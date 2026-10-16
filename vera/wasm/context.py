@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import itertools
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, NoReturn
 
 from vera import ast, fold
 from vera.naming import EMPTY_ALIAS_ENV, AliasEnv
@@ -1394,168 +1394,14 @@ class WasmContext(
 
         The per-kind dispatch.  Callers go through
         :meth:`translate_expr`, which adds the #1371 root scoping around
-        whatever this returns.
-
-        # WALKER_COVERAGE: (#597 — every Expr subclass below has a
-        # disposition; check_walker_coverage.py enforces completeness.)
-        #
-        # Handled (explicit isinstance branch — codegen produces WAT):
-        #   IntLit            → i64.const
-        #   FloatLit          → f64.const
-        #   BoolLit           → i32.const 0/1
-        #   UnitLit           → empty (no stack value)
-        #   StringLit         → string-pool index pair
-        #   InterpolatedString → string-builder sequence
-        #   SlotRef           → local.get
-        #   ResultRef         → local.get (postcondition checks)
-        #   BinaryExpr        → operand translations + binop
-        #   UnaryExpr         → operand + unop
-        #   IndexExpr         → bounds check + load
-        #   ArrayLit          → alloc + element stores
-        #   FnCall            → call
-        #   QualifiedCall     → effect-op dispatch
-        #   ModuleCall        → desugared to FnCall
-        #   ConstructorCall   → ADT layout alloc + field stores
-        #   NullaryConstructor → tag-only ADT alloc
-        #   AnonFn            → closure-lift dispatch (closures.py)
-        #   IfExpr            → block + br_if
-        #   MatchExpr         → pattern dispatch + arm bodies
-        #   Block             → statement sequence + trailing expr
-        #   HandleExpr        → handler installation + body
-        #   AssertExpr        → predicate + trap on false
-        #   AssumeExpr        → predicate + trap on false
-        #   ForallExpr        → quantifier dispatch (verifier-only at runtime)
-        #   ExistsExpr        → quantifier dispatch
-        #   OldExpr           → snapshot lookup (postcondition contexts)
-        #   NewExpr           → snapshot lookup (postcondition contexts)
-        #
-        # Cannot occur (rejected before reaching codegen):
-        #   HoleExpr          → parser placeholder; check time rejects
+        whatever this returns.  Each class's translation is its arm in
+        ``_TRANSLATE_ARMS``, a ``vera.fold.dispatch`` table, so every `Expr`
+        class has one; a hole, which the check rejects, has the refusal.
         """
-        if isinstance(expr, ast.IntLit):
-            # #1212: a literal a @Byte write boundary marked (directly, or as
-            # a leaf of an `if` / `match` join flowing into one) lowers at the
-            # i32 Byte width — see `_mark_byte_literal_leaves`.
-            if id(expr) in self._byte_literal_ids:
-                return [f"i32.const {expr.value}"]
-            return [f"i64.const {expr.value}"]
-
-        if isinstance(expr, ast.BoolLit):
-            return [f"i32.const {1 if expr.value else 0}"]
-
-        if isinstance(expr, ast.FloatLit):
-            return [f"f64.const {expr.value}"]
-
-        if isinstance(expr, ast.UnitLit):
-            return []  # Unit produces no value on the stack
-
-        if isinstance(expr, ast.SlotRef):
-            return self._translate_slot_ref(expr, env)
-
-        if isinstance(expr, ast.BinaryExpr):
-            return self._translate_binary(expr, env)
-
-        if isinstance(expr, ast.UnaryExpr):
-            return self._translate_unary(expr, env)
-
-        if isinstance(expr, ast.IfExpr):
-            return self._translate_if(expr, env)
-
-        if isinstance(expr, ast.Block):
-            return self.translate_block(expr, env)
-
-        if isinstance(expr, ast.FnCall):
-            return self._translate_call(expr, env)
-
-        if isinstance(expr, ast.QualifiedCall):
-            return self._translate_qualified_call(expr, env)
-
-        if isinstance(expr, ast.ModuleCall):
-            # C7e: desugar to flat FnCall — imported function is compiled
-            # into the same WASM module via flattening.  #814 §8.5.3: a
-            # module-qualified call MUST reach the module's function even
-            # when a local shadows its bare name, so resolve the WASM target
-            # via the qualified-target table (mod$… name for a shadowed fn,
-            # else the bare name) rather than blindly dropping the path.
-            #
-            # #814/#774: an imported GENERIC whose bare name a local shadows
-            # resolves through a separate table to its ``mod$…`` mono BASE; the
-            # base is a `_generic_fn_info` key, so the resulting FnCall is
-            # rewritten by `_resolve_generic_call` to the per-instantiation clone
-            # (`mod$m$gen$Int`) rather than the local shadow's bare `gen`.
-            #
-            # The desugar and the statement-position result-shape predicates
-            # (`_is_void_expr` / `_is_pair_result_expr`) share ONE target
-            # resolver so they can never disagree on which function is called
-            # (CR 3518737022): `_resolve_module_call_wasm_name` returns a shadowed
-            # generic's fully-resolved clone (`mod$m$gen$Int`, which
-            # `_translate_call` then calls directly) or the bare name of an
-            # UNshadowed generic (which `_translate_call` mangles itself).
-            target = self._resolve_module_call_wasm_name(expr)
-            desugared = ast.FnCall(
-                name=target,
-                args=expr.args,
-                span=expr.span,
-            )
-            # #1558: a tail call by the module's own path is marked on the
-            # `ModuleCall` (`compute_tail_call_sites`), and the fresh node
-            # above is no key of that set, so the mark is carried across —
-            # after the #983/#820 subtractions, which remove this node's id
-            # like any other call's.
-            return self._translate_call(
-                desugared, env, tail=id(expr) in self._tail_call_sites)
-
-        if isinstance(expr, ast.StringLit):
-            return self._translate_string_lit(expr)
-
-        if isinstance(expr, ast.InterpolatedString):
-            return self._translate_interpolated_string(expr, env)
-
-        if isinstance(expr, ast.ResultRef):
-            return self._translate_result_ref()
-
-        if isinstance(expr, ast.ConstructorCall):
-            return self._translate_constructor_call(expr, env)
-
-        if isinstance(expr, ast.NullaryConstructor):
-            return self._translate_nullary_constructor(expr)
-
-        if isinstance(expr, ast.MatchExpr):
-            return self._translate_match(expr, env)
-
-        if isinstance(expr, ast.AnonFn):
-            return self._translate_anon_fn(expr, env)
-
-        if isinstance(expr, ast.HandleExpr):
-            return self._translate_handle_expr(expr, env)
-
-        if isinstance(expr, ast.ArrayLit):
-            return self._translate_array_lit(expr, env)
-
-        if isinstance(expr, ast.IndexExpr):
-            return self._translate_index_expr(expr, env)
-
-        if isinstance(expr, ast.AssertExpr):
-            return self._translate_assert(expr, env)
-
-        if isinstance(expr, ast.AssumeExpr):
-            return self._translate_assume()
-
-        if isinstance(expr, ast.ForallExpr):
-            return self._translate_forall(expr, env)
-
-        if isinstance(expr, ast.ExistsExpr):
-            return self._translate_exists(expr, env)
-
-        if isinstance(expr, ast.OldExpr):
-            return self._translate_old_expr(expr)
-
-        if isinstance(expr, ast.NewExpr):
-            return self._translate_new_expr(expr)
-
-        raise CodegenSkip(
-            expr, f"no translator for expression type {type(expr).__name__}"
-        )
+        arm = _TRANSLATE_ARMS.get(type(expr))
+        if arm is None:
+            _no_translator(self, expr, env)
+        return arm(self, expr, env)
 
     # -----------------------------------------------------------------
     # Blocks and statements
@@ -1947,3 +1793,107 @@ _VOID_ARMS: Mapping[type[ast.Expr], _VoidArm] = fold.dispatch("_is_void_expr", {
         ast.HoleExpr, ast.OldExpr, ast.NewExpr,
     ), _void_never),
 })
+
+
+# =====================================================================
+# `_translate_expr_unscoped`: one arm per expression class
+# =====================================================================
+
+def _translate_int_lit(
+    ctx: WasmContext, expr: ast.IntLit, env: WasmSlotEnv,
+) -> list[str] | None:
+    # #1212: a literal a @Byte write boundary marked (directly, or as
+    # a leaf of an `if` / `match` join flowing into one) lowers at the
+    # i32 Byte width — see `_mark_byte_literal_leaves`.
+    if id(expr) in ctx._byte_literal_ids:
+        return [f"i32.const {expr.value}"]
+    return [f"i64.const {expr.value}"]
+
+
+def _translate_module_call(
+    ctx: WasmContext, expr: ast.ModuleCall, env: WasmSlotEnv,
+) -> list[str] | None:
+    # C7e: desugar to flat FnCall — imported function is compiled
+    # into the same WASM module via flattening.  #814 §8.5.3: a
+    # module-qualified call MUST reach the module's function even
+    # when a local shadows its bare name, so resolve the WASM target
+    # via the qualified-target table (mod$… name for a shadowed fn,
+    # else the bare name) rather than blindly dropping the path.
+    #
+    # #814/#774: an imported GENERIC whose bare name a local shadows
+    # resolves through a separate table to its ``mod$…`` mono BASE; the
+    # base is a `_generic_fn_info` key, so the resulting FnCall is
+    # rewritten by `_resolve_generic_call` to the per-instantiation clone
+    # (`mod$m$gen$Int`) rather than the local shadow's bare `gen`.
+    #
+    # The desugar and the statement-position result-shape predicates
+    # (`_is_void_expr` / `_is_pair_result_expr`) share ONE target
+    # resolver so they can never disagree on which function is called
+    # (CR 3518737022): `_resolve_module_call_wasm_name` returns a shadowed
+    # generic's fully-resolved clone (`mod$m$gen$Int`, which
+    # `_translate_call` then calls directly) or the bare name of an
+    # UNshadowed generic (which `_translate_call` mangles itself).
+    target = ctx._resolve_module_call_wasm_name(expr)
+    desugared = ast.FnCall(
+        name=target,
+        args=expr.args,
+        span=expr.span,
+    )
+    # #1558: a tail call by the module's own path is marked on the
+    # `ModuleCall` (`compute_tail_call_sites`), and the fresh node
+    # above is no key of that set, so the mark is carried across —
+    # after the #983/#820 subtractions, which remove this node's id
+    # like any other call's.
+    return ctx._translate_call(
+        desugared, env, tail=id(expr) in ctx._tail_call_sites)
+
+
+def _no_translator(
+    ctx: WasmContext, expr: ast.Expr, env: WasmSlotEnv,
+) -> NoReturn:
+    raise CodegenSkip(
+        expr, f"no translator for expression type {type(expr).__name__}"
+    )
+
+
+_TranslateArm = Callable[[WasmContext, Any, WasmSlotEnv], "list[str] | None"]
+
+#: The WAT an expression translates to, by class.
+_TRANSLATE_ARMS: Mapping[type[ast.Expr], _TranslateArm] = fold.dispatch(
+    "_translate_expr_unscoped", {
+        ast.IntLit: _translate_int_lit,
+        ast.BoolLit: lambda ctx, e, env: [f"i32.const {1 if e.value else 0}"],
+        ast.FloatLit: lambda ctx, e, env: [f"f64.const {e.value}"],
+        # Unit produces no value on the stack.
+        ast.UnitLit: lambda ctx, e, env: [],
+        ast.SlotRef: lambda ctx, e, env: ctx._translate_slot_ref(e, env),
+        ast.BinaryExpr: lambda ctx, e, env: ctx._translate_binary(e, env),
+        ast.UnaryExpr: lambda ctx, e, env: ctx._translate_unary(e, env),
+        ast.IfExpr: lambda ctx, e, env: ctx._translate_if(e, env),
+        ast.Block: lambda ctx, e, env: ctx.translate_block(e, env),
+        ast.FnCall: lambda ctx, e, env: ctx._translate_call(e, env),
+        ast.QualifiedCall:
+            lambda ctx, e, env: ctx._translate_qualified_call(e, env),
+        ast.ModuleCall: _translate_module_call,
+        ast.StringLit: lambda ctx, e, env: ctx._translate_string_lit(e),
+        ast.InterpolatedString:
+            lambda ctx, e, env: ctx._translate_interpolated_string(e, env),
+        ast.ResultRef: lambda ctx, e, env: ctx._translate_result_ref(),
+        ast.ConstructorCall:
+            lambda ctx, e, env: ctx._translate_constructor_call(e, env),
+        ast.NullaryConstructor:
+            lambda ctx, e, env: ctx._translate_nullary_constructor(e),
+        ast.MatchExpr: lambda ctx, e, env: ctx._translate_match(e, env),
+        ast.AnonFn: lambda ctx, e, env: ctx._translate_anon_fn(e, env),
+        ast.HandleExpr: lambda ctx, e, env: ctx._translate_handle_expr(e, env),
+        ast.ArrayLit: lambda ctx, e, env: ctx._translate_array_lit(e, env),
+        ast.IndexExpr: lambda ctx, e, env: ctx._translate_index_expr(e, env),
+        ast.AssertExpr: lambda ctx, e, env: ctx._translate_assert(e, env),
+        ast.AssumeExpr: lambda ctx, e, env: ctx._translate_assume(),
+        ast.ForallExpr: lambda ctx, e, env: ctx._translate_forall(e, env),
+        ast.ExistsExpr: lambda ctx, e, env: ctx._translate_exists(e, env),
+        ast.OldExpr: lambda ctx, e, env: ctx._translate_old_expr(e),
+        ast.NewExpr: lambda ctx, e, env: ctx._translate_new_expr(e),
+        # A parser placeholder the check rejects before code generation.
+        ast.HoleExpr: _no_translator,
+    })
