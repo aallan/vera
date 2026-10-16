@@ -367,11 +367,11 @@ def test_the_generic_paragraph_counts_its_causes_right() -> None:
 
 def test_the_cause_texts_state_the_limits_the_code_sets() -> None:
     """Each capacity a cause names is the one `vera/codegen/assembly.py`
-    sets: 4-byte shadow-stack roots and worklist entries, 16-byte wrapper
-    table entries."""
+    sets: 4-byte shadow-stack roots, 16-byte wrapper table entries.  The
+    mark worklist names none: a full worklist drops a push for a rescan to
+    find, and traps nothing (#1510)."""
     from vera.codegen.assembly import (
-        GC_STACK_SIZE, GC_WORKLIST_SIZE, GC_WRAPTABLE_ENTRY_SIZE,
-        GC_WRAPTABLE_SIZE,
+        GC_STACK_SIZE, GC_WRAPTABLE_ENTRY_SIZE, GC_WRAPTABLE_SIZE,
     )
     texts = {cause.key: cause.text for cause in UNREACHABLE_CAUSES}
 
@@ -380,9 +380,9 @@ def test_the_cause_texts_state_the_limits_the_code_sets() -> None:
 
     assert spelled(GC_STACK_SIZE // 4) in texts["shadow_stack_overflow"]
     assert f"{GC_STACK_SIZE // 1024} KiB" in texts["shadow_stack_overflow"]
-    assert spelled(GC_WORKLIST_SIZE // 4) in texts["gc_worklist_overflow"]
     assert spelled(GC_WRAPTABLE_SIZE // GC_WRAPTABLE_ENTRY_SIZE) in texts[
         "wrap_table_overflow"]
+    assert not any("worklist" in text for text in texts.values())
 
 
 def test_the_runtime_chapter_states_the_regions_the_code_sets() -> None:

@@ -687,6 +687,7 @@ MARKED_FILES = (
     "test_expr_fold.py",
     "test_call_facts_after_obligations_1706.py",
     "test_destructure_checked_against_source_1545.py",
+    "test_gc_mark_width_1510.py",
 )
 UNMARKED_FILES = (
     "test_obligations.py",

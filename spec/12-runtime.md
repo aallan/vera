@@ -532,7 +532,7 @@ The runtime implements a conservative mark-sweep garbage collector entirely in W
 
 ![Allocation and collection: $alloc aligns the request, tries the free list, bumps if there is room, and otherwise runs the three collector phases — clear marks, mark from shadow-stack roots with conservative scanning, sweep unmarked blocks onto the free list — before retrying and finally growing memory.](../assets/diagrams/gc-cycle.svg)
 
-**Shadow stack.** WASM does not support stack scanning, so the compiler maintains an explicit shadow stack in linear memory. The compiler pushes live heap pointers onto it at function entry (pointer-type parameters), after each `call $alloc` (newly allocated objects), and manages save/restore at function exit. Seven globals track the shadow stack and GC state:
+**Shadow stack.** WASM does not support stack scanning, so the compiler maintains an explicit shadow stack in linear memory. The compiler pushes live heap pointers onto it at function entry (pointer-type parameters), after each `call $alloc` (newly allocated objects), and manages save/restore at function exit. Thirteen globals track the shadow stack and GC state:
 
 | Global | Type | Purpose |
 |--------|------|---------|
@@ -543,13 +543,19 @@ The runtime implements a conservative mark-sweep garbage collector entirely in W
 | `$gc_heap_start` | `i32` | Heap start address (`data_end + 81920`, or `data_end + 147456` with the wrapper table; Section 12.5.1) |
 | `$gc_free_head` | `mut i32` | Free list head pointer |
 | `$gc_bm_base` | `mut i32` | Base of the object-base bitmap a collection builds |
+| `$gc_rs_lo` | `mut i32` | Header of the lowest object whose child a full mark worklist dropped |
+| `$gc_rs_off` | `mut i32` | Word offset in that object at which its push was dropped |
+| `$gc_rs_hi` | `mut i32` | Header of the highest object whose child a full mark worklist dropped |
+| `$gc_rs_stop` | `mut i32` | Header of the object the last rescan walk stopped in, which the next walk resumes |
+| `$gc_rs_stop_off` | `mut i32` | Word offset in that object at which the walk stopped |
+| `$gc_rs_below` | `mut i32` | Header of the highest object below that one whose child a full mark worklist dropped since the walk stopped |
 
 A program with the wrapper table also has `$gc_wrap_base`, `$gc_wrap_ptr` and `$gc_wrap_end`.
 
 **Collection phases.** The `$gc_collect` function performs these phases:
 
 1. **Clear marks:** Walk the heap linearly from `$gc_heap_start` to `$heap_ptr`, clearing the mark bit in each object header and recording each object's base address in a transient bitmap placed just above `$heap_ptr` (one bit per 8-byte granule).
-2. **Mark:** Seed a worklist from shadow stack entries that point into the heap. Drain the worklist iteratively: for each object, set its mark bit, then conservatively scan every i32-aligned word in the payload. Any word that looks like a valid heap pointer (correct range and alignment, and recorded in the bitmap as an object base) is pushed onto the worklist.
+2. **Mark:** Seed a worklist from shadow stack entries that point into the heap. Drain the worklist iteratively: for each object, set its mark bit, then conservatively scan every i32-aligned word in the payload. Any word that looks like a valid heap pointer (correct range and alignment, and recorded in the bitmap as an object base) is pushed onto the worklist. The worklist's size bounds the collector's memory, not the heap it can mark: a push that finds the worklist full is dropped and the object being scanned recorded, and once the worklist empties the recorded objects are scanned again, until a drain drops nothing. A rescan that fills the worklist stops there, and the next resumes the object it stopped in at the word it stopped at, however far below it a later drop moves the recorded range's start; the stretch between the highest such drop and that object holds nothing recorded and is not walked. Marking therefore completes for any heap the program can allocate. The seed never overflows the worklist, which holds no fewer entries than the shadow stack has roots.
 3. **Wrapper table** (only with the wrapper table): release the host resource of each unmarked wrapper and compact the table.
 4. **Sweep:** Walk the heap again, linking unmarked objects into the free list for reuse by `$alloc`.
 
