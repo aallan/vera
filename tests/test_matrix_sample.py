@@ -684,6 +684,7 @@ MARKED_FILES = (
     "test_short_circuit_1501.py",
     "test_nested_patterns_1697.py",
     "test_expr_fold.py",
+    "test_destructure_checked_against_source_1545.py",
 )
 UNMARKED_FILES = (
     "test_obligations.py",

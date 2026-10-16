@@ -146,6 +146,8 @@ let Tuple<@Int, @String> = some_function();
 
 This introduces two bindings: one `Int` and one `String`.
 
+A destructuring `let` names its value's type or one of its constructors, which must be the value's (**E314**, **E320**) and the type's only constructor (**E311**); it writes one binding per component or field (**E314** for a tuple, **E321** for a data constructor), and each binding is checked against its component of the value as a `let` binding is checked against its value (**E170**).
+
 ### 4.7.2 Let with Type Alias
 
 <!-- vera:skip-parse category="FRAGMENT" reason="type alias + let @PosInt = 42" -->
