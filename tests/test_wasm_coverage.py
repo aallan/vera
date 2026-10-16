@@ -707,14 +707,14 @@ public fn inc(@Unit -> @Int)
 
 
 # =====================================================================
-# TestClosureCoverage — closures.py _walk_free_vars branches
+# TestClosureCoverage — closures.py's free-variable walk
 # =====================================================================
 
 class TestClosureCoverage:
     """Full pipeline tests for closure compilation.
 
-    Targets missed lines in closures.py: _walk_free_vars recursive
-    cases for different expression types, and _collect_pattern_bindings.
+    Targets the free-variable walk in closures.py (`_collect_free_vars`,
+    over `vera.fold.scoped`) across expression types, patterns included.
     """
 
     def test_closure_captures_in_binary(self) -> None:

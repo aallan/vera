@@ -672,7 +672,6 @@ public fn main(@Unit -> @Int)
 """
 
 
-@pytest.mark.xfail(strict=True, reason="the free-variable walk skips a LetDestruct")
 def test_repro_a_destructuring_let_in_a_closure_compiles_and_runs() -> None:
     """At 313c04db the free-variable walk skipped a `LetDestruct`: it never
     read the source and never counted the two bindings, so `@Int.1` and

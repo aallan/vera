@@ -2228,7 +2228,7 @@ class InferenceMixin:
 
         Delegates to :func:`vera.naming.slot_name` (#1208) so a closure's
         parameter-count keys (`param_type_counts`) use the same name that
-        `_translate_slot_ref` / `_walk_free_vars` resolve against — and that
+        `_translate_slot_ref` / `_collect_free_vars` resolve against — and that
         the checker bound the slot under.
         """
         return naming.slot_name_or_none(te, self._alias_env)
