@@ -374,12 +374,12 @@ class _Path(NamedTuple):
     there and the slots in scope.  The context of the walks built on
     `vera.fold.contexts`."""
 
-    facts: tuple[object, ...]
+    facts: list[object]
     env: SlotEnv
 
     def assuming(self, *facts: object) -> _Path:
-        """This path with *facts* holding as well."""
-        return _Path((*self.facts, *facts), self.env)
+        """This path with *facts* holding as well, in a new list."""
+        return _Path([*self.facts, *facts], self.env)
 
     @staticmethod
     def fresh() -> _Path:
@@ -390,8 +390,19 @@ class _Path(NamedTuple):
         run in another activation than the one that built it; the walks
         model none of that (#779, #1492), so the body is read with nothing
         it could prove from an enclosing binding.  Every call and every
-        obligation there is still found."""
-        return _Path((), SlotEnv())
+        obligation there is still found.
+
+        For the §6.4.3 walk (#779) a slot reference inside never resolves
+        onto an outer same-named slot, which could prove a FALSE Tier-1
+        against the outer function's facts: every slot-dependent obligation
+        falls to the honest Tier-3 leg (codegen's unconditional traps back
+        div/index, and the lifted closure's interior guards back the
+        binding sites), while a literal-only shape still classifies exactly
+        (a manifest `5 / 0` is a loud E526, matching direct position).
+        Captured array bounds stay Tier-3 pending the Tier-2 work in #427.
+        The path conditions on ``smt._path_conditions`` are not this
+        context's and stay as the enclosing walk left them."""
+        return _Path([], SlotEnv())
 
 
 class RecursiveCall(NamedTuple):
@@ -7715,7 +7726,7 @@ class ContractVerifier:
         reaches every position, and `_calls_step` says which path each is
         read in.
         """
-        start = _Path(tuple(z3_path_conds), slot_env)
+        start = _Path(z3_path_conds, slot_env)
         for node, path in fold.contexts(expr, self._calls_step(smt), start):
             if isinstance(node, (ast.FnCall, ast.ModuleCall)):
                 # A module-qualified call is on the cycle only when it is by
@@ -7771,9 +7782,9 @@ class ContractVerifier:
         # or `assume` holds for the rest of its block, so its predicate
         # is a path fact of every later statement and of the tail.  A
         # tail call's measure lost it, and was refused E502 after an
-        # `assert` that makes it hold (#1480 review).  A new tuple per
+        # `assert` that makes it hold (#1480 review).  A new list per
         # fact, never an append: an untranslatable `if` hands both of
-        # its branches this walk's facts, and a fact appended to them would
+        # its branches this walk's list, and a fact appended to it would
         # reach the other branch.
         cur_env, cur_facts = path.env, path.facts
         for stmt in block.statements:
@@ -7818,7 +7829,7 @@ class ContractVerifier:
                 cur_env = self._shadow_destructured_slots(stmt, smt, cur_env)
             fact = self._assumed_block_fact(stmt, smt, cur_env)
             if fact is not None:
-                cur_facts = (*cur_facts, fact)
+                cur_facts = [*cur_facts, fact]
         yield block.expr, _Path(cur_facts, cur_env)
 
     def _calls_binary(
@@ -7851,7 +7862,7 @@ class ContractVerifier:
             if arm.condition is not None:
                 arm_facts.append(arm.condition)
             arm_facts.extend(arm.facts)
-            yield match_arm, _Path(tuple(arm_facts), arm.env)
+            yield match_arm, _Path(arm_facts, arm.env)
 
     def _assumed_block_fact(
         self, stmt: ast.Stmt, smt: SmtContext, slot_env: SlotEnv,
@@ -7996,526 +8007,410 @@ class ContractVerifier:
         obligation, walked separately by
         :py:meth:`_walk_for_nat_binding_obligations`.)
 
-        Mirrors :py:meth:`_walk_for_calls` structurally.  Path conditions
-        are tracked via ``smt._path_conditions`` (pushed/popped on
-        if/match branches), so :py:meth:`SmtContext.check_valid` picks
-        them up automatically when discharging each obligation.
-
-        # WALKER_COVERAGE: (#597 — every Expr subclass has a disposition;
-        # check_walker_coverage.py enforces completeness.  This walker descends
-        # the function body — and, since #801, each contract predicate — to
-        # every nested trapping primitive op.)
-        #
-        # Handled (explicit isinstance branch — check and/or recurse):
-        #   BinaryExpr         → div/mod by-zero check (E526); recurse
-        #                        operands, the right of `&&`, `||` and `==>`
-        #                        under the left (#1501)
-        #   UnaryExpr          → recurse operand
-        #   IndexExpr          → array-index bounds check (E527); recurse
-        #   ArrayLit           → recurse elements
-        #   AssertExpr         → assert obligation (#800) + recurse condition
-        #   AssumeExpr         → recurse condition
-        #   IfExpr             → recurse cond / then / else
-        #   Block              → recurse let RHSes, statements, trailing expr
-        #   MatchExpr          → recurse scrutinee + arm bodies
-        #   FnCall             → recurse args; the call's precondition
-        #                        (#1480 review)
-        #   ModuleCall         → recurse args; the call's precondition
-        #   ConstructorCall    → recurse args
-        #   QualifiedCall      → recurse args (effect operation)
-        #   InterpolatedString → recurse interpolated parts
-        #
-        # Leaf — no nested operation, walk terminates:
-        #   IntLit             → literal
-        #   BoolLit            → literal
-        #   StringLit          → literal
-        #   FloatLit           → literal
-        #   UnitLit            → literal
-        #   SlotRef            → bound slot, no sub-expression
-        #   ResultRef          → @result reference, no sub-expression
-        #   NullaryConstructor → nullary ADT tag, no sub-expression
-        #
-        # Fresh-scope descent (#779) — walked, with scope-honest precision:
-        #   AnonFn             → body under an EMPTY slot env (fresh params;
-        #                        slot-dependent obligations fall to Tier-3,
-        #                        literal-only shapes classify exactly)
-        #   ForallExpr         → domain (enclosing env) + predicate (AnonFn)
-        #   ExistsExpr         → domain (enclosing env) + predicate (AnonFn)
-        #   HandleExpr         → state init + body (enclosing env);
-        #                        clause bodies / updates (empty env)
-        #
-        # Intentionally ignored — no Expr children to recurse into (the
-        # walker also visits ensures clauses, where these DO appear):
-        #   OldExpr            → contract state operator (leaf, effect_ref only)
-        #   NewExpr            → contract state operator (leaf, effect_ref only)
-        #
-        # Cannot occur — rejected before this walk:
-        #   HoleExpr           → check time rejects
+        `vera.fold.contexts` reaches every position.  The classes whose arm
+        does more than read its children on its own path are steps in
+        `_primitive_step`, each running its obligations where the
+        recursive walk ran them, between the children it walks.  Path
+        conditions are tracked via ``smt._path_conditions`` (pushed/popped
+        on if/match branches), so :py:meth:`SmtContext.check_valid` picks
+        them up automatically when discharging each obligation; a path's
+        facts are the ``assumptions`` list each obligation is handed.
         """
-        if isinstance(expr, ast.FnCall):
-            for arg in expr.args:
-                self._walk_for_primitive_op_obligations(
-                    decl, arg, smt, slot_env, assumptions,
-                )
-            # #1480 review: the call's own precondition — a user callee's
-            # `requires` or a built-in's declared domain — obligated HERE,
-            # where the walk reaches it, not only where translation does.
-            self._obligate_call_site(expr, smt, slot_env, assumptions)
-            # #807: float_to_int(x) is a partial op — NaN / ±Inf /
-            # out-of-i64-range trap, as codegen's `float_conversion` check
-            # (#1479) — so it carries a domain obligation just like
-            # div-by-zero (#801) and overflow (#798).
-            # #1480: `floor`, `ceil` and `round` make the same check after a
-            # rounding step, and `float_to_string` truncates the integer
-            # part it prints with an `i64.trunc_f64_s` that traps the same
-            # way (#1482); none of them carried anything.
-            if len(expr.args) == 1 and self._is_builtin_call(expr.name):
-                if expr.name in _FLOAT_CONVERSIONS:
-                    self._check_float_to_int_domain_obligation(
-                        decl, expr, expr.args[0], expr.name, smt, slot_env,
-                    )
-                elif expr.name == "show":
-                    self._check_float_rendering(
-                        decl, expr, expr.args[0], smt, slot_env)
-                elif expr.name == "abs":
-                    # `abs(-2^63)` is 2^63, which no `@Nat` holds (spec
-                    # §2.2): the result's range is the overflow obligation
-                    # every `+`/`-`/`*` carries, and codegen's `abs` traps
-                    # where it fails (#798).
-                    self._check_overflow_obligation(
-                        decl, expr, smt, slot_env, assumptions,
-                    )
-            return
+        start = _Path(assumptions, slot_env)
+        for _node, _path in fold.contexts(
+                expr, self._primitive_step(decl, smt), start):
+            pass
 
-        if isinstance(expr, ast.ModuleCall):
-            # Module-qualified calls (e.g. `Math.abs(@Int.0)`) can host
-            # `@Nat - @Nat` in their args just like FnCall does — recurse.
-            for arg in expr.args:
-                self._walk_for_primitive_op_obligations(
-                    decl, arg, smt, slot_env, assumptions,
-                )
-            self._obligate_call_site(expr, smt, slot_env, assumptions)
-            return
+    def _primitive_step(
+        self, decl: ast.FnDecl, smt: SmtContext,
+    ) -> fold.Step[_Path]:
+        """The §6.4.3 walk's arms, by class.
 
-        if isinstance(expr, ast.ConstructorCall):
-            # ADT constructors (e.g. `Some(@Nat.0 - @Nat.1)`) carry
-            # arguments that can host the same subtraction shape.  The
-            # constructor's *result* type is the ADT, not @Nat — so
-            # `_is_nat_typed` doesn't need a branch here — but the args
-            # themselves still need walking.
-            for arg in expr.args:
-                self._walk_for_primitive_op_obligations(
-                    decl, arg, smt, slot_env, assumptions,
-                )
-            return
+        Every other class reads its children on its own path: a
+        constructor's arguments, an effect operation's, a unary operand, an
+        array literal's elements, a quantifier's domain and predicate, and
+        the leaves (literals, slot refs, `@T.result`, a nullary
+        constructor, and `old` / `new`, which the walk meets in an
+        `ensures` clause and which hold no expression).
 
-        if isinstance(expr, ast.QualifiedCall):
-            # Qualified calls (e.g. `Map.get(...)`) — like FnCall and
-            # ModuleCall, args can hold subtraction sites we must
-            # check.  The SMT layer doesn't translate QualifiedCall
-            # itself, so any obligation rooted ON a QualifiedCall
-            # would already drop to Tier 3 via the existing
-            # untranslatable-expression path; recursing here only
-            # catches obligations rooted INSIDE its args.
-            for arg in expr.args:
-                self._walk_for_primitive_op_obligations(
-                    decl, arg, smt, slot_env, assumptions,
-                )
-            return
+        ADT constructors (e.g. `Some(@Nat.0 - @Nat.1)`) carry
+        arguments that can host the same subtraction shape.  The
+        constructor's *result* type is the ADT, not @Nat — so
+        `_is_nat_typed` doesn't need a branch here — but the args
+        themselves still need walking.
 
-        if isinstance(expr, ast.IfExpr):
-            # Walk the condition first (before pushing path-cond) — any
-            # @Nat-@Nat in the condition is unconditional from the
-            # caller's perspective.
-            self._walk_for_primitive_op_obligations(
-                decl, expr.condition, smt, slot_env, assumptions,
-            )
-            z3_cond = smt.translate_expr(expr.condition, slot_env)
-            if z3_cond is not None:
-                import z3 as z3mod
-                smt._path_conditions.append(z3_cond)
+        Qualified calls (e.g. `Map.get(...)`) — like FnCall and
+        ModuleCall, args can hold subtraction sites we must
+        check.  The SMT layer doesn't translate QualifiedCall
+        itself, so any obligation rooted ON a QualifiedCall
+        would already drop to Tier 3 via the existing
+        untranslatable-expression path; recursing here only
+        catches obligations rooted INSIDE its args.
+
+        An array-literal element can host a trapping op
+        (`[@Int.0 / @Int.1, ...]`, `[arr[@Nat.0], ...]`).  Elements
+        share the enclosing scope, so recurse into each (#680 review).
+
+        #779: the quantifier DOMAIN evaluates in the enclosing scope,
+        so it walks with the enclosing env at full precision (a
+        divisor there can prove Tier-1 from the function's requires).
+        The predicate is an AnonFn — the fresh-scope case
+        (`_path_closure`).
+
+        """
+        arms: dict[type[ast.Node], Callable[
+            [ast.FnDecl, Any, _Path, SmtContext],
+            Iterator[tuple[ast.Node, _Path]]]] = {
+            ast.FnCall: self._primitive_fn_call,
+            ast.ModuleCall: self._primitive_module_call,
+            ast.IfExpr: self._primitive_if,
+            ast.Block: self._primitive_block,
+            ast.BinaryExpr: self._primitive_binary,
+            ast.MatchExpr: self._primitive_match,
+            ast.IndexExpr: self._primitive_index,
+            ast.AssertExpr: self._primitive_assert,
+            ast.AssumeExpr: self._primitive_assume,
+            ast.InterpolatedString: self._primitive_interpolation,
+            ast.HandleExpr: lambda decl, e, path, smt: _path_handle(e, path, smt),
+            ast.AnonFn: lambda decl, e, path, smt: _path_closure(e, path, smt),
+        }
+
+        def step(node: ast.Node, path: _Path) -> Iterator[tuple[ast.Node, _Path]] | None:
+            arm = arms.get(type(node))
+            return None if arm is None else arm(decl, node, path, smt)
+
+        return step
+
+    def _primitive_fn_call(
+        self, decl: ast.FnDecl, expr: ast.FnCall, path: _Path, smt: SmtContext,
+    ) -> Iterator[tuple[ast.Node, _Path]]:
+        for arg in expr.args:
+            yield arg, path
+        # #1480 review: the call's own precondition — a user callee's
+        # `requires` or a built-in's declared domain — obligated HERE,
+        # where the walk reaches it, not only where translation does.
+        self._obligate_call_site(expr, smt, path.env, path.facts)
+        # #807: float_to_int(x) is a partial op — NaN / ±Inf /
+        # out-of-i64-range trap, as codegen's `float_conversion` check
+        # (#1479) — so it carries a domain obligation just like
+        # div-by-zero (#801) and overflow (#798).
+        # #1480: `floor`, `ceil` and `round` make the same check after a
+        # rounding step, and `float_to_string` truncates the integer
+        # part it prints with an `i64.trunc_f64_s` that traps the same
+        # way (#1482); none of them carried anything.
+        if len(expr.args) == 1 and self._is_builtin_call(expr.name):
+            if expr.name in _FLOAT_CONVERSIONS:
+                self._check_float_to_int_domain_obligation(
+                    decl, expr, expr.args[0], expr.name, smt, path.env,
+                )
+            elif expr.name == "show":
+                self._check_float_rendering(
+                    decl, expr, expr.args[0], smt, path.env)
+            elif expr.name == "abs":
+                # `abs(-2^63)` is 2^63, which no `@Nat` holds (spec
+                # §2.2): the result's range is the overflow obligation
+                # every `+`/`-`/`*` carries, and codegen's `abs` traps
+                # where it fails (#798).
+                self._check_overflow_obligation(
+                    decl, expr, smt, path.env, path.facts,
+                )
+
+    def _primitive_module_call(
+        self, decl: ast.FnDecl, expr: ast.ModuleCall, path: _Path, smt: SmtContext,
+    ) -> Iterator[tuple[ast.Node, _Path]]:
+        # Module-qualified calls (e.g. `Math.abs(@Int.0)`) can host
+        # `@Nat - @Nat` in their args just like FnCall does — recurse.
+        for arg in expr.args:
+            yield arg, path
+        self._obligate_call_site(expr, smt, path.env, path.facts)
+
+    def _primitive_if(
+        self, decl: ast.FnDecl, expr: ast.IfExpr, path: _Path, smt: SmtContext,
+    ) -> Iterator[tuple[ast.Node, _Path]]:
+        # Walk the condition first (before pushing path-cond) — any
+        # @Nat-@Nat in the condition is unconditional from the
+        # caller's perspective.
+        yield expr.condition, path
+        z3_cond = smt.translate_expr(expr.condition, path.env)
+        if z3_cond is not None:
+            import z3 as z3mod
+            smt._path_conditions.append(z3_cond)
+            try:
+                yield expr.then_branch, path
+            finally:
+                smt._path_conditions.pop()
+            if expr.else_branch is not None:
+                smt._path_conditions.append(z3mod.Not(z3_cond))
                 try:
-                    self._walk_for_primitive_op_obligations(
-                        decl, expr.then_branch, smt, slot_env, assumptions,
-                    )
+                    yield expr.else_branch, path
                 finally:
                     smt._path_conditions.pop()
-                if expr.else_branch is not None:
-                    smt._path_conditions.append(z3mod.Not(z3_cond))
-                    try:
-                        self._walk_for_primitive_op_obligations(
-                            decl, expr.else_branch, smt, slot_env,
-                            assumptions,
-                        )
-                    finally:
-                        smt._path_conditions.pop()
-            else:  # condition untranslatable — hot under the #779 empty env
-                self._walk_for_primitive_op_obligations(
-                    decl, expr.then_branch, smt, slot_env, assumptions,
+        else:  # condition untranslatable — hot under the #779 empty env
+            yield expr.then_branch, path
+            if expr.else_branch is not None:
+                yield expr.else_branch, path
+
+    def _primitive_block(
+        self, decl: ast.FnDecl, expr: ast.Block, path: _Path, smt: SmtContext,
+    ) -> Iterator[tuple[ast.Node, _Path]]:
+        cur_env = path.env
+        pc_depth = len(smt._path_conditions)  # #804 restore point (see below)
+        for stmt in expr.statements:
+            # Each statement is read in the env so far: a `let`'s or a
+            # destructure's value before its binders are pushed, and a
+            # statement-position expression too.
+            # Walk a statement-position expression for @Nat subtraction
+            # obligations (test_unsafe_sub_stmt_position_obligated).
+            yield stmt, _Path(path.facts, cur_env)
+            if isinstance(stmt, ast.LetStmt):
+                bound = self._apply_let_binding(
+                    stmt, smt, cur_env,
+                    policy=BlockBindingPolicy.OPAQUE_SHADOW,
                 )
-                if expr.else_branch is not None:
-                    self._walk_for_primitive_op_obligations(
-                        decl, expr.else_branch, smt, slot_env, assumptions,
-                    )
-            return
-
-        if isinstance(expr, ast.Block):
-            cur_env = slot_env
-            pc_depth = len(smt._path_conditions)  # #804 restore point (see below)
-            for stmt in expr.statements:
-                if isinstance(stmt, ast.LetStmt):
-                    self._walk_for_primitive_op_obligations(
-                        decl, stmt.value, smt, cur_env, assumptions,
-                    )
-                    bound = self._apply_let_binding(
-                        stmt, smt, cur_env,
-                        policy=BlockBindingPolicy.OPAQUE_SHADOW,
-                    )
-                    if bound is not None:  # OPAQUE_SHADOW never halts
-                        cur_env = bound
-                elif isinstance(stmt, ast.LetDestruct):
-                    # #680 review: a `let Ctor<...> = <value>` destructure can
-                    # host a trapping op in its *value* (`Tuple(@Int.0 /
-                    # @Int.1, ...)`), so walk it first.  Then rebind each
-                    # destructured slot so a later op resolves to the
-                    # destructured value, not a stale same-type outer binding.
-                    #
-                    # A literal-constructor source (`Tuple(10, 6)`) pairs each
-                    # binding with a translatable sub-expression: project the
-                    # real term for Tier-1 precision (`_ / @Int.1` discharges
-                    # `10 != 0` instead of falling to Tier-3), mirroring the
-                    # @Nat-binding walker (PR #778 review).  A non-literal /
-                    # untranslatable component falls back to a *tracked opaque
-                    # shadow* (not a bare fresh var, which carries no `!= 0`
-                    # and false-fired E526 — the 77d90fb regression): a later
-                    # div/sub operand that IS the shadow routes to Tier-3.
-                    # Literal components are translated in the pre-destructure
-                    # env and applied after the loop, avoiding same-type
-                    # self-shadowing.
-                    self._walk_for_primitive_op_obligations(
-                        decl, stmt.value, smt, cur_env, assumptions,
-                    )
-                    lit_args: tuple[ast.Expr, ...] = ()
-                    if (isinstance(stmt.value, ast.ConstructorCall)
-                            and stmt.value.name == stmt.constructor):
-                        lit_args = stmt.value.args
-                    pushed: list[tuple[str, z3.ExprRef]] = []
-                    for i, te in enumerate(stmt.type_bindings):
-                        type_name = smt._type_expr_to_slot_name(te)
-                        if type_name is None:
-                            continue
-                        slot_val: z3.ExprRef | None = None
-                        if i < len(lit_args):
-                            slot_val = smt.translate_expr(lit_args[i], cur_env)
-                        if slot_val is None:
-                            # Non-literal / untranslatable component: push a
-                            # *tracked* opaque placeholder so a later op falls
-                            # to Tier-3, never a stale outer's value.  EVERY
-                            # component must push something so same-type De
-                            # Bruijn positions stay aligned — skipping one
-                            # shifts `@Int.0` onto a sibling (`Tuple(10,
-                            # <opaque>)` would resolve `@Int.0` to the literal
-                            # `10` and silently discharge: the worst #680
-                            # failure class, PR #778 review).  Borrow the stale
-                            # outer's sort when present; else derive a fresh
-                            # placeholder from the binding type (scalar via
-                            # `_fresh_slot_var`, array / ADT via explicit
-                            # declarations).
-                            stale = cur_env.resolve(type_name, 0)
-                            if stale is not None:
-                                slot_val = z3.FreshConst(stale.sort(), "shadow")
-                            else:
-                                slot_val = self._fresh_slot_var(smt, te)
-                                if slot_val is None:
-                                    resolved = self._resolve_type(te)
-                                    if self._is_array_type(resolved):
-                                        slot_val = self._declare_array_var(
-                                            smt, smt._fresh_name("shadow"),
-                                            resolved,
-                                        )
-                                    elif self._is_adt_type(resolved):
-                                        slot_val = smt.declare_adt(
-                                            smt._fresh_name("shadow"), resolved,
-                                        )
-                            if slot_val is None:
-                                continue
-                            self._opaque_shadows.append(slot_val)
-                            self._guarded_binder_value(smt, te, slot_val)
-                        pushed.append((type_name, slot_val))
-                    for tn, sv in pushed:
-                        cur_env = cur_env.push(tn, sv)
-                elif isinstance(stmt, ast.ExprStmt):
-                    # Walk a statement-position expression for @Nat subtraction
-                    # obligations (test_unsafe_sub_stmt_position_obligated).
-                    self._walk_for_primitive_op_obligations(
-                        decl, stmt.expr, smt, cur_env, assumptions,
-                    )
-                # #804: after walking the statement, assume a bare assert/assume's
-                # predicate for LATER siblings in this block (the assume-half of
-                # the WP rule).  Pushed AFTER the walk so the assert never
-                # discharges itself; check_valid folds _path_conditions into each
-                # subsequent obligation automatically.
-                fact = self._assumed_block_fact(stmt, smt, cur_env)
-                if fact is not None:
-                    smt._path_conditions.append(fact)
-            self._walk_for_primitive_op_obligations(
-                decl, expr.expr, smt, cur_env, assumptions,
-            )
-            # #804: drop this block's assert/assume facts — keeps them positional
-            # (later siblings only) and block-scoped (no leak to a sibling
-            # branch).  Recursive if/match walks balance their own pushes, so
-            # only these facts sit above pc_depth; an exception here aborts the
-            # function before later walks run and every function starts from a
-            # reset _path_conditions, so no try/finally is needed.
-            del smt._path_conditions[pc_depth:]
-            return
-
-        if isinstance(expr, ast.BinaryExpr):
-            # Recurse first so nested subtractions are checked even
-            # when the outer expression isn't @Nat-typed.  The right operand
-            # of `&&`, `||` and `==>` runs only where the left one does not
-            # decide the result, so it is walked under that premise (#1501).
-            self._walk_for_primitive_op_obligations(
-                decl, expr.left, smt, slot_env, assumptions,
-            )
-            with smt.premise(smt.short_circuit_premise(expr, slot_env)):
-                self._walk_for_primitive_op_obligations(
-                    decl, expr.right, smt, slot_env, assumptions,
-                )
-            if self._is_guarded_nat_subtraction(expr):
-                # Both operands are @Nat-typed (#520).  A literal operand
-                # is an `Int`, so `@Nat.0 - 1` and `0 - 1` are `@Int`
-                # subtractions, with the overflow obligation below, and
-                # binding one into a @Nat slot is the narrowing that
-                # checks its sign (#552).
-                self._check_subtraction_obligation(
-                    decl, expr, smt, slot_env, assumptions,
-                )
-            elif expr.op in (ast.BinOp.DIV, ast.BinOp.MOD):
-                # #680: integer division/modulo by zero traps at runtime
-                # (`i64.div_s` / `i64.rem_s`).  Emit a `divisor != 0`
-                # obligation unless the divisor is a non-zero integer
-                # literal (`x / 5` — trivially safe, exempt like #520's
-                # pure-literal subtractions).  `_check_div_zero_obligation`
-                # itself skips a Real-sorted (float) divisor, since
-                # `f64.div` by zero yields inf/NaN rather than trapping.
-                if not (isinstance(expr.right, ast.IntLit)
-                        and expr.right.value != 0):
-                    self._check_div_zero_obligation(
-                        decl, expr, smt, slot_env, assumptions,
-                    )
-            elif expr.op in (ast.BinOp.ADD, ast.BinOp.SUB, ast.BinOp.MUL):
-                # #798: @Int/@Nat add/sub/mul wrap at the i64 boundary and
-                # now trap, so each carries an `int_overflow` range obligation.
-                # @Nat subtraction is underflow (nat_sub, handled above), not
-                # high-overflow, so it is excluded here.  `_overflow_arith_type`
-                # classifies on the operands' COMMON type, so an @Int add
-                # narrowed into a @Nat slot is still an @Int add (#798).
-                # #1417: the verifier fails CLOSED with the emitter.  An
-                # unclassified operand pair skipped the OBLIGATION here just
-                # as it skipped the guard in codegen, so a site the emitter
-                # now guards would carry no record to count it — the same
-                # desync one component over.  An unknown width reads as
-                # `Int`, which is the wider signed interpretation and the
-                # safe reading of the pair (R-1412 F5).
-                ovf_type = self._overflow_arith_fail_closed(expr)
-                if ovf_type is not None and not (
-                    expr.op == ast.BinOp.SUB and ovf_type == "Nat"
-                ):
-                    self._check_overflow_obligation(
-                        decl, expr, smt, slot_env, assumptions,
-                    )
-            return
-
-        if isinstance(expr, ast.UnaryExpr):
-            self._walk_for_primitive_op_obligations(
-                decl, expr.operand, smt, slot_env, assumptions,
-            )
-            return
-
-        if isinstance(expr, ast.MatchExpr):
-            self._walk_for_primitive_op_obligations(
-                decl, expr.scrutinee, smt, slot_env, assumptions,
-            )
-            scrutinee_z3 = smt.translate_expr(expr.scrutinee, slot_env)
-            for index, match_arm in enumerate(expr.arms):
-                # #1403: through the one arm-context derivation, which is
-                # what gives this walk the facts the arm establishes.  It is
-                # the walk that discharges every §6.4.3 safety obligation AND
-                # every body `assert`, and it was the one consumer that asked
-                # for the env and the discriminant but not the facts — so an
-                # `assert` that follows from a bound payload's declared type
-                # could never prove, and `Some(@PosInt) -> 100 / @PosInt.0`
-                # was refused E526 although the payload's own type says the
-                # divisor is positive.
+                if bound is not None:  # OPAQUE_SHADOW never halts
+                    cur_env = bound
+            elif isinstance(stmt, ast.LetDestruct):
+                # #680 review: a `let Ctor<...> = <value>` destructure can
+                # host a trapping op in its *value* (`Tuple(@Int.0 /
+                # @Int.1, ...)`), so walk it first.  Then rebind each
+                # destructured slot so a later op resolves to the
+                # destructured value, not a stale same-type outer binding.
                 #
-                # The reach is EVERY obligation this walk discharges, not the
-                # assert alone, and deliberately so: one arm establishes one
-                # set of facts, and a `/`, an `arr[i]` and an `assert` in it
-                # are all discharged from the same context (#1415 review, F1).
-                # The disclosure rule then reaches all of them for free:
-                # where the producer's own obligation left the fact
-                # unestablished, `_subpattern_source_facts` routes it to
-                # `smt._tainted_facts` and returns none, so `check_valid`
-                # withholds it and the site falls to its runtime guard.
-                # `_record_undecided_safety` is what makes that fall SAY so,
-                # rather than recording a silent `tier3`.
-                arm = self._enter_match_arm(
-                    expr.scrutinee, scrutinee_z3, match_arm.pattern,
-                    smt, slot_env,
-                    earlier=[a.pattern for a in expr.arms[:index]],
+                # A literal-constructor source (`Tuple(10, 6)`) pairs each
+                # binding with a translatable sub-expression: project the
+                # real term for Tier-1 precision (`_ / @Int.1` discharges
+                # `10 != 0` instead of falling to Tier-3), mirroring the
+                # @Nat-binding walker (PR #778 review).  A non-literal /
+                # untranslatable component falls back to a *tracked opaque
+                # shadow* (not a bare fresh var, which carries no `!= 0`
+                # and false-fired E526 — the 77d90fb regression): a later
+                # div/sub operand that IS the shadow routes to Tier-3.
+                # Literal components are translated in the pre-destructure
+                # env and applied after the loop, avoiding same-type
+                # self-shadowing.
+                lit_args: tuple[ast.Expr, ...] = ()
+                if (isinstance(stmt.value, ast.ConstructorCall)
+                        and stmt.value.name == stmt.constructor):
+                    lit_args = stmt.value.args
+                pushed: list[tuple[str, z3.ExprRef]] = []
+                for i, te in enumerate(stmt.type_bindings):
+                    type_name = smt._type_expr_to_slot_name(te)
+                    if type_name is None:
+                        continue
+                    slot_val: z3.ExprRef | None = None
+                    if i < len(lit_args):
+                        slot_val = smt.translate_expr(lit_args[i], cur_env)
+                    if slot_val is None:
+                        # Non-literal / untranslatable component: push a
+                        # *tracked* opaque placeholder so a later op falls
+                        # to Tier-3, never a stale outer's value.  EVERY
+                        # component must push something so same-type De
+                        # Bruijn positions stay aligned — skipping one
+                        # shifts `@Int.0` onto a sibling (`Tuple(10,
+                        # <opaque>)` would resolve `@Int.0` to the literal
+                        # `10` and silently discharge: the worst #680
+                        # failure class, PR #778 review).  Borrow the stale
+                        # outer's sort when present; else derive a fresh
+                        # placeholder from the binding type (scalar via
+                        # `_fresh_slot_var`, array / ADT via explicit
+                        # declarations).
+                        stale = cur_env.resolve(type_name, 0)
+                        if stale is not None:
+                            slot_val = z3.FreshConst(stale.sort(), "shadow")
+                        else:
+                            slot_val = self._fresh_slot_var(smt, te)
+                            if slot_val is None:
+                                resolved = self._resolve_type(te)
+                                if self._is_array_type(resolved):
+                                    slot_val = self._declare_array_var(
+                                        smt, smt._fresh_name("shadow"),
+                                        resolved,
+                                    )
+                                elif self._is_adt_type(resolved):
+                                    slot_val = smt.declare_adt(
+                                        smt._fresh_name("shadow"), resolved,
+                                    )
+                        if slot_val is None:
+                            continue
+                        self._opaque_shadows.append(slot_val)
+                        self._guarded_binder_value(smt, te, slot_val)
+                    pushed.append((type_name, slot_val))
+                for tn, sv in pushed:
+                    cur_env = cur_env.push(tn, sv)
+            # #804: after walking the statement, assume a bare assert/assume's
+            # predicate for LATER siblings in this block (the assume-half of
+            # the WP rule).  Pushed AFTER the walk so the assert never
+            # discharges itself; check_valid folds _path_conditions into each
+            # subsequent obligation automatically.
+            fact = self._assumed_block_fact(stmt, smt, cur_env)
+            if fact is not None:
+                smt._path_conditions.append(fact)
+        yield expr.expr, _Path(path.facts, cur_env)
+        # #804: drop this block's assert/assume facts — keeps them positional
+        # (later siblings only) and block-scoped (no leak to a sibling
+        # branch).  Recursive if/match walks balance their own pushes, so
+        # only these facts sit above pc_depth; an exception here aborts the
+        # function before later walks run and every function starts from a
+        # reset _path_conditions, so no try/finally is needed.
+        del smt._path_conditions[pc_depth:]
+
+    def _primitive_binary(
+        self, decl: ast.FnDecl, expr: ast.BinaryExpr, path: _Path, smt: SmtContext,
+    ) -> Iterator[tuple[ast.Node, _Path]]:
+        # Recurse first so nested subtractions are checked even
+        # when the outer expression isn't @Nat-typed.  The right operand
+        # of `&&`, `||` and `==>` runs only where the left one does not
+        # decide the result, so it is walked under that premise (#1501).
+        yield expr.left, path
+        with smt.premise(smt.short_circuit_premise(expr, path.env)):
+            yield expr.right, path
+        if self._is_guarded_nat_subtraction(expr):
+            # Both operands are @Nat-typed (#520).  A literal operand
+            # is an `Int`, so `@Nat.0 - 1` and `0 - 1` are `@Int`
+            # subtractions, with the overflow obligation below, and
+            # binding one into a @Nat slot is the narrowing that
+            # checks its sign (#552).
+            self._check_subtraction_obligation(
+                decl, expr, smt, path.env, path.facts,
+            )
+        elif expr.op in (ast.BinOp.DIV, ast.BinOp.MOD):
+            # #680: integer division/modulo by zero traps at runtime
+            # (`i64.div_s` / `i64.rem_s`).  Emit a `divisor != 0`
+            # obligation unless the divisor is a non-zero integer
+            # literal (`x / 5` — trivially safe, exempt like #520's
+            # pure-literal subtractions).  `_check_div_zero_obligation`
+            # itself skips a Real-sorted (float) divisor, since
+            # `f64.div` by zero yields inf/NaN rather than trapping.
+            if not (isinstance(expr.right, ast.IntLit)
+                    and expr.right.value != 0):
+                self._check_div_zero_obligation(
+                    decl, expr, smt, path.env, path.facts,
                 )
-                with self._under_arm(smt, arm):
-                    self._walk_for_primitive_op_obligations(
-                        decl, match_arm.body, smt, arm.env,
-                        arm.assuming(assumptions),
-                    )
-            return
-
-        if isinstance(expr, ast.IndexExpr):
-            # #680: `arr[i]` carries a `0 <= i < array_length(arr)` bounds
-            # obligation.  Recurse into the collection and index first (each
-            # may host a nested division / subtraction / index), then check
-            # this site.  Index sites inside closure / quantifier-predicate
-            # bodies are reached through the fresh-scope descent (#779):
-            # slot-dependent / captured-length sites fall to Tier-3 (beyond
-            # the fresh scope's fragment, #427; the runtime bounds trap
-            # backs them) while literal-only shapes classify exactly.
-            self._walk_for_primitive_op_obligations(
-                decl, expr.collection, smt, slot_env, assumptions,
-            )
-            self._walk_for_primitive_op_obligations(
-                decl, expr.index, smt, slot_env, assumptions,
-            )
-            self._check_index_bounds_obligation(
-                decl, expr, smt, slot_env, assumptions,
-            )
-            return
-
-        if isinstance(expr, ast.ArrayLit):
-            # An array-literal element can host a trapping op
-            # (`[@Int.0 / @Int.1, ...]`, `[arr[@Nat.0], ...]`).  Elements
-            # share the enclosing scope, so recurse into each (#680 review).
-            for element in expr.elements:
-                self._walk_for_primitive_op_obligations(
-                    decl, element, smt, slot_env, assumptions,
+        elif expr.op in (ast.BinOp.ADD, ast.BinOp.SUB, ast.BinOp.MUL):
+            # #798: @Int/@Nat add/sub/mul wrap at the i64 boundary and
+            # now trap, so each carries an `int_overflow` range obligation.
+            # @Nat subtraction is underflow (nat_sub, handled above), not
+            # high-overflow, so it is excluded here.  `_overflow_arith_type`
+            # classifies on the operands' COMMON type, so an @Int add
+            # narrowed into a @Nat slot is still an @Int add (#798).
+            # #1417: the verifier fails CLOSED with the emitter.  An
+            # unclassified operand pair skipped the OBLIGATION here just
+            # as it skipped the guard in codegen, so a site the emitter
+            # now guards would carry no record to count it — the same
+            # desync one component over.  An unknown width reads as
+            # `Int`, which is the wider signed interpretation and the
+            # safe reading of the pair (R-1412 F5).
+            ovf_type = self._overflow_arith_fail_closed(expr)
+            if ovf_type is not None and not (
+                expr.op == ast.BinOp.SUB and ovf_type == "Nat"
+            ):
+                self._check_overflow_obligation(
+                    decl, expr, smt, path.env, path.facts,
                 )
-            return
 
-        if isinstance(expr, ast.AssertExpr):
-            # #800: the asserted predicate is itself a Tier-1 proof obligation
-            # (spec §6.2.5) — prove it here.  Also recurse into it for any
-            # trapping op it hosts (`assert(@Int.0 / @Int.1 > 0)`).
-            self._check_assert_obligation(
-                decl, expr, smt, slot_env, assumptions,
-            )
-            self._walk_for_primitive_op_obligations(
-                decl, expr.expr, smt, slot_env, assumptions,
-            )
-            return
-
-        if isinstance(expr, ast.AssumeExpr):
-            # An assumed condition is taken on trust (no proof obligation);
-            # still recurse for any trapping op inside it (#680 review).
+    def _primitive_match(
+        self, decl: ast.FnDecl, expr: ast.MatchExpr, path: _Path, smt: SmtContext,
+    ) -> Iterator[tuple[ast.Node, _Path]]:
+        yield expr.scrutinee, path
+        scrutinee_z3 = smt.translate_expr(expr.scrutinee, path.env)
+        for index, match_arm in enumerate(expr.arms):
+            # #1403: through the one arm-context derivation, which is
+            # what gives this walk the facts the arm establishes.  It is
+            # the walk that discharges every §6.4.3 safety obligation AND
+            # every body `assert`, and it was the one consumer that asked
+            # for the env and the discriminant but not the facts — so an
+            # `assert` that follows from a bound payload's declared type
+            # could never prove, and `Some(@PosInt) -> 100 / @PosInt.0`
+            # was refused E526 although the payload's own type says the
+            # divisor is positive.
             #
-            # #1345: spec 6.2.6 requires a warning for EVERY `assume`.  It is
-            # an escape hatch and an unsound one — if the assumption is false
-            # the program may do anything — so a reader who sees a clean
-            # verify is entitled to know one was taken on trust.  Counted here
-            # too, which is what makes `VerifySummary.assumptions` a real
-            # number rather than the hardcoded 0 it was.
-            self._warning(
-                expr,
-                f"Unverified assumption in '{decl.name}': taken on trust, "
-                f"not proved.",
-                rationale=(
-                    "`assume` tells the verifier to accept a predicate "
-                    "without proof. If it does not hold at run time the "
-                    "program's behaviour is undefined, and every obligation "
-                    "discharged from it inherits that."
-                ),
-                spec_ref='Chapter 6, Section 6.2.6 "Assumptions (`assume`)"',
-                error_code="W003",
+            # The reach is EVERY obligation this walk discharges, not the
+            # assert alone, and deliberately so: one arm establishes one
+            # set of facts, and a `/`, an `arr[i]` and an `assert` in it
+            # are all discharged from the same context (#1415 review, F1).
+            # The disclosure rule then reaches all of them for free:
+            # where the producer's own obligation left the fact
+            # unestablished, `_subpattern_source_facts` routes it to
+            # `smt._tainted_facts` and returns none, so `check_valid`
+            # withholds it and the site falls to its runtime guard.
+            # `_record_undecided_safety` is what makes that fall SAY so,
+            # rather than recording a silent `tier3`.
+            arm = self._enter_match_arm(
+                expr.scrutinee, scrutinee_z3, match_arm.pattern,
+                smt, path.env,
+                earlier=[a.pattern for a in expr.arms[:index]],
             )
-            self._walk_for_primitive_op_obligations(
-                decl, expr.expr, smt, slot_env, assumptions,
-            )
-            return
+            with self._under_arm(smt, arm):
+                yield match_arm, _Path(arm.assuming(path.facts), arm.env)
 
-        if isinstance(expr, ast.InterpolatedString):
-            # An interpolated expression can host a trapping op
-            # (`"x: \(@Int.0 / @Int.1)"`) — recurse into each part, mirroring
-            # the @Nat-binding walker (#680 review).
-            for part in expr.parts:
-                if isinstance(part, ast.Expr):
-                    self._walk_for_primitive_op_obligations(
-                        decl, part, smt, slot_env, assumptions,
-                    )
-                    # #1480: a `@Float64` part is rendered by
-                    # `float_to_string`'s lowering, truncation included.
-                    self._check_float_rendering(
-                        decl, part, part, smt, slot_env)
-            return
+    def _primitive_index(
+        self, decl: ast.FnDecl, expr: ast.IndexExpr, path: _Path, smt: SmtContext,
+    ) -> Iterator[tuple[ast.Node, _Path]]:
+        # #680: `arr[i]` carries a `0 <= i < array_length(arr)` bounds
+        # obligation.  Recurse into the collection and index first (each
+        # may host a nested division / subtraction / index), then check
+        # this site.  Index sites inside closure / quantifier-predicate
+        # bodies are reached through the fresh-scope descent (#779):
+        # slot-dependent / captured-length sites fall to Tier-3 (beyond
+        # the fresh scope's fragment, #427; the runtime bounds trap
+        # backs them) while literal-only shapes classify exactly.
+        yield expr.collection, path
+        yield expr.index, path
+        self._check_index_bounds_obligation(
+            decl, expr, smt, path.env, path.facts,
+        )
 
-        if isinstance(expr, (ast.ForallExpr, ast.ExistsExpr)):
-            # #779: the quantifier DOMAIN evaluates in the enclosing scope,
-            # so it walks with the enclosing env at full precision (a
-            # divisor there can prove Tier-1 from the function's requires).
-            # The predicate is an AnonFn — the fresh-scope case below.
-            self._walk_for_primitive_op_obligations(
-                decl, expr.domain, smt, slot_env, assumptions,
-            )
-            self._walk_for_primitive_op_obligations(
-                decl, expr.predicate, smt, slot_env, assumptions,
-            )
-            return
+    def _primitive_assert(
+        self, decl: ast.FnDecl, expr: ast.AssertExpr, path: _Path, smt: SmtContext,
+    ) -> Iterator[tuple[ast.Node, _Path]]:
+        # #800: the asserted predicate is itself a Tier-1 proof obligation
+        # (spec §6.2.5) — prove it here.  Also recurse into it for any
+        # trapping op it hosts (`assert(@Int.0 / @Int.1 > 0)`).
+        self._check_assert_obligation(
+            decl, expr, smt, path.env, path.facts,
+        )
+        yield expr.expr, path
 
-        if isinstance(expr, ast.HandleExpr):
-            # #779: the handler's state-init and BODY are enclosing-scope
-            # code (handler state is not even visible in the body, spec
-            # §7.5.1), so they walk with the enclosing env at full precision.
-            # Clause bodies and state updates bind the operation's fresh
-            # parameters (and the handler state slot) — the fresh-scope
-            # env (see AnonFn below).
-            if expr.state is not None:
-                self._walk_for_primitive_op_obligations(
-                    decl, expr.state.init_expr, smt, slot_env, assumptions,
-                )
-            self._walk_for_primitive_op_obligations(
-                decl, expr.body, smt, slot_env, assumptions,
-            )
-            for clause in expr.clauses:
-                self._walk_for_primitive_op_obligations(
-                    decl, clause.body, smt, SlotEnv(), [],
-                )
-                if clause.state_update is not None:
-                    self._walk_for_primitive_op_obligations(
-                        decl, clause.state_update[1], smt, SlotEnv(), [],
-                    )
-            return
+    def _primitive_assume(
+        self, decl: ast.FnDecl, expr: ast.AssumeExpr, path: _Path, smt: SmtContext,
+    ) -> Iterator[tuple[ast.Node, _Path]]:
+        # An assumed condition is taken on trust (no proof obligation);
+        # still recurse for any trapping op inside it (#680 review).
+        #
+        # #1345: spec 6.2.6 requires a warning for EVERY `assume`.  It is
+        # an escape hatch and an unsound one — if the assumption is false
+        # the program may do anything — so a reader who sees a clean
+        # verify is entitled to know one was taken on trust.  Counted here
+        # too, which is what makes `VerifySummary.assumptions` a real
+        # number rather than the hardcoded 0 it was.
+        self._warning(
+            expr,
+            f"Unverified assumption in '{decl.name}': taken on trust, "
+            f"not proved.",
+            rationale=(
+                "`assume` tells the verifier to accept a predicate "
+                "without proof. If it does not hold at run time the "
+                "program's behaviour is undefined, and every obligation "
+                "discharged from it inherits that."
+            ),
+            spec_ref='Chapter 6, Section 6.2.6 "Assumptions (`assume`)"',
+            error_code="W003",
+        )
+        yield expr.expr, path
 
-        if isinstance(expr, ast.AnonFn):
-            # #779: a closure body binds fresh slots, so it walks with an
-            # EMPTY slot environment and no outer assumptions: a slot
-            # reference inside never resolves onto an outer same-named slot
-            # (which could prove a FALSE Tier-1 against the outer
-            # function's facts — the mistranslation hazard the issue's
-            # care-clause names).  Every slot-dependent obligation falls to
-            # the honest Tier-3 leg — codegen's unconditional traps back
-            # div/index, and the lifted closure's interior guards back the
-            # binding sites — while a literal-only shape still classifies
-            # exactly (a manifest `5 / 0` is a loud E526, matching direct
-            # position).  Captured array bounds stay Tier-3 pending the
-            # Tier-2 work in #427.
-            self._walk_for_primitive_op_obligations(
-                decl, expr.body, smt, SlotEnv(), [],
-            )
-            return
-
-        # Remaining expression types terminate the walk.  Literals and slot
-        # refs are genuine leaves; OldExpr / NewExpr cannot appear in a
-        # function body (rejected at check time outside ensures).
-        return
+    def _primitive_interpolation(
+        self, decl: ast.FnDecl, expr: ast.InterpolatedString, path: _Path, smt: SmtContext,
+    ) -> Iterator[tuple[ast.Node, _Path]]:
+        # An interpolated expression can host a trapping op
+        # (`"x: \(@Int.0 / @Int.1)"`) — recurse into each part, mirroring
+        # the @Nat-binding walker (#680 review).
+        for part in expr.parts:
+            if isinstance(part, ast.Expr):
+                yield part, path
+                # #1480: a `@Float64` part is rendered by
+                # `float_to_string`'s lowering, truncation included.
+                self._check_float_rendering(
+                    decl, part, part, smt, path.env)
 
     def _lookup_constructor_info(self, name: str) -> ConstructorInfo | None:
         """Find a constructor's info from either registry.
@@ -15826,8 +15721,12 @@ def _path_handle(
     #1492): there a closure's `@Nat.0` was the enclosing PARAMETER, and a
     measure proved over it held for a value the call never passes.
     """
-    # The state's initialiser and the handled body are enclosing-
-    # scope code: the state is no slot in the body (§7.5.1).
+    # #779: the handler's state-init and BODY are enclosing-scope
+    # code (handler state is not even visible in the body, spec
+    # §7.5.1), so they walk with the enclosing env at full precision.
+    # Clause bodies and state updates bind the operation's fresh
+    # parameters (and the handler state slot) — the fresh-scope
+    # env (`_Path.fresh()`).
     if expr.state is not None:
         yield expr.state, path
     yield expr.body, path
