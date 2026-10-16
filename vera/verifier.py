@@ -414,6 +414,31 @@ class EvaluatedAt:
 
 
 @dataclass(frozen=True)
+class ArgumentTarget:
+    """What one argument of a call binds into: its formal, resolved (#1706).
+
+    Derived once per (argument, formal) pair by
+    :py:meth:`ContractVerifier._argument_targets` and read twice: by the
+    binding-obligation walk, which obligates the argument against the
+    targets it NARROWS into, and by the call translation's guard, which
+    assumes the callee's facts only under the argument meeting every target
+    (:py:meth:`ContractVerifier._call_binding_facts`).  One derivation, so
+    the guard and the obligations cannot come to read the formal two ways.
+    """
+
+    arg: ast.Expr
+    #: The refinement the formal is, a generic one's instantiation included
+    #: (:py:meth:`ContractVerifier._refined_binding_target`), or None.
+    refined: Type | None
+    #: Whether the formal is a `@Nat`, concrete or instantiated, a
+    #: refinement of one included (:py:meth:`ContractVerifier._nat_binding_target`).
+    nat: bool
+    #: The type to read refinements written INSIDE the formal off, when it
+    #: carries any (:py:meth:`ContractVerifier._nested_refinement_formal`).
+    nested: Type | None
+
+
+@dataclass(frozen=True)
 class RefinementDeclaration:
     """One refinement type written in a program, and where (#1480)."""
 
@@ -1436,6 +1461,106 @@ class ContractVerifier:
             return target
         return None
 
+    def _argument_targets(
+        self,
+        args: Sequence[ast.Expr],
+        formals: Sequence[Type | None],
+    ) -> list[ArgumentTarget]:
+        """What each argument of a call binds into, one entry per (argument,
+        formal) pair in order (#1706).
+
+        THE derivation of a call's argument targets: the binding-obligation
+        walk obligates an argument against the ones it narrows into, and the
+        call translation's guard (:py:meth:`_call_binding_facts`) requires
+        every one, so the obligations and the guard read each formal through
+        the same three resolutions.
+        """
+        targets: list[ArgumentTarget] = []
+        for arg, formal in zip(args, formals):
+            nested = self._nested_refinement_formal(arg, formal)
+            targets.append(ArgumentTarget(
+                arg=arg,
+                refined=self._refined_binding_target(arg, formal),
+                nat=self._nat_binding_target(arg, formal),
+                nested=nested if self._has_nested_refinement(nested) else None,
+            ))
+        return targets
+
+    def _call_binding_facts(
+        self,
+        call: ast.FnCall | ast.ModuleCall,
+        callee: FunctionInfo,
+        terms: Sequence[z3.ExprRef | None],
+        smt: SmtContext,
+    ) -> list[z3.ExprRef]:
+        """The SMT layer's hook (``SmtContext._call_binding_hook``): the facts
+        *call*'s arguments owe *callee*'s parameters, over *terms*, the
+        arguments as the call's translation translated them (#1706).
+
+        Per argument, what the callee's own proof assumed of the parameter
+        (`_declare_value`'s `>= 0` for a `@Nat`, and the refinement
+        predicate and nested facts of `_declared_type_facts`): the
+        refinement's predicate, `>= 0` for a `@Nat`, and the refinements
+        nested in the formal.  For every argument, whether or not it narrows
+        at this call, because a fact over the argument's TERM is a fact over
+        whatever produced it — a `let` whose slot it is, a constructor field
+        inside it — and a statically fitting argument's facts are ones the
+        solver already holds, so its guard discharges.  The nested facts are
+        taken raw rather than through :py:meth:`_established_facts`: the
+        guard has to be at least what the callee assumed, and the callee's
+        own parameter carries no disclosure.  An untranslatable refinement
+        predicate is one the callee could not assume either, so only its
+        base's `>= 0`, which it did assume, stands for it.
+        """
+        formals = getattr(callee, "param_types", None)
+        if formals is None:
+            return []
+        facts: list[z3.ExprRef] = []
+        for target, term in zip(
+                self._argument_targets(call.args, formals), terms):
+            if term is None:
+                continue
+            if target.refined is not None:
+                predicate = self._translate_refined_predicate(
+                    smt, target.refined, term)
+                if predicate is not None:
+                    facts.append(predicate)
+            if target.nat and isinstance(term, z3.ArithRef):
+                facts.append(term >= 0)
+            if target.nested is not None:
+                nested, _ = self._nested_refinement_facts(
+                    smt, target.nested, term)
+                facts.extend(nested)
+        return facts
+
+    def _call_result_facts(
+        self,
+        callee: FunctionInfo,
+        call: ast.FnCall | ast.ModuleCall,
+        result: z3.ExprRef,
+        smt: SmtContext,
+    ) -> list[z3.ExprRef]:
+        """The SMT layer's hook (``SmtContext._call_result_facts_hook``): the
+        refinements written inside *callee*'s return type, as facts about
+        the call's *result*, where this run established them (#1706).
+
+        The head refinement already travels with the result (the SMT layer's
+        refined-return assumption, #746); these are the positions inside it,
+        an ADT payload or a tuple component, which the callee's return slot
+        was obligated for in the same way (#1410).  Read in the callee's
+        namespace, as its contract is (#1208), and asked of
+        :py:meth:`_established_facts` in the caller's, which withholds them
+        where the callee disclosed that obligation instead of discharging
+        it, so a goal that needs them is Tier 3, never Tier 1.
+        """
+        ret_ty = getattr(callee, "return_type", None)
+        if ret_ty is None or not self._has_nested_refinement(ret_ty):
+            return []
+        with smt._callee_contract_scope(callee):
+            facts, _ = self._nested_refinement_facts(smt, ret_ty, result)
+        return cast("list[z3.ExprRef]", self._established_facts(
+            list(facts), source=call, term=result, smt=smt))
+
     # -----------------------------------------------------------------
     # Diagnostics
     # -----------------------------------------------------------------
@@ -2296,6 +2421,13 @@ class ContractVerifier:
         # per-function state, which `SmtContext.reset()` clears — so the warm
         # (shared) smt is safe for the same reason `_tainted_facts` is.
         smt._disclosed_call_hook = self._disclosed_call_for_value
+        # #1706: and let a call's translation assume the callee's facts only
+        # under what its arguments owe the parameters, read off the same
+        # argument targets the binding-obligation walk obligates.  Stateless,
+        # so safe on the warm (shared) smt too.  The result's own nested
+        # refinements come with it, through the disclosure gate.
+        smt._call_binding_hook = self._call_binding_facts
+        smt._call_result_facts_hook = self._call_result_facts
         # #994 F1: let the SMT nullary-ctor translation resolve a bare tag's
         # exact instantiation from the checker's recorded (instance-substituted)
         # semantic type, instead of the ambiguous base-name scan that crashed Z3
@@ -9162,7 +9294,11 @@ class ContractVerifier:
                 # side-table, #747), so it obligates like a concretely-@Nat
                 # formal — as for generic constructor fields and effect-op
                 # formals.
-                for arg, formal in zip(expr.args, param_types):
+                # The targets are the ones the call's translation guards the
+                # callee's facts with (#1706): this arm obligates the ones an
+                # argument NARROWS into, the guard requires all of them.
+                for owed in self._argument_targets(expr.args, param_types):
+                    arg = owed.arg
                     # #746: a refined formal is the matched half of param-assume
                     # (R1) — the caller proves the argument satisfies the
                     # refinement here.  `_refined_binding_target` recovers a
@@ -9170,7 +9306,7 @@ class ContractVerifier:
                     # to a RefinedType at this call site (from the side-table).
                     # Refined-first so a refinement-over-@Nat formal discharges
                     # its full predicate rather than only `>= 0` (R9).
-                    refined_target = self._refined_binding_target(arg, formal)
+                    refined_target = owed.refined
                     if (refined_target is not None
                             and self._narrows_into_refined(arg, refined_target)):
                         self._check_refined_binding_obligation(
@@ -9178,8 +9314,7 @@ class ContractVerifier:
                             assumptions, site="call argument",
                             guarded=True,
                         )
-                    elif (self._nat_binding_target(arg, formal)
-                            and self._narrows_into_nat(arg)):
+                    elif owed.nat and self._narrows_into_nat(arg):
                         self._check_nat_binding_obligation(
                             decl, arg, smt, slot_env, assumptions,
                             site="call argument",
@@ -9206,8 +9341,7 @@ class ContractVerifier:
                     # `{ @Tuple<PosInt, Int> | P }` formal carries both, and
                     # they are different facts about one value).
                     self._check_nested_refinement_obligation(
-                        decl, arg,
-                        self._nested_refinement_formal(arg, formal),
+                        decl, arg, owed.nested,
                         smt, slot_env, assumptions, site="call argument",
                         callee=expr.name,
                     )
@@ -12472,6 +12606,10 @@ class ContractVerifier:
         # per-function state, which `SmtContext.reset()` clears — so the warm
         # (shared) smt is safe for the same reason `_tainted_facts` is.
         smt._disclosed_call_hook = self._disclosed_call_for_value
+        # #1706: the same binding guard as the main path, for the calls this
+        # fast path's body translation models.
+        smt._call_binding_hook = self._call_binding_facts
+        smt._call_result_facts_hook = self._call_result_facts
         # #994 F1: same recorded-type hint as the main path — a bare nullary
         # ctor in this generic body's refined return must resolve its sort from
         # the recorded type, not the ambiguous base-name scan.

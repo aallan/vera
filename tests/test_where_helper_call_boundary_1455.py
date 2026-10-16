@@ -300,7 +300,10 @@ class TestAProvedEnsuresDoesNotRestOnATrappingCall:
     """
 
     def test_the_call_is_refuted_rather_than_proved(self) -> None:
-        assert _error_codes(_ISSUE_WHERE) == ["E505"]
+        """The argument is refuted, and the caller's `ensures` with it: `h`'s
+        postcondition is assumed only of an argument that fits `@Pos`
+        (#1706), and `0 - 5` does not, so nothing proves `main`'s."""
+        assert _error_codes(_ISSUE_WHERE) == ["E505", "E500"]
 
     def test_the_artifact_still_refuses_the_value(self) -> None:
         """The other half of the differential: codegen was never the problem.

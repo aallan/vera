@@ -682,6 +682,14 @@ class SmtContext:
         # Path conditions accumulated from if/match branches so that
         # call-site precondition checks can see which branch is active.
         self._path_conditions: list[z3.ExprRef] = []
+        # #1706: while a call's callee contract is translated, the facts the
+        # call's arguments owe the callee's parameters, one entry per call
+        # being modelled (a call inside a callee's `ensures` nests).  Every
+        # fact the translation assumes about the call is assumed under them
+        # (`_guard_fact`, `_under_call_bindings`), so an obligation over an
+        # argument cannot be discharged by the facts of the call it feeds.
+        # Empty outside a call's translation, where nothing reads it.
+        self._call_bindings: list[z3.ExprRef] = []
         # #1363: declared-type facts whose OWN obligation resolved
         # not-proved-not-guarded.  Held apart from the solver rather than
         # asserted into it, so a goal is first asked WITHOUT them: anything
@@ -758,6 +766,25 @@ class SmtContext:
         # for the term rather than left on the verifier's live list.
         # None when no verifier is driving (pure-SMT tests).
         self._disclosed_call_hook: Any = None
+        # Optional hook (injected by the verifier) returning, for a call to a
+        # user function, the facts each argument owes the callee's parameter
+        # (#1706): what the callee's own proof assumed of that parameter,
+        # stated over the argument's term.  The verifier owns the formal's
+        # resolution (a refinement, a `@Nat`, a refinement nested in the
+        # type), which its binding-obligation walk reads too.  Signature:
+        # (call_node, callee_info, [term or None per argument], smt) ->
+        # [z3 fact].  None when no verifier is driving (pure-SMT tests).
+        self._call_binding_hook: Any = None
+        # Optional hook (injected by the verifier) returning what a call's
+        # declared return type says about its result beyond its head
+        # refinement (#1706): the refinements written INSIDE it, an
+        # `Option<PosInt>` payload, which the callee's return position was
+        # obligated to establish as it was the head.  Through the verifier's
+        # disclosure gate, which withholds them where the callee's own
+        # obligation for them was disclosed.  Signature: (callee_info,
+        # call_node, result_z3, smt) -> [z3 fact].  None when no verifier is
+        # driving (pure-SMT tests).
+        self._call_result_facts_hook: Any = None
         # Optional hook (injected by the verifier) returning the source-type
         # facts a constructor pattern's refined / @Nat sub-pattern bindings
         # carry, so a match arm body's call PRECONDITIONS see them (CR
@@ -3280,8 +3307,40 @@ class SmtContext:
           2. Translate actual arguments in the caller's env
           3. Check each callee precondition holds (solver has caller assumptions)
           4. Create a fresh return variable
-          5. Assume callee postconditions about the return variable
+          5. Assume callee postconditions about the return variable, under
+             the facts the arguments owe the callee's parameters
           6. Return the fresh variable
+
+        A call's facts about its result are assumed only where its arguments
+        fit the callee's parameters (#1706).  The callee proved its
+        `ensures`, and its refined return, from what it assumed of its
+        parameters: `>= 0` for a `@Nat`, a refinement's predicate, the
+        refinements nested in a parameter's type.  Assumed bare, those facts
+        re-derived what the arguments owe: `nat_id(@Nat -> @Nat)
+        ensures(@Nat.result == @Nat.0)` called as `nat_id(@Int.0)` put
+        `ret == @Int.0` and `ret >= 0` in the solver, which is the
+        `@Int.0 >= 0` the binding-obligation walk, run after the body is
+        translated, then discharged from them.  Under the parameters' facts
+        over the arguments (``_call_binding``), the facts tell a query
+        nothing about an argument the arguments' own facts do not, so no
+        obligation over an argument (its narrowing at this call, a `let` whose
+        slot it is, a constructor field inside it) rests on the call it
+        feeds.  That covers every fact the contract's translation assumes,
+        the arm facts a `match` on a parameter assumes about the argument's
+        term included (``_under_call_bindings``).  Ordering the call's own
+        obligations before step 5 was not taken: it leaves every obligation
+        the walk discharges after the body to those facts, a `let` narrowing
+        of the same value among them.
+
+        The result carries its declared type's facts as it did, now with the
+        refinements written inside the return type beside its head
+        refinement (``_call_result_facts_hook``): an argument fits a
+        nested-refined parameter only where its payload is known, and a call
+        result was the one producer the solver held no such fact for.  The
+        fresh result's own type facts that constrain it alone stay
+        unconditional (`declare_nat`'s `ret >= 0` for a `@Nat` return): with
+        the `ensures` guarded nothing ties the fresh variable back to the
+        arguments.
         """
         # Does the callee carry a real (non-trivial) precondition?  A callee
         # with only `requires(true)` has no obligation to demote — a failed
@@ -3467,6 +3526,62 @@ class SmtContext:
                     self._disclosed_term_sites.setdefault(
                         ret_var.get_id(), []).extend(sites)
 
+        # #1706: every fact below is assumed under what the arguments owe the
+        # callee's parameters — the call's own facts, and the arm facts a
+        # `match` in the callee's contract assumes about its parameters.
+        binding = self._call_binding(
+            callee_info, call_node, args, z3_args, zero_size)
+        if binding is not None:
+            self._call_bindings.append(binding)
+        try:
+            self._assume_callee_facts(
+                callee_info, call_node, callee_env, ret_var, refined_chain)
+        finally:
+            if binding is not None:
+                self._call_bindings.pop()
+        return ret_var
+
+    def _call_binding(
+        self,
+        callee_info: Any,
+        call_node: ast.FnCall | ast.ModuleCall,
+        args: tuple[ast.Expr, ...],
+        z3_args: list[z3.ExprRef],
+        zero_size: tuple[bool, ...],
+    ) -> z3.ExprRef | None:
+        """The conjunction of the facts *call_node*'s arguments owe the
+        callee's parameters, or None when they owe none (#1706).
+
+        The facts come from the verifier (``_call_binding_hook``), which
+        resolves each formal the way its binding-obligation walk does; this
+        layer hands it one term per argument, ``None`` at a zero-size
+        position, whose argument :meth:`_translate_call_args` translated and
+        dropped (#1214).
+        """
+        if self._call_binding_hook is None:
+            return None
+        translated = iter(z3_args)
+        terms = [
+            None if (i < len(zero_size) and zero_size[i]) else next(translated)
+            for i in range(len(args))
+        ]
+        facts = self._call_binding_hook(call_node, callee_info, terms, self)
+        if not facts:
+            return None
+        return facts[0] if len(facts) == 1 else z3.And(*facts)
+
+    def _assume_callee_facts(
+        self,
+        callee_info: Any,
+        call_node: ast.FnCall | ast.ModuleCall,
+        callee_env: SlotEnv,
+        ret_var: z3.ExprRef,
+        refined_chain: tuple[Type, list[ast.Expr]] | None,
+    ) -> None:
+        """Assume the callee's postconditions, its refined return's
+        predicate and the refinements written inside its return type, about
+        the fresh result *ret_var* — each through :meth:`_guard_fact`, which
+        scopes it to the branch and to the call's binding (#1706)."""
         # Assume callee postconditions about the return variable
         saved_result = self._result_var
         self._result_var = ret_var
@@ -3493,8 +3608,8 @@ class SmtContext:
         # `@Unit` it isn't even runtime-guarded, so assuming e.g.
         # `always_false(@Unit.0)` would add `false` → UNSAT → vacuously
         # discharge the caller's own obligations).  The base-`@Nat` `>= 0` is
-        # already carried by the `declare_nat` above, so the predicate alone
-        # suffices here.
+        # already carried by the result's `declare_nat`, so the predicate
+        # alone suffices here.
         # For a CHAIN this is the conjunction over every level (R-1431 review
         # of PR #1453).  Gating on one level took the base to another
         # `RefinedType`, which is not in this tuple, so the fact was dropped
@@ -3551,7 +3666,19 @@ class SmtContext:
                     # is an ASSUMPTION, so dropping one only tells the caller
                     # less and can cost a proof, never soundness.
 
-        return ret_var
+        # #1706: and the refinements written INSIDE the return type, which
+        # the callee's return position was obligated for as it was for the
+        # head.  A call's argument is now required to fit a nested-refined
+        # formal before the callee's facts hold, and a result was the one
+        # producer of such a value whose declared type the solver did not
+        # hold, so `consume(mk(x))` lost `consume`'s postcondition where `mk`
+        # proved its payload.  The verifier's gate withholds them where `mk`
+        # disclosed that obligation instead, so a proof that needs them is
+        # Tier 3.
+        if self._call_result_facts_hook is not None:
+            for fact in self._call_result_facts_hook(
+                    callee_info, call_node, ret_var, self):
+                self.assume(self._guard_fact(fact))
 
     def _fresh_opaque_slot(
         self, node: ast.Expr, tag: str, ty: Type | None = None,
@@ -3883,10 +4010,10 @@ class SmtContext:
             # precondition checks that read `_path_conditions` live (CR
             # PR-review).  Empty preceding ⇒ irrefutable arm ⇒ unconditional.
             if preceding_conds:
-                self.assume(z3.Implies(
-                    z3.And(*[z3.Not(pc) for pc in preceding_conds]), f))
+                self.assume(self._under_call_bindings(z3.Implies(
+                    z3.And(*[z3.Not(pc) for pc in preceding_conds]), f)))
             else:
-                self.assume(f)
+                self.assume(self._under_call_bindings(f))
         result = self.translate_expr(arms[-1].body, last_env)
         for _ in last_facts:
             self._path_conditions.pop()
@@ -3920,7 +4047,7 @@ class SmtContext:
                 # note) so the refined-return goal sees it after the path
                 # conditions pop, while the live `_path_conditions` push covers
                 # in-arm precondition checks.
-                self.assume(z3.Implies(cond, f))
+                self.assume(self._under_call_bindings(z3.Implies(cond, f)))
                 self._path_conditions.append(f)
             arm_body = self.translate_expr(arm.body, arm_env)
             for _ in arm_facts:
@@ -4718,9 +4845,30 @@ class SmtContext:
         (`solver.add(z3.Implies(cond, f))`); the call translator did not.
         Guarding keeps each fact exactly as strong as the path that earned it
         (PR #953 review).
+
+        A fact is equally only as strong as the ARGUMENTS that earned it
+        (#1706): the callee guarantees it of arguments that fit its
+        parameters, so it is assumed under ``_call_bindings`` as well, the
+        facts the arguments of each call being modelled owe.  The path alone
+        left `nat_id(@Int.0)`'s `ret == @Int.0` free to discharge the very
+        `@Int.0 >= 0` its argument owed.
         """
-        if self._path_conditions:
-            return z3.Implies(z3.And(*self._path_conditions), fact)
+        conditions = [*self._path_conditions, *self._call_bindings]
+        if conditions:
+            return z3.Implies(z3.And(*conditions), fact)
+        return fact
+
+    def _under_call_bindings(self, fact: z3.ExprRef) -> z3.ExprRef:
+        """*fact* under the bindings of the calls being modelled (#1706).
+
+        For the facts a `match` in a callee's contract assumes about its
+        scrutinee: inside a call's translation that scrutinee is the
+        callee's parameter, its term the actual argument, and the binder
+        facts its declared type gives are what the argument owes.  Outside a
+        call's translation there are no bindings and *fact* is unchanged.
+        """
+        if self._call_bindings:
+            return z3.Implies(z3.And(*self._call_bindings), fact)
         return fact
 
     def check_valid(
@@ -5000,6 +5148,7 @@ class SmtContext:
         self._fresh_counter = 0
         self._opaque_tainted = False
         self._path_conditions.clear()
+        self._call_bindings.clear()  # #1706: empty between calls already
         self._tainted_facts.clear()   # #1363: per-function, must not survive
         self._value_facts.clear()  # #1480 review: per-function placeholders
         self._guarded_values.clear()  # and the guarded binders' projections
