@@ -287,6 +287,11 @@ class _ShadowGuard:
         self._initial_sp = sp
         return self
 
+    def nested(self) -> "_ShadowGuard":
+        """A window above this one, for one node's construction: what is
+        pushed in it is popped when it closes, while this one stays open."""
+        return _ShadowGuard(self._caller)
+
     def push(self, ptr: int) -> int:
         """Push ``ptr`` onto the shadow stack.  Returns ``ptr``
         for chaining inside an assignment expression."""

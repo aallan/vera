@@ -845,12 +845,82 @@ def test_repro_json_parse_builds_a_10000_member_object(host: str, tmp_path: Path
     """At c1fc89b2 the host rooted every member's value while it built the
     object's map, and a 4,100-member object overflowed the shadow stack
     (`#692: host shadow-stack overflow`; the browser's
-    `GC shadow stack overflow`): the widest that parsed had 4,090."""
+    `GC shadow stack overflow`): the widest that parsed had 4,091."""
     if host == "browser" and not _HAS_NODE:
         pytest.skip("Node.js with --experimental-wasm-exnref is not available")
     out = HOSTS[host](_compiled(_wide_object(10_000)), tmp_path)
     assert out == "10000 127781\n"
 
+
+
+#: A JSON document of each shape: its delimiters, the Vera expression that
+#: writes member *i* (``@Int.0``), and the same member as Python writes it.
+#: Each is canonical as written, so ``json_stringify`` of its parse is the
+#: text itself.
+_JSON_SHAPES: dict[str, tuple[str, str, str, Callable[[int], str]]] = {
+    "object-of-numbers": ("{", "}", 'string_concat(string_concat("\\"k", int_to_string(@Int.0)), "\\":1")', lambda i: f'"k{i}":1'),
+    "object-of-strings": ("{", "}", 'string_concat(string_concat("\\"k", int_to_string(@Int.0)), "\\":\\"v\\"")', lambda i: f'"k{i}":"v"'),
+    "object-of-objects": ("{", "}", 'string_concat(string_concat("\\"k", int_to_string(@Int.0)), "\\":{\\"a\\":1}")', lambda i: f'"k{i}":{{"a":1}}'),
+    "object-of-arrays": ("{", "}", 'string_concat(string_concat("\\"k", int_to_string(@Int.0)), "\\":[1]")', lambda i: f'"k{i}":[1]'),
+    "array-of-numbers": ("[", "]", '"1"', lambda i: "1"),
+    "array-of-strings": ("[", "]", '"\\"s\\""', lambda i: '"s"'),
+    "array-of-objects": ("[", "]", '"{\\"a\\":1}"', lambda i: '{"a":1}'),
+    "array-of-arrays": ("[", "]", '"[1]"', lambda i: "[1]"),
+}
+
+
+def _json_document(shape: str, n: int) -> tuple[str, str]:
+    """The program that parses and re-serializes a document of *n* members
+    of *shape*, and the line it prints: the document's length."""
+    open_, close, member, python_member = _JSON_SHAPES[shape]
+    text = open_ + ",".join(python_member(i) for i in range(n)) + close
+    source = f"""\
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{{
+  let @Array<String> = array_map(array_range(0, {n}), fn(@Int -> @String) effects(pure) {{ {member} }});
+  match json_parse(string_concat(string_concat("{open_}", string_join(@Array<String>.0, ",")), "{close}")) {{
+    Ok(@Json) -> IO.print(int_to_string(string_length(json_stringify(@Json.0)))),
+    Err(@String) -> IO.print(@String.0)
+  }};
+  IO.print("\\n")
+}}
+"""
+    return source, f"{len(text)}\n"
+
+
+@pytest.mark.parametrize("host", ["native", "browser"])
+@pytest.mark.parametrize("shape", list(_JSON_SHAPES))
+def test_json_parse_builds_a_document_of_any_width(
+    shape: str, host: str, tmp_path: Path,
+) -> None:
+    """10,000 members, past the shadow stack's 4,096 slots.  The native host
+    held every string's, array's and object's roots until the whole
+    document was built (#1733), so at the base the widest that parsed was
+    4,091 members for an object of numbers and for arrays of strings or
+    arrays, 2,045 for objects of strings or arrays and for arrays of
+    objects, and 1,363 for an object of objects; only an array of numbers
+    had no limit.  Each string, array and object is now built in a
+    shadow-stack window of its own and holds no root once it is written."""
+    if host == "browser" and not _HAS_NODE:
+        pytest.skip("Node.js with --experimental-wasm-exnref is not available")
+    source, expected = _json_document(shape, 10_000)
+    assert HOSTS[host](_compiled(source), tmp_path) == expected
+
+
+@pytest.mark.parametrize("shape", list(_JSON_SHAPES))
+def test_json_parse_survives_a_collection_at_every_allocation(
+    shape: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Under `VERA_EAGER_GC=1` a collection runs at every allocation the
+    host's writer makes, so a node its window has not rooted is swept
+    before the node holding it is written."""
+    source, expected = _json_document(shape, 50)
+    with monkeypatch.context() as patch:
+        patch.setenv("VERA_EAGER_GC", "1")
+        result = pipeline.compile(source, file="eager_json.vera").result
+    assert result.ok, result.diagnostics
+    assert _native(result) == expected
 
 _HTML_ATTRIBUTES = """\
 private fn show(@HtmlNode -> @String)

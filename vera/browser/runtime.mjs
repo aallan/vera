@@ -2798,9 +2798,12 @@ function buildImportObject(module, moduleBytes) {
       // ptr written into the rooted values array as soon as it is
       // returned.  #1676: the map is the module's own, built by one call
       // of map_from_arrays$ks_vb from the keys array and the values
-      // array, both rooted before the first member is written, so the
-      // object takes two roots whatever its width (one root per member
-      // overflowed the shadow stack past about 4,090 members).
+      // array, both rooted before the first member is written, and the
+      // map is rooted across the node's allocation.  Every root is in
+      // this node's own window (writeJson's gcGuard), so a node holds
+      // none once it is written (a root per member, held until the
+      // object was built, overflowed the shadow stack past about 4,090
+      // members).
       const entries = value instanceof Map ? [...value.entries()] : Object.entries(value);
       const count = entries.length;
       let keysPtr = 0;

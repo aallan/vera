@@ -296,15 +296,17 @@ def write_json(
 
     Returns the heap pointer to the allocated Json node.
 
-    *guard* is a ``_ShadowGuard`` (defined in
-    ``vera.codegen.api``).  Intermediate WASM heap pointers
-    (string body, array backing, map) are pushed onto
-    its shadow-stack window before any subsequent alloc that
-    could trigger ``$gc_collect``.  See #692 + the analogous
-    notes in ``html_serde.write_html`` for the bug class.
+    *guard* is a ``_ShadowGuard`` (``vera.runtime.heap``).  Each
+    string, array and object is built in a window of its own
+    (``guard.nested()``): its intermediates (string body, array
+    backing, keys and values arrays, map) are rooted in it before any
+    allocation that could trigger ``$gc_collect``, and popped when the
+    node is written, so a node holds no root once it is built and a
+    document of any width fits the shadow stack (#1733: every node's
+    roots used to stay until the whole document was built).  See #692.
 
-    The returned root pointer is NOT pushed — the caller is
-    responsible for rooting it before the next alloc.
+    The returned pointer is NOT rooted: the caller stores it (in a
+    rooted array, or on its own guard) before its next allocation.
     """
     if value is None:
         # JNull — tag=0, total=8.  Single alloc, no cross-pointer
@@ -331,41 +333,43 @@ def write_json(
 
     if isinstance(value, str):
         # JString(String) — tag=3, i32_pair at offset 4, total=16.
-        # Allocate the string FIRST and root it before the body
-        # alloc; the original order (body alloc then string alloc)
-        # could trigger GC mid-construction while the body is in
-        # a Python local with only the tag written.
+        # Allocate the string FIRST and root it, in the node's own
+        # window, across the body alloc; the window closes once the
+        # body holds the string.
         s_ptr, s_len = alloc_string(caller, value)
-        if s_ptr != 0:
-            guard.push(s_ptr)
-        ptr = alloc(caller, 16)
-        write_i32(caller, ptr, _TAG_JSTRING)
-        write_i32(caller, ptr + 4, s_ptr)
-        write_i32(caller, ptr + 8, s_len)
+        with guard.nested() as window:
+            if s_ptr != 0:
+                window.push(s_ptr)
+            ptr = alloc(caller, 16)
+            write_i32(caller, ptr, _TAG_JSTRING)
+            write_i32(caller, ptr + 4, s_ptr)
+            write_i32(caller, ptr + 8, s_len)
         return ptr
 
     if isinstance(value, list):
         # JArray(Array<Json>) — tag=4, i32_pair at offset 4,
-        # total=16.  Root arr_ptr before recursing into children
-        # (each sub-write may trigger GC) and across the final
-        # body alloc.  Child pointers become reachable via the
-        # rooted arr_ptr's slots as soon as we ``write_i32`` them.
+        # total=16.  Root arr_ptr, in the node's own window, before
+        # recursing into children (each sub-write may trigger GC) and
+        # across the final body alloc.  Each child returns unrooted and
+        # is reachable through the rooted arr_ptr's slot as soon as we
+        # ``write_i32`` it; the window closes once the body is written.
         count = len(value)
-        if count > 0:
-            arr_ptr = alloc(caller, count * 4)
-            guard.push(arr_ptr)
-            for i, elem in enumerate(value):
-                elem_ptr = write_json(
-                    caller, alloc, write_i32, write_f64,
-                    alloc_string, map_alloc, guard, elem,
-                )
-                write_i32(caller, arr_ptr + i * 4, elem_ptr)
-        else:
-            arr_ptr = 0
-        ptr = alloc(caller, 16)
-        write_i32(caller, ptr, _TAG_JARRAY)
-        write_i32(caller, ptr + 4, arr_ptr)
-        write_i32(caller, ptr + 8, count)
+        with guard.nested() as window:
+            if count > 0:
+                arr_ptr = alloc(caller, count * 4)
+                window.push(arr_ptr)
+                for i, elem in enumerate(value):
+                    elem_ptr = write_json(
+                        caller, alloc, write_i32, write_f64,
+                        alloc_string, map_alloc, window, elem,
+                    )
+                    write_i32(caller, arr_ptr + i * 4, elem_ptr)
+            else:
+                arr_ptr = 0
+            ptr = alloc(caller, 16)
+            write_i32(caller, ptr, _TAG_JARRAY)
+            write_i32(caller, ptr + 4, arr_ptr)
+            write_i32(caller, ptr + 8, count)
         return ptr
 
     if isinstance(value, dict):
@@ -375,34 +379,34 @@ def write_json(
         # module's ``map_from_arrays$ks_vb`` from a keys array of
         # ``(ptr, len)`` cells and a values array of ``Json`` pointers,
         # in the object's order (a repeated member keeps its first
-        # position and takes its last value).  Both arrays are rooted
-        # before the first member is written, as a JArray's backing is,
-        # and each key and value lands in its array before the next
-        # allocation, so the object takes two roots whatever its width
-        # (one root per member overflowed the shadow stack past about
-        # 4,090 members).
+        # position and takes its last value).  Both arrays are rooted in
+        # the node's own window before the first member is written, as a
+        # JArray's backing is, each key and value lands in its array
+        # before the next allocation, and the map is rooted across the
+        # body alloc; the window closes once the body is written.
         items = list(value.items())
         count = len(items)
         keys_ptr = vals_ptr = 0
-        if count > 0:
-            keys_ptr = alloc(caller, count * 8)
-            guard.push(keys_ptr)
-            vals_ptr = alloc(caller, count * 4)
-            guard.push(vals_ptr)
-        for i, (k, v) in enumerate(items):
-            k_ptr, k_len = alloc_string(caller, str(k))
-            write_i32(caller, keys_ptr + 8 * i, k_ptr)
-            write_i32(caller, keys_ptr + 8 * i + 4, k_len)
-            val_ptr = write_json(
-                caller, alloc, write_i32, write_f64,
-                alloc_string, map_alloc, guard, v,
-            )
-            write_i32(caller, vals_ptr + 4 * i, val_ptr)
-        map_ptr = map_alloc(caller, keys_ptr, vals_ptr, count)
-        guard.push(map_ptr)
-        ptr = alloc(caller, 8)
-        write_i32(caller, ptr, _TAG_JOBJECT)
-        write_i32(caller, ptr + 4, map_ptr)
+        with guard.nested() as window:
+            if count > 0:
+                keys_ptr = alloc(caller, count * 8)
+                window.push(keys_ptr)
+                vals_ptr = alloc(caller, count * 4)
+                window.push(vals_ptr)
+            for i, (k, v) in enumerate(items):
+                k_ptr, k_len = alloc_string(caller, str(k))
+                write_i32(caller, keys_ptr + 8 * i, k_ptr)
+                write_i32(caller, keys_ptr + 8 * i + 4, k_len)
+                val_ptr = write_json(
+                    caller, alloc, write_i32, write_f64,
+                    alloc_string, map_alloc, window, v,
+                )
+                write_i32(caller, vals_ptr + 4 * i, val_ptr)
+            map_ptr = map_alloc(caller, keys_ptr, vals_ptr, count)
+            window.push(map_ptr)
+            ptr = alloc(caller, 8)
+            write_i32(caller, ptr, _TAG_JOBJECT)
+            write_i32(caller, ptr + 4, map_ptr)
         return ptr
 
     # Fallback: treat as string
