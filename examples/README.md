@@ -49,6 +49,7 @@ Examples that use only the IO and Random host families (e.g. `hello_world.vera`,
 | `effect_handler.vera` | `vera run examples/effect_handler.vera` | State, Exn effects, handler blocks, resume |
 | `io_operations.vera` | `vera run examples/io_operations.vera` | IO.print, IO.read_line, IO.get_env (Option result matched) |
 | `file_io.vera` | `vera run examples/file_io.vera` | File read/write with error handling |
+| `copy_bytes.vera` | `vera run examples/copy_bytes.vera` | IO.read_bytes, IO.write_bytes: copy a file by its bytes and compare the copy |
 | `database.vera` | `vera run examples/database.vera` | <DB> effect: parameterised SQL on in-memory SQLite, Option<String> cells (SQL NULL = None) |
 | `sqlitedb.vera` | `VERA_DB_URL=sqlite:///examples/sqlitedb.sqlite vera run examples/sqlitedb.vera` | <DB> effect reading a committed on-disk SQLite file; prints the city table, Option<String> cells (SQL NULL = None); without VERA_DB_URL it falls back to the in-memory default and prints a graceful Err |
 | `async_futures.vera` | `vera run examples/async_futures.vera` | Async effect, Future type, eager async/await composition (these scalar wraps stay eager) |

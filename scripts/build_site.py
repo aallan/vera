@@ -59,6 +59,14 @@ def _count_examples() -> int:
 
 
 @cache
+def _count_builtins() -> int:
+    """Count the built-in functions: the registry's records, which
+    `vera builtins` lists."""
+    from vera.builtins import BUILTINS
+    return len(BUILTINS)
+
+
+@cache
 def _count_conformance() -> int:
     """Count conformance programs from manifest.json."""
     import json as _json
@@ -516,6 +524,7 @@ def build_index_md() -> str:
     """
     n_examples = _count_examples()
     n_conformance = _count_conformance()
+    n_builtins = _count_builtins()
     e001_example = render_e001_doc_example()
     return f"""\
 # Vera: a language designed for machines to write
@@ -811,7 +820,7 @@ The documents above are how machines *read* Vera. The [language server]({RAW}/LS
 
 ## Status
 
-Vera is under [active development]({RAW}/ROADMAP.md). A complete compiler with 164 built-in functions, ten algebraic effects (IO, Http, HttpServer, State, Exceptions, Async, Inference, DB, Random, Diverge), contract-driven testing with [Z3](https://www.microsoft.com/en-us/research/project/z3-3/), a language server with agent-facing proof deltas, and a 14-chapter specification. A {n_conformance}-program conformance suite and {n_examples} worked examples are validated against the spec on every pull request. It's all developed in the open on [GitHub]({REPO}) under the MIT licence.
+Vera is under [active development]({RAW}/ROADMAP.md). A complete compiler with {n_builtins} built-in functions, ten algebraic effects (IO, Http, HttpServer, State, Exceptions, Async, Inference, DB, Random, Diverge), contract-driven testing with [Z3](https://www.microsoft.com/en-us/research/project/z3-3/), a language server with agent-facing proof deltas, and a 14-chapter specification. A {n_conformance}-program conformance suite and {n_examples} worked examples are validated against the spec on every pull request. It's all developed in the open on [GitHub]({REPO}) under the MIT licence.
 
 ## Links
 

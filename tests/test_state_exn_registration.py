@@ -42,9 +42,9 @@ running both and comparing can.  The validation leg exists because the name
 comparison alone is blind to a symbol declared at the WRONG TYPE, which is
 invalid WASM the set difference reports as perfectly balanced.  Its scope
 and its two limits are stated on the test itself; the walkers' own
-completeness is gated by a field-coverage test in
-`tests/test_walker_defensive_branches_597.py`, because a corpus-anchored
-differential cannot flag a position no corpus program contains.
+completeness is the fold's (`vera/fold.py`, held to the AST by
+`tests/test_expr_fold.py`), because a corpus-anchored differential cannot
+flag a position no corpus program contains.
 """
 
 from __future__ import annotations
@@ -1135,8 +1135,8 @@ def test_every_referenced_state_exn_symbol_is_declared() -> None:
     corpus we curate, not an independent search for new violations — the two
     positions round 5 closed (`LetDestruct.value`, `ModuleCall.args`) had no
     corpus instance at all, which is why the shape tests above exist and why
-    the walkers now carry a field-coverage gate
-    (`tests/test_walker_defensive_branches_597.py`).
+    the walkers are now `vera.fold.walk`, which reaches every field by
+    construction (`tests/test_expr_fold.py`).
 
     The conformance suite's deliberate negatives are FILTERED OUT rather than
     swept-and-ignored (`_corpus_programs`): a program written to fail `vera

@@ -342,6 +342,8 @@ public fn effects_probe(@String, @Nat -> @Int)
   let @Result<String, String> = IO.read_char(());
   let @Result<String, String> = IO.read_file(@String.0);
   let @Result<Unit, String> = IO.write_file(@String.1, @String.1);
+  let @Result<Array<Byte>, String> = IO.read_bytes(@String.1);
+  let @Result<Unit, String> = IO.write_bytes(@String.1, []);
   let @Array<String> = IO.args(());
   let @Option<String> = IO.get_env(@String.1);
   IO.sleep(@Nat.0);
@@ -417,18 +419,21 @@ _EVERY_BUILTIN_IMPORTS = (
 )
 
 #: The declarations `_EVERY_EFFECT` makes, line for line and in order, as
-#: the base compiled them.
+#: the base compiled them, with the rows added since (`read_bytes` and
+#: `write_bytes`, #1711) where the registry's order puts them.
 _EVERY_EFFECT_IMPORTS = (
     '(import "vera" "args" (func $vera.args (result i32 i32)))',
     '(import "vera" "exit" (func $vera.exit (param i64)))',
     '(import "vera" "get_env" (func $vera.get_env (param i32 i32) (result i32)))',
     '(import "vera" "print" (func $vera.print (param i32 i32)))',
+    '(import "vera" "read_bytes" (func $vera.read_bytes (param i32 i32) (result i32)))',
     '(import "vera" "read_char" (func $vera.read_char (result i32)))',
     '(import "vera" "read_file" (func $vera.read_file (param i32 i32) (result i32)))',
     '(import "vera" "read_line" (func $vera.read_line (result i32 i32)))',
     '(import "vera" "sleep" (func $vera.sleep (param i64)))',
     '(import "vera" "stderr" (func $vera.stderr (param i32 i32)))',
     '(import "vera" "time" (func $vera.time (result i64)))',
+    '(import "vera" "write_bytes" (func $vera.write_bytes (param i32 i32 i32 i32) (result i32)))',
     '(import "vera" "write_file" (func $vera.write_file (param i32 i32 i32 i32) (result i32)))',
     '(import "vera" "host_decref_handle" (func $vera.host_decref_handle (param i32) (param i32)))',
     '(import "vera" "attach_bucket_to_wrapper" (func $vera.attach_bucket_to_wrapper (param i32) (param i32) (param i32)))',
@@ -1628,7 +1633,8 @@ def _io_call(op: str) -> str:
 
     info = TypeEnv().effects["IO"].operations[op]
     literal = {"String": '"x"', "Unit": "()", "Nat": "1", "Int": "1"}
-    args = ", ".join(literal[_surface(t, {}, "")] for t in info.param_types)
+    written = [_surface(t, {}, "") for t in info.param_types]
+    args = ", ".join("[]" if w.startswith("Array<") else literal[w] for w in written)
     ret = _surface(info.return_type, {}, "")
     if ret in ("Unit", "Never"):
         return f"IO.{op}({args})"

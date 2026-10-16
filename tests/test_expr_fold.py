@@ -25,15 +25,21 @@ both to the AST:
     previous child's subtree has been visited, and refuses a step that
     leaves a child out, adds one or reorders them.
 
-The two run-level cells at the end are the shapes the free-variable port
-changed: a destructuring `let` in a closure (refused at 313c04db, the
-function dropped with "unsupported expressions" and `main` with E620), and a
-closure whose `handle` captures different new types in its body and in its
-state (its capture layout order moved; the run output is the same).
+After the tables' cells come the shapes the ports changed or pin: a
+destructuring `let` in a closure (refused at 313c04db, the function dropped
+with "unsupported expressions" and `main` with E620); a closure whose
+`handle` captures different new types in its body and in its state (its
+capture layout order moved; the run output is the same); and an effect
+operation's arguments, which the SMT table translates for what they record.
+Then the consumers of the context walk: the `decreases` walk's translation
+order, and the `@Nat`-binding walk's handler writes.  Then the pre-scans'
+order, a handler's body before its clauses.  Last come the pins the
+walker-coverage gate's test file held, moved here when the gate retired.
 """
 
 from __future__ import annotations
 
+import ast as pyast
 import dataclasses
 import inspect
 import re
@@ -50,10 +56,12 @@ import z3
 from tests import pipeline
 from vera import ast, binders, fold
 from vera.checker import sql
+from vera.codegen import compilability
+from vera.codegen.core import CodeGenerator
 from vera.environment import TypeEnv
 from vera.smt import SlotEnv, SmtContext
 from vera.wasm.context import WasmContext
-from vera.wasm.helpers import StringPool
+from vera.wasm.helpers import CellNames, StringPool
 
 pytestmark = pytest.mark.matrix(decides=["vera/fold.py", "vera/binders.py"])
 
@@ -981,3 +989,784 @@ def test_an_effect_operation_translates_its_arguments() -> None:
     op = ast.QualifiedCall(qualifier="IO", name="print", args=(pair,))
     assert smt.translate_expr(op, SlotEnv()) is None
     assert len(smt.solver.assertions()) == 4
+
+
+# =====================================================================
+# Context-walk consumers: where a step's work runs
+# =====================================================================
+
+_CONDITION_IN_A_LET = """\
+public fn count(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  let @Nat = if @Nat.0 > 0 then { count(@Nat.0 - 1) } else { 0 };
+  @Nat.0
+}
+"""
+
+
+def test_the_decreases_walk_translates_a_condition_before_its_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The `decreases` walk's steps run where the recursive walk ran them:
+    the `if`'s condition is translated when the walk reaches it, inside the
+    `let` it is the value of, and only after that subtree does the block's
+    step bind the `let`, translating the whole `if`.  A step whose pairs
+    were computed before its first child bound the `let` first.  The walk
+    records calls and nothing else, so no verdict and no obligation tells
+    the two orders apart; the order the solver's facts are built in does,
+    and this cell reads it."""
+    from vera.verifier import ContractVerifier
+
+    order: list[str] = []
+    walking: list[bool] = []
+    walk_for_calls = ContractVerifier._walk_for_calls
+    translate = SmtContext.translate_expr
+
+    def walk(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        walking.append(True)
+        try:
+            return walk_for_calls(self, *args, **kwargs)
+        finally:
+            walking.pop()
+
+    def spy(self, expr, env):  # type: ignore[no-untyped-def]
+        if walking:
+            order.append(type(expr).__name__)
+        return translate(self, expr, env)
+
+    monkeypatch.setattr(ContractVerifier, "_walk_for_calls", walk)
+    monkeypatch.setattr(SmtContext, "translate_expr", spy)
+    envelope = pipeline.verify(_CONDITION_IN_A_LET).envelope()
+    assert envelope["ok"], envelope
+    assert "IfExpr" in order, order
+    assert order[0] == "BinaryExpr", (
+        f"the walk translated {order[0]} first: the `let` was bound before "
+        f"the condition inside it was reached ({order})")
+
+
+def _line_of(source: str, text: str) -> int:
+    """The 1-based line of the one occurrence of *text* in *source*."""
+    assert source.count(text) == 1, text
+    return source[:source.index(text)].count("\n") + 1
+
+
+_HANDLER_WRITES = """\
+private fn g(@Nat -> @Int)
+  requires(true)
+  ensures(@Int.result == nat_to_int(@Nat.0))
+  effects(pure)
+{
+  nat_to_int(@Nat.0)
+}
+
+public fn f(@Int -> @Int)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  effects(pure)
+{
+  handle[State<Nat>](@Nat = g(@Int.0)) {
+    get(@Unit) -> { resume(@Nat.0) },
+    put(@Nat) -> { resume(()) } with @Nat = g(nat_to_int(@Nat.0) - 1)
+  } in {
+    put(get(()));
+    nat_to_int(get(()))
+  }
+}
+"""
+
+
+def test_a_handler_s_state_writes_obligate_before_what_they_hold() -> None:
+    """The `@Nat`-binding walk's handler step obligates the state's
+    initialiser into its cell before the walk reaches the initialiser's own
+    sites, and a clause's step obligates its `with` update after the
+    clause's body and before the update's own sites, where the recursive
+    walk did: a write's record comes before the records of the value it
+    writes."""
+    envelope = pipeline.verify(_HANDLER_WRITES).envelope()
+    assert envelope["ok"], envelope
+    binds = [o["description"] for o in envelope["obligations"]
+             if o["kind"] == "nat_bind"]
+    assert binds == [
+        "g(@Int.0)", "@Int.0",
+        "g(nat_to_int(@Nat.0) - 1)", "nat_to_int(@Nat.0) - 1"], binds
+
+
+_DIVERGENT_CELL = """\
+private forall<T> fn h(@T, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[State<T>](@Int = 1) {
+    get(@Unit) -> { resume(@T.0) },
+    put(@T) -> { resume(()) } with @Int = 0 - 5
+  } in {
+    @Int.0
+  }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Nat = 3;
+  h(@Nat.0, 7)
+}
+"""
+
+
+def test_a_with_update_is_obligated_against_its_handler_s_cell() -> None:
+    """A clause's `with` update writes its handler's cell, the effect's
+    `State<T>` argument, whatever the `with` annotation says (#1203).  A
+    generic handler may declare its state at another type than its cell,
+    which the checker leaves to the instantiation (#1206): at `Nat` the
+    declaration is E533, and the update `0 - 5` is refused into the `Nat`
+    cell (E503).  The clause's step cannot see its handler, so the
+    handler's step hands it the cell; a clause handed none reads the `Int`
+    annotation and obligates nothing."""
+    envelope = pipeline.verify(_DIVERGENT_CELL).envelope()
+    records = [(o["kind"], o["status"], o.get("error_code"), o["location"]["line"])
+               for o in envelope["obligations"]
+               if o["kind"] in ("state_decl", "nat_bind")]
+    assert ("state_decl", "violated", "E533",
+            _line_of(_DIVERGENT_CELL, "(@Int = 1)")) in records, records
+    assert ("nat_bind", "violated", "E503",
+            _line_of(_DIVERGENT_CELL, "with @Int = 0 - 5")) in records, records
+
+
+# =====================================================================
+# The pre-scans meet a handler's body before its clauses
+# =====================================================================
+#
+# Code generation's two pre-scans, `_scan_io_ops` and
+# `_scan_expr_for_handlers`, are `fold.walk`, which meets a handler's state,
+# then its body, then its clauses (`fold.ORDER`).  The hand walks met the
+# clauses before the body.  What follows the order: the State and Exn
+# families a module declares, in the order they are first registered; the
+# cell or payload E607 and E612 name, the first unregistrable one the walk
+# meets; and the order E618 is reported in, by the derivation the pre-scans
+# walk each closure's signature with.  E617 is reported where a closure is
+# lowered, which already met the body first.
+
+_EXN_STATE_IN_CLAUSE_AND_BODY = """\
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[Exn<Int>] {
+    throw(@Int) -> {
+      handle[State<Bool>](@Bool = true) {
+        get(@Unit) -> { resume(@Bool.0) },
+        put(@Bool) -> { resume(()) }
+      } in {
+        if get(()) then { @Int.0 } else { 0 }
+      }
+    }
+  } in {
+    handle[State<Nat>](@Nat = 3) {
+      get(@Unit) -> { resume(@Nat.0) },
+      put(@Nat) -> { resume(()) }
+    } in {
+      nat_to_int(get(()))
+    }
+  }
+}
+"""
+
+_STATE_IN_CLAUSE_AND_BODY = """\
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[State<Int>](@Int = 10) {
+    get(@Unit) -> {
+      let @Bool = handle[State<Bool>](@Bool = true) {
+        get(@Unit) -> { resume(@Bool.0) },
+        put(@Bool) -> { resume(()) }
+      } in {
+        get(())
+      };
+      resume(if @Bool.0 then { @Int.0 } else { 0 })
+    },
+    put(@Int) -> { resume(()) }
+  } in {
+    let @Nat = handle[State<Nat>](@Nat = 3) {
+      get(@Unit) -> { resume(@Nat.0) },
+      put(@Nat) -> { resume(()) }
+    } in {
+      get(())
+    };
+    get(()) + nat_to_int(@Nat.0)
+  }
+}
+"""
+
+
+def test_a_handler_declares_its_body_families_before_its_clauses() -> None:
+    """A handler whose clause and body each hold a handler of a family
+    nothing registered before: the body's family is declared first.  The
+    same imports are declared either way; the hand walk declared the
+    clause's first.  The first program is check-green and does not load
+    (issue #1724), which this cell does not ask; the second runs."""
+    for source, families in (
+            (_EXN_STATE_IN_CLAUSE_AND_BODY, ["Nat", "Bool"]),
+            (_STATE_IN_CLAUSE_AND_BODY, ["Int", "Nat", "Bool"])):
+        compiled = pipeline.compile(source)
+        assert compiled.ok, [d.description for d in compiled.diagnostics]
+        declared = re.findall(r'\(import "vera" "state_get_(\w+)"', compiled.wat)
+        assert declared == families, declared
+    assert pipeline.run(_STATE_IN_CLAUSE_AND_BODY, "main").execution.value == 13
+
+
+_UNSUPPORTED_CELLS = """\
+private fn probe(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[Exn<Int>] {
+    throw(@Int) -> {
+      handle[State<String>](@String = "a") {
+        get(@Unit) -> { resume(@String.0) },
+        put(@String) -> { resume(()) }
+      } in {
+        @Int.0
+      }
+    }
+  } in {
+    handle[State<Array<Int>>](@Array<Int> = [1]) {
+      get(@Unit) -> { resume(@Array<Int>.0) },
+      put(@Array<Int>) -> { resume(()) }
+    } in {
+      3
+    }
+  }
+}
+"""
+
+_UNSUPPORTED_PAYLOADS = """\
+private fn probe(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[Exn<Int>] {
+    throw(@Int) -> {
+      handle[Exn<Unit>] {
+        throw(@Unit) -> { 0 }
+      } in {
+        @Int.0
+      }
+    }
+  } in {
+    handle[Exn<Unit>] {
+      throw(@Unit) -> { 1 }
+    } in {
+      3
+    }
+  }
+}
+"""
+
+
+def test_the_unsupported_cell_named_is_the_body_s() -> None:
+    """A handler whose clause and body each hold a `State` cell (E607) or
+    an `Exn` payload (E612) the backend cannot compile: the diagnostic names
+    the body's, the first the walk meets.  Compiled unchecked, as the
+    checker refuses both types where they are written (E340); a generic
+    clone instantiated at one is how a checked program reaches here."""
+    for source, code, body in (
+            (_UNSUPPORTED_CELLS, "E607", "handle[State<Array<Int>>]"),
+            (_UNSUPPORTED_PAYLOADS, "E612", "handle[Exn<Unit>] {\n      throw(@Unit) -> { 1 }")):
+        result = pipeline.compile(source, checked=False).result
+        named = [d.location.line for d in result.diagnostics if d.error_code == code]
+        assert named == [_line_of(source, body)], (code, named)
+
+
+_NESTED_BASES = """\
+type Pos = { @Int | @Int.0 > 0 };
+type Tiny = { @Pos | @Pos.0 < 10 };
+type Small = { @Pos | @Pos.0 < 20 };
+type TinyFn = fn(Tiny -> Int) effects(pure);
+type SmallFn = fn(Small -> Int) effects(pure);
+
+private fn probe(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[Exn<Int>] {
+    throw(@Int) -> {
+      let @TinyFn = fn(@Tiny -> @Int) effects(pure) { 1 };
+      @Int.0
+    }
+  } in {
+    let @SmallFn = fn(@Small -> @Int) effects(pure) { 2 };
+    3
+  }
+}
+"""
+
+_GENERIC_PREDICATES = """\
+private forall<T> fn always_true(@T -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  true
+}
+
+type Checked = { @Int | always_true(@Int.0) };
+type Checked2 = { @Int | always_true(@Int.0 + 1) };
+type CheckedFn = fn(Checked -> Int) effects(pure);
+type Checked2Fn = fn(Checked2 -> Int) effects(pure);
+
+private fn probe(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[Exn<Int>] {
+    throw(@Int) -> {
+      let @CheckedFn = fn(@Checked -> @Int) effects(pure) { 1 };
+      @Int.0
+    }
+  } in {
+    let @Checked2Fn = fn(@Checked2 -> @Int) effects(pure) { 2 };
+    3
+  }
+}
+"""
+
+
+def test_a_handler_s_body_closures_report_before_its_clauses() -> None:
+    """A handler whose clause and body each hold a closure whose signature
+    cannot be guarded: the body's closure reports first.  E618 (a
+    refinement whose base is another refinement) is reported by the
+    signature derivation the pre-scans walk, which met the clause's closure
+    first while they were hand walks; E617 (a predicate calling a generic
+    function) is reported where the closure is lowered, which met the
+    body's first all along.  Compiled unchecked, as the module tests of
+    both codes are."""
+    for source, code, clause_line, body_line in (
+            (_NESTED_BASES, "E618",
+             _line_of(_NESTED_BASES, "let @TinyFn"),
+             _line_of(_NESTED_BASES, "let @SmallFn")),
+            (_GENERIC_PREDICATES, "E617",
+             _line_of(_GENERIC_PREDICATES, "type Checked = "),
+             _line_of(_GENERIC_PREDICATES, "type Checked2 = "))):
+        result = pipeline.compile(source, checked=False).result
+        reported = [d.location.line for d in result.diagnostics if d.error_code == code]
+        assert reported == [body_line, clause_line], (code, reported)
+
+# =====================================================================
+# The pins the walker-coverage gate's test file held (#597, #1210)
+# =====================================================================
+#
+# Moved from `tests/test_walker_defensive_branches_597.py` when the last
+# hand walkers ported and the gate retired: the positions each pre-scan
+# reaches, the arms of the WASM-type and Vera-type tables, the one
+# boundary-guard derivation both pre-scans read, and `contract_exprs`.
+# The file's field-coverage gate read the walkers' `# WALKER_COVERAGE:`
+# checklists; the fold reaches every field by construction, which cell
+# (a) above holds.
+
+
+def _make_cg() -> CodeGenerator:
+    """Build a fresh CodeGenerator for compilability scans."""
+    return CodeGenerator()
+
+
+def _make_ctx() -> WasmContext:
+    """Build a fresh WasmContext for inference helpers."""
+    return WasmContext(string_pool=StringPool())
+
+
+def _declared_imports(body: str, formals: str, ret: str, effect: str,
+                      decls: str = "") -> set[str]:
+    """The host imports a module declares whose `main` has *body*."""
+    from tests import pipeline
+
+    source = (f"{decls}public fn main({formals} -> @{ret})\n"
+              f"  requires(true)\n  ensures(true)\n  {effect}\n{{\n  {body}\n}}\n")
+    compiled = pipeline.compile(source)
+    assert compiled.ok, [d.description for d in compiled.diagnostics]
+    assert "main" in compiled.exports
+    return set(re.findall(r'^\s*\(import "vera" "([^"]+)" ', compiled.wat, re.MULTILINE))
+
+
+class TestScanIoOpsPositions:
+    """A host call in each of these positions declares its import.  The
+    pre-scan walks them and registers nothing: the emitter that
+    lowers the call registers the import it calls (#735), so what pins each
+    position is the compiled module's declaration."""
+
+    def test_indexexpr_collection_recursion(self) -> None:
+        # An IO call's array indexed directly is dropped (E602), so the
+        # collection is a host built-in's.
+        assert "md_extract_code_blocks" in _declared_imports(
+            'md_extract_code_blocks(@MdBlock.0, "py")[0]', "@MdBlock", "String",
+            "effects(pure)")
+
+    def test_indexexpr_index_recursion(self) -> None:
+        assert "time" in _declared_imports(
+            "@Array<Int>.0[nat_to_int(IO.time(()))]", "@Array<Int>", "Int",
+            "effects(<IO>)")
+
+    def test_arraylit_elements_recursion(self) -> None:
+        assert "read_line" in _declared_imports(
+            "[IO.read_line(())]", "", "Array<String>", "effects(<IO>)")
+
+    def test_interpolated_string_parts_recursion(self) -> None:
+        # The literal fragments are bare `str`, the interpolated part an
+        # expression.
+        assert "read_line" in _declared_imports(
+            'IO.print("prefix: \\(IO.read_line(())) suffix")', "", "Unit",
+            "effects(<IO>)")
+
+    def test_anonfn_body_recursion(self) -> None:
+        # A lifted closure's body: its own context registers the import,
+        # merged into the module's when the closure is lifted.
+        decls = (
+            "type Reader = fn(Unit -> String) effects(<IO>);\n\n"
+            "private fn run(@Reader -> @String)\n  requires(true)\n"
+            "  ensures(true)\n  effects(<IO>)\n{\n  apply_fn(@Reader.0, ())\n}\n\n")
+        assert "read_line" in _declared_imports(
+            "run(fn(@Unit -> @String) effects(<IO>) { IO.read_line(()) })", "", "String",
+            "effects(<IO>)", decls)
+
+
+def _handle_expr() -> ast.HandleExpr:
+    """Build a minimal HandleExpr for State<Int>."""
+    return ast.HandleExpr(
+        effect=ast.EffectRef(
+            name="State",
+            type_args=(ast.NamedType(name="Int", type_args=None),)),
+        state=None,
+        clauses=(),
+        body=ast.Block(statements=(), expr=ast.UnitLit()),
+    )
+
+
+class TestScanExprForHandlersPositions:
+    """Each sub-expression position is walked, so
+    HandleExprs buried inside are still discovered for type
+    registration."""
+
+    def test_qualifiedcall_args_recursion(self) -> None:
+        cg = _make_cg()
+        node = ast.QualifiedCall(
+            qualifier="IO", name="print", args=(_handle_expr(),))
+        cg._scan_expr_for_handlers(node)
+        # State<Int> registered
+        assert (CellNames(family="Int", base="Int"), "i64") in cg._state_types
+
+    def test_indexexpr_recursion(self) -> None:
+        cg = _make_cg()
+        node = ast.IndexExpr(
+            collection=_handle_expr(), index=ast.IntLit(value=0))
+        cg._scan_expr_for_handlers(node)
+        assert (CellNames(family="Int", base="Int"), "i64") in cg._state_types
+
+    def test_arraylit_recursion(self) -> None:
+        cg = _make_cg()
+        node = ast.ArrayLit(elements=(_handle_expr(),))
+        cg._scan_expr_for_handlers(node)
+        assert (CellNames(family="Int", base="Int"), "i64") in cg._state_types
+
+    def test_interpolated_string_recursion(self) -> None:
+        cg = _make_cg()
+        node = ast.InterpolatedString(parts=("x: ", _handle_expr()))
+        cg._scan_expr_for_handlers(node)
+        assert (CellNames(family="Int", base="Int"), "i64") in cg._state_types
+
+    def test_anonfn_body_recursion(self) -> None:
+        cg = _make_cg()
+        body = ast.Block(statements=(), expr=_handle_expr())
+        node = ast.AnonFn(
+            params=(),
+            return_type=ast.NamedType(name="Unit", type_args=None),
+            effect=ast.PureEffect(),
+            body=body,
+        )
+        cg._scan_expr_for_handlers(node)
+        assert (CellNames(family="Int", base="Int"), "i64") in cg._state_types
+
+
+class TestInferExprWasmTypeArms:
+    """AnonFn → "i32" (closure handle), ModuleCall → None (path
+    field can't be threaded through bare-name FnCall dispatch)."""
+
+    def test_anonfn_returns_i32(self) -> None:
+        ctx = _make_ctx()
+        body = ast.Block(statements=(), expr=ast.UnitLit())
+        node = ast.AnonFn(
+            params=(),
+            return_type=ast.NamedType(name="Unit", type_args=None),
+            effect=ast.PureEffect(),
+            body=body,
+        )
+        assert ctx._infer_expr_wasm_type(node) == "i32"
+
+    def test_modulecall_returns_none(self) -> None:
+        """ModuleCall carries `expr.path` that the bare-name FnCall
+        dispatcher can't consume.  Returning None surfaces the
+        unknown-type cleanly rather than masking with a wrong same-
+        name lookup."""
+        ctx = _make_ctx()
+        node = ast.ModuleCall(
+            path=("some_module",), name="some_fn", args=())
+        assert ctx._infer_expr_wasm_type(node) is None
+
+
+class TestInferVeraTypeArms:
+    """Block / MatchExpr / HandleExpr → trailing-expr type;
+    AssertExpr / AssumeExpr → "Unit"; AnonFn / QualifiedCall /
+    ModuleCall → None (path/qualifier fields can't be threaded
+    through the bare-name FnCall dispatcher).
+
+    Since #1286 the `MatchExpr` arm joins over the arms rather than
+    reading `arms[0]` — it answers from the first arm that YIELDS a
+    name, an arm that only throws naming none.  The single-arm cases
+    below are unaffected by that distinction; the join itself is pinned
+    in `test_infer_vera_type_join_1286.py`.
+    """
+
+    def test_block_returns_trailing_expr_type(self) -> None:
+        ctx = _make_ctx()
+        node = ast.Block(statements=(), expr=ast.IntLit(value=42))
+        assert ctx._infer_vera_type(node) == "Int"
+
+    def test_matchexpr_returns_first_arm_body_type(self) -> None:
+        ctx = _make_ctx()
+        arm = ast.MatchArm(
+            pattern=ast.WildcardPattern(),
+            body=ast.BoolLit(value=True),
+        )
+        node = ast.MatchExpr(
+            scrutinee=ast.IntLit(value=0), arms=(arm,))
+        assert ctx._infer_vera_type(node) == "Bool"
+
+    def test_matchexpr_no_arms_returns_none(self) -> None:
+        ctx = _make_ctx()
+        node = ast.MatchExpr(
+            scrutinee=ast.IntLit(value=0), arms=())
+        assert ctx._infer_vera_type(node) is None
+
+    def test_handleexpr_returns_body_expr_type(self) -> None:
+        ctx = _make_ctx()
+        node = ast.HandleExpr(
+            effect=ast.EffectRef(name="State", type_args=()),
+            state=None,
+            clauses=(),
+            body=ast.Block(statements=(), expr=ast.FloatLit(value=1.5)),
+        )
+        assert ctx._infer_vera_type(node) == "Float64"
+
+    def test_assertexpr_returns_unit(self) -> None:
+        ctx = _make_ctx()
+        node = ast.AssertExpr(expr=ast.BoolLit(value=True))
+        assert ctx._infer_vera_type(node) == "Unit"
+
+    def test_assumeexpr_returns_unit(self) -> None:
+        ctx = _make_ctx()
+        node = ast.AssumeExpr(expr=ast.BoolLit(value=True))
+        assert ctx._infer_vera_type(node) == "Unit"
+
+    def test_anonfn_returns_none(self) -> None:
+        """Closure handle has no simple Vera-type name suitable
+        for call rewriting; None lets callers handle the unknown
+        case explicitly (post-#597-pr-review fix)."""
+        ctx = _make_ctx()
+        body = ast.Block(statements=(), expr=ast.UnitLit())
+        node = ast.AnonFn(
+            params=(),
+            return_type=ast.NamedType(name="Unit", type_args=None),
+            effect=ast.PureEffect(),
+            body=body,
+        )
+        assert ctx._infer_vera_type(node) is None
+
+    def test_qualifiedcall_returns_none(self) -> None:
+        """`qualifier` can't be threaded through bare-name FnCall
+        dispatch (post-#597-pr-review fix)."""
+        ctx = _make_ctx()
+        node = ast.QualifiedCall(
+            qualifier="IO", name="read_line", args=(ast.UnitLit(),))
+        assert ctx._infer_vera_type(node) is None
+
+    def test_modulecall_returns_none(self) -> None:
+        """`path` can't be threaded through bare-name FnCall
+        dispatch (post-#597-pr-review fix)."""
+        ctx = _make_ctx()
+        node = ast.ModuleCall(
+            path=("some_module",), name="some_fn", args=())
+        assert ctx._infer_vera_type(node) is None
+
+
+# The two pre-scans.  Both are in `vera/codegen/compilability.py`.
+_PRE_SCANS = ("_scan_io_ops", "_scan_expr_for_handlers")
+
+
+def _self_calls(path: Path, fn: str) -> set[str]:
+    """Method names *fn* calls on `self`, anywhere in its body."""
+    tree = pyast.parse(path.read_text(encoding="utf-8"))
+    for node in pyast.walk(tree):
+        if isinstance(node, pyast.FunctionDef) and node.name == fn:
+            return {
+                c.func.attr
+                for c in pyast.walk(node)
+                if isinstance(c, pyast.Call)
+                and isinstance(c.func, pyast.Attribute)
+                and isinstance(c.func.value, pyast.Name)
+                and c.func.value.id == "self"
+            }
+    raise AssertionError(f"{fn} not found in {path.name} — has it moved?")
+
+
+_CONTRACTS = Path(inspect.getfile(compilability)).parent / "contracts.py"
+_COMPILABILITY = Path(inspect.getfile(compilability))
+
+
+class TestBoundaryGuardDerivationIsShared:
+    """The pre-scan reads the emitters' own decomposition, not a copy of it.
+
+    Round 5 registered a named function's params and return by RE-DERIVING
+    the emitter's two bails ("mirror `_refinement_guard_parts` exactly" was
+    the comment).  It was a faithful copy of one route and unaware of three
+    others — tuple components on the way in, tuple components on the way out,
+    and closure signatures — each of which lowered predicates nothing
+    registered, and each of which was a check-green program that died at
+    whole-module WAT with `unknown func $vera.state_push_Nat`.
+
+    A behavioural test can only pin the shapes someone thought to write; the
+    reason round 5's fix was incomplete is that three shapes went unwritten.
+    So this asserts the STRUCTURE that makes the classes converge: exactly
+    one function classifies, and every consumer calls it.  Divergence now
+    requires editing that function — or deleting an edge here.
+    """
+
+    def test_every_consumer_reads_the_one_decomposition(self) -> None:
+        for consumer in (
+            "_emit_component_refinement_guards",   # the emitter
+            "_has_guardable_tuple_components",     # the epilogue gate
+            "_component_guard_predicates",         # the pre-scan's enumeration
+        ):
+            calls = _self_calls(_CONTRACTS, consumer)
+            assert "_tuple_component_guard_sites" in calls, (
+                f"`{consumer}` no longer reads the shared tuple "
+                "decomposition — it is classifying components itself again, "
+                f"which is the round-5 shape.  Calls: {sorted(calls)}"
+            )
+
+    def test_no_consumer_reclassifies_behind_the_decomposition(self) -> None:
+        """The negative half: a consumer that re-derives has diverged.
+
+        `_refinement_guard_parts` / `_resolve_tuple_type` / `_resolve_type_
+        alias` are how a component is classified.  Called from a consumer
+        rather than from `_tuple_component_guard_sites`, they are a second
+        opinion — and a second opinion is what the pre-scan and the emitter
+        having was.
+        """
+        for consumer in (
+            "_emit_component_refinement_guards",
+            "_has_guardable_tuple_components",
+            "_component_guard_predicates",
+        ):
+            calls = _self_calls(_CONTRACTS, consumer)
+            reclassified = calls & {
+                "_refinement_guard_parts",
+                "_resolve_tuple_type",
+                "_resolve_type_alias",
+            }
+            assert not reclassified, (
+                f"`{consumer}` classifies components with "
+                f"{sorted(reclassified)} instead of reading "
+                "`_tuple_component_guard_sites` — put the decision in the "
+                "decomposition, where all three consumers see it"
+            )
+
+    def test_the_pre_scan_walks_closure_signatures(self) -> None:
+        """Both walkers reach the closure leg, and it reads the derivation."""
+        assert "_signature_refinement_predicates" in _self_calls(
+            _COMPILABILITY, "_scan_anon_fn_signature")
+        for walker in _PRE_SCANS:
+            assert "_scan_anon_fn_signature" in _self_calls(
+                _COMPILABILITY, walker), (
+                f"`{walker}` no longer walks an AnonFn's SIGNATURE — a "
+                "refined closure formal / return is guarded in the lifted "
+                "body, and nothing else registers what its predicate needs"
+            )
+
+    def test_the_named_entry_point_reads_the_same_derivation(self) -> None:
+        """The handler walk's entry point enumerates a `FnDecl`'s signature."""
+        assert "_signature_refinement_predicates" in _self_calls(
+            _COMPILABILITY, "_scan_body_for_state_handlers")
+
+    def test_the_callgraph_probe_can_go_red(self) -> None:
+        """The extraction finds real edges, and misses ones that are absent."""
+        calls = _self_calls(_CONTRACTS, "_signature_refinement_predicates")
+        assert {"_refinement_guard_parts", "_component_guard_predicates"} <= (
+            calls), sorted(calls)
+        assert "_emit_refinement_check" not in calls, (
+            "the derivation must not EMIT anything — it is read by the "
+            "import pre-scan, which runs before any instruction is built"
+        )
+        with pytest.raises(AssertionError):
+            _self_calls(_CONTRACTS, "_no_such_method_anywhere")
+
+
+class TestContractExprsDispatch:
+    """Every contract kind is enumerated, a new one by construction.
+
+    The helper started as `getattr(c, "expr", None)`, which treats an
+    unrecognised contract kind as "carries no predicates" — the silent skip it
+    was written to fix, since `Decreases` carries `exprs` and was dropped
+    exactly that way.  It reads each clause's fields through `vera.fold`, so
+    the next new `ast.Contract` subclass has its expressions enumerated
+    whatever its fields are called.
+    """
+
+    @staticmethod
+    def _lit(n: int) -> ast.IntLit:
+        return ast.IntLit(value=n)
+
+    def test_single_predicate_kinds_are_yielded(self) -> None:
+        contracts = (
+            ast.Requires(expr=self._lit(1)),
+            ast.Ensures(expr=self._lit(2)),
+            ast.Invariant(expr=self._lit(3)),
+        )
+        assert [e.value for e in compilability.contract_exprs(contracts)] == [
+            1, 2, 3]
+
+    def test_decreases_yields_every_measure_component(self) -> None:
+        """A lexicographic measure is SEVERAL expressions, in `exprs`."""
+        contracts = (ast.Decreases(exprs=(self._lit(7), self._lit(8))),)
+        assert [e.value for e in compilability.contract_exprs(contracts)] == [
+            7, 8]
+
+    def test_a_new_contract_kind_is_enumerated_by_construction(self) -> None:
+        """A new `ast.Contract` subclass yields its expressions, in field
+        order, under field names no enumeration was told about.
+
+        Constructed synthetically because every kind that exists today is
+        handled — which is the point: this pins what happens to the NEXT one.
+        """
+
+        @dataclasses.dataclass(frozen=True)
+        class _FutureContract(ast.Contract):
+            measure: ast.Expr
+            bounds: tuple[ast.Expr, ...]
+
+        future = _FutureContract(
+            measure=self._lit(4), bounds=(self._lit(5), self._lit(6)))
+        assert [e.value for e in compilability.contract_exprs((future,))] == [
+            4, 5, 6]

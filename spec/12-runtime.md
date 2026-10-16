@@ -10,7 +10,7 @@ Vera programs compile to WebAssembly (WASM) modules and execute in a host runtim
 - Capturing output and state for the caller
 - Handling traps and runtime errors
 
-The runtime is deliberately minimal. It provides only what is needed to execute the compiled WASM — there is no scheduler. IO operations cover standard output (`print`), standard error (`stderr`), standard input (`read_line`, `read_char`), file access (`read_file`, `write_file`), command-line arguments (`args`), environment variables (`get_env`), time (`time`, `sleep`), and process exit (`exit`). Networking (`Http`), inference (`Inference`), randomness (`Random`) and SQL (`DB`) are host-backed the same way. Memory is managed automatically by a conservative mark-sweep garbage collector compiled into each WASM module (see Section 12.5.4).
+The runtime is deliberately minimal. It provides only what is needed to execute the compiled WASM — there is no scheduler. IO operations cover standard output (`print`), standard error (`stderr`), standard input (`read_line`, `read_char`), file access (`read_file`, `write_file`, `read_bytes`, `write_bytes`), command-line arguments (`args`), environment variables (`get_env`), time (`time`, `sleep`), and process exit (`exit`). Networking (`Http`), inference (`Inference`), randomness (`Random`) and SQL (`DB`) are host-backed the same way. Memory is managed automatically by a conservative mark-sweep garbage collector compiled into each WASM module (see Section 12.5.4).
 
 ## 12.2 WASM Module Structure
 
@@ -37,6 +37,8 @@ The module imports host functions from the runtime for two distinct reasons. The
 | `vera.read_char` | `() -> (i32)` | Program uses `IO.read_char` |
 | `vera.read_file` | `(i32, i32) -> (i32)` | Program uses `IO.read_file` |
 | `vera.write_file` | `(i32, i32, i32, i32) -> (i32)` | Program uses `IO.write_file` |
+| `vera.read_bytes` | `(i32, i32) -> (i32)` | Program uses `IO.read_bytes` |
+| `vera.write_bytes` | `(i32, i32, i32, i32) -> (i32)` | Program uses `IO.write_bytes` |
 | `vera.args` | `() -> (i32, i32)` | Program uses `IO.args` |
 | `vera.exit` | `(i64) -> ()` | Program uses `IO.exit` |
 | `vera.get_env` | `(i32, i32) -> (i32)` | Program uses `IO.get_env` |
@@ -74,7 +76,7 @@ Imports are only emitted when the program actually uses the corresponding host-b
 
 The module exports one page (64 KiB) of linear memory as `"memory"`. The host runtime uses this export to read string data for `IO.print` and to write data returned by host functions (e.g., `IO.read_line`, `IO.read_file`).
 
-When the program uses IO operations that return strings or ADTs — `IO.read_line`, `IO.read_char`, `IO.read_file`, `IO.write_file`, `IO.args`, `IO.get_env` — the module also exports the `$alloc` function so the host can allocate memory in the WASM linear memory for return values. The fire-and-forget operations (`IO.print`, `IO.exit`, `IO.sleep`, `IO.time`, `IO.stderr`) don't allocate: `vera.print`, `vera.stderr`, and `vera.sleep` take only primitive parameters and return nothing; `vera.time` returns an `i64` scalar; `vera.exit` traps without returning. Modules that use only these operations don't need `$alloc` exported.
+When the program uses IO operations that return strings or ADTs — `IO.read_line`, `IO.read_char`, `IO.read_file`, `IO.write_file`, `IO.read_bytes`, `IO.write_bytes`, `IO.args`, `IO.get_env` — the module also exports the `$alloc` function so the host can allocate memory in the WASM linear memory for return values. The fire-and-forget operations (`IO.print`, `IO.exit`, `IO.sleep`, `IO.time`, `IO.stderr`) don't allocate: `vera.print`, `vera.stderr`, and `vera.sleep` take only primitive parameters and return nothing; `vera.time` returns an `i64` scalar; `vera.exit` traps without returning. Modules that use only these operations don't need `$alloc` exported.
 
 For the memory layout, see Section 12.5.
 
@@ -112,7 +114,7 @@ Each execution creates a fresh engine, module, linker, and store. There is no pe
 The linker resolves all imports before instantiation. If the module imports a host function that the linker has not defined, instantiation fails with an error.
 
 The linker registers host functions before instantiation:
-1. IO host functions — registered for each IO operation the module imports (`vera.print`, `vera.read_line`, `vera.read_char`, `vera.read_file`, `vera.write_file`, `vera.args`, `vera.exit`, `vera.get_env`, `vera.sleep`, `vera.time`, `vera.stderr`).
+1. IO host functions — registered for each IO operation the module imports (`vera.print`, `vera.read_line`, `vera.read_char`, `vera.read_file`, `vera.write_file`, `vera.read_bytes`, `vera.write_bytes`, `vera.args`, `vera.exit`, `vera.get_env`, `vera.sleep`, `vera.time`, `vera.stderr`).
 2. `vera.state_get_{T}` / `vera.state_put_{T}` / `vera.state_push_{T}` / `vera.state_pop_{T}` — registered for each concrete `State<T>` type used by the program.
 
 ### 12.3.3 Entry Point Resolution
@@ -287,6 +289,40 @@ No line terminator is added; callers include `\n` if they want one. Mirrors `IO.
 2. Otherwise, if standard input is not a terminal, read one character from the stream.
 3. Otherwise, on a Unix terminal, switch to cbreak mode (no line buffering, no echo, Ctrl-C still interrupts), read one character and restore the terminal; on Windows, read one key with `msvcrt.getwch()`.
 4. Return `Ok(ch)`, or `Err("EOF")` at end of input or, on a Unix terminal, for Ctrl-D. A host failure also returns an `Err` naming it.
+
+#### 12.4.1.12 IO.read\_bytes
+
+**Import:** `(import "vera" "read_bytes" (func $vera.read_bytes (param i32 i32) (result i32)))`
+
+**Parameters:**
+- `path_ptr` (i32): byte offset of the file path string.
+- `path_len` (i32): length of the file path in bytes.
+
+**Returns:** `i32` — a heap pointer to a `Result<Array<Byte>, String>` ADT value.
+
+**Behaviour:**
+1. Decode the file path from linear memory.
+2. Attempt to read the file's bytes, whole and unchanged.
+3. On success: allocate a block of the file's length with `$alloc`, copy the bytes into it, one byte per element, and construct a `Result.Ok` ADT containing the array (tag=0, arr\_ptr, arr\_len), the layout of an `Ok` holding a `String`. An empty file gives the empty array, `(0, 0)`. Return the heap pointer.
+4. On failure: construct a `Result.Err` ADT containing the error message (tag=1, str\_ptr, str\_len). Return the heap pointer.
+
+#### 12.4.1.13 IO.write\_bytes
+
+**Import:** `(import "vera" "write_bytes" (func $vera.write_bytes (param i32 i32 i32 i32) (result i32)))`
+
+**Parameters:**
+- `path_ptr` (i32): byte offset of the file path string.
+- `path_len` (i32): length of the file path in bytes.
+- `data_ptr` (i32): byte offset of the array's first element.
+- `data_len` (i32): the array's length, which is its length in bytes.
+
+**Returns:** `i32` — a heap pointer to a `Result<Unit, String>` ADT value.
+
+**Behaviour:**
+1. Decode the file path from linear memory, and read the array's bytes.
+2. Attempt to write the bytes to the file, unchanged.
+3. On success: construct a `Result.Ok` ADT with tag=0 (no payload for Unit). Return the heap pointer.
+4. On failure: construct a `Result.Err` ADT containing the error message (tag=1, str\_ptr, str\_len). Return the heap pointer.
 
 ### 12.4.2 State\<T\>
 

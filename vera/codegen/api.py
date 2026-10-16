@@ -32,9 +32,11 @@ from vera.runtime.heap import (
     _alloc_option_none,
     _alloc_option_some_string,
     _alloc_result_err_string,
+    _alloc_result_ok_bytes,
     _alloc_result_ok_string,
     _alloc_result_ok_unit,
     _alloc_string,
+    _read_bytes_at,
     _read_string_export,
     _read_wasm_string,
     build_request_adt,
@@ -738,6 +740,37 @@ def execute(
         [wasmtime.ValType.i32()],
     )
     own["write_file"] = (write_file_type, host_write_file)
+
+    # Host function: vera.read_bytes(ptr, len) -> i32
+    # [Result<Array<Byte>, String>]: the file's bytes, unchanged (#1711).
+    def host_read_bytes(
+        caller: wasmtime.Caller, ptr: int, length: int,
+    ) -> int:
+        path = _read_wasm_string(caller, ptr, length)
+        try:
+            data = Path(path).read_bytes()
+        except Exception as exc:  # noqa: BLE001 — host boundary; any failure becomes Result.Err
+            return _alloc_result_err_string(caller, str(exc))
+        return _alloc_result_ok_bytes(caller, data)
+
+    own["read_bytes"] = (read_file_type, host_read_bytes)
+
+    # Host function: vera.write_bytes(p_ptr, p_len, d_ptr, d_len) -> i32
+    # [Result<Unit, String>]: the array's bytes, unchanged (#1711).
+    def host_write_bytes(
+        caller: wasmtime.Caller,
+        p_ptr: int, p_len: int,
+        d_ptr: int, d_len: int,
+    ) -> int:
+        path = _read_wasm_string(caller, p_ptr, p_len)
+        data = _read_bytes_at(caller, d_ptr, d_len)
+        try:
+            Path(path).write_bytes(data)
+        except Exception as exc:  # noqa: BLE001 — host boundary; any failure becomes Result.Err
+            return _alloc_result_err_string(caller, str(exc))
+        return _alloc_result_ok_unit(caller)
+
+    own["write_bytes"] = (write_file_type, host_write_bytes)
 
     # Host function: vera.args() -> (i32, i32)  [Array<String> pair]
     def host_args(caller: wasmtime.Caller) -> tuple[int, int]:

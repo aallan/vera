@@ -1,0 +1,68 @@
+-- Conformance: string_to_bytes, bytes_to_string (Chapter 9, Section 9.6.11)
+-- Tests: a string's UTF-8 bytes as Array<Byte>, their decoding back to the
+--   string, the empty string and the empty array, and the Err naming the
+--   offset of the first byte of the first sequence that is not well-formed
+--   UTF-8: a stray continuation byte, a truncated sequence, an overlong form,
+--   an encoded surrogate and a value above U+10FFFF
+private fn byte_of(@Byte -> @Byte)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Byte.0
+}
+
+private fn to_byte(@Int -> @Byte)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match int_to_byte(@Int.0) {
+    Some(@Byte) -> @Byte.0,
+    None -> byte_of(0)
+  }
+}
+
+private fn bytes_of(@Array<Int> -> @Array<Byte>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  array_map(@Array<Int>.0, fn(@Int -> @Byte) effects(pure) { to_byte(@Int.0) })
+}
+
+private fn show_bytes(@Array<Byte> -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  string_join(array_map(@Array<Byte>.0, fn(@Byte -> @String) effects(pure) { int_to_string(byte_to_int(@Byte.0)) }), ",")
+}
+
+private fn decoded(@Array<Byte> -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match bytes_to_string(@Array<Byte>.0) {
+    Ok(@String) -> string_concat("ok ", @String.0),
+    Err(@String) -> string_concat("err ", @String.0)
+  }
+}
+
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  IO.print(string_concat(show_bytes(string_to_bytes("héllo €")), "\n"));
+  IO.print(string_concat(int_to_string(array_length(string_to_bytes(""))), "\n"));
+  IO.print(string_concat(decoded(string_to_bytes("héllo €")), "\n"));
+  IO.print(string_concat(decoded([]), "|\n"));
+  IO.print(string_concat(decoded(bytes_of([97, 128, 98])), "\n"));
+  IO.print(string_concat(decoded(bytes_of([97, 98, 226, 130])), "\n"));
+  IO.print(string_concat(decoded(bytes_of([192, 175])), "\n"));
+  IO.print(string_concat(decoded(bytes_of([237, 160, 128])), "\n"));
+  IO.print(string_concat(decoded(bytes_of([195, 169, 244, 144, 128, 128])), "\n"));
+  ()
+}

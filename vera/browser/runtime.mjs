@@ -533,6 +533,16 @@ function hostWriteFile(_pPtr, _pLen, _dPtr, _dLen) {
   return allocResultErrString('File I/O not available in browser');
 }
 
+/** vera.read_bytes(pathPtr, pathLen) → Result<Array<Byte>, String> heap ptr. */
+function hostReadBytes(_pathPtr, _pathLen) {
+  return allocResultErrString('File I/O not available in browser');
+}
+
+/** vera.write_bytes(pPtr, pLen, dPtr, dLen) → Result<Unit, String> heap ptr. */
+function hostWriteBytes(_pPtr, _pLen, _dPtr, _dLen) {
+  return allocResultErrString('File I/O not available in browser');
+}
+
 /** vera.args() → [backingPtr, count] Array<String>. */
 function hostArgs() {
   return allocArrayOfStrings(cliArgs);
@@ -1772,6 +1782,8 @@ const IO_BINDINGS = {
   read_char: hostReadChar,
   read_file: hostReadFile,
   write_file: hostWriteFile,
+  read_bytes: hostReadBytes,
+  write_bytes: hostWriteBytes,
   args: hostArgs,
   exit: hostExit,
   get_env: hostGetEnv,
@@ -1950,12 +1962,14 @@ const HOST_IMPORT_ROWS = new Map([
   ["exit", "io", ""],
   ["get_env", "io", ""],
   ["print", "io", ""],
+  ["read_bytes", "io", ""],
   ["read_char", "io", ""],
   ["read_file", "io", ""],
   ["read_line", "io", ""],
   ["sleep", "io", ""],
   ["stderr", "io", ""],
   ["time", "io", ""],
+  ["write_bytes", "io", ""],
   ["write_file", "io", ""],
   ["md_extract_code_blocks", "md", ""],
   ["md_has_code_block", "md", ""],

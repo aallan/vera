@@ -344,6 +344,8 @@ The `IO` effect has no type parameters. All IO operations are invoked as qualifi
 | `read_char` | `Unit -> Result<String, String>` | Read one character from stdin — cbreak mode on a Unix TTY, where Ctrl-D gives `Err("EOF")`; redirected input reads one character from the stdin stream and gives `Err("EOF")` at end of input |
 | `read_file` | `String -> Result<String, String>` | Read file contents; returns `Ok(contents)` or `Err(message)` |
 | `write_file` | `String, String -> Result<Unit, String>` | Write string to file; returns `Ok(())` or `Err(message)` |
+| `read_bytes` | `String -> Result<Array<Byte>, String>` | Read a file's bytes as they are, with no decoding or newline translation; returns `Ok(bytes)` or `Err(message)` |
+| `write_bytes` | `String, Array<Byte> -> Result<Unit, String>` | Write bytes to a file as they are; returns `Ok(())` or `Err(message)` |
 | `args` | `Unit -> Array<String>` | Command-line arguments |
 | `exit` | `Int -> Never` | Terminate with exit code (never returns) |
 | `get_env` | `String -> Option<String>` | Look up environment variable; returns `Some(value)` or `None` |
@@ -382,6 +384,8 @@ public fn main(-> @Unit)
   ()
 }
 ```
+
+`read_bytes` and `write_bytes` move a file's bytes as they are: no byte is decoded, replaced or translated, a line ending included, on any platform. `read_bytes` is `Err` only for a file that cannot be opened or read, and an empty file is `Ok` of the empty array. `string_to_bytes` and `bytes_to_string` (Section 9.6.11) convert between bytes and a `String`.
 
 For the runtime implementation of IO operations, see Chapter 12, Section 12.4.1.
 
@@ -1030,7 +1034,7 @@ Clamp is defined as `min(max(v, lo), hi)`; when `lo > hi` the outer `min` domina
 
 ### 9.6.11 Type Conversions
 
-Vera has no implicit numeric conversions. The following built-in functions provide explicit conversions between numeric types.
+Vera has no implicit numeric conversions. The following built-in functions provide explicit conversions between numeric types, and between a string and its bytes.
 
 #### Widening conversions (always succeed)
 
@@ -1135,6 +1139,45 @@ match int_to_byte(65) {
 ```
 
 This expression evaluates to `65`.
+
+#### UTF-8 conversions
+
+A `String` is held as its UTF-8 bytes (Section 2.2), and an `Array<Byte>` holds bytes one to an element. These two functions convert between them. Like every built-in above they compile to inline WebAssembly, so every host runs the same code for them.
+
+<!-- vera:skip-parse category="FRAGMENT" reason="string_to_bytes signature (no body)" -->
+```
+public fn string_to_bytes(@String -> @Array<Byte>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+```
+
+Returns the bytes of a string: its UTF-8 encoding, one byte per element. It is total, and the empty string gives the empty array.
+
+```
+array_length(string_to_bytes("héllo"))
+```
+
+This expression evaluates to `6`: `é` is the two bytes `195, 169`.
+
+<!-- vera:skip-parse category="FRAGMENT" reason="bytes_to_string signature (no body)" -->
+```
+public fn bytes_to_string(@Array<Byte> -> @Result<String, String>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+```
+
+Decodes UTF-8. An array that is well-formed UTF-8, by the table of well-formed byte sequences in the Unicode Standard (Section 3.9, Table 3-7), is `Ok` with the string those bytes are. Any other array is `Err("invalid UTF-8 at byte N")`, where `N` is the zero-based offset of the first byte of the first sequence that is not well formed. Such a sequence is a byte that begins none (`80`–`C1`, `F5`–`FF`), a lead byte whose next byte is outside its range, a sequence the array ends inside, an overlong form, an encoded surrogate, or a value above `U+10FFFF`. The empty array gives `Ok("")`. For every string `s` whose bytes are well-formed UTF-8, `bytes_to_string(string_to_bytes(s))` is `Ok(s)`.
+
+```
+match bytes_to_string(string_to_bytes("héllo")) {
+  Ok(@String) -> @String.0,
+  Err(@String) -> @String.0
+}
+```
+
+This expression evaluates to `"héllo"`. Applied to the bytes `97, 255, 98`, `bytes_to_string` gives `Err("invalid UTF-8 at byte 1")`.
 
 #### float_to_string
 
@@ -1639,6 +1682,32 @@ base64_decode("")                      -- Ok("")
 base64_decode("ABC")                   -- Err("invalid base64 length")
 base64_decode("QQ!!")                  -- Err("invalid base64")
 ```
+
+#### base64\_encode\_bytes
+
+<!-- vera:skip-parse category="FRAGMENT" reason="base64_encode_bytes signature (no body)" -->
+```
+public fn base64_encode_bytes(@Array<Byte> -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+```
+
+Encodes bytes to standard Base64 (RFC 4648), as `base64_encode` encodes a string's bytes: every 3 bytes produce 4 characters from the same alphabet, and 1 or 2 remaining bytes are padded with `=`. An empty array produces an empty string. The bytes need not be UTF-8: the bytes `255, 254, 253, 0` encode to `"//79AA=="`.
+
+#### base64\_decode\_bytes
+
+<!-- vera:skip-parse category="FRAGMENT" reason="base64_decode_bytes signature (no body)" -->
+```
+public fn base64_decode_bytes(@String -> @Result<Array<Byte>, String>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+```
+
+Decodes a standard Base64 string (RFC 4648) to the bytes it encodes, whether or not they are UTF-8. It fails as `base64_decode` does, with `Err("invalid base64 length")` or `Err("invalid base64")`, and wherever `base64_decode` gives `Ok`, the bytes are the ones its `String` holds. `"//79AA=="` decodes to `Ok` of the bytes `255, 254, 253, 0`.
+
+The two pairs are two operations over two types. `base64_encode` and `base64_decode` take and give a `String`, text; `base64_encode_bytes` and `base64_decode_bytes` take and give an `Array<Byte>`, which holds any bytes. A payload that encodes bytes, such as an image in a JSON document, decodes to what it is with `base64_decode_bytes`.
 
 ### 9.6.17 URL Encoding
 

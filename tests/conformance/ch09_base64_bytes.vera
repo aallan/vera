@@ -1,0 +1,78 @@
+-- Conformance: base64_encode_bytes, base64_decode_bytes (Chapter 9, Section 9.6.16)
+-- Tests: RFC 4648 Base64 over Array<Byte>: each of the three padding cases,
+--   bytes that are not UTF-8, the empty array and the empty string, the round
+--   trip of every byte value, and the two errors the decoder names
+private fn byte_of(@Byte -> @Byte)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Byte.0
+}
+
+private fn to_byte(@Int -> @Byte)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match int_to_byte(@Int.0) {
+    Some(@Byte) -> @Byte.0,
+    None -> byte_of(0)
+  }
+}
+
+private fn bytes_of(@Array<Int> -> @Array<Byte>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  array_map(@Array<Int>.0, fn(@Int -> @Byte) effects(pure) { to_byte(@Int.0) })
+}
+
+private fn show_bytes(@Array<Byte> -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  string_join(array_map(@Array<Byte>.0, fn(@Byte -> @String) effects(pure) { int_to_string(byte_to_int(@Byte.0)) }), ",")
+}
+
+private fn decoded(@String -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match base64_decode_bytes(@String.0) {
+    Ok(@Array<Byte>) -> string_concat("ok ", show_bytes(@Array<Byte>.0)),
+    Err(@String) -> string_concat("err ", @String.0)
+  }
+}
+
+private fn round_trip(@Array<Byte> -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match base64_decode_bytes(base64_encode_bytes(@Array<Byte>.0)) {
+    Ok(@Array<Byte>) -> string_concat(int_to_string(array_length(@Array<Byte>.0)), string_concat(" ", int_to_string(array_fold(@Array<Byte>.0, 0, fn(@Int, @Byte -> @Int) effects(pure) { @Int.0 + byte_to_int(@Byte.0) })))),
+    Err(@String) -> string_concat("err ", @String.0)
+  }
+}
+
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  IO.print(string_concat(base64_encode_bytes(bytes_of([77])), "\n"));
+  IO.print(string_concat(base64_encode_bytes(bytes_of([77, 97])), "\n"));
+  IO.print(string_concat(base64_encode_bytes(bytes_of([77, 97, 110])), "\n"));
+  IO.print(string_concat(base64_encode_bytes(bytes_of([255, 254, 253, 0])), "\n"));
+  IO.print(string_concat(base64_encode_bytes([]), "|\n"));
+  IO.print(string_concat(decoded("//79AA=="), "\n"));
+  IO.print(string_concat(decoded(""), "|\n"));
+  IO.print(string_concat(round_trip(bytes_of(array_range(0, 256))), "\n"));
+  IO.print(string_concat(decoded("ABC"), "\n"));
+  IO.print(string_concat(decoded("QQ!!"), "\n"));
+  ()
+}

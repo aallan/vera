@@ -452,9 +452,6 @@ jobs:
       - name: Check every diagnostic carries rationale/fix/spec_ref (#682)
         run: python scripts/check_diagnostic_fields.py
 
-      - name: Check every walker covers every Expr subclass (#597)
-        run: python scripts/check_walker_coverage.py
-
       - name: Check every test drives the pipeline through tests/pipeline.py
         run: python scripts/check_test_drivers.py
 

@@ -334,8 +334,7 @@ class CallsMarkupMixin:
     ) -> list[str] | None:
         """Translate async(expr) → Future<T>.
 
-        Two lowerings, decided by ``fused_async_arg_target`` (shared
-        with the ``_scan_io_ops`` walk — see
+        Two lowerings, decided by ``fused_async_arg_target`` (see
         ``vera/wasm/async_fusion.py`` for why the predicate must not
         be re-derived here):
 

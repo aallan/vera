@@ -1,7 +1,9 @@
 """Encoding and URL built-in translation mixin for WasmContext.
 
-Handles: base64_encode, base64_decode, url_encode, url_decode,
-url_parse, url_join. All emit heap-allocating state machines in WAT.
+Handles: base64_encode, base64_decode (and over bytes, base64_encode_bytes
+and base64_decode_bytes, which the same emitters lower), string_to_bytes,
+bytes_to_string, url_encode, url_decode, url_parse, url_join. All emit
+heap-allocating state machines in WAT.
 """
 
 from __future__ import annotations
@@ -717,6 +719,224 @@ class CallsEncodingMixin:
         ins.append("i32.store offset=8")
 
         ins.append("end")  # block $done_bd
+
+        ins.append(f"local.get {out}")
+        return ins
+
+    # -----------------------------------------------------------------
+    # UTF-8 between String and Array<Byte> (#1711)
+    # -----------------------------------------------------------------
+
+    def _translate_string_to_bytes(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate string_to_bytes(s) → Array<Byte> (i32_pair).
+
+        A `String` is its UTF-8 bytes and an `Array<Byte>` holds one byte
+        per cell, so the result is a copy of the string's bytes, in a block
+        of its own, as every array operation leaves an array.  The empty
+        string is the empty array, ``(0, 0)``.
+        """
+        arg_instrs = self.translate_expr(arg, env)
+        if arg_instrs is None:
+            return None
+
+        self.needs_alloc = True
+
+        src = self.alloc_local("i32")
+        n = self.alloc_local("i32")
+        dst = self.alloc_local("i32")
+
+        ins: list[str] = []
+        ins.extend(arg_instrs)
+        ins.append(f"local.set {n}")
+        ins.append(f"local.set {src}")
+        ins.append(f"local.get {n}")
+        ins.append("i32.eqz")
+        ins.append("if (result i32 i32)")
+        ins.append("  i32.const 0")
+        ins.append("  i32.const 0")
+        ins.append("else")
+        ins.append(f"  local.get {n}")
+        ins.append("  call $alloc")
+        ins.append(f"  local.set {dst}")
+        ins.extend("  " + line for line in gc_shadow_push(dst))
+        ins.append(f"  local.get {dst}")
+        ins.append(f"  local.get {src}")
+        ins.append(f"  local.get {n}")
+        ins.append("  memory.copy")
+        ins.append(f"  local.get {dst}")
+        ins.append(f"  local.get {n}")
+        ins.append("end")
+        return ins
+
+    def _translate_bytes_to_string(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate bytes_to_string(bytes) → Result<String, String> (i32 ptr).
+
+        Decodes UTF-8 by Unicode's table of well-formed byte sequences
+        (§3.9, Table 3-7).  A lead byte from ``C2`` to ``F4`` names how many
+        continuation bytes follow it and the range its second byte must be
+        in: ``A0``..``BF`` after ``E0``, ``80``..``9F`` after ``ED`` (no
+        surrogate), ``90``..``BF`` after ``F0``, ``80``..``8F`` after ``F4``
+        (nothing above U+10FFFF), ``80``..``BF`` otherwise; every later byte
+        is in ``80``..``BF``.  ``80``..``C1`` and ``F5``..``FF`` lead
+        nothing, and a sequence the array ends inside is not well formed.
+
+        A well-formed array is copied into a string of its own, ``Ok``;
+        any other is ``Err("invalid UTF-8 at byte N")``, ``N`` the offset of
+        the first byte of the first sequence that is not well formed (the
+        offset CPython's strict decoder reports as ``start``).
+
+        ADT layout (16 bytes), as ``base64_decode``'s:
+          Ok(String):  [tag=0 : i32] [ptr : i32] [len : i32] [pad 4]
+          Err(String): [tag=1 : i32] [ptr : i32] [len : i32] [pad 4]
+        """
+        arg_instrs = self.translate_expr(arg, env)
+        if arg_instrs is None:
+            return None
+
+        self.needs_alloc = True
+
+        prefix_off, prefix_len = self.string_pool.intern("invalid UTF-8 at byte ")
+        empty_off, _ = self.string_pool.intern("")
+
+        src = self.alloc_local("i32")
+        n = self.alloc_local("i32")
+        i = self.alloc_local("i32")      # the sequence's first byte
+        lead = self.alloc_local("i32")
+        need = self.alloc_local("i32")   # continuation bytes after the lead
+        lo = self.alloc_local("i32")     # the second byte's range
+        hi = self.alloc_local("i32")
+        second = self.alloc_local("i32")
+        dst = self.alloc_local("i32")
+        out = self.alloc_local("i32")
+        msg_ptr = self.alloc_local("i32")
+        msg_len = self.alloc_local("i32")
+
+        def at(offset: int) -> list[str]:
+            # The byte `offset` past the sequence's first.
+            return [f"local.get {src}", f"local.get {i}", "i32.add",
+                    f"i32.load8_u offset={offset}"]
+
+        def continuation(offset: int) -> list[str]:
+            # Leave the decode unless the byte is in 80..BF.
+            return [*at(offset), "i32.const 192", "i32.and", "i32.const 128",
+                    "i32.ne", "br_if $u8_bad"]
+
+        ins: list[str] = []
+        ins.extend(arg_instrs)
+        ins.append(f"local.set {n}")
+        ins.append(f"local.set {src}")
+        ins.append("i32.const 0")
+        ins.append(f"local.set {i}")
+
+        ins.append("block $u8_done")
+        ins.append("block $u8_bad")
+        ins.append("block $u8_ok")
+        ins.append("loop $u8_next")
+        # Every sequence read: well formed.
+        ins.extend([f"local.get {i}", f"local.get {n}", "i32.ge_u",
+                    "br_if $u8_ok"])
+        ins.extend([*at(0), f"local.set {lead}"])
+        # ASCII is a sequence of one byte.
+        ins.extend([f"local.get {lead}", "i32.const 128", "i32.lt_u", "if",
+                    f"  local.get {i}", "  i32.const 1", "  i32.add",
+                    f"  local.set {i}", "  br $u8_next", "end"])
+        # 80..C1 and F5..FF lead no sequence.
+        ins.extend([f"local.get {lead}", "i32.const 194", "i32.lt_u",
+                    "br_if $u8_bad",
+                    f"local.get {lead}", "i32.const 244", "i32.gt_u",
+                    "br_if $u8_bad"])
+        ins.extend(["i32.const 128", f"local.set {lo}",
+                    "i32.const 191", f"local.set {hi}"])
+        ins.extend([
+            f"local.get {lead}", "i32.const 224", "i32.lt_u", "if",
+            "  i32.const 1", f"  local.set {need}",
+            "else",
+            f"  local.get {lead}", "  i32.const 240", "  i32.lt_u", "  if",
+            "    i32.const 2", f"    local.set {need}",
+            f"    local.get {lead}", "    i32.const 224", "    i32.eq", "    if",
+            "      i32.const 160", f"      local.set {lo}", "    end",
+            f"    local.get {lead}", "    i32.const 237", "    i32.eq", "    if",
+            "      i32.const 159", f"      local.set {hi}", "    end",
+            "  else",
+            "    i32.const 3", f"    local.set {need}",
+            f"    local.get {lead}", "    i32.const 240", "    i32.eq", "    if",
+            "      i32.const 144", f"      local.set {lo}", "    end",
+            f"    local.get {lead}", "    i32.const 244", "    i32.eq", "    if",
+            "      i32.const 143", f"      local.set {hi}", "    end",
+            "  end",
+            "end",
+        ])
+        # The sequence's last byte, `i + need`, is inside the array.
+        ins.extend([f"local.get {i}", f"local.get {need}", "i32.add",
+                    f"local.get {n}", "i32.ge_u", "br_if $u8_bad"])
+        # The second byte in [lo, hi].
+        ins.extend([*at(1), f"local.tee {second}", f"local.get {lo}",
+                    "i32.lt_u", "br_if $u8_bad",
+                    f"local.get {second}", f"local.get {hi}", "i32.gt_u",
+                    "br_if $u8_bad"])
+        # The third and fourth, continuation bytes.
+        ins.extend([f"local.get {need}", "i32.const 2", "i32.ge_u", "if",
+                    *("  " + line for line in continuation(2)), "end"])
+        ins.extend([f"local.get {need}", "i32.const 3", "i32.eq", "if",
+                    *("  " + line for line in continuation(3)), "end"])
+        ins.extend([f"local.get {i}", f"local.get {need}", "i32.add",
+                    "i32.const 1", "i32.add", f"local.set {i}",
+                    "br $u8_next"])
+        ins.append("end")  # loop $u8_next
+        ins.append("end")  # block $u8_ok
+
+        # --- Ok: the bytes, copied into a string of their own ---------
+        ins.append(f"i32.const {empty_off}")
+        ins.append(f"local.set {dst}")
+        ins.append(f"local.get {n}")
+        ins.append("if")
+        ins.append(f"  local.get {n}")
+        ins.append("  call $alloc")
+        ins.append(f"  local.set {dst}")
+        ins.extend("  " + line for line in gc_shadow_push(dst))
+        ins.append(f"  local.get {dst}")
+        ins.append(f"  local.get {src}")
+        ins.append(f"  local.get {n}")
+        ins.append("  memory.copy")
+        ins.append("end")
+        ins.append("i32.const 16")
+        ins.append("call $alloc")
+        ins.append(f"local.tee {out}")
+        ins.append("i32.const 0")
+        ins.append("i32.store")            # tag = 0 (Ok)
+        ins.extend(gc_shadow_push(out))
+        ins.append(f"local.get {out}")
+        ins.append(f"local.get {dst}")
+        ins.append("i32.store offset=4")
+        ins.append(f"local.get {out}")
+        ins.append(f"local.get {n}")
+        ins.append("i32.store offset=8")
+        ins.append("br $u8_done")
+        ins.append("end")  # block $u8_bad
+
+        # --- Err: the offset of the sequence's first byte, in decimal --
+        ins.extend(self._string_concat_core(
+            [f"i32.const {prefix_off}", f"i32.const {prefix_len}"],
+            self._to_string_core([f"local.get {i}", "i64.extend_i32_u"])))
+        ins.append(f"local.set {msg_len}")
+        ins.append(f"local.set {msg_ptr}")
+        ins.append("i32.const 16")
+        ins.append("call $alloc")
+        ins.append(f"local.tee {out}")
+        ins.append("i32.const 1")
+        ins.append("i32.store")            # tag = 1 (Err)
+        ins.extend(gc_shadow_push(out))
+        ins.append(f"local.get {out}")
+        ins.append(f"local.get {msg_ptr}")
+        ins.append("i32.store offset=4")
+        ins.append(f"local.get {out}")
+        ins.append(f"local.get {msg_len}")
+        ins.append("i32.store offset=8")
+        ins.append("end")  # block $u8_done
 
         ins.append(f"local.get {out}")
         return ins

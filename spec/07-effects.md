@@ -384,6 +384,8 @@ The `IO` effect is built-in and provides these operations for interacting with t
 | `read_char` | `Unit -> Result<String, String>` | Read one character from stdin — cbreak mode on a Unix TTY, where Ctrl-D gives `Err("EOF")`; redirected input reads one character from the stdin stream and gives `Err("EOF")` at end of input |
 | `read_file` | `String -> Result<String, String>` | Read entire file as UTF-8 |
 | `write_file` | `String, String -> Result<Unit, String>` | Write string to file |
+| `read_bytes` | `String -> Result<Array<Byte>, String>` | Read entire file as its bytes, unchanged |
+| `write_bytes` | `String, Array<Byte> -> Result<Unit, String>` | Write bytes to file, unchanged |
 | `args` | `Unit -> Array<String>` | Get command-line arguments |
 | `exit` | `Int -> Never` | Exit process with status code |
 | `get_env` | `String -> Option<String>` | Look up environment variable |

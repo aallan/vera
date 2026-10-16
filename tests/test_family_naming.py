@@ -1150,9 +1150,8 @@ def test_every_expression_kind_has_a_formatter_arm() -> None:
     check that typed them apart (#1218's failure mode, reintroduced through
     the renderer that fixed it).
 
-    Checked STRUCTURALLY, the way `scripts/check_walker_coverage.py` checks
-    its walkers: the classes `_fmt_expr` actually branches on, read off its
-    `isinstance` calls.  A raw substring search over the same source would
+    Checked STRUCTURALLY: the classes `_fmt_expr` actually branches on,
+    read off its `isinstance` calls.  A raw substring search over the same source would
     discharge an arm from a comment or a docstring that merely names the
     class (PR #1238 review), which is a false green on the property that
     two predicates never share a family name.

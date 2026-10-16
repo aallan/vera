@@ -86,8 +86,8 @@ scans or sweeps it:
   op entry;
 - a 128-byte slab at the arena base holds the fixed-size canonical-ABI
   return areas (retptrs);
-- data crossing back into Vera (an `IO.read_file` payload, the
-  `IO.args` array) is copied out into ordinary GC-heap blocks with
+- data crossing back into Vera (an `IO.read_file` or `IO.read_bytes`
+  payload, the `IO.args` array) is copied out into ordinary GC-heap blocks with
   explicit shadow-stack rooting, mirroring the host runtime's
   `_ShadowGuard` discipline.
 
@@ -102,7 +102,7 @@ Host data larger than the arena (for example an argv list over
 |---|---|
 | `IO.print` / `IO.stderr` | `wasi:cli/stdout`, `wasi:cli/stderr` + `wasi:io/streams` (chunked at the 4096-byte `blocking-write-and-flush` cap) |
 | `IO.read_line` / `IO.read_char` | `wasi:cli/stdin` + `wasi:io/streams` |
-| `IO.read_file` / `IO.write_file` | `wasi:filesystem/types` + `wasi:filesystem/preopens` (paths resolve against the first preopened directory) |
+| `IO.read_file` / `IO.write_file` / `IO.read_bytes` / `IO.write_bytes` | `wasi:filesystem/types` + `wasi:filesystem/preopens` (paths resolve against the first preopened directory; the bytes cross as they are, in both directions) |
 | `IO.args` | `wasi:cli/environment.get-arguments` (skips `argv[0]`) |
 | `IO.get_env` | `wasi:cli/environment.get-environment` |
 | `IO.exit` | `wasi:cli/exit` (Section 13.6) |
@@ -207,7 +207,8 @@ the core target.
 `IO.stderr` (routed to the serve host's console), `IO.time` /
 `IO.sleep`, the `Random` family, `Map` and `Set`, and the pure
 language.  `IO.read_line` / `read_char` /
-`read_file` / `write_file` / `get_env` / `args` / `exit` are rejected
+`read_file` / `write_file` / `read_bytes` / `write_bytes` / `get_env` /
+`args` / `exit` are rejected
 with a diagnostic: the wasi:http proxy world provides no stdin,
 filesystem, or environment (verified by negative probe — the imports
 do not link under stock `wasmtime serve`).
@@ -231,7 +232,7 @@ pointing at `wasmtime serve`.  The native `vera serve` driver
 
 The dual-target differential in `tests/test_wasi_target.py` runs every
 deterministic run-level conformance program under both targets and
-requires byte-identical stdout/stderr: 129 of the 177 run-level programs
+requires byte-identical stdout/stderr: 131 of the 179 run-level programs
 execute identically (the remainder use host families outside the
 target's surface, have no `main`, or depend on wall-clock time).  A
 stock-host smoke test additionally runs the compiled artifact under

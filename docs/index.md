@@ -312,7 +312,7 @@ The documents above are how machines *read* Vera. The [language server](https://
 
 ## Status
 
-Vera is under [active development](https://raw.githubusercontent.com/aallan/vera/main/ROADMAP.md). A complete compiler with 164 built-in functions, ten algebraic effects (IO, Http, HttpServer, State, Exceptions, Async, Inference, DB, Random, Diverge), contract-driven testing with [Z3](https://www.microsoft.com/en-us/research/project/z3-3/), a language server with agent-facing proof deltas, and a 14-chapter specification. A 270-program conformance suite and 43 worked examples are validated against the spec on every pull request. It's all developed in the open on [GitHub](https://github.com/aallan/vera) under the MIT licence.
+Vera is under [active development](https://raw.githubusercontent.com/aallan/vera/main/ROADMAP.md). A complete compiler with 168 built-in functions, ten algebraic effects (IO, Http, HttpServer, State, Exceptions, Async, Inference, DB, Random, Diverge), contract-driven testing with [Z3](https://www.microsoft.com/en-us/research/project/z3-3/), a language server with agent-facing proof deltas, and a 14-chapter specification. A 272-program conformance suite and 44 worked examples are validated against the spec on every pull request. It's all developed in the open on [GitHub](https://github.com/aallan/vera) under the MIT licence.
 
 ## Links
 

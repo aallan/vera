@@ -14,6 +14,7 @@ from vera.builtins import BUILTINS, BuiltinSpec
 from vera.types import (
     BOOL,
     BUILTIN_TYPEVAR_MARKER,
+    BYTE,
     FLOAT64,
     INT,
     NAT,
@@ -613,6 +614,15 @@ class TypeEnv:
                 ),
                 "write_file": OpInfo(
                     "write_file", (STRING, STRING),
+                    AdtType("Result", (UNIT, STRING)), "IO",
+                ),
+                # A file's bytes, unchanged in both directions (#1711).
+                "read_bytes": OpInfo(
+                    "read_bytes", (STRING,),
+                    AdtType("Result", (AdtType("Array", (BYTE,)), STRING)), "IO",
+                ),
+                "write_bytes": OpInfo(
+                    "write_bytes", (STRING, AdtType("Array", (BYTE,))),
                     AdtType("Result", (UNIT, STRING)), "IO",
                 ),
                 "args": OpInfo(

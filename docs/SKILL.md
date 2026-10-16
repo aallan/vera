@@ -1017,6 +1017,10 @@ parse_float64(@String.0)                -- returns Result<Float64, String>
 parse_bool(@String.0)                   -- returns Result<Bool, String>
 base64_encode(@String.0)                -- returns String (RFC 4648)
 base64_decode(@String.0)                -- returns Result<String, String>
+base64_encode_bytes(@Array<Byte>.0)     -- returns String (RFC 4648, over bytes)
+base64_decode_bytes(@String.0)          -- returns Result<Array<Byte>, String>
+string_to_bytes(@String.0)              -- returns Array<Byte> (the string's UTF-8 bytes)
+bytes_to_string(@Array<Byte>.0)         -- returns Result<String, String> (UTF-8 decode)
 url_encode(@String.0)                   -- returns String (RFC 3986 percent-encoding)
 url_decode(@String.0)                   -- returns Result<String, String>
 url_parse(@String.0)                    -- returns Result<UrlParts, String> (RFC 3986 decomposition)
@@ -1116,6 +1120,37 @@ is_lower(@String.0)                                -- returns Bool
 `char_to_upper` / `char_to_lower` convert only the **first byte** of the string; remaining bytes pass through unchanged. Useful for title-casing a token. The six classifiers all inspect only the first byte and return `false` for the empty string. All sixteen are ASCII-only — no Unicode awareness.
 
 String functions use the heap allocator (`$alloc`). Memory is managed automatically by a conservative mark-sweep garbage collector — there is no manual allocation or deallocation. All four parse functions return `Result<T, String>`: `parse_nat`, `parse_int`, `parse_float64`, and `parse_bool`. They return `Ok(value)` on valid input and `Err(msg)` on empty or invalid input; leading and trailing spaces are tolerated. `parse_int` accepts an optional `+` or `-` sign. `parse_bool` is strict: only `"true"` and `"false"` (lowercase) are valid. `base64_encode` encodes a string to standard Base64 (RFC 4648); `base64_decode` returns `Result<String, String>`, failing on invalid length or characters. `url_encode` percent-encodes a string for use in URLs (RFC 3986), leaving unreserved characters (`A-Z`, `a-z`, `0-9`, `-`, `_`, `.`, `~`) unchanged; `url_decode` returns `Result<String, String>`, failing on invalid `%XX` sequences. `url_parse` decomposes a URL into its RFC 3986 components, returning `Result<UrlParts, String>` where `UrlParts(scheme, authority, path, query, fragment)` is a built-in ADT with five String fields; it returns `Err("missing scheme")` if no `:` is found. `url_join` reassembles a `UrlParts` value into a URL string. `UrlParts` is in every program, so match on it directly (`UrlParts(@String, @String, @String, @String, @String) -> ...`) with no local declaration.
+
+#### Bytes
+
+An `Array<Byte>` holds bytes, one to an element. `string_to_bytes` gives a string's UTF-8 bytes, and `bytes_to_string` decodes bytes to a string: `Ok` for well-formed UTF-8, otherwise `Err("invalid UTF-8 at byte N")`, where `N` is the offset of the first byte of the first sequence that is not well formed. `base64_encode_bytes` and `base64_decode_bytes` are Base64 (RFC 4648) over bytes, so a payload that is not text, such as an image, decodes to what it is. `IO.read_bytes` and `IO.write_bytes` read and write a file's bytes unchanged.
+
+```vera
+private fn decoded(@Array<Byte> -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match bytes_to_string(@Array<Byte>.0) {
+    Ok(@String) -> @String.0,
+    Err(@String) -> @String.0
+  }
+}
+
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  let @Array<Byte> = string_to_bytes("héllo");
+  IO.print(string_concat(int_to_string(array_length(@Array<Byte>.0)), " bytes, "));
+  IO.print(string_concat(base64_encode_bytes(@Array<Byte>.0), ", "));
+  match base64_decode_bytes("aMOpbGxv") {
+    Ok(@Array<Byte>) -> IO.print(decoded(@Array<Byte>.0)),
+    Err(@String) -> IO.print(@String.0)
+  }
+}
+```
 
 ### Markdown operations
 
@@ -1431,7 +1466,7 @@ its own body (`E340` otherwise).
 
 ### Effect declarations
 
-The IO effect is built-in — no declaration is needed. It provides eleven operations:
+The IO effect is built-in — no declaration is needed. It provides these operations:
 
 | Operation | Signature | Description |
 |-----------|-----------|-------------|
@@ -1440,6 +1475,8 @@ The IO effect is built-in — no declaration is needed. It provides eleven opera
 | `IO.read_char` | `Unit -> Result<String, String>` | Read one character from stdin — cbreak mode on a Unix TTY, where Ctrl-D gives `Err("EOF")`; redirected input reads one character from the stdin stream and gives `Err("EOF")` at end of input.  Browser target not supported — depends on JSPI for suspend/resume. |
 | `IO.read_file` | `String -> Result<String, String>` | Read file contents |
 | `IO.write_file` | `String, String -> Result<Unit, String>` | Write string to file |
+| `IO.read_bytes` | `String -> Result<Array<Byte>, String>` | Read a file's bytes, unchanged (no UTF-8 decoding, no newline translation) |
+| `IO.write_bytes` | `String, Array<Byte> -> Result<Unit, String>` | Write bytes to a file, unchanged |
 | `IO.args` | `Unit -> Array<String>` | Get command-line arguments |
 | `IO.exit` | `Int -> Never` | Exit with status code |
 | `IO.get_env` | `String -> Option<String>` | Read environment variable |
@@ -2516,6 +2553,7 @@ These are known limitations in the reference implementation. Most are tracked as
 |-----|-----------|-------|
 | `==` between two generic-data values returned by calls compares heap addresses, so equal values compare unequal and a proved `ensures` fails at run time. `map_get` on a `Map` read straight from a `State` cell returns a wrong value. | Bind each call's result with `let` before comparing; bind the cell's value with `let` before `map_get`. | [#1525](https://github.com/aallan/vera/issues/1525) |
 | A callee's `ensures` can be assumed on a branch whose condition the verifier cannot translate (an `apply_fn` call in an `if` condition), so a postcondition can be proved from a call that never happens on that path. | Bind the condition with `let` first, or keep `apply_fn` out of `if` conditions whose branches carry contracted calls. | [#1696](https://github.com/aallan/vera/issues/1696) |
+| `array_find` over an array of `Bool`, `Byte`, `String` or a record returns a `Some` holding the wrong value; over `Int`, `Nat` and `Float64` it is right. | Use `array_filter` with the same predicate and take element 0 when its `array_length` is positive. | [#1730](https://github.com/aallan/vera/issues/1730) |
 
 When a Vera program type-checks cleanly, compiles without errors, and then produces a runtime trap you can't explain, runtime trap diagnostics are Vera-native end-to-end: each trap carries a `kind` label naming its cause — `contract_violation`, `overflow`, `nat_guard`, `nat_underflow`, `assertion_failed`, `index_out_of_bounds`, `string_index_out_of_bounds`, `float_conversion`, `heap_exhausted`, `uncaught_exception` (an `Exn<T>` no `handle[Exn<T>]` caught before it left the entry point), `divide_by_zero`, `out_of_bounds`, `stack_exhausted`, `host_error`, or `unreachable` for the runtime's own internal limits (shadow-stack overflow and the like), and `unknown` — a message describing the failure, which names the failing site wherever the check carries one (the assertion's text, the index and its bound, the subtraction and the `requires` that discharges it), a per-kind `Fix:` paragraph naming the canonical remediation (omitted for `contract_violation` and `host_error`, whose descriptions already carry the specific instruction, and for `unknown`, where there is nothing general to suggest), and, under the default `vera run` host, a source backtrace pointing at the offending Vera function and line — not just `wasm trap: <reason>` (a `--target wasi-p2` trap keeps its kind, message and `Fix:`, but its `frames` list is empty, because frames do not cross the component boundary, spec §13.6).  Tail-recursive iteration runs in constant WASM stack space for both non-allocating ([#517](https://github.com/aallan/vera/issues/517)) and allocating ([#549](https://github.com/aallan/vera/issues/549)) tail calls — the latter prepends a `$gc_sp` restore before each `return_call` to keep the shadow stack bounded across iterations.
 
