@@ -213,9 +213,14 @@ use_setproctitle = false  # required on macOS (mutmut PR #450)
 # vera/checker/core.py emits E121 from 198 sites); so they fail there with no
 # mutant active.  They read the modules' source, not their behaviour, so no
 # mutant can reach them.  scripts/mutate_diff.py drops any other such test
-# from a run and reports it.
+# from a run and reports it.  tests/mutation_oracle.py skips, in the copy, a
+# test that starts a Python or vera process: the process compiles every
+# mutated module afresh (a mutated _register_builtins makes environment.py
+# 31.7 MB) and records nothing for the stats pass, so the test is no oracle.
 pytest_add_cli_args = [
     "--timeout=300",
+    "-p",
+    "tests.mutation_oracle",
     "--deselect=tests/test_verifier_refinements.py::TestANonVerdictIsAttributedToTheRightOutcome::test_no_demotion_site_hardcodes_a_solver_reason",
     "--deselect=tests/test_verifier_refinements.py::TestANonVerdictIsAttributedToTheRightOutcome::test_every_possibly_unguarded_demotion_supplies_a_reason",
     "--deselect=tests/test_checker_errors.py::TestErrorCodes::test_error_code_collision_gate_is_clean",

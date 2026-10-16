@@ -842,6 +842,18 @@ def render(record: Mapping[str, Any]) -> str:
         out.append("")
         out.extend(f"- `{test}`" for test in record["dropped_tests"])
         out.append("")
+    if record.get("subprocess_tests"):
+        shown = record["subprocess_tests"][:30]
+        out.append("### Not oracles in mutmut's copy")
+        out.append("")
+        out.append(f"{len(record['subprocess_tests'])} test(s) start a Python or `vera` process, which "
+                   "inside mutmut's copy runs the mutated modules afresh and records nothing for the "
+                   "stats pass, so `tests/mutation_oracle.py` skipped them there"
+                   + (":" if len(shown) == len(record["subprocess_tests"])
+                      else f"; the first {len(shown)}, the record lists every one:"))
+        out.append("")
+        out.extend(f"- `{test}`" for test in shown)
+        out.append("")
     notes = []
     for item in record["files"]:
         if item["outside"] or item["outside_removed"]:
@@ -1027,6 +1039,10 @@ def _lane(args: argparse.Namespace, repo: Path, workdir: Path, engine: list[str]
     # not inherit a hook's GIT_DIR.
     env = _git_env()
     env["PYTHONDONTWRITEBYTECODE"] = "1"
+    # tests/mutation_oracle.py, which [tool.mutmut] loads, appends here each
+    # test it keeps out of the oracle for starting a Python or vera process.
+    skips = workdir / "oracle-skips.txt"
+    env["MUTATION_ORACLE_SKIPS"] = str(skips)
     record: dict[str, Any] = {
         "schema": 1, "base": base, "merge_base": merge_base, "head": head,
         "engine_version": "", "budget_s": args.budget, "elapsed_s": 0.0,
@@ -1036,7 +1052,7 @@ def _lane(args: argparse.Namespace, repo: Path, workdir: Path, engine: list[str]
                    "outside_removed": v.outside_removed,
                    "unchanged_code": v.unchanged_code} for v in verdicts],
         "stopped": None, "engine_exit": None, "outside_diff": [], "engine_tail": [],
-        "dropped_tests": [],
+        "dropped_tests": [], "subprocess_tests": [],
     }
     rows: list[UnitResult] = []
     stopped: str | None = None
@@ -1076,6 +1092,8 @@ def _lane(args: argparse.Namespace, repo: Path, workdir: Path, engine: list[str]
             # is no oracle there: drop it, and run again.
             dropped.append(failing)
         record["dropped_tests"] = dropped
+        if skips.exists():
+            record["subprocess_tests"] = sorted(set(skips.read_text(encoding="utf-8").split()))
         record["engine_exit"] = run.returncode
         no_tests = run.returncode == 1 and NO_TESTS_SENTENCE in log.read_text(
             encoding="utf-8", errors="replace")
