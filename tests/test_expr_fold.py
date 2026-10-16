@@ -981,3 +981,60 @@ def test_an_effect_operation_translates_its_arguments() -> None:
     op = ast.QualifiedCall(qualifier="IO", name="print", args=(pair,))
     assert smt.translate_expr(op, SlotEnv()) is None
     assert len(smt.solver.assertions()) == 4
+
+
+# =====================================================================
+# Context-walk consumers: where a step's work runs
+# =====================================================================
+
+_CONDITION_IN_A_LET = """\
+public fn count(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  let @Nat = if @Nat.0 > 0 then { count(@Nat.0 - 1) } else { 0 };
+  @Nat.0
+}
+"""
+
+
+def test_the_decreases_walk_translates_a_condition_before_its_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The `decreases` walk's steps run where the recursive walk ran them:
+    the `if`'s condition is translated when the walk reaches it, inside the
+    `let` it is the value of, and only after that subtree does the block's
+    step bind the `let`, translating the whole `if`.  A step whose pairs
+    were computed before its first child bound the `let` first.  The walk
+    records calls and nothing else, so no verdict and no obligation tells
+    the two orders apart; the order the solver's facts are built in does,
+    and this cell reads it."""
+    from vera.verifier import ContractVerifier
+
+    order: list[str] = []
+    walking: list[bool] = []
+    walk_for_calls = ContractVerifier._walk_for_calls
+    translate = SmtContext.translate_expr
+
+    def walk(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        walking.append(True)
+        try:
+            return walk_for_calls(self, *args, **kwargs)
+        finally:
+            walking.pop()
+
+    def spy(self, expr, env):  # type: ignore[no-untyped-def]
+        if walking:
+            order.append(type(expr).__name__)
+        return translate(self, expr, env)
+
+    monkeypatch.setattr(ContractVerifier, "_walk_for_calls", walk)
+    monkeypatch.setattr(SmtContext, "translate_expr", spy)
+    envelope = pipeline.verify(_CONDITION_IN_A_LET).envelope()
+    assert envelope["ok"], envelope
+    assert "IfExpr" in order, order
+    assert order[0] == "BinaryExpr", (
+        f"the walk translated {order[0]} first: the `let` was bound before "
+        f"the condition inside it was reached ({order})")
