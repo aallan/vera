@@ -14,7 +14,7 @@ Read direction (WASM -> Python):
 
 HtmlNode ADT layouts (from prelude injection -> registration.py):
   HtmlElement(String, Map<String,String>, Array<HtmlNode>)
-    tag=0  String at +4, Map handle at +12, Array(ptr,len) at +16  total=24
+    tag=0  String at +4, Map at +12, Array(ptr,len) at +16  total=24
   HtmlText(String)
     tag=1  String at +4  total=12 (padded to 16 for 8-byte alignment)
   HtmlComment(String)
@@ -27,7 +27,7 @@ Python HtmlNode representation:
 
 #692: ``write_html`` takes a ``guard`` parameter — a context-manager
 helper from ``vera.codegen.api._ShadowGuard`` — that pushes
-intermediate WASM heap pointers (``name_ptr``, ``wrapper_ptr``,
+intermediate WASM heap pointers (``name_ptr``, ``map_ptr``,
 ``arr_ptr``) onto the GC shadow stack across sub-tree recursion and
 the final node body alloc.  Without this rooting, an alloc that
 triggers ``$gc_collect`` mid-walk reclaims those Python-held
@@ -56,9 +56,8 @@ if TYPE_CHECKING:
 AllocFn = Callable[[wasmtime.Caller, int], int]
 WriteI32Fn = Callable[[wasmtime.Caller, int, int], None]
 AllocStringFn = Callable[[wasmtime.Caller, str], tuple[int, int]]
-# #573: map_alloc returns a wrapper-ADT pointer.  See json_serde.py
-# for the long version; the HTML side mirrors it for HtmlElement
-# attrs.
+# #1676: map_alloc is ``_alloc_attrs``: an HtmlElement's attributes as a
+# ``Map<String, String>`` the module's own ``map_from_arrays$ks_vs`` builds.
 MapAllocFn = Callable[[wasmtime.Caller, dict[object, object]], int]
 ReadI32Fn = Callable[[wasmtime.Caller, int], int]
 ReadStringFn = Callable[[wasmtime.Caller, int, int], str]
@@ -85,7 +84,7 @@ def write_html(
     *guard* is a ``_ShadowGuard`` (defined in
     ``vera.codegen.api``) — an active context manager that owns
     the WASM shadow-stack window for this walk.  Intermediate
-    pointers (name, wrapper, arr) are pushed onto it via
+    pointers (name, map, arr) are pushed onto it via
     ``guard.push(ptr)`` before any subsequent alloc that could
     trigger ``$gc_collect``.  See module docstring + #692.
 
@@ -99,7 +98,7 @@ def write_html(
 
     if tag == "element":
         # HtmlElement(String, Map<String,String>, Array<HtmlNode>)
-        # tag=0, String(name) at +4, Map handle at +12, Array at +16, total=24
+        # tag=0, String(name) at +4, Map at +12, Array at +16, total=24
         name = node.get("name", "")
         attrs = node.get("attrs", {})
         children = node.get("children", [])
@@ -112,19 +111,14 @@ def write_html(
         if name_ptr != 0:
             guard.push(name_ptr)
 
-        # Allocate Map<String, String> for attributes.
-        # Keys and values are Python strings.
-        # #706: ``map_alloc`` (``_alloc_map_wrapper``) encodes this
-        # Python dict into a fresh bucket-as-truth wrapper; store the
-        # wrapper pointer in HtmlElement's attrs field so user-level
-        # ``map_get`` / ``map_contains`` calls take it directly.  The
-        # attrs Map is reclaimed by ordinary mark-sweep when the
-        # wrapper becomes unreachable — no host store to evict.
+        # Allocate Map<String, String> for attributes: #1676,
+        # ``map_alloc`` (``_alloc_attrs``) builds it with the module's
+        # own map functions, in the attributes' order.
         map_dict: dict[object, object] = {}
         for k, v in attrs.items():
             map_dict[str(k)] = str(v)
-        wrapper_ptr = map_alloc(caller, map_dict)
-        guard.push(wrapper_ptr)
+        map_ptr = map_alloc(caller, map_dict)
+        guard.push(map_ptr)
 
         # Allocate children array
         child_count = len(children)
@@ -151,13 +145,13 @@ def write_html(
 
         # Allocate the HtmlElement node — by this point all field
         # pointers are rooted (via guard pushes above for name and
-        # wrapper, via guard.push(arr_ptr) for children, or = 0
+        # map, via guard.push(arr_ptr) for children, or = 0
         # for the empty-children case) so this alloc is safe.
         ptr = alloc(caller, 24)
         write_i32(caller, ptr, _TAG_HTML_ELEMENT)
         write_i32(caller, ptr + 4, name_ptr)
         write_i32(caller, ptr + 8, name_len)
-        write_i32(caller, ptr + 12, wrapper_ptr)
+        write_i32(caller, ptr + 12, map_ptr)
         write_i32(caller, ptr + 16, arr_ptr)
         write_i32(caller, ptr + 20, child_count)
         return ptr
@@ -200,28 +194,27 @@ def read_html(
 
     Returns a dict with 'tag' key indicating the node type.
 
-    #706: ``decode_attrs(caller, wrapper_ptr)`` decodes an HtmlElement's
-    ``Map<String, String>`` attributes from its bucket-as-truth wrapper.
+    ``decode_attrs(caller, map_ptr)`` reads an HtmlElement's
+    ``Map<String, String>`` attributes, in the map's order, through the
+    module's ``map_keys$ks`` and ``map_values$vs`` exports (#1676).
     """
     tag = read_i32(caller, ptr)
 
     if tag == _TAG_HTML_ELEMENT:
-        # String(name) at +4, Map handle at +12, Array at +16
+        # String(name) at +4, Map at +12, Array at +16
         name_ptr = read_i32(caller, ptr + 4)
         name_len = read_i32(caller, ptr + 8)
         name = read_string(caller, name_ptr, name_len)
-        # #706: HtmlElement's i32 field at offset 12 is the attrs
-        # Map's wrapper pointer (see write_html).  Its bucket IS the
-        # map, so ``decode_attrs`` decodes it directly — no handle to
-        # unwrap, no ``map_store`` lookup.
-        wrapper_ptr = read_i32(caller, ptr + 12)
+        # HtmlElement's i32 field at offset 12 is the attrs map (see
+        # write_html).
+        map_ptr = read_i32(caller, ptr + 12)
         arr_ptr = read_i32(caller, ptr + 16)
         arr_len = read_i32(caller, ptr + 20)
 
-        # #706: decode attributes (Map<String, String>) directly from
-        # the wrapper's bucket — values are Python strings.
+        # Decode attributes (Map<String, String>) in the map's order —
+        # values are Python strings.
         attrs: dict[str, str] = {}
-        for k, v in decode_attrs(caller, wrapper_ptr).items():
+        for k, v in decode_attrs(caller, map_ptr).items():
             attrs[str(k)] = str(v)
 
         # Read children

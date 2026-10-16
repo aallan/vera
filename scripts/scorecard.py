@@ -149,9 +149,11 @@ MEASURES: tuple[Measure, ...] = (
             " `vera/builtins.py`, lowers through a host import (`Host`; before the"
             " registry, the host-import family sets of"
             " `vera/codegen/compilability.py`), each written by hand in the Python"
-            " host and in `vera/browser/runtime.mjs`, and the map operations"
-            " `vera/codegen/wasi.py` writes again for the WASI server world"
-            " (`_MAP_OPS`)"),
+            " host and in `vera/browser/runtime.mjs`, and the ones"
+            " `vera/codegen/wasi.py` writes again for a WASI world: the entries of"
+            " its `_MAP_OPS` while it had one, and since `Map` and `Set` moved into"
+            " generated code (#1676) the built-ins whose registry row names a WASI"
+            " world"),
     Measure("sync_gates", "Gate scripts that exist only to sync copies", "8 of 23", TREE,
             "the scripts of the audit's eight still classed as such ("
             + ", ".join(f"`{g}`" for g in MIRROR_GATES)
@@ -420,18 +422,43 @@ def _hosted_records(registry: Path) -> set[str]:
     return names
 
 
+def _wasi_written_records(registry: Path, hosted: set[str]) -> int | None:
+    """The built-ins among *hosted* whose `HOST_IMPORTS` row in the registry
+    names a WASI world (``wasi=``), which `vera/codegen/wasi.py`'s adapter
+    implements again, or None when the registry has no such table."""
+    for name, value in _assignments(_parse(registry)):
+        if name != "HOST_IMPORTS" or not isinstance(value, ast.Tuple):
+            continue
+        written: set[str] = set()
+        for row in value.elts:
+            if not isinstance(row, ast.Call):
+                continue
+            worlds = next((k.value for k in row.keywords if k.arg == "wasi"), None)
+            if worlds is None or (isinstance(worlds, ast.Tuple) and not worlds.elts):
+                continue
+            served = next((k.value for k in row.keywords if k.arg == "serves"), None)
+            names = [a.value for a in (*row.args, *([served] if served else []))
+                     if isinstance(a, ast.Constant) and isinstance(a.value, str)]
+            written |= hosted.intersection(names)
+        return len(written)
+    return None
+
+
 def host_mirrored(root: Path) -> tuple[int, int]:
-    """The built-ins a host implements, and the WASI map operations.
+    """The built-ins a host implements, and the ones WASI writes again.
 
     The built-ins are those whose record in the built-in registry,
     `vera/builtins.py`, lowers through a host import (`Host`), each written
     by hand in the Python host and in `vera/browser/runtime.mjs`; in a tree
     from before the registry, the members of the host-import family sets of
     `vera/codegen/compilability.py` (`_MD_BUILTINS` and the rest, which the
-    audit's 53 were exactly).  The map operations are the entries of
-    `vera/codegen/wasi.py`'s `_MAP_OPS`, which the WASI server world writes
-    again.  A module without its table is an error, not a zero: zero is
-    the target, and the row must not read as met because its source moved.
+    audit's 53 were exactly).  The WASI ones are the entries of
+    `vera/codegen/wasi.py`'s `_MAP_OPS`, which the WASI server world wrote
+    again, in a tree that has the table; in a registry tree without it
+    (since #1676 moved `Map` and `Set` into generated code), the hosted
+    built-ins whose registry row names a WASI world.  A tree with neither
+    is an error, not a zero: zero is the target, and the row must not read
+    as met because its source moved.
     """
     registry = root / "vera" / "builtins.py"
     if registry.exists():
@@ -462,12 +489,24 @@ def host_mirrored(root: Path) -> tuple[int, int]:
         value for name, value in _assignments(_parse(root / "vera" / "codegen" / "wasi.py"))
         if name == "_MAP_OPS"
     ]
-    if len(tables) != 1 or not isinstance(tables[0], ast.Dict):
+    if len(tables) == 1 and isinstance(tables[0], ast.Dict):
+        return len(set().union(*families)), len(tables[0].keys)
+    written = (_wasi_written_records(registry, set().union(*families))
+               if registry.exists() else None)
+    if written is None:
         raise MeasureError(
-            "vera/codegen/wasi.py has no `_MAP_OPS` table, the source of the"
-            " host-built-ins row's WASI map operations"
+            "vera/codegen/wasi.py has no `_MAP_OPS` table and vera/builtins.py"
+            " no `HOST_IMPORTS` rows with their WASI worlds, the sources of the"
+            " host-built-ins row's WASI operations"
         )
-    return len(set().union(*families)), len(tables[0].keys)
+    return len(set().union(*families)), written
+
+
+def host_mirrored_text(built_ins: int, wasi: int) -> str:
+    """The host-mirrored row as the scorecard prints it: the hosted
+    built-ins, twice, and WASI's own copies of them, "none" at zero."""
+    rest = "none" if wasi == 0 else f"WASI's {wasi:,}"
+    return f"{built_ins:,} × 2, plus {rest}"
 
 
 def sync_gates(root: Path) -> tuple[int, int]:
@@ -696,7 +735,7 @@ def tree_values(
         tests = gate_tests(root)
         if isinstance(tests, str):
             return tests
-        built_ins, map_ops = host_mirrored(root)
+        built_ins, wasi_copies = host_mirrored(root)
         existing, gates = sync_gates(root)
         now = {
             "infer_functions": f"{infer_functions(root):,}",
@@ -704,7 +743,7 @@ def tree_values(
             "guarded_claims": f"{guarded_claims(root):,}",
             "expr_dispatchers": f"{expr_dispatchers(root):,}",
             "long_functions": f"{long_functions(root):,}",
-            "host_mirrored": f"{built_ins:,} × 2, plus WASI's {map_ops:,} map operations",
+            "host_mirrored": host_mirrored_text(built_ins, wasi_copies),
             "sync_gates": f"{existing:,} of {gates:,}",
             "gate_tests": f"{tests:,}",
             "golden_outputs": _golden(golden_outputs(root)),

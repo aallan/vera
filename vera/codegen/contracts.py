@@ -99,15 +99,15 @@ class _ElementGuardSite:
 class ContractsMixin:
     """Methods for compiling runtime contract checks."""
 
-    #: How the emitter registers each projection's host import (#1430).  Data
-    #: rather than a branch per carrier, keyed by the SAME projection string
-    #: `vera.carriers` records the position under, so a carrier added to that
-    #: registry without an entry here declines its guard instead of calling
-    #: an import nothing declared.
-    _PROJECTION_IMPORTS: ClassVar[dict[str, tuple[str, str]]] = {
-        "map_keys": ("map", "key"),
-        "map_values": ("map", "value"),
-        "set_to_array": ("set", "element"),
+    #: The slot each projection's generated function is named by (#1430,
+    #: #1676).  Data rather than a branch per carrier, keyed by the SAME
+    #: projection string `vera.carriers` records the position under, so a
+    #: carrier added to that registry without an entry here declines its
+    #: guard instead of calling a function nothing generated.
+    _PROJECTION_SLOTS: ClassVar[dict[str, str]] = {
+        "map_keys": "k",
+        "map_values": "v",
+        "set_to_array": "e",
     }
 
     #: The element stride per RESOLVED element base — the same set the
@@ -430,7 +430,7 @@ class ContractsMixin:
             if parts is None:
                 continue  # this position carries no predicate to check
             if (projection is not None
-                    and projection not in self._PROJECTION_IMPORTS):
+                    and projection not in self._PROJECTION_SLOTS):
                 return []
             predicate, base_name = parts
             load_wt = self._type_expr_to_wasm_type(elem_te)
@@ -547,29 +547,22 @@ class ContractsMixin:
         """``(ptr local, len local, instructions)`` for the projected element
         sequence of a `Map` or `Set` handle (#1430).
 
-        The projections are host imports returning an array's `(ptr, len)`
-        pair, registered through the same helpers an ordinary `map_values(m)`
-        call uses — so a guard calls exactly the import the program would, on
-        every host, and the closure layer's existing import propagation
-        carries it out of a lifted body.
+        The projections are the module's generated functions returning an
+        array's `(ptr, len)` pair, requested through the same helper an
+        ordinary `map_values(m)` call uses — so a guard calls exactly the
+        function the program would, and the closure layer's existing helper
+        propagation carries it out of a lifted body.
 
-        None when the element's tag has no host-import shape, which is a
+        None when the element's tag has no generated operation, which is a
         DECLINE rather than a skip: the verifier's mirror declines the same
         shapes and records the obligation `tier3_unguarded`, where a
         `CodegenSkip` would drop the whole function over a guard.
         """
-        container, slot = self._PROJECTION_IMPORTS[site.projection or ""]
+        slot = self._PROJECTION_SLOTS[site.projection or ""]
         tag = ctx._map_wasm_tag(site.element_base)
         if tag is None:
             return None
-        if container == "map":
-            wasm_name = ctx._register_map_import(
-                site.projection or "",
-                key_tag=tag if slot == "key" else None,
-                val_tag=tag if slot == "value" else None,
-            )
-        else:
-            wasm_name = ctx._register_set_import(site.projection or "", tag)
+        wasm_name = ctx._collection_fn(site.projection or "", **{slot: tag})
         ctx.needs_alloc = True  # the projection allocates the array it returns
         seq_ptr = ctx.alloc_local("i32")
         seq_len = ctx.alloc_local("i32")

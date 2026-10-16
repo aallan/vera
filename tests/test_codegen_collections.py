@@ -568,9 +568,9 @@ class TestWrapperHandleTagging578:
     enforces `heap_ptr < 0x80000000`).  The unwrap site ANDs
     with 0x7FFFFFFF to recover the raw handle.
 
-    #706: `Map` / `Set` are now bucket-as-truth — their wrappers
-    carry no host handle (the +4 field is vestigial), so they no
-    longer wrap/unwrap.  `Decimal` keeps the value-typed Python
+    #706 made `Map` / `Set` bucket-as-truth and #1676 the module's
+    own tries: they carry no host handle, so they never wrap/unwrap.
+    `Decimal` keeps the value-typed Python
     store and is the remaining type exercising the bit-31 tagging,
     so these codegen tests use a Decimal program.
     """

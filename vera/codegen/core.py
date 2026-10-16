@@ -571,6 +571,11 @@ class CodeGenerator(
         # $hash_<type>), merged from each WasmContext and emitted once at
         # module assembly — the same propagate-then-emit shape as _adt_eq_helpers.
         self._show_hash_helpers: dict[str, str] = {}
+        # #1676: the generated Map and Set functions, merged from each
+        # WasmContext and emitted once at module assembly, and the ones the
+        # module exports for a host to call.
+        self._collection_helpers: dict[str, str] = {}
+        self._collection_exports: set[str] = set()
         # #573: wrap-table flag — see ``WasmContext`` for the long
         # description.  Set in ``_assemble_module`` whenever a
         # host-handle type that has migrated to heap-wrap-as-ADT is
@@ -1202,6 +1207,22 @@ class CodeGenerator(
                 if match:
                     self._closure_parents[match.group(1)] = decl.name
         return fn_wat
+
+    def _export_host_string_maps(self) -> None:
+        """Generate and export the functions a host builds and reads a
+        ``Map<String, String>`` through (#1676: ``hamt.HOST_MAPS``)."""
+        from vera.wasm import hamt
+        from vera.wasm.context import WasmContext
+
+        def request_eq() -> None:
+            self._adt_eq_helpers.setdefault(
+                "$eq_String", WasmContext._emit_string_eq_fn())
+
+        for name in hamt.HOST_MAPS["s"]:
+            hamt.register(name, self._collection_helpers, request_eq)
+            self._collection_exports.add(name)
+        self._needs_alloc = True
+        self._needs_memory = True
 
     def _drop_dangling_callers(
         self, functions_wat: list[str], exports: list[str],
@@ -3272,6 +3293,13 @@ class CodeGenerator(
                 self._needs_alloc = True
                 self._needs_memory = True
                 break
+
+        # #1676: `vera serve` and the WASI server world build a `Request`'s
+        # headers and read a `Response`'s through the module's own map
+        # functions, which it exports when it holds the prelude's two (a
+        # handler's; a module declaring its own `Request` serves nothing).
+        if {"Request", "Response"} <= self._prelude_injected_adts:
+            self._export_host_string_maps()
 
         # Assemble the module
         wat = self._assemble_module(functions_wat)

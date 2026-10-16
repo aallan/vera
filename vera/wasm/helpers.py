@@ -462,10 +462,11 @@ def bind_slot_value_from_stack(
 _SHADOW_PUSH_MARKER = "global.get $gc_stack_limit"
 
 
-def gc_shadow_push(local_idx: int) -> list[str]:
+def gc_shadow_push(local_idx: int | str) -> list[str]:
     """Generate WAT instructions to push an i32 value onto the GC shadow stack.
 
-    Stores the value from ``local_idx`` at the current shadow-stack
+    Stores the value from ``local_idx`` (a local's index, or its ``$name``
+    in a generated helper that names its locals) at the current shadow-stack
     pointer (``$gc_sp``) and advances ``$gc_sp`` by 4 bytes.  Traps
     if the push would overflow the shadow stack into the GC worklist
     region — bounding the FULL four-byte slot, not just its first byte

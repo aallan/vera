@@ -11,7 +11,8 @@ import wasmtime
 
 from vera.runtime.heap import (
     _ShadowGuard,
-    _alloc_map_wrapper,
+    _rooted_read,
+    _alloc_jobject_map,
     _alloc_result_err_string,
     _alloc_result_ok_i32,
     _alloc_string,
@@ -109,7 +110,7 @@ def register_json(linker: wasmtime.Linker, ops_used: set[str]) -> None:
             with _ShadowGuard(caller) as guard:
                 json_ptr = write_json(
                     caller, _call_alloc, _write_i32, _write_f64,
-                    _alloc_string, _alloc_map_wrapper, guard, parsed,
+                    _alloc_string, _alloc_jobject_map, guard, parsed,
                 )
                 # Push the tree root before the Result.Ok alloc —
                 # that alloc could trigger GC and free the
@@ -130,10 +131,10 @@ def register_json(linker: wasmtime.Linker, ops_used: set[str]) -> None:
         def host_json_stringify(
             caller: wasmtime.Caller, ptr: int,
         ) -> tuple[int, int]:
-            value = read_json(
+            value = _rooted_read(caller, ptr, lambda: read_json(
                 caller, ptr, _read_i32, _read_f64,
                 _read_wasm_string, _decode_jobject,
-            )
+            ))
             # #1293: one canonical output form, shared with
             # ``vera/browser/runtime.mjs`` and stated in spec §9.7.1.
             # ``dumps_canonical`` also refuses NaN and Infinity, which

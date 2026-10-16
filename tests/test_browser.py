@@ -2345,7 +2345,10 @@ class TestBrowserMapHostStoreGCReachability695:
     coercion, JS ``gcShadowPush`` / ``gcShadowPop`` discipline,
     ``readJson`` / ``readHtml`` bit-31 mask) was covered only by
     stdout-parity tests with default GC pressure.  A regression in
-    any of those browser-side paths would silently ship.
+    any of those browser-side paths would silently ship.  Since #1676
+    that implementation is gone and a map or set is the module's own
+    trie; the tests pin the generated code and the JSON host's
+    ``writeJson`` / ``readJson`` under the same pressure.
 
     These tests compile the same three #695 / #705 reproducers with
     ``VERA_EAGER_GC=1`` set in the environment (which the codegen
@@ -2393,8 +2396,10 @@ class TestBrowserMapHostStoreGCReachability695:
     ) -> None:
         """Browser parallel of
         ``test_codegen_gc_rooting.py::test_eager_gc_set_of_json_post_walk_uaf``.
-        Exercises the JS-side ``attach_bucket_to_wrapper`` Set branch
-        plus the ``allocMapWrapper`` JS rooting (#707 round 2 fix).
+        The set is the module's own trie (#1676), so this exercises the
+        generated ``set_add`` and ``set_to_array`` under eager collection,
+        where it once drove ``attach_bucket_to_wrapper``'s Set branch and
+        ``allocMapWrapper``'s rooting (#707 round 2 fix).
         """
         src = """
 private fn build_set(-> @Set<Json>)
@@ -2464,9 +2469,10 @@ public fn main(-> @Unit)
     ) -> None:
         """Browser parallel of
         ``test_codegen_gc_rooting.py::test_eager_gc_map_of_json_user_level_post_walk_uaf``.
-        Exercises the user-level ``map_insert(map_new(), ...)`` path
-        through the JS-side ``attach_bucket_to_wrapper`` Map branch,
-        with EAGER_GC pressure on every alloc.
+        Exercises the user-level ``map_insert(map_new(), ...)`` path,
+        the module's own trie since #1676 (it once ran through the JS-side
+        ``attach_bucket_to_wrapper`` Map branch), with EAGER_GC pressure
+        on every alloc.
         """
         src = """
 private fn build_map(-> @Map<String, Json>)
@@ -3434,12 +3440,12 @@ _JSON_NUMBER_CASES = [
 class TestBrowserMapValueTypes349:
     """Per-value-type and per-key-type Map host-import parity (#349).
 
-    ``runtime.mjs`` dispatches Map bindings on a mangled
-    ``map_insert$k<kt>_v<vt>`` suffix and decodes each bucket column with
-    a type tag (``i`` i64, ``f`` f64, ``s`` String, else i32).  The
-    existing suite only ever drove String→Int maps, so the f64 slot
-    writer, the String-array emitter, and the ``map_get`` / ``map_size``
-    / ``map_values`` closures were never invoked in the browser.
+    ``runtime.mjs`` dispatched Map bindings on a mangled
+    ``map_insert$k<kt>_v<vt>`` suffix and decoded each bucket column with
+    a type tag (``i`` i64, ``f`` f64, ``s`` String, else i32), and the
+    suite only ever drove String→Int maps.  Since #1676 those are the
+    module's own functions, one per tag pair, and these cells pin that
+    each key and value type behaves in the browser as it does natively.
     """
 
     @pytest.mark.parametrize(
@@ -3836,10 +3842,10 @@ _JSON_KEY_ORDER_CASES = [
 class TestBrowserJsonKeyOrderParity1293:
     """Object key order survives the browser host's JS intermediates.
 
-    Canonical (§9.7.1) key order is insertion order — what both hosts'
-    underlying ``Map<String, Json>`` bucket already holds, and what
-    ``dumps_canonical`` documents itself as preserving.  The browser host
-    used to reach that bucket through *ordinary JS objects* on both sides
+    Canonical (§9.7.1) key order is insertion order — what the module's
+    ``Map<String, Json>`` holds (#1676), and what ``dumps_canonical``
+    documents itself as preserving.  The browser host used to reach
+    that map through *ordinary JS objects* on both sides
     of the WASM boundary: ``JSON.parse`` returns one, ``writeJson``
     enumerated it with ``Object.entries``, and ``readJson`` rebuilt one
     key by key.  An ordinary object cannot carry insertion order —
@@ -3893,7 +3899,7 @@ class TestBrowserJsonKeyOrderParity1293:
         was": two compensating reorderings cancel, and the parse side's
         ascending-index order happens to be a fixed point of the
         stringify side's.  This case has no parse side at all — the map
-        is built by ``map_insert`` in Vera, so the bucket order is the
+        is built by ``map_insert`` in Vera, so the map's order is the
         program's, and only ``readJson`` plus the serialiser stand
         between it and the output.
         """

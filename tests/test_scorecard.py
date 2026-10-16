@@ -270,6 +270,43 @@ class TestHostMirrored:
         with pytest.raises(SC.MeasureError, match="host import"):
             SC.host_mirrored(tmp_path)
 
+    # The registry once `Map` and `Set` left the hosts (#1676): no
+    # `_MAP_OPS`, and the WASI part is the hosted built-ins whose row names a
+    # WASI world.  `md_parse`'s row names one; `log`'s and the effect
+    # operation's do not count (no world, and not a built-in).
+    _ROWS = (
+        "HOST_IMPORTS: tuple[HostImport, ...] = (\n"
+        "    _md('md_parse', _I32_PAIR, ('i32',), wasi=(WASI_SERVER,)),\n"
+        "    _scalar('math', 'log', ('f64',), ('f64',)),\n"
+        "    _scalar('random', 'random_int', ('i64', 'i64'), ('i64',),"
+        " 'Random.random_int', wasi=_BOTH),\n"
+        ")\n"
+    )
+
+    def test_a_registry_without_the_map_table_reads_the_rows_worlds(
+        self, tmp_path: Path,
+    ) -> None:
+        _write(tmp_path / "vera" / "builtins.py", self._REGISTRY + self._ROWS)
+        _write(tmp_path / "vera" / "codegen" / "wasi.py", "Y = 2\n")
+        assert SC.host_mirrored(tmp_path) == (2, 1)
+
+    def test_a_registry_with_neither_source_is_an_error_not_a_zero(
+        self, tmp_path: Path,
+    ) -> None:
+        _write(tmp_path / "vera" / "builtins.py", self._REGISTRY)
+        _write(tmp_path / "vera" / "codegen" / "wasi.py", "Y = 2\n")
+        with pytest.raises(SC.MeasureError, match="HOST_IMPORTS"):
+            SC.host_mirrored(tmp_path)
+
+    def test_the_row_names_what_its_second_count_counts(self) -> None:
+        """The second count is WASI's own copies of host built-ins; at zero
+        the row reads "plus none", the target, and never "0 map operations",
+        a quantity the measure stopped counting when `_MAP_OPS` went."""
+        assert SC.host_mirrored_text(39, 0) == "39 × 2, plus none"
+        assert SC.host_mirrored_text(53, 10) == "53 × 2, plus WASI's 10"
+        root = Path(__file__).resolve().parent.parent
+        assert SC.host_mirrored_text(*SC.host_mirrored(root)).endswith(", plus none")
+
     def test_the_tree_reads_the_registrys_count(self) -> None:
         """The row read from the source is the registry's own count of the
         built-ins it lowers through a host import."""

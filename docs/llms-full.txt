@@ -471,7 +471,7 @@ array, useful when processing diagnostics programmatically.
 @Tuple<Int, String>                      -- tuple
 @Option<Int>                             -- Option type (Some/None)
 @Map<String, Int>                        -- key-value map (keys: Eq + Hash)
-@Set<Int>                                -- unordered unique elements (Eq + Hash)
+@Set<Int>                                -- unique elements, insertion order (Eq + Hash)
 @Decimal                                 -- exact decimal arithmetic
 @Json                                    -- JSON data (parse/query/serialize)
 @HtmlNode                                -- HTML document node (parse/query/serialize)
@@ -775,7 +775,7 @@ array_fold(
 -- 0+1+3 + 2+3 + 3+3 = 15
 ```
 
-The same applies to `String` captures.  ADT captures (`Option<T>`, `Result<T, E>`, user `data` types, `Json`, `HtmlNode`, `MdBlock`, opaque handles `Map<K, V>` / `Set<T>` / `Decimal`) work too — they're single-i32 wrapper pointers that the closure-struct layout handles directly.
+The same applies to `String` captures.  ADT captures (`Option<T>`, `Result<T, E>`, user `data` types, `Json`, `HtmlNode`, `MdBlock`, opaque handles `Map<K, V>` / `Set<T>` / `Decimal`) work too — they're single-i32 pointers that the closure-struct layout handles directly.
 
 ### When to use recursion instead
 
@@ -886,7 +886,7 @@ array_sort_by(@Array<Int>.0, fn(@Int, @Int -> @Ordering) effects(pure) { ... }) 
 
 ### Map operations
 
-`Map<K, V>` is a key-value collection. Keys must satisfy `Eq` and `Hash` abilities (primitive types: `Int`, `Nat`, `Bool`, `Float64`, `String`, `Byte`). Values may be any type with a runtime representation — a zero-size key or value type (`Unit`, or a `Future` wrapping one) is rejected at check time with E135. All operations are pure — insert and remove return new maps.
+`Map<K, V>` is a key-value collection. Keys must satisfy `Eq` and `Hash` abilities (primitive types: `Int`, `Nat`, `Bool`, `Float64`, `String`, `Byte`). Values may be any type with a runtime representation — a zero-size key or value type (`Unit`, or a `Future` wrapping one) is rejected at check time with E135. All operations are pure — insert and remove return new maps, sharing what they do not change, so an insert costs the depth of the map's trie, not its size. `map_keys` and `map_values` return the keys and values in insertion order: a key inserted again keeps its first position, and a removed key loses it. `-0.0` and `0.0` are one key, and so are any two NaNs.
 
 ```vera
 map_insert(map_new(), "hello", 42)                  -- returns Map<String, Nat>
@@ -903,7 +903,7 @@ map_values(@Map<String, Nat>.0)                     -- returns Array<Nat>
 
 ### Set operations
 
-`Set<T>` is an unordered collection of unique elements. Elements must satisfy `Eq` and `Hash` abilities (primitive types: `Int`, `Nat`, `Bool`, `Float64`, `String`, `Byte`); a zero-size element type (`Unit`, or a `Future` wrapping one) is rejected at check time with E135. All operations are pure — add and remove return new sets.
+`Set<T>` is a collection of unique elements, which `set_to_array` returns in insertion order. Elements must satisfy `Eq` and `Hash` abilities (primitive types: `Int`, `Nat`, `Bool`, `Float64`, `String`, `Byte`); a zero-size element type (`Unit`, or a `Future` wrapping one) is rejected at check time with E135. All operations are pure — add and remove return new sets.
 
 ```vera
 set_add(set_add(set_new(), "hello"), "world")       -- returns Set<String>
@@ -2559,7 +2559,6 @@ These are known limitations in the reference implementation. Most are tracked as
 |-----|-----------|-------|
 | `==` between two generic-data values returned by calls compares heap addresses, so equal values compare unequal and a proved `ensures` fails at run time. `map_get` on a `Map` read straight from a `State` cell returns a wrong value. | Bind each call's result with `let` before comparing; bind the cell's value with `let` before `map_get`. | [#1525](https://github.com/aallan/vera/issues/1525) |
 | A callee's `ensures` can be assumed on a branch whose condition the verifier cannot translate (an `apply_fn` call in an `if` condition), so a postcondition can be proved from a call that never happens on that path. | Bind the condition with `let` first, or keep `apply_fn` out of `if` conditions whose branches carry contracted calls. | [#1696](https://github.com/aallan/vera/issues/1696) |
-| `set_to_array`, `map_keys` and `map_values` return a wrong array at a `Bool` or `Byte` element, key or value: `set_to_array` of a `Set<Byte>` holding 3, 7 and 200 returns 200, 0, 0. | Hold `byte_to_int(b)` in a `Set<Int>` or `Map<Int, V>` when the elements or keys come back as an array; `set_contains`, `map_get` and the operations that return no array are unaffected. | [#1729](https://github.com/aallan/vera/issues/1729) |
 | `array_find` over an array of `Bool`, `Byte`, `String` or a record returns a `Some` holding the wrong value; over `Int`, `Nat` and `Float64` it is right. | Use `array_filter` with the same predicate and take element 0 when its `array_length` is positive. | [#1730](https://github.com/aallan/vera/issues/1730) |
 
 When a Vera program type-checks cleanly, compiles without errors, and then produces a runtime trap you can't explain, runtime trap diagnostics are Vera-native end-to-end: each trap carries a `kind` label naming its cause — `contract_violation`, `overflow`, `nat_guard`, `nat_underflow`, `assertion_failed`, `index_out_of_bounds`, `string_index_out_of_bounds`, `float_conversion`, `heap_exhausted`, `uncaught_exception` (an `Exn<T>` no `handle[Exn<T>]` caught before it left the entry point), `divide_by_zero`, `out_of_bounds`, `stack_exhausted`, `host_error`, or `unreachable` for the runtime's own internal limits (shadow-stack overflow and the like), and `unknown` — a message describing the failure, which names the failing site wherever the check carries one (the assertion's text, the index and its bound, the subtraction and the `requires` that discharges it), a per-kind `Fix:` paragraph naming the canonical remediation (omitted for `contract_violation` and `host_error`, whose descriptions already carry the specific instruction, and for `unknown`, where there is nothing general to suggest), and, under the default `vera run` host, a source backtrace pointing at the offending Vera function and line — not just `wasm trap: <reason>` (a `--target wasi-p2` trap keeps its kind, message and `Fix:`, but its `frames` list is empty, because frames do not cross the component boundary, spec §13.6).  Tail-recursive iteration runs in constant WASM stack space for both non-allocating ([#517](https://github.com/aallan/vera/issues/517)) and allocating ([#549](https://github.com/aallan/vera/issues/549)) tail calls — the latter prepends a `$gc_sp` restore before each `return_call` to keep the shadow stack bounded across iterations.

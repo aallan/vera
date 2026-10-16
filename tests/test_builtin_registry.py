@@ -65,7 +65,6 @@ from vera.builtins import (
     HOST_IMPORT_BY_NAME,
     HOST_IMPORTS,
     INTRINSICS,
-    TAG_TYPES,
     Binding,
     BuiltinSpec,
     Host,
@@ -105,15 +104,12 @@ pytestmark = pytest.mark.matrix(decides=[
     # The other readers, and the hosts' bindings the cells run.
     "vera/introspect.py",
     "vera/builtin_domains.py",
-    "vera/runtime/collections.py",
     "vera/runtime/decimal.py",
     "vera/runtime/html.py",
     "vera/runtime/json.py",
-    "vera/runtime/map.py",
     "vera/runtime/math.py",
     "vera/runtime/md.py",
     "vera/runtime/regex.py",
-    "vera/runtime/set.py",
     "vera/runtime/async_http.py",
     "vera/runtime/db.py",
     "vera/runtime/http.py",
@@ -386,22 +382,6 @@ _EVERY_BUILTIN_IMPORTS = (
     '(import "vera" "regex_find_all" (func $vera.regex_find_all (param i32 i32 i32 i32) (result i32)))',
     '(import "vera" "regex_match" (func $vera.regex_match (param i32 i32 i32 i32) (result i32)))',
     '(import "vera" "regex_replace" (func $vera.regex_replace (param i32 i32 i32 i32 i32 i32) (result i32)))',
-    '(import "vera" "map_contains$ks" (func $vera.map_contains$ks (param i32) (param i32) (param i32) (result i32)))',
-    '(import "vera" "map_get$ks_vb" (func $vera.map_get$ks_vb (param i32) (param i32) (param i32) (result i32)))',
-    '(import "vera" "map_get$ks_vi" (func $vera.map_get$ks_vi (param i32) (param i32) (param i32) (result i32)))',
-    '(import "vera" "map_get$ks_vs" (func $vera.map_get$ks_vs (param i32) (param i32) (param i32) (result i32)))',
-    '(import "vera" "map_insert$ks_vi" (func $vera.map_insert$ks_vi (param i32) (param i32) (param i32) (param i64) (result i32)))',
-    '(import "vera" "map_keys$ks" (func $vera.map_keys$ks (param i32) (result i32) (result i32)))',
-    '(import "vera" "map_new" (func $vera.map_new (result i32)))',
-    '(import "vera" "map_remove$ks" (func $vera.map_remove$ks (param i32) (param i32) (param i32) (result i32)))',
-    '(import "vera" "map_size" (func $vera.map_size (param i32) (result i64)))',
-    '(import "vera" "map_values$vi" (func $vera.map_values$vi (param i32) (result i32) (result i32)))',
-    '(import "vera" "set_add$ei" (func $vera.set_add$ei (param i32) (param i64) (result i32)))',
-    '(import "vera" "set_contains$ei" (func $vera.set_contains$ei (param i32) (param i64) (result i32)))',
-    '(import "vera" "set_new" (func $vera.set_new (result i32)))',
-    '(import "vera" "set_remove$ei" (func $vera.set_remove$ei (param i32) (param i64) (result i32)))',
-    '(import "vera" "set_size" (func $vera.set_size (param i32) (result i64)))',
-    '(import "vera" "set_to_array$ei" (func $vera.set_to_array$ei (param i32) (result i32) (result i32)))',
     '(import "vera" "decimal_abs" (func $vera.decimal_abs (param i32) (result i32)))',
     '(import "vera" "decimal_add" (func $vera.decimal_add (param i32) (param i32) (result i32)))',
     '(import "vera" "decimal_compare" (func $vera.decimal_compare (param i32) (param i32) (result i32)))',
@@ -1044,15 +1024,13 @@ class _Module:
 
 
 def _planted(row: Any) -> tuple[str, str]:
-    """An import of *row* and its declaration: the row's own name, its
-    instance at `String` tags (the `Map` instances the server world
-    implements), or its `State` cell's at `Int`."""
+    """An import of *row* and its declaration: the row's own name, or its
+    `State` cell's at `Int`."""
     if row.instance == CELL:
         name = f"{row.name}_Int"
         return name, next(line for line in registry.cell_lines("Int", "i64")
                           if f'"{name}"' in line)
-    name = registry.instance_name(row.name, **dict.fromkeys(row.instance, "s"))
-    return name, import_line(name)
+    return row.name, import_line(row.name)
 
 
 @pytest.mark.parametrize("world", [registry.WASI_CLI, registry.WASI_SERVER])
@@ -1174,7 +1152,8 @@ def test_repro_a_call_never_emitted_reaches_no_parser_error() -> None:
 def test_the_wasi_tables_are_the_rows_worlds() -> None:
     """The cli world's adapter ops are its rows, with their types; the server
     world keeps the rows both worlds implement and names a reason for each
-    cli-only row it refuses; its map ops are the map rows' instances."""
+    cli-only row it refuses, and implements no row of its own (a `Map` is
+    the module's own code, #1676)."""
     from vera.codegen import wasi
 
     worlds = {row.name: set(row.wasi) for row in HOST_IMPORTS}
@@ -1186,19 +1165,15 @@ def test_the_wasi_tables_are_the_rows_worlds() -> None:
     assert wasi._SERVER_IO_OPS == {n for n, w in worlds.items() if w == both}
     assert set(wasi._SERVER_REJECTED_OPS) == {
         n for n, w in worlds.items() if w == {registry.WASI_CLI}}
-    for name, op in wasi._MAP_OPS.items():
-        row = host_import(name)
-        assert row is not None and registry.WASI_SERVER in row.wasi, name
-        params, results = _line_types(import_line(name))
-        assert (op.params, op.results) == (" ".join(params), " ".join(results)), name
+    assert {n for n, w in worlds.items() if w == {registry.WASI_SERVER}} == set()
     assert wasi._CLI_REFUSED == registry.wasi_refused(registry.WASI_CLI)
     assert wasi._SERVER_REFUSED == registry.wasi_refused(registry.WASI_SERVER)
 
 
 def test_the_wasi_refusal_names_the_modules_imports() -> None:
     """The refusal lists a family's imports as the module declares them,
-    families in the registry's order (a map call's instance, not the bare
-    `map_insert`)."""
+    families in the registry's order, and names no flag family's (the wrap
+    table's helpers a `Decimal` declares)."""
     from vera.codegen.wasi import emit_wasi_component
 
     compiled = pipeline.compile("""\
@@ -1207,13 +1182,12 @@ public fn main(-> @Float64)
   ensures(true)
   effects(pure)
 {
-  let @Map<String, Int> = map_insert(map_new(), "k", 1);
-  sin(int_to_float(map_size(@Map<String, Int>.0)))
+  sin(decimal_to_float(decimal_from_int(1)))
 }
 """).result
     with pytest.raises(ValueError) as refused:
         emit_wasi_component(compiled)
-    assert ("following host families: map (map_insert$ks_vi, map_new, map_size);"
+    assert ("following host families: decimal (decimal_from_int, decimal_to_float);"
             " math (sin)") in str(refused.value)
 
 
@@ -1262,14 +1236,6 @@ def test_the_rendered_blocks_are_the_registrys() -> None:
     ours = [b for b in blocks if b.name == "host-imports" or b.name.startswith("signatures-")]
     assert len(ours) == 1 + len(render_lists.SIGNATURE_BLOCKS)
     assert [b.name for b in ours if b.current != b.new] == []
-
-
-def test_the_python_hosts_tags_are_the_registrys() -> None:
-    from vera.runtime.collections import _VAL_WASM_TYPES
-
-    assert set(_VAL_WASM_TYPES) == set(TAG_TYPES)
-    for tag, types in TAG_TYPES.items():
-        assert [str(t) for t in _VAL_WASM_TYPES[tag]] == list(types)
 
 
 # ---------------------------------------------------------------------
@@ -1709,4 +1675,4 @@ def test_a_host_effects_operations_each_have_a_row(effect: str) -> None:
 def test_the_host_families_are_the_imports_families() -> None:
     assert [f for f in _families() if any(r.family == f for r in HOST_IMPORTS)] == list(
         _families())
-    assert all(row.instance in ("", "k", "v", "kv", "e", CELL) for row in HOST_IMPORTS)
+    assert all(row.instance in ("", CELL) for row in HOST_IMPORTS)

@@ -181,7 +181,8 @@ def _fn_body(wat: str, name: str) -> str:
 
 # A program that needs BOTH the shadow stack and the wrap table, so the
 # emitted module carries `$register_wrapper` (whose slow path holds the
-# fourth bound) alongside ordinary `gc_shadow_push` sites.
+# fourth bound, and which a `Decimal` brings) alongside ordinary
+# `gc_shadow_push` sites, the generated `Map` functions' among them.
 _WRAP_TABLE_SOURCE = """\
 public fn f(@Unit -> @Int)
   requires(true)
@@ -189,7 +190,7 @@ public fn f(@Unit -> @Int)
   effects(pure)
 {
   match map_get(map_insert(map_new(), "k", 1), "k") {
-    Some(@Int) -> @Int.0,
+    Some(@Int) -> string_length(decimal_to_string(decimal_from_int(@Int.0))),
     None -> 0
   }
 }

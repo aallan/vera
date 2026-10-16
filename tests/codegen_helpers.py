@@ -386,14 +386,14 @@ def _assert_no_host_imports_for_inline_builtins(wat: str) -> None:
 # Phase-2c `$gc_collect` walk evicted via `host_decref_handle` once the
 # owning wrapper was unmarked.
 #
-# Post-#706 (bucket-as-truth): Map and Set hold no Python store at all
-# — each op builds a fresh wrapper whose `bucket_ptr` (+8) owns the
-# data, and transient wrappers + buckets are reclaimed by ordinary
+# Since #706 Map and Set hold no Python store at all, and since #1676
+# each is a trie in the module's heap: an update copies the branches on
+# its key's path, and the transient copies are reclaimed by ordinary
 # mark-sweep.  `ExecuteResult.peak_heap_bytes` (the exported `$heap_ptr`
-# high-water mark) is the leak signal: a working reclaimer keeps it
-# ~O(N) across an insert chain; a leak grows it ~O(N^2).  Decimal alone
-# still uses a Python store, so `ExecuteResult.host_store_sizes` keeps
-# reporting its post-execution population.
+# high-water mark) is the leak signal, read over a chain whose live set
+# stays fixed (`_assert_chain_reclaims`).  Decimal alone still uses a
+# Python store, so `ExecuteResult.host_store_sizes` keeps reporting its
+# post-execution population.
 # =====================================================================
 
 
@@ -403,16 +403,20 @@ def _assert_chain_reclaims(
     large_n: int,
     small_val: int,
     large_val: int,
-    ratio: int = 30,
+    ratio: int = 40,
 ) -> None:
-    """#706: run an insert/add chain at two sizes and assert the heap
-    high-water mark grows ~O(N), proving transient wrappers + buckets
-    are reclaimed by mark-sweep.
+    """#706/#1676: run a chain at two sizes and assert the heap
+    high-water mark grows far less than the number of steps, proving the
+    transients each step leaves are reclaimed by mark-sweep.
 
-    With power-of-two bucket sizing a working reclaimer reuses freed
-    same-size buckets, so 10x the inserts gives only ~6x the peak heap.
-    A leak (transients never freed) grows ~O(N^2) → ~100x.  The bound
-    sits well between the two.
+    A chain keeps a fixed live set, so only reclamation bounds its peak.
+    Over 1,000 and 100,000 steps of the Map and Set chains, a working
+    collector grows the peak 13x and 14x (not 1x: the first-fit free list
+    fragments, and #1718's stale tails keep some dead blocks marked); a
+    collector that reclaims nothing grows it 73x and 85x.  A chain whose
+    live set grows with it cannot separate the two, because a trie's
+    insert leaves O(log N) bytes behind: the growing Map chain measured
+    9.4x against 10.7x over a 10x step.  The bound sits between them.
     """
     small = pipeline.run(
         _compile_ok(chain(small_n)), capture_stderr=False).execution
@@ -425,12 +429,11 @@ def _assert_chain_reclaims(
         f"chain(n={large_n}) returned {large.value}, expected {large_val}"
     )
     assert large.peak_heap_bytes < small.peak_heap_bytes * ratio, (
-        f"#706 reclamation regression: peak heap for n={large_n} "
+        f"reclamation regression (#706/#1676): peak heap for n={large_n} "
         f"({large.peak_heap_bytes:,} bytes) exceeds {ratio}x the n="
-        f"{small_n} peak ({small.peak_heap_bytes:,} bytes).  Transient "
-        f"Map/Set wrappers + buckets are not being reclaimed — O(N^2) "
-        f"high-water growth indicates a leak, vs the ~O(N) expected from "
-        f"mark-sweep plus power-of-two bucket sizing."
+        f"{small_n} peak ({small.peak_heap_bytes:,} bytes).  The chain's "
+        f"live set is fixed, so a peak that grows with the steps means "
+        f"its transient Map/Set blocks are not being reclaimed."
     )
 
 

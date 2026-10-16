@@ -11,7 +11,7 @@ from typing import Any
 import wasmtime
 
 from vera.runtime.heap import (
-    _alloc_map_wrapper,
+    _alloc_attrs,
     _alloc_result_err_string,
     _alloc_result_ok_i32,
     _alloc_string,
@@ -20,6 +20,7 @@ from vera.runtime.heap import (
     _read_i32,
     _read_wasm_string,
     _ShadowGuard,
+    _rooted_read,
     _write_i32,
 )
 
@@ -216,7 +217,7 @@ def register_html(linker: wasmtime.Linker, ops_used: set[str]) -> None:
             with _ShadowGuard(caller) as guard:
                 html_ptr = write_html(
                     caller, _call_alloc, _write_i32,
-                    _alloc_string, _alloc_map_wrapper,
+                    _alloc_string, _alloc_attrs,
                     guard, root,
                 )
                 guard.push(html_ptr)
@@ -235,10 +236,10 @@ def register_html(linker: wasmtime.Linker, ops_used: set[str]) -> None:
         def host_html_to_string(
             caller: wasmtime.Caller, ptr: int,
         ) -> tuple[int, int]:
-            node = read_html(
+            node = _rooted_read(caller, ptr, lambda: read_html(
                 caller, ptr, _read_i32,
                 _read_wasm_string, _decode_attrs,
-            )
+            ))
             text = _html_to_string_py(node)
             return _alloc_string(caller, text)
 
@@ -256,10 +257,10 @@ def register_html(linker: wasmtime.Linker, ops_used: set[str]) -> None:
             caller: wasmtime.Caller,
             node_ptr: int, sel_ptr: int, sel_len: int,
         ) -> tuple[int, int]:
-            node = read_html(
+            node = _rooted_read(caller, node_ptr, lambda: read_html(
                 caller, node_ptr, _read_i32,
                 _read_wasm_string, _decode_attrs,
-            )
+            ))
             selector = _read_wasm_string(caller, sel_ptr, sel_len)
             matches = _html_query_py(node, selector)
             count = len(matches)
@@ -286,7 +287,7 @@ def register_html(linker: wasmtime.Linker, ops_used: set[str]) -> None:
                     for i, m in enumerate(matches):
                         m_ptr = write_html(
                             caller, _call_alloc, _write_i32,
-                            _alloc_string, _alloc_map_wrapper,
+                            _alloc_string, _alloc_attrs,
                             guard, m,
                         )
                         _write_i32(caller, arr_ptr + i * 4, m_ptr)
@@ -308,10 +309,10 @@ def register_html(linker: wasmtime.Linker, ops_used: set[str]) -> None:
         def host_html_text(
             caller: wasmtime.Caller, ptr: int,
         ) -> tuple[int, int]:
-            node = read_html(
+            node = _rooted_read(caller, ptr, lambda: read_html(
                 caller, ptr, _read_i32,
                 _read_wasm_string, _decode_attrs,
-            )
+            ))
             text = _html_text_py(node)
             return _alloc_string(caller, text)
 

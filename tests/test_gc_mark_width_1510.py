@@ -7,12 +7,12 @@ whenever a collection ran with more values pending at once than the
 worklist holds, although the heap itself was already allocated.
 
 The class is every program whose live heap, at some collection, has more
-than 16,384 values pending at once: one wide structure (an array or a
-`Map` bucket holding heap values), one long chain (a list whose spine
-leaves every cell's head pending), a structure of closures each capturing
-a heap value, or any mixture, on every target that runs the generated
-collector — native, the browser runtime and the WASI 0.2 component, which
-embeds the same core module.
+than 16,384 values pending at once: one wide structure (an array
+holding heap values, as a `Map`'s bucket was before #1676), one long
+chain (a list whose spine leaves every cell's head pending), a structure
+of closures each capturing a heap value, or any mixture, on every target
+that runs the generated collector — native, the browser runtime and the
+WASI 0.2 component, which embeds the same core module.
 
 The instrument crosses the structure (an `Array<String>`; a list of a user
 `data`, built and walked by tail calls; an `Array` of boxed closures each

@@ -419,6 +419,12 @@ class WasmContext(
         # assembly, and guarded against re-entry via `_show_hash_pending`.
         self._show_hash_helpers: dict[str, str] = {}
         self._show_hash_pending: set[str] = set()
+        # #1676: the Map and Set functions `vera.wasm.hamt` generates for
+        # the operations this body calls, by name → WAT text, merged into
+        # the CodeGenerator core like the helpers above; and the ones a host
+        # calls, which the module exports (`_export_collection`).
+        self._collection_helpers: dict[str, str] = {}
+        self._collection_exports: set[str] = set()
         # #933: nesting-depth bound for the derived-helper generators
         # (`$show_<type>` / `$hash_<type>` / `$eq_<type>`).  A UNIFORMLY-
         # recursive ADT (`List<T>` whose tail is again `List<T>`) recurs on the

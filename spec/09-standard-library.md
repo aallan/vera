@@ -7,7 +7,7 @@ Vera's standard library provides built-in types, effects, and functions that are
 The standard library comprises:
 
 - **Built-in ADTs**: `Option<T>` and `Result<T, E>` for representing partiality and fallibility.
-- **Built-in collections**: `Array<T>` for fixed-size homogeneous sequences, `Set<T>` for unordered unique elements, and `Map<K, V>` for key-value mappings.
+- **Built-in collections**: `Array<T>` for fixed-size homogeneous sequences, `Set<T>` for unique elements, and `Map<K, V>` for key-value mappings, each of the two enumerated in insertion order.
 - **Built-in effects**: `IO` for output, `State<T>` for mutable state, `Http` for network I/O (`get` and `post`), `Async` for concurrency, `Inference` for LLM calls, `HttpServer` for verified HTTP handling, and `DB` for SQL database access (see §9.5 for each).
 - **Built-in functions**: `array_length`, `array_append`, `array_range`, and `array_concat` for arrays, numeric operations (`abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow`), type conversions (`int_to_float`, `float_to_int`, `nat_to_int`, `int_to_nat`, `byte_to_int`, `int_to_byte`), Float64 predicates (`float_is_nan`, `float_is_infinite`, `nan`, `infinity`), string search (`string_contains`, `string_starts_with`, `string_ends_with`, `string_index_of`), string transformation (`string_strip`, `string_upper`, `string_lower`, `string_replace`, `string_split`, `string_join`, `string_char_code`, `string_from_char_code`), regular expressions (`regex_match`, `regex_find`, `regex_find_all`, `regex_replace`), plus functions for vector similarity, which are specified but not implemented (§9.6.19).
 - **Decimal type**: `Decimal` for exact decimal arithmetic via host imports (see §9.7.2). Exact in both the Python runtime (`decimal.Decimal`) and the browser runtime (scaled-BigInt engine), which mirror each other operation-for-operation over finite decimal values.
@@ -254,9 +254,9 @@ For the compilation model of arrays, see Chapter 11, Section 11.12.
 
 ### 9.4.2 Set\<T\>
 
-`Set<T>` is an unordered collection of unique elements. It requires the `Eq` and `Hash` abilities on `T` (see Section 9.8). Element types must be hashable primitives: `Int`, `Nat`, `Bool`, `Float64`, `String`, or `Byte`.
+`Set<T>` is a collection of unique elements. It requires the `Eq` and `Hash` abilities on `T` (see Section 9.8). Element types must be hashable primitives: `Int`, `Nat`, `Bool`, `Float64`, `String`, or `Byte`.
 
-Set is an opaque built-in type. A set lives on the WASM heap, as a wrapper pointing to the bucket that holds its elements; WASM code holds it as one `i32` pointer, and the operations are host imports that read the bucket and build a new one. All operations are pure — `set_add` and `set_remove` return new sets (functional semantics).
+Set is an opaque built-in type, the persistent hash trie Section 9.4.3 describes for a map, whose entries hold elements alone; WASM code holds a set as one `i32` pointer. All operations are pure — `set_add` and `set_remove` return new sets and leave the one they were given unchanged, sharing every block the update does not change. Elements compare as a map's keys do, and `set_to_array` returns them in insertion order: an element added again keeps its first position, and a removed element loses its position.
 
 **Operations:**
 
@@ -287,7 +287,13 @@ private fn set_demo(-> @Int)
 
 `Map<K, V>` is a key-value mapping. It requires the `Eq` and `Hash` abilities on `K` (see Section 9.8). Keys must be hashable primitive types: `Int`, `Nat`, `Bool`, `Float64`, `String`, or `Byte`. Values must be primitives (`Int`, `Nat`, `Bool`, `Byte`, `Float64`, `String`), ADT heap-pointer types (`Option<T>`, `Result<T, E>`), or other `Map` values. `Array<T>` values are not supported as Map values.
 
-Map is an opaque built-in type. A map lives on the WASM heap, as a wrapper pointing to the bucket that holds its entries; WASM code holds it as one `i32` pointer, and the operations are host imports that read the bucket and build a new one. All operations are pure — `map_insert` and `map_remove` return new maps (functional semantics).
+Map is an opaque built-in type: a persistent hash trie in the module's own heap, a 32-way branch for each five bits of a key's hash with the entries below them, and its operations are functions the module carries, generated for each key and value representation the program uses. No host implements one. WASM code holds a map as one `i32` pointer. All operations are pure — `map_insert` and `map_remove` return new maps and leave the one they were given unchanged, sharing every block the update does not change: an update copies the branches on its key's path, at most thirteen, so its time and space grow with the trie's depth, not with the map's size.
+
+Keys compare by SameValueZero. A `Float64` key is stored in a canonical form, `-0.0` as `0.0` and every NaN as one NaN, so `-0.0` and `0.0` are one key and a NaN key can be found again; a `String` key compares by content; any other key by its value. A key's hash is the `Hash` ability's value for its type (Section 9.8.1), its bits mixed before the trie reads them, so no comparison the trie makes requires `Ord`.
+
+The hash is not seeded. A `String` key hashes by FNV-1a over its UTF-8 bytes, and every key's hash then passes through MurmurHash3's 64-bit finalizer, a bijective mixer, so two `String` keys share a hash exactly when their 64-bit FNV-1a values are equal, and no two keys of another type ever share one. Keys that share a hash share one collision node below the trie's last branch, which an operation searches and copies whole, so an insert into it costs O(n) in the n keys it holds. A program that builds a `Map<String, _>` from keys an adversary chooses — the request headers `vera serve` builds into a `Request`, the members of a JSON text it parses — pays that cost on keys chosen to collide: measured natively with every key forced onto one hash, 4,000 inserts take 1.3 s, against 10 ms with the hash, and every lookup finds its key ([#1736](https://github.com/aallan/vera/issues/1736)).
+
+`map_keys` and `map_values` return a map's keys and values in insertion order, the two in step: a key inserted again keeps its first position and takes its new value, and a removed key loses its position, so inserting it again puts it last. A `JObject`'s members are serialized in this order (Section 9.7.1).
 
 **Operations:**
 
@@ -2259,7 +2265,7 @@ Text malformed for any other reason also produces `Err`, but that message is the
 **Canonical serialization.** `json_stringify` has exactly one output form, per the one-canonical-form principle (§0.2.3), and every runtime produces it byte for byte (§12.9.3):
 
 - **Separators.** `,` between elements and members, `:` between a key and its value, with no surrounding whitespace. No indentation, no trailing newline.
-- **Object members.** Emitted in the insertion order of the underlying `Map<String, Json>`, not sorted.
+- **Object members.** Emitted in the insertion order of the underlying `Map<String, Json>` (Section 9.4.3), not sorted.
 - **Strings.** Escaped per RFC 8259, with non-ASCII characters emitted literally rather than as `\uXXXX` escapes.
 - **Numbers.** Rendered by ECMAScript's `Number::toString` with radix 10 ([ECMA-262 §6.1.6.1.20](https://tc39.es/ecma262/#sec-numeric-types-number-tostring)). A `JNumber` wraps a `Float64`, so this is the rendering rule that matters most: an integral value carries no fractional part (`1`, not `1.0`), the notation switches to exponential at and above `1e21` and below `1e-6`, the exponent is signed and unpadded (`1e-7`, not `1e-07`), and negative zero renders `0`.
 

@@ -689,6 +689,7 @@ MARKED_FILES = (
     "test_destructure_checked_against_source_1545.py",
     "test_gc_mark_width_1510.py",
     "test_bytes_1711.py",
+    "test_persistent_map_set_1676.py",
 )
 UNMARKED_FILES = (
     "test_obligations.py",

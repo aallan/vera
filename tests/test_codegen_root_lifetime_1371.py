@@ -761,9 +761,12 @@ _SCALAR_RETURNS = frozenset({"Int", "Nat", "Bool", "Byte", "Float64", "Unit"})
 _WRAPPER_FAMILIES = ("decimal", "map", "set")
 
 _PUSH_OF = re.compile(r"global\.get \$gc_sp\s+local\.get (\d+)\s+i32\.store")
-# Map / Set host imports are type-specialised — `map_values$vi`,
-# `map_insert$si` — so the builtin name is the part before the `$`.
-_HOST_CALL = re.compile(r"call \$vera\.([A-Za-z0-9_]+)(?:\$[A-Za-z0-9_]+)?")
+# A host import, or one of the module's generated `Map` / `Set` functions
+# (#1676), which return their result unrooted as a host import does.  Both
+# are named per representation — `map_values$vi`, `map_insert$ks_vi` — so
+# the builtin name is the part before the `$`.
+_HOST_CALL = re.compile(
+    r"call \$(?:vera\.([A-Za-z0-9_]+)|((?:map|set)_[a-z_]+))(?:\$[A-Za-z0-9_]+)?")
 
 
 def _heap_returning_builtins() -> set[str]:
@@ -853,9 +856,9 @@ def _audit_host_call_rooting(wat: str) -> tuple[set[str], list[tuple[str, str]]]
     unrooted: list[tuple[str, str]] = []
     for i, line in enumerate(lines):
         match = _HOST_CALL.fullmatch(line)
-        if not match or match.group(1) not in names:
+        if not match or (match.group(1) or match.group(2)) not in names:
             continue
-        name = match.group(1)
+        name = match.group(1) or match.group(2)
         observed.add(name)
         window = lines[i + 1:i + 41]
         # Truncate at the first allocation that could collect this result.
@@ -957,6 +960,10 @@ _NEEDS_ALLOC_EXEMPT = {
     # The scoping wrapper only runs when the lowering it wraps ALREADY
     # pushed, and it raises `CodegenInvariantError` if the flag is unset.
     "vera/wasm/context.py:_scope_shadow_roots",
+    # The text of the generated Map and Set functions (#1676); the two
+    # sites that emit it, `_collection_fn` and `_export_host_string_maps`,
+    # set the flag.
+    "vera/wasm/hamt.py:_push",
 }
 
 

@@ -2782,8 +2782,8 @@ class TestRuntimePackageImportHygiene421:
         import sys
 
         modules = [
-            "heap", "collections", "traps", "random", "math", "md", "json",
-            "regex", "html", "map", "set", "decimal", "http", "inference",
+            "heap", "traps", "random", "math", "md", "json",
+            "regex", "html", "decimal", "http", "inference",
             "state",
         ]
         for mod in modules:

@@ -16,10 +16,11 @@ vera run --target wasi-p2 program.vera       # execute under the built-in wasip2
 
 **Status: Partially implemented.**  The target covers the **IO and Random host
 families** (Section 13.4).  It is not a blanket "WASI 0.2 compliant"
-mode: a program using any other host family (Http, Map, Set, Decimal,
-Json, Html, Md, Regex, Math, Inference, DB, State, Async) is rejected with
-a diagnostic naming the unsupported family — never silently compiled
-against the core target instead.
+mode: a program using any other host family (Http, Decimal, Json, Html, Md,
+Regex, Math, Inference, DB, State, Async) is rejected with a diagnostic
+naming the unsupported family — never silently compiled against the core
+target instead.  `Map` and `Set` are the module's own code (Section 9.4.3)
+and run in both worlds at every instance.
 
 The core `wasm` target (Chapters 11–12) is the default and the
 canonical compilation model; the browser runtime (Section 12.9) is
@@ -190,21 +191,21 @@ guest heap (using the compilation's own constructor layouts), calls
 outgoing-response resource sequence.  Guest traps map to a 500 from
 the host.
 
-![The server world: stock wasmtime serve delivers each request through wasi:http; the generated adapter builds the Request ADT in the guest heap, calls the verified handle, decodes the Response, and drives the outgoing resources — with String-keyed Map operations implemented in guest code.](../assets/diagrams/server-world.svg)
+![The server world: stock wasmtime serve delivers each request through wasi:http; the generated adapter builds the Request ADT in the guest heap, calls the verified handle, decodes the Response, and drives the outgoing resources — building the Request's headers and reading the Response's through the module's own Map operations.](../assets/diagrams/server-world.svg)
 
 **Headers without a host.**  `Request`/`Response` headers are
-`Map<String, String>`, and Map operations are host imports on the
-core target.  A Vera Map's representation is two plain guest-heap
-blocks, so the server world implements the String-keyed Map
-operations **in guest code** with the host's exact semantics
-(position-preserving update, later-insert-wins, capacity growth) —
-handlers use `map_new` / `map_insert` / `map_get` etc. unchanged.
-Non-String Map instantiations, and every other host collection
-family, are rejected by the family gate.
+`Map<String, String>`, and a `Map` is the module's own code (Section
+9.4.3), which the module exports for the adapter: the adapter builds
+the request's headers with one call of `map_from_arrays$ks_vs`, a
+header repeated in the request keeping its first position and taking
+its last value, and reads the response's through `map_keys$ks` and
+`map_values$vs`.  Handlers use `map_new` / `map_insert` / `map_get`
+etc. unchanged, and every `Map` and `Set` instance runs as it does on
+the core target.
 
-**Server-world surface.**  Alongside the in-guest String maps, the
-handler may use `IO.print` / `IO.stderr` (routed to the serve host's
-console), `IO.time` / `IO.sleep`, the `Random` family, and the pure
+**Server-world surface.**  The handler may use `IO.print` /
+`IO.stderr` (routed to the serve host's console), `IO.time` /
+`IO.sleep`, the `Random` family, `Map` and `Set`, and the pure
 language.  `IO.read_line` / `read_char` /
 `read_file` / `write_file` / `read_bytes` / `write_bytes` / `get_env` /
 `args` / `exit` are rejected
@@ -231,7 +232,7 @@ pointing at `wasmtime serve`.  The native `vera serve` driver
 
 The dual-target differential in `tests/test_wasi_target.py` runs every
 deterministic run-level conformance program under both targets and
-requires byte-identical stdout/stderr: 124 of the 176 run-level programs
+requires byte-identical stdout/stderr: 131 of the 179 run-level programs
 execute identically (the remainder use host families outside the
 target's surface, have no `main`, or depend on wall-clock time).  A
 stock-host smoke test additionally runs the compiled artifact under
