@@ -548,7 +548,7 @@ public fn main(-> @Float64)
     def test_math_ops_gated_when_unused(self) -> None:
         """A module that uses no math builtins emits no math imports.
 
-        Regression for the gating: if ``_math_ops_used`` was ever
+        Regression for the gating: if ``_host_imports_used`` was ever
         populated unconditionally, every compiled module would
         import all 10 host functions — a 10% size bloat for
         programs that don't use them.  Compile a trivial pure

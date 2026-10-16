@@ -549,7 +549,7 @@ class CallsMathMixin:
         These aren't expressible as WASM instructions — there's no
         ``f64.log`` or ``f64.sin``.  We emit a host import call
         (``call $vera.{op_name}``) and add the op to
-        ``_math_ops_used`` so ``codegen/assembly.py`` emits the
+        ``_host_imports_used`` so ``codegen/assembly.py`` emits the
         matching ``(import "vera" "{op_name}" ...)`` declaration.
         IEEE 754 semantics (NaN for out-of-domain, ±inf for
         overflow) are preserved by the underlying Python ``math``
@@ -558,7 +558,7 @@ class CallsMathMixin:
         arg_instrs = self.translate_expr(arg, env)
         if arg_instrs is None:
             return None
-        self._math_ops_used.add(op_name)
+        self._host_imports_used.add(op_name)
         return [*arg_instrs, f"call $vera.{op_name}"]
 
     def _translate_atan2(
@@ -576,7 +576,7 @@ class CallsMathMixin:
         x_instrs = self.translate_expr(x_arg, env)
         if y_instrs is None or x_instrs is None:
             return None
-        self._math_ops_used.add("atan2")
+        self._host_imports_used.add("atan2")
         return [*y_instrs, *x_instrs, "call $vera.atan2"]
 
     def _translate_pi(self) -> list[str]:

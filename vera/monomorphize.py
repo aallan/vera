@@ -1993,273 +1993,68 @@ class UninferredTypeArg:
     origin: tuple[str, ...] | None = None
 
 
-# Builtin function name → SIMPLE Vera return-type name (type args dropped).
-# Consulted by Monomorphizer._infer_fncall_vera_type_simple() (instantiation
-# discovery) AND by the WASM call-rewrite chain
-# (InferenceMixin._infer_fncall_vera_type, vera/wasm/inference.py) — the two
-# consultors that must agree on clone names, or discovery emits one mangled
-# suffix while the call site references another (dangling E602, #769 gap 1b).
-# REGISTRY-COMPLETE (#769): covers every registered builtin whose return has
-# a concrete outer constructor (TypeEnv._register_builtins is the key oracle;
-# tests/test_codegen_monomorphize.py::TestBuiltinReturnTables769 enforces it).
-# Values preserve the rewrite chain's historical names verbatim — e.g.
-# string_length is "Int" (the WAT-collapsed name), string_char_code is
-# "Nat" — because clone-NAME agreement is the invariant, not name precision;
-# changing a value is a clone-granularity decision, not a completion.
-# Bare-TypeVar returns (option_unwrap_or, await, …) must stay OUT: a fixed
-# entry would bind phantom vars.  Ability-op names (show/hash) and apply_fn
-# are not registry builtins and keep their logic arms in the chain.
-_BUILTIN_VERA_RETURN_TYPES: dict[str, str] = {
-    # array
-    "array_all": "Bool",
-    "array_any": "Bool",
-    "array_append": "Array",
-    "array_concat": "Array",
-    "array_filter": "Array",
-    "array_find": "Option",
-    "array_flatten": "Array",
-    "array_length": "Int",
-    "array_map": "Array",
-    "array_mapi": "Array",
-    "array_range": "Array",
-    "array_reverse": "Array",
-    "array_slice": "Array",
-    "array_sort_by": "Array",
-    # async
-    "async": "Future",
-    # base64
-    "base64_decode": "Result",
-    "base64_encode": "String",
-    # bool_to
-    "bool_to_string": "String",
-    # byte_to
-    "byte_to_int": "Int",
-    "byte_to_string": "String",
-    # char
-    "char_to_lower": "String",
-    "char_to_upper": "String",
-    # decimal
-    "decimal_abs": "Decimal",
-    "decimal_add": "Decimal",
-    "decimal_compare": "Ordering",
-    "decimal_div": "Option",
-    "decimal_eq": "Bool",
-    "decimal_from_float": "Decimal",
-    "decimal_from_int": "Decimal",
-    "decimal_from_string": "Option",
-    "decimal_mul": "Decimal",
-    "decimal_neg": "Decimal",
-    "decimal_round": "Decimal",
-    "decimal_sub": "Decimal",
-    "decimal_to_float": "Float64",
-    "decimal_to_string": "String",
-    # float
-    "float_clamp": "Float64",
-    "float_is_infinite": "Bool",
-    "float_is_nan": "Bool",
-    "float_to_int": "Int",
-    "float_to_string": "String",
-    # html
-    "html_attr": "Option",
-    "html_parse": "Result",
-    "html_query": "Array",
-    "html_text": "String",
-    "html_to_string": "String",
-    # int_to
-    "int_to_byte": "Option",
-    "int_to_float": "Float64",
-    "int_to_nat": "Option",
-    "int_to_string": "String",
-    # is_
-    "is_alpha": "Bool",
-    "is_alphanumeric": "Bool",
-    "is_digit": "Bool",
-    "is_lower": "Bool",
-    "is_upper": "Bool",
-    "is_whitespace": "Bool",
-    # json
-    "json_array_get": "Option",
-    "json_array_length": "Int",
-    "json_as_array": "Option",
-    "json_as_bool": "Option",
-    "json_as_int": "Option",
-    "json_as_number": "Option",
-    "json_as_object": "Option",
-    "json_as_string": "Option",
-    "json_get": "Option",
-    "json_get_array": "Option",
-    "json_get_bool": "Option",
-    "json_get_int": "Option",
-    "json_get_number": "Option",
-    "json_get_string": "Option",
-    "json_has_field": "Bool",
-    "json_keys": "Array",
-    "json_parse": "Result",
-    "json_stringify": "String",
-    "json_type": "String",
-    # map_
-    "map_contains": "Bool",
-    "map_get": "Option",
-    "map_insert": "Map",
-    "map_keys": "Array",
-    "map_new": "Map",
-    "map_remove": "Map",
-    "map_size": "Int",
-    "map_values": "Array",
-    # math/misc
-    "abs": "Nat",
-    "acos": "Float64",
-    "asin": "Float64",
-    "atan": "Float64",
-    "atan2": "Float64",
-    "ceil": "Int",
-    "clamp": "Int",
-    "cos": "Float64",
-    "e": "Float64",
-    "floor": "Int",
-    "infinity": "Float64",
-    "log": "Float64",
-    "log10": "Float64",
-    "log2": "Float64",
-    "max": "Int",
-    "min": "Int",
-    "nan": "Float64",
-    "pi": "Float64",
-    "pow": "Float64",
-    "round": "Int",
-    "sign": "Int",
-    "sin": "Float64",
-    "sqrt": "Float64",
-    "tan": "Float64",
-    # md_
-    "md_extract_code_blocks": "Array",
-    "md_has_code_block": "Bool",
-    "md_has_heading": "Bool",
-    "md_parse": "Result",
-    "md_render": "String",
-    # nat_to
-    "nat_to_int": "Int",
-    "nat_to_string": "String",
-    # option
-    "option_and_then": "Option",
-    "option_map": "Option",
-    # parse
-    "parse_bool": "Result",
-    "parse_float64": "Result",
-    "parse_int": "Result",
-    "parse_nat": "Result",
-    # regex
-    "regex_find": "Result",
-    "regex_find_all": "Result",
-    "regex_match": "Result",
-    "regex_replace": "Result",
-    # result
-    "result_map": "Result",
-    # set_
-    "set_add": "Set",
-    "set_contains": "Bool",
-    "set_new": "Set",
-    "set_remove": "Set",
-    "set_size": "Int",
-    "set_to_array": "Array",
-    # string
-    "string_char_code": "Nat",
-    "string_chars": "Array",
-    "string_concat": "String",
-    "string_contains": "Bool",
-    "string_ends_with": "Bool",
-    "string_from_char_code": "String",
-    "string_index_of": "Option",
-    "string_join": "String",
-    "string_length": "Int",
-    "string_lines": "Array",
-    "string_lower": "String",
-    "string_pad_end": "String",
-    "string_pad_start": "String",
-    "string_repeat": "String",
-    "string_replace": "String",
-    "string_reverse": "String",
-    "string_slice": "String",
-    "string_split": "Array",
-    "string_starts_with": "Bool",
-    "string_strip": "String",
-    "string_trim_end": "String",
-    "string_trim_start": "String",
-    "string_upper": "String",
-    "string_words": "Array",
-    # to_string
-    "to_string": "String",
-    # url
-    "url_decode": "Result",
-    "url_encode": "String",
-    "url_join": "String",
-    "url_parse": "Result",
-}
+# Built-in name → SIMPLE Vera return-type name (type args dropped), and
+# built-in name → (outer, inners) for the FULLY-CONCRETE parameterized
+# returns.  Consulted by Monomorphizer._infer_fncall_vera_type_simple() and
+# _get_arg_type_info() (instantiation discovery) AND by the WASM call-rewrite
+# chain (InferenceMixin, vera/wasm/inference.py) — the two consultors that
+# must agree on clone names, or discovery emits one mangled suffix while the
+# call site references another (dangling E602, #769 gap 1b).  Both are read
+# from the built-in registry's records (vera/builtins.py, #735), so they
+# cover every registered built-in by construction:
+#   - the simple table holds every built-in whose return has a concrete
+#     outer constructor; a bare-TypeVar return (option_unwrap_or, await, …)
+#     stays OUT, since a fixed entry would bind phantom vars;
+#   - the parameterized table holds exactly the returns that are an AdtType
+#     with type args and no embedded TypeVar, the inners as the registry's
+#     pretty names (nested inners like "Array<Json>" parse via
+#     _parse_type_name); a return that keeps a type var (array_map, map_get,
+#     …) stays OUT, resolved by the generic-return / arg-forwarding paths.
+# Ability-op names (show/hash) and apply_fn are not registry built-ins and
+# keep their logic arms in the chain.
+# tests/test_codegen_monomorphize.py::TestBuiltinReturnTables769 holds both.
 
-# Builtins returning FULLY-CONCRETE parameterized types — maps function name
-# to (outer_type, (inner_type, ...)) for _get_arg_type_info() and its WASM
-# twin _get_arg_type_info_wasm (vera/wasm/inference.py imports this dict, so
-# additions fix discovery and call-rewrite atomically).  REGISTRY-COMPLETE
-# (#769): exactly the registered builtins whose return is an AdtType with
-# type args and no embedded TypeVar, values as the registry's pretty names
-# (nested inners like "Array<Json>" parse via _parse_type_name); enforced by
-# tests/test_codegen_monomorphize.py::TestBuiltinReturnTables769.  Builtins
-# whose return keeps a type var (array_map, map_get, …) must stay OUT —
-# they are handled by the generic-return / arg-forwarding resolution.
-_BUILTIN_PARAMETERIZED_RETURNS: dict[str, tuple[str, tuple[str, ...]]] = {
-    # array
-    "array_range": ("Array", ("Int",)),
-    # base64
-    "base64_decode": ("Result", ("String", "String")),
-    # decimal
-    "decimal_div": ("Option", ("Decimal",)),
-    "decimal_from_string": ("Option", ("Decimal",)),
-    # html
-    "html_attr": ("Option", ("String",)),
-    "html_parse": ("Result", ("HtmlNode", "String")),
-    "html_query": ("Array", ("HtmlNode",)),
-    # int_to
-    "int_to_byte": ("Option", ("Byte",)),
-    "int_to_nat": ("Option", ("Nat",)),
-    # json
-    "json_array_get": ("Option", ("Json",)),
-    "json_as_array": ("Option", ("Array<Json>",)),
-    "json_as_bool": ("Option", ("Bool",)),
-    "json_as_int": ("Option", ("Int",)),
-    "json_as_number": ("Option", ("Float64",)),
-    "json_as_object": ("Option", ("Map<String, Json>",)),
-    "json_as_string": ("Option", ("String",)),
-    "json_get": ("Option", ("Json",)),
-    "json_get_array": ("Option", ("Array<Json>",)),
-    "json_get_bool": ("Option", ("Bool",)),
-    "json_get_int": ("Option", ("Int",)),
-    "json_get_number": ("Option", ("Float64",)),
-    "json_get_string": ("Option", ("String",)),
-    "json_keys": ("Array", ("String",)),
-    "json_parse": ("Result", ("Json", "String")),
-    # md_
-    "md_extract_code_blocks": ("Array", ("String",)),
-    "md_parse": ("Result", ("MdBlock", "String")),
-    # parse
-    "parse_bool": ("Result", ("Bool", "String")),
-    "parse_float64": ("Result", ("Float64", "String")),
-    "parse_int": ("Result", ("Int", "String")),
-    "parse_nat": ("Result", ("Nat", "String")),
-    # regex
-    "regex_find": ("Result", ("Option<String>", "String")),
-    "regex_find_all": ("Result", ("Array<String>", "String")),
-    "regex_match": ("Result", ("Bool", "String")),
-    "regex_replace": ("Result", ("String", "String")),
-    # string
-    "string_chars": ("Array", ("String",)),
-    "string_index_of": ("Option", ("Nat",)),
-    "string_lines": ("Array", ("String",)),
-    "string_split": ("Array", ("String",)),
-    "string_words": ("Array", ("String",)),
-    # url
-    "url_decode": ("Result", ("String", "String")),
-    "url_parse": ("Result", ("UrlParts", "String")),
-}
+#: The simple names the rewrite chain has always used where they are not the
+#: record's: `string_length` returns `Nat` and is named by the WAT-collapsed
+#: `Int` here.  Clone-NAME agreement between the two consultors is the
+#: invariant, not name precision, so changing a value is a clone-granularity
+#: decision, not a completion (#769).
+_HISTORICAL_RETURN_NAMES: dict[str, str] = {"string_length": "Int"}
+
+
+def _builtin_return_tables() -> tuple[
+    dict[str, str], dict[str, tuple[str, tuple[str, ...]]]
+]:
+    """The two tables, from the registry's records."""
+    from vera.builtins import BUILTINS
+    from vera.types import (
+        AdtType, FunctionType, PrimitiveType, RefinedType, Type, TypeVar, pretty_type,
+    )
+
+    def concrete(ty: Type) -> bool:
+        if isinstance(ty, TypeVar):
+            return False
+        if isinstance(ty, AdtType):
+            return all(concrete(a) for a in ty.type_args)
+        if isinstance(ty, RefinedType):
+            return concrete(ty.base)
+        if isinstance(ty, FunctionType):
+            return all(concrete(p) for p in ty.params) and concrete(ty.return_type)
+        return True
+
+    simple: dict[str, str] = {}
+    parameterized: dict[str, tuple[str, tuple[str, ...]]] = {}
+    for name, spec in BUILTINS.items():
+        ret = spec.signature.ret
+        if isinstance(ret, (PrimitiveType, AdtType)):
+            simple[name] = _HISTORICAL_RETURN_NAMES.get(name, ret.name)
+        if isinstance(ret, AdtType) and ret.type_args and concrete(ret):
+            parameterized[name] = (
+                ret.name, tuple(pretty_type(a) for a in ret.type_args))
+    return simple, parameterized
+
+
+_BUILTIN_VERA_RETURN_TYPES, _BUILTIN_PARAMETERIZED_RETURNS = _builtin_return_tables()
 
 
 @dataclass(frozen=True)
