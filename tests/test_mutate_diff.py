@@ -439,6 +439,30 @@ class TestMapping:
 HELPERS = {"pipeline": "import vera.checker\n", "matrix_sample": "import random\n"}
 
 
+STATS_FAILURE = """\
+Running stats
+FAILED tests/test_checker_errors.py::TestErrorCodes::test_error_code_collision_gate_is_clean - AssertionError: 13 collision(s):
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+1 failed, 6532 passed in 101.2s
+failed to collect stats. runner returned 1
+"""
+
+
+class TestCopyFailure:
+    def test_the_stats_pass_names_its_failing_test(self) -> None:
+        assert md.copy_failure(STATS_FAILURE) == (
+            "tests/test_checker_errors.py::TestErrorCodes::test_error_code_collision_gate_is_clean")
+
+    def test_a_clean_run_names_its_failing_test(self) -> None:
+        log = ("ERROR tests/test_lsp.py::TestDocuments::test_writes[a b] - FileNotFoundError: x\n"
+               "Failed to run clean test\n")
+        assert md.copy_failure(log) == "tests/test_lsp.py::TestDocuments::test_writes[a b]"
+
+    def test_a_log_with_no_such_stop_names_none(self) -> None:
+        assert md.copy_failure("Running mutation testing\n1.0 mutations/second\n") is None
+        assert md.copy_failure("FAILED tests/test_x.py::t - y\nsomething else went wrong\n") is None
+
+
 class TestOracle:
 
     @pytest.mark.parametrize(("source", "reaches"), [
@@ -660,6 +684,12 @@ class TestConfigRewrite:
         assert after["tool"]["mypy"] == before["tool"]["mypy"]
         assert after["project"] == before["project"]
 
+    def test_extra_arguments_follow_the_repositorys(self) -> None:
+        out = md.rewrite_config(PYPROJECT, only_mutate=["vera/x.py"], extra_tests=[],
+                                extra_args=["--deselect=tests/test_a.py::t"])
+        assert tomllib.loads(out)["tool"]["mutmut"]["pytest_add_cli_args"] == [
+            "--timeout=300", "--deselect=tests/test_a.py::t"]
+
     def test_a_config_without_the_section_is_refused(self) -> None:
         with pytest.raises(md.ConfigError):
             md.rewrite_config("[project]\nname = 'x'\n", only_mutate=[], extra_tests=[])
@@ -697,6 +727,9 @@ class TestTheRepositoryConfig:
         assert deselected == {
             reads + "test_no_demotion_site_hardcodes_a_solver_reason",
             reads + "test_every_possibly_unguarded_demotion_supplies_a_reason",
+            # runs scripts/check_diagnostic_fields.py over the copy's vera/,
+            # where each mutant repeats its function's error codes
+            "tests/test_checker_errors.py::TestErrorCodes::test_error_code_collision_gate_is_clean",
         }
 
     def test_every_deselected_test_exists(self) -> None:
@@ -958,6 +991,13 @@ with log.open("a", encoding="utf-8") as fh:
     fh.write(json.dumps({"cwd": os.getcwd(), "args": args,
                          "git_dir": os.environ.get("GIT_DIR")}) + "\\n")
 if args[0] == "run":
+    failing = os.environ.get("FAKE_COPY_FAILURE", "")
+    config = Path("pyproject.toml").read_text(encoding="utf-8")
+    if failing and (os.environ.get("FAKE_COPY_FAILURE_STICKY") or f"--deselect={failing}" not in config):
+        print("Running stats")
+        print(f"FAILED {failing} - FileNotFoundError: [Errno 2] No such file or directory: 'CHANGELOG.md'")
+        print("failed to collect stats. runner returned 1")
+        sys.exit(1)
     print(os.environ.get("FAKE_RUN_OUTPUT", ""))
     sys.exit(int(os.environ.get("FAKE_RUN_EXIT", "0")))
 if args[0] == "results":
@@ -1158,6 +1198,41 @@ class TestEndToEnd:
         code, record, _ = _main(repo, tmp_path, "    vera.m.x_kept__mutmut_1: killed\n")
         assert code == 0
         assert [f["qualname"] for f in record["functions"]] == ["kept"]
+
+    def _plant_a_tree_reading_test(self, repo: Path) -> str:
+        (repo / "tests" / "test_reads_tree.py").write_text(
+            "import vera\nfrom pathlib import Path\n\n\ndef test_reads():\n"
+            "    assert Path('CHANGELOG.md').read_text(encoding='utf-8')\n", encoding="utf-8")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-q", "--amend", "--no-edit")
+        return "tests/test_reads_tree.py::test_reads"
+
+    def test_a_test_that_fails_in_the_copy_is_dropped_reported_and_the_run_completes(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A test that cannot pass inside mutmut's copy with no mutant active
+        (here one that reads a file the copy lacks) is no oracle there: the
+        lane drops it, runs again, and names it in the summary and record."""
+        failing = self._plant_a_tree_reading_test(repo)
+        monkeypatch.setenv("FAKE_COPY_FAILURE", failing)
+        code, record, calls = _main(repo, tmp_path, "    vera.m.x_kept__mutmut_1: killed\n")
+        assert code == 0 and record["stopped"] is None
+        assert record["dropped_tests"] == [failing]
+        assert "tests/test_reads_tree.py" in record["extra_tests"]
+        assert len([c for c in calls if c["args"][0] == "run"]) == 2
+        summary = (tmp_path / "summary.md").read_text(encoding="utf-8")
+        assert f"`{failing}`" in summary and "Dropped from the oracle" in summary
+
+    def test_a_drop_that_does_not_take_stops_the_run_short(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        failing = self._plant_a_tree_reading_test(repo)
+        monkeypatch.setenv("FAKE_COPY_FAILURE", failing)
+        monkeypatch.setenv("FAKE_COPY_FAILURE_STICKY", "1")
+        code, record, calls = _main(repo, tmp_path, "    vera.m.x_kept__mutmut_1: not checked\n")
+        assert code == 2 and record["stopped"] == "engine"
+        assert record["dropped_tests"] == [failing]
+        assert len([c for c in calls if c["args"][0] == "run"]) == 2
 
     def test_a_hung_results_call_stops_the_run_short(
         self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,

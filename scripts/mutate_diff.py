@@ -32,7 +32,11 @@ mutmut over exactly those functions:
    the families the selection leaves out on purpose.  mutmut then runs over
    one glob per changed unit (``vera.smt.xǁSmtContextǁreset__mutmut_*``):
    its stats pass records which tests reach each function, and each mutant
-   runs only those tests, fastest first, stopping at the first failure.
+   runs only those tests, fastest first, stopping at the first failure.  A
+   test that fails inside mutmut's copy with no mutant active (one that reads
+   a file the copy lacks, or ``vera/``'s source text, which in the copy is
+   mutmut's generated file) stops that pass; it is no oracle there, so the
+   lane drops it, runs again, and names it in the summary and the record.
 4. The run has a wall-clock budget.  When it runs out, mutmut is
    interrupted, then its process group terminated, then killed, and what it
    decided so far is reported.
@@ -133,6 +137,13 @@ DEFAULT_BUDGET_S = 2400
 
 #: Seconds for each short engine command (``results``, ``show``, ``--version``).
 ENGINE_CALL_TIMEOUT_S = 300
+
+#: Tests the lane drops from one run before it calls the run stopped short.
+MAX_COPY_DROPS = 5
+
+#: What mutmut prints when its stats pass or its clean run of the covering
+#: tests stops on a failing test (both run with ``-x``).
+_COPY_STOPS = ("failed to collect stats", "Failed to run clean test")
 
 #: Survivors whose ``mutmut show`` diff the summary carries: a step summary
 #: over 1 MiB is dropped whole, and the record lists every survivor.
@@ -515,9 +526,11 @@ def _toml_value(value: Any) -> str:
     raise ConfigError(f"a [tool.mutmut] value the rewrite does not model: {value!r}")
 
 
-def rewrite_config(text: str, *, only_mutate: Sequence[str], extra_tests: Sequence[str]) -> str:
-    """``text`` with ``[tool.mutmut]``'s ``only_mutate`` replaced and
-    ``extra_tests`` added to its test selection; everything else unchanged."""
+def rewrite_config(text: str, *, only_mutate: Sequence[str], extra_tests: Sequence[str],
+                   extra_args: Sequence[str] = ()) -> str:
+    """``text`` with ``[tool.mutmut]``'s ``only_mutate`` replaced, ``extra_tests``
+    added to its test selection and ``extra_args`` to its pytest arguments;
+    everything else unchanged."""
     data = tomllib.loads(text)
     cfg = data.get("tool", {}).get("mutmut")
     if not isinstance(cfg, dict):
@@ -527,6 +540,8 @@ def rewrite_config(text: str, *, only_mutate: Sequence[str], extra_tests: Sequen
     selection = list(cfg.get("pytest_add_cli_args_test_selection", []))
     selection += [t for t in extra_tests if t not in selection]
     new["pytest_add_cli_args_test_selection"] = selection
+    if extra_args:
+        new["pytest_add_cli_args"] = list(cfg.get("pytest_add_cli_args", [])) + list(extra_args)
     section = "[tool.mutmut]\n" + "".join(
         f"{key} = {_toml_value(value)}\n" for key, value in new.items()) + "\n"
     match = re.search(r"(?ms)^\[tool\.mutmut\][ \t]*\n.*?(?=^\[|\Z)", text)
@@ -683,6 +698,15 @@ def run_engine(cmd: Sequence[str], *, cwd: Path, budget_s: float, log_path: Path
         return EngineRun(returncode, "budget", time.monotonic() - start)
 
 
+def copy_failure(log: str) -> str | None:
+    """The test that stopped mutmut's stats pass or its clean run, read off
+    its log, when that is how the run stopped."""
+    if not any(stop in log for stop in _COPY_STOPS):
+        return None
+    match = re.search(r"^(?:FAILED|ERROR) (.+?)(?: - .*)?$", log, re.M)
+    return match.group(1).strip() if match else None
+
+
 def parse_results(text: str) -> dict[str, str]:
     """``mutmut results --all true``: one ``    <mutant>: <status>`` a line."""
     results: dict[str, str] = {}
@@ -809,6 +833,15 @@ def render(record: Mapping[str, Any]) -> str:
             out.append(f"{len(survivors) - len(shown)} more survivors are in the JSON record, "
                        "by name, without their diffs.")
             out.append("")
+    if record.get("dropped_tests"):
+        out.append("### Dropped from the oracle")
+        out.append("")
+        out.append("Each failed inside mutmut's copy with no mutant active (it reads a file the copy "
+                   "lacks, or `vera/`'s source text, which in the copy is mutmut's generated file), "
+                   "so it is no oracle there; the run went again without it:")
+        out.append("")
+        out.extend(f"- `{test}`" for test in record["dropped_tests"])
+        out.append("")
     notes = []
     for item in record["files"]:
         if item["outside"] or item["outside_removed"]:
@@ -1003,6 +1036,7 @@ def _lane(args: argparse.Namespace, repo: Path, workdir: Path, engine: list[str]
                    "outside_removed": v.outside_removed,
                    "unchanged_code": v.unchanged_code} for v in verdicts],
         "stopped": None, "engine_exit": None, "outside_diff": [], "engine_tail": [],
+        "dropped_tests": [],
     }
     rows: list[UnitResult] = []
     stopped: str | None = None
@@ -1018,14 +1052,30 @@ def _lane(args: argparse.Namespace, repo: Path, workdir: Path, engine: list[str]
             source = (tree / path).read_text(encoding="utf-8")
             (tree / path).write_text(narrow(source, keep), encoding="utf-8")
         pyproject = tree / "pyproject.toml"
-        pyproject.write_text(rewrite_config(pyproject.read_text(encoding="utf-8"),
-                                            only_mutate=files, extra_tests=extra_tests),
-                             encoding="utf-8")
+        config = pyproject.read_text(encoding="utf-8")
         record["engine_version"] = _engine_version(engine, env)
         globs = [mutant_glob(u.path, u.key) for u in mutable]
-        log = workdir / "mutmut-run.log"
-        run = run_engine([*engine, "run", "--max-children", str(args.max_children), *globs],
-                         cwd=tree, budget_s=args.budget, log_path=log, env=env)
+        dropped: list[str] = []
+        remaining = args.budget
+        attempt = 0
+        while True:
+            attempt += 1
+            pyproject.write_text(rewrite_config(
+                config, only_mutate=files, extra_tests=extra_tests,
+                extra_args=[f"--deselect={test}" for test in dropped]), encoding="utf-8")
+            log = workdir / f"mutmut-run-{attempt}.log"
+            run = run_engine([*engine, "run", "--max-children", str(args.max_children), *globs],
+                             cwd=tree, budget_s=remaining, log_path=log, env=env)
+            remaining -= run.elapsed_s
+            failing = (copy_failure(log.read_text(encoding="utf-8", errors="replace"))
+                       if run.stopped is None and run.returncode == 1 else None)
+            if (failing is None or failing in dropped or len(dropped) >= MAX_COPY_DROPS
+                    or remaining <= 0):
+                break
+            # The test cannot pass in mutmut's copy with no mutant active, so it
+            # is no oracle there: drop it, and run again.
+            dropped.append(failing)
+        record["dropped_tests"] = dropped
         record["engine_exit"] = run.returncode
         no_tests = run.returncode == 1 and NO_TESTS_SENTENCE in log.read_text(
             encoding="utf-8", errors="replace")
