@@ -4199,5 +4199,19 @@
       "nat_range",
       "check_error"
     ]
+  },
+  {
+    "id": "ch04_let_destructure_component_mismatch",
+    "file": "ch04_let_destructure_component_mismatch.vera",
+    "chapter": 4,
+    "title": "A destructuring let's binding its component does not fit is a checker error (#1545)",
+    "level": "check",
+    "spec_ref": "Section 4.7.1",
+    "expected_error": "E170",
+    "features": [
+      "let_destruct",
+      "tuple",
+      "check_error"
+    ]
   }
 ]
