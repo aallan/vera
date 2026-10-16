@@ -1507,22 +1507,18 @@ public fn handle(@Request -> @Response)
         assert '(table $wasi_tbl (export "wasi_tbl") 32 32 funcref)' in wat
 
     def test_no_two_ops_share_a_dispatch_slot(self) -> None:
-        """The two op tables compose into ONE index space in this world.
-
-        `_OPS` and `_MAP_OPS` are written apart and their slots are picked
-        by hand, so nothing but this stops a new cli op from taking a map
-        op's `elem` index — which does not fail to parse, it silently
-        dispatches one to the other.  #754 nearly did exactly that.
-        """
-        from vera.codegen.wasi import _MAP_OPS, _OPS, _SERVER_TABLE_SIZE
+        """The op table's slots are picked by hand, so nothing but this
+        stops a new op from taking another's `elem` index — which does not
+        fail to parse, it silently dispatches one to the other.  #754
+        nearly did exactly that."""
+        from vera.codegen.wasi import _OPS, _SERVER_TABLE_SIZE
 
         seen: dict[int, str] = {}
-        for table in (_OPS, _MAP_OPS):
-            for name, spec in table.items():
-                assert spec.slot not in seen, (
-                    f"{name} and {seen[spec.slot]} share slot {spec.slot}"
-                )
-                seen[spec.slot] = name
+        for name, spec in _OPS.items():
+            assert spec.slot not in seen, (
+                f"{name} and {seen[spec.slot]} share slot {spec.slot}"
+            )
+            seen[spec.slot] = name
         assert max(seen) < _SERVER_TABLE_SIZE, (
             f"slot {max(seen)} ({seen[max(seen)]}) is outside the server "
             f"dispatch table ({_SERVER_TABLE_SIZE} entries)"
@@ -1532,14 +1528,6 @@ public fn handle(@Request -> @Response)
         wat = _emit_server(MAP_ORDER_HANDLER)
         versions = set(re.findall(r"wasi:[a-z/-]+@(\d+\.\d+\.\d+)", wat))
         assert versions == {"0.2.0"}
-
-    def test_map_wrapper_tag_matches_the_heap_constant(self) -> None:
-        """The emitter pins the #706 wrapper tag word without importing
-        the (wasmtime-loading) heap module — this is the drift check."""
-        from vera.codegen.wasi import _MAP_WRAPPER_TAG
-        from vera.runtime.heap import _MAP_HANDLE_TAG
-
-        assert _MAP_WRAPPER_TAG == _MAP_HANDLE_TAG
 
     def test_emit_does_not_mutate_compile_result(self) -> None:
         result = _compile_ok(HTTP_SERVER_EXAMPLE)
@@ -1607,9 +1595,10 @@ public fn handle(@Request -> @Response)
         with pytest.raises(ValueError, match=r"IO\.get_env"):
             emit_wasi_component(result, world="server")
 
-    def test_non_string_map_is_rejected_naming_the_instantiation(
-        self,
-    ) -> None:
+    def test_a_map_of_any_instance_is_admitted(self) -> None:
+        """A `Map` is the module's own code (#1676): the server world builds
+        a component for one at any instance, where it once refused every
+        instance but `Map<String, String>`."""
         result = _compile_ok("""\
 public fn handle(@Request -> @Response)
   requires(true) ensures(true) effects(<HttpServer>)
@@ -1618,12 +1607,7 @@ public fn handle(@Request -> @Response)
   Response(200, map_new(), nat_to_string(map_size(@Map<Int, Int>.0)))
 }
 """)
-        with pytest.raises(
-            ValueError, match=r"map_insert\$ki_vi.*|Map<String, String>",
-        ) as exc:
-            emit_wasi_component(result, world="server")
-        assert "map_insert$ki_vi" in str(exc.value)
-        assert "Map<String, String>" in str(exc.value)
+        Component(_ENGINE, emit_wasi_component(result, world="server"))
 
     def test_math_handler_is_rejected_naming_math(self) -> None:
         result = _compile_ok("""\
@@ -1679,10 +1663,23 @@ class TestCliWorldPin:
         assert "$op_map_" not in wat
         assert '(export "wasi:cli/run@0.2.0"' in wat
 
-    def test_cli_world_still_rejects_map_programs(self) -> None:
-        result = _compile_ok(HTTP_SERVER_EXAMPLE)
-        with pytest.raises(ValueError, match="map"):
-            emit_wasi_component(result)
+    def test_cli_world_runs_map_and_set_programs(self) -> None:
+        """A `Map` or `Set` is the module's own code (#1676), so the cli
+        world runs one at any instance, as the core target does."""
+        from vera.codegen import execute
+        from vera.runtime.wasi_host import execute_wasi_p2
+
+        result = _compile_ok("""\
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Map<Int, String> = map_insert(map_insert(map_new(), 2, "b"), 1, "a");
+  let @Set<String> = set_add(set_add(set_new(), "y"), "x");
+  IO.print(string_join(map_values(@Map<Int, String>.0), ","));
+  IO.print(string_join(set_to_array(@Set<String>.0), ","))
+}
+""")
+        assert execute_wasi_p2(result).stdout == execute(result).stdout == "b,ay,x"
 
 
 class TestServerLayoutTripwire:

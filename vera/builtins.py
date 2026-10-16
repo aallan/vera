@@ -22,13 +22,11 @@ declares and what a host binds.
 :data:`HOST_IMPORTS` lists every ``(import "vera" ...)`` declaration code
 generation can emit, in the order a module declares them: the families in
 :data:`HOST_FAMILIES`' order, and the rows of a family in the order they are
-listed here.  That order is load-bearing.  The io, md, regex, map, set and
-decimal rows are listed by name, while the json, html, http, async, db,
-random and math rows keep the order the modules have always declared them
-in, which is not sorted.  A per-instance row (a ``Map`` or ``Set`` operation
-by its key, value or element representation, a ``State`` cell by its type)
-is one row, declared once for each instance a module uses, those instances
-in name order.
+listed here.  That order is load-bearing.  The io, md, regex and decimal
+rows are listed by name, while the json, html, http, async, db, random and
+math rows keep the order the modules have always declared them in, which is
+not sorted.  A per-instance row (a ``State`` cell by its type) is one row,
+declared once for each instance a module uses.
 
 What a call's emitter is handed is its record's :class:`Binding`, the
 argument convention that emitter takes.
@@ -304,52 +302,52 @@ BUILTINS: Mapping[str, BuiltinSpec] = _table(
         forall=("T",), since="0.0.117", lowering=Inline("_translate_array_flatten")),
     _fn("array_sort_by", (_array(T), _pure_fn((T, T), _ORDERING)), _array(T),
         forall=("T",), since="0.0.117", lowering=Inline("_translate_array_sort_by")),
-    # --- Map<K, V>: host imports per key and value representation;
-    # `Eq<K>` and `Hash<K>` --------------------------------------------
+    # --- Map<K, V>: functions of the module, one per key and value
+    # representation (`vera.wasm.hamt`, #1676); `Eq<K>` and `Hash<K>` ------
     _fn("map_new", (), _map(K, V),
         forall=("K", "V"), constraints=_MAP_K, since="0.0.94",
-        lowering=Host("_translate_map_new", "map", Binding.CALL)),
+        lowering=Inline("_translate_map_new", Binding.CALL)),
     _fn("map_insert", (_map(K, V), K, V), _map(K, V),
         forall=("K", "V"), constraints=_MAP_K, since="0.0.94",
-        lowering=Host("_translate_map_insert", "map", Binding.CALL)),
+        lowering=Inline("_translate_map_insert", Binding.CALL)),
     _fn("map_get", (_map(K, V), K), _option(V),
         forall=("K", "V"), constraints=_MAP_K, since="0.0.94",
-        lowering=Host("_translate_map_get", "map", Binding.CALL)),
+        lowering=Inline("_translate_map_get", Binding.CALL)),
     _fn("map_contains", (_map(K, V), K), BOOL,
         forall=("K", "V"), constraints=_MAP_K, since="0.0.94",
-        lowering=Host("_translate_map_contains", "map", Binding.CALL)),
+        lowering=Inline("_translate_map_contains", Binding.CALL)),
     _fn("map_remove", (_map(K, V), K), _map(K, V),
         forall=("K", "V"), constraints=_MAP_K, since="0.0.94",
-        lowering=Host("_translate_map_remove", "map", Binding.CALL)),
+        lowering=Inline("_translate_map_remove", Binding.CALL)),
     _fn("map_size", (_map(K, V),), INT,
         forall=("K", "V"), constraints=_MAP_K, since="0.0.94",
-        lowering=Host("_translate_map_size", "map")),
+        lowering=Inline("_translate_map_size")),
     _fn("map_keys", (_map(K, V),), _array(K),
         forall=("K", "V"), constraints=_MAP_K, since="0.0.94",
-        lowering=Host("_translate_map_keys", "map", Binding.CALL)),
+        lowering=Inline("_translate_map_keys", Binding.CALL)),
     _fn("map_values", (_map(K, V),), _array(V),
         forall=("K", "V"), constraints=_MAP_K, since="0.0.94",
-        lowering=Host("_translate_map_values", "map", Binding.CALL)),
-    # --- Set<T>: host imports per element representation; `Eq<T>` and
-    # `Hash<T>` --------------------------------------------------------
+        lowering=Inline("_translate_map_values", Binding.CALL)),
+    # --- Set<T>: functions of the module, one per element
+    # representation (`vera.wasm.hamt`, #1676); `Eq<T>` and `Hash<T>` --
     _fn("set_new", (), _set(T),
         forall=("T",), constraints=_SET_T, since="0.0.95",
-        lowering=Host("_translate_set_new", "set", Binding.CALL)),
+        lowering=Inline("_translate_set_new", Binding.CALL)),
     _fn("set_add", (_set(T), T), _set(T),
         forall=("T",), constraints=_SET_T, since="0.0.95",
-        lowering=Host("_translate_set_add", "set", Binding.CALL)),
+        lowering=Inline("_translate_set_add", Binding.CALL)),
     _fn("set_contains", (_set(T), T), BOOL,
         forall=("T",), constraints=_SET_T, since="0.0.95",
-        lowering=Host("_translate_set_contains", "set", Binding.CALL)),
+        lowering=Inline("_translate_set_contains", Binding.CALL)),
     _fn("set_remove", (_set(T), T), _set(T),
         forall=("T",), constraints=_SET_T, since="0.0.95",
-        lowering=Host("_translate_set_remove", "set", Binding.CALL)),
+        lowering=Inline("_translate_set_remove", Binding.CALL)),
     _fn("set_size", (_set(T),), INT,
         forall=("T",), constraints=_SET_T, since="0.0.95",
-        lowering=Host("_translate_set_size", "set")),
+        lowering=Inline("_translate_set_size")),
     _fn("set_to_array", (_set(T),), _array(T),
         forall=("T",), constraints=_SET_T, since="0.0.95",
-        lowering=Host("_translate_set_to_array", "set", Binding.CALL)),
+        lowering=Inline("_translate_set_to_array", Binding.CALL)),
     # --- Decimal: construction, conversion, arithmetic, comparison,
     # rounding.  A unary operation's literals are its import's parameter
     # and result types, which its emitter reads to wrap and unwrap -------
@@ -737,13 +735,12 @@ class HostImport:
 
     name: str
     family: str
-    #: WAT value types.  In a per-instance row, ``"K"``, ``"V"`` and
-    #: ``"E"`` stand for the key, value and element representation the
-    #: name's suffix tags, and ``"C"`` for a ``State`` cell's type.
+    #: WAT value types.  In a ``State`` row, ``"C"`` stands for the cell's
+    #: type.
     params: tuple[str, ...] = ()
     results: tuple[str, ...] = ()
-    #: The slots the name's suffix tags, in order (``"kv"``: ``$k<t>_v<t>``),
-    #: ``"cell"`` for a ``State`` cell's ``_<family>``, or ``""``.
+    #: ``"cell"`` for a ``State`` row, declared once per cell under the
+    #: cell's family (``state_get_Int``), or ``""``.
     instance: str = ""
     #: The built-in or effect operation the import implements; empty for
     #: the runtime's own imports.
@@ -770,8 +767,6 @@ HOST_FAMILIES: tuple[HostFamily, ...] = (
     HostFamily("io", Style.GROUPED, Gate.NAMES),
     HostFamily("md", Style.GROUPED, Gate.NAMES),
     HostFamily("regex", Style.GROUPED, Gate.NAMES),
-    HostFamily("map", Style.SEPARATE, Gate.NAMES),
-    HostFamily("set", Style.SEPARATE, Gate.NAMES),
     HostFamily("decimal", Style.SEPARATE, Gate.NAMES),
     HostFamily("wrap", Style.SEPARATE, Gate.FLAG),
     HostFamily("json", Style.GROUPED, Gate.NAMES),
@@ -807,13 +802,11 @@ def _regex(name: str, params: tuple[str, ...]) -> HostImport:
 
 
 def _handle(family: str, name: str, params: tuple[str, ...],
-            results: tuple[str, ...], instance: str = "",
-            *, wasi: tuple[str, ...] = ()) -> HostImport:
-    """A Map, Set or Decimal import: its value lives on the GC heap behind
-    a wrapper the wrap table reclaims (#573)."""
-    return HostImport(name, family, params, results, instance, serves=name,
-                      needs_alloc=True, needs_memory=True, needs_wrap_table=True,
-                      wasi=wasi)
+            results: tuple[str, ...]) -> HostImport:
+    """A Decimal import: its value lives on the GC heap behind a wrapper
+    the wrap table reclaims (#573)."""
+    return HostImport(name, family, params, results, serves=name,
+                      needs_alloc=True, needs_memory=True, needs_wrap_table=True)
 
 
 def _heap(family: str, name: str, params: tuple[str, ...],
@@ -858,23 +851,6 @@ HOST_IMPORTS: tuple[HostImport, ...] = (
     _regex("regex_find_all", ("i32", "i32", "i32", "i32")),
     _regex("regex_match", ("i32", "i32", "i32", "i32")),
     _regex("regex_replace", ("i32", "i32", "i32", "i32", "i32", "i32")),
-    # --- Map<K, V>: the map is a wrapper pointer (#706) ---------------------
-    _handle("map", "map_contains", ("i32", "K"), ("i32",), "k", wasi=(WASI_SERVER,)),
-    # `map_get` is named by its value too: the host builds the `Option<V>`.
-    _handle("map", "map_get", ("i32", "K"), ("i32",), "kv", wasi=(WASI_SERVER,)),
-    _handle("map", "map_insert", ("i32", "K", "V"), ("i32",), "kv", wasi=(WASI_SERVER,)),
-    _handle("map", "map_keys", ("i32",), _I32_PAIR, "k", wasi=(WASI_SERVER,)),
-    _handle("map", "map_new", (), ("i32",), wasi=(WASI_SERVER,)),
-    _handle("map", "map_remove", ("i32", "K"), ("i32",), "k", wasi=(WASI_SERVER,)),
-    _handle("map", "map_size", ("i32",), ("i64",), wasi=(WASI_SERVER,)),
-    _handle("map", "map_values", ("i32",), _I32_PAIR, "v", wasi=(WASI_SERVER,)),
-    # --- Set<T> -----------------------------------------------------------------
-    _handle("set", "set_add", ("i32", "E"), ("i32",), "e"),
-    _handle("set", "set_contains", ("i32", "E"), ("i32",), "e"),
-    _handle("set", "set_new", (), ("i32",)),
-    _handle("set", "set_remove", ("i32", "E"), ("i32",), "e"),
-    _handle("set", "set_size", ("i32",), ("i64",)),
-    _handle("set", "set_to_array", ("i32",), _I32_PAIR, "e"),
     # --- Decimal: a handle into the host's store (#573 phase 3) -------------
     _handle("decimal", "decimal_abs", ("i32",), ("i32",)),
     _handle("decimal", "decimal_add", _I32_PAIR, ("i32",)),
@@ -893,17 +869,16 @@ HOST_IMPORTS: tuple[HostImport, ...] = (
     # --- The wrap table's two helpers (#573, #695/#705): declared when
     # any wrapper is, and called by `$gc_collect`'s phase 2c and by the
     # wrap step ---------------------------------------------------------------
-    HostImport("host_decref_handle", "wrap", ("i32", "i32"), wasi=(WASI_SERVER,)),
-    HostImport("attach_bucket_to_wrapper", "wrap", ("i32", "i32", "i32"),
-               wasi=(WASI_SERVER,)),
-    # --- Json and Html: the parsers allocate the `Map` of a `JObject` or
-    # an `HtmlElement`, so they declare the wrap table too (#573) -----------
-    _heap("json", "json_parse", _I32_PAIR, ("i32",), wrap=True),
-    _heap("json", "json_stringify", ("i32",), _I32_PAIR, wrap=True),
-    _heap("html", "html_parse", _I32_PAIR, ("i32",), wrap=True),
-    _heap("html", "html_to_string", ("i32",), _I32_PAIR, wrap=True),
-    _heap("html", "html_query", ("i32", "i32", "i32"), _I32_PAIR, wrap=True),
-    _heap("html", "html_text", ("i32",), _I32_PAIR, wrap=True),
+    HostImport("host_decref_handle", "wrap", ("i32", "i32")),
+    HostImport("attach_bucket_to_wrapper", "wrap", ("i32", "i32", "i32")),
+    # --- Json and Html: the parsers build a `JObject`'s and an
+    # `HtmlElement`'s `Map` through the module's own functions (#1676) -----
+    _heap("json", "json_parse", _I32_PAIR, ("i32",)),
+    _heap("json", "json_stringify", ("i32",), _I32_PAIR),
+    _heap("html", "html_parse", _I32_PAIR, ("i32",)),
+    _heap("html", "html_to_string", ("i32",), _I32_PAIR),
+    _heap("html", "html_query", ("i32", "i32", "i32"), _I32_PAIR),
+    _heap("html", "html_text", ("i32",), _I32_PAIR),
     # --- Http effect operations --------------------------------------------
     _heap("http", "http_get", _I32_PAIR, ("i32",), "Http.get"),
     _heap("http", "http_post", ("i32", "i32", "i32", "i32"), ("i32",), "Http.post"),
@@ -948,14 +923,6 @@ HOST_IMPORT_BY_NAME: Mapping[str, HostImport] = {row.name: row for row in HOST_I
 
 _STYLE: Mapping[str, Style] = {f.name: f.style for f in HOST_FAMILIES}
 
-#: The WAT types of a ``Map``/``Set`` key, value or element by its tag:
-#: Int and Nat (``i``), Float64 (``f``), String (``s``), and every other
-#: representation, an i32 (``b``).
-TAG_TYPES: Mapping[str, tuple[str, ...]] = {
-    "i": ("i64",), "f": ("f64",), "s": ("i32", "i32"), "b": ("i32",),
-}
-
-
 def family_rows(family: str) -> Iterator[HostImport]:
     """A family's rows, in the order a module declares them."""
     return (row for row in HOST_IMPORTS if row.family == family)
@@ -967,28 +934,11 @@ CELL = "cell"
 _CELL_ROWS = tuple(row for row in HOST_IMPORTS if row.instance == CELL)
 
 
-def instance_name(op: str, **tags: str | None) -> str:
-    """The import name of *op* at the representations *tags* names.
-
-    ``instance_name("map_insert", k="s", v="i")`` is ``map_insert$ks_vi``.
-    A tag of None is absent.  The tags given must be exactly the row's
-    slots, so a row without an instance takes none.
-    """
-    row = HOST_IMPORT_BY_NAME[op]
-    present = {slot: tag for slot, tag in tags.items() if tag is not None}
-    if row.instance == CELL or set(present) != set(row.instance):
-        raise ValueError(
-            f"{op} is instanced by {row.instance!r}, not by {sorted(present)}")
-    if not row.instance:
-        return op
-    return op + "$" + "_".join(f"{slot}{present[slot]}" for slot in row.instance)
-
-
 def host_import(name: str) -> HostImport | None:
     """The row a declared import *name* is an instance of, or None: the
-    row's own name, an instance's (``map_insert$ks_vi``), or a ``State``
-    cell's, the row's name and the cell's family (``state_get_Int``)."""
-    row = HOST_IMPORT_BY_NAME.get(name.partition("$")[0])
+    row's own name, or a ``State`` cell's, the row's name and the cell's
+    family (``state_get_Int``)."""
+    row = HOST_IMPORT_BY_NAME.get(name)
     if row is not None:
         return row
     return next((r for r in _CELL_ROWS if name.startswith(r.name + "_")), None)
@@ -1014,45 +964,21 @@ def _func(name: str, params: tuple[str, ...], results: tuple[str, ...],
     return f"(func $vera.{name}" + "".join(" " + piece for piece in pieces) + ")"
 
 
-def _expand(types: tuple[str, ...], tags: Mapping[str, str]) -> tuple[str, ...]:
-    out: list[str] = []
-    for t in types:
-        slot = t.lower()
-        out.extend(TAG_TYPES[tags[slot]] if t.isupper() else (t,))
-    return tuple(out)
-
-
 def import_line(name: str) -> str:
-    """The declaration of import *name*, a row's name or an instance's."""
-    row = host_import(name)
+    """The declaration of import *name*, a row's name."""
+    row = HOST_IMPORT_BY_NAME.get(name)
     if row is None or row.instance == CELL:
         raise KeyError(f"no host import declares {name!r}")
     if row.line:
         return row.line
-    suffix = name.partition("$")[2]
-    tags = {part[0]: part[1:] for part in suffix.split("_")} if suffix else {}
-    if "".join(tags) != row.instance:
-        raise KeyError(f"{name!r} does not name an instance of {row.name}")
-    sig = _func(name, _expand(row.params, tags), _expand(row.results, tags),
-                _STYLE[row.family])
+    sig = _func(name, row.params, row.results, _STYLE[row.family])
     return f'  (import "vera" "{name}" {sig})'
 
 
 def declaration_lines(family: str, names: Collection[str]) -> list[str]:
-    """The declarations of *family*'s imports among *names*.
-
-    In the family's row order; a per-instance row's instances in name order.
-    A row's own name stands for an instanced row's use but declares nothing:
-    only an instance is an import.
-    """
-    lines: list[str] = []
-    for row in family_rows(family):
-        if row.instance:
-            prefix = row.name + "$"
-            lines.extend(import_line(n) for n in sorted(names) if n.startswith(prefix))
-        elif row.name in names:
-            lines.append(import_line(row.name))
-    return lines
+    """The declarations of *family*'s imports among *names*, in the
+    family's row order."""
+    return [import_line(row.name) for row in family_rows(family) if row.name in names]
 
 
 def cell_lines(family_symbol: str, wasm_type: str) -> list[str]:
@@ -1087,14 +1013,11 @@ def _validate() -> None:
         if not set(row.wasi) <= set(_BOTH):  # pragma: no cover — table typo
             raise ValueError(f"host import {row.name}: unknown WASI world in {row.wasi}")
     for row in HOST_IMPORTS:
-        slots = {t.lower() for t in (*row.params, *row.results) if t.isupper()}
-        # A slot may name the import without changing its signature
-        # (`map_keys$ki`), so the placeholders are within the slots.
-        allowed = {"c"} if row.instance == CELL else set(row.instance)
-        if not slots <= allowed:  # pragma: no cover — table typo
+        slots = {t for t in (*row.params, *row.results) if t.isupper()}
+        if slots - ({"C"} if row.instance == CELL else set()):  # pragma: no cover
             raise ValueError(
-                f"host import {row.name}: placeholders {sorted(slots)} are not"
-                f" slots of its instance {row.instance!r}")
+                f"host import {row.name}: placeholders {sorted(slots)} outside"
+                f" a State cell's row")
     for spec in BUILTINS.values():
         low = spec.lowering
         if isinstance(low, Host):

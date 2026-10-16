@@ -677,10 +677,6 @@ INTERNAL_TRAPS: tuple[InternalTrap, ...] = (
         "the VERA_GC_CHECK_MARKS invariant (a debugging knob)",
     ),
     InternalTrap(
-        "codegen/wasi.py:_op_attach_bucket_to_wrapper", "compiler_bug", 1,
-        "the server world's bucket-as-truth tripwire (#706)",
-    ),
-    InternalTrap(
         "wasm/calls.py:_translate_qualified_call", "compiler_bug", 1,
         "after `IO.exit`, which never returns",
     ),

@@ -52,4 +52,4 @@ Each entry keeps its chapter's wording, including the issue it cites. The specif
 
 ### 13.1 Overview
 
-**Status: Partially implemented.**  The target covers the **IO and Random host families** (Section 13.4).  It is not a blanket "WASI 0.2 compliant" mode: a program using any other host family (Http, Map, Set, Decimal, Json, Html, Md, Regex, Math, Inference, DB, State, Async) is rejected with a diagnostic naming the unsupported family — never silently compiled against the core target instead.
+**Status: Partially implemented.**  The target covers the **IO and Random host families** (Section 13.4).  It is not a blanket "WASI 0.2 compliant" mode: a program using any other host family (Http, Decimal, Json, Html, Md, Regex, Math, Inference, DB, State, Async) is rejected with a diagnostic naming the unsupported family — never silently compiled against the core target instead.  `Map` and `Set` are the module's own code (Section 9.4.3) and run in both worlds at every instance.

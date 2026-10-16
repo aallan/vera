@@ -1432,6 +1432,10 @@ class FunctionCompilationMixin:
         # #924: recursive show/hash helper functions generated while lowering
         # this body (deduped by name across the whole module at assembly).
         self._show_hash_helpers.update(ctx._show_hash_helpers)
+        # #1676: the Map and Set functions this body calls, and the ones a
+        # host calls, which the module exports.
+        self._collection_helpers.update(ctx._collection_helpers)
+        self._collection_exports |= ctx._collection_exports
 
         # #517 — tail-call optimization fallback for functions whose
         # bodies are followed by post-body work that must run before

@@ -470,7 +470,7 @@ array, useful when processing diagnostics programmatically.
 @Tuple<Int, String>                      -- tuple
 @Option<Int>                             -- Option type (Some/None)
 @Map<String, Int>                        -- key-value map (keys: Eq + Hash)
-@Set<Int>                                -- unordered unique elements (Eq + Hash)
+@Set<Int>                                -- unique elements, insertion order (Eq + Hash)
 @Decimal                                 -- exact decimal arithmetic
 @Json                                    -- JSON data (parse/query/serialize)
 @HtmlNode                                -- HTML document node (parse/query/serialize)
@@ -787,7 +787,7 @@ array_fold(
 -- 0+1+3 + 2+3 + 3+3 = 15
 ```
 
-The same applies to `String` captures.  ADT captures (`Option<T>`, `Result<T, E>`, user `data` types, `Json`, `HtmlNode`, `MdBlock`, opaque handles `Map<K, V>` / `Set<T>` / `Decimal`) work too — they're single-i32 wrapper pointers that the closure-struct layout handles directly.
+The same applies to `String` captures.  ADT captures (`Option<T>`, `Result<T, E>`, user `data` types, `Json`, `HtmlNode`, `MdBlock`, opaque handles `Map<K, V>` / `Set<T>` / `Decimal`) work too — they're single-i32 pointers that the closure-struct layout handles directly.
 
 ### When to use recursion instead
 
@@ -901,7 +901,7 @@ array_sort_by(@Array<Int>.0, fn(@Int, @Int -> @Ordering) effects(pure) { ... }) 
 
 ### Map operations
 
-`Map<K, V>` is a key-value collection. Keys must satisfy `Eq` and `Hash` abilities (primitive types: `Int`, `Nat`, `Bool`, `Float64`, `String`, `Byte`). Values may be any type with a runtime representation — a zero-size key or value type (`Unit`, or a `Future` wrapping one) is rejected at check time with E135. All operations are pure — insert and remove return new maps.
+`Map<K, V>` is a key-value collection. Keys must satisfy `Eq` and `Hash` abilities (primitive types: `Int`, `Nat`, `Bool`, `Float64`, `String`, `Byte`). Values may be any type with a runtime representation — a zero-size key or value type (`Unit`, or a `Future` wrapping one) is rejected at check time with E135. All operations are pure — insert and remove return new maps, sharing what they do not change, so an insert costs the depth of the map's trie, not its size. `map_keys` and `map_values` return the keys and values in insertion order: a key inserted again keeps its first position, and a removed key loses it. `-0.0` and `0.0` are one key, and so are any two NaNs.
 
 <!-- vera:skip-parse category="FRAGMENT" reason="Map built-in examples, bare calls" -->
 ```vera
@@ -919,7 +919,7 @@ map_values(@Map<String, Nat>.0)                     -- returns Array<Nat>
 
 ### Set operations
 
-`Set<T>` is an unordered collection of unique elements. Elements must satisfy `Eq` and `Hash` abilities (primitive types: `Int`, `Nat`, `Bool`, `Float64`, `String`, `Byte`); a zero-size element type (`Unit`, or a `Future` wrapping one) is rejected at check time with E135. All operations are pure — add and remove return new sets.
+`Set<T>` is a collection of unique elements, which `set_to_array` returns in insertion order. Elements must satisfy `Eq` and `Hash` abilities (primitive types: `Int`, `Nat`, `Bool`, `Float64`, `String`, `Byte`); a zero-size element type (`Unit`, or a `Future` wrapping one) is rejected at check time with E135. All operations are pure — add and remove return new sets.
 
 <!-- vera:skip-parse category="FRAGMENT" reason="Set built-in examples, bare calls" -->
 ```vera

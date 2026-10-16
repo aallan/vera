@@ -11,7 +11,7 @@ import wasmtime
 
 from vera.runtime.heap import (
     _ShadowGuard,
-    _alloc_map_wrapper,
+    _alloc_jobject_map,
     _alloc_result_err_string,
     _alloc_result_ok_i32,
     _alloc_string,
@@ -109,7 +109,7 @@ def register_json(linker: wasmtime.Linker, ops_used: set[str]) -> None:
             with _ShadowGuard(caller) as guard:
                 json_ptr = write_json(
                     caller, _call_alloc, _write_i32, _write_f64,
-                    _alloc_string, _alloc_map_wrapper, guard, parsed,
+                    _alloc_string, _alloc_jobject_map, guard, parsed,
                 )
                 # Push the tree root before the Result.Ok alloc —
                 # that alloc could trigger GC and free the

@@ -1,4 +1,4 @@
-"""Tests for vera.codegen — gc_reclamation (transient Map/Set/Decimal reclamation, bucket occupancy, host-handle reclamation).
+"""Tests for vera.codegen — gc_reclamation (transient Map/Set/Decimal reclamation, zero and empty keys, host-handle reclamation).
 
 Split from tests/test_codegen.py (#419). Shared helpers live in tests/codegen_helpers.py.
 """
@@ -20,11 +20,11 @@ from tests.codegen_helpers import (
 
 
 class TestBucketOccupancy706:
-    """#706: the 20-byte bucket slot carries an explicit occupancy flag,
-    so an empty-string key (``(ptr, len) == (0, 0)``) and an Int ``0``
-    key are distinguished from a genuinely empty slot — closing the
+    """An empty-string key (``(ptr, len) == (0, 0)``) and an Int ``0`` key
+    are keys like any other, never mistaken for an absent entry: the
     sentinel collision the old write-only mirror left latent (#707
-    review).
+    review), which the bucket's occupancy flag closed (#706) and a trie
+    that holds no empty slot cannot have (#1676).
     """
 
     def test_empty_string_key_round_trips(self) -> None:
@@ -131,11 +131,11 @@ class TestSameValueZeroKeys743:
     """PR #743 (folded into #706): Float64 Map keys / Set elements compare
     under SameValueZero, so a NaN key/element round-trips (NaN equals NaN).
 
-    Pre-existing: the CLI Python dict / the browser ``decodeColumn`` list
-    use ``==`` / ``===``, which treat NaN as unequal to itself, so a NaN
-    key could never be found, removed, or deduped.  ``0.0 / 0.0`` verifies
-    and runs to NaN, so this is reachable.  Surfaced by the CodeRabbit
-    review of #706.
+    Pre-#743 the CLI Python dict and the browser's lists used ``==`` /
+    ``===``, which treat NaN as unequal to itself, so a NaN key could never
+    be found, removed, or deduped; the module's own map stores a ``Float64``
+    key canonical (#1676).  ``0.0 / 0.0`` verifies and runs to NaN, so this
+    is reachable.  Surfaced by the CodeRabbit review of #706.
     """
 
     def test_nan_map_key_found(self) -> None:
@@ -215,12 +215,12 @@ public fn main(-> @Int)
 class TestHostHandleReclamation573:
     """Reclamation regressions originally for the heap-wrap-as-ADT
     migration of Map (#573), Set (#575), and Decimal (#576), updated
-    for the #706 bucket-as-truth move.
+    for the #706 bucket-as-truth move and for #1676.
 
-    After #706 Map and Set hold no Python store: each op builds a fresh
-    wrapper + bucket and the transients are reclaimed by ordinary
-    mark-sweep (no Phase 2c destructor).  Decimal alone still uses a
-    Python store, reclaimed via ``host_decref_handle``.
+    A Map or Set is the module's own persistent trie (#1676): an update
+    copies a path and the transients are reclaimed by ordinary mark-sweep
+    (no Phase 2c destructor).  Decimal alone uses a Python store,
+    reclaimed via ``host_decref_handle``.
 
     Covers:
 
@@ -231,22 +231,19 @@ class TestHostHandleReclamation573:
     * **value correct after pressure** — repeated lookups against the
       live final value across heavy GC cadence prove reclamation never
       evicts live entries.
-    * **JObject bucket path at scale** — the JSON parser's internal
-      ``Map<String, Json>`` allocations round-trip through the bucket
-      codec thousands of times without corruption.
-    * **wrap-table machinery present** — Map / Set / JSON / HTML /
-      Decimal modules emit the ``host_decref_handle`` import,
-      ``$register_wrapper`` (with its #579 compaction slow path), and
-      export.  Post-#706 only Decimal actually registers; the infra is
-      still gated on the broad ops predicate, so it is emitted (but
-      unused) for non-Decimal modules too — conservative and
-      correctness-neutral.
+    * **JObject map at scale** — the JSON parser's internal
+      ``Map<String, Json>`` is built and read through the module's own
+      map functions thousands of times without corruption.
+    * **wrap-table machinery** — a Decimal module emits the
+      ``host_decref_handle`` import, ``$register_wrapper`` (with its #579
+      compaction slow path), and export; a JSON or HTML module, whose
+      host builds no wrapper, emits none of it.
     """
 
     def test_map_chain_reclaims_transients(self) -> None:
-        """#706: a long ``array_fold`` over ``map_insert`` keeps only the
-        final Map reachable; every transient wrapper + bucket is
-        reclaimed by ordinary mark-sweep (no Python store to evict).
+        """A long ``array_fold`` over ``map_insert`` keeps only the final
+        Map reachable; every transient path copy is reclaimed by ordinary
+        mark-sweep (no Python store to evict).
 
         Measured via ``peak_heap_bytes`` (the bump high-water mark): with
         reclamation the heap grows ~O(N) across the chain (≈6x for 10x
@@ -274,12 +271,12 @@ public fn main(@Unit -> @Int)
         _assert_chain_reclaims(chain, 1000, 10000, 500, 5000)
 
     def test_json_object_map_bucket_path_at_scale(self) -> None:
-        """#706: JSON's internal ``Map<String, Json>`` for each JObject is
-        a bucket-as-truth wrapper (``_alloc_map_wrapper``).  Parse 5 000
-        transient JObjects in an iterative ``array_fold`` and read a field
-        back out of each, round-tripping every one through the bucket
-        *encode* (``_alloc_map_wrapper``) and *decode* (``_decode_map``
-        via ``map_get``, reached through ``json_get_int``) paths at scale
+        """JSON's internal ``Map<String, Json>`` for each JObject is the
+        module's own map, which the host builds through the exported
+        ``map_from_arrays$ks_vb`` (#1676).  Parse 5 000 transient JObjects
+        in an iterative ``array_fold`` and read a field back out of each,
+        round-tripping every one through the host's build and the
+        generated ``map_get`` (reached through ``json_get_int``) at scale
         without corruption.
 
         This is a functional round-trip check, not a leak check.  Each
@@ -289,8 +286,8 @@ public fn main(@Unit -> @Int)
         ``peak_heap_bytes`` ratio cannot separate the two (that signal
         needs healthy O(N) vs leaked O(N^2), which holds for the Map/Set
         chains above but never for constant-size transients).  Reclamation
-        of these JObject wrappers is covered there — the chains leak
-        O(N^2) through the same ``_alloc_map_wrapper`` encode path — and
+        of these JObject maps is covered there — the chains leak O(N^2)
+        through the same path-copying insert — and
         their value reachability by ``TestMapHostStoreGCReachability695``
         under ``VERA_EAGER_GC=1``.
         """
@@ -470,21 +467,16 @@ public fn main(@Unit -> @Bool)
             f"reclamation isn't keeping pace with allocation."
         )
 
-    def test_json_only_module_includes_wrap_table(self) -> None:
-        """A module that uses ONLY ``json_parse`` (no user-level
-        ``map_*`` ops) still emits the wrap-table infrastructure
-        (``host_decref_handle`` import, ``$register_wrapper``, export).
+    def test_json_only_module_carries_no_wrap_table(self) -> None:
+        """A module that uses only ``json_parse`` carries none of the
+        wrap-table machinery (no ``host_decref_handle`` import, no
+        ``$register_wrapper``, no export), and runs.
 
-        The ``_needs_wrap_table`` flag flips on a Json or Html import in
-        ``_host_imports_used``, whose row sets it (this was #573 finding
-        5: JSON / HTML modules must not trap at instantiation when the
-        host accesses the ``register_wrapper`` export).  Post-#706
-        ``write_json``'s JObject branch builds its ``Map<String, Json>``
-        as a bucket-as-truth wrapper, which does NOT register — so this
-        infra is conservatively emitted but unused for a JSON-only
-        module (Decimal is the only registerer post-#706).  This
-        structural test pins that the emission + instantiation path
-        stays present and trap-free.
+        #573 finding 5 gave JSON and HTML modules the table because their
+        hosts reached for the ``register_wrapper`` export at instantiation;
+        the hosts build a ``JObject``'s map through the module's own map
+        functions now (#1676), and a run that reached for the export would
+        trap on its absence.
         """
         src = """
 public fn main(@Unit -> @Int)
@@ -498,65 +490,28 @@ public fn main(@Unit -> @Int)
 }
 """
         wat = _compile_ok(src).wat
-        assert (
-            'import "vera" "host_decref_handle"' in wat
-        ), (
-            "#573 finding 5 regression: JSON-only program is "
-            "missing the host_decref_handle import (gated on "
-            "the json_parse row's flag so the wrap-table machinery is present)."
-        )
-        assert "$register_wrapper" in wat, (
-            "#573 finding 5 regression: JSON-only program is "
-            "missing the $register_wrapper helper; the host must not "
-            "trap at instantiation reaching for the export."
-        )
-        assert '(export "register_wrapper"' in wat, (
-            "#573 finding 5 regression: JSON-only program is "
-            "missing the register_wrapper export."
-        )
-        # Functional check too: the program runs and returns 1.
+        assert 'import "vera" "host_decref_handle"' not in wat
+        assert "$register_wrapper" not in wat
+        assert '(export "register_wrapper"' not in wat
         assert _run(src) == 1
 
-    def test_html_only_module_includes_wrap_table(self) -> None:
-        """An HTML-using program emits the wrap-table machinery
-        (mirror of ``test_json_only_module_includes_wrap_table``).
-
-        ``write_html``'s HtmlElement attrs branch builds its
-        ``Map<String, String>`` as a bucket-as-truth wrapper exactly
-        like ``write_json``'s JObject branch — neither registers
-        post-#706, so the infra is emitted (gated on the Html rows' flag)
-        but unused here.  Compiling ``html_parse`` typically also pulls
-        in the prelude's ``html_attr`` (which dispatches to
-        ``map_get``), so a Map import sets the flag anyway in practice —
-        but the Html rows' flag is the load-bearing one if
-        that prelude transitivity ever changes.
-        """
+    def test_html_only_module_carries_no_wrap_table(self) -> None:
+        """The HTML twin of ``test_json_only_module_carries_no_wrap_table``:
+        an ``HtmlElement``'s attributes are the module's own map too."""
         src = """
 public fn main(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
-  match html_parse("<p>hello</p>") {
+  match html_parse("<p class=\\"x\\">hello</p>") {
     Ok(@HtmlNode) -> 1,
     Err(@String) -> 0
   }
 }
 """
         wat = _compile_ok(src).wat
-        assert (
-            'import "vera" "host_decref_handle"' in wat
-        ), (
-            "#573 finding 5 regression (HTML): missing "
-            "host_decref_handle import (gated on the Html rows' flag so "
-            "the wrap-table machinery is present)."
-        )
-        assert "$register_wrapper" in wat, (
-            "#573 finding 5 regression (HTML): missing "
-            "$register_wrapper helper."
-        )
-        assert '(export "register_wrapper"' in wat, (
-            "#573 finding 5 regression (HTML): missing "
-            "register_wrapper export."
-        )
+        assert 'import "vera" "host_decref_handle"' not in wat
+        assert "$register_wrapper" not in wat
+        assert '(export "register_wrapper"' not in wat
         assert _run(src) == 1
 
     def test_register_wrapper_has_compaction_slow_path(self) -> None:
@@ -585,11 +540,7 @@ public fn main(@Unit -> @Int)
 public fn main(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
-  let @Map<Int, Int> = map_new();
-  match map_get(@Map<Int, Int>.0, 1) {
-    Some(@Int) -> @Int.0,
-    None -> 0
-  }
+  string_length(decimal_to_string(decimal_from_int(1)))
 }
 """
         wat = _compile_ok(src).wat

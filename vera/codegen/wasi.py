@@ -570,8 +570,7 @@ _DROPS: dict[str, tuple[str, str, str]] = {
 #: refused, naming the family and those imports.
 _CLI_REFUSED: tuple[str, ...] = wasi_refused(WASI_CLI)
 
-#: The same for the server world, which also implements the map operations
-#: at the ``Map<String, String>`` instances (``_MAP_OPS``).
+#: The same for the server world.
 _SERVER_REFUSED: tuple[str, ...] = wasi_refused(WASI_SERVER)
 
 _DECLARED_IMPORT_RE = re.compile(r'^  \(import "vera" "([^"]+)" ', re.MULTILINE)
@@ -2766,20 +2765,14 @@ def emit_wasi_component(result: CompileResult, world: str = "cli") -> str:
 #
 # Topology: identical to the cli world (MAIN owns memory/GC/arena/
 # cabi_realloc; adapter plants dispatch-table ops), extended with:
-#   - the String-keyed Map ops emulated IN-GUEST in the adapter
-#     (post-#706 Maps are guest-memory bucket arrays — no host store),
 #   - the serve wrapper ``$serve_handle`` in the adapter, importing
 #     the wasi:http lowers directly (never through the dispatch
-#     table) plus MAIN's exported ``handle``/``alloc``/GC globals,
-#   - a 32-slot dispatch table (map family at slots 16+),
-#   - the wrap-table region accepted (map programs carry it), arena
-#     placed above it exactly as the cli world places it above the
-#     GC statics.
-
-#: Map wrapper tag word — must equal ``vera.runtime.heap._MAP_HANDLE_TAG``
-#: (pinned by a drift test in tests/test_wasi_target.py; not imported
-#: here to keep this module free of runtime deps).
-_MAP_WRAPPER_TAG = 0xFEEDC001
+#     table) plus MAIN's exported ``handle``/``alloc``/GC globals and
+#     its own map functions, which build the Request's headers and read
+#     the Response's (#1676: a Map is the module's own code),
+#   - a 32-slot dispatch table,
+#   - the wrap-table region accepted, arena placed above it exactly as
+#     the cli world places it above the GC statics.
 
 _SERVER_TABLE_SIZE = 32
 
@@ -2811,23 +2804,6 @@ _METHOD_NAMES: tuple[str, ...] = (
 #: 39-case variant in ``_HTTP_TYPES_IFACE`` below; 0-based).
 _ERRCODE_INTERNAL_ERROR = 38
 
-#: In-guest Map ops (String/String only) + the two wrapper stubs.
-#: Slots extend the cli table (0-15); pure guest code — no WASI
-#: interfaces, lowers, or drops.
-_MAP_OPS: dict[str, _OpSpec] = {
-    "map_new": _op(16, "", "i32", needs_alloc=True),
-    "map_insert$ks_vs": _op(17, "i32 i32 i32 i32 i32", "i32",
-                            needs_alloc=True),
-    "map_get$ks_vs": _op(18, "i32 i32 i32", "i32", needs_alloc=True),
-    "map_contains$ks": _op(19, "i32 i32 i32", "i32"),
-    "map_size": _op(20, "i32", "i64"),
-    "map_remove$ks": _op(21, "i32 i32 i32", "i32", needs_alloc=True),
-    "map_keys$ks": _op(22, "i32", "i32 i32", needs_alloc=True),
-    "map_values$vs": _op(23, "i32", "i32 i32", needs_alloc=True),
-    "host_decref_handle": _op(24, "i32 i32", ""),
-    "attach_bucket_to_wrapper": _op(25, "i32 i32 i32", ""),
-}
-
 #: Stage-C ops the server world keeps (proxy-world-linkable; design
 #: §1.3 verdict table): the rows both worlds' components implement.
 _SERVER_IO_OPS = frozenset(
@@ -2856,13 +2832,12 @@ _SERVER_REJECTED_OPS: dict[str, str] = {
 
 #: Generalized ``vera.*`` import matcher for the server world: accepts
 #: BOTH the compact param form (``(param i32 i32)``, the IO family)
-#: and the per-param form with ``$``-suffixed names
-#: (``map_insert$ks_vs (param i32) (param i32) ...``, the map family).
+#: and the per-param form.
 _SERVER_IMPORT_RE = re.compile(
     r'^  \(import "vera" "([A-Za-z0-9_$]+)" \(func \$\S+'
     r'((?:\s\(param(?: (?:i32|i64|f32|f64))+\))*)'
-    # Multivalue results are spelled as REPEATED single-type groups
-    # ("(result i32) (result i32)", e.g. map_keys$ks) — hence * here.
+    # Multivalue results may be spelled as REPEATED single-type groups
+    # ("(result i32) (result i32)") — hence * here.
     r'((?:\s\(result(?: (?:i32|i64|f32|f64))+\))*)\)\)$'
 )
 _CORE_TYPE_RE = re.compile(r"i32|i64|f32|f64")
@@ -2872,22 +2847,12 @@ _CORE_TYPE_RE = re.compile(r"i32|i64|f32|f64")
 # Server family gate + handler validation
 # ---------------------------------------------------------------------
 
-def _map_op_is_string_string(op: str) -> bool:
-    """True for ``$ks``/``$vs``-only instantiation suffixes."""
-    suffix = op.split("$", 1)[1]
-    return all(
-        (tok == "ks") if tok.startswith("k") else (tok == "vs")
-        for tok in suffix.split("_")
-    )
-
-
 def _gate_families_server(result: CompileResult) -> None:
     """Server-world family gate (design §3.1/§5.1).
 
-    Same shape as the cli gate but Map<String, String> is allowed
-    (in-guest emulation); any other Map instantiation is rejected
-    naming the offending op, and a cli-only IO operation with its
-    reason.  Never a silent fallback.
+    Same shape as the cli gate, and a cli-only IO operation is rejected
+    with its reason.  Never a silent fallback.  A `Map` or `Set` is the
+    module's own code (#1676) and declares no import.
     """
     declared = _declared_by_family(result.wat)
     offending = [
@@ -2906,26 +2871,14 @@ def _gate_families_server(result: CompileResult) -> None:
             "--target wasi-p2 --world server does not support the "
             f"following host famil{'ies' if len(offending) > 1 else 'y'}: "
             f"{'; '.join(offending)}. Supported families: IO (print, "
-            "stderr, time, sleep), Random, Map<String, String>."
-        )
-    bad_maps = [
-        op for op in declared.get("map", ())
-        if "$" in op and not _map_op_is_string_string(op)
-    ]
-    if bad_maps:
-        raise ValueError(
-            "--target wasi-p2 --world server supports Map host ops "
-            "only at the Map<String, String> instantiation "
-            f"(map_*$ks_vs); unsupported instantiation"
-            f"{'s' if len(bad_maps) > 1 else ''}: {', '.join(bad_maps)}"
+            "stderr, time, sleep), Random."
         )
     for name in _DECLARED_IMPORT_RE.findall(result.wat):
         if name in _SERVER_REJECTED_OPS:
             raise ValueError(
                 "--target wasi-p2 --world server does not support "
                 f"{_SERVER_REJECTED_OPS[name]}. Supported ops: IO.print, "
-                "IO.stderr, IO.time, IO.sleep, Random, and "
-                "Map<String, String>."
+                "IO.stderr, IO.time, IO.sleep, and Random."
             )
     _refuse_unimplemented(declared, WASI_SERVER, "--target wasi-p2 --world server")
 
@@ -2980,9 +2933,7 @@ def _parse_server_imports(wat: str) -> dict[str, _OpSpec]:
         name = m.group(1)
         params = " ".join(_CORE_TYPE_RE.findall(m.group(2)))
         results = " ".join(_CORE_TYPE_RE.findall(m.group(3)))
-        spec = _MAP_OPS.get(name)
-        if spec is None and name in _SERVER_IO_OPS:
-            spec = _OPS[name]
+        spec = _OPS[name] if name in _SERVER_IO_OPS else None
         if spec is None:
             raise ValueError(
                 "--target wasi-p2 --world server does not support the "
@@ -3112,666 +3063,12 @@ def _transform_main_server(
 
 
 # ---------------------------------------------------------------------
-# Server adapter: in-guest Map ops (String/String, bucket-as-truth #706)
+# Server adapter: the op table's function names
 # ---------------------------------------------------------------------
-#
-# Semantics mirrored from vera/runtime/map.py + vera/runtime/heap.py:
-# byte-wise key equality (SameValueZero == bytewise for Strings),
-# position-preserving update (existing key keeps its slot order, new
-# key appends — Python-dict parity, observable via map_keys), copy-on-
-# write (fresh wrapper + bucket per insert/remove), capacity = the
-# smallest power of two >= max(8, 2*count) (``_bkt_capacity``), and
-# new buckets SHARING the immutable key/value string bytes of the
-# source (the host ``_encode_raw`` precedent; the conservative GC
-# traces bucket words, so shared strings stay live via the new
-# bucket).
-#
-# GC discipline (#593 class, mirroring the host callbacks which read
-# everything into Python BEFORE allocating): each op shadow-pushes its
-# raw pointer arguments at entry (rooting a string-pool/null pointer
-# is harmless — the scan range-checks), pushes the new wrapper across
-# the bucket alloc, links bucket into wrapper+8 immediately after the
-# bucket alloc, then does pure memory writes; pops on exit.  Compiled
-# callers do NOT root their arguments across the call — the host path
-# never needed them to.
 
 def _op_ident(name: str) -> str:
     """Adapter function identifier for op ``name`` (strips ``$kX_vX``)."""
     return "$op_" + name.split("$")[0]
-
-
-def _mk_wrapper() -> str:
-    """12-byte Map wrapper {tag, vestigial 0, bucket_ptr 0}."""
-    return (
-        "  (func $mk_wrapper (result i32)\n"
-        "    (local $w i32)\n"
-        "    i32.const 12\n"
-        "    call $alloc\n"
-        "    local.set $w\n"
-        "    local.get $w\n"
-        f"    i32.const {_MAP_WRAPPER_TAG}\n"
-        "    i32.store\n"
-        "    local.get $w\n"
-        "    i32.const 0\n"
-        "    i32.store offset=4\n"
-        "    local.get $w\n"
-        "    i32.const 0\n"
-        "    i32.store offset=8\n"
-        "    local.get $w\n"
-        "  )"
-    )
-
-
-def _bkt_find() -> str:
-    """(bucket, key ptr, key len) -> occupied slot ptr, or 0."""
-    return (
-        "  (func $bkt_find (param $b i32) (param $kp i32) "
-        "(param $kl i32) (result i32)\n"
-        "    (local $cap i32)\n"
-        "    (local $i i32)\n"
-        "    (local $slot i32)\n"
-        "    local.get $b\n"
-        "    i32.eqz\n"
-        "    if\n"
-        "      i32.const 0\n"
-        "      return\n"
-        "    end\n"
-        "    local.get $b\n"
-        "    i32.load\n"
-        "    local.set $cap\n"
-        "    block $done\n"
-        "    loop $scan\n"
-        "      local.get $i\n"
-        "      local.get $cap\n"
-        "      i32.ge_u\n"
-        "      br_if $done\n"
-        "      local.get $b\n"
-        "      i32.const 8\n"
-        "      i32.add\n"
-        "      local.get $i\n"
-        "      i32.const 20\n"
-        "      i32.mul\n"
-        "      i32.add\n"
-        "      local.set $slot\n"
-        "      local.get $slot\n"
-        "      i32.load\n"
-        "      if\n"
-        "        local.get $slot\n"
-        "        i32.load offset=8\n"
-        "        local.get $kl\n"
-        "        i32.eq\n"
-        "        if\n"
-        "          local.get $slot\n"
-        "          i32.load offset=4\n"
-        "          local.get $kp\n"
-        "          local.get $kl\n"
-        "          call $bytes_eq\n"
-        "          if\n"
-        "            local.get $slot\n"
-        "            return\n"
-        "          end\n"
-        "        end\n"
-        "      end\n"
-        "      local.get $i\n"
-        "      i32.const 1\n"
-        "      i32.add\n"
-        "      local.set $i\n"
-        "      br $scan\n"
-        "    end\n"
-        "    end\n"
-        "    i32.const 0\n"
-        "  )"
-    )
-
-
-def _bkt_cap() -> str:
-    """Capacity for N entries: pow2 >= max(8, 2*N) (``_bkt_capacity``)."""
-    return (
-        "  (func $bkt_cap (param $n i32) (result i32)\n"
-        "    (local $cap i32)\n"
-        "    i32.const 8\n"
-        "    local.set $cap\n"
-        "    loop $grow\n"
-        "      local.get $cap\n"
-        "      local.get $n\n"
-        "      i32.const 1\n"
-        "      i32.shl\n"
-        "      i32.lt_u\n"
-        "      if\n"
-        "        local.get $cap\n"
-        "        i32.const 1\n"
-        "        i32.shl\n"
-        "        local.set $cap\n"
-        "        br $grow\n"
-        "      end\n"
-        "    end\n"
-        "    local.get $cap\n"
-        "  )"
-    )
-
-
-def _op_map_new(lay: _Layout) -> str:
-    return (
-        "  (func $op_map_new (result i32)\n"
-        "    call $mk_wrapper\n"
-        "  )"
-    )
-
-
-def _op_map_insert(lay: _Layout) -> str:
-    # Position-preserving copy: occupied slots are copied in slot
-    # order; the matched slot gets the new value in place; a new key
-    # appends after the copy.
-    return (
-        "  (func $op_map_insert (param $wp i32) (param $kp i32) "
-        "(param $kl i32) (param $vp i32) (param $vl i32) (result i32)\n"
-        "    (local $ob i32)\n"
-        "    (local $ocap i32)\n"
-        "    (local $ocnt i32)\n"
-        "    (local $found i32)\n"
-        "    (local $w i32)\n"
-        "    (local $b i32)\n"
-        "    (local $cap i32)\n"
-        "    (local $ncnt i32)\n"
-        "    (local $i i32)\n"
-        "    (local $j i32)\n"
-        "    (local $slot i32)\n"
-        "    (local $dst i32)\n"
-        "    local.get $wp\n"
-        "    call $shadow_push\n"
-        "    local.get $kp\n"
-        "    call $shadow_push\n"
-        "    local.get $vp\n"
-        "    call $shadow_push\n"
-        "    local.get $wp\n"
-        "    i32.load offset=8\n"
-        "    local.set $ob\n"
-        "    local.get $ob\n"
-        "    if\n"
-        "      local.get $ob\n"
-        "      i32.load\n"
-        "      local.set $ocap\n"
-        "      local.get $ob\n"
-        "      i32.load offset=4\n"
-        "      local.set $ocnt\n"
-        "    end\n"
-        "    local.get $ob\n"
-        "    local.get $kp\n"
-        "    local.get $kl\n"
-        "    call $bkt_find\n"
-        "    local.set $found\n"
-        "    local.get $ocnt\n"
-        "    local.get $found\n"
-        "    i32.eqz\n"
-        "    i32.add\n"
-        "    local.set $ncnt\n"
-        "    local.get $ncnt\n"
-        "    call $bkt_cap\n"
-        "    local.set $cap\n"
-        "    call $mk_wrapper\n"
-        "    local.set $w\n"
-        "    local.get $w\n"
-        "    call $shadow_push\n"
-        "    local.get $cap\n"
-        "    i32.const 20\n"
-        "    i32.mul\n"
-        "    i32.const 8\n"
-        "    i32.add\n"
-        "    call $alloc\n"
-        "    local.set $b\n"
-        "    local.get $b\n"
-        "    i32.const 0\n"
-        "    local.get $cap\n"
-        "    i32.const 20\n"
-        "    i32.mul\n"
-        "    i32.const 8\n"
-        "    i32.add\n"
-        "    memory.fill\n"
-        "    local.get $b\n"
-        "    local.get $cap\n"
-        "    i32.store\n"
-        "    local.get $w\n"
-        "    local.get $b\n"
-        "    i32.store offset=8\n"
-        "    block $copied\n"
-        "    loop $cp\n"
-        "      local.get $i\n"
-        "      local.get $ocap\n"
-        "      i32.ge_u\n"
-        "      br_if $copied\n"
-        "      local.get $ob\n"
-        "      i32.const 8\n"
-        "      i32.add\n"
-        "      local.get $i\n"
-        "      i32.const 20\n"
-        "      i32.mul\n"
-        "      i32.add\n"
-        "      local.set $slot\n"
-        "      local.get $slot\n"
-        "      i32.load\n"
-        "      if\n"
-        "        local.get $b\n"
-        "        i32.const 8\n"
-        "        i32.add\n"
-        "        local.get $j\n"
-        "        i32.const 20\n"
-        "        i32.mul\n"
-        "        i32.add\n"
-        "        local.set $dst\n"
-        "        local.get $dst\n"
-        "        local.get $slot\n"
-        "        i32.const 20\n"
-        "        memory.copy\n"
-        "        local.get $slot\n"
-        "        local.get $found\n"
-        "        i32.eq\n"
-        "        if\n"
-        "          local.get $dst\n"
-        "          local.get $vp\n"
-        "          i32.store offset=12\n"
-        "          local.get $dst\n"
-        "          local.get $vl\n"
-        "          i32.store offset=16\n"
-        "        end\n"
-        "        local.get $j\n"
-        "        i32.const 1\n"
-        "        i32.add\n"
-        "        local.set $j\n"
-        "      end\n"
-        "      local.get $i\n"
-        "      i32.const 1\n"
-        "      i32.add\n"
-        "      local.set $i\n"
-        "      br $cp\n"
-        "    end\n"
-        "    end\n"
-        "    local.get $found\n"
-        "    i32.eqz\n"
-        "    if\n"
-        "      local.get $b\n"
-        "      i32.const 8\n"
-        "      i32.add\n"
-        "      local.get $j\n"
-        "      i32.const 20\n"
-        "      i32.mul\n"
-        "      i32.add\n"
-        "      local.set $dst\n"
-        "      local.get $dst\n"
-        "      i32.const 1\n"
-        "      i32.store\n"
-        "      local.get $dst\n"
-        "      local.get $kp\n"
-        "      i32.store offset=4\n"
-        "      local.get $dst\n"
-        "      local.get $kl\n"
-        "      i32.store offset=8\n"
-        "      local.get $dst\n"
-        "      local.get $vp\n"
-        "      i32.store offset=12\n"
-        "      local.get $dst\n"
-        "      local.get $vl\n"
-        "      i32.store offset=16\n"
-        "    end\n"
-        "    local.get $b\n"
-        "    local.get $ncnt\n"
-        "    i32.store offset=4\n"
-        "    i32.const 4\n"
-        "    call $shadow_pop_n\n"
-        "    local.get $w\n"
-        "  )"
-    )
-
-
-def _op_map_get(lay: _Layout) -> str:
-    # Option<String>: Some = 12 B {1, ptr, len}; None = 4 B {0}.
-    # The Option shares the bucket's value bytes (immutable strings);
-    # wp is rooted across the Option alloc so the bucket stays live.
-    return (
-        "  (func $op_map_get (param $wp i32) (param $kp i32) "
-        "(param $kl i32) (result i32)\n"
-        "    (local $slot i32)\n"
-        "    (local $adt i32)\n"
-        "    local.get $wp\n"
-        "    call $shadow_push\n"
-        "    local.get $wp\n"
-        "    i32.load offset=8\n"
-        "    local.get $kp\n"
-        "    local.get $kl\n"
-        "    call $bkt_find\n"
-        "    local.set $slot\n"
-        "    local.get $slot\n"
-        "    if\n"
-        "      i32.const 12\n"
-        "      call $alloc\n"
-        "      local.set $adt\n"
-        "      local.get $adt\n"
-        "      i32.const 1\n"
-        "      i32.store\n"
-        "      local.get $adt\n"
-        "      local.get $slot\n"
-        "      i32.load offset=12\n"
-        "      i32.store offset=4\n"
-        "      local.get $adt\n"
-        "      local.get $slot\n"
-        "      i32.load offset=16\n"
-        "      i32.store offset=8\n"
-        "    else\n"
-        "      i32.const 4\n"
-        "      call $alloc\n"
-        "      local.set $adt\n"
-        "      local.get $adt\n"
-        "      i32.const 0\n"
-        "      i32.store\n"
-        "    end\n"
-        "    i32.const 1\n"
-        "    call $shadow_pop_n\n"
-        "    local.get $adt\n"
-        "  )"
-    )
-
-
-def _op_map_contains(lay: _Layout) -> str:
-    return (
-        "  (func $op_map_contains (param $wp i32) (param $kp i32) "
-        "(param $kl i32) (result i32)\n"
-        "    local.get $wp\n"
-        "    i32.load offset=8\n"
-        "    local.get $kp\n"
-        "    local.get $kl\n"
-        "    call $bkt_find\n"
-        "    i32.const 0\n"
-        "    i32.ne\n"
-        "  )"
-    )
-
-
-def _op_map_size(lay: _Layout) -> str:
-    return (
-        "  (func $op_map_size (param $wp i32) (result i64)\n"
-        "    (local $b i32)\n"
-        "    local.get $wp\n"
-        "    i32.load offset=8\n"
-        "    local.tee $b\n"
-        "    if (result i64)\n"
-        "      local.get $b\n"
-        "      i32.load offset=4\n"
-        "      i64.extend_i32_u\n"
-        "    else\n"
-        "      i64.const 0\n"
-        "    end\n"
-        "  )"
-    )
-
-
-def _op_map_remove(lay: _Layout) -> str:
-    # Structural rebuild minus the matched slot (host ``map_remove``
-    # parity: survivors keep slot order; capacity resized for the new
-    # count).
-    return (
-        "  (func $op_map_remove (param $wp i32) (param $kp i32) "
-        "(param $kl i32) (result i32)\n"
-        "    (local $ob i32)\n"
-        "    (local $ocap i32)\n"
-        "    (local $ocnt i32)\n"
-        "    (local $found i32)\n"
-        "    (local $w i32)\n"
-        "    (local $b i32)\n"
-        "    (local $cap i32)\n"
-        "    (local $ncnt i32)\n"
-        "    (local $i i32)\n"
-        "    (local $j i32)\n"
-        "    (local $slot i32)\n"
-        "    local.get $wp\n"
-        "    call $shadow_push\n"
-        "    local.get $kp\n"
-        "    call $shadow_push\n"
-        "    local.get $wp\n"
-        "    i32.load offset=8\n"
-        "    local.set $ob\n"
-        "    local.get $ob\n"
-        "    if\n"
-        "      local.get $ob\n"
-        "      i32.load\n"
-        "      local.set $ocap\n"
-        "      local.get $ob\n"
-        "      i32.load offset=4\n"
-        "      local.set $ocnt\n"
-        "    end\n"
-        "    local.get $ob\n"
-        "    local.get $kp\n"
-        "    local.get $kl\n"
-        "    call $bkt_find\n"
-        "    local.set $found\n"
-        "    local.get $ocnt\n"
-        "    local.get $found\n"
-        "    i32.const 0\n"
-        "    i32.ne\n"
-        "    i32.sub\n"
-        "    local.set $ncnt\n"
-        "    local.get $ncnt\n"
-        "    call $bkt_cap\n"
-        "    local.set $cap\n"
-        "    call $mk_wrapper\n"
-        "    local.set $w\n"
-        "    local.get $w\n"
-        "    call $shadow_push\n"
-        "    local.get $cap\n"
-        "    i32.const 20\n"
-        "    i32.mul\n"
-        "    i32.const 8\n"
-        "    i32.add\n"
-        "    call $alloc\n"
-        "    local.set $b\n"
-        "    local.get $b\n"
-        "    i32.const 0\n"
-        "    local.get $cap\n"
-        "    i32.const 20\n"
-        "    i32.mul\n"
-        "    i32.const 8\n"
-        "    i32.add\n"
-        "    memory.fill\n"
-        "    local.get $b\n"
-        "    local.get $cap\n"
-        "    i32.store\n"
-        "    local.get $w\n"
-        "    local.get $b\n"
-        "    i32.store offset=8\n"
-        "    block $copied\n"
-        "    loop $cp\n"
-        "      local.get $i\n"
-        "      local.get $ocap\n"
-        "      i32.ge_u\n"
-        "      br_if $copied\n"
-        "      local.get $ob\n"
-        "      i32.const 8\n"
-        "      i32.add\n"
-        "      local.get $i\n"
-        "      i32.const 20\n"
-        "      i32.mul\n"
-        "      i32.add\n"
-        "      local.set $slot\n"
-        "      local.get $slot\n"
-        "      i32.load\n"
-        "      if\n"
-        "        local.get $slot\n"
-        "        local.get $found\n"
-        "        i32.ne\n"
-        "        if\n"
-        "          local.get $b\n"
-        "          i32.const 8\n"
-        "          i32.add\n"
-        "          local.get $j\n"
-        "          i32.const 20\n"
-        "          i32.mul\n"
-        "          i32.add\n"
-        "          local.get $slot\n"
-        "          i32.const 20\n"
-        "          memory.copy\n"
-        "          local.get $j\n"
-        "          i32.const 1\n"
-        "          i32.add\n"
-        "          local.set $j\n"
-        "        end\n"
-        "      end\n"
-        "      local.get $i\n"
-        "      i32.const 1\n"
-        "      i32.add\n"
-        "      local.set $i\n"
-        "      br $cp\n"
-        "    end\n"
-        "    end\n"
-        "    local.get $b\n"
-        "    local.get $ncnt\n"
-        "    i32.store offset=4\n"
-        "    i32.const 3\n"
-        "    call $shadow_pop_n\n"
-        "    local.get $w\n"
-        "  )"
-    )
-
-
-def _map_column_op(fn_name: str, val_offset: int) -> str:
-    """Shared body of map_keys (offset 4) / map_values (offset 12).
-
-    Returns the Array<String> (backing, count) pair; element strings
-    are SHARED with the bucket (immutable), so the only alloc is the
-    backing — wp is rooted across it and the fill loop is alloc-free.
-    """
-    return (
-        f"  (func {fn_name} (param $wp i32) (result i32 i32)\n"
-        "    (local $b i32)\n"
-        "    (local $cap i32)\n"
-        "    (local $cnt i32)\n"
-        "    (local $backing i32)\n"
-        "    (local $i i32)\n"
-        "    (local $j i32)\n"
-        "    (local $slot i32)\n"
-        "    local.get $wp\n"
-        "    i32.load offset=8\n"
-        "    local.set $b\n"
-        "    local.get $b\n"
-        "    if\n"
-        "      local.get $b\n"
-        "      i32.load offset=4\n"
-        "      local.set $cnt\n"
-        "    end\n"
-        "    local.get $cnt\n"
-        "    i32.eqz\n"
-        "    if\n"
-        "      i32.const 0\n"
-        "      i32.const 0\n"
-        "      return\n"
-        "    end\n"
-        "    local.get $b\n"
-        "    i32.load\n"
-        "    local.set $cap\n"
-        "    local.get $wp\n"
-        "    call $shadow_push\n"
-        "    local.get $cnt\n"
-        "    i32.const 3\n"
-        "    i32.shl\n"
-        "    call $alloc\n"
-        "    local.set $backing\n"
-        "    i32.const 1\n"
-        "    call $shadow_pop_n\n"
-        "    block $done\n"
-        "    loop $scan\n"
-        "      local.get $i\n"
-        "      local.get $cap\n"
-        "      i32.ge_u\n"
-        "      br_if $done\n"
-        "      local.get $b\n"
-        "      i32.const 8\n"
-        "      i32.add\n"
-        "      local.get $i\n"
-        "      i32.const 20\n"
-        "      i32.mul\n"
-        "      i32.add\n"
-        "      local.set $slot\n"
-        "      local.get $slot\n"
-        "      i32.load\n"
-        "      if\n"
-        "        local.get $backing\n"
-        "        local.get $j\n"
-        "        i32.const 3\n"
-        "        i32.shl\n"
-        "        i32.add\n"
-        "        local.get $slot\n"
-        f"        i32.load offset={val_offset}\n"
-        "        i32.store\n"
-        "        local.get $backing\n"
-        "        local.get $j\n"
-        "        i32.const 3\n"
-        "        i32.shl\n"
-        "        i32.add\n"
-        "        local.get $slot\n"
-        f"        i32.load offset={val_offset + 4}\n"
-        "        i32.store offset=4\n"
-        "        local.get $j\n"
-        "        i32.const 1\n"
-        "        i32.add\n"
-        "        local.set $j\n"
-        "      end\n"
-        "      local.get $i\n"
-        "      i32.const 1\n"
-        "      i32.add\n"
-        "      local.set $i\n"
-        "      br $scan\n"
-        "    end\n"
-        "    end\n"
-        "    local.get $backing\n"
-        "    local.get $cnt\n"
-        "  )"
-    )
-
-
-def _op_map_keys(lay: _Layout) -> str:
-    return _map_column_op("$op_map_keys", 4)
-
-
-def _op_map_values(lay: _Layout) -> str:
-    return _map_column_op("$op_map_values", 12)
-
-
-def _op_host_decref_handle(lay: _Layout) -> str:
-    # No-op for Map (kind 1) / Set (kind 2); Decimal (kind 3) is
-    # family-gated out of the server world — host parity (#706).
-    return (
-        "  (func $op_host_decref_handle (param $kind i32) "
-        "(param $h i32)\n"
-        "  )"
-    )
-
-
-def _op_attach_bucket_to_wrapper(lay: _Layout) -> str:
-    # #706 tripwire parity: only Decimal (kind=3) may reach this
-    # no-op; a Map/Set wrapper routed back through _emit_wrap_handle
-    # violates the bucket-as-truth invariant -> trap.
-    return (
-        "  (func $op_attach_bucket_to_wrapper (param $w i32) "
-        "(param $kind i32) (param $h i32)\n"
-        "    local.get $kind\n"
-        "    i32.const 3\n"
-        "    i32.ne\n"
-        "    if\n"
-        "      unreachable\n"
-        "    end\n"
-        "  )"
-    )
-
-
-_MAP_OP_EMITTERS: dict[str, Callable[[_Layout], str]] = {
-    "map_new": _op_map_new,
-    "map_insert$ks_vs": _op_map_insert,
-    "map_get$ks_vs": _op_map_get,
-    "map_contains$ks": _op_map_contains,
-    "map_size": _op_map_size,
-    "map_remove$ks": _op_map_remove,
-    "map_keys$ks": _op_map_keys,
-    "map_values$vs": _op_map_values,
-    "host_decref_handle": _op_host_decref_handle,
-    "attach_bucket_to_wrapper": _op_attach_bucket_to_wrapper,
-}
 
 
 # ---------------------------------------------------------------------
@@ -3841,15 +3138,18 @@ def _serve_handle(
     Rooting: mp/pp/w/buf are shadow-pushed across the allocation
     window and popped together after the Request ADT is built (the
     ADT itself needs no push — ``handle``'s own GC prologue roots its
-    parameter, and no allocation happens in between).  The
-    ``;; root:`` markers are load-bearing for the mutation-validation
-    test (string surgery strips one and the GC-stress test must go
-    RED).
+    parameter, and no allocation happens in between).  The headers
+    are the module's own ``Map<String, String>``, built by one call of
+    its exported ``map_from_arrays$ks_vs`` from two rooted arrays
+    (#1676).  The ``;; root:`` markers are load-bearing for the
+    mutation-validation test (string surgery strips one and the
+    GC-stress test must go RED).
 
-    No allocations happen after ``vera_handle`` returns (the Response
-    decode is read-only; from-list entries go to the arena), so
-    ``resp`` and everything it references need no rooting — the same
-    argument as host-side ``decode_response_adt``.
+    After ``vera_handle`` returns, the Response's headers are read
+    through the module's ``map_keys$ks`` and ``map_values$vs``, which
+    allocate, so ``resp`` and the keys array are rooted across them;
+    nothing allocates after that (from-list entries go to the arena),
+    the same argument as host-side ``decode_response_adt``.
     """
     s = {k: lay.slab(k) for k in _SERVER_SLAB}
     slash_ptr = statics_base + sum(len(m) for m in _METHOD_NAMES)
@@ -3877,11 +3177,9 @@ def _serve_handle(
     (local $t i32)
     (local $ch i32)
     (local $w i32)
-    (local $b i32)
-    (local $cap i32)
-    (local $cnt i32)
+    (local $hk i32)
+    (local $hv i32)
     (local $slot i32)
-    (local $dup i32)
     (local $body i32)
     (local $sh i32)
     (local $buf i32)
@@ -3894,8 +3192,6 @@ def _serve_handle(
     (local $resp i32)
     (local $status i64)
     (local $rw i32)
-    (local $rb i32)
-    (local $rcap i32)
     (local $ep i32)
     (local $rcnt i32)
     (local $rfields i32)
@@ -3972,7 +3268,7 @@ def _serve_handle(
     end
     local.get $pp
     call $shadow_push ;; root: path
-    ;; ---- headers -> in-guest Map<String, String> ----
+    ;; ---- headers -> the module's Map<String, String> (#1676) ----
     local.get $req
     call $l_headers
     local.set $hdrs
@@ -3985,36 +3281,22 @@ def _serve_handle(
     i32.const {s["ents"] + 4}
     i32.load
     local.set $ecnt
-    call $mk_wrapper
-    local.set $w
-    local.get $w
-    call $shadow_push ;; root: headers
+    ;; a keys array and a values array of (ptr, len) cells, rooted
+    ;; while each header's strings are copied in
     local.get $ecnt
-    call $bkt_cap
-    local.set $cap
-    local.get $cap
-    i32.const 20
-    i32.mul
-    i32.const 8
-    i32.add
+    i32.const 3
+    i32.shl
     call $alloc
-    local.set $b
-    local.get $b
-    i32.const 0
-    local.get $cap
-    i32.const 20
-    i32.mul
-    i32.const 8
-    i32.add
-    memory.fill
-    local.get $b
-    local.get $cap
-    i32.store
-    local.get $w
-    local.get $b
-    i32.store offset=8
-    i32.const 0
-    local.set $cnt
+    local.set $hk
+    local.get $hk
+    call $shadow_push
+    local.get $ecnt
+    i32.const 3
+    i32.shl
+    call $alloc
+    local.set $hv
+    local.get $hv
+    call $shadow_push
     i32.const 0
     local.set $i
     block $hdone
@@ -4089,73 +3371,41 @@ def _serve_handle(
         end
         end
       end
-      ;; dedup: later header wins (#305 dict(headers) parity)
-      local.get $b
+      local.get $hk
+      local.get $i
+      i32.const 3
+      i32.shl
+      i32.add
+      local.tee $slot
       local.get $kc
+      i32.store
+      local.get $slot
       local.get $kl
-      call $bkt_find
-      local.set $dup
-      local.get $dup
+      i32.store offset=4
+      ;; value copy -> GC
+      i32.const 0
+      local.set $vc
+      local.get $vl
       if
-        i32.const 0
+        local.get $vl
+        call $alloc
         local.set $vc
-        local.get $vl
-        if
-          local.get $vl
-          call $alloc
-          local.set $vc
-          local.get $vc
-          local.get $vp0
-          local.get $vl
-          memory.copy
-        end
-        local.get $dup
         local.get $vc
-        i32.store offset=12
-        local.get $dup
+        local.get $vp0
         local.get $vl
-        i32.store offset=16
-      else
-        local.get $b
-        i32.const 8
-        i32.add
-        local.get $cnt
-        i32.const 20
-        i32.mul
-        i32.add
-        local.set $slot
-        local.get $slot
-        i32.const 1
-        i32.store
-        local.get $slot
-        local.get $kc
-        i32.store offset=4
-        local.get $slot
-        local.get $kl
-        i32.store offset=8
-        i32.const 0
-        local.set $vc
-        local.get $vl
-        if
-          local.get $vl
-          call $alloc
-          local.set $vc
-          local.get $vc
-          local.get $vp0
-          local.get $vl
-          memory.copy
-        end
-        local.get $slot
-        local.get $vc
-        i32.store offset=12
-        local.get $slot
-        local.get $vl
-        i32.store offset=16
-        local.get $cnt
-        i32.const 1
-        i32.add
-        local.set $cnt
+        memory.copy
       end
+      local.get $hv
+      local.get $i
+      i32.const 3
+      i32.shl
+      i32.add
+      local.tee $slot
+      local.get $vc
+      i32.store
+      local.get $slot
+      local.get $vl
+      i32.store offset=4
       local.get $i
       i32.const 1
       i32.add
@@ -4163,9 +3413,18 @@ def _serve_handle(
       br $hdr
     end
     end
-    local.get $b
-    local.get $cnt
-    i32.store offset=4
+    ;; one call builds the map: a repeated header keeps its first
+    ;; position and takes its last value (#305 dict(headers) parity)
+    local.get $hk
+    local.get $ecnt
+    local.get $hv
+    local.get $ecnt
+    call $map_from_arrays
+    local.set $w
+    i32.const 2
+    call $shadow_pop_n
+    local.get $w
+    call $shadow_push ;; root: headers
     ;; ---- body -> GC buffer (grow-by-doubling, 16 KiB chunks) ----
     local.get $req
     i32.const {s["consume"]}
@@ -4319,93 +3578,75 @@ def _serve_handle(
     local.get $resp
     i32.load offset={rh_off}
     local.set $rw
-    ;; response headers Map -> from-list entries in the arena
+    ;; response headers: read through the module's map_keys$ks and
+    ;; map_values$vs (#1676), which allocate, so the response and the
+    ;; keys array stay rooted until both arrays are read
+    local.get $resp
+    call $shadow_push ;; root: response
+    local.get $rw
+    call $map_keys
+    local.set $rcnt
+    local.set $hk
+    local.get $hk
+    call $shadow_push ;; root: response header keys
+    local.get $rw
+    call $map_values
+    drop
+    local.set $hv
+    i32.const 2
+    call $shadow_pop_n
+    ;; -> from-list entries in the arena
     call $arena_reset
     global.get $arena_ptr
     local.set $ep
-    i32.const 0
-    local.set $rcnt
-    i32.const 0
-    local.set $rb
-    local.get $rw
+    ;; arena bound: a header section past the arena would silently
+    ;; overrun the GC heap — trap instead (same class as the
+    ;; cabi_realloc OOM trap, §4.1)
+    local.get $ep
+    local.get $rcnt
+    i32.const 4
+    i32.shl
+    i32.add
+    i32.const {lay.arena_end}
+    i32.gt_u
     if
-      local.get $rw
-      i32.load offset=8
-      local.set $rb
+      unreachable
     end
-    local.get $rb
-    if
-      local.get $rb
-      i32.load
-      local.set $rcap
-      i32.const 0
+    i32.const 0
+    local.set $i
+    block $rdone
+    loop $rslot
+      local.get $i
+      local.get $rcnt
+      i32.ge_u
+      br_if $rdone
+      local.get $ep
+      local.get $i
+      i32.const 4
+      i32.shl
+      i32.add
+      local.tee $e
+      local.get $hk
+      local.get $i
+      i32.const 3
+      i32.shl
+      i32.add
+      i64.load
+      i64.store
+      local.get $e
+      local.get $hv
+      local.get $i
+      i32.const 3
+      i32.shl
+      i32.add
+      i64.load
+      i64.store offset=8
+      local.get $i
+      i32.const 1
+      i32.add
       local.set $i
-      block $rdone
-      loop $rslot
-        local.get $i
-        local.get $rcap
-        i32.ge_u
-        br_if $rdone
-        local.get $rb
-        i32.const 8
-        i32.add
-        local.get $i
-        i32.const 20
-        i32.mul
-        i32.add
-        local.set $slot
-        local.get $slot
-        i32.load
-        if
-          ;; arena bound: a header section past the arena would
-          ;; silently overrun the GC heap — trap instead (same class
-          ;; as the cabi_realloc OOM trap, §4.1)
-          local.get $ep
-          local.get $rcnt
-          i32.const 4
-          i32.shl
-          i32.add
-          i32.const 16
-          i32.add
-          i32.const {lay.arena_end}
-          i32.gt_u
-          if
-            unreachable
-          end
-          local.get $ep
-          local.get $rcnt
-          i32.const 4
-          i32.shl
-          i32.add
-          local.set $e
-          local.get $e
-          local.get $slot
-          i32.load offset=4
-          i32.store
-          local.get $e
-          local.get $slot
-          i32.load offset=8
-          i32.store offset=4
-          local.get $e
-          local.get $slot
-          i32.load offset=12
-          i32.store offset=8
-          local.get $e
-          local.get $slot
-          i32.load offset=16
-          i32.store offset=12
-          local.get $rcnt
-          i32.const 1
-          i32.add
-          local.set $rcnt
-        end
-        local.get $i
-        i32.const 1
-        i32.add
-        local.set $i
-        br $rslot
-      end
-      end
+      br $rslot
+    end
     end
     local.get $ep
     local.get $rcnt
@@ -4786,8 +4027,8 @@ _SERVER_BASE_DROPS = frozenset({"error", "istream", "ostream"})
 def _server_helper_funcs(
     used: dict[str, _OpSpec], lay: _Layout, statics_base: int,
 ) -> list[str]:
-    """Adapter helpers for the server world (always-on rooting + map
-    machinery; IO helpers gated by the op set)."""
+    """Adapter helpers for the server world (always-on rooting; IO
+    helpers gated by the op set)."""
     names = set(used)
     out = [
         "  (func $arena_reset\n"
@@ -4796,10 +4037,6 @@ def _server_helper_funcs(
         "  )",
         _SHADOW_PUSH_FN,
         _SHADOW_POP_FN,
-        _BYTES_EQ_FN,
-        _mk_wrapper(),
-        _bkt_find(),
-        _bkt_cap(),
         _method_src(statics_base),
         _respond_err(),
     ]
@@ -4837,6 +4074,14 @@ def _server_adapter_fields(
         '  (import "env" "gc_stack_limit" (global $gc_stack_limit i32))',
         '  (import "env" "vera_handle"'
         ' (func $vera_handle (param i32) (result i32)))',
+        # #1676: the module's own map functions, which build the
+        # Request's headers and read the Response's.
+        '  (import "env" "map_from_arrays"'
+        ' (func $map_from_arrays (param i32 i32 i32 i32) (result i32)))',
+        '  (import "env" "map_keys"'
+        ' (func $map_keys (param i32) (result i32 i32)))',
+        '  (import "env" "map_values"'
+        ' (func $map_values (param i32) (result i32 i32)))',
     ]
     for key in lowers:
         fields.append(_LOWERS[key][1])
@@ -4858,8 +4103,7 @@ def _server_adapter_fields(
     fields += _server_helper_funcs(used, lay, statics_base)
 
     for name in sorted(used, key=lambda n: used[n].slot):
-        emitter = _MAP_OP_EMITTERS.get(name) or _OP_EMITTERS[name]
-        fields.append(emitter(lay))
+        fields.append(_OP_EMITTERS[name](lay))
     fields.append(_serve_handle(lay, req, resp, statics_base))
     for name in sorted(used, key=lambda n: used[n].slot):
         fields.append(
@@ -4917,6 +4161,10 @@ def _assemble_server_component(
         "(core global $g_lim))"
     )
     parts.append('  (alias core export $main "handle" (core func $f_handle))')
+    parts.append(
+        '  (alias core export $main "map_from_arrays$ks_vs" (core func $f_mfa))')
+    parts.append('  (alias core export $main "map_keys$ks" (core func $f_mkeys))')
+    parts.append('  (alias core export $main "map_values$vs" (core func $f_mvals))')
 
     for key in lowers:
         parts.append(_LOWERS[key][0])
@@ -4942,6 +4190,9 @@ def _assemble_server_component(
     parts.append('      (export "gc_sp" (global $g_sp))')
     parts.append('      (export "gc_stack_limit" (global $g_lim))')
     parts.append('      (export "vera_handle" (func $f_handle))')
+    parts.append('      (export "map_from_arrays" (func $f_mfa))')
+    parts.append('      (export "map_keys" (func $f_mkeys))')
+    parts.append('      (export "map_values" (func $f_mvals))')
     parts.append("    ))")
     parts.append('    (with "wasi" (instance')
     for key in lowers:

@@ -56,12 +56,10 @@ AllocFn = Callable[[wasmtime.Caller, int], int]
 WriteI32Fn = Callable[[wasmtime.Caller, int, int], None]
 WriteF64Fn = Callable[[wasmtime.Caller, int, float], None]
 AllocStringFn = Callable[[wasmtime.Caller, str], tuple[int, int]]
-# #706: map_alloc is ``_alloc_map_wrapper`` — it encodes the Python
-# dict into a fresh bucket-as-truth wrapper and returns the wrapper
-# pointer (no host store, no wrap-table registration).  It accepts
-# ``caller`` so it can call the exported ``$alloc`` to build the
-# wrapper + bucket in WASM memory.
-MapAllocFn = Callable[[wasmtime.Caller, dict[object, object]], int]
+# #1676: map_alloc is ``_alloc_jobject_map``: the ``Map<String, Json>``
+# of the keys array and the values array it is handed, built by one call
+# of the module's own ``map_from_arrays$ks_vb``.
+MapAllocFn = Callable[[wasmtime.Caller, int, int, int], int]
 ReadI32Fn = Callable[[wasmtime.Caller, int], int]
 ReadF64Fn = Callable[[wasmtime.Caller, int], float]
 ReadStringFn = Callable[[wasmtime.Caller, int, int], str]
@@ -371,49 +369,36 @@ def write_json(
         return ptr
 
     if isinstance(value, dict):
-        # JObject(Map<String, Json>) — tag=5, i32 at offset 4, total=8
-        # Build a Map<String, Json> as a bucket-as-truth wrapper (#706).
-        # Keys are stored as Python strings (matching map_contains$ks
-        # which reads WASM strings and compares against Python strings).
-        # Values are i32 Json heap pointers.
-        #
-        # #706: ``map_alloc`` is ``_alloc_map_wrapper`` (in
-        # ``vera/codegen/api.py``), which encodes this Python dict
-        # into a fresh bucket-as-truth wrapper + bucket and returns
-        # the wrapper pointer.  That makes the JObject's i32 field
-        # type-compatible with user-level ``map_get`` /
-        # ``map_contains`` calls, which take the wrapper pointer
-        # directly.  The JObject's Map is reclaimed by ordinary
-        # mark-sweep when the wrapper becomes unreachable — there is
-        # no host store to evict.
-        #
-        # #692: each iteration's val_ptr is pushed onto the
-        # shadow stack BEFORE the next iteration's recursive
-        # ``write_json`` (which may GC).  Without this, the
-        # Python dict (``map_dict``) holds val_ptrs as ints that
-        # the conservative scan can't see; the WASM blocks they
-        # point to would be freed by the very next sub-alloc.
-        #
-        # Exception-safety note: if a recursive ``write_json``
-        # raises mid-loop, the outer ``__exit__`` resets
-        # ``$gc_sp`` and pops every prior ``val_ptr`` push.
-        # ``map_dict`` still holds those ints as plain Python
-        # values when the exception unwinds — but that's safe:
-        # the function exits via the raise BEFORE the
-        # ``map_alloc(caller, map_dict)`` call below, so the
-        # stale ints never reach WASM.  A future maintainer
-        # should NOT try to recover ``map_dict`` partial state
-        # — the val_ptrs are guaranteed-invalid after the
-        # guard exit.
-        map_dict: dict[object, object] = {}
-        for k, v in value.items():
+        # JObject(Map<String, Json>) — tag=5, i32 at offset 4, total=8.
+        # #1676: the map is the module's own; ``map_alloc``
+        # (``_alloc_jobject_map``) builds it with one call of the
+        # module's ``map_from_arrays$ks_vb`` from a keys array of
+        # ``(ptr, len)`` cells and a values array of ``Json`` pointers,
+        # in the object's order (a repeated member keeps its first
+        # position and takes its last value).  Both arrays are rooted
+        # before the first member is written, as a JArray's backing is,
+        # and each key and value lands in its array before the next
+        # allocation, so the object takes two roots whatever its width
+        # (one root per member overflowed the shadow stack past about
+        # 4,090 members).
+        items = list(value.items())
+        count = len(items)
+        keys_ptr = vals_ptr = 0
+        if count > 0:
+            keys_ptr = alloc(caller, count * 8)
+            guard.push(keys_ptr)
+            vals_ptr = alloc(caller, count * 4)
+            guard.push(vals_ptr)
+        for i, (k, v) in enumerate(items):
+            k_ptr, k_len = alloc_string(caller, str(k))
+            write_i32(caller, keys_ptr + 8 * i, k_ptr)
+            write_i32(caller, keys_ptr + 8 * i + 4, k_len)
             val_ptr = write_json(
                 caller, alloc, write_i32, write_f64,
                 alloc_string, map_alloc, guard, v,
             )
-            guard.push(val_ptr)
-            map_dict[str(k)] = val_ptr
-        wrapper_ptr = map_alloc(caller, map_dict)
+            write_i32(caller, vals_ptr + 4 * i, val_ptr)
+        wrapper_ptr = map_alloc(caller, keys_ptr, vals_ptr, count)
         guard.push(wrapper_ptr)
         ptr = alloc(caller, 8)
         write_i32(caller, ptr, _TAG_JOBJECT)

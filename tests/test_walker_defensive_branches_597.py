@@ -106,8 +106,8 @@ class TestScanIoOpsDefensiveBranches:
     def test_indexexpr_collection_recursion(self) -> None:
         # An IO call's array indexed directly is dropped (E602), so the
         # collection is a host built-in's.
-        assert "map_keys$ks" in _declared_imports(
-            "map_keys(@Map<String, Int>.0)[0]", "@Map<String, Int>", "String",
+        assert "md_extract_code_blocks" in _declared_imports(
+            'md_extract_code_blocks(@MdBlock.0, "py")[0]', "@MdBlock", "String",
             "effects(pure)")
 
     def test_indexexpr_index_recursion(self) -> None:

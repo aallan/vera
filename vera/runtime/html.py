@@ -11,7 +11,7 @@ from typing import Any
 import wasmtime
 
 from vera.runtime.heap import (
-    _alloc_map_wrapper,
+    _alloc_attrs,
     _alloc_result_err_string,
     _alloc_result_ok_i32,
     _alloc_string,
@@ -216,7 +216,7 @@ def register_html(linker: wasmtime.Linker, ops_used: set[str]) -> None:
             with _ShadowGuard(caller) as guard:
                 html_ptr = write_html(
                     caller, _call_alloc, _write_i32,
-                    _alloc_string, _alloc_map_wrapper,
+                    _alloc_string, _alloc_attrs,
                     guard, root,
                 )
                 guard.push(html_ptr)
@@ -286,7 +286,7 @@ def register_html(linker: wasmtime.Linker, ops_used: set[str]) -> None:
                     for i, m in enumerate(matches):
                         m_ptr = write_html(
                             caller, _call_alloc, _write_i32,
-                            _alloc_string, _alloc_map_wrapper,
+                            _alloc_string, _alloc_attrs,
                             guard, m,
                         )
                         _write_i32(caller, arr_ptr + i * 4, m_ptr)

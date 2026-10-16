@@ -56,9 +56,8 @@ if TYPE_CHECKING:
 AllocFn = Callable[[wasmtime.Caller, int], int]
 WriteI32Fn = Callable[[wasmtime.Caller, int, int], None]
 AllocStringFn = Callable[[wasmtime.Caller, str], tuple[int, int]]
-# #573: map_alloc returns a wrapper-ADT pointer.  See json_serde.py
-# for the long version; the HTML side mirrors it for HtmlElement
-# attrs.
+# #1676: map_alloc is ``_alloc_attrs``: an HtmlElement's attributes as a
+# ``Map<String, String>`` the module's own ``map_from_arrays$ks_vs`` builds.
 MapAllocFn = Callable[[wasmtime.Caller, dict[object, object]], int]
 ReadI32Fn = Callable[[wasmtime.Caller, int], int]
 ReadStringFn = Callable[[wasmtime.Caller, int, int], str]
@@ -112,14 +111,9 @@ def write_html(
         if name_ptr != 0:
             guard.push(name_ptr)
 
-        # Allocate Map<String, String> for attributes.
-        # Keys and values are Python strings.
-        # #706: ``map_alloc`` (``_alloc_map_wrapper``) encodes this
-        # Python dict into a fresh bucket-as-truth wrapper; store the
-        # wrapper pointer in HtmlElement's attrs field so user-level
-        # ``map_get`` / ``map_contains`` calls take it directly.  The
-        # attrs Map is reclaimed by ordinary mark-sweep when the
-        # wrapper becomes unreachable — no host store to evict.
+        # Allocate Map<String, String> for attributes: #1676,
+        # ``map_alloc`` (``_alloc_attrs``) builds it with the module's
+        # own map functions, in the attributes' order.
         map_dict: dict[object, object] = {}
         for k, v in attrs.items():
             map_dict[str(k)] = str(v)

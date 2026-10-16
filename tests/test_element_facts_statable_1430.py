@@ -1710,7 +1710,7 @@ def test_the_projected_sequence_is_rooted_before_the_walk(
     proc = _cli("compile", "--wat", str(p))
     assert proc.returncode == 0, proc.stderr[-500:]
     wat = proc.stdout
-    call = wat.index("call $vera.map_values")
+    call = wat.index("call $map_values")
     loop = wat.index("loop $lp_elem", call)
     between = wat[call:loop]
     assert "$gc_sp" in between, (

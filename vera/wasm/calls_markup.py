@@ -36,6 +36,9 @@ class CallsMarkupMixin:
             return None
         self.needs_alloc = True
         self._host_imports_used.add("json_parse")
+        # #1676: the host builds and reads a JSON object's members through the
+        # module's own map functions, which the module exports.
+        self._export_host_maps("b")
         ins: list[str] = []
         ins.extend(arg_instrs)
         ins.append("call $vera.json_parse")
@@ -53,6 +56,9 @@ class CallsMarkupMixin:
             return None
         self.needs_alloc = True
         self._host_imports_used.add("json_stringify")
+        # #1676: the host builds and reads a JSON object's members through the
+        # module's own map functions, which the module exports.
+        self._export_host_maps("b")
         ins: list[str] = []
         ins.extend(arg_instrs)
         ins.append("call $vera.json_stringify")
@@ -72,6 +78,9 @@ class CallsMarkupMixin:
             return None
         self.needs_alloc = True
         self._host_imports_used.add("html_parse")
+        # #1676: the host builds and reads an HTML element's attributes through the
+        # module's own map functions, which the module exports.
+        self._export_host_maps("s")
         ins: list[str] = []
         ins.extend(arg_instrs)
         ins.append("call $vera.html_parse")
@@ -89,6 +98,9 @@ class CallsMarkupMixin:
             return None
         self.needs_alloc = True
         self._host_imports_used.add("html_to_string")
+        # #1676: the host builds and reads an HTML element's attributes through the
+        # module's own map functions, which the module exports.
+        self._export_host_maps("s")
         ins: list[str] = []
         ins.extend(arg_instrs)
         ins.append("call $vera.html_to_string")
@@ -107,6 +119,9 @@ class CallsMarkupMixin:
             return None
         self.needs_alloc = True
         self._host_imports_used.add("html_query")
+        # #1676: the host builds and reads an HTML element's attributes through the
+        # module's own map functions, which the module exports.
+        self._export_host_maps("s")
         ins: list[str] = []
         ins.extend(node_instrs)
         ins.extend(sel_instrs)
@@ -125,6 +140,9 @@ class CallsMarkupMixin:
             return None
         self.needs_alloc = True
         self._host_imports_used.add("html_text")
+        # #1676: the host builds and reads an HTML element's attributes through the
+        # module's own map functions, which the module exports.
+        self._export_host_maps("s")
         ins: list[str] = []
         ins.extend(arg_instrs)
         ins.append("call $vera.html_text")

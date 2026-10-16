@@ -949,6 +949,9 @@ class ClosureLiftingMixin:
         self._adt_eq_helpers.update(ctx._adt_eq_helpers)
         # #924: recursive show/hash helpers generated inside a lifted closure.
         self._show_hash_helpers.update(ctx._show_hash_helpers)
+        # #1676: Map and Set functions a lifted closure's body calls.
+        self._collection_helpers.update(ctx._collection_helpers)
+        self._collection_exports |= ctx._collection_exports
 
         # Build GC prologue/epilogue (only when closure body allocates).
         # Two-phase prologue: ``gc_prologue`` runs before ``load_instrs``

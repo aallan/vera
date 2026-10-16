@@ -421,6 +421,13 @@ class AssemblyMixin:
         for _name, sh_wat in sorted(self._show_hash_helpers.items()):
             parts.append(sh_wat)
 
+        # #1676: the generated Map and Set functions, and the exports of the
+        # ones a host builds or reads a map through.
+        for _name, coll_wat in sorted(self._collection_helpers.items()):
+            parts.append(coll_wat)
+        for name in sorted(self._collection_exports):
+            parts.append(f'  (export "{name}" (func ${name}))')
+
         parts.append(")")
         return "\n".join(parts)
 

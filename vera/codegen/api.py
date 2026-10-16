@@ -48,13 +48,11 @@ from vera.runtime.http import register_http
 from vera.runtime.db import register_db
 from vera.runtime.inference import register_inference
 from vera.runtime.json import register_json
-from vera.runtime.map import register_map
 from vera.runtime.math import register_math
 from vera.runtime.md import register_md
 from vera.runtime.random import register_random
 from vera.runtime.regex import register_regex
 from vera.envflags import flag_enabled
-from vera.runtime.set import register_set
 from vera.runtime.state import register_state
 from vera.runtime.traps import (
     WasmTrapError as WasmTrapError,  # re-export: part of execute()'s contract
@@ -480,8 +478,6 @@ HOST_BINDERS: Mapping[str, Binder] = {
     "io": _bind_own,
     "md": lambda linker, names, env: register_md(linker),
     "regex": lambda linker, names, env: register_regex(linker),
-    "map": lambda linker, names, env: register_map(linker, names),
-    "set": lambda linker, names, env: register_set(linker, names),
     "decimal": lambda linker, names, env: register_decimal(
         linker, names, env.decimal_store, env.host_store_refs),
     "wrap": _bind_own,
@@ -1099,19 +1095,17 @@ def execute(
     imports = [(imp.module, imp.name or "") for imp in module.imports]
     families = imported_families(imports)
 
-    # #573 / #706: Phase 2c destructor host import.  Only Decimal keeps
-    # a value-typed Python store and registers its wrappers with the
-    # wrap table; Map / Set are bucket-as-truth (plain heap objects
-    # reclaimed by ordinary mark-sweep, no store, no registration).  It is
-    # bound when the module declares it, which any wrapper family's use
-    # does; the body only evicts Decimal handles and cancels futures.
+    # #573: Phase 2c destructor host import.  Decimal keeps a value-typed
+    # Python store and registers its wrappers with the wrap table, and so
+    # does a fused-async future; a Map or Set is a plain heap object of the
+    # module's own (#1676) and never enters it.  It is bound when the
+    # module declares it, which any wrapper family's use does; the body
+    # only evicts Decimal handles and cancels futures.
     def host_decref_handle(
         _caller: wasmtime.Caller, kind: int, handle: int,
     ) -> None:
-        # #706: only Decimal (kind=3) keeps a Python store to evict.
-        # Map (1) / Set (2) are bucket-as-truth — no store entry, and
-        # their wrappers are not registered with the wrap table, so
-        # Phase 2c never fires for them.  Other kinds: silent no-op.
+        # Only Decimal (kind=3) keeps a Python store to evict.  Other
+        # kinds but the future's: silent no-op.
         if kind == 3 and "decimal" in families:
             _decimal_store.pop(handle, None)
         # #841: Future (kind=4) — an unawaited future whose wrapper
@@ -1131,26 +1125,21 @@ def execute(
         host_decref_handle,
     )
 
-    # #706: attach_bucket_to_wrapper no longer populates a bucket.
-    # Map / Set wrappers carry their bucket directly (bucket-as-truth)
-    # and Decimal is value-typed, so nothing needs a bucket attached.
-    # The import stays defined because Decimal's ``_emit_wrap_handle``
-    # still emits a call to it; the body is a tripwire asserting only
-    # Decimal (kind=3) reaches this path, so a regression that routes a
-    # Map / Set wrapper back through ``_emit_wrap_handle`` fails loudly
-    # here instead of silently leaving its bucket unpopulated.
+    # #706: attach_bucket_to_wrapper populates nothing: Decimal is
+    # value-typed, and a Map or Set is no wrapper at all (#1676).  The
+    # import stays defined because Decimal's ``_emit_wrap_handle`` still
+    # emits a call to it; the body is a tripwire asserting only Decimal
+    # (kind=3) reaches this path, so a wrapper of any other kind routed
+    # through ``_emit_wrap_handle`` fails loudly here.
     def host_attach_bucket(
         _caller: wasmtime.Caller, _wrapper_ptr: int, kind: int,
         _handle: int,
     ) -> None:
-        # Only Decimal (kind=3) should reach this no-op path; Map (1)
-        # and Set (2) are bucket-as-truth and never wrap a handle.
         if kind != 3:
             raise RuntimeError(
                 f"#706: attach_bucket_to_wrapper called with kind={kind}; "
-                "expected Decimal (3).  A Map/Set wrapper was routed back "
-                "through _emit_wrap_handle — the bucket-as-truth invariant "
-                "is violated."
+                "expected Decimal (3): a wrapper of another kind was routed "
+                "through _emit_wrap_handle."
             )
 
     own["attach_bucket_to_wrapper"] = (
