@@ -14,7 +14,7 @@ Ordering derives from the design principles ([DESIGN.md](DESIGN.md)): verificati
 
 [TESTING.md](TESTING.md#overview) counts the tests, the conformance programs and the examples.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs, plus the *limitations* the stages below retire.
 
-v0.3.0 is the sound base (Stage 29), reached through v0.2.4 to v0.2.8 (Stages 24 to 28).  The feature release follows it in Stage 30: the `Decision` effect ([#1467](https://github.com/aallan/vera/issues/1467)) and its blockers, [#351](https://github.com/aallan/vera/issues/351), [#352](https://github.com/aallan/vera/issues/352), [#372](https://github.com/aallan/vera/issues/372) and [#373](https://github.com/aallan/vera/issues/373).
+v0.3.0 is the sound base (Stage 29), reached through v0.2.5 to v0.2.8 (Stages 25 to 28).  The feature release follows it in Stage 30: the `Decision` effect ([#1467](https://github.com/aallan/vera/issues/1467)) and its blockers, [#351](https://github.com/aallan/vera/issues/351) and [#370](https://github.com/aallan/vera/issues/370).
 
 ## The bug queue
 
@@ -31,10 +31,7 @@ Verification-completeness gaps — an obligation not emitted, a guard not plante
 | Issue | What |
 |---|---|
 | [#909](https://github.com/aallan/vera/issues/909) | A value's postcondition / refinement is forgotten through an ADT field (box then unbox loses the fact), degrading provable programs to Tier 3. |
-| [#1561](https://github.com/aallan/vera/issues/1561) | A generic function's `decreases` stays Tier 3 when it calls a non-recursive helper, where the monomorphic form is proved. |
-| [#1585](https://github.com/aallan/vera/issues/1585) | A generic `where` helper on a recursion cycle with its generic parent leaves its own `decreases` at Tier 3, though the parent's is proved. |
-| [#1577](https://github.com/aallan/vera/issues/1577) | An imported generic whose `decreases` measure is one of its module's data types is proved in the module's own run and falls to Tier 3 through an importer. |
-| [#1177](https://github.com/aallan/vera/issues/1177) | A parameterized ADT `decreases` measure (`List<Int>`) is ranked at run time through per-instantiation size helpers, so it gets a runtime guard. |
+| [#1561](https://github.com/aallan/vera/issues/1561) | A generic function's `decreases` stays Tier 3 when it calls a non-recursive helper, where the monomorphic form is proved; a generic `where` helper on a recursion cycle with its generic parent leaves its own `decreases` at Tier 3, though the parent's is proved; an imported generic whose `decreases` measure is one of its module's data types is proved in the module's own run and falls to Tier 3 through an importer; and a parameterized ADT `decreases` measure (`List<Int>`) is ranked at run time through per-instantiation size helpers, so it gets a runtime guard. |
 | [#1450](https://github.com/aallan/vera/issues/1450) | The boundary guard composes a refinement over a refined base, so such a type compiles instead of being refused with **E618**. |
 
 ## Stage 20 — The single-source sprint
@@ -58,23 +55,6 @@ Exit criterion: each listed drift class has a generator or a gate, and a release
 | [#1611](https://github.com/aallan/vera/issues/1611) | Five test cells that can pass without exercising what they assert — each shown by a mutation or a direct run. |
 | [#1612](https://github.com/aallan/vera/issues/1612) | Stale comments and docstrings in tests and two compiler helpers, a test cache that never hits, and a mis-positioned constructor call. |
 
-## Stage 24 — Hosts, the generator and the fold (v0.2.4)
-
-*One source where there were many.*
-
-The host bindings, the tree walks and the test inputs each get one source: a registry, a fold and a generator.  Five rows carry over from v0.2.2: the distrust tester's nightly trials (`VERA_DISTRUST_TRIALS`), its attribution through the reconciliation ([#1633](https://github.com/aallan/vera/issues/1633)), the desugar of a module's call by its own path, the CI changes (path filters, a 94% coverage floor, and a CHANGELOG gate that reads the pull request's base), and a `main` that reaches every feature a run-level conformance program's header names ([#1645](https://github.com/aallan/vera/issues/1645)); the two with issues are on the [debt track](https://github.com/aallan/vera/milestone/10).
-
-Exit criterion: the fold leaves WAT byte-identical over the corpus, and the generator runs nightly.
-
-| Change | What |
-|---|---|
-| Host bindings from the registry | The built-in registry gains implementation metadata and generates the import declarations, the set of host imports used, the `api.py` registration table, the `runtime.mjs` dispatch skeleton and the WASI refusal list, so a host operation is added in one place. |
-| Persistent `Map` and `Set` in WASM | `Map<K, V>` and `Set<T>` become structural persistent collections in the generated module, keyed through the `Hash` and `Ord` abilities, so an insert shares structure with the map it came from and costs O(log n), and their operations leave the host surface instead of being mirrored across the hosts.  The acceptance test is the measurement that opened the item: a fold of `map_insert` over 10,000 keys, a minute of host time today, completes in well under a second ([#1676](https://github.com/aallan/vera/issues/1676)). |
-| Bytes in, out and through | `IO.read_bytes` and `IO.write_bytes` over `Array<Byte>`, the UTF-8 conversions `string_to_bytes` and `bytes_to_string`, and base64 over bytes, written once through the registry for the Python, JavaScript and WASI hosts, with a packed one-byte layout for `Array<Byte>` in generated code.  Today `IO.read_file` decodes a file as UTF-8 on the native host, so a file whose bytes are not UTF-8 is an `Err` and one whose bytes happen to be is a `String`, the browser runtime refuses every read, nothing writes bytes, and `base64_decode` returns a `String`; the image operations of the `Decision` effect ([#1467](https://github.com/aallan/vera/issues/1467)) wait on this ([#1711](https://github.com/aallan/vera/issues/1711)). |
-| One fold | One `Expr` fold and one binder-aware scope walker; the hand-written dispatchers and scope implementations port to them one at a time, and the walker-coverage gate retires. |
-| A program generator | A type-directed generator feeds three nightly differentials: what checks compiles and loads with every public function exported; every obligation record has its guard and every guard its record; a Tier 1 proof meets no runtime violation on generated inputs. |
-| A mutation lane | Mutation testing scoped to a pull request's diff, and a nightly sweep that measures all of `vera/` a slice a night. |
-
 ## Stage 25 — One resolver (v0.2.5)
 
 *Every name resolved once.*
@@ -83,7 +63,13 @@ Stages 25 to 27 build the shared representation [#1525](https://github.com/aalla
 
 A resolver pass owns names.  Every declaration gets a `DeclId`, every occurrence maps to one exactly once, and code generation's symbols derive from them in a namespace no generated name can reach.  The prelude becomes a real module with reserved names ([#1469](https://github.com/aallan/vera/issues/1469)), so a program cannot redeclare `Option`, `Result` or `Json`, and the upgrade note says so.  E608–E623 move to check time, and the verifier and code generation stop registering declarations of their own.  The stage closes the ownership and prelude cluster ([milestone v0.2.5](https://github.com/aallan/vera/milestone/5)).
 
-Exit criterion: `check` and `verify` verdicts are identical over the corpus except where the pull request names a change, and WAT differs only in symbol names.
+One row carries over from v0.2.4, the program generator, and five from v0.2.2: the distrust tester's nightly trials (`VERA_DISTRUST_TRIALS`), its attribution through the reconciliation ([#1633](https://github.com/aallan/vera/issues/1633)), the desugar of a module's call by its own path, the CI changes (path filters, a 94% coverage floor, and a CHANGELOG gate that reads the pull request's base), and a `main` that reaches every feature a run-level conformance program's header names ([#1645](https://github.com/aallan/vera/issues/1645)); the two with issues are on the [debt track](https://github.com/aallan/vera/milestone/10).
+
+Exit criterion: `check` and `verify` verdicts are identical over the corpus except where the pull request names a change, WAT differs only in symbol names, and the generator runs nightly.
+
+| Change | What |
+|---|---|
+| A program generator | A type-directed generator feeds three nightly differentials: what checks compiles and loads with every public function exported; every obligation record has its guard and every guard its record; a Tier 1 proof meets no runtime violation on generated inputs. |
 
 ## Stage 26 — One typed program (v0.2.6)
 
@@ -161,18 +147,10 @@ Exit criterion: the Http and Inference limitation rows are retired; an agent can
 
 | Issue | What |
 |---|---|
-| [#351](https://github.com/aallan/vera/issues/351) | Http: custom request headers (`Authorization` is the blocking case). |
-| [#352](https://github.com/aallan/vera/issues/352) | Http: status-code access — distinguish a 404 from a 500. |
-| [#353](https://github.com/aallan/vera/issues/353) | Http: per-request timeout control. |
-| [#356](https://github.com/aallan/vera/issues/356) | Http: PUT / PATCH / DELETE. |
-| [#370](https://github.com/aallan/vera/issues/370) | Inference: configurable `max_tokens` / `temperature` — cost gates and deterministic replays. |
-| [#372](https://github.com/aallan/vera/issues/372) | Inference: user-defined `handle[Inference]` handlers — mocking, caching, routing — and, on the same handler lowering, user-declared effects, which an effect row can name once a handler for one is lowered. |
-| [#1467](https://github.com/aallan/vera/issues/1467) | `Decision` effect — typed probabilistic decisions from System One models: `noul` / `choice` / `score` return a value already in the type system with a `Confidence` refinement, a fast tier beside `Inference` so a function's effect row states what it may spend.  Userland first (a declared effect with a handler over `Http.post`), then a calibration measurement as a hard gate, then promotion to a built-in host effect mirroring `Http` and `DB` with the `async` whitelist entry; a batch `Decision.ask` and handler support follow, the latter decided with #372. |
-| [#373](https://github.com/aallan/vera/issues/373) | Host-import `Array<Float64>` returns (`alloc_result_ok_float_array`) — the infrastructure #371 needs. |
-| [#371](https://github.com/aallan/vera/issues/371) | `Inference.embed` — vector embeddings, unblocked by #373. |
-| [#451](https://github.com/aallan/vera/issues/451) | Provider: Google Gemini. |
-| [#1289](https://github.com/aallan/vera/issues/1289) | Provider registry — a model name reaches the toolchain as data rather than a compiler-source edit to `_PROVIDERS`. |
-| [#380](https://github.com/aallan/vera/issues/380) | Example: handler mocking for Inference (unblocked by #372). |
+| [#351](https://github.com/aallan/vera/issues/351) | Http: custom request headers (`Authorization` is the blocking case); status-code access — distinguish a 404 from a 500; per-request timeout control; PUT / PATCH / DELETE. |
+| [#370](https://github.com/aallan/vera/issues/370) | Inference: configurable `max_tokens` / `temperature` — cost gates and deterministic replays; user-defined `handle[Inference]` handlers — mocking, caching, routing — and, on the same handler lowering, user-declared effects, which an effect row can name once a handler for one is lowered; host-import `Array<Float64>` returns (`alloc_result_ok_float_array`), the infrastructure `Inference.embed` needs; `Inference.embed`, vector embeddings; and an example of handler mocking for Inference. |
+| [#1467](https://github.com/aallan/vera/issues/1467) | `Decision` effect — typed probabilistic decisions from System One models: `noul` / `choice` / `score` return a value already in the type system with a `Confidence` refinement, a fast tier beside `Inference` so a function's effect row states what it may spend.  Userland first (a declared effect with a handler over `Http.post`), then a calibration measurement as a hard gate, then promotion to a built-in host effect mirroring `Http` and `DB` with the `async` whitelist entry; a batch `Decision.ask` and handler support follow, the latter decided with #370. |
+| [#1289](https://github.com/aallan/vera/issues/1289) | Provider registry — a model name reaches the toolchain as data rather than a compiler-source edit to `_PROVIDERS`; and Google Gemini as a provider. |
 
 ## Stage 31 — The verified tool server
 
@@ -212,7 +190,7 @@ Exit criterion: the LSP limitation rows are retired, and a fresh VeraBench run (
 | [#523](https://github.com/aallan/vera/issues/523) | `vera context` — token-budgeted project export for agents. |
 | [#698](https://github.com/aallan/vera/issues/698) | `vera shape` — function-archetype histograms per module. |
 | [#224](https://github.com/aallan/vera/issues/224) | REPL — the shortest feedback path is `vera run` on a file. |
-| [#562](https://github.com/aallan/vera/issues/562) | `vera test` advanced features — input shrinking, cross-function scenarios, coverage-guided generation. |
+| [#440](https://github.com/aallan/vera/issues/440) | `vera test` advanced features — input shrinking, cross-function scenarios, coverage-guided generation. |
 | [#143](https://github.com/aallan/vera/issues/143) | Expand to 50+ examples. |
 | [#519](https://github.com/aallan/vera/issues/519) | SKILL.md documentation gap inventory. |
 | [#424](https://github.com/aallan/vera/issues/424) | Register veralang.dev with llms.txt directories. |
@@ -230,10 +208,8 @@ Exit criterion: the browser limitation rows are retired and an animated demo run
 
 | Issue | What |
 |---|---|
-| [#609](https://github.com/aallan/vera/issues/609) | `IO.sleep` via JSPI (or Asyncify fallback) so animations don't freeze the tab; unblocks the browser half of `IO.read_char`. |
-| [#355](https://github.com/aallan/vera/issues/355) | Replace sync XHR with `fetch` — every fix option is an async-to-sync bridge, so it shares the JSPI machinery. |
-| [#610](https://github.com/aallan/vera/issues/610) | Minimal ANSI-subset interpreter so terminal-style programs render unchanged. |
-| [#603](https://github.com/aallan/vera/issues/603) | Export string-marshalling helpers so JS can pass `String` arguments into Vera functions. |
+| [#603](https://github.com/aallan/vera/issues/603) | `IO.sleep` via JSPI (or Asyncify fallback) so animations don't freeze the tab, which unblocks the browser half of `IO.read_char`; a minimal ANSI-subset interpreter so terminal-style programs render unchanged; and exported string-marshalling helpers so JS can pass `String` arguments into Vera functions. |
+| [#351](https://github.com/aallan/vera/issues/351) | Replace sync XHR with `fetch` — every fix option is an async-to-sync bridge, so it shares the JSPI machinery. |
 
 ## The horizon
 
@@ -243,7 +219,7 @@ Beyond the staged sprints — grouped by arc, each pulled forward by its trigger
 
 **Nominal types** — [#1358](https://github.com/aallan/vera/issues/1358) `newtype`: nominal scalar types, checked at use (the issue carries the design, a validation plan and an estimate).
 
-**Testing depth** — [#792](https://github.com/aallan/vera/issues/792) feedback-driven hardening for the deep verifier/smt layers, [#170](https://github.com/aallan/vera/issues/170) Hypothesis as `vera test` generation backend (bookmark; trigger is sustained "cannot generate inputs" warnings).
+**Testing depth** — [#792](https://github.com/aallan/vera/issues/792) feedback-driven hardening for the deep verifier/smt layers, [#440](https://github.com/aallan/vera/issues/440) Hypothesis as `vera test` generation backend (trigger: sustained "cannot generate inputs" warnings).
 
 **Concurrency and WASI** — [#406](https://github.com/aallan/vera/issues/406) WASI 0.3 native async (gated on wasmtime-py exposing component async), [#853](https://github.com/aallan/vera/issues/853) extend wasi-p2 beyond IO+Random (Http via `wasi:http` outgoing-handler, streaming filesystem, sockets), [#270](https://github.com/aallan/vera/issues/270) `handle[Async]` scheduling strategies, [#227](https://github.com/aallan/vera/issues/227) timeout/cancellation effects, [#228](https://github.com/aallan/vera/issues/228) WebSocket/SSE, [#770](https://github.com/aallan/vera/issues/770) non-blocking / timed stdin, [#844](https://github.com/aallan/vera/issues/844) advisory diagnostic for shape-unfusable `async` arguments.
 
@@ -258,7 +234,7 @@ Beyond the staged sprints — grouped by arc, each pulled forward by its trigger
 Not stage-gated; advanced alongside whatever stage is active.
 
 - **VeraBench** ([vera-bench](https://github.com/aallan/vera-bench)) — the suite is its own thread; the compiler-side pass@k re-run is staged as Stage 32's measurement ([#225](https://github.com/aallan/vera/issues/225)).
-- **CI, process, and tooling** — [#386](https://github.com/aallan/vera/issues/386) Hypothesis round-trip properties (bookmark), [#712](https://github.com/aallan/vera/issues/712) Codecov → Harness migration watch, [#753](https://github.com/aallan/vera/issues/753) pygls / Python 3.16 watch, [#1126](https://github.com/aallan/vera/issues/1126) z3-solver 5.0 bake period, then re-run the obligation differential, [#1103](https://github.com/aallan/vera/issues/1103) migrate GitHub Pages off legacy branch-deploy to a self-owned Actions workflow, [#1295](https://github.com/aallan/vera/issues/1295) decide whether the four abilities (`Eq`/`Hash`/`Ord`/`Show`) highlight distinctly from ordinary types in the editor grammars, [#1263](https://github.com/aallan/vera/issues/1263) detect `_PROVIDERS` model IDs that a vendor has stopped documenting — every provider test pins the ID to a literal, which catches a registry edit but not rot at the vendor, so the signal needs a network-allowed probe.
+- **CI, process, and tooling** — [#386](https://github.com/aallan/vera/issues/386) Hypothesis round-trip properties (bookmark), [#712](https://github.com/aallan/vera/issues/712) Codecov → Harness migration watch, [#753](https://github.com/aallan/vera/issues/753) pygls / Python 3.16 watch, [#1126](https://github.com/aallan/vera/issues/1126) z3-solver 5.0 bake period, then re-run the obligation differential, [#1103](https://github.com/aallan/vera/issues/1103) migrate GitHub Pages off legacy branch-deploy to a self-owned Actions workflow, [#1295](https://github.com/aallan/vera/issues/1295) decide whether the four abilities (`Eq`/`Hash`/`Ord`/`Show`) highlight distinctly from ordinary types in the editor grammars, [#1289](https://github.com/aallan/vera/issues/1289) detect `_PROVIDERS` model IDs that a vendor has stopped documenting — every provider test pins the ID to a literal, which catches a registry edit but not rot at the vendor, so the signal needs a network-allowed probe.
 
 ## Not doing now
 

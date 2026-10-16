@@ -32,7 +32,7 @@ Each entry keeps its chapter's wording, including the issue it cites. The specif
 
 ### 7.5 Effect Handlers
 
-**Status: Partially implemented.** Code generation compiles handlers only for `State<T>` and `Exn<E>`, and a handler for any other effect, a user-declared one included, is refused at check where it is written (E340). Handlers for the other effects are tracked in [#372](https://github.com/aallan/vera/issues/372).
+**Status: Partially implemented.** Code generation compiles handlers only for `State<T>` and `Exn<E>`, and a handler for any other effect, a user-declared one included, is refused at check where it is written (E340). Handlers for the other effects are tracked in [#370](https://github.com/aallan/vera/issues/370).
 
 ## [spec/09-standard-library.md](https://raw.githubusercontent.com/aallan/vera/main/spec/09-standard-library.md)
 
@@ -42,7 +42,7 @@ Each entry keeps its chapter's wording, including the issue it cites. The specif
 
 ### 9.6.19 similarity (Future)
 
-**Status: Not implemented.** Requires `Inference.embed` (returning `Array<Float64>`), which is not implemented. `Inference.complete` is implemented ([#61](https://github.com/aallan/vera/issues/61)); `embed` is tracked separately ([#371](https://github.com/aallan/vera/issues/371)).
+**Status: Not implemented.** Requires `Inference.embed` (returning `Array<Float64>`), which is not implemented. `Inference.complete` is implemented ([#61](https://github.com/aallan/vera/issues/61)); `embed` is tracked separately ([#370](https://github.com/aallan/vera/issues/370)).
 
 ### 9.8 Abilities
 

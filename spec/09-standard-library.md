@@ -1802,7 +1802,7 @@ url_join(UrlParts("", "", "", "", ""))
 
 ### 9.6.19 similarity (Future)
 
-> **Status: Not implemented.** Requires `Inference.embed` (returning `Array<Float64>`), which is not implemented. `Inference.complete` is implemented ([#61](https://github.com/aallan/vera/issues/61)); `embed` is tracked separately ([#371](https://github.com/aallan/vera/issues/371)).
+> **Status: Not implemented.** Requires `Inference.embed` (returning `Array<Float64>`), which is not implemented. `Inference.complete` is implemented ([#61](https://github.com/aallan/vera/issues/61)); `embed` is tracked separately ([#370](https://github.com/aallan/vera/issues/370)).
 
 <!-- vera:skip-parse category="FRAGMENT" reason="similarity signature (no body)" -->
 ```
@@ -2883,13 +2883,6 @@ The standard library and built-in effects have the following limitations, each t
 | No date or time handling beyond `IO.time` — no ISO 8601 parsing, formatting, or arithmetic | [#233](https://github.com/aallan/vera/issues/233) |
 | No cryptographic primitives (hashing, HMAC) | [#235](https://github.com/aallan/vera/issues/235) |
 | No CSV parsing or generation | [#236](https://github.com/aallan/vera/issues/236) |
-| `Http`: fixed request headers — no custom header support | [#351](https://github.com/aallan/vera/issues/351) |
-| `Http`: response status codes are not accessible | [#352](https://github.com/aallan/vera/issues/352) |
-| `Http`: no per-request timeout control | [#353](https://github.com/aallan/vera/issues/353) |
-| `Http`: browser runtime uses deprecated synchronous XMLHttpRequest | [#355](https://github.com/aallan/vera/issues/355) |
-| `Http`: GET and POST only — no PUT, PATCH, or DELETE | [#356](https://github.com/aallan/vera/issues/356) |
-| `Inference.complete`: `max_tokens` and `temperature` are not configurable | [#370](https://github.com/aallan/vera/issues/370) |
-| `Inference`: no `embed` operation (vector embeddings) | [#371](https://github.com/aallan/vera/issues/371) |
-| `Inference`: no user-defined handlers — `handle[Inference]` is rejected | [#372](https://github.com/aallan/vera/issues/372) |
-| Host imports cannot return `Array<Float64>` (`alloc_result_ok_float_array` infrastructure) | [#373](https://github.com/aallan/vera/issues/373) |
+| `Http`: fixed request headers — no custom header support; `Http`: response status codes are not accessible; `Http`: no per-request timeout control; `Http`: browser runtime uses deprecated synchronous XMLHttpRequest; `Http`: GET and POST only — no PUT, PATCH, or DELETE | [#351](https://github.com/aallan/vera/issues/351) |
+| `Inference.complete`: `max_tokens` and `temperature` are not configurable; `Inference`: no `embed` operation (vector embeddings); `Inference`: no user-defined handlers — `handle[Inference]` is rejected; Host imports cannot return `Array<Float64>` (`alloc_result_ok_float_array` infrastructure) | [#370](https://github.com/aallan/vera/issues/370) |
 <!-- render_lists:end limitations -->
