@@ -131,15 +131,6 @@ UNREACHABLE_CAUSES: tuple[UnreachableCause, ...] = (
         "space).",
     ),
     UnreachableCause(
-        "gc_worklist_overflow",
-        "The collector's mark worklist overflowed: more heap objects were "
-        "waiting to be marked at one time than its 16 384 entries hold "
-        "(`GC_WORKLIST_SIZE` in `vera/codegen/assembly.py`), which one very "
-        "wide live structure — an array or map holding more heap values "
-        "than that — can reach.  Split the structure, or hold fewer heap "
-        "values in it at once.",
-    ),
-    UnreachableCause(
         "wrap_table_overflow",
         "More than 4 096 host-backed values — "
         + " and ".join(WRAP_TABLE_VALUES.values())
@@ -680,10 +671,6 @@ INTERNAL_TRAPS: tuple[InternalTrap, ...] = (
         "codegen/assembly.py:_emit_register_wrapper",
         "wrap_table_overflow", 1,
         "the wrapper table is still full after a collection",
-    ),
-    InternalTrap(
-        "codegen/assembly.py:_emit_gc_collect", "gc_worklist_overflow", 2,
-        "the mark worklist's bound, at the root seed and in the drain loop",
     ),
     InternalTrap(
         "codegen/assembly.py:_emit_gc_assert_base", "compiler_bug", 1,
