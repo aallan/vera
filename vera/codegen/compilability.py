@@ -447,10 +447,12 @@ class CompilabilityMixin:
         `vera.fold.walk` reaches every position a closure can be written
         in, a destructuring `let`'s value, a module call's arguments and a
         handler's state, body, clauses and `with` updates among them
-        (#1210), in the fold's order: a handler's body before its clauses,
-        so a closure in each reports its E618 in that order, the order the
-        lowering reports E617 in.  A closure's signature is walked before
-        its body.
+        (#1210), a closure's signature before its body.  The handler walk,
+        `_scan_expr_for_handlers`, which `emit_function` runs first over
+        the same body, contract predicates and signature predicates, walks
+        the same closures through the same derivation, and E618 is reported
+        once for a declaration, so the E618s are that walk's, in its order:
+        nothing this walk reaches is reached by it alone.
         """
         for found in fold.walk(node):
             if isinstance(found, ast.AnonFn):
@@ -568,9 +570,10 @@ class CompilabilityMixin:
 
         A handler registers its family where the walk meets it, in the
         fold's order, a handler's body before its clauses: the families are
-        declared in that order, and of the cells or payloads the backend
-        cannot compile, the one E607 or E612 names is the first the walk
-        meets.
+        declared in that order, of the cells or payloads the backend cannot
+        compile the one E607 or E612 names is the first the walk meets, and
+        a closure's E618 is reported where the walk meets the closure, the
+        order the lowering reports E617 in.
         """
         for found in fold.walk(node):
             if isinstance(found, ast.HandleExpr):
