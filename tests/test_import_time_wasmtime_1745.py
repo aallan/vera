@@ -13,7 +13,10 @@ its wasmtime objects inside a test, a fixture or a cached helper.
 Import time is everything a module runs when it is imported: its top-level
 statements, the bodies of its classes and of its ``if``, ``try``, ``for``
 and ``with`` blocks, its decorators and its default arguments.  Function
-bodies run later, so they are not read.
+bodies run later, so they are not read.  The gate reads direct construction
+only: a call at import to a helper that builds a wasmtime object inside its
+own body is not seen, so such a helper is called from a fixture or a test,
+never at module level.
 """
 from __future__ import annotations
 
