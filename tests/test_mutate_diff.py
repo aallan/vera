@@ -1570,3 +1570,18 @@ class TestWorkflow:
         concurrency = self._wf()["concurrency"]
         assert "github.event.pull_request.number" in concurrency["group"]
         assert concurrency["cancel-in-progress"] is True
+
+
+def test_tail_keeps_the_head_of_a_fault_dump(tmp_path: Path) -> None:
+    """A fault dump's first lines name the dying test; the window keeps them beside the last lines (#1745)."""
+    log = tmp_path / "engine.log"
+    rows = [f"row {n}" for n in range(100)]
+    rows[30] = "Fatal Python error: Illegal instruction"
+    rows[31] = "Current thread 0x1 (most recent call first):"
+    rows[32] = '  File "tests/test_x.py", line 7 in test_trap'
+    log.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    kept = md._tail(log)
+    assert kept[0] == rows[30] and kept[2] == rows[32] and kept[-1] == "row 99" and len(kept) == 40
+    plain = tmp_path / "plain.log"
+    plain.write_text("\n".join(rows[40:]) + "\n", encoding="utf-8")
+    assert md._tail(plain) == rows[60:]
