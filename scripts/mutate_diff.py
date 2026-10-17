@@ -977,12 +977,19 @@ def _default_engine() -> list[str]:
 
 
 def _tail(path: Path, lines: int = 40) -> list[str]:
-    """The engine log's last lines, its spinner frames dropped."""
+    """The engine log's last lines, its spinner frames dropped.  When the log
+    holds a Python fault dump, the dump's first lines take the first half of
+    the window: the fatal error and the innermost frames, which name the test
+    that was running, rather than pytest's outermost frames alone."""
     if not path.exists():
         return []
     text = path.read_text(encoding="utf-8", errors="replace")
     rows = [r.rstrip() for r in re.split(r"[\r\n]+", text)
             if r.strip() and not re.match(r"\s*[\u2800-\u28ff] ", r)]
+    for i, row in enumerate(rows):
+        if row.startswith("Fatal Python error"):
+            head = rows[i:i + lines // 2]
+            return head + rows[max(i + len(head), len(rows) - (lines - len(head))):]
     return rows[-lines:]
 
 

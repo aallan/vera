@@ -27,6 +27,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+import functools
 from pathlib import Path
 
 import pytest
@@ -38,11 +39,21 @@ from vera.codegen import CompileResult
 from vera.codegen.wasi import emit_wasi_component
 from tests import pipeline
 
-# Engine + wasip2 linker are stateless across instantiations; build
-# once at module scope to keep the suite fast.
-_ENGINE = wasmtime.Engine()
-_LINKER = Linker(_ENGINE)
-_LINKER.add_wasip2()
+# Engine + wasip2 linker are stateless across instantiations; build once,
+# on first use.  Built at import, they install wasmtime's trap handlers
+# in whichever process imports the module: mutmut's fork server, whose
+# collect-only warm-up then tears them down with faulthandler, so every
+# forked run dies on its first trap (#1745).
+@functools.cache
+def _engine() -> wasmtime.Engine:
+    return wasmtime.Engine()
+
+
+@functools.cache
+def _linker() -> Linker:
+    linker = Linker(_engine())
+    linker.add_wasip2()
+    return linker
 
 
 HELLO = """\
@@ -96,8 +107,8 @@ def _run_component(
     calling a wasip2 import on a config-less store aborts the whole
     process (SIGABRT), per the WASI.md spike invariants.
     """
-    component = Component(_ENGINE, emit_wasi_component(result))
-    store = wasmtime.Store(_ENGINE)
+    component = Component(_engine(), emit_wasi_component(result))
+    store = wasmtime.Store(_engine())
     config = wasmtime.WasiConfig()
     out = bytearray()
     err = bytearray()
@@ -111,7 +122,7 @@ def _run_component(
     if preopen is not None:
         config.preopen_dir(preopen, "/")
     store.set_wasi(config)
-    instance = _LINKER.instantiate(store, component)
+    instance = _linker().instantiate(store, component)
     func = instance.get_func(store, entry)
     assert func is not None, f"missing lifted export {entry!r}"
     value = func(store)
@@ -128,19 +139,19 @@ class TestComponentValidates:
     structural type-match against wasmtime's real wasip2 host."""
 
     def test_print_program_parses_as_component(self) -> None:
-        Component(_ENGINE, _emit(HELLO))
+        Component(_engine(), _emit(HELLO))
 
     def test_print_program_instantiates_under_wasip2(self) -> None:
-        store = wasmtime.Store(_ENGINE)
+        store = wasmtime.Store(_engine())
         store.set_wasi(wasmtime.WasiConfig())
-        _LINKER.instantiate(store, Component(_ENGINE, _emit(HELLO)))
+        _linker().instantiate(store, Component(_engine(), _emit(HELLO)))
 
     def test_kitchen_sink_parses_and_instantiates(self) -> None:
         """All 14 IO/Random ops + every WASI interface import at once."""
-        component = Component(_ENGINE, _emit(KITCHEN_SINK))
-        store = wasmtime.Store(_ENGINE)
+        component = Component(_engine(), _emit(KITCHEN_SINK))
+        store = wasmtime.Store(_engine())
         store.set_wasi(wasmtime.WasiConfig())
-        _LINKER.instantiate(store, component)
+        _linker().instantiate(store, component)
 
     def test_no_memory_program_parses_and_instantiates(self) -> None:
         """A program with no strings and no GC still gets a memory +
@@ -152,10 +163,10 @@ public fn main(-> @Int)
   Random.random_int(1, 6)
 }
 """
-        component = Component(_ENGINE, _emit(source))
-        store = wasmtime.Store(_ENGINE)
+        component = Component(_engine(), _emit(source))
+        store = wasmtime.Store(_engine())
         store.set_wasi(wasmtime.WasiConfig())
-        _LINKER.instantiate(store, component)
+        _linker().instantiate(store, component)
 
     def test_interface_imports_are_gated_by_ops(self) -> None:
         """A print-only program must not import filesystem/random/etc.
@@ -339,12 +350,12 @@ public fn main(-> @Int)
   @Int.0 + 1
 }
 """)
-        component = Component(_ENGINE, emit_wasi_component(result))
-        store = wasmtime.Store(_ENGINE)
+        component = Component(_engine(), emit_wasi_component(result))
+        store = wasmtime.Store(_engine())
         config = wasmtime.WasiConfig()
         config.argv = ["prog"]
         store.set_wasi(config)
-        instance = _LINKER.instantiate(store, component)
+        instance = _linker().instantiate(store, component)
         func = instance.get_func(store, "main")
         assert func is not None
         with pytest.raises(wasmtime.WasmtimeError, match="unreachable"):
@@ -353,14 +364,14 @@ public fn main(-> @Int)
     def test_wasi_cli_run_export_is_callable(self) -> None:
         """The nested wasi:cli/run@0.2.0#run export drives main and
         reports ok — this is what stock `wasmtime run` invokes."""
-        component = Component(_ENGINE, _emit(HELLO))
-        store = wasmtime.Store(_ENGINE)
+        component = Component(_engine(), _emit(HELLO))
+        store = wasmtime.Store(_engine())
         config = wasmtime.WasiConfig()
         out = bytearray()
         config.stdout_custom = out.extend
         config.argv = ["prog"]
         store.set_wasi(config)
-        instance = _LINKER.instantiate(store, component)
+        instance = _linker().instantiate(store, component)
         iface = instance.get_export_index(store, "wasi:cli/run@0.2.0")
         assert iface is not None
         run_idx = instance.get_export_index(store, "run", instance=iface)
@@ -690,14 +701,14 @@ public fn main(-> @Unit)
   IO.print("post")
 }
 """)
-        component = Component(_ENGINE, emit_wasi_component(result))
-        store = wasmtime.Store(_ENGINE)
+        component = Component(_engine(), emit_wasi_component(result))
+        store = wasmtime.Store(_engine())
         config = wasmtime.WasiConfig()
         out = bytearray()
         config.stdout_custom = out.extend
         config.argv = ["prog"]
         store.set_wasi(config)
-        instance = _LINKER.instantiate(store, component)
+        instance = _linker().instantiate(store, component)
         func = instance.get_func(store, "main")
         assert func is not None
         with pytest.raises(wasmtime.WasmtimeError):
@@ -722,14 +733,14 @@ public fn main(-> @Int)
   checked(1)
 }
 """)
-        component = Component(_ENGINE, emit_wasi_component(result))
-        store = wasmtime.Store(_ENGINE)
+        component = Component(_engine(), emit_wasi_component(result))
+        store = wasmtime.Store(_engine())
         config = wasmtime.WasiConfig()
         err = bytearray()
         config.stderr_custom = err.extend
         config.argv = ["prog"]
         store.set_wasi(config)
-        instance = _LINKER.instantiate(store, component)
+        instance = _linker().instantiate(store, component)
         func = instance.get_func(store, "main")
         assert func is not None
         with pytest.raises(wasmtime.WasmtimeError):
@@ -789,7 +800,7 @@ class TestCliCompileWasiP2:
         assert rc == 0
         # A core module here would fail Component validation — this is
         # what distinguishes the wasi-p2 artifact from --target wasm.
-        Component(_ENGINE, out.read_bytes())
+        Component(_engine(), out.read_bytes())
 
     def test_wat_flag_prints_component_text(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
@@ -1458,23 +1469,23 @@ class TestServerWorldEmission:
     modules) and carries exactly the incoming-handler entry surface."""
 
     def test_http_server_example_parses_as_component(self) -> None:
-        Component(_ENGINE, _emit_server(HTTP_SERVER_EXAMPLE))
+        Component(_engine(), _emit_server(HTTP_SERVER_EXAMPLE))
 
     def test_map_get_handler_parses_as_component(self) -> None:
-        Component(_ENGINE, _emit_server(DIFF_HANDLER))
+        Component(_engine(), _emit_server(DIFF_HANDLER))
 
     def test_full_map_op_battery_parses_as_component(self) -> None:
         """keys/values/size/contains/remove all at once (slots 16-25)."""
-        Component(_ENGINE, _emit_server(MAP_ORDER_HANDLER))
+        Component(_engine(), _emit_server(MAP_ORDER_HANDLER))
 
     def test_io_print_handler_parses_as_component(self) -> None:
-        Component(_ENGINE, _emit_server(PRINT_HANDLER))
+        Component(_engine(), _emit_server(PRINT_HANDLER))
 
     def test_time_sleep_random_handler_parses_as_component(self) -> None:
         """The rest of the allowed IO/Random family in one handler —
         pins the clocks/poll/random interface closure in the server
         assembly (all proxy-world-linkable, design §1.3)."""
-        Component(_ENGINE, _emit_server("""\
+        Component(_engine(), _emit_server("""\
 public fn handle(@Request -> @Response)
   requires(true) ensures(true) effects(<HttpServer, IO, Random>)
 {
@@ -1607,7 +1618,7 @@ public fn handle(@Request -> @Response)
   Response(200, map_new(), nat_to_string(map_size(@Map<Int, Int>.0)))
 }
 """)
-        Component(_ENGINE, emit_wasi_component(result, world="server"))
+        Component(_engine(), emit_wasi_component(result, world="server"))
 
     def test_math_handler_is_rejected_naming_math(self) -> None:
         result = _compile_ok("""\
@@ -2083,7 +2094,7 @@ class TestCliServerWorld:
             output=str(out),
         )
         assert rc == 0
-        Component(_ENGINE, out.read_bytes())
+        Component(_engine(), out.read_bytes())
 
     def test_wat_prints_incoming_handler_export(
         self, capsys: pytest.CaptureFixture[str],
