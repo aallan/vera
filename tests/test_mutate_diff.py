@@ -1582,6 +1582,13 @@ def test_tail_keeps_the_head_of_a_fault_dump(tmp_path: Path) -> None:
     log.write_text("\n".join(rows) + "\n", encoding="utf-8")
     kept = md._tail(log)
     assert kept[0] == rows[30] and kept[2] == rows[32] and kept[-1] == "row 99" and len(kept) == 40
+    # mutmut's spinner writes its status without a newline, so the dump's
+    # first line shares a row with it (#1747).
+    glued = tmp_path / "glued.log"
+    rows[30] = "\r⠋ Running clean tests Fatal Python error: Illegal instruction"
+    glued.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    kept = md._tail(glued)
+    assert kept[0] == "Fatal Python error: Illegal instruction" and kept[2] == rows[32] and len(kept) == 40
     plain = tmp_path / "plain.log"
     plain.write_text("\n".join(rows[40:]) + "\n", encoding="utf-8")
     assert md._tail(plain) == rows[60:]

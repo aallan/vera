@@ -1,14 +1,17 @@
 """No test module constructs a wasmtime object at import time (#1745).
 
-mutmut's fork server imports every selected test module once, in a
-``pytest --collect-only`` session, and forks each test run from that
-process.  wasmtime installs its trap handlers when a process creates its
-first ``Engine`` and never again, and pytest's faulthandler plugin restores
-the signal handlers it found when that session ends.  An ``Engine`` built
-at import therefore leaves every forked run without a trap handler, and the
-first WebAssembly trap ends the process (SIGILL, exit -4): the nightly
-sweep's first night lost all seven slices this way.  A test module builds
-its wasmtime objects inside a test, a fixture or a cached helper.
+The first ``Engine`` a process creates installs wasmtime's trap handlers,
+once per process, and a collection that runs no test is the wrong moment
+for that: mutmut's fork server warms up with a ``pytest --collect-only``
+session over every selected test module and forks each run from that
+process, so an ``Engine`` built at import would decide, for every run, where
+in the process's life the handlers appear.  A test module builds its
+wasmtime objects inside a test, a fixture or a cached helper.  The handler
+loss that stopped the nightly sweep's first two nights was not this gate's
+case: pytest's faulthandler plugin restored the pre-session handlers
+between mutmut's stats pass and clean pass, and the lanes now run with
+``-p no:faulthandler`` (#1747,
+``tests/test_wasmtime_traps_across_pytest_sessions_1747.py``).
 
 Import time is everything a module runs when it is imported: its top-level
 statements, the bodies of its classes and of its ``if``, ``try``, ``for``

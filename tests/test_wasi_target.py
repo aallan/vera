@@ -40,10 +40,10 @@ from vera.codegen.wasi import emit_wasi_component
 from tests import pipeline
 
 # Engine + wasip2 linker are stateless across instantiations; build once,
-# on first use.  Built at import, they install wasmtime's trap handlers
-# in whichever process imports the module: mutmut's fork server, whose
-# collect-only warm-up then tears them down with faulthandler, so every
-# forked run dies on its first trap (#1745).
+# on first use, never at import (tests/test_import_time_wasmtime_1745.py):
+# the first Engine a process creates installs wasmtime's trap handlers, and
+# a collection that runs no test is the wrong moment for that (#1745; the
+# handler loss that stopped the nightly sweep is #1747's).
 @functools.cache
 def _engine() -> wasmtime.Engine:
     return wasmtime.Engine()

@@ -218,10 +218,20 @@ use_setproctitle = false  # required on macOS (mutmut PR #450)
 # test that starts a Python or vera process: the process compiles every
 # mutated module afresh (a mutated _register_builtins makes environment.py
 # 33.6 MB) and records nothing for the stats pass, so the test is no oracle.
+# No faulthandler plugin (#1747): it records the process's signal handlers
+# when a pytest session starts and restores them when it ends, and wasmtime
+# installs its trap handlers once per process, at the first Engine.  mutmut's
+# fork runner runs the stats pass and the clean pass as two sessions in one
+# process, so the first session's end took wasmtime's handlers away and the
+# clean pass died on its first trap (SIGILL); the forked mutant runs inherit
+# whatever the parent has.  tests/test_wasmtime_traps_across_pytest_sessions_1747.py
+# shows both halves on Linux, where traps are signals.
 pytest_add_cli_args = [
     "--timeout=300",
     "-p",
     "tests.mutation_oracle",
+    "-p",
+    "no:faulthandler",
     "--deselect=tests/test_verifier_refinements.py::TestANonVerdictIsAttributedToTheRightOutcome::test_no_demotion_site_hardcodes_a_solver_reason",
     "--deselect=tests/test_verifier_refinements.py::TestANonVerdictIsAttributedToTheRightOutcome::test_every_possibly_unguarded_demotion_supplies_a_reason",
     "--deselect=tests/test_checker_errors.py::TestErrorCodes::test_error_code_collision_gate_is_clean",
