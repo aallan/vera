@@ -984,6 +984,10 @@ def _tail(path: Path, lines: int = 40) -> list[str]:
     if not path.exists():
         return []
     text = path.read_text(encoding="utf-8", errors="replace")
+    # The dump's first line follows the spinner's status text, which mutmut
+    # writes without a newline; it opens a row of its own here, or the row
+    # would go with the spinner frames below.
+    text = text.replace("Fatal Python error", "\nFatal Python error")
     rows = [r.rstrip() for r in re.split(r"[\r\n]+", text)
             if r.strip() and not re.match(r"\s*[\u2800-\u28ff] ", r)]
     for i, row in enumerate(rows):
