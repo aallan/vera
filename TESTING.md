@@ -805,6 +805,12 @@ written twice would let the gate pass on two hosts that were never asked the
 same question, and an encoding compared after re-parsing would stop being a
 byte comparison, which is what makes it able to see plain-text run grouping.
 
+`tests/program_generator.py` is the program generator ([Program
+Generator](#program-generator)): it writes a program's text from a seed and
+drives no stage itself, and it holds the minimiser and the night's report
+(`summarize`).  `tests/test_program_generator.py` is the one module that runs
+its programs, through `tests/pipeline.py`.
+
 `tests/guard_emitter_scan.py` is the one derivation of WHERE code generation
 plants a guard, read by two rosters that would otherwise each keep a list:
 `carriers.ELEMENT_GUARD_SITES` (#1430) and the boundary-guard roster in
@@ -1386,6 +1392,85 @@ that keeps widening goes to its mechanism's release.  A bug found in review is
 filed, not folded in, unless it is a regression or a defect in the pull
 request's own code.
 
+## Program Generator
+
+`tests/program_generator.py` writes a whole Vera program from a seed, and
+`tests/test_program_generator.py` runs it in process through
+`tests/pipeline.py`.  It samples programs the corpus does not hold: every
+slot reference is computed from the generator's own binding stack, and every
+contract is true of every input its `requires` admits, so a refutation, a trap
+or a mismatch is the toolchain's or the generator's, never the program's own.
+
+Version one writes up to three `data` declarations (enums, and data types whose
+fields are `Int`, `Nat`, `Bool` or an earlier data type), two to six functions,
+and a `main` that prints each public function's value.  A body is built of
+`let`, `if`, `match` (constructor patterns with binders and wildcards, and
+`Int` and `Bool` literal patterns), arithmetic with `@Nat` narrowing and
+provable `@Nat` subtraction, division by a literal and by a divisor the
+verifier sees is positive, comparisons, the Boolean operators, constructions,
+and calls along a call graph without cycles.  A public function takes `Int`,
+`Nat` and `Bool` parameters, the types `vera test` generates.
+
+Each program is held to the generator's contract and three differentials:
+
+| Check | Holds | A failure is |
+|---|---|---|
+| Contract | `vera check` reports no diagnostic, the text is `vera fmt`'s canonical form, and `vera verify` answers every query inside its default budget with no error | a program the generator wrote wrong, or a true contract the verifier refuted |
+| (1) Load | the module compiles with no E6xx diagnostic, exports exactly the public functions, and runs each on the arguments the generator chose for it | a program that checks and does not compile, load or run |
+| (2) Reconcile | `vera/reconcile.py`'s join reports no mismatch outside the known classes | a runtime check claimed with no guard, or a guard with no record |
+| (3) Distrust | `vera test --distrust` reports no refuted proof (E703), no trap it cannot attribute, and no failing trial | a Tier 1 proof, or a true contract, contradicted at run time |
+
+**Known classes.**  `KNOWN_CLASSES` reads `scripts/check_reconciliation.py`'s
+`KNOWN` as classes, each by its mismatch's kind, obligation and emitter and by
+the shape of its site: #1598 (an `@Int` division), #1695 for #1629 (a division
+by a non-zero literal, and a `@Nat` binder of a `Nat` field), and #1695 for
+#1557 (a value non-negative only through a call to a function returning
+`@Nat`).
+A verify error is #1525's when it vanishes once each function binds
+an unused `let` of every data type it constructs and does not name in its
+signature (`program_generator.name_constructed_types`); the three
+differentials then run over that program.  A find inside a known class is
+counted under its issue, with the evidence in its record, and fails nothing.
+Each class is pinned by a repro cell that fails the day its issue is fixed, and
+the entry comes out.
+
+**Where it runs.**  Every pull request runs the contract and the three
+differentials over ten pinned seeds, with the instrument's own cells: a seed
+writes its program byte for byte, in the test's process and under two string
+hash seeds; a hundred seeds reach every construct of version one and keep the
+generator's invariants; each differential reports a hand-written program that
+breaks it and passes that program's nearest neighbour that does not; and the
+known-class pins and the minimiser's cells.  Nothing else of the generator
+runs on a pull request.  [`nightly-generator.yml`](.github/workflows/nightly-generator.yml)
+runs the night's 5,000 seeds at 14:17 UTC, a short night of 1,000 seeds on a
+pull request that changes the generator, its instrument or the workflow, and
+any seeds `workflow_dispatch` names.  A night's seeds start at its day's
+offset from 2026-10-01 times 100,000, so no two nights share one.  On the runner's four workers 1,000 seeds take about 0.22 s a program, so a night of 5,000 seeds is about 19 minutes of the step's 45.
+
+**A find.**  A find outside the known classes is minimised: a function
+dropped with a literal standing in for each call, a data declaration, a
+print or a `let` dropped, an expression replaced by a smaller one, one change
+at a time while the find holds and the program stays one the generator could
+have written (`program_generator.well_formed`).  Its record, under
+`VERA_GENERATOR_OUT` and in the run's `program-generator-night` artifact,
+names the seed and the differential, and gives the minimal program and what
+the generator expected of each of its functions: the contract it wrote, the
+interval the verifier can see, the one a run can reach, and the value an exact
+`ensures` states on the failing arguments.  A failed scheduled night files or
+updates one issue, labelled `generator-find`, carrying the night's report.
+
+```bash
+python -m tests.program_generator 1234                                  # the program seed 1234 writes
+VERA_GENERATOR_SEEDS=1234 pytest tests/test_program_generator.py        # the contract and the three differentials over it
+VERA_GENERATOR_SEEDS=0-999 VERA_GENERATOR_OUT=out pytest tests/test_program_generator.py -n 4
+python -m tests.program_generator summarize out                         # the report a night posts
+```
+
+Recursion and `decreases`, generics, type aliases and refinements, imports,
+containers, `State` and `Exn` handlers, closures, `String`, `Float64` and
+`Byte` values, relational preconditions and the product of two variables are
+version two's grammar ([ROADMAP.md](ROADMAP.md) Stage 26).
+
 ## Adding Tests
 
 When extending the compiler, add tests following the existing patterns:
@@ -1603,7 +1688,7 @@ GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs the
 | **eager-gc** | Python 3.12 x Ubuntu | The conformance programs' runs (`pytest tests/test_conformance.py -k run -n auto`) and `check_examples_run.py` again under `VERA_EAGER_GC=1`, which collects at every allocation so a GC-rooting bug fails deterministically rather than by timing (see [ENVIRONMENT.md](ENVIRONMENT.md)) |
 | **browser-parity** | Python 3.12 + Node.js 22 x Ubuntu | `pytest tests/test_browser.py -v` — verifies JS runtime matches Python runtime; collects V8 coverage via `NODE_V8_COVERAGE` and uploads to Codecov |
 
-[`mutation-diff.yml`](.github/workflows/mutation-diff.yml)'s one job, `mutation (diff)`, runs beside these on a pull request that changes a `vera/**/*.py` file, or the lane's own script, test file or workflow ([Mutation Testing](#mutation-testing)).  It is not a required check.  [`mutation-nightly.yml`](.github/workflows/mutation-nightly.yml) runs nightly at 21:00 UTC and on demand, never on a pull request: a `setup` job, seven `sweep` jobs, a `stitch` job, and an `issue` job, the only one with write access (`issues: write`), when a scheduled night stops short.
+[`mutation-diff.yml`](.github/workflows/mutation-diff.yml)'s one job, `mutation (diff)`, runs beside these on a pull request that changes a `vera/**/*.py` file, or the lane's own script, test file or workflow ([Mutation Testing](#mutation-testing)).  It is not a required check.  [`nightly-generator.yml`](.github/workflows/nightly-generator.yml)'s one job runs the program generator's three differentials over the night's seeds at 14:17 UTC, over a short night on a pull request that changes the generator, its instrument or the workflow, and on demand ([Program Generator](#program-generator)); it has `contents: read` and the `issues: write` its tracking-issue step needs on a failed scheduled night, and it is not a required check.  The pull request's shards run the generator's ten pinned seeds as ordinary tests.  [`mutation-nightly.yml`](.github/workflows/mutation-nightly.yml) runs nightly at 21:00 UTC and on demand, never on a pull request: a `setup` job, seven `sweep` jobs, a `stitch` job, and an `issue` job, the only one with write access (`issues: write`), when a scheduled night stops short.
 
 The coverage threshold of **80%** is enforced in CI, by the coverage job. Coverage is **95% Python, 87% JavaScript** — matching the overview table above. The two are reported as two figures and never blended into one: they come from different collectors over different line populations (`pytest --cov` over the Python compiler, V8 over `vera/browser/`), so a combined percentage would need a line-weighted total that neither report produces. JavaScript coverage for `vera/browser/runtime.mjs` is collected separately using V8's built-in coverage and uploaded to Codecov with the `javascript` flag, independently of the Python `pytest --cov` report.
 
