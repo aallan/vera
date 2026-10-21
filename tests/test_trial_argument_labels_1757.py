@@ -13,7 +13,7 @@ and the order of the arguments does not.
 
 The matrix holds the labels over parameter shapes (two of one type, three
 of one type, two types interleaved, a single parameter, a type once among
-others) by the three reports.  Each function's `requires` pins every
+others, an alias among its base type) by the three reports.  Each function's `requires` pins every
 parameter to a value of its own by the name the source gives it, so the
 tester's own generation puts that value at that parameter, and a report
 must show each value under the name that pinned it, in the parameters'
@@ -48,13 +48,19 @@ SHAPES: dict[str, tuple[tuple[str, str, int | bool], ...]] = {
         ("Int", "@Int.0", -41),),
     "a type once among others": (
         ("Int", "@Int.1", -51), ("Bool", "@Bool.0", True), ("Int", "@Int.0", -53)),
+    # A top-level alias is a slot type of its own (`naming.slot_name`): the
+    # checker binds `@Cnt` under `Cnt`, not under the `Nat` it resolves to.
+    "an alias among its base": (
+        ("Cnt", "@Cnt.1", 61), ("Nat", "@Nat.0", 62), ("Cnt", "@Cnt.0", 63)),
 }
 
 REPORTS = ("text", "json", "refutation")
 
 #: Every trial fails this `ensures`, which the verifier leaves to Tier 3, so
-#: every trial is reported with its arguments.
+#: every trial is reported with its arguments.  `Cnt` is the alias row's.
 _FAILING = """\
+type Cnt = Nat;
+
 public fn f({params} -> @Int)
   requires({pins})
   ensures(string_length(int_to_string(@Int.result)) == 99)
@@ -65,8 +71,12 @@ public fn f({params} -> @Int)
 """
 
 #: #1555's address comparison, which the verifier proves and every run
-#: refutes (E703); `{premise}` is a statement at the head of the body.
+#: refutes (E703); `{premise}` is a statement at the head of the body.  The
+#: instance is a checklist line of issue #1525: when that lands, the
+#: refutation cells and the premise repro need another refuted proof.
 _REFUTED = """\
+type Cnt = Nat;
+
 public fn f({params} -> @Int)
   requires({pins})
   ensures(@Int.result < 0)
