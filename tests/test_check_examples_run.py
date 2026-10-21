@@ -14,6 +14,11 @@ The gate's design has three separable parts, and each is tested here:
 - **The runner** (`run_corpus`) — a seeded corpus proves the gate goes red
   on a program that traps at runtime and green on one that does not.
 
+The real corpus runs here too (`TestRealExamples`): every example the
+tables run, in process, read by the gate's own two signals.  That is how CI
+runs it, in the suite and in the eager-GC lane; the script stays for local
+use.
+
 Two conventions are asserted throughout: a regex or glob that matches
 nothing must be an ERROR rather than a silent pass (otherwise a rewording
 switches the gate off), and each check is exercised in both directions — a passing case
@@ -1311,3 +1316,38 @@ class TestTestingMdCrossCheck:
             "## Next section\n\n| `ghost.vera` | x | runs |\n",
         )
         assert _MOD.check_testing_md(doc, {"a": _MOD.RunSpec()}, {}) == []
+
+
+# ---------------------------------------------------------------------------
+# The real corpus
+# ---------------------------------------------------------------------------
+
+
+class TestRealExamples:
+    """Every example `RUN_SPECS` names runs trap-free, as the gate runs it:
+    its entry point and arguments, a scratch working directory, stdin at
+    end of input, the variables `NEUTRALISED_ENV` names unset and the
+    spec's own set, and both signals read, the exit status and then
+    `check_output`'s.  `vera run` runs in process here (`tests/pipeline.py`),
+    which `tests/test_pipeline.py` holds to the command a process runs.  The
+    eager-GC lane runs this class under `VERA_EAGER_GC=1`, where a
+    collection at every allocation turns a rooting bug into a failure."""
+
+    @pytest.mark.parametrize("name", sorted(_MOD.RUN_SPECS))
+    def test_the_example_runs_trap_free(
+        self, name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from tests import pipeline
+
+        spec = _MOD.RUN_SPECS[name]
+        examples = _ROOT / "examples"
+        assert _MOD.missing_fixture(spec, examples) is None
+        monkeypatch.chdir(tmp_path)
+        env: dict[str, str | None] = dict.fromkeys(_MOD.NEUTRALISED_ENV)
+        env.update(_MOD.spec_env(spec, examples))
+        argv = ["run", str(examples / f"{name}.vera"), "--fn", spec.fn]
+        if spec.args:
+            argv += ["--", *spec.args]
+        result = pipeline.cli(*argv, env=env)
+        assert result.returncode == 0, result.stderr or result.stdout
+        assert _MOD.check_output(name, spec, result.stdout + result.stderr) is None

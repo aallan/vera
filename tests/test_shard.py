@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import subprocess
 import sys
 from collections import defaultdict
@@ -303,6 +304,7 @@ class TestTheWiring:
         runs = [step for step in job["steps"] if re.match(r"pytest\b", str(step.get("run", "")))]
         assert len(runs) == 1, job["steps"]
         for cell in cells:
-            command = render(str(runs[0]["run"]), {f"matrix.{k}": v for k, v in cell.items()})
-            assert f"--shard={cell['shard']}/{cell['shards']}" in command.split(), (cell, command)
+            command = render(str(runs[0]["run"]), {f"matrix.{k}": v for k, v in cell.items()},
+                             runs[0].get("env"))
+            assert f"--shard={cell['shard']}/{cell['shards']}" in shlex.split(command), (cell, command)
         assert (runs[0].get("env") or {}).get("VERA_MATRIX_CHANGED") == "${{ needs.plan.outputs.changed }}"

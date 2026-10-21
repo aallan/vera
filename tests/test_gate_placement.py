@@ -37,8 +37,10 @@ from __future__ import annotations
 
 import importlib.util
 import itertools
+import os
 import re
 import shlex
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -55,9 +57,12 @@ ROOT = Path(__file__).resolve().parent.parent
 PRECOMMIT = ROOT / ".pre-commit-config.yaml"
 CI = ROOT / ".github" / "workflows" / "ci.yml"
 
-# The sweeps too slow for a commit.  CI runs the last three in `lint`; the
-# first is a local tool whose work CI does through the suite
-# (tests/test_conformance.py), so a hook runs none of them.
+# The sweeps too slow for a commit.  CI runs the last in `lint`; the first
+# three are local tools whose work CI does through the suite
+# (tests/test_conformance.py; the examples' tests in
+# tests/test_verifier_contracts.py and tests/test_pipeline.py; and
+# tests/test_check_examples_run.py's TestRealExamples), so a hook runs none
+# of them.
 SLOW_SWEEPS = (
     "scripts/check_conformance.py",
     "scripts/check_examples.py",
@@ -76,6 +81,12 @@ COMMIT_TIME_ONLY = {
 # A local hook's script whose CI counterpart is a different script: the
 # generator runs locally, and CI verifies its output is current.
 CI_COUNTERPART = {"scripts/build_site.py": "scripts/check_site_assets.py"}
+
+# A local hook's script whose work the suite does over the whole tree, in
+# the test file named: CI matches the hook with a run of the whole suite.
+SUITE_COUNTERPART = {
+    "scripts/check_doc_examples.py": "tests/test_check_doc_examples.py",
+}
 
 
 def _hooks() -> list[dict[str, Any]]:
@@ -279,8 +290,14 @@ def evaluate(
     return result
 
 
-def render(command: str, context: dict[str, object]) -> str:
-    """A `run:` command with each `${{ }}` replaced by its value."""
+def render(
+    command: str, context: dict[str, object],
+    env: dict[str, object] | None = None,
+) -> str:
+    """A `run:` command with each `${{ }}` replaced by its value, and each
+    shell variable *env* sets (`$NAME`, `${NAME}`) by the value the step's
+    `env:` gives it, its own `${{ }}` replaced first.  A variable *env* does
+    not set (`$GITHUB_OUTPUT`, `$RUNNER_TEMP`) stays as written."""
 
     def value(m: re.Match[str]) -> str:
         result = evaluate(m.group(0), context, strict=False)
@@ -290,7 +307,16 @@ def render(command: str, context: dict[str, object]) -> str:
             return "true" if result else "false"
         return str(result)
 
-    return re.sub(r"\$\{\{.*?\}\}", value, command)
+    rendered = re.sub(r"\$\{\{.*?\}\}", value, command)
+    if not env:
+        return rendered
+    values = {name: render(str(raw), context) for name, raw in env.items()}
+
+    def variable(m: re.Match[str]) -> str:
+        name = m.group(1) or m.group(2)
+        return values[name] if name in values else m.group(0)
+
+    return re.sub(r"\$\{([A-Za-z_]\w*)\}|\$([A-Za-z_]\w*)", variable, rendered)
 
 
 def _truthy(value: object) -> bool:
@@ -397,7 +423,8 @@ def _gating_steps(
         if not _runs(step, context, where):
             continue
         _can_fail(step, context, where)
-        command = render(str(step.get("run", "")), context)
+        env = {**(workflow.get("env") or {}), **(job.get("env") or {}), **(step.get("env") or {})}
+        command = render(str(step.get("run", "")), context, env)
         if re.search(r"\|\||\bset\s+\+e\b", command):
             pytest.fail(f"{where}: `{command.strip()}` can swallow its own failure")
         steps.append({**step, "run": command})
@@ -442,6 +469,10 @@ def _invokes(steps: list[dict[str, Any]], *command: str) -> list[dict[str, Any]]
 # push and empty on the nightly run, where its step does not run.
 # `needs.plan.outputs.changed` is the files a pull request changes that a
 # class-instrument matrix can be decided by, and empty on every other event.
+# `needs.plan.outputs.inert` is scripts/ci_changes.py's answer to "does every
+# file this pull request changes belong to the VS Code extension, which no
+# filtered job reads?", `true` or `false` on a pull request and empty on
+# every other event, where its step does not run.
 # `needs.test.result` is the full matrix's result as a run in which every
 # gate holds sees it: `success` where the matrix runs, `skipped` where it
 # stands down.  `needs.matrix-gate.outputs.failed` is the cells matrix-gate
@@ -454,7 +485,9 @@ _PULL_REQUEST = {
     "github.base_ref": "main",
     "github.ref": "refs/pull/1/merge",
     "needs.plan.outputs.changed": "vera/narrowing.py\ntests/test_one_classifier_1503.py",
+    "needs.plan.outputs.inert": "false",
 }
+INERT_EVENT = "pull request that changes only the VS Code extension's own files"
 EVENTS = {
     "pull request into main": {
         **_PULL_REQUEST,
@@ -466,6 +499,13 @@ EVENTS = {
         "needs.plan.outputs.release": "true",
         "needs.test.result": "success",
     },
+    INERT_EVENT: {
+        **_PULL_REQUEST,
+        "needs.plan.outputs.release": "false",
+        "needs.plan.outputs.changed": "",
+        "needs.plan.outputs.inert": "true",
+        "needs.test.result": "skipped",
+    },
     "push of a merge into main": {
         **_WORKFLOW,
         "github.event_name": "push",
@@ -474,6 +514,7 @@ EVENTS = {
         "github.event.before": "1" * 40,
         "needs.plan.outputs.release": "false",
         "needs.plan.outputs.changed": "",
+        "needs.plan.outputs.inert": "",
         "needs.test.result": "skipped",
     },
     "push of a release merge into main": {
@@ -484,6 +525,7 @@ EVENTS = {
         "github.event.before": "2" * 40,
         "needs.plan.outputs.release": "true",
         "needs.plan.outputs.changed": "",
+        "needs.plan.outputs.inert": "",
         "needs.test.result": "success",
     },
     "nightly schedule": {
@@ -494,9 +536,63 @@ EVENTS = {
         "github.sha": "3" * 40,
         "needs.plan.outputs.release": "",
         "needs.plan.outputs.changed": "",
+        "needs.plan.outputs.inert": "",
         "needs.test.result": "success",
     },
 }
+
+
+def _inert_files() -> list[str]:
+    """Every tracked file scripts/ci_changes.py calls inert: what a pull
+    request in the inert event can change."""
+    spec = importlib.util.spec_from_file_location(
+        "gate_placement_ci_changes", ROOT / "scripts" / "ci_changes.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    listing = subprocess.run(
+        ["git", "ls-files", "-z"], cwd=ROOT, capture_output=True, check=True,
+        env={k: v for k, v in os.environ.items() if not k.startswith("GIT_")})
+    names = [n for n in listing.stdout.decode("utf-8").split("\0") if n]
+    return sorted(n for n in names if module.is_inert(n))
+
+
+# The files an event's pull request changes, where the event narrows them:
+# a hook that fires on none of them has nothing in that pull request to
+# gate.  An event absent here can change any file.
+EVENT_FILES = {INERT_EVENT: _inert_files}
+
+
+# The identify tags `_fires` reads a path's kind by: the ones a hook here
+# names in `types`.  A hook naming another fails the test that met it.
+_TAGS = {
+    "file": lambda path: True,
+    "text": lambda path: not path.lower().endswith((".png", ".jpg", ".gif", ".ico", ".sqlite")),
+    "python": lambda path: path.endswith((".py", ".pyi")),
+    "yaml": lambda path: path.endswith((".yml", ".yaml")),
+    "toml": lambda path: path.endswith(".toml"),
+    "json": lambda path: path.endswith(".json"),
+}
+
+
+def _fires(hook: dict[str, Any], path: str) -> bool:
+    """Whether pre-commit runs *hook* on a commit that stages *path*: its
+    `files` and `exclude` patterns and its `types`, or `always_run`.  A
+    hook from another repository carries its `types` in that repository's
+    manifest, not here, so it is read as firing on every file."""
+    if hook.get("always_run"):
+        return True
+    if not re.search(str(hook.get("files", "")), path):
+        return False
+    if re.search(str(hook.get("exclude", "^$")), path):
+        return False
+    for tag in [*hook.get("types", []), *hook.get("types_or", [])]:
+        if tag not in _TAGS:
+            pytest.fail(f"{hook['id']}: teach _TAGS the identify tag {tag!r}")
+    if not all(_TAGS[tag](path) for tag in hook.get("types", [])):
+        return False
+    types_or = hook.get("types_or", [])
+    return not types_or or any(_TAGS[tag](path) for tag in types_or)
 
 
 class TestTheEvaluator:
@@ -759,6 +855,67 @@ def _runs_the_whole_suite(workflow: dict[Any, Any], context: dict[str, object]) 
     return False
 
 
+def _gates_ci_misses(
+    workflow: dict[Any, Any], context: dict[str, object],
+    changed: list[str] | None,
+) -> list[str]:
+    """The local hooks whose gate CI does not run in *context*: of every
+    hook, or, where *changed* names the files a pull request changes, of
+    the hooks that fire on one of them.  A matrix job's step gates when it
+    gates on every cell."""
+    steps: list[dict[str, Any]] = []
+    for name, job in workflow["jobs"].items():
+        cells = _matrix_cells(job) if "strategy" in job else [{}]
+        per_cell = [
+            {step.get("name") or step.get("uses"): step
+             for step in _gating_steps(workflow, name, {**context, **cell})}
+            for cell in cells
+        ]
+        everywhere = set.intersection(*(set(found) for found in per_cell))
+        steps += [per_cell[0][key] for key in everywhere]
+    # The pre-commit-hooks hooks run in CI through pre-commit itself.
+    hygiene = "\n".join(
+        step["run"] for step in _invokes(steps, "pre-commit", "run", "--all-files")
+    )
+    missing: list[str] = []
+    for hook in _hooks():
+        if changed is not None and not any(_fires(hook, path) for path in changed):
+            continue
+        if hook["repo"] != "local":
+            named = re.search(
+                rf"(?<![\w-]){re.escape(hook['id'])}(?![\w-])", hygiene
+            )
+            if hook["id"] not in COMMIT_TIME_ONLY and named is None:
+                missing.append(f"{hook['id']} (pre-commit run --all-files)")
+            continue
+        entry = hook["entry"]
+        args = _runs_pytest(entry)
+        if args is not None:
+            # A named test file must be run by name; the staged files and
+            # the collection, by a run of the whole suite.
+            files = [arg for arg in args if arg.startswith("tests/")]
+            for arg in files:
+                if not any(arg in (_runs_pytest(step["run"]) or []) for step in steps):
+                    missing.append(f"{hook['id']} ({arg})")
+            if not files and not _runs_the_whole_suite(workflow, context):
+                missing.append(f"{hook['id']} (the whole suite)")
+            continue
+        script = re.search(r"scripts/\w+\.py", entry)
+        if script is not None and script.group(0) in SUITE_COUNTERPART:
+            if not _runs_the_whole_suite(workflow, context):
+                missing.append(f"{hook['id']} (the whole suite, which carries "
+                               f"{SUITE_COUNTERPART[script.group(0)]})")
+            continue
+        if script is not None:
+            wanted = ["python", CI_COUNTERPART.get(script.group(0), script.group(0))]
+        else:
+            wanted = _command(entry)
+            wanted[0] = wanted[0].removeprefix(".venv/bin/")
+        if not _invokes(steps, *wanted):
+            missing.append(f"{hook['id']} ({' '.join(wanted)})")
+    return missing
+
+
 class TestCiRunsEveryGate:
     """Each gate the hook runs runs in CI on each of the modelled events,
     and can fail the run.
@@ -801,53 +958,39 @@ class TestCiRunsEveryGate:
 
     @pytest.mark.parametrize("event", sorted(EVENTS))
     def test_every_gate_the_hook_runs_also_runs_in_ci(self, event: str) -> None:
-        workflow = _workflow()
-        context = EVENTS[event]
-        # A matrix job's step gates when it gates on every cell.
-        steps: list[dict[str, Any]] = []
-        for name, job in workflow["jobs"].items():
-            cells = _matrix_cells(job) if "strategy" in job else [{}]
-            per_cell = [
-                {step.get("name") or step.get("uses"): step
-                 for step in _gating_steps(workflow, name, {**context, **cell})}
-                for cell in cells
-            ]
-            everywhere = set.intersection(*(set(found) for found in per_cell))
-            steps += [per_cell[0][key] for key in everywhere]
-        # The pre-commit-hooks hooks run in CI through pre-commit itself.
-        hygiene = "\n".join(
-            step["run"] for step in _invokes(steps, "pre-commit", "run", "--all-files")
-        )
-        missing: list[str] = []
-        for hook in _hooks():
-            if hook["repo"] != "local":
-                named = re.search(
-                    rf"(?<![\w-]){re.escape(hook['id'])}(?![\w-])", hygiene
-                )
-                if hook["id"] not in COMMIT_TIME_ONLY and named is None:
-                    missing.append(f"{hook['id']} (pre-commit run --all-files)")
-                continue
-            entry = hook["entry"]
-            args = _runs_pytest(entry)
-            if args is not None:
-                # A named test file must be run by name; the staged files and
-                # the collection, by a run of the whole suite.
-                files = [arg for arg in args if arg.startswith("tests/")]
-                for arg in files:
-                    if not any(arg in (_runs_pytest(step["run"]) or []) for step in steps):
-                        missing.append(f"{hook['id']} ({arg})")
-                if not files and not _runs_the_whole_suite(workflow, context):
-                    missing.append(f"{hook['id']} (the whole suite)")
-                continue
-            script = re.search(r"scripts/\w+\.py", entry)
-            if script is not None:
-                wanted = ["python", CI_COUNTERPART.get(script.group(0), script.group(0))]
-            else:
-                wanted = _command(entry)
-                wanted[0] = wanted[0].removeprefix(".venv/bin/")
-            if not _invokes(steps, *wanted):
-                missing.append(f"{hook['id']} ({' '.join(wanted)})")
+        narrowed = EVENT_FILES.get(event)
+        changed = narrowed() if narrowed is not None else None
+        assert changed is None or changed, f"{event}: no file to change"
+        missing = _gates_ci_misses(_workflow(), EVENTS[event], changed)
         assert missing == [], f"{event}: local gates CI does not run: {missing}"
+
+    def test_a_suite_counterpart_needs_the_whole_suite(self) -> None:
+        """A workflow that runs no whole suite leaves the doc-example
+        hook's gate unrun, though its script is no step's either."""
+        workflow = _workflow()
+        lint_only = {**workflow, "jobs": {"lint": workflow["jobs"]["lint"]}}
+        missing = _gates_ci_misses(lint_only, EVENTS["pull request into main"], None)
+        assert ("doc-examples (the whole suite, which carries "
+                "tests/test_check_doc_examples.py)") in missing
+
+    def test_an_event_needs_only_the_hooks_its_files_fire(self) -> None:
+        """The narrowing reads the event's own files for every hook, not
+        whatever the loop last bound: a pytest hook's test arguments are
+        not the files a pull request changes.  With no CI job at all, a
+        change to the compiler misses mypy's gate, and a change to the
+        extension's manifest misses only the hooks that fire on any file."""
+        empty = {**_workflow(), "jobs": {}}
+        context = EVENTS["pull request into main"]
+
+        def ids(missing: list[str]) -> set[str]:
+            return {entry.split(" ", 1)[0] for entry in missing}
+
+        compiler = ids(_gates_ci_misses(empty, context, ["vera/cli.py"]))
+        assert {"mypy", "ruff", "pytest-collect", "explicit-encoding"} <= compiler
+        manifest = ids(_gates_ci_misses(empty, context, ["editors/vscode/package.json"]))
+        anywhere = {hook["id"] for hook in _hooks()
+                    if hook["repo"] != "local" or hook.get("always_run")}
+        assert manifest and manifest <= anywhere, manifest - anywhere
 
     def test_the_commit_time_only_exception_is_real(self) -> None:
         """Every exemption names a hook that exists and that CI does not
@@ -887,3 +1030,57 @@ class TestCiRunsEveryGate:
             assert name in steps, name
             with pytest.raises(SyntaxError):
                 evaluate(str(steps[name]["if"]), EVENTS["push of a merge into main"])
+
+    def test_the_suite_counterparts_are_real(self) -> None:
+        """Every script the suite stands in for is a hook's, no CI step runs
+        it, and its counterpart is a test file of the suite, so the table
+        cannot outlive its reason."""
+        entries = "\n".join(hook.get("entry", "") for hook in _hooks())
+        runs = "\n".join(
+            str(step.get("run", ""))
+            for job in _workflow()["jobs"].values()
+            for step in job.get("steps", [])
+        )
+        for script, test_file in SUITE_COUNTERPART.items():
+            assert script in entries, script
+            assert script not in runs, script
+            assert (ROOT / test_file).is_file(), test_file
+
+
+class TestTheRenderer:
+    """A step's `env:` reaches its command as shell variables, so the
+    command is read with each variable's value in place."""
+
+    def test_a_variable_the_step_sets_is_its_value(self) -> None:
+        context = {"matrix.shard": 2, "matrix.shards": 3}
+        env = {"SHARD": "${{ matrix.shard }}/${{ matrix.shards }}"}
+        assert render('pytest --shard="$SHARD"', context, env) == 'pytest --shard="2/3"'
+        assert render("pytest --shard=${SHARD}", context, env) == "pytest --shard=2/3"
+
+    def test_a_variable_the_step_does_not_set_stays(self) -> None:
+        assert render('echo x >> "$GITHUB_OUTPUT"', {}, {"BASE": "a"}) == 'echo x >> "$GITHUB_OUTPUT"'
+
+    def test_a_longer_name_is_not_a_shorter_ones(self) -> None:
+        assert render("$BASE_REF $BASE", {}, {"BASE": "b"}) == "$BASE_REF b"
+
+
+class TestWhenAHookFires:
+    @pytest.mark.parametrize(("hook", "path", "fires"), [
+        ({"id": "a", "files": r"^tests/test_[^/]*\.py$"}, "tests/test_x.py", True),
+        ({"id": "a", "files": r"^tests/test_[^/]*\.py$"}, "editors/vscode/package.json", False),
+        ({"id": "b", "types": ["python"]}, "editors/vscode/helper.py", True),
+        ({"id": "b", "types": ["python"]}, "editors/vscode/package.json", False),
+        ({"id": "c"}, "editors/vscode/package.json", True),
+        ({"id": "d", "files": "x", "always_run": True}, "editors/vscode/package.json", True),
+        ({"id": "e", "files": r"\.md$", "exclude": r"^docs/"}, "docs/a.md", False),
+        ({"id": "f", "types_or": ["yaml", "toml"]}, "a.toml", True),
+        ({"id": "f", "types_or": ["yaml", "toml"]}, "a.json", False),
+    ])
+    def test_its_patterns_and_types_decide(
+        self, hook: dict[str, Any], path: str, fires: bool,
+    ) -> None:
+        assert _fires(hook, path) is fires
+
+    def test_a_tag_it_cannot_read_is_an_error(self) -> None:
+        with pytest.raises(pytest.fail.Exception):
+            _fires({"id": "g", "types": ["markdown"]}, "a.md")

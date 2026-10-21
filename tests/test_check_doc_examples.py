@@ -561,29 +561,6 @@ def _hook(config: str, hook_id: str) -> dict[str, str]:
     return fields
 
 
-def _ci_job(ci: str, name: str) -> list[str]:
-    """One job's lines of ci.yml, read as text like `_hook`: from its key to
-    the next line indented two spaces or less."""
-    lines = ci.splitlines()
-    start = lines.index(f"  {name}:")
-    body: list[str] = []
-    for line in lines[start + 1:]:
-        if line and not line.startswith("   "):
-            break
-        body.append(line)
-    return body
-
-
-def _ci_step(job: list[str], run: str) -> list[str]:
-    """The lines of the step in `job` whose `run:` is exactly `run`."""
-    starts = [index for index, line in enumerate(job) if line.startswith("      - ")]
-    for first, after in zip(starts, [*starts[1:], len(job)], strict=True):
-        block = job[first:after]
-        if any(line.strip() == f"run: {run}" for line in block):
-            return block
-    raise AssertionError(f"no step runs {run}")
-
-
 class TestCoverage:
     def test_every_tracked_document_with_vera_blocks_is_gated_or_exempt(
         self,
@@ -695,22 +672,31 @@ class TestCoverage:
 
     def test_ci_runs_the_gate_over_every_document(self) -> None:
         """A commit that adds only a new document with Vera blocks no longer
-        fires the hook, so this run, over every document on every pull
+        fires the hook, so the suite's run of this file, on every pull
         request, push and nightly run, is the one certain to hold it to the
-        coverage rule (#1481): in DOC_GATES or in NOT_GATED."""
+        coverage rule (#1481): in DOC_GATES or in NOT_GATED.  CI runs the
+        gate as this file's tests (`TestCoverage`, `TestRealDocuments`), not
+        as the script: tests/test_gate_placement.py holds the hook to a run
+        of the whole suite on every event (`SUITE_COUNTERPART`), and the
+        path filter calls no document inert, so a pull request that could
+        add one never skips the suite."""
         ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-        runs = re.findall(r"run: python scripts/check_doc_examples\.py(.*)", ci)
-        assert runs == [""]
+        assert "scripts/check_doc_examples.py" not in ci
         triggers = ci.split("\njobs:\n", 1)[0]
         for event in ("push", "pull_request", "schedule"):
             assert re.search(rf"^  {event}:", triggers, re.MULTILINE), event
-        job = _ci_job(ci, "lint")
-        assert [line for line in job if re.match(r"^    (if|continue-on-error):", line)] == []
-        step = _ci_step(job, "python scripts/check_doc_examples.py")
-        assert [
-            line for line in step
-            if re.match(r"^\s+(-\s+)?(if|continue-on-error):", line)
-        ] == []
+        from tests.test_gate_placement import SUITE_COUNTERPART
+
+        assert SUITE_COUNTERPART["scripts/check_doc_examples.py"] == (
+            "tests/test_check_doc_examples.py")
+        spec = importlib.util.spec_from_file_location(
+            "doc_examples_ci_changes", ROOT / "scripts" / "ci_changes.py")
+        assert spec is not None and spec.loader is not None
+        ci_changes = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(ci_changes)
+        for doc in [*_MOD.tracked_documents(ROOT), "editors/vscode/NEW.md",
+                    "editors/vscode/notes.txt", "editors/vscode/page.html"]:
+            assert not ci_changes.is_inert(doc), doc
 
     def test_no_retired_per_document_gate_remains(self) -> None:
         config = (ROOT / ".pre-commit-config.yaml").read_text(encoding="utf-8")
@@ -1669,3 +1655,15 @@ class TestRealDocuments:
         workspace = _MOD.Workspace(ROOT, tmp_path)
         report = _MOD.gate_document(ROOT, doc, workspace)
         assert _MOD.collect([report]) == _MOD.Findings([], [], [])
+
+    @pytest.mark.parametrize("doc", _GATED_DOCUMENTS)
+    def test_every_example_run_the_document_names_runs(
+        self, doc: str, tmp_path: Path,
+    ) -> None:
+        """The gate's last step past `gate_document`, as `run_gate` takes
+        it: each `vera run examples/...` the document names parses, and the
+        ones no example gate covers run, so the suite does all the gate's
+        work and CI runs the script nowhere else."""
+        found, problems = _MOD.documented_invocations(ROOT / doc, doc)
+        assert problems == []
+        assert _MOD.run_invocations(ROOT, found, tmp_path) == []

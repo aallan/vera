@@ -33,8 +33,9 @@ jobs:
   # decides whether the full test matrix runs.  On a pull request, also the
   # files it changes that a class-instrument matrix can be decided by, so a
   # matrix whose file or deciding module changed runs every cell
-  # (tests/matrix_sample.py).  On the nightly run its steps do not run, and
-  # the job finishes in seconds.
+  # (tests/matrix_sample.py), and whether every file it changes is inert,
+  # which decides whether the filtered jobs run (scripts/ci_changes.py).  On
+  # the nightly run its steps do not run, and the job finishes in seconds.
   plan:
     name: plan
     permissions:
@@ -43,6 +44,7 @@ jobs:
     outputs:
       release: ${{ steps.release.outputs.release }}
       changed: ${{ steps.changed.outputs.changed }}
+      inert: ${{ steps.inert.outputs.inert }}
     steps:
       - uses: actions/checkout@v7
         if: github.event_name == 'push' || github.event_name == 'pull_request'
@@ -86,6 +88,24 @@ jobs:
           git diff --name-only "$BASE_SHA...$HEAD_SHA" -- vera/ 'tests/test_*.py' >> "$GITHUB_OUTPUT"
           echo "$delimiter" >> "$GITHUB_OUTPUT"
 
+      # The path filter.  `inert=true` when every file the pull request
+      # changes, from its merge base, is one of the VS Code extension's own,
+      # which vscode-extension.yml builds and tests and no filtered job reads
+      # (scripts/ci_changes.py says which).  The filtered jobs then stand
+      # down: a job its own `if:` skips reports success under its name, which
+      # satisfies a required check, and the shard job's cells, whose names a
+      # skipped matrix job would not report, run and skip each step.  The
+      # filters test `!= 'true'`, so where this step does not run (a push,
+      # the nightly run) every job runs, and a failure here fails the plan
+      # job, and matrix-gate with it.
+      - name: Does this pull request change only files no filtered job reads?
+        id: inert
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python scripts/ci_changes.py "$BASE_SHA" "$HEAD_SHA" >> "$GITHUB_OUTPUT"
+
   # The pull request's suite: Python 3.12 on Linux in three shards and on
   # Windows in two.  A test belongs to the shard its node id hashes to
   # (tests/shard.py), so the shards are the suite between them and no
@@ -94,7 +114,10 @@ jobs:
   # module the pull request changes, from the plan job's list.  A shard's
   # xdist workers steal queued tests from one another (--dist worksteal),
   # so a worker left with two long tests does not hold the shard's end.
-  # Every cell's name is a required check.
+  # Every cell's name is a required check.  On a pull request whose every
+  # file is inert (the plan job's `inert`), each cell runs and skips its
+  # steps, so it still reports under its name: a matrix job skipped by its
+  # own `if:` would report one check under its unexpanded name instead.
   shard:
     name: test (${{ matrix.os }}, 3.12, shard ${{ matrix.shard }}/${{ matrix.shards }})
     needs: plan
@@ -115,21 +138,26 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
+        if: needs.plan.outputs.inert != 'true'
         with:
           persist-credentials: false
 
       - name: Set up Python 3.12
+        if: needs.plan.outputs.inert != 'true'
         uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
       - name: Install dependencies
+        if: needs.plan.outputs.inert != 'true'
         run: pip install -e ".[dev]"
 
       - name: Run tests
+        if: needs.plan.outputs.inert != 'true'
         env:
           VERA_MATRIX_CHANGED: ${{ needs.plan.outputs.changed }}
-        run: pytest -v -n 4 --dist worksteal --shard=${{ matrix.shard }}/${{ matrix.shards }}
+          SHARD: ${{ matrix.shard }}/${{ matrix.shards }}
+        run: pytest -v -n 4 --dist worksteal --shard="$SHARD"
 
   # The full OS x Python matrix: on a pull request that raises
   # [project].version, on the push event its merge produces on main (a
@@ -210,10 +238,15 @@ jobs:
       # tests/matrix_sample.py), and every cell of one whose file or
       # deciding module it changes, from the plan job's list; the release
       # push and the nightly run run every cell.
+      # On a pull request no `--matrix` at all, which is the default that
+      # reads VERA_MATRIX_CHANGED: an explicit `--matrix=sample` would
+      # sample a changed matrix too.  Unquoted, so the empty value is no
+      # argument.
       - name: Run tests
         env:
           VERA_MATRIX_CHANGED: ${{ needs.plan.outputs.changed }}
-        run: pytest -v -n auto ${{ github.event_name != 'pull_request' && '--matrix=full' || '' }}
+          MATRIX_ARGS: ${{ github.event_name != 'pull_request' && '--matrix=full' || '' }}
+        run: pytest -v -n auto $MATRIX_ARGS
 
   # The required check for the full matrix (scripts/matrix_gate.py).  It runs
   # whatever the plan and the matrix did, and passes when the plan succeeded
@@ -354,7 +387,7 @@ jobs:
       - name: Run tests with coverage
         env:
           COVERAGE_CORE: sysmon
-        run: pytest -v -n auto --cov=vera --cov-report=term-missing --cov-report=xml --cov-fail-under=80 --matrix=full
+        run: pytest -v -n auto --cov=vera --cov-report=term-missing --cov-report=xml --cov-fail-under=94 --matrix=full
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
@@ -364,8 +397,15 @@ jobs:
           flags: python
           fail_ci_if_error: false
 
+  # The jobs from here to the end of the file, bar lint and security, stand
+  # down on a pull request whose every file is inert (the plan job's
+  # `inert`, scripts/ci_changes.py): none of them reads the VS Code
+  # extension's own files.  A job its `if:` skips reports success, so a
+  # required one still reports under its name.
   typecheck:
     name: typecheck
+    needs: plan
+    if: needs.plan.outputs.inert != 'true'
     permissions:
       contents: read
     runs-on: ubuntu-latest
@@ -394,7 +434,8 @@ jobs:
       - uses: actions/checkout@v7
         with:
           # Full history so check_changelog_updated.py can diff against
-          # origin/main.  Other lint checks work fine without it.
+          # the pull request's base branch.  Other lint checks work fine
+          # without it.
           fetch-depth: 0
           persist-credentials: false
 
@@ -410,29 +451,28 @@ jobs:
         # PR-level escape hatch: adding the "skip-changelog" label
         # skips this step for PRs that legitimately don't need an entry
         # (e.g., a typo fix in a code comment).  The step always runs
-        # for push events on main.
+        # for push events on main.  It diffs against the pull request's
+        # base branch, and against main on a push.
         if: github.event_name != 'pull_request' || !contains(github.event.pull_request.labels.*.name, 'skip-changelog')
-        run: python scripts/check_changelog_updated.py
+        env:
+          BASE_REF: ${{ github.base_ref || 'main' }}
+        run: python scripts/check_changelog_updated.py "origin/$BASE_REF"
 
       - name: Check every changelog.d/ fragment is well formed (#1529)
         run: python scripts/check_changelog_fragments.py
 
-      # The conformance suite is not repeated here: tests/test_conformance.py
-      # runs it inside the suite (the script stays for local use).  The
-      # examples' check + verify stays, as the one run of `vera check` and
-      # `vera verify` through the CLI over every example: the suite's example
-      # tests call the checker and verifier in-process.
-      - name: Check all examples type-check and verify cleanly
-        run: python scripts/check_examples.py
-
+      # What the suite does over the whole tree is not repeated here, and
+      # the scripts stay for local use: the conformance programs
+      # (tests/test_conformance.py), the examples' check and verify
+      # (tests/test_verifier_contracts.py, and tests/test_pipeline.py, which
+      # holds each stage to its command), every document's Vera blocks and
+      # the example runs they name (tests/test_check_doc_examples.py), and
+      # the examples' runs (tests/test_check_examples_run.py).
       - name: Check the corpus is in canonical form
         run: python scripts/check_corpus_canonical.py
 
       - name: Check vera run commands in examples/README.md are valid
         run: python scripts/check_examples_readme.py
-
-      - name: Check every agent-facing document's Vera blocks parse, check, verify and run (#1481)
-        run: python scripts/check_doc_examples.py
 
       - name: Check spec EBNF and Lark grammar agree on rule names (#683)
         run: python scripts/check_grammar_alignment.py
@@ -445,9 +485,6 @@ jobs:
 
       - name: Check no unexpected [E602]/[E604] silent skips (Layer 1 of #626)
         run: python scripts/check_e602_clean.py
-
-      - name: Check every example runs trap-free or carries a skip property
-        run: python scripts/check_examples_run.py
 
       - name: Check every diagnostic carries rationale/fix/spec_ref (#682)
         run: python scripts/check_diagnostic_fields.py
@@ -477,7 +514,9 @@ jobs:
         # nightly run, which has no commit before it, with the commit it
         # tests, which raises nothing.  The rule is in
         # scripts/check_doc_counts.py.
-        run: python scripts/check_doc_counts.py --release-if-version-raised "${{ github.event_name == 'pull_request' && github.base_ref || github.event.before || github.sha }}"
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.base_ref || github.event.before || github.sha }}
+        run: python scripts/check_doc_counts.py --release-if-version-raised "$BASE"
 
       - name: Check limitations.json loads and the Bugs headings survive
         run: python scripts/check_limitations_sync.py
@@ -522,6 +561,8 @@ jobs:
 
   dependency-audit:
     name: dependency-audit
+    needs: plan
+    if: needs.plan.outputs.inert != 'true'
     permissions:
       contents: read
     runs-on: ubuntu-latest
@@ -544,6 +585,8 @@ jobs:
 
   wheel-preflight:
     name: wheel-preflight
+    needs: plan
+    if: needs.plan.outputs.inert != 'true'
     # Structural backstop for #691-class regressions: if an upstream dep
     # bumps its platform-tag baseline (e.g. z3-solver going from
     # macosx_13_0_arm64 to macosx_15_0_arm64 between 4.15.4 and 4.15.5),
@@ -569,6 +612,8 @@ jobs:
 
   package-distribution:
     name: package-distribution
+    needs: plan
+    if: needs.plan.outputs.inert != 'true'
     # Build the exact artifacts that will eventually be uploaded under
     # the `veralang` distribution name (#737).  This stays separate from
     # release automation (#481): PR CI validates artifacts but publishes
@@ -612,6 +657,8 @@ jobs:
 
   sbom:
     name: sbom
+    needs: plan
+    if: needs.plan.outputs.inert != 'true'
     permissions:
       contents: read
     runs-on: ubuntu-latest
@@ -643,6 +690,8 @@ jobs:
 
   eager-gc:
     name: eager-gc
+    needs: plan
+    if: needs.plan.outputs.inert != 'true'
     # #1379/#1382: `VERA_EAGER_GC=1` forces a collection at every `$alloc`,
     # which turns a rooting bug from a timing accident into a deterministic
     # failure (ENVIRONMENT.md).  Both defects this lane would have caught
@@ -651,8 +700,9 @@ jobs:
     # here.  Its own job rather than a step on `test`: it re-runs every
     # run-level conformance program and every runnable example under a knob
     # that makes them slower, and a failure here should name itself rather
-    # than arrive as a line inside the main suite's output.  The conformance
-    # programs go through the suite's own run stage (`test_run`); a
+    # than arrive as a line inside the main suite's output.  Both go through
+    # the suite's own tests, in one pytest run: the conformance programs'
+    # run stage (`test_run`) and the examples' runs (TestRealExamples).  A
     # collection changes what a program does only when it runs, so the
     # parse, check and verify stages are not repeated here.
     permissions:
@@ -671,18 +721,15 @@ jobs:
       - name: Install dependencies
         run: pip install -e ".[dev]"
 
-      - name: Conformance runs under eager GC
-        run: pytest tests/test_conformance.py -k run -n auto
-        env:
-          VERA_EAGER_GC: "1"
-
-      - name: Examples run under eager GC
-        run: python scripts/check_examples_run.py
+      - name: Conformance and example runs under eager GC
+        run: pytest tests/test_conformance.py tests/test_check_examples_run.py::TestRealExamples -k run -n auto
         env:
           VERA_EAGER_GC: "1"
 
   browser-parity:
     name: browser-parity
+    needs: plan
+    if: needs.plan.outputs.inert != 'true'
     permissions:
       contents: read
     runs-on: ubuntu-latest
@@ -711,7 +758,7 @@ jobs:
 
       - name: Generate JS coverage report
         if: always()
-        run: npx c8 report --temp-directory="${{ runner.temp }}/v8-coverage" --reporter=lcov --report-dir=./js-coverage --src=vera/browser/
+        run: npx c8 report --temp-directory="$RUNNER_TEMP/v8-coverage" --reporter=lcov --report-dir=./js-coverage --src=vera/browser/
 
       - name: Upload JS coverage to Codecov
         if: always()
