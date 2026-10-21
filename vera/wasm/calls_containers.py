@@ -382,14 +382,16 @@ class CallsContainersMixin:
 
     def _collection_fn(self, op: str, **tags: str | None) -> str:
         """The function *op* lowers to at the representations *tags* names
-        (``$map_insert$ks_vi``), requested with every helper it calls.
+        (``$map_insert$ks_vi``), requested with every helper it calls and
+        every host import they call (a `String` hash's key, #1736).
 
         The functions are ``vera.wasm.hamt``'s, emitted once per module
         (``_collection_helpers``, merged like the structural-Eq helpers);
         ``$eq_String`` is the one a String key's equality shares with ``==``.
         """
         name = hamt.helper_name(op, **tags)
-        hamt.register(name, self._collection_helpers, self._request_string_eq_helper)
+        hamt.register(name, self._collection_helpers, self._request_string_eq_helper,
+                      self._host_imports_used)
         self.needs_alloc = True
         return f"${name}"
 

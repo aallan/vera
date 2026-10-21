@@ -789,6 +789,7 @@ HOST_FAMILIES: tuple[HostFamily, ...] = (
     HostFamily("db", Style.GROUPED, Gate.NAMES),
     HostFamily("random", Style.GROUPED, Gate.NAMES),
     HostFamily("math", Style.GROUPED, Gate.NAMES),
+    HostFamily("hash", Style.GROUPED, Gate.NAMES),
     HostFamily("contract", Style.GROUPED, Gate.FLAG),
     HostFamily("trap", Style.GROUPED, Gate.FLAG),
     HostFamily("state", Style.GROUPED, Gate.CELL),
@@ -922,6 +923,9 @@ HOST_IMPORTS: tuple[HostImport, ...] = (
     _scalar("math", "acos", ("f64",), ("f64",)),
     _scalar("math", "atan", ("f64",), ("f64",)),
     _scalar("math", "atan2", ("f64", "f64"), ("f64",)),
+    # --- The key a `Map`'s or `Set`'s `String` hash draws, one 64-bit word
+    # a call, twice per instantiation (#1736) ----------------------------------
+    HostImport("hash_key", "hash", (), ("i64",), wasi=_BOTH),
     # --- The two signals a failing check calls before it traps (#1479) -----
     HostImport(CONTRACT_SIGNAL, "contract", ("i32", "i32"), wasi=_BOTH),
     HostImport(TRAP_SIGNAL, "trap", line=TRAP_IMPORT_WAT, wasi=_BOTH),
