@@ -32,6 +32,7 @@ from vera.fold import walk as _walk
 from vera.prelude import prelude_declarations
 
 pytestmark = pytest.mark.matrix(decides=[
+    "vera/binding.py",
     "vera/resolver.py",
     "vera/prelude.py",
     "vera/naming.py",

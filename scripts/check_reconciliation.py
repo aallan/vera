@@ -206,6 +206,9 @@ FRAGMENTS: dict[str, str] = {
         "one half of the import cycle ch08_circular_import is refused for",
     "tests/conformance/vera/cycle_b.vera":
         "one half of the import cycle ch08_circular_import is refused for",
+    "tests/conformance/vera/shadowlib.vera":
+        "the module half of ch08_module_prelude_adt_name and "
+        "ch08_module_prelude_adt_contention_rejected, refused at check (E158)",
 }
 
 
