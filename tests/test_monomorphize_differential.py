@@ -1973,13 +1973,12 @@ def test_discovery_scopes_agree_between_the_two_sides(rel: str) -> None:
     _assert_scopes_agree(rel, cg, ver)
 
 
-# Module shapes whose clones are reached by the SHADOWED-generic worklist and
-# the nested-helper chase — walks the repo corpus above never enters, and each
-# with its own namespace-selection site on both sides.
+# Module shapes whose clones are reached through a module generic the entry
+# shadows and through the nested-helper chase — walks the repo corpus above
+# never enters, each with its namespace-selection site on both sides.
 _SCOPE_MODULE_CASES: dict[str, tuple[str, str, tuple[str, ...]]] = {
-    # A shadowed module generic whose body reaches a normal (unshadowed) one:
-    # codegen's `_chase_normal_transitive` / the verifier's
-    # `_chase_normal_from_clone`, rooted at the shadowed clone.
+    # A module generic the entry shadows, whose body reaches another of the
+    # module's generics: both clones are the module's, under link names.
     "shadowed_reaching_normal": (
         "sh",
         "public forall<T> fn plain(@T -> @Int)\n"
@@ -1988,14 +1987,10 @@ _SCOPE_MODULE_CASES: dict[str, tuple[str, str, tuple[str, ...]]] = {
         "public forall<T> fn gen(@T -> @Int)\n"
         "  requires(true) ensures(true) effects(pure)\n"
         "{ plain(@T.0) }\n",
-        # The local shadow is NON-generic on purpose.  It still makes the
-        # module's `gen` qualified-only — `importer_occupied_bare_names`
-        # counts every top-level name, generic or not — which is what routes
-        # the clone through the shadowed worklist and its normal-closure
-        # chase.  A generic shadow would ALSO mint a clone under the same
-        # pre-rename name `gen$Int`, and the two sides' scope sets would then
-        # differ for a reason that has nothing to do with which namespace
-        # either picked.
+        # The local shadow is NON-generic on purpose: a generic shadow would
+        # also mint a clone `gen$Int`, beside the module's `mod$sh$gen$Int`,
+        # and the two sides' scope sets would then differ for a reason that
+        # has nothing to do with which namespace either picked.
         (
             "import sh;\n\n"
             "private fn gen(@Int -> @Int)\n"

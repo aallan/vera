@@ -198,11 +198,6 @@ class MonomorphizationMixin:
             # which a type argument written there is resolved through
             # before it names a clone (`_type_arg_alias_scopes`).
             type_arg_aliases=getattr(self, "_type_arg_scopes", {}),
-            # The module each IMPORTED generic in `generic_decls` was declared
-            # in, so a qualified call is named from a bare-name generic only
-            # when that generic is the one the call reaches.
-            generic_origins=getattr(
-                self, "_imported_generic_base_origins", {}),
         )
 
     def _monomorphize(

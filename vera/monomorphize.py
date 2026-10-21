@@ -32,12 +32,9 @@ from __future__ import annotations
 import contextlib
 import re
 from collections.abc import (
-    Callable,
-    Collection,
     Iterable,
     Iterator,
     Mapping,
-    Sequence,
 )
 from dataclasses import dataclass, field, fields, replace
 from typing import Any, cast
@@ -271,8 +268,8 @@ def canonicalize_type_aliases(
     That is exactly the module-harvest contract (#1111): spec §8.4.1 makes
     type aliases module-local, so a module's return-type expressions are
     canonicalized against the module's OWN alias maps at harvest time and
-    the shared registries (``_fn_ret_type_exprs`` /
-    ``_module_fn_ret_type_exprs``) stay namespace-free by construction.
+    the shared registry (``_fn_ret_type_exprs``) stays namespace-free by
+    construction.
 
     Scope and deliberate limits:
 
@@ -717,249 +714,6 @@ def rewrite_fn_call_names(node: object, rename: dict[str, str]) -> object:
             return new_items
         return node
     return node
-
-
-def importer_occupied_bare_names(program: ast.Program) -> set[str]:
-    """The bare SOURCE names *program*'s own declarations occupy (#1274/F3).
-
-    The importer-side input to :func:`module_qualified_generic_names`, computed
-    once so codegen and the verifier cannot answer it differently.  Two Pass-0
-    transforms move helper names out of the bare namespace before anything
-    resolves against it:
-
-    * ``qualify_nested_generic_decls`` renames every nested GENERIC helper to
-      ``parent$where$name`` (#1014);
-    * codegen's ``_hoist_nongeneric_where_helpers`` lifts every non-generic
-      helper that has no generic ancestor to a ``$``-qualified top-level decl
-      (#991).
-
-    What survives with a bare name is therefore every top-level function, plus
-    the helpers neither transform touches — a NON-generic helper under a
-    generic ancestor (the hoist skips generic subtrees, and the qualification
-    only renames generic nodes).
-
-    The rule is deliberately stated over the SOURCE shape so it is idempotent
-    across BOTH transforms and their composition: run it on any of those
-    programs and the extra top-level entries are all ``$``-mangled, which can
-    never equal a module's source identifier, so the answer this predicate
-    consumes is unchanged.  That is what lets the verifier — which holds the
-    pre-transform AST — and codegen — which holds the post-transform one —
-    reach the same set, and all three legs are asserted directly over a program
-    carrying every helper shape this rule distinguishes.
-
-    Pre-fix they did not: the verifier's walk counted a non-generic
-    ``where``-helper named ``gen2`` as occupying the bare name while codegen,
-    reading the hoisted program, did not, so an imported ``gen2`` was
-    qualified-only on one side and bare-name-owning on the other — codegen
-    emitted ``gen2$Bool`` while the verifier verified ``mod$lib$gen2$Bool``,
-    and neither covered the other's clone.
-    """
-    out: set[str] = set()
-
-    def walk_helpers(decl: ast.FnDecl, generic_ancestor: bool) -> None:
-        for wfn in decl.where_fns or ():
-            if generic_ancestor and not wfn.forall_vars:
-                out.add(wfn.name)
-            walk_helpers(wfn, generic_ancestor or bool(wfn.forall_vars))
-
-    for tld in program.declarations:
-        decl = tld.decl
-        if isinstance(decl, ast.FnDecl):
-            out.add(decl.name)
-            walk_helpers(decl, bool(decl.forall_vars))
-    return out
-
-
-def module_qualified_symbol(path: Sequence[str], name: str) -> str:
-    """The symbol a module's function takes where its bare name is not its
-    own in the flat namespace: ``mod$<path>$name`` (#814).  ``$`` is illegal
-    in a Vera identifier, so it collides with no source name."""
-    return "mod$" + "$".join(path) + "$" + name
-
-
-def displaced_module_fns(
-    module_program: ast.Program,
-    path: Sequence[str],
-    importer_names: Collection[str],
-    modules: Mapping[tuple[str, ...], ast.Program],
-) -> dict[str, str]:
-    """Each bare name a call in the module at *path* resolves to a
-    NON-generic function whose bare name the importer's own declarations
-    occupy, to the symbol that function is emitted and registered under
-    (:func:`module_qualified_symbol`).
-
-    Code generation has one flat function namespace, where the importer's
-    declaration holds the bare name, so a module's non-generic function of
-    that name is emitted under its ``mod$`` symbol
-    (``_register_shadowed_import``).  A bare call in a module's bodies still
-    means what the MODULE's namespace holds (§8.5.2): its own function of
-    the name, or else the one it imports.  Codegen redirected only the call's
-    target of the first, and nothing of the second: discovery, in code
-    generation and in the verifier, and the call site's type inference named
-    the call from the IMPORTER's declaration, so a generic called on its
-    result was specialised at the wrong type (a module that fails to load),
-    beside an importer's generic of the name the call reached that generic's
-    clone, and beside a non-generic one the importer's function ran in its
-    place — a silent wrong value, under a postcondition the verifier proved
-    from the right callee (PR #1508 review).  Both sides read this one
-    derivation (*importer_names* is :func:`importer_occupied_bare_names` of
-    the entry program), so each resolves such a call to the same symbol.
-
-    *modules* maps each resolved module's path to its program, as the checker
-    saw it.  An imported name is a public non-generic function of a module
-    *module_program* imports, admitted by its import filters
-    (:func:`vera.resolver.merged_import_filters`).  It maps to the symbol its
-    own module emits it under, the one that module's own entry here holds.
-    It is mapped only where exactly one import supplies it (two is the
-    checker's E155), and never over a top-level function the module declares
-    itself, which shadows every import of the name.  An imported GENERIC is
-    not here: #1274's reroute (:func:`module_qualified_generic_targets`)
-    sends its calls to the owner's clone.
-    """
-    from vera.resolver import merged_import_filters
-
-    displaced = {
-        tld.decl.name: module_qualified_symbol(path, tld.decl.name)
-        for tld in module_program.declarations
-        if isinstance(tld.decl, ast.FnDecl) and not tld.decl.forall_vars
-        and tld.decl.name in importer_names
-    }
-    declared = {
-        tld.decl.name for tld in module_program.declarations
-        if isinstance(tld.decl, ast.FnDecl)
-    }
-    suppliers: dict[str, list[tuple[str, ...]]] = {}
-    for dep_path, name_filter in merged_import_filters(
-            module_program.imports).items():
-        dep = modules.get(dep_path)
-        if dep is None:
-            continue
-        for tld in dep.declarations:
-            decl = tld.decl
-            if (isinstance(decl, ast.FnDecl) and not decl.forall_vars
-                    and (tld.visibility or "private") == "public"
-                    and (name_filter is None or decl.name in name_filter)
-                    and decl.name in importer_names
-                    and decl.name not in declared):
-                suppliers.setdefault(decl.name, []).append(dep_path)
-    for name, paths in suppliers.items():
-        if len(paths) == 1:
-            displaced[name] = module_qualified_symbol(paths[0], name)
-    return displaced
-
-
-def module_qualified_generic_names(
-    module_program: ast.Program,
-    name_filter: set[str] | None,
-    local_fn_names: set[str],
-    *,
-    direct: bool = True,
-) -> set[str]:
-    """The module's top-level generics reached ONLY under ``mod$<path>$name``.
-
-    One predicate, shared by codegen and the verifier, for the naming rule
-    non-generic module functions already follow (``_register_shadowed_import``):
-    a module function keeps the importer's BARE name only when that name in the
-    importer's flat namespace denotes this very declaration — public, inside the
-    importer's import filter, and unshadowed by a local declaration.  Anything
-    else is qualified-only: its clones are emitted (and discovered) under
-    ``mod$<path>$name``, and every bare call to it from its own module's bodies
-    is rerouted onto that identity.
-
-    Pre-#1274 the rule for generics was ``private`` alone (#1000 / #1029), which
-    covered only the case where the bare name could not POSSIBLY denote the
-    module's generic.  The other two qualified-only cases were silently wrong:
-
-    * **public but locally shadowed** — the module's own bare call resolved to
-      the IMPORTER's same-named generic, so both modules' ``gen2`` mangled to one
-      ``gen2$Bool``, one overwrote the other, and the module ran the importer's
-      body with the module's proved contract (a false Tier-1, and invalid WASM
-      where the two clones' WAT types differ);
-    * **public but outside the import filter** — registered in no clone
-      namespace at all, so the module's own bare call assembled to an
-      ``unknown func``.
-
-    ``local_fn_names`` is the importer's occupied bare-name set (the same one
-    ``_register_shadowed_import`` consults); ``name_filter`` is ``None`` for a
-    wildcard import.  ``direct`` is ``ResolvedModule.direct``: a module reached
-    only transitively contributes nothing to the entry's namespace, so all of
-    its generics are qualified-only whatever their visibility.
-    """
-    out: set[str] = set()
-    for tld in module_program.declarations:
-        decl = tld.decl
-        if not isinstance(decl, ast.FnDecl) or not decl.forall_vars:
-            continue
-        owns_bare_name = (
-            # A TRANSITIVE module's declarations are not in the entry program's
-            # namespace at all (spec §8.6.4 — visibility is the importer's
-            # property), so none of them can own its bare name.  Without this
-            # the `import_names` lookup answers `None` for such a module — the
-            # spelling that means "wildcard import" — and every one of its
-            # public generics was classified a bare-name owner.
-            direct
-            and (tld.visibility or "private") == "public"
-            and (name_filter is None or decl.name in name_filter)
-            and decl.name not in local_fn_names
-        )
-        if not owns_bare_name:
-            out.add(decl.name)
-    return out
-
-
-def module_qualified_generic_targets(
-    module_program: ast.Program,
-    qualified_by_path: Mapping[tuple[str, ...], set[str]],
-    public_generics_by_path: Mapping[tuple[str, ...], set[str]],
-    own_path: tuple[str, ...],
-) -> dict[str, tuple[str, ...]]:
-    """Bare name → the module that OWNS it, for every qualified-only generic
-    reachable by a bare call from *module_program*'s bodies (#1274 F1).
-
-    A module's bare call resolves in ITS namespace, which holds its own
-    declarations and what it imports.  Codegen has one flat WASM namespace,
-    though, so a name this module resolves to a generic is only safe to leave
-    bare when that generic owns the flat bare name — which
-    :func:`module_qualified_generic_names` decides, from the ENTRY program's
-    point of view, once per module.
-
-    The per-module reroute set was that module's OWN qualified-only generics
-    alone, which silently missed the hop: ``mid`` declares no generics and calls
-    ``deep``'s by bare name, so nothing was rerouted and the entry program's
-    same-named generic captured the call — ``vera verify`` clean, ``mid``'s
-    proved postcondition violated at run.  This adds the imports' sets under the
-    SAME predicate, keyed by which module each name belongs to, because the
-    ``mod$<path>$name`` identity is per-owner and ``mid``'s call must reach
-    ``mod$deep$gen``, not ``mod$mid$gen``.
-
-    Visibility is read from *this* module's side: only a PUBLIC name inside this
-    module's own import filter is reachable here at all, so a private or
-    out-of-filter generic of a dependency contributes nothing (it is not in this
-    namespace to be called).  The module's OWN generics are applied last, so a
-    local declaration shadows an import exactly as §8.5.2 requires.
-    """
-    # Whatever this module declares owns its own bare calls (§8.5.2), so an
-    # import never contributes a name the module itself defines — otherwise a
-    # module that declares `gen` AND imports another module's `gen` would have
-    # its own calls rerouted to the dependency's clone.
-    own_names = importer_occupied_bare_names(module_program)
-    targets: dict[str, tuple[str, ...]] = {}
-    for imp in module_program.imports:
-        dep_path = tuple(imp.path)
-        exported = public_generics_by_path.get(dep_path)
-        if not exported:
-            continue
-        allowed = None if imp.names is None else set(imp.names)
-        for name in qualified_by_path.get(dep_path, set()):
-            if (
-                name in exported
-                and name not in own_names
-                and (allowed is None or name in allowed)
-            ):
-                targets[name] = dep_path
-    for name in qualified_by_path.get(own_path, set()):
-        targets[name] = own_path
-    return targets
 
 
 @dataclass(frozen=True)
@@ -1462,122 +1216,6 @@ def namespace_adt_names(
     return NamespaceAdtNames(types, ctors)
 
 
-def public_generic_names(module_program: ast.Program) -> set[str]:
-    """The module's PUBLIC top-level generic names — what a dependent can name
-    at all, before that dependent's own import filter narrows it."""
-    return {
-        tld.decl.name
-        for tld in module_program.declarations
-        if isinstance(tld.decl, ast.FnDecl) and tld.decl.forall_vars
-        and (tld.visibility or "private") == "public"
-    }
-
-
-def reroute_module_qualified_generic_calls(
-    decl: ast.FnDecl,
-    qualified_generics: Collection[str],
-    make_call: Callable[[ast.FnCall, tuple[ast.Expr, ...]], ast.Node],
-    own_path: tuple[str, ...] | None = None,
-    own_names: Collection[str] = frozenset(),
-) -> ast.FnDecl:
-    """Shadow-aware rewrite of bare calls to a module's QUALIFIED-ONLY top-level
-    generics (#1000, widened by #1274).
-
-    An imported body (a generic, a non-generic fn, or another generic) may call
-    one of its module's own generics by bare name.  Once the importer clones or
-    discovers that body, the bare name is resolved in the IMPORTER's flat
-    namespace — where it denotes the module's generic only when that generic
-    owns it (see :func:`module_qualified_generic_names`).  For every generic
-    that does NOT, each such ``FnCall`` is replaced by ``make_call(node,
-    rerouted_args)``: codegen builds an ``ast.ModuleCall`` (resolved by the
-    desugar to the module's ``mod$<path>$name`` clone), while the verifier
-    builds a name-renamed ``FnCall`` keyed to that same ``mod$…`` discovery
-    base.  The SHARED shadow-aware walk is what keeps the two sides' routing (and
-    thus the #732 differential) in lockstep.
-
-    Shadow-aware (PR #1029 review): a ``where``-helper sharing a module
-    generic's name lexically owns the bare call for its whole scope (spec §5), so
-    rerouting it would run/verify the module generic instead of the
-    lexically-nearer helper (a wrong body / wrong contract).  Each ``FnDecl``
-    level adds its helpers' names to the shadow set for its body AND subtree.
-    Only the matched call NODE changes (recursively rerouted args); every other
-    node — including nested ``AnonFn`` / ``where`` bodies — is structurally
-    preserved with its span.
-
-    *own_path* is the path the module whose body this is names itself by
-    (#1558), and *own_names* the names among *qualified_generics* that are
-    the module's OWN declarations.  A call the author already qualified with
-    the path — ``ma::gen(x)`` inside ``module ma;`` — names the module's own
-    function exactly as a bare ``gen(x)`` there does, so for a name in
-    *own_names* it is routed the same way, and a ``where`` helper does not
-    capture it, as nothing local shadows a qualified call.  The verifier
-    passes them for its qualified-only generics, so its name-renamed key
-    discovers the clone codegen emits (the #732 differential); codegen's
-    generic reroute passes none, since it emits that very ``ModuleCall``.
-    Codegen's displaced-function rename passes them too (#1508): there the
-    module's own function is emitted under its ``mod$`` symbol, and a call by
-    the path left to the desugar reached the bare name, which the entry's
-    declaration of it — a generic's clone included — holds.
-    """
-    if not qualified_generics:
-        return decl
-
-    def walk(node: object, shadowed: frozenset[str]) -> object:
-        if isinstance(node, ast.FnDecl):
-            level = shadowed | {wfn.name for wfn in node.where_fns or ()}
-            changes: dict[str, Any] = {}
-            for f in fields(node):
-                if f.name == "span":
-                    continue
-                val = getattr(node, f.name)
-                new_val = walk(val, level)
-                if new_val is not val:
-                    changes[f.name] = new_val
-            if changes:
-                return replace(node, **changes)
-            return node
-        if (isinstance(node, ast.FnCall)
-                and node.name in qualified_generics
-                and node.name not in shadowed):
-            new_args = tuple(
-                cast("ast.Expr", walk(a, shadowed)) for a in node.args
-            )
-            return make_call(node, new_args)
-        if (own_path is not None
-                and isinstance(node, ast.ModuleCall)
-                and tuple(node.path) == own_path
-                and node.name in own_names):
-            new_args = tuple(
-                cast("ast.Expr", walk(a, shadowed)) for a in node.args
-            )
-            return make_call(
-                ast.FnCall(name=node.name, args=node.args, span=node.span),
-                new_args,
-            )
-        if isinstance(node, ast.Node):
-            changes = {}
-            for f in fields(node):
-                if f.name == "span":
-                    continue
-                val = getattr(node, f.name)
-                new_val = walk(val, shadowed)
-                if new_val is not val:
-                    changes[f.name] = new_val
-            if changes:
-                return replace(node, **changes)
-            return node
-        if isinstance(node, tuple):
-            new_items = tuple(walk(v, shadowed) for v in node)
-            if any(n is not o for n, o in zip(new_items, node)):
-                return new_items
-            return node
-        return node
-
-    result = walk(decl, frozenset())
-    assert isinstance(result, ast.FnDecl)  # noqa: S101
-    return result
-
-
 def where_helper_name(name: str) -> str:
     """A ``where`` helper's own name: *name*, or its last ``$where$``
     segment when the link step (:func:`vera.binding.link`) has already
@@ -1681,7 +1319,8 @@ def qualify_nested_generic_decls(
     #1029): the main program passes ``""`` (bare ``compute$where$gid``), while
     codegen's ``_register_modules`` and the verifier's ``_collect_instantiations``
     pass ``"mod$" + "$".join(mod.path) + "$"`` for an IMPORTED module — byte-for-
-    byte the ``_module_qualified_wasm_name`` / ``_module_qualified_base`` prefix.
+    byte the prefix of a module declaration's link name
+    (:attr:`vera.binding.DeclId.link_name`).
     Without it, two imported modules' same-named nested generics
     (``ma::compute$where$gid`` and ``mb::compute$where$gid``) collapse to one
     key first-seen-wins, leaving a LYING namesake unverified (a false Tier-1).
@@ -2161,28 +1800,6 @@ class MonoContext:
     adt_ctor_tp_indices: Mapping[str, Mapping[str, tuple[int | None, ...]]] = (
         field(default_factory=dict)
     )
-    # #1274 (F1): ``(module path, name)`` pairs whose generic is QUALIFIED-ONLY
-    # — reached under ``mod$<path>$name``, never under the bare name.  A
-    # ``ModuleCall`` to one of these must NOT be discovered as an instantiation
-    # of whatever ``generic_decls`` holds for its bare name, because that entry
-    # belongs to somebody else (the importer's same-named generic).  Defaulted
-    # empty: a consumer that routes these by RENAMING the call instead (the
-    # verifier) never presents such a node here, so it needs no entry.
-    qualified_module_generics: frozenset[tuple[tuple[str, ...], str]] = (
-        frozenset()
-    )
-    # #1509: the declaration of each generic a program reaches only QUALIFIED
-    # (a module's private generic, or one whose bare name the importer's own
-    # declaration owns), keyed ``(module path, name)``.  The type namer reads
-    # it to name a ``ModuleCall`` to such a generic the way the call-site
-    # rewrite does — instantiating its declared return — rather than falling
-    # back to the checker, whose type for an ADT (``Option<Nat>``) is not the
-    # clone name the rewrite uses (``Option``).  Codegen supplies its
-    # ``_shadowed_imported_generic_decls`` and the verifier the same set,
-    # derived by the same predicate.  Defaulted empty: a consumer not
-    # threaded names such a call as before.
-    qualified_generic_decls: Mapping[tuple[tuple[str, ...], str], ast.FnDecl] = (
-        field(default_factory=dict))
     # #1327/#1366/#1369: the checker's span-keyed resolved-type table for the
     # ENTRY program — the source both type namers fall back to when their own
     # walk names nothing (see :func:`checker_clone_type_name`), for a body the
@@ -2210,21 +1827,6 @@ class MonoContext:
     # environments, so both name a clone from the same canonical arguments.
     # A namespace absent here is not canonicalized.
     type_arg_aliases: Mapping[tuple[str, ...] | None, TypeArgAliasScope] = (
-        field(default_factory=dict))
-    # For each generic in ``generic_decls`` that an imported module declared,
-    # that module's path; a local generic is absent.  A qualified call
-    # ``path::name`` is named from the bare-name generic only when the
-    # generic came from ``path`` (:meth:`Monomorphizer._module_call_generic_decl`).
-    generic_origins: Mapping[str, tuple[str, ...]] = field(
-        default_factory=dict)
-    # Per module path, each non-generic function a bare call there means —
-    # the module's own, or one it imports — whose bare name the entry
-    # program's declaration holds in the flat tables, to the symbol that
-    # function is registered under there (:func:`displaced_module_fns`).  A
-    # bare call walked in that module's namespace is resolved through it
-    # before any flat table is read.  Code generation's bodies arrive with
-    # those calls already renamed; the verifier's keep the source spelling.
-    displaced_fn_symbols: Mapping[tuple[str, ...], Mapping[str, str]] = (
         field(default_factory=dict))
 
 
@@ -2264,10 +1866,6 @@ class Monomorphizer:
         # derived purely from `ctx`, which no discovery walk mutates.
         self._ctx_type_vars_cached: frozenset[str] | None = None
         self._declared_types_cached: frozenset[str] | None = None
-        # #1274 (F1): the module whose OWN shadowed generics the current scan is
-        # keyed on, or ``None`` outside such a scan.  Walk state, like the two
-        # above it — see `shadowed_module_scope`.
-        self._shadowed_scan_path: tuple[str, ...] | None = None
         # #1299: the bare names visible where the walk currently is — the
         # namespace's own (see `namespace_scope`) plus the `where` helpers of
         # every enclosing function, accumulated by `collect_calls_in_node`
@@ -2293,10 +1891,6 @@ class Monomorphizer:
         # outside any scope (and for a consumer that supplied no tables),
         # where the flat map answers as it always did.
         self._scope_ctor_owners: Mapping[str, str] | None = None
-        # The walked module's own functions the entry's declarations displace
-        # in the flat tables, to their registered symbols (`namespace_scope`,
-        # `_call_symbol`); empty outside a module's scope.
-        self._scope_displaced: Mapping[str, str] = {}
 
     @contextlib.contextmanager
     def namespace_scope(
@@ -2333,11 +1927,7 @@ class Monomorphizer:
         saved_path = self._namespace_path
         saved = self._scope_fn_names
         saved_owners = self._scope_ctor_owners
-        saved_displaced = self._scope_displaced
         self._namespace_path = path
-        self._scope_displaced = (
-            self.ctx.displaced_fn_symbols.get(path, {})
-            if path is not None else {})
         if self.ctx.namespace_fn_names is not None:
             self._scope_fn_names = self.ctx.namespace_fn_names.visible(path)
         if self.ctx.namespace_ctor_owners is not None:
@@ -2353,7 +1943,6 @@ class Monomorphizer:
             self._namespace_path = saved_path
             self._scope_fn_names = saved
             self._scope_ctor_owners = saved_owners
-            self._scope_displaced = saved_displaced
 
     def checker_table(
         self, path: tuple[str, ...] | None,
@@ -2403,19 +1992,6 @@ class Monomorphizer:
             return owned.get(ctor_name)
         return self.ctx.ctor_tp_indices.get(ctor_name)
 
-    def _call_symbol(self, call: ast.FnCall) -> ast.FnCall:
-        """*call* as the walked namespace resolves it.
-
-        A bare call to a function the entry program's declaration displaces
-        in the flat tables — one of the module's own, or one it imports —
-        names the symbol that function is registered under
-        (:func:`displaced_module_fns`), so every table lookup below answers
-        for the declaration the module means and not the entry's.  Any other
-        call is returned as it is.
-        """
-        symbol = self._scope_displaced.get(call.name)
-        return call if symbol is None else replace(call, name=symbol)
-
     def _bare_call_is_user_fn(self, name: str) -> bool:
         """Discovery's leg of :func:`~vera.slots.bare_call_denotes_user_fn`.
 
@@ -2434,28 +2010,6 @@ class Monomorphizer:
         if self._scope_fn_names is None or "$" in name:
             return True
         return name in self._scope_fn_names
-
-    @contextlib.contextmanager
-    def shadowed_module_scope(
-        self, path: tuple[str, ...],
-    ) -> Iterator[None]:
-        """Scan a clone body against *path*'s OWN qualified-only generics.
-
-        Inside this scope a ``ModuleCall`` targeting *path* is discovered
-        normally: the table it is matched against holds that module's generics
-        by bare name, so the entry found is the intended one.  Outside it the
-        same node is skipped, because the flat table's entry for that bare name
-        belongs to whoever owns it in the importer's namespace.
-
-        Both sides drive it around the identical scan, so their discovered sets
-        stay equal (#732).
-        """
-        saved = self._shadowed_scan_path
-        self._shadowed_scan_path = path
-        try:
-            yield
-        finally:
-            self._shadowed_scan_path = saved
 
     def collect_calls_in_expr(
         self,
@@ -2533,16 +2087,6 @@ class Monomorphizer:
             self._scope_fn_names = saved_names | {
                 wfn.name for wfn in (fn.where_fns or ())
             }
-        # A `where` helper owns its bare name in its parent's subtree
-        # (spec §5), so a module function the entry displaces is not what a
-        # call there means.  Codegen's reroute is shadow-aware the same way.
-        saved_displaced = self._scope_displaced
-        helpers = {wfn.name for wfn in (fn.where_fns or ())}
-        if helpers & saved_displaced.keys():
-            self._scope_displaced = {
-                name: symbol for name, symbol in saved_displaced.items()
-                if name not in helpers
-            }
         try:
             self._collect_calls_in_node_scoped(
                 fn, generic_decls, ctor_to_adt, instances,
@@ -2551,7 +2095,6 @@ class Monomorphizer:
             self._op_result_types = saved_ops
             self._scope_type_vars = saved_vars
             self._scope_fn_names = saved_names
-            self._scope_displaced = saved_displaced
 
     def _binds_a_type_var(
         self,
@@ -2799,37 +2342,11 @@ class Monomorphizer:
         instances: dict[str, set[tuple[str, ...]]],
     ) -> None:
         """Total AST recursion underlying :meth:`collect_calls_in_expr`."""
-        # #774: a qualified call `m::g(…)` to an imported generic is an
-        # ``ast.ModuleCall``, not a ``FnCall`` — discover it identically (same
-        # arg-driven type inference) so the importer monomorphizes the same
-        # instantiation for both call forms.  Keyed on ``generic_decls``: the
-        # caller merges imported (unshadowed) generics into that dict, so a
-        # ModuleCall only matches once its target is a known generic.
-        if isinstance(node, (ast.FnCall, ast.ModuleCall)) and (
-            node.name in generic_decls
-        ) and not (
-            # A module's own function the entry displaces is not a call to
-            # the generic that holds the flat bare name (`_call_symbol`).
-            isinstance(node, ast.FnCall) and node.name in self._scope_displaced
-        ) and not (
-            # #1274 (F1): a qualified call whose target is QUALIFIED-ONLY is not
-            # a call to the bare name at all — its clone is emitted under
-            # ``mod$<path>$name`` by the shadowed path.  Discovering it against
-            # the FLAT table would instantiate whichever generic happens to own
-            # the bare name (the importer's), emitting a clone nothing calls and
-            # the other side never verifies.  Only the QUALIFIED spelling is
-            # skipped; a bare call to an unshadowed imported generic still
-            # routes here, which is what #774 needs.
-            #
-            # Not skipped inside that module's OWN shadowed scan
-            # (``shadowed_module_scope``): there the table IS the module's
-            # generics keyed by bare name, so ``m::bb`` from ``m``'s own clone
-            # body is exactly the entry meant — the #1000/#1029 private chain.
-            isinstance(node, ast.ModuleCall)
-            and tuple(node.path) != self._shadowed_scan_path
-            and (tuple(node.path), node.name)
-            in self.ctx.qualified_module_generics
-        ):
+        # The walked program is linked (`vera.binding.link`): every call names
+        # the declaration it calls by its link name, a qualified `m::g(…)`
+        # included, so a call to a generic is a `FnCall` whose name keys
+        # `generic_decls`.
+        if isinstance(node, ast.FnCall) and node.name in generic_decls:
             decl = generic_decls[node.name]
             type_args = self._infer_type_args_from_args(
                 decl, node.args, ctor_to_adt, generic_decls,
@@ -3279,8 +2796,6 @@ class Monomorphizer:
         """
         if generic_decls is None:
             generic_decls = self.ctx.generic_decls or None
-        if isinstance(expr, ast.FnCall):
-            expr = self._call_symbol(expr)
         if isinstance(expr, ast.IntLit):
             return "Int"
         if isinstance(expr, ast.BoolLit):
@@ -3414,59 +2929,12 @@ class Monomorphizer:
                 and not self._bare_call_is_user_fn(expr.name)
                 and expr.name in self._op_result_types):
             return self._op_result_types[expr.name]
-        if isinstance(expr, ast.ModuleCall):
-            # #1509: a qualified call to a GENERIC names its instantiated
-            # return, exactly as the bare call's arm below and the rewrite
-            # twin's `ModuleCall` arm (which resolves the target and reuses
-            # its FnCall arm) do.  Without it the checker answered, and for a
-            # data type its answer is the full semantic type (`Option<Nat>`)
-            # where both of those name the clone after the bare type
-            # (`Option`, #772): `idg(lib::justg(2))` discovered `idg` at a
-            # specialisation the call site does not call.  A module's own
-            # private generics reach here too — code generation reroutes a
-            # module body's call to one into a `ModuleCall`.  A non-generic
-            # target keeps the checker's answer, as before.
-            decl = self._module_call_generic_decl(expr, generic_decls)
-            if decl is not None:
-                return self._generic_return_name(
-                    decl, self._infer_type_args_from_args(
-                        decl, expr.args, ctor_to_adt, generic_decls,
-                    ),
-                )
-            return None
         if isinstance(expr, ast.FnCall) and generic_decls:
             return self._infer_fncall_vera_type(
                 expr, ctor_to_adt, generic_decls)
         if isinstance(expr, ast.FnCall):
             return self._infer_fncall_vera_type_simple(expr)
         return None
-
-    def _module_call_generic_decl(
-        self, call: ast.ModuleCall,
-        generic_decls: dict[str, ast.FnDecl] | None,
-    ) -> ast.FnDecl | None:
-        """The generic declaration ``path::name`` reaches, if it is one.
-
-        A qualified-only generic is looked up under its own module
-        (``qualified_generic_decls``); any other is the one the bare name
-        denotes when that generic came from the called module, since a module
-        generic that owns the importer's bare name is the generic
-        ``generic_decls`` holds under it (#774).  ``None`` for a non-generic
-        target, or a qualified-only generic the consumer did not supply.
-        """
-        key = (tuple(call.path), call.name)
-        decl = self.ctx.qualified_generic_decls.get(key)
-        if (decl is None and key not in self.ctx.qualified_module_generics
-                and self.ctx.generic_origins.get(call.name) == key[0]):
-            # The generic the bare name holds is the one `path::name`
-            # reaches only when it came from `path`.  A local generic of the
-            # same name, or another module's, is not: the qualified target is
-            # then that module's own declaration — a non-generic, named by
-            # the checker, as the call site names it (PR #1508 review).
-            decl = (generic_decls or {}).get(call.name)
-        if decl is None or not decl.forall_vars:
-            return None
-        return decl
 
     @staticmethod
     def _generic_return_name(
@@ -3651,8 +3119,6 @@ class Monomorphizer:
         None for positions that cannot be inferred from the argument (e.g.
         T in Err(e) where only E is resolved from Err).
         """
-        if isinstance(expr, ast.FnCall):
-            expr = self._call_symbol(expr)
         if isinstance(expr, ast.SlotRef):
             if expr.type_args:
                 arg_names = []

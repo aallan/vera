@@ -2863,8 +2863,8 @@ class ContractVerifier:
     def _module_qualified_base(path: tuple[str, ...], name: str) -> str:
         """The ``mod$…`` base a shadowed imported generic's clones live under.
 
-        Must match codegen's ``CrossModuleMixin._module_qualified_wasm_name``
-        byte-for-byte: it is the shared namespaced key under which BOTH sides
+        It is the declaration's link name (:attr:`vera.binding.DeclId.link_name`),
+        byte-for-byte: the shared namespaced key under which BOTH sides
         record a shadowed MODULE generic's instantiations (`_emitted_instances`
         on codegen, ``_instances`` here), so the #732 differential distinguishes
         the module generic's clone from a same-named LOCAL generic (CR
@@ -3137,9 +3137,6 @@ class ContractVerifier:
             # #1511: each namespace's alias maps — the entry's environment and
             # every module's own — so a type argument is resolved where it
             # was written before it names a clone, as code generation does.
-            # The module each imported generic came from, as code
-            # generation's `_imported_generic_base_origins` holds it.
-            generic_origins=dict(self._generic_origins),
             type_arg_aliases={
                 None: (self._alias_env.aliases, self._alias_env.alias_params),
                 **{

@@ -233,7 +233,7 @@ class CrossModuleMixin:
         # on the ORIGINAL nested AST and must keep seeing it.
         # #1029: namespace each imported module's nested-generic qualification
         # by the module path (``mod$<path>$compute$where$gid``) — byte-identical
-        # to ``_module_qualified_wasm_name`` — so two imported modules' same-named
+        # to the helper's link name (`vera.binding.DeclId`) — so two imported modules' same-named
         # nested generics stay DISTINCT bases instead of collapsing first-seen-wins
         # (which left a lying namesake unemitted/unverified: a false Tier-1).  The
         # main program keeps the bare prefix (core.py Pass 0).
@@ -387,9 +387,6 @@ class CrossModuleMixin:
                     ret_te, temp._type_aliases, temp._type_alias_params,
                 )
                 self._fn_ret_type_exprs.setdefault(fn_name, canonical_ret)
-                self._module_fn_ret_type_exprs[
-                    (mod.path, fn_name)
-                ] = canonical_ret
 
             # Harvest per-parameter concrete-@Nat flags (#747, CR #756).
             # Without this an imported function `f(@Nat -> …)` loses its

@@ -717,9 +717,7 @@ class FunctionCompilationMixin:
         # #841: Future<Result<String, String>>-returning fn names, for the
         # await lowering's directly-awaited-call check (computed once in
         # core.py).
-        ctx.set_future_ret_fns(
-            self._future_ret_fns, self._future_ret_module_fns,
-        )
+        ctx.set_future_ret_fns(self._future_ret_fns)
         # #798: resolved-type side-table for the integer-overflow guard's
         # Int/Nat operand classifier (kept in lockstep with the verifier).
         # #987: for an imported body this is ITS module's table (correct spans)

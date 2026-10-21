@@ -339,10 +339,6 @@ class WasmContext(
         # in vera/codegen/core.py (compute_future_ret_fns) and shared
         # with the compilability pre-scan; set via set_future_ret_fns.
         self._future_ret_fns: frozenset[str] = frozenset()
-        # #841 round 2: qualified companion for ModuleCall awaits.
-        self._future_ret_module_fns: frozenset[
-            tuple[tuple[str, ...], str]
-        ] = frozenset()
         # #1479: set by `_emit_trap` beside every `vera.trap` call it emits
         # — the one signal every named check raises, its kind a code rather
         # than an import of its own — so assembly declares the import.
@@ -693,14 +689,10 @@ class WasmContext(
         """
         self._eq_full_type_names = full_names
 
-    def set_future_ret_fns(
-        self,
-        names: frozenset[str],
-        module_fns: frozenset[tuple[tuple[str, ...], str]] = frozenset(),
-    ) -> None:
-        """Set the Future<Result<String, String>>-returning fn sets (#841)."""
+    def set_future_ret_fns(self, names: frozenset[str]) -> None:
+        """Set the Future<Result<String, String>>-returning fn set (#841):
+        link names, so a qualified call is classified by its target."""
         self._future_ret_fns = names
-        self._future_ret_module_fns = module_fns
 
     def set_fn_ret_type_exprs(
         self, ret_type_exprs: dict[str, ast.TypeExpr],

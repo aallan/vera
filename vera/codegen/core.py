@@ -55,7 +55,6 @@ from vera.wasm import StringPool
 from vera.wasm.helpers import CellNames
 from vera.wasm.async_fusion import (
     compute_future_ret_fns,
-    compute_future_ret_module_fns,
 )
 from vera.codegen.modules import CrossModuleMixin
 from vera.codegen.registration import RegistrationMixin
@@ -282,15 +281,6 @@ class CodeGenerator(
         # read by the WasmContext await lowering (computed in compile()
         # from the program decls).
         self._future_ret_fns: frozenset[str] = frozenset()
-        # #841 round 2: (module path, name) → return TypeExpr for every
-        # imported module fn (harvested in modules.py), and the derived
-        # qualified future-return set for ModuleCall awaits.
-        self._module_fn_ret_type_exprs: dict[
-            tuple[tuple[str, ...], str], ast.TypeExpr
-        ] = {}
-        self._future_ret_module_fns: frozenset[
-            tuple[tuple[str, ...], str]
-        ] = frozenset()
 
         # ADT layout metadata (populated during registration)
         self._adt_layouts: dict[str, dict[str, ConstructorLayout]] = {}
@@ -2516,11 +2506,6 @@ class CodeGenerator(
         # have already populated _type_aliases/_type_alias_params.
         self._future_ret_fns = compute_future_ret_fns(
             self._fn_ret_type_exprs,
-            self._type_aliases,
-            self._type_alias_params,
-        )
-        self._future_ret_module_fns = compute_future_ret_module_fns(
-            self._module_fn_ret_type_exprs,
             self._type_aliases,
             self._type_alias_params,
         )

@@ -401,7 +401,6 @@ class CallsMarkupMixin:
         if not await_needs_check(
             arg,
             self._future_ret_fns,
-            self._future_ret_module_fns,
             self._alias_env.aliases,
             self._alias_env.alias_params,
         ):
