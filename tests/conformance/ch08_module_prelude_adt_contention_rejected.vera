@@ -1,14 +1,12 @@
--- Conformance: a module data type contending with a prelude one is a codegen
--- error (Chapter 8, Section 8.4.1; Chapter 11, Section 11.16).
--- Tests: E621 -- `vera.shadowlib` declares `private data Json { JBlob(Int) }`
--- and this program uses the prelude's `Json`, so the two differently-shaped
--- declarations contend for the one flat layout slot. This program type-checks
--- CLEANLY and must then be refused by `vera compile`: before the rail the
--- module's layout won, the prelude's `Json` was never registered, and `depth`
--- vanished from the exports behind [E602]/[E620] warnings located in
--- `<prelude>` -- a zero-exit compile of a module missing a function (#1277).
--- The paired positive is `ch08_module_prelude_adt_name.vera`, which imports
--- the same module and never names `Json`.
+-- Conformance: a module data type named after a prelude one is refused at
+-- check (Chapter 8, Section 8.4.1).
+-- Tests: E158 -- `vera.shadowlib` declares `private data Json { JBlob(Int) }`
+-- and this program uses the prelude's `Json`.  The two declarations used to
+-- contend for one layout slot and the compile was refused (E621, #1277); the
+-- prelude's data types are now reserved names in every file (#1469), so the
+-- module's declaration is refused at check.  The paired program,
+-- `ch08_module_prelude_adt_name.vera`, imports the same module, never names
+-- `Json`, and is refused by the same declaration.
 import vera.shadowlib(blob_size);
 
 public fn depth(@Json -> @Int)

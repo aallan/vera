@@ -1,10 +1,9 @@
 module vera.shadowlib;
 
--- A module-local data type whose name is one the prelude also provides.
--- Spec 8.4.1: the prelude's data types are ordinary public declarations a
--- program names and shadows -- the reserved namespace is the `Vera` prefix
--- alone (E154) -- so this declaration is legal, and it stays legal for as
--- long as nothing in the program demands the prelude's `Json` (#1277).
+-- A module-local data type whose name is one the prelude provides.
+-- Spec 8.4.1: the prelude's data types are reserved names in every file
+-- (#1469), so this declaration is refused at check (E158) in every program
+-- that imports the module.
 private data Json {
   JBlob(Int)
 }

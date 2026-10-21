@@ -8,7 +8,7 @@ public data List<T> {
   Cons(T, List<T>)
 }
 
-public data Option<T> {
-  None,
-  Some(T)
+public data Maybe<T> {
+  Nothing,
+  Just(T)
 }

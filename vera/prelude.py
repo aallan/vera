@@ -493,24 +493,18 @@ private forall<VeraA, VeraB, VeraE> fn result_map(@Result<VeraA, VeraE>, @VeraRe
 
 
 def overridable_builtin_names() -> frozenset[str]:
-    """Built-in names the prelude injects as *overridable* Vera combinators.
+    """Every function the prelude declares in Vera source.
 
-    Each is a real Vera ``FnDecl`` injected by :func:`inject_prelude`, so a
-    user override is sound — the verifier and codegen both reason about
-    whichever body is in the program — and ``inject_prelude`` deliberately
-    skips its own injection when the user defines one (see the loop in that
-    function).  These are therefore *exempt* from the E151 "redefines a
-    built-in" check (#815): the unsoundness that motivates E151 is the
-    idealized-model-vs-runtime desync of the *opaque*, verifier-modelled
-    built-ins (``abs`` / ``min`` / ``max`` / …), which have no Vera body to
-    fall back to.
+    Each is a real Vera ``FnDecl`` injected by :func:`inject_prelude`.  Read
+    by :func:`reserved_function_names`, which reserves them (#1469), and by
+    code generation and the verifier, which tell a prelude body from a user
+    one by name.
 
-    Derived from the combinator source blocks so the exempt set stays in
-    sync automatically if a combinator is added or removed.  Note the
-    iterative array built-ins (``array_map`` / ``array_filter`` /
-    ``array_fold``) are *not* exempt: ``_ARRAY_COMBINATORS`` is empty
-    (they are codegen-modelled, not prelude-injected Vera bodies), so
-    redefining them is correctly rejected by E151.
+    Derived from the combinator source blocks so the set stays in step if a
+    combinator is added or removed.  The iterative array built-ins
+    (``array_map`` / ``array_filter`` / ``array_fold``) are not here:
+    ``_ARRAY_COMBINATORS`` is empty (they are codegen-modelled, not
+    prelude-injected Vera bodies), so they are built-ins like ``abs``.
     """
     names: set[str] = set()
     for block in (
@@ -522,6 +516,44 @@ def overridable_builtin_names() -> frozenset[str]:
     ):
         names.update(re.findall(r"\bfn\s+([a-z_][A-Za-z0-9_]*)", block))
     return frozenset(names)
+
+
+# =====================================================================
+# Reserved names (#1469)
+# =====================================================================
+#
+# The prelude is a module whose names are reserved: no declaration in the
+# entry file or in any module may take one, whatever its shape.  This block
+# is the ONE place the reserved set is composed; the checker's refusals
+# (E151 for a function, E158 for a type) and the rendered lists in
+# KNOWN_ISSUES.md and SKILL.md all read it.
+
+#: The built-in data types the type checker registers itself rather than
+#: from prelude source (spec §9.7.3).
+BUILTIN_ADT_NAMES: tuple[str, ...] = ("MdBlock", "MdInline")
+
+#: The built-in type names code generation recognises by name (spec §9.4):
+#: how a value of one is rendered, compared and laid out.
+BUILTIN_TYPE_NAMES: tuple[str, ...] = (
+    "Array", "Decimal", "Future", "Map", "Set", "Tuple")
+
+
+@functools.lru_cache(maxsize=1)
+def reserved_function_names() -> frozenset[str]:
+    """The function names no declaration may take: every function the
+    prelude declares (#1469).  A ``fn`` or a ``where`` helper of one of
+    these names is refused at check (E151), as a built-in's is."""
+    return overridable_builtin_names()
+
+
+@functools.lru_cache(maxsize=1)
+def reserved_type_names() -> frozenset[str]:
+    """The type names no declaration may take: the prelude's data types,
+    the built-in data types and the built-in type names (#1469).  A
+    ``data`` declaration, a ``type`` alias or a type parameter of one of
+    these names is refused at check (E158)."""
+    return (prelude_adt_names() | frozenset(BUILTIN_ADT_NAMES)
+            | frozenset(BUILTIN_TYPE_NAMES))
 
 
 # =====================================================================
@@ -1008,14 +1040,35 @@ def inject_prelude(
     program: ast.Program,
     modules: Mapping[tuple[str, ...], ast.Program] = MappingProxyType({}),
 ) -> str:
-    """Inject prelude ADTs, combinators, and array operations.
+    """Prepend :func:`prelude_declarations` to *program*'s declarations.
 
-    Mutates ``program.declarations`` by prepending prelude declarations.
-    Returns the concatenated prelude source buffer that the injected
-    declarations' spans index into, so diagnostics about prelude code
-    can quote the actual prelude line under the synthetic
-    :data:`PRELUDE_FILE` origin instead of misattributing the span's
-    line number to the user's file (#851).
+    Mutates ``program.declarations``.  Returns the concatenated prelude
+    source buffer the injected declarations' spans index into (#851).
+    """
+    new_decls, full_source = prelude_declarations(program, modules)
+    if not new_decls:  # pragma: no cover
+        return full_source
+    # Program is a frozen dataclass, so we use object.__setattr__.
+    object.__setattr__(
+        program,
+        "declarations",
+        tuple(new_decls) + program.declarations,
+    )
+    return full_source
+
+
+def prelude_declarations(
+    program: ast.Program,
+    modules: Mapping[tuple[str, ...], ast.Program] = MappingProxyType({}),
+) -> tuple[tuple[ast.TopLevelDecl, ...], str]:
+    """The prelude declarations *program* is compiled with, and the source
+    buffer their spans index into; *program* is not changed.
+
+    The buffer lets diagnostics about prelude code quote the actual
+    prelude line under the synthetic :data:`PRELUDE_FILE` origin instead
+    of misattributing the span's line number to the user's file (#851).
+    The resolver pass (:mod:`vera.binding`) binds these declarations'
+    calls, so the consumer that compiles them must compile these objects.
 
     The prelude provides:
 
@@ -1210,14 +1263,4 @@ def inject_prelude(
             span=None,
         ))
 
-    if not new_decls:  # pragma: no cover
-        return full_source
-
-    # Prepend to declarations so user defs shadow during registration.
-    # Program is a frozen dataclass, so we use object.__setattr__.
-    object.__setattr__(
-        program,
-        "declarations",
-        tuple(new_decls) + program.declarations,
-    )
-    return full_source
+    return tuple(new_decls), full_source

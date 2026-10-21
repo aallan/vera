@@ -1,22 +1,8 @@
--- Conformance: a type alias may reuse a prelude data type's name
+-- Conformance: a type alias may not reuse a prelude data type's name
 -- (Chapter 8, Section 8.4.1).
--- Tests: the prelude's data types are ordinary public declarations a program
--- names and shadows -- the reserved namespace is the `Vera` prefix alone
--- (E154) -- so `type UrlParts = Int;` is accepted, and only a user `data` of
--- that name suppresses the prelude's own declaration. Both therefore exist
--- here: the alias resolves inside the type argument below, and the prelude's
--- `UrlParts` is still injected, still stamped, and its other declarations are
--- unaffected -- `Option` is matched as usual.
--- What this program does NOT pin is #1287 itself. The defect was an internal
--- one -- the prelude's declaration-index block losing an entry -- and it is
--- inert at emission, because `AliasEnv.data_types` changes a rendering only
--- for `Decimal` and `Float`. The emitted WAT is identical either way, so no
--- run-level program can distinguish it; the unit cells in
--- `tests/test_prelude_decl_stamp_1287.py` carry that claim. What this pins is
--- that the shape is accepted, verifies and runs.
--- The alias is deliberately used in a type-ARGUMENT position rather than as a
--- slot head: a slot headed by an alias sharing a registered ADT's name is
--- separately miscompiled (#1309), which is not what this program is about.
+-- Tests: E158 -- the prelude's data types are reserved names (#1469), so
+-- `type UrlParts = Int;` is refused at check, at the alias, whatever the rest
+-- of the program does with the prelude's `UrlParts`.
 import vera.math(magnitude);
 
 type UrlParts = Int;

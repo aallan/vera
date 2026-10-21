@@ -103,6 +103,7 @@ Option<Int>
 
 `Option<T>` is a built-in algebraic data type equivalent to:
 
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E158" reason="the prelude's own declaration of a reserved name, shown as the compiler injects it (#1469)" -->
 ```
 public data Option<T> {
   Some(T),
@@ -120,6 +121,7 @@ Result<Int, String>
 
 `Result<T, E>` is a built-in algebraic data type equivalent to:
 
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E158" reason="the prelude's own declaration of a reserved name, shown as the compiler injects it (#1469)" -->
 ```
 public data Result<T, E> {
   Ok(T),

@@ -58,6 +58,7 @@ The primitive types (`Int`, `Nat`, `Bool`, `Byte`, `Float64`, `String`, `Unit`, 
 
 ### 9.3.1 Option\<T\>
 
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E158" reason="the prelude's own declaration of a reserved name, shown as the compiler injects it (#1469)" -->
 ```
 public data Option<T> {
   Some(T),
@@ -89,6 +90,7 @@ private fn safe_head(@Array<Int> -> @Option<Int>)
 
 ### 9.3.2 Result\<T, E\>
 
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E158" reason="the prelude's own declaration of a reserved name, shown as the compiler injects it (#1469)" -->
 ```
 public data Result<T, E> {
   Ok(T),
@@ -120,7 +122,7 @@ private fn checked_nat(@Int -> @Result<Nat, String>)
 
 ### 9.3.3 UrlParts
 
-<!-- vera:skip-check category="ILLUSTRATIVE" code="none" reason="prelude-injected UrlParts declaration shown without visibility" -->
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E158 none" reason="the prelude's own UrlParts declaration, a reserved name, shown without visibility (#1469)" -->
 ```
 data UrlParts {
   UrlParts(String, String, String, String, String)
@@ -150,6 +152,7 @@ See §9.5.4 for the `async` and `await` function specifications.
 
 ### 9.3.5 MdInline
 
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E158" reason="the prelude's own declaration of a reserved name, shown as the compiler injects it (#1469)" -->
 ```
 public data MdInline {
   MdText(String),
@@ -175,6 +178,7 @@ See §9.7.3 for the Markdown function specifications.
 
 ### 9.3.6 MdBlock
 
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E158" reason="the prelude's own declaration of a reserved name, shown as the compiler injects it (#1469)" -->
 ```
 public data MdBlock {
   MdParagraph(Array<MdInline>),
@@ -617,9 +621,9 @@ public fn handle(@Request -> @Response)
 }
 ```
 
-**Built-in types** (prelude ADTs, injected when referenced; user definitions shadow them):
+**Built-in types** (prelude ADTs, injected when referenced; their names are reserved):
 
-<!-- vera:skip-check category="ILLUSTRATIVE" code="none none" reason="prelude-injected Request/Response decls shown without visibility (#305)" -->
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E158 E158 none none" reason="the prelude's own Request/Response declarations, reserved names, shown without visibility (#305, #1469)" -->
 ```
 data Request { Request(String, String, Map<String, String>, String) }
 data Response { Response(Int, Map<String, String>, String) }
@@ -1526,6 +1530,7 @@ Parsing functions convert strings to typed values, returning `Result<T, String>`
 
 The `Result` type used by parsing functions is the standard ADT:
 
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E158" reason="the prelude's own declaration of a reserved name, shown as the compiler injects it (#1469)" -->
 ```vera
 private data Result<T, E> { Ok(T), Err(E) }
 ```
@@ -2233,6 +2238,7 @@ json_get_int(obj, "name")                  -- None (wrong type)
 
 `Json` is a standard library ADT for structured data interchange. Tracked in [#58](https://github.com/aallan/vera/issues/58).
 
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E158" reason="the prelude's own declaration of a reserved name, shown as the compiler injects it (#1469)" -->
 ```vera
 public data Json {
   JNull,
@@ -2413,6 +2419,7 @@ Markdown is the lingua franca of large language models — they understand it na
 
 Markdown is represented as two mutually defined ADTs: `MdBlock` for block-level elements (§9.3.6) and `MdInline` for inline-level content (§9.3.5). The two-level design makes illegal states unrepresentable — a heading cannot contain another heading at the type level.
 
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E158" reason="the prelude's own declaration of a reserved name, shown as the compiler injects it (#1469)" -->
 ```
 public data MdInline {
   MdText(String),
@@ -2432,6 +2439,7 @@ public data MdInline {
 - `MdLink(@Array<MdInline>, @String)` — hyperlink: display text (inline content) and target URL.
 - `MdImage(@String, @String)` — image: alt text and source URL.
 
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E158" reason="the prelude's own declaration of a reserved name, shown as the compiler injects it (#1469)" -->
 ```
 public data MdBlock {
   MdParagraph(Array<MdInline>),
@@ -2656,6 +2664,7 @@ HTML is the primary output format of web applications and the most common docume
 
 HTML is represented as a single ADT `HtmlNode` with three constructors:
 
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E158" reason="the prelude's own declaration of a reserved name, shown as the compiler injects it (#1469)" -->
 ```
 public data HtmlNode {
   HtmlElement(String, Map<String, String>, Array<HtmlNode>),
@@ -2800,6 +2809,7 @@ Operation: `compare(@T, @T -> @Ordering)`. Returns `Less`, `Equal`, or `Greater`
 
 The `Ordering` ADT is a built-in type:
 
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E158" reason="the prelude's own declaration of a reserved name, shown as the compiler injects it (#1469)" -->
 ```
 public data Ordering {
   Less,

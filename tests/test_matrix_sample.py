@@ -690,6 +690,7 @@ MARKED_FILES = (
     "test_gc_mark_width_1510.py",
     "test_bytes_1711.py",
     "test_persistent_map_set_1676.py",
+    "test_resolver_1694.py",
 )
 UNMARKED_FILES = (
     "test_obligations.py",

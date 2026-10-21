@@ -39,7 +39,7 @@ A module imports declarations from other modules using `import` statements:
 
 ```
 import vera.math;
-import vera.collections(List, Option);
+import vera.collections(List, Maybe);
 ```
 
 Import declarations appear after the module declaration (if any) and before any top-level definitions. There are two forms:
@@ -803,9 +803,9 @@ public data List<T> {
   Cons(T, List<T>)
 }
 
-public data Option<T> {
-  None,
-  Some(T)
+public data Maybe<T> {
+  Nothing,
+  Just(T)
 }
 ```
 
@@ -816,7 +816,7 @@ public data Option<T> {
 module vera.examples.modules;
 
 import vera.math(magnitude, larger);
-import vera.collections(List, Option);
+import vera.collections(List, Maybe);
 
 public fn clamp_to_range(@Int, @Int, @Int -> @Int)
   requires(@Int.1 <= @Int.0)
