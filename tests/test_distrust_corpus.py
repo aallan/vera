@@ -20,16 +20,18 @@ What it can see, and what it cannot:
 - A check code generation does not emit cannot trap, so a false Tier 3 or an
   unguarded obligation is invisible here: that is the reconciliation gate's
   class, not this one.
-- A trap is attributed by joining the check it fired at to an obligation
-  record by exact span (`vera.tester._TrapIndex`).  Measured when this file
-  was introduced, over the 1,591 non-prelude checks the 219 programs compile:
-  1,328 join an obligation that way, 221 join none, and the 42 precondition
-  checks are read rather than joined.  A trap at a check that joins nothing
+- A trap is attributed through the reconciliation's relation between a
+  check and the records it stands for (`vera.reconcile.join`, read by
+  `vera.tester._TrapIndex`, #1633), wherever the two sides locate them.
+  Measured at c9235415 over the 1,561 non-prelude checks the 223 programs
+  compile: the relation joins 1,364 to a record (657 to proved records
+  alone, 707 to unproved ones) and 197 to none, which are 92 checks the
+  reconciliation reports with no record at all (W004), 73 in imported bodies
+  this run did not verify, and 32 `requires` checks whose calls' discharged
+  preconditions the verifier does not record.  Read by exact span, as before
+  #1633, 1,328 joined and 233 did not.  A trap at a check that joins nothing
   is `unattributed`, counted in the session line `tests/conftest.py` prints
-  ("distrust corpus: ..."), and never asserted to be zero.  #1630's join in
-  `vera/reconcile.py`, which reads the relation between a record and its
-  check from the program, is the mechanism the attribution switches to once
-  it lands (#1633).
+  ("distrust corpus: ..."), and never asserted to be zero.
 
 Each program also carries the default-mode differential: default `vera test`
 runs no trial against a function the verifier proved, and every function it
@@ -42,8 +44,10 @@ introduction no program refutes, at 5 trials or at 100 — 173 proofs run and
 hold, 3 are not exercised, and the open soundness bugs that do refute (#1587,
 #1555) have no shape in the corpus.
 
-Trials per function come from VERA_DISTRUST_TRIALS (default 5).  The whole
-file adds about 20 worker-seconds to the suite.
+Trials per function come from VERA_DISTRUST_TRIALS (default 5, the pull
+request's count); the nightly stress workflow runs this file at 1,000
+(tests/test_nightly_stress_workflow.py reads the step).  The whole file adds
+about 20 worker-seconds to the suite.
 """
 
 from __future__ import annotations
@@ -65,7 +69,9 @@ CONFORMANCE = ROOT / "tests" / "conformance"
 MANIFEST: list[dict[str, Any]] = json.loads(
     (CONFORMANCE / "manifest.json").read_text(encoding="utf-8"))
 
-TRIALS = int(os.environ.get("VERA_DISTRUST_TRIALS", "5"))
+#: Trials per proved function in the pull request's suite.
+DEFAULT_TRIALS = 5
+TRIALS = int(os.environ.get("VERA_DISTRUST_TRIALS", str(DEFAULT_TRIALS)))
 
 #: Programs whose run refutes a proof today: program id -> its open issue.
 #: Each is a strict xfail, so the day its issue is fixed the program stops

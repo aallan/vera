@@ -60,6 +60,33 @@ def _load_golden() -> Any:
 
 golden = _load_golden()
 
+_RECONCILIATION_GATE = ROOT / "scripts" / "check_reconciliation.py"
+
+
+def _load_reconciliation_gate() -> Any:
+    """scripts/check_reconciliation.py, whose `KNOWN` list names the one
+    failure the verify stage may carry: an E541 the reconciliation reports
+    today.  Registered in ``sys.modules`` under the key
+    tests/test_reconciliation.py loads it by, so the two share one module."""
+    key = "_reconciliation_gate"
+    if key in sys.modules:
+        return sys.modules[key]
+    spec = importlib.util.spec_from_file_location(key, _RECONCILIATION_GATE)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[key] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+reconciliation_gate = _load_reconciliation_gate()
+
+
+def _sites(diagnostics: Sequence[Diagnostic]) -> list[tuple[str, str | None, int, int]]:
+    """Each diagnostic as the gate's rule reads it: code, file, line, column."""
+    return [(d.error_code, d.location.file, d.location.line, d.location.column)
+            for d in diagnostics]
+
 #: What the run environment removes (`conformance_golden.run_env`), as the
 #: changes `pipeline.cli` makes for the length of one command.
 _RUN_ENV: dict[str, str | None] = {name: None for name in golden.NEUTRALISED_ENV}
@@ -143,11 +170,19 @@ class TestConformance:
         )
 
     def test_verify(self, entry: dict) -> None:
-        """Programs at level verify/run must verify contracts cleanly."""
+        """Programs at level verify/run must verify contracts cleanly, as
+        ``vera verify`` does by default: with the reconciliation join, so a
+        runtime-check claim the compiled module does not answer fails the
+        stage.  The one failure it may carry is an E541 at a site
+        scripts/check_reconciliation.py's ``KNOWN`` names for the program,
+        under its open issue; the gate and tests/test_reconciliation.py hold
+        that list to what the join reports."""
         if not _at_least(entry, "verify"):
             pytest.skip(f"{entry['level']}-only")
-        verified = pipeline.verify(CONFORMANCE_DIR / entry["file"])
-        assert verified.ok, (
+        verified = pipeline.verify(CONFORMANCE_DIR / entry["file"], reconcile=True)
+        unlisted = reconciliation_gate.unlisted_verify_errors(
+            f"tests/conformance/{entry['file']}", _sites(verified.errors))
+        assert verified.ran and not unlisted, (
             f"Verification failed for {entry['id']}:\n{_report(verified.errors)}"
         )
 
@@ -238,6 +273,55 @@ def test_the_run_stage_runs_under_its_budget(monkeypatch: pytest.MonkeyPatch) ->
     )
     TestConformance().test_run(_ENTRIES["ch01_int_literals"])
     assert calls == [("arm", golden.RUN_TIMEOUT_SECONDS, True), ("disarm",)], calls
+
+
+# ---------------------------------------------------------------------------
+# The verify stage and the reconciliation gate's KNOWN list
+# ---------------------------------------------------------------------------
+
+#: The conformance program `vera verify` refuses by default, with the E541
+#: the reconciliation gate lists under its open issue.
+_KNOWN_E541 = next(entry for entry in reconciliation_gate.KNOWN
+                   if entry.kind == "recorded_unguarded"
+                   and entry.program.startswith("tests/conformance/"))
+
+
+def _known_e541_site() -> tuple[str, str | None, int, int]:
+    _name, line, column = _KNOWN_E541.site.rsplit(":", 2)
+    return ("E541", str(ROOT / _KNOWN_E541.program), int(line), int(column))
+
+
+def test_the_verify_stage_holds_the_known_e541_and_nothing_else() -> None:
+    """The listed program fails `vera verify` with exactly its listed E541
+    when the join runs, and verifies clean without it: the stage passes on
+    the listed error and on nothing more."""
+    path = ROOT / _KNOWN_E541.program
+    joined = pipeline.verify(path, reconcile=True)
+    errors = _sites(joined.errors)
+    assert [code for code, *_ in errors] == ["E541"], errors
+    assert reconciliation_gate.unlisted_verify_errors(
+        _KNOWN_E541.program, errors) == []
+    assert pipeline.verify(path).ok
+
+
+@pytest.mark.parametrize("cell", ["another_site", "another_program", "another_code"])
+def test_an_error_the_known_list_does_not_name_fails_the_verify_stage(
+    cell: str,
+) -> None:
+    """The listed error's nearest neighbours each fail the stage: the same
+    code one line on, the same site in another program, another code at the
+    same site."""
+    program = _KNOWN_E541.program
+    code, file, line, column = _known_e541_site()
+    if cell == "another_site":
+        line += 1
+    elif cell == "another_program":
+        program = "tests/conformance/ch01_int_literals.vera"
+        file = str(ROOT / program)
+    else:
+        code = "E500"
+    error = (code, file, line, column)
+    assert reconciliation_gate.unlisted_verify_errors(program, [error]) == [error]
 
 
 # ---------------------------------------------------------------------------

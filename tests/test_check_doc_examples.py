@@ -744,7 +744,7 @@ def _load_script(name: str) -> Any:
 # The modules `vera check` runs: parse, transform, resolve, type-check.
 _CHECK_PATH = ("vera/checker/", "vera/resolver.py", "vera/parser.py", "vera/transform.py")
 # The later stages, whose warnings `vera check` never gives.  The
-# reconciliation's W004 is given only by `vera verify --reconcile`, after
+# reconciliation's W004 and W005 are given only by `vera verify`, after
 # verification and compilation.
 _LATER_STAGES = ("vera/codegen/", "vera/verifier.py", "vera/tester.py",
                  "vera/reconcile.py")

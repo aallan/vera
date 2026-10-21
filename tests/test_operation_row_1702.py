@@ -48,8 +48,9 @@ included, is checked where no row is in force, its body under its own row.
 A refused call keeps the result type its signature fixes,
 and a `get` no row entry or handler gives an instance to is typed unknown,
 so a use of its result is no second error.  An operation of a user-declared
-effect is E340's (rule 6, #1699), and a refinement predicate checked where
-no function's row is in force is not judged.
+effect is E340's (rule 6, #1699), and one in a contract or a refinement
+predicate, which is held to purity whatever row is in force, is E187's
+(#1708).
 
 The instrument crosses each built-in effect's operation, qualified and,
 where the bare spelling has a route, bare, with the row in force (`pure`, one
@@ -646,14 +647,15 @@ def test_a_bare_operation_without_a_route_is_also_held_to_the_row() -> None:
     assert _codes(pipeline.check(pure)) == ("E217", "E122")
 
 
-def test_a_contract_is_held_to_the_function_s_row() -> None:
-    """A contract is checked under the function's row, so its operation
-    is held to it."""
+def test_a_contract_is_held_to_purity_not_to_the_function_s_row() -> None:
+    """A contract is held to purity whatever its function's row names
+    (#1708), so its operation is E187, whose fix moves the operation into
+    the body, where E125's would add the effect to the row."""
     source = ("public fn f(@Int -> @Int)\n"
               "  requires(Random.random_int(1, 1) > 0)\n  ensures(true)\n"
               "  effects(<IO>)\n{\n  @Int.0\n}\n")
     assert _placed(pipeline.check(source)) == [
-        ("E125", *_locate(source, "Random.random_int"))]
+        ("E187", *_locate(source, "Random.random_int"))]
 
 
 def test_a_host_operation_in_a_closure_lowers() -> None:
@@ -729,10 +731,11 @@ def test_a_helper_s_signature_is_held_to_no_row(
 ) -> None:
     """A `where` helper's signature is checked where no function's row is
     in force, as a top-level signature is, so an operation in its
-    refinement predicate is held to no row under a `pure` parent and an
-    `<IO>` one alike, while the helper's body is held to the helper's own
-    row (PR #1703 review: the predicate was held to the parent's row, which
-    named the parent in its fix)."""
+    refinement predicate is held to purity (E187, #1708) under a `pure`
+    parent and an `<IO>` one alike, never to the parent's row, while the
+    helper's body is held to the helper's own row (PR #1703 review: the
+    predicate was held to the parent's row, which named the parent in its
+    fix)."""
     param = _REFINED if position == "parameter" else "@Int"
     result = _REFINED if position == "return" else "@Int"
     performed = "Random.random_int(1, 1);\n    " if body == "performs" else ""
@@ -742,16 +745,16 @@ def test_a_helper_s_signature_is_held_to_no_row(
         f"    ensures(true)\n    effects({row})\n  {{\n    {performed}1\n"
         "  }\n}\n")
     checked = pipeline.check(source)
+    refused = ("E187", *_locate(source, "Random.random_int(1, 1) >"))
     if body == "clean":
-        assert not checked.diagnostics, [
-            (d.error_code, d.description) for d in checked.diagnostics]
+        assert _placed(checked) == [refused]
         return
     if row == "pure":
-        assert _placed(checked) == [("E122", *_locate(source, "fn h("))]
+        assert _placed(checked) == [refused, ("E122", *_locate(source, "fn h("))]
         return
     assert _placed(checked) == [
-        ("E125", *_locate(source, "Random.random_int(1, 1);"))]
-    assert "the effects clause of 'h'" in checked.errors[0].fix
+        refused, ("E125", *_locate(source, "Random.random_int(1, 1);"))]
+    assert "the effects clause of 'h'" in checked.errors[1].fix
 
 
 def _quantified(outer: str, pred: str, body: str, *, lead: str = "") -> str:
