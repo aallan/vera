@@ -33,9 +33,10 @@ from pathlib import Path
 import pytest
 
 from vera import ast, naming
+from vera.binding import display_type_names
 from vera.codegen.core import CodeGenerator
 from vera.parser import parse_file
-from vera.resolver import ModuleResolver
+from vera.resolver import ModuleResolver, ResolvedModule
 from vera.transform import transform
 from tests import pipeline
 
@@ -137,13 +138,29 @@ def _slot_tables(
     gen = CodeGenerator(
         source=main_path.read_text(encoding="utf-8"), file=str(main_path),
     )
-    gen._resolved_modules = mods
-    gen._unlinked_modules = list(mods)
-    gen._register_modules(program)
-    gen._register_all(program)
+    linked = _link(gen, program, mods)
+    linked_mod = next(m for m in gen._resolved_modules if m.path == (module,))
+    linked_params = _params(linked_mod.program, f"mod${module}${fn}")
+    gen._register_modules(linked)
+    gen._register_all(linked)
+    # Code generation names the linked program's declarations by their
+    # link names (#1694); shown as a reader writes them, the two agree.
     with gen._module_alias_scope((module,)):
-        codegen = [naming.slot_name(p, gen._alias_env) for p in params]
+        codegen = [display_type_names(naming.slot_name(p, gen._alias_env))[0]
+                   for p in linked_params]
     return checker, codegen
+
+
+def _link(
+    gen: CodeGenerator, program: ast.Program, mods: list[ResolvedModule],
+) -> ast.Program:
+    """Hand *gen* the linked program and modules, as `compile_program` does
+    before it registers anything (`vera.binding.link_program`)."""
+    from vera.binding import link_program
+    linked = link_program(program, mods)
+    gen._resolved_modules = linked.modules
+    gen._binding = linked.binding
+    return linked.program
 
 
 @pytest.mark.parametrize(
@@ -258,7 +275,6 @@ public fn main(@Unit -> @Int)
         source=main_path.read_text(encoding="utf-8"), file=str(main_path),
     )
     gen._resolved_modules = mods
-    gen._unlinked_modules = list(mods)
     gen.compile_program(program)
 
     # `inject_prelude` is demand-driven, so only the prelude ADTs this
@@ -324,10 +340,9 @@ public fn main(@Unit -> @Int)
     gen = CodeGenerator(
         source=main_path.read_text(encoding="utf-8"), file=str(main_path),
     )
-    gen._resolved_modules = mods
-    gen._unlinked_modules = list(mods)
-    gen._register_modules(program)
-    gen._register_all(program)
-    names = [naming.slot_name(p, gen._alias_env)
-             for p in _params(program, "takes")]
+    linked = _link(gen, program, mods)
+    gen._register_modules(linked)
+    gen._register_all(linked)
+    names = [display_type_names(naming.slot_name(p, gen._alias_env))[0]
+             for p in _params(linked, "takes")]
     assert names == ["Array<Float>"], names

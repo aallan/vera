@@ -102,7 +102,6 @@ is what makes the iterative resolution's dependency graph a DAG.
 from __future__ import annotations
 
 import enum
-import re
 import sys
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -135,6 +134,7 @@ __all__ = [
     "RefinementBinder",
     "alias_body",
     "alias_env_from_environment",
+    "alias_env_from_program",
     "classify_named",
     "display_adt_name",
     "family_base_name",
@@ -236,14 +236,55 @@ def alias_env_from_environment(env: object) -> AliasEnv:
         aliases[name] = body
         alias_params[name] = getattr(info, "type_params", None)
         order[name] = getattr(info, "decl_index", -1)
+    # The names the namespace WRITES (#1694): a module's types are held by
+    # their identities, which no type expression spells.
+    named = getattr(env, "named_data_types", None)
+    data_table = named() if named is not None else getattr(
+        env, "data_types", {})
     data_types = {
         name: getattr(info, "decl_index", -1)
-        for name, info in getattr(env, "data_types", {}).items()
+        for name, info in data_table.items()
     }
     return AliasEnv(
         aliases=aliases,
         alias_params=alias_params,
         type_params=frozenset(getattr(env, "type_params", {})),
+        data_types=data_types,
+        _order=order,
+    )
+
+
+def alias_env_from_program(program: ast.Program) -> AliasEnv:
+    """The naming env registering *program*'s own declarations gives
+    (:func:`alias_env_from_environment` over a fresh registration of it):
+    its aliases and data types, each at the declaration index registration
+    allocates, one shared count in source order, after the built-in data
+    types, which precede every declaration.
+
+    For a program no environment registered: the linked program
+    (:func:`vera.binding.link`, #1694) that instantiation discovery walks,
+    whose declarations carry the link names its clones are spelled in.
+    """
+    from vera.environment import TypeEnv
+
+    aliases: dict[str, ast.TypeExpr] = {}
+    alias_params: dict[str, tuple[str, ...] | None] = {}
+    order: dict[str, int] = {}
+    data_types = {name: -1 for name in TypeEnv().data_types}
+    index = 0
+    for tld in program.declarations:
+        decl = tld.decl
+        if isinstance(decl, ast.DataDecl):
+            data_types[decl.name] = index
+            index += 1
+        elif isinstance(decl, ast.TypeAliasDecl):
+            aliases[decl.name] = decl.type_expr
+            alias_params[decl.name] = decl.type_params
+            order[decl.name] = index
+            index += 1
+    return AliasEnv(
+        aliases=aliases,
+        alias_params=alias_params,
         data_types=data_types,
         _order=order,
     )
@@ -278,41 +319,30 @@ def with_type_params(env: AliasEnv, params: Iterable[str]) -> AliasEnv:
 # Display — the one spelling a USER is shown for a compiler-minted symbol
 # =====================================================================
 
-_OWNER_QUALIFIED = re.compile(r"^mod\$(?:[A-Za-z_][A-Za-z_0-9]*\$)+")
-
-
 def display_adt_name(name: str) -> str:
-    """The spelling a USER sees for an ADT or constructor name (#1317).
+    """The spelling a USER sees for a data type's or a constructor's name
+    in the linked program (#1694).
 
-    #1317 gives a CONTENDED module ``data`` declaration and its
-    constructors an owner-qualified symbol, ``mod$<path>$<Name>``, so two
-    modules' ``Shape``s stop contending for one registry slot.  That symbol
-    is a WASM detail and is never a spelling the reader is asked to know
-    (#187's own design note), so every surface that renders such a name TO
-    A PERSON strips the prefix here — and nothing else does it, so the
-    answer cannot differ between two of them.
+    The link step (:func:`vera.binding.link`) names a module's data type
+    ``mod$<path>$<Name>`` and every user constructor ``<its type's link
+    name>$<Name>``, so two namespaces' same-named types and constructors are
+    two names wherever code generation keys on one.  That name is a WASM
+    detail and never a spelling the reader is asked to know, so every
+    surface that renders one TO A PERSON strips it here, and nothing else
+    does, so the answer cannot differ between two of them: ``show``'s
+    constructor head, which is baked into the data section and reaches
+    STDOUT, and code generation's diagnostics.  The checker's own surfaces
+    render a type's identity through :func:`vera.binding.display_type_names`
+    instead, which can name a type's module where two would read alike.
 
-    The surfaces, and they are the ones a battery in
-    ``tests/test_per_owner_adt_identity_1317.py`` greps for ``mod$``:
-    ``show``'s constructor head, which is baked into the data section and
-    is the one that reaches STDOUT; and codegen's diagnostics, through
-    ``CodeGenerator._unmangle_adt_names``, which rewrites inside prose and
-    so works from the rename table rather than from a bare symbol — the
-    two are pinned equal.  The check-phase surfaces (LSP hover, ``vera
-    ast --json``, ``vera parse``, every ``vera check`` diagnostic) need no
-    strip at all and must not grow one: the rename is applied to a REPLACED
-    list of resolved modules inside codegen, so no mangled name exists
-    before then.  WAT symbol names are the other side of that line and are
-    never passed through here — they are the identity the rename exists to
-    make unique.
-
-    Total and idempotent: a name with no prefix is returned unchanged, and
-    the prefix cannot be forged, since ``$`` is illegal in a Vera
-    identifier.  Applied to a function's ``mod$…`` mangling it would strip
-    too much (``mod$lib$compute$where$g`` is not an ADT name), which is why
-    it is documented as the ADT/constructor renderer and called only there.
+    The name is the last ``$`` segment: a type's or a constructor's own name
+    is an identifier, which holds no ``$``.  Total and idempotent: a name
+    with no ``$`` is returned unchanged.  It is the renderer of a data
+    type's and a constructor's name only; a function's link name keeps
+    segments that are not its name (``mod$lib$compute$where$g``), which is
+    why it is called only there.
     """
-    return _OWNER_QUALIFIED.sub("", name, count=1)
+    return name.rpartition("$")[2]
 
 
 # =====================================================================
@@ -548,7 +578,11 @@ def _resolve_named(
     if sort is NameSort.BUILTIN:
         if name == "Decimal":
             return AdtType("Decimal", ())  # checker: E134 when args supplied
-        if name in REMOVED_ALIASES:
+        # The reading the name the program WROTE has: a declaration's link
+        # name (`vera.binding.link`, #1694) reads as its source name would,
+        # so a module's `data Float` it cannot see is the removed alias
+        # here as it is to the checker, which reads the source.
+        if display_adt_name(name) in REMOVED_ALIASES:
             return UnknownType()
     return AdtType(name, tuple(
         _resolve(a, env, type_params, limit) for a in te.type_args

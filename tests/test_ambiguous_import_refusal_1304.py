@@ -467,23 +467,21 @@ class TestTheDataSideFlapShapes:
         assert "rename" in fix
         assert "no namespace can reach both declarations" in fix
 
-    def test_a_shared_constructor_is_backstopped_by_E610(
+    def test_a_shared_constructor_is_refused_at_check(
         self, tmp_path: Path,
     ) -> None:
-        """The E610 axis, pinned at both layers.
+        """The constructor axis, refused at check (E157).
 
         Two DIFFERENTLY-named types sharing one constructor: the checker
-        refuses `Sq` (E157) and codegen's constructor rail refuses the pair
-        (E610), so the sibling of the E609 cell above is measured rather
-        than assumed.  It is the shape that shows the collision is not about
-        the type name — `Alpha` and `Beta` never clash — which is why the
-        two codes are separate on both sides.
-
-        `midc` imports both modules wholesale, so it can name both `Alpha`
-        and `Beta` and therefore both suppliers of `Sq`; that is the
-        AMBIGUOUS shape, which #1317's per-owner identity declines to
-        qualify apart (§8.5.2.2 refuses it rather than picking) and which
-        the codegen rail therefore still backstops.
+        refuses `Sq`, so the sibling of the E156 cell above is measured
+        rather than assumed.  It is the shape that shows the collision is
+        not about the type name — `Alpha` and `Beta` never clash — which is
+        why the two codes are separate.  `midc` imports both modules
+        wholesale, so it can name both `Alpha` and `Beta` and therefore both
+        suppliers of `Sq`: the AMBIGUOUS shape §8.5.2.2 refuses rather than
+        picks.  Code generation keeps no rail of its own for it: every
+        constructor is named by its link name there (#1694), so two
+        declarations never contend for one slot.
         """
         files = {
             "liba.vera": _ADT_A.replace("data Shape", "data Alpha"),
@@ -491,12 +489,11 @@ class TestTheDataSideFlapShapes:
             "midc.vera": _ADT_MID,
             "main.vera": _ADT_MAIN,
         }
-        check_errors, _result, cg_errors = build_multi_module_past_check(
+        check_errors, _result, _cg_errors = build_multi_module_past_check(
             tmp_path, files,
         )
         assert [c for c, _ in check_errors if c == "E157"], check_errors
         assert not [c for c, _ in check_errors if c == "E156"], check_errors
-        assert [c for c, _ in cg_errors if c == "E610"], cg_errors
 
     @pytest.mark.parametrize("remedy", ["selective", "local", "private"])
     def test_the_function_remedies_now_clear_a_data_clash(

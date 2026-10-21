@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from vera import ast
+from vera.binding import bare_name
 from vera.environment import AdtInfo, ConstructorInfo, FunctionInfo, TypeEnv
 from vera.errors import Diagnostic
 from vera.module_view import imported_data_types, modules_visible_to
@@ -67,10 +68,10 @@ def _module_exports(
     it names but does not export.  No function is injected into a
     registration, so its function table is the module's own.
     """
-    own_data = {
+    own_data = [
         tld.decl.name for tld in program.declarations
         if isinstance(tld.decl, ast.DataDecl)
-    }
+    ]
     all_fns = {
         k: v for k, v in temp.env.functions.items()
         if k not in builtin_fns or v.span is not None
@@ -82,11 +83,15 @@ def _module_exports(
     # (§8.3.3) was an unknown constructor.  A declaration registers a new
     # `AdtInfo`, so of the names the module declares, the entries that are
     # not the built-ins' own -- `temp`'s snapshot of them, taken before
-    # anything was injected or registered -- are the module's.
-    all_data = {
-        k: v for k, v in temp.env.data_types.items()
-        if k in own_data and temp._builtin_data_types.get(k) is not v
-    }
+    # anything was injected or registered -- are the module's.  Keyed by the
+    # name the module declares each under, which is what an import names;
+    # each `AdtInfo` carries the type's identity (#1694).
+    all_data: dict[str, AdtInfo] = {}
+    for name in own_data:
+        info = temp.env.lookup_type(name)
+        if (info is not None and name not in all_data
+                and temp._builtin_data_types.get(name) is not info):
+            all_data[name] = info
     public_fns = {
         k: v for k, v in all_fns.items() if v.visibility == "public"
     }
@@ -248,6 +253,12 @@ class ModulesMixin:
             all_data = reg.all_data_types
             self._module_all_functions[mod.path] = all_fns
             self._module_all_data_types[mod.path] = all_data
+            # #1694: and every one of them is a type a value can carry here,
+            # through an imported signature, whether or not this namespace
+            # can name it.  Keyed by identity, which no name spells, so this
+            # grants no name: an import does (step 5).
+            for dt_info in all_data.values():
+                self.env.data_types.setdefault(dt_info.name, dt_info)
 
             # 3. C7c: the public ones, and the constructors of public ADTs.
             #    Shared by every checker that can see the module, and never
@@ -377,12 +388,15 @@ class ModulesMixin:
             for dt_name, dt_info in mod_data.items():
                 if dt_name in self._ambiguous_import_type_names:
                     continue
-                if name_filter is None or dt_name in name_filter:
-                    self.env.data_types.setdefault(dt_name, dt_info)
+                if ((name_filter is None or dt_name in name_filter)
+                        and dt_name not in self._builtin_data_types):
+                    self.env.type_names.setdefault(dt_name, dt_info.name)
             for ct_name, ct_info in mod_ctors.items():
                 if ct_name in self._ambiguous_import_ctor_names:
                     continue
-                parent = ct_info.parent_type
+                # An import names a constructor's TYPE by the name the
+                # module declares it under (§8.5.4).
+                parent = bare_name(ct_info.parent_type)
                 if name_filter is None or parent in name_filter:
                     self.env.constructors.setdefault(ct_name, ct_info)
 
@@ -706,6 +720,8 @@ class ModulesMixin:
                 continue
             mod = by_path[path]
             temp = TypeChecker(source=mod.source, file=str(mod.file_path))
+            # The module's own data types take their identities (#1694).
+            temp._resolved_as = path
             for name, suppliers in imported_data_types(
                     mod.program, programs).items():
                 if len(suppliers) != 1:
@@ -713,13 +729,14 @@ class ModulesMixin:
                     # the module's own check reports E156 at the import.
                     continue
                 dep = cache.get(suppliers[0])
-                info = (None if dep is None
-                        else dep.checker.env.data_types.get(name))
+                info = None if dep is None else dep.data_types.get(name)
                 if info is not None:
                     # `setdefault`, as the importer-side injection does: a
                     # name the built-in registry holds is never won by an
-                    # import.
-                    temp.env.data_types.setdefault(name, info)
+                    # import.  The type is held by its identity (#1694).
+                    temp.env.data_types.setdefault(info.name, info)
+                    if name not in temp._builtin_data_types:
+                        temp.env.type_names.setdefault(name, info.name)
             temp._register_all(mod.program)
             cache[path] = _module_exports(
                 temp, mod.program, builtin_fns, builtin_ctors,

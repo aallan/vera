@@ -40,6 +40,7 @@ from :attr:`Binding.calls`; reporting it is the checker's job.
 
 from __future__ import annotations
 
+import re
 from collections.abc import (
     Collection, Iterable, Iterator, Mapping, Sequence,
 )
@@ -47,6 +48,7 @@ from dataclasses import dataclass, field, fields, replace
 from typing import Any, cast
 
 from vera import ast
+from vera.module_view import imported_data_types, reachable_paths
 from vera.prelude import PRELUDE_NAMESPACE
 from vera.resolver import ResolvedModule, merged_import_filters, own_module_path
 
@@ -73,17 +75,31 @@ _HANDLER_OPERATORS = frozenset({"resume"})
 
 @dataclass(frozen=True)
 class DeclId:
-    """One function declaration's identity."""
+    """One declaration's identity: a function, a ``where`` helper, a data
+    type, a type alias or a constructor."""
 
     owner: tuple[str, ...]
     name: str
     #: The functions a ``where`` helper is nested in, outermost first; empty
-    #: for a top-level declaration.
+    #: for a top-level declaration.  For a constructor, its data type's name.
     scope: tuple[str, ...] = ()
+    #: ``"fn"`` (a function or a ``where`` helper), ``"data"``, ``"alias"``
+    #: or ``"ctor"``.  A function's name is a lower-case identifier and a
+    #: type's or a constructor's an upper-case one (spec §1.7), so a function
+    #: and a type of one owner never share a link name.
+    kind: str = "fn"
 
     @property
     def link_name(self) -> str:
         """The name the declaration has in the linked program: unique."""
+        if self.kind == "ctor":
+            # The prelude's and the built-ins' constructors keep their
+            # names; every other one is named under its data type, so two
+            # namespaces' constructors of one spelling are two names.
+            if self.owner in (PRELUDE, BUILTIN):
+                return self.name
+            parent = DeclId(self.owner, self.scope[0], kind="data")
+            return f"{parent.link_name}${self.name}"
         if self.scope:
             parent = DeclId(self.owner, self.scope[-1], self.scope[:-1])
             return f"{parent.link_name}$where${self.name}"
@@ -132,6 +148,15 @@ class Binding:
     #: ``id(occurrence)`` of each bound ``FnCall`` / ``ModuleCall`` to the
     #: declaration it calls.
     calls: dict[int, DeclId] = field(default_factory=dict)
+    #: Each namespace's data type and type alias names, by owner: each name
+    #: the namespace writes, to the declaration it denotes there.  A
+    #: built-in's or a prelude type's name denotes that type in every
+    #: namespace and has no entry, and nor does a type parameter's.
+    types: dict[tuple[str, ...], dict[str, DeclId]] = field(
+        default_factory=dict)
+    #: The same for each namespace's constructor names.
+    ctors: dict[tuple[str, ...], dict[str, DeclId]] = field(
+        default_factory=dict)
     #: The occurrences themselves, so an ``id`` is never reused while the
     #: binding is alive.
     _nodes: list[ast.Node] = field(default_factory=list, repr=False)
@@ -143,6 +168,16 @@ class Binding:
     def _bind(self, call: ast.Node, target: DeclId) -> None:
         self.calls[id(call)] = target
         self._nodes.append(call)
+
+
+def _public_data(
+    program: ast.Program | None,
+) -> Iterator[tuple[ast.TopLevelDecl, ast.DataDecl]]:
+    """Each public ``data`` declaration of *program*, in source order."""
+    for tld in program.declarations if program is not None else ():
+        if (isinstance(tld.decl, ast.DataDecl)
+                and (tld.visibility or "private") == "public"):
+            yield tld, tld.decl
 
 
 def _public_fns(program: ast.Program) -> dict[str, ast.FnDecl]:
@@ -189,11 +224,89 @@ class _Binder:
         builtins: frozenset[str],
         prelude_fns: Mapping[str, ast.FnDecl],
         modules: Mapping[tuple[str, ...], ResolvedModule],
+        builtin_types: frozenset[str] = frozenset(),
+        builtin_ctors: frozenset[str] = frozenset(),
     ) -> None:
         self.builtins = builtins
         self.prelude_fns = prelude_fns
         self.modules = modules
+        self.builtin_types = builtin_types
+        self.builtin_ctors = builtin_ctors
+        self.programs = {path: mod.program for path, mod in modules.items()}
         self.out = Binding()
+
+    def bind_names(self, ns: _Namespace) -> None:
+        """The data type, alias and constructor names *ns* writes, each bound
+        to the declaration it denotes there, by the order the checker's
+        environment gives them (#1694): the namespace's own declarations
+        (§8.5.2); the built-ins' and the prelude's, whose names no import
+        takes; what exactly one direct import supplies, where two supply
+        nothing (E156, E157); and last a constructor of a public type of a
+        module the namespace can see but imports none of (#1513), when it
+        names one declaration only."""
+        if ns.owner == PRELUDE:
+            return
+        types: dict[str, DeclId] = {}
+        ctors: dict[str, DeclId] = {}
+        # The first declaration of each name: a surplus one is refused
+        # (E184, E159) and the first stays canonical.
+        for tld in ns.program.declarations:
+            decl = tld.decl
+            if isinstance(decl, ast.TypeAliasDecl):
+                types.setdefault(
+                    decl.name, DeclId(ns.owner, decl.name, kind="alias"))
+            elif isinstance(decl, ast.DataDecl):
+                if decl.name in types:
+                    continue
+                types[decl.name] = DeclId(ns.owner, decl.name, kind="data")
+                for ctor in decl.constructors:
+                    ctors.setdefault(ctor.name, DeclId(
+                        ns.owner, ctor.name, (decl.name,), kind="ctor"))
+        for name, suppliers in imported_data_types(
+                ns.program, self.programs).items():
+            if (name not in types and name not in self.builtin_types
+                    and len(suppliers) == 1):
+                types[name] = DeclId(suppliers[0], name, kind="data")
+        supplied: dict[str, set[DeclId]] = {}
+        for path, admitted in ns.imports.items():
+            for tld, decl in _public_data(self.programs.get(path)):
+                if admitted is not None and decl.name not in admitted:
+                    continue
+                for ctor in decl.constructors:
+                    supplied.setdefault(ctor.name, set()).add(DeclId(
+                        path, ctor.name, (decl.name,), kind="ctor"))
+        for name, found in supplied.items():
+            if (name not in ctors and name not in self.builtin_ctors
+                    and len(found) == 1):
+                ctors[name] = next(iter(found))
+        # #1513: a constructor of a type that reaches the namespace only
+        # through a signature, as `CallsMixin._stranger_constructor` admits
+        # it: exactly one visible module's public type declares the name,
+        # the namespace binds no type of that type's name, and exactly one
+        # visible module declares a type of it.
+        candidates: dict[str, list[DeclId]] = {}
+        declarers: dict[str, set[tuple[str, ...]]] = {}
+        for path in reachable_paths(ns.program, self.programs):
+            for tld in self.programs[path].declarations:
+                decl = tld.decl
+                if not isinstance(decl, ast.DataDecl):
+                    continue
+                declarers.setdefault(decl.name, set()).add(path)
+                if (tld.visibility or "private") != "public":
+                    continue
+                for ctor in decl.constructors:
+                    candidates.setdefault(ctor.name, []).append(DeclId(
+                        path, ctor.name, (decl.name,), kind="ctor"))
+        for name, options in candidates.items():
+            if (name in ctors or name in self.builtin_ctors
+                    or len(options) != 1):
+                continue
+            parent = options[0].scope[0]
+            if parent in types or len(declarers.get(parent, ())) != 1:
+                continue
+            ctors[name] = options[0]
+        self.out.types[ns.owner] = types
+        self.out.ctors[ns.owner] = ctors
 
     def namespace(
         self, owner: tuple[str, ...], program: ast.Program,
@@ -307,9 +420,14 @@ def bind_program(
         tld.decl.name: tld.decl for tld in prelude_decls
         if isinstance(tld.decl, ast.FnDecl)
     }
-    builtins = (frozenset(TypeEnv().functions)
+    env = TypeEnv()
+    builtins = (frozenset(env.functions)
                 - overridable_builtin_names()) | {"apply_fn"}
-    binder = _Binder(builtins, prelude_fns, modules)
+    binder = _Binder(
+        builtins, prelude_fns, modules,
+        builtin_types=frozenset(env.data_types),
+        builtin_ctors=frozenset(env.constructors),
+    )
     namespaces = [binder.namespace(ENTRY, program, None)]
     namespaces.extend(
         binder.namespace(path, mod.program, path)
@@ -322,6 +440,7 @@ def bind_program(
         binder.declare(ns)
     for ns in namespaces:
         binder.bind(ns)
+        binder.bind_names(ns)
     return binder.out
 
 
@@ -396,15 +515,99 @@ def _link_fn(
 def _link_program(
     program: ast.Program, owner: tuple[str, ...], binding: Binding,
 ) -> ast.Program:
+    types = {
+        name: ident.link_name
+        for name, ident in binding.types.get(owner, {}).items()
+        if ident.link_name != name
+    }
+    ctors = {
+        name: ident.link_name
+        for name, ident in binding.ctors.get(owner, {}).items()
+        if ident.link_name != name
+    }
     decls: list[ast.TopLevelDecl] = []
     for tld in program.declarations:
+        # The calls first: their binding is keyed by the occurrences the
+        # program was bound over, which the renaming below replaces.
         if isinstance(tld.decl, ast.FnDecl):
             decl: ast.Decl = _link_fn(
                 tld.decl, DeclId(owner, tld.decl.name), binding.calls)
         else:
             decl = cast(ast.Decl, _relink(tld.decl, binding.calls))
+        if types or ctors:
+            decl = cast(ast.Decl, _renamed(decl, types, ctors, frozenset()))
         decls.append(tld if decl is tld.decl else replace(tld, decl=decl))
     return replace(program, declarations=tuple(decls))
+
+
+#: The declarations that open a scope of type parameters, and the field
+#: each one's parameter names are in.
+_TYPE_PARAM_SCOPES: dict[type, str] = {
+    ast.FnDecl: "forall_vars",
+    ast.DataDecl: "type_params",
+    ast.TypeAliasDecl: "type_params",
+    ast.EffectDecl: "type_params",
+    ast.AbilityDecl: "type_params",
+}
+
+#: The constructor spellings: in an expression, in a pattern, and in a
+#: ``data`` declaration.
+_CTOR_NODES = (
+    ast.ConstructorCall, ast.NullaryConstructor, ast.ConstructorPattern,
+    ast.NullaryPattern, ast.Constructor,
+)
+
+
+def _renamed(
+    node: object, types: Mapping[str, str], ctors: Mapping[str, str],
+    bound: frozenset[str],
+) -> object:
+    """*node* with every data type, type alias and constructor name the
+    namespace writes spelled by its link name (#1694): *types* and *ctors*
+    map the names to rename.  A name a type parameter in scope binds
+    (*bound*) is the parameter's, so it keeps its spelling.  Nodes are
+    rebuilt only where something changed, and keep their spans."""
+    if isinstance(node, ast.Node):
+        scope = _TYPE_PARAM_SCOPES.get(type(node))
+        if scope is not None:
+            bound = bound | frozenset(getattr(node, scope) or ())
+        changed: dict[str, Any] = {}
+        for f in fields(node):
+            old = getattr(node, f.name)
+            new = _renamed(old, types, ctors, bound)
+            if new is not old:
+                changed[f.name] = new
+        name_field = _renamed_field(node)
+        if name_field is not None:
+            current = getattr(node, name_field)
+            table = ctors if isinstance(node, _CTOR_NODES) else types
+            renamed = (
+                current if current in bound and table is types
+                else table.get(current, current))
+            if renamed != current:
+                changed[name_field] = renamed
+        return replace(node, **changed) if changed else node
+    if isinstance(node, tuple):
+        walked = tuple(_renamed(x, types, ctors, bound) for x in node)
+        if any(a is not b for a, b in zip(walked, node)):
+            return walked
+        return node
+    return node
+
+
+def _renamed_field(node: ast.Node) -> str | None:
+    """The field of *node* that holds a type's or a constructor's name."""
+    if isinstance(node, (ast.NamedType, ast.DataDecl, ast.TypeAliasDecl)):
+        return "name"
+    if isinstance(node, (ast.SlotRef, ast.ResultRef)):
+        return "type_name"
+    if isinstance(node, _CTOR_NODES):
+        # A constructor the compiler wrote with its owner stated is the
+        # prelude's (`compare`'s `Less`, #1414), whatever the program holds.
+        if isinstance(node, ast.NullaryConstructor) and node.owner:
+            return None
+        return "name"
+    return None
 
 
 def relink_calls_to(
@@ -467,6 +670,94 @@ def display_text(text: str, names: Mapping[str, str]) -> str:
     return text
 
 
+#: A module data type's identity, ``mod$<path>$<Name>`` (:class:`DeclId`):
+#: the path's segments, then the type's upper-case name, and nothing after
+#: it, so a constructor's or a clone's longer name is not read as one.
+_TYPE_LINK_NAME = re.compile(
+    r"mod\$((?:[a-z][A-Za-z0-9_]*\$)+)([A-Z][A-Za-z0-9_]*)(?![A-Za-z0-9_$])")
+
+
+def display_type_names(*texts: str) -> tuple[str, ...]:
+    """*texts*, one diagnostic's parts, with every module data type's
+    identity spelled as a reader writes the type (#1694).
+
+    A type shows its name, ``Shape``.  Where the diagnostic would then show
+    two different types alike, two modules' ``Shape``s or a module's beside
+    the file's own, each module's is qualified by its module, ``liba.Shape``,
+    so the message names both owners.  The parts are read together, so a
+    fix never names the type its description qualified ambiguously.
+    """
+    if not any("mod$" in text for text in texts):
+        return texts
+    shown: dict[str, tuple[str, str]] = {}
+    for text in texts:
+        for match in _TYPE_LINK_NAME.finditer(text):
+            path = match.group(1)[:-1].replace("$", ".")
+            shown[match.group(0)] = (path, match.group(2))
+    if not shown:
+        return texts
+    owners: dict[str, set[str]] = {}
+    for link_name, (_path, name) in shown.items():
+        owners.setdefault(name, set()).add(link_name)
+    rest = " ".join(_TYPE_LINK_NAME.sub(" ", text) for text in texts)
+
+    def spelled(match: re.Match[str]) -> str:
+        path, name = shown[match.group(0)]
+        bare_use = re.search(
+            rf"(?<![A-Za-z0-9_$.]){name}(?![A-Za-z0-9_])", rest)
+        if len(owners[name]) > 1 or bare_use is not None:
+            return f"{path}.{name}"
+        return name
+
+    return tuple(_TYPE_LINK_NAME.sub(spelled, text) for text in texts)
+
+
+#: A user constructor's link name (:class:`DeclId`): its data type's link
+#: name, a module's ``mod$<path>$<Type>`` or an entry file's ``<Type>``,
+#: then ``$<Name>``.  Not inside a longer ``$`` chain, so a clone's
+#: type-argument suffix is not read as one.
+_CTOR_LINK_NAME = re.compile(
+    r"(?<![A-Za-z0-9_$])(?:mod\$(?:[a-z][A-Za-z0-9_]*\$)+)?"
+    r"[A-Z][A-Za-z0-9_]*\$([A-Z][A-Za-z0-9_]*)(?![A-Za-z0-9_$])")
+
+
+def display_link_names(
+    texts: Sequence[str], fn_names: Mapping[str, str],
+) -> tuple[str, ...]:
+    """*texts*, one diagnostic's parts, with every link name the linked
+    program holds spelled as a reader writes it: a function's through
+    *fn_names* (:func:`display_names`), a constructor's as its own name, and
+    a data type's by :func:`display_type_names`."""
+    shown = [display_text(text, fn_names) if fn_names else text
+             for text in texts]
+    shown = [_CTOR_LINK_NAME.sub(lambda m: m.group(1), text)
+             if "$" in text else text for text in shown]
+    return display_type_names(*shown)
+
+
+#: A string literal as `vera.ast.format_expr` renders one, escapes included.
+_STRING_LITERAL = re.compile(r'"(?:[^"\\]|\\.)*"')
+
+
+def display_message(message: str) -> str:
+    """A runtime message the compiler composed from the linked program,
+    with every constructor's and data type's link name spelled as a reader
+    writes it (:func:`display_link_names`).  A string literal the message
+    quotes is the program's text and is left as written."""
+    if "$" not in message:
+        return message
+    pieces: list[str] = []
+    last = 0
+    for match in _STRING_LITERAL.finditer(message):
+        pieces.append(message[last:match.start()])
+        pieces.append(match.group(0))
+        last = match.end()
+    pieces.append(message[last:])
+    outside = display_link_names(pieces[0::2], {})
+    pieces[0::2] = outside
+    return "".join(pieces)
+
+
 @dataclass(frozen=True)
 class Linked:
     """The program, its modules and its prelude, every declaration under
@@ -496,8 +787,10 @@ def link(
     call of the name.  So no two declarations share a name, and a consumer
     looking a call's name up finds the one declaration the call means
     without asking which namespace or which ``where`` block it sits in.
-    Types, constructors and aliases keep their names here, and every node
-    keeps its span.
+    Every data type, type alias and constructor name is spelled the same
+    way (#1694): a module's type and alias by ``mod$<path>$<Name>``, every
+    user constructor by ``<its type's link name>$<Name>``, the prelude's and
+    the built-ins' as they are.  Every node keeps its span.
     """
     linked = [
         replace(mod, program=_link_program(mod.program, mod.path, binding))

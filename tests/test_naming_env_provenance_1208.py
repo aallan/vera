@@ -27,6 +27,7 @@ import re
 import pytest
 
 from vera import ast, naming
+from vera.binding import display_type_names
 from vera.checker import typecheck
 from vera.codegen import execute
 from vera.monomorphize import Monomorphizer
@@ -610,10 +611,21 @@ public fn main(@Unit -> @Int)
             self: Monomorphizer, decl: ast.FnDecl,
             concrete_types: tuple[str, ...], alias_env: object = None,
         ) -> ast.FnDecl:
-            seen.append((decl.name, "<default>" if alias_env is None
-                         else naming.type_arg_name(
-                             ast.NamedType(name="Elem", type_args=None),
-                             alias_env)))  # type: ignore[arg-type]
+            # The alias by either spelling: discovery clones the linked
+            # declaration in the linked env, where ng's alias is
+            # `mod$ng$Elem` (#1694); verification clones the declaration as
+            # the checker saw it, in its env.  An env holds one of the two.
+            if alias_env is None:
+                rendered = "<default>"
+            else:
+                rendered = "<unresolved>"
+                for elem in ("Elem", "mod$ng$Elem"):
+                    shown = naming.type_arg_name(
+                        ast.NamedType(name=elem, type_args=None),
+                        alias_env)  # type: ignore[arg-type]
+                    if shown != elem:
+                        rendered = shown
+            seen.append((decl.name, rendered))
             return original(self, decl, concrete_types, alias_env)  # type: ignore[arg-type]
 
         Monomorphizer.monomorphize_fn = patched  # type: ignore[method-assign]
@@ -1658,8 +1670,10 @@ class TestDeclOrderIsPerNamespace:
         )
         gen.compile_program(parse_to_ast(_DECL_ORDER_MAIN))
         assert ("dolib",) in gen._module_decl_order
-        assert "X" in gen._module_decl_order[("dolib",)]
+        # The module's declarations by their link names (#1694).
+        assert "mod$dolib$X" in gen._module_decl_order[("dolib",)]
         assert "Z" not in gen._module_decl_order[("dolib",)]
+        assert "mod$dolib$Z" not in gen._module_decl_order[("dolib",)]
         # The main file's own space orders its two aliases as written, and
         # the module's `X` is NOT what stamped the main file's.
         assert gen._decl_order["Z"] < gen._decl_order["X"], gen._decl_order
@@ -1959,6 +1973,30 @@ def _codegen_env(
     return compiled.generator._alias_env
 
 
+def _linked_params_of(
+    source: str, fn_name: str, owner: tuple[str, ...] | None,
+    modules: list[ResolvedModule] | None = None,
+) -> tuple[ast.TypeExpr, ...]:
+    """*fn_name*'s parameters in the linked program (`vera.binding.link`):
+    *source* as the entry when *owner* is ``None``, else as the module
+    *owner*, spelled by link names as code generation compiles them."""
+    from vera.binding import link_program
+    prog = pipeline.parse(source).program
+    if owner is None:
+        linked = link_program(prog, modules or []).program
+        name = fn_name
+    else:
+        mod = _resolved(owner, source)
+        linked = link_program(
+            pipeline.parse("").program, [mod]).modules[0].program
+        name = "mod$" + "$".join(owner) + "$" + fn_name
+    fn = next(
+        tld.decl for tld in linked.declarations
+        if isinstance(tld.decl, ast.FnDecl) and tld.decl.name == name
+    )
+    return fn.params
+
+
 def _params_of(source: str, fn_name: str) -> tuple[ast.TypeExpr, ...]:
     prog = pipeline.parse(source).program
     fn = next(
@@ -1991,11 +2029,17 @@ class TestImportedAdtIndexIsPerOwningNamespace:
     def test_codegen_partitions_what_the_checker_partitions(self) -> None:
         """The differential, on the rendering both sides key off."""
         module = _resolved(("dolib",), _XMOD_ADT_LIB)
-        params = _params_of(_XMOD_ADT_MAIN, "pick")
         check_env = _checker_env(_XMOD_ADT_MAIN, [module])
         gen_env = _codegen_env(_XMOD_ADT_MAIN, [module])
-        checker_names = [naming.slot_name(te, check_env) for te in params]
-        codegen_names = [naming.slot_name(te, gen_env) for te in params]
+        # Each side renders the program it compiles: the checker the source,
+        # code generation the linked program, whose names are link names
+        # (#1694); shown as a reader writes them, the two must agree.
+        checker_names = [naming.slot_name(te, check_env)
+                         for te in _params_of(_XMOD_ADT_MAIN, "pick")]
+        codegen_names = [
+            display_type_names(naming.slot_name(te, gen_env))[0]
+            for te in _linked_params_of(
+                _XMOD_ADT_MAIN, "pick", None, [module])]
         assert checker_names == codegen_names, (
             "codegen and the checker partition pick's parameters "
             f"differently: checker {checker_names} vs codegen {codegen_names}"
@@ -2036,10 +2080,12 @@ class TestImportedAdtIndexIsPerOwningNamespace:
         module = _resolved(("dolib",), _XMOD_ADT_LIB_PADDED)
         check_env = _checker_env(_XMOD_ADT_MAIN, [module])
         gen_env = _codegen_env(_XMOD_ADT_MAIN, [module])
+        # Codegen names the module's type by its link name (#1694).
+        linked = "mod$dolib$Float"
         assert check_env.data_types["Float"] == 1, check_env.data_types
-        assert gen_env.data_types["Float"] == check_env.data_types["Float"], (
+        assert gen_env.data_types[linked] == check_env.data_types["Float"], (
             f"codegen orders the imported ADT at "
-            f"{gen_env.data_types['Float']}, the checker at "
+            f"{gen_env.data_types[linked]}, the checker at "
             f"{check_env.data_types['Float']}"
         )
 
@@ -2088,8 +2134,11 @@ public fn count(@Array<N> -> @Int)
         )
         gen.compile_program(parse_to_ast(_XMOD_ADT_MAIN))
         with gen._module_alias_scope(("dolib",)):
-            assert gen._alias_env.data_types["Float"] == 0, (
+            # The module's own names, as the linked program spells them
+            # (#1694).
+            assert gen._alias_env.data_types["mod$dolib$Float"] == 0, (
                 gen._alias_env.data_types
             )
-            te = _params_of(lib, "count")[0]
-            assert naming.slot_name(te, gen._alias_env) == "Array<Float>"
+            te = _linked_params_of(lib, "count", ("dolib",))[0]
+            assert (naming.slot_name(te, gen._alias_env)
+                    == "Array<mod$dolib$Float>")

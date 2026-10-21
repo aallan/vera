@@ -59,9 +59,6 @@ def _codes(diagnostics: object) -> list[str | None]:
 
 # The mechanisms still to land, each a strict xfail on the cells it flips:
 # a cell that starts passing fails the run until its mark is removed.
-_LINKED = pytest.mark.xfail(strict=True, reason=(
-    "#1694: code generation and the verifier compile the linked program "
-    "vera.binding names (module declarations always `mod$<path>$<name>`)"))
 _BY_DECL = pytest.mark.xfail(strict=True, reason=(
     "#1694: an E602 suppressed by the declaration it is about, not by a "
     "line inside a prelude generic's span"))
@@ -267,7 +264,6 @@ def test_repro_1498_two_private_helpers(tmp_path: Path) -> None:
 # wrote it.
 # =====================================================================
 
-@_LINKED
 def test_repro_1519_alias_named_like_the_type_argument(tmp_path: Path) -> None:
     files = {
         "gl.vera": "module gl;\n\ntype Shape = Int;\n\n"
@@ -292,7 +288,6 @@ def _colour_tree(tmp_path: Path, alias: str, body: str, ret: str) -> Path:
     return _tree(tmp_path, {"main.vera": entry, "mb.vera": module})
 
 
-@_LINKED
 @pytest.mark.parametrize("alias", ["type Colour = Int;\n\n",
                                    "type Colour = String;\n\n"],
                          ids=["Int", "String"])
@@ -302,7 +297,6 @@ def test_repro_1548_show_through_an_importer_alias(
     assert pipeline.run(path, "main").value == "Green"
 
 
-@_LINKED
 def test_repro_1548_hash_through_an_importer_alias(tmp_path: Path) -> None:
     plain = _colour_tree(tmp_path / "plain", "", "hash(favourite(()))", "Int")
     aliased = _colour_tree(tmp_path / "aliased", "type Colour = Int;\n\n",
@@ -606,3 +600,50 @@ def test_e158_fix_for_a_reserved_type_name_clears_it(
     checked = pipeline.check(fixed)
     assert checked.ok and "E158" not in _codes(checked.diagnostics)
     assert pipeline.run(fixed, "main").value == 4
+
+
+# =====================================================================
+# E609's retirement (#1694): two modules' same-named `data` are two types.
+# A value of one meeting the other is an ordinary mismatch at check, whose
+# message names both owners, and whose fix, applied as written, compiles.
+# =====================================================================
+
+_MEET = {
+    "liba.vera": _lib("liba", "public data Shape {\n  Cr(Int),\n  Sq(Int)\n}\n\n"
+                      + _fn("aone(@Int -> @Shape)", "Sq(@Int.0)",
+                            visibility="public")),
+    "libb.vera": _lib("libb", "public data Shape {\n  Sq(Int),\n  Cr(Int)\n}\n\n"
+                      + _fn("bone(@Shape -> @Int)",
+                            "match @Shape.0 {\n    Sq(@Int) -> @Int.0 + 1,\n"
+                            "    Cr(@Int) -> 100\n  }", visibility="public")),
+    "main.vera": "import liba(aone);\nimport libb(bone);\n\n"
+    + _fn("main(@Unit -> @Int)", "bone(aone(6))", visibility="public"),
+}
+
+
+def test_repro_1694_a_meeting_of_two_owners_types_is_refused(
+        tmp_path: Path) -> None:
+    checked = pipeline.check(_tree(tmp_path, _MEET))
+    found = [d for d in checked.errors if d.error_code == "E202"]
+    assert found, _codes(checked.errors)
+    assert "liba.Shape" in found[0].description
+    assert "libb.Shape" in found[0].description
+    assert "mod$" not in found[0].description + found[0].fix
+
+
+def test_e202_fix_for_a_meeting_of_two_owners_types_clears_it(
+        tmp_path: Path) -> None:
+    main = _tree(tmp_path, _MEET)
+    checked = pipeline.check(main)
+    (fix,) = [d.fix for d in checked.errors if d.error_code == "E202"]
+    line = re.search(r"'(import libb\([^)]*\);)'", fix)
+    ctor = re.search(r"constructors: ([A-Z][A-Za-z0-9_]*)\(\.\.\.\)", fix)
+    assert line is not None and ctor is not None, fix
+    source = main.read_text(encoding="utf-8")
+    source = source.replace("import libb(bone);", line.group(1))
+    source = source.replace("aone(6)", f"{ctor.group(1)}(6)")
+    main.write_text(source, encoding="utf-8")
+    fixed = pipeline.check(main)
+    assert fixed.ok and "E202" not in _codes(fixed.diagnostics), (
+        _codes(fixed.errors))
+    assert pipeline.run(main, "main").value == 7

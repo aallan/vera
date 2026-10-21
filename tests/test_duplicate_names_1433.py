@@ -145,6 +145,7 @@ NAMESPACES: dict[str, Namespace] = {
                    "TypeChecker._where_helper_parents"}), "`where` block"),
     "type": Namespace(
         frozenset({"TypeEnv.data_types", "TypeEnv.type_aliases",
+                   "TypeEnv.type_names",
                    "DataDecl", "TypeAliasDecl", "DataDecl.name",
                    "TypeAliasDecl.name", "Program.declarations",
                    "TypeChecker._ns_first_decls",

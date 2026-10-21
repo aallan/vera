@@ -897,6 +897,11 @@ class WasmContext(
                    else "reports its canonical description, not a message"),
                 at,
             )
+        if message:
+            # Composed from the linked program, whose declarations carry
+            # link names (#1694); the reader is shown the names as written.
+            from vera.binding import display_message
+            message = display_message(message)
         ptr, length = self.string_pool.intern(message) if message else (0, 0)
         if row.kind == "contract_violation":
             self._needs_contract_fail = True

@@ -1375,18 +1375,21 @@ public fn cmp_eq(@Unit -> @Bool)
 }
 """
 
-    def test_leg1_the_flat_enumeration_really_does_lose_a_constructor(
+    def test_leg1_the_flat_enumeration_loses_no_constructor(
         self,
     ) -> None:
-        """The collision is real at this site — the conversion is not a
-        no-op dressed up as one."""
+        """The collision this site once had cannot arise: every user
+        constructor is named under its type (`ZzBox$Less`, #1694), so the
+        flat map holds `Ordering`'s `Less` beside the user's, each with its
+        own owner."""
         _result, gen = _compile_with_generator(self._SRC)
         flat_owner = {
             c: adt for adt, ls in gen._adt_layouts.items() for c in ls
         }
-        assert flat_owner["Less"] == "ZzBox", flat_owner["Less"]
+        assert flat_owner["Less"] == "Ordering", flat_owner["Less"]
+        assert flat_owner["ZzBox$Less"] == "ZzBox", flat_owner
         flat_enum = sorted(c for c, p in flat_owner.items() if p == "Ordering")
-        assert flat_enum == ["Equal", "Greater"], flat_enum
+        assert flat_enum == ["Equal", "Greater", "Less"], flat_enum
         assert sorted(gen._adt_layouts["Ordering"]) == [
             "Equal", "Greater", "Less"]
 

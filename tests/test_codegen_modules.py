@@ -1456,27 +1456,6 @@ public fn main(@Int -> @Int)
 { double(@Int.0) + triple(@Int.0) }
 """, [mod_a, mod_b], fn="main", args=[1]) == 5
 
-    def test_adt_type_collision(self) -> None:
-        """Same ADT name in two modules produces E609."""
-        mod_a = self._resolved(("mod_a",), """\
-public data Color { Red, Green, Blue }
-""")
-        mod_b = self._resolved(("mod_b",), """\
-public data Color { Cyan, Magenta, Yellow }
-""")
-        result = self._compile_mod("""\
-import mod_a(Color);
-import mod_b(Color);
-public fn main(-> @Int)
-  requires(true) ensures(true) effects(pure)
-{ 0 }
-""", [mod_a, mod_b])
-        errors = [d for d in result.diagnostics if d.severity == "error"]
-        assert any(
-            e.error_code == "E609" and "Color" in e.description
-            for e in errors
-        )
-
     def test_prelude_types_not_flagged_as_collision(self) -> None:
         """Builtin ADTs (Option, Result, etc.) shared across two imported modules
         must NOT produce E609. Regression test for #360.
@@ -1512,31 +1491,6 @@ public fn main(@Int -> @Int)
             e.error_code == "E609" for e in errors
         ), f"False E609 for builtin ADTs: {[e.description for e in errors if e.error_code == 'E609']}"
         assert result.ok is True
-
-    def test_ctor_collision_across_adts(self) -> None:
-        """Same constructor name in different ADTs produces E610."""
-        mod_a = self._resolved(("colors",), """\
-public data Color { Red, Green, Blue }
-""")
-        mod_b = self._resolved(("shapes",), """\
-public data Shape { Red, Green, Triangle }
-""")
-        result = self._compile_mod("""\
-import colors(Color);
-import shapes(Shape);
-public fn main(-> @Int)
-  requires(true) ensures(true) effects(pure)
-{ 0 }
-""", [mod_a, mod_b])
-        errors = [d for d in result.diagnostics if d.severity == "error"]
-        assert any(
-            e.error_code == "E610" and "Red" in e.description
-            for e in errors
-        )
-        assert any(
-            e.error_code == "E610" and "Green" in e.description
-            for e in errors
-        )
 
     def test_local_shadows_import_no_collision(self) -> None:
         """Local definition shadowing an import is NOT a collision."""
@@ -3705,16 +3659,23 @@ public fn main(@Unit -> @Int)
             "VeraA", "VeraB",
         ), "prelude alias params missing — test no longer probes the hole"
 
+        # The module's alias is named by its link name (#1694), so it takes
+        # no slot of the prelude's: each keeps its own target and its own
+        # parameters, inside the module's scope as everywhere else.
+        own = "mod$mc$VeraOptionMapFn"
         with gen._module_alias_scope(("mc",)):
             assert isinstance(
-                gen._type_aliases["VeraOptionMapFn"], ast.NamedType,
-            ) and gen._type_aliases["VeraOptionMapFn"].name == "Int", (
+                gen._type_aliases[own], ast.NamedType,
+            ) and gen._type_aliases[own].name == "Int", (
                 "module alias lost its own target inside its scope"
             )
-            assert "VeraOptionMapFn" not in gen._type_alias_params, (
+            assert own not in gen._type_alias_params, (
                 "module's non-parameterized alias is paired with the "
                 "prelude's stale param list"
             )
+            assert gen._type_alias_params.get("VeraOptionMapFn") == (
+                "VeraA", "VeraB",
+            ), "the module's alias took the prelude's parameter list"
 
     def test_parameterized_module_alias_takes_its_own_params(self) -> None:
         """A parameterized module alias pairs with ITS params (PR #1191 review).

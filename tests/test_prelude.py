@@ -468,7 +468,6 @@ class TestPreludeEndToEnd:
         """option_unwrap_or(Some(42), 0) returns 42."""
         from tests.test_codegen_closures import _run
         src = """\
-public data Option<T> { None, Some(T) }
 public fn test(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
@@ -481,7 +480,6 @@ public fn test(@Unit -> @Int)
         """option_map(Some(10), +1) returns Some(11)."""
         from tests.test_codegen_closures import _run
         src = """\
-public data Option<T> { None, Some(T) }
 public fn test(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
@@ -497,7 +495,6 @@ public fn test(@Unit -> @Int)
         """option_and_then(Some(5), *2) returns Some(10)."""
         from tests.test_codegen_closures import _run
         src = """\
-public data Option<T> { None, Some(T) }
 public fn test(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
@@ -515,7 +512,6 @@ public fn test(@Unit -> @Int)
         """result_unwrap_or(Ok(77), 0) returns 77."""
         from tests.test_codegen_closures import _run
         src = """\
-public data Result<T, E> { Ok(T), Err(E) }
 public fn test(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
@@ -528,7 +524,6 @@ public fn test(@Unit -> @Int)
         """result_map(Ok(100), -1) returns Ok(99)."""
         from tests.test_codegen_closures import _run
         src = """\
-public data Result<T, E> { Ok(T), Err(E) }
 public fn test(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {

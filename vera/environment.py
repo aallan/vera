@@ -243,7 +243,21 @@ class TypeEnv:
 
     # Declaration registries (not scope-stacked)
     functions: dict[str, FunctionInfo] = field(default_factory=dict)
+    #: Every data type this namespace can MEET, keyed by its identity
+    #: (#1694): an entry-file, prelude or built-in type's identity is its
+    #: name, and a module's is its link name ``mod$<path>$<Name>``
+    #: (:class:`vera.binding.DeclId`), which no source name can spell.  So
+    #: the table holds a type a value can carry here without the namespace
+    #: being able to NAME it (a module's type reaching the file through an
+    #: imported signature), and two modules' same-named types are two
+    #: entries.  :meth:`lookup_type` is how a name the namespace writes is
+    #: read.
     data_types: dict[str, AdtInfo] = field(default_factory=dict)
+    #: The identity of each MODULE data type this namespace names, by the
+    #: name it writes: a module's own types while it is checked as a module,
+    #: and each type an import admits.  A type whose identity is its name
+    #: needs no entry.
+    type_names: dict[str, str] = field(default_factory=dict)
     type_aliases: dict[str, TypeAliasInfo] = field(default_factory=dict)
     effects: dict[str, EffectInfo] = field(default_factory=dict)
     abilities: dict[str, AbilityInfo] = field(default_factory=dict)
@@ -996,6 +1010,24 @@ class TypeEnv:
         """Look up a constructor by name."""
         return self.constructors.get(name)
 
+    def lookup_type(self, name: str) -> AdtInfo | None:
+        """The data type *name* denotes in this namespace: a name it writes,
+        or a type's identity (an ``AdtType``'s name, a constructor's
+        ``parent_type``), which is never a name a namespace writes."""
+        return self.data_types.get(self.type_names.get(name, name))
+
+    def named_data_types(self) -> dict[str, AdtInfo]:
+        """The data types this namespace can NAME, by the name it writes."""
+        named = {
+            name: info for name, info in self.data_types.items()
+            if "$" not in name
+        }
+        for name, identity in self.type_names.items():
+            info = self.data_types.get(identity)
+            if info is not None:
+                named[name] = info
+        return named
+
     def lookup_effect(self, name: str) -> EffectInfo | None:
         """Look up an effect by name."""
         return self.effects.get(name)
@@ -1109,5 +1141,5 @@ class TypeEnv:
     def is_type_name(self, name: str) -> bool:
         """Check if a name refers to a known type (primitive, ADT, or alias)."""
         return (name in PRIMITIVES
-                or name in self.data_types
+                or self.lookup_type(name) is not None
                 or name in self.type_aliases)

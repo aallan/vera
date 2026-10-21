@@ -14,6 +14,7 @@ import typing
 from typing import Any, cast
 
 from vera import ast, narrowing
+from vera.binding import bare_name
 from vera.lowering import (
     ability_lowerable,
     closure_operation_lowerable,
@@ -927,10 +928,11 @@ class CallsMixin:
                     f"{pretty_type(param_ty)}.",
                     rationale="Each argument's type must be a subtype of the "
                               "corresponding declared parameter type.",
-                    fix=f"Pass a value of type {pretty_type(param_ty)} for "
-                        f"argument {i}, or convert the current value (e.g. "
-                        f"int_to_nat(...), int_to_float(...)) to "
-                        f"{pretty_type(param_ty)}.",
+                    fix=(self._cross_owner_fix(fn_info.name, arg_ty, param_ty)
+                         or f"Pass a value of type {pretty_type(param_ty)} "
+                            f"for argument {i}, or convert the current value "
+                            f"(e.g. int_to_nat(...), int_to_float(...)) to "
+                            f"{pretty_type(param_ty)}."),
                     spec_ref='Chapter 5, Section 5.2 "Function Declaration Syntax"',
                     error_code="E202",
                 )
@@ -1856,6 +1858,40 @@ class CallsMixin:
     # Constructors
     # -----------------------------------------------------------------
 
+    def _cross_owner_fix(
+        self, fn_name: str, arg_ty: Type, param_ty: Type,
+    ) -> str | None:
+        """The fix for an argument of one owner's type where another owner's
+        type of the same name is expected (#1694), or ``None``.
+
+        Two declarations that share a name are two types, so no conversion
+        exists between them: the argument has to be built as a value of the
+        type the parameter names.  The fix says whose type that is, how this
+        file names it, and which constructors build one.
+        """
+        arg, param = base_type(arg_ty), base_type(param_ty)
+        if not (isinstance(arg, AdtType) and isinstance(param, AdtType)):
+            return None
+        name = bare_name(param.name)
+        if arg.name == param.name or bare_name(arg.name) != name:
+            return None
+        info = self.env.lookup_type(param.name)
+        ctors = ", ".join(
+            f"{ctor}(...)" if ci.field_types else ctor
+            for ctor, ci in (info.constructors.items() if info else ()))
+        build = (f" and pass one of its constructors: {ctors}" if ctors
+                 else "")
+        if not param.name.startswith("mod$"):
+            return (f"'{fn_name}' takes this file's own '{name}', a "
+                    f"different type from the imported one of that name. "
+                    f"Build the argument with this file's '{name}'{build}.")
+        path = tuple(param.name.split("$")[1:-1])
+        owner = ".".join(path)
+        return (f"'{fn_name}' takes the '{name}' of module '{owner}', a "
+                f"different type from the '{name}' this value has. Build the "
+                f"argument as a value of that type: name it in this file's "
+                f"import, {self._import_line(path, name)},{build}.")
+
     def _import_line(self, mod_path: tuple[str, ...], name: str) -> str:
         """The import line that brings *name* in from *mod_path* (#1513).
 
@@ -1865,6 +1901,9 @@ class CallsMixin:
         beside the first.
         """
         label = ".".join(mod_path)
+        # An import names a type by the name its module declares it under,
+        # whatever identity the type carries here (#1694).
+        name = bare_name(name)
         existing = self._import_names.get(mod_path)
         names = sorted(existing | {name}) if existing else [name]
         return f"'import {label}({', '.join(names)});'"
@@ -1934,7 +1973,10 @@ class CallsMixin:
         # same value, was an error.  Such a value meets the prelude's type
         # by the bare name in this file whichever way it arrives (#1560), so
         # barring the construction guarded nothing.
-        bound = self.env.data_types.get(type_name)
+        # The NAME the type is declared under, which is what this file would
+        # write for it: *type_name* may be the type's identity (#1694).
+        type_name = bare_name(type_name)
+        bound = self.env.lookup_type(type_name)
         if (bound is not None
                 and bound is not self._builtin_data_types.get(type_name)):
             return None
@@ -1986,14 +2028,15 @@ class CallsMixin:
         """The description and fix of the stranger-constructor warning."""
         mod_path = candidates[0][0]
         mod_label = ".".join(mod_path)
-        line = self._import_line(mod_path, ci.parent_type)
+        type_name = bare_name(ci.parent_type)
+        line = self._import_line(mod_path, type_name)
         if self._import_names.get(mod_path):
-            fix = (f"Add '{ci.parent_type}' to this file's import of "
+            fix = (f"Add '{type_name}' to this file's import of "
                    f"'{mod_label}': {line}.")
         else:
             fix = f"Add the import: {line}."
         return (
-            f"Constructor '{name}' belongs to data type '{ci.parent_type}' "
+            f"Constructor '{name}' belongs to data type '{type_name}' "
             f"of module '{mod_label}', which this file does not import.",
             fix,
         )

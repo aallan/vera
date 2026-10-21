@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from vera.resolver import ResolvedModule
 
 from vera import ast, naming
+from vera.binding import display_type_names
 from vera.callgraph import CallGraph
 from vera.errors import (
     Diagnostic,
@@ -362,6 +363,10 @@ def _collect_module_artifacts(
         )
         sub._module_body_check_memo = body_check_memo
         sub._module_registration_cache = registration_cache
+        # The path the program reaches the module by, as its body check has
+        # it (`ModulesMixin._check_module_bodies`): its own data types are
+        # typed by their link names here too, as code generation names them.
+        sub._resolved_as = mod.path
         sub.expr_types = {}
         sub.expr_semantic_types = sub_semantic
         sub.expr_target_types = sub_target
@@ -620,6 +625,7 @@ class TypeChecker(
         # is not registered yet, and it is a forward reference, not an
         # unknown name (E136 / E338).
         self._forward_type_names: frozenset[str] = frozenset()
+        self._forward_data_names: frozenset[str] = frozenset()
         self._forward_effect_names: frozenset[str] = frozenset()
         self._forward_effect_decls: dict[str, ast.EffectDecl] = {}
         # #1489: each import whose module did not resolve, with its name list
@@ -695,6 +701,10 @@ class TypeChecker(
         if key in self._seen_diag_keys:
             return
         self._seen_diag_keys.add(key)
+        # A module's data type is typed by its identity (#1694); a reader is
+        # shown the type's name.
+        description, rationale, fix = display_type_names(
+            description, rationale, fix)
         self.errors.append(Diagnostic(
             description=description,
             location=loc,
@@ -866,11 +876,14 @@ class TypeChecker(
         regularity = self.env.regularity_index()
         for tld in program.declarations:
             decl = tld.decl
-            if (isinstance(decl, ast.DataDecl)
-                    and id(decl) not in self._refused_decl_ids
-                    and decl.name in self.env.data_types
-                    and not regularity.is_regular(decl.name)):
-                self.env.refused_non_regular.add(decl.name)
+            if not isinstance(decl, ast.DataDecl):
+                continue
+            # The registry is keyed by the type's identity (#1694).
+            identity = self._type_identity(decl.name)
+            if (id(decl) not in self._refused_decl_ids
+                    and identity in self.env.data_types
+                    and not regularity.is_regular(identity)):
+                self.env.refused_non_regular.add(identity)
         for tld in program.declarations:
             # #815/#1433: a refused declaration — a built-in redefinition
             # (E151) or a name's surplus declaration (E184) — is already
@@ -1101,7 +1114,8 @@ class TypeChecker(
         does not return.  Two copies would be free to drift into one consumer
         refusing what the other models.
         """
-        found = self.env.regularity_index().irregular(decl.name)
+        identity = self._type_identity(decl.name)
+        found = self.env.regularity_index().irregular(identity)
         if found is None:
             return
         ctor_name, index, bad = found
@@ -1112,8 +1126,8 @@ class TypeChecker(
         # runs that pre-pass first, and a mutation removing this line left the
         # suite green while removing the pre-pass took it red.
         expected = tuple(
-            self.env.data_types[decl.name].type_params or ()
-        ) if decl.name in self.env.data_types else ()
+            self.env.data_types[identity].type_params or ()
+        ) if identity in self.env.data_types else ()
         params = ", ".join(expected)
         # Built from the OCCURRENCE, with each growing argument unwrapped to
         # the parameter it wraps.  Taking the enclosing declaration's
@@ -1121,7 +1135,7 @@ class TypeChecker(
         # mixed-arity pair was told to write `Body` — and would misstate the
         # arity whenever the two members' parameter counts differ
         # (PR #1432 re-verification).
-        remedy = suggested_occurrence(bad, expected, decl.name)
+        remedy = suggested_occurrence(bad, expected, identity)
         # A permutation has no varying part to lift out — every argument is
         # already a bare parameter, just in the wrong position — so the
         # remedy is worded per shape (PR #1432 re-verification).

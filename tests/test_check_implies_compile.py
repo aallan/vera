@@ -3071,17 +3071,15 @@ class TestGenericsAtATypeAlias:
             outcome.describe())
         assert run_main(outcome) == ("ok", 7)
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "#1519: the substituted data type `Shape` reads as the declaring "
-        "module's alias of `Int` inside the clone"))
     @pytest.mark.parametrize("call", ("idg(Circle(4))", "gl::idg(Circle(4))"))
     def test_a_data_type_named_like_the_declaring_modules_alias(
         self, call: str, tmp_path: Path,
     ) -> None:
         """The other direction: `gl` declares `type Shape = Int;`, and the
         entry calls `gl`'s generic at its own `data Shape`.  The clone is
-        rightly keyed on the entry's type, and is then built into a module
-        that fails to load (#1519, on `main` as well)."""
+        keyed on the entry's type, and in `gl`'s namespace the alias is
+        `gl`'s link name, so the substituted `Shape` is the entry's
+        (#1519)."""
         gl = (_GL.rstrip("\n") + "\n\ntype Shape = Int;\n\n"
               "public fn seven(@Unit -> @Int)\n" + _NC
               + "{\n  let @Shape = 7;\n  @Shape.0\n}\n")

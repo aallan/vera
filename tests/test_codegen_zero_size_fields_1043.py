@@ -22,6 +22,8 @@ end-to-end behaviour of every consumer.
 """
 from __future__ import annotations
 
+from vera.naming import display_adt_name
+
 from tests.codegen_helpers import (
     _compile,
     _compile_with_generator,
@@ -74,10 +76,11 @@ public fn f(-> @Int)
 
 def _layout(ctor: str) -> tuple:
     _result, gen = _compile_with_generator(_LAYOUT_SRC)
+    # A user constructor is keyed by its link name, `<Type>$<Ctor>` (#1694).
     for adt in gen._adt_layouts.values():
-        if ctor in adt:
-            lay = adt[ctor]
-            return (lay.field_offsets, lay.field_types, lay.total_size)
+        for key, lay in adt.items():
+            if display_adt_name(key) == ctor:
+                return (lay.field_offsets, lay.field_types, lay.total_size)
     raise AssertionError(f"constructor {ctor!r} not registered")
 
 

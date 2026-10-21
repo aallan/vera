@@ -32,7 +32,6 @@ from pathlib import Path
 import pytest
 
 from vera import ast
-from vera.binding import DeclId
 from vera.checker import typecheck
 from vera.checker.core import TypeChecker
 from vera.codegen.core import CodeGenerator
@@ -168,15 +167,20 @@ def signature_mismatches(entry: Path) -> list[str]:
     declares is still one declaration under its own key (#1694).
     """
     importer = _generator(entry)
+    assert importer._binding is not None
+    files = {mod.path: mod.file_path for mod in importer._resolved_modules}
+    as_entry: dict[tuple[str, ...], CodeGenerator] = {}
     out: list[str] = []
-    for mod in importer._unlinked_modules:
-        as_entry = _generator(mod.file_path)
-        for name in _own_functions(mod.program):
-            got = importer._fn_sigs.get(DeclId(mod.path, name).link_name)
-            want = as_entry._fn_sigs.get(name)
-            if got != want:
-                out.append(f"{'.'.join(mod.path)}::{name}: imported {got}, "
-                           f"as the entry {want}")
+    for ident, decl in importer._binding.decls.items():
+        if ident.owner not in files or ident.scope or decl.forall_vars:
+            continue
+        if ident.owner not in as_entry:
+            as_entry[ident.owner] = _generator(files[ident.owner])
+        got = importer._fn_sigs.get(ident.link_name)
+        want = as_entry[ident.owner]._fn_sigs.get(ident.name)
+        if got != want:
+            out.append(f"{'.'.join(ident.owner)}::{ident.name}: imported "
+                       f"{got}, as the entry {want}")
     return out
 
 
@@ -239,7 +243,7 @@ class TestSignaturesDoNotDependOnTheEntry:
                                                "which(1)"))):
             (tmp_path / name).write_text(text, encoding="utf-8")
 
-        def blind(self, mod, programs, renames):  # type: ignore[no-untyped-def]
+        def blind(self, mod):  # type: ignore[no-untyped-def]
             temp = CodeGenerator(source=mod.source, file=str(mod.file_path))
             temp._register_all(mod.program)
             return temp

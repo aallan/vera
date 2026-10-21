@@ -1421,7 +1421,11 @@ class TestBothSidesDiscoverTheSameClone:
         emitted, discovered = _emitted_and_discovered(
             tmp_path, _matrix_files(carrier, shadow))
         assert emitted == discovered, (emitted ^ discovered)
+        # The module's own ADT by its link name (#1694); a prelude type
+        # keeps its own name.
         owner = _CARRIER_OWNER[carrier]
+        if carrier != "prelude":
+            owner = "mod$mlib$" + owner
         assert any(
             name == "mod$mlib$gid"
             and any(owner == t.split("<")[0] for t in types)
@@ -2278,7 +2282,7 @@ _STRANGER_CALLS: dict[str, tuple[str, str, str, frozenset[tuple[str, ...]]]] = {
         frozenset({("gget", "Int")})),
     "entry_nested_constructor": (
         "entry", "import ga(gcount, gget);\n", "gcount(GMk(GMk(3)))",
-        frozenset({("gcount", "GBox")})),
+        frozenset({("gcount", "mod$gboxb$GBox")})),
     "module_body": (
         "module", "import ga(gcount);\n",
         "gcount(GMk(1)) + gcount(GMk(false))",

@@ -157,8 +157,10 @@ class ResolutionMixin:
                 return substitute(alias.resolved_type, mapping)
             return alias.resolved_type
 
-        # ADT or parameterised built-in?
-        adt = self.env.data_types.get(name)
+        # ADT or parameterised built-in?  The type the name denotes HERE,
+        # typed by its declaration's identity (#1694): a module's own type
+        # and each one an import admits are named by their link names.
+        adt = self.env.lookup_type(name)
         if adt is not None:
             if te.type_args and not (adt.type_params or ()):
                 # #1372 fix round: a declared ADT applied to type arguments it
@@ -211,11 +213,12 @@ class ResolutionMixin:
                 # this PR exists to close (`test_slot_naming_differential`
                 # caught it).
                 return AdtType(
-                    name, tuple(self._resolve_type(a) for a in te.type_args))
+                    adt.name,
+                    tuple(self._resolve_type(a) for a in te.type_args))
             if te.type_args:
                 args = tuple(self._resolve_type(a) for a in te.type_args)
-                return AdtType(name, args)
-            return AdtType(name, ())
+                return AdtType(adt.name, args)
+            return AdtType(adt.name, ())
 
         # Decimal is a non-parameterised built-in opaque type
         if name == "Decimal":
@@ -403,9 +406,13 @@ class ResolutionMixin:
         # refused, and `vera.naming._resolve_named` renders the placeholder
         # for the same expression, so the checker and the renderer stay
         # byte-identical (`tests/test_slot_naming_differential.py`).
-        placeholder = AdtType(name, tuple(
-            self._resolve_type(a) for a in te.type_args
-        ) if te.type_args else ())
+        # A forward `data` name is typed by the identity its declaration
+        # registers under (#1694), its own constructors' fields included.
+        placeholder = AdtType(
+            self._type_identity(name)
+            if name in self._forward_data_names else name,
+            tuple(self._resolve_type(a) for a in te.type_args)
+            if te.type_args else ())
         if name not in self._forward_type_names:
             self._report_unknown_type(te)
         return placeholder

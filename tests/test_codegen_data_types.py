@@ -32,7 +32,7 @@ public fn f(-> @Int)
 { 42 }
 """
         _result, gen = _compile_with_generator(source)
-        layout = gen._adt_layouts["Unit2"]["MkUnit"]
+        layout = gen._adt_layouts["Unit2"]["Unit2$MkUnit"]
         assert layout.tag == 0
         assert layout.field_offsets == ()
         assert layout.total_size == 8
@@ -47,7 +47,7 @@ public fn f(-> @Int)
 { 42 }
 """
         _result, gen = _compile_with_generator(source)
-        layout = gen._adt_layouts["Wrapper"]["Wrap"]
+        layout = gen._adt_layouts["Wrapper"]["Wrapper$Wrap"]
         assert layout.tag == 0
         assert layout.field_offsets == ((8, "i64"),)
         assert layout.total_size == 16
@@ -62,7 +62,7 @@ public fn f(-> @Int)
 { 42 }
 """
         _result, gen = _compile_with_generator(source)
-        layout = gen._adt_layouts["Pair"]["MkPair"]
+        layout = gen._adt_layouts["Pair"]["Pair$MkPair"]
         assert layout.tag == 0
         assert layout.field_offsets[0] == (8, "i64")   # Int at offset 8
         assert layout.field_offsets[1] == (16, "i32")   # Bool at offset 16
@@ -79,9 +79,9 @@ public fn f(-> @Int)
 """
         _result, gen = _compile_with_generator(source)
         layouts = gen._adt_layouts["Color"]
-        assert layouts["Red"].tag == 0
-        assert layouts["Green"].tag == 1
-        assert layouts["Blue"].tag == 2
+        assert layouts["Color$Red"].tag == 0
+        assert layouts["Color$Green"].tag == 1
+        assert layouts["Color$Blue"].tag == 2
 
     def test_float64_field_layout(self) -> None:
         """Constructor with Float64 field: tag(4) + pad(4) + f64(8) = 16."""
@@ -93,7 +93,7 @@ public fn f(-> @Int)
 { 42 }
 """
         _result, gen = _compile_with_generator(source)
-        layout = gen._adt_layouts["Box"]["MkBox"]
+        layout = gen._adt_layouts["Box"]["Box$MkBox"]
         assert layout.field_offsets == ((8, "f64"),)
         assert layout.total_size == 16
 
@@ -107,7 +107,7 @@ public fn f(-> @Int)
 { 42 }
 """
         _result, gen = _compile_with_generator(source)
-        layout = gen._adt_layouts["Toggle"]["MkToggle"]
+        layout = gen._adt_layouts["Toggle"]["Toggle$MkToggle"]
         assert layout.field_offsets == ((4, "i32"),)  # i32 aligns to 4
         assert layout.total_size == 8
 
@@ -121,7 +121,7 @@ public fn f(-> @Int)
 { 42 }
 """
         _result, gen = _compile_with_generator(source)
-        layout = gen._adt_layouts["Box"]["MkBox"]
+        layout = gen._adt_layouts["Box"]["Box$MkBox"]
         assert layout.field_offsets == ((4, "i32"),)  # T → pointer
         assert layout.total_size == 8
 
@@ -136,12 +136,12 @@ public fn f(-> @Int)
 """
         _result, gen = _compile_with_generator(source)
         layouts = gen._adt_layouts["MyOption"]
-        assert layouts["MyNone"].tag == 0
-        assert layouts["MyNone"].field_offsets == ()
-        assert layouts["MyNone"].total_size == 8
-        assert layouts["MySome"].tag == 1
-        assert layouts["MySome"].field_offsets == ((4, "i32"),)  # T → pointer
-        assert layouts["MySome"].total_size == 8
+        assert layouts["MyOption$MyNone"].tag == 0
+        assert layouts["MyOption$MyNone"].field_offsets == ()
+        assert layouts["MyOption$MyNone"].total_size == 8
+        assert layouts["MyOption$MySome"].tag == 1
+        assert layouts["MyOption$MySome"].field_offsets == ((4, "i32"),)  # T → pointer
+        assert layouts["MyOption$MySome"].total_size == 8
 
 
 # =====================================================================

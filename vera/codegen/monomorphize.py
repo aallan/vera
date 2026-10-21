@@ -176,7 +176,9 @@ class MonomorphizationMixin:
             # constructor to.  Built from the projection rather than from the
             # declarations because only the projection carries the per-owner
             # renames (#1409/#1423) the emitted symbol is spelled with.
-            namespace_ctor_owners=self._namespace_ctor_owner_tables(),
+            # #1694: every constructor is named by its link name, so the
+            # flat `ctor_to_adt` answers for every namespace.
+            namespace_ctor_owners=None,
             # #1436: and the owner-keyed type-parameter indices, so a
             # constructor two namespaces declare does not take its field
             # positions from whichever declaration registered last.

@@ -1623,8 +1623,10 @@ def test_generic_typearg_from_imported_constructor_is_discovered() -> None:
     finally:
         os.unlink(bp)
 
-    assert cg == {("Box",)}, f"codegen should emit exactly id2<Box>, got {cg}"
-    assert ver == {("Box",)}, (
+    # The module's `Box`, by its link name (#1694).
+    assert cg == {("mod$a$Box",)}, (
+        f"codegen should emit exactly id2<Box>, got {cg}")
+    assert ver == {("mod$a$Box",)}, (
         f"verifier should discover exactly id2<Box> (discovered {ver}) — "
         f"imported-constructor discovery gap, false Tier-1"
     )

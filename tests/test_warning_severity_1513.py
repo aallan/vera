@@ -50,7 +50,7 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
-from typing import Any, NamedTuple, cast
+from typing import Any, NamedTuple
 
 import pytest
 
@@ -730,18 +730,17 @@ class TestTheStrangerFallback:
         assert run["ok"] is True, run
         assert run["value"] == 2
 
-    def test_code_generation_asks_the_modules_the_checker_asks(
+    def test_the_resolver_binds_among_the_modules_the_checker_sees(
         self, tmp_path: Path,
     ) -> None:
-        """The fallback resolves a module body's constructor among the
-        modules that module's checker sees, so a declaration outside them
-        cannot make a name ambiguous on one side alone.  Asserted as an
-        equality of the two tables, namespace by namespace, on a chain
-        where the entry reaches more than any module does."""
-        from types import SimpleNamespace
-
-        from vera.codegen.modules import CrossModuleMixin
-        from vera.module_view import modules_visible_to
+        """The resolver pass binds such a constructor among the modules each
+        namespace's checker sees (#1694; `vera.module_view.reachable_paths`,
+        the walk the checker's view of a module is built from), so a
+        declaration outside them cannot make a name ambiguous on one side
+        alone.  On a chain where the entry reaches more than any module
+        does, `mx`'s `Green` is `mb`'s, and the entry's is unbound: two
+        modules it sees declare one."""
+        from vera.binding import ENTRY, DeclId, bind_program
         from vera.parser import parse_to_ast
         from vera.resolver import ModuleResolver
 
@@ -753,21 +752,10 @@ class TestTheStrangerFallback:
         program = parse_to_ast(path.read_text(encoding="utf-8"))
         resolved = ModuleResolver(_root=tmp_path).resolve_imports(
             program, path)
-        # A module's bodies are checked by a checker handed exactly the
-        # modules `modules_visible_to` reaches from it (the per-module body
-        # check in `vera/checker/modules.py`); the entry's, every module.
-        checker_view: dict[tuple[str, ...] | None,
-                           frozenset[tuple[str, ...]]] = {
-            mod.path: frozenset(
-                m.path for m in modules_visible_to(mod.program, resolved))
-            for mod in resolved
-        }
-        checker_view[None] = frozenset(m.path for m in resolved)
-        codegen_view = CrossModuleMixin._build_namespace_module_reach(
-            cast(Any, SimpleNamespace(_resolved_modules=resolved)))
-        assert codegen_view == checker_view
-        assert codegen_view[("mx",)] == {("ma",), ("mb",)}
-        assert ("mc",) in codegen_view[None]
+        binding = bind_program(program, resolved)
+        assert binding.ctors[("mx",)]["Green"] == DeclId(
+            ("mb",), "Green", ("Colour",), kind="ctor")
+        assert "Green" not in binding.ctors[ENTRY]
 
 
 # ---------------------------------------------------------------------------

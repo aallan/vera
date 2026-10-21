@@ -36,7 +36,6 @@ from vera.monomorphize import (
     UninferredTypeArg,
     collect_nested_generic_decls,
     declared_return_clone_key,
-    namespace_ctor_owners,
     namespace_fn_names,
     qualify_nested_generic_decls,
     uninferred_type_arg_fix,
@@ -59,7 +58,10 @@ from vera.obligations.core import (
     ProofObligation,
     expr_text_for,
 )
-from vera.naming import EMPTY_ALIAS_ENV, AliasEnv, alias_env_from_environment
+from vera.naming import (
+    EMPTY_ALIAS_ENV, AliasEnv, alias_env_from_environment,
+    alias_env_from_program,
+)
 from vera.builtin_domains import BUILTIN_DOMAINS, domain_contract
 from vera.resolver import merged_import_filters, own_module_path
 from vera.slots import (
@@ -685,6 +687,21 @@ def _is_locally_constructed(term: object, sort: object) -> bool:
         return False
 
 
+def _linked_alias_maps(
+    program: ast.Program,
+) -> tuple[dict[str, ast.TypeExpr], dict[str, tuple[str, ...]]]:
+    """*program*'s own type aliases, bodies and parameters, by name."""
+    aliases: dict[str, ast.TypeExpr] = {}
+    params: dict[str, tuple[str, ...]] = {}
+    for tld in program.declarations:
+        decl = tld.decl
+        if isinstance(decl, ast.TypeAliasDecl):
+            aliases[decl.name] = decl.type_expr
+            if decl.type_params:
+                params[decl.name] = decl.type_params
+    return aliases, params
+
+
 def _walk_fn_decls(program: ast.Program) -> Iterator[ast.FnDecl]:
     """Every function *declaration* in *program*, ``where``-helpers included.
 
@@ -1249,6 +1266,7 @@ class ContractVerifier:
         # discovery walks (`_collect_instantiations`), as code generation
         # compiles them.
         self._disc_modules: list[ResolvedModule] = []
+        self._disc_alias_envs: dict[tuple[str, ...] | None, AliasEnv] = {}
         # #1299: the names the bound prelude adds to the discovery copy.  Fed
         # to the shared `namespace_fn_names` derivation so the tables carry
         # the prelude for EVERY namespace, and so this side's answer does not
@@ -2674,6 +2692,14 @@ class ContractVerifier:
         """
         return self._alias_env_for_module(self._origin_module_for_generic(key))
 
+    def _disc_alias_env_for_generic(self, key: str | None) -> AliasEnv:
+        """:meth:`_alias_env_for_generic` for the discovery copy, which is
+        the linked program: the declaring namespace's env read off its
+        linked declarations (#1694)."""
+        origin = self._origin_module_for_generic(key)
+        return self._disc_alias_envs.get(
+            origin, self._disc_alias_envs.get(None, self._alias_env))
+
     def _origin_module_for_generic(
         self, key: str | None,
     ) -> tuple[str, ...] | None:
@@ -2956,6 +2982,25 @@ class ContractVerifier:
                     for ctor in decl.constructors
                 ])
 
+        # 2b. Every linked module's DataDecls (#1694): the discovery copy names
+        #    a module's types and constructors by their link names, as code
+        #    generation registers them, so they are recorded under those.
+        for lmod in self._disc_modules:
+            for tld in lmod.program.declarations:
+                decl = tld.decl
+                if isinstance(decl, ast.DataDecl):
+                    _record_adt(decl.name, decl.type_params, [
+                        (
+                            ctor.name,
+                            None if ctor.fields is None else tuple(
+                                f.name if isinstance(f, ast.NamedType)
+                                else None
+                                for f in ctor.fields
+                            ),
+                        )
+                        for ctor in decl.constructors
+                    ])
+
         # 3. Imported public constructors live in the verifier's module-fallback
         #    registry (`_module_constructors`), NOT `env.data_types` — include
         #    them so a local generic call whose type arg is inferred from an
@@ -3108,23 +3153,11 @@ class ContractVerifier:
                 [(lmod.path, lmod.program) for lmod in self._disc_modules],
                 prelude=self._disc_prelude_fn_names,
             ),
-            # #1436: the constructor half of the same narrowing, and for the
-            # same reason — flat, an ENTRY declaration answered for a name a
-            # module's body meant as its own (or the prelude's), and this
-            # side discovered a clone codegen does not emit.  The prelude's
-            # ADT names are passed separately because this program is
-            # post-injection and codegen's is not: reading them off the
-            # declarations would make the two sides' answers depend on WHEN
-            # each was built, which is what the #732 differential cannot
-            # tolerate.
-            namespace_ctor_owners=namespace_ctor_owners(
-                disc_program,
-                [(mod.path, mod.program) for mod in self._resolved_modules],
-                {
-                    adt_name: tuple(adt.constructors)
-                    for adt_name, adt in self.env.data_types.items()
-                },
-            ),
+            # #1694: no per-namespace constructor table.  Every constructor
+            # of the linked discovery copy is named by its link name, which
+            # names one declaration everywhere, so the flat `ctor_to_adt`
+            # gives each namespace's answer, as it does for code generation.
+            namespace_ctor_owners=None,
             adt_ctor_tp_indices=adt_ctor_tp_indices,
             # #1327/#1366/#1369: the same checker tables codegen's own
             # `_build_mono_context` threads — the ENTRY program's for the entry
@@ -3137,11 +3170,14 @@ class ContractVerifier:
             # #1511: each namespace's alias maps — the entry's environment and
             # every module's own — so a type argument is resolved where it
             # was written before it names a clone, as code generation does.
+            # Read off the linked programs (#1694), whose alias declarations
+            # and bodies carry the link names the discovery copy is written
+            # in, as code generation's maps do.
             type_arg_aliases={
-                None: (self._alias_env.aliases, self._alias_env.alias_params),
+                None: (type_aliases, type_alias_params),
                 **{
-                    path: (env.aliases, env.alias_params)
-                    for path, env in self._module_alias_envs.items()
+                    lmod.path: _linked_alias_maps(lmod.program)
+                    for lmod in self._disc_modules
                 },
             },
         )
@@ -3186,6 +3222,17 @@ class ContractVerifier:
             declarations=tuple(linked.prelude) + linked.program.declarations,
         )
         self._disc_modules = linked.modules
+        # #1694: the naming env each namespace of the discovery copy is
+        # recounted in, read off the linked programs: their declarations
+        # carry link names, which the envs registered from the programs as
+        # the checker saw them do not hold.
+        self._disc_alias_envs = {
+            None: alias_env_from_program(linked.program),
+            **{
+                lmod.path: alias_env_from_program(lmod.program)
+                for lmod in linked.modules
+            },
+        }
         # #1299: the names the prelude adds, as a set.  They belong to every
         # namespace, so `namespace_fn_names` takes them separately rather
         # than reading them off this program.
@@ -3341,7 +3388,7 @@ class ContractVerifier:
             # the nearest recorded ancestor itself, and an imported generic
             # nested under a non-generic function is recorded under the chain,
             # not under its outermost segment (#1208 round 2, probe ``m4``).
-            env = self._alias_env_for_generic(base_chain)
+            env = self._disc_alias_env_for_generic(base_chain)
             # #1223: the FAMILY at once, over a GROWING body set, mirroring
             # codegen's `_instantiate_hoisted_generics` and driving the same
             # discovery leaf.  A helper's concrete clone can call a SIBLING
@@ -3409,7 +3456,7 @@ class ContractVerifier:
                 continue
             mono_fn = mono.monomorphize_fn(
                 generic_decls[fn_name], concrete_types,
-                self._alias_env_for_generic(fn_name),  # #1208
+                self._disc_alias_env_for_generic(fn_name),  # #1208
             )
             # #1002: seed nested generic-under-generic instances from this clone.
             record_nested(mono_fn, fn_name)

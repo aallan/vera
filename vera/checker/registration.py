@@ -280,6 +280,10 @@ class RegistrationMixin:
             tld.decl.name for tld in program.declarations
             if isinstance(tld.decl, (ast.DataDecl, ast.TypeAliasDecl))
         )
+        self._forward_data_names = frozenset(
+            tld.decl.name for tld in program.declarations
+            if isinstance(tld.decl, ast.DataDecl)
+        )
         self._forward_effect_names = frozenset(
             tld.decl.name for tld in program.declarations
             if isinstance(tld.decl, ast.EffectDecl)
@@ -1552,6 +1556,7 @@ class RegistrationMixin:
             for tv in decl.type_params:
                 self.env.type_params[tv] = TypeVar(tv)
 
+        identity = self._type_identity(decl.name)
         ctors: dict[str, ConstructorInfo] = {}
         first_ctors: dict[str, ast.Constructor] = {}
         for ctor in decl.constructors:
@@ -1588,22 +1593,38 @@ class RegistrationMixin:
                     self._resolve_type(f) for f in ctor.fields)
             ci = ConstructorInfo(
                 name=ctor.name,
-                parent_type=decl.name,
+                parent_type=identity,
                 parent_type_params=decl.type_params,
                 field_types=field_types,
             )
             ctors[ctor.name] = ci
             self.env.constructors[ctor.name] = ci
 
-        self.env.data_types[decl.name] = AdtInfo(
-            name=decl.name,
+        self.env.data_types[identity] = AdtInfo(
+            name=identity,
             type_params=decl.type_params,
             constructors=ctors,
             visibility=visibility,
             decl_index=decl_index,
         )
+        # The name now denotes this declaration here, whatever an import
+        # had it denote: a declaration shadows an import (§8.5.2).
+        if identity == decl.name:
+            self.env.type_names.pop(decl.name, None)
+        else:
+            self.env.type_names[decl.name] = identity
 
         self.env.type_params = saved_params
+
+    def _type_identity(self, name: str) -> str:
+        """The identity of the data type *name* this namespace declares
+        (#1694): its name in the entry file, its link name in a module
+        (:class:`vera.binding.DeclId`), so two modules' same-named types are
+        two types and a value of one never passes for the other."""
+        if self._resolved_as is None:
+            return name
+        from vera.binding import DeclId
+        return DeclId(self._resolved_as, name, kind="data").link_name
 
     def _register_alias(self, decl: ast.TypeAliasDecl) -> None:
         """Register a type alias."""

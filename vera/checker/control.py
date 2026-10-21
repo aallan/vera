@@ -1117,7 +1117,11 @@ class ControlFlowMixin:
                 alias = None
         target = (base_type(alias.resolved_type) if alias is not None
                   else None)
-        head = target.name if isinstance(target, AdtType) else name
+        # A data type's name is read as the type it denotes here, which is
+        # typed by its identity (#1694); a constructor's name stays a name.
+        written = self.env.lookup_type(name)
+        identity = written.name if written is not None else name
+        head = target.name if isinstance(target, AdtType) else identity
         ci: ConstructorInfo | None = None
         # The data type the head names by its type name, the value's own
         # where `own` (its constructors then decide), another otherwise.
@@ -1133,8 +1137,8 @@ class ControlFlowMixin:
         if head != "Tuple":
             if alias is None:
                 ci = self._pattern_ctor_info(name)
-                own = (isinstance(scrut, AdtType) and scrut.name == name
-                       and (ci is None or ci.parent_type != name))
+                own = (isinstance(scrut, AdtType) and scrut.name == identity
+                       and (ci is None or ci.parent_type != identity))
             if own:
                 named = self._match_data_type(head)
             elif ci is None:
