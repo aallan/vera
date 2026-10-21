@@ -1446,9 +1446,7 @@ runs on a pull request.  [`nightly-generator.yml`](.github/workflows/nightly-gen
 runs the night's 5,000 seeds at 14:17 UTC, a short night of 1,000 seeds on a
 pull request that changes the generator, its instrument or the workflow, and
 any seeds `workflow_dispatch` names.  A night's seeds start at its day's
-offset from 2026-10-01 times 100,000, so no two nights share one.  1,000
-seeds took 43 s and 108 s on four workers of a developer laptop, the second
-beside three other suites.
+offset from 2026-10-01 times 100,000, so no two nights share one.  On the runner's four workers 1,000 seeds take about 0.22 s a program, so a night of 5,000 seeds is about 19 minutes of the step's 45.
 
 **A find.**  A find outside the known classes is minimised: a function
 dropped with a literal standing in for each call, a data declaration, a
