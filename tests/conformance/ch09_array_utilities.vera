@@ -151,3 +151,26 @@ public fn test_array_sort_by(@Unit -> @Int)
   let @Array<Int> = array_sort_by(array_concat(array_concat(array_range(7, 10), array_range(1, 4)), array_range(4, 7)), fn(@Int, @Int -> @Ordering) effects(pure) { if @Int.1 < @Int.0 then { Less } else { if @Int.1 > @Int.0 then { Greater } else { Equal } } });
   array_length(@Array<Int>.0)
 }
+
+-- ================================================================
+-- The run: each built-in's array beside its test's value, so an element out
+-- of place shows, and each predicate on both of its answers.
+-- ================================================================
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  let @Array<Int> = array_mapi(array_range(10, 13), fn(@Int, @Nat -> @Int) effects(pure) { @Int.0 + nat_to_int(@Nat.0) });
+  IO.print("mapi \(show(@Array<Int>.0)) length \(test_array_mapi(()))\n");
+  let @Array<Int> = array_reverse(array_range(1, 6));
+  IO.print("reverse \(show(@Array<Int>.0)) length \(test_array_reverse(()))\n");
+  IO.print("find \(test_array_find_some(())) \(test_array_find_none(()))\n");
+  IO.print("any \(test_array_any_true(())) \(test_array_any_false(()))\n");
+  IO.print("all \(test_array_all_true(())) \(test_array_all_false(()))\n");
+  let @Array<Array<Int>> = array_map(array_range(0, 3), fn(@Int -> @Array<Int>) effects(pure) { array_range(@Int.0, @Int.0 + 2) });
+  let @Array<Int> = array_flatten(@Array<Array<Int>>.0);
+  IO.print("flatten \(show(@Array<Int>.0)) length \(test_array_flatten(()))\n");
+  let @Array<Int> = array_sort_by(array_concat(array_concat(array_range(7, 10), array_range(1, 4)), array_range(4, 7)), fn(@Int, @Int -> @Ordering) effects(pure) { if @Int.1 < @Int.0 then { Less } else { if @Int.1 > @Int.0 then { Greater } else { Equal } } });
+  IO.print("sort by \(show(@Array<Int>.0)) length \(test_array_sort_by(()))\n")
+}

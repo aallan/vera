@@ -28,10 +28,12 @@ public fn test_tuple_state(@Unit -> @Int)
   }
 }
 
-public fn main(@Unit -> @Int)
+-- The run: both handlers, the `Option` cell and the `Tuple` cell.
+public fn main(@Unit -> @Unit)
   requires(true)
-  ensures(@Int.result == 9)
-  effects(pure)
+  ensures(true)
+  effects(<IO>)
 {
-  test_option_state(())
+  IO.print("option state \(test_option_state(()))\n");
+  IO.print("tuple state \(test_tuple_state(()))\n")
 }

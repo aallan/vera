@@ -12,10 +12,19 @@ public fn keep(@Unit -> @Unit)
   ()
 }
 
-public fn main(@Unit -> @Int)
+-- The run: `keep` under a handler of its cell, whose postcondition compares
+-- the cell before and after the call, then the cell read back.
+public fn main(@Unit -> @Unit)
   requires(true)
   ensures(true)
-  effects(pure)
+  effects(<IO>)
 {
-  0
+  let @Option<Int> = handle[State<Option<Int>>](@Option<Int> = Some(5)) {
+    get(@Unit) -> { resume(@Option<Int>.0) },
+    put(@Option<Int>) -> { resume(()) }
+  } in {
+    keep(());
+    get(())
+  };
+  IO.print("kept \(option_unwrap_or(@Option<Int>.0, 0))\n")
 }

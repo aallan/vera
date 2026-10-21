@@ -43,10 +43,55 @@ private fn nested(@Unit -> @Int)
   }
 }
 
-public fn main(@Unit -> @Int)
+-- A thrower spelled at one application of `Id`, caught by a handler spelled
+-- at two.
+private fn thrower_once(@Int -> @Int)
   requires(true)
-  ensures(@Int.result == 0)
+  ensures(true)
+  effects(<Exn<Id<Int>>>)
+{
+  if @Int.0 == 0 then {
+    throw(0 - 2)
+  } else {
+    @Int.0
+  }
+}
+
+private fn once_caught_twice(@Unit -> @Int)
+  requires(true)
+  ensures(true)
   effects(pure)
 {
-  single(()) + 7 + (nested(()) + 1)
+  handle[Exn<Id<Id<Int>>>] {
+    throw(@Id<Int>) -> { @Id<Int>.0 }
+  } in {
+    thrower_once(0)
+  }
+}
+
+-- A thrower spelled at two applications, caught by a handler spelled at
+-- none.
+private fn twice_caught_plain(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[Exn<Int>] {
+    throw(@Int) -> { @Int.0 - 10 }
+  } in {
+    thrower(0)
+  }
+}
+
+-- The run: each thrower and handler pair, the ones spelled at different
+-- application depths among them.
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  IO.print("single \(single(()))\n");
+  IO.print("nested \(nested(()))\n");
+  IO.print("once, caught at two \(once_caught_twice(()))\n");
+  IO.print("twice, caught at none \(twice_caught_plain(()))\n")
 }

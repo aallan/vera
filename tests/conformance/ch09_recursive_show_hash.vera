@@ -153,3 +153,20 @@ public fn test_eq_generic_mutual_recursive_adt_distinguishes(@Unit -> @Bool)
 {
   eq(GGrove(GBloom(1, GEmpty), GEmpty), GGrove(GBloom(2, GEmpty), GEmpty))
 }
+
+-- ================================================================
+-- The run: every test above (the `distinguishes` cases are false by
+-- design: two different values whose hashes or equality must differ).
+-- ================================================================
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  IO.print("show list \(test_show_recursive_list(())) \(test_show_recursive_list_nil(()))\n");
+  IO.print("hash list \(test_hash_recursive_list_deterministic(())) \(test_hash_recursive_list_distinguishes(()))\n");
+  IO.print("show tree \(test_show_recursive_tree(()))\n");
+  IO.print("show mutual \(test_show_mutual_recursive_adt(())) \(test_show_generic_mutual_recursive_adt(()))\n");
+  IO.print("hash generic mutual \(test_hash_generic_mutual_recursive_adt(()))\n");
+  IO.print("eq generic mutual \(test_eq_generic_mutual_recursive_adt(())) \(test_eq_generic_mutual_recursive_adt_distinguishes(()))\n")
+}

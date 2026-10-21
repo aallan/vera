@@ -33,7 +33,7 @@
     "title": "String escape sequences",
     "level": "run",
     "spec_ref": "Section 1.2",
-    "expected_stdout": "hello\nworldcol1\tcol2back\\slashsay \"hi\"A\n",
+    "expected_stdout": "hello\nworldcol1\tcol2back\\slashsay \"hi\"A\ncarriage return 13\nnul 0\nbell escape 7\nno-break space escape of 2 bytes\ntwo-byte literal \u00e9 of 2 bytes\nescaped newline length 3\n",
     "expected_exit": 0,
     "features": [
       "string_escape",
@@ -63,7 +63,7 @@
     "title": "Byte type",
     "level": "run",
     "spec_ref": "Section 1.1",
-    "expected_stdout": "1\n",
+    "expected_stdout": "literal 65\nzero 0\nmax 255\nidentity 200\nequal true false\n",
     "expected_exit": 0,
     "features": [
       "byte_type",
@@ -120,7 +120,7 @@
     "title": "Built-in types",
     "level": "run",
     "spec_ref": "Section 2.1",
-    "expected_stdout": "types ok\n",
+    "expected_stdout": "int 42\nnat 10\nbool true\nstring hello\nfloat 3.14\nbyte 7\n",
     "expected_exit": 0,
     "features": [
       "int",
@@ -139,7 +139,7 @@
     "title": "Option and Result types",
     "level": "run",
     "spec_ref": "Section 2.3",
-    "expected_stdout": "42\n",
+    "expected_stdout": "some 42\nnone 99\nok 7\nerr -1\n",
     "expected_exit": 0,
     "features": [
       "option",
@@ -216,7 +216,7 @@
     "title": "Single-letter ADT names (no prelude type-param collision)",
     "level": "run",
     "spec_ref": "Section 2.2",
-    "expected_stdout": "42\n",
+    "expected_stdout": "b 42\noption 7\n",
     "expected_exit": 0,
     "features": [
       "adt",
@@ -381,7 +381,7 @@
     "title": "De Bruijn slot indexing",
     "level": "run",
     "spec_ref": "Section 3.2",
-    "expected_stdout": "1\n",
+    "expected_stdout": "first 1\nlast 3\nshadowing 20\n",
     "expected_exit": 0,
     "features": [
       "slot_indexing",
@@ -465,7 +465,7 @@
     "title": "Arithmetic operators",
     "level": "run",
     "spec_ref": "Section 4.1",
-    "expected_stdout": "15\n",
+    "expected_stdout": "add 15\nsub 5\nmul 50\ndiv 2\nmod 1\nneg -42\n",
     "expected_exit": 0,
     "features": [
       "add",
@@ -515,7 +515,7 @@
     "title": "@Nat binding-site narrowing obligation (#552)",
     "level": "run",
     "spec_ref": "Section 4.7 / Section 11.2.1",
-    "expected_stdout": "5\n",
+    "expected_stdout": "let 5\nguarded let 7 0\ncall argument 8\ndestructure 5\nconstructor field 4 0\n",
     "expected_exit": 0,
     "features": [
       "nat_binding",
@@ -585,7 +585,7 @@
     "title": "Comparison operators",
     "level": "run",
     "spec_ref": "Section 4.1",
-    "expected_stdout": "1\n",
+    "expected_stdout": "eq true false\nneq true false\nlt true false\ngt true false\nle true false\nge true false\n",
     "expected_exit": 0,
     "features": [
       "eq",
@@ -603,7 +603,7 @@
     "title": "Boolean operators",
     "level": "run",
     "spec_ref": "Section 4.1",
-    "expected_stdout": "1\n",
+    "expected_stdout": "and true false\nor true false\nnot false true\n",
     "expected_exit": 0,
     "features": [
       "and",
@@ -638,7 +638,7 @@
     "title": "If/else expressions",
     "level": "run",
     "spec_ref": "Section 4.2",
-    "expected_stdout": "1\n",
+    "expected_stdout": "if true 1\nif false 0\nnested 2\n",
     "expected_exit": 0,
     "features": [
       "if_else",
@@ -652,7 +652,7 @@
     "title": "Let bindings",
     "level": "run",
     "spec_ref": "Section 4.3",
-    "expected_stdout": "10\n",
+    "expected_stdout": "let 10\nchain 30\nshadow 5\nmulti type 7\n",
     "expected_exit": 0,
     "features": [
       "let_binding",
@@ -666,7 +666,7 @@
     "title": "Basic match expressions",
     "level": "run",
     "spec_ref": "Section 4.4",
-    "expected_stdout": "2\n",
+    "expected_stdout": "color 1 2 3\nclassify zero one other\nbool yes no\n",
     "expected_exit": 0,
     "features": [
       "match",
@@ -738,7 +738,7 @@
     "title": "String built-in functions",
     "level": "run",
     "spec_ref": "Section 4.6",
-    "expected_stdout": "hello world\n",
+    "expected_stdout": "length 5\nlength of a two-byte character 2\nconcat hello world\nslice hello\nchar code 65\nto string 42\n",
     "expected_exit": 0,
     "features": [
       "string_length",
@@ -755,7 +755,7 @@
     "title": "String interpolation",
     "level": "run",
     "spec_ref": "Section 4.6",
-    "expected_stdout": "value = 42\n",
+    "expected_stdout": "hello world\nx = 42\nflag: true\nlen=3\nf = 2.5\na=1, b=2\nhello\nlen=5\nvalue = 42\n",
     "expected_exit": 0,
     "features": [
       "string_interpolation",
@@ -785,7 +785,7 @@
     "title": "Array construction builtins",
     "level": "run",
     "spec_ref": "Section 9.6",
-    "expected_stdout": "1\n",
+    "expected_stdout": "range length 5\nrange element 3\nempty range 0\nconcat length 5\nconcat element 30\nappend 99\nrange [3, 4, 5, 6]\nconcat [10, 20, 30, 40]\nappend [10, 20, 30, 99]\n",
     "expected_exit": 0,
     "features": [
       "array_range",
@@ -874,7 +874,7 @@
     "title": "Nested closures and the lifting worklist (#514)",
     "level": "run",
     "spec_ref": "Section 5.4",
-    "expected_stdout": "8\n",
+    "expected_stdout": "2d [[0, 2, 4, 6], [0, 2, 4, 6], [0, 2, 4, 6]]\n2d capture [[0, 1, 2, 3], [10, 11, 12, 13], [20, 21, 22, 23]]\n3d [[[0, 1], [0, 1]], [[0, 1], [0, 1]]]\n",
     "expected_exit": 0,
     "features": [
       "closure",
@@ -922,7 +922,7 @@
     "title": "Captured Array<T> indexed inside closure body (#588)",
     "level": "run",
     "spec_ref": "Section 5.4",
-    "expected_stdout": "0\n",
+    "expected_stdout": "flat [4, 4, 4]\nnested [[0, 1], [2, 3]]\ncombined [7, 7, 7]\n",
     "expected_exit": 0,
     "features": [
       "closure",
@@ -1187,7 +1187,7 @@
     "title": "Call-site preconditions over ADT-typed arguments",
     "level": "run",
     "spec_ref": "Section 6.1",
-    "expected_stdout": "1\n",
+    "expected_stdout": "constructions 6\nbinding -40\n",
     "expected_exit": 0,
     "features": [
       "requires",
@@ -1576,7 +1576,7 @@
     "title": "new(State<T>) names its cell, like old(State<T>)",
     "level": "run",
     "spec_ref": "Section 7.3.3",
-    "expected_stdout": "0\n",
+    "expected_stdout": "same width 7\ncross width 8\nunchanged 6\nthrough alias 5\ncells 42 9 false\n",
     "expected_exit": 0,
     "features": [
       "state_effect",
@@ -1626,7 +1626,7 @@
     "title": "State effect handler over a composite type argument (#914)",
     "level": "run",
     "spec_ref": "Section 7.3",
-    "expected_stdout": "9\n",
+    "expected_stdout": "option state 9\ntuple state 0\n",
     "expected_exit": 0,
     "features": [
       "state_effect",
@@ -1643,7 +1643,7 @@
     "title": "Exception effect handler over a composite payload type (#914)",
     "level": "run",
     "spec_ref": "Section 7.4",
-    "expected_stdout": "9\n",
+    "expected_stdout": "caught 9\nnot thrown 7\n",
     "expected_exit": 0,
     "features": [
       "exn_effect",
@@ -1659,7 +1659,7 @@
     "title": "old/new State snapshot over a composite type argument (#914)",
     "level": "run",
     "spec_ref": "Section 7.3",
-    "expected_stdout": "0\n",
+    "expected_stdout": "kept 5\n",
     "expected_exit": 0,
     "features": [
       "state_effect",
@@ -2192,7 +2192,7 @@
     "title": "JSON typed accessors (#366)",
     "level": "run",
     "spec_ref": "Section 9.6.23",
-    "expected_stdout": "2\n",
+    "expected_stdout": "as string 2 1\nas bool 1\nas int 42 1\nas number 1\nas array 3\nas object 1\nget string 5\nget number 1\nget bool 1\nget int 30 1 1\nget array 3\n",
     "expected_exit": 0,
     "features": [
       "json_as_string",
@@ -2215,7 +2215,7 @@
     "title": "HtmlNode ADT and html_* built-in functions",
     "level": "run",
     "spec_ref": "Section 9.7.4",
-    "expected_stdout": "5\n",
+    "expected_stdout": "parse 5 text length 5\nquery count 2\nto string length 11\nattr 3 0\nconstructor text 5\nlenient 1\ntext hello\nrendered <b>bold</b>\nhref url\n",
     "expected_exit": 0,
     "features": [
       "HtmlNode",
@@ -2278,7 +2278,7 @@
     "title": "Numeric built-in functions",
     "level": "run",
     "spec_ref": "Section 9.6.3",
-    "expected_stdout": "1\n",
+    "expected_stdout": "abs 42 0\nmin 3\nmax 7\nfloor 3\nceil 4\nround 4\nsqrt 2.0\npow 1024.0\n",
     "expected_exit": 0,
     "features": [
       "abs",
@@ -2323,7 +2323,7 @@
     "title": "Array utility built-ins phase 1 (#466)",
     "level": "run",
     "spec_ref": "Section 9.6.21",
-    "expected_stdout": "3\n",
+    "expected_stdout": "mapi [10, 12, 14] length 3\nreverse [5, 4, 3, 2, 1] length 5\nfind 6 -1\nany true false\nall true false\nflatten [0, 1, 1, 2, 2, 3] length 6\nsort by [1, 2, 3, 4, 5, 6, 7, 8, 9] length 9\n",
     "expected_exit": 0,
     "features": [
       "array_mapi",
@@ -2358,7 +2358,7 @@
     "title": "String utilities + character classification (#470, #471)",
     "level": "run",
     "spec_ref": "Section 9.6.22",
-    "expected_stdout": "1\n",
+    "expected_stdout": "is digit 1\nis alpha 1\nis alphanumeric 1\nis whitespace 1\nis upper and lower 1\nempty string 1\nchar to upper and lower 1\nreverse 1\ntrim 1\npad 1\nchars 3 [a, b, c]\nlines 3 [a, b, c]\nwords 2 [foo, bar]\n",
     "expected_exit": 0,
     "features": [
       "string_chars",
@@ -2386,7 +2386,7 @@
     "title": "Numeric type conversion functions",
     "level": "run",
     "spec_ref": "Section 9.6.4",
-    "expected_stdout": "42\n",
+    "expected_stdout": "int to float 42.0 -7.0\nfloat to int 3 -3\nnat to int 42\nint to nat 10 -1\nbyte to int 200\nint to byte 65 -1\n",
     "expected_exit": 0,
     "features": [
       "int_to_float",
@@ -2404,7 +2404,7 @@
     "title": "String search and transformation functions",
     "level": "run",
     "spec_ref": "Section 9.6.6-9.6.7",
-    "expected_stdout": "1\n",
+    "expected_stdout": "contains true false\nstarts with true false\nends with true false\nindex of 6\nupper HELLO\nlower hello\nreplace hello vera\nsplit and join a-b-c\n",
     "expected_exit": 0,
     "features": [
       "string_contains",
@@ -2425,7 +2425,7 @@
     "title": "Float64 predicate and constant functions",
     "level": "run",
     "spec_ref": "Section 9.6.5",
-    "expected_stdout": "1\n",
+    "expected_stdout": "nan nan\ninfinity inf\nis nan 1 0 0\nis infinite 1 1 0 0\n",
     "expected_exit": 0,
     "features": [
       "float_is_nan",
@@ -2457,7 +2457,7 @@
     "title": "String ordering is lexicographic",
     "level": "run",
     "spec_ref": "Section 4.5",
-    "expected_stdout": "123456\n",
+    "expected_stdout": "123456789\n",
     "expected_exit": 0,
     "features": [
       "string_ordering",
@@ -2533,7 +2533,7 @@
     "title": "URL parsing and joining",
     "level": "run",
     "spec_ref": "Section 9.6.5",
-    "expected_stdout": "5511335\n",
+    "expected_stdout": "full [https] [example.com] [/path] [q=1] [frag]\nno query [https] [example.com] [/path] [] []\nno scheme 1\nempty scheme 1\njoin https://example.com/path?q=1#frag\nroundtrip [https] [example.com] [/path] [q=1] [frag]\n",
     "expected_exit": 0,
     "features": [
       "url_parse",
@@ -2704,7 +2704,7 @@
     "title": "Abilities: Eq, Ord, Hash, Show",
     "level": "run",
     "spec_ref": "Section 9.8",
-    "expected_stdout": "1\n",
+    "expected_stdout": "eq int 1 0\neq bool 1 0\neq direct true false\neq data 1 0\ncompare 1 2 3, generic -1\nshow true true true\nhash 42 1 true\neq in contracts 3 3 3\ncompare in contracts 4 3\n",
     "expected_exit": 0,
     "features": [
       "ability",
@@ -2746,7 +2746,7 @@
     "title": "Structural show/hash for composite types (#911)",
     "level": "run",
     "spec_ref": "Section 9.8",
-    "expected_stdout": "1\n",
+    "expected_stdout": "show data true true true\nshow tuple true\nshow option true true\nshow result true true\nshow array true true\nshow nested true true true true\nhash data true false true\nhash tuple true array true\n",
     "expected_exit": 0,
     "features": [
       "show_operation",
@@ -2767,7 +2767,7 @@
     "title": "Structural show/hash on recursive ADTs (#924)",
     "level": "run",
     "spec_ref": "Section 9.8",
-    "expected_stdout": "1\n",
+    "expected_stdout": "show list true true\nhash list true false\nshow tree true\nshow mutual true true\nhash generic mutual true\neq generic mutual true false\n",
     "expected_exit": 0,
     "features": [
       "show_operation",
@@ -2785,7 +2785,7 @@
     "title": "Structural Eq auto-derivation for ADTs (#773)",
     "level": "run",
     "spec_ref": "Section 9.8",
-    "expected_stdout": "0\n",
+    "expected_stdout": "string field 1 0\nnested 1 0\nbox 1 0 1\ndeep nested 1 0\n",
     "expected_exit": 0,
     "features": [
       "ability_constraint",
@@ -2822,7 +2822,7 @@
     "title": "where-helpers inside a monomorphized generic (#904)",
     "level": "run",
     "spec_ref": "Section 11.10.3",
-    "expected_stdout": "12\n",
+    "expected_stdout": "outer 5\nwrap int 7\nwrap bool true false\n",
     "expected_exit": 0,
     "features": [
       "generic_function",
@@ -3004,7 +3004,7 @@
     "title": "Generic instantiation inferred from a user-fn return in argument position (#878)",
     "level": "run",
     "spec_ref": "Section 9.7.2",
-    "expected_stdout": "0\n",
+    "expected_stdout": "fallback arg 1\nfallback taken 1\nbare type variable 1\n1 / 3 = 0.3333333333333333333333333333\n",
     "expected_exit": 0,
     "features": [
       "decimal",
@@ -3295,7 +3295,7 @@
     "title": "Generic where-family resolving a bare op name",
     "level": "run",
     "spec_ref": "Section 7.4",
-    "expected_stdout": "7\n",
+    "expected_stdout": "get 42007\n",
     "expected_exit": 0,
     "features": [
       "cross_module",
@@ -3584,7 +3584,7 @@
     "title": "Parameterised alias payloads for Exn<E>",
     "level": "run",
     "spec_ref": "Section 7.6",
-    "expected_stdout": "0\n",
+    "expected_stdout": "single -7\nnested -1\nonce, caught at two -2\ntwice, caught at none -11\n",
     "expected_exit": 0,
     "features": [
       "exn_effect",
@@ -3745,7 +3745,7 @@
     "title": "A type alias may reuse a prelude data type's name",
     "level": "run",
     "spec_ref": "Section 8.4.1",
-    "expected_stdout": "1\n",
+    "expected_stdout": "above 3: 4\nabove 9: -1\n",
     "expected_exit": 0,
     "features": [
       "type_alias",

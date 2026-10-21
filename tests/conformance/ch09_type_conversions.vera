@@ -92,10 +92,17 @@ public fn test_int_to_byte_none(@Unit -> @Int)
   }
 }
 
-public fn main(@Unit -> @Int)
+-- The run: every conversion above, each in both directions it has, and each
+-- `Option` result on both of its constructors.
+public fn main(@Unit -> @Unit)
   requires(true)
-  ensures(@Int.result == 42)
-  effects(pure)
+  ensures(true)
+  effects(<IO>)
 {
-  float_to_int(int_to_float(42))
+  IO.print("int to float \(test_int_to_float(())) \(test_to_float_negative(()))\n");
+  IO.print("float to int \(test_float_to_int(())) \(test_float_to_int_negative(()))\n");
+  IO.print("nat to int \(test_nat_to_int(()))\n");
+  IO.print("int to nat \(test_int_to_nat_some(())) \(test_int_to_nat_none(()))\n");
+  IO.print("byte to int \(test_byte_to_int(200))\n");
+  IO.print("int to byte \(test_int_to_byte_some(())) \(test_int_to_byte_none(()))\n")
 }

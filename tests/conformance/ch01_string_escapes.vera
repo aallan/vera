@@ -9,8 +9,18 @@ public fn main(@Unit -> @Unit)
   IO.print("col1\tcol2");
   IO.print("back\\slash");
   IO.print("say \"hi\"");
-  IO.print("A");
-  ()
+  IO.print("A\n");
+  let @String = "\r";
+  let @String = "\0";
+  let @String = "\u{0007}";
+  let @String = "\u{00A0}";
+  let @String = "é";
+  IO.print("carriage return \(string_char_code(@String.4, 0))\n");
+  IO.print("nul \(string_char_code(@String.3, 0))\n");
+  IO.print("bell escape \(string_char_code(@String.2, 0))\n");
+  IO.print("no-break space escape of \(string_length(@String.1)) bytes\n");
+  IO.print("two-byte literal \(@String.0) of \(string_length(@String.0)) bytes\n");
+  IO.print("escaped newline length \(test_escape_length(()))\n")
 }
 
 public fn test_escape_length(@Unit -> @Int)
