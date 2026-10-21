@@ -1244,11 +1244,11 @@ class _TrapIndex:
 
 
 #: A function definition in the module text, as code generation writes one.
-_WAT_FUNC = re.compile(r"^\s*\(func \$([^\s()]+)", re.MULTILINE)
+_WAT_FUNC = re.compile(r"^\s*\(func \$:?([^\s()]+)", re.MULTILINE)
 #: A direct call, and a tail call, to a function the module defines (an
 #: import's name matches too, and is in no body of the graph).
-_WAT_CALL = re.compile(r"\b(?:return_call|call) \$([^\s()]+)")
-_WAT_NAME = re.compile(r"\$([^\s()]+)")
+_WAT_CALL = re.compile(r"\b(?:return_call|call) \$:?([^\s()]+)")
+_WAT_NAME = re.compile(r"\$:?([^\s()]+)")
 
 
 def _returned_parts(expr: ast.Expr) -> list[ast.Expr]:

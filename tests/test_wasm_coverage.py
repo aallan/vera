@@ -368,7 +368,7 @@ public fn imp(@Bool, @Bool -> @Bool)
 }
 """
         result = _compile_ok(source)
-        body = result.wat.split("(func $imp", 1)[1].split("(func ", 1)[0]
+        body = result.wat.split("(func $:imp", 1)[1].split("(func ", 1)[0]
         assert "if (result i32)" in body and "i32.or" not in body
         # `@Bool.0` is the second parameter: `imp(a, b)` is `b ==> a`.
         assert _run(source, "imp", [0, 0]) == 1

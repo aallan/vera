@@ -78,7 +78,7 @@ class TestOpaqueHandleParamRooting347:
         reports which handle type regressed.
         """
         result = _compile_ok(src)
-        fn_marker = f"(func ${fn_name}"
+        fn_marker = f"(func $:{fn_name}"
         fn_start = result.wat.index(fn_marker)
         if "\n  (func " in result.wat[fn_start + 1:]:
             fn_end = result.wat.index("\n  (func ", fn_start + 1)
@@ -163,7 +163,7 @@ public fn lookup_or_zero(@Map<Nat, Nat>, @Nat -> @Nat)
         wat = result.wat
         # Find $lookup_or_zero's body.
         fn_match = re.search(
-            r"\(func \$lookup_or_zero\b.*?(?=\n  \(func |\n\s*\)\s*$)",
+            r"\(func \$:lookup_or_zero\b.*?(?=\n  \(func |\n\s*\)\s*$)",
             wat, re.DOTALL,
         )
         assert fn_match is not None, (
@@ -226,7 +226,7 @@ public fn contains_or_false(@Set<Nat>, @Nat -> @Bool)
         result = compile(parse_to_ast(src), source=src)
         wat = result.wat
         fn_match = re.search(
-            r"\(func \$contains_or_false\b.*?(?=\n  \(func |\n\s*\)\s*$)",
+            r"\(func \$:contains_or_false\b.*?(?=\n  \(func |\n\s*\)\s*$)",
             wat, re.DOTALL,
         )
         assert fn_match is not None
@@ -273,7 +273,7 @@ public fn is_positive_or_false(@Decimal -> @Bool)
         result = compile(parse_to_ast(src), source=src)
         wat = result.wat
         fn_match = re.search(
-            r"\(func \$is_positive_or_false\b.*?(?=\n  \(func |\n\s*\)\s*$)",
+            r"\(func \$:is_positive_or_false\b.*?(?=\n  \(func |\n\s*\)\s*$)",
             wat, re.DOTALL,
         )
         assert fn_match is not None
@@ -334,7 +334,7 @@ class TestArrayFoldHandleRooting490:
         being rooted — which post-#573 phase 3 is the correct
         behaviour.
         """
-        fn_start = wat.index("(func $main")
+        fn_start = wat.index("(func $:main")
         if "\n  (func " in wat[fn_start + 1:]:
             fn_end = wat.index("\n  (func ", fn_start + 1)
         else:
@@ -1473,10 +1473,10 @@ class TestShadowGuardPushBound791:
         (the same protocol the #305 serve driver uses)."""
         wat = (
             "(module\n"
-            '  (memory (export "memory") 1)\n'
-            f'  (global (export "gc_sp") (mut i32) '
+            '  (memory (export "vera.memory") 1)\n'
+            f'  (global (export "vera.gc_sp") (mut i32) '
             f"(i32.const {self._STACK_BASE}))\n"
-            f'  (global (export "gc_stack_limit") i32 '
+            f'  (global (export "vera.gc_stack_limit") i32 '
             f"(i32.const {self._STACK_LIMIT}))\n"
             ")\n"
         )
@@ -1493,7 +1493,7 @@ class TestShadowGuardPushBound791:
         Pre-fix (``sp >= limit``) the check passed and the write
         spilled ``4 - headroom`` bytes past the window."""
         caller = self._make_caller()
-        sp_global = caller["gc_sp"]
+        sp_global = caller["vera.gc_sp"]
         assert isinstance(sp_global, wasmtime.Global)
         sp_global.set_value(caller, self._STACK_LIMIT - headroom)
         with _ShadowGuard(caller) as guard:
@@ -1503,7 +1503,7 @@ class TestShadowGuardPushBound791:
                 guard.push(0x1234)
         # No partial write may have leaked: the whole candidate slot
         # (including the bytes past `limit`) must still be zero.
-        memory = caller["memory"]
+        memory = caller["vera.memory"]
         assert isinstance(memory, wasmtime.Memory)
         spill = bytes(memory.read(
             caller,
@@ -1518,13 +1518,13 @@ class TestShadowGuardPushBound791:
         over-tightening to ``sp + 4 >= limit``), write the pointer
         little-endian at ``sp``, and advance ``gc_sp`` to ``limit``."""
         caller = self._make_caller()
-        sp_global = caller["gc_sp"]
+        sp_global = caller["vera.gc_sp"]
         assert isinstance(sp_global, wasmtime.Global)
         sp_global.set_value(caller, self._STACK_LIMIT - 4)
         with _ShadowGuard(caller) as guard:
             assert guard.push(0x1234) == 0x1234
             assert sp_global.value(caller) == self._STACK_LIMIT
-            memory = caller["memory"]
+            memory = caller["vera.memory"]
             assert isinstance(memory, wasmtime.Memory)
             slot = bytes(memory.read(
                 caller, self._STACK_LIMIT - 4, self._STACK_LIMIT,
@@ -1535,7 +1535,7 @@ class TestShadowGuardPushBound791:
         """``sp == limit`` (zero headroom) was already rejected by the
         old bound — pin that the boundary behaviour is unchanged."""
         caller = self._make_caller()
-        sp_global = caller["gc_sp"]
+        sp_global = caller["vera.gc_sp"]
         assert isinstance(sp_global, wasmtime.Global)
         sp_global.set_value(caller, self._STACK_LIMIT)
         with _ShadowGuard(caller) as guard:
@@ -1551,7 +1551,7 @@ class TestShadowGuardPushBound791:
         ctypes buffer at a negative offset — a write BEFORE the
         linear-memory base, i.e. host-memory corruption."""
         caller = self._make_caller()
-        sp_global = caller["gc_sp"]
+        sp_global = caller["vera.gc_sp"]
         assert isinstance(sp_global, wasmtime.Global)
         sp_global.set_value(caller, -8)
         with _ShadowGuard(caller) as guard:

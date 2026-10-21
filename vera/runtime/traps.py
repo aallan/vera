@@ -14,7 +14,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from vera.binding import display_name
+from vera.binding import SYMBOL_PREFIX, display_name, source_name
 
 from vera.trap_registry import (
     NATIVE_TRAP_OPCODES,
@@ -299,6 +299,11 @@ def _resolve_trap_frames(
         # strip would otherwise silently break every lookup below.
         if name.startswith("$"):
             name = name[1:]
+        # #1694: a declaration's function is `$:` + its link name; every
+        # other name is one code generation generated for itself, so a user
+        # function named `alloc` is not the allocator.
+        declared = name.startswith(SYMBOL_PREFIX)
+        name = source_name(name)
 
         # Prelude / built-in injection check.  Match either the exact
         # WAT name or, for monomorphized generics, the base name (the
@@ -317,10 +322,9 @@ def _resolve_trap_frames(
                 if base in prelude_fn_names:
                     is_prelude = True
 
-        is_builtin = (
+        is_builtin = is_prelude or not declared and (
             name in _BUILTIN_NAMES
             or any(name.startswith(p) for p in _BUILTIN_PREFIXES)
-            or is_prelude
         )
         if is_builtin:
             resolved.append(TrapFrame(

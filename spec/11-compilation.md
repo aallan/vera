@@ -181,10 +181,12 @@ The new local is registered in the `WasmSlotEnv` so subsequent `SlotRef` nodes r
 
 ```
 [arg0] [arg1] ... [argN]
-call $name
+call $:name
 ```
 
 Arguments are evaluated left to right onto the stack, then the function is called. Recursive calls work naturally since WASM supports calling functions by name within the same module.
+
+A declaration's function is named `$:` followed by its link name: the declared name for an entry-file or prelude function, `mod$<path>$<name>` for a module's (`mod$util$helper` for `helper` in `module util;`), and `<parent>$where$<name>` for a `where` helper, a monomorphized clone appending its type arguments (`$:identity$Int`).  No function code generation writes for itself (the allocator `$alloc`, the collector `$gc_collect`, a lifted closure `$anon_0`, a derived `$eq_Shape`) has a `:` in its name, and no Vera identifier can, so a declaration and a generated function never share a symbol.
 
 `QualifiedCall(IO, print, args)` compiles to a call to the corresponding host import:
 
@@ -244,7 +246,7 @@ All strings are concatenated into a single data segment starting at offset 0. Ea
 
 ## 11.6 Linear Memory
 
-The WASM module exports one page (64 KiB) of linear memory as `"memory"`. This memory holds:
+The WASM module exports one page (64 KiB) of linear memory as `"vera.memory"`. This memory holds:
 
 - **String constants** (data section, starting at offset 0)
 - **GC regions** — the shadow stack, the mark worklist and, for a program holding host-backed values, the wrapper table
@@ -278,7 +280,7 @@ The `IO` effect is implemented via host imports. Each IO operation the program u
 | `time` | `(import "vera" "time" (func $vera.time (result i64)))` |
 | `stderr` | `(import "vera" "stderr" (func $vera.stderr (param i32 i32)))` |
 
-Only the operations actually used in the program are imported. Operations that return host-allocated data (`read_line`, `read_char`, `read_file`, `write_file`, `read_bytes`, `write_bytes`, `args`, `get_env`) cause the module to export its `$alloc` function so the host can allocate WASM memory.
+Only the operations actually used in the program are imported. Operations that return host-allocated data (`read_line`, `read_char`, `read_file`, `write_file`, `read_bytes`, `write_bytes`, `args`, `get_env`) cause the module to export its `$alloc` function, as `"vera.alloc"`, so the host can allocate WASM memory.  Every name the module exports its runtime under starts with `vera.`, which no Vera identifier can spell, so a program's public function named `alloc` is exported beside the allocator.
 
 `IO.exit` emits `unreachable` after the call since the process terminates. Operations returning `Result` or `Option` return an `i32` heap pointer to the ADT; operations returning `String` or `Array<String>` return an `(i32, i32)` pair.
 

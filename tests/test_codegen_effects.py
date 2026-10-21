@@ -236,7 +236,7 @@ public fn f(@Unit -> @Unit)
 """
         result = _compile_ok(source)
         # The function body should NOT contain 'drop' after the put call
-        fn_start = result.wat.index("(func $f")
+        fn_start = result.wat.index("(func $:f")
         fn_body = result.wat[fn_start:]
         # put call should be present, drop should not follow it
         assert "call $vera.state_put_Int" in fn_body
@@ -2648,13 +2648,13 @@ def test_a_user_fn_shadows_one_state_op_without_disturbing_its_sibling(
     # Scoped to `probe`'s own body: the module legitimately declares the
     # `Bool` imports for `main`'s handler, so a whole-module search would
     # confirm nothing about which family `probe` calls.
-    body = re.search(r"\(func \$probe\b.*?\n  \)", wat, re.S)
+    body = re.search(r"\(func \$:probe\b.*?\n  \)", wat, re.S)
     assert body is not None, f"no $probe function in the emitted WAT:\n{wat[:400]}"
     calls = [
         line.strip() for line in body.group(0).splitlines()
         if "call " in line
     ]
-    assert any(c.endswith(f"${shadowed}") for c in calls), (
+    assert any(c.endswith(f"$:{shadowed}") for c in calls), (
         f"the user-defined `{shadowed}` is not called from probe — the "
         f"declared row re-registered the shadowed op: {calls}"
     )

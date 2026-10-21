@@ -17,6 +17,7 @@ from vera.builtins import (
     host_import,
 )
 from vera.envflags import flag_enabled
+from vera.runtime import runtime_export
 from vera.monomorphize import mangle_type_name
 from vera.skip import CodegenInvariantError
 from vera.trap_registry import signal_instructions
@@ -173,7 +174,8 @@ class AssemblyMixin:
 
         # Memory (for string data and heap)
         if self._needs_memory or self.string_pool.has_strings():
-            parts.append('  (memory (export "memory") 1)')
+            parts.append(
+                f'  (memory (export "{runtime_export("memory")}") 1)')
 
         # Data section (string constants)
         for value, offset, _length in self.string_pool.entries():
@@ -245,7 +247,7 @@ class AssemblyMixin:
                     "and a root the seed dropped would be swept while live"
                 )
             parts.append(
-                f"  (global $heap_ptr (export \"heap_ptr\") "
+                f"  (global $heap_ptr (export \"{runtime_export('heap_ptr')}\") "
                 f"(mut i32) (i32.const {gc_heap_start}))"
             )
             # #692: $gc_sp and $gc_stack_limit are exported so host
@@ -262,7 +264,7 @@ class AssemblyMixin:
             # $gc_stack_limit is immutable — the host reads it to
             # detect overflow before pushing.
             parts.append(
-                f"  (global $gc_sp (export \"gc_sp\") (mut i32) "
+                f"  (global $gc_sp (export \"{runtime_export('gc_sp')}\") (mut i32) "
                 f"(i32.const {gc_stack_base}))"
             )
             parts.append(
@@ -271,7 +273,8 @@ class AssemblyMixin:
             )
             gc_stack_limit = gc_stack_base + gc_stack_size
             parts.append(
-                f"  (global $gc_stack_limit (export \"gc_stack_limit\") "
+                f"  (global $gc_stack_limit "
+                f"(export \"{runtime_export('gc_stack_limit')}\") "
                 f"i32 (i32.const {gc_stack_limit}))"
             )
             parts.append(
@@ -349,7 +352,7 @@ class AssemblyMixin:
                 # at the WASM layer (which now expects wrapper
                 # pointers, not raw handles, on the operand stack).
                 parts.append(
-                    '  (export "register_wrapper" '
+                    f'  (export "{runtime_export("register_wrapper")}" '
                     '(func $register_wrapper))'
                 )
             parts.append(self._emit_gc_base_bitmap_helpers())
@@ -379,7 +382,8 @@ class AssemblyMixin:
         # anything else that allocates (e.g. String params need allocation
         # for CLI argument passing)
         if self._needs_alloc:
-            parts.append('  (export "alloc" (func $alloc))')
+            parts.append(
+                f'  (export "{runtime_export("alloc")}" (func $alloc))')
 
         # Closure type declarations (for call_indirect)
         for sig_content, sig_name in self._closure_sigs.items():

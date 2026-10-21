@@ -597,7 +597,7 @@ def assert_no_orphan_call_indirect(wat: str) -> None:
 
 
 #: Each function a module defines, as its ``(func $name`` header spells it.
-_FUNC_DEF_RE = re.compile(r"(?m)^\s*\(func \$([^\s()]+)")
+_FUNC_DEF_RE = re.compile(r"(?m)^\s*\(func \$:?([^\s()]+)")
 
 #: What a recorded check can carry: the kinds, emitters and obligation kinds
 #: of the emitters that record each check they emit (``TrapEmitter.per_site``).

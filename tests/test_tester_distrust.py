@@ -1386,16 +1386,16 @@ class TestAProofIsRunWhereverACheckStandsForIt:
         wat = (
             "  (table 1 funcref)\n"
             "  (elem (i32.const 0) func $anon_0)\n"
-            "  (func $f (param $p0 i64) (result i64)\n"
+            "  (func $:f (param $p0 i64) (result i64)\n"
             "    call_indirect (type $closure_sig_0)\n"
             "  )\n"
             "  (func $anon_0 (param $env i32) (result i64)\n"
-            "    call $helper\n"
+            "    call $:helper\n"
             "  )\n"
-            "  (func $helper (result i64)\n"
+            "  (func $:helper (result i64)\n"
             "    i64.const 1\n"
             "  )\n"
-            "  (func $unrelated (result i64)\n"
+            "  (func $:unrelated (result i64)\n"
             "    i64.const 2\n"
             "  )\n")
         index = _TrapIndex([], [], wat)
@@ -1426,9 +1426,9 @@ _EXERCISE_CELLS: dict[str, tuple[str, bool, bool]] = {
 }
 
 _EXERCISE_WAT = (
-    "  (func $f (param $p0 i64) (result i64)\n    call $g\n  )\n"
-    "  (func $g (param $p0 i64) (result i64)\n    i64.const 1\n  )\n"
-    "  (func $h (result i64)\n    i64.const 2\n  )\n")
+    "  (func $:f (param $p0 i64) (result i64)\n    call $:g\n  )\n"
+    "  (func $:g (param $p0 i64) (result i64)\n    i64.const 1\n  )\n"
+    "  (func $:h (result i64)\n    i64.const 2\n  )\n")
 
 
 @pytest.mark.parametrize("cell", list(_EXERCISE_CELLS))

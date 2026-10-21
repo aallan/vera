@@ -386,7 +386,7 @@ def _run(source: str, fn: str, args: list[int]) -> int:
 
 
 def _func_names(wat: str) -> list[str]:
-    return re.findall(r"\(func \$([^\s)]+)", wat)
+    return re.findall(r"\(func \$:?([^\s)]+)", wat)
 
 
 class TestWhereHelperNameCollision991:

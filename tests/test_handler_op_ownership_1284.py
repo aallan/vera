@@ -137,7 +137,7 @@ def test_handled_body_user_get_returns_the_user_answer() -> None:
 
 
 def test_handled_body_user_get_emits_the_user_call() -> None:
-    """The dispatch target, not just the value: `call $get`, no intrinsic."""
+    """The dispatch target, not just the value: `call $:get`, no intrinsic."""
     result = _compile(_HANDLED_BODY)
     assert result.wat is not None
     assert wat_calls(result.wat, "get")

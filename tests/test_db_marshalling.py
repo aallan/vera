@@ -161,7 +161,7 @@ class TestOptionStringArrayRoundTrip:
         # `mem_size` only after the backing is placed, or `straddle` lands
         # inside a since-grown region and no longer straddles the end.
         backing, count = _alloc_array_of_options_of_string(caller, ["x"])
-        memory = caller["memory"]
+        memory = caller["vera.memory"]
         assert isinstance(memory, wasmtime.Memory)
         mem_size = memory.data_len(caller)
         straddle = mem_size - 8            # tag read OK (+4); +12 overruns

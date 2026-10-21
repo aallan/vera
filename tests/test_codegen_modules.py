@@ -699,7 +699,7 @@ class TestCrossModuleGenerics774:
     ``program.declarations`` (the imported generic isn't there) and the defining
     module only monomorphized its own instantiations, so the clone was emitted
     NOWHERE — ``vera check`` passed but ``vera run`` failed WASM validation at
-    ``call $gid`` (both call forms).  The #814 asymmetric variant (a generic
+    ``call $:gid`` (both call forms).  The #814 asymmetric variant (a generic
     shadowed by a local AND qualified-called) false-Tier-1'd instead: verify
     resolved the module generic's contract while codegen fell back to the local
     shadow.
@@ -722,7 +722,7 @@ public forall<T> fn gid(@T -> @T)
     def test_imported_generic_bare_call_executes(self) -> None:
         """`gid(42)` (bare) runs, returning 42 — the importer emits gid$Int.
 
-        Pre-fix this failed WASM validation at ``call $gid`` (no clone).  The
+        Pre-fix this failed WASM validation at ``call $:gid`` (no clone).  The
         observable output (42) cannot coincide with the phantom-var default
         (Bool/i32), so a discovery miss can't masquerade as a pass.
         """
@@ -740,7 +740,7 @@ public fn main(@Unit -> @Int)
 
         The qualified form is an ``ast.ModuleCall`` the shared discovery now
         walks; it desugars to the bare mono target at codegen.  Pre-fix it
-        crashed identically at ``call $gid``.
+        crashed identically at ``call $:gid``.
         """
         mod = self._resolved(("genmod",), self.GEN_MODULE)
         val = self._run_mod("""\
@@ -2399,7 +2399,7 @@ public fn show(@Int -> @Int)
     def test_module_user_show_in_tuple_field_runs(self) -> None:
         """``Tuple(m::show(@Int.0), 9)`` where ``m::show`` returns @Int (i64) —
         the canonical #908 repro.  Before the fix, the field was sized as the
-        ability-op ``i32_pair`` while the emitted ``call $show`` returned i64.
+        ability-op ``i32_pair`` while the emitted ``call $:show`` returned i64.
         Extracts the trailing literal ``9`` (De Bruijn ``@Int.0`` = LAST)."""
         mod = self._resolved(("m",), self.SHOW_INT_MODULE)
         val = self._run_mod("""\
@@ -2624,7 +2624,7 @@ public fn main(@Unit -> @Int)
 
         ``top(5)`` → ``a(5)`` → ``b(6)`` → ``c(16)`` → ``16 + 100`` = 116.  The
         registration walk must reach ``c`` (a great-grandchild), not just ``a``
-        and ``b``, or ``b``'s ``call $c`` dangles.
+        and ``b``, or ``b``'s ``call $:c`` dangles.
         """
         lib_src = """\
 public fn top(@Int -> @Int)
@@ -2952,7 +2952,7 @@ public fn main(@Unit -> @Int)
         """#1029 (R1): a NON-generic imported fn (`use_it`) that calls a private
         module generic (`inner`) must reach the module's own `mod$lib$inner`
         clone.  Pre-fix only the public-generic branch rerouted, so `use_it`'s
-        bare `inner(@Int.0)` compiled to a `call $inner` that dangled at run
+        bare `inner(@Int.0)` compiled to a `call $:inner` that dangled at run
         (`unknown func`).  `inner` is identity, so `use_it(4) = 4 + 1 = 5`."""
         mod = self._resolved(("lib",), """\
 private forall<T> fn inner(@T -> @T)
@@ -3082,8 +3082,8 @@ public fn main(@Unit -> @Int)
         result = self._compile_mod(self.MAIN, mods)
         errors = [d for d in result.diagnostics if d.severity == "error"]
         assert not errors, f"Unexpected errors: {[e.description for e in errors]}"
-        assert "(func $mod$ca$gc (result i64)" in result.wat
-        assert "(func $mod$da$gd (result i32 i32)" in result.wat
+        assert "(func $:mod$ca$gc (result i64)" in result.wat
+        assert "(func $:mod$da$gd (result i32 i32)" in result.wat
 
     def test_local_alias_never_leaks_into_module_body(self) -> None:
         """A main-file ``type F = Bool`` must not re-type an imported

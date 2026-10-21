@@ -778,9 +778,9 @@ def test_every_compile_holds_the_call_indirect_table_invariant() -> None:
     """#1185, asserted on every module the stage builds."""
     with pytest.raises(AssertionError, match="#1185"):
         pipeline.assert_no_orphan_call_indirect(
-            "(module\n  (func $f\n    call_indirect (type 0)\n  )\n)")
+            "(module\n  (func $:f\n    call_indirect (type 0)\n  )\n)")
     pipeline.assert_no_orphan_call_indirect(
-        "(module\n  (table 1 funcref)\n  (func $f\n    call_indirect (type 0)\n  )\n)")
+        "(module\n  (table 1 funcref)\n  (func $:f\n    call_indirect (type 0)\n  )\n)")
     pipeline.assert_no_orphan_call_indirect("(module\n  (table 1 funcref)\n)")
 
 

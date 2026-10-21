@@ -56,6 +56,7 @@ from vera.markdown import (
     MdThematicBreak,
 )
 from vera.runtime.heap import _require_readable, _slice_and_decode
+from vera.runtime import runtime_export
 
 # Type aliases for the helper functions passed from api.py
 AllocFn = Callable[["wasmtime.Caller", int], int]
@@ -470,7 +471,7 @@ def _read_i32(caller: wasmtime.Caller, offset: int) -> int:
     friends), so an offset here is guest data, not an allocator's
     answer, and a raw ctypes slice would read the guard page.
     """
-    memory = caller["memory"]
+    memory = caller[runtime_export("memory")]
     assert isinstance(memory, wasmtime.Memory)  # noqa: S101
     _require_readable(memory, caller, offset, 4, "i32")
     buf = memory.data_ptr(caller)
@@ -484,7 +485,7 @@ def _read_i64(caller: wasmtime.Caller, offset: int) -> int:
     Bounds-checked through ``heap._require_readable`` (#1442), as
     :func:`_read_i32` above and for the same reason.
     """
-    memory = caller["memory"]
+    memory = caller[runtime_export("memory")]
     assert isinstance(memory, wasmtime.Memory)  # noqa: S101
     _require_readable(memory, caller, offset, 8, "i64")
     buf = memory.data_ptr(caller)
@@ -515,7 +516,7 @@ def _read_string(caller: wasmtime.Caller, ptr: int, length: int) -> str:
     """
     if length == 0:
         return ""  # pragma: no cover
-    memory = caller["memory"]
+    memory = caller[runtime_export("memory")]
     assert isinstance(memory, wasmtime.Memory)  # noqa: S101
     _require_readable(memory, caller, ptr, length, "string")
     return _slice_and_decode(memory, caller, ptr, length)

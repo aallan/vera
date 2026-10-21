@@ -1181,9 +1181,9 @@ class TestStockWasmtimeCli:
 # =====================================================================
 
 class TestReservedMarkerScan:
-    """The reserved-identifier check must inspect WAT identifiers, not
-    data-segment payloads — a program PRINTING "$wasi_tbl" is fine; a
-    program DEFINING a fn named wasi_tbl is a real collision."""
+    """The adapter's identifiers (`$wasi_tbl`, `$cabi_realloc`, …) and a
+    program's are disjoint: a program PRINTING "$wasi_tbl" writes data, and a
+    program DEFINING a fn named `wasi_tbl` defines `$:wasi_tbl` (#1694)."""
 
     def test_literal_containing_marker_is_accepted(self) -> None:
         result = _compile_ok("""\
@@ -1196,22 +1196,25 @@ public fn main(-> @Unit)
         _, out, _ = _run_component(result)
         assert out == "$wasi_tbl is a nice name"
 
-    def test_identifier_collision_is_still_rejected(self) -> None:
-        result = _compile_ok("""\
-private fn wasi_tbl(-> @Int)
+    @pytest.mark.parametrize("name", ["wasi_tbl", "wasi_arena_ptr", "cabi_realloc"])
+    def test_a_function_named_like_an_adapter_identifier_runs(
+        self, name: str,
+    ) -> None:
+        result = _compile_ok(f"""\
+public fn {name}(-> @Int)
   requires(true) ensures(true) effects(pure)
-{
+{{
   1
-}
+}}
 
-public fn main(-> @Int)
+public fn main(-> @Unit)
   requires(true) ensures(true) effects(<IO>)
-{
-  wasi_tbl()
-}
+{{
+  IO.print(int_to_string({name}()))
+}}
 """)
-        with pytest.raises(ValueError, match="reserved identifier"):
-            emit_wasi_component(result)
+        _, out, _ = _run_component(result)
+        assert out == "1"
 
     def test_longer_identifier_sharing_the_prefix_is_accepted(
         self,
@@ -1515,7 +1518,7 @@ public fn handle(@Request -> @Response)
         """Map family lands at slots 16+; the table must grow from the
         cli world's (design §1.3)."""
         wat = _emit_server(HTTP_SERVER_EXAMPLE)
-        assert '(table $wasi_tbl (export "wasi_tbl") 32 32 funcref)' in wat
+        assert '(table $wasi_tbl (export "vera.wasi_tbl") 32 32 funcref)' in wat
 
     def test_no_two_ops_share_a_dispatch_slot(self) -> None:
         """The op table's slots are picked by hand, so nothing but this
@@ -1666,7 +1669,7 @@ class TestCliWorldPin:
         # is one past the highest cli slot, so adding an op (#754 did) moves
         # it, and a literal here would only record when someone last looked.
         assert (
-            f'(table $wasi_tbl (export "wasi_tbl") '
+            f'(table $wasi_tbl (export "vera.wasi_tbl") '
             f'{_CLI_TABLE_SIZE} {_CLI_TABLE_SIZE} funcref)'
         ) in wat
         assert "wasi:http" not in wat
@@ -1973,7 +1976,7 @@ class TestWasmtimeServeSmoke:
         # wasmtime's own 500 + symbolized backtrace naming the guest
         # frames, and the violation text via the stderr channel.
         assert "worker failed" in log
-        assert "Main!handle" in log
+        assert "Main!:handle" in log
         assert "requires" in log
 
     def test_an_escaped_exception_is_named_by_the_served_component(

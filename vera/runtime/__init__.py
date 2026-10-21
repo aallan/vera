@@ -19,3 +19,17 @@ pluggable adapter, so it stays inline in `codegen/api.py`.  See
 `vera/README.md`, "Host-binding families (`vera/runtime/`)", for the
 boundary rationale.
 """
+
+#: What every name the compiled module exports its runtime under starts
+#: with (#1694): the memory, the allocator, the GC globals a host walks the
+#: shadow stack through, the wrapper registration and the WASI adapter's
+#: table, arena and realloc.  ``.`` is no Vera identifier's character, so a
+#: program's public function named ``alloc`` is exported beside the
+#: allocator, never over it.  Code generation writes these names and every
+#: host reads them through :func:`runtime_export`.
+RUNTIME_EXPORT_PREFIX = "vera."
+
+
+def runtime_export(name: str) -> str:
+    """The export name of the runtime's *name* (``memory``, ``alloc``, …)."""
+    return RUNTIME_EXPORT_PREFIX + name

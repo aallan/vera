@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from vera import ast
+from vera.binding import symbol
 from vera.builtins import INTRINSICS, Binding, Intrinsic
 from vera.monomorphize import (
     Monomorphizer,
@@ -359,9 +360,9 @@ class CallsMixin:
             sig = self._fn_ret_types.get(call_target)
             callee_ret_wt = sig if isinstance(sig, str) else None
         if is_tail and callee_ret_wt == self._self_ret_wt:
-            instructions.append(f"return_call ${call_target}")
+            instructions.append(f"return_call ${symbol(call_target)}")
         else:
-            instructions.append(f"call ${call_target}")
+            instructions.append(f"call ${symbol(call_target)}")
         return instructions
 
     def _lower_intrinsic(

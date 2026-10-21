@@ -399,7 +399,7 @@ public fn main(@Unit -> @Int)
 }
 """
         result = _compile_ok(source)
-        assert re.search(r"return_call \$drain(?![A-Za-z0-9_])", result.wat), (
+        assert re.search(r"return_call \$:drain(?![A-Za-z0-9_])", result.wat), (
             "the guarded self-tail site must keep return_call — the "
             "site-check prefix exists precisely so TCO survives the guard"
         )

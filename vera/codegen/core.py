@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 import wasmtime
 
 from vera import ast, naming
+from vera.binding import source_name, symbol
 from vera.codegen.api import CompileResult
 from vera.codegen.memory import ConstructorLayout
 from vera.errors import Diagnostic, SourceLocation
@@ -920,7 +921,8 @@ class CodeGenerator(
         headers = list(_WAT_FN_DEF_RE.finditer(wat))
         out: list[EmittedCheck] = []
         for position, header in enumerate(headers):
-            function = header.group(1)
+            # The record names a declaration's function by its link name.
+            function = source_name(header.group(1))
             end = (headers[position + 1].start()
                    if position + 1 < len(headers) else len(wat))
             prelude = function.split("$")[0] in self._prelude_fn_names
@@ -1094,7 +1096,8 @@ class CodeGenerator(
         """
         diags_before = len(self.diagnostics)
         closures_before = len(self._closure_fns_wat)
-        self._fn_decl_by_wat_name[decl.name] = decl
+        wat_name = symbol(decl.name)
+        self._fn_decl_by_wat_name[wat_name] = decl
         # #1208: the one door every emission passes, so the function's own
         # type-parameter narrowing is applied here rather than at each caller.
         with self._fn_alias_scope(decl):
@@ -1117,12 +1120,12 @@ class CodeGenerator(
                 ),
                 None,
             )
-            self._skipped_fn_roots[decl.name] = root
+            self._skipped_fn_roots[wat_name] = root
         else:
             for closure_wat in self._closure_fns_wat[closures_before:]:
                 match = _WAT_FN_NAME_RE.match(closure_wat)
                 if match:
-                    self._closure_parents[match.group(1)] = decl.name
+                    self._closure_parents[match.group(1)] = wat_name
         return fn_wat
 
     def _export_host_string_maps(self) -> None:
@@ -1195,7 +1198,9 @@ class CodeGenerator(
         # #1183: a directly-skipped function is already absent from the
         # module — record it before the early return so a program whose
         # ONLY drop is the root still reports it.
-        self._dropped_fn_diags.update(self._skipped_fn_roots)
+        self._dropped_fn_diags.update(
+            (source_name(name), diag)
+            for name, diag in self._skipped_fn_roots.items())
         # #1185: `_needs_table` is set in the same commit block that
         # extends `_closure_table` / `_closure_fns_wat`, so "the table is
         # suppressed" and "no closure survived the lift" are the same
@@ -1320,7 +1325,7 @@ class CodeGenerator(
                     why = (
                         f"the module's function table is empty: no "
                         f"closure survived codegen (function "
-                        f"'{root_of[name]}' was skipped — see the "
+                        f"'{source_name(root_of[name])}' was skipped — see the "
                         f"[{orphan_diag.error_code}] diagnostic at "
                         f"{_where(orphan_diag)})"
                     )
@@ -1331,7 +1336,7 @@ class CodeGenerator(
                     )
                 self._warning(
                     decl,
-                    f"Function '{name}' applies a closure via "
+                    f"Function '{source_name(name)}' applies a closure via "
                     f"call_indirect, but {why} — function dropped from "
                     f"the compiled output.",
                     rationale="An indirect call dispatches through the "
@@ -1351,7 +1356,7 @@ class CodeGenerator(
                 # explanation — record it so `vera run --fn <carrier>`
                 # refuses with it instead of falling back to the
                 # silent-substitution class (PR #1192 review).
-                self._dropped_fn_diags[name] = self.diagnostics[-1]
+                self._dropped_fn_diags[source_name(name)] = self.diagnostics[-1]
                 continue
             cause = direct_cause[name]
             via_closure = cause in closure_names
@@ -1360,7 +1365,7 @@ class CodeGenerator(
                 # travel as table indices), so one hop lands on a real
                 # function symbol.
                 cause = direct_cause[cause]
-            root_name = root_of[name]
+            root_name = source_name(root_of[name])
             root_diag = doomed[name]
             if root_diag is not None:
                 where = _where(root_diag)
@@ -1373,6 +1378,7 @@ class CodeGenerator(
                     "which could not be compiled (see the earlier "
                     "diagnostics)"
                 )
+            cause = source_name(cause)
             if cause == root_name:
                 chain = f"function '{root_name}', {root_part}"
             else:
@@ -1389,7 +1395,7 @@ class CodeGenerator(
             )
             self._warning(
                 decl,
-                f"Function '{name}' {verb} {chain} — "
+                f"Function '{source_name(name)}' {verb} {chain} — "
                 f"function dropped from the compiled output.",
                 rationale="The skipped function is absent from the "
                 "emitted WASM module, so this function's call to it "
@@ -1403,12 +1409,12 @@ class CodeGenerator(
             )
             # #1183: the [E620] just appended IS this function's
             # explanation — a caller drop has no root skip of its own.
-            self._dropped_fn_diags[name] = self.diagnostics[-1]
+            self._dropped_fn_diags[source_name(name)] = self.diagnostics[-1]
 
         # Prune the doomed top-level functions and their exports; stub
         # the doomed closure bodies in place (table slots must survive).
         dropped_set = set(dropped_tops)
-        exports[:] = [e for e in exports if e not in dropped_set]
+        exports[:] = [e for e in exports if symbol(e) not in dropped_set]
         self._closure_fns_wat = [
             (
                 f"  (func ${match.group(1)} {_DROPPED_CLOSURE_BODY})"

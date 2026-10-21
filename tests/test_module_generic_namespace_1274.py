@@ -809,7 +809,7 @@ public fn main(@Unit -> @Bool)
         # clones had collapsed onto one symbol, `main` would carry the other's
         # i64 and this would be the only assertion that noticed.
         assert re.search(
-            r"\(func \$main[^\n]*\(result i32\)", result.wat,
+            r"\(func \$:main[^\n]*\(result i32\)", result.wat,
         ), (
             "main returns @Bool, so its WAT result type must be i32 — an i64 "
             "here is the type-discriminating collapse this shape exists to "
@@ -825,18 +825,18 @@ public fn main(@Unit -> @Bool)
             tmp_path, {"lib.vera": self._LIB, "main.vera": self._MAIN},
         )
         assert not cg_errors, f"codegen errors: {cg_errors}"
-        symbols = set(re.findall(r"\(func (\$[\w$]+)", result.wat))
+        symbols = set(re.findall(r"\(func (\$:?[\w$]+)", result.wat))
         gen2_syms = sorted(x for x in symbols if "gen2" in x)
         # WHOLE-symbol matches: `$gen2$Bool` is a suffix of
         # `$mod$lib$gen2$Bool`, so a substring test for the bare clone is
         # satisfied by the qualified one alone and the "two distinct
         # symbols" claim would be vacuous.
-        assert "$mod$lib$gen2$Bool" in symbols, (
+        assert "$:mod$lib$gen2$Bool" in symbols, (
             f"the module generic's clone must be qualified by its owning "
             f"module, like every other shadowed module function — "
             f"got {gen2_syms}"
         )
-        assert "$gen2$Bool" in symbols, (
+        assert "$:gen2$Bool" in symbols, (
             f"the IMPORTER's own gen2<Bool> must still occupy the bare "
             f"clone name — got {gen2_syms}"
         )

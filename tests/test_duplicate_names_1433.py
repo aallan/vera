@@ -1344,7 +1344,7 @@ def test_a_helper_binder_renamed_apart_leaves_no_trace(
     no function symbol carries it and no skip warning names one."""
     _, result, _ = build_multi_module(tmp_path, cell.files)
     assert "shadowed" not in result.wat, (cell.id, re.findall(
-        r"\(func \$(\S*shadowed\S*)", result.wat))
+        r"\(func \$:?(\S*shadowed\S*)", result.wat))
     skips = [(d.error_code, d.description) for d in result.diagnostics
              if d.error_code in {"E602", "E604", "E605"}]
     assert skips == [], (cell.id, skips)
@@ -1642,7 +1642,7 @@ def test_a_repeated_type_parameter_names_its_place_in_the_list(
 # The codegen backstop
 # ---------------------------------------------------------------------------
 
-_DEF_H = "  (func $f$where$h (param $p0 i64) (result i64)\n    local.get $p0)"
+_DEF_H = "  (func $:f$where$h (param $p0 i64) (result i64)\n    local.get $p0)"
 
 
 def test_the_backstop_refuses_one_identifier_defined_twice() -> None:
@@ -1650,9 +1650,9 @@ def test_the_backstop_refuses_one_identifier_defined_twice() -> None:
     reaches it, so it is asserted against hand-built modules rather than
     left an unmeasured comment.  It names the symbol, because the reader of
     an internal error is a compiler author."""
-    wat = "\n".join(["(module", _DEF_H, "  (func $other (result i64)\n"
+    wat = "\n".join(["(module", _DEF_H, "  (func $:other (result i64)\n"
                      "    i64.const 0)", _DEF_H, ")"])
-    with pytest.raises(CodegenInvariantError, match=r"\$f\$where\$h"):
+    with pytest.raises(CodegenInvariantError, match=r"\$:f\$where\$h"):
         AssemblyMixin._assert_unique_func_names(wat)
 
 
@@ -1678,12 +1678,12 @@ def test_the_backstop_does_not_count_references() -> None:
         '  (import "vera" "print" (func $vera.print (param i32 i32)))',
         "  (type $closure_sig_0 (func (param i32) (result i32)))",
         "  (table 1 funcref)",
-        "  (elem (i32.const 0) func $f$where$h)",
-        '  (export "f" (func $f))',
+        "  (elem (i32.const 0) func $:f$where$h)",
+        '  (export "f" (func $:f))',
         _DEF_H,
-        '  (func $f (export "f") (param $p0 i64) (result i64)',
+        '  (func $:f (export "f") (param $p0 i64) (result i64)',
         "    local.get $p0",
-        "    call $f$where$h)",
+        "    call $:f$where$h)",
         ")",
     ])
     AssemblyMixin._assert_unique_func_names(wat)  # must not raise
@@ -1691,7 +1691,7 @@ def test_the_backstop_does_not_count_references() -> None:
 
 @pytest.mark.parametrize(
     "cell_id,symbol",
-    [("fn/twice", r"\$f\b"), ("where/twice", r"\$f\$where\$h")],
+    [("fn/twice", r"\$:f\b"), ("where/twice", r"\$:f\$where\$h")],
 )
 def test_a_compile_that_skips_the_checker_ends_in_an_e699(
     cell_id: str, symbol: str,

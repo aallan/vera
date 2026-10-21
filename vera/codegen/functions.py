@@ -10,6 +10,7 @@ import functools
 from typing import TYPE_CHECKING, cast
 
 from vera import ast
+from vera.binding import SYMBOL_PREFIX, source_name, symbol
 from vera.skip import AdtEqNotDerivableError, CodegenInvariantError, CodegenSkip
 from vera.codegen.compilability import contract_exprs
 from vera.tail_position import compute_tail_call_sites
@@ -145,7 +146,7 @@ class FunctionCompilationMixin:
         body.append(f"try_table {result_spec} {catches} (catch_all $xb_any)"
                     .replace("  ", " "))
         body.extend(f"  local.get {k}" for k in range(n_params))
-        body.append(f"  call ${name}")
+        body.append(f"  call ${symbol(name)}")
         body.append("end")
         body.append("return")
         for i in reversed(range(len(tags))):
@@ -389,7 +390,7 @@ class FunctionCompilationMixin:
             # is the defensive sibling of the append below, pinned by the
             # stubbed-lift regression in
             # tests/test_codegen_orphan_call_indirect_1185.py.
-            self._closure_lift_skips.append(decl.name)
+            self._closure_lift_skips.append(symbol(decl.name))
             self._emit_contract_predicate_degradation(ctx, exc, decl)
             return True
         except CodegenInvariantError as inv:  # #657: a closure-body invariant
@@ -409,7 +410,7 @@ class FunctionCompilationMixin:
             # false no-closure-in-program wording.  Pinned by the
             # `invariant_error` leg of the stubbed-lift regression in
             # tests/test_codegen_orphan_call_indirect_1185.py.
-            self._closure_lift_skips.append(decl.name)
+            self._closure_lift_skips.append(symbol(decl.name))
             self._harvest_interp_inference_failures(ctx)
             self._error(
                 inv.node if inv.node is not None else decl,
@@ -427,7 +428,7 @@ class FunctionCompilationMixin:
             # orphans every `call_indirect` elsewhere in the module — the
             # drop-propagation pass blames this function for those
             # carriers, so the user gets one root cause, not two.
-            self._closure_lift_skips.append(decl.name)
+            self._closure_lift_skips.append(symbol(decl.name))
             self._warning(
                 decl,
                 f"Function '{decl.name}' contains a closure whose "
@@ -1501,7 +1502,11 @@ class FunctionCompilationMixin:
                 if not stripped.startswith("return_call "):
                     patched_dec.append(instr)
                     continue
-                target = stripped.split()[1].lstrip("$")
+                # A declaration's symbol is `$:` + its link name; a generated
+                # function's is neither this one nor a guarded one.
+                wasm_target = stripped.split()[1].lstrip("$")
+                target = (source_name(wasm_target)
+                          if wasm_target.startswith(SYMBOL_PREFIX) else None)
                 ws = instr[: len(instr) - len(stripped)]
                 if target == decl.name:
                     if dec_self_tail is not None:
@@ -1614,7 +1619,9 @@ class FunctionCompilationMixin:
                     if export else None)
         export_part = (f' (export "{decl.name}")'
                        if export and boundary is None else "")
-        header = f"  (func ${decl.name}{export_part}"
+        # #1694: a declaration's symbol is `$:` + its link name, which no
+        # function code generation generates for itself can spell.
+        header = f"  (func ${symbol(decl.name)}{export_part}"
         if param_parts:
             header += " " + " ".join(param_parts)
         header += result_part

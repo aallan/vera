@@ -59,9 +59,6 @@ def _codes(diagnostics: object) -> list[str | None]:
 
 # The mechanisms still to land, each a strict xfail on the cells it flips:
 # a cell that starts passing fails the run until its mark is removed.
-_SYMBOLS = pytest.mark.xfail(strict=True, reason=(
-    "#1694: a declaration's WASM symbol in its own namespace, `$:` + link "
-    "name (vera.binding.DeclId.symbol)"))
 _LINKED = pytest.mark.xfail(strict=True, reason=(
     "#1694: code generation and the verifier compile the linked program "
     "vera.binding names (module declarations always `mod$<path>$<name>`)"))
@@ -88,7 +85,6 @@ def _refused(source: str | Path, code: str) -> None:
 # code generation emits.
 # =====================================================================
 
-@_SYMBOLS
 @pytest.mark.parametrize("name", ["alloc", "gc_collect"])
 def test_repro_1494_runtime_helper_name(name: str) -> None:
     """A user ``alloc`` or ``gc_collect`` beside a program that allocates."""
@@ -100,7 +96,6 @@ def test_repro_1494_runtime_helper_name(name: str) -> None:
     assert pipeline.run(source, "main", [3]).value == "4!"
 
 
-@_SYMBOLS
 def test_repro_1494_lifted_closure_name() -> None:
     """A user ``anon_0`` beside a program that lifts a closure."""
     source = (
@@ -112,7 +107,6 @@ def test_repro_1494_lifted_closure_name() -> None:
     assert pipeline.run(source, "main", [3]).value == 7
 
 
-@_SYMBOLS
 def test_repro_1694_string_equality_helper_name() -> None:
     """A user ``eq_String`` beside a ``String``-keyed ``Map`` (#1694's
     sighting from the persistent collections pull request)."""

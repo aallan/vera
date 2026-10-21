@@ -116,7 +116,9 @@ def _fn_body(wat: str, name: str) -> str:
     module pushes SOMETHING; the claim under test is about one function's
     roots, and a module-wide count would be satisfied by any other push.
     """
-    start = wat.index(f"(func ${name} ")
+    found = re.search(rf"\(func \$:?{re.escape(name)} ", wat)
+    assert found is not None, f"no `(func ${name}` in the emitted WAT"
+    start = found.start()
     rest = wat[start + 1:]
     nxt = rest.find("\n  (func ")
     return rest if nxt < 0 else rest[:nxt]
@@ -936,7 +938,7 @@ class TestTheThrowPayloadResolvesInItsOwnModule:
         # entry's under its own: the bodies, not the names, are the claim.
         xmod = _fn_body(_compile_xmod(tmp_path).wat, "mod$xmodlib$boom")
         same = _fn_body(_compile_ok(_XMOD_SAME_MODULE).wat, "boom")
-        assert xmod.replace("$mod$xmodlib$boom", "$boom") == same, (
+        assert xmod.replace("$:mod$xmodlib$boom", "$:boom") == same, (
             xmod, same)
         assert "i32.const 5" in xmod, xmod
 

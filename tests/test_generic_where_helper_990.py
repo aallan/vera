@@ -125,12 +125,12 @@ def _assert_compiles_and_runs(source: str, expected: int) -> None:
 
 
 def _func_names(wat: str) -> list[str]:
-    return re.findall(r"\(func \$([^\s)]+)", wat)
+    return re.findall(r"\(func \$:?([^\s)]+)", wat)
 
 
 class TestNestedGenericWhereHelper990:
     def test_generic_helper_under_nongeneric_parent_runs(self) -> None:
-        # THE BUG: check green, compile drops the clone, `call $gid` dangles.
+        # THE BUG: check green, compile drops the clone, `call $:gid` dangles.
         _assert_compiles_and_runs(_NESTED_GENERIC, 15)
 
     def test_clone_emitted_exactly_once(self) -> None:

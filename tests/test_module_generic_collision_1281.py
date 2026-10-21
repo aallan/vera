@@ -252,11 +252,11 @@ class TestDiamond:
         emitted = wat_fn_names(result.wat)
         # Absence, so the unbounded prefix is the conservative direction: ANY
         # `gen$…` in the entry's bare clone namespace is the failure.
-        assert "(func $gen$" not in result.wat, (
+        assert "(func $:gen$" not in result.wat, (
             f"a generic was emitted in the ENTRY's bare clone namespace, "
             f"where neither owner belongs; emitted: {emitted}"
         )
-        # Presence, so matched EXACTLY — `"(func $mod$mid1$gen$Bool" in wat`
+        # Presence, so matched EXACTLY — `"(func $:mod$mid1$gen$Bool" in wat`
         # is a prefix test a longer mangled clone would satisfy.
         assert "mod$mid1$gen$Bool" in emitted, emitted
         assert "mod$base$gen$Bool" in emitted, emitted
@@ -840,8 +840,8 @@ class TestPrescribedRemedyCompiles:
             {"liba.vera": _LIBA_PICK, "libb.vera": _LIBB_PICK,
              "main.vera": _ENTRY_LOCAL_PLUS_QUALIFIED},
         )
-        assert "$mod$liba$pick" in result.wat, "liba's body is missing"
-        assert "$mod$libb$pick" in result.wat, "libb's body is missing"
+        assert "$:mod$liba$pick" in result.wat, "liba's body is missing"
+        assert "$:mod$libb$pick" in result.wat, "libb's body is missing"
 
     def test_without_a_local_declaration_the_checker_still_refuses(
         self, tmp_path: Path,

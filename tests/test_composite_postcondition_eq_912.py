@@ -324,7 +324,7 @@ def _mono_clone_postcond_wat(source: str, clone: str) -> str:
     # Boundary-safe: the clone name is followed by whitespace or `(` in the
     # WAT header, so anchor on that to avoid matching a longer symbol sharing
     # the prefix (`$rebox$Int` must not match `$rebox$IntArray`).
-    m = re.search(r"\(func \$" + re.escape(clone) + r"[\s(]", result.wat)
+    m = re.search(r"\(func \$:" + re.escape(clone) + r"[\s(]", result.wat)
     assert m is not None, f"clone {clone!r} not found in WAT:\n{result.wat}"
     start = m.start()
     end = result.wat.find("(func ", m.end())

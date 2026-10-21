@@ -1748,7 +1748,7 @@ def test_heap_exhaustion_is_named_in_the_browser_under_a_memory_cap(
 _SIGNAL_CALL = re.compile(
     r"i32\.const (\d+)\s+i32\.const \d+\s+i32\.const \d+\s+call \$vera\.trap\b")
 _CONTRACT_CALL = re.compile(r"call \$vera\.contract_fail\b")
-_FUNC = re.compile(r"^  \(func \$([^\s()]+)", re.M)
+_FUNC = re.compile(r"^  \(func \$:?([^\s()]+)", re.M)
 
 #: Runtime functions, emitted once per module and belonging to no source
 #: site, so their signals are not per-site checks.

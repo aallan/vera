@@ -107,15 +107,15 @@ def _local_gets(body: str) -> set[int]:
 
 
 def _fn_body(wat: str, symbol: str) -> str:
-    """The WAT body of ``(func $symbol …)``, matched on the WHOLE symbol.
+    """The WAT body of ``(func $:symbol …)``, matched on the WHOLE symbol.
 
-    ``wat.split("(func $pick")`` also lands on ``(func $pick$Int`` — the
+    ``wat.split("(func $:pick")`` also lands on ``(func $:pick$Int`` — the
     mangled clone — and on any longer name sharing the prefix, so the split
     can silently return a different function's body (PR #1224 review).
     """
-    m = re.search(r"\(func \$" + re.escape(symbol) + r"(?![\w$])", wat)
+    m = re.search(r"\(func \$:?" + re.escape(symbol) + r"(?![\w$])", wat)
     if m is None:
-        raise AssertionError(f"no `(func ${symbol}` in the emitted WAT:\n{wat}")
+        raise AssertionError(f"no `(func $:{symbol}` in the emitted WAT:\n{wat}")
     rest = wat[m.end():]
     nxt = rest.find("(func ")
     return rest if nxt < 0 else rest[:nxt]

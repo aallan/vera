@@ -63,10 +63,10 @@ class TestEmittedShadowPushBoundIsSlotComplete860:
         body = "\n".join(f"    {i}" for i in gc_shadow_push(0))
         wat = (
             "(module\n"
-            '  (memory (export "memory") 1)\n'
-            f'  (global $gc_sp (export "gc_sp") (mut i32) '
+            '  (memory (export "vera.memory") 1)\n'
+            f'  (global $gc_sp (export "vera.gc_sp") (mut i32) '
             f"(i32.const {self._STACK_BASE}))\n"
-            f'  (global $gc_stack_limit (export "gc_stack_limit") i32 '
+            f'  (global $gc_stack_limit (export "vera.gc_stack_limit") i32 '
             f"(i32.const {self._STACK_LIMIT}))\n"
             '  (func (export "push") (param i32)\n'
             f"{body}\n"
@@ -89,14 +89,14 @@ class TestEmittedShadowPushBoundIsSlotComplete860:
         GC worklist region the mark phase reads.
         """
         store, instance = self._instance()
-        sp = instance.exports(store)["gc_sp"]
+        sp = instance.exports(store)["vera.gc_sp"]
         assert isinstance(sp, wasmtime.Global)
         sp.set_value(store, self._STACK_LIMIT - headroom)
         push = instance.exports(store)["push"]
         assert isinstance(push, wasmtime.Func)
         with pytest.raises(wasmtime.Trap):
             push(store, 0x1234)
-        memory = instance.exports(store)["memory"]
+        memory = instance.exports(store)["vera.memory"]
         assert isinstance(memory, wasmtime.Memory)
         spill = bytes(memory.read(
             store,
@@ -116,14 +116,14 @@ class TestEmittedShadowPushBoundIsSlotComplete860:
         """
         store, instance = self._instance()
         exports = instance.exports(store)
-        sp = exports["gc_sp"]
+        sp = exports["vera.gc_sp"]
         assert isinstance(sp, wasmtime.Global)
         sp.set_value(store, self._STACK_LIMIT - 4)
         push = exports["push"]
         assert isinstance(push, wasmtime.Func)
         push(store, 0x1234)
         assert sp.value(store) == self._STACK_LIMIT
-        memory = exports["memory"]
+        memory = exports["vera.memory"]
         assert isinstance(memory, wasmtime.Memory)
         assert bytes(memory.read(
             store, self._STACK_LIMIT - 4, self._STACK_LIMIT,
@@ -133,7 +133,7 @@ class TestEmittedShadowPushBoundIsSlotComplete860:
         """``sp == limit`` was rejected by the old bound too — pin it."""
         store, instance = self._instance()
         exports = instance.exports(store)
-        sp = exports["gc_sp"]
+        sp = exports["vera.gc_sp"]
         assert isinstance(sp, wasmtime.Global)
         sp.set_value(store, self._STACK_LIMIT)
         push = exports["push"]
@@ -157,12 +157,12 @@ _SLOT_COMPLETE_WAT = re.compile(
 
 # The slot-START form in JavaScript: `sp` compared straight against the
 # limit global's value.
-_SLOT_START_JS = re.compile(r"sp\s*>=\s*wasm\.gc_stack_limit\.value")
+_SLOT_START_JS = re.compile(r"sp\s*>=\s*rt\('gc_stack_limit'\)\.value")
 
 # The slot-COMPLETE form in JavaScript, matching `_ShadowGuard.push`'s
 # predicate (negative `sp` rejected outright).
 _SLOT_COMPLETE_JS = re.compile(
-    r"sp\s*<\s*0\s*\|\|\s*sp\s*\+\s*4\s*>\s*wasm\.gc_stack_limit\.value",
+    r"sp\s*<\s*0\s*\|\|\s*sp\s*\+\s*4\s*>\s*rt\('gc_stack_limit'\)\.value",
 )
 
 
@@ -173,7 +173,9 @@ def _fn_body(wat: str, name: str) -> str:
     ``$register_wrapper`` cell: every allocating function in a module carries
     a shadow bound, so a module-wide search is answered by any of them.
     """
-    start = wat.index(f"(func ${name} ")
+    found = re.search(rf"\(func \$:?{re.escape(name)} ", wat)
+    assert found is not None, f"no `(func ${name}` in the emitted WAT"
+    start = found.start()
     rest = wat[start + 1:]
     nxt = rest.find("\n  (func ")
     return rest if nxt < 0 else rest[:nxt]

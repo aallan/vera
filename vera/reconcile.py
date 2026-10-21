@@ -840,7 +840,7 @@ def _left_unguarded(
 # Which code the module holds, and which code this run verified
 # =====================================================================
 
-_WAT_FN_DEF_RE = re.compile(r"^\s*\(func \$([^\s()]+)", re.MULTILINE)
+_WAT_FN_DEF_RE = re.compile(r"^\s*\(func \$:?([^\s()]+)", re.MULTILINE)
 
 
 def _compiled_regions(

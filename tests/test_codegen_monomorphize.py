@@ -228,7 +228,7 @@ public fn main(-> @Int)
 { identity(42) }
 """
         result = _compile_ok(source)
-        assert "$identity$Int" in result.wat
+        assert "$:identity$Int" in result.wat
 
     def test_generic_fn_mangled_in_exports(self) -> None:
         """Private generic's mangled names not exported; public caller is."""
@@ -2526,7 +2526,7 @@ public fn main(@Unit -> @Int)
 
         result = _compile_ok(self.TWO_PARAM_SRC)
         defs = re.findall(
-            r"\(func (\$unwrap_second\$[A-Za-z0-9_]+)", result.wat
+            r"\(func (\$:unwrap_second\$[A-Za-z0-9_]+)", result.wat
         )
         assert len(defs) == 2, (
             f"expected exactly 2 unwrap_second clones, got {defs}"
@@ -2536,7 +2536,7 @@ public fn main(@Unit -> @Int)
         )
         # Every call site must reference an emitted definition.
         calls = set(re.findall(
-            r"(?:return_)?call (\$unwrap_second\$[A-Za-z0-9_]+)",
+            r"(?:return_)?call (\$:unwrap_second\$[A-Za-z0-9_]+)",
             result.wat,
         ))
         assert calls == set(defs), (
@@ -2725,11 +2725,11 @@ public fn main(@Unit -> @Int)
         wat = result.wat or ""
         # Clone names use the #775 injective encoding: multi-arg
         # instantiation vectors join with `_J` (`my_map$Int_JInt`).
-        assert "$my_map$Int_JInt" in wat, (
+        assert "$:my_map$Int_JInt" in wat, (
             "expected the closure-bound instantiation my_map$Int_JInt; "
             "got: "
             + repr([ln for ln in wat.splitlines() if "my_map$" in ln][:4]))
-        assert "$my_map$Int_JBool" not in wat, (
+        assert "$:my_map$Int_JBool" not in wat, (
             "phantom-var default leaked into the mono suffix — the "
             "closure arg's alias chain did not resolve (#867 HOF path)")
 
@@ -2760,7 +2760,7 @@ class TestUserFnReturnTypeInArgPosition878:
         WAT-collapse ``i32 → "Bool"`` (a ``Decimal`` handle is ``i32``),
         the same value as the phantom-var default.
 
-    The call site then emitted ``call $option_unwrap_or$Bool`` — a clone
+    The call site then emitted ``call $:option_unwrap_or$Bool`` — a clone
     Pass 1.5 never emitted (discovery, which consults
     ``_BUILTIN_PARAMETERIZED_RETURNS`` and precise declared return types,
     correctly emitted ``$Decimal``) — so ``main`` was skipped and dropped
@@ -2804,10 +2804,10 @@ public fn main(@Unit -> @Unit)
         never the ``$Bool`` phantom-default clone."""
         result = _compile_ok(self._REPRO_IO)
         wat = result.wat or ""
-        assert "$option_unwrap_or$Decimal" in wat, (
+        assert "$:option_unwrap_or$Decimal" in wat, (
             "expected the Decimal instantiation option_unwrap_or$Decimal"
         )
-        assert "$option_unwrap_or$Bool" not in wat, (
+        assert "$:option_unwrap_or$Bool" not in wat, (
             "phantom-var Bool default leaked into the call target — the "
             "user-fn / parameterized-builtin return in argument position did "
             "not resolve (#878)"
@@ -2942,11 +2942,11 @@ public fn main(@Unit -> @Int)
         `$Decimal` clone, never the `$Bool` phantom default."""
         result = _compile_ok(self._ISSUE1_PARAM_RETURN)
         wat = result.wat or ""
-        assert "$first_opt$Decimal" in wat, (
+        assert "$:first_opt$Decimal" in wat, (
             "discovery did not emit first_opt$Decimal for a parameterized "
             "user-fn return (#899 issue 1)"
         )
-        assert "$first_opt$Bool" not in wat, (
+        assert "$:first_opt$Bool" not in wat, (
             "phantom Bool default leaked — discovery not mirrored to "
             "call-rewrite (#899 issue 1)"
         )
@@ -2999,10 +2999,10 @@ public fn main(@Unit -> @Int)
         alias name (`pick_last$Age`)."""
         result = _compile_ok(self._ISSUE2_ALIAS_SCALAR_RETURN)
         wat = result.wat or ""
-        assert "$pick_last$Int" in wat, (
+        assert "$:pick_last$Int" in wat, (
             "discovery emitted no canonical clone pick_last$Int (#1511)"
         )
-        assert "$pick_last$Age" not in wat, wat
+        assert "$:pick_last$Age" not in wat, wat
         skip_notes = [
             d for d in result.diagnostics
             if "function skipped" in str(d.description)
@@ -3104,11 +3104,11 @@ public fn main(@Unit -> @Int)
         agree — the call site must not reference the phantom `pick_last$Bool`."""
         result = _compile_ok(self._ISSUE3_PARAM_RETURN_BARE_T)
         wat = result.wat or ""
-        assert "$pick_last$Option" in wat, (
+        assert "$:pick_last$Option" in wat, (
             "discovery's base-name clone pick_last$Option is absent from the "
             "WAT (#899 issue 3)"
         )
-        assert "$pick_last$Bool" not in wat, (
+        assert "$:pick_last$Bool" not in wat, (
             "call-rewrite fell through to the i32→Bool collapse for a "
             "parameterized return (#899 issue 3)"
         )
@@ -3334,7 +3334,7 @@ class TestNestedWhereHelperEmission978:
     (``grandchild``).  The checker (`_check_fn`), verifier (`_verify_fn`), and
     registration (`_register_fn`) all recurse into nested ``where`` blocks, so
     ``grandchild``'s NAME is registered — ``child``'s body lowers its call to
-    ``return_call $grandchild`` — but the body was never emitted, so WAT
+    ``return_call $:grandchild`` — but the body was never emitted, so WAT
     assembly failed with ``unknown func: $grandchild``.  The generic path was
     unaffected: ``monomorphize._hoist_where_fns_under`` recurses.
 
@@ -3426,7 +3426,7 @@ public fn main(@Unit -> @Int) requires(true) ensures(true) effects(pure)
     # `wfn.where_fns`.  So a grandchild using `eq`/`compare` kept a raw FnCall
     # to the unregistered ability op; `_compile_fn` tripped CodegenSkip and
     # returned None, the body was silently dropped, and the parent's
-    # `return_call $grandchild` dangled (`unknown func`).  The values below are
+    # `return_call $:grandchild` dangled (`unknown func`).  The values below are
     # chosen so a passthrough/default can't coincide with the leaf result.
 
     def test_nested_where_grandchild_eq_body_runs(self) -> None:
@@ -3435,7 +3435,7 @@ public fn main(@Unit -> @Int) requires(true) ensures(true) effects(pure)
         ``outer(5)`` → ``child(5)`` → ``grandchild(5)`` → ``eq(5, 5)`` = true
         (1).  Before the ability-op recursion, ``grandchild``'s raw ``eq(...)``
         was never rewritten, so its body was dropped and ``child``'s
-        ``return_call $grandchild`` dangled (``unknown func: $grandchild``).
+        ``return_call $:grandchild`` dangled (``unknown func: $grandchild``).
         """
         source = """\
 public fn outer(@Int -> @Bool) requires(true) ensures(true) effects(pure)
@@ -3574,7 +3574,7 @@ class TestGenericPipeMonomorphization:
 
     Pre-fix, discovery walked the pipe's RHS ``FnCall`` with its *literal*
     (empty) argument list, so ``T`` never bound and no ``ident$Int`` clone was
-    emitted; codegen then lowered ``42 |> ident()`` to ``call $ident$Int`` on a
+    emitted; codegen then lowered ``42 |> ident()`` to ``call $:ident$Int`` on a
     function that doesn't exist and the enclosing fn was dropped at run (#913).
     """
 
@@ -4264,8 +4264,8 @@ public fn main(@Unit -> @Unit)
     def test_builtin_parameterized_return_mangles_string(self) -> None:
         result = _compile_ok(self._FIRST_CHARS)
         wat = result.wat or ""
-        assert "$first$String" in wat
-        assert "$first$Bool" not in wat, (
+        assert "$:first$String" in wat
+        assert "$:first$Bool" not in wat, (
             "phantom Bool clone emitted — _BUILTIN_PARAMETERIZED_RETURNS is "
             "missing string_chars (#769 gap 1)"
         )
@@ -4321,8 +4321,8 @@ public fn main(@Unit -> @Unit)
         skip notes, and the call site must reference ``$ident$String``."""
         result = _compile_ok(self._IDENT_SCALAR)
         wat = result.wat or ""
-        assert "$ident$String" in wat
-        assert "$ident$Bool" not in wat, (
+        assert "$:ident$String" in wat
+        assert "$:ident$Bool" not in wat, (
             "discovery emitted the phantom Bool clone the rewrite never "
             "calls (#769 gap 1b)"
         )
@@ -4373,8 +4373,8 @@ public fn main(@Unit -> @Unit)
     def test_nested_unification_mangles_int(self) -> None:
         result = _compile_ok(self._HEAD_HEAD)
         wat = result.wat or ""
-        assert "$head_head$Int" in wat
-        assert "$head_head$Bool" not in wat, (
+        assert "$:head_head$Int" in wat
+        assert "$:head_head$Bool" not in wat, (
             "phantom Bool clone — _unify_param_arg did not recurse into "
             "nested type args (#769 gap 2)"
         )
@@ -4664,8 +4664,8 @@ public fn main(@Unit -> @Unit)
     def test_apply_fn_arg_mangles_int(self) -> None:
         result = _compile_ok(self._APPLY_FN_ARG)
         wat = result.wat or ""
-        assert "$ident$Int" in wat
-        assert "$ident$Bool" not in wat, (
+        assert "$:ident$Int" in wat
+        assert "$:ident$Bool" not in wat, (
             "discovery emitted the phantom Bool clone for an apply_fn "
             "argument the rewrite manglings as $Int (#769)"
         )

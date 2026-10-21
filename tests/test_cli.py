@@ -900,7 +900,7 @@ class TestCmdCompile:
 
     # A CodegenSkip drops a function with an explanatory E602 warning; its
     # CALLER is then dropped too, with an [E620] naming the root cause
-    # (#1100 — pre-fix the caller's dangling `call $f` failed WAT assembly
+    # (#1100 — pre-fix the caller's dangling `call $:f` failed WAT assembly
     # with an opaque `unknown func` error).  `h` skips (`hash(@Decimal)` is
     # unsupported in codegen), `main` calls it.  The program is check-green.
     _SKIP_WITH_CALLER = (
@@ -4534,10 +4534,10 @@ class TestNatNarrowingCliThreading820:
 
     @staticmethod
     def _wat_function(wat: str, name: str) -> str:
-        """Slice the ``(func $name ...)`` s-expression out of a WAT module by
+        """Slice the ``(func $:name ...)`` s-expression out of a WAT module by
         paren-matching, so a guard assertion is scoped to that function rather
         than the runtime prelude (which has its own unrelated traps)."""
-        start = wat.index(f"(func ${name} ")
+        start = wat.index(f"(func $:{name} ")
         depth = 0
         for i in range(start, len(wat)):
             if wat[i] == "(":

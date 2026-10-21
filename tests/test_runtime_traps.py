@@ -1943,7 +1943,7 @@ class TestHostPrintInvalidUtf8589:
         wat = (
             "(module\n"
             '  (import "probe" "read" (func $read (param i32 i32)))\n'
-            '  (memory (export "memory") 1)\n'
+            '  (memory (export "vera.memory") 1)\n'
             f'  (data (i32.const 0) "{wat_bytes}")\n'
             '  (func (export "run")\n'
             "    i32.const 0\n"
@@ -2038,7 +2038,7 @@ class TestHostPrintInvalidUtf8589:
         wat_bytes = "".join(f"\\{b:02x}" for b in invalid_bytes)
         wat = (
             "(module\n"
-            '  (memory (export "memory") 1)\n'
+            '  (memory (export "vera.memory") 1)\n'
             f'  (data (i32.const 0) "{wat_bytes}")\n'
             ")\n"
         )
@@ -2046,7 +2046,7 @@ class TestHostPrintInvalidUtf8589:
         store = wasmtime.Store(engine)
         module = wasmtime.Module(engine, wat)
         instance = wasmtime.Instance(store, module, [])
-        memory = instance.exports(store)["memory"]
+        memory = instance.exports(store)["vera.memory"]
         assert isinstance(memory, wasmtime.Memory)
 
         # In-bounds invalid bytes → safe-decoded str with U+FFFD.
@@ -2095,7 +2095,7 @@ class TestHostPrintInvalidUtf8589:
         wat = (
             "(module\n"
             '  (import "vera" "print" (func $print (param i32 i32)))\n'
-            '  (memory (export "memory") 1)\n'
+            '  (memory (export "vera.memory") 1)\n'
             f'  (data (i32.const 0) "{wat_bytes}")\n'
             '  (func (export "run")\n'
             "    i32.const 0\n"
@@ -2128,7 +2128,7 @@ class TestHostPrintInvalidUtf8589:
         def host_print_strict(
             caller: wasmtime.Caller, ptr: int, length: int,
         ) -> None:
-            memory = caller["memory"]
+            memory = caller["vera.memory"]
             assert isinstance(memory, wasmtime.Memory)
             buf = memory.data_ptr(caller)
             bytes(buf[ptr:ptr + length]).decode("utf-8")  # strict — raises
@@ -2142,7 +2142,7 @@ class TestHostPrintInvalidUtf8589:
         def host_print_replace(
             caller: wasmtime.Caller, ptr: int, length: int,
         ) -> None:
-            memory = caller["memory"]
+            memory = caller["vera.memory"]
             assert isinstance(memory, wasmtime.Memory)
             buf = memory.data_ptr(caller)
             decoded.append(
@@ -2804,7 +2804,7 @@ def _read_wasm_string_via_caller(ptr: int, length: int) -> str:
     """Invoke the production ``_read_wasm_string`` with a live ``Caller``.
 
     ``_read_wasm_string`` needs a mid-call ``wasmtime.Caller`` (it reads
-    ``caller["memory"]``), which only exists inside a host trampoline — so a
+    ``caller["vera.memory"]``), which only exists inside a host trampoline — so a
     guest ``run`` calls a void host ``probe`` that forwards the given
     ``(ptr, length)`` to the real reader over a fresh 1-page (65536-byte)
     memory.  Returns the decoded string, or propagates the reader's
@@ -2818,7 +2818,7 @@ def _read_wasm_string_via_caller(ptr: int, length: int) -> str:
     wat = (
         "(module\n"
         '  (import "probe" "go" (func $go))\n'
-        '  (memory (export "memory") 1)\n'
+        '  (memory (export "vera.memory") 1)\n'
         '  (func (export "run") call $go)\n'
         ")\n"
     )

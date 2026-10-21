@@ -30,6 +30,16 @@
 // ---------------------------------------------------------------------------
 
 let wasm = null;       // WebAssembly instance exports
+// #1694: the module exports its runtime (memory, allocator, GC globals,
+// wrapper registration) under names no Vera identifier can spell, so a
+// program's public `alloc` is exported beside the allocator.  The prefix
+// is `vera.runtime.RUNTIME_EXPORT_PREFIX`.
+const RUNTIME_EXPORT_PREFIX = 'vera.';
+
+/** The runtime's export *name* (`memory`, `alloc`, `gc_sp`, …). */
+function rt(name) {
+  return wasm[RUNTIME_EXPORT_PREFIX + name];
+}
 let stdoutBuf = '';    // Captured IO.print output
 let stderrBuf = '';    // Captured IO.stderr output (#463)
 let lastViolation = ''; // Last contract violation message
@@ -197,7 +207,7 @@ const encoder = new TextEncoder();
 
 /** Get the WASM linear memory (never cache the buffer). */
 function mem() {
-  return wasm.memory;
+  return rt('memory');
 }
 
 /** Read a UTF-8 string from WASM memory. */
@@ -243,7 +253,7 @@ function readF64(offset) {
 
 /** Call the exported $alloc to allocate WASM heap memory. */
 function alloc(size) {
-  return wasm.alloc(size);
+  return rt('alloc')(size);
 }
 
 /** Allocate a UTF-8 string in WASM memory; returns [ptr, len]. */
@@ -268,24 +278,24 @@ function allocString(str) {
  * #706 to close a pre-existing rooting gap in these helpers.
  */
 function gcRooted(ptr, fn) {
-  if (ptr === 0 || !wasm || !wasm.gc_sp || !wasm.gc_stack_limit) {
+  if (ptr === 0 || !wasm || !rt('gc_sp') || !rt('gc_stack_limit')) {
     return fn();
   }
-  const sp = wasm.gc_sp.value;
+  const sp = rt('gc_sp').value;
   // #860, following #791: slot-complete bound.  The write below is FOUR
   // bytes at [sp..sp+3], so an sp with 1-3 bytes of headroom passed
   // `sp >= limit` and then spilled past the window.  Unreachable while
   // generated code advances $gc_sp in 4-byte steps from a 4-aligned base
   // — defence in depth, matching the CLI `_ShadowGuard.push` predicate.
-  if (sp < 0 || sp + 4 > wasm.gc_stack_limit.value) {
+  if (sp < 0 || sp + 4 > rt('gc_stack_limit').value) {
     throw new Error('GC shadow stack overflow in browser runtime (gcRooted)');
   }
   writeI32(sp, ptr | 0);
-  wasm.gc_sp.value = sp + 4;
+  rt('gc_sp').value = sp + 4;
   try {
     return fn();
   } finally {
-    wasm.gc_sp.value = sp;
+    rt('gc_sp').value = sp;
   }
 }
 
@@ -323,7 +333,7 @@ function gcRooted(ptr, fn) {
 // trying to build multi-alloc values — that's a build-config bug
 // and should surface immediately, not as a downstream UAF.
 function gcShadowPush(value) {
-  if (!wasm || !wasm.gc_sp || !wasm.gc_stack_limit) {
+  if (!wasm || !rt('gc_sp') || !rt('gc_stack_limit')) {
     throw new Error(
       '#707 browser runtime: $gc_sp / $gc_stack_limit not exported; ' +
       'module was built without GC support — multi-alloc host builders ' +
@@ -332,27 +342,27 @@ function gcShadowPush(value) {
       'HTML, Decimal or Markdown import, has it).'
     );
   }
-  const sp = wasm.gc_sp.value;
+  const sp = rt('gc_sp').value;
   // #860, following #791: slot-complete bound — see `gcRooted` above.
-  if (sp < 0 || sp + 4 > wasm.gc_stack_limit.value) {
+  if (sp < 0 || sp + 4 > rt('gc_stack_limit').value) {
     throw new Error('GC shadow stack overflow in browser runtime');
   }
   writeI32(sp, value | 0);
-  wasm.gc_sp.value = sp + 4;
+  rt('gc_sp').value = sp + 4;
 }
 function gcShadowPop() {
   // Symmetric guard with gcShadowPush — see comment above.  Both
   // checked against the same export-pair invariant (gc_sp and
   // gc_stack_limit travel together) so the pop won't underflow if
   // a future module ever exports one but not the other.
-  if (!wasm || !wasm.gc_sp || !wasm.gc_stack_limit) {
+  if (!wasm || !rt('gc_sp') || !rt('gc_stack_limit')) {
     throw new Error(
       '#707 browser runtime: gcShadowPop called without $gc_sp / ' +
       '$gc_stack_limit exports — push/pop must be balanced under ' +
       'the same export-pair invariant'
     );
   }
-  wasm.gc_sp.value -= 4;
+  rt('gc_sp').value -= 4;
 }
 
 // #708 (PR #707): JS-side parallel of the CLI
@@ -372,16 +382,16 @@ function gcShadowPop() {
 // __exit__``.  Caller pushes intermediates via ``gcShadowPush``;
 // the guard pops them all at the end without per-push bookkeeping.
 function gcGuard(fn) {
-  if (!wasm || !wasm.gc_sp) {
+  if (!wasm || !rt('gc_sp')) {
     // Module without GC infrastructure — just call.  This is fine
     // because such modules can't fire $gc_collect either.
     return fn();
   }
-  const savedSp = wasm.gc_sp.value;
+  const savedSp = rt('gc_sp').value;
   try {
     return fn();
   } finally {
-    wasm.gc_sp.value = savedSp;
+    rt('gc_sp').value = savedSp;
   }
 }
 
@@ -2193,14 +2203,14 @@ function buildImportObject(module, moduleBytes) {
     // registration is skipped → ``host_decref_handle`` never fires →
     // permanent decimalStore leak per write.  That's a build-config
     // bug; raise rather than silently leak.
-    if (!wasm || typeof wasm.register_wrapper !== "function") {
+    if (!wasm || typeof rt('register_wrapper') !== "function") {
       throw new Error(
         '#707 browser runtime: $register_wrapper not exported; ' +
         'module was built without wrap-table support but is trying ' +
         'to wrap a host handle.  Recompile with a Decimal in use.'
       );
     }
-    wasm.register_wrapper(ptr, kind, rawHandle);
+    rt('register_wrapper')(ptr, kind, rawHandle);
     return ptr;
   }
 

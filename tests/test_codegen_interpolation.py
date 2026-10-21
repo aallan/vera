@@ -543,7 +543,7 @@ public fn main(-> @Unit)
         # in the module (e.g. helper fns from the prelude) doesn't
         # produce a false negative.
         main_match = re.search(
-            r"\(func \$main.*?(?=\n\s*\(func |\n\s*\)\s*$)",
+            r"\(func \$:main.*?(?=\n\s*\(func |\n\s*\)\s*$)",
             wat,
             re.DOTALL,
         )
@@ -552,9 +552,9 @@ public fn main(-> @Unit)
         # `to_string` was the bug's wrapper — its absence is the
         # load-bearing structural property of the fix.  (`string_concat`
         # is inlined as byte-copy loops in the WAT rather than emitted
-        # as a separate `call $string_concat`, so we don't assert on
+        # as a separate `call $:string_concat`, so we don't assert on
         # it directly.)
-        assert "call $to_string" not in main_body, (
+        assert "call $:to_string" not in main_body, (
             "Pre-#602 bug shape: `String`-returning FnCall in "
             "interpolation should NOT be wrapped with `to_string`. "
             "If this assertion fires, `_infer_fncall_vera_type` has "
