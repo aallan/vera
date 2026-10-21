@@ -969,3 +969,46 @@ class TestBaseCheckoutCleanup:
 
         with mock.patch.object(_MOD.subprocess, "run", fake_run):
             _MOD.release_base_checkout(tmp_path / "repo", tmp_path / "base")
+
+
+# ---------------------------------------------------------------------------
+# --symbols: WAT compared modulo its symbol names (#1694)
+# ---------------------------------------------------------------------------
+
+_WAT = (
+    '(module\n  (func $main (export "main") (result i64)\n    call $f\n'
+    '    call $alloc)\n  (func $f (result i64) i64.const 1)\n'
+    '  (data (i32.const 0) "in f("))\n')
+
+
+class TestModuloSymbols:
+    """The resolver renames every declaration's symbol and nothing else,
+    so its differential compares each WAT after renaming every
+    ``$identifier`` canonically, by first occurrence, on both sides."""
+
+    def test_a_rename_alone_is_not_a_difference(self) -> None:
+        renamed = _WAT.replace("$main", "$:main").replace("call $f", "call $:f")
+        renamed = renamed.replace("(func $f ", "(func $:f ")
+        assert renamed != _WAT
+        assert (_MOD.normalise_symbols(renamed)
+                == _MOD.normalise_symbols(_WAT))
+
+    @pytest.mark.parametrize("change", [
+        ("i64.const 1", "i64.const 2"),
+        ('"in f("', '"in mod$m$f("'),
+        ("    call $f\n    call $alloc", "    call $alloc\n    call $f"),
+    ], ids=["an-instruction", "literal-data", "an-order"])
+    def test_any_other_change_still_differs(
+            self, change: tuple[str, str]) -> None:
+        old, new = change
+        assert (_MOD.normalise_symbols(_WAT.replace(old, new))
+                != _MOD.normalise_symbols(_WAT))
+
+    def test_the_flag_reaches_the_verdict(self) -> None:
+        assert _MOD._parse_args(["--symbols"]).modulo_symbols is True
+        assert _MOD._parse_args([]).modulo_symbols is False
+        info = _info()._replace(modulo_symbols=True)
+        comparison = _MOD.compare({}, {}, "origin/main")
+        assert _MOD.json_payload(info, comparison)["modulo_symbols"] is True
+        assert any("modulo symbol names" in line
+                   for line in _MOD.summary_lines(info, comparison))
