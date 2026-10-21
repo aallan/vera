@@ -506,7 +506,7 @@ function hostPrint(ptr, len) {
 function hostReadChar() {
   return allocResultErrString(
     'IO.read_char not yet supported in browser target ' +
-    '(depends on JSPI suspend/resume; tracking: #609, #618)',
+    '(depends on JSPI suspend/resume; tracking: #603)',
   );
 }
 

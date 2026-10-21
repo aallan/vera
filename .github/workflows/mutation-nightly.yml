@@ -98,6 +98,11 @@ jobs:
     # sweep's own tests, the scratch tree and the engine's grace on a stop,
     # inside a hosted job's 6 h.
     timeout-minutes: 330
+    # A hosted runner taken away under a slice (the nights of 19 and 20
+    # October 2026, #1751) fails its job with nothing uploaded.  The stitch
+    # decides the night from the records it has, and the run's colour
+    # follows the stitch, not the slice.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v7
         with:
@@ -138,6 +143,23 @@ jobs:
           --budget 16200
           --workdir "$RUNNER_TEMP/sweep"
           --out "$RUNNER_TEMP/slice"
+          --summary "$GITHUB_STEP_SUMMARY"
+
+      # A step before the sweep that fails while the runner is still there
+      # (the install, the sweep's own tests, the state download) leaves no
+      # record either; this one writes a lane record in its place, so the
+      # stitch reports the slice rather than reading it as a lost runner.
+      - name: Record a lane that failed before the sweep ran
+        if: failure()
+        env:
+          SLICE: ${{ matrix.slice }}
+          JOBS: ${{ needs.setup.outputs.jobs }}
+        run: >-
+          python scripts/mutate_sweep.py lane-failed
+          --slice "$SLICE" --of "$JOBS"
+          --state "$RUNNER_TEMP/state-in"
+          --out "$RUNNER_TEMP/slice"
+          --why "a step before the sweep failed"
           --summary "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the slice's record
@@ -201,11 +223,13 @@ jobs:
           path: ${{ runner.temp }}/state-out/
           retention-days: 90
 
-  # A tracking issue when a scheduled night stops short; a dispatched run is
-  # watched by whoever started it.
+  # A tracking issue when a scheduled night stops short: the stitch failed,
+  # or never ran because the setup failed.  A slice's own failure is the
+  # stitch's to judge (a lost runner is noted, not filed).  A dispatched run
+  # is watched by whoever started it.
   issue:
     needs: [setup, sweep, stitch]
-    if: failure() && github.event_name == 'schedule'
+    if: always() && github.event_name == 'schedule' && needs.stitch.result != 'success'
     permissions:
       issues: write
     runs-on: ubuntu-latest
@@ -222,7 +246,7 @@ jobs:
             const TITLE = "Nightly mutation sweep stopped short on main (tracking)";
             const sha = process.env.COMMIT_SHA;
             const body = [
-              `The nightly mutation sweep stopped short against \`${sha.slice(0, 7)}\` (commit ${sha}): a night that decided no mutant, or a slice whose engine or lane failed.`,
+              `The nightly mutation sweep stopped short against \`${sha.slice(0, 7)}\` (commit ${sha}): a night that decided no mutant, a slice whose engine or lane failed, or slices with no record beyond what the sweep tolerates (one a night, three over seven nights).`,
               ``,
               `**Run**: ${process.env.RUN_URL}`,
               ``,

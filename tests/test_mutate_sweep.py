@@ -241,6 +241,8 @@ BAD_STATES: dict[str, tuple[Any, str]] = {
     "a survivor that is not a mutant": (lambda s: s["last_complete"]["survivors"].append("x; rm:survived"),
                                         "survivor 'x; rm:survived' is malformed"),
     "a night's head that is not a commit": (_set("nights", 0, "head", "abc"), "a night's head is malformed"),
+    "a night's lost slice out of range": (_set("nights", 0, "lost", [sw.MAX_JOBS]), "a night's lost slices"),
+    "a night's lost slice listed twice": (_set("nights", 0, "lost", [0, 0]), "a night's lost slices"),
     "too many nights": (lambda s: s.update(nights=s["nights"] * (sw.KEPT_NIGHTS + 1)), "the nights"),
 }
 
@@ -290,6 +292,14 @@ class TestStateChecks:
         state = _written_state()
         assert sw.load_state(sw.save_state(state, tmp_path), "x") == state
 
+    def test_a_night_line_from_before_the_lost_field_loads(self, tmp_path: Path) -> None:
+        """The states in the workflow's artifacts predate the field, and a
+        state the script refuses stops every night (#1751)."""
+        state = _written_state()
+        assert "lost" in state["nights"][0]
+        del state["nights"][0]["lost"]
+        assert sw.load_state(sw.save_state(state, tmp_path), "x") == state
+
     @pytest.mark.parametrize("change,why", list(BAD_STATES.values()), ids=list(BAD_STATES))
     def test_a_state_out_of_bounds_is_refused(self, change: Any, why: str, tmp_path: Path) -> None:
         state = _written_state()
@@ -310,6 +320,7 @@ class TestStateChecks:
         state, night = _stitch([record], jobs=1)
         assert night["problems"][0].startswith("slice 0: a malformed record")
         assert state["units"][A.ident]["statuses"] == {}
+        assert night["lost"] == []  # a malformed record is still a record
 
 
 REPO_ID = 1234
@@ -495,6 +506,16 @@ def _record(slice_: int, of: int, results: dict[str, Any], *, head: str = HEAD,
             "dropped_tests": [], "subprocess_tests": []}
 
 
+def _night_line(date: str, lost: list[int] | None = None) -> dict[str, Any]:
+    """A night's line as the stitch writes it; ``lost`` absent is a line from
+    before the field, as a state an earlier version kept has them."""
+    line: dict[str, Any] = {"date": date, "head": HEAD, "jobs": 2, "moved": 0, "slices": [],
+                            "problems": [], "notes": [], "closed": False}
+    if lost is not None:
+        line["lost"] = lost
+    return line
+
+
 def _stitch(records: list[dict[str, Any]], state: dict[str, Any] | None = None, *, jobs: int = 2,
             ) -> tuple[dict[str, Any], dict[str, Any]]:
     return sw.stitch(state or sw.empty_state("2026-10-16"), "none", records, jobs=jobs, head=HEAD,
@@ -518,12 +539,67 @@ class TestStitch:
         good = _record(0, 2, {A.ident: {"hash": H, "mutants": 4, "statuses": {"1": "killed"}}})
         _, night = _stitch([good, _record(1, 2, {}, head="e" * 40)])
         assert any("ran eeee" in p for p in night["problems"])
+        assert night["lost"] == [] and night["notes"] == []  # it reported; a rejected record is not a lost slice
         _, night = _stitch([good, _record(1, 2, {}, digest="f" * 64)])
         assert any("another state" in p for p in night["problems"])
+        assert night["lost"] == [] and night["notes"] == []
 
-    def test_a_missing_slice_stops_the_night_short(self) -> None:
-        _, night = _stitch([_record(0, 2, {A.ident: {"hash": H, "mutants": 4, "statuses": {"1": "killed"}}})])
-        assert night["problems"] == ["no record from slice(s) 1"]
+    def test_a_missing_slice_is_noted_and_its_work_waits_for_the_next_night(self) -> None:
+        """A slice with no record is one whose job ended before it uploaded
+        anything: a hosted runner taken away under it (the nights of 19 and
+        20 October 2026, #1751).  The night keeps what the other slices
+        decided, says so, and stays green; the lost slice's work is planned
+        again the next night."""
+        state, night = _stitch([_record(0, 2, {A.ident: {"hash": H, "mutants": 4, "statuses": {"1": "killed"}}})])
+        assert night["problems"] == [] and night["lost"] == [1]
+        assert night["notes"] == ["slice 1: no record; its work waits for the next night"]
+        assert state["units"][A.ident]["statuses"] == {"1": "killed"} and state["nights"][-1]["lost"] == [1]
+        assert "no record" in sw.render_night(state, night, UNITS)
+
+    def test_two_missing_slices_in_one_night_stop_it_short(self) -> None:
+        good = _record(0, 3, {A.ident: {"hash": H, "mutants": 4, "statuses": {"1": "killed"}}})
+        _, night = _stitch([good], jobs=3)
+        assert night["lost"] == [1, 2]
+        assert night["problems"] == ["no record from slices 1 and 2: more than one in a night"]
+
+    def test_a_lane_that_failed_before_planning_is_reported_whatever_its_head_or_state(self) -> None:
+        """A step before the sweep that fails while the runner is still there
+        writes a lane record (the workflow's `lane-failed` step), which may
+        carry no head and a state digest of none: it planned nothing and
+        holds no result, so there is nothing for those to be wrong about, and
+        the stitch reports the lane and its reason."""
+        good = _record(0, 2, {A.ident: {"hash": H, "mutants": 4, "statuses": {"1": "killed"}}})
+        failed = _record(1, 2, {}, stopped="lane", digest="f" * 64, planned=0)
+        failed["head"], failed["engine"], failed["engine_tail"] = None, None, ["a step before the sweep failed"]
+        state, night = _stitch([good, failed])
+        assert night["problems"] == ["slice 1: stopped by the lane: a step before the sweep failed"]
+        assert night["lost"] == [] and state["units"][A.ident]["statuses"] == {"1": "killed"}
+
+    def test_a_night_whose_plan_sat_in_the_lost_slice_is_not_a_night_that_planned_nothing(self) -> None:
+        state = _state(f=4)  # work remains, and slice 0, which held it, sent no record
+        _, night = _stitch([_record(1, 2, {}, planned=0)], state)
+        assert night["lost"] == [0] and night["problems"] == []
+
+    def test_slices_lost_too_often_stop_the_night_short(self) -> None:
+        """One lost slice a night is weather.  More than ``LOST_LIMIT`` over
+        the last ``LOST_WINDOW_NIGHTS`` nights, this one included, is a
+        hazard the night reports, on a night that lost one; a night line
+        from before the field counts none."""
+        good = _record(0, 2, {A.ident: {"hash": H, "mutants": 4, "statuses": {"1": "killed"}}})
+        state = sw.empty_state("2026-10-10")
+        state["nights"] = [_night_line(f"2026-10-1{d}", [d % 2]) for d in range(1, 4)]
+        _, night = _stitch([good], json.loads(json.dumps(state)))
+        assert night["lost"] == [1]
+        assert night["problems"] == ["slices with no record over the last 4 nights: 4, more than 3"]
+        state["nights"] = state["nights"][:2]
+        _, night = _stitch([good], json.loads(json.dumps(state)))
+        assert night["problems"] == []  # three over three nights: within the limit
+        state["nights"] = [_night_line(f"2026-10-{d:02d}") for d in range(1, 10)]
+        _, night = _stitch([good], json.loads(json.dumps(state)))
+        assert night["problems"] == []  # lines from before the field
+        state["nights"] = [_night_line(f"2026-10-1{d}", [0, 1]) for d in range(1, 3)]
+        _, night = _stitch([good, _record(1, 2, {})], json.loads(json.dumps(state)))
+        assert night["problems"] == []  # a night that lost none reports no window
 
     def test_a_slice_its_engine_stopped_stops_the_night_short_and_its_results_still_count(self) -> None:
         state, night = _stitch([
@@ -686,8 +762,13 @@ class TestCycle:
         done = {C.ident: {"hash": H, "mutants": 1, "statuses": {"1": "killed"}}}
         closed, night = _stitch([_record(0, 1, done)], json.loads(json.dumps(state)), jobs=1)
         assert night["closed"] and closed["cycle"] == 2
-        kept, night = _stitch([_record(0, 2, done)], json.loads(json.dumps(state)))
+        kept, night = _stitch([_record(0, 2, done), _record(1, 2, {}, stopped="engine")],
+                              json.loads(json.dumps(state)))
         assert not night["closed"] and kept["cycle"] == 1
+        # A slice with no record is noted, not a stop: the bins are disjoint,
+        # so a state the other slices complete owed that slice nothing.
+        closed, night = _stitch([_record(0, 2, done)], json.loads(json.dumps(state)))
+        assert night["lost"] == [1] and night["problems"] == [] and night["closed"]
 
 
 # ---------------------------------------------------------------------------
@@ -784,6 +865,10 @@ class TestWorkflow:
         sweep = self._wf()["jobs"]["sweep"]
         assert sweep["strategy"] == {"fail-fast": False,
                                      "matrix": {"slice": "${{ fromJSON(needs.setup.outputs.slices) }}"}}
+        # A lost runner fails the slice's job with nothing uploaded; the
+        # stitch decides the night from the records it has, and the run's
+        # colour follows the stitch (#1751).
+        assert sweep["continue-on-error"] is True
         (step,) = [s for s in self._steps("setup") if s.get("id") == "jobs"]
         assert "scripts/mutate_sweep.py matrix" in step["run"]
 
@@ -798,12 +883,59 @@ class TestWorkflow:
         assert record["if"] == "always()"
         assert record["with"]["name"] == "mutation-sweep-slice-${{ matrix.slice }}"
 
+    def test_a_lane_that_fails_before_the_sweep_records_itself_while_the_runner_is_there(self) -> None:
+        steps = self._steps("sweep")
+        names = [s.get("name") for s in steps]
+        i = names.index("Record a lane that failed before the sweep ran")
+        assert names[i - 1] == "Mutate this slice of the night" and names[i + 1] == "Upload the slice's record"
+        step = steps[i]
+        assert step["if"] == "failure()" and "scripts/mutate_sweep.py lane-failed" in step["run"]
+        assert '--slice "$SLICE" --of "$JOBS"' in step["run"] and '--out "$RUNNER_TEMP/slice"' in step["run"]
+        assert step["env"] == {"SLICE": "${{ matrix.slice }}", "JOBS": "${{ needs.setup.outputs.jobs }}"}
+
     def test_the_tracking_issue_is_filed_only_for_a_scheduled_night_that_stopped_short(self) -> None:
         issue = self._wf()["jobs"]["issue"]
         assert issue["needs"] == ["setup", "sweep", "stitch"]
-        assert issue["if"] == "failure() && github.event_name == 'schedule'"
+        assert issue["if"] == "always() && github.event_name == 'schedule' && needs.stitch.result != 'success'"
         (step,) = issue["steps"]
         assert 'const LABEL = "mutation-sweep";' in step["with"]["script"]
+
+
+# ---------------------------------------------------------------------------
+# The heartbeat
+# ---------------------------------------------------------------------------
+
+
+MEMINFO = ("MemTotal:       16368832 kB\nMemFree:         1000000 kB\nMemAvailable:   11503616 kB\n"
+           "SwapTotal:       4194300 kB\nSwapFree:        3145724 kB\n")
+LOADAVG = "3.91 3.80 3.40 5/1234 99999\n"
+
+
+class TestHeartbeat:
+    """A lost runner uploads no record, so what the slice printed is all that
+    survives of it (#1751): a line every few minutes with the time, the
+    runner's memory and load, and the engine's last status."""
+
+    def test_a_line_carries_the_time_the_memory_the_load_and_the_engines_status(self) -> None:
+        assert sw.HEARTBEAT_S == 300.0
+        assert sw.heartbeat_line(3725.0, "Running mutants 12/345", MEMINFO, LOADAVG) == (
+            "heartbeat +1:02 | mem avail 11,234 of 15,985 MiB | swap used 1,024 of 4,096 MiB"
+            " | load 3.91 3.80 3.40 | engine: Running mutants 12/345")
+
+    def test_what_the_platform_cannot_say_is_left_out(self) -> None:
+        assert sw.heartbeat_line(59.0, None, None, None) == "heartbeat +0:00"
+        assert sw.heartbeat_line(36000.0, "x", None, "1.00 2.00 3.00 1/2 3") == (
+            "heartbeat +10:00 | load 1.00 2.00 3.00 | engine: x")
+        assert sw.heartbeat_line(0.0, None, "MemTotal: 10 kB\n", None) == "heartbeat +0:00"
+
+    def test_the_engines_status_is_the_newest_logs_last_row_without_the_spinner(self, tmp_path: Path) -> None:
+        assert sw.engine_status(tmp_path) is None
+        (tmp_path / "mutmut-run-1.log").write_text("the first attempt\n", encoding="utf-8")
+        (tmp_path / "mutmut-run-2.log").write_text(
+            "Running stats\n\u280b Running mutants 1/5\r\u2819 Running mutants 2/5\r", encoding="utf-8")
+        assert sw.engine_status(tmp_path) == "Running mutants 2/5"
+        (tmp_path / "mutmut-run-10.log").write_text("x" * 500, encoding="utf-8")
+        assert sw.engine_status(tmp_path) == "x" * sw.STATUS_WIDTH
 
 
 # ---------------------------------------------------------------------------
@@ -877,7 +1009,7 @@ def no_git_locators(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _night(repo: Path, tmp_path: Path, n: int, results: str, *, state: Path | None = None,
            engine: list[str] | None = None, budget: float | None = None,
-           ) -> tuple[int, dict[str, Any], list[dict[str, Any]]]:
+           extra: list[str] | None = None) -> tuple[int, dict[str, Any], list[dict[str, Any]]]:
     fake = tmp_path / f"fake{n}"
     fake.mkdir()
     (fake / "results.txt").write_text(results, encoding="utf-8")
@@ -888,7 +1020,7 @@ def _night(repo: Path, tmp_path: Path, n: int, results: str, *, state: Path | No
         code = sw.main(["night", "--slice", "0", "--of", "1", "--repo", str(repo), "--out", str(out),
                         "--workdir", str(tmp_path / f"work{n}"), "--max-children", "2",
                         *(["--state", str(state)] if state else []),
-                        *(["--budget", str(budget)] if budget else []),
+                        *(["--budget", str(budget)] if budget else []), *(extra or []),
                         "--engine", *(engine or [sys.executable, str(tmp_path / "fake_mutmut.py")])])
     finally:
         del os.environ["FAKE_STATE"]
@@ -1032,6 +1164,46 @@ class TestEndToEnd:
         assert record["stopped"] == "budget"
         assert record["results"]["vera/m.py::x_f"] == {"hash": record["results"]["vera/m.py::x_f"]["hash"],
                                                        "mutants": 2, "statuses": {"2": "killed"}}
+
+    def test_the_slice_prints_a_heartbeat_while_the_engine_runs(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        import threading
+
+        monkeypatch.setenv("FAKE_RUN_SLEEP", "0.9")
+        threads = threading.active_count()
+        code, record, _ = _night(repo, tmp_path, 1, "    vera.m.x_f__mutmut_1: killed\n",
+                                 extra=["--heartbeat", "0.2"])
+        assert code == 0 and record["stopped"] is None
+        beats = [line for line in capsys.readouterr().out.splitlines() if line.startswith("heartbeat +0:00")]
+        assert len(beats) >= 2, beats
+        assert threading.active_count() == threads  # it stopped with the engine
+        if sys.platform == "linux":  # the runners' platform: /proc is read
+            assert all("mem avail" in b and "swap used" in b and "load" in b for b in beats), beats
+
+    def test_a_lane_that_fails_before_the_sweep_leaves_a_record_the_stitch_reports(
+        self, repo: Path, tmp_path: Path,
+    ) -> None:
+        out = tmp_path / "slice"
+        state_dir = tmp_path / "state-in"
+        sw.save_state(sw.empty_state("2026-10-16"), state_dir)
+        args = ["lane-failed", "--slice", "1", "--of", "2", "--repo", str(repo), "--out", str(out),
+                "--state", str(state_dir), "--why", "a step before the sweep failed"]
+        assert sw.main(args) == 0
+        record = json.loads((out / "slice-1.json").read_text(encoding="utf-8"))
+        sw.check_record(record)
+        assert record["stopped"] == "lane" and record["engine_tail"] == ["a step before the sweep failed"]
+        assert record["head"] == _git(repo, "rev-parse", "HEAD").strip()
+        assert record["state_in"] == sw.state_digest(state_dir / sw.STATE_FILE) and record["planned"] == []
+        code = sw.main(["stitch", "--of", "2", "--repo", str(repo), "--slices", str(out),
+                        "--state", str(state_dir), "--out", str(tmp_path / "state-out")])
+        night = json.loads((tmp_path / "state-out" / sw.STATE_FILE).read_text(encoding="utf-8"))["nights"][-1]
+        assert code == 2 and night["lost"] == [0]
+        assert night["problems"] == ["slice 1: stopped by the lane: a step before the sweep failed"]
+        # A record the sweep wrote itself is left alone.
+        (out / "slice-1.json").write_text('{"kept": true}', encoding="utf-8")
+        assert sw.main(args) == 0
+        assert json.loads((out / "slice-1.json").read_text(encoding="utf-8")) == {"kept": True}
 
     def test_a_failure_of_the_lane_is_a_record_with_exit_two(self, repo: Path, tmp_path: Path) -> None:
         broken = tmp_path / "broken_engine.py"
