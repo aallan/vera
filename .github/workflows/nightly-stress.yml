@@ -97,9 +97,9 @@ jobs:
         # public function run against the checks code generation emits for
         # it, and a refuted proof fails its program.  The pull request's
         # suite runs it at 5 trials per function; here at 1,000, which took
-        # 27.6 s of wall on four local workers at c9235415 and is about
-        # 36-52 s on this runner, so the ten-minute stop is a hang, never a
-        # slow night.  It runs once the stress step ran, whatever its result,
+        # 27.6 s of wall on four local workers at c9235415 and 1 min 44 s
+        # on this runner, so the ten-minute stop is a hang, never a slow
+        # night.  It runs once the stress step ran, whatever its result,
         # so one failure never hides the other; a setup step's failure skips
         # both and is reported as itself.
         if: ${{ !cancelled() && (steps.stress.outcome == 'success' || steps.stress.outcome == 'failure') }}

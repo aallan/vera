@@ -332,8 +332,8 @@ class TestNightlyStressLaneCollection1328:
 #: The trials per proved function the nightly runs.  1,000 took 27.6 s of
 #: wall on four local workers (112 s of CPU) at c9235415, against 6.4 s at 5
 #: and 121 s at 3,000 (the input generator's blocking clauses make the cost
-#: grow faster than the count); the runner measured 1.3 to 1.9 times slower
-#: than the local machine on the stress step itself.
+#: grow faster than the count); on the runner the step took 1 min 44 s (the
+#: stress run of the pull request that added it).
 NIGHTLY_DISTRUST_TRIALS = 1000
 
 _DISTRUST_STEP = "Run the distrust corpus at the nightly trial count"
@@ -358,7 +358,7 @@ def _named(name: str) -> dict[str, Any]:
 
 class TestNightlyDistrustTrials:
     """The distrust corpus runs in the stress job, at its own trial count,
-    after the stress tests whatever they did, and a scheduled failure of
+    once the stress tests have run, pass or fail, and a scheduled failure of
     either files the tracking issue."""
 
     def test_the_step_runs_the_distrust_corpus_at_the_nightly_count(
@@ -377,7 +377,7 @@ class TestNightlyDistrustTrials:
         assert test_distrust_corpus.DEFAULT_TRIALS == 5
         assert NIGHTLY_DISTRUST_TRIALS >= 100 * test_distrust_corpus.DEFAULT_TRIALS
 
-    def test_it_runs_after_the_stress_tests_whatever_they_did(self) -> None:
+    def test_it_runs_once_the_stress_tests_ran_pass_or_fail(self) -> None:
         """Once the stress step ran, pass or fail, and not after a setup
         step's failure, which skips both and is reported as itself."""
         names = [s.get("name") for s in _steps()]
@@ -386,9 +386,11 @@ class TestNightlyDistrustTrials:
             "${{ !cancelled() && (steps.stress.outcome == 'success' "
             "|| steps.stress.outcome == 'failure') }}")
 
-    def test_its_budget_is_ten_times_its_measured_wall(self) -> None:
-        """27.6 s locally, at most 1.9 times that on the runner: a
-        ten-minute stop is a hang, never a slow night."""
+    def test_its_stop_is_about_six_times_its_wall_on_the_runner(
+        self,
+    ) -> None:
+        """1 min 44 s on the runner: a ten-minute stop is a hang, never
+        a slow night."""
         assert _named(_DISTRUST_STEP)["timeout-minutes"] == 10
 
     def test_a_scheduled_failure_of_either_step_files_the_issue(self) -> None:
