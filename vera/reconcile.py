@@ -210,6 +210,21 @@ class Mismatch:
         }
 
 
+@dataclass(frozen=True, eq=False)
+class EntryCall:
+    """One call that reaches the function an entry check guards (a
+    `requires` clause, a refined parameter's guard)."""
+
+    callers: frozenset[str]
+    """The module functions the call is written in: the function whose
+    region of the source holds it, every clone of a generic one."""
+
+    records: tuple[ProofObligation, ...]
+    """The records at the call the check stands for: none where the
+    verifier discharged the call's obligation and recorded nothing, as it
+    does for the precondition of a call into a user function."""
+
+
 @dataclass
 class Reconciliation:
     """The join's whole result: the mismatches, and what agreed."""
@@ -245,6 +260,16 @@ class Reconciliation:
     each `requires` clause and each refined parameter's guard.  Each stands
     for the records at the calls that reach the function, never for one of
     the function's own."""
+
+    entry_calls: dict[EmittedCheck, list[EntryCall]] = field(
+        default_factory=dict)
+    """Each entry check's calls: every call in the programs the run covered
+    that reaches the check's function, with the module functions it is
+    written in and the records at it the check stands for (``answers``,
+    narrowed to the call).  A run of a function makes only the calls written
+    in the functions it reaches, so what a trapped check stands for in that
+    run is those calls' records, and a reached call with no record is a
+    proof no record names (``vera.tester._TrapIndex``)."""
 
 
 # =====================================================================
@@ -901,13 +926,14 @@ def _left_unguarded(
 _WAT_FN_DEF_RE = re.compile(r"^\s*\(func \$([^\s()]+)", re.MULTILINE)
 
 
-def _compiled_regions(
+def _function_regions(
     compile_result: CompileResult,
-) -> set[tuple[str, int, int]]:
+) -> dict[tuple[str, int, int], frozenset[str]]:
     """(file, first line, last line) of every function the module defines,
-    from the trap source map code generation keeps for each of them —
-    a clone under its generic's entry, as the record of checks reads it."""
-    out: set[tuple[str, int, int]] = set()
+    from the trap source map code generation keeps for each of them, with
+    the module functions compiled from it — a clone under its generic's
+    entry, as the record of checks reads it."""
+    out: dict[tuple[str, int, int], set[str]] = {}
     source = compile_result.fn_source_map
     for match in _WAT_FN_DEF_RE.finditer(compile_result.wat):
         name = match.group(1)
@@ -916,7 +942,84 @@ def _compiled_regions(
             continue
         key = _file_key(entry[0])
         if key is not None:
-            out.add((key, entry[1], entry[2]))
+            out.setdefault((key, entry[1], entry[2]), set()).add(name)
+    return {region: frozenset(names) for region, names in out.items()}
+
+
+def _compiled_regions(
+    compile_result: CompileResult,
+) -> set[tuple[str, int, int]]:
+    """The regions of :func:`_function_regions`, without their names."""
+    return set(_function_regions(compile_result))
+
+
+def _written_in(
+    index: _Index, regions: dict[tuple[str, int, int], frozenset[str]],
+    node: ast.Node,
+) -> frozenset[str]:
+    """The module functions *node* is written in: those of the innermost
+    region that holds its line (a closure's, inside its function's), or
+    none when no region holds it."""
+    key = index.file_of.get(id(node))
+    span = node.span
+    if key is None or span is None:
+        return frozenset()
+    holding = [(end - start, names) for (rkey, start, end), names in regions.items()
+               if rkey == key and start <= span.line <= end]
+    if not holding:
+        return frozenset()
+    narrowest = min(extent for extent, _ in holding)
+    return frozenset().union(
+        *(names for extent, names in holding if extent == narrowest))
+
+
+def _record_call(
+    index: _Index, records: _Records, record: ProofObligation,
+) -> ast.FnCall | ast.ModuleCall | None:
+    """The call a record an entry check stands for sits at: the call itself
+    for a precondition's `call_pre`, the call whose argument holds it for a
+    refined parameter's narrowing."""
+    rnode = records.located(record)
+    if rnode is None:
+        return None
+    call = _call_node(rnode)
+    if call is not None:
+        return call
+    found = _argument_site(index, rnode)
+    return found[0] if found is not None else None
+
+
+def _entry_calls(
+    index: _Index, records: _Records,
+    answers: list[tuple[ProofObligation, EmittedCheck]],
+    entry_decls: dict[EmittedCheck, ast.FnDecl],
+    regions: dict[tuple[str, int, int], frozenset[str]],
+) -> dict[EmittedCheck, list[EntryCall]]:
+    """Each entry check's calls (``Reconciliation.entry_calls``): every call
+    the index holds that reaches the check's function, each with the module
+    functions it is written in and the records at it the check stands for."""
+    calls: dict[int, list[ast.FnCall | ast.ModuleCall]] = {}
+    for nodes in index.by_span.values():
+        for node in nodes:
+            if isinstance(node, (ast.FnCall, ast.ModuleCall)):
+                reached = _reached_decl(index, node)
+                if reached is not None:
+                    calls.setdefault(id(reached), []).append(node)
+    standing: dict[EmittedCheck, dict[int, list[ProofObligation]]] = {}
+    for record, check in answers:
+        if check not in entry_decls:
+            continue
+        call = _record_call(index, records, record)
+        if call is not None:
+            standing.setdefault(check, {}).setdefault(id(call), []).append(record)
+    out: dict[EmittedCheck, list[EntryCall]] = {}
+    for check, decl in entry_decls.items():
+        at_call = standing.get(check, {})
+        out[check] = [
+            EntryCall(_written_in(index, regions, call),
+                      tuple(at_call.get(id(call), ())))
+            for call in calls.get(id(decl), [])
+        ]
     return out
 
 
@@ -996,6 +1099,8 @@ def join(
     for record in records.all:
         by_kind.setdefault(record.kind, []).append(record)
 
+    #: Each entry check -> the function whose entry it guards.
+    entry_decls: dict[EmittedCheck, ast.FnDecl] = {}
     #: record id -> the obligation sites the checks offer it, each with the
     #: checks standing for that site.
     offers: dict[int, dict[SiteKey, list[EmittedCheck]]] = {}
@@ -1016,6 +1121,10 @@ def join(
                 located.where == "clause"
                 and isinstance(located.node, ast.Requires)):
             out.entry.append(check)
+            guarded = (located.owner if located.where == "parameter"
+                       else index.fn_of.get(id(located.node)))
+            if isinstance(guarded, ast.FnDecl):
+                entry_decls[check] = guarded
         standing: list[ProofObligation] = []
         for kind in check.obligations:
             for record in by_kind.get(kind, ()):
@@ -1065,6 +1174,8 @@ def join(
             for check in site_checks:
                 related.setdefault(id(check), check)
         out.answers.extend((record, check) for check in related.values())
+    out.entry_calls = _entry_calls(index, records, out.answers, entry_decls,
+                                   _function_regions(compile_result))
 
     for check, standing in unrecorded:
         if any(record.status != DENIES_GUARD for record in standing):

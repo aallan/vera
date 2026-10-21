@@ -40,6 +40,7 @@ from vera.errors import ERROR_CODES
 from vera.introspect import errors_payload
 from vera.obligations.core import ProofObligation
 from vera.parser import parse
+from vera.reconcile import EntryCall, join
 from vera.tester import FunctionTestResult, TestResult, TrialResult, _TrapIndex
 from vera.trap_registry import KNOWN_TRAP_DEFECTS, TRAP_EMITTERS, EmittedCheck
 from vera.transform import transform
@@ -1562,6 +1563,92 @@ public fn f(@Int -> @Int)
 """ + _MO
 
 
+# The same callee, `g`, reached from `f` through the planted false proof and
+# from `h`, which `f` never calls (PR #1754 review): whatever `h`'s call
+# records says nothing about a run of `f`.  Below, `h`'s call is Tier 3
+# (`string_length` is not provably positive), and `f`'s call, discharged at
+# Tier 1, has no record.
+_TWO_CALLERS_H = """
+public fn h(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  g(string_length(show(@Int.0)))
+}
+"""
+
+SRC_JOIN_UNREACHED_TIER3_CALLER = """\
+private fn g(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+
+public fn f(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(pure)
+{
+  let @Int = g(if mo(7) == mo(7) then { 1 } else { 0 });
+  @Int.1
+}
+""" + _TWO_CALLERS_H + _MO
+
+SRC_JOIN_PROVED_CALL_BESIDE_A_TIER3_CALLER = """\
+private fn g(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0)
+  effects(pure)
+{
+  let @Int = g(if mo(7) == mo(7) then { 1 } else { 0 });
+  @Int.1
+}
+""" + _TWO_CALLERS_H + _MO
+
+# A refined parameter reached from two callers, both proved: `f`'s through
+# the planted false proof (line 16), `h`'s on the literal 5 (line 25).
+SRC_JOIN_PARAMETER_TWO_CALLERS = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+private fn g(@Pos -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Pos.0
+}
+
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0)
+  effects(pure)
+{
+  let @Int = g(if mo(7) == mo(7) then { 1 } else { 0 });
+  @Int.1
+}
+
+public fn h(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0)
+  effects(pure)
+{
+  let @Int = g(5);
+  @Int.1
+}
+""" + _MO
+
+
 def _refuted(source: str) -> set[tuple[str, int]]:
     """The (kind, line) of every proved record `f`'s trials refute, after
     asserting that every trial refutes."""
@@ -1652,6 +1739,47 @@ class TestAttributionThroughTheJoin:
                    for t in f.failures), [t.attribution for t in f.failures]
 
 
+class TestAnEntryCheckReadsTheCallsTheTrialMakes:
+    """A `requires` check and a refined parameter's guard stand for the
+    records at the calls into their function; a trial of `f` makes only the
+    calls a run of `f` reaches, so only theirs count, and a reachable call
+    with no record (a precondition discharged at Tier 1, which the verifier
+    records nowhere) is a proof no record names (PR #1754 review)."""
+
+    def test_an_unreached_tier3_caller_leaves_the_false_proof_exercised(
+        self,
+    ) -> None:
+        """Without the filter, `h`'s Tier 3 call made `g`'s check read as
+        a guard for every function, and `f`, whose only claim is the
+        planted proof, read as not exercised and its run exited 0."""
+        result = _run(SRC_JOIN_UNREACHED_TIER3_CALLER, distrust=True, trials=3)
+        f = _fn(result, "f")
+        assert f.category == "tested", (f.category, f.reason)
+        assert f.trials_run == f.trials_failed > 0
+        assert {t.status for t in f.failures} == {"unattributed"}
+        assert result.summary.unattributed >= 1
+
+    def test_an_unreached_tier3_caller_is_no_guard_for_this_trial(
+        self,
+    ) -> None:
+        f = _fn(_run(SRC_JOIN_PROVED_CALL_BESIDE_A_TIER3_CALLER, distrust=True,
+                     trials=3), "f")
+        assert f.category == "tested", (f.category, f.reason)
+        assert f.trials_failed > 0
+        assert {t.status for t in f.failures} == {"unattributed"}
+        assert all("(no obligation recorded)" in t.attribution
+                   for t in f.failures), [t.attribution for t in f.failures]
+
+    def test_another_callers_proof_is_not_refuted(self) -> None:
+        """`h`'s proved argument (line 25) is no proof a trial of `f`
+        runs: the refutation names `f`'s own (line 16) alone."""
+        assert _refuted(SRC_JOIN_PARAMETER_TWO_CALLERS) == {("refine_bind", 16)}
+
+    def test_the_other_caller_still_holds(self) -> None:
+        h = _fn(_run(SRC_JOIN_PARAMETER_TWO_CALLERS, distrust=True, trials=3), "h")
+        assert (h.category, h.trials_failed) == ("tested", 0), (h.category, h.reason)
+
+
 def _decl(source: str, name: str) -> ast.FnDecl:
     program = pipeline.parse(source, file=_FILE).program
     (decl,) = [t.decl for t in program.declarations
@@ -1732,6 +1860,114 @@ def test_the_exercise_matrix_covers_every_reading() -> None:
         part for cell in _EXERCISE_CELLS for part in readings if part in cell}
     assert {where for where, _, _ in _EXERCISE_CELLS.values()} == {
         "f", "g", "h"}
+
+
+# An entry check in `g`, which `f` calls and `h` does not (`_EXERCISE_WAT`),
+# read through the calls into `g` the join lists: each cell names the
+# functions its calls are written in and the status of the record at each,
+# `None` for a call the verifier discharged and recorded nothing for, with
+# whether a run of `f` can test a proof at the check (PR #1754 review).
+_ENTRY_CALL_CELLS: dict[str, tuple[list[tuple[str, str | None]], bool]] = {
+    "tier3_at_an_unreached_caller_beside_a_discharged_call": (
+        [("h", "tier3"), ("f", None)], True),
+    "tier3_at_its_own_call": ([("f", "tier3")], False),
+    "proved_at_its_own_call": ([("f", "verified")], True),
+    "tier3_at_its_own_call_and_proved_at_an_unreached_one": (
+        [("f", "tier3"), ("h", "verified")], False),
+    "tier3_and_discharged_at_its_own_calls": ([("f", "tier3"), ("f", None)], True),
+    "called_from_no_reached_function": ([("h", "tier3")], True),
+}
+
+
+def _entry_call_index(
+    calls: list[tuple[str, str | None]],
+) -> tuple[_TrapIndex, EmittedCheck, list[ProofObligation]]:
+    """`g`'s precondition check, an entry check, with *calls* into `g`,
+    each a `call_pre` record at its own line in its caller, or none."""
+    check = EmittedCheck(_PRE, "contract_violation", ("requires", "call_pre"),
+                         "g", 2, 3, 2, 9, _M_FILE, False)
+    records: list[ProofObligation] = []
+    listed: list[EntryCall] = []
+    for line, (caller, status) in enumerate(calls, start=20):
+        at_call: tuple[ProofObligation, ...] = ()
+        if status is not None:
+            record = ProofObligation(
+                fn_name=caller, kind="call_pre", expr_text="@Int.0 > 0",
+                status=status, line=line, column=3, file=_M_FILE)  # type: ignore[arg-type]
+            records.append(record)
+            at_call = (record,)
+        listed.append(EntryCall(frozenset({caller}), at_call))
+    index = _index_of([check], records, _EXERCISE_WAT, entry=[check],
+                      entry_calls={check: listed})
+    return index, check, records
+
+
+# A call into `g` written in `f`'s body (line 14) and one written in a
+# closure `f` builds (line 16): the closure is a module function of its own,
+# whose region of the source sits inside `f`'s.
+SRC_CALL_IN_A_CLOSURE = """\
+private fn g(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+
+public fn f(@Array<Int> -> @Array<Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Int = g(1);
+  array_map(@Array<Int>.0, fn(@Int -> @Int) effects(pure) {
+    g(string_length(show(@Int.0)))
+  })
+}
+"""
+
+
+def test_a_call_is_written_in_the_innermost_function_holding_it() -> None:
+    """The join places each call into an entry check's function in the
+    narrowest region of the source map that holds its line: a closure's
+    call is the closure's, not its enclosing function's."""
+    verified = pipeline.verify(SRC_CALL_IN_A_CLOSURE, file=_FILE, past_check=True)
+    compiled = pipeline.compile(SRC_CALL_IN_A_CLOSURE, file=_FILE, past_check=True).result
+    joined = join(verified.result, compiled, program=verified.checked.program,
+                  file=_FILE, resolved_modules=[])
+    (check,) = [c for c in joined.entry if c.function == "g"]
+    callers = sorted(sorted(call.callers) for call in joined.entry_calls[check])
+    closures = [name for name, (_, start, _) in compiled.fn_source_map.items()
+                if start == 15]
+    assert len(closures) == 1, compiled.fn_source_map
+    assert callers == sorted([["f"], closures]), callers
+
+
+@pytest.mark.parametrize("cell", list(_ENTRY_CALL_CELLS))
+def test_an_entry_check_is_read_through_the_calls_the_run_makes(cell: str) -> None:
+    calls, expected = _ENTRY_CALL_CELLS[cell]
+    index, _, _ = _entry_call_index(calls)
+    assert index.exercises(_matrix_decl(), _M_FILE) is expected
+
+
+@pytest.mark.parametrize(("calls", "status", "refutes"), [
+    # A proof at the run's own call refutes that record alone.
+    ([("f", "verified"), ("h", "verified")], "refuted", [20]),
+    # A Tier 3 call the run never makes is no guard of it.
+    ([("h", "tier3"), ("f", None)], "unattributed", []),
+    # A discharged call beside a proved one: which fired, no record says.
+    ([("f", "verified"), ("f", None)], "unattributed", []),
+    # Every call the run makes Tier 3: a guard doing its job.
+    ([("f", "tier3"), ("h", "verified")], "fail", []),
+])
+def test_a_trap_at_an_entry_check_reads_the_calls_the_run_makes(
+    calls: list[tuple[str, str | None]], status: str, refutes: list[int],
+) -> None:
+    index, _, _ = _entry_call_index(calls)
+    trial = _trap([("g", False), ("f", False)])
+    index.attribute(trial, _matrix_decl())
+    assert (trial.status, [r.line for r in trial.refutes]) == (status, refutes), (
+        trial.attribution)
 
 
 # The reviewer's repro: `opt_pos` and `same` are proved, but the generator
@@ -2301,12 +2537,14 @@ def _spanned(
 def _index_of(
     checks: list[EmittedCheck], records: list[ProofObligation],
     wat: str = "", *, entry: list[EmittedCheck] | tuple[()] = (),
+    entry_calls: dict[EmittedCheck, list[EntryCall]] | None = None,
 ) -> _TrapIndex:
     """A `_TrapIndex` over hand-built checks and records, related by span
     (`_spanned`); *entry* names the checks the join would place at an entry
-    (a `requires`, a refined parameter)."""
+    (a `requires`, a refined parameter), and *entry_calls* the calls into
+    each one's function, as the join would list them."""
     return _TrapIndex(checks, records, wat, answers=_spanned(checks, records),
-                      entry=entry)
+                      entry=entry, entry_calls=entry_calls)
 
 
 _ENTRY = [("f", False)]

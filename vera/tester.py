@@ -37,7 +37,10 @@ from vera.trap_registry import TRAP_EMITTERS
 from vera.types import BOOL, BYTE, FLOAT64, INT, NAT, STRING, UNIT, ModuleArtifacts, PrimitiveType, Type, base_type, pretty_type
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
+
     from vera.codegen import CompileResult
+    from vera.reconcile import EntryCall
     from vera.resolver import ResolvedModule
     from vera.trap_registry import EmittedCheck
     from vera.verifier import VerifyResult
@@ -959,9 +962,11 @@ class _TrapIndex:
     side, a check standing for a proved and an unproved record, a trap with
     no frame — cannot be pinned on either side, and is ``unattributed``:
     counted and said, never folded into either.  What stays unattributed is
-    a check whose record does not exist: the verifier records no discharged
+    a check whose record does not exist: a call the trial can make whose
+    precondition the verifier discharged, since it records no discharged
     precondition of a call into a user function, and the checks the
-    reconciliation reports with no record (W004) have none by definition.
+    reconciliation reports with no record (W004), which have none by
+    definition.
 
     The rule holds only while the record holds every site that can raise a
     trap an obligation describes: a trap at a site it omitted would be judged
@@ -980,12 +985,19 @@ class _TrapIndex:
 
     A check a function makes on entry for the call that entered it — a
     `requires` clause, a refined parameter's guard (``Reconciliation.
-    entry``) — stands for the records at the calls in the program that reach
-    the function.  The trial's own call is not one of them: its arguments
-    are a Z3 model of exactly those constraints, so the entry checks of the
-    function under test are set aside at that call.  One could fail only
-    where the model and the compiled check disagree, which is still a
-    disagreement between a proof and the program.
+    entry``) — stands for the records at the calls that reach the function,
+    and in a trial for the calls the trial can make: the ones written in a
+    function its run reaches (``Reconciliation.entry_calls``, read through
+    :meth:`reachable`).  Another caller's record is no proof or guard of
+    this run.  A reached call with no record is one whose obligation the
+    verifier discharged without recording it, a proof no record names, so
+    the check can stand for a proof (a run can test it) and a trap at it
+    stays unattributed (PR #1754 review).  The trial's own call is not one
+    of the calls: its arguments are a Z3 model of exactly those constraints,
+    so the entry checks of the function under test are set aside at that
+    call.  One could fail only where the model and the compiled check
+    disagree, which is still a disagreement between a proof and the
+    program.
     """
 
     def __init__(
@@ -996,6 +1008,7 @@ class _TrapIndex:
         *,
         answers: Iterable[tuple[ProofObligation, EmittedCheck]] = (),
         entry: Iterable[EmittedCheck] = (),
+        entry_calls: Mapping[EmittedCheck, Sequence[EntryCall]] | None = None,
     ) -> None:
         # The module's text, read for its call graph (`reachable`): which
         # functions a call of the function under test can run.
@@ -1028,6 +1041,8 @@ class _TrapIndex:
                 got.append(record)
             self._answered.add(id(record))
         self._entry: frozenset[EmittedCheck] = frozenset(entry)
+        self._entry_calls: Mapping[EmittedCheck, Sequence[EntryCall]] = (
+            entry_calls or {})
 
     @classmethod
     def joined(
@@ -1047,13 +1062,16 @@ class _TrapIndex:
 
         answers: list[tuple[ProofObligation, EmittedCheck]] = []
         entry: list[EmittedCheck] = []
+        entry_calls: dict[EmittedCheck, list[EntryCall]] = {}
         if compile_result.ok:
             reconciliation = join(
                 verify_result, compile_result, program=program, file=file,
                 resolved_modules=resolved_modules)
             answers, entry = reconciliation.answers, reconciliation.entry
+            entry_calls = reconciliation.entry_calls
         return cls(compile_result.emitted_checks, verify_result.obligations,
-                   compile_result.wat, answers=answers, entry=entry)
+                   compile_result.wat, answers=answers, entry=entry,
+                   entry_calls=entry_calls)
 
     def attribute(self, trial: TrialResult, decl: ast.FnDecl) -> None:
         """Set *trial*'s ``status``, ``attribution`` and ``refutes``.
@@ -1094,7 +1112,8 @@ class _TrapIndex:
             ))
             return
 
-        read = [(check, *self._read(check)) for check in checks]
+        reach = self.reachable(decl.name)
+        read = [(check, *self._read(check, reach)) for check in checks]
         if all(state == "proved" for _, state, _ in read):
             trial.status = "refuted"
             trial.refutes = _unique(r for _, _, rs in read for r in rs)
@@ -1116,7 +1135,7 @@ class _TrapIndex:
         _unattributed(trial, f"{kind} at {spans} in '{fired_in}'")
 
     def _read(
-        self, check: EmittedCheck,
+        self, check: EmittedCheck, reach: set[str] | None = None,
     ) -> tuple[str, list[ProofObligation]]:
         """One check's standing: ``proved`` or ``not proved`` (with the
         records it stands for), ``proved and not proved`` when it stands for
@@ -1128,15 +1147,25 @@ class _TrapIndex:
         several records of one kind at one node, as for each component of a
         destructure — and is the runtime half of one of them, which no record
         says.  When some are proved and some not, the check is neither a
-        proof's nor a guard's, and every record is kept (PR #1634 review)."""
-        records = self._answers.get(check, [])
-        if not records:
-            return "no obligation recorded", []
-        if all(r.status == "verified" for r in records):
-            return "proved", records
-        if all(r.status != "verified" for r in records):
-            return "not proved", records
-        return "proved and not proved", records
+        proof's nor a guard's, and every record is kept (PR #1634 review).
+
+        *reach* is the run a trial makes (:meth:`reachable`).  An entry check
+        read with it stands for the calls written in those functions alone,
+        and a reached call with no record makes it ``no obligation
+        recorded``, or ``recorded and unrecorded`` beside records: a proof
+        no record names may be what it stands for."""
+        if reach is not None and check in self._entry:
+            calls = [call for call in self._entry_calls.get(check, ())
+                     if call.callers & reach]
+            records = _unique(
+                r for call in calls for r in call.records
+                if r.kind not in _BOOKKEEPING_KINDS)
+            if not calls or any(not call.records for call in calls):
+                if not records:
+                    return "no obligation recorded", []
+                return "recorded and unrecorded", records
+            return _standing(records)
+        return _standing(self._answers.get(check, []))
 
     def proof_clauses(
         self, decl: ast.FnDecl, file: str | None,
@@ -1226,7 +1255,7 @@ class _TrapIndex:
             if check.function not in reach or (
                     check.function == decl.name and check in self._entry):
                 continue
-            state, _ = self._read(check)
+            state, _ = self._read(check, reach)
             if state == "not proved" or (
                     state == "no obligation recorded" and check.prelude):
                 continue
@@ -1306,6 +1335,19 @@ def _returned_parts(expr: ast.Expr) -> list[ast.Expr]:
 def _unattributed(trial: TrialResult, where: str) -> None:
     trial.status = "unattributed"
     trial.attribution = f"trap not attributable to an obligation: {where}"
+
+
+def _standing(records: list[ProofObligation]) -> tuple[str, list[ProofObligation]]:
+    """What *records*, the ones a check stands for, make of it: ``no
+    obligation recorded``, ``proved``, ``not proved``, or ``proved and not
+    proved`` (``_TrapIndex._read``)."""
+    if not records:
+        return "no obligation recorded", []
+    if all(r.status == "verified" for r in records):
+        return "proved", records
+    if all(r.status != "verified" for r in records):
+        return "not proved", records
+    return "proved and not proved", records
 
 
 def _unique(records: Iterable[ProofObligation]) -> list[ProofObligation]:

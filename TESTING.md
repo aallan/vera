@@ -1331,8 +1331,13 @@ whose record sits at another node (a refined parameter's guard and the
 argument, a binder and the value it takes apart, a refined return and the
 body, an arm and its join, a measure and its tail call) is attributed; a trap
 at a check the relation joins to no record is counted as unattributed rather
-than asserted away.  The pull request's suite runs it at 5 trials per
-function, and the nightly stress workflow at 1,000.
+than asserted away.  An entry check, a `requires` clause or a refined
+parameter's guard, stands in a trial for the calls the trial's run can make
+alone (`Reconciliation.entry_calls`), so another caller's record is neither
+its proof nor its guard, and a reached call whose precondition the verifier
+discharged without a record keeps a trap there unattributed.  The pull
+request's suite runs it at 5 trials per function, and the nightly stress
+workflow at 1,000.
 
 ### Where an instrument runs
 
