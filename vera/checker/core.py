@@ -57,6 +57,7 @@ from vera.types import (
     Type,
     TypeVar,
     UnknownType,
+    canonical_type_name,
     is_subtype,
     pretty_type,
     pretty_inferred_type,
@@ -126,8 +127,9 @@ class _Predicate(NamedTuple):
     """A contract predicate being checked, held to purity (#1708): its kind
     as its E187 and fix name it (``requires``, ``ensures``, ``decreases``,
     ``assert``, ``assume`` or ``refinement``), the function it is written
-    in, where there is one, and the depth of the checker's handled effects
-    where it begins, so the handlers written inside it are the ones above."""
+    in, where there is one, and the depth of the checker's handled effect
+    instances where it begins, so the handlers written inside it are the
+    ones above."""
 
     kind: str
     owner: str | None
@@ -451,6 +453,9 @@ class TypeChecker(
         # so it pushes None: no predicate is innermost there.  Empty outside
         # every predicate.
         self._pure_predicates: list[_Predicate | None] = []
+        # #1708: the closure literals refused where they are written in a
+        # predicate, by `id`, so their application draws no second code.
+        self._impure_literals: set[int] = set()
         # The `id`s of the closure literals being checked as a quantifier's
         # predicate, which code generation inlines into the function around
         # the quantifier rather than lifting (spec §11.13.2): no closure
@@ -1647,31 +1652,44 @@ class TypeChecker(
         place is counted nowhere, so none of it counts for the purity of
         the declaration around it (E122)."""
         self._pure_predicates.append(
-            _Predicate(kind, owner, len(self._handled_effects)))
+            _Predicate(kind, owner, len(self._handled_effect_insts)))
         try:
             return self._synth_expr(expr)
         finally:
             self._pure_predicates.pop()
 
-    def _impure_in_predicate(self, effects: Iterable[str]) -> _Impure | None:
+    def _impure_in_predicate(
+        self, effects: Iterable[EffectInstance | str],
+    ) -> _Impure | None:
         """Which of *effects* the innermost predicate being checked would
-        perform: those no handler written inside it handles.  None outside
-        every predicate, in the body of a closure written in one, which its
-        own row judges, and where every effect is handled."""
+        perform: those no handler written inside it handles.  An instance
+        is handled by a handler of an equal instance, its name and its type
+        arguments (`handle[State<Bool>]` does not handle a `State<Int>`); a
+        bare name, an operation's effect, which binds the innermost handler
+        of that name, by any handler of that name.  None outside every
+        predicate, in the body of a closure written in one, which its own
+        row judges, and where every effect is handled."""
         if not self._pure_predicates:
             return None
         predicate = self._pure_predicates[-1]
         if predicate is None:
             return None
-        handled = set(self._handled_effects[predicate.mark:])
-        unhandled = tuple(sorted({e for e in effects if e not in handled}))
+        inside = self._handled_effect_insts[predicate.mark:]
+        names = {inst.name for inst in inside}
+        unhandled = tuple(sorted(
+            {e if isinstance(e, str)
+             else canonical_type_name(e.name, e.type_args or None)
+             for e in effects
+             if (e not in names if isinstance(e, str) else e not in inside)}))
         return _Impure(predicate, unhandled) if unhandled else None
 
     def _refuse_impure_predicate(
         self, node: ast.Node, what: str, performer: str, impure: _Impure,
+        *, closure: bool = False,
     ) -> None:
         """E187: *what* performs the effects *impure* names, in its
-        predicate.  *performer* is how the fix names it."""
+        predicate.  *performer* is how the fix names it; a *closure*
+        written in the predicate, applied or not, has a fix of its own."""
         kind, owner = impure.predicate.kind, impure.predicate.owner
         effects = impure.effects
         if kind in ("requires", "ensures", "decreases"):
@@ -1700,6 +1718,25 @@ class TypeChecker(
             fix = (f"Perform {performer} in a function's body instead: "
                    f"{bind}, and write the refinement predicate over its own "
                    f"value alone.")
+        if closure:
+            alone = {"requires": "the parameters alone",
+                     "ensures": "the parameters and the result alone"}
+            if kind in alone:
+                fix = (f"Write the anonymous function in the body of "
+                       f"'{owner}' instead, and write the {kind} clause over "
+                       f"{alone[kind]}: a contract predicate may write only "
+                       f"an anonymous function that performs no effect.")
+            elif kind == "decreases":
+                fix = ("Write the measure over the parameters alone, "
+                       "without the anonymous function.")
+            elif kind in ("assert", "assume"):
+                fix = (f"Write the anonymous function before the {kind}, "
+                       f"outside it, and check in the {kind} only a value "
+                       f"bound before it.")
+            else:
+                fix = ("Write the anonymous function in a function's body "
+                       "instead, and write the refinement predicate over its "
+                       "own value alone.")
         self._error(
             node,
             f"{what} in {where} performs {', '.join(effects)}: a contract "

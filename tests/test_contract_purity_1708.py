@@ -514,3 +514,245 @@ def test_the_refinement_fix_applied_literally_checks_clean() -> None:
     checked = pipeline.check(fixed)
     assert not checked.diagnostics, (
         [(d.error_code, d.description) for d in checked.diagnostics], fixed)
+
+
+# =====================================================================
+# A handler written inside the predicate handles its own instance alone
+# =====================================================================
+#
+# `handle[State<Bool>]` inside a predicate does not handle the `State<Int>`
+# a callee performs, nor `handle[Exn<String>]` an `Exn<Int>`: each place is
+# judged by the instances it performs, and an effect is handled only by a
+# handler of an equal instance written inside the predicate (PR #1762
+# review: the names alone made the contract perform the caller's effect).
+
+_BUMP = ("private fn bump(@Unit -> @Int)\n  requires(true)\n  ensures(true)\n"
+         "  effects(<State<Int>>)\n{\n  put(get(()) + 1);\n  get(())\n}\n\n")
+_RISKY = ("private fn risky(@Int -> @Int)\n  requires(true)\n  ensures(true)\n"
+          "  effects(<Exn<Int>>)\n{\n"
+          "  if @Int.0 > 0 then { Exn.throw(7) } else { 0 }\n}\n\n")
+
+#: effect -> (the function's row, its declarations, the handler written in
+#: the predicate at another instantiation, the one at the same, ROUTE the
+#: place that performs the effect).
+_INSTANCES: dict[str, tuple[str, str, str, str]] = {
+    "State": (
+        "<State<Int>>", _BUMP,
+        "handle[State<Bool>](@Bool = true) { get(@Unit) -> { resume(@Bool.0) }, "
+        "put(@Bool) -> { resume(()) } } in { ROUTE } >= 0",
+        "handle[State<Int>](@Int = 0) { get(@Unit) -> { resume(@Int.0) }, "
+        "put(@Int) -> { resume(()) } } in { ROUTE } >= 0"),
+    "Exn": (
+        "<Exn<Int>>", _RISKY,
+        "handle[Exn<String>] { throw(@String) -> { false } } in { ROUTE >= 0 }",
+        "handle[Exn<Int>] { throw(@Int) -> { false } } in { ROUTE >= 0 }"),
+}
+
+#: route -> effect -> (the place that performs it, the text E187 is placed
+#: at).  A parameter's route needs a parameter, so it is written only in the
+#: kinds whose function names one beside its `@Int`.
+_ROUTES: dict[str, dict[str, tuple[str, str]]] = {
+    "a call": {"State": ("bump(())", "bump(())"),
+               "Exn": ("risky(1)", "risky(1)")},
+    "apply_fn of a literal": {
+        "State": ("apply_fn(fn(@Unit -> @Int) effects(<State<Int>>) "
+                  "{ bump(()) }, ())", "fn(@Unit -> @Int)"),
+        "Exn": ("apply_fn(fn(@Int -> @Int) effects(<Exn<Int>>) "
+                "{ risky(@Int.0) }, 1)", "fn(@Int -> @Int)")},
+    "an unapplied literal": {
+        "State": ("array_length([fn(@Unit -> @Int) effects(<State<Int>>) "
+                  "{ bump(()) }])", "fn(@Unit -> @Int)"),
+        "Exn": ("array_length([fn(@Int -> @Int) effects(<Exn<Int>>) "
+                "{ risky(@Int.0) }])", "fn(@Int -> @Int)")},
+    "apply_fn of a parameter": {"State": ("apply_fn(@P.0, ())", "apply_fn(@P.0"),
+                                "Exn": ("apply_fn(@P.0, 1)", "apply_fn(@P.0")},
+}
+_PARAMETER_TYPES = {"State": "type P = fn(Unit -> Int) effects(<State<Int>>);\n\n",
+                    "Exn": "type P = fn(Int -> Int) effects(<Exn<Int>>);\n\n"}
+_NAMING_A_PARAMETER = ("requires", "ensures", "assert", "assume")
+
+
+def _instance_program(kind: str, effect: str, route: str, *, same: bool) -> str:
+    row, decls, other, same_handler = _INSTANCES[effect]
+    pred = (same_handler if same else other).replace(
+        "ROUTE", _ROUTES[route][effect][0])
+    source = _KINDS[kind].replace("PRED", pred).replace("EFF", row)
+    if route == "apply_fn of a parameter":
+        decls += _PARAMETER_TYPES[effect]
+        source = source.replace("public fn f(@Int -> @Int)",
+                                "public fn f(@Int, @P -> @Int)")
+    return decls + source
+
+
+_INSTANCE_CELLS = [
+    (kind, effect, route)
+    for route in _ROUTES for effect in _INSTANCES for kind in _KINDS
+    if route != "apply_fn of a parameter" or kind in _NAMING_A_PARAMETER
+]
+
+
+@pytest.mark.parametrize(("kind", "effect", "route"), _INSTANCE_CELLS)
+def test_a_handler_of_another_instantiation_does_not_handle(
+    kind: str, effect: str, route: str,
+) -> None:
+    """Under a handler for another instantiation of the effect, written
+    inside the predicate, the place still performs the function's instance:
+    refused there, once."""
+    source = _instance_program(kind, effect, route, same=False)
+    checked = pipeline.check(source)
+    marker = _ROUTES[route][effect][1]
+    assert _placed(checked) == [("E187", *_locate(source, marker))], (
+        [(d.error_code, d.description) for d in checked.errors], source)
+
+
+#: The neighbour's verify obligations at the base (54b5034f), by kind: a
+#: call under a handler of the same instantiation, which handles its effect
+#: there.  The callee adds its own `requires` and `ensures`, and `bump` its
+#: `get(()) + 1`'s overflow check.
+_BASE_SAME_HANDLER: dict[str, tuple[tuple[str, str], ...]] = {
+    "requires": (("requires", "tier3"), ("ensures", "verified")),
+    "ensures": (("ensures", "tier3"), ("requires", "verified")),
+    "decreases": (("decreases", "tier3"), ("ensures", "verified"),
+                  ("int_overflow", "verified"), ("nat_bind", "verified"),
+                  ("requires", "verified")),
+    "assert": (("assert", "tier3"), ("ensures", "verified"),
+               ("requires", "verified")),
+    "result": (("refine_bind", "tier3"), ("ensures", "verified"),
+               ("requires", "verified")),
+} | {kind: (("ensures", "verified"), ("requires", "verified"))
+     for kind in ("assume", "alias", "field", "parameter")}
+_CALLEE = {"State": (("ensures", "verified"), ("requires", "verified"),
+                     ("int_overflow", "tier3")),
+           "Exn": (("ensures", "verified"), ("requires", "verified"))}
+
+
+@pytest.mark.parametrize("effect", list(_INSTANCES))
+@pytest.mark.parametrize("kind", list(_KINDS))
+def test_a_handler_of_the_same_instantiation_handles(kind: str, effect: str) -> None:
+    """The neighbour: the call under a handler of its own instantiation,
+    written inside the predicate, is pure there, accepted with the base's
+    verdict and statuses."""
+    source = _instance_program(kind, effect, "a call", same=True)
+    checked = pipeline.check(source)
+    assert not checked.diagnostics, (
+        [(d.error_code, d.description) for d in checked.diagnostics], source)
+    base = tuple(sorted((*_BASE_SAME_HANDLER[kind], *_CALLEE[effect])))
+    assert _statuses(source) == (True, base), source
+
+
+# =====================================================================
+# A handler written around the predicate handles nothing in it
+# =====================================================================
+
+#: effect -> (the handler written around the statement, the operation).
+_AROUND: dict[str, tuple[str, str]] = {
+    "State": ("handle[State<Int>](@Int = 0) {\n    get(@Unit) -> { resume(@Int.0) },\n"
+              "    put(@Int) -> { resume(()) }\n  } in {\n    STMT\n    @Int.0\n  }",
+              "get(()) >= 0"),
+    "Exn": ("handle[Exn<String>] {\n    throw(@String) -> { 0 }\n  } in {\n"
+            "    STMT\n    @Int.0\n  }",
+            'if true then { true } else { Exn.throw("x") }'),
+}
+_AROUND_KINDS: dict[str, str] = {
+    "assert": "assert(OP);",
+    "assume": "assume(OP);",
+    "let refinement": "let @{ @Int | OP } = 5;",
+}
+#: Each neighbour: the value bound before the predicate, under the same
+#: handler, and the predicate over the bound value.
+_AROUND_NEIGHBOURS: dict[str, str] = {
+    "assert": "let @Bool = OP;\n    assert(@Bool.0);",
+    "assume": "let @Bool = OP;\n    assume(@Bool.0);",
+    "let refinement": "let @Bool = OP;\n    assert(@Bool.0);\n"
+                      "    let @{ @Int | @Int.0 >= 0 } = 5;",
+}
+
+
+def _around(effect: str, stmt: str) -> str:
+    handler, op = _AROUND[effect]
+    return ("public fn f(@Int -> @Int)\n  requires(true)\n  ensures(true)\n"
+            "  effects(pure)\n{\n  "
+            + handler.replace("STMT", stmt.replace("OP", op)) + "\n}\n")
+
+
+@pytest.mark.parametrize("effect", list(_AROUND))
+@pytest.mark.parametrize("kind", list(_AROUND_KINDS))
+def test_a_handler_around_the_predicate_handles_nothing_in_it(
+    kind: str, effect: str,
+) -> None:
+    """A handler written around an `assert`, an `assume` or a `let`'s
+    refinement is outside the predicate, so it handles nothing there: the
+    operation is refused (mutant: every handler in force counted)."""
+    source = _around(effect, _AROUND_KINDS[kind])
+    marker = "get(())" if effect == "State" else "Exn.throw"
+    assert _placed(pipeline.check(source)) == [
+        ("E187", *_locate(source, marker))], source
+
+
+#: The neighbours' verify obligations at the base.
+_BASE_AROUND: dict[str, tuple[tuple[str, str], ...]] = {
+    "assert": (("assert", "tier3"), ("ensures", "verified"), ("requires", "verified")),
+    "assume": (("ensures", "verified"), ("requires", "verified")),
+    "let refinement": (("assert", "tier3"), ("ensures", "verified"),
+                       ("refine_bind", "verified"), ("requires", "verified")),
+}
+
+
+@pytest.mark.parametrize("effect", list(_AROUND))
+@pytest.mark.parametrize("kind", list(_AROUND_NEIGHBOURS))
+def test_a_value_bound_under_the_handler_before_the_predicate(
+    kind: str, effect: str,
+) -> None:
+    source = _around(effect, _AROUND_NEIGHBOURS[kind])
+    checked = pipeline.check(source)
+    assert not checked.diagnostics, (
+        [(d.error_code, d.description) for d in checked.diagnostics], source)
+    assert _statuses(source) == (True, tuple(sorted(_BASE_AROUND[kind]))), source
+
+
+# =====================================================================
+# An application is judged by the type it applies
+# =====================================================================
+
+
+@pytest.mark.parametrize("row", ["<IO>", "<State<Int>>"])
+def test_apply_fn_of_a_literal_whose_type_names_an_effect_is_refused(row: str) -> None:
+    """The literal performs nothing, but its type names an effect, and the
+    application is held to the type, as an `apply_fn` of any other value is
+    and as a `pure` body holds it (E125): one code, at the application."""
+    source = ("public fn f(@Int -> @Int)\n"
+              f"  requires(apply_fn(fn(@Int -> @Bool) effects({row}) {{ true }}, 0))\n"
+              "  ensures(true)\n  effects(pure)\n{\n  @Int.0\n}\n")
+    assert _placed(pipeline.check(source)) == [
+        ("E187", *_locate(source, "apply_fn("))]
+
+
+def test_a_quantifier_whose_predicate_type_names_an_effect_is_refused() -> None:
+    source = ("public fn f(@Int -> @Int)\n  requires(true)\n"
+              "  ensures(forall(@Nat, 3, fn(@Nat -> @Bool) effects(<IO>) { true }))\n"
+              "  effects(pure)\n{\n  @Int.0\n}\n")
+    assert _placed(pipeline.check(source)) == [
+        ("E187", *_locate(source, "forall("))]
+
+
+def test_the_unapplied_closure_fix_applied_literally_checks_clean() -> None:
+    """The fix for an anonymous function written in a predicate names no
+    application, which an unapplied one does not have."""
+    source = ("public fn f(@Int -> @Int)\n"
+              "  requires(array_length([fn(@Int -> @Bool) effects(<IO>) "
+              "{ IO.time(()) >= 0 }]) == 1)\n"
+              "  ensures(true)\n  effects(<IO>)\n{\n  @Int.0\n}\n")
+    fix = pipeline.check(source).errors[0].fix
+    assert fix == (
+        "Write the anonymous function in the body of 'f' instead, and write "
+        "the requires clause over the parameters alone: a contract predicate "
+        "may write only an anonymous function that performs no effect.")
+    fixed = source.replace(
+        "  requires(array_length([fn(@Int -> @Bool) effects(<IO>) "
+        "{ IO.time(()) >= 0 }]) == 1)\n", "  requires(true)\n").replace(
+        "{\n  @Int.0\n}",
+        "{\n  let @Int = array_length([fn(@Int -> @Bool) effects(<IO>) "
+        "{ IO.time(()) >= 0 }]);\n  @Int.1\n}")
+    checked = pipeline.check(fixed)
+    assert not checked.diagnostics, (
+        [(d.error_code, d.description) for d in checked.diagnostics], fixed)

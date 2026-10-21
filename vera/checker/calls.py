@@ -938,9 +938,8 @@ class CallsMixin:
         # #1708: in a contract predicate, a callee whose row names an effect
         # no handler written inside the predicate handles is refused, and
         # the call is neither counted nor held to the row in force.
-        impure = (self._impure_in_predicate(
-            e.name for e in fn_info.effect.effects)
-            if isinstance(fn_info.effect, ConcreteEffectRow) else None)
+        impure = (self._impure_in_predicate(fn_info.effect.effects)
+                  if isinstance(fn_info.effect, ConcreteEffectRow) else None)
         if impure is not None:
             self._refuse_impure_predicate(
                 node, f"Call to '{fn_info.name}'",
@@ -1149,16 +1148,15 @@ class CallsMixin:
                     error_code="E202",
                 )
 
-        # #1708: in a contract predicate, a value whose row names an effect
-        # no handler written inside the predicate handles is refused here,
-        # unless it is a closure literal, which is refused where it is
+        # #1708: in a contract predicate, a value whose type's row names an
+        # effect no handler written inside the predicate handles is refused
+        # here, unless it is a closure literal already refused where it is
         # written (`_check_anon_fn`); either way the application is neither
         # counted nor held to the row in force.
-        impure = (self._impure_in_predicate(
-            e.name for e in fn_ty.effect.effects)
-            if isinstance(fn_ty.effect, ConcreteEffectRow) else None)
+        impure = (self._impure_in_predicate(fn_ty.effect.effects)
+                  if isinstance(fn_ty.effect, ConcreteEffectRow) else None)
         if impure is not None:
-            if not isinstance(fn_arg, ast.AnonFn):
+            if id(fn_arg) not in self._impure_literals:
                 self._refuse_impure_predicate(
                     node, "apply_fn of a function value", "the apply_fn",
                     impure)
