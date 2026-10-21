@@ -9,6 +9,16 @@ the run exits with its ``expected_exit`` and prints exactly its
 ``expected_stdout`` (or carries a ``nondeterministic_stdout`` reason in
 place of the output); scripts/conformance_golden.py holds that rule, and
 tests/test_conformance.py shares it.
+
+The verify stage is ``vera verify`` as it runs by default, with the
+reconciliation join, so a runtime-check claim the compiled module does not
+answer fails it.  It passes only when every error is an E541 the
+reconciliation gate's ``KNOWN`` list names for the program
+(scripts/check_reconciliation.py's ``unlisted_verify_errors``, which
+tests/test_conformance.py shares).  A negative entry never reaches the verify
+stage: it stops at the stage its ``expected_error_stage`` names, ``check``
+or ``compile``, with the code its ``expected_error`` names there, the
+contention negative's E621 at compile among them.
 """
 
 import json
@@ -18,6 +28,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from check_reconciliation import unlisted_verify_errors
 from conformance_golden import entry_problems, run_mismatch, run_program
 
 CONFORMANCE_DIR = Path(__file__).parent.parent / "tests" / "conformance"
@@ -34,6 +45,33 @@ def _vera(*args: str) -> subprocess.CompletedProcess[str]:
         encoding="utf-8",
         check=False,
     )
+
+
+def verify_problem(
+    rel: str, result: subprocess.CompletedProcess[str],
+) -> str | None:
+    """Why a `vera verify --json` run fails the verify stage of the program
+    at *rel*, or None: an envelope that does not parse, or an error that is
+    not an E541 the reconciliation gate's ``KNOWN`` names for it."""
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return "expected a JSON envelope, got:\n" + result.stdout + result.stderr
+    errors = [
+        (d.get("error_code"), (d.get("location") or {}).get("file"),
+         (d.get("location") or {}).get("line", 0),
+         (d.get("location") or {}).get("column", 0))
+        for d in payload.get("diagnostics", [])
+    ]
+    unlisted = unlisted_verify_errors(rel, errors)
+    if not unlisted:
+        return None
+    return "\n".join(
+        f"[{d.get('error_code')}] {d.get('description', '')}"
+        for d in payload.get("diagnostics", [])
+        if (d.get("error_code"), (d.get("location") or {}).get("file"),
+            (d.get("location") or {}).get("line", 0),
+            (d.get("location") or {}).get("column", 0)) in unlisted)
 
 
 def main() -> int:
@@ -126,11 +164,12 @@ def main() -> int:
                 failed.append((entry_id, "check", result.stdout + result.stderr))
                 continue
 
-        # Verify
+        # Verify, with the reconciliation join `vera verify` runs by default
         if level_n >= _LEVEL_ORDER["verify"]:
-            result = _vera("verify", path)
-            if "OK:" not in result.stdout:
-                failed.append((entry_id, "verify", result.stdout + result.stderr))
+            result = _vera("verify", "--json", path)
+            problem = verify_problem(f"tests/conformance/{entry['file']}", result)
+            if problem is not None:
+                failed.append((entry_id, "verify", problem))
                 continue
 
         # Run: the exit status and the exact stdout the entry declares

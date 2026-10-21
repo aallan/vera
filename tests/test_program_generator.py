@@ -57,7 +57,6 @@ from vera import ast, narrowing
 from vera.formatter import format_source
 from vera.obligations.cache import walk_nodes
 from vera.reconcile import Mismatch, join
-from vera.types import INT, NAT
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -435,25 +434,6 @@ def _nat_through_a_call(node: ast.Node, sites: Sites) -> bool:
             and not narrowing.is_static_nat_typed(node, lambda _call: None))
 
 
-def _int_joined_with_nat(node: ast.Node, sites: Sites) -> bool:
-    """An `if` or a `match` the checker types `@Nat` that joins a branch it
-    types `@Int` with one it types `@Nat` (#1756): the relaxed `Int <: Nat`
-    rule hands the join the second type, so the verifier, reading it,
-    records no narrowing where the join is bound into a `@Nat` position,
-    while code generation's static rule reads the `@Int` branch and guards
-    the binding."""
-    if isinstance(node, ast.IfExpr):
-        values = [node.then_branch.expr, node.else_branch.expr]
-    elif isinstance(node, ast.MatchExpr):
-        values = [arm.body for arm in node.arms]
-    else:
-        return False
-    if sites.checker_type(node) != NAT:
-        return False
-    types = [sites.checker_type(value) for value in values]
-    return INT in types and NAT in types
-
-
 @dataclass(frozen=True)
 class KnownClass:
     """A mismatch the join reports today, by the open issue whose class it
@@ -483,8 +463,6 @@ _SHAPES: dict[str, Callable[[ast.Node, Sites], bool]] = {
         lambda node, _s: _division_by(node, literal=True),
     "a `@Nat` binder of a `Nat` field": _nat_field_binder,
     "a `@Nat` value read through a call": _nat_through_a_call,
-    "an `@Int` branch joined with a `@Nat` branch, typed `@Nat`":
-        _int_joined_with_nat,
 }
 
 
@@ -546,24 +524,9 @@ public fn t(@Nat -> @Nat)
 }
 """
 
-_REPRO_1756 = """\
-public fn tripled(@Bool, @Nat -> @Int)
-  requires(@Nat.0 <= 10)
-  ensures(@Int.result >= 0 && @Int.result <= 0)
-  effects(pure)
-{
-  let @Nat = if @Bool.0 then {
-    -1 * -3
-  } else {
-    @Nat.0
-  };
-  0
-}
-"""
-
 #: The mismatches the join reports today that a generated program can meet:
 #: each a shape of a `scripts/check_reconciliation.py` `KNOWN` class, or of
-#: an open issue the generator found (#1756).
+#: an open issue the generator found.
 KNOWN_CLASSES: tuple[KnownClass, ...] = (
     KnownClass(
         "#1598", "guarded_unrecorded", "int_overflow",
@@ -581,11 +544,6 @@ KNOWN_CLASSES: tuple[KnownClass, ...] = (
         "#1695 (#1557)", "guarded_unrecorded", "nat_bind",
         "wasm/operators.py:_emit_nat_bind_guard",
         "a `@Nat` value read through a call", _REPRO_1557),
-    KnownClass(
-        "#1756", "guarded_unrecorded", "nat_bind",
-        "wasm/operators.py:_emit_nat_bind_guard",
-        "an `@Int` branch joined with a `@Nat` branch, typed `@Nat`",
-        _REPRO_1756),
 )
 
 
@@ -975,67 +933,6 @@ def test_each_known_class_keeps_its_shape(cls: KnownClass) -> None:
         ((cls.kind, cls.obligation, cls.emitter), cls.issue)], finds
     alone = reconcile_finds(cls.repro, known=(cls,))
     assert [f.known for f in alone] == [cls.issue], alone
-
-
-#: #1756's members, by the form of the `@Int` branch: literal arithmetic
-#: (seed 463), an `@Int` parameter (seed 2016), and a `match` whose later
-#: arm is the `@Int`, each joined with a `@Nat` at a `@Nat` `let`.
-_MEMBERS_1756 = {
-    "literal arithmetic, seed 463": _REPRO_1756,
-    "an `@Int` parameter, seed 2016": """\
-public fn joined(@Bool, @Int, @Nat -> @Int)
-  requires(@Int.0 >= 0 && @Int.0 <= 10)
-  ensures(@Int.result >= 0 && @Int.result <= 0)
-  effects(pure)
-{
-  let @Nat = if @Bool.0 then {
-    @Int.0
-  } else {
-    @Nat.0
-  };
-  0
-}
-""",
-    "a `match` whose later arm is the `@Int`": """\
-public fn picked(@Bool, @Int, @Nat -> @Int)
-  requires(@Int.0 >= 0 && @Int.0 <= 10)
-  ensures(@Int.result >= 0 && @Int.result <= 0)
-  effects(pure)
-{
-  let @Nat = match @Bool.0 {
-    true -> @Nat.0,
-    false -> @Int.0
-  };
-  0
-}
-""",
-}
-
-
-@pytest.mark.parametrize("member", sorted(_MEMBERS_1756))
-def test_the_1756_class_reads_its_mechanism(member: str) -> None:
-    """#1756's class is the checker's join, not a literal: an `@Int` branch
-    of any form joined with a `@Nat` branch, in an `if` or a `match`, is
-    typed `@Nat`.  Each member is that known class, with the shape and the
-    join's site as its record's evidence."""
-    source = _MEMBERS_1756[member]
-    assert not contract_finds(source), contract_finds(source)
-    [cls] = [k for k in KNOWN_CLASSES if k.issue == "#1756"]
-    finds = reconcile_finds(source)
-    assert [(f.signature, f.known) for f in finds] == [
-        ((cls.kind, cls.obligation, cls.emitter), "#1756")], finds
-    assert finds[0].evidence == f"{cls.shape}, at 6:14", finds[0].evidence
-
-
-def test_the_1756_class_holds_no_other_nat_bind() -> None:
-    """The other `nat_bind` classes' repros, a field binder and a value read
-    through a call, are not #1756's: its predicate alone leaves each a
-    find."""
-    [cls] = [k for k in KNOWN_CLASSES if k.issue == "#1756"]
-    for repro in (_REPRO_1629_BINDER, _REPRO_1557):
-        finds = reconcile_finds(repro, known=(cls,))
-        assert [(f.signature[1], f.known) for f in finds] == [
-            ("nat_bind", "")], finds
 
 
 def test_the_distrust_differential_reports_a_refuted_proof() -> None:

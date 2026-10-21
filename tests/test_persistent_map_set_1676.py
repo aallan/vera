@@ -1511,7 +1511,31 @@ def test_marking_a_wide_map_keeps_every_key(n: int) -> None:
         assert counted["walked"] == 0, counted
     if n == 1_000_000:
         # The premise: walks that resumed below their range's top.
-        assert max(c.resumed_below_top for c in walked) >= 1, walked
+        assert max((c.resumed_below_top for c in walked), default=0) >= 1, walked
+
+
+#: A key under which the 100,000-key map's collections walk, several times
+#: in one (R87's, PR #1753): under some drawn keys none walks at that width.
+_WALKING_KEY = [5737245576368889743, 7345542093559887913]
+
+
+@pytest.mark.stress
+def test_marking_a_wide_map_keeps_every_key_where_collections_walk() -> None:
+    """The 100,000-key cell under a pinned key whose collections walk,
+    beside the drawn one: there the resume rule's counters have walks to
+    judge, which a drawn key need not give at this width."""
+    from tests.test_gc_mark_width_1510 import _assert_the_walks_keep_the_resume_rule, _counted_run
+    from tests.test_keyed_string_hash_1736 import _native_key
+
+    n = 100_000
+    result = pipeline.compile(_wide_map(n, 3000), file="wide.vera").result
+    assert result.ok, result.diagnostics
+    with _native_key(list(_WALKING_KEY)):
+        value, counted, walked = _counted_run(result)
+    assert value == n * (n - 1) // 2
+    _assert_the_walks_keep_the_resume_rule(counted, walked)
+    # The premise: collections that walk more than once.
+    assert max((c.walks for c in walked), default=0) >= 2, walked
 
 
 @_needs_node

@@ -1239,7 +1239,9 @@ class ExpressionsMixin:
         lifted = id(expr) not in self._inlined_closures
         if lifted:
             self._closure_handler_marks.append(len(self._handled_effects))
+        self._pure_predicates.append(None)
         body_type = self._synth_expr(expr.body, expected=ret_type)
+        self._pure_predicates.pop()
         if lifted:
             self._closure_handler_marks.pop()
         self.env.pop_scope()
@@ -1255,8 +1257,25 @@ class ExpressionsMixin:
         # value's row on the way to an application (a sub with one is
         # permissive, #294), so this is what holds a `pure` function to its
         # closures.  An operation a judgement refused was never counted
-        # (`_check_op_call`): its code at the call is its one.
+        # (`_check_op_call`): its code at the call is its one.  Written in a
+        # contract predicate, a closure that performs an effect is refused
+        # at the closure, applied or not, as a `pure` function is held to
+        # its closures (#1708): its application draws no second code.
+        # Judged by the instances the closure's row declares for what it
+        # performs, so a handler written inside the predicate handles them
+        # only at their own instance.
+        impure = None
         if isinstance(eff, ConcreteEffectRow):
+            declared = [inst for inst in eff.effects if inst.name in performed]
+            impure = self._impure_in_predicate(
+                [*declared, *(name for name in performed
+                              if all(inst.name != name for inst in declared))])
+        if impure is not None:
+            self._impure_literals.add(id(expr))
+            self._refuse_impure_predicate(
+                expr, "An anonymous function written",
+                "the anonymous function", impure, closure=True)
+        elif isinstance(eff, ConcreteEffectRow):
             self._effect_ops_used |= performed
 
         if body_type and not isinstance(body_type, UnknownType):
@@ -1568,9 +1587,14 @@ class ExpressionsMixin:
     # Assert / Assume
     # -----------------------------------------------------------------
 
+    def _predicate_owner(self) -> str | None:
+        """The function an `assert` or `assume` is written in, as its E187
+        names it: the innermost declaration being checked."""
+        return self._fn_scope_stack[-1].name if self._fn_scope_stack else None
+
     def _check_assert(self, expr: ast.AssertExpr) -> Type | None:
-        """Type-check assert(expr)."""
-        ty = self._synth_expr(expr.expr)
+        """Type-check assert(expr), a predicate held to purity (#1708)."""
+        ty = self._check_predicate("assert", self._predicate_owner(), expr.expr)
         if ty and not isinstance(ty, UnknownType):
             if not is_subtype(base_type(ty), BOOL):
                 self._error(
@@ -1591,8 +1615,8 @@ class ExpressionsMixin:
         return UNIT
 
     def _check_assume(self, expr: ast.AssumeExpr) -> Type | None:
-        """Type-check assume(expr)."""
-        ty = self._synth_expr(expr.expr)
+        """Type-check assume(expr), a predicate held to purity (#1708)."""
+        ty = self._check_predicate("assume", self._predicate_owner(), expr.expr)
         if ty and not isinstance(ty, UnknownType):
             if not is_subtype(base_type(ty), BOOL):
                 self._error(
@@ -1653,6 +1677,17 @@ class ExpressionsMixin:
         pred_ty = self._synth_expr(expr.predicate)
         self._inlined_closures.discard(id(expr.predicate))
         if not isinstance(pred_ty, FunctionType):
+            return
+        if self._pure_predicates and self._pure_predicates[-1] is not None:
+            # In a contract predicate (#1708) the quantifier applies a
+            # predicate whose type's row names an effect: refused here,
+            # unless the literal was refused where it is written
+            # (`_check_anon_fn`), and held to no row in force.
+            impure = (self._impure_in_predicate(pred_ty.effect.effects)
+                      if isinstance(pred_ty.effect, ConcreteEffectRow) else None)
+            if impure is not None and id(expr.predicate) not in self._impure_literals:
+                self._refuse_impure_predicate(
+                    expr, f"The {form} quantifier", f"the {form}", impure)
             return
         effect = pred_ty.effect
         if isinstance(effect, ConcreteEffectRow):

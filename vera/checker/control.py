@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 
-from vera import ast, naming, patterns
+from vera import ast, naming, narrowing, patterns
 from vera.checker.registration import builtin_effect_names
 from vera.environment import AdtInfo, Binding, ConstructorInfo, FunctionInfo
 from vera.formatter import format_type_canonical
@@ -195,6 +195,44 @@ def _display_only(ty: Type, declared: Collection[str]) -> bool:
     return False
 
 
+def _no_call(_call: ast.Expr) -> str | None:
+    """A call-type oracle that reads no call: a call's result is never a
+    constant, and the checker's types for one are a table only artifact
+    collection fills."""
+    return None
+
+
+def _signed_join(
+    joined: Type | None, branches: Sequence[tuple[ast.Expr, Type]],
+) -> Type | None:
+    """The type of a join whose branches meet as an `@Int` and a `@Nat`
+    (#1756).
+
+    `is_subtype` admits an `@Int` where a `@Nat` is expected, leaving the
+    narrowing to the verifier, and `_join` gives its first type to its
+    second, so an `if` whose then-branch is an `@Int` and whose else-branch is
+    a `@Nat`, or a `match` whose later arm is the `@Int`, came out a `@Nat`.
+    The verifier reads a join's type to decide whether binding it into a
+    `@Nat` position narrows, and saw no narrowing, while code generation's
+    static rule read the `@Int` branch and planted the guard.  So a join
+    *joined* as a `@Nat`, or as a refinement of `@Nat` (the subtype rule
+    hands it the refined type), is an `@Int`, spec §4.4's meet of the two,
+    when one of its *branches* is an `@Int` that is not statically
+    non-negative: `vera.narrowing.is_static_nat_typed`, the rule code
+    generation's guard reads, which takes a literal at its value and never a
+    negation.  Binding it into a `@Nat` position is then a narrowing the
+    verifier obligates.  A join whose `@Int` branches are all non-negative
+    constants keeps its type, as before.
+    """
+    if joined is None or not types_equal(base_type(joined), NAT):
+        return joined
+    for expr, ty in branches:
+        if (types_equal(base_type(ty), INT)
+                and not narrowing.is_static_nat_typed(expr, _no_call)):
+            return INT
+    return joined
+
+
 def _bindings_form(name: str, types: tuple[Type, ...]) -> str:
     """A destructure's head binding *types* by constructor *name*, as
     written: `Pair<@Int, @String>`."""
@@ -246,10 +284,13 @@ class ControlFlowMixin:
         # other is a subtype of, with each position it leaves open given by
         # the other, so `[]` beside `["abc"]` is an `Array<String>` in
         # either order.
+        branches = [(expr.then_branch, then_ty), (expr.else_branch, else_ty)]
         if is_subtype(then_ty, else_ty):
-            return self._join(then_ty, else_ty) or else_ty
+            return _signed_join(
+                self._join(then_ty, else_ty) or else_ty, branches)
         if is_subtype(else_ty, then_ty):  # pragma: no cover — subtyping is symmetric for current rules
-            return self._join(else_ty, then_ty) or then_ty
+            return _signed_join(
+                self._join(else_ty, then_ty) or then_ty, branches)
 
         # Re-synthesis: a branch with an unresolved type variable is
         # synthesized again with the other branch's type expected, so a
@@ -276,7 +317,8 @@ class ControlFlowMixin:
                 # then branch, as two open branches always gave.
                 joined = then_ty
         if joined is not None:
-            return joined
+            return _signed_join(joined, [(expr.then_branch, then_ty),
+                                         (expr.else_branch, else_ty)])
 
         self._error(
             expr,
@@ -317,6 +359,7 @@ class ControlFlowMixin:
                     and after_error)
 
         result_type: Type | None = None
+        arm_types: list[tuple[ast.Expr, Type]] = []
         for arm in expr.arms:
             # Check pattern and collect bindings
             bindings = self._check_pattern(arm.pattern, scrutinee_ty)
@@ -332,6 +375,7 @@ class ControlFlowMixin:
 
             if arm_ty is None or isinstance(arm_ty, UnknownType):
                 continue
+            arm_types.append((arm.body, arm_ty))
 
             if result_type is None or isinstance(result_type, UnknownType):
                 result_type = arm_ty
@@ -393,7 +437,7 @@ class ControlFlowMixin:
                 self._names_refused_ctor(arm.pattern) for arm in expr.arms)):
             self._check_exhaustiveness(expr, scrutinee_ty, in_error=in_error,
                                        after_error=after_error)
-        return result_type or UnknownType()
+        return _signed_join(result_type, arm_types) or UnknownType()
 
     def _names_refused_ctor(self, pat: ast.Pattern) -> bool:
         """Whether *pat* names a constructor of a refused declaration.

@@ -46,12 +46,13 @@ write skeleton with ? -> vera check (get W001 hints) -> fill holes -> vera check
 ```bash
 vera check file.vera              # Parse and type-check
 vera check --json file.vera       # Type-check with JSON output (for parsing)
-vera verify file.vera             # Type-check + verify contracts via Z3
+vera verify file.vera             # Type-check + verify contracts via Z3, then compile
+                                  #   and check each Tier 3 claim has its check (E541)
+                                  #   and each check a record (W004)
 vera verify --json file.vera      # Verify with JSON output (for parsing)
 vera verify --timeout-ms 60000 file.vera  # Per-query Z3 budget in ms (default
                                   #   10000; env VERA_Z3_TIMEOUT_MS)
-vera verify --reconcile file.vera # Also compile, and check each Tier 3 claim has
-                                  #   its check (E541) and each check a record (W004)
+vera verify --no-reconcile file.vera  # Verify without compiling: no reconciliation
 vera compile file.vera                    # Compile to .wasm binary
 vera compile --wat file.vera              # Print WAT text (human-readable WASM)
 vera compile --target browser file.vera   # Compile + emit browser bundle
