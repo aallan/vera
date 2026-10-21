@@ -935,8 +935,19 @@ class CallsMixin:
                     error_code="E202",
                 )
 
+        # #1708: in a contract predicate, a callee whose row names an effect
+        # no handler written inside the predicate handles is refused, and
+        # the call is neither counted nor held to the row in force.
+        impure = (self._impure_in_predicate(
+            e.name for e in fn_info.effect.effects)
+            if isinstance(fn_info.effect, ConcreteEffectRow) else None)
+        if impure is not None:
+            self._refuse_impure_predicate(
+                node, f"Call to '{fn_info.name}'",
+                f"the call to '{fn_info.name}'", impure)
+
         # Track effects
-        if not isinstance(fn_info.effect, PureEffectRow):
+        if not isinstance(fn_info.effect, PureEffectRow) and impure is None:
             if isinstance(fn_info.effect, ConcreteEffectRow):
                 for ei in fn_info.effect.effects:
                     self._effect_ops_used.add(ei.name)
@@ -951,7 +962,7 @@ class CallsMixin:
 
         # Call-site effect check: callee's effects must be permitted
         # by the caller's context (Spec §7.8 subeffecting).
-        if self.env.current_effect_row is not None:
+        if self.env.current_effect_row is not None and impure is None:
             if not is_effect_subtype(fn_info.effect,
                                      self.env.current_effect_row):
                 self._error(
@@ -1137,6 +1148,21 @@ class CallsMixin:
                     spec_ref='Chapter 11, Section 11.10.5 "Closure Invocation (apply_fn)"',
                     error_code="E202",
                 )
+
+        # #1708: in a contract predicate, a value whose row names an effect
+        # no handler written inside the predicate handles is refused here,
+        # unless it is a closure literal, which is refused where it is
+        # written (`_check_anon_fn`); either way the application is neither
+        # counted nor held to the row in force.
+        impure = (self._impure_in_predicate(
+            e.name for e in fn_ty.effect.effects)
+            if isinstance(fn_ty.effect, ConcreteEffectRow) else None)
+        if impure is not None:
+            if not isinstance(fn_arg, ast.AnonFn):
+                self._refuse_impure_predicate(
+                    node, "apply_fn of a function value", "the apply_fn",
+                    impure)
+            return fn_ty.return_type
 
         # The applied row joins the caller's used effects and must be
         # permitted by the caller's declared row — exactly as a named
@@ -1384,8 +1410,10 @@ class CallsMixin:
             if not e204_cascade:
                 self._check_sql_provenance(op_info.name, args, node)
 
-        refused = not lowers or self._refuse_operation_outside_row(
-            op_info, arg_types, node)
+        refused = (not lowers
+                   or self._refuse_operation_in_predicate(op_info, node)
+                   or self._refuse_operation_outside_row(
+                       op_info, arg_types, node))
         if counted and not refused:
             self._effect_ops_used.add(op_info.parent_effect)
         if refused and not mapping and contains_typevar(op_info.return_type):
@@ -1455,6 +1483,26 @@ class CallsMixin:
             error_code="E340",
         )
         return False
+
+    def _refuse_operation_in_predicate(
+        self, op_info: OpInfo, node: ast.Node,
+    ) -> bool:
+        """E187 (#1708): an operation of a built-in effect, performed in a
+        contract predicate where no handler written inside the predicate
+        handles the effect, whatever the row in force names.  A
+        user-declared effect's operation is E340's.  Returns whether it
+        refused."""
+        effect = op_info.parent_effect
+        if not effect_operation_lowerable(effect):
+            return False
+        impure = self._impure_in_predicate((effect,))
+        if impure is None:
+            return False
+        written = (f"{node.qualifier}.{node.name}"
+                   if isinstance(node, ast.QualifiedCall) else op_info.name)
+        self._refuse_impure_predicate(
+            node, f"Effect operation '{written}'", f"'{written}'", impure)
+        return True
 
     def _refuse_operation_outside_row(
         self, op_info: OpInfo, arg_types: list[Type | None], node: ast.Node,

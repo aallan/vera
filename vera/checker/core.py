@@ -20,10 +20,10 @@ each handle a specific concern:
 
 from __future__ import annotations
 
-from collections.abc import Callable, Container, Iterator
+from collections.abc import Callable, Container, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 if TYPE_CHECKING:
     from vera.resolver import ResolvedModule
@@ -120,6 +120,26 @@ def typecheck(
         attach_partial_diagnostics(exc, checker.errors)
         raise
     return checker.errors
+
+
+class _Predicate(NamedTuple):
+    """A contract predicate being checked, held to purity (#1708): its kind
+    as its E187 and fix name it (``requires``, ``ensures``, ``decreases``,
+    ``assert``, ``assume`` or ``refinement``), the function it is written
+    in, where there is one, and the depth of the checker's handled effects
+    where it begins, so the handlers written inside it are the ones above."""
+
+    kind: str
+    owner: str | None
+    mark: int
+
+
+class _Impure(NamedTuple):
+    """What a place in a contract predicate performs (#1708): the innermost
+    predicate, and the effects no handler written inside it handles."""
+
+    predicate: _Predicate
+    effects: tuple[str, ...]
 
 
 @dataclass
@@ -426,6 +446,11 @@ class TypeChecker(
         # where its body begins, so the handlers written inside it are the
         # entries above the mark.  Empty outside every closure.
         self._closure_handler_marks: list[int] = []
+        # #1708: the contract predicates being checked, innermost last.  A
+        # closure's body written in one is judged by the closure's own row,
+        # so it pushes None: no predicate is innermost there.  Empty outside
+        # every predicate.
+        self._pure_predicates: list[_Predicate | None] = []
         # The `id`s of the closure literals being checked as a quantifier's
         # predicate, which code generation inlines into the function around
         # the quantifier rather than lifting (spec §11.13.2): no closure
@@ -1512,7 +1537,7 @@ class TypeChecker(
         """Check a contract clause for well-formedness."""
         if isinstance(contract, ast.Requires):
             self.env.in_contract = True
-            ty = self._synth_expr(contract.expr)
+            ty = self._check_predicate("requires", fn.name, contract.expr)
             self.env.in_contract = False
             if ty and not is_subtype(ty, BOOL):
                 self._error(
@@ -1530,7 +1555,7 @@ class TypeChecker(
         elif isinstance(contract, ast.Ensures):
             self.env.in_ensures = True
             self.env.in_contract = True
-            ty = self._synth_expr(contract.expr)
+            ty = self._check_predicate("ensures", fn.name, contract.expr)
             self.env.in_ensures = False
             self.env.in_contract = False
             if ty and not is_subtype(ty, BOOL):
@@ -1550,7 +1575,7 @@ class TypeChecker(
         elif isinstance(contract, ast.Decreases):
             self.env.in_contract = True
             for expr in contract.exprs:
-                ty = self._synth_expr(expr)
+                ty = self._check_predicate("decreases", fn.name, expr)
                 # #1172: every measure component must carry a well-founded
                 # ordering (spec §5.6.1(3)): Nat, Int (floored at zero by
                 # the runtime guard), or a constructor-backed algebraic
@@ -1602,6 +1627,96 @@ class TypeChecker(
                         error_code="E127",
                     )
             self.env.in_contract = False
+
+    # -----------------------------------------------------------------
+    # Pure predicates (#1708)
+    # -----------------------------------------------------------------
+
+    def _check_predicate(self, kind: str, owner: str | None,
+                         expr: ast.Expr) -> Type | None:
+        """Synthesise *expr*, a contract predicate of *kind*, as pure
+        (spec §7.9.1).
+
+        The row in force stays the one around the predicate, which types
+        its operations and its state forms (`old`, `new`).  What the
+        predicate performs is refused where it is performed (E187): an
+        operation, a call to a function whose row names an effect, an
+        `apply_fn` of a function value whose row names one, and an
+        anonymous function written in it that performs one.  A handler
+        written inside the predicate handles its effect there.  A refused
+        place is counted nowhere, so none of it counts for the purity of
+        the declaration around it (E122)."""
+        self._pure_predicates.append(
+            _Predicate(kind, owner, len(self._handled_effects)))
+        try:
+            return self._synth_expr(expr)
+        finally:
+            self._pure_predicates.pop()
+
+    def _impure_in_predicate(self, effects: Iterable[str]) -> _Impure | None:
+        """Which of *effects* the innermost predicate being checked would
+        perform: those no handler written inside it handles.  None outside
+        every predicate, in the body of a closure written in one, which its
+        own row judges, and where every effect is handled."""
+        if not self._pure_predicates:
+            return None
+        predicate = self._pure_predicates[-1]
+        if predicate is None:
+            return None
+        handled = set(self._handled_effects[predicate.mark:])
+        unhandled = tuple(sorted({e for e in effects if e not in handled}))
+        return _Impure(predicate, unhandled) if unhandled else None
+
+    def _refuse_impure_predicate(
+        self, node: ast.Node, what: str, performer: str, impure: _Impure,
+    ) -> None:
+        """E187: *what* performs the effects *impure* names, in its
+        predicate.  *performer* is how the fix names it."""
+        kind, owner = impure.predicate.kind, impure.predicate.owner
+        effects = impure.effects
+        if kind in ("requires", "ensures", "decreases"):
+            where = f"the {kind} clause of '{owner}'"
+        elif kind in ("assert", "assume"):
+            where = f"an {kind} in '{owner}'" if owner else f"an {kind}"
+        else:
+            where = "a refinement predicate"
+        bind = ("bind its value with let there and check that value with "
+                "assert")
+        if kind == "requires":
+            fix = (f"Perform {performer} in the body of '{owner}' instead: "
+                   f"{bind}, and write the requires clause over the "
+                   f"parameters alone.")
+        elif kind == "ensures":
+            fix = (f"Perform {performer} in the body of '{owner}' instead: "
+                   f"{bind}, and write the ensures clause over the "
+                   f"parameters and the result alone.")
+        elif kind == "decreases":
+            fix = (f"Write the measure over the parameters alone, without "
+                   f"{performer}.")
+        elif kind in ("assert", "assume"):
+            fix = (f"Bind the value of {performer} with let before the "
+                   f"{kind}, and check the bound value in it.")
+        else:
+            fix = (f"Perform {performer} in a function's body instead: "
+                   f"{bind}, and write the refinement predicate over its own "
+                   f"value alone.")
+        self._error(
+            node,
+            f"{what} in {where} performs {', '.join(effects)}: a contract "
+            f"predicate must be pure.",
+            rationale=(
+                "A contract predicate is evaluated by the compiled checks "
+                "and modelled by the verifier, where the program never "
+                "asked for an effect, so it must be pure whatever the "
+                "effects clause of its function names: a requires, ensures "
+                "or decreases clause, an assert, an assume, and a refinement "
+                "type's predicate.  A handler written inside the predicate "
+                "handles its effect there, which keeps the predicate pure."
+            ),
+            fix=fix,
+            spec_ref='Chapter 7, Section 7.9.1 "Pure Contracts"',
+            error_code="E187",
+        )
 
     # -----------------------------------------------------------------
     # Refinement predicates (#861)
@@ -1674,7 +1789,7 @@ class TypeChecker(
         # enclosing predicate's (PR #876 review).
         self.env.refinement_bases.append(resolved_base)
         try:
-            ty = self._synth_expr(te.predicate)
+            ty = self._check_predicate("refinement", None, te.predicate)
         finally:
             self.env.refinement_bases.pop()
             self.env.in_contract = saved_in_contract

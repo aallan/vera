@@ -974,6 +974,7 @@ ERROR_CODES: dict[str, str] = {
     "E184": "Name declared twice in one namespace",
     "E185": "Declaration takes a built-in ability's name or operation",
     "E186": "Quantifier index type is not Int or Nat",
+    "E187": "Contract predicate performs an effect",
     # E2xx — Type Checker: Calls
     "E200": "Unresolved function",
     "E201": "Wrong argument count",

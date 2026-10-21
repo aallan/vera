@@ -1707,10 +1707,10 @@ class TestEffectRow:
         """A predicate is checked before the row of the function it guards
         is in force, or with none: an alias's, a data field's, a signature's
         (a `where` helper's under its parent's row).  A user-declared
-        effect's operation there is refused at the call; a built-in one's
-        runs: an operation is held to a row in force that is not `pure`
-        (#1702), and here there is none, or the `pure` row of the helper's
-        parent, whose purity check holds its body and not this signature."""
+        effect's operation there is refused at the call (E340); so is a
+        built-in one's, by the purity a refinement predicate is held to
+        whatever row is in force (E187, #1708), and code generation, which
+        lowers it, never sees it."""
         call = ("Counter.tick(())" if op == "user"
                 else "Random.random_int(1, 1)")
         source = ((_COUNTER if op == "user" else "")
@@ -1720,7 +1720,9 @@ class TestEffectRow:
             assert _placed(vera_pipeline.check(source).errors) == [
                 ("E340", *_locate(source, "Counter.tick"))]
             return
-        _holds(source, None, 1)
+        _holds(source, ("E187",), None, backend=False)
+        assert _placed(vera_pipeline.check(source).errors) == [
+            ("E187", *_locate(source, "Random.random_int"))]
 
 
 # =====================================================================
