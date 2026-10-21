@@ -40,10 +40,14 @@ public fn test_not(@Unit -> @Bool)
   !true
 }
 
-public fn main(@Unit -> @Bool)
+-- The run: every operator above, each test's value on a line of its own, and
+-- `!` of both values.
+public fn main(@Unit -> @Unit)
   requires(true)
-  ensures(@Bool.result == true)
-  effects(pure)
+  ensures(true)
+  effects(<IO>)
 {
-  true && true
+  IO.print("and \(test_and(())) \(test_and_false(()))\n");
+  IO.print("or \(test_or(())) \(test_or_false(()))\n");
+  IO.print("not \(test_not(())) \(!false)\n")
 }

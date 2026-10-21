@@ -1,5 +1,3 @@
--- Conformance: string escape sequences (Chapter 1)
--- Tests: \n, \t, \\, \", \r, \0, \u{XXXX}
 public fn main(@Unit -> @Unit)
   requires(true)
   ensures(true)
@@ -9,8 +7,14 @@ public fn main(@Unit -> @Unit)
   IO.print("col1\tcol2");
   IO.print("back\\slash");
   IO.print("say \"hi\"");
-  IO.print("A");
-  ()
+  IO.print("A\n");
+  let @String = "\r";
+  let @String = "\0";
+  let @String = "é";
+  IO.print("carriage return \(string_char_code(@String.2, 0))\n");
+  IO.print("nul \(string_char_code(@String.1, 0))\n");
+  IO.print("two-byte escape \(@String.0) of \(string_length(@String.0)) bytes\n");
+  IO.print("escaped newline length \(test_escape_length(()))\n")
 }
 
 public fn test_escape_length(@Unit -> @Int)

@@ -72,11 +72,18 @@ public fn test_pow(@Unit -> @Float64)
   pow(2.0, 10)
 }
 
-public fn main(@Unit -> @Int)
+-- The run: every built-in above, each test's value on a line of its own.
+public fn main(@Unit -> @Unit)
   requires(true)
   ensures(true)
-  effects(pure)
+  effects(<IO>)
 {
-  let @Nat = abs(-1);
-  @Nat.0
+  IO.print("abs \(test_abs(())) \(test_abs_zero(()))\n");
+  IO.print("min \(test_min(()))\n");
+  IO.print("max \(test_max(()))\n");
+  IO.print("floor \(test_floor(()))\n");
+  IO.print("ceil \(test_ceil(()))\n");
+  IO.print("round \(test_round(()))\n");
+  IO.print("sqrt \(test_sqrt(()))\n");
+  IO.print("pow \(test_pow(()))\n")
 }

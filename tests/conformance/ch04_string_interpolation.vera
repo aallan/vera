@@ -64,12 +64,29 @@ public fn test_nested_call(@Unit -> @String)
   "len=\(string_length(@String.0))"
 }
 
+public fn test_float_convert(@Unit -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Float64 = 2.5;
+  "f = \(@Float64.0)"
+}
+
+-- The run: every interpolation above, each on a line of its own.
 public fn main(@Unit -> @Unit)
   requires(true)
   ensures(true)
   effects(<IO>)
 {
+  IO.print("\(test_basic(()))\n");
+  IO.print("\(test_int_convert(()))\n");
+  IO.print("\(test_bool_convert(()))\n");
+  IO.print("\(test_nat_convert(()))\n");
+  IO.print("\(test_float_convert(()))\n");
+  IO.print("\(test_multiple(()))\n");
+  IO.print("\(test_only_expr(()))\n");
+  IO.print("\(test_nested_call(()))\n");
   let @Int = 42;
-  IO.print("value = \(@Int.0)");
-  ()
+  IO.print("value = \(@Int.0)\n")
 }

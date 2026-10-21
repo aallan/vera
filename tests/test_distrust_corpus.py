@@ -229,7 +229,9 @@ def test_the_instrument_fails_on_a_false_proof(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("program, proofs", [
     ("examples/safe_divide.vera", 2),
-    ("conformance/ch04_arithmetic", 7),
+    # The six operator tests; the run's `main` prints them and proves
+    # nothing of its own (#1645).
+    ("conformance/ch04_arithmetic", 6),
 ])
 def test_the_corpus_reaches_its_proofs(program: str, proofs: int) -> None:
     """Every proof in these programs is run, so a change that stopped

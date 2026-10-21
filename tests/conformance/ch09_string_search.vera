@@ -68,14 +68,24 @@ public fn test_split_join(@Unit -> @String)
   string_join(string_split("a,b,c", ","), "-")
 }
 
-public fn main(@Unit -> @Int)
+-- The run: every built-in above, each test's value on a line of its own, and
+-- each predicate on a string it must refuse.
+public fn main(@Unit -> @Unit)
   requires(true)
   ensures(true)
-  effects(pure)
+  effects(<IO>)
 {
-  if string_contains("vera", "er") then {
-    1
-  } else {
-    0
-  }
+  let @String = "hello world";
+  let @String = "z";
+  let @Bool = string_contains(@String.1, @String.0);
+  let @Bool = string_starts_with(@String.1, @String.0);
+  let @Bool = string_ends_with(@String.1, @String.0);
+  IO.print("contains \(test_string_contains(())) \(@Bool.2)\n");
+  IO.print("starts with \(test_starts_with(())) \(@Bool.1)\n");
+  IO.print("ends with \(test_ends_with(())) \(@Bool.0)\n");
+  IO.print("index of \(test_index_of(()))\n");
+  IO.print("upper \(test_to_upper(()))\n");
+  IO.print("lower \(test_to_lower(()))\n");
+  IO.print("replace \(test_replace(()))\n");
+  IO.print("split and join \(test_split_join(()))\n")
 }

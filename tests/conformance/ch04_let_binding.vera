@@ -39,11 +39,14 @@ public fn test_let_multi_type(@Unit -> @Int)
   @Int.0
 }
 
-public fn main(@Unit -> @Int)
+-- The run: each binding form above.
+public fn main(@Unit -> @Unit)
   requires(true)
-  ensures(@Int.result == 10)
-  effects(pure)
+  ensures(true)
+  effects(<IO>)
 {
-  let @Int = 10;
-  @Int.0
+  IO.print("let \(test_let(()))\n");
+  IO.print("chain \(test_let_chain(()))\n");
+  IO.print("shadow \(test_let_shadow(()))\n");
+  IO.print("multi type \(test_let_multi_type(()))\n")
 }

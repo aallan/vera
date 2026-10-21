@@ -264,3 +264,22 @@ public fn test_hash_array_deterministic(@Unit -> @Bool)
 {
   eq(hash([1, 2, 3]), hash([1, 2, 3]))
 }
+
+-- ================================================================
+-- The run: every test above (the `distinguishes` case is false by design:
+-- two tags whose hashes must differ).
+-- ================================================================
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  IO.print("show data \(test_show_adt_nullary(())) \(test_show_adt_one_field(())) \(test_show_adt_two_fields(()))\n");
+  IO.print("show tuple \(test_show_tuple(()))\n");
+  IO.print("show option \(test_show_option_some(())) \(test_show_option_none(()))\n");
+  IO.print("show result \(test_show_result_ok(())) \(test_show_result_err(()))\n");
+  IO.print("show array \(test_show_array(())) \(test_show_array_empty(()))\n");
+  IO.print("show nested \(test_show_nested_adt(())) \(test_show_option_of_tuple(())) \(test_show_tuple_of_tuple(())) \(test_show_inline_some_of_tuple(()))\n");
+  IO.print("hash data \(test_hash_adt_nullary_deterministic(())) \(test_hash_adt_distinguishes_tags(())) \(test_hash_adt_field_deterministic(()))\n");
+  IO.print("hash tuple \(test_hash_tuple_deterministic(())) array \(test_hash_array_deterministic(()))\n")
+}

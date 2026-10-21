@@ -34,12 +34,15 @@ private fn b_value(@B -> @Int)
   }
 }
 
-public fn main(@Unit -> @Int)
+-- The run: both single-letter types, and the prelude combinator whose
+-- template the names once collided with.
+public fn main(@Unit -> @Unit)
   requires(true)
-  ensures(@Int.result == 42)
-  effects(pure)
+  ensures(true)
+  effects(<IO>)
 {
-  b_value(MkB(MkA(42)))
+  IO.print("b \(b_value(MkB(MkA(42))))\n");
+  IO.print("option \(test_option(()))\n")
 }
 
 public fn test_option(@Unit -> @Int)

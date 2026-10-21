@@ -274,3 +274,25 @@ public fn test_json_get_number_float(@Unit -> @Int)
     }
   }
 }
+
+-- ================================================================
+-- The run: every accessor above, each test's value on the line of its
+-- accessor (a match and its mismatch side by side).
+-- ================================================================
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  IO.print("as string \(test_json_as_string_match(())) \(test_json_as_string_mismatch(()))\n");
+  IO.print("as bool \(test_json_as_bool_match(()))\n");
+  IO.print("as int \(test_json_as_int_match(())) \(test_json_as_int_nan(()))\n");
+  IO.print("as number \(test_json_as_number_match(()))\n");
+  IO.print("as array \(test_json_as_array(()))\n");
+  IO.print("as object \(test_json_as_object(()))\n");
+  IO.print("get string \(test_json_get_string(()))\n");
+  IO.print("get number \(test_json_get_number_float(()))\n");
+  IO.print("get bool \(test_json_get_bool(()))\n");
+  IO.print("get int \(test_json_get_int(())) \(test_json_get_missing_field(())) \(test_json_get_wrong_type(()))\n");
+  IO.print("get array \(test_json_get_array_length(()))\n")
+}
