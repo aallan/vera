@@ -1269,8 +1269,13 @@ CONSTRUCTS = (
 
 
 def _walk(value: object) -> Iterator[object]:
-    """Every IR node below *value*, a ``let``'s value included."""
+    """Every IR node below *value*, a ``let``'s value included, each once: a
+    ``let``'s value is reached through its :class:`Let`, never again through
+    a reference to it."""
     if isinstance(value, (Function, Ctor, Data, Program)):
+        return
+    if isinstance(value, Ref):
+        yield value
         return
     if isinstance(value, Binding):
         if value.value is not None:
@@ -1351,6 +1356,11 @@ def _count_node(node: object, count: dict[str, int]) -> None:
         count["neg"] += 1
     elif isinstance(node, Not):
         count["!"] += 1
+
+
+def nodes(fn: Function) -> Iterator[object]:
+    """Every IR node of *fn*'s body, each once."""
+    return _walk(fn.body)
 
 
 def size(prog: Program) -> int:

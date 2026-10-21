@@ -56,6 +56,7 @@ from vera import ast, narrowing
 from vera.formatter import format_source
 from vera.obligations.cache import walk_nodes
 from vera.reconcile import Mismatch, join
+from vera.types import NAT
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -163,6 +164,10 @@ def contract_finds(source: str, stages: Stages | None = None) -> list[Find]:
         Find("contract", ("check", d.error_code or d.severity), d.format())
         for d in verified.checked.diagnostics
     ]
+    if finds:
+        # The formatter parses what it formats, and raises on text that does
+        # not parse, so it runs only on a program the check accepted.
+        return finds
     canonical = format_source(source, file=LABEL)
     if canonical != source:
         finds.append(Find("contract", ("fmt",), _first_difference(
@@ -345,11 +350,13 @@ def load_finds(
 # =====================================================================
 
 class Sites:
-    """The checked program's nodes by where they start, its constructors'
-    fields and its functions' returns, for the known-class predicates."""
+    """The checked program's nodes by where they start, the checker's type
+    for each expression span, its constructors' fields and its functions'
+    returns, for the known-class predicates."""
 
     def __init__(self, checked: pipeline.Checked) -> None:
         self.program = checked.program
+        self.types = checked.artifacts.expr_semantic_types
         self._at: dict[tuple[int, int], list[ast.Node]] = {}
         for node in walk_nodes(self.program):
             span = node.span
@@ -367,6 +374,14 @@ class Sites:
 
     def at(self, mismatch: Mismatch) -> list[ast.Node]:
         return self._at.get((mismatch.line, mismatch.column), [])
+
+    def checker_type(self, node: ast.Node) -> object:
+        """The type the checker gave the expression at *node*'s span."""
+        span = node.span
+        if span is None:
+            return None
+        return self.types.get(
+            (span.line, span.column, span.end_line, span.end_column))
 
     def call_returns_nat(self, call: ast.Expr) -> str | None:
         """The call-type oracle the static rule lacks (#1557): a call's
@@ -419,6 +434,33 @@ def _nat_through_a_call(node: ast.Node, sites: Sites) -> bool:
             and not narrowing.is_static_nat_typed(node, lambda _call: None))
 
 
+def _literal_only(e: ast.Expr) -> bool:
+    """A literal, a negated literal, or arithmetic over nothing else."""
+    if isinstance(e, ast.IntLit):
+        return True
+    if isinstance(e, ast.UnaryExpr):
+        return e.op == ast.UnaryOp.NEG and _literal_only(e.operand)
+    if isinstance(e, ast.BinaryExpr):
+        return e.op in (ast.BinOp.ADD, ast.BinOp.SUB, ast.BinOp.MUL,
+                        ast.BinOp.DIV, ast.BinOp.MOD) and (
+            _literal_only(e.left) and _literal_only(e.right))
+    return False
+
+
+def _literal_branch_join(node: ast.Node, sites: Sites) -> bool:
+    """An `if` the checker types `@Nat` that joins a branch of literals, a
+    negated literal or literal arithmetic, with a `@Nat` branch (#1756):
+    the verifier reads the checker's `@Nat` and records no narrowing, and
+    code generation's static rule, which reads a negated literal as an
+    `@Int`, guards the binding."""
+    if not isinstance(node, ast.IfExpr) or sites.checker_type(node) != NAT:
+        return False
+    values = [branch.expr for branch in (node.then_branch, node.else_branch)]
+    return any(
+        _literal_only(literal) and sites.checker_type(other) == NAT
+        for literal, other in (values, values[::-1]))
+
+
 @dataclass(frozen=True)
 class KnownClass:
     """A mismatch the join reports today, by the open issue whose class it
@@ -448,6 +490,8 @@ _SHAPES: dict[str, Callable[[ast.Node, Sites], bool]] = {
         lambda node, _s: _division_by(node, literal=True),
     "a `@Nat` binder of a `Nat` field": _nat_field_binder,
     "a `@Nat` value read through a call": _nat_through_a_call,
+    "a branch of literals joined with a `@Nat` branch, typed `@Nat`":
+        _literal_branch_join,
 }
 
 
@@ -509,8 +553,24 @@ public fn t(@Nat -> @Nat)
 }
 """
 
-#: The mismatches the join reports today that a generated program can meet,
-#: each a shape of a `scripts/check_reconciliation.py` `KNOWN` class.
+_REPRO_1756 = """\
+public fn tripled(@Bool, @Nat -> @Int)
+  requires(@Nat.0 <= 10)
+  ensures(@Int.result >= 0 && @Int.result <= 0)
+  effects(pure)
+{
+  let @Nat = if @Bool.0 then {
+    -1 * -3
+  } else {
+    @Nat.0
+  };
+  0
+}
+"""
+
+#: The mismatches the join reports today that a generated program can meet:
+#: each a shape of a `scripts/check_reconciliation.py` `KNOWN` class, or of
+#: an open issue the generator found (#1756).
 KNOWN_CLASSES: tuple[KnownClass, ...] = (
     KnownClass(
         "#1598", "guarded_unrecorded", "int_overflow",
@@ -528,6 +588,11 @@ KNOWN_CLASSES: tuple[KnownClass, ...] = (
         "#1695 (#1557)", "guarded_unrecorded", "nat_bind",
         "wasm/operators.py:_emit_nat_bind_guard",
         "a `@Nat` value read through a call", _REPRO_1557),
+    KnownClass(
+        "#1756", "guarded_unrecorded", "nat_bind",
+        "wasm/operators.py:_emit_nat_bind_guard",
+        "a branch of literals joined with a `@Nat` branch, typed `@Nat`",
+        _REPRO_1756),
 )
 
 
@@ -553,7 +618,9 @@ def reconcile_finds(
             "reconcile", (m.kind, m.obligation, m.emitter or m.status),
             f"{m.kind} '{m.obligation}' at {m.line}:{m.column} in "
             f"'{m.function}' ({m.emitter or m.status}): {m.detail}",
-            known=cls.issue if cls is not None else "", function=m.function))
+            known=cls.issue if cls is not None else "", function=m.function,
+            evidence=(f"{cls.shape}, at {m.line}:{m.column}"
+                      if cls is not None else "")))
     return finds
 
 
@@ -895,7 +962,11 @@ def test_the_reconcile_differential_reports_a_mismatch_outside_its_classes(
     assert [(f.signature, f.known) for f in unknown] == [(
         known[0].signature, "")], unknown
     assert "guarded_unrecorded 'div_zero' at 6:3 in 'r'" in unknown[0].detail
-    neighbour = _REPRO_1629_DIVISOR.replace("@Int.0 % 3", "@Int.0 + 0 * 3")
+    # The neighbour keeps its contract, so the join runs over it and
+    # reports nothing because nothing is there.
+    neighbour = _REPRO_1629_DIVISOR.replace(
+        "@Int.result <= 2", "@Int.result <= 100").replace("@Int.0 % 3", "@Int.0")
+    assert not contract_finds(neighbour), contract_finds(neighbour)
     assert reconcile_finds(neighbour, known=()) == []
 
 
@@ -925,7 +996,10 @@ def test_the_distrust_differential_reports_a_refuted_proof() -> None:
         "  let @Option<Int> = mo(7);\n"
         "  if @Option<Int>.0 == @Option<Int>.1 then { 0 - 1 } else { 1 }\n")
     assert neighbour != _FALSE_PROOF
-    assert distrust_finds(neighbour) == []
+    assert pipeline.verify(neighbour, file=LABEL).ok
+    stats: dict[str, int] = {}
+    assert distrust_finds(neighbour, stats=stats) == []
+    assert stats["proofs_exercised"] == 1, stats
 
 
 def _lost_postcondition(lowest: int) -> gen.Program:
@@ -1009,17 +1083,31 @@ def test_the_minimiser_keeps_the_failure_it_shrinks() -> None:
     assert len(minimal.functions) == 1, minimal.render()
 
 
+def _order_sensitive(fn: gen.Function) -> bool:
+    """A public function whose exact `ensures` states a value that changes
+    when its `Int` parameters' order is reversed, with no `let`, so its
+    result reads the parameters alone: written with two slots of one type
+    swapped, its run returns the reversed value, or its `requires`, swapped
+    too, refuses the arguments."""
+    if not (fn.public and gen.ensure_style(fn) == "exact" and not fn.body.lets
+            and len(fn.params) >= 2
+            and all(q.type == "Int" for q in fn.params)):
+        return False
+    args = list(fn.example)
+    return gen.evaluate(fn, args) != gen.evaluate(fn, args[::-1])
+
+
 def test_the_record_states_what_the_generator_expected() -> None:
     """A find's record carries each function's contract as written, its
     intervals, and the value an exact `ensures` states on the failing
     arguments, so a generator bug is told from a toolchain find by reading
-    the record."""
-    prog = next(p for p in map(gen.generate, range(100))
-                if any(gen.ensure_style(f) == "exact" and f.params
-                       and all(q.type == "Int" for q in f.params)
-                       for f in p.functions))
-    fn = next(f for f in prog.functions if gen.ensure_style(f) == "exact"
-              and f.params and all(q.type == "Int" for q in f.params))
+    the record.  The value is the generator's own evaluation, held to a run
+    of the compiled function where the parameters' order matters, which is
+    the one place two swapped slots of one type show: `vera check` and the
+    verifier read the body and the `ensures` swapped alike."""
+    prog = next(p for p in map(gen.generate, range(1000))
+                if any(_order_sensitive(f) for f in p.functions))
+    fn = next(f for f in prog.functions if _order_sensitive(f))
     args = [int(a) for a in fn.example]
     entry = next(e for e in gen.expectations(prog, fn.name, args)
                  if e["function"] == fn.name)

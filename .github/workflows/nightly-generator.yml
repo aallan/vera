@@ -44,9 +44,15 @@ on:
         type: string
         default: ""
 
-# A pull request's run gives way to its next push; a night is never cancelled.
+# The job's own block below adds the issue write; nothing else is granted.
+permissions:
+  contents: read
+
+# A pull request's run gives way to its next push.  A scheduled or dispatched
+# run has a group of its own, so neither waits on nor replaces another: a
+# group holds one pending run, and a newer one would cancel it.
 concurrency:
-  group: nightly-generator-${{ github.event_name == 'pull_request' && github.ref || 'main' }}
+  group: nightly-generator-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:

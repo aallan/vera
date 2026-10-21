@@ -1423,9 +1423,10 @@ Each program is held to the generator's contract and three differentials:
 **Known classes.**  `KNOWN_CLASSES` reads `scripts/check_reconciliation.py`'s
 `KNOWN` as classes, each by its mismatch's kind, obligation and emitter and by
 the shape of its site: #1598 (an `@Int` division), #1695 for #1629 (a division
-by a non-zero literal, and a `@Nat` binder of a `Nat` field) and #1695 for
+by a non-zero literal, and a `@Nat` binder of a `Nat` field), #1695 for
 #1557 (a value non-negative only through a call to a function returning
-`@Nat`).  A verify error is #1525's when it vanishes once each function binds
+`@Nat`), and #1756, which the generator found (an `if` joining a branch of
+literals with a `@Nat` branch, which the checker types `@Nat`).  A verify error is #1525's when it vanishes once each function binds
 an unused `let` of every data type it constructs and does not name in its
 signature (`program_generator.name_constructed_types`); the three
 differentials then run over that program.  A find inside a known class is
