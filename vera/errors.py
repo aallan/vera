@@ -888,6 +888,7 @@ ERROR_CODES: dict[str, str] = {
     "W003": "Unverified assumption (assume statement)",
     "W002": "Async argument evaluates eagerly",
     "W004": "Emitted runtime check not matched by an obligation record",
+    "W005": "Runtime checks not reconciled: the program holds typed holes",
     # E0xx — Parse & Transform
     "E001": "Missing contract block",
     "E002": "Missing effect clause",

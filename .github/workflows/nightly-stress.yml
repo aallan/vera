@@ -5,7 +5,9 @@ name: Stress tests
 # bugs historically manifested.  They're skipped from the
 # default per-PR pytest run (via `addopts = "-m 'not stress'"`
 # in pyproject.toml) because the full suite at 5 minutes wall-
-# clock would dominate ordinary CI time.
+# clock would dominate ordinary CI time.  After them, the job runs the
+# distrust corpus (tests/test_distrust_corpus.py) at 1,000 trials per proved
+# function, where the pull request's suite runs 5.
 #
 # This workflow runs them in three triggers:
 #
@@ -87,6 +89,25 @@ jobs:
         # up any future stress-marked class wherever it lives,
         # rather than requiring this line to be extended again.
         run: pytest -v -m stress tests/
+        id: stress
+
+      - name: Run the distrust corpus at the nightly trial count
+        # `vera test --distrust` over every example and every run-level
+        # conformance program (tests/test_distrust_corpus.py): each proved
+        # public function run against the checks code generation emits for
+        # it, and a refuted proof fails its program.  The pull request's
+        # suite runs it at 5 trials per function; here at 1,000, which took
+        # 27.6 s of wall on four local workers at c9235415 and 1 min 44 s
+        # on this runner, so the ten-minute stop is a hang, never a slow
+        # night.  It runs once the stress step ran, whatever its result,
+        # so one failure never hides the other; a setup step's failure skips
+        # both and is reported as itself.
+        if: ${{ !cancelled() && (steps.stress.outcome == 'success' || steps.stress.outcome == 'failure') }}
+        timeout-minutes: 10
+        env:
+          VERA_DISTRUST_TRIALS: "1000"
+        run: pytest -v -n auto --dist worksteal tests/test_distrust_corpus.py
+        id: distrust
 
       # Auto-file a tracking issue on cron failure (option A from
       # #669 review).  Skipped on `pull_request` (PR's own check
@@ -108,6 +129,8 @@ jobs:
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           COMMIT_SHA: ${{ github.sha }}
+          STRESS_OUTCOME: ${{ steps.stress.outcome }}
+          DISTRUST_OUTCOME: ${{ steps.distrust.outcome }}
         with:
           script: |
             const LABEL = "stress-regression";
@@ -115,12 +138,18 @@ jobs:
             const sha = process.env.COMMIT_SHA;
             const sha7 = sha.slice(0, 7);
             const runUrl = process.env.RUN_URL;
+            // Which of the two test steps failed: the stress battery, the
+            // distrust corpus, or neither (a step before them).
+            const failed = [
+              ["the stress tests (`tests/test_stress.py`, `tests/test_codegen_gc_reclamation.py`)", process.env.STRESS_OUTCOME],
+              ["the distrust corpus at 1,000 trials (`tests/test_distrust_corpus.py`)", process.env.DISTRUST_OUTCOME],
+            ].filter(([, outcome]) => outcome === "failure").map(([name]) => name);
             const commentBody = [
-              `Stress nightly failed against \`${sha7}\` (commit ${sha}).`,
+              `Stress nightly failed against \`${sha7}\` (commit ${sha}): ${failed.length ? failed.join(" and ") : "a step before the tests"}.`,
               ``,
               `**Run logs**: ${runUrl}`,
               ``,
-              `This is a regression on \`main\`; bisect against the green commits before this run.  See the failing test's docstring (each stress test names the bug class it guards against, which narrows the regression family) — the battery spans \`tests/test_stress.py\` and \`tests/test_codegen_gc_reclamation.py\`.`,
+              `This is a regression on \`main\`; bisect against the green commits before this run.  See the failing test's docstring: each stress test names the bug class it guards against, which narrows the regression family, and a distrust failure names the proof a run refuted (E703).`,
             ].join("\n");
 
             // Ensure the label exists (idempotent — create on first failure).

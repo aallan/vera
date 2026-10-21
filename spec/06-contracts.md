@@ -454,9 +454,10 @@ A fully Tier 1-verified program has the strongest guarantee: if it compiles, the
 $ vera verify tests/conformance/ch06_assert_assume.vera
 OK: tests/conformance/ch06_assert_assume.vera
 Verification: 8 verified (Tier 1), 3 runtime checks (Tier 3)
+Reconciliation: 3 of 3 runtime checks (Tier 3) found in the compiled module
 ```
 
-That program contains an `assume` statement. An assumption reaches no tier (see the table below), so the summary line does not count it: `vera verify` reports it with a W003 warning (Section 6.2.6), and `vera verify --json` counts it in the `assumptions` field of its `verification` object.
+The last line is the reconciliation's (Section 6.8.1), printed when the program claims a runtime check.  That program contains an `assume` statement. An assumption reaches no tier (see the table below), so the summary line does not count it: `vera verify` reports it with a W003 warning (Section 6.2.6), and `vera verify --json` counts it in the `assumptions` field of its `verification` object.
 
 ### 6.8.1 Obligation Vocabulary
 
@@ -473,6 +474,8 @@ Every obligation this chapter describes ends in exactly one of the first four st
 | **specified, not implemented** | — | Carried by the `Status:` callouts in this specification and collected in the [implementation-status appendix](../docs/implementation-status.md). |
 
 The counts partition accordingly: `total == tier1_verified + tier3_runtime`. A `violated` or `tier3_unguarded` obligation is discharged to no tier, so it appears in the `obligations` array and in the diagnostics, but in neither count.
+
+A runtime-guarded claim is held to the compiled module.  `vera verify` compiles the program as `vera compile` does and joins each obligation with the check the module holds for it, wherever the two sides locate one obligation: a refined parameter's guard answers the narrowing at each call's argument, a `requires` check the precondition at each call that reaches its function, a measure's checks its evaluation at each tail call.  A `tier3` or `timeout` obligation no check answers is an E541 error, since the claim is not true of the compiled module, and a check no obligation accounts for is a W004 warning.  A program code generation refuses fails `vera verify` with that refusal, except a program holding typed holes (Section 4.17), whose verification stands without the join and carries a W005 warning that its runtime checks were not reconciled.  `vera verify --no-reconcile` verifies without compiling.
 
 ### 6.8.2 Premise Consistency
 

@@ -159,7 +159,8 @@ Every diagnostic has a stable code grouped by compiler phase — the `W` series 
 - **W001** — Typed hole (`?`) — expected type and available bindings reported (warning, not error)
 - **W002** — `async()` argument evaluates eagerly: its effects fall outside the commutative set (`Http`), so the future is computed sequentially at the `async()` site rather than concurrently (warning, not error)
 - **W003** — Unverified assumption: an `assume` statement is taken on trust, not proved (warning, not error)
-- **W004** — `vera verify --reconcile` found a runtime check in the compiled module that no verification record accounts for: the check still runs, and the summary omits it (warning, not error)
+- **W004** — `vera verify` found a runtime check in the compiled module that no verification record accounts for: the check still runs, and the summary omits it (warning, not error)
+- **W005** — `vera verify` did not reconcile the runtime checks, because the program holds typed holes and code generation compiles nothing until they are filled (warning, not error)
 - **E001–E009** — Parse errors (missing contracts, unexpected tokens, malformed slot references, bad string escapes)
 - **E011–E013** — Import errors (circular import, unresolvable import, a module that fails to parse)
 - **E020, E021, E023** — Malformed comments: unterminated `{-` (E020) or `/*` (E021), or a `/*` nested inside another (E023 — only `{- -}` nests). Each names the delimiter at fault and how to close it.
@@ -169,7 +170,7 @@ Every diagnostic has a stable code grouped by compiler phase — the `W` series 
 - **E1xx** — Type check: core + expressions (type mismatches, slot resolution, operators, declarations, termination)
 - **E2xx** — Type check: calls (unresolved functions, argument mismatches, module calls, ability operations)
 - **E3xx** — Type check: control flow (if/match, patterns, effect handlers)
-- **E5xx** — Verification (contract violations, undecidable fallbacks, primitive-operation safety incl. arithmetic overflow, premise satisfiability, and E541: a runtime-check claim `vera verify --reconcile` found no check for in the compiled module)
+- **E5xx** — Verification (contract violations, undecidable fallbacks, primitive-operation safety incl. arithmetic overflow, premise satisfiability, and E541: a runtime-check claim `vera verify` found no check for in the compiled module)
 - **E6xx** — Codegen (unsupported features, name collisions, typed holes block compilation); **E699** is an internal compiler error
 - **E7xx** — Testing (contract violations, input generation, execution errors, a proof a test run refutes)
 
@@ -2638,12 +2639,13 @@ write skeleton with ? -> vera check (get W001 hints) -> fill holes -> vera check
 ```bash
 vera check file.vera              # Parse and type-check
 vera check --json file.vera       # Type-check with JSON output (for parsing)
-vera verify file.vera             # Type-check + verify contracts via Z3
+vera verify file.vera             # Type-check + verify contracts via Z3, then compile
+                                  #   and check each Tier 3 claim has its check (E541)
+                                  #   and each check a record (W004)
 vera verify --json file.vera      # Verify with JSON output (for parsing)
 vera verify --timeout-ms 60000 file.vera  # Per-query Z3 budget in ms (default
                                   #   10000; env VERA_Z3_TIMEOUT_MS)
-vera verify --reconcile file.vera # Also compile, and check each Tier 3 claim has
-                                  #   its check (E541) and each check a record (W004)
+vera verify --no-reconcile file.vera  # Verify without compiling: no reconciliation
 vera compile file.vera                    # Compile to .wasm binary
 vera compile --wat file.vera              # Print WAT text (human-readable WASM)
 vera compile --target browser file.vera   # Compile + emit browser bundle
@@ -2917,7 +2919,9 @@ included) and publishes:
 - **Diagnostics** with the same stable error codes, rationale, and
   spec references as `vera check --json` / `vera verify --json`, plus
   a `tier` annotation on verification diagnostics (Tier 3 fallbacks
-  carry `tier: 3` in their data).
+  carry `tier: 3` in their data).  The server compiles nothing, so the
+  reconciliation `vera verify` runs after verifying (E541, W004, W005,
+  and a code generation refusal) is the command's alone.
 - **Per-function verification-tier hints** — a Hint-severity
   diagnostic per function summarising its proof state: "Tier 1 — all
   contracts proven by Z3" or "Tier 3 — N of M obligations fall back
@@ -3641,6 +3645,7 @@ Diagnostics carry stable codes, grouped by compiler phase; the list after the ta
 - **W003**: Unverified assumption (assume statement)
 - **W002**: Async argument evaluates eagerly
 - **W004**: Emitted runtime check not matched by an obligation record
+- **W005**: Runtime checks not reconciled: the program holds typed holes
 - **E001**: Missing contract block
 - **E002**: Missing effect clause
 - **E003**: Malformed slot reference
