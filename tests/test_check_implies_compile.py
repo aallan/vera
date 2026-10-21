@@ -1971,8 +1971,18 @@ class TestClauseOperationMatrix:
             # only that no E339 is claimed for it.
             assert "E339" not in {d.error_code for d in outcome.check_errors}
             return
-        _differential(outcome)
         emitted = cell.position.label != "assume"
+        if cell.position.label in ("assert", "assume"):
+            # A predicate is held to purity (#1708), so the operation in an
+            # `assert` or an `assume` is refused for that too (E187); E339
+            # is claimed as before, exactly where the gate refuses.
+            codes = {d.error_code for d in outcome.check_errors}
+            assert codes - {"E339"} == {"E187"}, outcome.describe()
+            assert ("E339" in codes) == _gate_refused(outcome), outcome.describe()
+            assert ("E339" in codes) == (cell.shadowed and emitted), \
+                outcome.describe()
+            return
+        _differential(outcome)
         assert ("E339" in {d.error_code for d in outcome.check_errors}) \
             == (cell.shadowed and emitted), outcome.describe()
 
