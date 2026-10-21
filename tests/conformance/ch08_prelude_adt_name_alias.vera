@@ -29,13 +29,27 @@ public fn total(@Array<UrlParts> -> @Int)
   magnitude(array_length(@Array<UrlParts>.0))
 }
 
-public fn main(@Unit -> @Int)
+-- The found element, read back through `total`'s `Array<UrlParts>` parameter
+-- as the length of a range that long, or -1 for `None`.
+private fn found(@Option<Int> -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  match array_find([3, 4], fn(@Int -> @Bool) effects(pure) { @Int.0 > 3 }) {
-    Some(@Int) -> total([@Int.0]),
-    None -> 0
+  match @Option<Int>.0 {
+    Some(@Int) -> total(array_range(0, @Int.0)),
+    None -> 0 - 1
   }
+}
+
+-- The run: the element of [3, 4] above 3, and the `None` above 9.
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  let @Option<Int> = array_find([3, 4], fn(@Int -> @Bool) effects(pure) { @Int.0 > 3 });
+  IO.print("above 3: \(found(@Option<Int>.0))\n");
+  let @Option<Int> = array_find([3, 4], fn(@Int -> @Bool) effects(pure) { @Int.0 > 9 });
+  IO.print("above 9: \(found(@Option<Int>.0))\n")
 }

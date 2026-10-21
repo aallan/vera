@@ -14,7 +14,7 @@ import ch09_nested_helper_family_op_name_lib(touch);
 
 private forall<T> fn outer(@T -> @Int)
   requires(true)
-  ensures(@Int.result == 7)
+  ensures(@Int.result == 42007)
   effects(pure)
 {
   ginner(@T.0)
@@ -22,7 +22,7 @@ private forall<T> fn outer(@T -> @Int)
 where {
   forall<U> fn ginner(@U -> @Int)
     requires(true)
-    ensures(@Int.result == 7)
+    ensures(@Int.result == 42007)
     effects(pure)
   {
     handle[State<Int>](@Int = 42007) {
@@ -33,19 +33,22 @@ where {
     }
   }
 
-  forall<V> fn gsib(@V -> @Int)
+  -- Returns its argument, so the run shows which `get` produced it: the
+  -- `State<Int>` cell's 42007.
+  forall<V> fn gsib(@V -> @V)
     requires(true)
-    ensures(@Int.result == 7)
+    ensures(true)
     effects(pure)
   {
-    7
+    @V.0
   }
 }
 
-public fn main(@Unit -> @Int)
+-- The run: what `gsib` received from the bare `get(())`.
+public fn main(@Unit -> @Unit)
   requires(true)
-  ensures(@Int.result == 7)
-  effects(pure)
+  ensures(true)
+  effects(<IO>)
 {
-  outer(1)
+  IO.print("get \(outer(1))\n")
 }
