@@ -378,9 +378,13 @@ class TestNightlyDistrustTrials:
         assert NIGHTLY_DISTRUST_TRIALS >= 100 * test_distrust_corpus.DEFAULT_TRIALS
 
     def test_it_runs_after_the_stress_tests_whatever_they_did(self) -> None:
+        """Once the stress step ran, pass or fail, and not after a setup
+        step's failure, which skips both and is reported as itself."""
         names = [s.get("name") for s in _steps()]
         assert names.index(_DISTRUST_STEP) == names.index("Run stress tests") + 1
-        assert _named(_DISTRUST_STEP)["if"] == "${{ !cancelled() }}"
+        assert _named(_DISTRUST_STEP)["if"] == (
+            "${{ !cancelled() && (steps.stress.outcome == 'success' "
+            "|| steps.stress.outcome == 'failure') }}")
 
     def test_its_budget_is_ten_times_its_measured_wall(self) -> None:
         """27.6 s locally, at most 1.9 times that on the runner: a

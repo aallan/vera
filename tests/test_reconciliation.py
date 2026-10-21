@@ -1462,7 +1462,7 @@ def test_the_default_and_no_reconcile_differ_by_the_join_alone(
             errors)
         assert [w["error_code"] for w in payload["warnings"]  # type: ignore[union-attr]
                 if w["error_code"] in _JOIN_WARNINGS] == joined_warnings
-        assert ("reconciliation" in payload) is not flags
+        assert ("reconciliation" in payload) is (not flags), (flags, payload)
 
 
 def test_a_typed_hole_skips_the_join_and_says_so(
@@ -1549,6 +1549,40 @@ def test_no_reconcile_is_refused_where_it_cannot_be_honoured(
 ) -> None:
     ran = pipeline.cli(*argv, EXAMPLES_DIR / "absolute_value.vera")
     assert (ran.returncode, ran.stderr) == (1, f"Error: {refusal}\n")
+
+
+_ECHO = """\
+public fn one(@String -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @String.0
+}
+
+public fn two(@String, @String -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  string_concat(@String.1, @String.0)
+}
+"""
+
+
+@pytest.mark.parametrize("flags", [
+    ("--no-reconcile",), ("--reconcile",), ("--reconcile", "--no-reconcile")])
+def test_a_programs_own_arguments_may_spell_the_flags(
+    flags: tuple[str, ...], tmp_path: Path,
+) -> None:
+    """What follows `--` is the called function's, never the command
+    line's: `vera run` hands the flags to it rather than refusing them."""
+    path = tmp_path / "echo.vera"
+    path.write_text(_ECHO, encoding="utf-8")
+    fn = "one" if len(flags) == 1 else "two"
+    ran = pipeline.cli("run", path, "--fn", fn, "--", *flags)
+    assert (ran.returncode, ran.stdout) == (0, "".join(flags) + "\n"), (
+        ran.stderr)
 
 
 def test_reconcile_reports_an_unanswered_claim_as_e541(

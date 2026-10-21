@@ -99,9 +99,10 @@ jobs:
         # suite runs it at 5 trials per function; here at 1,000, which took
         # 27.6 s of wall on four local workers at c9235415 and is about
         # 36-52 s on this runner, so the ten-minute stop is a hang, never a
-        # slow night.  It runs whatever the stress step did, so one failure
-        # never hides the other.
-        if: ${{ !cancelled() }}
+        # slow night.  It runs once the stress step ran, whatever its result,
+        # so one failure never hides the other; a setup step's failure skips
+        # both and is reported as itself.
+        if: ${{ !cancelled() && (steps.stress.outcome == 'success' || steps.stress.outcome == 'failure') }}
         timeout-minutes: 10
         env:
           VERA_DISTRUST_TRIALS: "1000"

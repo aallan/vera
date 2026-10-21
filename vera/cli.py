@@ -2264,21 +2264,22 @@ def main() -> None:
     # a command that cannot honour one must refuse it rather than ignore it.
     # `vera verify` reconciles by default, which `--reconcile` states and
     # `--no-reconcile` turns off, so the two together contradict each other.
+    # As for `--distrust`, only the arguments before `--` are read.
     _rc_msg = ""
     for _rc_flag in ("--reconcile", "--no-reconcile"):
-        if _rc_flag in args and args[0] != "verify":
+        if _rc_flag in _own_args and args[0] != "verify":
             _rc_msg = (
                 f"{_rc_flag} is only accepted by `vera verify`, not "
                 f"`vera {args[0]}`."
             )
             break
     else:
-        if "--reconcile" in args and "--no-reconcile" in args:
+        if "--reconcile" in _own_args and "--no-reconcile" in _own_args:
             _rc_msg = (
                 "`vera verify` takes --reconcile or --no-reconcile, not both."
             )
     if _rc_msg:
-        if "--json" in args:
+        if "--json" in _own_args:
             print(json.dumps({"ok": False, "file": "",
                               "diagnostics": [{"severity": "error",
                                                "description": _rc_msg}]},
@@ -2321,7 +2322,7 @@ def main() -> None:
     use_check_fmt = "--check" in args and command == "fmt"
     use_explain_slots = "--explain-slots" in args
     use_distrust = command == "test" and "--distrust" in args
-    use_reconcile = "--no-reconcile" not in args
+    use_reconcile = "--no-reconcile" not in _own_args
 
     # Parse --fn <name> option
     fn_name: str | None = None
