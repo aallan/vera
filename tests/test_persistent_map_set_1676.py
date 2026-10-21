@@ -1494,20 +1494,24 @@ public fn main(-> @Int)
 ])
 def test_marking_a_wide_map_keeps_every_key(n: int) -> None:
     """Collections over a live map of every width keep every key, and each
-    walk of #1722's rescan visits each word and header of its range at most
-    once.  A branch scans 32 children at most and an entry one key; what
-    still fills the worklist at 100,000 entries is the stale tails of
-    reused blocks (#1718): 26 collections walk there, 157 at 1,000,000, and
-    none at 10,000."""
-    from tests.test_gc_mark_width_1510 import _assert_each_stretch_walked_once, _counted_run
+    walk of #1722's rescan keeps the resume rule.  A branch scans 32
+    children at most and an entry one key; what still fills the worklist
+    at 100,000 entries is the stale tails of reused blocks (#1718).  The
+    keys' hashes are keyed per instantiation (#1736), so the trie's shape,
+    the heap's layout and how many collections walk vary from run to run,
+    and none walks at 10,000."""
+    from tests.test_gc_mark_width_1510 import _assert_the_walks_keep_the_resume_rule, _counted_run
 
     result = pipeline.compile(_wide_map(n, 3000), file="wide.vera").result
     assert result.ok, result.diagnostics
     value, counted, walked = _counted_run(result)
     assert value == n * (n - 1) // 2
-    _assert_each_stretch_walked_once(walked)
+    _assert_the_walks_keep_the_resume_rule(counted, walked)
     if n == 10_000:
         assert counted["walked"] == 0, counted
+    if n == 1_000_000:
+        # The premise: walks that resumed below their range's top.
+        assert max(c.resumed_below_top for c in walked) >= 1, walked
 
 
 @_needs_node

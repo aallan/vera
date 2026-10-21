@@ -10,6 +10,7 @@ See spec/11-compilation.md for the compilation specification.
 from __future__ import annotations
 
 import os
+import struct
 import sys
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -475,7 +476,8 @@ def _bind_async(linker: Any, names: set[str], env: HostEnv) -> None:
 def _hash_key_word() -> int:
     """One 64-bit word of the key a module's `String` hash draws, from the
     operating system's random source (#1736)."""
-    return int.from_bytes(os.urandom(8), "little", signed=True)
+    word: int = struct.unpack("<q", os.urandom(8))[0]
+    return word
 
 
 def _bind_hash_key(linker: Any, names: set[str], env: HostEnv) -> None:

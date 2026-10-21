@@ -580,8 +580,13 @@ def test_both_of_two_dirty_structures_are_rescanned() -> None:
 #: The counters `_counted_run` threads through the collector, each an
 #: exported mutable global: the words the rescan's walks visit, the chain
 #: headers they visit, the walks, the collections that walked at least
-#: once, and that collection's flag.
-_COUNTERS = ("walk_words", "walk_headers", "walks", "walked", "walking")
+#: once, and that collection's flag; then the scans that break the resume
+#: rule, each where a walk starts scanning an object: after the walk's
+#: own drop, below the resume object above the highest drop below it, and
+#: at or above the resume object from a word below the highest word the
+#: walks since the resume point was last cleared scanned.
+_COUNTERS = ("walk_words", "walk_headers", "walks", "walked", "walking",
+             "past_drop", "past_below", "rescanned")
 
 
 def _bump(name: str) -> str:
@@ -626,10 +631,14 @@ def _counted_run(
 
     The counters are placed at the labels Phase 2b's walk is emitted
     under, `$rw_done` (where a walk starts), `$rw_loop` (once per chain
-    header a walk visits) and `$rs_scan_loop` (once per word a walk
-    visits), each asserted present exactly once.  The probes sit beside
-    the walk's counters and before the sweep, so the records read only
-    where walks start and where marking ends."""
+    header a walk visits), `$rs_scan_loop` (once per word a walk visits)
+    and `$rs_scan_done` (where a walk starts scanning an object, followed
+    by the comment that ends the scan), each asserted present exactly
+    once.  The resume rule's three counters are judged against
+    `$rs_floor`, the highest word the walks scanned since the resume
+    point was last cleared, as it stood when the walk started.  The
+    probes sit beside the walk's counters and before the sweep, so the
+    records read only where walks start and where marking ends."""
     import wasmtime
 
     wat = result.wat
@@ -638,6 +647,8 @@ def _counted_run(
     decls = "".join(
         f'  (global ${name} (export "{name}") (mut i32) (i32.const 0))\n'
         for name in _COUNTERS)
+    decls += ("  (global $rs_high (mut i32) (i32.const 0))\n"
+              "  (global $rs_floor (mut i32) (i32.const 0))\n")
     anchor = "  (global $gc_free_head"
     assert wat.count(anchor) == 1
     wat = wat.replace(anchor, decls + anchor)
@@ -649,7 +660,31 @@ def _counted_run(
          _bump("walks") + "global.get $walking\ni32.eqz\nif\n"
          + _bump("walked") + "i32.const 1\nglobal.set $walking\nend\n"
          + "local.get $ptr\nlocal.get $rs_end\n" + counts
-         + "call $probe_walk\nblock $rw_done\n"),
+         + "call $probe_walk\n"
+         # No resume point: nothing the walks before scanned is pending.
+         + "global.get $gc_rs_stop\ni32.eqz\nif\ni32.const 0\n"
+         + "global.set $rs_high\nend\n"
+         + "global.get $rs_high\nglobal.set $rs_floor\nblock $rw_done\n"),
+        ("          block $rs_scan_done\n",
+         # After this walk's drop, which ends the walk.
+         "global.get $gc_rs_lo\nglobal.get $gc_rs_hi\ni32.le_u\nif\n"
+         + _bump("past_drop") + "end\n"
+         # Below the resume object, above the highest drop below it.
+         + "local.get $ptr\nglobal.get $gc_rs_stop\ni32.lt_u\nif\n"
+         + "local.get $ptr\nglobal.get $gc_rs_below\ni32.gt_u\nif\n"
+         + _bump("past_below") + "end\nend\n"
+         # At or above it, from below the words already scanned.
+         + "local.get $ptr\nglobal.get $gc_rs_stop\ni32.ge_u\nif\n"
+         + "local.get $obj_ptr\nlocal.get $scan_ptr\ni32.add\n"
+         + "global.get $rs_floor\ni32.lt_u\nif\n"
+         + _bump("rescanned") + "end\nend\n"
+         + "          block $rs_scan_done\n"),
+        ("          ;; A dropped push ends the walk here, the rest of\n",
+         "local.get $obj_ptr\nlocal.get $scan_ptr\ni32.add\n"
+         "global.get $rs_high\ni32.gt_u\nif\n"
+         "local.get $obj_ptr\nlocal.get $scan_ptr\ni32.add\n"
+         "global.set $rs_high\nend\n"
+         "          ;; A dropped push ends the walk here, the rest of\n"),
         ("    ;; Worklist region: gc_stack_limit .. gc_worklist_end.\n",
          "    i32.const 0\n    global.set $walking\n"
          "    ;; Worklist region: gc_stack_limit .. gc_worklist_end.\n"),
@@ -753,6 +788,31 @@ def _assert_each_stretch_walked_once(walked: list[_Walked]) -> None:
             or 2 * c.headers > c.span + 2 * c.walks]
     assert not over, (f"{len(over)} of {len(walked)} walked collections"
                       f" exceed it, the most words in {max(over)}")
+
+
+def _assert_the_walks_keep_the_resume_rule(
+    counted: dict[str, int], walked: list[_Walked],
+) -> None:
+    """Every walk keeps the resume rule on any layout.  It scans nothing
+    past its own drop, and below its resume object nothing above the
+    highest drop below that object.  At or above the resume object it
+    scans no word that a walk since the resume point was last cleared
+    scanned: none is visited twice.  Each collection's walks visit no more
+    chain headers than half their span plus one per walk.
+
+    The words bound of `_assert_each_stretch_walked_once` holds over a
+    fixed layout, not over every one.  A walk that starts below its resume
+    object scans every marked object from the range's bottom up to the
+    highest drop below it, and an earlier walk of the same collection may
+    have scanned them already."""
+    broken = {name: counted[name]
+              for name in ("past_drop", "past_below", "rescanned")
+              if counted[name]}
+    assert not broken, broken
+    over = [c for c in walked if 2 * c.headers > c.span + 2 * c.walks]
+    assert not over, (f"{len(over)} of {len(walked)} walked collections"
+                      f" exceed it, the most headers in"
+                      f" {max(over, key=lambda c: c.headers)}")
 
 
 def test_a_walk_that_fills_the_worklist_stops_there() -> None:

@@ -519,6 +519,7 @@ def _determinism_program(handler: bool = False) -> str:
         "int_to_string(map_size(@Map<String, Int>.0))",
         'string_join(map_keys(@Map<String, Int>.0), "|")',
         'string_join(array_map(map_values(@Map<String, Int>.0), fn(@Int -> @String) effects(pure) { int_to_string(@Int.0) }), ",")',
+        "int_to_string(array_fold(map_values(@Map<String, Int>.0), 7, fn(@Int, @Int -> @Int) effects(pure) { (@Int.1 * 31 + @Int.0) % 1000000007 }))",
         f'string_join([{gets}], ",")',
         "int_to_string(set_size(@Set<String>.0))",
         'string_join(set_to_array(@Set<String>.0), "|")',
@@ -563,8 +564,11 @@ def _expected_transcript() -> str:
     s: dict[str, None] = dict.fromkeys(keys)
     del s["abcdefg"]
     probes = [*keys, "absent"]
+    fold = 7
+    for v in m.values():
+        fold = (fold * 31 + v) % 1000000007
     return " ".join([
-        str(len(m)), "|".join(m), ",".join(str(v) for v in m.values()),
+        str(len(m)), "|".join(m), ",".join(str(v) for v in m.values()), str(fold),
         ",".join(str(m[k]) if k in m else "-" for k in probes),
         str(len(s)), "|".join(s), "".join("1" if k in s else "0" for k in probes),
     ])
@@ -614,6 +618,114 @@ def test_the_server_world_answers_alike_under_any_key(tmp_path: Path) -> None:
     assert result.ok, result.diagnostics
     answers = [_served(result, tmp_path / str(i)) for i in range(2)]
     assert answers == [(200, _expected_transcript())] * 2
+
+
+#: A JSON text's members and an element's attributes, neither in sorted
+#: order, a member given twice and an attribute inserted again, written
+#: back by `json_stringify` and `html_to_string`, which read the map
+#: through the module's `map_keys$ks` and `map_values$v*`.  The element is
+#: built, not parsed: the Node harness has no `DOMParser`.
+_HOST_READERS = """\
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  let @Map<String, String> = map_insert(map_insert(map_insert(map_insert(map_new(), "pear", "1"), "apple", "2"), "kiwi", "3"), "pear", "4");
+  let @Map<String, String> = map_new();
+  let @HtmlNode = HtmlElement("div", @Map<String, String>.0, [HtmlElement("p", @Map<String, String>.1, [HtmlText("x")])]);
+  IO.print(match json_parse("{\\"pear\\": 1, \\"apple\\": 2, \\"kiwi\\": 3, \\"\\": 4, \\"caf\u00e9\\": 5, \\"apple\\": 6}") {
+    Ok(@Json) -> json_stringify(@Json.0),
+    Err(@String) -> @String.0
+  });
+  IO.print(" ");
+  IO.print(string_join(array_map(html_query(@HtmlNode.0, "p"), fn(@HtmlNode -> @String) effects(pure) { html_to_string(@HtmlNode.0) }), ";"));
+  IO.print("\\n")
+}
+"""
+
+#: What the base (c9235415) printed, natively.
+_HOST_READERS_OUT = '{"pear":1,"apple":6,"kiwi":3,"":4,"caf\u00e9":5} <p pear="4" apple="2" kiwi="3">x</p>\n'
+
+
+def test_the_hosts_write_a_map_alike_under_the_native_key() -> None:
+    """`json_stringify` of a parsed `JObject` and `html_to_string` of an
+    element's attributes print what the base printed, under the two test
+    keys and a drawn one."""
+    result = pipeline.compile(_HOST_READERS, file="readers.vera").result
+    assert result.ok, result.diagnostics
+    outs = []
+    for words in ([*K1], [*K2], None):
+        with _native_key([_signed(w) for w in words] if words else None):
+            outs.append(pipeline.run(result).execution.stdout)
+    assert outs == [_HOST_READERS_OUT] * 3
+
+
+@_needs_node
+def test_the_browser_writes_a_map_alike_under_any_key(tmp_path: Path) -> None:
+    result = pipeline.compile(_HOST_READERS, file="readers.vera").result
+    assert result.ok, result.diagnostics
+    assert [_in_browser(result, tmp_path / str(i)) for i in range(2)] == [_HOST_READERS_OUT] * 2
+
+
+#: A handler's response headers, inserted out of order, one inserted
+#: again (it keeps its place and takes its new value), one removed, and
+#: one inserted last.
+_RESPONSE_HEADERS = """\
+public fn handle(@Request -> @Response)
+  requires(true)
+  ensures(true)
+  effects(<HttpServer>)
+{
+  let @Map<String, String> = map_insert(map_insert(map_insert(map_insert(map_new(), "x-pear", "1"), "x-apple", "2"), "x-kiwi", "3"), "x-pear", "4");
+  Response(200, map_remove(map_insert(@Map<String, String>.0, "x-date", "5"), "x-apple"), "ok")
+}
+"""
+
+#: The order the semantics of spec §9.4.3 give them, and the base printed.
+_RESPONSE_HEADERS_OUT = [("x-pear", "4"), ("x-kiwi", "3"), ("x-date", "5")]
+
+
+def test_the_native_server_writes_the_response_headers_alike_under_any_key() -> None:
+    from vera.codegen.api import HttpRequestData
+
+    result = pipeline.compile(_RESPONSE_HEADERS, file="headers.vera").result
+    assert result.ok, result.diagnostics
+    written = []
+    for words in ([*K1], [*K2], None):
+        with _native_key([_signed(w) for w in words] if words else None):
+            ran = pipeline.run(result, "handle", http_request=HttpRequestData(
+                method="GET", path="/", headers={}, body=""))
+        response = ran.execution.http_response
+        assert response is not None
+        headers = response["headers"]
+        assert isinstance(headers, dict)
+        written.append(list(headers.items()))
+    assert written == [_RESPONSE_HEADERS_OUT] * 3
+
+
+@_needs_wasmtime_cli
+def test_the_server_world_writes_the_response_headers_alike_under_any_key(
+    tmp_path: Path,
+) -> None:
+    """Under `wasmtime serve` the adapter reads the headers through the
+    module's `map_keys$ks` and `map_values$vs`; the host adds its own
+    after them."""
+    from tests.test_wasi_target import _serve_request, _WasmtimeServe
+    from vera.codegen.wasi import emit_wasi_component
+
+    result = pipeline.compile(_RESPONSE_HEADERS, file="headers.vera").result
+    assert result.ok, result.diagnostics
+    component = emit_wasi_component(result, world="server")
+    written = []
+    for i in range(2):
+        served = tmp_path / str(i)
+        served.mkdir()
+        with _WasmtimeServe(component, served, flags=("-O", "pooling-allocator=n")) as server:
+            status, headers, body = _serve_request(server.port, "GET", "/", [], "")
+        assert (status, body) == (200, "ok")
+        written.append([(k, v) for k, v in headers.items() if k.startswith("x-")])
+    assert written == [_RESPONSE_HEADERS_OUT] * 2
 
 
 # =====================================================================
