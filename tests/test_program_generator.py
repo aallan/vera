@@ -1083,18 +1083,19 @@ def test_the_minimiser_keeps_the_failure_it_shrinks() -> None:
     assert len(minimal.functions) == 1, minimal.render()
 
 
-def _order_sensitive(fn: gen.Function) -> bool:
-    """A public function whose exact `ensures` states a value that changes
-    when its `Int` parameters' order is reversed, with no `let`, so its
-    result reads the parameters alone: written with two slots of one type
-    swapped, its run returns the reversed value, or its `requires`, swapped
-    too, refuses the arguments."""
-    if not (fn.public and gen.ensure_style(fn) == "exact" and not fn.body.lets
-            and len(fn.params) >= 2
-            and all(q.type == "Int" for q in fn.params)):
-        return False
-    args = list(fn.example)
-    return gen.evaluate(fn, args) != gen.evaluate(fn, args[::-1])
+def _difference() -> gen.Program:
+    """`f0(@Int, @Int -> @Int)`, its first parameter minus its second, with
+    that exact `ensures`: written with two slots of one type swapped, the
+    run returns the negation, while `vera check` and the verifier read the
+    body and the `ensures` swapped alike."""
+    bounds = gen.Iv(0, 10)
+    first = gen.Binding("Int", bounds, bounds)
+    second = gen.Binding("Int", bounds, bounds)
+    fn = gen.Function(
+        "f0", True, [first, second], "Int",
+        gen.Block([], gen.Bin("-", gen.Ref(first), gen.Ref(second))),
+        ensure_style="exact", example=[7, 2])
+    return gen.Program(0, [], [fn], [fn])
 
 
 def test_the_record_states_what_the_generator_expected() -> None:
@@ -1102,20 +1103,23 @@ def test_the_record_states_what_the_generator_expected() -> None:
     intervals, and the value an exact `ensures` states on the failing
     arguments, so a generator bug is told from a toolchain find by reading
     the record.  The value is the generator's own evaluation, held to a run
-    of the compiled function where the parameters' order matters, which is
-    the one place two swapped slots of one type show: `vera check` and the
-    verifier read the body and the `ensures` swapped alike."""
-    prog = next(p for p in map(gen.generate, range(1000))
-                if any(_order_sensitive(f) for f in p.functions))
-    fn = next(f for f in prog.functions if _order_sensitive(f))
-    args = [int(a) for a in fn.example]
-    entry = next(e for e in gen.expectations(prog, fn.name, args)
-                 if e["function"] == fn.name)
-    ran = pipeline.run(prog.render(), fn=fn.name, args=args)
-    assert ran.ok, ran.trap
-    assert entry["expected"] == ran.value, (entry, prog.render())
-    assert entry["style"] == "exact"
-    assert entry["ensures"] and entry["requires"]
+    of the compiled function: over the first public exact function of a
+    hundred generated programs, and over `_difference`, whose value its
+    parameters' order decides, the one place two swapped slots show."""
+    generated = next(
+        (p, f) for p in map(gen.generate, range(100)) for f in p.functions
+        if f.public and gen.ensure_style(f) == "exact" and f.params)
+    difference = _difference()
+    for prog, fn in (generated, (difference, difference.functions[0])):
+        args = [int(a) for a in fn.example]
+        entry = next(e for e in gen.expectations(prog, fn.name, args)
+                     if e["function"] == fn.name)
+        ran = pipeline.run(prog.render(), fn=fn.name, args=args)
+        assert ran.ok, ran.trap
+        assert entry["expected"] == ran.value, (entry, prog.render())
+        assert entry["style"] == "exact"
+        assert entry["ensures"] and entry["requires"]
+    assert gen.evaluate(difference.functions[0], [7, 2]) == 5
 
 
 # =====================================================================
