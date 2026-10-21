@@ -170,7 +170,7 @@ if @Bool.0 then {
 }
 ```
 
-Both branches MUST have the same type. The type of the `if` expression is that common type.  Where one branch is an `Int` and the other a `Nat` or a refinement of `Nat`, the `if` is an `Int`, as an arithmetic expression over the two is (Section 4.4), unless every `Int` branch is made only of non-negative literals and `Nat` values (`3`, `@Nat.0 + 1`), which keeps it a `Nat`.  A subtraction among them, such as `0 - 1` or `@Nat.0 - 1`, keeps the join a `Nat` too, and is obligated where it is bound, as Section 4.4 states, and refused (**E503**) where it can be negative.  Binding an `Int`-typed `if` into a `Nat` position is the narrowing of Section 2.2.1, obligated where it is bound and refused (**E503**) where a branch can be negative, whichever branch the `Int` is.
+Both branches MUST have the same type. The type of the `if` expression is that common type.  Where one branch is an `Int` and the other a `Nat` or a refinement of `Nat`, the `if` is an `Int`, as an arithmetic expression over the two is (Section 4.4), unless every `Int` branch is made only of non-negative literals and `Nat` values (`3`, `@Nat.0 + 1`); such an `if` needs no narrowing where it is bound into a `Nat` position, whichever of the two types it has.  A subtraction among such values, such as `0 - 1` or `@Nat.0 - 1`, is obligated where it is bound, as Section 4.4 states, and refused (**E503**) where it can be negative.  Binding an `Int`-typed `if` into a `Nat` position is the narrowing of Section 2.2.1, obligated where it is bound and refused (**E503**) where a branch can be negative, whichever branch the `Int` is.
 
 The condition MUST have type `Bool`. There are no truthy/falsy conversions.
 

@@ -30,7 +30,8 @@ import pytest
 from tests import pipeline
 from vera.reconcile import join
 
-pytestmark = pytest.mark.matrix(decides=["vera/checker/control.py"])
+pytestmark = pytest.mark.matrix(
+    decides=["vera/checker/control.py", "vera/narrowing.py"])
 
 LABEL = "join_1756.vera"
 
@@ -45,6 +46,7 @@ FORMS: dict[str, bool] = {
     "-0": False,
     "3": False,
     "-@Nat.0": True,
+    "@Nat.0 + 1": False,
     "@Int.0": True,
     "@Int.0 + 1": True,
 }
@@ -53,14 +55,21 @@ ORDERS = ("form first", "form last", "both the form")
 JOINS = ("if", "match", "nested if")
 POSITIONS = ("let", "argument", "return", "field")
 
+#: The kept forms: an `@Int` branch made only of non-negative literals and
+#: `@Nat` values, which the rule leaves as it was.  Their join is a `@Nat`
+#: or an `@Int` by the order of its branches, and needs no narrowing where it
+#: is bound into a `@Nat` position, so the verifier records none, at base
+#: and here.
+KEPT = ("3", "@Nat.0 + 1")
+
 #: The `@Nat` side of a join: a `@Nat` slot, or a `@Pos` parameter, `Pos`
 #: a refinement of `@Nat`, whose join with an `@Int` the relaxed subtype
 #: rule types `Pos`.  Beside a refinement the forms are those the join
-#: demotes to an `@Int`: `3` is a non-negative constant, its join keeps
-#: `Pos`, and code generation's static rule, which reads no refinement,
-#: guards that binding with no record, which is #1695's class.
+#: demotes to an `@Int`: a kept form's join is left as it was, and code
+#: generation's static rule, which reads no refinement, guards its binding
+#: with no record, which is #1695's class.
 REFINED = "@Pos.0"
-REFINED_FORMS = tuple(form for form in FORMS if form != "3")
+REFINED_FORMS = tuple(form for form in FORMS if form not in KEPT)
 
 
 def _branches(form: str, order: str, nat: str = "@Nat.0") -> tuple[str, str]:
@@ -188,8 +197,9 @@ def test_a_join_into_a_nat_position_is_obligated(
 ) -> None:
     """The verdict is the value's sign: E503 where the form can be negative,
     clean where it cannot; the narrowing is recorded wherever the module
-    guards it, so the join reports no guard without a record.  The `@Nat`
-    side is a `@Nat` slot or a slot of a refinement of `@Nat`."""
+    guards it, so the join reports no guard without a record, and a kept
+    form's join needs none in either order.  The `@Nat` side is a `@Nat`
+    slot or a slot of a refinement of `@Nat`."""
     first, second = _branches(form, order, nat)
     outcome = _outcome(_program(position, _join(kind, first, second, "  ")))
     negative = FORMS[form]
@@ -198,6 +208,8 @@ def test_a_join_into_a_nat_position_is_obligated(
     assert not outcome.unrecorded, outcome
     if negative:
         assert "violated" in outcome.nat_binds, outcome
+    if form in KEPT:
+        assert outcome.nat_binds == (), outcome
 
 
 def _negative_space() -> list[object]:
