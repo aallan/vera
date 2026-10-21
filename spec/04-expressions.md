@@ -170,7 +170,7 @@ if @Bool.0 then {
 }
 ```
 
-Both branches MUST have the same type. The type of the `if` expression is that common type.
+Both branches MUST have compatible types, and the type of the `if` expression is their join: their common type, or, for an `Int` and a `Nat`, the type given below.  Where one branch is an `Int` and the other a `Nat` or a refinement of `Nat`, the `if` is an `Int`, as an arithmetic expression over the two is (Section 4.4), unless every `Int` branch is made only of non-negative literals and `Nat` values (`3`, `@Nat.0 + 1`); such an `if` needs no narrowing where it is bound into a `Nat` position, whichever of the two types it has.  A subtraction among such values, such as `0 - 1` or `@Nat.0 - 1`, is obligated where it is bound, as Section 4.4 states, and refused (**E503**) where it can be negative.  Binding an `Int`-typed `if` into a `Nat` position is the narrowing of Section 2.2.1, obligated where it is bound and refused (**E503**) where a branch can be negative, whichever branch the `Int` is.
 
 The condition MUST have type `Bool`. There are no truthy/falsy conversions.
 
@@ -198,6 +198,8 @@ match @Option<Int>.0 {
   None -> 0
 }
 ```
+
+Every arm MUST have a type compatible with the others', and the type of the `match` is their join; an `Int` arm and a `Nat` arm meet as the two branches of an `if` do (Section 4.8), whichever comes first.
 
 ### 4.9.1 Patterns
 
