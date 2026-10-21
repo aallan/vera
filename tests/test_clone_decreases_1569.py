@@ -45,7 +45,7 @@ from tests.module_fixture_helpers import (
     module_value,
 )
 from vera import ast
-from vera.verifier import ContractVerifier, VerifyResult
+from vera.verifier import VerifyResult
 
 # A generated class instrument (tests/matrix_sample.py): a pull request runs a
 # sample of its parametrised cells, and all of them when it changes this file or
@@ -468,19 +468,19 @@ def test_a_call_the_clone_left_under_its_source_name_withholds_the_proof(
     rest on the other edges.  The verifier refuses the group instead.
 
     The cell is driven by making the imported generic's copy keep its calls
-    as written; the control (``renamed``) proves the same program is
-    otherwise refused only for its growing edge.
+    as written (the verifier relinks a module generic's calls to itself,
+    `vera.binding.relink_calls_to`); the control (``renamed``) proves the
+    same program is otherwise refused only for its growing edge.
     """
-    reroute = ContractVerifier._reroute_to_module_qualified
+    from vera import binding
+    relink = binding.relink_calls_to
 
-    def keep_calls(self: ContractVerifier, decl: ast.FnDecl,
-                   *args: object, **kwargs: object) -> ast.FnDecl:
+    def keep_calls(decl: ast.FnDecl, *args: object) -> ast.FnDecl:
         if decl.forall_vars and not renamed:
             return decl
-        return reroute(self, decl, *args, **kwargs)  # type: ignore[arg-type]
+        return relink(decl, *args)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(ContractVerifier, "_reroute_to_module_qualified",
-                        keep_calls)
+    monkeypatch.setattr(binding, "relink_calls_to", keep_calls)
     files, entry = _files("importer", _UNRENAMED_MODULE)
     statuses = _decreases(tmp_path, files, entry)
     assert statuses and "verified" not in statuses[:1], statuses

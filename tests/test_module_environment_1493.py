@@ -32,6 +32,7 @@ from pathlib import Path
 import pytest
 
 from vera import ast
+from vera.binding import DeclId
 from vera.checker import typecheck
 from vera.checker.core import TypeChecker
 from vera.codegen.core import CodeGenerator
@@ -161,25 +162,17 @@ def signature_mismatches(entry: Path) -> list[str]:
     """Every module function whose imported signature differs from the one
     it has when its module is the entry.
 
-    Compared over names that denote ONE declaration in the importer's
-    registry: a name the entry also declares, or that two modules declare,
-    is keyed by a rule of its own (#814, E608) and is not this question.
+    The importer registers each module function under its link name
+    (`vera.binding.DeclId.link_name`), which no other declaration has, so
+    every one of them is compared: a name the entry or another module also
+    declares is still one declaration under its own key (#1694).
     """
     importer = _generator(entry)
-    source = entry.read_text(encoding="utf-8")
-    entry_names = set(_own_functions(vera_pipeline.parse(source).program))
-    mods = importer._resolved_modules
-    declared: dict[str, int] = {}
-    for mod in mods:
-        for name in _own_functions(mod.program):
-            declared[name] = declared.get(name, 0) + 1
     out: list[str] = []
-    for mod in mods:
+    for mod in importer._unlinked_modules:
         as_entry = _generator(mod.file_path)
         for name in _own_functions(mod.program):
-            if name in entry_names or declared[name] > 1 or "$" in name:
-                continue
-            got = importer._fn_sigs.get(name)
+            got = importer._fn_sigs.get(DeclId(mod.path, name).link_name)
             want = as_entry._fn_sigs.get(name)
             if got != want:
                 out.append(f"{'.'.join(mod.path)}::{name}: imported {got}, "

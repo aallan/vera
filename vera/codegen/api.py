@@ -174,6 +174,10 @@ class CompileResult:
     # code.  Without it the CLI's suppression-marker collapse cannot
     # fire for traps that go through prelude functions.
     prelude_fn_names: set[str] = field(default_factory=set)
+    # #1694: each module declaration's link name (``mod$<path>$<name>``) to
+    # the name it is declared under, so a trap frame shows the user's
+    # spelling (`vera.binding.display_names`).
+    fn_display_names: dict[str, str] = field(default_factory=dict)
     # #1183: user-declared top-level functions that were DROPPED from the
     # emitted module by the #1100 skip propagation, mapped to the
     # diagnostic explaining the drop (the function's own `[E602]`-class
@@ -1539,6 +1543,7 @@ def execute(
         # which resolves to the empty list the field already allows.
         frames = _resolve_trap_frames(
             exc, result.fn_source_map, result.prelude_fn_names,
+            result.fn_display_names,
         )
         raise WasmTrapError(
             message,

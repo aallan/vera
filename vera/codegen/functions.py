@@ -448,13 +448,11 @@ class FunctionCompilationMixin:
 
     def _compile_fn(
         self, decl: ast.FnDecl, *, export: bool = True,
-        module_renames: dict[str, str] | None = None,
         imported: bool = False,
         module_tables: (
             tuple[SpanTypeTable | None, SpanTypeTable | None] | None
         ) = None,
         where_scope: frozenset[str] = frozenset(),
-        own_path: tuple[str, ...] | None = None,
     ) -> str | None:
         """Compile a single function to WAT.
 
@@ -467,7 +465,7 @@ class FunctionCompilationMixin:
         denoting a user declaration.  See ``_scoped_fn_names``.
 
         *imported* is True when *decl* is an imported module body compiled into
-        this flat WASM module (Pass 2.5 / 2.6).  The checker's resolved- /
+        this flat WASM module (Pass 2.5).  The checker's resolved- /
         target-type side-tables are keyed by span alone (``(line, col, end_line,
         end_col)`` — no file identity), so the MAIN-file tables
         (``self._expr_semantic_types`` / ``self._expr_target_types``) must NOT be
@@ -479,7 +477,7 @@ class FunctionCompilationMixin:
         *module_tables* (#987) is the imported module's OWN
         ``(expr_semantic_types, expr_target_types)`` pair, keyed by that module's
         node spans — so looking *decl*'s spans up in it is correct, not a
-        cross-file collision.  When supplied (the normal path from Pass 2.5 / 2.6
+        cross-file collision.  When supplied (the normal path from Pass 2.5
         via ``CheckArtifacts.module_artifacts``), the imported body gets the same
         per-component target-type recovery a same-file body does, so its
         array-element / tuple-construction narrowing guard fires through the
@@ -488,10 +486,6 @@ class FunctionCompilationMixin:
         pre-#987 behaviour: those component sites stay unguarded, never
         false-guarded.  Fn-type-based recovery (closure formal / return types) is
         NOT span-keyed and is unaffected either way.
-
-        *own_path* (#1558) is the path that names *decl*'s own file in a
-        qualified call; the tail-call analyzer marks a tail call by it as it
-        marks the bare call (``compute_tail_call_sites``).
         """
         # #987: an imported body's span-keyed tables are ITS module's own (or
         # None when none were threaded) — never the main-file tables, whose
@@ -765,20 +759,6 @@ class FunctionCompilationMixin:
         )
         ctx.set_closure_id_start(self._next_closure_id)
         ctx.set_closure_sigs(self._closure_sigs)
-        # #814 §8.5.3: module-qualified call target table, so a ``m::f`` call
-        # whose bare name is shadowed by a local resolves to the module's
-        # body (emitted under a distinct ``mod$…`` name) rather than the local.
-        ctx.set_module_qualified_targets(self._module_qualified_targets)
-        # #814/#774: shadowed imported-generic qualified-call bases, so a
-        # `m::gen(…)` whose bare name a local shadows resolves to the module
-        # generic's clone rather than the local shadow.
-        ctx.set_module_qualified_generic_bases(
-            self._module_qualified_generic_bases,
-        )
-        # #814 C2: intra-module call renames, set ONLY when compiling a
-        # ``mod$…`` body, so a bare sibling call inside it reaches the
-        # module's version rather than the main program's local shadow.
-        ctx.set_intra_module_renames(module_renames or {})
         env = WasmSlotEnv()
 
         # Allocate parameters and track pointer params for GC prologue
@@ -939,10 +919,10 @@ class FunctionCompilationMixin:
         # must match caller).  See ``vera/tail_position.py``
         # for the analyzer rules and ``_translate_call`` in
         # ``vera/wasm/calls.py`` for the emit site.
-        # #1558: a tail call by *own_path*, the path naming this body's own
-        # file, is the bare tail call to that top-level function and is
-        # marked with it.
-        tail_sites = compute_tail_call_sites(decl, own_path)
+        # #1558: a call by the body's own module path is relinked to the
+        # plain call of its target's link name (`vera.binding.link`), so a
+        # tail call by it is marked as the bare tail call is.
+        tail_sites = compute_tail_call_sites(decl)
 
         # #758/#983 — per-narrowing-leaf @Int->@Nat return guard.  Collect the
         # tail-position return leaves that narrow into a bare @Nat return so

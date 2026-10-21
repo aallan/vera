@@ -1961,12 +1961,10 @@ class OperatorsMixin:
     def _infer_fncall_vera_type_for_narrowing(self, call: ast.Expr) -> str | None:
         """Codegen's return-type oracle for the shared narrowing rule.
 
-        A `ModuleCall` is desugared to a `FnCall` before translation, so the
-        same lookup answers both once the flattened shape is synthesised.
+        A qualified call reaches code generation as the plain call of its
+        target's link name (`vera.binding.link`), so the `FnCall` lookup
+        answers it.
         """
-        if isinstance(call, ast.ModuleCall):
-            return self._infer_fncall_vera_type(
-                ast.FnCall(name=call.name, args=call.args, span=call.span))
         if isinstance(call, ast.FnCall):
             return self._infer_fncall_vera_type(call)
         return None
@@ -1999,7 +1997,7 @@ class OperatorsMixin:
         resolved = self._resolved_codegen_type(expr)
         if resolved is not None:
             return resolved == "Nat"
-        if not isinstance(expr, (ast.FnCall, ast.ModuleCall)):
+        if not isinstance(expr, ast.FnCall):
             return False
         decl_ret = self._fn_ret_type_exprs.get(expr.name)
         if isinstance(decl_ret, ast.RefinementType):
@@ -2008,11 +2006,7 @@ class OperatorsMixin:
                 and not decl_ret.type_args
                 and self._resolve_base_type_name(decl_ret.name) == "Nat"):
             return True
-        call = (
-            expr if isinstance(expr, ast.FnCall)
-            else ast.FnCall(name=expr.name, args=expr.args, span=expr.span)
-        )
-        return self._infer_fncall_vera_type(call) == "Nat"
+        return self._infer_fncall_vera_type(expr) == "Nat"
 
     def _is_guarded_nat_subtraction(self, expr: ast.Expr) -> bool:
         """Whether *expr* is a `@Nat` subtraction this guard checks — so its
@@ -2654,10 +2648,6 @@ class OperatorsMixin:
             )
         if isinstance(expr, ast.FnCall):
             return self._infer_fncall_vera_type(expr) == "Int"
-        if isinstance(expr, ast.ModuleCall):
-            return self._infer_fncall_vera_type(
-                ast.FnCall(name=expr.name, args=expr.args, span=expr.span),
-            ) == "Int"
         return False
 
     def _operand_is_int_or_nat(self, expr: ast.Expr) -> bool:

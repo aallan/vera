@@ -138,6 +138,7 @@ def _slot_tables(
         source=main_path.read_text(encoding="utf-8"), file=str(main_path),
     )
     gen._resolved_modules = mods
+    gen._unlinked_modules = list(mods)
     gen._register_modules(program)
     gen._register_all(program)
     with gen._module_alias_scope((module,)):
@@ -257,6 +258,7 @@ public fn main(@Unit -> @Int)
         source=main_path.read_text(encoding="utf-8"), file=str(main_path),
     )
     gen._resolved_modules = mods
+    gen._unlinked_modules = list(mods)
     gen.compile_program(program)
 
     # `inject_prelude` is demand-driven, so only the prelude ADTs this
@@ -323,6 +325,7 @@ public fn main(@Unit -> @Int)
         source=main_path.read_text(encoding="utf-8"), file=str(main_path),
     )
     gen._resolved_modules = mods
+    gen._unlinked_modules = list(mods)
     gen._register_modules(program)
     gen._register_all(program)
     names = [naming.slot_name(p, gen._alias_env)

@@ -1402,7 +1402,9 @@ class TestNameCollisionDetection:
         return TestCrossModuleCodegen._compile_mod(source, modules)
 
     def test_fn_collision_two_modules(self) -> None:
-        """Same function name in two imported modules produces E608."""
+        """Two imports that both supply ``process`` leave the bare call bound
+        to neither declaration (the checker reports it, E155), so code
+        generation refuses the unchecked program rather than pick one."""
         mod_a = self._resolved(("mod_a",), """\
 public fn process(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
@@ -1421,15 +1423,15 @@ public fn main(@Int -> @Int)
 { process(@Int.0) }
 """, [mod_a, mod_b])
         errors = [d for d in result.diagnostics if d.severity == "error"]
-        assert len(errors) >= 1
-        assert "process" in errors[0].description
-        assert "mod_a" in errors[0].description
-        assert "mod_b" in errors[0].description
-        assert errors[0].error_code == "E608"
+        assert any(
+            "process" in e.description and "not defined" in e.description
+            for e in errors
+        ), errors
         assert result.ok is False
 
     def test_private_helper_collision(self) -> None:
-        """Private helpers with same name across modules produce E608."""
+        """Private helpers with the same name in two modules are two
+        declarations (#1498): each module's body calls its own."""
         mod_a = self._resolved(("mod_a",), """\
 public fn double(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
@@ -1446,18 +1448,13 @@ private fn helper(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 }
 """)
-        result = self._compile_mod("""\
+        assert TestCrossModuleCodegen._run_mod("""\
 import mod_a(double);
 import mod_b(triple);
 public fn main(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { double(@Int.0) + triple(@Int.0) }
-""", [mod_a, mod_b])
-        errors = [d for d in result.diagnostics if d.severity == "error"]
-        assert any(
-            e.error_code == "E608" and "helper" in e.description
-            for e in errors
-        )
+""", [mod_a, mod_b], fn="main", args=[1]) == 5
 
     def test_adt_type_collision(self) -> None:
         """Same ADT name in two modules produces E609."""
@@ -1569,30 +1566,6 @@ public fn main(@Int -> @Int)
 """, [mod, mod])
         errors = [d for d in result.diagnostics if d.severity == "error"]
         assert not errors
-
-    def test_collision_message_includes_both_modules(self) -> None:
-        """Collision diagnostic mentions both conflicting module paths."""
-        mod_a = self._resolved(("alpha",), """\
-public fn compute(@Int -> @Int)
-  requires(true) ensures(true) effects(pure)
-{ @Int.0 }
-""")
-        mod_b = self._resolved(("beta",), """\
-public fn compute(@Int -> @Int)
-  requires(true) ensures(true) effects(pure)
-{ @Int.0 }
-""")
-        result = self._compile_mod("""\
-import alpha(compute);
-import beta(compute);
-public fn main(-> @Int)
-  requires(true) ensures(true) effects(pure)
-{ 0 }
-""", [mod_a, mod_b])
-        errors = [d for d in result.diagnostics if d.severity == "error"]
-        assert len(errors) >= 1
-        desc = errors[0].description
-        assert "alpha" in desc and "beta" in desc
 
 
 class TestCrossModuleFusedAwait841:
@@ -3109,8 +3082,8 @@ public fn main(@Unit -> @Int)
         result = self._compile_mod(self.MAIN, mods)
         errors = [d for d in result.diagnostics if d.severity == "error"]
         assert not errors, f"Unexpected errors: {[e.description for e in errors]}"
-        assert "(func $gc (result i64)" in result.wat
-        assert "(func $gd (result i32 i32)" in result.wat
+        assert "(func $mod$ca$gc (result i64)" in result.wat
+        assert "(func $mod$da$gd (result i32 i32)" in result.wat
 
     def test_local_alias_never_leaks_into_module_body(self) -> None:
         """A main-file ``type F = Bool`` must not re-type an imported
@@ -3274,7 +3247,8 @@ public fn main(@Unit -> @Int)
         result = gen.compile_program(prog)
         errors = [d for d in result.diagnostics if d.severity == "error"]
         assert not errors, [e.description for e in errors]
-        clone_keys = [k for k in gen._fn_ret_type_exprs if "$" in k and k.startswith("pick")]
+        clone_keys = [k for k in gen._fn_ret_type_exprs
+                      if k.startswith("mod$ga$pick$")]
         assert clone_keys, (
             f"expected a pick clone key, got: "
             f"{sorted(gen._fn_ret_type_exprs)}"

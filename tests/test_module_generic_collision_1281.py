@@ -509,7 +509,11 @@ public fn main(@Unit -> @Int)
 
 
 class TestTheRailStillRefusesRealCollisions:
-    """The relaxation is narrow.  Both halves of what E608 protects stay."""
+    """Two same-named declarations are two declarations (#1694): each has
+    its own link name, so nothing is refused at compile for sharing a name.
+    A bare name two imports supply is still refused, at check (E155), and
+    code generation refuses the unchecked program, since the call is bound
+    to neither."""
 
     _LIB_A = _BASE.replace("module base;", "module liba;")
     _LIB_B = f"""\
@@ -552,7 +556,7 @@ public fn main(@Unit -> @Int)
         assert _errors(check_errors, "E155"), (
             f"the checker let two bare-name owners through: {check_errors}"
         )
-        assert _errors(cg_errors, "E608"), (
+        assert any("'gen' is not defined" in d for _, d in cg_errors), (
             f"the rail let two bare-name owners through: {cg_errors}"
         )
 
@@ -608,24 +612,17 @@ public fn main(@Unit -> @Int)
         assert _errors(check_errors, "E155"), (
             f"an ambiguous bare name was let through: {check_errors}"
         )
-        assert _errors(cg_errors, "E608"), (
+        assert any("'gen' is not defined" in d for _, d in cg_errors), (
             f"an ambiguous bare name was let through: {cg_errors}"
         )
 
     def test_a_generic_beside_a_non_generic_still_collides(
         self, tmp_path: Path,
     ) -> None:
-        """The relaxation is for GENERICS, and stays there.
-
-        A qualified-only generic in one module beside a same-named
-        NON-generic in another occupies two different flat identities too —
-        ``mod$liba$gen$Bool`` and ``$gen`` — so the two conditions below it
-        would let the pair through.  It keeps its refusal because nobody has
-        measured that shape, and the narrow scope is the point: a relaxation
-        is only as good as the classification behind it, and the
-        classification (``module_qualified_generic_names``) speaks about
-        generics.
-        """
+        """A private generic in one module beside a same-named private
+        NON-generic in another: two declarations, ``mod$liba$gen`` (cloned
+        ``mod$liba$gen$Bool``) and ``mod$libb$gen``, each reached by its own
+        module's call (#1498)."""
         liba = f"""\
 module liba;
 
@@ -666,43 +663,9 @@ public fn main(@Unit -> @Int)
   effects(pure)
 { door1(true) + door2(()) }
 """
-        _, result, cg_errors = build_multi_module(
-            tmp_path,
-            {"liba.vera": liba, "libb.vera": libb, "main.vera": main},
-        )
-        assert _errors(cg_errors, "E608"), (
-            f"a generic/non-generic pair was let through: {cg_errors}"
-        )
-
-    def test_two_bare_name_owners_collide_whatever_the_ambiguity_says(
-        self,
-    ) -> None:
-        """The owner condition, asked of the predicate directly.
-
-        End to end it is belt and braces: two generics can only BOTH own the
-        entry's bare name when the entry imports both, publicly and in
-        filter, and declares neither — which is exactly what makes the name
-        ambiguous there, so the gate above catches the shape first.  The two
-        conditions coincide through a chain of reasoning about two
-        separately-derived tables, and a drift between them would silently
-        relax a real clone collision, so the condition is asserted on its own
-        rather than left resting on that coincidence.
-        """
-        from vera.codegen.core import CodeGenerator
-
-        gen = CodeGenerator(source="", file="<test>")
-        gen._ambiguous_imported_fn_names = frozenset()
-        generics = {("a",): frozenset({"gen"}), ("b",): frozenset({"gen"})}
-        # Neither is qualified-only: both own the entry's bare name, so both
-        # sets of clones mangle to `gen$…`.
-        assert not gen._declarations_cannot_collide(
-            "gen", ("a",), ("b",), generics, {("a",): set(), ("b",): set()},
-        )
-        # One qualified-only: distinct namespaces, so the pair is fine.
-        assert gen._declarations_cannot_collide(
-            "gen", ("a",), ("b",), generics,
-            {("a",): {"gen"}, ("b",): set()},
-        )
+        assert _answer(
+            tmp_path, {"liba.vera": liba, "libb.vera": libb, "main.vera": main},
+        ) == BASE_ANSWER + DEEPB_ANSWER
 
     def test_a_local_declaration_disambiguates_two_dependencies(
         self, tmp_path: Path,
@@ -750,8 +713,10 @@ public fn main(@Unit -> @Int)
     def test_two_non_generics_still_collide(
         self, tmp_path: Path, vis: str,
     ) -> None:
-        """Non-generics are untouched: each really is emitted under the bare
-        ``$name`` in Pass 2.5, whatever its visibility."""
+        """Two same-named non-generics, whatever their visibility, are
+        emitted under their own link names, and each module's ``door``
+        reaches its own ``plain``: 10 and 20, so a capture either way would
+        read 20 or 40 (#1498)."""
         # `{{n}}` stays doubled — it is the literal `{n}` placeholder the
         # `.replace` below fills in.  The BODY braces were doubled too, which
         # emitted `{{ 1 }}`: a block nested in a block, accepted only
@@ -763,7 +728,7 @@ module lib{{n}};
   requires(true)
   ensures(true)
   effects(pure)
-{{ 1 }}
+{{ {{n}}0 }}
 
 public fn door{{n}}(@Unit -> @Int)
   requires(true)
@@ -781,15 +746,12 @@ public fn main(@Unit -> @Int)
   effects(pure)
 { door1(()) + door2(()) }
 """
-        _, result, cg_errors = build_multi_module(
+        assert _answer(
             tmp_path,
             {"lib1.vera": lib.replace("{n}", "1"),
              "lib2.vera": lib.replace("{n}", "2"),
              "main.vera": main},
-        )
-        assert _errors(cg_errors, "E608"), (
-            f"two same-named non-generics were let through: {cg_errors}"
-        )
+        ) == 30
 
 
 # =====================================================================

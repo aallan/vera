@@ -932,9 +932,12 @@ class TestTheThrowPayloadResolvesInItsOwnModule:
         importer's `type Small = Int` the tag would take an i64 parameter or
         the value would be an `i64.const`, and the two bodies would differ.
         """
-        xmod = _fn_body(_compile_xmod(tmp_path).wat, "boom")
+        # The module's `boom` under its link name (#1694), compared with the
+        # entry's under its own: the bodies, not the names, are the claim.
+        xmod = _fn_body(_compile_xmod(tmp_path).wat, "mod$xmodlib$boom")
         same = _fn_body(_compile_ok(_XMOD_SAME_MODULE).wat, "boom")
-        assert xmod == same, (xmod, same)
+        assert xmod.replace("$mod$xmodlib$boom", "$boom") == same, (
+            xmod, same)
         assert "i32.const 5" in xmod, xmod
 
     def test_the_tag_is_i32_and_the_program_returns_the_payload(
@@ -983,4 +986,4 @@ class TestTheThrowPayloadResolvesInItsOwnModule:
         tags = re.findall(
             r"\(tag \$exn_\S+ \(param ([^)]*)\)\)", result.wat)
         assert tags == ["i64"], tags
-        assert "i64.const 5" in _fn_body(result.wat, "boom")
+        assert "i64.const 5" in _fn_body(result.wat, "mod$xmodlib$boom")

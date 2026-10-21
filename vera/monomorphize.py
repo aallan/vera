@@ -1578,6 +1578,15 @@ def reroute_module_qualified_generic_calls(
     return result
 
 
+def where_helper_name(name: str) -> str:
+    """A ``where`` helper's own name: *name*, or its last ``$where$``
+    segment when the link step (:func:`vera.binding.link`) has already
+    named it ``<parent>$where$<name>``.  A transform that names a helper
+    under its parent's prefix builds ``<prefix>$where$`` + this, so on a
+    linked program it reproduces the link name rather than nesting it."""
+    return name.rpartition("$where$")[2]
+
+
 def _qualify_generic_subtree_calls(
     fn: ast.FnDecl, rename: dict[str, str],
 ) -> ast.FnDecl:
@@ -1616,7 +1625,7 @@ def _qualify_nested_under(
     where_fns = fn.where_fns or ()
     declared = {wfn.name for wfn in where_fns}
     generic_renames = {
-        wfn.name: f"{prefix}$where${wfn.name}"
+        wfn.name: f"{prefix}$where${where_helper_name(wfn.name)}"
         for wfn in where_fns
         if wfn.forall_vars
     }
@@ -1639,7 +1648,8 @@ def _qualify_nested_under(
             # top-level parent.
             new_where.append(
                 _qualify_nested_under(
-                    wfn, f"{prefix}$where${wfn.name}", combined,
+                    wfn, f"{prefix}$where${where_helper_name(wfn.name)}",
+                    combined,
                 )
             )
     body_only = replace(fn, where_fns=None)

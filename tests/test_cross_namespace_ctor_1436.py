@@ -1423,11 +1423,13 @@ class TestBothSidesDiscoverTheSameClone:
         assert emitted == discovered, (emitted ^ discovered)
         owner = _CARRIER_OWNER[carrier]
         assert any(
-            name == "gid" and any(owner == t.split("<")[0] for t in types)
+            name == "mod$mlib$gid"
+            and any(owner == t.split("<")[0] for t in types)
             for name, types in emitted
         ), (owner, sorted(emitted))
         assert not any(
-            name == "gid" and any(t.split("<")[0] in _SHADOW_ADTS
+            name == "mod$mlib$gid"
+            and any(t.split("<")[0] in _SHADOW_ADTS
                                   for t in types)
             for name, types in emitted
         ), sorted(emitted)

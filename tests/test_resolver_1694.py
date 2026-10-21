@@ -225,7 +225,6 @@ def _lib(path: str, decls: str) -> str:
     return f"module {path};\n\n{decls}"
 
 
-@_LINKED
 def test_repro_1498_selective_import(tmp_path: Path) -> None:
     files = {
         "liba.vera": _lib("liba", _fn("f(@Int -> @Int)", "@Int.0 + 100",
@@ -241,7 +240,6 @@ def test_repro_1498_selective_import(tmp_path: Path) -> None:
     assert pipeline.run(_tree(tmp_path, files), "main").value == 101201
 
 
-@_LINKED
 def test_repro_1498_module_shadows_its_import(tmp_path: Path) -> None:
     files = {
         "deep.vera": _lib("deep", _fn("f(@Int -> @Int)", "@Int.0 + 100",
@@ -255,7 +253,6 @@ def test_repro_1498_module_shadows_its_import(tmp_path: Path) -> None:
     assert pipeline.run(_tree(tmp_path, files), "main").value == 111
 
 
-@_LINKED
 def test_repro_1498_two_private_helpers(tmp_path: Path) -> None:
     def lib(path: str, add: int, public: str) -> str:
         return _lib(path, _fn("h(@Int -> @Int)", f"@Int.0 + {add}") + "\n"
@@ -391,7 +388,6 @@ def test_repro_1556_type_parameter_takes_a_builtin_type_name() -> None:
 # #1581: a module generic's call to its `where` helper, in an importer.
 # =====================================================================
 
-@_LINKED
 def test_repro_1581_where_helper_beside_a_same_named_generic(
         tmp_path: Path) -> None:
     module = (

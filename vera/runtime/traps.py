@@ -11,7 +11,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
+
+from vera.binding import display_name
 
 from vera.trap_registry import (
     NATIVE_TRAP_OPCODES,
@@ -211,6 +214,7 @@ def _resolve_trap_frames(
     exc: BaseException,
     fn_source_map: dict[str, tuple[str, int, int]],
     prelude_fn_names: set[str] | None = None,
+    display_names: Mapping[str, str] | None = None,
 ) -> list[TrapFrame]:
     """Resolve ``wasmtime.Trap.frames`` against the codegen source map.
 
@@ -355,7 +359,9 @@ def _resolve_trap_frames(
 
         file_path, line_start, line_end = loc
         resolved.append(TrapFrame(
-            func=name,
+            # A module declaration's frame shows the name it is declared
+            # under; the file says which module (#1694).
+            func=display_name(name, display_names or {}),
             file=file_path,
             line_start=line_start,
             line_end=line_end,

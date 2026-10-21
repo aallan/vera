@@ -1569,13 +1569,13 @@ public fn main(@Unit -> @String)
         )
         wat = gen._result.wat  # type: ignore[attr-defined]
         # `mangle_type_name` escapes `$` for a WAT identifier, so the
-        # qualified identity appears as `mod_U24_<path>_U24_<Name>` — which
-        # is also why no WAT symbol can ever read as a `mod$` leak in text
-        # output, and why the battery's grep and this assertion do not
-        # contradict each other.
+        # qualified TYPE identity appears as `mod_U24_<path>_U24_<Name>`, and
+        # no symbol derived from the renamed type reads as its `mod$` spelling
+        # in text output.  A FUNCTION's symbol is its link name
+        # (`mod$<path>$<name>`, #1694), which is not this rename.
         assert "mod_U24_liba_U24_" in wat, wat[-400:]
         assert "mod_U24_libb_U24_" in wat, wat[-400:]
-        assert "mod$" not in wat
+        assert "mod$liba$Shape" not in wat and "mod$libb$Shape" not in wat
 
     def test_the_strip_and_the_rename_table_are_one_derivation(
         self, tmp_path: Path,

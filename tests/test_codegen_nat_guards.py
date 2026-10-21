@@ -284,16 +284,17 @@ public fn main(@Unit -> @Nat)
         assert checks(result, kind="nat_underflow", function="countdown") == ()
 
     def test_modulecall_provenance_emits_guard_and_traps(self) -> None:
-        """ModuleCall with @Nat return type carries provenance.
+        """A module-qualified call with a @Nat return type carries provenance.
 
-        `vera.math::abs(...)` returns `@Nat` per spec/09 §9.x, so
-        `vera.math::abs(a) - vera.math::abs(b)` is a `@Nat - @Nat`
-        site where both operands have @Nat provenance via
-        ast.ModuleCall (not ast.FnCall).  The CodeRabbit review on
-        PR #554 (round 1) identified that the original codegen
-        helpers `_is_static_nat_typed` and `_has_nat_origin_codegen`
-        only handled ast.FnCall — module-qualified callees with
-        @Nat return types would have slipped past the guard.
+        `nm::absn(...)` returns `@Nat`, so `nm::absn(a) - nm::absn(b)` is a
+        `@Nat - @Nat` site where both operands have @Nat provenance through
+        a qualified call.  The CodeRabbit review on PR #554 (round 1)
+        identified that the original codegen helpers `_is_static_nat_typed`
+        and `_has_nat_origin_codegen` only handled ast.FnCall — module-
+        qualified callees with @Nat return types would have slipped past the
+        guard.  The link step (#1694) makes the qualified call the plain call
+        of its target's link name, whose declared return carries the
+        provenance.
 
         This test exercises the fix by:
           (1) confirming the guard is emitted in the WAT for the
@@ -303,14 +304,20 @@ public fn main(@Unit -> @Nat)
               produces -5 without the guard, traps with it).
         """
         unsafe_src = """
-import vera.math(abs);
+module nm;
+
+private fn absn(@Int -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  abs(@Int.0)
+}
 
 private fn unsafe_modcall(@Int, @Int -> @Nat)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  vera.math::abs(@Int.1) - vera.math::abs(@Int.0)
+  nm::absn(@Int.1) - nm::absn(@Int.0)
 }
 
 public fn main(@Unit -> @Nat)
@@ -351,14 +358,20 @@ public fn main(@Unit -> @Nat)
 
         # Safe case: passing args where lhs >= rhs runs cleanly.
         safe_src = """
-import vera.math(abs);
+module nm;
+
+private fn absn(@Int -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  abs(@Int.0)
+}
 
 private fn safe_modcall(@Int, @Int -> @Nat)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  vera.math::abs(@Int.1) - vera.math::abs(@Int.0)
+  nm::absn(@Int.1) - nm::absn(@Int.0)
 }
 
 public fn main(@Unit -> @Nat)

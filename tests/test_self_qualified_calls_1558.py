@@ -1513,12 +1513,15 @@ class TestATailCallByThePath:
                     _entry("import ma(run_it);", "run_it(3)"),
                     encoding="utf-8")
                 target = root / "main.vera"
-            bodies.append(_wat_fn(_wat(target), "count"))
+            # `ma`'s `count` under its link name when `ma` is a module
+            # (#1694).
+            name = "count" if placement == "entry" else "mod$ma$count"
+            bodies.append(_wat_fn(_wat(target), name))
         qualified, bare = bodies
-        assert "return_call $count" in bare, bare
-        assert "return_call $count" in qualified, qualified
-        assert "call $count" not in qualified.replace(
-            "return_call $count", ""), qualified
+        assert f"return_call ${name}" in bare, bare
+        assert f"return_call ${name}" in qualified, qualified
+        assert f"call ${name}" not in qualified.replace(
+            f"return_call ${name}", ""), qualified
 
     @pytest.mark.parametrize("q", ["ma::", ""], ids=["qualified", "bare"])
     def test_a_narrowing_tail_call_keeps_its_guard(

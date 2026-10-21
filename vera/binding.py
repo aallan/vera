@@ -40,11 +40,13 @@ from :attr:`Binding.calls`; reporting it is the checker's job.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator, Mapping
-from dataclasses import dataclass, field
+from collections.abc import (
+    Collection, Iterable, Iterator, Mapping, Sequence,
+)
+from dataclasses import dataclass, field, fields, replace
+from typing import Any, cast
 
 from vera import ast
-from vera.fold import walk
 from vera.prelude import PRELUDE_NAMESPACE
 from vera.resolver import ResolvedModule, merged_import_filters, own_module_path
 
@@ -160,33 +162,23 @@ def _top_level_fns(program: ast.Program) -> dict[str, ast.FnDecl]:
     return out
 
 
-def _type_predicates(te: ast.TypeExpr | None) -> Iterator[ast.Expr]:
-    """The refinement predicates written inside a type expression."""
-    stack: list[object] = [te]
+def _calls_under(root: object) -> Iterator[ast.FnCall | ast.ModuleCall]:
+    """Every call written under *root*: in an expression, in a refinement
+    predicate a type expression carries (a parameter's, a ``let``'s, an
+    alias body's, a constructor field's), in a contract or an invariant.  A
+    function's ``where`` helpers are left out; each is its own frame."""
+    stack: list[object] = [root]
     while stack:
-        t = stack.pop()
-        if isinstance(t, ast.RefinementType):
-            yield t.predicate
-            stack.append(t.base_type)
-        elif isinstance(t, ast.NamedType):
-            stack.extend(t.type_args or ())
-        elif isinstance(t, ast.FnType):
-            stack.extend(t.params)
-            stack.append(t.return_type)
-
-
-def _fn_roots(decl: ast.FnDecl) -> list[ast.Node]:
-    """Everything in *decl* a call can be written in, nested declarations
-    (its ``where`` helpers) excepted."""
-    roots: list[ast.Node] = [decl.body]
-    for contract in decl.contracts:
-        if isinstance(contract, ast.Decreases):
-            roots.extend(contract.exprs)
-        else:
-            roots.append(contract.expr)  # type: ignore[attr-defined]
-    for te in (*decl.params, decl.return_type):
-        roots.extend(_type_predicates(te))
-    return roots
+        node = stack.pop()
+        if isinstance(node, (ast.FnCall, ast.ModuleCall)):
+            yield node
+        if isinstance(node, ast.Node):
+            for f in fields(node):
+                if f.name == "where_fns" and isinstance(node, ast.FnDecl):
+                    continue
+                stack.append(getattr(node, f.name))
+        elif isinstance(node, tuple):
+            stack.extend(node)
 
 
 class _Binder:
@@ -230,22 +222,31 @@ class _Binder:
         own = _top_level_fns(ns.program)
         for name, decl in own.items():
             self._bind_fn(ns, own, decl, [(name, decl)])
+        # A call can be written outside every function too: in a refinement
+        # an alias or a constructor field carries, or a data invariant.
+        for tld in ns.program.declarations:
+            if not isinstance(tld.decl, ast.FnDecl):
+                self._bind_calls(ns, own, tld.decl, [])
 
     def _bind_fn(
         self, ns: _Namespace, own: Mapping[str, ast.FnDecl],
         decl: ast.FnDecl, frames: list[tuple[str, ast.FnDecl]],
     ) -> None:
-        for node in walk(tuple(_fn_roots(decl))):
-            if isinstance(node, ast.FnCall):
-                target = self._bare(ns, own, node.name, frames)
-            elif isinstance(node, ast.ModuleCall):
-                target = self._qualified(ns, node.path, node.name)
-            else:
-                continue
-            if target is not None:
-                self.out._bind(node, target)
+        self._bind_calls(ns, own, decl, frames)
         for wfn in decl.where_fns or ():
             self._bind_fn(ns, own, wfn, [*frames, (wfn.name, wfn)])
+
+    def _bind_calls(
+        self, ns: _Namespace, own: Mapping[str, ast.FnDecl],
+        root: ast.Node, frames: list[tuple[str, ast.FnDecl]],
+    ) -> None:
+        for node in _calls_under(root):
+            if isinstance(node, ast.FnCall):
+                target = self._bare(ns, own, node.name, frames)
+            else:
+                target = self._qualified(ns, node.path, node.name)
+            if target is not None:
+                self.out._bind(node, target)
 
     def _bare(
         self, ns: _Namespace, own: Mapping[str, ast.FnDecl], name: str,
@@ -322,3 +323,210 @@ def bind_program(
     for ns in namespaces:
         binder.bind(ns)
     return binder.out
+
+
+# =====================================================================
+# The link step: each program with every declaration under its link name
+# =====================================================================
+
+def _relinked_call(
+    node: ast.FnCall | ast.ModuleCall, target: DeclId | None,
+    args: tuple[ast.Expr, ...],
+) -> ast.Expr:
+    """*node*, naming *target* by its link name.
+
+    A built-in or a prelude function keeps its bare name, which is its link
+    name; every other declaration, a ``where`` helper included, is named by
+    the one name it has in the linked program, so no later pass asks which
+    declaration a call's name means.  A qualified call becomes a plain one.
+    """
+    if target is not None and target.owner not in (BUILTIN, PRELUDE):
+        return ast.FnCall(
+            name=target.link_name, args=args, piped=node.piped,
+            stage_span=node.stage_span, span=node.span)
+    if args is node.args:
+        return node
+    return replace(node, args=args)
+
+
+def _relink(node: object, calls: Mapping[int, DeclId]) -> object:
+    """*node* with every call the binding binds naming its target's link
+    name.  Nodes are rebuilt only where something under them changed, and
+    every rebuilt node keeps its span, so the checker's span-keyed tables
+    still answer for it."""
+    if isinstance(node, (ast.FnCall, ast.ModuleCall)):
+        args = cast(tuple[ast.Expr, ...], _relink(node.args, calls))
+        return _relinked_call(node, calls.get(id(node)), args)
+    if isinstance(node, ast.Node):
+        changed: dict[str, Any] = {}
+        for f in fields(node):
+            old = getattr(node, f.name)
+            new = _relink(old, calls)
+            if new is not old:
+                changed[f.name] = new
+        return replace(node, **changed) if changed else node
+    if isinstance(node, tuple):
+        walked = tuple(_relink(x, calls) for x in node)
+        if any(a is not b for a, b in zip(walked, node)):
+            return walked
+        return node
+    return node
+
+
+def _link_fn(
+    decl: ast.FnDecl, ident: DeclId, calls: Mapping[int, DeclId],
+) -> ast.FnDecl:
+    """*decl* under *ident*'s link name, its calls relinked, and each of its
+    ``where`` helpers linked the same way under its own identity.  *decl*
+    itself when none of that changes anything, as for a prelude function."""
+    if not decl.where_fns:
+        own = cast(ast.FnDecl, _relink(decl, calls))
+        if own is decl and ident.link_name == decl.name:
+            return decl
+        return replace(own, name=ident.link_name)
+    own = cast(ast.FnDecl, _relink(replace(decl, where_fns=None), calls))
+    helpers = tuple(
+        _link_fn(wfn, DeclId(ident.owner, wfn.name,
+                             (*ident.scope, ident.name)), calls)
+        for wfn in decl.where_fns
+    )
+    return replace(own, name=ident.link_name, where_fns=helpers)
+
+
+def _link_program(
+    program: ast.Program, owner: tuple[str, ...], binding: Binding,
+) -> ast.Program:
+    decls: list[ast.TopLevelDecl] = []
+    for tld in program.declarations:
+        if isinstance(tld.decl, ast.FnDecl):
+            decl: ast.Decl = _link_fn(
+                tld.decl, DeclId(owner, tld.decl.name), binding.calls)
+        else:
+            decl = cast(ast.Decl, _relink(tld.decl, binding.calls))
+        decls.append(tld if decl is tld.decl else replace(tld, decl=decl))
+    return replace(program, declarations=tuple(decls))
+
+
+def relink_calls_to(
+    decl: ast.FnDecl, targets: Collection[DeclId], binding: Binding,
+) -> ast.FnDecl:
+    """*decl* with each call *binding* binds to one of *targets* naming it
+    by its link name, and every other call as written.  *decl* must be a
+    declaration *binding* was computed over."""
+    calls = {
+        key: ident for key, ident in binding.calls.items()
+        if ident in targets
+    }
+    return cast(ast.FnDecl, _relink(decl, calls))
+
+
+def bare_name(link_name: str) -> str:
+    """The source name a declaration's link name was made from: the last
+    ``$where$`` segment of a helper's, the name after a module path's."""
+    name = link_name.rpartition("$where$")[2]
+    if name.startswith("mod$"):
+        name = name.rpartition("$")[2]
+    return name
+
+
+def display_names(binding: Binding) -> dict[str, str]:
+    """Each module declaration's link name to the spelling a message shows
+    for it: the name it is declared under (a helper's chained under its
+    parent's, ``f$where$h``).  The file a message or a trap frame names
+    says which module the declaration is in."""
+    return {
+        ident.link_name: DeclId(ENTRY, ident.name, ident.scope).link_name
+        for ident in binding.decls
+        if ident.owner not in (ENTRY, PRELUDE, BUILTIN)
+    }
+
+
+def display_name(name: str, names: Mapping[str, str]) -> str:
+    """*name* as a message shows it: its :func:`display_names` spelling, or,
+    for a clone of a declaration or a helper hoisted from one, that
+    declaration's spelling with the clone's suffix kept."""
+    shown = names.get(name)
+    if shown is not None:
+        return shown
+    best = ""
+    for link_name in names:
+        if (len(link_name) > len(best)
+                and name.startswith(link_name + "$")):
+            best = link_name
+    return names[best] + name[len(best):] if best else name
+
+
+def display_text(text: str, names: Mapping[str, str]) -> str:
+    """*text* with every link name in it spelled as :func:`display_name`
+    spells it, the longest first so no name is rewritten inside another."""
+    if "mod$" not in text:
+        return text
+    for link_name in sorted(names, key=len, reverse=True):
+        if link_name in text:
+            text = text.replace(link_name, names[link_name])
+    return text
+
+
+@dataclass(frozen=True)
+class Linked:
+    """The program, its modules and its prelude, every declaration under
+    its link name (:func:`link_program`)."""
+
+    program: ast.Program
+    modules: list[ResolvedModule]
+    #: The prelude declarations the binding bound, which are the ones to
+    #: compile (their link names are their own).
+    prelude: tuple[ast.TopLevelDecl, ...]
+    #: The buffer the prelude declarations' spans index into.
+    prelude_source: str
+    binding: Binding
+
+
+def link(
+    program: ast.Program,
+    resolved_modules: Sequence[ResolvedModule],
+    binding: Binding,
+) -> tuple[ast.Program, list[ResolvedModule]]:
+    """The entry *program* and its *resolved_modules*, linked.
+
+    Every module's top-level function takes its link name
+    (``mod$<path>$<name>``), every ``where`` helper its own
+    (``<parent>$where$<name>``), and every call *binding* binds names the
+    declaration it calls by that link name: a qualified call becomes a plain
+    call of the name.  So no two declarations share a name, and a consumer
+    looking a call's name up finds the one declaration the call means
+    without asking which namespace or which ``where`` block it sits in.
+    Types, constructors and aliases keep their names here, and every node
+    keeps its span.
+    """
+    linked = [
+        replace(mod, program=_link_program(mod.program, mod.path, binding))
+        for mod in resolved_modules
+    ]
+    return _link_program(program, ENTRY, binding), linked
+
+
+def link_program(
+    program: ast.Program,
+    resolved_modules: Sequence[ResolvedModule],
+) -> Linked:
+    """:func:`link` over a fresh binding of *program*, its modules and the
+    prelude they are compiled with."""
+    from vera.prelude import prelude_declarations
+
+    prelude, prelude_source = prelude_declarations(
+        program, {mod.path: mod.program for mod in resolved_modules})
+    binding = bind_program(program, resolved_modules, prelude)
+    linked_program, linked_modules = link(program, resolved_modules, binding)
+    return Linked(
+        program=linked_program,
+        modules=linked_modules,
+        prelude=tuple(
+            replace(tld, decl=_link_fn(tld.decl, DeclId(PRELUDE, tld.decl.name),
+                                       binding.calls))
+            if isinstance(tld.decl, ast.FnDecl) else tld
+            for tld in prelude
+        ),
+        prelude_source=prelude_source,
+        binding=binding,
+    )

@@ -32,9 +32,9 @@ from vera.monomorphize import (
     NamespaceFnNames,
     canonicalize_type_aliases,
     qualify_nested_generic_decls,
+    where_helper_name,
 )
 from vera.naming import EMPTY_ALIAS_ENV, AliasEnv
-from vera.resolver import own_module_path
 from vera.prelude import (
     PRELUDE_FILE,
     PRELUDE_NAMESPACE,
@@ -198,7 +198,7 @@ class CodeGenerator(
         # MAIN-file entries only, so an imported body compiled in Pass 2.5 / 2.6
         # cannot recover its component targets from them.  ``_compile_fn``
         # selects the entry for the module being compiled — via the ``path`` its
-        # ``_imported_fn_decls`` / ``_shadowed_module_fns`` entry carries — so the
+        # ``_imported_fn_decls`` entry carries — so the
         # imported body's array-element / tuple-construction narrowing guard
         # fires exactly as the module's standalone compile emits it.  Empty
         # when a caller skipped ``typecheck_with_artifacts`` (or has no
@@ -428,13 +428,18 @@ class CodeGenerator(
         # (`vera.module_view.imported_data_types`); empty everywhere else,
         # where imported layouts are absorbed and scoped by membership.
         self._imported_adt_names: frozenset[str] = frozenset()
-        # Each imported module's program as the checker saw it, by path,
-        # captured by `_register_modules` before its rewrites.  Pass 1.2 asks the
-        # prelude's demand of them (`inject_prelude(..., modules=)`), and the
-        # verifier's discovery asks it of the same programs, so the two sides
-        # inject one prelude (PR #1508 review).
-        self._module_programs_as_checked: dict[
-            tuple[str, ...], ast.Program] = {}
+        # Each imported module as the checker saw it, before the link step
+        # (`_compile_program`) renamed its declarations: what a namespace
+        # imports is asked of these, since an import list names declarations
+        # by their source names.
+        self._unlinked_modules: list[ResolvedModule] = []
+        # The prelude declarations the resolver pass bound, and the buffer
+        # their spans index into, injected at Pass 1.2.
+        self._linked_prelude: tuple[ast.TopLevelDecl, ...] = ()
+        self._linked_prelude_source = ""
+        # Each module declaration's link name to the name a message shows
+        # for it (`vera.binding.display_names`).
+        self._fn_display_names: dict[str, str] = {}
         # #1511: the data types a mono clone's TYPE ARGUMENTS name, while that
         # clone is registered or compiled (`_clone_type_scope`).  A clone is
         # measured in the namespace its generic was declared in, and its type
@@ -678,60 +683,21 @@ class CodeGenerator(
         self._resolved_modules: list[ResolvedModule] = (
             resolved_modules or []
         )
-        # #1558: the path that names the entry file in a qualified call, set
-        # by `_compile_program`; `_own_path_of` answers for every namespace.
-        self._entry_own_path: tuple[str, ...] | None = None
-        # Imported (module path, FnDecl) to compile in Pass 2.5.  The path is
-        # carried so Pass 2.5 can apply that module's intra-rename map (#814
-        # C2): a bare sibling call inside an imported body must reach the
-        # module's version, not a local shadow of that name.
+        # Imported (module path, FnDecl) to compile in Pass 2.5, each under
+        # its link name (`vera.binding.link`), which no other declaration
+        # has.  The path selects the module's alias namespace and span tables
+        # while its body compiles.
         self._imported_fn_decls: list[tuple[tuple[str, ...], ast.FnDecl]] = []
-        # #814 §8.5.3: WASM target name for a module-qualified call
-        # ``m::f`` keyed by (module path, fn name).  Normally the bare name;
-        # for a module fn whose bare name is shadowed by a LOCAL definition
-        # it is a distinct ``mod$…`` name so the qualified call reaches the
-        # module's body while bare calls keep resolving to the local shadow.
-        self._module_qualified_targets: dict[
-            tuple[tuple[str, ...], str], str
-        ] = {}
-        # (module path, mangled name, FnDecl) of shadowed module fns to emit
-        # in Pass 2.6.
-        self._shadowed_module_fns: list[
-            tuple[tuple[str, ...], str, ast.FnDecl]
-        ] = []
-        # Per-module intra-module call rename map: module path → {bare name →
-        # mod$ name} for that module's locally-shadowed functions.  Applied
-        # ONLY inside an emitted ``mod$…`` body so an intra-module call lands
-        # on the module's version, not the main program's local shadow (#814
-        # C2 — the residual the verifier↔codegen review found).
-        self._module_intra_renames: dict[
-            tuple[str, ...], dict[str, str]
-        ] = {}
-        # Names of ALL local functions (top-level + recursive where-fns) that
-        # shadow the importer's flat namespace.  Populated by _register_modules;
-        # Pass 2.5 consults it so an imported fn shadowed by a local where-fn is
-        # not emitted under a clashing bare name (#814).
-        self._local_shadowed_fn_names: set[str] = set()
-        # #890: fn/ADT/ctor names contributed ONLY by a transitively-reached
-        # module (imported by an imported module, not by this program).  Their
-        # bodies ARE compiled into the flat WASM module so an imported body can
-        # call them, but the top-level program's own bodies must not reach them
-        # (spec §8.6.4 — a transitive module's declarations are not visible to
-        # the original importer).  The guard rail (`_check_cross_module_calls`)
-        # subtracts these from its "known" set, so a bare/qualified call to a
-        # transitive symbol from a *main-program* body fails loudly at compile
-        # instead of silently resolving to the emitted-for-a-sibling body.
-        self._transitive_only_names: set[str] = set()
-        # #1299: namespace path (``None`` = the main program) → the bare
-        # SOURCE function names a body compiled in that namespace can NAME.
-        # Codegen absorbs every module into one flat WASM namespace, so
-        # `_fn_sigs` cannot answer "whose declaration is this bare `get`?" —
-        # it holds a module's private helpers, the public ones an import
-        # filter excluded, and every transitive module's declarations, none
-        # of which the checker resolved against.  This map is what
-        # `_scoped_fn_names` narrows `_fn_sigs` down to before the #1284
-        # ownership predicate reads it.  Computed once in
-        # `_collect_namespace_fn_names`, after the Pass-0 transforms.
+        # #1299: namespace path (``None`` = the main program) → the function
+        # names a body compiled in that namespace can NAME.  Over the linked
+        # program a module's declarations, and every `where` helper, are
+        # `$`-bearing link names, so the only bare names a module's body can
+        # name are the prelude's, and the entry's body names its own and the
+        # prelude's.  This map is what `_scoped_fn_names` narrows `_fn_sigs`
+        # down to before the #1284 ownership predicate reads it, so a module
+        # body's bare `get` is the operation even where the entry declares a
+        # `get`.  Computed once in `_collect_namespace_fn_names`, after the
+        # Pass-0 transforms.
         self._namespace_fn_names: dict[
             tuple[str, ...] | None, frozenset[str]
         ] = {}
@@ -739,38 +705,14 @@ class CodeGenerator(
         # 1.5's discovery narrows against exactly what `_scoped_fn_names`
         # narrows against (#1299).
         self._namespace_tables: NamespaceFnNames | None = None
-        # #1281: bare names some namespace could resolve to more than one
-        # module's declaration — a module importing two dependencies that
-        # each export `gen`, and declaring no `gen` of its own.  Spec §8.5
-        # refuses that name in the namespace holding the clash rather than
-        # ordering the two imports (#1304), and the CHECKER reports it
-        # (E155), so a program reaching this pass with the name still
-        # ambiguous has bypassed the checker.  The E608 relaxation therefore
-        # fires only for names OUTSIDE this set, and the shape keeps its
-        # refusal here too instead of compiling against whichever body the
-        # positional reroute map favoured.  Filled beside
-        # `_namespace_fn_names`, from the same walk as the checker's.
-        self._ambiguous_imported_fn_names: frozenset[str] = frozenset()
-        # #774: imported PUBLIC generic (`forall`) FnDecls the importer must
+        # #774: every module generic (`forall`) FnDecl the importer must
         # monomorphize itself — cross-module generic monomorphization.  The
         # importer discovers instantiations from ITS OWN call sites and emits
         # the clones into its own (flat) WASM module, since the defining module
         # only monomorphizes its own instantiations (and never calls a generic
-        # it merely exports).  Keyed by bare name (first-seen wins, public +
-        # import-filtered), split by whether a LOCAL shadows the bare name:
-        #   * `_imported_generic_decls` — UNshadowed: merged into
-        #     `generic_decls` in `_monomorphize`, so both a bare call `gid(…)`
-        #     and a qualified `m::gid(…)` (which desugars to the bare target)
-        #     route through `_generic_fn_info` to the emitted clone.
-        #   * `_shadowed_imported_generic_decls` — a local non-generic shadows
-        #     the bare name (#814 asymmetric variant), so ONLY the qualified
-        #     form may reach the module's generic; the bare name stays on the
-        #     local.  These are monomorphized under a distinct ``mod$…$`` mono
-        #     prefix and reached via `_module_qualified_generic_targets`.
+        # it merely exports).  Keyed by link name, so two modules' same-named
+        # generics are two bases and a call names the one it means.
         self._imported_generic_decls: dict[str, ast.FnDecl] = {}
-        self._shadowed_imported_generic_decls: dict[
-            tuple[str, ...], dict[str, ast.FnDecl]
-        ] = {}
         # #998: bare name → origin module path for `_imported_generic_decls`
         # entries (same first-seen-wins order), and clone WASM name → origin
         # module path for every emitted clone of an imported generic
@@ -802,14 +744,6 @@ class CodeGenerator(
         # Reset per-`_monomorphize` run; declared here so the type is stated
         # once (imported bases that actually entered `generic_decls`).
         self._imported_generic_base_origins: dict[str, tuple[str, ...]] = {}
-        # #814/#774: (module path, generic name) → mono base name the qualified
-        # call must mangle against, for a generic whose bare name a local
-        # shadows.  The ModuleCall desugar consults this so `m::gen(5)` resolves
-        # to the module generic's clone (`mod$m$gen$Int`) instead of falling
-        # back to the local shadow's bare `gen`.
-        self._module_qualified_generic_bases: dict[
-            tuple[tuple[str, ...], str], str
-        ] = {}
 
     def _family_name_te(self, te: ast.TypeExpr) -> str:
         """The ``State<T>``/``Exn<E>`` host-import/tag FAMILY name for a
@@ -1064,7 +998,6 @@ class CodeGenerator(
             else:
                 roots.append(decl)
         roots.extend(idecl for _path, idecl in self._imported_fn_decls)
-        roots.extend(idecl for _p, _m, idecl in self._shadowed_module_fns)
         referenced: set[str] = set()
         work = roots
         while work:
@@ -1145,17 +1078,15 @@ class CodeGenerator(
 
     def _compile_fn_tracked(
         self, decl: ast.FnDecl, *, export: bool = True,
-        module_renames: dict[str, str] | None = None,
         imported: bool = False,
         module_tables: (
             tuple[SpanTypeTable | None, SpanTypeTable | None] | None
         ) = None,
         where_scope: frozenset[str] = frozenset(),
-        own_path: tuple[str, ...] | None = None,
     ) -> str | None:
         """`_compile_fn` plus the #1100 skip/closure bookkeeping.
 
-        Every Pass 2/2.5/2.6/mono compile goes through here so
+        Every Pass 2/2.5/mono compile goes through here so
         `_drop_dangling_callers` can later see (a) which WAT symbol
         names were DROPPED (a caller's `call $name` to one would fail
         WAT assembly with a raw `unknown func`), with the diagnostic
@@ -1170,10 +1101,6 @@ class CodeGenerator(
         exactly what the checker's ``_lookup_function_scoped`` walks.  The
         default is right for a top-level declaration with no helpers, which
         is every caller that omits it.
-
-        *own_path* (#1558) is the path that names *decl*'s own file in a
-        qualified call (``_own_path_of``), so a tail call by it compiles to
-        ``return_call`` as the bare tail call does.
         """
         diags_before = len(self.diagnostics)
         closures_before = len(self._closure_fns_wat)
@@ -1182,9 +1109,9 @@ class CodeGenerator(
         # type-parameter narrowing is applied here rather than at each caller.
         with self._fn_alias_scope(decl):
             fn_wat = self._compile_fn(
-                decl, export=export, module_renames=module_renames,
+                decl, export=export,
                 imported=imported, module_tables=module_tables,
-                where_scope=where_scope, own_path=own_path,
+                where_scope=where_scope,
             )
         if fn_wat is None:
             # The LAST codegen diagnostic emitted during this compile is
@@ -2410,7 +2337,31 @@ class CodeGenerator(
         """
         result = self._compile_program(program)
         self._unmangle_adt_names(result.diagnostics)
+        self._unmangle_fn_names(result.diagnostics)
+        result.fn_display_names = dict(self._fn_display_names)
         return result
+
+    def _unmangle_fn_names(self, diagnostics: list[Diagnostic]) -> None:
+        """Spell every module declaration in *diagnostics* as it is declared
+        (#1694): the link step names each one ``mod$<path>$<name>``, which is
+        a WASM detail, and the diagnostic's location names its file."""
+        if not self._fn_display_names:
+            return
+        from vera.binding import display_text
+        for diag in diagnostics:
+            for attr in ("description", "rationale", "fix"):
+                text = getattr(diag, attr, None)
+                if text:
+                    shown = display_text(text, self._fn_display_names)
+                    if shown != text:
+                        setattr(diag, attr, shown)
+
+    def _display_fn_name(self, name: str) -> str:
+        """*name* as a message shows it (:func:`vera.binding.display_name`)."""
+        if not self._fn_display_names:
+            return name
+        from vera.binding import display_name
+        return display_name(name, self._fn_display_names)
 
     def _unmangle_adt_names(self, diagnostics: list[Diagnostic]) -> None:
         """Put the user's own spelling back into every diagnostic (#1317).
@@ -2445,10 +2396,6 @@ class CodeGenerator(
             for tld in program.declarations
             if isinstance(tld.decl, ast.DataDecl)
         }
-        # #1558: and the path that names it in a qualified call, over the
-        # modules it resolves.
-        self._entry_own_path = own_module_path(
-            program, None, self._resolved_modules)
         # Pass 0a: reject programs with typed holes
         holes = _find_holes(program)
         if holes:
@@ -2480,6 +2427,24 @@ class CodeGenerator(
                 diagnostics=self.diagnostics,
                 state_types=[],
             )
+
+        # The link step (#1694): every function and `where` helper under its
+        # link name and every call naming the declaration the resolver pass
+        # binds it to, so no two declarations share a name in what follows
+        # and no pass below asks which namespace or which `where` block a
+        # call's name belongs to.  Spans are kept, so the checker's
+        # span-keyed tables still answer.  The programs as the checker saw
+        # them stay in hand for the questions asked of their imports, which
+        # name declarations by their source names.
+        from vera.binding import link_program
+        self._unlinked_modules = list(self._resolved_modules)
+        linked = link_program(program, self._resolved_modules)
+        program = linked.program
+        self._resolved_modules = linked.modules
+        self._linked_prelude = linked.prelude
+        self._linked_prelude_source = linked.prelude_source
+        from vera.binding import display_names
+        self._fn_display_names = display_names(linked.binding)
 
         # Pass 0: hoist non-generic where-helpers to parent-qualified
         # top-level decls (#991) so same-named helpers in different parent trees
@@ -2574,15 +2539,17 @@ class CodeGenerator(
         # must overlay onto the PRELUDE's definition of that name, not
         # the main file's.
         pre_inject_ids = {id(tld) for tld in program.declarations}
-        from vera.prelude import inject_prelude
-        # #851 — keep the synthetic prelude buffer: injected decls'
-        # spans index into it, and `_diag_location` quotes it (under
-        # the `<prelude>` origin) for prelude-origin diagnostics.
-        # The imported modules' bodies compile into this WASM module too,
-        # so what they use is demanded with the entry's.
-        self._prelude_source = inject_prelude(
-            program, modules=self._module_programs_as_checked,
+        # The prelude declarations the resolver pass bound (`link_program`),
+        # compiled once: what the entry and the imported modules use is
+        # demanded together, since the modules' bodies compile into this
+        # WASM module too.  #851 — keep the synthetic prelude buffer:
+        # injected decls' spans index into it, and `_diag_location` quotes
+        # it (under the `<prelude>` origin) for prelude-origin diagnostics.
+        object.__setattr__(
+            program, "declarations",
+            tuple(self._linked_prelude) + program.declarations,
         )
+        self._prelude_source = self._linked_prelude_source
         # #1277: prelude ADTs whose name an IMPORTED module has already
         # taken in `_adt_layouts`.  One flat layout map, one slot per name,
         # so the two declarations contend and the module's — registered back
@@ -2833,10 +2800,9 @@ class CodeGenerator(
             _dec_collect(idecl, idecl.name)
         for mdecl in mono_decls:
             _dec_collect(mdecl, mdecl.name)
-        for _path, mangled, idecl in self._shadowed_module_fns:
-            _dec_collect(idecl, mangled)
 
-        # Pass 1.9: check for cross-module calls that codegen can't handle
+        # Pass 1.9: refuse a call the resolver pass bound to nothing, which
+        # only a program compiled without being checked can hold.
         self._check_cross_module_calls(program)
         if any(d.severity == "error" for d in self.diagnostics):
             return CompileResult(
@@ -2889,7 +2855,6 @@ class CodeGenerator(
                         where_scope=frozenset(
                             w.name for w in decl.where_fns or ()
                         ),
-                        own_path=self._own_path_of(None),
                     )
                     if fn_wat is not None:
                         functions_wat.append(fn_wat)
@@ -2912,7 +2877,6 @@ class CodeGenerator(
                         for wfn, wscope in self._where_fn_scopes(decl):
                             wfn_wat = self._compile_fn_tracked(
                                 wfn, export=False, where_scope=wscope,
-                                own_path=self._own_path_of(None),
                             )
                             if wfn_wat is not None:
                                 # PR #1013 review: a fully-concrete (T-unused)
@@ -2993,11 +2957,6 @@ class CodeGenerator(
                 fn_wat = self._compile_fn_tracked(
                     mdecl, export=is_public,
                     imported=origin is not None,
-                    own_path=self._own_path_of(origin),
-                    module_renames=(
-                        self._module_intra_renames.get(origin, {})
-                        if origin is not None else None
-                    ),
                     module_tables=(
                         self._module_artifacts.get(origin)
                         if origin is not None else None
@@ -3019,25 +2978,15 @@ class CodeGenerator(
                 if is_public:
                     exports.append(mdecl.name)
 
-        # Pass 2.5: compile imported function bodies (C7e)
+        # Pass 2.5: compile imported function bodies (C7e).  Each is under
+        # its link name, which nothing else in the program has, so a name
+        # met twice is one declaration reached twice (a module the resolved
+        # list names twice) and is emitted once.
         imported_seen: set[str] = set()
         for path, idecl in self._imported_fn_decls:
             if idecl.name in imported_seen:
                 continue
-            # Skip if a local function already defined this name — a top-level
-            # local (fn_visibility) OR a local `where`-fn helper
-            # (_local_shadowed_fn_names).  Either flattens to a bare ``$name``
-            # that owns the namespace; emitting the imported body under the
-            # same bare name would duplicate it (the qualified target reaches
-            # the module via its ``mod$…`` emission instead, #814).
-            if (idecl.name in fn_visibility
-                    or idecl.name in self._local_shadowed_fn_names):
-                continue
             imported_seen.add(idecl.name)
-            # #814 C2 (Pass 2.5 mirror): pass the originating module's
-            # intra-rename map so a bare sibling call inside this imported
-            # body resolves to the module's version (its `mod$…` emission)
-            # rather than a local shadow of that name.
             # #1111: resolve type aliases against THIS module's own
             # namespace (spec §8.4.1: aliases are module-local) — the flat
             # maps hold only the main file's + prelude's aliases.
@@ -3046,59 +2995,20 @@ class CodeGenerator(
             with self._module_alias_scope(path), self._module_source_scope(path):
                 fn_wat = self._compile_fn_tracked(
                     idecl, export=False,
-                    module_renames=self._module_intra_renames.get(path, {}),
                     imported=True,  # #986: don't consult main-file span tables
-                    own_path=self._own_path_of(path),
                     # #987: thread THIS module's own span-keyed tables so the
                     # imported body's component guards fire.
                     module_tables=self._module_artifacts.get(path),
                     # #1299: no `where_scope`.  This body resolves bare names
                     # in ITS module's namespace, which the alias scope above
                     # already selects, and it brings no bare helper name of
-                    # its own: `_register_modules` runs the #991 hoist and the
-                    # #1014 qualification over every module AST, so an
-                    # imported declaration arriving here carries only
-                    # `$`-qualified helpers — admitted unconditionally.  The
-                    # door invariant in test_lexical_fn_scope_1299 holds every
-                    # emission site to that, and goes red if one stops.
-                )
-            if fn_wat is not None:
-                functions_wat.append(fn_wat)
-
-        # Pass 2.6: emit shadowed module functions under their qualified
-        # ('mod$…') WASM name (#814 §8.5.3).  The plain Pass 2.5 above skips
-        # any imported fn whose bare name a local redefines (so bare calls
-        # resolve to the local, §8.5.2); here we additionally emit the
-        # module's body under a distinct name so a module-qualified call
-        # ``m::f`` reaches it.  ``dataclasses.replace`` only renames the WASM
-        # function; the body's intra-module calls are redirected to their own
-        # ``mod$`` targets via ``module_renames`` (C2) so a sibling call
-        # inside the body also lands on the module's version, not a local
-        # shadow.
-        for path, mangled, idecl in self._shadowed_module_fns:
-            if mangled in imported_seen:
-                continue
-            imported_seen.add(mangled)
-            # #1111: same per-module alias namespace as Pass 2.5 — the
-            # ``mod$…`` rename does not change which module's aliases
-            # the body's type expressions belong to.
-            # #1186: likewise the ``mod$…`` rename does not move the body's
-            # spans, so its diagnostics still belong to the module's file.
-            with self._module_alias_scope(path), self._module_source_scope(path):
-                fn_wat = self._compile_fn_tracked(
-                    dataclasses.replace(idecl, name=mangled),
-                    export=False,
-                    module_renames=self._module_intra_renames.get(path, {}),
-                    imported=True,  # #986: don't consult main-file span tables
-                    own_path=self._own_path_of(path),
-                    # #987: the ``mod$…`` rename only changes the WASM
-                    # function name; the body's node spans are unchanged, so
-                    # THIS module's table still keys them correctly and its
-                    # component guards fire.
-                    module_tables=self._module_artifacts.get(path),
-                    # #1299: the ``mod$…`` rename moves the body into no other
-                    # namespace, and adds no helper — same reasoning, and the
-                    # same door invariant, as the Pass-2.5 emission above.
+                    # its own: the link step names every helper by its link
+                    # name and `_register_modules` runs the #991 hoist over
+                    # every module AST, so an imported declaration arriving
+                    # here carries only `$`-qualified helpers — admitted
+                    # unconditionally.  The door invariant in
+                    # test_lexical_fn_scope_1299 holds every emission site to
+                    # that, and goes red if one stops.
                 )
             if fn_wat is not None:
                 functions_wat.append(fn_wat)
@@ -3778,7 +3688,7 @@ class CodeGenerator(
         # generic onto the ancestor's hoisted helper — at base a loud
         # duplicate-identifier crash, silently the wrong body here).
         this_level = {
-            wfn.name: f"{prefix}$where${wfn.name}"
+            wfn.name: f"{prefix}$where${where_helper_name(wfn.name)}"
             for wfn in where_fns
             if not wfn.forall_vars
         }
@@ -4042,8 +3952,8 @@ class CodeGenerator(
             for mdecl in mono_decls
         ]
 
-        # #992: the imported populations compile directly in Pass 2.5/2.6
-        # and never pass through the loops above — an `eq`/`compare` in any
+        # #992: the imported population compiles directly in Pass 2.5
+        # and never passes through the loops above — an `eq`/`compare` in any
         # imported body stayed a raw FnCall codegen cannot lower, dropping
         # the body and dangling the importer's call.  Rewrite each entry
         # too.  Entries are the FLATTENED where-tree (every helper is its
@@ -4052,10 +3962,6 @@ class CodeGenerator(
         self._imported_fn_decls = [
             (path, self._rewrite_fn_ability_ops(idecl, ability_ops))
             for path, idecl in self._imported_fn_decls
-        ]
-        self._shadowed_module_fns = [
-            (path, mangled, self._rewrite_fn_ability_ops(idecl, ability_ops))
-            for path, mangled, idecl in self._shadowed_module_fns
         ]
 
         return program, new_monos

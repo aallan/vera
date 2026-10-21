@@ -443,7 +443,9 @@ class TestImportedGenericCloneEnv:
         def record(side: str):
             def patched(self, decl, concrete_types, alias_env=None):
                 out = original(self, decl, concrete_types, alias_env)
-                if decl.name == "twolen":
+                # The module generic under its link name, or as the checker
+                # saw it (the verifier verifies that one) (#1694).
+                if decl.name in ("twolen", "mod$blib$twolen"):
                     clones.setdefault(side, _slot_refs(out))
                 return out
             return patched
@@ -1328,8 +1330,10 @@ public fn main(@Unit -> @Int)
         prog = parse_to_ast(_GENERIC_MAIN)
         v = ContractVerifier(resolved_modules=[module])
         v.register_program(prog)
-        assert v._generic_origins.get("twolen") == ("blib",)
-        assert v._alias_env_for_generic("twolen") is v._module_alias_envs[("blib",)]
+        # Keyed by the generic's link name (#1694).
+        assert v._generic_origins.get("mod$blib$twolen") == ("blib",)
+        assert v._alias_env_for_generic("mod$blib$twolen") is (
+            v._module_alias_envs[("blib",)])
         # A main-file generic has no origin and keeps this program's env.
         assert v._alias_env_for_generic("no_such_generic") is v._alias_env
 

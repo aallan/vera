@@ -937,20 +937,10 @@ class DataMixin:
         wildcard walk's LOUD-skip (sound) — though no check-green shape reaches
         it (var-at-Unit is E206-rejected, a phantom-var callee is E121-rejected).
 
-        A MODULE-qualified callee (``boxlib::mk()``, #1073) resolves through
-        the single shared target resolver (``_resolve_module_call_wasm_name``,
-        the #774-reviewed source of truth that CONSUMES ``path`` — no wrong
-        same-name-local lookup, mirroring ``_infer_vera_type``'s ModuleCall
-        arm) and recurses with the resolved-name ``FnCall``: the bare or
-        ``mod$…`` name of a non-generic import is in ``_fn_ret_type_exprs``,
-        a shadowed generic resolves to its per-instantiation clone whose
-        registered declared return is already substituted, and anything
-        unregistered falls through to the sound LOUD-skip.
+        A MODULE-qualified callee (``boxlib::mk()``, #1073) reaches here as the
+        plain call of its link name (``mod$boxlib$mk``, `vera.binding.link`),
+        whose declared return is in ``_fn_ret_type_exprs`` like any other.
         """
-        if isinstance(scrutinee, ast.ModuleCall):
-            target = self._resolve_module_call_wasm_name(scrutinee)
-            return self._match_scrutinee_vera_type(ast.FnCall(
-                name=target, args=scrutinee.args, span=scrutinee.span))
         if isinstance(scrutinee, ast.FnCall):
             if scrutinee.name in self._generic_fn_info:
                 rendered = self._generic_call_ret_vera_type(scrutinee)
