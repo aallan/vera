@@ -2329,16 +2329,19 @@ def _run_trials(
     needs_raw = any(base_type(pt) in _NEEDS_RAW for pt in param_types)
     scope = fn_slot_scope(alias_env, decl.forall_vars)
 
+    # Each parameter's label is the slot reference the source names it by:
+    # `@T.0` is the LAST parameter of type `T` (De Bruijn order,
+    # DE_BRUIJN.md), so a parameter's index counts the parameters of its type
+    # after it (#1757).  The arguments keep the parameters' order, which
+    # `_assume_on_arguments` reads by position.
+    names = [_type_expr_to_slot_name(te, scope) for te in decl.params]
+    labels = [
+        f"@{name}.{names[k + 1:].count(name)}" for k, name in enumerate(names)
+    ]
+
     results: list[TrialResult] = []
     for args in inputs:
-        # Build descriptive arg dict
-        arg_dict: dict[str, int | float | str] = {}
-        slot_counts: dict[str, int] = {}
-        for param_te, val in zip(decl.params, args):
-            tname = _type_expr_to_slot_name(param_te, scope)
-            idx = slot_counts.get(tname, 0)
-            arg_dict[f"@{tname}.{idx}"] = val
-            slot_counts[tname] = idx + 1
+        arg_dict: dict[str, int | float | str] = dict(zip(labels, args))
 
         try:
             if needs_raw:

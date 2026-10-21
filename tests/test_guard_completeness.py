@@ -1366,14 +1366,18 @@ class TestADeclinedChainGuardDoesNotRunTheMeasure1222:
     threw.
     """
 
-    def test_the_program_still_returns_rather_than_throwing(
-        self, tmp_path: Path,
-    ) -> None:
-        out = _run(tmp_path, _1222_EFFECTFUL_MEASURE, "--fn", "walk", "--",
-                   "4", name="eff1222.vera")
-        assert out.strip() == "0", (
+    def test_the_program_still_returns_rather_than_throwing(self) -> None:
+        """A measure is held to purity (#1708), so the check refuses this
+        one (E187); code generation, driven past the check, still evaluates
+        nothing at entry."""
+        checked = pipeline.check(_1222_EFFECTFUL_MEASURE)
+        assert [d.error_code for d in checked.errors] == ["E187"], [
+            (d.error_code, d.description) for d in checked.errors]
+        module = pipeline.compile(_1222_EFFECTFUL_MEASURE, past_check=True).result
+        ran = pipeline.run(module, fn="walk", args=[4])
+        assert ran.ok and ran.value == 0, (
             f"an effectful measure was evaluated at entry, so a program "
-            f"that returned 0 now throws:\n{out}"
+            f"that returned 0 now throws: {ran.trap}"
         )
 
 
