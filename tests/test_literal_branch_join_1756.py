@@ -53,12 +53,21 @@ ORDERS = ("form first", "form last", "both the form")
 JOINS = ("if", "match", "nested if")
 POSITIONS = ("let", "argument", "return", "field")
 
+#: The `@Nat` side of a join: a `@Nat` slot, or a `@Pos` parameter, `Pos`
+#: a refinement of `@Nat`, whose join with an `@Int` the relaxed subtype
+#: rule types `Pos`.  Beside a refinement the forms are those the join
+#: demotes to an `@Int`: `3` is a non-negative constant, its join keeps
+#: `Pos`, and code generation's static rule, which reads no refinement,
+#: guards that binding with no record, which is #1695's class.
+REFINED = "@Pos.0"
+REFINED_FORMS = tuple(form for form in FORMS if form != "3")
 
-def _branches(form: str, order: str) -> tuple[str, str]:
+
+def _branches(form: str, order: str, nat: str = "@Nat.0") -> tuple[str, str]:
     if order == "form first":
-        return form, "@Nat.0"
+        return form, nat
     if order == "form last":
-        return "@Nat.0", form
+        return nat, form
     return form, form
 
 
@@ -102,9 +111,14 @@ private fn keep_int(@Int -> @Int)
 """
 
 
+_POS = "type Pos = { @Nat | @Nat.0 > 0 };\n\n"
+
+
 def _program(position: str, joined: str, ty: str = "Nat") -> str:
     """A function placing *joined* (written from column three) at
-    *position*, typed *ty*."""
+    *position*, typed *ty*; a join that reads `@Pos.0` has a `@Pos`
+    parameter, and the program declares `Pos`."""
+    refined = REFINED in joined
     ret = "@Nat" if position == "return" and ty == "Nat" else "@Int"
     if position == "let":
         body = f"  let @{ty} = {joined};\n  0"
@@ -116,8 +130,9 @@ def _program(position: str, joined: str, ty: str = "Nat") -> str:
     else:
         ctor = "Wrap" if ty == "Nat" else "Plain"
         body = f"  let @Box = {ctor}({joined});\n  0"
-    return _HEAD + (
-        f"public fn f(@Bool, @Int, @Nat -> {ret})\n"
+    params = "@Bool, @Int, @Nat, @Pos" if refined else "@Bool, @Int, @Nat"
+    return (_POS if refined else "") + _HEAD + (
+        f"public fn f({params} -> {ret})\n"
         f"  requires(true)\n  ensures(true)\n  effects(pure)\n{{\n{body}\n}}\n")
 
 
@@ -129,6 +144,9 @@ class Outcome:
 
 
 def _outcome(source: str) -> Outcome:
+    """The verdict, the narrowings recorded in `f`, and the guards with no
+    record.  A `@Pos` parameter's entry guard is one of #1695's, a guard on
+    a value already of the refined type, and is left out."""
     verified = pipeline.verify(source, file=LABEL)
     assert verified.checked.ok, "\n".join(
         d.format() for d in verified.checked.errors)
@@ -143,27 +161,36 @@ def _outcome(source: str) -> Outcome:
                         if o.kind == "nat_bind" and o.fn_name == "f"),
         unrecorded=tuple(
             f"{m.obligation} at {m.line}:{m.column}"
-            for m in joined.mismatches if m.kind == "guarded_unrecorded"),
+            for m in joined.mismatches if m.kind == "guarded_unrecorded"
+            and not (REFINED in source and m.obligation == "refine_bind")),
     )
 
 
 def _cells() -> list[object]:
-    return [
-        pytest.param(form, kind, order, position,
+    cells = [
+        pytest.param(form, kind, order, position, "@Nat.0",
                      id=f"{form} {order} {kind} {position}")
         for form in FORMS for kind in JOINS for order in ORDERS
         for position in POSITIONS
     ]
+    cells += [
+        pytest.param(form, kind, order, position, REFINED,
+                     id=f"{form} {order} {kind} {position} beside a refined Nat")
+        for form in REFINED_FORMS for kind in JOINS for order in ORDERS[:2]
+        for position in POSITIONS
+    ]
+    return cells
 
 
-@pytest.mark.parametrize("form, kind, order, position", _cells())
+@pytest.mark.parametrize("form, kind, order, position, nat", _cells())
 def test_a_join_into_a_nat_position_is_obligated(
-    form: str, kind: str, order: str, position: str,
+    form: str, kind: str, order: str, position: str, nat: str,
 ) -> None:
     """The verdict is the value's sign: E503 where the form can be negative,
     clean where it cannot; the narrowing is recorded wherever the module
-    guards it, so the join reports no guard without a record."""
-    first, second = _branches(form, order)
+    guards it, so the join reports no guard without a record.  The `@Nat`
+    side is a `@Nat` slot or a slot of a refinement of `@Nat`."""
+    first, second = _branches(form, order, nat)
     outcome = _outcome(_program(position, _join(kind, first, second, "  ")))
     negative = FORMS[form]
     assert ("E503" in outcome.errors) == negative, outcome
@@ -175,28 +202,35 @@ def test_a_join_into_a_nat_position_is_obligated(
 
 def _negative_space() -> list[object]:
     cells = [
-        pytest.param(form, kind, order, position, "Int",
+        pytest.param(form, kind, order, position, "Int", "@Nat.0",
                      id=f"{form} {order} {kind} {position} into Int")
         for form in FORMS for kind in JOINS for order in ORDERS
         for position in POSITIONS
     ]
     cells += [
-        pytest.param("@Nat.0", kind, "both the form", position, "Nat",
+        pytest.param(form, kind, order, position, "Int", REFINED,
+                     id=f"{form} {order} {kind} {position} into Int beside a refined Nat")
+        for form in FORMS for kind in JOINS for order in ORDERS[:2]
+        for position in POSITIONS
+    ]
+    cells += [
+        pytest.param("@Nat.0", kind, "both the form", position, "Nat", "@Nat.0",
                      id=f"two Nat branches {kind} {position}")
         for kind in JOINS for position in POSITIONS
     ]
     return cells
 
 
-@pytest.mark.parametrize("form, kind, order, position, ty", _negative_space())
+@pytest.mark.parametrize("form, kind, order, position, ty, nat", _negative_space())
 def test_a_join_the_base_accepts_is_accepted(
-    form: str, kind: str, order: str, position: str, ty: str,
+    form: str, kind: str, order: str, position: str, ty: str, nat: str,
 ) -> None:
     """The neighbours the base accepts with no narrowing: the same joins
-    into an `@Int` position, and joins of two `@Nat` branches.  Each is
-    accepted, records no narrowing and leaves no guard without a record, at
-    the base and here."""
-    first, second = _branches(form, order)
+    into an `@Int` position, beside a `@Nat` slot or a refinement of one,
+    and joins of two `@Nat` branches.  Each is accepted, records no
+    narrowing and leaves no guard without a record, at the base and
+    here."""
+    first, second = _branches(form, order, nat)
     joined = _join(kind, first, second, "  ")
     outcome = _outcome(_program(position, joined, ty))
     assert outcome == Outcome((), (), ()), outcome

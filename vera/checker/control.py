@@ -215,15 +215,16 @@ def _signed_join(
     The verifier reads a join's type to decide whether binding it into a
     `@Nat` position narrows, and saw no narrowing, while code generation's
     static rule read the `@Int` branch and planted the guard.  So a join
-    *joined* as a `@Nat` is an `@Int`, spec §4.4's meet of the two, when one
-    of its *branches* is an `@Int` that is not statically non-negative:
-    `vera.narrowing.is_static_nat_typed`, the rule code generation's guard
-    reads, which takes a literal at its value and never a negation.  Binding
-    it into a `@Nat` position is then a narrowing the verifier obligates.  A
-    join whose `@Int` branches are all non-negative constants keeps its
-    `@Nat`, as before.
+    *joined* as a `@Nat`, or as a refinement of `@Nat` (the subtype rule
+    hands it the refined type), is an `@Int`, spec §4.4's meet of the two,
+    when one of its *branches* is an `@Int` that is not statically
+    non-negative: `vera.narrowing.is_static_nat_typed`, the rule code
+    generation's guard reads, which takes a literal at its value and never a
+    negation.  Binding it into a `@Nat` position is then a narrowing the
+    verifier obligates.  A join whose `@Int` branches are all non-negative
+    constants keeps its type, as before.
     """
-    if not (isinstance(joined, PrimitiveType) and joined.name == "Nat"):
+    if joined is None or not types_equal(base_type(joined), NAT):
         return joined
     for expr, ty in branches:
         if (types_equal(base_type(ty), INT)
