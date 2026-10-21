@@ -18,6 +18,7 @@ refused at check with the code that names its mistake.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -565,3 +566,52 @@ def test_binding_transitive_module_is_not_visible(tmp_path: Path) -> None:
     assert (binding.of(_calls_in(_decl(mid, "m"), "b")[0])
             == DeclId(("base",), "b"))
     assert DeclId(("base",), "b") in binding.decls
+
+
+# =====================================================================
+# The reservation's fixes, applied literally: the replacement name each
+# diagnostic's `fix` suggests clears it.
+# =====================================================================
+
+def _suggested(fix: str) -> str:
+    """The example name a fix text gives, as `(for example 'NAME')`."""
+    match = re.search(r"for example '([A-Za-z_][A-Za-z0-9_]*)'", fix)
+    assert match is not None, fix
+    return match.group(1)
+
+
+def _apply_fix(source: str, code: str, name: str) -> str:
+    checked = pipeline.check(source)
+    found = [d for d in checked.errors if d.error_code == code]
+    assert found, _codes(checked.errors)
+    return re.sub(rf"\b{name}\b", _suggested(found[0].fix), source)
+
+
+def test_e151_fix_for_a_prelude_function_name_clears_it() -> None:
+    source = (_fn("json_get(@Int -> @Int)", "@Int.0 + 1") + "\n"
+              + _fn("main(@Unit -> @Int)", "json_get(41)",
+                    visibility="public"))
+    fixed = _apply_fix(source, "E151", "json_get")
+    checked = pipeline.check(fixed)
+    assert checked.ok and "E151" not in _codes(checked.diagnostics)
+    assert pipeline.run(fixed, "main").value == 42
+
+
+@pytest.mark.parametrize("source, name", [
+    ("public data Option<T> {\n  Nothing,\n  Just(T)\n}\n\n"
+     + _fn("main(@Unit -> @Int)",
+           "match Just(4) {\n    Just(@Int) -> @Int.0,\n    Nothing -> 0\n  }",
+           visibility="public"), "Option"),
+    ("type Decimal = Int;\n\n"
+     + _fn("main(@Unit -> @Int)", "let @Decimal = 4;\n  @Decimal.0",
+           visibility="public"), "Decimal"),
+    ("private forall<Array> fn idd(@Array -> @Array)\n" + _CONTRACT
+     + "{\n  @Array.0\n}\n\n"
+     + _fn("main(@Unit -> @Int)", "idd(4)", visibility="public"), "Array"),
+], ids=["data", "alias", "type-parameter"])
+def test_e158_fix_for_a_reserved_type_name_clears_it(
+        source: str, name: str) -> None:
+    fixed = _apply_fix(source, "E158", name)
+    checked = pipeline.check(fixed)
+    assert checked.ok and "E158" not in _codes(checked.diagnostics)
+    assert pipeline.run(fixed, "main").value == 4

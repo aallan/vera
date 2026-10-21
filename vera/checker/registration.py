@@ -1464,8 +1464,9 @@ class RegistrationMixin:
             rationale=rationale,
             fix=(
                 f"Rename the {kind} to a name no prelude or built-in type "
-                f"uses, and update every use of it. If you meant the "
-                f"{what} '{name}', use it directly instead of declaring it."
+                f"uses (for example 'My{name}'), and update every use of "
+                f"it. If you meant the {what} '{name}', use it directly "
+                f"instead of declaring it."
             ),
             spec_ref='Chapter 8, Section 8.4.1 "Visibility Rules"',
             error_code="E158",
