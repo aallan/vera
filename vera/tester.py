@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     from vera.codegen import CompileResult
     from vera.resolver import ResolvedModule
     from vera.trap_registry import EmittedCheck
+    from vera.verifier import VerifyResult
 
 
 # =====================================================================
@@ -370,11 +371,12 @@ class _TestEngine:
         results: list[FunctionTestResult] = []
         diagnostics: list[Diagnostic] = verifier_errors
         # --distrust: what a trapped trial of a proved function is read
-        # against — the module's record of its checks, and the verifier's of
-        # its obligations.
+        # against — the module's record of its checks, the verifier's of its
+        # obligations, and the reconciliation's relation between the two.
         traps = (
-            _TrapIndex(compile_result.emitted_checks, verify_result.obligations,
-                       compile_result.wat)
+            _TrapIndex.joined(
+                verify_result, compile_result, program=self.program,
+                file=self.file, resolved_modules=self.resolved_modules)
             if self.distrust else None
         )
         distrusted = traps is not None
@@ -924,10 +926,14 @@ _OBLIGATED_TRAP_KINDS: frozenset[str] = frozenset(
     row.kind for row in TRAP_EMITTERS.values() if row.obligations
 )
 
-# The two emitters of a function's prologue checks: its `requires` clauses,
-# and the guard on a refined parameter, spanned at the parameter's type.
-_PRECONDITION_EMITTER = "codegen/contracts.py:_compile_preconditions"
-_REFINEMENT_EMITTER = "codegen/contracts.py:_emit_refinement_check"
+#: The obligation kinds whose record is the verifier's bookkeeping rather
+#: than a claim a check is the runtime half of: a `requires` record is
+#: ``verified`` when the clause translates, which is the clause the body
+#: assumes, not a proof that any call satisfies it.  The join pairs a
+#: function's `requires` check with it (and with the `call_pre` at each call
+#: that reaches the function, the records that do stand for a call), so it
+#: is left out of what a trap is read against.
+_BOOKKEEPING_KINDS: frozenset[str] = frozenset({"requires"})
 
 
 class _TrapIndex:
@@ -936,18 +942,26 @@ class _TrapIndex:
     A trap names its kind (``WasmTrapError.kind``) and, through its
     backtrace, the WASM function it fired in.  The module's record of its
     checks (``CompileResult.emitted_checks``) says which checks of that kind
-    that function holds, each at a source span and standing for a set of
-    obligation kinds; the verifier's stream says what became of the
-    obligation recorded at each span.  So the trap refutes a proof only when
-    EVERY check of its kind in that function stands for obligations the
-    stream reports ``verified``: whichever of them fired, a proof said it
-    could not.  When every one stands for an obligation that was NOT proved,
-    the trap is a Tier-3 guard doing its job — a program finding, reported
-    exactly as a Tier-3 function's failing trial is.  Anything in between —
-    a check with no obligation at its span, proved and unproved checks side
-    by side, a check whose span holds a proved and an unproved obligation of
-    its kind, a trap with no frame — cannot be pinned on either side, and is
-    ``unattributed``: counted and said, never folded into either.
+    that function holds, and the reconciliation's relation
+    (``Reconciliation.answers``, :mod:`vera.reconcile`) says which of the
+    verifier's records each check is the runtime half of, wherever the two
+    sides locate them: a refined parameter's guard stands for the narrowing
+    at each call's argument, a binder's for the value it takes apart, a
+    refined return's for the body, an arm's for the join, a measure's for
+    its evaluation at a tail call, a `requires` check for the `call_pre` at
+    each call that reaches it.  So the trap refutes a proof only when EVERY
+    check of its kind in that function stands for records the stream
+    reports ``verified``: whichever of them fired, a proof said it could
+    not.  When every one stands for records that were NOT proved, the trap
+    is a Tier-3 guard doing its job — a program finding, reported exactly as
+    a Tier-3 function's failing trial is.  Anything in between — a check
+    the relation joins to no record, proved and unproved checks side by
+    side, a check standing for a proved and an unproved record, a trap with
+    no frame — cannot be pinned on either side, and is ``unattributed``:
+    counted and said, never folded into either.  What stays unattributed is
+    a check whose record does not exist: the verifier records no discharged
+    precondition of a call into a user function, and the checks the
+    reconciliation reports with no record (W004) have none by definition.
 
     The rule holds only while the record holds every site that can raise a
     trap an obligation describes: a trap at a site it omitted would be judged
@@ -964,22 +978,14 @@ class _TrapIndex:
     trap was, which is how an index into the string "contract" once read as
     a contract failure; and two checks can carry the same message.
 
-    The join is by exact span (file, line, column).  Where the two sides
-    locate one obligation at different nodes — a binder, a `decreases`
-    component checked at its clause, a refined return guarded at its type —
-    the check joins nothing, and its traps are unattributed until the join
-    reads that relation from the program (#1633).
-
-    One relation is read rather than joined: a prologue check (a `requires`
-    clause, a refined parameter's guard) answers the obligation of the CALL
-    that entered the function, not one of the function's own.  On the
-    trial's own call, the arguments are a Z3 model of exactly those
-    constraints, so the prologue checks of the function under test are set
-    aside: one could fail only where the model and the compiled check
-    disagree, which is still a disagreement between a proof and the program.
-    Reached by any other call, a precondition check answers that caller's
-    call-site obligation, which the stream records only when it was not
-    proved, and so joins nothing either.
+    A check a function makes on entry for the call that entered it — a
+    `requires` clause, a refined parameter's guard (``Reconciliation.
+    entry``) — stands for the records at the calls in the program that reach
+    the function.  The trial's own call is not one of them: its arguments
+    are a Z3 model of exactly those constraints, so the entry checks of the
+    function under test are set aside at that call.  One could fail only
+    where the model and the compiled check disagree, which is still a
+    disagreement between a proof and the program.
     """
 
     def __init__(
@@ -987,6 +993,9 @@ class _TrapIndex:
         checks: list[EmittedCheck],
         obligations: list[ProofObligation],
         wat: str = "",
+        *,
+        answers: Iterable[tuple[ProofObligation, EmittedCheck]] = (),
+        entry: Iterable[EmittedCheck] = (),
     ) -> None:
         # The module's text, read for its call graph (`reachable`): which
         # functions a call of the function under test can run.
@@ -997,18 +1006,54 @@ class _TrapIndex:
         for check in checks:
             self._checks.setdefault((check.function, check.kind), []).append(
                 check)
+        # Each record by the span it is located at, to find a clause's own
+        # record (`proof_clauses`): the verifier locates it at the clause,
+        # so this finds a record, never a check's.
         self._records: dict[
             tuple[str | None, int, int], list[ProofObligation]] = {}
         for record in obligations:
             self._records.setdefault(
                 (record.file, record.line, record.column), []).append(record)
-        # The other direction, for `proof_clauses`: each (span, obligation
-        # kind) some check the program holds stands for.
-        self._checked_spans: set[tuple[str | None, int, int, str]] = {
-            (check.file, check.line, check.column, kind)
-            for check in checks if not check.prelude
-            for kind in check.obligations
-        }
+        # The relation, each check with the records it stands for.  Keyed by
+        # the check's value: the copies of one check (a clone's, a splice's)
+        # are one check, and stand for the same records.
+        self._answers: dict[EmittedCheck, list[ProofObligation]] = {}
+        #: The records some check stands for (`proof_clauses`).
+        self._answered: set[int] = set()
+        for record, check in answers:
+            if record.kind in _BOOKKEEPING_KINDS:
+                continue
+            got = self._answers.setdefault(check, [])
+            if all(r is not record for r in got):
+                got.append(record)
+            self._answered.add(id(record))
+        self._entry: frozenset[EmittedCheck] = frozenset(entry)
+
+    @classmethod
+    def joined(
+        cls,
+        verify_result: VerifyResult,
+        compile_result: CompileResult,
+        *,
+        program: ast.Program,
+        file: str | None,
+        resolved_modules: list[ResolvedModule],
+    ) -> _TrapIndex:
+        """The index of one run: its checks, its records, its module text,
+        and the reconciliation's relation between the two
+        (:func:`vera.reconcile.join`).  A module that did not compile holds
+        no check for the relation to place."""
+        from vera.reconcile import join
+
+        answers: list[tuple[ProofObligation, EmittedCheck]] = []
+        entry: list[EmittedCheck] = []
+        if compile_result.ok:
+            reconciliation = join(
+                verify_result, compile_result, program=program, file=file,
+                resolved_modules=resolved_modules)
+            answers, entry = reconciliation.answers, reconciliation.entry
+        return cls(compile_result.emitted_checks, verify_result.obligations,
+                   compile_result.wat, answers=answers, entry=entry)
 
     def attribute(self, trial: TrialResult, decl: ast.FnDecl) -> None:
         """Set *trial*'s ``status``, ``attribution`` and ``refutes``.
@@ -1032,9 +1077,9 @@ class _TrapIndex:
         )
         checks = self._checks.get((fired_in, kind), [])
         if at_entry:
-            kept = [c for c in checks if not _is_prologue_check(c, decl)]
+            kept = [c for c in checks if c not in self._entry]
             if checks and not kept:
-                # Only a prologue check of the kind is left to have fired.
+                # Only an entry check of the kind is left to have fired.
                 _unattributed(trial, (
                     f"{kind} at the entry of '{decl.name}', whose arguments "
                     f"satisfy its precondition in the verifier's model and "
@@ -1074,22 +1119,17 @@ class _TrapIndex:
         self, check: EmittedCheck,
     ) -> tuple[str, list[ProofObligation]]:
         """One check's standing: ``proved`` or ``not proved`` (with the
-        records), ``proved and not proved`` when its span holds both, or why
-        it joins nothing.
+        records it stands for), ``proved and not proved`` when it stands for
+        both, or ``no obligation recorded`` when the relation joins it to no
+        record.
 
-        A span can hold several obligations of one kind — the verifier's
-        per-site ordinal keeps them apart at one node, as for each component
-        of a destructure — and the check is the runtime half of one of them,
-        which the record does not say.  When some are proved and some not,
-        the check is neither a proof's nor a guard's, and every record is
-        kept (PR #1634 review)."""
-        if check.emitter == _PRECONDITION_EMITTER:
-            return "a call's precondition", []
-        records = [] if check.prelude else [
-            r for r in self._records.get(
-                (check.file, check.line, check.column), [])
-            if r.kind in check.obligations
-        ]
+        A check can stand for several records — a parameter's guard for each
+        call's argument, a measure's for the clause and each tail call,
+        several records of one kind at one node, as for each component of a
+        destructure — and is the runtime half of one of them, which no record
+        says.  When some are proved and some not, the check is neither a
+        proof's nor a guard's, and every record is kept (PR #1634 review)."""
+        records = self._answers.get(check, [])
         if not records:
             return "no obligation recorded", []
         if all(r.status == "verified" for r in records):
@@ -1113,9 +1153,11 @@ class _TrapIndex:
         that passes says nothing about it.  The `requires` clauses are not
         among them: the arguments are generated to satisfy them.
 
-        Joined by exact span, as a trap's check is, except the refined
-        return: the verifier records it at the body, and code generation
-        guards it at the return type, or at a component within it.
+        A clause's records are the ones located at the clause; whether a
+        check stands for one is the relation's to say, wherever the check
+        stands: a refined return's records sit at the body's value, or at
+        the components and elements the function builds where it returns,
+        and its guard at the return type.
         """
         checked: list[str] = []
         unchecked: list[str] = []
@@ -1131,10 +1173,8 @@ class _TrapIndex:
             return records if records and all(
                 r.status == "verified" for r in records) else []
 
-        def stands_for(node: ast.Node, kind: str) -> bool:
-            span = node.span
-            return span is not None and (
-                file, span.line, span.column, kind) in self._checked_spans
+        def stands_for(records: list[ProofObligation]) -> bool:
+            return any(id(r) in self._answered for r in records)
 
         clauses: list[tuple[ast.Node, str]] = [
             (contract, "ensures") for contract in decl.contracts
@@ -1149,26 +1189,16 @@ class _TrapIndex:
         for node, kind in clauses:
             records = proved(node, kind)
             if records:
-                (checked if stands_for(node, kind) else unchecked).append(
+                (checked if stands_for(records) else unchecked).append(
                     _describe_obligation(records[0], decl.name))
 
-        # The refined return: recorded at the body for a refinement of the
-        # whole value, and at each component or element the function builds
-        # where it returns for a refined tuple component or array element.
-        # Code generation guards it at the return type, and a built component
-        # or element where it is built too.
-        ret = decl.return_type.span
-        parts = [node for node in _returned_parts(decl.body)
-                 if proved(node, "refine_bind")]
-        if ret is not None and parts:
-            guarded = any(
-                check.emitter == _REFINEMENT_EMITTER and not check.prelude
-                and (ret.line, ret.column) <= (check.line, check.column)
-                <= (ret.end_line, ret.end_column)
-                for check in self._checks.get(
-                    (decl.name, "contract_violation"), [])
-            ) or all(stands_for(node, "refine_bind") for node in parts)
-            (checked if guarded else unchecked).append(
+        # The refined return: checked when a check stands for each place a
+        # record of it sits.
+        parts = [found for node in _returned_parts(decl.body)
+                 if (found := proved(node, "refine_bind"))]
+        if parts:
+            (checked if all(stands_for(found) for found in parts)
+             else unchecked).append(
                 "the refinement of its return type "
                 f"`{ast.format_type_expr(decl.return_type)}`")
         return checked, unchecked
@@ -1178,24 +1208,23 @@ class _TrapIndex:
 
         True when one of its own proved clauses has a check, or when its run
         — its body, a closure it calls, a callee, transitively — reaches any
-        check that can stand for a proved obligation: one joined to an
-        obligation the stream reports ``verified``, one the exact-span join
-        places nowhere (its obligation may sit at another node, #1633), or a
-        callee's precondition check, which answers this function's call.
-        Left out are its own prologue checks, which the attribution sets
-        aside on the trial's own call because the arguments are generated to
-        satisfy them; a runtime function's own checks; and a guard joined to
-        an obligation the verifier did not prove.  A function for which this
-        is False can refute nothing, and is reported not exercised rather
-        than run.
+        check that can stand for a proved obligation: one the relation joins
+        to a record the stream reports ``verified``, or one it joins to no
+        record outside a runtime function, whose record may be a proof the
+        stream does not hold (a callee's precondition check, at a call whose
+        precondition was discharged).  Left out are its own entry checks,
+        which the attribution sets aside on the trial's own call because the
+        arguments are generated to satisfy them; a runtime function's checks
+        the relation joins to nothing; and a check joined only to records
+        the verifier did not prove.  A function for which this is False can
+        refute nothing, and is reported not exercised rather than run.
         """
         if self.proof_clauses(decl, file)[0]:
             return True
         reach = self.reachable(decl.name)
         for check in self._all_checks:
             if check.function not in reach or (
-                    check.function == decl.name
-                    and _is_prologue_check(check, decl)):
+                    check.function == decl.name and check in self._entry):
                 continue
             state, _ = self._read(check)
             if state == "not proved" or (
@@ -1277,22 +1306,6 @@ def _returned_parts(expr: ast.Expr) -> list[ast.Expr]:
 def _unattributed(trial: TrialResult, where: str) -> None:
     trial.status = "unattributed"
     trial.attribution = f"trap not attributable to an obligation: {where}"
-
-
-def _is_prologue_check(check: EmittedCheck, decl: ast.FnDecl) -> bool:
-    """Whether *check* is one of *decl*'s own entry checks: a `requires`
-    clause, or a refined parameter's guard (spanned within the type)."""
-    if check.emitter == _PRECONDITION_EMITTER:
-        return True
-    if check.emitter != _REFINEMENT_EMITTER:
-        return False
-    at = (check.line, check.column)
-    return any(
-        te.span is not None
-        and (te.span.line, te.span.column) <= at
-        <= (te.span.end_line, te.span.end_column)
-        for te in decl.params
-    )
 
 
 def _unique(records: Iterable[ProofObligation]) -> list[ProofObligation]:

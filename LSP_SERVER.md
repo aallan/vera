@@ -81,7 +81,9 @@ included) and publishes:
 - **Diagnostics** with the same stable error codes, rationale, and
   spec references as `vera check --json` / `vera verify --json`, plus
   a `tier` annotation on verification diagnostics (Tier 3 fallbacks
-  carry `tier: 3` in their data).
+  carry `tier: 3` in their data).  The server compiles nothing, so the
+  reconciliation `vera verify` runs after verifying (E541, W004, W005,
+  and a code generation refusal) is the command's alone.
 - **Per-function verification-tier hints** — a Hint-severity
   diagnostic per function summarising its proof state: "Tier 1 — all
   contracts proven by Z3" or "Tier 3 — N of M obligations fall back

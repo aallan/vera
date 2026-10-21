@@ -36,8 +36,10 @@ import subprocess
 import sys
 import tomllib
 from pathlib import Path
+from typing import Any
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW = ROOT / ".github" / "workflows" / "nightly-stress.yml"
@@ -316,3 +318,90 @@ class TestNightlyStressLaneCollection1328:
             f"missing: {sorted(canonical_class_ids - workflow_class_ids)}, "
             f"extra: {sorted(workflow_class_ids - canonical_class_ids)}"
         )
+
+
+# ---------------------------------------------------------------------
+# The distrust corpus at the nightly's trial count
+# ---------------------------------------------------------------------
+#
+# `tests/test_distrust_corpus.py` runs `vera test --distrust` over the
+# corpus at `VERA_DISTRUST_TRIALS` trials per proved function: 5 in the
+# pull request's suite, and many more here, in the job the stress tests
+# run in.  The workflow is read as data.
+
+#: The trials per proved function the nightly runs.  1,000 took 27.6 s of
+#: wall on four local workers (112 s of CPU) at c9235415, against 6.4 s at 5
+#: and 121 s at 3,000 (the input generator's blocking clauses make the cost
+#: grow faster than the count); the runner measured 1.3 to 1.9 times slower
+#: than the local machine on the stress step itself.
+NIGHTLY_DISTRUST_TRIALS = 1000
+
+_DISTRUST_STEP = "Run the distrust corpus at the nightly trial count"
+
+
+def _workflow() -> dict[Any, Any]:
+    data = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    assert isinstance(data, dict)
+    return data
+
+
+def _steps() -> list[dict[str, Any]]:
+    steps = _workflow()["jobs"]["stress"]["steps"]
+    assert isinstance(steps, list)
+    return steps
+
+
+def _named(name: str) -> dict[str, Any]:
+    (step,) = [s for s in _steps() if s.get("name") == name]
+    return step
+
+
+class TestNightlyDistrustTrials:
+    """The distrust corpus runs in the stress job, at its own trial count,
+    after the stress tests whatever they did, and a scheduled failure of
+    either files the tracking issue."""
+
+    def test_the_step_runs_the_distrust_corpus_at_the_nightly_count(
+        self,
+    ) -> None:
+        step = _named(_DISTRUST_STEP)
+        argv = shlex.split(step["run"])
+        assert argv[0] == "pytest" and argv[-1] == "tests/test_distrust_corpus.py"
+        assert "-n" in argv and "-m" not in argv, argv
+        assert step["env"] == {
+            "VERA_DISTRUST_TRIALS": str(NIGHTLY_DISTRUST_TRIALS)}
+
+    def test_the_nightly_count_is_far_above_the_pull_requests(self) -> None:
+        from tests import test_distrust_corpus
+
+        assert test_distrust_corpus.DEFAULT_TRIALS == 5
+        assert NIGHTLY_DISTRUST_TRIALS >= 100 * test_distrust_corpus.DEFAULT_TRIALS
+
+    def test_it_runs_after_the_stress_tests_whatever_they_did(self) -> None:
+        names = [s.get("name") for s in _steps()]
+        assert names.index(_DISTRUST_STEP) == names.index("Run stress tests") + 1
+        assert _named(_DISTRUST_STEP)["if"] == "${{ !cancelled() }}"
+
+    def test_its_budget_is_ten_times_its_measured_wall(self) -> None:
+        """27.6 s locally, at most 1.9 times that on the runner: a
+        ten-minute stop is a hang, never a slow night."""
+        assert _named(_DISTRUST_STEP)["timeout-minutes"] == 10
+
+    def test_a_scheduled_failure_of_either_step_files_the_issue(self) -> None:
+        issue = _named("Open or update tracking issue on cron failure")
+        assert issue["if"] == "failure() && github.event_name == 'schedule'"
+        names = [s.get("name") for s in _steps()]
+        assert names.index(issue["name"]) > names.index(_DISTRUST_STEP)
+        assert issue["env"]["STRESS_OUTCOME"] == "${{ steps.stress.outcome }}"
+        assert issue["env"]["DISTRUST_OUTCOME"] == (
+            "${{ steps.distrust.outcome }}")
+        assert _named("Run stress tests")["id"] == "stress"
+        assert _named(_DISTRUST_STEP)["id"] == "distrust"
+        script = issue["with"]["script"]
+        assert "process.env.STRESS_OUTCOME" in script
+        assert "process.env.DISTRUST_OUTCOME" in script
+        assert 'const LABEL = "stress-regression";' in script
+
+    def test_every_context_value_reaches_a_shell_through_env(self) -> None:
+        for step in _steps():
+            assert "${{" not in step.get("run", ""), step.get("name")

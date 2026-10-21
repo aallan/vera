@@ -10,7 +10,10 @@ stage functions:
 - ``check``: ``parse``, then resolve the imports and type-check
   (``ModuleResolver``, ``typecheck_with_artifacts``), as ``vera check`` does.
 - ``verify``: ``check``, then verify the contracts with the checker's tables
-  (``vera.verifier.verify``), as ``vera verify`` does.
+  (``vera.verifier.verify``), as ``vera verify --no-reconcile`` does; with
+  ``reconcile=True``, also compile and join the records with the module's
+  checks (``vera.reconcile.reconcile_verified``), as ``vera verify`` does by
+  default.
 - ``compile``: ``check``, then generate code with the checker's tables
   (``CodeGenerator.compile_program``), as ``vera compile`` does.
 - ``run``: ``compile``, then execute one export (``vera.codegen.execute``).
@@ -114,6 +117,7 @@ from vera.codegen import CodeGenerator, CompileResult, ExecuteResult, execute
 from vera.codegen.api import HttpRequestData
 from vera.errors import Diagnostic, VeraError
 from vera.parser import parse as _parse_tree
+from vera.reconcile import Reconciled, reconcile_verified
 from vera.resolver import ModuleResolver, ResolvedModule
 from vera.runtime.traps import WasmTrapError
 from vera.tester import TestResult
@@ -465,12 +469,15 @@ def check(
 @dataclass(frozen=True)
 class Verified:
     """``check``, then contract verification when the check passed (or
-    past it, with ``past_check``)."""
+    past it, with ``past_check``), and, with ``reconcile``, the compile and
+    the join ``vera verify`` adds by default."""
 
     checked: Checked
     #: The budget each solver query had, as the caller gave it.
     timeout_ms: int | None
     _result: VerifyResult | None
+    #: The compile and the join, when asked for and verification ran.
+    reconciled: Reconciled | None = None
 
     @property
     def ran(self) -> bool:
@@ -490,9 +497,12 @@ class Verified:
 
     @property
     def diagnostics(self) -> tuple[Diagnostic, ...]:
-        """The check's diagnostics, then the verifier's."""
+        """The check's diagnostics, then the verifier's, then the compile's
+        and the join's when it ran."""
         own = tuple(self._result.diagnostics) if self._result is not None else ()
-        return self.checked.diagnostics + own
+        joined = (tuple(self.reconciled.diagnostics)
+                  if self.reconciled is not None else ())
+        return self.checked.diagnostics + own + joined
 
     @property
     def errors(self) -> tuple[Diagnostic, ...]:
@@ -516,10 +526,13 @@ class Verified:
         otherwise, built by the functions the command builds them with."""
         if self._result is None:
             return self.checked.envelope()
-        return verify_envelope(
+        envelope = verify_envelope(
             self.checked.file, self._result, self.errors, self.warnings,
             timeout_ms=self.timeout_ms, default_file=self.checked.file,
         )
+        if self.reconciled is not None:
+            envelope["reconciliation"] = self.reconciled.report()
+        return envelope
 
 
 def verify(
@@ -531,13 +544,18 @@ def verify(
     timeout_ms: int | None = None,
     past_check: bool = False,
     budget_s: float | None = None,
+    reconcile: bool = False,
 ) -> Verified:
-    """Check *source*, then verify its contracts, as ``vera verify`` does.
+    """Check *source*, then verify its contracts, as ``vera verify
+    --no-reconcile`` does; with *reconcile*, as ``vera verify`` does.
 
     Verification runs only on a program the check accepts, with the
     checker's tables for the program and for each module it imports.  With
     ``past_check=True`` it runs on a program the check refuses too, with the
-    tables that check collected.
+    tables that check collected.  With ``reconcile=True`` the program is
+    then compiled with the same tables and its records joined with the
+    module's checks, and the stage's diagnostics and envelope are the
+    command's default ones.
     """
     with _budget(budget_s):
         checked = check(
@@ -555,7 +573,11 @@ def verify(
             expr_target_types=artifacts.expr_target_types,
             module_artifacts=artifacts.module_artifacts,
         )
-        return Verified(checked, timeout_ms, result)
+        reconciled = reconcile_verified(
+            checked.program, checked.source, checked.file,
+            list(checked.resolved or ()), artifacts, result,
+        ) if reconcile else None
+        return Verified(checked, timeout_ms, result, reconciled)
 
 
 # =====================================================================

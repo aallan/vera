@@ -82,12 +82,14 @@ def _checks(source: str) -> list[EmittedCheck]:
 
 
 def _index(source: str) -> _TrapIndex:
-    """The engine's `_TrapIndex` for *source*: its checks, its obligations and
-    its module text, built as `_run` builds them."""
-    verified = pipeline.verify(source, file=_FILE, past_check=True).result
+    """The engine's `_TrapIndex` for *source*: its checks, its obligations,
+    its module text and the reconciliation's relation between the two, built
+    as `_run` builds them."""
+    verified = pipeline.verify(source, file=_FILE, past_check=True)
     compiled = pipeline.compile(source, file=_FILE, past_check=True).result
-    return _TrapIndex(
-        compiled.emitted_checks, verified.obligations, compiled.wat)
+    return _TrapIndex.joined(
+        verified.result, compiled, program=verified.checked.program,
+        file=_FILE, resolved_modules=[])
 
 
 def _fn(result: TestResult, name: str) -> FunctionTestResult:
@@ -1310,14 +1312,16 @@ class TestAProofIsRunWhereverACheckStandsForIt:
     def test_a_refined_element_proof_beside_an_unchecked_ensures_runs(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """Run, as at 441c9bd9: every trial fails.  The element's proved
-        guard and the return type's guard, which joins no record, are both
-        candidates, so each trap is unattributed rather than refuting."""
+        """Run, and refuted: every trial fails at a check that stands for the
+        element's proved record, the element's own guard by its span and the
+        return type's guard through the join's return relation (#1633; read
+        by span, the return type's joined nothing and each trap was
+        unattributed)."""
         result = _run(SRC_REFINED_ELEMENTS, distrust=True, trials=3)
         f = _fn(result, "positives")
-        assert f.category == "tested", (f.category, f.reason)
+        assert f.category == "refuted", (f.category, f.reason)
         assert f.trials_failed == f.trials_run > 0
-        assert {t.status for t in f.failures} == {"unattributed"}
+        assert {t.status for t in f.failures} == {"refuted"}
         assert f.unchecked == [
             "ensures(array_length(@Array<@Pos>.result) == 2)"]
         assert "E702" not in _codes(result)
@@ -1325,10 +1329,11 @@ class TestAProofIsRunWhereverACheckStandsForIt:
                       distrust=True)
         out = capsys.readouterr().out
         assert rc == 1, out
-        # A failing line names the clause no trial tested too.
+        # The refutation's line names the clause no trial tested too.
         assert re.search(
-            r"positives \.+ FAILED  \(0/\d+ passed, \d+ failed; no runtime "
-            r"check for `ensures\(array_length\(@Array<@Pos>\.result\) == 2\)`\)",
+            r"positives \.+ REFUTED \(\d+/\d+ trials contradict the Tier 1 "
+            r"proof; no runtime check for "
+            r"`ensures\(array_length\(@Array<@Pos>\.result\) == 2\)`\)",
             out), out
 
     def test_a_component_refined_return_is_a_checked_clause(self) -> None:
@@ -1339,11 +1344,13 @@ class TestAProofIsRunWhereverACheckStandsForIt:
         index = _index(SRC_REFINED_COMPONENT)
         assert index.proof_clauses(decl, _FILE) == (
             ["the refinement of its return type `@Tuple<@Pos, @Int>`"], [])
+        # The component's guard and the return type's both stand for the
+        # component's proved record, so every trap refutes it (#1633).
         f = _fn(_run(SRC_REFINED_COMPONENT, distrust=True, trials=3),
                 "pos_pair")
-        assert f.category == "tested", (f.category, f.reason)
+        assert f.category == "refuted", (f.category, f.reason)
         assert f.trials_failed == f.trials_run > 0
-        assert {t.status for t in f.failures} == {"unattributed"}
+        assert {t.status for t in f.failures} == {"refuted"}
 
     def test_a_proof_reached_through_a_callee_is_refuted(self) -> None:
         result = _run(SRC_CALLEE_PROOF, distrust=True, trials=3)
@@ -1403,6 +1410,255 @@ class TestAProofIsRunWhereverACheckStandsForIt:
         assert index.reachable("helper") == {"helper"}
 
 
+# =====================================================================
+# Attribution through the reconciliation's relation (#1633)
+# =====================================================================
+#
+# A trap is read against the records the reconciliation join relates its
+# check to (`vera/reconcile.py`), never against the records that merely
+# share its span.  Each fixture below holds a false proof (#1555's
+# comparison) whose check stands at one node and whose record at another,
+# one per location class the join reads: read by span, every one of these
+# traps was unattributed.
+
+# A refined parameter: guarded in the callee's prologue, at the parameter's
+# type; recorded at the caller's argument.
+SRC_JOIN_PARAMETER = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+private fn g(@Pos -> @Int)
+  requires(true)
+  ensures(@Int.result > 0)
+  effects(pure)
+{
+  @Pos.0
+}
+
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result > 0)
+  effects(pure)
+{
+  g(if mo(7) == mo(7) then { 1 } else { 0 })
+}
+""" + _MO
+
+# A destructure binder: guarded at the binding's type, recorded at the value
+# it takes apart.
+SRC_JOIN_BINDER = """\
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  let Tuple<@Nat, @Int> = Tuple(if mo(7) == mo(7) then { 1 } else { 0 - 1 }, 3);
+  nat_to_int(@Nat.0)
+}
+""" + _MO
+
+# A match binder: guarded at the pattern, recorded at the scrutinee.
+SRC_JOIN_PATTERN = """\
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  match Some(if mo(7) == mo(7) then { 1 } else { 0 - 1 }) {
+    Some(@Nat) -> nat_to_int(@Nat.0),
+    None -> 1
+  }
+}
+""" + _MO
+
+# A refined return: guarded at the return type, recorded at the body.
+SRC_JOIN_RETURN = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+public fn f(@Int -> @Pos)
+  requires(true)
+  ensures(@Pos.result > 0)
+  effects(pure)
+{
+  if mo(7) == mo(7) then { 1 } else { 0 }
+}
+""" + _MO
+
+# A return narrowing pushed down a join: guarded at the one arm that
+# narrows, recorded at the join.
+SRC_JOIN_ARM = """\
+public fn f(@Int -> @Nat)
+  requires(true)
+  ensures(@Nat.result == 1)
+  effects(pure)
+{
+  if mo(7) == mo(7) then { 1 } else { 0 - 1 }
+}
+""" + _MO
+
+# A `decreases` measure: the verifier records its operations at the clause,
+# for the evaluation on entry, and at the tail call, for the evaluation on
+# the call's arguments; code generation checks both evaluations at the
+# measure's own nodes.
+SRC_JOIN_MEASURE = """\
+private fn walk(@Nat, @Nat -> @Int)
+  requires(@Nat.0 <= @Nat.1 + 1)
+  ensures(@Int.result == 0)
+  decreases(@Nat.1 + 1 - @Nat.0)
+  effects(pure)
+{
+  if @Nat.0 > @Nat.1 then { 0 } else { walk(@Nat.1, @Nat.0 + 1) }
+}
+
+public fn f(@Nat -> @Int)
+  requires(@Nat.0 < 100)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  walk(@Nat.0, 0)
+}
+"""
+
+# A generic callee's precondition: demoted at the call (`call_pre`, Tier 3,
+# E532), checked in the callee's prologue.
+SRC_JOIN_DEMOTED_PRECONDITION = """\
+private forall<T> fn first(@Array<T> -> @T)
+  requires(array_length(@Array<T>.0) > 0)
+  ensures(true)
+  effects(pure)
+{
+  @Array<T>.0[0]
+}
+
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0)
+  effects(pure)
+{
+  let @Array<Int> = [];
+  let @Int = first(@Array<Int>.0);
+  @Int.1
+}
+"""
+
+# A proved call into a user function: the verifier records a discharged
+# call-site precondition nowhere (the callee's prologue holds the check), so
+# a trap there has no record to be read against.
+SRC_JOIN_PROVED_CALL = """\
+private fn g(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(@Int.result > 0)
+  effects(pure)
+{
+  @Int.0
+}
+
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result > 0)
+  effects(pure)
+{
+  g(if mo(7) == mo(7) then { 1 } else { 0 })
+}
+""" + _MO
+
+
+def _refuted(source: str) -> set[tuple[str, int]]:
+    """The (kind, line) of every proved record `f`'s trials refute, after
+    asserting that every trial refutes."""
+    f = _fn(_run(source, distrust=True, trials=3), "f")
+    assert f.category == "refuted", (f.category, f.reason, [
+        t.attribution for t in f.failures])
+    assert {t.status for t in f.failures} == {"refuted"}
+    return {(o.kind, o.line) for t in f.failures for o in t.refutes}
+
+
+def _check_at(index: _TrapIndex, emitter: str, span: tuple[int, int, int, int],
+              ) -> EmittedCheck:
+    """The one check of *emitter* at *span* the module holds (copies of one
+    check in a tail prefix and an entry are one check here)."""
+    found = {c for c in index._all_checks
+             if c.emitter == emitter
+             and (c.line, c.column, c.end_line, c.end_column) == span}
+    (check,) = {(c.function, c.line, c.column) for c in found}
+    return next(iter(found))
+
+
+class TestAttributionThroughTheJoin:
+    """Each location class the join reads, at a trap whose check and record
+    stand at different nodes (#1633's Done-when list)."""
+
+    def test_a_refined_parameter_guard_answers_the_callers_argument(
+        self,
+    ) -> None:
+        refuted = _refuted(SRC_JOIN_PARAMETER)
+        assert ("refine_bind", 16) in refuted, refuted
+
+    def test_a_destructure_binder_guard_answers_the_value(self) -> None:
+        assert _refuted(SRC_JOIN_BINDER) == {("nat_bind", 6)}
+
+    def test_a_match_binder_guard_answers_the_scrutinee(self) -> None:
+        assert _refuted(SRC_JOIN_PATTERN) == {("nat_bind", 6)}
+
+    def test_a_refined_return_guard_answers_the_body(self) -> None:
+        refuted = _refuted(SRC_JOIN_RETURN)
+        assert ("refine_bind", 8) in refuted, refuted
+
+    def test_an_arm_guard_answers_the_join(self) -> None:
+        assert _refuted(SRC_JOIN_ARM) == {("nat_bind", 6)}
+
+    def test_a_measure_check_answers_its_clause_and_the_tail_call(
+        self,
+    ) -> None:
+        """One check, two evaluations: entry, whose record is at the
+        clause, and the tail call's arguments, whose record is at the call.
+        A trap at it stands for both, so it can refute neither alone."""
+        index = _index(SRC_JOIN_MEASURE)
+        check = _check_at(index, "wasm/operators.py:_emit_overflow_guard",
+                          (4, 13, 4, 23))
+        state, records = index._read(check)
+        assert state == "not proved"
+        assert sorted((r.line, r.column) for r in records) == [(4, 13), (7, 40)]
+
+    def test_a_callees_precondition_answers_the_demoted_call(self) -> None:
+        """The `call_pre` the verifier demoted at the call is what the
+        callee's `requires` check is the runtime half of: a trap there is a
+        Tier-3 guard doing its job."""
+        index = _index(SRC_JOIN_DEMOTED_PRECONDITION)
+        check = _check_at(index, "codegen/contracts.py:_compile_preconditions",
+                          (2, 3, 2, 42))
+        state, records = index._read(check)
+        assert (state, [(r.kind, r.status, r.line) for r in records]) == (
+            "not proved", [("call_pre", "tier3", 15)])
+        trial = TrialResult(
+            fn_name="f", args={"@Int.0": 0}, status="fail",
+            message="Precondition violation", trap_kind="contract_violation",
+            trap_frames=[("first$Int", False), ("f", False)])
+        index.attribute(trial, _decl(SRC_JOIN_DEMOTED_PRECONDITION, "f"))
+        assert (trial.status, trial.refutes) == ("fail", [])
+        assert trial.attribution.startswith(
+            "the runtime check of an obligation the verifier did not prove: "
+            "the call_pre obligation"), trial.attribution
+
+    def test_a_proved_call_into_a_user_function_is_still_unattributed(
+        self,
+    ) -> None:
+        """What the relation cannot reach: a check whose record does not
+        exist.  A discharged call-site precondition is recorded nowhere, so
+        the trap at the callee's `requires` stays unattributed."""
+        f = _fn(_run(SRC_JOIN_PROVED_CALL, distrust=True, trials=3), "f")
+        assert f.category == "tested", (f.category, f.reason)
+        assert {t.status for t in f.failures} == {"unattributed"}
+        assert all("(no obligation recorded)" in t.attribution
+                   for t in f.failures), [t.attribution for t in f.failures]
+
+
+def _decl(source: str, name: str) -> ast.FnDecl:
+    program = pipeline.parse(source, file=_FILE).program
+    (decl,) = [t.decl for t in program.declarations
+               if isinstance(t.decl, ast.FnDecl) and t.decl.name == name]
+    return decl
+
+
 #: How one check a run of `f` reaches reads, whether it lets the run test a
 #: proof, and where it sits: in `f` itself or in `g`, which `f` calls.
 _EXERCISE_CELLS: dict[str, tuple[str, bool, bool]] = {
@@ -1421,7 +1677,9 @@ _EXERCISE_CELLS: dict[str, tuple[str, bool, bool]] = {
     # check may stand for the proved one, so a run can test it.
     "mixed_in_f": ("f", False, True),
     "mixed_in_callee": ("g", False, True),
-    "prelude_precondition": ("g", True, True),
+    # A runtime function's check stands for no record the run holds (the
+    # join's `prelude` class), a precondition's among them.
+    "prelude_precondition": ("g", True, False),
     "in_an_unreached_function": ("h", False, False),
 }
 
@@ -1459,7 +1717,10 @@ def test_what_lets_a_run_test_a_proof(cell: str) -> None:
                              base.line, base.column, base.end_line,
                              base.end_column, None if prelude else _M_FILE,
                              prelude)
-    index = _TrapIndex([check], records, _EXERCISE_WAT)
+    entry = [check] if not prelude and (
+        cell.endswith("precondition") or cell == "own_refined_parameter_guard"
+    ) else []
+    index = _index_of([check], records, _EXERCISE_WAT, entry=entry)
     assert index.exercises(decl, _M_FILE) is expected
 
 
@@ -1673,7 +1934,9 @@ def test_each_proved_clause_joins_the_check_that_stands_for_it(
     parts = _clause_parts(decl)
     records = [record for record, _ in parts.values()]
     checks = [check for name, (_, check) in parts.items() if name in checked]
-    have, lack = _TrapIndex(checks, records).proof_clauses(decl, _M_FILE)
+    have, lack = _TrapIndex(
+        checks, records, answers=[parts[name] for name in checked],
+    ).proof_clauses(decl, _M_FILE)
     named = {
         "ensures": "ensures(ensures clause)",
         "decreases": "decreases(decreases clause)",
@@ -1716,7 +1979,7 @@ class TestProofClauseEdges:
             "wasm/operators.py:_emit_overflow_guard", "overflow",
             ("int_overflow",), "f", check.line, check.column, check.end_line,
             check.end_column, _M_FILE, False)
-        have, lack = _TrapIndex([stray], [record]).proof_clauses(decl, _M_FILE)
+        have, lack = _index_of([stray], [record]).proof_clauses(decl, _M_FILE)
         assert (have, lack) == ([], ["ensures(ensures clause)"])
 
     def test_a_prelude_check_does_not_stand_for_it(self) -> None:
@@ -1725,7 +1988,7 @@ class TestProofClauseEdges:
         prelude = EmittedCheck(
             check.emitter, check.kind, check.obligations, "f", check.line,
             check.column, check.end_line, check.end_column, None, True)
-        have, lack = _TrapIndex([prelude], [record]).proof_clauses(decl, _M_FILE)
+        have, lack = _index_of([prelude], [record]).proof_clauses(decl, _M_FILE)
         assert (have, lack) == ([], ["ensures(ensures clause)"])
 
     def test_a_refinement_guard_outside_the_return_type_does_not_count(
@@ -1737,7 +2000,7 @@ class TestProofClauseEdges:
         guard = EmittedCheck(
             _REFINE, "contract_violation", ("refine_bind",), "f", line,
             column, end_line, end_column, _M_FILE, False)
-        have, lack = _TrapIndex([guard], [record]).proof_clauses(decl, _M_FILE)
+        have, lack = _index_of([guard], [record]).proof_clauses(decl, _M_FILE)
         assert (have, lack) == (
             [], ["the refinement of its return type `@Pos`"])
 
@@ -2017,6 +2280,35 @@ def _trap(frames: list[tuple[str, bool]]) -> TrialResult:
     )
 
 
+def _spanned(
+    checks: list[EmittedCheck], records: list[ProofObligation],
+) -> list[tuple[ProofObligation, EmittedCheck]]:
+    """The relation the reconciliation join gives a check and the records
+    that share its span: each record of one of the check's kinds at its
+    site (`vera.reconcile._site_key`'s first rule), none for a prelude
+    check.  The cells here hand-build their checks and records, so they
+    state the relation the same way; tests/test_reconciliation.py holds the
+    join to it, and `TestAttributionThroughTheJoin` reads a real one."""
+    return [
+        (record, check) for check in checks if not check.prelude
+        for record in records
+        if record.kind in check.obligations
+        and (record.file, record.line, record.column) == (
+            check.file, check.line, check.column)
+    ]
+
+
+def _index_of(
+    checks: list[EmittedCheck], records: list[ProofObligation],
+    wat: str = "", *, entry: list[EmittedCheck] | tuple[()] = (),
+) -> _TrapIndex:
+    """A `_TrapIndex` over hand-built checks and records, related by span
+    (`_spanned`); *entry* names the checks the join would place at an entry
+    (a `requires`, a refined parameter)."""
+    return _TrapIndex(checks, records, wat, answers=_spanned(checks, records),
+                      entry=entry)
+
+
 _ENTRY = [("f", False)]
 _NESTED = [("f", False), ("caller", False)]
 
@@ -2079,7 +2371,8 @@ def test_attribution_matrix(states: tuple[str, ...], position: str) -> None:
         checks.append(check)
         records.extend(at)
     trial = _trap(_ENTRY if position == "entry" else _NESTED)
-    _TrapIndex(checks, records).attribute(trial, _matrix_decl())
+    _index_of(checks, records, entry=[c for c in checks if c.emitter == _PRE]
+              ).attribute(trial, _matrix_decl())
     verdict = _VERDICTS[states][0 if position == "entry" else 1]
     proved = [r for r in records
               if r.status == "verified" and r.kind == "ensures"]
@@ -2101,7 +2394,7 @@ class TestAttributionEdges:
     def test_a_trap_with_no_frame_is_unattributed(self) -> None:
         check, records = _cell("proved", 10)
         trial = _trap([])
-        _TrapIndex([check], records).attribute(trial, _matrix_decl())
+        _index_of([check], records).attribute(trial, _matrix_decl())
         assert trial.status == "unattributed"
         assert "no frame" in trial.attribution
 
@@ -2109,7 +2402,7 @@ class TestAttributionEdges:
         check, records = _cell("proved", 10)
         trial = _trap(_ENTRY)
         trial.status, trial.trap_kind = "error", "host_error"
-        _TrapIndex([check], records).attribute(trial, _matrix_decl())
+        _index_of([check], records).attribute(trial, _matrix_decl())
         assert (trial.status, trial.refutes) == ("error", [])
         assert trial.attribution == (
             "no obligation describes a trap of kind host_error")
@@ -2125,7 +2418,7 @@ class TestAttributionEdges:
         check, records = _cell("proved", 10)
         trial = _trap(_ENTRY)
         trial.status, trial.trap_kind = "error", kind
-        _TrapIndex([check], records).attribute(trial, _matrix_decl())
+        _index_of([check], records).attribute(trial, _matrix_decl())
         assert (trial.status, trial.refutes) == ("error", [])
         assert trial.attribution == (
             f"no obligation describes a trap of kind {kind or 'unknown'}")
@@ -2153,7 +2446,7 @@ class TestAttributionEdges:
         removed a candidate: here the function's own `requires` check."""
         pre, records = _cell("precondition", 10)
         trial = _trap(_ENTRY)
-        _TrapIndex([pre], records).attribute(trial, _matrix_decl())
+        _index_of([pre], records, entry=[pre]).attribute(trial, _matrix_decl())
         assert trial.status == "unattributed"
         assert trial.attribution == (
             "trap not attributable to an obligation: contract_violation at "
@@ -2163,7 +2456,7 @@ class TestAttributionEdges:
     def test_a_proved_check_of_another_function_does_not_count(self) -> None:
         check, records = _cell("proved", 10)
         trial = _trap([("helper", False), ("f", False)])
-        _TrapIndex([check], records).attribute(trial, _matrix_decl())
+        _index_of([check], records).attribute(trial, _matrix_decl())
         assert trial.status == "unattributed"
         assert "in 'helper', where the module records no check" in trial.attribution
 
@@ -2173,7 +2466,7 @@ class TestAttributionEdges:
         record = ProofObligation(fn_name="f", kind="int_overflow", expr_text="x",
                                  status="verified", line=10, column=3, file=_M_FILE)
         trial = _trap(_ENTRY)
-        _TrapIndex([check], [record]).attribute(trial, _matrix_decl())
+        _index_of([check], [record]).attribute(trial, _matrix_decl())
         assert trial.status == "unattributed"
 
     def test_a_record_of_another_obligation_kind_does_not_join(self) -> None:
@@ -2181,7 +2474,7 @@ class TestAttributionEdges:
         stray = ProofObligation(fn_name="f", kind="int_overflow", expr_text="x",
                                 status="verified", line=10, column=3, file=_M_FILE)
         trial = _trap(_ENTRY)
-        _TrapIndex([check], [stray]).attribute(trial, _matrix_decl())
+        _index_of([check], [stray]).attribute(trial, _matrix_decl())
         assert trial.status == "unattributed"
         assert "10:3 (no obligation recorded)" in trial.attribution
 
@@ -2196,7 +2489,7 @@ class TestAttributionEdges:
         clone = ProofObligation(fn_name="f", kind="ensures", expr_text="clause 10",
                                 status="timeout", line=10, column=3, file=_M_FILE)
         trial = _trap(_ENTRY)
-        _TrapIndex([check], [proved, clone]).attribute(trial, _matrix_decl())
+        _index_of([check], [proved, clone]).attribute(trial, _matrix_decl())
         assert (trial.status, trial.refutes) == ("unattributed", [])
         assert trial.attribution == (
             "trap not attributable to an obligation: contract_violation at "
@@ -2208,14 +2501,15 @@ class TestAttributionEdges:
         record = ProofObligation(fn_name="f", kind="ensures", expr_text="x",
                                  status="verified", line=10, column=3, file=None)
         trial = _trap(_ENTRY)
-        _TrapIndex([check], [record]).attribute(trial, _matrix_decl())
+        _index_of([check], [record]).attribute(trial, _matrix_decl())
         assert trial.status == "unattributed"
 
     def test_the_exn_boundary_frame_is_still_the_trials_own_call(self) -> None:
         proved, records = _cell("proved", 10)
         pre, _ = _cell("precondition", 11)
         trial = _trap([("f", False), ("f$exn_boundary", False)])
-        _TrapIndex([proved, pre], records).attribute(trial, _matrix_decl())
+        _index_of([proved, pre], records, entry=[pre]).attribute(
+            trial, _matrix_decl())
         assert trial.status == "refuted"
 
     @pytest.mark.parametrize("position, status", [
@@ -2231,7 +2525,8 @@ class TestAttributionEdges:
                              param.end_column, _M_FILE, False)
         proved, records = _cell("proved", 10)
         trial = _trap(_ENTRY if position == "entry" else _NESTED)
-        _TrapIndex([proved, guard], records).attribute(trial, decl)
+        _index_of([proved, guard], records, entry=[guard]).attribute(
+            trial, decl)
         assert trial.status == status
 
 

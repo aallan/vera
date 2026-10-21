@@ -12,7 +12,7 @@ check the compiled module holds — and :func:`reconcile` joins them:
 
 * ``recorded_unguarded`` — a record whose status claims a runtime check
   (``tier3``, ``timeout``) that no emitted check answers.  The claim is
-  false, so ``vera verify --reconcile`` reports it as an error (E541).
+  false, so ``vera verify`` reports it as an error (E541).
 * ``guarded_unrecorded`` — an emitted check that no record accounts for:
   either no record of its kind stands at its site, or the only one says
   the site has no guard (``tier3_unguarded``).  The value is checked, but
@@ -227,6 +227,24 @@ class Reconciliation:
     out_of_scope: list[EmittedCheck] = field(default_factory=list)
     """Checks in code this run did not verify (prelude and imported
     bodies)."""
+
+    answers: list[tuple[ProofObligation, EmittedCheck]] = field(
+        default_factory=list)
+    """Every (record, check) the join relates, whatever the record's status:
+    the check stands for the record's site, or for one arm of the join the
+    record stands at.  Wider than ``pairs`` in three ways: a record that
+    claims no runtime check is related too; each of several records at one
+    site is related to every check that site offers, before the one-to-one
+    matching (:func:`_match_sites`) gives each its own; and an arm's check is
+    related to the join's record whether or not every arm has one.  It is
+    what ``vera test --distrust`` reads a trap against
+    (``vera.tester._TrapIndex``)."""
+
+    entry: list[EmittedCheck] = field(default_factory=list)
+    """The checks a function makes on entry for the call that entered it:
+    each `requires` clause and each refined parameter's guard.  Each stands
+    for the records at the calls that reach the function, never for one of
+    the function's own."""
 
 
 # =====================================================================
@@ -718,9 +736,13 @@ def _site_key(
         return _key_from_return(index, located, check, rnode)
     if where == "binder" and same_file:
         return _key_from_binder(index, located, check, rnode)
-    # A value check answers the record at its own node (above) and, through
-    # its arm, the record at a join it is an arm of (`_arm_coverage`).  A
-    # prelude body's check answers no record: no prelude function's check
+    if where == "value":
+        # A value check answers the record at its own node (above), through
+        # its arm the record at a join it is an arm of (`_arm_coverage`),
+        # and, standing in a `decreases` measure, the measure's evaluation
+        # at a tail call (`_key_from_measure`).
+        return _key_from_measure(index, located, check, record, rnode)
+    # A prelude body's check answers no record: no prelude function's check
     # is the runtime half of an obligation the verifier records at a call.
     return None
 
@@ -783,6 +805,42 @@ def _key_from_return(
     if path is None or not _stands_for(check.path, path, rnode):
         return None
     return ("return", check.emitter, id(located.node), check.path)
+
+
+def _enclosing_contract(index: _Index, node: ast.Node) -> ast.Contract | None:
+    """The contract clause *node* is written in, or None outside every
+    clause."""
+    cur: ast.Node | None = node
+    while cur is not None and not isinstance(cur, ast.FnDecl):
+        if isinstance(cur, ast.Contract):
+            return cur
+        cur = index.parent.get(id(cur))
+    return None
+
+
+def _key_from_measure(
+    index: _Index, located: _Located, check: EmittedCheck,
+    record: ProofObligation, rnode: ast.Node,
+) -> SiteKey | None:
+    # Code generation evaluates a `decreases` measure on entry, on the
+    # function's own arguments (`_compile_decreases_entry`), and before each
+    # self tail call, on the call's arguments (`_dec_self_tail_prefix`): both
+    # with the checks it spans at the measure's own nodes.  The verifier
+    # records the entry's evaluation at those nodes, and the tail call's at
+    # the call, quoting the measure's text (`ContractVerifier.
+    # _evaluation_site`).  So a check at a node of a function's measure
+    # answers the record at a call reaching that function which quotes the
+    # node; each call is a site of its own.
+    node = located.node
+    if not isinstance(node, ast.Expr) or not isinstance(
+            _enclosing_contract(index, node), ast.Decreases):
+        return None
+    fn = index.fn_of.get(id(node))
+    call = _call_node(rnode)
+    if (fn is None or call is None or _reached_decl(index, call) is not fn
+            or record.expr_text != ast.format_expr(node)):
+        return None
+    return ("measure", check.emitter, id(call), _span_of(check), check.path)
 
 
 def _binder_value(located: _Located) -> ast.Node | None:
@@ -954,6 +1012,10 @@ def join(
                 if index.nodes_at(check.file, _span_of(check)) else
                 "no node of the program stands at the check's span"))
             continue
+        if located.where == "parameter" or (
+                located.where == "clause"
+                and isinstance(located.node, ast.Requires)):
+            out.entry.append(check)
         standing: list[ProofObligation] = []
         for kind in check.obligations:
             for record in by_kind.get(kind, ()):
@@ -992,6 +1054,17 @@ def join(
             continue
         offers.setdefault(id(record), {})[("arms", id(rnode))] = [
             c for found in leaves_covered.values() for c in found]
+
+    # The relation itself, every record with every check standing for its
+    # site or for an arm of its join, before the matching below picks one
+    # site per record.
+    for record in records.all:
+        related: dict[int, EmittedCheck] = {}
+        for site_checks in (*offers.get(id(record), {}).values(),
+                            *covered.get(id(record), {}).values()):
+            for check in site_checks:
+                related.setdefault(id(check), check)
+        out.answers.extend((record, check) for check in related.values())
 
     for check, standing in unrecorded:
         if any(record.status != DENIES_GUARD for record in standing):
@@ -1218,15 +1291,15 @@ def mismatch_diagnostics(
                     "`vera verify` counts a `tier3` or `timeout` obligation as "
                     "runtime-guarded: code generation is meant to emit a check "
                     "that traps when the property fails.  The verifier and "
-                    "code generation decide that separately, and "
-                    "`--reconcile` compiled this program and found no emitted "
-                    "check for this obligation, so the claim is not true of "
-                    "the compiled module."
+                    "code generation decide that separately, and this run "
+                    "compiled the program and found no emitted check for "
+                    "this obligation, so the claim is not true of the "
+                    "compiled module."
                     if m.kind == "recorded_unguarded" else
                     "`vera verify` counts a `tier3` or `timeout` obligation as "
                     "runtime-guarded: code generation is meant to emit a check "
-                    "that traps when the property fails.  `--reconcile` "
-                    "compiled this program but could not relate this record "
+                    "that traps when the property fails.  This run "
+                    "compiled the program but could not relate this record "
                     "to the program or to any emitter, so it cannot say "
                     "whether the module checks it: the claim is unconfirmed, "
                     "which the reconciliation reports rather than skips."
@@ -1268,7 +1341,7 @@ def mismatch_diagnostics(
                 if m.kind == "guarded_unrecorded" else
                 "Every runtime check in the compiled module is meant to be "
                 "the runtime half of an obligation `vera verify` recorded.  "
-                "`--reconcile` could not relate this check to a site of the "
+                "This run could not relate this check to a site of the "
                 "program it knows how to pair, so it cannot say which record "
                 "accounts for it; the check still runs, and the "
                 "reconciliation reports the gap rather than skips it."
@@ -1281,9 +1354,9 @@ def mismatch_diagnostics(
 
 
 def report_dict(reconciliation: Reconciliation | None) -> dict[str, object]:
-    """The ``reconciliation`` object of ``vera verify --reconcile --json``:
-    whether the module compiled, the counts, and every mismatch.  None
-    stands for a compile that failed, which leaves nothing to join."""
+    """The ``reconciliation`` object of ``vera verify --json``: whether the
+    module compiled, the counts, and every mismatch.  None stands for a
+    compile that failed, which leaves nothing to join."""
     if reconciliation is None:
         return {"compiled": False, "matched": 0, "recorded_unguarded": 0,
                 "guarded_unrecorded": 0, "no_mapping": 0, "absent": 0,
@@ -1301,12 +1374,15 @@ def report_dict(reconciliation: Reconciliation | None) -> dict[str, object]:
     }
 
 
-def summary_line(reconciliation: Reconciliation) -> str:
-    """The one-line reconciliation summary ``vera verify --reconcile``
-    prints after the verification summary."""
+def summary_line(reconciliation: Reconciliation) -> str | None:
+    """The one-line reconciliation summary ``vera verify`` prints after the
+    verification summary, or None when the program claims no runtime check
+    (Tier 3), which leaves nothing to say."""
     matched = len({id(record) for record, _ in reconciliation.pairs})
     claims = matched + len(reconciliation.absent) + sum(
         1 for m in reconciliation.mismatches if m.status)
+    if not claims:
+        return None
     text = (
         f"Reconciliation: {matched} of {claims} runtime checks (Tier 3) "
         f"found in the compiled module"
@@ -1320,8 +1396,137 @@ def summary_line(reconciliation: Reconciliation) -> str:
 
 
 # =====================================================================
-# The pipeline, as `vera verify --reconcile` runs it
+# The pipeline, as `vera verify` runs it
 # =====================================================================
+
+#: The code generation refusal a join is skipped for rather than failed on:
+#: a program holding typed holes (E614).  `vera check` accepts one with a
+#: W001 per hole, and the verifier verifies the rest of it; code generation
+#: compiles nothing until every hole is filled, so there is no module to
+#: join, and refusing the verification would take the hole workflow's
+#: feedback away (spec Section 4.17).
+SKIPPED_FOR = "E614"
+
+
+@dataclass
+class Reconciled:
+    """What ``vera verify`` adds to a verification unless
+    ``--no-reconcile``: the program compiled as ``vera compile`` compiles
+    it, the join, and the diagnostics the two give."""
+
+    compile_result: CompileResult
+    reconciliation: Reconciliation | None
+    """None when code generation refused the program: nothing to join."""
+
+    diagnostics: list[Diagnostic]
+    """The compile's own diagnostics, then one per mismatch
+    (:func:`mismatch_diagnostics`); for a program holding typed holes, the
+    one W005 warning that says the join was skipped."""
+
+    skipped: str = ""
+    """Why the join did not run although ``--no-reconcile`` was not given:
+    the program holds typed holes.  Empty when it ran, or the compile
+    refused the program for another reason."""
+
+    def report(self) -> dict[str, object]:
+        """The ``reconciliation`` object of ``vera verify --json``."""
+        if self.skipped:
+            return {"skipped": self.skipped}
+        return report_dict(self.reconciliation)
+
+
+def compile_for_reconcile(
+    program: ast.Program,
+    source: str,
+    file: str | None,
+    resolved_modules: list[ResolvedModule],
+    artifacts: CheckArtifacts,
+) -> CompileResult:
+    """Compile *program* exactly as ``vera compile`` does, with the
+    checker's *artifacts*."""
+    from vera.codegen import compile as codegen_compile
+
+    return codegen_compile(
+        program, source=source, file=file, resolved_modules=resolved_modules,
+        expr_semantic_types=artifacts.expr_semantic_types,
+        expr_target_types=artifacts.expr_target_types,
+        module_artifacts=artifacts.module_artifacts,
+    )
+
+
+def _holes_skip(holes: list[Diagnostic], source: str) -> Diagnostic:
+    """The W005 warning for a join skipped because the program holds typed
+    holes, located at the first."""
+    first = holes[0]
+    lines = source.splitlines()
+    line = first.location.line
+    count = (f"{len(holes)} typed holes" if len(holes) > 1
+             else "a typed hole")
+    return Diagnostic(
+        description=(
+            f"The runtime checks are not reconciled: the program holds "
+            f"{count}, and code generation compiles a program only once every "
+            f"hole is filled (E614), so there is no compiled module to hold "
+            f"its Tier 3 claims to."
+        ),
+        location=SourceLocation(
+            file=first.location.file, line=line, column=first.location.column),
+        source_line=lines[line - 1] if 1 <= line <= len(lines) else "",
+        rationale=(
+            "`vera verify` compiles the program in process and joins each "
+            "runtime-check claim (`tier3`, `timeout`) with the check the "
+            "compiled module holds for it.  A typed hole has no runtime "
+            "behaviour, so code generation refuses the program, and the "
+            "verification of the rest of it stands on its own: every proof "
+            "and every disclosure above is the verifier's, and no Tier 3 "
+            "claim has been held to a compiled check."
+        ),
+        fix=(
+            "Fill each hole with an expression of the type its W001 warning "
+            "names; `vera verify` then compiles the program and reconciles "
+            "its runtime checks."
+        ),
+        spec_ref='Chapter 6, Section 6.8.1 "Obligation Vocabulary"',
+        severity="warning",
+        error_code="W005",
+    )
+
+
+def reconcile_verified(
+    program: ast.Program,
+    source: str,
+    file: str | None,
+    resolved_modules: list[ResolvedModule],
+    artifacts: CheckArtifacts,
+    verify_result: VerifyResult,
+) -> Reconciled:
+    """Compile *program* and join *verify_result*'s records with the checks
+    the module holds, as ``vera verify`` does unless ``--no-reconcile``.
+
+    A program code generation refuses leaves nothing to join: its refusal
+    is the answer, with one exception, a program holding typed holes, for
+    which the join is skipped with a W005 warning (:data:`SKIPPED_FOR`)."""
+    compiled = compile_for_reconcile(
+        program, source, file, resolved_modules, artifacts)
+    holes = [d for d in compiled.diagnostics
+             if d.severity == "error" and d.error_code == SKIPPED_FOR]
+    if holes:
+        return Reconciled(
+            compiled, None, [_holes_skip(holes, source)],
+            skipped="the program holds typed holes, which code generation "
+                    "refuses (E614)")
+    diagnostics = list(compiled.diagnostics)
+    if not compiled.ok:
+        return Reconciled(compiled, None, diagnostics)
+    joined = join(verify_result, compiled, program=program, file=file,
+                  resolved_modules=resolved_modules)
+    sources = {str(module.file_path): module.source
+               for module in resolved_modules}
+    if file is not None:
+        sources[file] = source
+    diagnostics += mismatch_diagnostics(joined.mismatches, sources)
+    return Reconciled(compiled, joined, diagnostics)
+
 
 @dataclass
 class ReconcileRun:
@@ -1343,30 +1548,12 @@ class ReconcileRun:
             self.reconciliation.mismatches)
 
 
-def compile_for_reconcile(
-    program: ast.Program,
-    source: str,
-    file: str,
-    resolved_modules: list[ResolvedModule],
-    artifacts: CheckArtifacts,
-) -> CompileResult:
-    """Compile *program* exactly as ``vera compile`` does, with the
-    checker's *artifacts*."""
-    from vera.codegen import compile as codegen_compile
-
-    return codegen_compile(
-        program, source=source, file=file, resolved_modules=resolved_modules,
-        expr_semantic_types=artifacts.expr_semantic_types,
-        expr_target_types=artifacts.expr_target_types,
-        module_artifacts=artifacts.module_artifacts,
-    )
-
-
 def reconcile_file(
     path: str | Path, timeout_ms: int | None = None,
 ) -> ReconcileRun:
     """Check, verify, compile and join the program at *path*, in process,
-    with the same calls ``vera verify --reconcile`` makes."""
+    with the same calls ``vera verify`` makes.  A compile refusal, a typed
+    hole's included, stops the run before the join."""
     from vera.checker import typecheck_with_artifacts
     from vera.parser import parse
     from vera.resolver import ModuleResolver
@@ -1403,16 +1590,12 @@ def reconcile_file(
         expr_target_types=artifacts.expr_target_types,
         module_artifacts=artifacts.module_artifacts,
     )
-    run.compile_result = compile_for_reconcile(
-        program, source, str(p), resolved, artifacts)
+    reconciled = reconcile_verified(
+        program, source, str(p), resolved, artifacts, run.verify_result)
+    run.compile_result = reconciled.compile_result
     run.compile_errors = [
         d.description for d in run.compile_result.diagnostics
         if d.severity == "error"
     ]
-    if run.compile_errors:
-        return run
-    run.reconciliation = join(
-        run.verify_result, run.compile_result, program=program,
-        file=str(p), resolved_modules=resolved,
-    )
+    run.reconciliation = reconciled.reconciliation
     return run

@@ -25,15 +25,16 @@ vera check file.vera              # Parse and type-check
 vera check --json file.vera       # Type-check with JSON diagnostics
 vera check --quiet file.vera      # Type-check, suppress success output
 vera check --explain-slots file.vera  # Show slot resolution table (which @T.n maps to which param)
-vera verify file.vera             # Type-check + verify contracts via Z3
+vera verify file.vera             # Type-check + verify contracts via Z3, then compile in
+                                  #   process and check every Tier 3 claim against the
+                                  #   checks the module holds (E541 claim with no check,
+                                  #   W004 check with no record)
 vera verify --json file.vera      # Verify with JSON diagnostics
 vera verify --quiet file.vera     # Verify, suppress success output
 vera verify --timeout-ms 60000 file.vera  # Per-query Z3 budget in ms (default 10000;
                                   #   env VERA_Z3_TIMEOUT_MS; raise it to tell a
                                   #   needs-more-time Tier 3 from a never one, #1350)
-vera verify --reconcile file.vera # Also compile in process and check every Tier 3
-                                  #   claim against the checks the module holds
-                                  #   (E541 claim with no check, W004 check with no record)
+vera verify --no-reconcile file.vera  # Verify without compiling: no reconciliation
 vera compile file.vera                    # Compile to .wasm binary
 vera compile --wat file.vera              # Print WAT text (human-readable WASM)
 vera compile --target browser file.vera   # Compile + emit browser bundle
@@ -191,7 +192,7 @@ So `total == tier1_verified + tier3_runtime`, and the array — which is the com
 
 `assumptions` sits beside those counts and is NOT part of that identity: it counts the `assume` statements this run took on trust (one W003 warning each, spec §6.2.6), which are not obligations and discharge to no tier. It is derived from the assembled diagnostics, so a consumer reproduces it by counting W003 rather than by reading any obligation's status. A non-zero value is the honest measure of how much of a "verified" result rests on something nobody proved.
 
-`vera verify --reconcile` also compiles the program in process and joins the `obligations` array with the checks the compiled module holds, adding a `reconciliation` object (its counts and each mismatch) to the envelope: a `tier3` or `timeout` obligation that no emitted check answers is an **E541** error, and an emitted check that no obligation accounts for is a **W004** warning.
+`vera verify` also compiles the program in process and joins the `obligations` array with the checks the compiled module holds, adding a `reconciliation` object (its counts and each mismatch) to the envelope: a `tier3` or `timeout` obligation that no emitted check answers is an **E541** error, and an emitted check that no obligation accounts for is a **W004** warning. A program code generation refuses fails `vera verify` with that refusal, except a program holding typed holes: the join is skipped with a **W005** warning, and `reconciliation` is `{"skipped": "<reason>"}` with no counts. `--no-reconcile` skips the join, and the envelope carries no `reconciliation`.
 
 
 ### Error codes

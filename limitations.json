@@ -118,7 +118,7 @@
       "issues": [1642],
       "rows": {
         "KNOWN_ISSUES.md#limitations": [
-          "`vera verify --reconcile` cannot tell a partial set of component checks from a whole one where the verifier records one obligation for a whole value it cannot see into (an opaque argument of a tuple-typed parameter): any one of the value's component checks answers that record, because only code generation's decomposition states which components are guarded."
+          "`vera verify`'s reconciliation cannot tell a partial set of component checks from a whole one where the verifier records one obligation for a whole value it cannot see into (an opaque argument of a tuple-typed parameter): any one of the value's component checks answers that record, because only code generation's decomposition states which components are guarded."
         ]
       }
     },
