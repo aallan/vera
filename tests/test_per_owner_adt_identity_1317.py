@@ -384,34 +384,31 @@ public fn bone(@Int -> @Int)
 """
 
 
-class TestThePreludeIsReserved:
-    """R7: a prelude name bypasses the RENAME, and E621 decides it
-    unchanged.
+def _check_refusals(
+    tmp_path: Path, files: dict[str, str],
+) -> list[tuple[str | None, str]]:
+    """``(code, file name)`` of each check error for the program."""
+    checked = pipeline.check(pipeline.write_tree(tmp_path, files))
+    return [(d.error_code, Path(d.location.file or "").name)
+            for d in checked.errors]
 
-    Per-owner ADT identity is a rule between USER modules, so the rename
-    holds back from every name the prelude can provide — otherwise it would
-    dissolve the very pairs E621 exists to refuse.  What the exemption is
-    NOT is a ban on the name: E621 is a CONTENTION check, and a module
-    restating the prelude's exact shape shares the one layout and compiles.
-    ``examples/vera/collections.vera`` is that shape in this repository —
-    a module declaring ``public data Option<T> { None, Some(T) }`` that
-    ``examples/modules.vera`` imports — so a blanket refusal would refuse a
-    shipped example.  :meth:`test_a_module_restating_the_prelude_still_
-    compiles` is the cell that keeps the two apart.
+
+class TestThePreludeIsReserved:
+    """R7: a prelude name is never qualified apart; since #1469 it is
+    reserved outright.
+
+    Per-owner ADT identity is a rule between USER modules.  A module's
+    declaration under a name the prelude provides is refused at check
+    (E158), whatever its shape, a restatement of the prelude's own included,
+    where code generation once decided the pair by contention (E621).
     """
 
-    def test_a_module_restating_the_prelude_still_compiles(
+    def test_a_module_restating_the_prelude_is_refused(
         self, tmp_path: Path,
     ) -> None:
-        """The half a blanket refusal would break.
-
-        ``liba`` declares the prelude's ``Option`` with the prelude's own
-        shape, beside a module whose unrelated ``Shape`` is not contended
-        at all.  E621 is silent — the single registered layout serves both
-        declarations — and the program runs.  Read against the two cells
-        below, this is what shows the exemption withholds the RENAME and
-        leaves E621's shape test to decide, rather than refusing the name.
-        """
+        """``liba`` declares the prelude's ``Option`` with the prelude's own
+        shape: refused at its declaration, where E621 once found nothing to
+        contend with and let the single layout serve both."""
         liba = """\
 module liba;
 
@@ -428,36 +425,35 @@ public fn aone(@Int -> @Int)
   }
 }
 """
-        verify, codes, answer = _cell(
+        refusals = _check_refusals(
             tmp_path / "restate-prelude",
             {"liba.vera": liba, "libb.vera": _LIBB, "main.vera": _ENTRY},
         )
-        assert codes == [], codes
-        assert verify == [], verify
-        assert answer == ("ok", 7), answer
+        assert refusals == [("E158", "liba.vera")], refusals
 
-    def test_two_modules_declaring_a_prelude_name_stay_e621(
+    def test_two_modules_declaring_a_prelude_name_are_refused(
         self, tmp_path: Path,
     ) -> None:
-        _verify, codes, _answer = _cell(
+        refusals = _check_refusals(
             tmp_path / "prelude",
             {"liba.vera": _PRELUDE_A, "libb.vera": _PRELUDE_B,
              "main.vera": _ENTRY},
         )
-        assert "E621" in codes, codes
+        assert ("E158", "liba.vera") in refusals, refusals
+        assert ("E158", "libb.vera") in refusals, refusals
 
-    def test_a_single_module_declaring_a_prelude_name_stays_e621(
+    def test_a_single_module_declaring_a_prelude_name_is_refused(
         self, tmp_path: Path,
     ) -> None:
-        """The other direction: nothing to contend with among modules, so
-        the rename has no reason to fire — and E621 still does."""
+        """Nothing to contend with among modules, and the declaration is
+        refused all the same."""
         entry = _ENTRY.replace("import libb(bone);\n", "").replace(
             " + bone(4)", " + 4")
-        _verify, codes, _answer = _cell(
+        refusals = _check_refusals(
             tmp_path / "prelude-one",
             {"liba.vera": _PRELUDE_A, "main.vera": entry},
         )
-        assert "E621" in codes, codes
+        assert refusals and refusals[0] == ("E158", "liba.vera"), refusals
 
     def test_the_same_shape_under_a_user_name_is_admitted(
         self, tmp_path: Path,
@@ -479,20 +475,12 @@ public fn aone(@Int -> @Int)
         assert answer == ("ok", 7), answer
 
     def test_every_reserved_name_is_held_back(self, tmp_path: Path) -> None:
-        """MEASURED over the LIVE reservation, not grepped (PR review).
-
-        An earlier version of this cell asserted that the source of
-        ``_contended_adt_renames`` contained the string
-        ``builtin_adt_names | prelude_adt_names()`` — which tests the
-        spelling of one line and would stay green through any change that
-        computed the set and then ignored it.  This drives the rename
-        itself, once per name the prelude can provide, and asserts each is
-        left in the bare slot: two modules declaring it differently reach
-        E621 rather than being qualified apart.
+        """MEASURED over the LIVE reservation, once per name the prelude
+        provides: two modules declaring it differently are each refused at
+        check (E158), never qualified apart.
 
         Parameterless over the LIVE set, so a prelude ADT added later is
-        covered without this cell being edited.  Mutation: replacing
-        ``reserved`` with an empty frozenset reds every name here.
+        covered without this cell being edited.
         """
         from vera.prelude import prelude_adt_names
 
@@ -530,19 +518,12 @@ public fn bone(@Int -> @Int)
   }}
 }}
 """
-            _verify, _result, cg_errors = build_multi_module(
+            refusals = _check_refusals(
                 tmp_path / f"reserved-{name}",
                 {"liba.vera": liba, "libb.vera": libb, "main.vera": _ENTRY},
             )
-            codes = _codes(cg_errors)
-            # Every prelude name must refuse this pair rather than qualify
-            # it apart.  Which CODE depends on whether the program demands
-            # the block (`Json`, `HtmlNode`, `Request`, `Response` inject
-            # only on demand, so an undemanded one falls to the ordinary
-            # module-versus-module rail); what is asserted is that the pair
-            # is REFUSED, never renamed.
-            assert codes, f"{name}: qualified apart instead of refused"
-            assert set(codes) <= {"E609", "E610", "E621"}, (name, codes)
+            assert ("E158", "liba.vera") in refusals, (name, refusals)
+            assert ("E158", "libb.vera") in refusals, (name, refusals)
             checked += 1
         assert checked == len(reserved)
 
@@ -2151,15 +2132,10 @@ class TestOneRuleDecidesBothPairs:
     def test_a_reserved_name_meets_whatever_either_can_reach(
         self, tmp_path: Path,
     ) -> None:
-        """The one pair that meets without either side reaching the other.
-
-        The prelude's names are never qualified away (R7), so an entry
-        ``data Json`` and a module's share the one slot however the
-        importer filters or shadows them — they meet by construction, and
-        the rail refuses them on the same rule rather than by an exception
-        to it.  This is why #1312's own cells for `Json` stay exactly as
-        they were.
-        """
+        """The one pair that once met without either side reaching the
+        other: an entry ``data Json`` and a module's shared the prelude's
+        slot (E623).  Both take a reserved name (#1469), so each is refused
+        at check."""
         libb = """\
 module blib;
 
@@ -2188,11 +2164,12 @@ public fn main(@Unit -> @Int)
   probe(3)
 }
 """
-        _verify, codes, _answer = _cell(
+        refusals = _check_refusals(
             tmp_path / "reserved-meets",
             {"blib.vera": libb, "main.vera": entry},
         )
-        assert "E623" in codes, codes
+        assert sorted(refusals) == [
+            ("E158", "blib.vera"), ("E158", "main.vera")], refusals
 
     def test_the_code_says_which_pair_was_caught(
         self, tmp_path: Path,

@@ -833,19 +833,13 @@ class TestSpecialCasedBuiltinAdtsAreRefused:
 
     @pytest.mark.parametrize(
         "name", ["Option", "Result", "Ordering", "UrlParts", "Json"])
-    def test_every_other_builtin_name_stays_declarable(
+    def test_every_prelude_type_name_is_refused_too(
         self, name: str,
     ) -> None:
-        """The reservation is exactly the reserved names.
-
-        §8.4.1 makes the prelude's data types ordinary declarations a program
-        may shadow, `examples/vera/collections.vera` ships a `public data
-        Option<T>`, and #1312's E623 rail is built on entry-file shadowing
-        being legal — so widening this would refuse programs the language
-        documents as valid.  Whether to reserve them is #1496's question,
-        not this one.
-        """
-        assert "E158" not in [
+        """The prelude's own data types are reserved as well (#1469): a
+        declaration under one of their names is refused at check by the
+        same code, whatever its shape."""
+        assert "E158" in [
             d.error_code for d in _check(_shadow_program(name))]
 
     def test_every_reserved_name_is_one_the_compiler_knows(self) -> None:
@@ -1451,25 +1445,15 @@ public fn main(@Unit -> @Int)
 
 
 class TestRedeclaringAPreludeAdtNeverICEs:
-    """#1419 finding B — a legal redeclaration must not reach an internal
-    compiler error.
+    """#1419 finding B — a redeclaration of a prelude data type, including
+    one with FEWER constructors, must not reach an internal compiler error.
 
-    §8.4.1 lets a program redeclare a prelude data type, including with
-    FEWER constructors.  `_owned_ctor_layout` briefly raised
-    `CodegenInvariantError` when an owner-stamped reference named a
-    constructor its owner did not declare, and `private data Ordering {
-    Less, Equal }` + `show(compare(1, 2))` — check-clean and verify-clean —
-    became "Internal compiler error … Please file a bug report".  The door
-    degrades to no-layout instead, so the caller's `CodegenSkip` reports the
-    construct and drops the function, which is what the compiler did before
-    #1414.
-
-    What is NOT yet true, and is deliberately not asserted: that `compare`
-    still WORKS beside a user `Ordering`.  Making it work needs the render
-    side to become owner-aware at the same time — resolving only the
-    constructor against the built-in table was measured producing a module
-    that fails to load, which is worse than the skip.  That is the same
-    per-(owner, ADT, constructor) keying finding A needs.
+    `_owned_ctor_layout` briefly raised `CodegenInvariantError` when an
+    owner-stamped reference named a constructor its owner did not declare,
+    and `private data Ordering { Less, Equal }` + `show(compare(1, 2))`
+    became "Internal compiler error … Please file a bug report".  #1469
+    reserved the prelude's type names, so each declaration is refused at
+    check (E158) and code generation never meets it.
     """
 
     @pytest.mark.parametrize("decl", [
@@ -1477,7 +1461,7 @@ class TestRedeclaringAPreludeAdtNeverICEs:
         "public data Ordering { Lt, Eq, Gt }",
         "private data Ordering { Less, Equal, Greater }",
     ])
-    def test_no_internal_compiler_error(self, decl: str) -> None:
+    def test_the_redeclaration_is_refused_at_check(self, decl: str) -> None:
         source = decl + """
 
 public fn probe(@Unit -> @String)
@@ -1488,13 +1472,8 @@ public fn probe(@Unit -> @String)
   show(compare(1, 2))
 }
 """
-        assert not _check(source), [d.error_code for d in _check(source)]
-        result = _compile(source)
-        # Either it compiles, or it is refused with a located diagnostic —
-        # never an invariant violation.
-        for d in result.diagnostics:
-            assert "Internal compiler error" not in d.description, d.description
-            assert d.error_code != "E999", d.description
+        codes = [d.error_code for d in _check(source)]
+        assert codes and codes[0] == "E158", codes
 
 
 class TestNoUnannotatedBareConstructorLookup:

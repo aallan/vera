@@ -571,18 +571,18 @@ CELLS: list[Cell] = [
     _c("fn/two-imports-supply-one-name", "function", "across_modules",
        "import libf;\nimport libg;\n\n" + _main("f(1)"),
        "E155", modules={"libf": _LIBF, "libg": _LIBG}),
+    # The prelude's functions are reserved (#1469), its combinators too.
     _c("fn/shadows-prelude-combinator", "function", "builtin",
        _fn("option_unwrap_or", sig="@Option<Int>, @Int -> @Int", body="99")
        + "\n" + _main("option_unwrap_or(None, 5)"),
-       "legal", value=99),
+       "E151"),
     _c("fn/redefines-built-in", "function", "builtin",
        _fn("string_length", sig="@String -> @Int", body="1") + "\n"
        + _main('string_length("ab")'),
        "E151"),
-    # A prelude BODY calls the user's override: `json_get_string` reaches
-    # this `json_get`, so the program returns 0 where the prelude's own
-    # `json_get` gives 2.  Pinned at 0 until owner-qualified prelude
-    # symbols (#1495) make it 2.
+    # A prelude BODY once called the user's override: `json_get_string`
+    # reached this `json_get` and the program returned 0 where the prelude's
+    # own `json_get` gives 2 (#1495).  The name is reserved now (#1469).
     _c("fn/prelude-body-calls-an-override", "function", "builtin",
        _fn("json_get", sig="@Json, @String -> @Option<Json>", body="None",
            vis="private ") + "\n"
@@ -591,9 +591,7 @@ CELLS: list[Cell] = [
                '      Some(@String) -> string_length(@String.0),\n'
                '      None -> 0\n    },\n'
                '    Err(@String) -> 0 - 1\n  }'),
-       "legal", value=0,
-       pinned="#1495: a prelude body binds to the program's override of a "
-              "prelude function; the correct value is 2"),
+       "E151"),
 
     # -- where helpers -----------------------------------------------------
     _c("where/twice", "where_helper", "same_scope",
@@ -747,10 +745,11 @@ CELLS: list[Cell] = [
     _c("type/data-named-Tuple", "type", "builtin",
        "public data Tuple { T1(Int) }\n\n" + _main("1"),
        "E158"),
+    # Reserved whatever the shape, a restatement included (#1469).
     _c("type/entry-restates-prelude-type", "type", "builtin",
        "public data Option<T> { None, Some(T) }\n\n"
        + _main("match Some(4) { Some(@Int) -> @Int.0, None -> 0 }"),
-       "legal", value=4),
+       "E158"),
 
     # -- constructors ------------------------------------------------------
     _c("ctor/listed-twice-in-one-data", "constructor", "same_scope",

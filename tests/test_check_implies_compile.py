@@ -1555,11 +1555,6 @@ KNOWN_CHECK_GREEN_REFUSALS: dict[str, tuple[tuple[str, ...], str]] = {
         "a typed hole is a W001 warning at check and refused at compile — "
         "spec §4.17 makes that the contract of `?`",
     ),
-    "tests/conformance/ch08_module_prelude_adt_contention_rejected.vera": (
-        ("E621", "missing-export", "missing-export"),
-        "a conformance NEGATIVE whose manifest names the compile stage "
-        "(`expected_error_stage: compile`): the checker accepts it by design",
-    ),
     "tests/conformance/ch08_ambiguous_import_lib_bool.vera": (
         ("E604",), _UNINSTANTIATED_GENERIC),
     "tests/conformance/ch08_ambiguous_import_lib_int.vera": (

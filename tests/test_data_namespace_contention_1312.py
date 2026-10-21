@@ -62,9 +62,9 @@ from tests.module_fixture_helpers import (
 _BLIB_OWN_JSON = """\
 module blib;
 
-private data Json { JBlob(Int) }
+private data Jbox { JBlob(Int) }
 
-private fn wrap(@Int -> @Json)
+private fn wrap(@Int -> @Jbox)
   requires(true)
   ensures(true)
   effects(pure)
@@ -86,14 +86,14 @@ public fn probe(@Int -> @Int)
 _ENTRY_OWN_JSON = """\
 import blib(probe);
 
-private data Json { JMine(Int) }
+private data Jbox { JMine(Int) }
 
-public fn consume(@Json -> @Int)
+public fn consume(@Jbox -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  match @Json.0 {
+  match @Jbox.0 {
     JMine(@Int) -> @Int.0
   }
 }
@@ -114,7 +114,7 @@ public fn main(@Unit -> @Int)
 _BLIB_UNUSED_JSON = """\
 module blib;
 
-private data Json { JBlob(Int) }
+private data Jbox { JBlob(Int) }
 
 public fn probe(@Int -> @Int)
   requires(true)
@@ -128,9 +128,9 @@ public fn probe(@Int -> @Int)
 _ENTRY_UNUSED_JSON = """\
 import blib(probe);
 
-private data Json { JMine(Int) }
+private data Jbox { JMine(Int) }
 
-public fn consume(@Json -> @Int)
+public fn consume(@Jbox -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
@@ -270,53 +270,30 @@ def _codes(errors: list[tuple[str, str]]) -> list[str]:
 class TestEntryVersusModule:
     """E623 where the entry's declaration cannot share the module's layout."""
 
-    def test_differing_shapes_are_refused_not_silently_dropped(
+    def test_differing_private_shapes_each_keep_their_own(
         self, tmp_path: Path,
     ) -> None:
-        """Base: exit 0, ``ok: true``, warnings only, ``exports ==
-        ['consume']`` — ``main`` silently gone."""
+        """The issue's pair, under a name the prelude does not hold (its
+        own `Json` is reserved since #1469): the entry's private `Jbox` and
+        the module's private `Jbox` each keep their own layout, so nothing
+        is refused and ``main`` runs."""
         _verr, result, cg_errors = build_multi_module(
             tmp_path / "differ",
             {"blib.vera": _BLIB_OWN_JSON, "main.vera": _ENTRY_OWN_JSON},
         )
-        assert _codes(cg_errors) == ["E623"], cg_errors
-        assert not result.ok
+        assert cg_errors == [], cg_errors
+        assert "main" in result.exports and "consume" in result.exports
+        assert module_value(result) == ("ok", 7)
 
     def test_the_issues_own_repro(self, tmp_path: Path) -> None:
-        """The issue's fixture verbatim, where the module never touches its
-        own ``Json``.
-
-        Measured green at the base — nothing inside the module drops,
-        because nothing inside it constructs the type — which is why the
-        rail keys on the DECLARATIONS and not on the E602 wreckage.  Its
-        sibling above is the shape that loses ``main``.
-        """
+        """The issue's fixture, renamed the same way, where the module never
+        touches its own type: nothing is refused either."""
         _verr, result, cg_errors = build_multi_module(
             tmp_path / "verbatim",
             {"blib.vera": _BLIB_UNUSED_JSON, "main.vera": _ENTRY_UNUSED_JSON},
         )
-        assert _codes(cg_errors) == ["E623"], cg_errors
-        assert not result.ok
-
-    def test_it_is_located_at_the_entry_declaration(
-        self, tmp_path: Path,
-    ) -> None:
-        """One diagnostic, at the declaration whose registration wins the
-        slot, naming the module's own file and line so the other half is
-        reachable."""
-        _verr, result, _cg = build_multi_module(
-            tmp_path / "located",
-            {"blib.vera": _BLIB_OWN_JSON, "main.vera": _ENTRY_OWN_JSON},
-        )
-        diag = next(d for d in result.diagnostics if d.error_code == "E623")
-        assert diag.severity == "error"
-        assert diag.location.file is not None
-        assert diag.location.file.endswith("main.vera")
-        assert diag.location.line == 3, diag.location.line
-        assert "private data Json" in diag.source_line
-        assert "blib" in diag.description
-        assert "blib.vera:3" in diag.description
-        assert diag.rationale and diag.fix and diag.spec_ref
+        assert cg_errors == [], cg_errors
+        assert module_value(result) == ("ok", 7)
 
     def test_identical_shapes_stay_legal_and_run(self, tmp_path: Path) -> None:
         """The relaxation the rail must not break: an entry file restating a
@@ -335,7 +312,7 @@ class TestEntryVersusModule:
     ) -> None:
         """Control: the rail fires on a CONTENDED name, not on any entry
         ``data`` in a program that happens to import something."""
-        entry = _ENTRY_OWN_JSON.replace("Json", "Zbox").replace(
+        entry = _ENTRY_OWN_JSON.replace("Jbox", "Zbox").replace(
             "JMine", "MkZbox")
         _verr, result, cg_errors = build_multi_module(
             tmp_path / "control",
@@ -967,14 +944,14 @@ class TestOneDiagnosticPerContendedName:
         assert "libb" in text, text
         assert "Shape" in text, text
 
-    def test_the_two_way_case_is_unchanged(self, tmp_path: Path) -> None:
-        """One module beside the entry still reports once, naming it — the
-        shape #1312's own cells pin, and this change must not move it."""
+    def test_the_two_way_private_case_reports_nothing(
+        self, tmp_path: Path,
+    ) -> None:
+        """One module's private type beside the entry's own of its name is
+        no contention: no E623, as the two private declarations above."""
         _verr, result, cg_errors = build_multi_module(
             tmp_path / "two-way",
             {"blib.vera": _BLIB_OWN_JSON, "main.vera": _ENTRY_OWN_JSON},
         )
-        e623 = [d for d in result.diagnostics if d.error_code == "E623"]
-        assert len(e623) == 1, [d.description for d in e623]
-        assert "blib" in (e623[0].description or ""), e623[0].description
-        assert _codes(cg_errors) == ["E623"], cg_errors
+        assert [d for d in result.diagnostics if d.error_code == "E623"] == []
+        assert cg_errors == [], cg_errors

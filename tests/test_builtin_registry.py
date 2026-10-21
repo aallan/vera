@@ -666,7 +666,8 @@ _PRELUDE_VALUES = {
 
 @pytest.mark.parametrize("spec", _ALL, ids=_IDS)
 def test_a_declaration_of_its_name(spec: BuiltinSpec) -> None:
-    """E151, or for a prelude body the accepted override."""
+    """E151, for a prelude body's name as for every other built-in's
+    (#1469 reserved the prelude's function names)."""
     aliases, formals, ret, call = probe_parts(spec, closures=False)
     decls = "".join(f"type {n} = {d};\n\n" for n, d in aliases.items())
     if isinstance(spec.lowering, Prelude):
@@ -679,10 +680,7 @@ def test_a_declaration_of_its_name(spec: BuiltinSpec) -> None:
         spec.name, formals, ret, _effect_clause(spec), body, "private")
     checked = pipeline.check(source)
     codes = [d.error_code for d in checked.errors]
-    if isinstance(spec.lowering, Prelude):
-        assert codes == [], [d.description for d in checked.errors]
-    else:
-        assert codes == ["E151"], [d.description for d in checked.errors]
+    assert codes == ["E151"], [d.description for d in checked.errors]
 
 
 # ---------------------------------------------------------------------

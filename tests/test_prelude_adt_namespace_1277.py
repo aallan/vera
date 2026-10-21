@@ -233,11 +233,12 @@ def test_module_adt_contending_with_a_demanded_prelude_adt_is_loud(
 
 
 def test_the_rail_makes_the_cli_fail(tmp_path: Path) -> None:
-    """`vera compile` exits non-zero on the contention shape.
+    """`vera check` and `vera compile` exit non-zero on the contention shape.
 
-    The whole point of the rail is the exit code: at the branch point
-    every diagnostic in this program is a warning, so `cmd_compile`
-    returned 0 over a module with the function silently missing.
+    At the branch point every diagnostic in this program was a warning, so
+    `cmd_compile` returned 0 over a module with the function silently
+    missing.  The module's `data Json` takes a reserved prelude name
+    (#1469), so the check refuses it now, before code generation runs.
     """
     from vera.cli import cmd_check, cmd_compile
 
@@ -245,9 +246,7 @@ def test_the_rail_makes_the_cli_fail(tmp_path: Path) -> None:
     (tmp_path / "jlib.vera").write_text(_JLIB_OWN_JSON, encoding="utf-8")
     main_path = tmp_path / "main.vera"
     main_path.write_text(_MAIN_USES_PRELUDE_JSON, encoding="utf-8")
-    # `vera check` stays green: this is a codegen-namespace collision, not
-    # a type error, and the checker gives both namespaces their own view.
-    assert cmd_check(str(main_path), quiet=True) == 0
+    assert cmd_check(str(main_path), quiet=True) == 1
     assert cmd_compile(str(main_path), wat=True) == 1
 
 

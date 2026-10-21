@@ -306,7 +306,6 @@ public forall<T> fn identity(@T -> @T)
 
     COLLECTIONS_MODULE = """\
 public data List<T> { Nil, Cons(T, List<T>) }
-public data Option<T> { None, Some(T) }
 """
 
     # -- Bare calls (parsed normally) -----------------------------------
@@ -838,23 +837,18 @@ public fn to_string(@Color -> @String)
 """)
         assert "E151" in self._codes(errs), self._codes(errs)
 
-    def test_overriding_option_map_combinator_is_allowed(self) -> None:
-        """The prelude combinators stay user-overridable — exempt from E151.
-
-        This is the regression guard for the #815 design decision: a naive
-        "reject every built-in name" rule would wrongly fire here.
-        """
+    def test_a_prelude_combinator_name_is_refused(self) -> None:
+        """The prelude's combinators are reserved like every other built-in
+        function (#1469): #815's exemption is gone, so a user
+        ``option_map`` is E151."""
         errs = _errors("""
-public data Option<T> { None, Some(T) }
 public fn option_map(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 { 0 }
 """)
-        assert "E151" not in self._codes(errs), self._codes(errs)
-        # ...but the exemption is *specific* to the prelude combinators: a
-        # non-combinator built-in such as the iterative `array_map` is NOT
-        # exempt and must still be rejected (boundary guard — a too-broad
-        # exemption would wrongly let this through).
+        assert "E151" in self._codes(errs), self._codes(errs)
+        # ...as a non-combinator built-in such as the iterative
+        # `array_map` always was.
         arr_errs = _errors("""
 public fn array_map(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
@@ -1009,20 +1003,16 @@ public forall<T> fn abs(@T -> @T)
 """)
         assert "E151" in self._codes(errs), self._codes(errs)
 
-    def test_overriding_json_combinator_is_allowed(self) -> None:
-        """The exemption covers *all* prelude combinators, not just
-        ``option_map`` — a user ``json_get`` override is allowed.
-
-        Regression guard for the exempt-set derivation across every
-        combinator source block (a JSON block, distinct from the Option
-        block ``test_overriding_option_map_combinator`` covers).
-        """
+    def test_a_json_combinator_name_is_refused(self) -> None:
+        """The reservation covers *all* prelude combinators, not just
+        ``option_map``: a user ``json_get`` is E151 too, from the JSON
+        block rather than the Option block."""
         errs = _errors("""
 public fn json_get(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 { 0 }
 """)
-        assert "E151" not in self._codes(errs), self._codes(errs)
+        assert "E151" in self._codes(errs), self._codes(errs)
 
 
 # =====================================================================

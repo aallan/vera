@@ -676,16 +676,20 @@ public fn main(@Unit -> @Int)
     def test_a_function_the_prelude_owns_is_not_reported(
         self, tmp_path: Path,
     ) -> None:
+        """Each module's `option_map` takes a reserved name (#1469), so each
+        declaration is refused (E151), and the two imports are not reported
+        as ambiguous besides."""
         payload = _check(_write(tmp_path, self._two_libs(self._PRELUDE_NAMED_LIB)))
-        assert _error_codes(payload) == []
+        assert _error_codes(payload) == ["E151", "E151"]
 
     def test_a_data_type_the_builtins_own_is_not_reported(
         self, tmp_path: Path,
     ) -> None:
-        """`Option` is the prelude's, so two modules exporting one do not
-        make it ambiguous HERE — whatever the other rails make of them."""
+        """`Option` is the prelude's, so each module's declaration of it is
+        refused (E158, #1469), and two modules exporting one do not make it
+        ambiguous besides."""
         payload = _check(_write(tmp_path, self._two_libs(self._PRELUDE_NAMED_ADT)))
-        assert _error_codes(payload) == []
+        assert _error_codes(payload) == ["E158", "E158"]
 
     def test_the_prelude_argument_changes_the_ambiguity_half(self) -> None:
         """Pins the corrected `namespace_fn_names` docstring (#1304 review).

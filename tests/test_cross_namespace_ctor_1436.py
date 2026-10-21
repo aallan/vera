@@ -1687,111 +1687,91 @@ def _prelude_name_files(
 @pytest.fixture(scope="module")
 def prelude_name_builds(
     tmp_path_factory: pytest.TempPathFactory,
-) -> dict[tuple[str, str, str], tuple[
+) -> dict[str, tuple[
     list[tuple[str, str]], CompileResult, list[tuple[str, str]],
 ]]:
-    """One build per (type, shape, reach); every cell below reads one.
-
-    `observation` does not change the program, so parametrizing over it
-    would compile the same 24 programs seven times each (PR #1454 review).
-    """
+    """One build of the control program per reach; every cell below reads
+    one.  The control declares no prelude name, so it is the same program
+    for every name."""
     return {
-        (name, shape, reach): build_multi_module(
-            tmp_path_factory.mktemp(f"{name}_{shape}_{reach}"),
-            _prelude_name_files(name, shape, reach),
+        reach: build_multi_module(
+            tmp_path_factory.mktemp(f"control_{reach}"),
+            _prelude_name_files("Json", "control", reach),
         )
-        for name in _PRELUDE_RESTATEMENTS
-        for shape in ("differing", "identical", "control")
         for reach in ("direct", "transitive")
     }
 
 
 class TestAPreludeNamedDeclarationKeepsItsOwnNamespace:
-    """A module's declaration under a PRELUDE type's name (#1454 review, 1).
+    """A module's declaration under a PRELUDE type's name (#1454, #1469).
 
-    §8.4.1 lets a module declare a differently-shaped type of a prelude
-    name that nothing demands — it "stands alone until" the prelude's is
-    needed — and the first form of the scoping treated every declaration
-    under a prelude NAME as infrastructure, so its constructors overwrote
-    the prelude's in every namespace: `show(Some(42))` rendered
-    `Some(false)`, `hash(Some(42)) == hash(Some(43))` was true, and
-    `match parse_int("42")` took the `Err` arm — in the entry, inside an
-    unrelated module, and in the prelude's own combinator bodies, with no
-    diagnostic from any stage.
-
-    The carve-out is keyed on SHAPE now: a declaration that restates the
-    prelude's type IS the one layout and belongs everywhere; one that only
-    borrows the name is an ordinary ADT of the module that wrote it.  Four
-    namespaces are observed per cell — the declaring module, the entry, a
-    module that can name neither, and the prelude's own bodies — across the
-    four demand-injected types, both shapes, and both reaches.
+    The first form of #1454's scoping treated every declaration under a
+    prelude NAME as infrastructure, so its constructors overwrote the
+    prelude's in every namespace: `show(Some(42))` rendered `Some(false)`,
+    `hash(Some(42)) == hash(Some(43))` was true, and `match parse_int("42")`
+    took the `Err` arm, with no diagnostic from any stage.  #1469 reserved
+    every prelude type name, so a module's declaration under one, whatever
+    its shape, is refused at check (E158), and the prelude's constructors
+    are the only ones of their names.  The control (a module type with
+    constructors named like none of the prelude's) is observed in four
+    namespaces per reach: the declaring module, the entry, a module that
+    can name neither, and the prelude's own bodies.
     """
+
+    @pytest.mark.parametrize("reach", ["direct", "transitive"])
+    @pytest.mark.parametrize("shape", ["differing", "identical"])
+    @pytest.mark.parametrize("name", sorted(_PRELUDE_RESTATEMENTS))
+    def test_a_prelude_named_declaration_is_refused(
+        self, name: str, shape: str, reach: str, tmp_path: Path,
+    ) -> None:
+        root = pipeline.write_tree(
+            tmp_path, _prelude_name_files(name, shape, reach))
+        checked = pipeline.check(root)
+        assert not checked.ok
+        first = checked.errors[0]
+        assert first.error_code == "E158", checked.errors
+        assert Path(first.location.file).name == "tlib.vera", first.location
 
     @pytest.mark.parametrize("observation", sorted(_PRELUDE_EXPECTED))
     @pytest.mark.parametrize("reach", ["direct", "transitive"])
-    @pytest.mark.parametrize("shape", ["differing", "identical", "control"])
-    @pytest.mark.parametrize(
-        "name", sorted(_PRELUDE_RESTATEMENTS))
     def test_the_prelude_keeps_its_constructors(
-        self, name: str, shape: str, reach: str, observation: str,
-        prelude_name_builds: dict[tuple[str, str, str], tuple[
+        self, reach: str, observation: str,
+        prelude_name_builds: dict[str, tuple[
             list[tuple[str, str]], CompileResult, list[tuple[str, str]],
         ]],
     ) -> None:
-        _verify, result, _cg = prelude_name_builds[(name, shape, reach)]
+        _verify, result, _cg = prelude_name_builds[reach]
         assert module_value(result, observation) == (
             "ok", _PRELUDE_EXPECTED[observation])
 
     @pytest.mark.parametrize("reach", ["direct", "transitive"])
-    @pytest.mark.parametrize("shape", ["differing", "identical", "control"])
-    @pytest.mark.parametrize("name", sorted(_PRELUDE_RESTATEMENTS))
     def test_nothing_is_reported_and_nothing_is_dropped(
-        self, name: str, shape: str, reach: str,
-        prelude_name_builds: dict[tuple[str, str, str], tuple[
+        self, reach: str,
+        prelude_name_builds: dict[str, tuple[
             list[tuple[str, str]], CompileResult, list[tuple[str, str]],
         ]],
     ) -> None:
-        """The silence around each program, asserted once per build.
-
-        These programs are legal under §8.4.1 and this PR does not reach
-        for a new refusal: whether a differently-shaped declaration of a
-        demand-injected prelude name should be REFUSED is a language
-        question, deliberately left open.  The cells above pin the VALUES;
-        this one pins that nothing was reported to get them, and that no
-        function was skipped on the way.
-        """
-        verify_errors, result, cg_errors = prelude_name_builds[
-            (name, shape, reach)]
+        """The silence around each control program, asserted once per
+        build: nothing was reported to get the values above, and no
+        function was skipped on the way."""
+        verify_errors, result, cg_errors = prelude_name_builds[reach]
         assert not verify_errors and not cg_errors, (verify_errors, cg_errors)
         assert [d.error_code for d in result.diagnostics] == [], (
             result.diagnostics)
 
-    @pytest.mark.parametrize("shape", ["differing", "identical", "control"])
-    @pytest.mark.parametrize("name", sorted(_PRELUDE_RESTATEMENTS))
-    def test_both_sides_agree_over_an_imported_prelude_name(
-        self, name: str, shape: str, tmp_path: Path,
-    ) -> None:
-        """The same equality where the collision is with INFRASTRUCTURE.
-
-        An imported ADT whose constructors are spelled `Some`, `Ok` or
-        `Err` reaches each side's owner table through a different door —
-        codegen's projection applies imports without displacing
-        infrastructure, and the shared derivation has to say the same or
-        the two name different clones and the caller is dropped (E602/E620).
-        The cell the carrier matrix runs cannot see this: its collisions are
-        with another namespace's ADT, never with the prelude's own.
-        """
+    def test_both_sides_agree_over_the_control(self, tmp_path: Path) -> None:
+        """Codegen's emitted clones and the verifier's discovered ones are
+        the same set, and the entry's `ent_gid` clone is named after the
+        prelude's `Option`."""
         emitted, discovered = _emitted_and_discovered(
-            tmp_path, _prelude_name_files(name, shape, "direct"))
-        # Premise first: two empty sets are equal, and these programs are
-        # only a differential at all because the entry instantiates its own
-        # `forall` over a value built with the contended constructor.
+            tmp_path, _prelude_name_files("Json", "control", "direct"))
+        # Premise first: two empty sets are equal, and the program is only
+        # a differential at all because the entry instantiates its own
+        # `forall` over a value built with a prelude constructor.
         assert any(fn == "ent_gid" for fn, _types in emitted), sorted(emitted)
         assert emitted == discovered, (emitted ^ discovered)
-        # ... and the clone is named after the PRELUDE's type, not the
-        # imported declaration that borrowed its constructor's spelling.
-        assert all(
-            not any(t.split("<")[0] == name for t in types)
+        assert any(
+            any(t.split("<")[0] == "Option" for t in types)
             for fn, types in emitted if fn == "ent_gid"
         ), sorted(emitted)
 
@@ -1828,42 +1808,6 @@ class TestAPreludeNamedDeclarationKeepsItsOwnNamespace:
                 f"not the prelude's {owner}")
         # The declaring module keeps its own reading of the same names.
         assert (owners.visible(("tlib",)) or {}).get("Some") == name
-
-    @pytest.mark.parametrize("name", sorted(_PRELUDE_RESTATEMENTS))
-    def test_the_declaring_module_reads_its_own(
-        self, name: str, tmp_path: Path,
-    ) -> None:
-        """Inside the module that wrote it, the borrowed name is ITS type.
-
-        The other half of the rule, and the one a fix that simply hid the
-        declaration would break: codegen follows the checker's owner in the
-        declaring namespace too, where the local declaration shadows the
-        prelude's constructor (§8.5.2).
-        """
-        files = _prelude_name_files(name, "differing", "direct")
-        files["tlib.vera"] += """
-public fn t_show(@Unit -> @String)
-  requires(true)
-  ensures(true)
-  effects(pure)
-{
-  show(Some(true))
-}
-"""
-        files["main.vera"] += """
-public fn mod_show(@Unit -> @String)
-  requires(true)
-  ensures(true)
-  effects(pure)
-{
-  tlib::t_show(())
-}
-"""
-        verify_errors, result, cg_errors = build_multi_module(tmp_path, files)
-        assert not verify_errors and not cg_errors, (verify_errors, cg_errors)
-        assert module_value(result, "mod_show") == ("ok", "Some(true)")
-        # ... while the entry still reads the prelude's.
-        assert module_value(result, "ent_show") == ("ok", "Some(42)")
 
 
 class TestTheTwoOwnerDerivationsAdmitByTheSameKey:

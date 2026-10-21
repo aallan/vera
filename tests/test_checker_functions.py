@@ -117,8 +117,6 @@ private fn foo(@PosInt, @Int -> @Int)
 
     def test_parameterised_slot(self) -> None:
         _check_ok("""
-private data Option<T> { None, Some(T) }
-
 private fn foo(@Option<Int> -> @Bool)
   requires(true) ensures(true) effects(pure)
 { true }

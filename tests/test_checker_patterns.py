@@ -21,8 +21,6 @@ class TestPatterns:
 
     def test_constructor_pattern(self) -> None:
         _check_ok("""
-private data Option<T> { None, Some(T) }
-
 private fn unwrap(@Option<Int> -> @Int)
   requires(true) ensures(true) effects(pure)
 {
@@ -60,7 +58,6 @@ private fn to_str(@Bool -> @String)
 
     def test_nested_pattern(self) -> None:
         _check_ok("""
-private data Option<T> { None, Some(T) }
 private data List<T> { Nil, Cons(T, List<T>) }
 
 private fn first(@List<Option<Int>> -> @Int)
@@ -78,8 +75,6 @@ private fn first(@List<Option<Int>> -> @Int)
         """A constructor pattern naming an unknown constructor is an E320
         error (#1513): the arm has no layout to test."""
         warns = _check("""
-private data Option<T> { None, Some(T) }
-
 private fn f(@Option<Int> -> @Int)
   requires(true) ensures(true) effects(pure)
 {
@@ -113,8 +108,6 @@ private fn f(@Pair -> @Int)
         """A nullary pattern naming an unknown constructor is an E322 error
         (#1513)."""
         warns = _check("""
-private data Option<T> { None, Some(T) }
-
 private fn f(@Option<Int> -> @Int)
   requires(true) ensures(true) effects(pure)
 {
@@ -142,8 +135,6 @@ class TestMatchArmTypes:
         # the other, so the unification must report E302 (kills the
         # is_subtype / types_equal / error_code mutants in _check_match).
         errs = _check_err("""
-private data Option<T> { None, Some(T) }
-
 private fn f(@Option<Int> -> @String)
   requires(true) ensures(true) effects(pure)
 {
@@ -169,8 +160,6 @@ class TestExhaustiveness:
     def test_adt_exhaustive(self) -> None:
         """All constructors covered → no error."""
         _check_ok("""
-private data Option<T> { None, Some(T) }
-
 private fn unwrap(@Option<Int> -> @Int)
   requires(true) ensures(true) effects(pure)
 {
@@ -184,8 +173,6 @@ private fn unwrap(@Option<Int> -> @Int)
     def test_adt_missing_constructor(self) -> None:
         """Missing None constructor → non-exhaustive error."""
         _check_err("""
-private data Option<T> { None, Some(T) }
-
 private fn unwrap(@Option<Int> -> @Int)
   requires(true) ensures(true) effects(pure)
 {
@@ -198,8 +185,6 @@ private fn unwrap(@Option<Int> -> @Int)
     def test_adt_missing_multiple(self) -> None:
         """Missing both Err constructor → error mentions missing ones."""
         errs = _check_err("""
-private data Result<T, E> { Ok(T), Err(E) }
-
 private fn get(@Result<Int, String> -> @Int)
   requires(true) ensures(true) effects(pure)
 {
@@ -214,8 +199,6 @@ private fn get(@Result<Int, String> -> @Int)
     def test_adt_missing_carries_e311(self) -> None:
         """The ADT non-exhaustive diagnostic carries E311, not just the text."""
         errs = _check_err("""
-private data Option<T> { None, Some(T) }
-
 private fn f(@Option<Int> -> @Int)
   requires(true) ensures(true) effects(pure)
 {
@@ -229,8 +212,6 @@ private fn f(@Option<Int> -> @Int)
     def test_unreachable_arm_after_catch_all_warns_e310(self) -> None:
         """An arm after a catch-all is the one (and only) E310 warning."""
         warns = _warnings("""
-private data Option<T> { None, Some(T) }
-
 private fn f(@Option<Int> -> @Int)
   requires(true) ensures(true) effects(pure)
 {
@@ -273,8 +254,6 @@ private fn f(@Int -> @Int)
         """Each exhaustiveness diagnostic carries the right severity and a
         populated rationale/fix/spec_ref (kills the =None / severity mutants)."""
         e311 = _check_err("""
-private data Option<T> { None, Some(T) }
-
 private fn f(@Option<Int> -> @Int)
   requires(true) ensures(true) effects(pure)
 {
@@ -287,8 +266,6 @@ private fn f(@Option<Int> -> @Int)
         assert e311.rationale and e311.fix and e311.spec_ref
 
         e310 = [w for w in _warnings("""
-private data Option<T> { None, Some(T) }
-
 private fn f(@Option<Int> -> @Int)
   requires(true) ensures(true) effects(pure)
 {
@@ -304,8 +281,6 @@ private fn f(@Option<Int> -> @Int)
     def test_adt_with_wildcard(self) -> None:
         """Wildcard after Some covers None → exhaustive."""
         _check_ok("""
-private data Option<T> { None, Some(T) }
-
 private fn unwrap(@Option<Int> -> @Int)
   requires(true) ensures(true) effects(pure)
 {
@@ -319,8 +294,6 @@ private fn unwrap(@Option<Int> -> @Int)
     def test_adt_with_binding(self) -> None:
         """Binding pattern is a catch-all → exhaustive."""
         _check_ok("""
-private data Option<T> { None, Some(T) }
-
 private fn unwrap(@Option<Int> -> @Int)
   requires(true) ensures(true) effects(pure)
 {
@@ -538,8 +511,6 @@ private fn foo(@Color -> @Int)
     def test_constructor_pattern_arity_mismatch(self) -> None:
         """Constructor pattern with wrong number of sub-patterns (lines 299-305)."""
         _check_err("""
-private data Option<T> { None, Some(T) }
-
 private fn foo(@Option<Int> -> @Int)
   requires(true) ensures(true) effects(pure)
 {
@@ -667,8 +638,6 @@ class TestBidirectionalInference:
     def test_none_return_resolves_option(self) -> None:
         """None as function return resolves to Option<Int>."""
         _check_ok("""
-private data Option<T> { None, Some(T) }
-
 private fn nothing(-> @Option<Int>)
   requires(true) ensures(true) effects(pure)
 { None }
@@ -677,8 +646,6 @@ private fn nothing(-> @Option<Int>)
     def test_if_none_some_resolves(self) -> None:
         """If-else with None/Some(42): None resolves from Some branch."""
         _check_ok("""
-private data Option<T> { None, Some(T) }
-
 private fn maybe(@Bool -> @Option<Int>)
   requires(true) ensures(true) effects(pure)
 {
@@ -689,8 +656,6 @@ private fn maybe(@Bool -> @Option<Int>)
     def test_if_some_none_resolves(self) -> None:
         """If-else with Some(42)/None: None resolves from Some branch."""
         _check_ok("""
-private data Option<T> { None, Some(T) }
-
 private fn maybe(@Bool -> @Option<Int>)
   requires(true) ensures(true) effects(pure)
 {
@@ -701,8 +666,6 @@ private fn maybe(@Bool -> @Option<Int>)
     def test_match_none_arm_resolves(self) -> None:
         """Match arm returning None resolves from expected return type."""
         _check_ok("""
-private data Option<T> { None, Some(T) }
-
 private fn flip(@Option<Int> -> @Option<Int>)
   requires(true) ensures(true) effects(pure)
 {
@@ -716,8 +679,6 @@ private fn flip(@Option<Int> -> @Option<Int>)
     def test_let_binding_resolves(self) -> None:
         """let @Option<Int> = None resolves TypeVar from declared type."""
         _check_ok("""
-private data Option<T> { None, Some(T) }
-
 private fn f(-> @Option<Int>)
   requires(true) ensures(true) effects(pure)
 {
@@ -739,8 +700,6 @@ private fn empty(-> @List<Int>)
     def test_err_resolves_result(self) -> None:
         """Err(msg) resolves T in Result<Int, String> from return type."""
         _check_ok("""
-private data Result<T, E> { Ok(T), Err(E) }
-
 private fn fail(@String -> @Result<Int, String>)
   requires(true) ensures(true) effects(pure)
 { Err(@String.0) }
@@ -749,8 +708,6 @@ private fn fail(@String -> @Result<Int, String>)
     def test_nested_some_none_resolves(self) -> None:
         """Nested Some(None) resolves from Option<Option<Int>>."""
         _check_ok("""
-private data Option<T> { None, Some(T) }
-
 private fn nested(-> @Option<Option<Int>>)
   requires(true) ensures(true) effects(pure)
 { Some(None) }
@@ -759,8 +716,6 @@ private fn nested(-> @Option<Option<Int>>)
     def test_none_as_fn_arg_resolves(self) -> None:
         """None passed as function argument resolves from param type."""
         _check_ok("""
-private data Option<T> { None, Some(T) }
-
 private fn id(@Option<Int> -> @Option<Int>)
   requires(true) ensures(true) effects(pure)
 { @Option<Int>.0 }
@@ -773,8 +728,6 @@ private fn test(-> @Option<Int>)
     def test_none_with_wrong_expected_errors(self) -> None:
         """None resolved to Option<Int> should not match Int return."""
         _check_err("""
-private data Option<T> { None, Some(T) }
-
 private fn bad(-> @Int)
   requires(true) ensures(true) effects(pure)
 { None }
@@ -783,8 +736,6 @@ private fn bad(-> @Int)
     def test_block_threads_expected(self) -> None:
         """Expected type threads through block to tail expression."""
         _check_ok("""
-private data Option<T> { None, Some(T) }
-
 private fn f(@Int -> @Option<Int>)
   requires(true) ensures(true) effects(pure)
 {
@@ -796,8 +747,6 @@ private fn f(@Int -> @Option<Int>)
     def test_ok_resolves_result(self) -> None:
         """Ok(42) resolves E in Result<Int, String> from return type."""
         _check_ok("""
-private data Result<T, E> { Ok(T), Err(E) }
-
 private fn succeed(-> @Result<Int, String>)
   requires(true) ensures(true) effects(pure)
 { Ok(42) }
@@ -808,7 +757,6 @@ private fn succeed(-> @Result<Int, String>)
     def test_nested_generic_ctor_let_binding(self) -> None:
         """Cons(None, Nil) resolves via annotated let binding (#243)."""
         _check_ok("""
-private data Option<T> { None, Some(T) }
 private data List<T> { Nil, Cons(T, List<T>) }
 
 private fn f(-> @List<Option<Int>>)
@@ -822,7 +770,6 @@ private fn f(-> @List<Option<Int>>)
     def test_nested_generic_ctor_fn_arg(self) -> None:
         """Cons(None, Nil) resolves as non-generic function argument (#243)."""
         _check_ok("""
-private data Option<T> { None, Some(T) }
 private data List<T> { Nil, Cons(T, List<T>) }
 
 private fn id(@List<Option<Int>> -> @List<Option<Int>>)
@@ -837,7 +784,6 @@ private fn test(-> @List<Option<Int>>)
     def test_nested_generic_ctor_return_context(self) -> None:
         """Cons(None, Nil) resolves from return type context (#243)."""
         _check_ok("""
-private data Option<T> { None, Some(T) }
 private data List<T> { Nil, Cons(T, List<T>) }
 
 private fn f(-> @List<Option<Int>>)
@@ -848,7 +794,6 @@ private fn f(-> @List<Option<Int>>)
     def test_deeper_nested_generic_ctor(self) -> None:
         """Cons(Some(None), Nil) resolves deeper nesting (#243)."""
         _check_ok("""
-private data Option<T> { None, Some(T) }
 private data List<T> { Nil, Cons(T, List<T>) }
 
 private fn f(-> @List<Option<Option<Int>>>)

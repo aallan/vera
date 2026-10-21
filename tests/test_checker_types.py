@@ -2486,12 +2486,10 @@ class TestGenericOverUnitRejected900:
 
     def test_user_override_of_prelude_name_over_unit_rejected(self) -> None:
         # Release review (CodeRabbit): a USER `forall<T>` override of a
-        # prelude name (`option_map`) that READS `@T` is a genuine cloned
-        # `@T`-slot body, so instantiating it at bare Unit must trip E206.
-        # The pre-fix name-based built-in exclusion skipped any name in the
-        # registry, letting this check-green program crash codegen with a
-        # dangling-slot E699.  The discriminator is `forall_vars_read`
-        # (empty for the hand-written built-in, populated for the override).
+        # prelude name (`option_map`) that READS `@T` was a cloned `@T`-slot
+        # body, and the name-based built-in exclusion let it crash codegen
+        # with a dangling-slot E699.  The prelude's function names are
+        # reserved now (#1469), so the declaration itself is refused.
         errs = _errors(
             "private forall<T> fn option_map(@T -> @T)\n"
             "  requires(true) ensures(true) effects(pure) { @T.0 }\n"
@@ -2499,8 +2497,8 @@ class TestGenericOverUnitRejected900:
             "  requires(true) ensures(true) effects(pure) { option_map(()) }\n"
         )
         codes = {e.error_code for e in errs}
-        assert "E206" in codes, \
-            f"user override of a prelude name over Unit must be E206, got {codes}"
+        assert "E151" in codes, \
+            f"a declaration of a prelude name must be E151, got {codes}"
 
     # ---- The @T-not-read cases: VALID at T=Unit, must be ACCEPTED ----
     # A `@T` parameter that the body never reads erases cleanly from the WASM
