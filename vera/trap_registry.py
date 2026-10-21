@@ -842,7 +842,7 @@ SAFE_NATIVE_SITES: tuple[NativeSite, ...] = (
 KNOWN_TRAP_DEFECTS: tuple[NativeSite, ...] = (
     NativeSite(
         "wasm/calls_strings.py:_float_to_string_core", "i64.trunc_f64_s", 1,
-        "#1698 (#1482): the integer part of a finite value of magnitude 2^63 or "
+        "#1502: the integer part of a finite value of magnitude 2^63 or "
         "more does not fit the i64 the digit loop runs over, so the total "
         "`float_to_string` traps, as float_conversion",
         kind="float_conversion",

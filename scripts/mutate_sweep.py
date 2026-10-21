@@ -36,9 +36,12 @@ in ``JOBS`` parallel jobs and carries what each decided:
    badge's ``mutation.json`` (``summary``), which a pull request commits, and
    the next cycle starts.
 
-A night that decides nothing, a slice whose engine or lane failed, and a slice
-whose record is missing exit 2, and the workflow files a tracking issue;
-survivors are the measurement, never a failure.
+A night that decides nothing and a slice whose engine or lane failed exit 2,
+and the workflow files a tracking issue; survivors are the measurement, never
+a failure.  A slice whose record is missing (its runner was lost before it
+uploaded one) is noted and its work waits for the next night, unless more than
+one is missing in a night or more than LOST_LIMIT over LOST_WINDOW_NIGHTS
+nights, which is a hazard the night reports.
 
 Usage:
     python scripts/mutate_sweep.py night --slice 0 --of 1 --state DIR --out DIR
@@ -61,6 +64,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import time
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -124,6 +128,24 @@ CUT_SHORT = frozenset({"segfault", "suspicious"})
 
 #: The nights the state keeps a line for.
 KEPT_NIGHTS = 120
+
+#: A slice with no record is one whose job ended before it uploaded anything:
+#: a hosted runner taken away under it (the nights of 19 and 20 October 2026,
+#: #1751), or a lane that failed before the sweep ran.  One a night is noted
+#: and its work waits for the next night; more than one in a night, or more
+#: than LOST_LIMIT over the last LOST_WINDOW_NIGHTS nights (that night
+#: included), stops the night short.
+LOST_WINDOW_NIGHTS = 7
+LOST_LIMIT = 3
+
+#: Seconds between the heartbeat lines a slice prints while the engine runs:
+#: the elapsed time, the runner's available memory, swap and load, and the
+#: engine's last status.  A lost runner uploads no record, so what the job
+#: printed is all that survives of it, and the log outlives the runner.
+HEARTBEAT_S = 300.0
+
+#: Characters of the engine's status a heartbeat line carries.
+STATUS_WIDTH = 120
 
 #: The most mutants the state accepts for one function (the largest
 #: measured is ``TypeEnv._register_builtins``'s 1,661).
@@ -286,8 +308,15 @@ def check_unit(ident: Any, record: Any) -> None:
 
 
 def _check_night(night: Any) -> None:
-    rec = _keys(night, {"date", "head", "jobs", "moved", "slices", "problems", "notes", "closed"},
-                "a night")
+    keys = {"date", "head", "jobs", "moved", "slices", "problems", "notes", "closed"}
+    # The lost slices entered the line on 2026-10-21 (#1751); the lines the
+    # workflow's artifacts hold from before have none, and still load.
+    if isinstance(night, dict) and "lost" in night:
+        keys.add("lost")
+    rec = _keys(night, keys, "a night")
+    lost = rec.get("lost", [])
+    _check(isinstance(lost, list) and len(lost) == len(set(lost)) <= MAX_JOBS
+           and all(type(n) is int and 0 <= n < MAX_JOBS for n in lost), "a night's lost slices")
     _text(rec["date"], _DATE, "a night's date")
     _text(rec["head"], _HEX40, "a night's head")
     _int(rec["jobs"], 1, MAX_JOBS, "a night's jobs")
@@ -580,6 +609,88 @@ def _whole_tree(tree: Path) -> list[str]:
     return sorted(p.name for p in tree.iterdir() if p.name not in ("vera", "mutants"))
 
 
+def _meminfo_kb(text: str) -> dict[str, int]:
+    """``/proc/meminfo``'s fields, in kB."""
+    fields: dict[str, int] = {}
+    for line in text.splitlines():
+        name, _, rest = line.partition(":")
+        parts = rest.split()
+        if parts and parts[0].isdigit():
+            fields[name.strip()] = int(parts[0])
+    return fields
+
+
+def heartbeat_line(elapsed_s: float, status: str | None, meminfo: str | None,
+                   loadavg: str | None) -> str:
+    """One heartbeat line: the elapsed time as ``+H:MM``, then what the
+    platform can say (the texts of ``/proc/meminfo`` and ``/proc/loadavg``)
+    and the engine's last status, each part left out where it is absent."""
+    minutes = int(elapsed_s) // 60
+    parts = [f"heartbeat +{minutes // 60}:{minutes % 60:02d}"]
+    mem = _meminfo_kb(meminfo) if meminfo else {}
+    if "MemAvailable" in mem and "MemTotal" in mem:
+        parts.append(f"mem avail {round(mem['MemAvailable'] / 1024):,} of {round(mem['MemTotal'] / 1024):,} MiB")
+    if "SwapTotal" in mem and "SwapFree" in mem:
+        parts.append(f"swap used {round((mem['SwapTotal'] - mem['SwapFree']) / 1024):,} of "
+                     f"{round(mem['SwapTotal'] / 1024):,} MiB")
+    if loadavg and len(loadavg.split()) >= 3:
+        parts.append("load " + " ".join(loadavg.split()[:3]))
+    if status:
+        parts.append(f"engine: {status}")
+    return " | ".join(parts)
+
+
+def _attempt(log: Path) -> int:
+    try:
+        return int(log.stem.rsplit("-", 1)[-1])
+    except ValueError:
+        return -1
+
+
+def engine_status(workdir: Path) -> str | None:
+    """The last row of the newest engine log in ``workdir`` (the highest
+    attempt), its spinner frame stripped: what mutmut was last doing."""
+    logs = sorted(workdir.glob("mutmut-run-*.log"), key=_attempt)
+    if not logs:
+        return None
+    with logs[-1].open("rb") as fh:
+        fh.seek(0, io.SEEK_END)
+        fh.seek(max(0, fh.tell() - 8192))
+        text = fh.read().decode("utf-8", errors="replace")
+    rows = [r.strip() for r in re.split(r"[\r\n]+", text) if r.strip()]
+    if not rows:
+        return None
+    return re.sub(r"^[\u2800-\u28ff]\s*", "", rows[-1])[:STATUS_WIDTH] or None
+
+
+def _proc_text(path: str) -> str | None:
+    try:
+        return Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
+class Heartbeat(threading.Thread):
+    """A line to stdout every ``every_s`` seconds until stopped: the job log
+    keeps them when the runner is lost, which uploads no record."""
+
+    def __init__(self, every_s: float, workdir: Path) -> None:
+        super().__init__(name="sweep-heartbeat", daemon=True)
+        self.every_s = every_s
+        self.workdir = workdir
+        self.started_at = time.monotonic()
+        self._stopping = threading.Event()
+
+    def run(self) -> None:
+        while not self._stopping.wait(self.every_s):
+            print(heartbeat_line(time.monotonic() - self.started_at, engine_status(self.workdir),
+                                 _proc_text("/proc/meminfo"), _proc_text("/proc/loadavg")), flush=True)
+
+    def stop(self) -> None:
+        self._stopping.set()
+        self.join(timeout=max(5.0, self.every_s))
+
+
 def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: list[str],
               today: str) -> dict[str, Any]:
     """Plan the night and run slice ``args.slice``'s bin: its record."""
@@ -623,12 +734,20 @@ def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: li
     pyproject = tree / "pyproject.toml"
     config = pyproject.read_text(encoding="utf-8")
     also_copy = _whole_tree(tree)
-    run, log, dropped = md.run_dropping(
-        [*engine, "run", "--max-children", str(args.max_children), *engine_targets(picks)],
-        tree=tree, pyproject=pyproject, budget_s=args.budget, workdir=workdir, env=env,
-        config_for=lambda dropped: md.rewrite_config(
-            config, only_mutate=files, extra_tests=selection, also_copy=also_copy,
-            extra_args=[f"--deselect={test}" for test in dropped]))
+    every = float(getattr(args, "heartbeat", HEARTBEAT_S))
+    beat = Heartbeat(every, workdir) if every > 0 else None
+    if beat is not None:
+        beat.start()
+    try:
+        run, log, dropped = md.run_dropping(
+            [*engine, "run", "--max-children", str(args.max_children), *engine_targets(picks)],
+            tree=tree, pyproject=pyproject, budget_s=args.budget, workdir=workdir, env=env,
+            config_for=lambda dropped: md.rewrite_config(
+                config, only_mutate=files, extra_tests=selection, also_copy=also_copy,
+                extra_args=[f"--deselect={test}" for test in dropped]))
+    finally:
+        if beat is not None:
+            beat.stop()
     record["engine_s"] = round(time.monotonic() - started, 1)
     record["dropped_tests"] = dropped
     if skips.exists():
@@ -786,6 +905,12 @@ def calibrate(state: dict[str, Any], records: Sequence[Mapping[str, Any]],
         state["calibration"] = round(min(max((old + ratio) / 2, 0.2), 5.0), 3)
 
 
+def _listed(numbers: Sequence[int]) -> str:
+    """``1``, ``1 and 2``, ``1, 2 and 3``."""
+    words = [str(n) for n in numbers]
+    return words[0] if len(words) == 1 else ", ".join(words[:-1]) + " and " + words[-1]
+
+
 def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[str, Any]], *,
            jobs: int, head: str, units: Sequence[SweepUnit], today: str,
            ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -815,14 +940,24 @@ def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[s
         else:
             seen.add(record["slice"])
             valid.append(record)
-    missing = sorted(set(range(jobs)) - seen)
-    if missing:
-        problems.append(f"no record from slice(s) {', '.join(map(str, missing))}")
+    # A slice with no record: its job ended before it uploaded anything (a
+    # hosted runner taken away under it, #1751).  Its work waits for the next
+    # night's plan and the night goes on; more than one in a night, or more
+    # than LOST_LIMIT over the last LOST_WINDOW_NIGHTS nights, is a hazard
+    # the night reports, on a night that lost one.
+    lost = sorted(set(range(jobs)) - seen)
+    notes: list[str] = [f"slice {n}: no record; its work waits for the next night" for n in lost]
+    if len(lost) > 1:
+        problems.append(f"no record from slices {_listed(lost)}: more than one in a night")
+    recent = [len(n.get("lost", [])) for n in state_in.get("nights", [])[-(LOST_WINDOW_NIGHTS - 1):]]
+    recent.append(len(lost))
+    if lost and sum(recent) > LOST_LIMIT:
+        problems.append(f"slices with no record over the last {len(recent)} nights: {sum(recent)}, "
+                        f"more than {LOST_LIMIT}")
     # A slice whose lane failed reports no engine; when none reports one,
     # the state keeps its own.
     engine: str | None = next((str(r["engine"]) for r in valid if r.get("engine")), None)
     state = reconcile(state_in, units, engine)
-    notes: list[str] = []
     if engine is not None and state_in.get("engine") not in (None, engine):
         # Every function starts afresh under another engine: the cycle does.
         notes.append(f"mutmut {state_in.get('engine')} gave way to {engine}: every function "
@@ -839,7 +974,7 @@ def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[s
         problems.append("the night planned nothing while the cycle is open")
     calibrate(state, valid, {u.ident: u for u in units})
     closed = close_cycle(state, units, head=head, today=today) if not problems else False
-    night = {"date": today, "head": head, "jobs": jobs, "moved": added,
+    night = {"date": today, "head": head, "jobs": jobs, "moved": added, "lost": lost,
              "slices": [{"slice": r["slice"], "planned": len(r.get("planned", [])),
                          "decided": decided_count(r), "stopped": r.get("stopped"),
                          "engine_s": r.get("engine_s"), "dropped_tests": r.get("dropped_tests", []),
@@ -950,6 +1085,10 @@ def render_night(state: Mapping[str, Any], night: Mapping[str, Any],
         out += ["| Slice | Units | Decided | Stopped | Engine s |", "|---:|---:|---:|---|---:|"]
         out += [f"| {s['slice']} | {s['planned']} | {s['decided']} | {s['stopped'] or ''} | "
                 f"{s['engine_s'] or 0:.0f} |" for s in night["slices"]]
+        out.append("")
+    if night.get("lost"):
+        out.append(f"Slice(s) {', '.join(map(str, night['lost']))} sent no record (the job ended before it "
+                   "uploaded one); their work waits for the next night.")
         out.append("")
     if night["problems"]:
         out.append("**Stopped short:**")
@@ -1100,6 +1239,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                        help=f"wall-clock seconds for mutmut (default {DEFAULT_BUDGET_S})")
     night.add_argument("--max-children", type=int, default=os.cpu_count() or 1,
                        help="mutmut's parallel workers (default: every CPU)")
+    night.add_argument("--heartbeat", type=float, default=HEARTBEAT_S,
+                       help=f"seconds between heartbeat lines while the engine runs, 0 for none "
+                            f"(default {HEARTBEAT_S:g})")
     night.add_argument("--repo", default=str(ROOT), help="the repository (default: this one)")
     night.add_argument("--workdir", help="an empty or absent directory for the scratch tree")
     night.add_argument("--summary", help="append the Markdown summary here")

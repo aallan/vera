@@ -363,7 +363,7 @@
       "issues": [351],
       "rows": {
         "KNOWN_ISSUES.md#limitations": [
-          "`Http.get`/`Http.post` send fixed headers — callers cannot add custom ones such as `Authorization`. Http responses surface only the body — status codes are not accessible, so callers cannot distinguish a 404 from a 500. Http requests have no per-request timeout control; a hung server hangs the program. The browser runtime implements Http via deprecated synchronous XMLHttpRequest, which browsers throttle; the fix is blocked (see the issue's relationships). Http supports GET and POST only — no PUT, PATCH, or DELETE. Milestone 2 Http-hardening work."
+          "`Http.get`/`Http.post` send fixed headers — callers cannot add custom ones such as `Authorization`. Http responses surface only the body — status codes are not accessible, so callers cannot distinguish a 404 from a 500. Http requests have no per-request timeout control: the native runtime gives up after a fixed 60 seconds, which a caller cannot change. The browser runtime implements Http via deprecated synchronous XMLHttpRequest, which browsers throttle; the fix is blocked (see the issue's relationships). Http supports GET and POST only — no PUT, PATCH, or DELETE. Milestone 2 Http-hardening work."
         ],
         "spec/09-standard-library.md#limitations": [
           "`Http`: fixed request headers — no custom header support; `Http`: response status codes are not accessible; `Http`: no per-request timeout control; `Http`: browser runtime uses deprecated synchronous XMLHttpRequest; `Http`: GET and POST only — no PUT, PATCH, or DELETE"
