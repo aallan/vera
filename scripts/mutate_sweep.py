@@ -38,10 +38,12 @@ in ``JOBS`` parallel jobs and carries what each decided:
 
 A night that decides nothing and a slice whose engine or lane failed exit 2,
 and the workflow files a tracking issue; survivors are the measurement, never
-a failure.  A slice whose record is missing (its runner was lost before it
-uploaded one) is noted and its work waits for the next night, unless more than
-one is missing in a night or more than LOST_LIMIT over LOST_WINDOW_NIGHTS
-nights, which is a hazard the night reports.
+a failure.  A step that fails before the sweep runs, while the runner is still
+there, writes a lane record (``lane-failed``), reported like any other.  A
+slice whose record is missing (its runner was lost before it could upload
+one) is noted and its work waits for the next night, unless more than one is
+missing in a night or more than LOST_LIMIT over LOST_WINDOW_NIGHTS nights,
+which is a hazard the night reports.
 
 Usage:
     python scripts/mutate_sweep.py night --slice 0 --of 1 --state DIR --out DIR
@@ -129,12 +131,12 @@ CUT_SHORT = frozenset({"segfault", "suspicious"})
 #: The nights the state keeps a line for.
 KEPT_NIGHTS = 120
 
-#: A slice with no record is one whose job ended before it uploaded anything:
-#: a hosted runner taken away under it (the nights of 19 and 20 October 2026,
-#: #1751), or a lane that failed before the sweep ran.  One a night is noted
-#: and its work waits for the next night; more than one in a night, or more
-#: than LOST_LIMIT over the last LOST_WINDOW_NIGHTS nights (that night
-#: included), stops the night short.
+#: A slice with no record is one whose runner was taken away before it could
+#: upload anything (the nights of 19 and 20 October 2026, #1751): a step that
+#: fails while the runner is still there writes a lane record instead.  One
+#: a night is noted and its work waits for the next night; more than one in a
+#: night, or more than LOST_LIMIT over the last LOST_WINDOW_NIGHTS nights
+#: (that night included), stops the night short.
 LOST_WINDOW_NIGHTS = 7
 LOST_LIMIT = 3
 
@@ -929,11 +931,16 @@ def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[s
         except StateError as exc:
             problems.append(f"{where}: a malformed record: {exc}")
             continue
+        # A lane that failed planned nothing and holds no result, so its head
+        # (none, when the failure came before it was read) and its state
+        # digest are nothing to check: the record says what failed.
+        empty_lane = (record.get("stopped") == "lane" and not record.get("planned")
+                      and not record.get("results"))
         if record.get("of") != jobs:
             problems.append(f"{where}: not a record of this night's {jobs} slices")
-        elif record.get("head") != head:
+        elif not empty_lane and record.get("head") != head:
             problems.append(f"{where}: ran {record.get('head')}, not {head}")
-        elif record.get("state_in") != digest:
+        elif not empty_lane and record.get("state_in") != digest:
             problems.append(f"{where}: planned from another state")
         elif record["slice"] in seen:
             problems.append(f"{where}: two records")
@@ -967,10 +974,14 @@ def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[s
     for record in valid:
         added += merge(state, record, problems, notes)
         if record.get("stopped") not in (None, "budget"):
-            problems.append(f"slice {record['slice']}: stopped by the {record['stopped']}")
+            why = record.get("engine_tail") or []
+            problems.append(f"slice {record['slice']}: stopped by the {record['stopped']}"
+                            + (f": {why[0]}" if record["stopped"] == "lane" and why else ""))
     if not problems and added == 0 and any(r.get("planned") for r in valid):
         problems.append("the night decided no mutant and counted no function")
-    if not any(r.get("planned") for r in valid) and not complete(state, units):
+    # A lost slice may have held the night's whole plan, so this is read only
+    # from a night every slice reported.
+    if not lost and not any(r.get("planned") for r in valid) and not complete(state, units):
         problems.append("the night planned nothing while the cycle is open")
     calibrate(state, valid, {u.ident: u for u in units})
     closed = close_cycle(state, units, head=head, today=today) if not problems else False
@@ -1125,6 +1136,42 @@ def _state_file(directory: str | None) -> Path | None:
     return Path(directory) / STATE_FILE if directory else None
 
 
+def lane_record(slice_: int, of: int, *, head: str | None, state_path: Path | None,
+                budget_s: float, why: str) -> dict[str, Any]:
+    """The record of a slice whose lane failed: it planned nothing and decided
+    nothing, and ``why`` is what the stitch reports."""
+    return {"schema": SCHEMA, "slice": slice_, "of": of, "head": head,
+            "state_in": state_digest(state_path), "engine": None, "budget_s": budget_s,
+            "planned": [], "results": {}, "stopped": "lane", "engine_tail": [why],
+            "dropped_tests": [], "subprocess_tests": []}
+
+
+def cmd_lane_failed(args: argparse.Namespace) -> int:
+    """Write slice ``--slice``'s record as a lane that failed before the sweep
+    ran (a step before it failed while the runner was still there), unless
+    the sweep wrote one itself: the stitch then reports the slice rather than
+    reading its missing record as a runner that was lost."""
+    out = Path(args.out).resolve()
+    path = out / f"slice-{args.slice}.json"
+    if path.exists():
+        print(f"{path} exists: the sweep wrote its own record")
+        return 0
+    out.mkdir(parents=True, exist_ok=True)
+    head: str | None
+    try:
+        head = md._git(Path(args.repo).resolve(), "rev-parse", "--verify", "HEAD^{commit}").strip()
+    except (md.LaneError, OSError):  # git itself may be what failed; the record says so with no head
+        head = None
+    record = lane_record(args.slice, args.of, head=head, state_path=_state_file(args.state),
+                         budget_s=args.budget, why=args.why)
+    path.write_text(json.dumps(record, indent=1, sort_keys=True, ensure_ascii=False) + "\n",
+                    encoding="utf-8")
+    report = render_slice(record)
+    print(report)
+    _write(args.summary, report)
+    return 0
+
+
 def cmd_night(args: argparse.Namespace) -> int:
     repo = Path(args.repo).resolve()
     out = Path(args.out).resolve()
@@ -1144,11 +1191,9 @@ def cmd_night(args: argparse.Namespace) -> int:
         import traceback
 
         traceback.print_exc()
-        record = {"schema": SCHEMA, "slice": args.slice, "of": args.of, "head": None,
-                  "state_in": state_digest(Path(args.state) if args.state else None),
-                  "engine": None, "budget_s": args.budget, "planned": [], "results": {},
-                  "stopped": "lane", "engine_tail": [f"{type(exc).__name__}: {exc}"],
-                  "dropped_tests": [], "subprocess_tests": []}
+        record = lane_record(args.slice, args.of, head=None,
+                             state_path=Path(args.state) if args.state else None,
+                             budget_s=args.budget, why=f"{type(exc).__name__}: {exc}")
     (out / f"slice-{args.slice}.json").write_text(
         json.dumps(record, indent=1, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
     report = render_slice(record)
@@ -1246,6 +1291,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     night.add_argument("--workdir", help="an empty or absent directory for the scratch tree")
     night.add_argument("--summary", help="append the Markdown summary here")
     night.add_argument("--engine", nargs="+", help="the mutmut command")
+    lane = sub.add_parser("lane-failed", help="record a slice whose lane failed before the sweep ran")
+    lane.add_argument("--slice", type=int, default=0, help="this job's slice (default 0)")
+    lane.add_argument("--of", type=int, default=1, help="the night's slices (default 1)")
+    lane.add_argument("--state", help="the directory holding the last state (none: cycle 1)")
+    lane.add_argument("--out", required=True, help="the directory for slice-<n>.json")
+    lane.add_argument("--budget", type=float, default=DEFAULT_BUDGET_S, help="the slice's budget, seconds")
+    lane.add_argument("--repo", default=str(ROOT), help="the repository (default: this one)")
+    lane.add_argument("--why", required=True, help="what failed, for the stitch's report")
+    lane.add_argument("--summary", help="append the Markdown summary here")
     stitch_p = sub.add_parser("stitch", help="fold the night's slices into the state")
     stitch_p.add_argument("--state", help="the directory holding the last state (none: cycle 1)")
     stitch_p.add_argument("--slices", help="the directory holding the night's slice-<n>.json")
@@ -1265,10 +1319,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     matrix.add_argument("--event", required=True, help="the event that started the run")
     matrix.add_argument("--requested", default="", help="the dispatch's jobs input")
     args = parser.parse_args(argv)
-    if args.command in ("night", "stitch") and not 0 <= getattr(args, "slice", 0) < args.of:
+    if args.command in ("night", "stitch", "lane-failed") and not 0 <= getattr(args, "slice", 0) < args.of:
         parser.error("--slice must be at least 0 and less than --of")
     commands = {"night": cmd_night, "stitch": cmd_stitch, "summary": cmd_summary,
-                "matrix": cmd_matrix, "find-state": cmd_find_state}
+                "matrix": cmd_matrix, "find-state": cmd_find_state, "lane-failed": cmd_lane_failed}
     return commands[args.command](args)
 
 

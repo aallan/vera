@@ -145,6 +145,23 @@ jobs:
           --out "$RUNNER_TEMP/slice"
           --summary "$GITHUB_STEP_SUMMARY"
 
+      # A step before the sweep that fails while the runner is still there
+      # (the install, the sweep's own tests, the state download) leaves no
+      # record either; this one writes a lane record in its place, so the
+      # stitch reports the slice rather than reading it as a lost runner.
+      - name: Record a lane that failed before the sweep ran
+        if: failure()
+        env:
+          SLICE: ${{ matrix.slice }}
+          JOBS: ${{ needs.setup.outputs.jobs }}
+        run: >-
+          python scripts/mutate_sweep.py lane-failed
+          --slice "$SLICE" --of "$JOBS"
+          --state "$RUNNER_TEMP/state-in"
+          --out "$RUNNER_TEMP/slice"
+          --why "a step before the sweep failed"
+          --summary "$GITHUB_STEP_SUMMARY"
+
       - name: Upload the slice's record
         if: always()
         uses: actions/upload-artifact@v7

@@ -559,6 +559,24 @@ class TestStitch:
         assert night["lost"] == [1, 2]
         assert night["problems"] == ["no record from slices 1 and 2: more than one in a night"]
 
+    def test_a_lane_that_failed_before_planning_is_reported_whatever_its_head_or_state(self) -> None:
+        """A step before the sweep that fails while the runner is still there
+        writes a lane record (the workflow's `lane-failed` step), which may
+        carry no head and a state digest of none: it planned nothing and
+        holds no result, so there is nothing for those to be wrong about, and
+        the stitch reports the lane and its reason."""
+        good = _record(0, 2, {A.ident: {"hash": H, "mutants": 4, "statuses": {"1": "killed"}}})
+        failed = _record(1, 2, {}, stopped="lane", digest="f" * 64, planned=0)
+        failed["head"], failed["engine"], failed["engine_tail"] = None, None, ["a step before the sweep failed"]
+        state, night = _stitch([good, failed])
+        assert night["problems"] == ["slice 1: stopped by the lane: a step before the sweep failed"]
+        assert night["lost"] == [] and state["units"][A.ident]["statuses"] == {"1": "killed"}
+
+    def test_a_night_whose_plan_sat_in_the_lost_slice_is_not_a_night_that_planned_nothing(self) -> None:
+        state = _state(f=4)  # work remains, and slice 0, which held it, sent no record
+        _, night = _stitch([_record(1, 2, {}, planned=0)], state)
+        assert night["lost"] == [0] and night["problems"] == []
+
     def test_slices_lost_too_often_stop_the_night_short(self) -> None:
         """One lost slice a night is weather.  More than ``LOST_LIMIT`` over
         the last ``LOST_WINDOW_NIGHTS`` nights, this one included, is a
@@ -862,6 +880,16 @@ class TestWorkflow:
         assert record["if"] == "always()"
         assert record["with"]["name"] == "mutation-sweep-slice-${{ matrix.slice }}"
 
+    def test_a_lane_that_fails_before_the_sweep_records_itself_while_the_runner_is_there(self) -> None:
+        steps = self._steps("sweep")
+        names = [s.get("name") for s in steps]
+        i = names.index("Record a lane that failed before the sweep ran")
+        assert names[i - 1] == "Mutate this slice of the night" and names[i + 1] == "Upload the slice's record"
+        step = steps[i]
+        assert step["if"] == "failure()" and "scripts/mutate_sweep.py lane-failed" in step["run"]
+        assert '--slice "$SLICE" --of "$JOBS"' in step["run"] and '--out "$RUNNER_TEMP/slice"' in step["run"]
+        assert step["env"] == {"SLICE": "${{ matrix.slice }}", "JOBS": "${{ needs.setup.outputs.jobs }}"}
+
     def test_the_tracking_issue_is_filed_only_for_a_scheduled_night_that_stopped_short(self) -> None:
         issue = self._wf()["jobs"]["issue"]
         assert issue["needs"] == ["setup", "sweep", "stitch"]
@@ -1149,6 +1177,30 @@ class TestEndToEnd:
         assert threading.active_count() == threads  # it stopped with the engine
         if sys.platform == "linux":  # the runners' platform: /proc is read
             assert all("mem avail" in b and "swap used" in b and "load" in b for b in beats), beats
+
+    def test_a_lane_that_fails_before_the_sweep_leaves_a_record_the_stitch_reports(
+        self, repo: Path, tmp_path: Path,
+    ) -> None:
+        out = tmp_path / "slice"
+        state_dir = tmp_path / "state-in"
+        sw.save_state(sw.empty_state("2026-10-16"), state_dir)
+        args = ["lane-failed", "--slice", "1", "--of", "2", "--repo", str(repo), "--out", str(out),
+                "--state", str(state_dir), "--why", "a step before the sweep failed"]
+        assert sw.main(args) == 0
+        record = json.loads((out / "slice-1.json").read_text(encoding="utf-8"))
+        sw.check_record(record)
+        assert record["stopped"] == "lane" and record["engine_tail"] == ["a step before the sweep failed"]
+        assert record["head"] == _git(repo, "rev-parse", "HEAD").strip()
+        assert record["state_in"] == sw.state_digest(state_dir / sw.STATE_FILE) and record["planned"] == []
+        code = sw.main(["stitch", "--of", "2", "--repo", str(repo), "--slices", str(out),
+                        "--state", str(state_dir), "--out", str(tmp_path / "state-out")])
+        night = json.loads((tmp_path / "state-out" / sw.STATE_FILE).read_text(encoding="utf-8"))["nights"][-1]
+        assert code == 2 and night["lost"] == [0]
+        assert night["problems"] == ["slice 1: stopped by the lane: a step before the sweep failed"]
+        # A record the sweep wrote itself is left alone.
+        (out / "slice-1.json").write_text('{"kept": true}', encoding="utf-8")
+        assert sw.main(args) == 0
+        assert json.loads((out / "slice-1.json").read_text(encoding="utf-8")) == {"kept": True}
 
     def test_a_failure_of_the_lane_is_a_record_with_exit_two(self, repo: Path, tmp_path: Path) -> None:
         broken = tmp_path / "broken_engine.py"
