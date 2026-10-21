@@ -33,7 +33,7 @@
     "title": "String escape sequences",
     "level": "run",
     "spec_ref": "Section 1.2",
-    "expected_stdout": "hello\nworldcol1\tcol2back\\slashsay \"hi\"A\ncarriage return 13\nnul 0\ntwo-byte escape \u00e9 of 2 bytes\nescaped newline length 3\n",
+    "expected_stdout": "hello\nworldcol1\tcol2back\\slashsay \"hi\"A\ncarriage return 13\nnul 0\nbell escape 7\nno-break space escape of 2 bytes\ntwo-byte literal \u00e9 of 2 bytes\nescaped newline length 3\n",
     "expected_exit": 0,
     "features": [
       "string_escape",

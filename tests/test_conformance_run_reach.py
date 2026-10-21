@@ -11,9 +11,11 @@ two cells hold the run to the program:
 * every built-in function the entry's `features` names is called from a
   function the run reaches.
 
-Reachability is read from the parsed program, a call by its bare name
-resolving to a `where` helper of an enclosing function before a top-level
-one, as the checker resolves it.  What the cells cannot see is a check too
+Reachability is read from the parsed program.  A call is one by the rule
+every corpus walk shares (`vera.obligations.cache.called_name`): a bare
+call, or one qualified by the program's own module path, which names the
+file's own function.  Its name resolves to a `where` helper of an enclosing
+function before a top-level one, as the checker resolves it.  What the cells cannot see is a check too
 weak to tell a wrong value from a right one, or a header naming a feature
 the file does not contain; #1645's lines name those, and each program's
 `main` prints, for each case, the value it computed, which the entry's
@@ -30,7 +32,8 @@ import pytest
 from tests import pipeline
 from vera import ast
 from vera.builtins import BUILTINS
-from vera.obligations.cache import walk_nodes
+from vera.obligations.cache import called_name, walk_nodes
+from vera.resolver import own_module_path
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFORMANCE = ROOT / "tests" / "conformance"
@@ -74,8 +77,16 @@ LISTED: tuple[str, ...] = (
 CHECK_ONLY: dict[tuple[str, str], str] = {}
 
 
-def _program(entry_id: str) -> ast.Program:
-    return pipeline.parse(CONFORMANCE / str(MANIFEST[entry_id]["file"])).program
+def _program(entry_id: str) -> tuple[ast.Program, tuple[str, ...] | None]:
+    """The program, and the path a module-qualified call names its own file
+    by (`own_module_path`), which only a `module` declaration gives."""
+    path = CONFORMANCE / str(MANIFEST[entry_id]["file"])
+    program = pipeline.parse(path).program
+    if program.module is None:
+        return program, None
+    checked = pipeline.check(path)
+    return checked.program, own_module_path(
+        checked.program, None, checked.resolved or ())
 
 
 def _functions(program: ast.Program) -> dict[str, ast.FnDecl]:
@@ -94,13 +105,16 @@ def _functions(program: ast.Program) -> dict[str, ast.FnDecl]:
     return out
 
 
-def _calls(decl: ast.FnDecl) -> set[str]:
-    return {node.name for node in walk_nodes(decl.body)
-            if isinstance(node, ast.FnCall)}
+def _calls(decl: ast.FnDecl, own: tuple[str, ...] | None) -> set[str]:
+    return {name for node in walk_nodes(decl.body)
+            if (name := called_name(node, own)) is not None}
 
 
-def _run(program: ast.Program) -> tuple[set[str], set[str]]:
-    """(the functions the run reaches, the names they call), from `main`."""
+def _run(
+    program: ast.Program, own: tuple[str, ...] | None,
+) -> tuple[set[str], set[str]]:
+    """(the functions the run reaches, the names they call), from `main`;
+    *own* is the program's own module path."""
     functions = _functions(program)
     reached: set[str] = set()
     called: set[str] = set()
@@ -110,7 +124,7 @@ def _run(program: ast.Program) -> tuple[set[str], set[str]]:
         if key in reached:
             continue
         reached.add(key)
-        names = _calls(functions[key])
+        names = _calls(functions[key], own)
         called |= names
         scope = key.split(".")
         for name in names:
@@ -126,10 +140,10 @@ def _run(program: ast.Program) -> tuple[set[str], set[str]]:
 def test_the_run_reaches_every_function_the_program_defines(
     entry_id: str,
 ) -> None:
-    program = _program(entry_id)
+    program, own = _program(entry_id)
     functions = _functions(program)
     assert "main" in functions, f"{entry_id} has no `main` for `vera run`"
-    reached, _ = _run(program)
+    reached, _ = _run(program, own)
     unreached = sorted(
         name for name in set(functions) - reached
         if (entry_id, name) not in CHECK_ONLY)
@@ -142,7 +156,7 @@ def test_the_run_calls_every_builtin_the_entry_names(entry_id: str) -> None:
     features = MANIFEST[entry_id].get("features", [])
     assert isinstance(features, list)
     named = [f for f in features if f in BUILTINS]
-    _, called = _run(_program(entry_id))
+    _, called = _run(*_program(entry_id))
     assert not [f for f in named if f not in called], (
         f"`vera run` of {entry_id} calls none of "
         f"{[f for f in named if f not in called]}")
@@ -157,4 +171,4 @@ def test_check_only_names_listed_programs_and_their_functions() -> None:
     """A stale entry would exempt nothing and say it exempts something."""
     for (entry_id, name), why in CHECK_ONLY.items():
         assert entry_id in LISTED and why
-        assert name in _functions(_program(entry_id)), (entry_id, name)
+        assert name in _functions(_program(entry_id)[0]), (entry_id, name)
