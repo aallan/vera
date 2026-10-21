@@ -1,0 +1,178 @@
+name: Program generator
+
+# The program generator's three differentials (TESTING.md § Program
+# Generator): each of the night's seeds writes a program
+# (tests/program_generator.py), which tests/test_program_generator.py runs in
+# process through check, verify, compile, load, the reconciliation join and
+# `vera test --distrust`.  A find outside the known classes is minimised and
+# fails its seed's cell.  The night's report, and each seed's record (a
+# find's with its minimal program and what the generator expected of it),
+# are the `program-generator-night` artifact.
+#
+# It runs in three triggers:
+#
+# 1. The schedule, 14:17 UTC.  A scheduled run here starts two to five hours
+#    after its cron (measured over the five nights to 2026-10-21): the
+#    mutation sweep (cron 21:00) ran from about 23:00 to 05:00, ci.yml's
+#    nightly run (03:00) from about 07:15 to 09:00, and nightly-stress.yml
+#    (06:00) from about 10:00 to 12:00, so this one keeps clear of all three.
+#    A failed scheduled night files or updates one tracking issue, labelled
+#    `generator-find`, carrying the night's report.
+# 2. A pull request that changes the generator, its instrument or this
+#    workflow runs a short night, so they run here before they merge.  The
+#    pull request's checks show the result; no issue is filed.
+# 3. workflow_dispatch reruns the seeds its input names (`12,40-49`), or a
+#    night (`night:N`), and runs tonight's seeds when the input is empty.
+#    Whoever started it reads the run; no issue is filed.
+#
+# Every context value reaches a step through `env`, and the instrument's
+# seed parser refuses an input that is not seeds and ranges.
+
+on:
+  schedule:
+    - cron: "17 14 * * *"
+  pull_request:
+    branches: [main]
+    paths:
+      - "tests/program_generator.py"
+      - "tests/test_program_generator.py"
+      - ".github/workflows/nightly-generator.yml"
+  workflow_dispatch:
+    inputs:
+      seeds:
+        description: "Seeds to rerun (12,40-49), or night:N; empty runs tonight's"
+        type: string
+        default: ""
+
+# A pull request's run gives way to its next push; a night is never cancelled.
+concurrency:
+  group: nightly-generator-${{ github.event_name == 'pull_request' && github.ref || 'main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  night:
+    permissions:
+      contents: read
+      # `issues: write` is for the tracking-issue step, which runs on a
+      # failed scheduled night only.  Scoped to the job, as
+      # nightly-stress.yml scopes its own.
+      issues: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      # The night's seeds, sized to the per-program cost measured on this
+      # runner (TESTING.md § Program Generator) with the hour's margin.
+      NIGHT: "night:5000"
+      PULL_REQUEST_SEEDS: "0-999"
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      # The step stops short of the job's hour, so the report, the artifact
+      # and the tracking issue still run when a night overruns.
+      - name: Run the night
+        timeout-minutes: 45
+        env:
+          VERA_GENERATOR_SEEDS: ${{ github.event_name == 'pull_request' && env.PULL_REQUEST_SEEDS || inputs.seeds || env.NIGHT }}
+          VERA_GENERATOR_OUT: ${{ runner.temp }}/generator
+        run: pytest tests/test_program_generator.py -n auto --dist worksteal -p no:cacheprovider -q -rf
+
+      - name: Write the night's report
+        if: always()
+        env:
+          OUT: ${{ runner.temp }}/generator
+        run: |
+          mkdir -p "$OUT"
+          python -m tests.program_generator summarize "$OUT" > "$OUT/REPORT.md"
+          cat "$OUT/REPORT.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the night's records
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: program-generator-night
+          path: ${{ runner.temp }}/generator/
+          retention-days: 30
+
+      # Deduplicated on the label, as nightly-stress.yml's: an open issue
+      # carrying it gets a comment, and with none a fresh issue is filed.
+      # Open issues stay open until a maintainer closes them.
+      - name: Open or update the tracking issue on a failed scheduled night
+        if: failure() && github.event_name == 'schedule'
+        uses: actions/github-script@v9
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          COMMIT_SHA: ${{ github.sha }}
+          REPORT: ${{ runner.temp }}/generator/REPORT.md
+        with:
+          script: |
+            const fs = require("fs");
+            const LABEL = "generator-find";
+            const TITLE = "Nightly program generator finds on main (tracking)";
+            const sha = process.env.COMMIT_SHA;
+            let report;
+            try {
+              report = fs.readFileSync(process.env.REPORT, "utf8");
+            } catch (e) {
+              report = "The night wrote no report: a step before it failed.";
+            }
+            // An issue body or comment holds 65,536 characters; the
+            // artifact holds the whole report.
+            const LIMIT = 60000;
+            if (report.length > LIMIT) {
+              report = report.slice(0, LIMIT)
+                + "\n\n(The report continues in the run's `program-generator-night` artifact.)";
+            }
+            const body = [
+              `The nightly program generator failed against \`${sha.slice(0, 7)}\` (commit ${sha}).`,
+              ``,
+              `**Run**: ${process.env.RUN_URL}`,
+              ``,
+              "Each find below names its seed, the differential it failed, what the generator expected of the minimal program, and the program.  `VERA_GENERATOR_SEEDS=<seed> pytest tests/test_program_generator.py` reruns a seed and `python -m tests.program_generator <seed>` prints its program.  A find is filed by its class (CONTRIBUTING.md § Filing), never fixed in the generator.",
+              ``,
+              report,
+            ].join("\n");
+
+            // Ensure the label exists (created on the first failed night).
+            try {
+              await github.rest.issues.getLabel({
+                owner: context.repo.owner, repo: context.repo.repo, name: LABEL,
+              });
+            } catch (e) {
+              if (e.status !== 404) throw e;
+              await github.rest.issues.createLabel({
+                owner: context.repo.owner, repo: context.repo.repo, name: LABEL,
+                color: "d73a4a",
+                description: "A nightly program generator find on main",
+              });
+            }
+
+            // Issues only: listForRepo also returns pull requests.
+            const { data: candidates } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              labels: LABEL, state: "open", per_page: 10,
+            });
+            const open = candidates.filter(item => !item.pull_request);
+            if (open.length > 0) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: open[0].number, body,
+              });
+              core.info(`Commented on #${open[0].number}`);
+            } else {
+              const { data: created } = await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title: TITLE, body, labels: [LABEL],
+              });
+              core.info(`Filed #${created.number}`);
+            }
