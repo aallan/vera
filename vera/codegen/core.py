@@ -634,6 +634,10 @@ class CodeGenerator(
         # `_compile_fn` entry; every entry overwrites it, and the
         # Pass-2 loops reset it to False when they finish.
         self._in_prelude_fn: bool = False
+        # #1549: the declaration `_compile_fn` is compiling, set beside
+        # `_in_prelude_fn`, and each diagnostic's key, by `id`.
+        self._compiling_fn_key: str | None = None
+        self._diag_fn_keys: dict[int, str | None] = {}
 
         # Cross-module state (C7e)
         self._resolved_modules: list[ResolvedModule] = (
@@ -793,6 +797,7 @@ class CodeGenerator(
             severity="warning",
             error_code=error_code,
         ))
+        self._diag_fn_keys[id(self.diagnostics[-1])] = self._compiling_fn_key
 
     def _error(
         self,
@@ -823,6 +828,7 @@ class CodeGenerator(
             severity="error",
             error_code=error_code,
         ))
+        self._diag_fn_keys[id(self.diagnostics[-1])] = self._compiling_fn_key
 
     def _error_once(
         self,
@@ -2363,6 +2369,7 @@ class CodeGenerator(
         # #851 — all function compilation is done; any diagnostic
         # emitted from here on is module-level, not prelude-origin.
         self._in_prelude_fn = False
+        self._compiling_fn_key = None
 
         # #604 / #655 — suppress spurious template-only warnings.
         #
@@ -2422,21 +2429,12 @@ class CodeGenerator(
         # name-shadowing fixture and asserts there's no over-broad
         # suppression.
         forall_decl_names: set[str] = set()
-        # #913: name → span of each forall template, so a CLOSURE-level skip
-        # warning (whose description is NOT `Function 'NAME' …`-prefixed —
-        # it names the closure, not the enclosing fn) can be matched by
-        # error_code + forall-origin (the warning's source line falls within
-        # the template's declaration span).  Keeps the suppression robust
-        # against description wording rather than re-parsing a name out of it.
-        forall_decl_spans: dict[str, ast.Span] = {}
         for tld in program.declarations:
             decl = tld.decl
             if not isinstance(decl, ast.FnDecl):
                 continue
             if decl.forall_vars:
                 forall_decl_names.add(decl.name)
-                if decl.span is not None:
-                    forall_decl_spans[decl.name] = decl.span
             else:
                 # #990: a nested generic where-helper is a mono base too — its
                 # template goes through `_compile_fn` in the Pass-2 where-fn
@@ -2445,8 +2443,6 @@ class CodeGenerator(
                 for wfn in self._flatten_where_fns(decl):
                     if wfn.forall_vars:
                         forall_decl_names.add(wfn.name)
-                        if wfn.span is not None:
-                            forall_decl_spans[wfn.name] = wfn.span
         if forall_decl_names:
             mono_compiled = compiled_mono_bases & forall_decl_names
             if mono_compiled:
@@ -2464,9 +2460,11 @@ class CodeGenerator(
                 #      the template body (`vera/codegen/closures.py`) whose
                 #      unsubstituted `@T` param/return type has no WASM
                 #      representation.  Its description names the closure, so
-                #      the prefix match misses it; suppress it by forall-origin
-                #      — its source line sits inside a compiled-clone
-                #      template's declaration span.
+                #      the prefix match misses it; suppress it by the
+                #      declaration that was being compiled when it was emitted
+                #      (#1549), a compiled-clone template.  A line compare
+                #      read a PRELUDE template's span against the user file's
+                #      lines and dropped a user function's E602.
                 suppressible_codes = {"E602", "E604", "E605"}
                 kept: list[Diagnostic] = []
                 for d in self.diagnostics:
@@ -2476,12 +2474,8 @@ class CodeGenerator(
                             for name in mono_compiled
                         )
                         if not suppressed and d.error_code == "E602":
-                            line = d.location.line
-                            suppressed = any(
-                                (span := forall_decl_spans.get(name)) is not None
-                                and span.line <= line <= span.end_line
-                                for name in mono_compiled
-                            )
+                            suppressed = (
+                                self._diag_fn_keys.get(id(d)) in mono_compiled)
                         if suppressed:
                             continue
                     kept.append(d)

@@ -514,6 +514,11 @@ class FunctionCompilationMixin:
         self._in_prelude_fn = (
             decl.name.split("$")[0] in self._prelude_fn_names
         )
+        # #1549: and the declaration being compiled, which every diagnostic
+        # emitted from here on is keyed by (`_warning` / `_error`), so the
+        # template-warning suppression in `compile_program` asks which
+        # function a diagnostic is about, never which lines it sits on.
+        self._compiling_fn_key: str | None = decl.name
 
         # Check if function is compilable
         if not self._is_compilable(decl):

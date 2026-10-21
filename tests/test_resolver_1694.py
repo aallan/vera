@@ -59,9 +59,6 @@ def _codes(diagnostics: object) -> list[str | None]:
 
 # The mechanisms still to land, each a strict xfail on the cells it flips:
 # a cell that starts passing fails the run until its mark is removed.
-_BY_DECL = pytest.mark.xfail(strict=True, reason=(
-    "#1694: an E602 suppressed by the declaration it is about, not by a "
-    "line inside a prelude generic's span"))
 _ALIASES = pytest.mark.xfail(strict=True, reason=(
     "#1694: an alias body resolves against every alias of its namespace, "
     "in the checker and in vera.naming alike"))
@@ -324,7 +321,7 @@ _UNWRAP_MAIN = _fn("main(@Unit -> @Int)",
 
 
 @pytest.mark.parametrize("gap", [
-    pytest.param(1, id="inside-span", marks=_BY_DECL),
+    pytest.param(1, id="inside-span"),
     pytest.param(16, id="outside-span"),
 ])
 def test_repro_1549_e602_kept_at_any_line(gap: int) -> None:

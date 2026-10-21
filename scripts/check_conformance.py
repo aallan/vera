@@ -68,8 +68,8 @@ def main() -> int:
         # the pipeline stage the diagnostic fires at — "check" (the default)
         # or "compile".  A COMPILE-stage negative additionally asserts that
         # `check` is clean, which is the whole point of the class it exists
-        # to pin: a program the checker accepts and codegen must refuse
-        # (#1277's E621).  Either way the positive pipeline is skipped.
+        # to pin: a program the checker accepts and codegen must refuse.
+        # Either way the positive pipeline is skipped.
         expected_error = entry.get("expected_error")
         if expected_error is not None:
             stage = entry.get("expected_error_stage", "check")

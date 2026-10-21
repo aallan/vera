@@ -453,9 +453,10 @@ class ClosureLiftingMixin:
                 # suppressed once a clone compiles: the wrapper by the #604
                 # description-prefix filter, THIS one by that filter's #913
                 # forall-origin arm (`vera/codegen/core.py`), which matches a
-                # template-body E602 by its source line falling inside a
-                # compiled-clone template's span (its description names the
-                # closure, not the enclosing fn, so the prefix match misses it).
+                # template-body E602 by the declaration being compiled when
+                # it was emitted, a compiled-clone template (#1549; its
+                # description names the closure, not the enclosing fn, so the
+                # prefix match misses it).
                 self._harvest_interp_inference_failures(ctx)
                 self._warning(
                     anon_fn,
