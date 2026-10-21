@@ -485,3 +485,116 @@ class TestTheWorkflow:
             pull_request = context["github.event_name"] == "pull_request"
             want = ["pytest", "-v", "-n", "auto"] + ([] if pull_request else ["--matrix=full"])
             assert command.split() == want, (event, command)
+
+
+# ---------------------------------------------------------------------------
+# The shell that reads a value from `env:`
+# ---------------------------------------------------------------------------
+
+WORKFLOWS = ROOT / ".github" / "workflows"
+
+#: A variable a command reads as bash reads it, `$NAME` or `${NAME}`;
+#: PowerShell's environment drive, `$env:NAME`, is not one.
+_VARIABLE = re.compile(r"\$\{[A-Za-z_]\w*\}|\$[A-Za-z_]\w*(?![\w:])")
+
+
+def _runners(job: dict[str, Any]) -> list[str]:
+    """The runner each of a job's cells takes, its matrix read cell by cell."""
+    cells = _matrix_cells(job) if "strategy" in job else [{}]
+    return [render(str(job.get("runs-on", "")), cell) for cell in cells]
+
+
+def _shell(workflow: dict[Any, Any], job: dict[str, Any], step: dict[str, Any]) -> str | None:
+    """The shell a step names, by its own `shell:` or else its job's or its
+    workflow's `defaults`; None leaves the runner's default."""
+    if step.get("shell"):
+        return str(step["shell"])
+    for owner in (job, workflow):
+        shell = ((owner.get("defaults") or {}).get("run") or {}).get("shell")
+        if shell:
+            return str(shell)
+    return None
+
+
+def unread_on_windows(workflow: dict[Any, Any]) -> list[tuple[str, str]]:
+    """The steps a Windows runner takes whose command reads a variable as bash
+    does, under a shell other than bash.  A Windows runner's default shell is
+    pwsh, which reads `$NAME` as a PowerShell variable of its own, so the
+    value the step's `env:` gives the name never reaches the command."""
+    found = []
+    for job_id, job in (workflow.get("jobs") or {}).items():
+        if not any("windows" in runner.lower() for runner in _runners(job)):
+            continue
+        for step in job.get("steps") or []:
+            if _VARIABLE.search(str(step.get("run", ""))) and _shell(workflow, job, step) != "bash":
+                found.append((str(job_id), str(step.get("name"))))
+    return found
+
+
+def _one_step(*, runs_on: str = "windows-latest", run: str = 'pytest --shard="$SHARD"',
+              shell: str | None = None, job_shell: str | None = None,
+              workflow_shell: str | None = None,
+              matrix: dict[str, Any] | None = None) -> dict[str, Any]:
+    step: dict[str, Any] = {"name": "the step", "run": run}
+    if shell is not None:
+        step["shell"] = shell
+    job: dict[str, Any] = {"runs-on": runs_on, "steps": [step]}
+    if job_shell is not None:
+        job["defaults"] = {"run": {"shell": job_shell}}
+    if matrix is not None:
+        job["strategy"] = {"matrix": matrix}
+    workflow: dict[str, Any] = {"jobs": {"the job": job}}
+    if workflow_shell is not None:
+        workflow["defaults"] = {"run": {"shell": workflow_shell}}
+    return workflow
+
+
+class TestTheShellThatReadsAValue:
+    """A value a step's `env:` gives reaches its command only through a shell
+    that reads `$NAME` from the environment: bash does on every runner, and
+    pwsh, a Windows runner's default shell, does not.  The first run of
+    #1770 handed both Windows shards `--shard=''`, so every step a Windows
+    runner takes that reads one runs under bash."""
+
+    @pytest.mark.parametrize("path", sorted(WORKFLOWS.glob("*.yml")), ids=lambda p: p.name)
+    def test_every_workflow_reads_its_values_under_bash_on_windows(self, path: Path) -> None:
+        assert unread_on_windows(dict(yaml.safe_load(path.read_text(encoding="utf-8")))) == []
+
+    def test_the_steps_a_windows_runner_takes_that_read_one(self) -> None:
+        """The shards' and the test matrix's pytest read `$SHARD` and
+        `$MATRIX_ARGS`; the rule above reaches them, as the bash they name
+        shows when it is taken away."""
+        workflow = _workflow()
+        for job_id in ("shard", "test"):
+            for step in workflow["jobs"][job_id]["steps"]:
+                step.pop("shell", None)
+        assert unread_on_windows(workflow) == [("shard", "Run tests"), ("test", "Run tests")]
+
+    @pytest.mark.parametrize(
+        ("shape", "flagged"),
+        [
+            pytest.param({}, True, id="a Windows runner's default shell"),
+            pytest.param({"shell": "bash"}, False, id="bash on the step"),
+            pytest.param({"job_shell": "bash"}, False, id="bash as the job's default"),
+            pytest.param({"workflow_shell": "bash"}, False, id="bash as the workflow's default"),
+            pytest.param({"shell": "pwsh"}, True, id="pwsh named"),
+            pytest.param({"job_shell": "pwsh", "workflow_shell": "bash"}, True,
+                         id="the job's pwsh over the workflow's bash"),
+            pytest.param({"runs_on": "${{ matrix.os }}",
+                          "matrix": {"os": ["ubuntu-latest", "windows-latest"]}}, True,
+                         id="a matrix axis that takes Windows"),
+            pytest.param({"runs_on": "${{ matrix.os }}",
+                          "matrix": {"include": [{"os": "ubuntu-latest"}, {"os": "windows-latest"}]}},
+                         True, id="a matrix include that takes Windows"),
+            pytest.param({"runs_on": "${{ matrix.os }}",
+                          "matrix": {"os": ["ubuntu-24.04", "macos-15"]}}, False,
+                         id="a matrix that never takes Windows"),
+            pytest.param({"runs_on": "ubuntu-latest"}, False, id="a Linux runner, whose default is bash"),
+            pytest.param({"run": 'pip install -e ".[dev]"'}, False, id="a command that reads no variable"),
+            pytest.param({"run": "pytest --shard=$env:SHARD"}, False, id="PowerShell's own $env:NAME"),
+            pytest.param({"run": 'pytest --shard="${SHARD}"'}, True, id="a braced variable"),
+            pytest.param({"run": 'echo "$RUNNER_TEMP"'}, True, id="a variable the runner sets"),
+        ],
+    )
+    def test_which_steps_need_bash(self, shape: dict[str, Any], flagged: bool) -> None:
+        assert unread_on_windows(_one_step(**shape)) == ([("the job", "the step")] if flagged else [])

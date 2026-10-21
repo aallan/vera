@@ -27,9 +27,9 @@ spelled.  The CI half fails closed.  A step counts as a gate only where it
 runs and can fail the run: a condition the evaluator cannot read is an error
 unless ``UNREADABLE_CONDITIONS`` names the step with its reason (a condition
 on a context name the modelled events do not define is unreadable, not
-null), and ``continue-on-error``, a shell other than the default ``bash -e``,
-or a run command that swallows its own failure (``|| true``, ``set +e``) is
-an error outright.  A gate is a command the step invokes on a line with no
+null), and ``continue-on-error``, a shell other than bash (the default
+``bash -e`` or ``shell: bash``), or a run command that swallows its own
+failure (``|| true``, ``set +e``) is an error outright.  A gate is a command the step invokes on a line with no
 shell control operator, not text it mentions.
 """
 
@@ -381,9 +381,11 @@ def _runs(item: dict[str, Any], context: dict[str, object], where: str) -> bool:
 
 def _can_fail(item: dict[str, Any], context: dict[str, object], where: str) -> None:
     """A gate that cannot fail the run is no gate: `continue-on-error` must be
-    absent or provably false in `context`, and no shell may be substituted
-    for the default `bash -e`, which stops a multi-line step at its first
-    failing command."""
+    absent or provably false in `context`, and a step runs under bash: the
+    default `bash -e`, or `shell: bash`, which GitHub runs as `bash
+    --noprofile --norc -eo pipefail` on every runner, Git Bash on Windows.
+    Both stop a multi-line step at its first failing command; any other
+    shell may not."""
     value = item.get("continue-on-error")
     if value not in (None, False):
         try:
@@ -396,8 +398,8 @@ def _can_fail(item: dict[str, Any], context: dict[str, object], where: str) -> N
                 " without failing the run"
             )
     shell = item.get("shell") or (item.get("defaults") or {}).get("run", {}).get("shell")
-    if shell is not None:
-        pytest.fail(f"{where} runs its steps under `{shell}` instead of the default `bash -e`")
+    if shell not in (None, "bash"):
+        pytest.fail(f"{where} runs its steps under `{shell}`, not bash")
 
 
 def _gating_steps(
@@ -922,8 +924,8 @@ class TestCiRunsEveryGate:
 
     A step counts only where `_gating_steps` says it runs and can fail: its
     job's and its own conditions evaluated for the event (and matrix cell),
-    no `continue-on-error`, no shell substituted for `bash -e`, and no run
-    command that swallows its own failure."""
+    no `continue-on-error`, no shell but bash, and no run command that
+    swallows its own failure."""
 
     @pytest.mark.parametrize(
         ("args", "narrows"),
@@ -939,6 +941,35 @@ class TestCiRunsEveryGate:
     )
     def test_what_narrows_a_run(self, args: list[str], narrows: list[str]) -> None:
         assert _narrowing(args) == narrows
+
+    @pytest.mark.parametrize("where", ["step", "defaults"])
+    @pytest.mark.parametrize(
+        ("shell", "can_fail"),
+        [
+            (None, True),
+            ("bash", True),
+            ("bash {0}", False),
+            ("sh", False),
+            ("pwsh", False),
+            ("cmd", False),
+            ("python", False),
+        ],
+    )
+    def test_a_step_can_fail_the_run_only_under_bash(
+        self, shell: str | None, can_fail: bool, where: str,
+    ) -> None:
+        """`bash {0}`, GitHub's form for a shell of one's own, runs bash
+        without `-e`, so a multi-line step carries on past a failure; the
+        other shells may not stop at one either.  A job's `defaults` count
+        as its steps' shell."""
+        item: dict[str, Any] = {"name": "the gate", "run": "python scripts/gate.py"}
+        if shell is not None:
+            item.update({"shell": shell} if where == "step" else {"defaults": {"run": {"shell": shell}}})
+        if can_fail:
+            _can_fail(item, {}, "the gate")
+        else:
+            with pytest.raises(pytest.fail.Exception, match="not bash"):
+                _can_fail(item, {}, "the gate")
 
     def test_a_shard_set_is_the_whole_suite_only_when_complete(self) -> None:
         """Three shards of three run the suite; two of them, or shards of

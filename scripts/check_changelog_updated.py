@@ -42,10 +42,10 @@ Escape hatches
 Configuration
 -------------
 
-- ``BASE``, the one positional argument — the base ref, which must name a
-  commit.  CI passes the pull request's base branch
-  (``origin/<github.base_ref>``), so a pull request into an integration
-  branch is held to what it adds to that branch.
+- ``BASE``, the one positional argument — the base ref the branch is
+  diffed against, which must name a commit.  CI passes the pull request's
+  base branch (``origin/<github.base_ref>``), which is ``origin/main`` on
+  every run ci.yml makes, since its pull requests target ``main``.
 - ``CHANGELOG_CHECK_BASE`` — with no argument, the base ref to try first,
   before ``origin/main`` and ``main``.
 

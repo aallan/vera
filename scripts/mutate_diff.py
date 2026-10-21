@@ -48,13 +48,14 @@ diffs, and a JSON record (``--json``) that lists every survivor.
 
 The exit code is red for a defect and green for an unfinished run.  It is 1
 when a mutant of the diff survives, whatever else stopped the run; 2 when the
-run itself failed: the engine failed, mutmut reported a mutant of a function
-the lane did not map to the diff, or the lane stopped before mutmut decided
-anything; and 0 otherwise.  An exit 0 says what it decided in the headline:
-every mutant killed or timed out, or how many functions no in-process test
-reaches, or, where the budget ran out or a mutant was left undecided (``not
-checked``, ``suspicious``, ``segfault``, interrupted), that the run is
-incomplete, which a ``::warning::`` annotation repeats on the pull request.
+run itself failed, whether or not the budget ran out first: the engine
+failed, mutmut reported a mutant of a function the lane did not map to the
+diff, or the lane stopped before mutmut decided anything; and 0 otherwise.
+An exit 0 says what it decided in the headline: every mutant killed or timed
+out, or how many functions no in-process test reaches, or, where the budget
+ran out or a mutant was left undecided (``not checked``, ``suspicious``,
+``segfault``, interrupted), that the run is incomplete, which a
+``::warning::`` annotation repeats on the pull request.
 A function no in-process test reaches has every mutant ``no tests``: it is
 reported as not observable in process, the rule MUTATION.md states for
 ``cli.py``, and does not fail the run.
@@ -797,6 +798,14 @@ def outside_units(units: Sequence[Unit], results: Mapping[str, str]) -> list[str
     return sorted(n for n in results if unit_of_mutant(n) not in owned)
 
 
+def failed(stopped: str | None, failure: str) -> str:
+    """How the run stopped once ``failure`` (``engine`` or ``unmapped``) is
+    found too.  A failure outranks the budget, which leaves a run only
+    incomplete, so a run the budget stopped that then failed is red; of two
+    failures the first is the one recorded."""
+    return failure if stopped in (None, "budget") else stopped
+
+
 def exit_code(rows: Sequence[UnitResult], *, stopped: str | None) -> int:
     """1: a survivor, whatever stopped the run; 2: the run itself failed (the
     engine, or a mutant the lane did not map); 0 otherwise, an incomplete run
@@ -1158,15 +1167,15 @@ def _lane(args: argparse.Namespace, repo: Path, workdir: Path, engine: list[str]
         listed = _engine_call(engine, ["results", "--all", "true"], cwd=tree, env=env)
         results: dict[str, str] = {}
         if listed is None:
-            stopped = stopped or "engine"
+            stopped = failed(stopped, "engine")
             record["engine_tail"] = [f"mutmut results did not finish in {ENGINE_CALL_TIMEOUT_S} s"]
         elif listed.returncode != 0:
-            stopped = stopped or "engine"
+            stopped = failed(stopped, "engine")
         else:
             try:
                 results = parse_results(listed.stdout)
             except ResultsError as exc:
-                stopped = stopped or "engine"
+                stopped = failed(stopped, "engine")
                 record["engine_tail"] = [str(exc)]
         if no_tests:
             results = {name: "no tests" for name in results}
@@ -1175,7 +1184,7 @@ def _lane(args: argparse.Namespace, repo: Path, workdir: Path, engine: list[str]
         if record["outside_diff"]:
             # In the narrowed tree every mutant belongs to a changed unit; one
             # that does not means the mapping or the narrowing went wrong.
-            stopped = stopped or "unmapped"
+            stopped = failed(stopped, "unmapped")
         to_show = [(row, name) for row in rows for name in row.survivors][:MAX_SHOWN_SURVIVORS]
         for row, name in to_show:
             shown = _engine_call(engine, ["show", name], cwd=tree, env=env)

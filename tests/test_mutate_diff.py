@@ -1500,6 +1500,40 @@ class TestEndToEnd:
         assert record["outcome"].startswith("Fail: 1 mutant(s) of the diff survive")
         assert "::warning" not in capsys.readouterr().out
 
+    @pytest.mark.parametrize(
+        ("results", "env", "code", "stopped"),
+        [
+            pytest.param("    vera.m.x_kept__mutmut_1: killed\n    vera.m.x_kept__mutmut_2: not checked\n",
+                         {"FAKE_RESULTS_SLEEP": "30"}, 2, "engine", id="a hung results call"),
+            pytest.param("    vera.m.x_kept__mutmut_1: survived\n",
+                         {"FAKE_RESULTS_EXIT": "1"}, 2, "engine",
+                         id="a failing results call that lists a survivor"),
+            pytest.param("    vera.m.x_kept__mutmut_1: killed\n    vera.m.x_kept__mutmut_2: survived by proxy\n",
+                         {}, 2, "engine", id="results the lane cannot read"),
+            pytest.param("    vera.m.x_kept__mutmut_1: killed\n    vera.m.x_other__mutmut_1: survived\n",
+                         {}, 2, "unmapped", id="a survivor of a function the lane did not map"),
+            pytest.param("    vera.m.x_kept__mutmut_1: survived\n    vera.m.x_other__mutmut_1: killed\n",
+                         {}, 1, "unmapped", id="a survivor of the diff and an unmapped mutant"),
+        ],
+    )
+    def test_a_failure_after_the_budget_ran_out_is_still_red(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str], results: str, env: dict[str, str], code: int,
+        stopped: str,
+    ) -> None:
+        """The budget leaves a run only incomplete.  A failure of the engine
+        or of the mapping found after it outranks it, so the run is red, as
+        the same failure is with no budget stop; a survivor of the diff
+        outranks both."""
+        monkeypatch.setenv("FAKE_RUN_SLEEP", "60")
+        if "FAKE_RESULTS_SLEEP" in env:
+            monkeypatch.setattr(md, "ENGINE_CALL_TIMEOUT_S", 1)
+        for name, value in env.items():
+            monkeypatch.setenv(name, value)
+        got, record, _ = _main(repo, tmp_path, results, budget=1)
+        assert (got, record["exit_code"], record["stopped"]) == (code, code, stopped)
+        assert "::warning" not in capsys.readouterr().out
+
     def test_a_finished_run_carries_no_warning(
         self, repo: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str],
     ) -> None:

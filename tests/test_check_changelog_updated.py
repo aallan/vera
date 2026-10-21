@@ -716,11 +716,10 @@ class TestEndToEnd:
     def test_the_base_named_on_the_command_line_is_the_one_diffed(
         self, tmp_path: Path,
     ) -> None:
-        """A pull request into an integration branch is held to what it
-        adds to that branch.  CI names the pull request's base; against
-        ``main`` instead, a fragment the integration branch already carries
-        reads as the pull request's own, so every pull request into the
-        branch passed on the branch's entries."""
+        """The base the argument names is the one the branch is diffed
+        against: against ``release``, a change to ``vera/cli.py`` with no
+        fragment of its own fails, where against ``main`` the fragment
+        ``release`` already carries would read as the change's own."""
         repo = _setup_repo(tmp_path)
         _git(repo, "checkout", "-q", "-b", "release")
         _add_fragment(repo, "1500.fixed.md")

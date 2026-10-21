@@ -152,8 +152,11 @@ jobs:
         if: needs.plan.outputs.inert != 'true'
         run: pip install -e ".[dev]"
 
+      # bash on every runner: a Windows runner's default shell, pwsh, reads
+      # `$SHARD` as a PowerShell variable of its own, which is empty.
       - name: Run tests
         if: needs.plan.outputs.inert != 'true'
+        shell: bash
         env:
           VERA_MATRIX_CHANGED: ${{ needs.plan.outputs.changed }}
           SHARD: ${{ matrix.shard }}/${{ matrix.shards }}
@@ -241,8 +244,10 @@ jobs:
       # On a pull request no `--matrix` at all, which is the default that
       # reads VERA_MATRIX_CHANGED: an explicit `--matrix=sample` would
       # sample a changed matrix too.  Unquoted, so the empty value is no
-      # argument.
+      # argument.  Under bash on every runner, as the shards' step is: pwsh,
+      # the Windows cells' default shell, would read `$MATRIX_ARGS` as empty.
       - name: Run tests
+        shell: bash
         env:
           VERA_MATRIX_CHANGED: ${{ needs.plan.outputs.changed }}
           MATRIX_ARGS: ${{ github.event_name != 'pull_request' && '--matrix=full' || '' }}
