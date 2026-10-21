@@ -38,7 +38,7 @@ from vera.errors import (
 )
 from vera.lowering import ability_lowerable
 from vera.naming import AliasEnv
-from vera.registration import where_helper_parents
+from vera.registration import NamespaceAliases, where_helper_parents
 from vera.environment import (
     AdtInfo,
     FunctionInfo,
@@ -628,6 +628,11 @@ class TypeChecker(
         self._forward_data_names: frozenset[str] = frozenset()
         self._forward_effect_names: frozenset[str] = frozenset()
         self._forward_effect_decls: dict[str, ast.EffectDecl] = {}
+        # #1552: the aliases THIS namespace declares, which a type expression
+        # resolved during registration reads through, so one naming an alias
+        # further down resolves it rather than meeting an unregistered name.
+        # `_register_all` replaces it with the namespace's own.
+        self._ns_aliases = NamespaceAliases(self)
         # #1489: each import whose module did not resolve, with its name list
         # (``None`` for a wildcard), so an E136 on a name it lists can say
         # which import to fix.  Set by `_register_modules`.

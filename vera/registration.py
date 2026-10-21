@@ -8,12 +8,13 @@ This module extracts that shared logic to avoid duplication.
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Callable, Protocol
 
 from vera import ast
-from vera.environment import FunctionInfo, TypeEnv
+from vera.environment import FunctionInfo, TypeAliasInfo, TypeEnv
+from vera.naming import alias_env_of_decls, alias_mentions, alias_visible
 from vera.obligations.cache import walk_nodes
-from vera.types import EffectRowType, Type, TypeVar
+from vera.types import PRIMITIVES, EffectRowType, Type, TypeVar
 
 if TYPE_CHECKING:
     pass
@@ -156,3 +157,140 @@ def register_fn(
     )
 
     env.type_params = saved_params
+
+
+class _AliasOwner(Protocol):
+    """A registration pass: the environment it registers into, and the type
+    resolution it registers with."""
+
+    env: TypeEnv
+
+    def _resolve_type(self, te: ast.TypeExpr) -> Type: ...
+
+
+class NamespaceAliases:
+    """The type aliases one namespace declares, resolved by THE ALIAS RULE
+    (:func:`vera.naming.alias_visible`, #1552).
+
+    A registration pass resolves each declaration's type expressions as it
+    reaches it, in source order, so a body naming an alias declared further
+    down met a table that did not hold it yet: ``type A = B; type B = Int;``
+    registered ``A`` as an opaque ``B``, and a constructor field or an
+    operation's signature naming a later alias the same.  The pass now asks
+    this object instead of its table: :meth:`lookup` answers an alias the
+    pass has not reached by resolving its body there and then, once, so a
+    declaration's position decides nothing but what the rule says it decides
+    inside a cycle of mentions.  The checker and the verifier both register
+    through one of these, so they resolve every alias alike.
+    """
+
+    def __init__(
+        self, owner: _AliasOwner,
+        decls: Iterable[ast.TypeAliasDecl] = (),
+    ) -> None:
+        self._owner = owner
+        self.decls: dict[str, ast.TypeAliasDecl] = {
+            decl.name: decl for decl in decls}
+        self._env = alias_env_of_decls(self.decls.values())
+        self._ahead: dict[str, TypeAliasInfo] = {}
+        self._scopes: list[str] = []
+
+    @classmethod
+    def of_program(
+        cls, owner: _AliasOwner, program: ast.Program,
+    ) -> NamespaceAliases:
+        """The aliases *program*'s pass registers: the first declaration of
+        each type name, when it is an alias whose name the pass does not
+        refuse (a primitive's or a reserved type's, E158).  A later
+        declaration of the name is a duplicate (E184), and a ``data`` of it
+        holds the name."""
+        from vera.prelude import reserved_type_names
+
+        refused = frozenset(PRIMITIVES) | reserved_type_names()
+        seen: set[str] = set()
+        decls: list[ast.TypeAliasDecl] = []
+        for tld in program.declarations:
+            decl = tld.decl
+            if (not isinstance(decl, (ast.DataDecl, ast.TypeAliasDecl))
+                    or decl.name in seen):
+                continue
+            seen.add(decl.name)
+            if (isinstance(decl, ast.TypeAliasDecl)
+                    and decl.name not in refused):
+                decls.append(decl)
+        return cls(owner, decls)
+
+    def lookup(self, name: str) -> TypeAliasInfo | None:
+        """What the alias *name* denotes where a type is being resolved:
+        ``None`` when it names no alias in scope there."""
+        registered = self._owner.env.type_aliases
+        if name not in self.decls:
+            return registered.get(name)
+        if self._scopes and not alias_visible(
+                self._env, self._scopes[-1], name):
+            return None
+        info = registered.get(name)
+        return info if info is not None else self.resolve(name)
+
+    def resolve_decl(self, decl: ast.TypeAliasDecl) -> TypeAliasInfo:
+        """*decl* resolved, for its registration: the early resolution when
+        a declaration above it already needed it."""
+        if self.decls.get(decl.name) is decl:
+            return self.resolve(decl.name)
+        return self._resolve_body(decl)
+
+    def resolve(self, name: str) -> TypeAliasInfo:
+        """Alias *name* resolved: as registered, or now, every alias its body
+        admits that is not resolved yet resolved first.
+
+        Iterative and dependency-first, one dependency pushed at a time, as
+        :func:`vera.naming._resolve_alias` is and for the same reasons: a
+        chain of aliases each naming the next one down is the user's to make
+        as long as they like, so resolving one may not take a Python frame
+        per hop, and the admitted mentions are a DAG, so by the time a body
+        is resolved every alias it admits is (no resolution nests).
+        """
+        registered = self._owner.env.type_aliases
+        done = self._ahead
+        stack: list[str] = [name]
+        in_progress: set[str] = {name}
+        while stack:
+            cur = stack[-1]
+            if cur in done or cur in registered:
+                in_progress.discard(cur)
+                stack.pop()
+                continue
+            decl = self.decls[cur]
+            pending = next((
+                ref for ref in alias_mentions(
+                    decl.type_expr, decl.type_params, self.decls)
+                if ref not in done and ref not in registered
+                and ref not in in_progress
+                and alias_visible(self._env, cur, ref)
+            ), None)
+            if pending is not None:
+                stack.append(pending)
+                in_progress.add(pending)
+                continue
+            done[cur] = self._resolve_body(decl)
+            in_progress.discard(cur)
+            stack.pop()
+        info = done.get(name)
+        return info if info is not None else registered[name]
+
+    def _resolve_body(self, decl: ast.TypeAliasDecl) -> TypeAliasInfo:
+        """*decl*'s body resolved with only its own type parameters in scope
+        and the rule's view of the namespace's aliases."""
+        env = self._owner.env
+        saved = env.type_params
+        env.type_params = {tv: TypeVar(tv) for tv in decl.type_params or ()}
+        self._scopes.append(decl.name)
+        try:
+            resolved = self._owner._resolve_type(decl.type_expr)
+        finally:
+            self._scopes.pop()
+            env.type_params = saved
+        return TypeAliasInfo(
+            name=decl.name, type_params=decl.type_params,
+            resolved_type=resolved, body=decl.type_expr,
+        )

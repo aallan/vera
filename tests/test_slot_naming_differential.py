@@ -664,9 +664,10 @@ public fn b25(
 # The declaration-ORDER corner (#1208) needs its own preludes: the whole
 # point is where the `data` sits relative to the `type`, so these cannot ride
 # the shared prelude.  An ADT named after a built-in special case (`Decimal`)
-# or a removed alias (`Float`) is the only shape whose rendering the ordering
-# can change, and each is swept in BOTH orders — a visibility bound applied
-# in the wrong direction agrees with the checker on one ordering only.
+# or a removed alias (`Float`) is the only shape whose rendering a
+# declaration-order bound would change, and each is swept in BOTH orders,
+# which render alike (#1552) — a bound left in one direction agrees with the
+# checker on one ordering only.
 _ORDERING_FN = """\
 public fn ord(@Option<{alias}>, @{adt}<Int> -> @Int)
   requires(true)
@@ -837,10 +838,16 @@ def test_inline_battery_reaches_the_alias_corners(sweep: Sweep) -> None:
     # #1208 review: the two ORDERING corners named, not merely counted.  A
     # battery entry that self-destructs (or is silently dropped) contributes
     # no observations at all, which a count-based floor reads as agreement —
-    # so each corner asserts the exact string it must render.  `Cyc1`'s body
-    # sees only the declarations before it, so the cycle terminates on the
-    # opaque `Cyc2`; `Fwd`'s forward reference stays opaque as `Later`.
-    assert {"Option<Cyc2>", "Option<Later>"} <= rendered, sorted(rendered)
+    # so each corner asserts the exact strings it must render.  Inside the
+    # cycle `Cyc1`'s body sees only the cycle's declarations before it, so
+    # the cycle terminates on the opaque `Cyc2`; `Fwd`'s forward reference
+    # resolves (#1552), so both of its program's parameters render
+    # `Option<Int>`.
+    assert "Option<Cyc2>" in rendered, sorted(rendered)
+    forward = {o.legacy for o in battery
+               if o.origin == "<battery:forward_reference>"
+               and o.shape in ("@Option<@Fwd>", "@Option<@Later>")}
+    assert forward == {"Option<Int>"}, forward
     # The effect-row corners: a qualified reference keeps its `Module.Effect`
     # spelling, a row VARIABLE renders as its name, and a row carrying both
     # renders sorted.
@@ -859,15 +866,22 @@ def test_inline_battery_reaches_the_alias_corners(sweep: Sweep) -> None:
     assert "Option<ArrayMapFn<Int, Bool>>" in rendered
     assert "Option<OptionMapFn<Int, Bool>>" in rendered
     assert "Option<fn(Int -> Bool) effects(pure)>" in rendered
-    # #1208: the declaration-ORDER corner, in both directions.  An ADT
-    # declared below the alias that names it is invisible to that body (the
-    # built-in `Decimal` branch, arguments dropped; `?` for the removed
-    # `Float`); declared above it, the ADT branch wins and keeps them.  A
-    # bound applied in one direction only still renders three of these four.
-    ordering = {o.legacy for o in sweep.observations
-                if o.origin.startswith("<battery:decl_order_")}
-    assert {"Option<Decimal>", "Option<Decimal<Int>>",
-            "Option<?>", "Option<Float<Int>>"} <= ordering, ordering
+    # The declaration-ORDER corner, in both directions (#1208, #1552).  An
+    # ADT declared below the alias that names it is the ADT that body names,
+    # arguments kept, as it is declared above it: each `alias_first` program
+    # renders exactly what its `adt_first` twin renders.  A bound left in one
+    # direction renders `Option<Decimal>` or `Option<?>` in one of the four.
+    by_program: dict[str, set[str]] = {}
+    for o in sweep.observations:
+        if o.origin.startswith("<battery:decl_order_"):
+            by_program.setdefault(o.origin, set()).add(o.legacy)
+    for adt in ("decimal", "float"):
+        first = by_program[f"<battery:decl_order_{adt}_alias_first>"]
+        second = by_program[f"<battery:decl_order_{adt}_adt_first>"]
+        assert first == second, (adt, first, second)
+    ordering = set().union(*by_program.values())
+    assert {"Option<Decimal<Int>>", "Option<Float<Int>>"} <= ordering, ordering
+    assert not {"Option<Decimal>", "Option<?>"} & ordering, ordering
 
 
 def test_differential_gate_detects_divergence() -> None:

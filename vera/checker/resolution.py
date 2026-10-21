@@ -100,8 +100,10 @@ class ResolutionMixin:
         if name in PRIMITIVES and not te.type_args:
             return PRIMITIVES[name]
 
-        # Type alias?
-        alias = self.env.type_aliases.get(name)
+        # Type alias?  Any of this namespace's, wherever it is declared, by
+        # THE ALIAS RULE (#1552): inside an alias body, not one declared after
+        # it on a cycle of mentions with it.
+        alias = self._ns_aliases.lookup(name)
         if alias:
             # #660 — validate type-argument arity against the alias's
             # declared type parameters.  Pre-fix the `zip` below
@@ -219,6 +221,16 @@ class ResolutionMixin:
                 args = tuple(self._resolve_type(a) for a in te.type_args)
                 return AdtType(adt.name, args)
             return AdtType(adt.name, ())
+
+        # A data type this namespace declares further down, met during
+        # registration: the type its declaration registers under, ahead of
+        # every built-in reading of its name as the registered one is
+        # (#1552), so `type M = Float;` above `data Float` means the
+        # declaration, as it does below it.
+        if name in self._forward_data_names:
+            return AdtType(self._type_identity(name), tuple(
+                self._resolve_type(a) for a in te.type_args
+            ) if te.type_args else ())
 
         # Decimal is a non-parameterised built-in opaque type
         if name == "Decimal":

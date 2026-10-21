@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple, cast
 from vera import ast, binders, carriers, fold, narrowing, naming
 from vera.callgraph import CallGraph, computation_calls
 from vera.environment import ConstructorInfo, FunctionInfo, TypeEnv
+from vera.registration import NamespaceAliases
 from vera.monomorphize import (
     MonoContext,
     Monomorphizer,
@@ -1093,6 +1094,9 @@ class ContractVerifier:
         module_artifacts: ModuleArtifacts | None = None,
     ) -> None:
         self.env = TypeEnv()
+        # #1552: the aliases this namespace declares, read by THE ALIAS RULE
+        # as the checker reads them; `_register_all` sets the namespace's.
+        self._ns_aliases = NamespaceAliases(self)
         self.errors: list[Diagnostic] = []
         # #222 Phase A: reified obligations in discharge order.
         self.obligations: list[ProofObligation] = []
@@ -1828,6 +1832,9 @@ class ContractVerifier:
 
     def _register_all(self, program: ast.Program) -> None:
         """Register all declarations (lightweight pass for forward refs)."""
+        # #1552: an alias declared further down is resolved where a type
+        # expression of this pass names it, by the checker's rule.
+        self._ns_aliases = NamespaceAliases.of_program(self, program)
         for tld in program.declarations:
             decl = tld.decl
             if isinstance(decl, ast.FnDecl):
@@ -1997,14 +2004,9 @@ class ContractVerifier:
         """
         from vera.environment import TypeAliasInfo
         decl_index = self.env.next_decl_index()
-        saved_params = dict(self.env.type_params)
-        if decl.type_params:
-            for tv in decl.type_params:
-                self.env.type_params[tv] = TypeVar(tv)
-        try:
-            resolved = self._resolve_type(decl.type_expr)
-        finally:
-            self.env.type_params = saved_params
+        # #1552: resolved by THE ALIAS RULE, as the checker resolves it, or
+        # already, when a declaration above this one named it.
+        resolved = self._ns_aliases.resolve_decl(decl).resolved_type
         self.env.type_aliases[decl.name] = TypeAliasInfo(
             name=decl.name,
             type_params=decl.type_params,
@@ -2743,9 +2745,10 @@ class ContractVerifier:
             # Check type params first
             if te.name in self.env.type_params:
                 return self.env.type_params[te.name]
-            # Check type aliases
-            if te.name in self.env.type_aliases:
-                alias = self.env.type_aliases[te.name]
+            # Check type aliases: any of this namespace's, wherever it is
+            # declared, by THE ALIAS RULE (#1552).
+            alias = self._ns_aliases.lookup(te.name)
+            if alias is not None:
                 # An APPLICATION substitutes its arguments into the alias's
                 # body (#1237) — the same rule the checker applies in
                 # `vera/checker/resolution.py::_resolve_named_type` (#660), and

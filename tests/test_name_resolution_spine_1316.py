@@ -243,22 +243,30 @@ class TestClassifyNamedIsTheOrder:
             is NameSort.BUILTIN
         )
 
-    def test_the_declaration_index_bound_applies_to_both_registries(
-        self,
-    ) -> None:
-        """An alias body sees only what was declared BEFORE it (#1208), and
-        the bound orders the alias and ADT registries against each other."""
+    def test_the_alias_rule_bounds_only_a_cycle(self) -> None:
+        """Inside an alias body every alias of the namespace is in scope
+        except one declared after it on a cycle of mentions with it, and a
+        declared ADT is in scope wherever it is declared (#1552)."""
         env = AliasEnv(
-            aliases={"A": _nt("Int")}, alias_params={"A": None},
-            data_types={"Decimal": 5}, _order={"A": 3},
+            aliases={"A": _nt("B"), "B": _nt("A"), "C": _nt("D"),
+                     "D": _nt("Int")},
+            alias_params={"A": None, "B": None, "C": None, "D": None},
+            data_types={"Decimal": 5},
+            _order={"A": 0, "B": 1, "C": 2, "D": 3},
         )
-        assert classify_named(_nt("A"), env, limit=9) is NameSort.ALIAS
-        assert classify_named(_nt("A"), env, limit=2) is NameSort.BUILTIN
+        # On a cycle, the earlier body does not see the later alias; the
+        # later body sees the earlier one.
+        assert classify_named(_nt("B"), env, scope="A") is NameSort.BUILTIN
+        assert classify_named(_nt("A"), env, scope="B") is NameSort.ALIAS
+        # Off a cycle, an alias declared later is in scope.
+        assert classify_named(_nt("D"), env, scope="C") is NameSort.ALIAS
+        # Outside every alias body, every alias is.
+        assert classify_named(_nt("B"), env) is NameSort.ALIAS
+        # A declared ADT, from any alias body.
         assert (
-            classify_named(_nt("Decimal"), env, limit=9)
+            classify_named(_nt("Decimal"), env, scope="A")
             is NameSort.DECLARED_ADT
         )
-        assert classify_named(_nt("Decimal"), env, limit=4) is NameSort.BUILTIN
 
     def test_an_order_entry_with_no_body_falls_through(self) -> None:
         """The branch stays TOTAL for an env assembled elsewhere."""

@@ -1598,46 +1598,46 @@ public fn main(@Unit -> @Int)
 class TestDeclOrderIsPerNamespace:
     """Codegen's declaration-index space is keyed to its owning namespace.
 
-    The index answers "was this name already declared when this alias body
-    was registered?" — a question about ONE namespace (§8.4.1: aliases are
-    module-local).  Codegen shared a single first-wins space across every
-    absorbed namespace, and modules register at Pass 0.5 while the main file
-    registers at Pass 1, so a name a module had already stamped kept that
-    EARLIER index inside the main file — turning the main file's FORWARD
-    reference into a backward one (PR #1224 review).
+    The index answers one question, about ONE namespace (§8.4.1: aliases are
+    module-local): inside a cycle of mentions, which alias is declared first
+    (THE ALIAS RULE, #1552).  Codegen once shared a single first-wins space
+    across every absorbed namespace, and modules register at Pass 0.5 while
+    the main file registers at Pass 1, so a name a module had already stamped
+    kept that EARLIER index inside the main file (PR #1224 review).
 
-    ``type Z = X;`` precedes ``type X = Nat;`` here, so ``Z``'s body sees only
-    the imported ADT ``X``, and the checker keeps ``@Option<Nat>`` and
-    ``@Option<Z>`` as two stacks.  With the shared space codegen resolved
-    ``Z`` through the LATER ``type X = Nat``, merged the two stacks, and
-    ``@Option<Nat>.0`` became parameter 2 — a check-clean, verify-clean
-    program that reads the wrong parameter and returns a garbage value from
-    valid WASM (both parameters erase to ``i32``, so nothing traps).
+    ``type Z = X;`` precedes ``type X = Nat;`` here, beside an imported ``data
+    X``.  An alias body sees every alias of its namespace wherever it is
+    declared (#1552), and a declaration shadows an import throughout the
+    file, so ``Z`` is ``Nat`` on both sides: ``@Option<Nat>`` and
+    ``@Option<Z>`` are one stack, ``@Option<Nat>.0`` is parameter 2, and the
+    call passing an ``X`` where ``Z`` is expected is refused at check.
     """
 
-    def test_the_program_returns_its_first_parameter(self) -> None:
+    def test_the_forward_alias_is_the_local_one(self) -> None:
+        """``Z`` names the main file's ``X``, declared below it, not the
+        imported ADT, so passing an ``X`` for it is an argument mismatch."""
         module = _resolved(("dolib",), _DECL_ORDER_LIB)
-        result = _compile_mod(_DECL_ORDER_MAIN, [module])
-        errors = [
-            d for d in result.diagnostics  # type: ignore[attr-defined]
-            if d.severity == "error"
-        ]
-        assert not errors, f"unexpected codegen errors: {errors}"
-        ran = execute(result, fn_name="main")  # type: ignore[arg-type]
-        assert ran.value == 7, (
-            "codegen merged two parameter stacks the checker kept apart — a "
-            f"module's declaration index leaked into the main file's: got "
-            f"{ran.value}"
-        )
+        checked = pipeline.check(
+            _DECL_ORDER_MAIN, file="main.vera", modules=[module])
+        assert not checked.ok
+        assert [d.error_code for d in checked.errors] == ["E202"], [
+            (d.error_code, d.description) for d in checked.errors]
 
     def test_codegen_reads_the_parameter_the_checker_names(self) -> None:
-        """The same claim in the instruction stream, so a coincidence of
-        values cannot satisfy it."""
+        """The one stack in the instruction stream: with a call that checks,
+        ``@Option<Nat>.0`` is the LAST of the two parameters on both sides,
+        so the program returns 9 and the body reads parameter 2 only."""
         module = _resolved(("dolib",), _DECL_ORDER_LIB)
-        result = _compile_mod(_DECL_ORDER_MAIN, [module])
+        source = _DECL_ORDER_MAIN.replace(
+            "pick(Some(7), Some(MkX(99)))", "pick(Some(7), Some(9))")
+        assert pipeline.check(
+            source, file="main.vera", modules=[module]).ok
+        result = _compile_mod(source, [module])
+        assert execute(  # type: ignore[arg-type]
+            result, fn_name="main").value == 9
         body = _fn_body(result.wat, "pick")  # type: ignore[attr-defined]
-        assert 0 in _local_gets(body), (
-            "the emitted body does not read parameter 1:\n" + body
+        assert _local_gets(body) == {1}, (
+            "the emitted body does not read parameter 2 alone:\n" + body
         )
 
     def test_the_control_without_the_shadowing_alias_is_unchanged(
@@ -2011,19 +2011,18 @@ class TestImportedAdtIndexIsPerOwningNamespace:
 
     Codegen's ``_adt_layouts`` is one map across every absorbed namespace,
     while the alias maps and the declaration-index space are module-scoped
-    (§8.4.1, PR #1224).  An imported ADT therefore reached the main file's
-    naming environment with no index of its own and took the
-    before-everything fallback every built-in takes — so a main-file alias
-    naming it resolved THROUGH it, while the checker (which carries the
-    ADT's own module-space index) left the alias body opaque.
+    (§8.4.1, PR #1224).  An imported ADT once reached the main file's naming
+    environment with no index of its own, so a main-file alias naming it
+    resolved THROUGH it in codegen while the checker left the alias body
+    opaque (#1227).
 
     ``type M = Float;`` over an imported ``data Float`` is the shape that
-    exhibits it: the checker partitions ``['Array<?>', 'Array<Float>']`` and
-    codegen rendered ``['Array<Float>', 'Array<Float>']``, merging two
-    parameter stacks the binding table keeps apart (#1227).  A user ADT
-    named after a removed built-in alias is what makes the divergence
-    visible rather than merely latent — the alias falls back to ``?`` on the
-    side that cannot see the ADT.
+    exhibits it.  A declared ADT is in scope in an alias body wherever it is
+    declared (#1552), so both sides now resolve ``M`` to the imported
+    ``Float`` and render ``['Array<Float>', 'Array<Float>']``: one parameter
+    stack, as the binding table keys it.  A user ADT named after a removed
+    built-in alias is the shape a bound would make visible — the alias falls
+    back to ``?`` on a side that cannot see the ADT.
     """
 
     def test_codegen_partitions_what_the_checker_partitions(self) -> None:
@@ -2048,9 +2047,9 @@ class TestImportedAdtIndexIsPerOwningNamespace:
     def test_the_export_reads_the_parameter_the_checker_names(self) -> None:
         """The consequence, in the emitted instruction stream.
 
-        ``@Array<M>.0`` is parameter 1 for the checker — one of two stacks.
-        Merged into one stack, index 0 is the LAST occurrence, so the body
-        loads the second array's locals instead.
+        ``@Array<M>`` and ``@Array<Float>`` are one stack for the checker, so
+        ``@Array<M>.0`` is its LAST occurrence: the body loads the second
+        array's locals and not the first's.
         """
         module = _resolved(("dolib",), _XMOD_ADT_LIB)
         result = _compile_mod(_XMOD_ADT_MAIN, [module])
@@ -2061,12 +2060,12 @@ class TestImportedAdtIndexIsPerOwningNamespace:
         assert not errors, f"unexpected codegen errors: {errors}"
         body = _fn_body(result.wat, "pick")  # type: ignore[attr-defined]
         reads = _local_gets(body)
-        assert {0, 1} & reads, (
-            "the emitted body does not read parameter 1:\n" + body
+        assert {2, 3} <= reads, (
+            "the emitted body does not read parameter 2:\n" + body
         )
-        assert not ({2, 3} & reads), (
-            "the emitted body reads parameter 2 — the imported ADT is still "
-            f"ordered ahead of the main file's aliases:\n{body}"
+        assert not ({0, 1} & reads), (
+            "the emitted body reads parameter 1 — the alias body is still "
+            f"bounded by the imported ADT's index:\n{body}"
         )
 
     def test_the_index_is_the_modules_own_position(self) -> None:

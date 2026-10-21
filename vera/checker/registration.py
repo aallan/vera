@@ -5,7 +5,7 @@ from __future__ import annotations
 import functools
 import re
 from collections.abc import Iterator
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar, cast
 
 from vera import ast
 from vera.environment import (
@@ -18,6 +18,9 @@ from vera.environment import (
 )
 from vera.prelude import BUILTIN_TYPE_NAMES
 from vera.types import PRIMITIVES, TypeVar
+
+if TYPE_CHECKING:
+    from vera.checker.core import TypeChecker
 
 # #1191: the prelude's generated-declaration namespace — "Vera" + an
 # uppercase letter or digit ("VeraOptionMapFn", "VeraA").  Anchored, so
@@ -288,6 +291,13 @@ class RegistrationMixin:
             tld.decl.name for tld in program.declarations
             if isinstance(tld.decl, ast.EffectDecl)
         )
+        # #1552: and the aliases it declares, so a type expression this pass
+        # resolves (an alias body, a constructor field, an operation's
+        # signature) reads an alias declared further down by THE ALIAS RULE
+        # instead of meeting a name not registered yet.
+        from vera.registration import NamespaceAliases
+        self._ns_aliases = NamespaceAliases.of_program(
+            cast("TypeChecker", self), program)
         # The first declaration of each, for what an E340 at a row naming
         # one says before the declaration is registered (#1681).
         self._forward_effect_decls: dict[str, ast.EffectDecl] = {}
@@ -1635,12 +1645,9 @@ class RegistrationMixin:
         self._check_reserved_type_params(decl)
         self._check_duplicate_type_params(decl, f"type alias '{decl.name}'")
         decl_index = self.env.next_decl_index()
-        saved_params = dict(self.env.type_params)
-        if decl.type_params:
-            for tv in decl.type_params:
-                self.env.type_params[tv] = TypeVar(tv)
-
-        resolved = self._resolve_type(decl.type_expr)
+        # #1552: resolved as THE ALIAS RULE reads the namespace, or already,
+        # when a declaration above this one named it.
+        resolved = self._ns_aliases.resolve_decl(decl).resolved_type
         self.env.type_aliases[decl.name] = TypeAliasInfo(
             name=decl.name,
             type_params=decl.type_params,
@@ -1648,8 +1655,6 @@ class RegistrationMixin:
             body=decl.type_expr,
             decl_index=decl_index,
         )
-
-        self.env.type_params = saved_params
 
     def _register_effect(self, decl: ast.EffectDecl) -> None:
         """Register an effect and its operations."""

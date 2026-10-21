@@ -89,21 +89,23 @@ module env NARROWED by :func:`~vera.slots.fn_slot_scope`, accumulating a
 two parameter stacks the checker keeps apart, and every reference into them
 resolves onto the wrong parameter.
 
-Alias visibility follows the checker's REGISTRATION ORDER: an alias body is
-resolved against only the aliases declared before it, exactly as
-``_register_alias`` resolves each alias against the table as it stood at
-that point.  A forward reference (``type A = B;`` before ``type B = Int;``)
-therefore stays opaque as ``B``, and a cycle (``type A = B; type B = A;``)
-terminates with the same placeholder the checker produces rather than
-looping — the ordering restriction is well-founded by construction, and it
-is what makes the iterative resolution's dependency graph a DAG.
+Alias visibility is THE ALIAS RULE (#1552), which the checker and the
+verifier resolve by too (:func:`alias_visible`): an alias body sees every
+alias of its namespace, wherever it is declared, except an alias on a cycle
+of mentions with it that is declared after it.  A forward reference
+(``type A = B;`` before ``type B = Int;``) therefore resolves to ``Int``, as
+the same two declarations in the other order do; a cycle (``type A = B; type
+B = A;``) terminates, in source order inside the cycle, with the placeholder
+the checker produces rather than looping.  The restriction is what makes the
+iterative resolution's dependency graph a DAG.  A data type is visible from
+an alias body wherever it is declared.
 """
 
 from __future__ import annotations
 
 import enum
 import sys
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 
 from vera import ast
@@ -128,13 +130,15 @@ from vera.types import (
 
 __all__ = [
     "EMPTY_ALIAS_ENV",
-    "UNBOUNDED",
     "AliasEnv",
     "NameSort",
     "RefinementBinder",
     "alias_body",
     "alias_env_from_environment",
     "alias_env_from_program",
+    "alias_env_of_decls",
+    "alias_mentions",
+    "alias_visible",
     "classify_named",
     "display_adt_name",
     "family_base_name",
@@ -163,33 +167,32 @@ class AliasEnv:
     Vera's alias namespace is MODULE-scoped (spec §8.4.1), so one of these
     describes one module's view.  *aliases* maps an alias name to its
     SYNTACTIC body (``TypeAliasInfo.body``, #1208) in DECLARATION ORDER —
-    the order is load-bearing, see the module docstring.  *alias_params* is
-    the same key set mapped to each alias's declared type parameters
-    (``None`` for a non-parameterised alias).  *type_params* is the set of
-    type-variable names in scope at the point being rendered; a type
+    the order THE ALIAS RULE reads inside a cycle, see the module docstring.
+    *alias_params* is the same key set mapped to each alias's declared type
+    parameters (``None`` for a non-parameterised alias).  *type_params* is the
+    set of type-variable names in scope at the point being rendered; a type
     parameter SHADOWS a same-named alias, which is why it is tested first.
-    *data_types* maps each declared ADT name to its DECLARATION INDEX, in the
-    same shared index space as ``_order`` (#1208).  An ADT matters to naming
-    only because a user ADT may take a name the resolver otherwise treats
-    specially — and whether it does so depends on where it was declared
-    relative to the alias body asking, hence the index rather than a flat
-    set; see :func:`_resolve_named`.  A built-in ADT carries ``-1``: it
-    precedes every user declaration and is therefore always visible.
+    *data_types* maps each declared ADT name to its declaration index (#1208).
+    An ADT matters to naming only because a user ADT may take a name the
+    resolver otherwise treats specially (a removed alias's, ``Float``), and
+    it does so wherever it is declared (#1552); see :func:`_resolve_named`.
+    A built-in ADT carries ``-1``.
     """
 
     aliases: Mapping[str, ast.TypeExpr]
     alias_params: Mapping[str, tuple[str, ...] | None]
     type_params: frozenset[str] = frozenset()
     data_types: Mapping[str, int] = field(default_factory=dict)
-    # Alias name -> declaration index, so an alias body can be resolved
-    # against only the declarations that precede it.  Shares ONE index space
-    # with ``data_types``, which is what lets the bound order the two
-    # registries against each other.  Also the per-env memo of
-    # already-resolved alias bodies (an alias's restricted resolution is
-    # fixed, so it is computed at most once).
+    # Alias name -> declaration index: the source order THE ALIAS RULE reads
+    # inside a cycle of mentions (:func:`alias_visible`).  Also the per-env
+    # memo of already-resolved alias bodies (an alias's resolution is fixed,
+    # so it is computed at most once) and of the strongly connected
+    # components of the alias mention graph.
     _order: Mapping[str, int] = field(
         default_factory=dict, repr=False, compare=False)
     _memo: dict[str, Type] = field(
+        default_factory=dict, repr=False, compare=False)
+    _components: dict[str, int] = field(
         default_factory=dict, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -349,20 +352,111 @@ def display_adt_name(name: str) -> str:
 # Resolution — the checker's `_resolve_type`, as a pure function
 # =====================================================================
 
-_UNBOUNDED = sys.maxsize
-"""The visibility bound for a rendering that is NOT inside an alias body.
+_UNORDERED = sys.maxsize
+"""The declaration index of an alias the environment holds no index for."""
 
-The checker resolves a parameter's type expression after registration has
-finished, so every declaration is in scope; only an alias BODY is bounded,
-and only by its own declaration index.  A sentinel rather than
-``len(env.aliases)``, because the index space is shared with the ADTs and so
-runs past the alias count.
-"""
 
-UNBOUNDED = _UNBOUNDED
-"""Public spelling of the unbounded visibility limit, for callers of
-:func:`classify_named` outside an alias body — which is every consumer that
-is not this module's own alias resolution."""
+def alias_mentions(
+    body: ast.TypeExpr, params: Iterable[str] | None,
+    aliases: Mapping[str, object],
+) -> list[str]:
+    """The aliases of *aliases* that *body* mentions, in mention order, an
+    alias's own type parameters (*params*) excepted: those are bound in the
+    body and are not references to a same-named alias.
+
+    The edges of the mention graph THE ALIAS RULE reads, over-approximated
+    as :func:`_mentioned_names` is (a resolution may skip a mention), so the
+    checker, the verifier and this module, which all read it, agree on it.
+    """
+    mentioned: list[str] = []
+    _mentioned_names(body, mentioned)
+    own = frozenset(params or ())
+    return [ref for ref in mentioned if ref in aliases and ref not in own]
+
+
+def _alias_components(env: AliasEnv) -> Mapping[str, int]:
+    """Each alias of *env* to the strongly connected component of the
+    mention graph it sits in (Tarjan's, iterative, so a graph of any size
+    takes no Python frame per alias), memoized on *env*."""
+    comp = env._components
+    if comp or not env.aliases:
+        return comp
+    index: dict[str, int] = {}
+    low: dict[str, int] = {}
+    on_stack: set[str] = set()
+    stack: list[str] = []
+    count = 0
+
+    def edges(name: str) -> Iterator[str]:
+        return iter(alias_mentions(
+            env.aliases[name], env.alias_params.get(name), env.aliases))
+
+    for root in env.aliases:
+        if root in index:
+            continue
+        index[root] = low[root] = len(index)
+        stack.append(root)
+        on_stack.add(root)
+        work: list[tuple[str, Iterator[str]]] = [(root, edges(root))]
+        while work:
+            node, out = work[-1]
+            descended = False
+            for ref in out:
+                if ref not in index:
+                    index[ref] = low[ref] = len(index)
+                    stack.append(ref)
+                    on_stack.add(ref)
+                    work.append((ref, edges(ref)))
+                    descended = True
+                    break
+                if ref in on_stack:
+                    low[node] = min(low[node], index[ref])
+            if descended:
+                continue
+            work.pop()
+            if work:
+                parent = work[-1][0]
+                low[parent] = min(low[parent], low[node])
+            if low[node] == index[node]:
+                while True:
+                    member = stack.pop()
+                    on_stack.discard(member)
+                    comp[member] = count
+                    if member == node:
+                        break
+                count += 1
+    return comp
+
+
+def alias_visible(env: AliasEnv, scope: str, ref: str) -> bool:
+    """THE ALIAS RULE (#1552): is alias *ref* in scope in alias *scope*'s
+    body?
+
+    Every alias of the namespace is, wherever it is declared, except one on
+    a cycle of mentions with *scope* (its strongly connected component)
+    that is declared after it: the source order inside a cycle is what
+    makes a cyclic or self-referential alias terminate on an opaque
+    placeholder (E132 refuses the structural cycles), and a declaration's
+    position decides nothing else.  The checker and the verifier resolve an
+    alias body by this rule too, so all three agree by construction.
+    """
+    comp = _alias_components(env)
+    if comp.get(ref) != comp.get(scope):
+        return True
+    return (env._order.get(ref, _UNORDERED)
+            < env._order.get(scope, _UNORDERED))
+
+
+def alias_env_of_decls(decls: Iterable[ast.TypeAliasDecl]) -> AliasEnv:
+    """The naming environment of a namespace's own alias declarations, in
+    source order: what a registration pass reads THE ALIAS RULE against
+    before it has registered them."""
+    aliases: dict[str, ast.TypeExpr] = {}
+    alias_params: dict[str, tuple[str, ...] | None] = {}
+    for decl in decls:
+        aliases[decl.name] = decl.type_expr
+        alias_params[decl.name] = decl.type_params
+    return AliasEnv(aliases=aliases, alias_params=alias_params)
 
 
 class NameSort(enum.Enum):
@@ -411,7 +505,7 @@ def classify_named(
     env: AliasEnv,
     *,
     type_params: frozenset[str] | None = None,
-    limit: int = _UNBOUNDED,
+    scope: str | None = None,
 ) -> NameSort:
     """THE resolution spine: which branch does ``te.name`` take in *env*?
 
@@ -420,10 +514,10 @@ def classify_named(
     :func:`_resolve_named` documents and the order the checker resolves in;
     it lives here, once, so no consumer can hold a different one.
 
-    *type_params* defaults to ``env.type_params``; *limit* bounds visibility
-    to declarations with index ``< limit`` and is only ever narrowed inside an
-    alias BODY (see :func:`_resolve_alias`).  Every other caller leaves it
-    :data:`UNBOUNDED`.
+    *type_params* defaults to ``env.type_params``; *scope* is the alias whose
+    BODY is being resolved (see :func:`_resolve_alias`), which sees the
+    aliases :func:`alias_visible` admits.  Every other caller leaves it
+    ``None``: outside an alias body every alias of the namespace is in scope.
 
     Pure and total: no diagnostics, no exceptions, no state.
     """
@@ -433,19 +527,18 @@ def classify_named(
         return NameSort.TYPE_PARAM
     if name in PRIMITIVES and not te.type_args:
         return NameSort.PRIMITIVE
-    idx = env._order.get(name)
-    # ``name in env.aliases`` is what makes the branch TOTAL: the two maps
-    # agree for every environment this module builds, but an env assembled
-    # elsewhere with an ``_order`` entry and no body must fall through to the
-    # ADT branch rather than raise.
-    if idx is not None and idx < limit and name in env.aliases:
+    # ``name in env.aliases`` is what makes the branch TOTAL: an env
+    # assembled elsewhere with an ``_order`` entry and no body falls through
+    # to the ADT branch rather than raise.
+    if name in env.aliases and (
+            scope is None or alias_visible(env, scope, name)):
         declared = env.alias_params.get(name) or ()
         supplied = len(te.type_args) if te.type_args else 0
         if supplied != len(declared):
             return NameSort.ALIAS_ARITY_MISMATCH
         return NameSort.ALIAS
-    adt_idx = env.data_types.get(name)
-    if adt_idx is not None and adt_idx < limit:
+    # A declared data type is in scope wherever it is declared (#1552).
+    if name in env.data_types:
         return NameSort.DECLARED_ADT
     return NameSort.BUILTIN
 
@@ -455,7 +548,7 @@ def alias_body(
     env: AliasEnv,
     *,
     type_params: frozenset[str] | None = None,
-    limit: int = _UNBOUNDED,
+    scope: str | None = None,
 ) -> ast.TypeExpr:
     """The SYNTACTIC body an :attr:`NameSort.ALIAS` classification names,
     with ``te``'s arguments substituted for the alias's own parameters.
@@ -494,30 +587,30 @@ def resolve_type_expr(te: ast.TypeExpr, env: AliasEnv) -> Type:
     Total: it reports no diagnostics and raises nothing, where the checker
     would additionally emit E133 / E134 / E135 and return the same type.
     """
-    return _resolve(te, env, env.type_params, _UNBOUNDED)
+    return _resolve(te, env, env.type_params, None)
 
 
 def _resolve(
     te: ast.TypeExpr,
     env: AliasEnv,
     type_params: frozenset[str],
-    limit: int,
+    scope: str | None,
 ) -> Type:
-    """``_resolve_type`` with the alias-visibility bound *limit* (only
-    aliases whose declaration index is ``< limit`` are in scope) and an
-    explicit *type_params* set (an alias body sees its OWN parameters, not
+    """``_resolve_type`` inside alias *scope*'s body (``None`` outside every
+    alias body: see :func:`classify_named`) and with an explicit
+    *type_params* set (an alias body sees its OWN parameters, not
     the caller's — matching the ``saved_params`` swap in
     ``_register_alias``)."""
     if isinstance(te, ast.NamedType):
-        return _resolve_named(te, env, type_params, limit)
+        return _resolve_named(te, env, type_params, scope)
     if isinstance(te, ast.FnType):
-        params = tuple(_resolve(p, env, type_params, limit) for p in te.params)
-        ret = _resolve(te.return_type, env, type_params, limit)
-        eff = _resolve_effect_row(te.effect, env, type_params, limit)
+        params = tuple(_resolve(p, env, type_params, scope) for p in te.params)
+        ret = _resolve(te.return_type, env, type_params, scope)
+        eff = _resolve_effect_row(te.effect, env, type_params, scope)
         return FunctionType(params, ret, eff)
     if isinstance(te, ast.RefinementType):
         return RefinedType(
-            _resolve(te.base_type, env, type_params, limit), te.predicate)
+            _resolve(te.base_type, env, type_params, scope), te.predicate)
     return UnknownType()
 
 
@@ -525,7 +618,7 @@ def _resolve_named(
     te: ast.NamedType,
     env: AliasEnv,
     type_params: frozenset[str],
-    limit: int,
+    scope: str | None,
 ) -> Type:
     """``_resolve_named_type``'s branch order, exactly.
 
@@ -541,25 +634,19 @@ def _resolve_named(
     its extra work is E135 diagnostics, which naming does not emit.
 
     The declared-ADT branch, by contrast, is NOT absorbable, and it must sit
-    exactly where the checker puts it — ahead of the ``Decimal`` and removed
-    -alias branches.  A user may declare ``data Float`` or ``data Decimal``
-    (both check clean), and for those the checker takes the ADT branch first:
-    ``@Option<Float>`` renders ``Option<Float>``, not ``Option<?>``, and a
-    user ``Decimal`` keeps its type arguments (``Option<Decimal<Int>>``)
-    instead of having them dropped by the built-in ``Decimal`` branch.
+    exactly where the checker puts it — ahead of the removed-alias branch.  A
+    user may declare ``data Float`` (``Float`` is a removed alias, not a
+    reserved name), and for it the checker takes the ADT branch first:
+    ``@Option<Float<Int>>`` renders ``Option<Float<Int>>``, not
+    ``Option<?>``.
 
-    ADT visibility is bounded by declaration index exactly as alias
-    visibility is, because the two registries share ONE index space (#1208).
-    ``type M = Decimal;`` declared ABOVE ``data Decimal`` resolved, at
-    registration time, against a table that did not yet hold the ADT — so the
-    built-in ``Decimal`` branch is what the checker took, and what is taken
-    here.  Declared below it, the ADT branch wins on both sides.  The bound
-    only ever matters for an ADT named after a removed alias or a built-in in
-    the first place; every other ADT reaches the same opaque ``AdtType``
-    whichever branch it takes.
+    A declared ADT is in scope wherever it is declared (#1552): ``type M =
+    Float;`` declared ABOVE ``data Float`` resolves to the ADT, as it does
+    below it, on both sides.  Every other ADT reaches the same opaque
+    ``AdtType`` whichever branch it takes.
     """
     name = te.name
-    sort = classify_named(te, env, type_params=type_params, limit=limit)
+    sort = classify_named(te, env, type_params=type_params, scope=scope)
     if sort is NameSort.TYPE_PARAM:
         # `env.type_params` maps every name to `TypeVar(name)`.
         return TypeVar(name)
@@ -572,7 +659,7 @@ def _resolve_named(
         body = _resolve_alias(name, env)
         if te.type_args and params:
             args = tuple(
-                _resolve(a, env, type_params, limit) for a in te.type_args)
+                _resolve(a, env, type_params, scope) for a in te.type_args)
             return substitute(body, dict(zip(params, args)))
         return body
     if sort is NameSort.BUILTIN:
@@ -585,7 +672,7 @@ def _resolve_named(
         if display_adt_name(name) in REMOVED_ALIASES:
             return UnknownType()
     return AdtType(name, tuple(
-        _resolve(a, env, type_params, limit) for a in te.type_args
+        _resolve(a, env, type_params, scope) for a in te.type_args
     ) if te.type_args else ())
 
 
@@ -618,11 +705,11 @@ def _mentioned_names(te: ast.TypeExpr, out: list[str]) -> None:
 def _resolve_alias(name: str, env: AliasEnv) -> Type:
     """The alias's registration-time ``resolved_type``, recomputed.
 
-    Resolved against only the aliases DECLARED BEFORE it and with only its
-    own type parameters in scope — the state ``_register_alias`` had when it
-    resolved that body.  The strictly-decreasing visibility bound makes the
-    resolution well-founded, so a cyclic or forward-referencing alias
-    terminates on the opaque placeholder the checker also produces.
+    Resolved against the aliases THE ALIAS RULE admits in its body
+    (:func:`alias_visible`) and with only its own type parameters in scope —
+    what ``_register_alias`` resolved that body against.  The rule makes the
+    resolution well-founded, so a cyclic alias terminates on the opaque
+    placeholder the checker also produces.
 
     ITERATIVE, dependency-first, because the chain length is the user's to
     choose and the checker's is O(1) per hop (it stores each alias's
@@ -630,8 +717,9 @@ def _resolve_alias(name: str, env: AliasEnv) -> Type:
     frames per hop and died on a legal program — ``type A1 = A0; type A2 =
     A1; …`` at ~340 hops raised an uncaught ``RecursionError`` from inside a
     renderer this module's docstring calls TOTAL (#1208 review, probe
-    ``d01_deep_chain``).  Every alias a body mentions has a strictly smaller
-    declaration index, so the mention graph is a DAG.
+    ``d01_deep_chain``).  The mentions the rule admits form a DAG: inside a
+    cycle of mentions an admitted one has a strictly smaller declaration
+    index, and between cycles the components are ordered.
 
     ONE dependency is pushed per iteration, and that is the load-bearing
     detail rather than a stylistic one.  Pushing a body's whole pending list
@@ -643,8 +731,8 @@ def _resolve_alias(name: str, env: AliasEnv) -> Type:
     and it raised ``RecursionError`` from the same renderer at a few hundred
     levels (#1208 round-2 review, probe ``sib_300``).  Pushing one at a time
     leaves only this walk's ANCESTORS in progress, and an ancestor can never
-    be a pending dependency (its index is strictly larger), so nothing is ever
-    filtered: by the time a body is resolved every alias it mentions is in the
+    be a pending dependency (the admitted mentions are a DAG), so nothing is
+    ever filtered: by the time a body is resolved every alias it mentions is in the
     memo, and the ``_resolve_alias`` calls underneath it return from the memo
     without recursing.  The Python nesting is therefore ONE frame below this
     one, whatever the chain length — the depth of the ``_resolve`` walk itself
@@ -660,12 +748,10 @@ def _resolve_alias(name: str, env: AliasEnv) -> Type:
         return cached
     stack: list[str] = [name]
     # Exactly this walk's ancestors — see the docstring.  Defence in depth,
-    # and provably inert on any environment this module builds: the visibility
-    # bound strictly decreases along a dependency edge, so an ancestor's index
-    # is strictly larger than every pending dependency's and can never be one
-    # of them.  Should that invariant ever be broken, skipping an in-progress
-    # name terminates on the same opaque placeholder the checker produces
-    # instead of spinning.
+    # and provably inert: the admitted mentions are a DAG, so an ancestor can
+    # never be a pending dependency.  Should that invariant ever be broken,
+    # skipping an in-progress name terminates on the same opaque placeholder
+    # the checker produces instead of spinning.
     in_progress: set[str] = {name}
     while stack:
         cur = stack[-1]
@@ -673,27 +759,24 @@ def _resolve_alias(name: str, env: AliasEnv) -> Type:
             in_progress.discard(cur)
             stack.pop()
             continue
-        limit = env._order[cur]
-        mentioned: list[str] = []
-        _mentioned_names(env.aliases[cur], mentioned)
         pending = next((
-            ref for ref in mentioned
+            ref for ref in alias_mentions(
+                env.aliases[cur], env.alias_params.get(cur), env.aliases)
             if ref not in memo
             and ref not in in_progress
-            and ref in env.aliases
-            and env._order.get(ref, _UNBOUNDED) < limit
+            and alias_visible(env, cur, ref)
         ), None)
         if pending is not None:
             # ONE at a time, so only ancestors are ever in progress and no
-            # real dependency is filtered.  Strictly smaller indices, so the
-            # stack cannot cycle and each alias is resolved at most once
-            # (a later push hits the memo).
+            # real dependency is filtered.  The admitted mentions are a DAG,
+            # so the stack cannot cycle and each alias is resolved at most
+            # once (a later push hits the memo).
             stack.append(pending)
             in_progress.add(pending)
             continue
         memo[cur] = _resolve(
             env.aliases[cur], env,
-            frozenset(env.alias_params.get(cur) or ()), limit)
+            frozenset(env.alias_params.get(cur) or ()), cur)
         in_progress.discard(cur)
         stack.pop()
     return memo[name]
@@ -703,7 +786,7 @@ def _resolve_effect_row(
     er: ast.EffectRow,
     env: AliasEnv,
     type_params: frozenset[str],
-    limit: int,
+    scope: str | None,
 ) -> EffectRowType:
     """``_resolve_effect_row``, as a pure function.
 
@@ -722,12 +805,12 @@ def _resolve_effect_row(
                     row_var = ref.name
                     continue
                 instances.append(EffectInstance(ref.name, tuple(
-                    _resolve(a, env, type_params, limit) for a in ref.type_args
+                    _resolve(a, env, type_params, scope) for a in ref.type_args
                 ) if ref.type_args else ()))
             elif isinstance(ref, ast.QualifiedEffectRef):
                 instances.append(EffectInstance(
                     f"{ref.module}.{ref.name}", tuple(
-                        _resolve(a, env, type_params, limit)
+                        _resolve(a, env, type_params, scope)
                         for a in ref.type_args
                     ) if ref.type_args else ()))
         return ConcreteEffectRow(frozenset(instances), row_var)

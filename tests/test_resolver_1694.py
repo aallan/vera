@@ -59,9 +59,6 @@ def _codes(diagnostics: object) -> list[str | None]:
 
 # The mechanisms still to land, each a strict xfail on the cells it flips:
 # a cell that starts passing fails the run until its mark is removed.
-_ALIASES = pytest.mark.xfail(strict=True, reason=(
-    "#1694: an alias body resolves against every alias of its namespace, "
-    "in the checker and in vera.naming alike"))
 _SLOTS = pytest.mark.xfail(strict=True, reason=(
     "#1694: a refinement in a type argument keeps its predicate in the "
     "slot name (spec 3.8.1)"))
@@ -337,13 +334,159 @@ def test_repro_1549_e602_kept_at_any_line(gap: int) -> None:
 # #1552: an alias naming an alias declared after it.
 # =====================================================================
 
-@_ALIASES
 def test_repro_1552_alias_forward_reference() -> None:
     source = (
         "type A = B;\n\ntype B = Int;\n\n"
         + _fn("inc(@A -> @Int)", "@A.0 + 1") + "\n"
         + _fn("main(@Unit -> @Int)", "inc(41)", visibility="public"))
     assert pipeline.run(source, "main").value == 42
+
+
+# The class: a type expression a registration pass resolves (an alias body,
+# a constructor field, an operation's signature) that names an alias or a
+# data type declared further down.  THE ALIAS RULE (vera.naming.alias_visible)
+# admits every alias of the namespace except one on a cycle of mentions with
+# the body's alias declared after it, and a data type wherever it is
+# declared, so each shape gives one outcome in both declaration orders.
+_ORDERED_SHAPES = {
+    "alias_in_a_type_argument": (
+        ("type A = Array<B>;", "type B = Int;"),
+        _fn("main(@Unit -> @Int)", "let @A = [41];\n  @A.0[0] + 1",
+            visibility="public")),
+    "constructor_field": (
+        ("private data Box { MkBox(A) }", "type A = Int;"),
+        _fn("main(@Unit -> @Int)",
+            "match MkBox(41) {\n    MkBox(@A) -> @A.0 + 1\n  }",
+            visibility="public")),
+    "removed_alias_data_name": (
+        ("type M = Float;", "private data Float { MkF(Int) }"),
+        _fn("main(@Unit -> @Int)",
+            "let @M = MkF(41);\n  match @M.0 {\n"
+            "    MkF(@Int) -> @Int.0 + 1\n  }",
+            visibility="public")),
+    "function_signature": (
+        (_fn("inc(@A -> @Int)", "@A.0 + 1"), "type A = Int;"),
+        _fn("main(@Unit -> @Int)", "inc(41)", visibility="public")),
+}
+
+
+@pytest.mark.parametrize("order", ["as_written", "reversed"])
+@pytest.mark.parametrize("shape", sorted(_ORDERED_SHAPES))
+def test_class_1552_one_outcome_in_either_order(shape: str, order: str) -> None:
+    decls, main = _ORDERED_SHAPES[shape]
+    ordered = decls if order == "as_written" else tuple(reversed(decls))
+    source = "\n\n".join(ordered) + "\n\n" + main
+    assert pipeline.run(source, "main").value == 42
+
+
+_OP_SHAPES = {
+    "effect_operation": (
+        "effect Ask {\n  op ask(Unit -> A);\n}",
+        "public fn main(@Unit -> @Int)\n" + _CONTRACT + "{\n"
+        "  handle[Ask] {\n    ask(@Unit) -> { resume(41) }\n"
+        "  } in {\n    ask(()) + 1\n  }\n}\n"),
+    "ability_operation": (
+        "ability Sz<T> {\n  op size(T -> A);\n}",
+        _fn("main(@Unit -> @Int)", "size(1) + 1", visibility="public")),
+}
+
+
+@pytest.mark.parametrize("order", ["as_written", "reversed"])
+@pytest.mark.parametrize("shape", sorted(_OP_SHAPES))
+def test_class_1552_an_operation_signature_reads_a_later_alias(
+        shape: str, order: str) -> None:
+    """A user effect's or ability's operation is refused by code generation's
+    lowering rule (E340) whatever its signature; with the alias resolved its
+    type is the same in both orders, so the refusal is all there is."""
+    decl, main = _OP_SHAPES[shape]
+    pair = (decl, "type A = Int;")
+    ordered = pair if order == "as_written" else tuple(reversed(pair))
+    checked = pipeline.check("\n\n".join(ordered) + "\n\n" + main)
+    assert _codes(checked.errors) == ["E340"], _codes(checked.errors)
+
+
+@pytest.mark.parametrize("order", ["as_written", "reversed"])
+def test_class_1552_the_verifier_reads_a_later_alias(order: str) -> None:
+    """The verifier's own registration takes the rule: a parameter typed by
+    an alias of a refined alias declared below it carries the refinement,
+    so the postcondition is proved (Tier 1)."""
+    pair = ("type A = B;", "type B = { @Int | @Int.0 > 0 };")
+    ordered = pair if order == "as_written" else tuple(reversed(pair))
+    source = ("\n\n".join(ordered) + "\n\n"
+              "public fn pos(@A -> @Int)\n  requires(true)\n"
+              "  ensures(@Int.result > 0)\n  effects(pure)\n{\n"
+              "  @A.0\n}\n")
+    verified = pipeline.verify(source)
+    assert verified.ok, _codes(verified.errors)
+    statuses = {o.kind: o.status for o in verified.obligations}
+    assert statuses.get("ensures") == "verified", statuses
+
+
+@pytest.mark.parametrize("order", ["as_written", "reversed"])
+def test_class_1552_a_generic_alias_resolves_ahead(order: str) -> None:
+    """An alias applying a parameterised alias declared below it substitutes
+    the arguments as it does declared above it.  Checked, not run: a
+    parameterised alias of a two-word value fails in code generation in
+    either order, the find in this PR's last section."""
+    from vera.checker.core import TypeChecker
+    from vera.parser import parse_to_ast
+    from vera.types import pretty_type
+
+    pair = ("type P = Wrap<Int>;", "type Wrap<T> = Array<T>;")
+    ordered = pair if order == "as_written" else tuple(reversed(pair))
+    source = "\n\n".join(ordered) + "\n\n" + _fn(
+        "main(@Unit -> @Int)", "2", visibility="public")
+    checker = TypeChecker(source=source, file="<generic>")
+    checker.check_program(parse_to_ast(source))
+    assert not _codes([d for d in checker.errors if d.severity == "error"])
+    assert pretty_type(
+        checker.env.type_aliases["P"].resolved_type) == "Array<Int>"
+
+
+@pytest.mark.parametrize("order", ["as_written", "reversed"])
+def test_class_1552_a_long_forward_chain_resolves(order: str) -> None:
+    """Resolving an alias ahead takes no Python frame per hop: a 400-link
+    chain declared in either direction checks and runs."""
+    links = [f"type A{i} = A{i + 1};" for i in range(400)] + ["type A400 = Int;"]
+    ordered = links if order == "as_written" else list(reversed(links))
+    source = ("\n".join(ordered) + "\n\n"
+              + _fn("main(@Unit -> @Int)", "let @A0 = 41;\n  @A0.0 + 1",
+                    visibility="public"))
+    assert pipeline.run(source, "main").value == 42
+
+
+@pytest.mark.parametrize("order", ["as_written", "reversed"])
+@pytest.mark.parametrize("shape, expected", [
+    pytest.param(("type F = fn(F -> Int) effects(pure);",),
+                 {"F": "fn(F -> Int) effects(pure)"}, id="self_reference"),
+    pytest.param(("type F = fn(G -> Int) effects(pure);",
+                  "type G = fn(F -> Int) effects(pure);"),
+                 {"F": "fn(G -> Int) effects(pure)",
+                  "G": "fn(fn(G -> Int) effects(pure) -> Int) effects(pure)"},
+                 id="mutual_as_written"),
+])
+def test_class_1552_inside_a_cycle_source_order_holds(
+        shape: tuple[str, ...], expected: dict[str, str], order: str) -> None:
+    """Negative space: aliases on a cycle of mentions through a function type
+    (no E132, which is structural) resolve as at the base, the later one
+    opaque inside the earlier one's body.  The reversed order of the mutual
+    pair swaps which one is earlier, so its expectation swaps too."""
+    from vera.checker.core import TypeChecker
+    from vera.parser import parse_to_ast
+    from vera.types import pretty_type
+
+    ordered = shape if order == "as_written" else tuple(reversed(shape))
+    if order == "reversed" and len(shape) == 2:
+        expected = {"G": "fn(F -> Int) effects(pure)",
+                    "F": "fn(fn(F -> Int) effects(pure) -> Int) effects(pure)"}
+    source = "\n\n".join(ordered) + "\n\n" + _fn(
+        "main(@Unit -> @Int)", "2", visibility="public")
+    checker = TypeChecker(source=source, file="<cycle>")
+    checker.check_program(parse_to_ast(source))
+    assert not _codes([d for d in checker.errors if d.severity == "error"])
+    aliases = checker.env.type_aliases
+    assert {name: pretty_type(aliases[name].resolved_type)
+            for name in expected} == expected
 
 
 # =====================================================================
