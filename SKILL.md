@@ -153,7 +153,8 @@ Every diagnostic has a stable code grouped by compiler phase — the `W` series 
 - **W001** — Typed hole (`?`) — expected type and available bindings reported (warning, not error)
 - **W002** — `async()` argument evaluates eagerly: its effects fall outside the commutative set (`Http`), so the future is computed sequentially at the `async()` site rather than concurrently (warning, not error)
 - **W003** — Unverified assumption: an `assume` statement is taken on trust, not proved (warning, not error)
-- **W004** — `vera verify --reconcile` found a runtime check in the compiled module that no verification record accounts for: the check still runs, and the summary omits it (warning, not error)
+- **W004** — `vera verify` found a runtime check in the compiled module that no verification record accounts for: the check still runs, and the summary omits it (warning, not error)
+- **W005** — `vera verify` did not reconcile the runtime checks, because the program holds typed holes and code generation compiles nothing until they are filled (warning, not error)
 - **E001–E009** — Parse errors (missing contracts, unexpected tokens, malformed slot references, bad string escapes)
 - **E011–E013** — Import errors (circular import, unresolvable import, a module that fails to parse)
 - **E020, E021, E023** — Malformed comments: unterminated `{-` (E020) or `/*` (E021), or a `/*` nested inside another (E023 — only `{- -}` nests). Each names the delimiter at fault and how to close it.
@@ -163,7 +164,7 @@ Every diagnostic has a stable code grouped by compiler phase — the `W` series 
 - **E1xx** — Type check: core + expressions (type mismatches, slot resolution, operators, declarations, termination)
 - **E2xx** — Type check: calls (unresolved functions, argument mismatches, module calls, ability operations)
 - **E3xx** — Type check: control flow (if/match, patterns, effect handlers)
-- **E5xx** — Verification (contract violations, undecidable fallbacks, primitive-operation safety incl. arithmetic overflow, premise satisfiability, and E541: a runtime-check claim `vera verify --reconcile` found no check for in the compiled module)
+- **E5xx** — Verification (contract violations, undecidable fallbacks, primitive-operation safety incl. arithmetic overflow, premise satisfiability, and E541: a runtime-check claim `vera verify` found no check for in the compiled module)
 - **E6xx** — Codegen (unsupported features, name collisions, typed holes block compilation); **E699** is an internal compiler error
 - **E7xx** — Testing (contract violations, input generation, execution errors, a proof a test run refutes)
 
@@ -1392,6 +1393,8 @@ Conditions guaranteed when the function returns. Use `@T.result` to refer to the
 ```vera
   ensures(@Int.result == @Int.0 / @Int.1)
 ```
+
+A contract performs no effect, whatever the function's effects clause names: an effect operation in a `requires`, `ensures`, `decreases`, `assert`, `assume` or refinement predicate, or a call to a function that performs one, is refused (`E187`), so perform it in the body, bind its value with `let`, and check that value with `assert`.
 
 ### decreases (termination)
 

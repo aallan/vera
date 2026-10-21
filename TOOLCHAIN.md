@@ -99,10 +99,10 @@ vera fmt --check file.vera     # exit non-zero if not already canonical (CI mode
 ## Recipe: verify contracts
 
 ```bash
-vera verify file.vera          # type-check + discharge contracts via Z3
-vera verify --json file.vera   # adds a "verification" tier summary
+vera verify file.vera          # type-check + discharge contracts via Z3, then check each Tier 3 claim has its check
+vera verify --json file.vera   # adds a "verification" tier summary and a "reconciliation" object
 vera verify --timeout-ms 60000 file.vera   # per-query Z3 budget, ms (default 10000)
-vera verify --reconcile file.vera          # also compile, and check each Tier 3 claim has its check
+vera verify --no-reconcile file.vera       # verify without compiling: no reconciliation
 ```
 
 Vera verifies in two implemented tiers, at every call site:
@@ -120,14 +120,23 @@ Vera verifies in two implemented tiers, at every call site:
   reported as warnings (`E504`, `E506`) and counted in neither tier.
 
 **Checking the Tier 3 claims against the module.** A `tier3` status claims that
-the compiled module checks the property. `vera verify --reconcile` compiles the
-program in process, as `vera compile` would, and joins the verifier's records
-with the checks the module holds: a `tier3` or `timeout` obligation that no
-emitted check answers is an **E541** error, and an emitted check that no
-obligation accounts for is a **W004** warning. With
-`--json` the envelope gains a `reconciliation` object holding the counts and
-each mismatch. The mismatches the corpus shows are listed, each under its
-open issue, in `scripts/check_reconciliation.py`.
+the compiled module checks the property. `vera verify` compiles the program in
+process, as `vera compile` would, and joins the verifier's records with the
+checks the module holds: a `tier3` or `timeout` obligation that no emitted
+check answers is an **E541** error, and an emitted check that no obligation
+accounts for is a **W004** warning. With `--json` the envelope carries a
+`reconciliation` object holding the counts and each mismatch, and the text
+output ends with a `Reconciliation:` line when the program claims a runtime
+check. A program code generation refuses fails `vera verify` with that
+refusal, bar one holding typed holes: `vera verify` still verifies a partial
+program, and says with a **W005** warning that its runtime checks were not
+reconciled, since code generation compiles nothing until every hole is filled
+(`reconciliation` is then `{"skipped": ...}`). `--no-reconcile` skips the join
+and compiles nothing. The mismatches the corpus shows are listed, each under
+its open issue, in `scripts/check_reconciliation.py`. `vera test --distrust`
+reads a trap against the same join's relation between checks and records,
+and reports none of its mismatches; the language server compiles nothing, so
+it gives none of the join's diagnostics.
 
 (Tier 2, Z3-*guided*, is specified in spec/06 but not implemented.)
 
