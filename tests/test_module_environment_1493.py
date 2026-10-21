@@ -763,26 +763,27 @@ class TestOneDerivation:
     def test_every_reach_is_one_walk(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """The modules a module's checker sees and the modules the
-        constructor fallback resolves among (#1513) are one walk,
-        ``reachable_paths``: taken away, both see nothing."""
-        from vera import module_view
-        from vera.monomorphize import namespace_module_reach
+        """The modules a module's checker sees and the modules the resolver
+        pass binds a constructor of an unimported type among (#1513, #1694)
+        are one walk, ``reachable_paths``: taken away, both see nothing."""
+        from vera import binding, module_view
         from vera.resolver import ResolvedModule
 
         root = parse_to_ast("module r;\n\nimport mid;\n")
         mids = parse_to_ast("module mid;\n\nimport deep;\n")
-        deep = parse_to_ast("module deep;\n")
+        deep = parse_to_ast("module deep;\n\npublic data D {\n  Dk(Int)\n}\n")
         resolved = [
             ResolvedModule(("deep",), Path("/x/deep.vera"), deep, "", True),
             ResolvedModule(("mid",), Path("/x/mid.vera"), mids, "", False),
             ResolvedModule(("r",), Path("/x/r.vera"), root, "", False),
         ]
-        pairs = [(m.path, m.program) for m in resolved]
-        assert namespace_module_reach(pairs)[("r",)] == {("mid",), ("deep",)}
+        entry = parse_to_ast("import r;\n")
+        dk = binding.DeclId(("deep",), "Dk", ("D",), kind="ctor")
+        assert binding.reachable_paths is module_view.reachable_paths
+        assert binding.bind_program(entry, resolved).ctors[("r",)]["Dk"] == dk
         monkeypatch.setattr(
             module_view, "reachable_paths", lambda program, programs: [])
+        monkeypatch.setattr(
+            binding, "reachable_paths", module_view.reachable_paths)
         assert module_view.modules_visible_to(root, resolved) == []
-        reach = namespace_module_reach(pairs)
-        assert all(not paths for key, paths in reach.items()
-                   if key is not None), reach
+        assert "Dk" not in binding.bind_program(entry, resolved).ctors[("r",)]

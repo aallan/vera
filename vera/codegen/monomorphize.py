@@ -24,7 +24,6 @@ from vera.lowering import ability_lowerable
 from vera.monomorphize import (
     MonoContext,
     Monomorphizer,
-    NamespaceCtorOwners,
     TypeArgAliasScope,
     collect_nested_generic_decls,
     declared_return_clone_key,
@@ -90,26 +89,6 @@ def _simple_return_type_name(te: ast.TypeExpr | None) -> str | None:
 class MonomorphizationMixin:
     """Methods for monomorphizing generic functions."""
 
-    def _namespace_ctor_owner_tables(self) -> NamespaceCtorOwners:
-        """Each namespace's constructor → ADT map, from the scoped projection.
-
-        ``_namespace_ctor_projection`` is what the wasm layer resolves a
-        constructor through, so asking it once per namespace gives discovery
-        the same owner the call site will emit.  Building it here instead of
-        from the declarations keeps the two in step through the per-owner ADT
-        renames, whose mangled names are what the emitted symbol carries.
-        """
-        tables: dict[tuple[str, ...] | None, dict[str, str]] = {}
-        saved = self._active_module_path
-        try:
-            for path in [None, *(m.path for m in self._resolved_modules)]:
-                self._active_module_path = path
-                _layouts, ctor_to_adt, _tp = self._namespace_ctor_projection()
-                tables[path] = ctor_to_adt
-        finally:
-            self._active_module_path = saved
-        return NamespaceCtorOwners(tables)
-
     def _build_mono_context(
         self,
         generic_decls: dict[str, ast.FnDecl],
@@ -169,17 +148,7 @@ class MonomorphizationMixin:
             # named a clone from the invisible declaration's return type
             # while the rewrite named one from the cell's.
             namespace_fn_names=getattr(self, "_namespace_tables", None),
-            # #1436: the constructor half of the same narrowing, built from
-            # THE registry that answers this side's call sites — one call to
-            # `_namespace_ctor_projection` per namespace — so discovery names
-            # a clone after the ADT the WASM rewrite will resolve the same
-            # constructor to.  Built from the projection rather than from the
-            # declarations because only the projection carries the per-owner
-            # renames (#1409/#1423) the emitted symbol is spelled with.
-            # #1694: every constructor is named by its link name, so the
-            # flat `ctor_to_adt` answers for every namespace.
-            namespace_ctor_owners=None,
-            # #1436: and the owner-keyed type-parameter indices, so a
+            # #1436: the owner-keyed type-parameter indices, so a
             # constructor two namespaces declare does not take its field
             # positions from whichever declaration registered last.
             adt_ctor_tp_indices=getattr(self, "_adt_ctor_tp_indices", {}),

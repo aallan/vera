@@ -58,10 +58,9 @@ def _always_injected() -> frozenset[str]:
 
 
 _NAMES = _names()
-# The prelude injects these only when the entry program uses them, so a
-# module's own declaration of one stands alone and compiles (spec §8.4.1);
-# the rest contend with a declaration every program compiles (E621), or are
-# built-in layouts, and do not compile under a module's differing shape.
+# The prelude injects these only when the entry program uses them: the names
+# #1559 was about.  A module's declaration of any prelude name is refused at
+# check since #1469 (E158), and the matrix runs its renamed control for these.
 _DEMAND_INJECTED = sorted(prelude_adt_names() - _always_injected())
 
 _HDR = "  requires(true)\n  ensures(true)\n  effects(pure)\n"
@@ -82,8 +81,8 @@ def _module_a(name: str) -> str:
 
 # A construction with fields (41) and a nullary one (100), a match on the
 # imported function's result with a wildcard (5), and one nested in `Some`
-# (7): 153.  The entry names no type, since naming one of the on-demand
-# prelude types there draws the prelude's own declaration in (E621).
+# (7): 153.  The entry names no type: at the base, naming one of the
+# on-demand prelude types there drew the prelude's own declaration in (E621).
 _ENTRY_BODY = (
     "unwrap(MyK(@Int.0)) + unwrap(MyN)"
     " + match mk(5) {\n    MyK(@Int) -> @Int.0,\n    _ -> 0\n  }"

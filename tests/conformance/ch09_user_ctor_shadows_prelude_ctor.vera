@@ -4,8 +4,8 @@
 -- `ZzBox` is never used; before the fix its mere declaration made every
 -- `Ordering` in the program render as `Less(false)`, on a check-clean and
 -- verify-clean program. A positive rather than a negative fixture: §8.4.1
--- makes the prelude's data types shadowable, so this program is LEGAL and
--- the bug was that it compiled to the wrong answer.
+-- reserves the prelude's type names but not its constructor names, so this
+-- program is LEGAL and the bug was that it compiled to the wrong answer.
 private data ZzBox {
   Less(Bool)
 }

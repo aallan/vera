@@ -609,9 +609,9 @@ class CodeGenerator(
         # membership of `_adt_layouts` answers neither "did the prelude
         # supply this?" nor "whose type is this?".  Recorded by
         # OBSERVING the post-injection walk in Pass 1.2 rather than by
-        # re-deriving `inject_prelude`'s demand predicates, for the same
-        # reason the E609/E610 rail beside it is: a second copy of "does
-        # this program want Request?" is a second thing to keep in step.
+        # re-deriving `inject_prelude`'s demand predicates: a second copy
+        # of "does this program want Request?" is a second thing to keep
+        # in step.
         #
         # Consumed by `validate_handler` (`vera/runtime/server.py`),
         # which must establish that a `handle(@Request -> @Response)` is
@@ -1518,40 +1518,23 @@ class CodeGenerator(
         asymmetry between the two sides' notions of "builtin").  Subtracting
         what the namespaces declare cannot go stale with registration order.
 
-        Subtraction alone is sound only while "declared by a namespace" and
-        "global infrastructure" are DISJOINT, and §8.4.1 makes them overlap
-        on purpose: the prelude's data types are ordinary public
-        declarations a program may name and shadow.  So the floor unioned
-        in has to state the prelude's names positively rather than let them
-        be recovered by elimination (#1277).  Two sets do that, and they
-        answer different questions:
+        The floor unioned in states the prelude's names positively rather
+        than letting them be recovered by elimination (#1277).  Two sets do
+        that, and they answer different questions:
 
         - ``_builtin_adt_names`` — the Pass-0.5 snapshot of
-          ``_register_builtin_adts`` (``Option``, ``Result``, ``Tuple``, …),
-          which is also the set the E609/E610 collision rails exempt.
+          ``_register_builtin_adts`` (``Option``, ``Result``, ``Tuple``, …).
         - :func:`~vera.prelude.prelude_adt_names` — every ADT the PRELUDE
           can provide, which is the half the snapshot cannot hold: ``Json``,
           ``HtmlNode``, ``Request`` and ``Response`` register in Pass 1.2,
-          after this membership is computed.  Without it, one file's ``data
-          Json`` removed ``Json`` from every OTHER namespace's members —
-          including the entry program's, which never declared it and
-          legitimately sees the prelude's — while the checker's ``TypeEnv``
+          after this membership is computed, while the checker's ``TypeEnv``
           carries the name in every namespace unconditionally.
 
         Naming a prelude ADT the program never demanded is inert, so this
-        floor does not condition on demand where the checker does not —
-        but the reason is NOT that an unregistered name is filtered out
-        downstream.  That is true of a name with no layout at all, and
-        false in exactly the case this floor is about: when a module has
-        declared the name, a layout IS registered, and it is the module's.
-        What makes it inert is narrower and is a property of today's only
-        consumer — ``naming._resolve_named`` reads ``data_types`` for the
-        index alone, and the index changes a rendering only for
-        ``Decimal`` and the single ``REMOVED_ALIASES`` entry ``Float``,
-        neither of which the prelude declares.  A future consumer that
-        reads the set for anything else would see the module's layout
-        under the prelude's name — which is why the Pass-1.2 rail refuses
-        that program (E621) rather than leaving the two to disagree.
+        floor does not condition on demand where the checker does not: no
+        declaration may take a prelude type's name (E158, #1469), so the
+        name has no layout but the prelude's, and an unregistered name is
+        filtered out downstream.
 
         THE PRELUDE is a namespace too (#1316), and the only one whose
         membership is stated rather than looked up: it declares no user type
@@ -1906,8 +1889,7 @@ class CodeGenerator(
         # `_register_modules`: that returns early when the program imports
         # nothing, and the entry program still needs its own set (a
         # `forall<T>` parent's `where` helper puts an out-of-scope bare name
-        # in `_fn_sigs` with no module in sight).  Ordered BEFORE it because
-        # the E608 rail inside reads the ambiguity half.
+        # in `_fn_sigs` with no module in sight).
         self._collect_namespace_fn_names(program)
 
         # Pass 0.5: register imported module declarations (C7e)

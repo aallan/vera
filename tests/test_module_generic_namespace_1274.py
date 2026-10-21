@@ -472,7 +472,7 @@ class TestTransitiveVisibility:
     for such a module — the same spelling that means "wildcard import" — so
     every public generic of a transitive module was read as a bare-name owner.
     Latent rather than live: the checker refuses a bare call to it from the
-    entry (`E200`), and two transitive namesakes are refused by the E608
+    entry (`E200`), and two transitive namesakes were refused by the E608
     collision rail (#1281), so no program observed the misclassification.  It is
     corrected for parity, because the predicate is supposed to BE §8.6.4 and a
     reader who trusts it should not have to know which rail happens to cover a

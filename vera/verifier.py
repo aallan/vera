@@ -3153,11 +3153,6 @@ class ContractVerifier:
                 [(lmod.path, lmod.program) for lmod in self._disc_modules],
                 prelude=self._disc_prelude_fn_names,
             ),
-            # #1694: no per-namespace constructor table.  Every constructor
-            # of the linked discovery copy is named by its link name, which
-            # names one declaration everywhere, so the flat `ctor_to_adt`
-            # gives each namespace's answer, as it does for code generation.
-            namespace_ctor_owners=None,
             adt_ctor_tp_indices=adt_ctor_tp_indices,
             # #1327/#1366/#1369: the same checker tables codegen's own
             # `_build_mono_context` threads — the ENTRY program's for the entry

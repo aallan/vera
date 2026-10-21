@@ -807,9 +807,9 @@ class TestSpecialCasedBuiltinAdtsAreRefused:
         """One rule, both declaration sites.
 
         The entry file and a module are separate registration passes, and
-        the neighbouring data-namespace rails answer them differently — a
-        module `data Option` is E621 at CODEGEN while the entry's is
-        accepted (#1312's asymmetry).  A reservation that held only where
+        the data-namespace rails once answered them differently (a module
+        `data Option` was E621 at code generation while the entry's was
+        accepted, #1312's asymmetry).  A reservation that held only where
         the checker happened to be asked first would leave the other door
         open, so the module door is measured rather than assumed.
         """
@@ -1692,8 +1692,8 @@ public fn f(@Unit -> @Ordering)
 class TestSiblingConstructorCollision:
     """#1425 — constructor names are unique per NAMESPACE (spec §8.4).
 
-    The intra-namespace sibling of E610 (two modules) and E157 (two
-    imports).  Before it, two declarations sharing a constructor name were
+    The intra-namespace sibling of E157 (two imports).  Before it, two
+    declarations sharing a constructor name were
     accepted with no diagnostic, and a USE of the name produced `[E212]` /
     `[E213]` describing whichever declaration registered last rather than
     the collision — measured, `Rose<T> { Leaf(T), Node(T, Rose<T>) }` beside

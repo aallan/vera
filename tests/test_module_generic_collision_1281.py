@@ -1,29 +1,18 @@
-"""#1281: E608 must not refuse two modules' PROVABLY DISTINCT generics.
+"""#1281: two modules' PROVABLY DISTINCT generics are not refused.
 
-The flat-namespace collision rail exists because Pass 2.5 emits every
-imported function under one WASM name, so two modules' same-named
-declarations would overwrite each other.  A GENERIC emits nothing under its
-bare name — only clones — and since #1274 those clones live in a namespace
-chosen per OWNER: a generic that owns the importer's bare name mangles to
-``gen$Bool``, and one that does not (private, outside the filter, shadowed,
-or reached only transitively) mangles to ``mod$<path>$gen$Bool``.  Two
-generics in different owner namespaces cannot overwrite each other, and the
-rail refused them anyway.
+The flat-namespace collision rail (E608) existed because Pass 2.5 emitted
+every imported function under one WASM name, so two modules' same-named
+declarations would have overwritten each other.  #1281 relaxed it for
+generics, whose clones live in a namespace chosen per OWNER, and #1694
+retired it: every module declaration is compiled under its link name
+``mod$<path>$<name>`` (:mod:`vera.binding`), so no two declarations share
+a symbol, and the cells below run each pair the rail once refused.
 
-What the rail must keep refusing is the two cases where the pair is NOT
-distinct:
-
-* **both own the bare name** — two directly-imported, in-filter, public
-  generics really do mangle to one ``gen$Bool``;
-* **some namespace can name both** — a module importing two dependencies
-  that each export ``gen`` would resolve its own bare ``gen`` to one of them,
-  and neither the language nor the implementation had said which.  Spec §8.5
-  now says: the name is refused in that namespace (issue 1304), so the
-  CHECKER rejects the program (E155) and this rail is its backstop.  Both
-  are asserted in the two cells below, through
-  :func:`~tests.module_fixture_helpers.build_multi_module_past_check`,
-  because a rail that no test can reach is one that can rot into a
-  relaxation nobody measures.
+What is still refused is a name some namespace can name twice: a module
+importing two dependencies that each export ``gen`` would resolve its own
+bare ``gen`` to one of them, and spec §8.5.2.2 refuses the name in that
+namespace (E155, at check, issue 1304), asserted through
+:func:`~tests.module_fixture_helpers.build_multi_module_past_check`.
 
 Every expected value is the DECLARING module's own answer, taken from the
 standalone oracle — each library compiled alone with its own driver — never
@@ -140,15 +129,8 @@ public fn main(@Unit -> @Int)
 def _errors(
     diags: list[tuple[str, str]], code: str,
 ) -> list[tuple[str, str]]:
-    """The diagnostics carrying *code*, matched on the CODE.
-
-    Matched on ``Diagnostic.error_code``, never on the description: the
-    description never contains the code, so a substring filter fell through
-    to the "defined in both imported module" wording — which E609 (data
-    types) and E610 (constructors) share verbatim, because they are the same
-    ``_emit_collision_error`` call with a different ``kind``.  Every positive
-    assertion below wants E608 specifically.
-    """
+    """The diagnostics carrying *code*, matched on ``Diagnostic.error_code``
+    and never on the description, which never contains the code."""
     return [(c, d) for c, d in diags if c == code]
 
 
@@ -162,30 +144,6 @@ def _answer(
     kind, payload = module_value(result, fn)
     assert kind == "ok", f"module did not load/run: {payload}"
     return payload
-
-
-def test_the_collision_filter_matches_on_the_code_not_the_wording() -> None:
-    """``_errors`` distinguishes E608 from its same-worded siblings.
-
-    ``_emit_collision_error`` produces E608 (functions), E609 (data types)
-    and E610 (constructors) from ONE format string, so all three read
-    "… is defined in both imported module …".  A description-substring
-    filter therefore matched any of them, and every positive assertion in
-    this file would have been satisfied by an ADT collision.
-    """
-    diags = [
-        ("E609", "Data type 'gen' is defined in both imported module "
-                 "'a' and 'b'."),
-        ("E610", "Constructor 'Gen' is defined in both imported module "
-                 "'a' and 'b'."),
-    ]
-    assert _errors(diags, "E608") == []
-    assert _errors([*diags, ("E608", "Function 'gen' is defined in both "
-                                     "imported module 'a' and 'b'.")],
-                   "E608") == [
-        ("E608", "Function 'gen' is defined in both imported module "
-                 "'a' and 'b'."),
-    ]
 
 
 class TestStandaloneOracles:
@@ -233,15 +191,12 @@ class TestDiamond:
         # a plain sum is satisfied by them swapping, which is the defect.
         assert _answer(tmp_path, dict(self._FILES)) == DIAMOND_TOTAL
 
-    def test_no_collision_diagnostic(self, tmp_path: Path) -> None:
+    def test_no_diagnostic(self, tmp_path: Path) -> None:
         _, result, _ = build_multi_module(tmp_path, dict(self._FILES))
-        # Every diagnostic, not just the errors: an E608 demoted to a warning
-        # would still be the rail firing on a pair it must not refuse.
-        collisions = _errors(
-            [(d.error_code, d.description) for d in result.diagnostics],
-            "E608",
-        )
-        assert not collisions, f"E608 still refuses the pair: {collisions}"
+        # Every diagnostic, warnings included: nothing about the pair is
+        # reported, the E608 rail it once met included.
+        assert [(d.error_code, d.description)
+                for d in result.diagnostics] == []
 
     def test_the_two_clones_are_distinct_symbols(
         self, tmp_path: Path,
@@ -797,7 +752,7 @@ public fn main(@Unit -> @Int)
 
 
 class TestPrescribedRemedyCompiles:
-    """E155 and E608 must not prescribe contradictory fixes (#1387).
+    """E155's prescribed remedy compiles (#1387).
 
     §8.5.2.2's diagnostic tells the reader, verbatim, to "declare 'pick' in
     this file — a local declaration takes every bare call — and use the
@@ -808,11 +763,10 @@ class TestPrescribedRemedyCompiles:
     collision without renaming" was still literally true.
 
     No bare-name collision exists in that shape: with a local `pick`
-    declared, BOTH modules' functions are shadowed and
-    `_register_shadowed_import` emits each under its own `mod$<path>$pick`.
-    The rail fired on provenance alone, before that ran — the over-breadth
-    #1281 removed for generics, still in place for non-generics, which land
-    in distinct namespaces by exactly the same rule.
+    declared, BOTH modules' functions are shadowed, and each is compiled
+    under its own link name `mod$<path>$pick` (#1694).  The rail fired on
+    provenance alone — the over-breadth #1281 removed for generics, and
+    #1694 for every declaration.
     """
 
     def test_the_remedy_the_checker_prescribes_runs(
@@ -871,14 +825,15 @@ public fn main(@Unit -> @Int)
         )
         assert "E155" in [c for c, _ in check_errors], check_errors
 
-    def test_a_genuinely_colliding_bare_export_still_gets_e608(
+    def test_a_bare_export_beside_a_wildcard_import_is_refused_at_check(
         self, tmp_path: Path,
     ) -> None:
-        """The rail must keep the case it exists for.
+        """The case the rail existed for, refused where it belongs.
 
-        With `liba`'s `pick` imported bare and unshadowed, it OWNS the flat
-        `$pick`; `libb`'s would overwrite it.  One owner is one too many for
-        the relaxation, which requires that NEITHER module owns the name.
+        `liba`'s `pick` imported by name and `libb` imported whole both
+        supply the bare `pick`, so the check refuses the pair (E155,
+        §8.5.2.2); in code generation the two are `mod$liba$pick` and
+        `mod$libb$pick` (#1694), and nothing would overwrite anything.
         """
         entry = """\
 import liba(pick);
@@ -897,5 +852,4 @@ public fn main(@Unit -> @Int)
             {"liba.vera": _LIBA_PICK, "libb.vera": _LIBB_PICK,
              "main.vera": entry},
         )
-        codes = [c for c, _ in errors] + [c for c, _ in cg_errors]
-        assert "E155" in codes or "E608" in codes, codes
+        assert "E155" in [c for c, _ in errors], (errors, cg_errors)

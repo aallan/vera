@@ -1324,7 +1324,7 @@ class TestDiscoveryWalkContract:
             adt_tp_counts={}, type_aliases={}, type_alias_params={},
             fn_ret_types={},
             fn_names=frozenset({"get", "holder", "holder$Bool$where$get"}),
-            namespace_fn_names=NamespaceFnNames({None: scope}, frozenset()),
+            namespace_fn_names=NamespaceFnNames({None: scope}),
         )
         return Monomorphizer(ctx)
 

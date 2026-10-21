@@ -1,45 +1,37 @@
-"""#1317 / #187 (data half) — per-owner ADT identity.
+"""#1317 / #187 (data half) / #1694 — per-owner ADT identity.
 
-Codegen keys every ADT registry by BARE name — layouts, constructor
+Codegen keyed every ADT registry by BARE name — layouts, constructor
 layouts, type-parameter metadata, the structural-``Eq`` helper namer, the
 declaration index, the export table — so two modules declaring
 ``data Shape`` contended for one slot and E609/E610 refused the pair by
-DECLARATION: no visibility gate, no import-filter gate, no shadowing
-relaxation.  #1317 measured the consequence — there was no data-side escape
-hatch at all, and renaming in a dependency's source was the only remedy —
-and #187 named the mechanism that closes it.
+DECLARATION.  #1317 renamed a CONTENDED module declaration to
+``mod$<path>$<Name>`` at absorb time.  #1694 makes that name the identity
+of every module data type in every stage: the resolver pass names each
+module ``data`` declaration, alias and constructor by its link name
+(:mod:`vera.binding`), the checker types a module's ADT by it, and code
+generation compiles the linked program, so ADT identity is
+``(owner, name)`` BY CONSTRUCTION and no stage asks which owner a name
+means.
 
-The fix is one rename, in one place.  A CONTENDED module declaration and
-its constructors are renamed to ``mod$<path>$<Name>`` at absorb time
-(``CrossModuleMixin._register_modules``), inside every namespace that can
-name them, so ADT identity is ``(owner, name)`` BY CONSTRUCTION and each of
-the downstream registries is correct without knowing the rule exists.  That
-is the #1029 device applied to the data namespace, and the reason the fix
-is not a per-owner lookup threaded through every name-keyed consumer.
-
-**What still refuses, and why each is not an oversight.**
+**What refuses, and why each is not an oversight.**
 
 * **Two suppliers.**  A name two of one namespace's imports both supply is
-  ambiguous, and §8.5.2.2 refuses it rather than picking (E156 at check,
-  E609/E610 as the codegen backstop).  Nothing is renamed for such a name.
-* **A flow.**  Two owners' declarations can MEET in a namespace that can
-  name neither, because a value crosses between them through the
-  signatures it imports: with ``liba::aone(@Int -> @Shape)`` and
-  ``libb::bone(@Shape -> @Int)``, an entry may write ``bone(aone(6))``
-  even under filters that exclude the type, because the checker unifies
-  two same-named cross-module ADTs.  Measured with the rename in place and
-  the flow condition removed: a check-green, verify-green program
-  returning ``100`` where ``7`` is the answer — a silent wrong answer, and
-  strictly worse than the refusal it replaced.  :class:`TestMeeting` is
-  that measurement, kept.
-* **A prelude name.**  Maintainer ruling R7: ``Option``, ``Result``,
-  ``Ordering`` and every name the prelude can provide stay E621's, exactly
-  as built-in function names stay E151's, effect names E152's and built-in
-  ADT names E158's.  Per-owner identity is a rule between USER modules.
-* **The entry's own declaration.**  Its contention with a module's is
-  E623's (#1312) and that rail is untouched — see
-  :class:`TestTheEntryIsNotAParty` for the one direction in which the two
-  interact.
+  ambiguous, and §8.5.2.2 refuses it at check rather than picking (E156,
+  E157).
+* **A meeting.**  Two owners' declarations are two types, so a value of
+  one that reaches a place expecting the other — ``bone(aone(6))`` with
+  ``liba::aone(@Int -> @Shape)`` and ``libb::bone(@Shape -> @Int)`` — is
+  an ordinary mismatch at check whose message names both owners.  Before
+  #1694 the checker unified two same-named cross-module ADTs, and with the
+  rename in place and the flow condition removed the program returned
+  ``100`` where ``7`` is the answer; :class:`TestMeeting` keeps that
+  measurement.
+* **A prelude name.**  ``Option``, ``Result``, ``Ordering`` and every type
+  name the prelude can provide are reserved (E158, #1469), as built-in
+  function names are E151's and effect names E152's.
+* **The entry's own declaration** is an owner like a module's: an entry
+  ``data Shape`` beside a module's is two types
+  (:class:`TestTheEntryIsAnOwnerToo`).
 """
 from __future__ import annotations
 
@@ -231,9 +223,8 @@ class TestTheThreeRemedies:
         """#1317 measurement 2: the shadowing §8.5.4 describes for names
         did not lift the collision.
 
-        E623 is silent here too, and correctly: the entry can name neither
-        module's ``Shape``, so once both are qualified there is no pair
-        left for the entry-versus-module rail to report.
+        Nothing is refused: the entry's ``Shape`` and each module's are
+        three types (#1694).
         """
         verify, codes, answer = _cell(
             tmp_path / "local",
@@ -479,7 +470,7 @@ public fn aone(@Int -> @Int)
     ) -> None:
         """The control that isolates the RESERVATION from the shapes.
 
-        Byte-identical declarations to the E621 cell above, renamed to a
+        Byte-identical declarations to the reserved-name cell above, renamed to a
         name the prelude does not own: it compiles and runs, so what
         refuses the pair above is the prelude's ownership of ``Option``
         and nothing else about those two declarations.
@@ -971,15 +962,10 @@ class TestTheEntryIsAnOwnerToo:
     DIFFERENT question from E609, and the two disagreed: an entry declaring
     ``Shape`` beside one contending module was refused, and adding a second
     contending module qualified both away and lifted the refusal.  The
-    entry is now a party to the same rule — it owns its declarations, keeps
-    the bare slot (its program is the one codegen was handed and is never
-    rewritten), and a module declaration it cannot MEET is qualified away
-    exactly as a second module's would be.
-
-    E623 keeps its own code and its own location, at the entry declaration
-    naming the module's file and line: which pair meets decides which code
-    speaks, and the entry-versus-module pair is the one whose diagnostic
-    can point at the file `vera compile` was given.
+    entry is a party to the same rule (#1694): its declaration is a type of
+    its own beside each module's, keeping its bare name, which is its link
+    name, and a module's value that meets the entry's type is an ordinary
+    mismatch at check, located where the value meets it.
     """
 
     def test_a_module_the_entry_cannot_name_is_qualified_away(
@@ -1673,20 +1659,18 @@ public fn main(@Unit -> @String)
 
 
 # =====================================================================
-# Alias-hidden shapes, and the E623 asymmetry — both measured
+# Alias-hidden shapes, and the entry's verdict with one owner or two
 # =====================================================================
 
 
 class TestShapesReadThroughTheDeclaringModulesAliases:
-    """Contention is decided on RESOLVED shapes, not on spellings.
+    """Two modules' declarations are two types whatever their spellings.
 
     §8.4.1 makes an alias module-local, so two modules can spell one layout
-    differently and two layouts identically.  The rename is decided at the
-    top of ``_register_modules``, before the harvest fills
-    ``_module_type_aliases`` — so it builds each module's alias maps from
-    that module's own declarations rather than reading tables that are
-    still empty.  Both directions are measured, because reading unresolved
-    spellings gets each one wrong in the opposite way.
+    differently and two layouts identically.  Each module's type is its own
+    (#1694), laid out under its link name through its own module's
+    aliases; both directions are measured, because reading unresolved
+    spellings got each one wrong in the opposite way before.
     """
 
     def test_one_layout_spelled_two_ways_is_two_types(
@@ -1714,10 +1698,10 @@ class TestShapesReadThroughTheDeclaringModulesAliases:
 
         Both modules write ``data Shape { Sq(Count) }`` — the SAME
         spelling — while ``Count`` is ``Int`` in one and ``Bool`` in the
-        other.  Compared as text the two look identical, so no contention
-        is seen, nothing is renamed, and the pair lands back on E609 with
-        both of #1317's import-side remedies failing.  Compared as resolved
-        layouts they are distinct, are qualified apart, and run.
+        other.  Compared as text the two looked identical, so before #1694
+        a reading of the spelling saw no contention, renamed nothing, and
+        the pair landed on E609.  Each is its own type, laid out through
+        its own module's alias, and the program runs.
         """
         liba = """\
 module liba;
@@ -1819,14 +1803,12 @@ class TestTheEntryRailIsMonotonic:
     the two modules contend with each other, qualified both away, left the
     entry alone in the bare slot, and lifted the refusal.
 
-    Making the entry an owner in the same rule settles it in the accepting
-    direction, and both cells below assert the SAME verdict: neither module
-    can meet the entry's declaration, so each is qualified away whether
-    there is one of them or two.  The refusing direction is asserted by
-    :class:`TestTheEntryIsAnOwnerToo` — a module whose value reaches the
-    entry is still refused with one module or with two, because the rename
-    declines for the pair that meets rather than for the pair that happens
-    to be there.
+    Typing each declaration by its own identity (#1694) settles it in both
+    directions, and both cells below assert the SAME verdict: each module's
+    ``Shape`` is a type of its own whether there is one of them or two.
+    The refusing direction is asserted by :class:`TestTheEntryIsAnOwnerToo`:
+    a module's value that reaches the entry's ``Shape`` is a mismatch at
+    check with one module or with two.
     """
 
     def test_one_contending_module_beside_the_entry(
@@ -1981,12 +1963,11 @@ class TestADiagnosticStreamThatIsNotEmpty:
     class covers the diagnostic stream itself, by compiling a program that
     HAS a rename and also reports.
 
-    What cannot be built today is a diagnostic that NAMES a renamed type:
-    the codegen diagnostics that interpolate an ADT name are the collision
-    rails (E609/E610/E621/E623), and a declaration those report on is by
-    construction one the rename declined to touch.  That is why the strip
-    at the diagnostic boundary is defence in depth and is pinned directly
-    on ``_unmangle_adt_names`` as well as here.
+    Every module type reaches code generation under its link name (#1694),
+    so a code-generation diagnostic that names a type names it so, and the
+    display pass at the diagnostic boundary (``_unmangle_fn_names``, over
+    :func:`vera.binding.display_link_names`) spells it as the reader
+    writes it; the cell below drives one that does.
     """
 
     def test_a_renamed_program_with_real_diagnostics_leaks_nothing(
@@ -2026,13 +2007,14 @@ public fn broken(@Int -> @Int)
     ) -> None:
         """The cell that makes the strip LOAD-BEARING (PR review, N1).
 
-        Deleting the ``_unmangle_adt_names`` call from ``compile_program``
-        was inert against every other cell here: the sweeps run over
+        Deleting the display pass from ``compile_program`` (then
+        ``_unmangle_adt_names``, now ``_unmangle_fn_names``) was inert
+        against every other cell here: the sweeps run over
         programs whose diagnostics never mention an ADT, so nothing read
         the one thing the strip exists to change.  This drives a diagnostic
         that DOES name the type — ``liba``'s ``Shape`` has an ``Array``
         field, so codegen's structural-``Eq`` rail reports E613 about it —
-        on a program where ``Shape`` is contended and therefore renamed.
+        on a program where ``Shape`` carries its link name.
         Measured with the call deleted: ``Type 'mod$liba$Shape' does not
         satisfy ability 'Eq'``.
 
@@ -2075,14 +2057,13 @@ public fn aone(@Int -> @Int)
 
 
 class TestOneRuleDecidesBothPairs:
-    """E609 and E623 stop deciding different questions (#1423).
+    """One rule decides both pairs (#1423, #1694).
 
-    Per-owner identity applied to the modules alone left two rails asking
-    different things about the same slot, and a verdict that changed when
-    an unrelated module joined the build.  The entry is now a party to the
-    same rule, so a `data` declaration is refused exactly when some
-    namespace can MEET another of the same name — and which CODE reports it
-    says which pair was caught, not which test was run.
+    Per-owner identity applied to the modules alone left two rails (E609,
+    E623) asking different things about the same slot, and a verdict that
+    changed when an unrelated module joined the build.  Every declaration
+    is now a type of its own, the entry's included, so a program is refused
+    exactly where a value of one meets another, at check.
     """
 
     def test_the_entry_keeps_the_bare_slot(self, tmp_path: Path) -> None:

@@ -96,8 +96,7 @@ class TestConformance:
         """Programs at level check/verify/run must type-check cleanly — or,
         for a negative entry (``expected_error``), must FAIL at the stage
         ``expected_error_stage`` names with that error code
-        (ch08_circular_import → E011 at check;
-        ch08_module_prelude_adt_contention_rejected → E621 at compile).
+        (ch08_circular_import → E011 at check).
 
         A COMPILE-stage negative also asserts that check is clean, because
         "the checker accepts it and codegen must refuse it" is exactly the
@@ -292,7 +291,8 @@ CLI_SMOKE: dict[str, tuple[tuple[tuple[str, ...], ...], str]] = {
     ),
     "tests/conformance/ch08_module_prelude_adt_contention_rejected.vera": (
         (("check",), ("compile", "--json")),
-        "a clean check, then code generation's refusal (E621), exit status 1",
+        "the check's refusal (E158) of a module's declaration, exit status 1, "
+        "from `check` and from `compile --json`",
     ),
     "examples/hello_world.vera": (
         (("run",),),

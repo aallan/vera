@@ -1458,7 +1458,8 @@ public fn main(@Int -> @Int)
 
     def test_prelude_types_not_flagged_as_collision(self) -> None:
         """Builtin ADTs (Option, Result, etc.) shared across two imported modules
-        must NOT produce E609. Regression test for #360.
+        compile: a regression test for #360, where they drew E609 (code
+        generation's ADT collision rail, retired by #1694).
 
         Both modules explicitly return builtin ADTs so that Option and Result
         appear in each module's _adt_layouts when the temp CodeGenerators are
@@ -1487,9 +1488,7 @@ public fn main(@Int -> @Int)
         errors = [d for d in result.diagnostics if d.severity == "error"]
         # Option, Result, Ordering, UrlParts, Tuple, MdInline, MdBlock are
         # builtins registered in every CodeGenerator — must not collide.
-        assert not any(
-            e.error_code == "E609" for e in errors
-        ), f"False E609 for builtin ADTs: {[e.description for e in errors if e.error_code == 'E609']}"
+        assert not errors, [(e.error_code, e.description) for e in errors]
         assert result.ok is True
 
     def test_local_shadows_import_no_collision(self) -> None:

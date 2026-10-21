@@ -419,15 +419,12 @@ class ModulesMixin:
         export silently rebind a downstream bare call.
 
         DEFINITION-GATED, not use-gated: the clash is refused because the
-        import pair exists, whether or not any body names it.  That is the
-        semantics codegen's E608 rail already has — a program importing two
-        suppliers and never calling either is E608 today — so the two layers
-        answer one question the same way, which is the whole of #1304's
-        complaint about three phases each deciding independently.  Both read
-        :func:`~vera.monomorphize.namespace_fn_names`; this side asks for its
-        OWN namespace's clashes (to report at its own import, and to keep the
-        name unbound), the E608 side asks the union (to decide whether a PAIR
-        of modules may share the flat namespace).
+        import pair exists, whether or not any body names it, so the verdict
+        is a function of the import lists alone.  It reads
+        :func:`~vera.monomorphize.namespace_fn_names` for its OWN namespace's
+        clashes, to report at its own import and to keep the name unbound;
+        the resolver pass leaves a bare call two imports supply unbound by
+        the same rule (:mod:`vera.binding`).
 
         Reported once per clashing name, at the LAST import that supplies it
         — the one whose presence completes the clash — and in sorted name
@@ -436,39 +433,31 @@ class ModulesMixin:
         Every namespace gets its own pass: the entry program here, and each
         module's through the fresh checker :meth:`_check_module_bodies`
         builds for it, whose diagnostics are surfaced into this one.  That is
-        what makes the refusal reach a module the entry program only imports
-        — the shape §8.5 left undefined and the only one where the flap was
-        observable, since E608 already refused the entry-visible pair.
+        what makes the refusal reach a module the entry program only imports,
+        the shape §8.5 left undefined and the one where the flap was
+        observable (#1304).
 
-        THREE NAMESPACES, three codes, mirroring the split codegen's rails
-        already use: functions (E155, backstopped by E608), data types (E156,
-        by E609) and constructors (E157, by E610).  One code would have been
-        cheaper and wrong — a constructor clash is not a type clash (two
-        modules exporting differently-named ADTs can share a constructor
-        name, and only E610 catches that today), and the registry's existing
-        convention is one code per declaration namespace.
+        THREE NAMESPACES, three codes: functions (E155), data types (E156)
+        and constructors (E157).  One code would have been cheaper and
+        wrong: a constructor clash is not a type clash (two modules
+        exporting differently-named ADTs can share a constructor name), and
+        the registry's convention is one code per declaration namespace.
 
         The data side flapped exactly as the function side did — measured on
         two modules each exporting a ``public data Shape`` with different
         constructor field types, where ``Sq(3)`` type-checked on some hash
         seeds and was ``E213`` on others.  Its accepting seeds were the worse
         half: ``check`` and ``verify`` both passed, and the program then died
-        at ``run`` with an ``E609`` located at line 0 of the entry file,
-        naming two modules the entry never imported.
+        at ``run`` with a code-generation collision error located at line 0
+        of the entry file, naming two modules the entry never imported.
 
-        The data side's escape hatches are the function side's, with one
-        extra condition (#1317).  E609/E610 once refused two modules'
-        same-named ADTs by DECLARATION, so neither narrowing an import nor
-        declaring the type locally made such a program compile and these
-        diagnostics prescribed renaming alone.  Per-owner ADT identity
-        changed that: a ``data`` declaration no namespace can reach is
-        compiled under ``mod$<path>$<Name>``, so both remedies carry
-        through — while the two declarations cannot MEET, by name or
-        through an imported signature that carries a value of the type.
-        :meth:`_ambiguous_data_fix` states the condition rather than
-        leaving it to be discovered at compile.  Every program these codes
-        refuse is one E609/E610 already refused later and less precisely,
-        so this moves a rejection rather than adding one.
+        The data side's escape hatches are the function side's: narrowing
+        an import or declaring the name locally clears the clash.  Each
+        module's declaration is a type of its own (#1694), named by its link
+        name ``mod$<path>$<Name>``, so two declarations never contend in
+        code generation; a value of one that reaches a place expecting the
+        other is an ordinary type mismatch whose message names both owners.
+        :meth:`_ambiguous_data_fix` says so.
 
         A name the BUILT-IN registry already owns is never ambiguous: every
         injection below is a ``setdefault`` onto an environment the built-ins
@@ -569,27 +558,22 @@ class ModulesMixin:
     def _ambiguous_data_fix(name: str, kind: str, labels: list[str]) -> str:
         """The remedies that work for a clashing TYPE or CONSTRUCTOR name.
 
-        The same two the function side offers, with the condition that
-        makes them work stated rather than left to be discovered (#1317).
-        Until per-owner ADT identity landed neither of them did: E609/E610
-        refused two modules' same-named ``data`` declarations however the
-        importer filtered or shadowed them, so this text prescribed
-        renaming alone.  Now a declaration no namespace can reach is
-        compiled under its own owner-qualified symbol, and both remedies
-        carry through to the runtime value — but only while the two
-        declarations cannot MEET, which the compilation rail decides and
-        reports as E609/E610 when they can (spec §11.16).
+        The two the function side offers, and the one a crossing value
+        needs.  Each module's ``data`` declaration is a type of its own
+        (#1694), so narrowing an import or declaring the name locally clears
+        the clash, and a value of one module's type that must reach code
+        expecting the other's is a type mismatch whatever the names:
+        declaring the type once and importing it is the remedy for that.
         """
         return (
             f"Import at most one supplier of '{name}': name the other "
             f"import's declarations selectively, as "
             f"'import {labels[-1]}(<other-name>);' (replace <other-name> "
             f"with a declaration you need from that module). Declaring "
-            f"'{name}' in this file resolves it too. Either works while no "
-            "namespace can reach both declarations — neither by importing "
-            "the name nor through an imported signature that carries a "
-            f"value of it; where one can, rename the {kind} '{name}' in "
-            f"'{labels[0]}' or '{labels[-1]}'."
+            f"'{name}' in this file resolves it too. Each module's "
+            "declaration is a type of its own, so where a value made by "
+            f"'{labels[0]}' must reach '{labels[-1]}', declare the type "
+            "once, in one module, and import it in the other."
         )
 
     def _check_module_bodies(self, mod: ResolvedModule) -> None:

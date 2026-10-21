@@ -769,7 +769,7 @@ How Vera language features (by spec chapter) map to test files and example progr
 | Ch 2: Types | Bidirectional type checking (local inference) | test_checker_* | — | — |
 | Ch 4: Expressions | Nested constructor patterns in match | test_codegen_* | ch04_match_nested | pattern_matching |
 | Ch 8: Modules | Imports, cross-module typing and codegen | test_codegen_modules, test_resolver | — | modules |
-| Ch 11: Compilation | Cross-module name collision detection (E608/E609/E610) | test_codegen_modules | — | — |
+| Ch 11: Compilation | Every declaration under its link name: two modules' same-named declarations compile apart (#1694) | test_resolver_1694, test_codegen_modules | — | — |
 | Ch 9: Stdlib | Markdown (md_parse, md_render, md_has_heading, md_has_code_block, md_extract_code_blocks) | test_codegen_*, test_markdown | ch09_markdown | markdown |
 | Ch 9: Stdlib | Regex (regex_match, regex_find, regex_find_all, regex_replace) | test_codegen_*, test_checker_* | ch09_regex | regex |
 | Ch 9: Stdlib | Map, Set, Decimal collections | test_codegen_*, test_checker_* | ch09_map, ch09_set, ch09_decimal, ch09_decimal_generics | collections |

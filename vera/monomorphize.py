@@ -37,7 +37,7 @@ from collections.abc import (
     Mapping,
 )
 from dataclasses import dataclass, field, fields, replace
-from typing import Any, cast
+from typing import Any
 
 from vera import ast, naming
 from vera.naming import EMPTY_ALIAS_ENV, AliasEnv
@@ -735,24 +735,17 @@ class NamespaceFnNames:
     IMPORT order.  Spec §8.5 refuses that name in the namespace that holds
     the clash (#1304), so the checker reads its own namespace's entry to
     report at the offending import and to keep the name out of the type
-    environment.  ``ambiguous`` is the union of those names over every
-    namespace, which is what codegen's E608 rail asks — it decides whether a
-    PAIR of modules may share the flat namespace at all, a question no single
-    namespace answers.  Both come off one walk, so the layer that refuses
-    early and the layer that backstops it cannot disagree about which shape
-    is ambiguous.
+    environment.
 
-    One derivation because there are four consumers and they must not
+    One derivation because there are three consumers and they must not
     disagree: codegen narrows its per-declaration ownership table with it
-    (``_scoped_fn_names``), codegen's E608 rail reads the ambiguity union,
-    the CHECKER refuses its own namespace's clashes (#1304), and the verifier
-    narrows discovery with it.  Two walks over the same imports could differ
-    about a filter or a visibility, and the two sides of the #732
-    differential would then discover different clones.
+    (``_scoped_fn_names``), the CHECKER refuses its own namespace's clashes
+    (#1304), and the verifier narrows discovery with it.  Two walks over the
+    same imports could differ about a filter or a visibility, and the two
+    sides of the #732 differential would then discover different clones.
     """
 
     by_namespace: Mapping[tuple[str, ...] | None, frozenset[str]]
-    ambiguous: frozenset[str]
     ambiguous_sources: Mapping[
         tuple[str, ...] | None,
         Mapping[str, tuple[tuple[str, ...], ...]],
@@ -800,23 +793,9 @@ def namespace_fn_names(
     join the "declared here" set for the ambiguity test: a name the prelude
     or the built-in registry already owns is never ambiguous however many
     dependencies export it, because the importer's injection is a
-    ``setdefault`` and the incumbent wins — measured, with a module exporting
-    its own one-argument ``option_map``, as ``E201`` against the PRELUDE's
-    two-argument signature.
-
-    That makes the two halves of the result behave differently under this
-    argument, and the earlier claim that the ambiguity half is "identical
-    either way" was wrong.  A dependency MAY export a prelude-named
-    declaration — the combinators are overridable, not reserved
-    (:func:`vera.prelude.overridable_builtin_names`) — so two dependencies
-    exporting ``option_map`` are ambiguous under ``prelude=()`` and are not
-    under the populated set.  Codegen calls
-    ``_collect_namespace_fn_names`` twice, before and after its prelude pass,
-    and its E608 rail reads the FIRST (prelude-empty) answer because
-    ``_register_modules`` runs between them; the checker passes its built-in
-    snapshot and so reads the populated one.  The ordering is therefore
-    load-bearing rather than incidental, and is pinned by
-    ``test_the_prelude_argument_changes_the_ambiguity_half``.
+    ``setdefault`` and the incumbent wins.  No dependency may declare a
+    prelude function's name in any case (E151, #1469), so the argument
+    changes the ambiguity half only over a program the checker refuses.
     """
     public_fns: dict[tuple[str, ...], frozenset[str]] = {}
     module_list = list(modules)
@@ -872,210 +851,7 @@ def namespace_fn_names(
     ] = {}
     for key, prog in [(None, entry), *module_list]:
         by_namespace[key], ambiguous_sources[key] = visible(prog)
-    return NamespaceFnNames(
-        by_namespace,
-        frozenset(
-            name for clashes in ambiguous_sources.values() for name in clashes
-        ),
-        ambiguous_sources,
-    )
-
-
-@dataclass(frozen=True)
-class NamespaceCtorOwners:
-    """Which ADT each bare CONSTRUCTOR name denotes in each namespace (#1436).
-
-    The third consumer of one owner.  The checker resolves a constructor
-    against the namespace that writes it, codegen's
-    ``_namespace_ctor_projection`` builds the by-name tables the wasm layer
-    reads the same way, and discovery — which names a clone after the type it
-    infers from a constructor ARGUMENT — has to answer identically or the two
-    sides of the #732 differential emit and discover different clones.  It
-    did not: with a flat map, a module body's ``gid(Sq(x))`` discovered
-    ``gid$Mine`` from an ENTRY declaration the module cannot name while the
-    call site emitted ``gid$Shape``, and the function was dropped (E602/E620)
-    on a check-clean, verify-clean program.
-
-    ``by_namespace`` maps a module path — ``None`` for the entry program — to
-    that namespace's constructor → ADT map: the infrastructure every
-    namespace holds, then the public constructors its OWN imports admit (a
-    constructor is admitted by its PARENT type's name, §8.5.4), then its own
-    declarations, which shadow both (§8.5.2).  That is the ordering codegen's
-    projection applies to layouts, stated over declarations for the consumers
-    that have no layouts.
-    """
-
-    by_namespace: Mapping[
-        tuple[str, ...] | None, Mapping[str, str],
-    ]
-
-    def visible(
-        self, path: tuple[str, ...] | None,
-    ) -> Mapping[str, str] | None:
-        """*path*'s constructor → ADT map, or ``None`` for a namespace this
-        table does not describe — never an EMPTY map, which would claim the
-        namespace can name no constructor at all.
-        """
-        return self.by_namespace.get(path)
-
-
-def namespace_ctor_owners(
-    entry: ast.Program,
-    modules: Iterable[tuple[tuple[str, ...], ast.Program]],
-    registry: Mapping[str, Iterable[str]],
-) -> NamespaceCtorOwners:
-    """Build the per-namespace constructor ownership tables (#1436).
-
-    *registry* is the consumer's own ADT → constructor names view, read for
-    one thing only: the INFRASTRUCTURE floor — the constructors every
-    namespace holds whatever it declares or imports.  An ADT some namespace
-    DECLARES is not infrastructure and is placed by the per-namespace passes
-    below instead; the PRELUDE's own declarations are, and are read from
-    :func:`~vera.prelude.prelude_data_decls` rather than recognised in the
-    registry, because a consumer working on a prelude-INJECTED program would
-    otherwise take them for the entry file's (the verifier's discovery copy
-    is injected; the program codegen hands in is not, and both must answer
-    the same).  Reading them per ADT, rather than inverting a by-name map,
-    is what keeps a user declaration that borrows `Some` from erasing
-    `Option`'s claim to it.
-
-    Everything else is read from the declarations as written, exactly as
-    :func:`namespace_fn_names` reads functions: imports are per namespace and
-    never inherited, so a module reached only transitively from the entry
-    contributes nothing to the entry's map while keeping everything its own
-    imports allow.
-
-    One use of such a module's declaration remains (#1513): a constructor
-    of a PUBLIC type of a module the namespace's checker sees, which the
-    namespace does not import — `gcount(GMk(9))` with `GBox` reaching the
-    caller only through `gcount`'s signature.  After the three classes, a
-    constructor name none of them holds is filled from the public types of
-    the modules in :func:`namespace_module_reach` that the namespace cannot
-    name, where exactly one such type declares it: the fallback class of
-    codegen's ``_namespace_ctor_projection``, over the same modules, so the
-    two sides name the clone after the same type.  It fills and never
-    displaces, so every name the classes above resolve keeps its owner.
-    """
-    from vera.prelude import prelude_data_decls
-
-    module_list = list(modules)
-    declared_adts = {
-        tld.decl.name
-        for _path, prog in [((), entry), *module_list]
-        for tld in prog.declarations
-        if isinstance(tld.decl, ast.DataDecl)
-    }
-    base = {
-        ctor: adt for adt, ctors in registry.items()
-        if adt not in declared_adts
-        for ctor in ctors
-    }
-    base.update({
-        ctor.name: decl.name
-        for decl in prelude_data_decls().values()
-        for ctor in decl.constructors
-    })
-    public_adts: dict[tuple[str, ...], dict[str, tuple[str, ...]]] = {}
-    for path, prog in module_list:
-        public_adts[path] = {
-            tld.decl.name: tuple(
-                ctor.name for ctor in tld.decl.constructors
-            )
-            for tld in prog.declarations
-            if isinstance(tld.decl, ast.DataDecl)
-            and (tld.visibility or "private") == "public"
-        }
-
-    def owners(prog: ast.Program) -> dict[str, str]:
-        out = dict(base)
-        for imp in prog.imports:
-            exported = public_adts.get(tuple(imp.path))
-            if exported is None:
-                continue
-            for adt_name in sorted(exported):
-                # A selective import admits a type's constructors by naming
-                # the TYPE (§8.5.4); the constructor's own name in the list
-                # is not a form the checker accepts — `import m(Sq)` for a
-                # constructor is E210 — and admitting it here would make
-                # this derivation answer a question codegen's
-                # `_build_adt_membership` answers the other way (#1454
-                # review, finding 4).
-                if imp.names is not None and adt_name not in imp.names:
-                    continue
-                for ctor_name in exported[adt_name]:
-                    # An IMPORTED declaration may not take a name
-                    # infrastructure already holds — the checker's injection
-                    # is a `setdefault` over an environment the built-ins
-                    # populate, and §8.5.2 gives the shadow to a LOCAL
-                    # declaration rather than to an import.  Codegen's
-                    # projection applies `foreign` the same way, and the two
-                    # owner derivations disagreeing is how the two sides of
-                    # the #732 differential name different clones (PR #1454
-                    # review).
-                    if ctor_name in base:
-                        continue
-                    out[ctor_name] = adt_name
-        for tld in prog.declarations:
-            if isinstance(tld.decl, ast.DataDecl):
-                for ctor in tld.decl.constructors:
-                    out[ctor.name] = tld.decl.name
-        return out
-
-    reach = namespace_module_reach(module_list)
-
-    def fill_strangers(
-        key: tuple[str, ...] | None, out: dict[str, str],
-    ) -> dict[str, str]:
-        # Every type this namespace declares or imports already holds its
-        # constructors in `out` (or yields them to infrastructure), so the
-        # public types of its reach that declare a name `out` lacks are the
-        # strangers codegen's fallback reads.  A name is filled only where
-        # exactly one of them declares it.
-        sources: dict[str, list[str]] = {}
-        for path in sorted(reach.get(key, frozenset())):
-            for adt_name, ctor_names in sorted(
-                    public_adts.get(path, {}).items()):
-                for ctor_name in ctor_names:
-                    if ctor_name not in out:
-                        sources.setdefault(ctor_name, []).append(adt_name)
-        for ctor_name, adt_names in sources.items():
-            if len(adt_names) == 1:
-                out[ctor_name] = adt_names[0]
-        return out
-
-    return NamespaceCtorOwners({
-        key: fill_strangers(key, owners(prog))
-        for key, prog in [(None, entry), *module_list]
-    })
-
-
-def namespace_module_reach(
-    modules: Iterable[tuple[tuple[str, ...], ast.Program]],
-) -> dict[tuple[str, ...] | None, frozenset[tuple[str, ...]]]:
-    """The modules each namespace's checker can see (#1513).
-
-    The entry program's checker is handed every resolved module; a module's
-    bodies are checked by a fresh checker handed the modules its own imports
-    reach, transitively (:func:`vera.module_view.modules_visible_to`).  A
-    constructor of a type a namespace does not import is resolved among
-    those modules by the checker (`_stranger_constructor`), so codegen's
-    ``_namespace_ctor_projection`` and :func:`namespace_ctor_owners` resolve
-    it among the modules this returns — one derivation for both, keyed by
-    module path with ``None`` for the entry program.  A module's reach is
-    :func:`vera.module_view.reachable_paths`, the walk the checker's view of
-    that module is built from, and the two are asserted equal by
-    ``tests/test_warning_severity_1513.py``.
-    """
-    from vera.module_view import reachable_paths
-
-    module_list = list(modules)
-    by_path = dict(module_list)
-    reach: dict[tuple[str, ...] | None, frozenset[tuple[str, ...]]] = {
-        None: frozenset(by_path),
-    }
-    for path, prog in module_list:
-        reach[path] = frozenset(reachable_paths(prog, by_path))
-    return reach
+    return NamespaceFnNames(by_namespace, ambiguous_sources)
 
 
 @dataclass(frozen=True)
@@ -1093,13 +869,11 @@ class NamespaceAdtNames:
     clashing bare name to the module paths supplying it, in IMPORT order.
     The two are tracked independently because they come apart: two modules
     exporting differently-named ADTs that happen to share a constructor name
-    clash on the constructor alone, which is the shape codegen separates as
-    E610 from E609.
+    clash on the constructor alone (E157 without E156).
 
-    Only the CHECKER reads this.  Codegen's E609/E610 rails ask a different
-    question — whether two modules' declarations can share the flat
-    namespace at all — and answer it from declarations rather than from any
-    namespace's imports, so they refuse a superset and stay as they are.
+    Only the CHECKER reads this.  Code generation asks no such question:
+    every module type and constructor carries its link name in the linked
+    program (#1694), so two declarations never contend there.
     """
 
     ambiguous_types: Mapping[
@@ -1787,13 +1561,6 @@ class MonoContext:
     # that has not been threaded, or a walk entered outside any scope, keeps
     # the flat answer — never an EMPTY one, which would claim no name at all.
     namespace_fn_names: NamespaceFnNames | None = None
-    # #1436: the per-namespace constructor ownership tables ``ctor_to_adt``
-    # is NARROWED by while a declaration is being walked, the data-side twin
-    # of ``namespace_fn_names``.  Flat, one namespace's declaration answered
-    # for another's and discovery named a clone after an ADT the walked body
-    # cannot see.  Entered by :meth:`Monomorphizer.namespace_scope`, the same
-    # seam; ``None`` keeps the flat answer for a consumer not yet threaded.
-    namespace_ctor_owners: NamespaceCtorOwners | None = None
     # #1436: the type-parameter index table keyed by OWNING ADT.  The flat
     # ``ctor_tp_indices`` above cannot represent two data types sharing a
     # constructor name, so it is read only where this one has no entry.
@@ -1887,10 +1654,6 @@ class Monomorphizer:
         # The module namespace the walk is currently in (`namespace_scope`),
         # carried onto every record so a diagnostic names the right file.
         self._namespace_path: tuple[str, ...] | None = None
-        # #1436: the ctor → ADT map of the namespace being walked, or ``None``
-        # outside any scope (and for a consumer that supplied no tables),
-        # where the flat map answers as it always did.
-        self._scope_ctor_owners: Mapping[str, str] | None = None
 
     @contextlib.contextmanager
     def namespace_scope(
@@ -1926,23 +1689,14 @@ class Monomorphizer:
         # file: precisely the misattribution `origin` exists to prevent.
         saved_path = self._namespace_path
         saved = self._scope_fn_names
-        saved_owners = self._scope_ctor_owners
         self._namespace_path = path
         if self.ctx.namespace_fn_names is not None:
             self._scope_fn_names = self.ctx.namespace_fn_names.visible(path)
-        if self.ctx.namespace_ctor_owners is not None:
-            # #1436: the constructor half of the same narrowing, saved and
-            # restored with the other two for the reason the comment above
-            # gives — a field restored on one branch and not the other is how
-            # a stale scope outlives its block.
-            self._scope_ctor_owners = self.ctx.namespace_ctor_owners.visible(
-                path)
         try:
             yield
         finally:
             self._namespace_path = saved_path
             self._scope_fn_names = saved
-            self._scope_ctor_owners = saved_owners
 
     def checker_table(
         self, path: tuple[str, ...] | None,
@@ -1963,18 +1717,14 @@ class Monomorphizer:
     def _ctor_owner(
         self, name: str, ctor_to_adt: Mapping[str, str],
     ) -> str | None:
-        """Which ADT *name* denotes in the namespace being walked (#1436).
+        """Which ADT *name* denotes (#1436, #1694).
 
-        A narrowing, never a widening: outside a scope, or for a consumer
-        that supplied no tables, this is exactly the flat answer discovery
-        gave before.  Inside one it is that namespace's own map, with no
-        fallback to the flat one — a constructor another namespace declares
-        and this one cannot name must not resolve here, which is the whole
-        defect.
+        The walk runs over the linked program, where every user constructor
+        carries its link name (``<type link name>$<Ctor>``), so one flat map
+        answers for every namespace: a constructor another namespace
+        declares has another name, which the walked body cannot spell.
         """
-        if self._scope_ctor_owners is None:
-            return ctor_to_adt.get(name)
-        return self._scope_ctor_owners.get(name)
+        return ctor_to_adt.get(name)
 
     def _ctor_tp_indices(
         self, adt_name: str, ctor_name: str,
@@ -4038,122 +3788,3 @@ class Monomorphizer:
         result = self._substitute_in_ast(te, mapping)
         assert isinstance(result, ast.TypeExpr)  # noqa: S101
         return result
-
-
-def qualify_contended_data_decls(
-    program: ast.Program,
-    types: Mapping[str, str],
-    ctors: Mapping[str, str],
-) -> ast.Program:
-    """Rename CONTENDED data types and constructors inside ONE namespace
-    (#1317, the data half of #187).
-
-    The ADT analogue of :func:`qualify_nested_generic_decls`, and the same
-    device for the same reason.  Codegen keys every ADT registry by bare
-    name — layouts, constructor layouts, the constructor-to-ADT map,
-    type-parameter metadata, the structural-``Eq`` helper namer, the export
-    table — so two modules declaring ``data Shape`` contend for one slot
-    however the importer filters or shadows them, and E609/E610 refused the
-    pair outright rather than let the second silently take the first's
-    layout.
-
-    Qualifying the name makes ADT identity ``(owner, name)`` BY
-    CONSTRUCTION, exactly as #1029 does for nested generics: every
-    downstream consumer keys on a name that is now unique, so none of them
-    needs a per-owner lookup of its own and none of them can be the one
-    that was missed.  *types* and *ctors* map the bare names THIS namespace
-    can see to their qualified spellings; a name absent from either map is
-    left alone, which is what keeps the rewrite to the contended
-    declarations and leaves every other program's emitted WAT
-    byte-identical.
-
-    ``$`` cannot appear in a source identifier, so a qualified name
-    collides with nothing user-writable — the same guarantee the ``mod$``
-    function mangling relies on.  It is an internal WASM symbol and never
-    reaches the reader: ``CodeGenerator._unmangle_adt_names`` strips it
-    back off at the diagnostic boundary (#187's own design note — whether
-    the mangled name is visible to the user, answered "no").
-
-    Applied per NAMESPACE, with that namespace's own map: a module's own
-    renamed declaration and every renamed declaration it can NAME through
-    its imports are rewritten together, so a chain ``entry -> mid -> deep``
-    keeps agreeing about which symbol ``Shape`` denotes.  The ENTRY
-    program is never rewritten and never needs to be — the declaration the
-    entry's bare name denotes is precisely the one that keeps the bare
-    spelling (``CrossModuleMixin._contended_adt_renames``).
-    """
-    if not types and not ctors:
-        return program
-
-    def walk(node: object) -> object:
-        if isinstance(node, ast.NamedType):
-            new_name = types.get(node.name, node.name)
-            args = node.type_args
-            new_args = (
-                tuple(cast(ast.TypeExpr, walk(a)) for a in args)
-                if args is not None else None
-            )
-            if new_name == node.name and new_args is args:
-                return node
-            return replace(node, name=new_name, type_args=new_args)
-        if isinstance(node, (ast.SlotRef, ast.ResultRef)):
-            new_name = types.get(node.type_name, node.type_name)
-            args = node.type_args
-            new_args = (
-                tuple(cast(ast.TypeExpr, walk(a)) for a in args)
-                if args is not None else None
-            )
-            if new_name == node.type_name and new_args is args:
-                return node
-            return replace(node, type_name=new_name, type_args=new_args)
-        # The four CONSTRUCTOR spellings, and all four are load-bearing: an
-        # arity-0 constructor is its own node in both expression and pattern
-        # position (``ast.NullaryConstructor`` / ``ast.NullaryPattern``), so
-        # rewriting only the applied pair would leave ``data Colour { Red,
-        # Green(Int) }`` half-renamed — ``Green`` resolving to the module's
-        # layout and ``Red`` to whatever else holds the bare name.
-        if isinstance(node, (ast.ConstructorCall, ast.ConstructorPattern,
-                             ast.NullaryConstructor, ast.NullaryPattern,
-                             ast.Constructor)):
-            new_name = ctors.get(node.name, node.name)
-            changed: dict[str, Any] = {}
-            for f in fields(node):
-                if f.name == "name":
-                    continue
-                old = getattr(node, f.name)
-                new = walk(old)
-                if new is not old:
-                    changed[f.name] = new
-            if new_name != node.name:
-                changed["name"] = new_name
-            return replace(node, **changed) if changed else node
-        if isinstance(node, ast.DataDecl):
-            new_name = types.get(node.name, node.name)
-            changed = {}
-            for f in fields(node):
-                if f.name == "name":
-                    continue
-                old = getattr(node, f.name)
-                new = walk(old)
-                if new is not old:
-                    changed[f.name] = new
-            if new_name != node.name:
-                changed["name"] = new_name
-            return replace(node, **changed) if changed else node
-        if isinstance(node, ast.Node):
-            changed = {}
-            for f in fields(node):
-                old = getattr(node, f.name)
-                new = walk(old)
-                if new is not old:
-                    changed[f.name] = new
-            return replace(node, **changed) if changed else node
-        if isinstance(node, tuple):
-            walked = tuple(walk(x) for x in node)
-            return walked if any(
-                a is not b for a, b in zip(walked, node)) else node
-        if isinstance(node, list):  # pragma: no cover — AST tuples are frozen
-            return [walk(x) for x in node]
-        return node
-
-    return cast(ast.Program, walk(program))

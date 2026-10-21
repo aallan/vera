@@ -21,8 +21,7 @@ Each function below is the only place its question is answered:
 
 * :func:`reachable_paths` — the module paths a namespace's imports reach,
   transitively.  The checker's module view reads it, and so does the
-  constructor fallback's reach in code generation and the verifier
-  (:func:`vera.monomorphize.namespace_module_reach`, #1513).
+  resolver pass's constructor fallback (:mod:`vera.binding`, #1513).
 * :func:`modules_visible_to` — the resolved modules a namespace can reach,
   with ``direct`` re-derived against its own import list.
 * :func:`imported_data_types` — which module each data type name a namespace

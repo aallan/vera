@@ -1206,8 +1206,8 @@ class Topology:
         if self.label == "diamond":
             # Two modules import B; the entry imports both and B.  ``paint``
             # is declared by ``mc`` alone: a second module declaring it too
-            # is #1498's shape (E608 between two modules no namespace can
-            # name together), which is not this class.
+            # is #1498's shape (two modules' same-named functions, E608
+            # until #1694), which is not this class.
             return {
                 "mb.vera": _MB,
                 "ma.vera": "module ma;\n\nimport mb(Colour);\n" + _PICK,

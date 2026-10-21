@@ -48,7 +48,7 @@ Every Vera program implicitly has access to a **standard prelude** that provides
 
 In addition, Option/Result combinators (`option_unwrap_or`, `option_map`, `option_and_then`, `result_unwrap_or`, `result_map`) and array operations (`array_slice`, `array_map`, `array_filter`, `array_fold`) are automatically available.
 
-User-defined `data` declarations with the same name **shadow** the prelude definition. If a user defines a non-standard variant (e.g. `data Option<T> { None, Just(T) }` instead of the standard `None, Some(T)`), the related combinators are suppressed — they rely on the standard constructor names.
+The prelude is a module whose names are **reserved** (§8.4.1): a `data` declaration, a `type` alias or a type parameter named after one of its data types is refused at check (**E158**), and a function or a `where` helper named after one of its functions (**E151**), in the entry file and in every module, so each prelude name means the prelude's declaration everywhere. A program that wants a variant of its own declares it under a name of its own (`data Maybe<T> { Nothing, Just(T) }`). Constructor names are not reserved.
 
 ## 9.2 Primitive Types
 
@@ -208,7 +208,7 @@ See §9.7.3 for the Markdown function specifications.
 
 ### 9.3.7 Option and Result Combinators
 
-The standard prelude (§9.1.2) provides combinator functions that eliminate common match boilerplate for `Option<T>` and `Result<T, E>`. These are injected automatically unless the user defines a non-standard variant (different constructors or arities) or shadows the function names.
+The standard prelude (§9.1.2) provides combinator functions that eliminate common match boilerplate for `Option<T>` and `Result<T, E>`. These are injected automatically; their names are reserved (§9.1.2), so no declaration shadows them.
 
 **Option combinators:**
 

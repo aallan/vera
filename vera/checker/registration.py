@@ -1483,11 +1483,10 @@ class RegistrationMixin:
         """Refuse two data declarations in one namespace sharing a
         constructor name (#1425, spec §8.4).
 
-        The intra-namespace sibling of E610 (two modules) and E157 (two
-        imports).  Spec §8.4 puts all three under one rule — a constructor
-        name clash is "rejected at check time, in whichever namespace holds
-        the clash: the entry program's, or any module's" — and this is the
-        namespace that had no rail.
+        The intra-namespace sibling of E157 (two imports).  Spec §8.4 puts
+        both under one rule — a constructor name clash is "rejected at check
+        time, in whichever namespace holds the clash: the entry program's,
+        or any module's" — and this is the namespace that had no rail.
 
         Accepting it was not merely untidy: resolution is by bare name with
         the last declaration winning, so the pair produced diagnostics that
@@ -1497,9 +1496,10 @@ class RegistrationMixin:
 
         Deliberately NOT fired for the two shadowing shapes §8.4.1 and
         §8.5.2 make legal, neither of which is a second declaration in this
-        namespace: restating a PRELUDE type (``examples/vera/
-        collections.vera`` declares `None` and `Some`), and shadowing an
-        IMPORTED constructor.
+        namespace: a constructor named like a PRELUDE one (#1469 reserves
+        the prelude's type and function names, not its constructors;
+        ``tests/conformance/ch09_user_ctor_shadows_prelude_ctor.vera``), and
+        shadowing an IMPORTED constructor.
         """
         first = self._ns_ctor_owners.get(ctor.name)
         if first is None:
