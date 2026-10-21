@@ -48,10 +48,17 @@ public fn test_ge(@Unit -> @Bool)
   5 >= 5
 }
 
-public fn main(@Unit -> @Bool)
+-- The run: every operator above, each test's value and, beside it, the same
+-- operator on operands it must refuse.
+public fn main(@Unit -> @Unit)
   requires(true)
-  ensures(@Bool.result == true)
-  effects(pure)
+  ensures(true)
+  effects(<IO>)
 {
-  5 == 5
+  IO.print("eq \(test_eq(())) \(5 == 3)\n");
+  IO.print("neq \(test_neq(())) \(5 != 5)\n");
+  IO.print("lt \(test_lt(())) \(5 < 3)\n");
+  IO.print("gt \(test_gt(())) \(3 > 5)\n");
+  IO.print("le \(test_le(())) \(6 <= 5)\n");
+  IO.print("ge \(test_ge(())) \(4 >= 5)\n")
 }

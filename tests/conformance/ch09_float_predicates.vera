@@ -100,14 +100,15 @@ public fn test_is_infinite_nan(@Unit -> @Int)
   }
 }
 
-public fn main(@Unit -> @Int)
+-- The run: both constants, and each predicate on NaN, an infinity of each
+-- sign and a finite value.
+public fn main(@Unit -> @Unit)
   requires(true)
-  ensures(@Int.result == 1)
-  effects(pure)
+  ensures(true)
+  effects(<IO>)
 {
-  if float_is_nan(nan()) then {
-    1
-  } else {
-    0
-  }
+  IO.print("nan \(test_nan_constant(()))\n");
+  IO.print("infinity \(test_infinity_constant(()))\n");
+  IO.print("is nan \(test_is_nan_true(())) \(test_is_nan_false(())) \(test_is_nan_infinity(()))\n");
+  IO.print("is infinite \(test_is_infinite_true(())) \(test_is_infinite_negative(())) \(test_is_infinite_false(())) \(test_is_infinite_nan(()))\n")
 }

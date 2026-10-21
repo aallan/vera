@@ -17,12 +17,16 @@ public fn last_of_three(@Int, @Int, @Int -> @Int)
   @Int.0
 }
 
-public fn main(@Unit -> @Int)
+-- The run: the first and the last of three same-typed arguments, and a
+-- shadowed `let`.
+public fn main(@Unit -> @Unit)
   requires(true)
   ensures(true)
-  effects(pure)
+  effects(<IO>)
 {
-  first_of_three(1, 2, 3)
+  IO.print("first \(first_of_three(1, 2, 3))\n");
+  IO.print("last \(test_last(()))\n");
+  IO.print("shadowing \(test_let_shadowing(()))\n")
 }
 
 public fn test_last(@Unit -> @Int)

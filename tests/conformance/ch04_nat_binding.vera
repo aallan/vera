@@ -87,10 +87,16 @@ public fn unwrap_nat(@Option<Nat> -> @Nat)
   }
 }
 
-public fn main(@Unit -> @Nat)
+-- The run: every binding site above, the guarded `let` on both of its
+-- branches, and the sub-pattern bind on both constructors.
+public fn main(@Unit -> @Unit)
   requires(true)
   ensures(true)
-  effects(pure)
+  effects(<IO>)
 {
-  clamp_let(5)
+  IO.print("let \(clamp_let(5))\n");
+  IO.print("guarded let \(guard_let(7)) \(guard_let(-3))\n");
+  IO.print("call argument \(call_narrow(8))\n");
+  IO.print("destructure \(destruct_narrow(9))\n");
+  IO.print("constructor field \(unwrap_nat(wrap_opt(4))) \(unwrap_nat(None))\n")
 }

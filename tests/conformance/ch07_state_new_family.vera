@@ -53,10 +53,38 @@ private fn through_alias(@Unit -> @Int)
   5
 }
 
-public fn main(@Unit -> @Int)
+-- Each cell read back through a row that holds it alone, so a bare get(())
+-- names it, with a postcondition tying new(State<T>) to the value read.
+private fn read_int(@Unit -> @Int)
   requires(true)
-  ensures(@Int.result == 0)
-  effects(pure)
+  ensures(@Int.result == new(State<Int>))
+  effects(<State<Int>>)
+{
+  get(())
+}
+
+private fn read_nat(@Unit -> @Nat)
+  requires(true)
+  ensures(@Nat.result == new(State<Nat>))
+  effects(<State<Nat>>)
+{
+  get(())
+}
+
+private fn read_bool(@Unit -> @Bool)
+  requires(true)
+  ensures(@Bool.result == new(State<Bool>))
+  effects(<State<Bool>>)
+{
+  get(())
+}
+
+-- The run: each function above under the three cells, whose postconditions
+-- trap if a read names the wrong cell, then the three cells read back.
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
 {
   handle[State<Int>](@Int = 42) {
     get(@Unit) -> { resume(@Int.0) },
@@ -70,12 +98,11 @@ public fn main(@Unit -> @Int)
         get(@Unit) -> { resume(@Bool.0) },
         put(@Bool) -> { resume(()) }
       } in {
-        let @Int = same_width(()) * 1000 + cross_width(()) * 100 + unchanged(()) * 10 + through_alias(());
-        if @Int.0 != 7865 then {
-          1
-        } else {
-          0
-        }
+        IO.print("same width \(same_width(()))\n");
+        IO.print("cross width \(cross_width(()))\n");
+        IO.print("unchanged \(unchanged(()))\n");
+        IO.print("through alias \(through_alias(()))\n");
+        IO.print("cells \(read_int(())) \(read_nat(())) \(read_bool(()))\n")
       }
     }
   }

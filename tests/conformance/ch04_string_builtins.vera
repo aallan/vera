@@ -55,11 +55,16 @@ public fn test_to_string(@Unit -> @String)
   to_string(42)
 }
 
+-- The run: each built-in above, each test's value on a line of its own.
 public fn main(@Unit -> @Unit)
   requires(true)
   ensures(true)
   effects(<IO>)
 {
-  IO.print(string_concat("hello", " world"));
-  ()
+  IO.print("length \(test_length(()))\n");
+  IO.print("length of a two-byte character \(test_length_non_ascii(()))\n");
+  IO.print("concat \(test_concat(()))\n");
+  IO.print("slice \(test_slice(()))\n");
+  IO.print("char code \(test_char_code(()))\n");
+  IO.print("to string \(test_to_string(()))\n")
 }

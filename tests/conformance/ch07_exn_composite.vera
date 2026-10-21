@@ -26,10 +26,13 @@ public fn not_thrown(@Unit -> @Int)
   }
 }
 
-public fn main(@Unit -> @Int)
+-- The run: a composite payload thrown and caught, and a handler whose body
+-- throws nothing.
+public fn main(@Unit -> @Unit)
   requires(true)
-  ensures(@Int.result == 9)
-  effects(pure)
+  ensures(true)
+  effects(<IO>)
 {
-  caught_composite(())
+  IO.print("caught \(caught_composite(()))\n");
+  IO.print("not thrown \(not_thrown(()))\n")
 }

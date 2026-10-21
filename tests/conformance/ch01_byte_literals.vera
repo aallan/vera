@@ -40,11 +40,16 @@ public fn byte_eq(@Byte, @Byte -> @Bool)
   @Byte.0 == @Byte.1
 }
 
-public fn main(@Unit -> @Bool)
+-- The run: each literal's value, the identity on a value other than the
+-- literal, and equality on an equal and an unequal pair.
+public fn main(@Unit -> @Unit)
   requires(true)
   ensures(true)
-  effects(pure)
+  effects(<IO>)
 {
-  let @Byte = byte_from_literal();
-  byte_eq(@Byte.0, byte_identity(@Byte.0))
+  IO.print("literal \(byte_to_int(byte_from_literal()))\n");
+  IO.print("zero \(byte_to_int(byte_zero()))\n");
+  IO.print("max \(byte_to_int(byte_max()))\n");
+  IO.print("identity \(byte_to_int(byte_identity(200)))\n");
+  IO.print("equal \(byte_eq(byte_from_literal(), byte_identity(65))) \(byte_eq(byte_zero(), byte_max()))\n")
 }

@@ -40,14 +40,13 @@ public fn test_nested(@Unit -> @Int)
   }
 }
 
-public fn main(@Unit -> @Int)
+-- The run: each branch above, and the nested conditional.
+public fn main(@Unit -> @Unit)
   requires(true)
-  ensures(@Int.result == 1)
-  effects(pure)
+  ensures(true)
+  effects(<IO>)
 {
-  if true then {
-    1
-  } else {
-    0
-  }
+  IO.print("if true \(test_if_true(()))\n");
+  IO.print("if false \(test_if_false(()))\n");
+  IO.print("nested \(test_nested(()))\n")
 }

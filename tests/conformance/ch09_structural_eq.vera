@@ -205,10 +205,14 @@ public fn test_deep_nested_eq_unequal(@Unit -> @Int)
   }
 }
 
-public fn main(@Unit -> @Int)
+-- The run: every test above, equal and unequal side by side (1 for equal).
+public fn main(@Unit -> @Unit)
   requires(true)
-  ensures(@Int.result == 0)
-  effects(pure)
+  ensures(true)
+  effects(<IO>)
 {
-  0
+  IO.print("string field \(test_string_field_eq_equal(())) \(test_string_field_eq_unequal(()))\n");
+  IO.print("nested \(test_nested_adt_eq_equal(())) \(test_nested_adt_eq_unequal(()))\n");
+  IO.print("box \(test_box_string_eq_equal(())) \(test_box_string_eq_unequal(())) \(test_box_string_as_eq_instance(()))\n");
+  IO.print("deep nested \(test_deep_nested_eq_equal(())) \(test_deep_nested_eq_unequal(()))\n")
 }
