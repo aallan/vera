@@ -472,6 +472,23 @@ def _bind_async(linker: Any, names: set[str], env: HostEnv) -> None:
     register_async(linker, names, env.future_store, env.host_store_refs, env.executor)
 
 
+def _hash_key_word() -> int:
+    """One 64-bit word of the key a module's `String` hash draws, from the
+    operating system's random source (#1736)."""
+    return int.from_bytes(os.urandom(8), "little", signed=True)
+
+
+def _bind_hash_key(linker: Any, names: set[str], env: HostEnv) -> None:
+    """``vera.hash_key``: a fresh word at each call.  A module calls it twice,
+    on its first `String` hash, and keeps the two words as the key of its
+    instantiation (``vera/wasm/hamt.py``, #1736)."""
+    def hash_key(_caller: wasmtime.Caller) -> int:
+        return _hash_key_word()
+
+    linker.define_func("vera", "hash_key", wasmtime.FuncType([], [wasmtime.ValType.i64()]),
+                       hash_key, access_caller=True)
+
+
 #: The Python host's binder for each family of the registry's host imports
 #: (``vera.builtins.HOST_FAMILIES``): what defines a module's imports of that
 #: family, given the names it declares.  ``bind_host_imports`` calls the one
@@ -491,6 +508,7 @@ HOST_BINDERS: Mapping[str, Binder] = {
     "db": lambda linker, names, env: register_db(linker, names, env.env_vars),
     "random": lambda linker, names, env: register_random(linker, names),
     "math": lambda linker, names, env: register_math(linker, names),
+    "hash": _bind_hash_key,
     "contract": _bind_own,
     "trap": _bind_own,
     "state": lambda linker, names, env: register_state(

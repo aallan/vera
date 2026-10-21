@@ -1108,16 +1108,24 @@ def test_the_server_world_builds_the_request_headers_in_order(tmp_path: Path) ->
 # =====================================================================
 
 def _run_pure(result: CompileResult) -> tuple[object, bytes]:
-    """`main`'s value and the module's memory after a pure program runs."""
+    """`main`'s value and the module's memory after a pure program runs: its
+    `String` hash's key from the native host's own binder (#1736), and every
+    other import refused."""
+    from vera.codegen.api import HOST_BINDERS
+
     engine = wasmtime.Engine()
     store = wasmtime.Store(engine)
     module = wasmtime.Module(engine, result.wat)
     linker = wasmtime.Linker(engine)
     for imported in module.imports:
+        if (imported.module, imported.name) == ("vera", "hash_key"):
+            continue
+
         def refuse(*args: object, _name: str = imported.name) -> None:
             raise AssertionError(f"the module called the host import {_name} {args}")
         assert isinstance(imported.type, wasmtime.FuncType), imported.name
         linker.define_func(imported.module, imported.name, imported.type, refuse)
+    HOST_BINDERS["hash"](linker, {"hash_key"}, None)  # type: ignore[arg-type]
     exports = linker.instantiate(store, module).exports(store)
     main = exports["main"]
     assert isinstance(main, wasmtime.Func)
@@ -1307,13 +1315,15 @@ def _constant_hash(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _assert_one_hash(result: CompileResult) -> None:
-    """The constant hash reached the module: every `$hamt_hash$*` function
-    it carries returns 7, and none reads its key (every real body ends in
-    `$hamt_mix`).  A cell that passes under either hash proves nothing
+    """The constant hash reached the module: the body of every
+    `$hamt_hash$*` function it carries is `i64.const 7` and nothing else, so
+    none reads its key.  A cell that passes under either hash proves nothing
     unless the module it ran had the forced one."""
     found = re.findall(r"\(func \$hamt_hash\$\w.*?(?=\n  \(func |\Z)", result.wat, re.S)
     assert found, "the module carries no hash function"
-    assert all("i64.const 7" in f and "$hamt_mix" not in f for f in found), found
+    bodies = [[line.strip() for line in f.splitlines()[1:] if not line.strip().startswith("(local")]
+              for f in found]
+    assert all(body == ["i64.const 7)"] for body in bodies), found
 
 
 _ONE_HASH = """\
@@ -1341,11 +1351,12 @@ public fn main(@Unit -> @Unit)
 def test_a_thousand_string_keys_on_one_hash_are_all_found(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The hash is unseeded (spec §9.4.3, #1736), so keys an adversary
-    chooses can share one: 1,000 `String` keys forced onto one hash all land in one
-    collision node, which each insert searches and copies whole.  The
-    inserts cost O(n²) (17 ms here, 0.6 ms with the hash; 1.3 s at 4,000),
-    and every lookup, and an absent key's, is right."""
+    """Keys that share a hash meet in one collision node, which each insert
+    searches and copies whole: 1,000 `String` keys forced onto one hash all
+    land in one.  The inserts cost O(n²) (17 ms here, 0.6 ms with the hash;
+    1.3 s at 4,000), and every lookup, and an absent key's, is right.  The
+    hash is keyed for each instantiation (spec §9.4.3, #1736), so no one can
+    choose such keys; the forced hash stands in for them."""
     _constant_hash(monkeypatch)
     result = pipeline.compile(_ONE_HASH, file="one_hash.vera").result
     assert result.ok, result.diagnostics

@@ -695,13 +695,17 @@ def _counted_run(
     linker.define_func("probe", "marked", wasmtime.FuncType([i32] * 2, []),
                        marked)
     # A pure program's own imports are the signals its checks would call;
-    # a run that passes them calls none, so each is a stub that fails.
+    # a run that passes them calls none, so each is a stub that fails.  The
+    # key a `String` hash draws (#1736) is the native host's own.
+    from vera.codegen.api import HOST_BINDERS
+
     for imported in module.imports:
-        if imported.module == "probe":
+        if imported.module == "probe" or (imported.module, imported.name) == ("vera", "hash_key"):
             continue
         assert isinstance(imported.type, wasmtime.FuncType), imported.name
         linker.define_func(imported.module, imported.name or "",
                            imported.type, refuse)
+    HOST_BINDERS["hash"](linker, {"hash_key"}, None)  # type: ignore[arg-type]
     exports = linker.instantiate(store, module).exports(store)
     value = exports["main"](store)
     counted = {name: exports[name].value(store) for name in _COUNTERS}

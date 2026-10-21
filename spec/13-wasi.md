@@ -123,6 +123,13 @@ however long it is, and what the program itself wrote to stderr stays
 the program's.  Under another host the mark shows only as the message
 starting on a line of its own.
 
+The key a `Map` or `Set` hashes its `String` keys under (Section 9.4.3)
+comes from the adapter as well: two words of
+`wasi:random/random.get-random-u64`, drawn on the module's first `String`
+hash.  A component whose module hashes a `String` key imports
+`wasi:random`, which stock `wasmtime run` and `wasmtime serve` provide, and
+each instantiation draws a key of its own.
+
 ## 13.5 Entry Points
 
 Every component exports `wasi:cli/run@0.2.0` — the world entry stock
