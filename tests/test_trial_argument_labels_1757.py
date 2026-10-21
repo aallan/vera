@@ -13,7 +13,8 @@ and the order of the arguments does not.
 
 The matrix holds the labels over parameter shapes (two of one type, three
 of one type, two types interleaved, a single parameter, a type once among
-others, an alias among its base type) by the three reports.  Each function's `requires` pins every
+others, an alias among its base type, a `String` pair through the raw ABI)
+by the three reports.  Each function's `requires` pins every
 parameter to a value of its own by the name the source gives it, so the
 tester's own generation puts that value at that parameter, and a report
 must show each value under the name that pinned it, in the parameters'
@@ -36,7 +37,7 @@ pytestmark = pytest.mark.matrix(decides=["vera/tester.py"])
 #: Each shape's parameters in order: the type, the name the source gives
 #: the parameter (its index counts the later parameters of its type), and
 #: the value its `requires` pins it to.
-SHAPES: dict[str, tuple[tuple[str, str, int | bool], ...]] = {
+SHAPES: dict[str, tuple[tuple[str, str, int | bool | str], ...]] = {
     "two of one type": (
         ("Nat", "@Nat.1", 11), ("Nat", "@Nat.0", 12)),
     "three of one type": (
@@ -52,6 +53,11 @@ SHAPES: dict[str, tuple[tuple[str, str, int | bool], ...]] = {
     # checker binds `@Cnt` under `Cnt`, not under the `Nat` it resolves to.
     "an alias among its base": (
         ("Cnt", "@Cnt.1", 61), ("Nat", "@Nat.0", 62), ("Cnt", "@Cnt.0", 63)),
+    # `String` arguments reach the compiled function through the raw ABI
+    # (`execute`'s `raw_args`), and the E703 description quotes them.
+    "a `String` pair, through the raw ABI": (
+        ("String", "@String.1", "ab"), ("Int", "@Int.0", -71),
+        ("String", "@String.0", "cd")),
 }
 
 REPORTS = ("text", "json", "refutation")
@@ -98,21 +104,29 @@ private fn mo(@Int -> @Option<Int>)
 """
 
 
-def _shown(value: int | bool) -> int:
-    """A value as a report shows it: a `Bool` is the 1 or 0 the compiled
-    function receives (`_extract_values`)."""
-    return int(value)
+def _shown(value: int | bool | str) -> int | str:
+    """A value as the text and `--json` reports show it: a `Bool` is the 1
+    or 0 the compiled function receives (`_extract_values`)."""
+    return value if isinstance(value, str) else int(value)
 
 
-def _pin(name: str, value: int | bool) -> str:
+def _rendered(value: int | bool | str) -> str:
+    """A value as the E703 description writes it (`_render_args`), a string
+    quoted."""
+    return json.dumps(value) if isinstance(value, str) else str(_shown(value))
+
+
+def _pin(name: str, value: int | bool | str) -> str:
     if value is True:
         return name
     if value is False:
         return f"!{name}"
+    if isinstance(value, str):
+        return f"{name} == {json.dumps(value)}"
     return f"{name} == {value}"
 
 
-def _source(template: str, shape: tuple[tuple[str, str, int | bool], ...],
+def _source(template: str, shape: tuple[tuple[str, str, int | bool | str], ...],
             premise: str = "") -> str:
     return template.format(
         params=", ".join(f"@{ty}" for ty, _, _ in shape),
@@ -153,7 +167,7 @@ def _refuted_trials(envelope: Any) -> list[str]:
 
 
 def _reported(tmp_path: Path, report: str,
-              shape: tuple[tuple[str, str, int | bool], ...]) -> tuple[list[Any], Any]:
+              shape: tuple[tuple[str, str, int | bool | str], ...]) -> tuple[list[Any], Any]:
     """What *report* shows for each failing trial of *shape*'s function, and
     what it must show."""
     if report == "text":
@@ -171,7 +185,7 @@ def _reported(tmp_path: Path, report: str,
     ran = pipeline.cli("test", "--json", "--distrust", "--trials", "3", _write(
         tmp_path, _source(_REFUTED, shape)))
     return _refuted_trials(ran.json()), ", ".join(
-        f"{name} = {_shown(value)}" for _, name, value in shape)
+        f"{name} = {_rendered(value)}" for _, name, value in shape)
 
 
 @pytest.mark.parametrize("report", REPORTS)
