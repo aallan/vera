@@ -320,6 +320,7 @@ class TestStateChecks:
         state, night = _stitch([record], jobs=1)
         assert night["problems"][0].startswith("slice 0: a malformed record")
         assert state["units"][A.ident]["statuses"] == {}
+        assert night["lost"] == []  # a malformed record is still a record
 
 
 REPO_ID = 1234
@@ -538,8 +539,10 @@ class TestStitch:
         good = _record(0, 2, {A.ident: {"hash": H, "mutants": 4, "statuses": {"1": "killed"}}})
         _, night = _stitch([good, _record(1, 2, {}, head="e" * 40)])
         assert any("ran eeee" in p for p in night["problems"])
+        assert night["lost"] == [] and night["notes"] == []  # it reported; a rejected record is not a lost slice
         _, night = _stitch([good, _record(1, 2, {}, digest="f" * 64)])
         assert any("another state" in p for p in night["problems"])
+        assert night["lost"] == [] and night["notes"] == []
 
     def test_a_missing_slice_is_noted_and_its_work_waits_for_the_next_night(self) -> None:
         """A slice with no record is one whose job ended before it uploaded

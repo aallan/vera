@@ -921,11 +921,15 @@ def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[s
     problems: list[str] = []
     valid: list[Mapping[str, Any]] = []
     seen: set[int] = set()
+    reported: set[int] = set()  # every slice a record came from, accepted or not
     engines = {r.get("engine") for r in records if isinstance(r, dict) and r.get("engine") is not None}
     if len(engines) > 1:
         problems.append(f"the slices ran different engines: {sorted(map(str, engines))}")
     for record in records:
         where = f"slice {record.get('slice') if isinstance(record, dict) else '?'}"
+        number = record.get("slice") if isinstance(record, dict) else None
+        if type(number) is int and 0 <= number < jobs:
+            reported.add(number)
         try:
             check_record(record)
         except StateError as exc:
@@ -947,12 +951,13 @@ def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[s
         else:
             seen.add(record["slice"])
             valid.append(record)
-    # A slice with no record: its job ended before it uploaded anything (a
-    # hosted runner taken away under it, #1751).  Its work waits for the next
-    # night's plan and the night goes on; more than one in a night, or more
-    # than LOST_LIMIT over the last LOST_WINDOW_NIGHTS nights, is a hazard
-    # the night reports, on a night that lost one.
-    lost = sorted(set(range(jobs)) - seen)
+    # A slice with no record at all: its job ended before it uploaded anything
+    # (a hosted runner taken away under it, #1751).  A record the night
+    # rejected is not that: the slice reported.  A lost slice's work waits for
+    # the next night's plan and the night goes on; more than one in a night,
+    # or more than LOST_LIMIT over the last LOST_WINDOW_NIGHTS nights, is a
+    # hazard the night reports, on a night that lost one.
+    lost = sorted(set(range(jobs)) - reported)
     notes: list[str] = [f"slice {n}: no record; its work waits for the next night" for n in lost]
     if len(lost) > 1:
         problems.append(f"no record from slices {_listed(lost)}: more than one in a night")
