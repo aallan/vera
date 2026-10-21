@@ -1626,18 +1626,22 @@ def minimize(prog: Program, holds: Callable[[Program], bool], *,
              budget: int = 300) -> Program:
     """The smallest program :func:`reductions` reaches from *prog* while
     *holds* stays true, trying at most *budget* candidates, each of them
-    :func:`well_formed`.  *prog* itself must hold."""
+    :func:`well_formed` and none the program already held: a nullary
+    constructor, or a construction at its stand-in values, is its own
+    stand-in, and taking it as a step would restart the reductions on the
+    same program.  *prog* itself must hold."""
     current = prog
+    held = prog.render()
     tried = 0
     progress = True
     while progress and tried < budget:
         progress = False
         for cand in reductions(current):
             try:
-                cand.render()
+                text = cand.render()
             except RenderError:
                 continue
-            if not well_formed(cand):
+            if text == held or not well_formed(cand):
                 continue
             tried += 1
             try:
@@ -1645,7 +1649,7 @@ def minimize(prog: Program, holds: Callable[[Program], bool], *,
             except Exception:  # noqa: BLE001 — a candidate that crashes a stage is not the find
                 ok = False
             if ok:
-                current = cand
+                current, held = cand, text
                 progress = True
                 break
             if tried >= budget:

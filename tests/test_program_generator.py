@@ -48,6 +48,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pytest
+import yaml
 
 from tests import pipeline
 from tests import program_generator as gen
@@ -56,7 +57,7 @@ from vera import ast, narrowing
 from vera.formatter import format_source
 from vera.obligations.cache import walk_nodes
 from vera.reconcile import Mismatch, join
-from vera.types import NAT
+from vera.types import INT, NAT
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -434,31 +435,23 @@ def _nat_through_a_call(node: ast.Node, sites: Sites) -> bool:
             and not narrowing.is_static_nat_typed(node, lambda _call: None))
 
 
-def _literal_only(e: ast.Expr) -> bool:
-    """A literal, a negated literal, or arithmetic over nothing else."""
-    if isinstance(e, ast.IntLit):
-        return True
-    if isinstance(e, ast.UnaryExpr):
-        return e.op == ast.UnaryOp.NEG and _literal_only(e.operand)
-    if isinstance(e, ast.BinaryExpr):
-        return e.op in (ast.BinOp.ADD, ast.BinOp.SUB, ast.BinOp.MUL,
-                        ast.BinOp.DIV, ast.BinOp.MOD) and (
-            _literal_only(e.left) and _literal_only(e.right))
-    return False
-
-
-def _literal_branch_join(node: ast.Node, sites: Sites) -> bool:
-    """An `if` the checker types `@Nat` that joins a branch of literals, a
-    negated literal or literal arithmetic, with a `@Nat` branch (#1756):
-    the verifier reads the checker's `@Nat` and records no narrowing, and
-    code generation's static rule, which reads a negated literal as an
-    `@Int`, guards the binding."""
-    if not isinstance(node, ast.IfExpr) or sites.checker_type(node) != NAT:
+def _int_joined_with_nat(node: ast.Node, sites: Sites) -> bool:
+    """An `if` or a `match` the checker types `@Nat` that joins a branch it
+    types `@Int` with one it types `@Nat` (#1756): the relaxed `Int <: Nat`
+    rule hands the join the second type, so the verifier, reading it,
+    records no narrowing where the join is bound into a `@Nat` position,
+    while code generation's static rule reads the `@Int` branch and guards
+    the binding."""
+    if isinstance(node, ast.IfExpr):
+        values = [node.then_branch.expr, node.else_branch.expr]
+    elif isinstance(node, ast.MatchExpr):
+        values = [arm.body for arm in node.arms]
+    else:
         return False
-    values = [branch.expr for branch in (node.then_branch, node.else_branch)]
-    return any(
-        _literal_only(literal) and sites.checker_type(other) == NAT
-        for literal, other in (values, values[::-1]))
+    if sites.checker_type(node) != NAT:
+        return False
+    types = [sites.checker_type(value) for value in values]
+    return INT in types and NAT in types
 
 
 @dataclass(frozen=True)
@@ -490,8 +483,8 @@ _SHAPES: dict[str, Callable[[ast.Node, Sites], bool]] = {
         lambda node, _s: _division_by(node, literal=True),
     "a `@Nat` binder of a `Nat` field": _nat_field_binder,
     "a `@Nat` value read through a call": _nat_through_a_call,
-    "a branch of literals joined with a `@Nat` branch, typed `@Nat`":
-        _literal_branch_join,
+    "an `@Int` branch joined with a `@Nat` branch, typed `@Nat`":
+        _int_joined_with_nat,
 }
 
 
@@ -591,7 +584,7 @@ KNOWN_CLASSES: tuple[KnownClass, ...] = (
     KnownClass(
         "#1756", "guarded_unrecorded", "nat_bind",
         "wasm/operators.py:_emit_nat_bind_guard",
-        "a branch of literals joined with a `@Nat` branch, typed `@Nat`",
+        "an `@Int` branch joined with a `@Nat` branch, typed `@Nat`",
         _REPRO_1756),
 )
 
@@ -984,6 +977,67 @@ def test_each_known_class_keeps_its_shape(cls: KnownClass) -> None:
     assert [f.known for f in alone] == [cls.issue], alone
 
 
+#: #1756's members, by the form of the `@Int` branch: literal arithmetic
+#: (seed 463), an `@Int` parameter (seed 2016), and a `match` whose later
+#: arm is the `@Int`, each joined with a `@Nat` at a `@Nat` `let`.
+_MEMBERS_1756 = {
+    "literal arithmetic, seed 463": _REPRO_1756,
+    "an `@Int` parameter, seed 2016": """\
+public fn joined(@Bool, @Int, @Nat -> @Int)
+  requires(@Int.0 >= 0 && @Int.0 <= 10)
+  ensures(@Int.result >= 0 && @Int.result <= 0)
+  effects(pure)
+{
+  let @Nat = if @Bool.0 then {
+    @Int.0
+  } else {
+    @Nat.0
+  };
+  0
+}
+""",
+    "a `match` whose later arm is the `@Int`": """\
+public fn picked(@Bool, @Int, @Nat -> @Int)
+  requires(@Int.0 >= 0 && @Int.0 <= 10)
+  ensures(@Int.result >= 0 && @Int.result <= 0)
+  effects(pure)
+{
+  let @Nat = match @Bool.0 {
+    true -> @Nat.0,
+    false -> @Int.0
+  };
+  0
+}
+""",
+}
+
+
+@pytest.mark.parametrize("member", sorted(_MEMBERS_1756))
+def test_the_1756_class_reads_its_mechanism(member: str) -> None:
+    """#1756's class is the checker's join, not a literal: an `@Int` branch
+    of any form joined with a `@Nat` branch, in an `if` or a `match`, is
+    typed `@Nat`.  Each member is that known class, with the shape and the
+    join's site as its record's evidence."""
+    source = _MEMBERS_1756[member]
+    assert not contract_finds(source), contract_finds(source)
+    [cls] = [k for k in KNOWN_CLASSES if k.issue == "#1756"]
+    finds = reconcile_finds(source)
+    assert [(f.signature, f.known) for f in finds] == [
+        ((cls.kind, cls.obligation, cls.emitter), "#1756")], finds
+    assert finds[0].evidence == f"{cls.shape}, at 6:14", finds[0].evidence
+
+
+def test_the_1756_class_holds_no_other_nat_bind() -> None:
+    """The other `nat_bind` classes' repros, a field binder and a value read
+    through a call, are not #1756's: its predicate alone leaves each a
+    find."""
+    [cls] = [k for k in KNOWN_CLASSES if k.issue == "#1756"]
+    for repro in (_REPRO_1629_BINDER, _REPRO_1557):
+        finds = reconcile_finds(repro, known=(cls,))
+        assert [(f.signature[1], f.known) for f in finds] == [
+            ("nat_bind", "")], finds
+
+
 def test_the_distrust_differential_reports_a_refuted_proof() -> None:
     """#1555's address comparison: proved, and refuted by its one run.  The
     neighbour binds each call before comparing, the documented workaround,
@@ -1062,6 +1116,53 @@ def test_a_refusal_the_counterfactual_does_not_remove_stays_a_find() -> None:
     assert "survived the counterfactual" in finds[1].evidence
 
 
+def test_a_refutation_names_its_function_and_arguments() -> None:
+    """#1555's refuted proof over a parameter the precondition pins: the
+    find names the function and the arguments it was refuted on, which the
+    record hands `program_generator.expectations`.  The diagnostic alone
+    names neither."""
+    pinned = _FALSE_PROOF.replace(
+        "public fn main(-> @Int)\n  requires(true)",
+        "public fn main(@Nat -> @Int)\n  requires(@Nat.0 == 3)")
+    assert pinned != _FALSE_PROOF
+    finds = distrust_finds(pinned)
+    assert [(f.signature[0], f.function, f.args) for f in finds] == [
+        ("E703", "main", (3,))], finds
+    assert finds[0].to_dict()["args"] == [3]
+
+
+def test_the_minimiser_never_accepts_the_program_it_holds() -> None:
+    """A candidate that renders as the program the minimiser holds is no
+    step.  A nullary constructor, or a construction of a type's fewest-field
+    constructor at its stand-in values, is its own stand-in; accepting it
+    restarted the reductions, which tried again every candidate refused
+    before it and reached none after it, until the budget was spent.  Under
+    a predicate that holds while any construction remains, seed 2000's
+    program had 147 of its accepted candidates identical to the program
+    they replaced; none is now."""
+    def constructs(prog: gen.Program) -> bool:
+        return any(isinstance(node, gen.Construct)
+                   for fn in prog.functions for node in gen.nodes(fn))
+
+    prog = gen.generate(2000)
+    assert constructs(prog)
+    replaced = [prog.render()]
+    steps: list[tuple[str, str]] = []
+
+    def holds(candidate: gen.Program) -> bool:
+        if not constructs(candidate):
+            return False
+        steps.append((replaced[0], candidate.render()))
+        replaced[0] = candidate.render()
+        return True
+
+    minimal = gen.minimize(prog, holds, budget=MINIMISE_BUDGET)
+    assert steps, "the minimiser accepted nothing"
+    identical = [n for n, (before, after) in enumerate(steps) if before == after]
+    assert not identical, f"{len(identical)} of {len(steps)} steps kept the program"
+    assert constructs(minimal)
+
+
 def test_the_minimiser_keeps_the_failure_it_shrinks() -> None:
     """The smallest of the first hundred programs that divides by a literal
     is shrunk to the smallest program whose join still reports the divisor
@@ -1126,11 +1227,44 @@ def test_the_record_states_what_the_generator_expected() -> None:
 # The nightly lane
 # =====================================================================
 
+def test_the_workflow_keeps_what_it_claims() -> None:
+    """`nightly-generator.yml` read as data, for the five things its header
+    and the description claim: the tracking issue is filed on a failed
+    scheduled night alone; the job holds `contents: read` and
+    `issues: write` and nothing more; no context value is interpolated into
+    a `run:` or the script; a pull request runs it only for the generator,
+    its instrument and the workflow; and nothing is `continue-on-error`."""
+    workflow = yaml.safe_load(
+        (ROOT / ".github" / "workflows" / "nightly-generator.yml").read_text(
+            encoding="utf-8"))
+    # YAML 1.1 reads the `on` key as true.
+    triggers = workflow.get("on", workflow.get(True))
+    assert workflow["permissions"] == {"contents": "read"}
+    [job] = workflow["jobs"].values()
+    assert job["permissions"] == {"contents": "read", "issues": "write"}
+    steps = job["steps"]
+    issue = [s for s in steps if str(s.get("uses", "")).startswith(
+        "actions/github-script@")]
+    assert len(issue) == 1, issue
+    assert issue[0]["if"] == "failure() && github.event_name == 'schedule'"
+    for step in steps:
+        for text in (step.get("run", ""), (step.get("with") or {}).get(
+                "script", "")):
+            assert "${{" not in str(text), step.get("name")
+        assert "continue-on-error" not in step, step.get("name")
+    assert "continue-on-error" not in job
+    assert sorted(triggers["pull_request"]["paths"]) == sorted([
+        "tests/program_generator.py", "tests/test_program_generator.py",
+        ".github/workflows/nightly-generator.yml"])
+
+
 def night_seeds(spec: str | None = None,
                 today: datetime.date | None = None) -> list[int]:
     """The seeds ``VERA_GENERATOR_SEEDS`` names: nothing when it is unset,
     ``night:N`` for N seeds the UTC day determines, or a list of seeds and
-    ranges (``12,40-49``) to rerun."""
+    ranges (``12,40-49``) to rerun.  Anything else, a range that runs
+    backwards and ``night:0`` among it, is a ``ValueError``, which fails
+    the collection: a dispatch naming no seed would otherwise pass."""
     spec = os.environ.get("VERA_GENERATOR_SEEDS", "") if spec is None else spec
     spec = spec.strip()
     if not spec:
@@ -1138,6 +1272,8 @@ def night_seeds(spec: str | None = None,
     night = re.fullmatch(r"night:(\d+)", spec)
     if night:
         count = int(night.group(1))
+        if count == 0:
+            raise ValueError("VERA_GENERATOR_SEEDS: night:0 names no seed")
         day = today or datetime.datetime.now(datetime.timezone.utc).date()
         start = (day - NIGHT_EPOCH).days * NIGHT_STRIDE
         return list(range(start, start + count))
@@ -1148,6 +1284,10 @@ def night_seeds(spec: str | None = None,
             raise ValueError(f"VERA_GENERATOR_SEEDS: cannot read {part!r}")
         low = int(bounds.group(1))
         high = int(bounds.group(2) or low)
+        if high < low:
+            raise ValueError(
+                f"VERA_GENERATOR_SEEDS: {part.strip()!r} runs backwards and "
+                f"names no seed")
         seeds.extend(range(low, high + 1))
     return seeds
 
@@ -1161,6 +1301,12 @@ def test_the_night_is_read_as_the_workflow_writes_it() -> None:
         300_000)
     with pytest.raises(ValueError):
         night_seeds("1;rm")
+    # A dispatch that names no seed would run the pull request's cells
+    # alone and pass: a reversed range and a night of none are refused.
+    with pytest.raises(ValueError):
+        night_seeds("49-40")
+    with pytest.raises(ValueError):
+        night_seeds("night:0")
 
 
 NIGHT_SEEDS = night_seeds()
