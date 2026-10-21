@@ -975,16 +975,18 @@ def _written_in(
 
 def _record_call(
     index: _Index, records: _Records, record: ProofObligation,
+    where: str,
 ) -> ast.FnCall | ast.ModuleCall | None:
-    """The call a record an entry check stands for sits at: the call itself
-    for a precondition's `call_pre`, the call whose argument holds it for a
-    refined parameter's narrowing."""
+    """The call a record an entry check stands for sits at, by the check's
+    class (*where*): for a `requires` clause the call its `call_pre` stands
+    at, and for a refined parameter the call whose argument holds the
+    narrowing, which stands at a place inside the argument and so at an
+    inner call when the argument is one (PR #1754 review, CodeRabbit)."""
     rnode = records.located(record)
     if rnode is None:
         return None
-    call = _call_node(rnode)
-    if call is not None:
-        return call
+    if where == "clause":
+        return _call_node(rnode)
     found = _argument_site(index, rnode)
     return found[0] if found is not None else None
 
@@ -992,7 +994,7 @@ def _record_call(
 def _entry_calls(
     index: _Index, records: _Records,
     answers: list[tuple[ProofObligation, EmittedCheck]],
-    entry_decls: dict[EmittedCheck, ast.FnDecl],
+    entry_decls: dict[EmittedCheck, tuple[ast.FnDecl, str]],
     regions: dict[tuple[str, int, int], frozenset[str]],
 ) -> dict[EmittedCheck, list[EntryCall]]:
     """Each entry check's calls (``Reconciliation.entry_calls``): every call
@@ -1009,11 +1011,11 @@ def _entry_calls(
     for record, check in answers:
         if check not in entry_decls:
             continue
-        call = _record_call(index, records, record)
+        call = _record_call(index, records, record, entry_decls[check][1])
         if call is not None:
             standing.setdefault(check, {}).setdefault(id(call), []).append(record)
     out: dict[EmittedCheck, list[EntryCall]] = {}
-    for check, decl in entry_decls.items():
+    for check, (decl, _) in entry_decls.items():
         at_call = standing.get(check, {})
         out[check] = [
             EntryCall(_written_in(index, regions, call),
@@ -1099,8 +1101,9 @@ def join(
     for record in records.all:
         by_kind.setdefault(record.kind, []).append(record)
 
-    #: Each entry check -> the function whose entry it guards.
-    entry_decls: dict[EmittedCheck, ast.FnDecl] = {}
+    #: Each entry check -> the function whose entry it guards, and the
+    #: check's class (`parameter` or `clause`).
+    entry_decls: dict[EmittedCheck, tuple[ast.FnDecl, str]] = {}
     #: record id -> the obligation sites the checks offer it, each with the
     #: checks standing for that site.
     offers: dict[int, dict[SiteKey, list[EmittedCheck]]] = {}
@@ -1124,7 +1127,7 @@ def join(
             guarded = (located.owner if located.where == "parameter"
                        else index.fn_of.get(id(located.node)))
             if isinstance(guarded, ast.FnDecl):
-                entry_decls[check] = guarded
+                entry_decls[check] = (guarded, located.where)
         standing: list[ProofObligation] = []
         for kind in check.obligations:
             for record in by_kind.get(kind, ()):

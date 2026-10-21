@@ -1943,6 +1943,93 @@ def test_a_call_is_written_in_the_innermost_function_holding_it() -> None:
     assert callers == sorted([["f"], closures]), callers
 
 
+# A refined parameter whose argument is itself a call: the verifier records
+# the narrowing at the argument, the call `pick(...)` (line 24), and the call
+# it feeds is `g`'s.  `pick` proves its result is 1 when its argument holds,
+# and the planted proof says it does.
+SRC_JOIN_ARGUMENT_IS_A_CALL = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+private fn g(@Pos -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Pos.0
+}
+
+private fn pick(@Bool -> @Int)
+  requires(true)
+  ensures(@Bool.0 ==> @Int.result == 1)
+  effects(pure)
+{
+  if @Bool.0 then { 1 } else { 0 }
+}
+
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0)
+  effects(pure)
+{
+  let @Int = g(pick(mo(7) == mo(7)));
+  @Int.1
+}
+""" + _MO
+
+# Both shapes of a call argument in one function: one the verifier proves
+# positive (line 24) and one it cannot (line 25).
+SRC_CALL_ARGUMENTS_PROVED_AND_NOT = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+private fn g(@Pos -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Pos.0
+}
+
+private fn same(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0)
+  effects(pure)
+{
+  @Int.0
+}
+
+public fn f(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(pure)
+{
+  let @Int = g(same(@Int.0));
+  g(string_length(show(@Int.0)))
+}
+"""
+
+
+def test_a_refined_argument_that_is_a_call_answers_the_call_it_feeds() -> None:
+    """The record at an argument that is itself a call belongs to the call
+    whose argument it is, not to the inner call: the planted proof behind
+    `pick` is refuted at its record, not left unattributed."""
+    assert _refuted(SRC_JOIN_ARGUMENT_IS_A_CALL) == {("refine_bind", 24)}
+
+
+def test_each_call_argument_is_placed_at_the_call_it_feeds() -> None:
+    verified = pipeline.verify(SRC_CALL_ARGUMENTS_PROVED_AND_NOT, file=_FILE,
+                               past_check=True)
+    compiled = pipeline.compile(SRC_CALL_ARGUMENTS_PROVED_AND_NOT, file=_FILE,
+                                past_check=True).result
+    joined = join(verified.result, compiled, program=verified.checked.program,
+                  file=_FILE, resolved_modules=[])
+    (check,) = [c for c in joined.entry if c.function == "g"]
+    placed = sorted(
+        [(r.kind, r.status, r.line) for r in call.records]
+        for call in joined.entry_calls[check])
+    assert placed == [[("refine_bind", "tier3", 25)],
+                      [("refine_bind", "verified", 24)]], placed
+
+
 @pytest.mark.parametrize("cell", list(_ENTRY_CALL_CELLS))
 def test_an_entry_check_is_read_through_the_calls_the_run_makes(cell: str) -> None:
     calls, expected = _ENTRY_CALL_CELLS[cell]
