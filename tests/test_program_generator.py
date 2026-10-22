@@ -61,6 +61,7 @@ import re
 import subprocess
 import sys
 import time
+from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, is_dataclass, replace
 from dataclasses import fields as dataclass_fields
@@ -1223,6 +1224,10 @@ def _codegen_finds(prog: gen.Program, stages: Stages, trials: int,
             + distrust_finds(prog, trials, stages, stats))
 
 
+def _key(f: Find) -> tuple[str, tuple[str, ...], str]:
+    return (f.differential, f.signature, f.function)
+
+
 def _alike(a: Find, b: Find) -> bool:
     """Whether two finds are the same find of two programs that differ in
     columns only: their differential, signature and function.  Two sites
@@ -1242,8 +1247,10 @@ def classify_rederived(
     (:data:`REDERIVED`) marked with the class's issue.
 
     Each class's counterfactual binds its values on top of the classes
-    before it, and a find is the first class's under which it vanishes: no
-    find of the counterfactual, in a known class or not, is alike it.  A
+    before it, and a find is the first class's under which it vanishes:
+    the counterfactual makes no find alike it outside the known classes,
+    and no more alike it in all than the program made inside them, so one
+    it makes again in a known class has not vanished.  A
     counterfactual that does not check and verify clean, or that makes a
     find outside the known classes the program does not, isolates nothing,
     and classifies nothing more.  A known find the counterfactual makes
@@ -1255,6 +1262,7 @@ def classify_rederived(
     open_ = [f for f in finds if not f.known and f.differential in _CODEGEN]
     if not open_:
         return finds
+    held = Counter(_key(f) for f in finds if f.known and f.differential in _CODEGEN)
     marked: dict[int, Rederived] = {}
     kinds: tuple[str, ...] = ()
     served: dict[str, int] = {}
@@ -1270,10 +1278,15 @@ def classify_rederived(
         after = _codegen_finds(bound, stages, trials, served)
         if any(not any(_alike(f, g) for g in open_) for f in after if not f.known):
             break
+        anew = Counter(_key(f) for f in after if not f.known)
+        again = Counter(_key(f) for f in after)
         for f in open_:
-            # A find the counterfactual makes again, in a known class or out
-            # of one, has not vanished: a class may hold its site there.
-            if id(f) not in marked and not any(_alike(f, g) for g in after):
+            # The program's open finds of a signature vanish when the
+            # counterfactual makes none of them outside the classes and no
+            # more of them in all than the program made inside one: a find
+            # it makes again in a known class has not vanished.
+            k = _key(f)
+            if id(f) not in marked and not anew[k] and again[k] <= held[k]:
                 marked[id(f)] = cls
         if len(marked) == len(open_):
             if stats is not None:
@@ -1886,6 +1899,29 @@ def test_a_fold_from_a_nat_keeps_its_run_non_negative() -> None:
 
     assert gen.well_formed(program(1))
     assert not gen.well_formed(program(-5))
+
+
+def test_a_member_beside_a_known_find_of_its_signature_is_counted() -> None:
+    """A class's find in a function that also holds a known find of its
+    signature: the counterfactual makes the known one again and not the
+    member, so the member has vanished and is counted (seed 429's shape, a
+    `nat_bind` guard of #1525's beside one of #1695's)."""
+    n = gen.Binding("Nat", gen.Iv(0, 5), gen.Iv(0, 5))
+    x = gen.Binding("Nat", gen.Iv(0, 100), gen.Iv(0, 100))
+    same = gen.Function("f1", False, [x], "Nat", gen.Block([], gen.Ref(x)),
+                        ensure_style="exact")
+    held = gen.Binding("Nat", value=gen.Call(same, [gen.Ref(n)]))
+    pick = _pick()
+    call = gen.Call(pick, [gen.Lit(False), gen.Bin("*", gen.Ref(held), gen.Lit(2)),
+                           gen.Bin("-", gen.Ref(held), gen.Lit(3))], {"T": "Int"})
+    prog = _one(call, lets=[gen.Let(held)], params=[n], example=[1], functions=[pick, same])
+    guards = [f for f in _codegen_finds(prog, Stages.of(prog), TRIALS)
+              if f.signature[:2] == ("guarded_unrecorded", "nat_bind") and f.function == "f9"]
+    assert sorted(f.known for f in guards) == ["", "#1695"], guards
+    finds = differentials(prog, warm=False)
+    assert [f for f in finds if not f.known] == [], finds
+    assert sorted(f.known for f in finds if f.signature[:2] == (
+        "guarded_unrecorded", "nat_bind") and f.function == "f9") == ["#1525", "#1695"], finds
 
 
 def test_two_sites_of_one_signature_where_one_vanishes_stay_finds(
