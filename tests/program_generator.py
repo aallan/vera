@@ -2945,8 +2945,11 @@ def bind_in_place(prog: Program, kinds: Collection[str]) -> Program | None:
     value's type (#1525's class, or #1744's for a handler)."""
     cand = copy.deepcopy(prog)
     functions = all_functions(cand)
-    for fn in functions:
-        fn.contract = _requires(fn) + _ensures(fn)
+    # Every contract is read before any is fixed: a fixed one is written as
+    # given, and a caller's `ensures` reads its callee's as the verifier does.
+    contracts = [_requires(fn) + _ensures(fn) for fn in functions]
+    for fn, contract in zip(functions, contracts):
+        fn.contract = contract
     changed = False
 
     def bind(e: Expr, ty: str) -> Expr:

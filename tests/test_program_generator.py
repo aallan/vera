@@ -1771,6 +1771,31 @@ def test_each_rederived_class_keeps_its_repro(cls: Rederived) -> None:
     assert pipeline.check(bound.render(), file=LABEL).ok, bound.render()
 
 
+def _clauses(text: str) -> list[str]:
+    """Every contract clause of a program's text, in order."""
+    return [line.strip() for line in text.splitlines()
+            if line.strip().startswith(("requires(", "ensures(", "decreases("))]
+
+
+def test_the_counterfactual_writes_every_contract_as_the_program_does() -> None:
+    """The counterfactual changes bodies alone: over a hundred programs,
+    each binding every value of every class, the contracts of the entry and
+    of the module are the program's, clause for clause, a caller's `ensures`
+    that reads its callee's included (seed 429's: a contract fixed before
+    its caller's was read made the caller's `ensures(true)`)."""
+    kinds = [k for c in REDERIVED for k in c.kinds]
+    bound_some = 0
+    for seed in range(100):
+        prog = gen.generate(seed)
+        bound = gen.bind_in_place(prog, kinds)
+        if bound is None:
+            continue
+        bound_some += 1
+        for name, text in prog.files().items():
+            assert _clauses(bound.files()[name]) == _clauses(text), (seed, name)
+    assert bound_some, "no program of a hundred holds a value to bind"
+
+
 def test_a_find_the_counterfactual_does_not_remove_stays_a_find(
         monkeypatch: pytest.MonkeyPatch) -> None:
     """The class's boundary: in a program of #1525's class, a find that the
@@ -1804,6 +1829,22 @@ def test_a_counterfactual_that_makes_a_find_of_its_own_classifies_nothing(
         return out
 
     monkeypatch.setattr(sys.modules[__name__], "load_finds", in_the_counterfactual)
+    finds = differentials(_repro_generic_argument(), warm=False)
+    codegen = [f for f in finds if f.differential in _CODEGEN]
+    assert codegen and not [f for f in codegen if f.known], finds
+
+
+def test_a_counterfactual_that_does_not_check_classifies_nothing(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """A counterfactual `vera check` refuses makes no find of the load,
+    reconcile or distrust differential at all, which is no evidence: the
+    program's finds stay finds."""
+    def refused(prog: gen.Program, kinds: object) -> gen.Program:
+        out = copy.deepcopy(prog)
+        out.functions[-1].contract = ["requires(true)", "ensures(@Bool.result)"]
+        return out
+
+    monkeypatch.setattr(gen, "bind_in_place", refused)
     finds = differentials(_repro_generic_argument(), warm=False)
     codegen = [f for f in finds if f.differential in _CODEGEN]
     assert codegen and not [f for f in codegen if f.known], finds
