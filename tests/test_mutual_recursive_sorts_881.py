@@ -35,9 +35,17 @@ from tests import pipeline
 
 
 def _verify(source: str) -> VerifyResult:
-    """Type-check and verify *source*, past a check refusal: the two
-    Tuple-mediated equality fixtures below do not type-check (E243, #1654)."""
-    return pipeline.verify(source, past_check=True).result
+    """Type-check and verify *source*."""
+    return pipeline.verify(source).result
+
+
+def _refused_e243(source: str) -> None:
+    """*source* is refused at check, its equality on a type that carries a
+    `Tuple` (E243, #1654), so verification does not run."""
+    verified = pipeline.verify(source)
+    assert {d.error_code for d in verified.checked.errors} == {"E243"}, [
+        (d.error_code, d.description[:70]) for d in verified.checked.errors]
+    assert not verified.ran
 
 
 def _ensures(result: VerifyResult) -> list:
@@ -222,11 +230,12 @@ public fn f(@A -> @Bool)
         assert result.summary.tier1_verified >= 1
         assert all(o.status != "violated" for o in result.obligations)
 
-    def test_non_fp_tuple_mediated_equality_proves_tier1(self) -> None:
-        # Pins the model choice for a Tuple-mediated NON-FP recursive group:
-        # structural datatype `=` matches the runtime, so reflexivity
-        # `@A.0 == @A.0` proves Tier-1 (same as the direct-reference case).
-        result = _verify("""
+    def test_non_fp_tuple_mediated_equality_is_refused_at_check(self) -> None:
+        # The model choice for a Tuple-mediated NON-FP recursive group
+        # (structural datatype `=`, reflexivity proving Tier-1) is reached by
+        # no program the check accepts: a `Tuple` is not Eq-derivable, so
+        # `==` on a type that carries one is refused (E243, #1654).
+        _refused_e243("""
 private data A { Stop, MkA(Tuple<B, Int>) }
 
 private data B { Halt, MkB(A) }
@@ -237,18 +246,13 @@ public fn refl(@A -> @Bool)
   @A.0 == @A.0
 }
 """)
-        ens = _ensures(result)
-        assert ens and all(o.status == "verified" for o in ens), [
-            (o.kind, o.status) for o in result.obligations
-        ]
 
-    def test_fp_tuple_mediated_equality_demotes_to_tier3(self) -> None:
-        # The #871 interaction reached THROUGH a Tuple field: the Float64 sits
-        # inside a recursive cycle (`FA` -> `Tuple<FB, Float64>` -> `FB` ->
-        # `FA`), so equality has no finite expansion and `@FA.0 == @FA.0` must
-        # demote to a loud Tier-3 runtime check — never a false Tier-1 proof
-        # (structural `=` would wrongly prove NaN == NaN).
-        result = _verify("""
+    def test_fp_tuple_mediated_equality_is_refused_at_check(self) -> None:
+        # The #871 interaction reached THROUGH a Tuple field (`FA` ->
+        # `Tuple<FB, Float64>` -> `FB` -> `FA`) is reached by no program the
+        # check accepts: `==` on a type that carries a `Tuple` is refused
+        # (E243, #1654), so no equality over the cycle is ever verified.
+        _refused_e243("""
 private data FA { Stop, MkFA(Tuple<FB, Float64>) }
 
 private data FB { Halt, MkFB(FA) }
@@ -259,12 +263,6 @@ public fn refl(@FA -> @Bool)
   @FA.0 == @FA.0
 }
 """)
-        ens = _ensures(result)
-        assert ens, [(o.kind, o.status) for o in result.obligations]
-        assert all(o.status == "tier3" for o in ens), [
-            (o.kind, o.status) for o in result.obligations
-        ]
-        assert result.summary.tier3_runtime >= 1
 
 
 @pytest.mark.parametrize(

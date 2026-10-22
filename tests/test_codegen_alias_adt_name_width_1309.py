@@ -24,10 +24,13 @@ Two failure modes were measured at the branch point, and they are NOT the
   fresh-name control.  Matching widths are not a silent-wrongness case;
   the pair types are.
 
-:class:`TestAliasOverAdtNameWidthBattery` is the differential that makes
-width-luck impossible to reintroduce: every name in the LIVE built-in ADT
-registry, aliased to every representation class, with the emitted function
-signature compared against the identical program under a fresh alias name.
+Since #1469 every such name is reserved: an alias that takes one is refused
+at check (E158), so no program reaches code generation with one.  The
+run-level cells below assert that refusal, and
+:class:`TestAliasOverAdtNameWidthBattery` asserts it for every name in the
+LIVE built-in ADT registry, aliased to every representation class, beside a
+fresh-name control that compiles.  The unit cells hold code generation's own
+derivation order.
 """
 from __future__ import annotations
 
@@ -36,7 +39,7 @@ import pytest
 from vera import ast
 from vera.codegen import CodeGenerator
 
-from tests.codegen_helpers import _compile, _compile_ok, _run, wat_fn_body
+from tests.codegen_helpers import _compile, _compile_ok, wat_fn_body
 from tests import pipeline
 
 
@@ -94,123 +97,106 @@ def _program(alias: str, target: str, lit: str, body: str, ret: str) -> str:
     )
 
 
-def _run_value(source: str, fn: str = "main") -> object:
-    """Execute and return the raw value (str for String returns, else scalar)."""
-    result = _compile_ok(source)
-    return pipeline.run(result, fn, capture_stderr=False).execution.value
+def _refused(source: str, name: str) -> None:
+    """The alias is refused at check, at its name: a built-in or prelude
+    type's name is reserved (E158, #1469), so no stage after the check runs
+    on the program."""
+    errors = pipeline.check(source).errors
+    reserved = [d for d in errors if d.error_code == "E158"]
+    assert reserved and f"{name!r}" in reserved[0].description, [
+        (d.error_code, d.description) for d in errors]
 
 
 class TestAliasOverAdtNameLoud:
-    """Scalar targets: the widths differ, so the base failure was at load."""
+    """Scalar targets: the widths differ, so the base failure was at load.
+    The name is reserved now, so the alias is refused at check."""
 
-    def test_int_alias_named_option_runs(self) -> None:
+    def test_int_alias_named_option_is_refused(self) -> None:
         """The issue's own repro.
 
         Base: ``Invalid input WebAssembly code at offset 119: type
         mismatch: expected i64, found i32`` from ``vera run``, on a
         check-green / verify-green (4 Tier-1) program.
         """
-        source = _program("Option", "Int", "21", "@{A}.0 + @{A}.0", "@Int")
-        assert _run(source, fn="main") == 42
+        _refused(_program("Option", "Int", "21", "@{A}.0 + @{A}.0", "@Int"),
+                 "Option")
 
-    def test_float_alias_named_result_runs(self) -> None:
-        source = _program(
-            "Result", "Float64", "1.5", "@{A}.0 + @{A}.0", "@Float64")
-        assert _run_value(source) == pytest.approx(3.0)
+    def test_float_alias_named_result_is_refused(self) -> None:
+        _refused(_program(
+            "Result", "Float64", "1.5", "@{A}.0 + @{A}.0", "@Float64"),
+            "Result")
 
 
 class TestAliasOverAdtNameSilent:
-    """Pair targets: the module VALIDATES and computes the wrong answer.
+    """Pair targets: the module VALIDATED and computed the wrong answer.
 
     This is the silent case the issue's "matching widths" prediction
     missed.  An ``i32_pair`` is two words; the ADT branch's single i32
-    silently discards the length, and nothing traps.
+    silently discarded the length, and nothing trapped.  The name is
+    reserved now, so the alias is refused at check.
     """
 
-    def test_string_alias_named_option_keeps_the_bytes(self) -> None:
+    def test_string_alias_named_option_is_refused(self) -> None:
         """Base: exit 0, returned two junk bytes instead of ``"abab"``."""
-        source = _program(
+        _refused(_program(
             "Option", "String", '"ab"', "string_concat(@{A}.0, @{A}.0)",
-            "@String")
-        assert _run_value(source) == "abab"
+            "@String"), "Option")
 
-    def test_array_alias_named_option_keeps_the_length(self) -> None:
+    def test_array_alias_named_option_is_refused(self) -> None:
         """Base: exit 0, ``array_length`` returned 0 for a 3-element array."""
-        source = _program(
+        _refused(_program(
             "Option", "Array<Int>", "[5, 6, 7]", "array_length(@{A}.0)",
-            "@Nat")
-        assert _run(source, fn="main") == 3
+            "@Nat"), "Option")
 
 
 class TestAliasOverAdtNameInert:
-    """Matching-width targets: green before AND after — a regression guard.
+    """Matching-width targets, green at the branch point: the name is
+    reserved now, so the alias is refused at check."""
 
-    Green on both sides of the fix proves nothing about the fix; these are
-    here so the branch reorder cannot break the cases it must leave alone.
-    """
-
-    def test_bool_alias_named_ordering_still_runs(self) -> None:
-        source = _program(
+    def test_bool_alias_named_ordering_is_refused(self) -> None:
+        _refused(_program(
             "Ordering", "Bool", "true", "if @{A}.0 then {{ 7 }} else {{ 9 }}",
-            "@Int")
-        assert _run(source, fn="main") == 7
+            "@Int"), "Ordering")
 
-    def test_map_alias_named_tuple_still_runs(self) -> None:
-        source = _program(
+    def test_map_alias_named_tuple_is_refused(self) -> None:
+        _refused(_program(
             "Tuple", "Map<String, Int>", "map_new()", "map_size(@{A}.0)",
-            "@Nat")
-        assert _run(source, fn="main") == 0
+            "@Nat"), "Tuple")
 
 
 class TestBuiltinContainerNameShadow:
     """The alias branch must also beat the built-in CONTAINER branches.
 
     ``Array`` / ``Map`` / ``Set`` / ``Decimal`` / ``Tuple`` are not
-    primitives in the checker (``vera.types.PRIMITIVES``), so an alias
-    taking one of those names wins there too — and codegen tested them
-    before the alias table exactly as it tested ``_adt_layouts``.  Base:
-    each of these died with ``expected i64, found i32``.
+    primitives in the checker (``vera.types.PRIMITIVES``), and codegen
+    tested them before the alias table exactly as it tested
+    ``_adt_layouts``.  Base: each of these died with ``expected i64, found
+    i32``.  Every such name is reserved now (E158, #1469), so the alias is
+    refused at check.
     """
 
     @pytest.mark.parametrize(
         "name", ["Array", "Map", "Set", "Decimal", "Tuple", "Future"])
-    def test_alias_named_after_a_builtin_container_runs(
+    def test_alias_named_after_a_builtin_container_is_refused(
         self, name: str,
     ) -> None:
-        source = _program(name, "Int", "21", "@{A}.0 + @{A}.0", "@Int")
-        assert _run(source, fn="main") == 42
+        _refused(_program(name, "Int", "21", "@{A}.0 + @{A}.0", "@Int"), name)
 
     @pytest.mark.parametrize("name", ["Request", "Response", "UrlParts"])
-    def test_alias_named_after_a_prelude_adt_runs(self, name: str) -> None:
-        """A prelude-DECLARED ADT's name, shadowed by a main-file alias.
+    def test_alias_named_after_a_prelude_adt_is_refused(
+        self, name: str,
+    ) -> None:
+        """A prelude-DECLARED ADT's name, taken by a main-file alias, is
+        refused like a built-in's.  ``Json`` and ``HtmlNode`` are pinned in
+        ``test_name_resolution_spine_1316.py`` (#1316)."""
+        _refused(_program(name, "Int", "21", "@{A}.0 + @{A}.0", "@Int"), name)
 
-        ``Json`` and ``HtmlNode`` are deliberately absent: their prelude
-        COMBINATOR BODIES (``json_get``, ``html_attr``) are emitted into
-        every module and render their own ``@Json`` / ``@HtmlNode``
-        parameters against the flat ``_type_aliases`` map, which a main-file
-        alias of that name pollutes.  That was an alias-ENV SCOPING defect
-        (spec §8.4.1 makes the namespace module-scoped, so a prelude body
-        must render against the prelude's env), not the branch-ORDER defect
-        fixed here; #1316 closed it and ``test_name_resolution_spine_1316.py``
-        pins it.
-        """
-        source = _program(name, "Int", "21", "@{A}.0 + @{A}.0", "@Int")
-        assert _run(source, fn="main") == 42
-
-    def test_primitive_shadow_runs_at_the_primitive_width(self) -> None:
-        """The behavioural half, and the one that can go wrong silently.
-
-        ``type Bool = Int;`` then using ``@Bool`` AS a Bool.  The checker
-        refuses the alias (E158, #1497: a primitive's name could never be
-        named), so this drives a compile that skips the checker, and code
-        generation must still resolve the primitive first: the primitive
-        branch wins, so the slot stays i32.  Hoist the alias branch above
-        the primitives and ``@Bool`` becomes i64 — which is why the unit
-        assertions below are not the whole story.  The check-time refusal
-        does not make this test redundant: code generation is reachable
-        without the checker, and its width must not depend on it.
-        """
-        source = """\
+    def test_a_primitive_named_alias_is_refused(self) -> None:
+        """``type Bool = Int;`` is refused at check (E158, #1497: a
+        primitive's name could never be named), so no program reaches code
+        generation with it; the derivation's own order for the seven
+        primitives is held by the unit cell below."""
+        _refused("""\
 type Bool = Int;
 
 private fn f(@Bool -> @Int)
@@ -228,8 +214,7 @@ public fn main(@Unit -> @Int)
 {
   f(true)
 }
-"""
-        assert _run(source, fn="main") == 1
+""", "Bool")
 
     @pytest.mark.parametrize("name", ["Int", "Nat", "Bool", "Float64",
                                       "String", "Byte", "Unit"])
@@ -289,8 +274,10 @@ public fn main(@Unit -> @Future<String>)
 
     _CONTROL = _ALIASED.replace("Future", "Zz")
 
-    def test_a_future_named_alias_to_array_is_not_a_string_return(self) -> None:
-        assert "main" not in _compile_ok(self._ALIASED).fn_string_returns
+    def test_a_future_named_alias_to_array_is_refused(self) -> None:
+        """``Future`` is reserved now (E158, #1469), so the shape the branch
+        order misread is refused at check."""
+        _refused(self._ALIASED, "Future")
 
     def test_the_fresh_name_control_agrees(self) -> None:
         """The differential: the same program under a name that is not an
@@ -298,9 +285,9 @@ public fn main(@Unit -> @Future<String>)
         what decides this — the name is."""
         assert "main" not in _compile_ok(self._CONTROL).fn_string_returns
 
-    def test_a_future_named_alias_to_string_is_still_a_string_return(self) -> None:
-        """Over-correction control: resolving the alias must not lose a
-        genuine string return that reaches one THROUGH the shadowed name."""
+    def test_a_future_named_alias_to_string_is_refused(self) -> None:
+        """The over-correction control's shape, a string return beside an
+        alias of the reserved name, is refused at check too."""
         source = """\
 type Future<T> = Array<T>;
 
@@ -312,7 +299,7 @@ public fn main(@Unit -> @String)
   "hi"
 }
 """
-        assert "main" in _compile_ok(source).fn_string_returns
+        _refused(source, "Future")
 
     def test_the_genuine_transparent_future_still_decodes(self) -> None:
         """The #841 / #1047 behaviour the Future branch exists for, with no
@@ -321,7 +308,7 @@ public fn main(@Unit -> @String)
 public fn mk(@Unit -> @Future<String>)
   requires(true)
   ensures(true)
-  effects(pure)
+  effects(<Async>)
 {
   async("hi")
 }
@@ -337,7 +324,7 @@ type Deferred<T> = Future<T>;
 public fn mk(@Unit -> @Deferred<String>)
   requires(true)
   ensures(true)
-  effects(pure)
+  effects(<Async>)
 {
   async("hi")
 }
@@ -346,19 +333,14 @@ public fn mk(@Unit -> @Deferred<String>)
 
 
 class TestAliasOverAdtNameWidthBattery:
-    """The differential: EVERY built-in ADT name x EVERY representation.
+    """EVERY built-in ADT name x EVERY representation.
 
-    For each pair, compile the alias-named program and the identical
-    program under a fresh alias name, and compare the emitted ``$twice``
-    body in full — the parameter, local and result widths of the header,
-    and the instructions under it.  The whole body, not the header alone:
-    a header-only comparison reads the parameter and result widths but
-    not the ``(local …)`` declarations, and the module docstring's
-    "byte-identical to a fresh-name control" is a claim about the body
-    (measured: identical in every cell of the battery).  A single width
-    that resolves through the ADT branch instead of the alias branch shows
-    up here regardless of whether it happens to trap, so the loud cases
-    cannot be the only ones anyone notices.
+    Before #1469 each cell compiled the alias-named program beside the
+    identical program under a fresh alias name and compared the emitted
+    ``$twice`` body in full.  Every built-in ADT name is reserved now
+    (E158), so the alias-named program is refused at check, and the
+    fresh-name control, its nearest accepted neighbour, still compiles to a
+    ``$twice`` of its own.
     """
 
     @pytest.mark.parametrize("adt", _builtin_adt_names())
@@ -366,28 +348,16 @@ class TestAliasOverAdtNameWidthBattery:
         "target,lit,body,ret", _TARGETS,
         ids=[t[0] for t in _TARGETS],
     )
-    def test_emitted_widths_match_the_fresh_name_control(
+    def test_an_alias_of_the_name_is_refused_beside_its_control(
         self, adt: str, target: str, lit: str, body: str, ret: str,
     ) -> None:
-        aliased = _compile(_program(adt, target, lit, body, ret))
         control = _compile(_program(_CONTROL, target, lit, body, ret))
-
         control_errors = [
             d for d in control.diagnostics if d.severity == "error"]
         assert not control_errors, (
             f"control program for {target} is itself broken: {control_errors}")
-
-        aliased_errors = [
-            d for d in aliased.diagnostics if d.severity == "error"]
-        assert not aliased_errors, (
-            f"type {adt} = {target}; failed to assemble: {aliased_errors}")
-
-        want = wat_fn_body(control.wat, "twice")
-        got = wat_fn_body(aliased.wat, "twice")
-        assert got == want, (
-            f"type {adt} = {target}; emitted {got!r}, "
-            f"but the same program under a fresh alias name emitted {want!r}"
-        )
+        assert wat_fn_body(control.wat, "twice"), control.wat[:200]
+        _refused(_program(adt, target, lit, body, ret), adt)
 
     @pytest.mark.parametrize("adt", _builtin_adt_names())
     def test_derivation_follows_the_alias_not_the_adt(self, adt: str) -> None:

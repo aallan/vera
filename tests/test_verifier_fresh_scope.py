@@ -998,8 +998,9 @@ class TestUserEffectPutDisclosure:
     State's op, claimed its guard, and labeled the site "State-op"."""
 
     def test_user_effect_put_is_unguarded_effect_op_site(self) -> None:
-        """Measured past the check, which refuses a handler for a
-        user-declared effect (E340)."""
+        """The check refuses a handler for a user-declared effect (E340), so
+        no verification resolves a user effect's `put`; the State control
+        below keeps its site."""
         src = """
 effect Store {
   op put(Nat -> Unit);
@@ -1018,12 +1019,9 @@ public fn go(@Int -> @Int)
   }
 }
 """
-        assert {d.error_code
-                for d in vera_pipeline.check(src).errors} == {"E340"}
-        result = vera_pipeline.verify(src, past_check=True).result
-        errs = [d for d in result.diagnostics if d.severity == "error"
-                and "effect-operation argument" in d.description]
-        assert any(e.error_code == "E503" for e in errs)
+        verified = vera_pipeline.verify(src)
+        assert {d.error_code for d in verified.checked.errors} == {"E340"}
+        assert not verified.ran
 
     def test_builtin_state_put_keeps_its_site_label(self) -> None:
         """The State control: the same shape handled by the builtin
@@ -1039,8 +1037,9 @@ public fn go(@Int -> @Int)
         a bare `put` in a NESTED State handler's clause body under an
         outer user-effect handler is the USER effect's op (enclosing
         context): it must disclose as an unguarded effect-operation
-        argument, not claim the builtin State guard.  Measured past the
-        check, which refuses the user-effect handler (E340)."""
+        argument, not claim the builtin State guard.  The check refuses the
+        user-effect handler (E340), so no verification reaches the
+        clause-body `put`."""
         src = """
 effect Store {
   op put(Nat -> Unit);
@@ -1063,15 +1062,6 @@ public fn go(@Int -> @Int)
   }
 }
 """
-        assert {d.error_code
-                for d in vera_pipeline.check(src).errors} == {"E340"}
-        result = vera_pipeline.verify(src, past_check=True).result
-        disclosures = [
-            d for d in result.diagnostics
-            if "effect-operation argument" in d.description
-        ]
-        assert disclosures, [d.description[:70] for d in result.diagnostics]
-        assert not any(
-            "State-op argument" in d.description
-            for d in result.diagnostics
-        ), "the clause-body put must not claim the builtin State site"
+        verified = vera_pipeline.verify(src)
+        assert {d.error_code for d in verified.checked.errors} == {"E340"}
+        assert not verified.ran

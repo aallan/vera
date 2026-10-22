@@ -34,8 +34,8 @@ from vera.codegen.api import CompileResult
 from tests import pipeline
 from tests.module_fixture_helpers import (
     build_multi_module,
-    build_multi_module_past_check,
     module_value,
+    refused_multi_module,
 )
 
 # A generated class instrument (tests/matrix_sample.py): a pull request runs a
@@ -1243,7 +1243,7 @@ class TestOwnerCollisionMatrix:
         files["main.vera"] = files["main.vera"].replace(
             "import mlib;", "import mlib;\nimport xlib;") + (
                 _KEEPALIVE % "xlib::xping(1)")
-        check_errors, _result, _cg_errors = build_multi_module_past_check(
+        check_errors = refused_multi_module(
             tmp_path, files)
         assert any(
             code == "E157" and "more than one import" in desc
@@ -1279,17 +1279,22 @@ class TestBothNamespacesReadTheirOwnDeclaration:
     def test_the_checker_names_the_entrys_adt_while_codegen_keeps_the_modules(
         self, carrier: str, shadow: str, tmp_path: Path,
     ) -> None:
-        files = _matrix_files(carrier, shadow)
+        clean = _matrix_files(carrier, shadow)
+        files = dict(clean)
         files["main.vera"] += _ENTRY_MATCH_FN % {
             "arms": _CARRIER_ARMS[carrier]}
-        check_errors, result, cg_errors = build_multi_module_past_check(
-            tmp_path, files)
+        check_errors = refused_multi_module(tmp_path / "refused", files)
         owner = _ENTRY_SHADOWS[shadow]
         assert any(
             code == "E314" and f"constructor of {owner}" in desc
             for code, desc in check_errors
         ), check_errors
-        # ... and the module's own bodies are untouched by it.
+        # ... and the module's own bodies are untouched by it, measured on
+        # the same files without the entry's match, since no stage after
+        # the check runs on a program it refuses.
+        verify_errors, result, cg_errors = build_multi_module(
+            tmp_path / "clean", clean)
+        assert not verify_errors and not cg_errors, (verify_errors, cg_errors)
         for position in ("construction", "data_segment", "tag_eq"):
             assert module_value(result, position) == (
                 "ok", _MATRIX_EXPECTED[carrier][position]), (

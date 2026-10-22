@@ -44,7 +44,7 @@ from vera.codegen.core import CodeGenerator
 from tests import pipeline
 from tests.module_fixture_helpers import (
     build_multi_module,
-    build_multi_module_past_check,
+    compile_multi_module,
     module_value,
     refused_at_check as _refused_at_check,
 )
@@ -160,7 +160,7 @@ def _generator(tmp_path: Path, files: dict[str, str]) -> CodeGenerator:
         f"expected {len(files) - 1} resolved modules, got "
         f"{[m.path for m in mods]}"
     )
-    compiled = pipeline.compile(main_path, modules=mods, checked=False)
+    compiled = pipeline.compile(main_path, modules=mods)
     gen = compiled.generator
     assert gen is not None
     result = compiled.result
@@ -1937,6 +1937,23 @@ public fn helper(@Int -> @Int)
         assert "liba.Shape" in text and "libb.Shape" in text, text
 
 
+#: A function of `liba`'s that code generation skips on a program the check
+#: accepts: a `let` of a parameterised alias has no WASM representation
+#: (E602).  The `let` is the argument.
+_SKIPPED = """
+type Id<T> = T;
+
+public fn broken(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  %s
+  @Int.0
+}
+"""
+
+
 class TestADiagnosticStreamThatIsNotEmpty:
     """The display sweep, driven over a program that actually reports.
 
@@ -1957,27 +1974,19 @@ class TestADiagnosticStreamThatIsNotEmpty:
     def test_a_renamed_program_with_real_diagnostics_leaks_nothing(
         self, tmp_path: Path,
     ) -> None:
-        # Two contending `Shape`s (renamed), beside a dropped function that
-        # makes the stream non-empty.  Its unresolved call is an E200 error
-        # at check since #1513, so the program is driven past the check to
-        # reach code generation's own diagnostics.
-        liba = _LIBA + """
-public fn broken(@Int -> @Int)
-  requires(true)
-  ensures(true)
-  effects(pure)
-{
-  zz_no_such_builtin(@Int.0)
-}
-"""
+        # Two contending `Shape`s (renamed), beside a function code
+        # generation skips, which makes the stream non-empty: a `let` of a
+        # parameterised alias has no WASM representation (E602, a refusal of
+        # a check-green program, rostered in
+        # `tests/test_check_implies_compile.py`), on a program the check
+        # accepts.
+        liba = _LIBA + _SKIPPED % "let @Id<Nat> = 5;"
         entry = _ENTRY.replace(
-            "  aone(3) + bone(4)\n", "  aone(3) + bone(4)\n").replace(
             "import liba(aone);", "import liba(aone, broken);")
-        check_errors, result, _cg = build_multi_module_past_check(
+        result = compile_multi_module(
             tmp_path / "noisy",
             {"liba.vera": liba, "libb.vera": _LIBB, "main.vera": entry},
         )
-        assert [code for code, _ in check_errors] == ["E200"], check_errors
         assert result.diagnostics, (
             "the stream is empty, so this cell measures nothing"
         )
@@ -1996,40 +2005,25 @@ public fn broken(@Int -> @Int)
         against every other cell here: the sweeps run over
         programs whose diagnostics never mention an ADT, so nothing read
         the one thing the strip exists to change.  This drives a diagnostic
-        that DOES name the type — ``liba``'s ``Shape`` has an ``Array``
-        field, so codegen's structural-``Eq`` rail reports E613 about it —
-        on a program where ``Shape`` carries its link name.
-        Measured with the call deleted: ``Type 'mod$liba$Shape' does not
-        satisfy ability 'Eq'``.
-
-        Driven through ``build_multi_module_past_check`` because the
-        CHECKER refuses the comparison first (E243).  That is the point:
-        the codegen rail behind it still runs, still names the type, and
-        the reader must be shown their own spelling either way.
+        that DOES name the type — a `let` of ``Id<Shape>``, a parameterised
+        alias code generation has no representation for, so it skips the
+        function (E602) and names the binding's type — on a program the
+        check accepts, where ``Shape`` carries its link name.
+        Measured with the call deleted: ``let binding type
+        'mod$liba$Id<mod$liba$Shape>'``.
         """
-        liba = """\
-module liba;
-
-public data Shape { Sq(Array<Int>) }
-
-public fn aone(@Int -> @Int)
-  requires(true)
-  ensures(true)
-  effects(pure)
-{
-  if Sq([1]) == Sq([1]) then { @Int.0 } else { 0 }
-}
-"""
-        check_errors, result, _cg = build_multi_module_past_check(
-            tmp_path / "e613",
-            {"liba.vera": liba, "libb.vera": _LIBB, "main.vera": _ENTRY},
+        liba = _LIBA + _SKIPPED % "let @Id<Shape> = Sq(@Int.0);"
+        entry = _ENTRY.replace(
+            "import liba(aone);", "import liba(aone, broken);")
+        result = compile_multi_module(
+            tmp_path / "e602",
+            {"liba.vera": liba, "libb.vera": _LIBB, "main.vera": entry},
         )
-        assert check_errors, check_errors
-        e613 = [d for d in result.diagnostics if d.error_code == "E613"]
-        assert e613, [d.error_code for d in result.diagnostics]
+        e602 = [d for d in result.diagnostics if d.error_code == "E602"]
+        assert e602, [d.error_code for d in result.diagnostics]
         described = " ".join(
             (getattr(d, a, None) or "")
-            for d in e613 for a in ("description", "rationale", "fix")
+            for d in e602 for a in ("description", "rationale", "fix")
         )
         assert "Shape" in described, described[:200]
         assert "mod$" not in described, described[:200]

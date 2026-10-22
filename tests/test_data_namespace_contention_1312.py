@@ -30,9 +30,9 @@ from pathlib import Path
 
 from tests.module_fixture_helpers import (
     build_multi_module,
-    build_multi_module_past_check,
     module_value,
     refused_at_check as _refused_at_check,
+    refused_multi_module,
 )
 
 
@@ -518,7 +518,7 @@ class TestModuleRestatementDiamond:
             "  requires(true)\n  ensures(true)\n  effects(pure)\n"
             "{\n  bone(aone(6))\n}\n"
         )
-        check_errors, _result, _cg = build_multi_module_past_check(
+        check_errors = refused_multi_module(
             tmp_path / "ambiguous",
             {"liba.vera": _LIBA_RESTATE, "libb.vera": _LIBB_RESTATE,
              "main.vera": entry},

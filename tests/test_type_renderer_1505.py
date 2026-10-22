@@ -68,7 +68,7 @@ public fn f(@Array<{ @Int | @Int.0 > 0 }>, @Array<{ @Int | @Int.0 < 0 }> -> @Int
 
 
 def _descriptions(kind: str) -> list[str]:
-    verified = pipeline.verify(_HEAD, file="head.vera", past_check=True)
+    verified = pipeline.verify(_HEAD, file="head.vera")
     return [o.expr_text for o in verified.obligations if o.kind == kind]
 
 

@@ -46,6 +46,7 @@ import pytest
 
 from vera.codegen import execute
 from vera.codegen.api import WasmTrapError
+from tests import pipeline
 from tests.codegen_helpers import _compile, _run
 from tests.verifier_helpers import _verify
 
@@ -55,10 +56,14 @@ from tests.verifier_helpers import _verify
 # ---------------------------------------------------------------------
 
 
-def _error_codes(source: str) -> list[str]:
-    """Error-severity diagnostic codes from a compile (no exception raised)."""
-    result = _compile(source)
-    return [d.error_code for d in result.diagnostics if d.severity == "error"]
+def _refused_e243(source: str) -> None:
+    """A `==` on a type that is not Eq-derivable is refused at check (E243),
+    so code generation never translates it."""
+    compiled = pipeline.compile(source)
+    codes = {d.error_code for d in compiled.checked.errors}
+    assert codes == {"E243"}, [
+        (d.error_code, d.description[:70]) for d in compiled.checked.errors]
+    assert compiled.generator is None
 
 
 # Program bodies -------------------------------------------------------
@@ -436,24 +441,21 @@ public fn main(@Unit -> @Int)
 
 
 class TestNonEqCompositePostconditionCleanE613912:
-    def test_array_field_adt_postcond_is_clean_e613(self) -> None:
+    def test_array_field_adt_postcond_is_refused_at_check(self) -> None:
         # `@Box<Array<Int>>.result == MkBox(...)`: the argument is a CONCRETE
         # non-Eq type (`Array`), so the operand is NOT a free-type-var clone —
-        # it correctly reaches the structural-Eq dispatch, which is non-
-        # derivable.  Before the #912 postcondition backstop this escaped as an
-        # uncaught `AdtEqNotDerivableError` traceback; now it is a clean E613
-        # (the same the body path emits), never an unhandled exception.
+        # it reached the structural-Eq dispatch, which is non-derivable.
+        # Before the #912 postcondition backstop this escaped as an uncaught
+        # `AdtEqNotDerivableError` traceback; then a clean E613; now the check
+        # refuses it (E243).
         src = _BOX_GENERIC.format(
             ensures="@Box<Array<Int>>.result == MkBox(@Array<Int>.0)")
-        codes = _error_codes(src)
-        assert "E613" in codes, f"expected E613, got {codes}"
+        _refused_e243(src)
 
-    def test_tuple_postcond_is_clean_e613(self) -> None:
+    def test_tuple_postcond_is_refused_at_check(self) -> None:
         # `Tuple` is intentionally non-Eq (spec §9.8), so a `Tuple<...>` `==` in
-        # a postcondition is non-derivable.  The backstop turns the previously
-        # uncaught crash into a clean E613 — pinned so the postcondition path
-        # keeps parity with the body path's handling.
+        # a postcondition is non-derivable: the backstop turned the previously
+        # uncaught crash into a clean E613, and the check refuses it now (E243).
         src = _TUPLE_POSTCOND.format(
             ensures="@Tuple<Int, Int>.result == Tuple(@Int.0, @Int.0)")
-        codes = _error_codes(src)
-        assert "E613" in codes, f"expected E613, got {codes}"
+        _refused_e243(src)

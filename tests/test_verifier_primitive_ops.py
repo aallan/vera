@@ -9,7 +9,6 @@ from tests.verifier_helpers import (
     _verify,
     _verify_err,
     _verify_ok,
-    _verify_user_effect,
 )
 
 
@@ -381,24 +380,20 @@ private fn compound_shadow(@Int -> @Int)
         """A match arm binding over an UNTRANSLATABLE scrutinee (an effect op)
         must shadow its pattern slots, so a primitive op in the arm falls to
         Tier-3 — never discharged against a stale same-name outer slot.
-        Without it, `match Source.next(()) { Some(@Int) -> 1 / @Int.0 }` under
+        Without it, `match get(()) { Some(@Int) -> 1 / @Int.0 }` under
         `requires(@Int.0 != 0)` silently verifies `1 / @Int.0` against the
         *outer* param's `!= 0` while the matched field can be 0 — a silent
         false-discharge (PR #778 review, outside-diff; the match-arm analogue
         of the untranslatable-`let` shadow, mirroring `_fresh_pattern_env`).
-        No built-in operation returns an `Option<Int>`, so the scrutinee is a
-        user-declared effect's, measured past the check (E340, #1681)."""
-        result = _verify_user_effect("""
-effect Source {
-  op next(Unit -> Option<Int>);
-}
-
+        The scrutinee is a `State<Option<Int>>` read, an operation's result
+        the SMT layer cannot translate."""
+        result = _verify("""
 private fn opaque_match(@Int -> @Int)
   requires(@Int.0 != 0)
   ensures(true)
-  effects(<Source>)
+  effects(<State<Option<Int>>>)
 {
-  match Source.next(()) {
+  match get(()) {
     Some(@Int) -> 1 / @Int.0,
     None -> 1
   }

@@ -12,7 +12,7 @@ What is still refused is a name some namespace can name twice: a module
 importing two dependencies that each export ``gen`` would resolve its own
 bare ``gen`` to one of them, and spec §8.5.2.2 refuses the name in that
 namespace (E155, at check, issue 1304), asserted through
-:func:`~tests.module_fixture_helpers.build_multi_module_past_check`.
+:func:`~tests.module_fixture_helpers.refused_multi_module`.
 
 Every expected value is the DECLARING module's own answer, taken from the
 standalone oracle — each library compiled alone with its own driver — never
@@ -32,8 +32,8 @@ from tests import pipeline
 from tests.codegen_helpers import wat_fn_names
 from tests.module_fixture_helpers import (
     build_multi_module,
-    build_multi_module_past_check,
     module_value,
+    refused_multi_module,
 )
 
 BASE_ANSWER = 111
@@ -373,7 +373,6 @@ public fn main(@Unit -> @Int)
         }
         compiled = pipeline.compile(
             pipeline.write_tree(tmp_path, files), root=tmp_path,
-            past_check=True,
         )
         _ = compiled.parsed.program  # raises the parse or transform error
         gen = compiled.generator
@@ -487,11 +486,10 @@ public forall<T> fn gen(@T -> @Int)
         """Both public, both in filter, both directly imported: both own the
         entry's bare name, so both clones really do mangle to ``gen$Bool``.
 
-        Refused TWICE since #1304, and both are asserted.  The entry
-        namespace can name both suppliers, so the checker rejects the
-        program (E155) before codegen sees it; the rail behind that is still
-        driven here, because a rail nothing exercises is one that can rot
-        into a relaxation nobody measures.
+        Refused at check since #1304: the entry namespace can name both
+        suppliers, so the checker rejects the program (E155) before code
+        generation sees it, and no stage after the check runs on a program
+        it refuses.
         """
         main = """\
 import liba(gen);
@@ -503,16 +501,13 @@ public fn main(@Unit -> @Int)
   effects(pure)
 { gen(true) }
 """
-        check_errors, result, cg_errors = build_multi_module_past_check(
+        check_errors = refused_multi_module(
             tmp_path,
             {"liba.vera": self._LIB_A, "libb.vera": self._LIB_B,
              "main.vera": main},
         )
         assert _errors(check_errors, "E155"), (
             f"the checker let two bare-name owners through: {check_errors}"
-        )
-        assert any("'gen' is not defined" in d for _, d in cg_errors), (
-            f"the rail let two bare-name owners through: {cg_errors}"
         )
 
     def test_a_namespace_seeing_both_still_collides(
@@ -535,8 +530,8 @@ public fn main(@Unit -> @Int)
         pick left to be nondeterministic; the flap is pinned dead in
         ``tests/test_ambiguous_import_refusal_1304.py``.
 
-        Asserted at both layers for the reason above: the checker refuses
-        the program, and the rail behind it must still be refusing it.
+        Asserted at the check, which refuses the program; no stage after it
+        runs on a program it refuses.
         """
         midc = """\
 module midc;
@@ -559,16 +554,13 @@ public fn main(@Unit -> @Int)
   effects(pure)
 { doorc(true) }
 """
-        check_errors, result, cg_errors = build_multi_module_past_check(
+        check_errors = refused_multi_module(
             tmp_path,
             {"liba.vera": self._LIB_A, "libb.vera": self._LIB_B,
              "midc.vera": midc, "main.vera": main},
         )
         assert _errors(check_errors, "E155"), (
             f"an ambiguous bare name was let through: {check_errors}"
-        )
-        assert any("'gen' is not defined" in d for _, d in cg_errors), (
-            f"an ambiguous bare name was let through: {cg_errors}"
         )
 
     def test_a_generic_beside_a_non_generic_still_collides(
@@ -818,7 +810,7 @@ public fn main(@Unit -> @Int)
   liba::pick(1) + libb::pick(1)
 }
 """
-        check_errors, _result, _cg = build_multi_module_past_check(
+        check_errors = refused_multi_module(
             tmp_path / "no-local",
             {"liba.vera": _LIBA_PICK, "libb.vera": _LIBB_PICK,
              "main.vera": entry},
@@ -847,9 +839,9 @@ public fn main(@Unit -> @Int)
   pick(1) + libb::pick(1)
 }
 """
-        errors, _result, cg_errors = build_multi_module_past_check(
+        errors = refused_multi_module(
             tmp_path / "real-collision",
             {"liba.vera": _LIBA_PICK, "libb.vera": _LIBB_PICK,
              "main.vera": entry},
         )
-        assert "E155" in [c for c, _ in errors], (errors, cg_errors)
+        assert "E155" in [c for c, _ in errors], errors

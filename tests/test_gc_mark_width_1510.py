@@ -929,8 +929,7 @@ def test_a_worklist_smaller_than_the_shadow_stack_is_refused(
                         assembly.GC_STACK_SIZE - 4)
     with pytest.raises(CodegenInvariantError,
                        match="smaller than the shadow stack"):
-        pipeline.compile(_program("array", 10, 1), file="small_wl.vera",
-                         checked=False).result
+        pipeline.compile(_program("array", 10, 1), file="small_wl.vera").result
 
 
 def test_a_worklist_the_size_of_the_shadow_stack_still_marks(

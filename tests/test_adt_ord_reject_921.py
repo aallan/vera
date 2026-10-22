@@ -61,10 +61,8 @@ from vera.verifier import VerifyResult
 
 
 def _verify(source: str) -> VerifyResult:
-    """Type-check and verify *source*, past a check refusal: the traceback
-    tests below verify programs the checker refuses (E242), to pin that the
-    verifier does not crash on one."""
-    return pipeline.verify(source, past_check=True).result
+    """Type-check and verify *source*."""
+    return pipeline.verify(source).result
 
 
 def _error_descs(source: str) -> list[str]:
@@ -207,9 +205,9 @@ public fn f(@Box -> @Ordering)
 class TestVerifierNoTracebackOnAdtCompare921:
     def test_compare_adt_in_ensures_no_traceback(self) -> None:
         # RED on base: verify() raised TypeError('<' not supported between
-        # instances of 'DatatypeRef').  The checker gate now stops it earlier,
-        # but the direct verify() API must not crash even if reached: the
-        # smt.py guard demotes an ADT ordering to Tier 3 rather than raising.
+        # instances of 'DatatypeRef').  The checker refuses an ordering on a
+        # user ADT (E242), and verification runs only on a program the check
+        # accepts, so the verifier never meets one.
         src = """
 private data Box { MkBox(Int) }
 
@@ -221,9 +219,10 @@ public fn f(@Box -> @Ordering)
   compare(@Box.0, @Box.0)
 }
 """
-        # Must not raise; a clean VerifyResult (errors, no Python traceback).
-        result = _verify(src)
-        assert result is not None
+        verified = pipeline.verify(src)
+        assert {d.error_code for d in verified.checked.errors} == {"E242"}, [
+            (d.error_code, d.description[:70]) for d in verified.checked.errors]
+        assert not verified.ran
 
 
 # =====================================================================

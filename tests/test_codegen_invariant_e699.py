@@ -39,7 +39,7 @@ public fn f(-> @Int)
 
 
 def _compile_source(source: str):
-    return pipeline.compile(source, file="fixture.vera", checked=False).result
+    return pipeline.compile(source, file="fixture.vera").result
 
 
 def test_codegen_invariant_error_surfaces_as_e699(monkeypatch) -> None:

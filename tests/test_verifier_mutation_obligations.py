@@ -7,7 +7,6 @@ from __future__ import annotations
 
 from tests.verifier_helpers import (
     _verify,
-    _verify_user_effect,
 )
 
 
@@ -335,14 +334,13 @@ private fn sdiv_387(@Int, @Int -> @Int)
             s.tier1_verified, s.tier3_runtime, s.total)
 
     def test_div_two_tier3_summary_counts(self) -> None:
-        result = _verify_user_effect("""
-effect Src387 { op g(Unit -> Option<Int>); }
+        result = _verify("""
 private fn d1_387(@Int -> @Int)
-  requires(@Int.0 != 0) ensures(true) effects(<Src387>)
-{ match Src387.g(()) { Some(@Int) -> 1 / @Int.0, None -> 1 } }
+  requires(@Int.0 != 0) ensures(true) effects(<State<Option<Int>>>)
+{ match get(()) { Some(@Int) -> 1 / @Int.0, None -> 1 } }
 private fn d2_387(@Int -> @Int)
-  requires(@Int.0 != 0) ensures(true) effects(<Src387>)
-{ match Src387.g(()) { Some(@Int) -> 1 / @Int.0, None -> 1 } }
+  requires(@Int.0 != 0) ensures(true) effects(<State<Option<Int>>>)
+{ match get(()) { Some(@Int) -> 1 / @Int.0, None -> 1 } }
 """)
         s = result.summary
         divs = [o for o in result.obligations if o.kind == "div_zero"]
@@ -362,14 +360,13 @@ private fn ssub_387(@Nat, @Nat -> @Nat)
             s.tier1_verified, s.tier3_runtime, s.total)
 
     def test_sub_two_tier3_summary_counts(self) -> None:
-        result = _verify_user_effect("""
-effect SrcN387 { op g(Unit -> Option<Nat>); }
+        result = _verify("""
 private fn s1_387(@Nat -> @Nat)
-  requires(true) ensures(true) effects(<SrcN387>)
-{ match SrcN387.g(()) { Some(@Nat) -> @Nat.0 - @Nat.1, None -> 0 } }
+  requires(true) ensures(true) effects(<State<Option<Nat>>>)
+{ match get(()) { Some(@Nat) -> @Nat.0 - @Nat.1, None -> 0 } }
 private fn s2_387(@Nat -> @Nat)
-  requires(true) ensures(true) effects(<SrcN387>)
-{ match SrcN387.g(()) { Some(@Nat) -> @Nat.0 - @Nat.1, None -> 0 } }
+  requires(true) ensures(true) effects(<State<Option<Nat>>>)
+{ match get(()) { Some(@Nat) -> @Nat.0 - @Nat.1, None -> 0 } }
 """)
         s = result.summary
         subs = [o for o in result.obligations if o.kind == "nat_sub"]
@@ -773,7 +770,7 @@ private fn dest_asym_387(@Pos387, @Int -> @Nat)
         assert o.fn_name == "dest_asym_387", o.fn_name
 
     def test_destructure_unprojectable_guarded_tier3(self) -> None:
-        """``let Tuple<@Nat,@Nat> = TupSrc387.mk(())`` where the source is an
+        """``let Tuple<@Nat,@Nat> = get(())`` where the source is an
         EFFECT OPERATION returning ``Tuple<Int,Int>`` (a genuinely opaque value
         the SMT layer cannot project as a datatype) → the ``sort is None``
         branch: 2 GUARDED Tier-3 nat_bind obligations (codegen runtime-guards
@@ -788,12 +785,11 @@ private fn dest_asym_387(@Pos387, @Int -> @Nat)
         ``test_nonliteral_tuple_destructure_obligates_each_field``).  Using the
         effect op keeps this test pinned to the unprojectable Tier-3 path
         regardless of argument shape."""
-        result = _verify_user_effect("""
-effect TupSrc387 { op mk(Unit -> Tuple<Int, Int>); }
+        result = _verify("""
 private fn dest_t3_387(@Unit -> @Nat)
-  requires(true) ensures(true) effects(<TupSrc387>)
+  requires(true) ensures(true) effects(<State<Tuple<Int, Int>>>)
 {
-  let Tuple<@Nat, @Nat> = TupSrc387.mk(());
+  let Tuple<@Nat, @Nat> = get(());
   @Nat.0 + @Nat.1
 }
 """)
@@ -846,11 +842,10 @@ private fn dest_none_387(@Int, @Int -> @Int)
         ``Option<Int>`` → the unprojectable nat tail (3887-3898): a GUARDED
         Tier-3 nat_bind (codegen guards the sub-pattern bind at run time).
         Pins ``tier3`` + ``tier3_runtime`` and that it is NOT an error."""
-        result = _verify_user_effect("""
-effect OptSrc387 { op mk(Unit -> Option<Int>); }
+        result = _verify("""
 private fn sp_opaque_nat_387(@Unit -> @Nat)
-  requires(true) ensures(true) effects(<OptSrc387>)
-{ match OptSrc387.mk(()) { Some(@Nat) -> @Nat.0, None -> 0 } }
+  requires(true) ensures(true) effects(<State<Option<Int>>>)
+{ match get(()) { Some(@Nat) -> @Nat.0, None -> 0 } }
 """)
         assert [d for d in result.diagnostics if d.severity == "error"] == [], [
             d.description for d in result.diagnostics if d.severity == "error"]
@@ -871,12 +866,11 @@ private fn sp_opaque_nat_387(@Unit -> @Nat)
         leg.  A mutation dropping the site from
         ``_REFINED_BIND_GUARDED_SITES`` puts it back on the unguarded one and
         under-counts a runtime check that does fire."""
-        result = _verify_user_effect("""
+        result = _verify("""
 type Pos387 = { @Int | @Int.0 > 0 };
-effect OptSrc2387 { op mk(Unit -> Option<Int>); }
 private fn sp_opaque_ref_387(@Unit -> @Int)
-  requires(true) ensures(true) effects(<OptSrc2387>)
-{ match OptSrc2387.mk(()) { Some(@Pos387) -> @Pos387.0, None -> 1 } }
+  requires(true) ensures(true) effects(<State<Option<Int>>>)
+{ match get(()) { Some(@Pos387) -> @Pos387.0, None -> 1 } }
 """)
         assert [d for d in result.diagnostics if d.severity == "error"] == [], [
             d.description for d in result.diagnostics if d.severity == "error"]

@@ -65,7 +65,7 @@ def _errors(source: str) -> list[str]:
 def _eq_alias_adt(alias_decl: str, ty: str, pay_a: str, pay_b: str) -> str:
     """Two ``@{ty}`` slots (``ty`` an alias of a whole ADT) compared by ``==``."""
     return f"""\
-data Box<T> {{ MkB(Int, T, Int) }}
+private data Box<T> {{ MkB(Int, T, Int) }}
 {alias_decl}
 
 private fn a(-> @{ty})
@@ -164,7 +164,7 @@ def test_eq_alias_chain_of_generic_adt_distinct() -> None:
 
 
 _EQ_ALIAS_NON_GENERIC = """\
-data P { MkP(Int, Int) }
+private data P { MkP(Int, Int) }
 type PA = P;
 
 private fn a(-> @PA)
@@ -191,7 +191,7 @@ def test_eq_alias_of_non_generic_adt_equal() -> None:
 
 
 _EQ_ALIAS_NON_GENERIC_DISTINCT = """\
-data P { MkP(Int, Int) }
+private data P { MkP(Int, Int) }
 type PA = P;
 
 private fn mk(@Int -> @PA)
@@ -215,7 +215,7 @@ def test_eq_alias_of_non_generic_adt_distinct() -> None:
 # -- #1085 controls: the direct (un-aliased) spelling was already structural.
 
 _EQ_DIRECT_CONTROL = """\
-data Box<T> { MkB(Int, T, Int) }
+private data Box<T> { MkB(Int, T, Int) }
 
 private fn a(-> @Box<Int>)
   requires(true) ensures(true) effects(pure)
@@ -249,25 +249,26 @@ def test_control_eq_direct_box_int() -> None:
 def _forall_eq_alias(alias_decl: str, arg: str, pay_a: str, pay_b: str) -> str:
     """`same(a(), b())` with `same : forall<T where Eq<T>>`, T inferred to the
     alias `arg` from a `@Box<arg>` argument."""
+    eff = "<Async>" if "async(" in pay_a + pay_b else "pure"
     return f"""\
-data Box<T> {{ MkB(T) }}
+private data Box<T> {{ MkB(T) }}
 {alias_decl}
 
-forall<T where Eq<T>>
+private forall<T where Eq<T>>
 fn same(@Box<T>, @Box<T> -> @Bool)
   requires(true) ensures(true) effects(pure)
 {{ @Box<T>.1 == @Box<T>.0 }}
 
 private fn a(-> @Box<{arg}>)
-  requires(true) ensures(true) effects(pure)
+  requires(true) ensures(true) effects({eff})
 {{ MkB({pay_a}) }}
 
 private fn b(-> @Box<{arg}>)
-  requires(true) ensures(true) effects(pure)
+  requires(true) ensures(true) effects({eff})
 {{ MkB({pay_b}) }}
 
 public fn f(-> @Bool)
-  requires(true) ensures(true) effects(pure)
+  requires(true) ensures(true) effects({eff})
 {{ same(a(), b()) }}
 """
 
@@ -325,11 +326,11 @@ def test_forall_eq_alias_of_whole_adt_equal() -> None:
     """T := MyPair (`type MyPair = Pair;`, a whole-ADT alias): the gate grounds
     it to the registered ADT and derives Eq structurally."""
     src = """\
-data Pair { MkPair(Int, Int) }
-data Box<T> { MkB(T) }
+private data Pair { MkPair(Int, Int) }
+private data Box<T> { MkB(T) }
 type MyPair = Pair;
 
-forall<T where Eq<T>>
+private forall<T where Eq<T>>
 fn same(@Box<T>, @Box<T> -> @Bool)
   requires(true) ensures(true) effects(pure)
 { @Box<T>.1 == @Box<T>.0 }
@@ -356,10 +357,10 @@ public fn f(-> @Bool)
 # -- lockstep with the `$eq` generator (the #732 invariant) at THIS entry point.
 
 _FORALL_EQ_NON_EQ_ALIAS = """\
-data Box<T> { MkB(T) }
+private data Box<T> { MkB(T) }
 type BadArr = Array<Int>;
 
-forall<T where Eq<T>>
+private forall<T where Eq<T>>
 fn same(@Box<T>, @Box<T> -> @Bool)
   requires(true) ensures(true) effects(pure)
 { @Box<T>.1 == @Box<T>.0 }
@@ -393,14 +394,15 @@ def test_forall_eq_non_eq_alias_still_rejected() -> None:
 # =====================================================================
 
 def _show_future(alias_decl: str, ty: str, pay: str, expected: str) -> str:
+    eff = "<Async>" if "async(" in pay else "pure"
     return f"""\
 {alias_decl}
 private fn mkf(-> @{ty})
-  requires(true) ensures(true) effects(pure)
+  requires(true) ensures(true) effects({eff})
 {{ {pay} }}
 
 public fn f(-> @Bool)
-  requires(true) ensures(true) effects(pure)
+  requires(true) ensures(true) effects({eff})
 {{
   let @{ty} = mkf();
   eq(show(@{ty}.0), "{expected}")
@@ -435,11 +437,11 @@ _HASH_FUTURE_EQUAL = """\
 type FI = Future<Int>;
 
 private fn mkf(@Int -> @FI)
-  requires(true) ensures(true) effects(pure)
+  requires(true) ensures(true) effects(<Async>)
 { async(@Int.0) }
 
 public fn f(-> @Bool)
-  requires(true) ensures(true) effects(pure)
+  requires(true) ensures(true) effects(<Async>)
 {
   let @FI = mkf(5);
   let @FI = mkf(5);
@@ -458,11 +460,11 @@ _HASH_FUTURE_DISTINCT = """\
 type FI = Future<Int>;
 
 private fn mkf(@Int -> @FI)
-  requires(true) ensures(true) effects(pure)
+  requires(true) ensures(true) effects(<Async>)
 { async(@Int.0) }
 
 public fn f(-> @Bool)
-  requires(true) ensures(true) effects(pure)
+  requires(true) ensures(true) effects(<Async>)
 {
   let @FI = mkf(4294967303);
   let @FI = mkf(7);
@@ -479,11 +481,11 @@ def test_hash_aliased_future_distinct_payload_i64() -> None:
 
 _HASH_BARE_FUTURE = """\
 private fn mkf(@Int -> @Future<Int>)
-  requires(true) ensures(true) effects(pure)
+  requires(true) ensures(true) effects(<Async>)
 { async(@Int.0) }
 
 public fn f(-> @Bool)
-  requires(true) ensures(true) effects(pure)
+  requires(true) ensures(true) effects(<Async>)
 {
   let @Future<Int> = mkf(5);
   let @Future<Int> = mkf(5);
@@ -539,11 +541,11 @@ def test_control_show_plain_int() -> None:
 
 _SHOW_BARE_COMPOSITE_FUTURE = """\
 private fn mkf(-> @Future<Option<Int>>)
-  requires(true) ensures(true) effects(pure)
+  requires(true) ensures(true) effects(<Async>)
 { async(Some(5)) }
 
 public fn f(-> @Bool)
-  requires(true) ensures(true) effects(pure)
+  requires(true) ensures(true) effects(<Async>)
 {
   let @Future<Option<Int>> = mkf();
   eq(show(@Future<Option<Int>>.0), "Some(5)")
@@ -564,11 +566,11 @@ _SHOW_ALIASED_COMPOSITE_FUTURE = """\
 type FOI = Future<Option<Int>>;
 
 private fn mkf(-> @FOI)
-  requires(true) ensures(true) effects(pure)
+  requires(true) ensures(true) effects(<Async>)
 { async(Some(5)) }
 
 public fn f(-> @Bool)
-  requires(true) ensures(true) effects(pure)
+  requires(true) ensures(true) effects(<Async>)
 {
   let @FOI = mkf();
   eq(show(@FOI.0), "Some(5)")
@@ -585,11 +587,11 @@ _HASH_COMPOSITE_FUTURE_DISTINCT = """\
 type FOI = Future<Option<Int>>;
 
 private fn mkf(@Int -> @FOI)
-  requires(true) ensures(true) effects(pure)
+  requires(true) ensures(true) effects(<Async>)
 { async(Some(@Int.0)) }
 
 public fn f(-> @Bool)
-  requires(true) ensures(true) effects(pure)
+  requires(true) ensures(true) effects(<Async>)
 {
   let @FOI = mkf(5);
   let @FOI = mkf(9);
@@ -606,11 +608,11 @@ def test_hash_aliased_composite_future_payload_sensitive() -> None:
 
 _HASH_COMPOSITE_FUTURE_EQUAL = """\
 private fn mkf(@Int -> @Future<Option<Int>>)
-  requires(true) ensures(true) effects(pure)
+  requires(true) ensures(true) effects(<Async>)
 { async(Some(@Int.0)) }
 
 public fn f(-> @Bool)
-  requires(true) ensures(true) effects(pure)
+  requires(true) ensures(true) effects(<Async>)
 {
   let @Future<Option<Int>> = mkf(5);
   let @Future<Option<Int>> = mkf(5);
@@ -627,7 +629,7 @@ def test_hash_bare_composite_future_equal_payload() -> None:
 # -- #1091: show/hash of an alias of a WHOLE ADT.
 
 _SHOW_ALIAS_WHOLE_ADT_NONGEN = """\
-data Box { MkB(Int, Int) }
+private data Box { MkB(Int, Int) }
 type MyBox = Box;
 
 private fn a(-> @MyBox)
@@ -652,7 +654,7 @@ def test_show_alias_of_whole_adt_non_generic() -> None:
 
 
 _SHOW_ALIAS_WHOLE_ADT_GENERIC = """\
-data Box<T> { MkB(Int, T, Int) }
+private data Box<T> { MkB(Int, T, Int) }
 type MB = Box<Int>;
 
 private fn a(-> @MB)
@@ -676,7 +678,7 @@ def test_show_alias_of_whole_adt_generic() -> None:
 
 
 _HASH_ALIAS_WHOLE_ADT_DISTINCT = """\
-data Box<T> { MkB(Int, T, Int) }
+private data Box<T> { MkB(Int, T, Int) }
 type MB = Box<Int>;
 
 private fn mk(@Int -> @MB)
@@ -707,11 +709,11 @@ _SHOW_ARRAY_OF_ALIASED_FUTURE_SLOT = """\
 type FI = Future<Int>;
 
 private fn mkf(-> @FI)
-  requires(true) ensures(true) effects(pure)
+  requires(true) ensures(true) effects(<Async>)
 { async(5) }
 
 public fn f(-> @Bool)
-  requires(true) ensures(true) effects(pure)
+  requires(true) ensures(true) effects(<Async>)
 {
   let @Array<FI> = [mkf(), mkf()];
   eq(show(@Array<FI>.0), "[5, 5]")
@@ -731,11 +733,11 @@ _SHOW_ARRAYLIT_OF_ALIASED_FUTURE_SLOTS = """\
 type FI = Future<Int>;
 
 private fn mkf(-> @FI)
-  requires(true) ensures(true) effects(pure)
+  requires(true) ensures(true) effects(<Async>)
 { async(5) }
 
 public fn f(-> @Bool)
-  requires(true) ensures(true) effects(pure)
+  requires(true) ensures(true) effects(<Async>)
 {
   let @FI = mkf();
   eq(show([@FI.0, @FI.0]), "[5, 5]")
@@ -754,11 +756,11 @@ _HASH_ARRAY_OF_ALIASED_FUTURE_DISTINCT = """\
 type FI = Future<Int>;
 
 private fn mkf(@Int -> @FI)
-  requires(true) ensures(true) effects(pure)
+  requires(true) ensures(true) effects(<Async>)
 { async(@Int.0) }
 
 public fn f(-> @Bool)
-  requires(true) ensures(true) effects(pure)
+  requires(true) ensures(true) effects(<Async>)
 {
   let @Array<FI> = [mkf(4294967303)];
   let @Array<FI> = [mkf(7)];
@@ -783,11 +785,11 @@ _SHOW_TUPLE_ALIASED_FUTURE_COMPONENT = """\
 type FI = Future<Int>;
 
 private fn mkf(-> @FI)
-  requires(true) ensures(true) effects(pure)
+  requires(true) ensures(true) effects(<Async>)
 { async(5) }
 
 public fn f(-> @Bool)
-  requires(true) ensures(true) effects(pure)
+  requires(true) ensures(true) effects(<Async>)
 {
   let @FI = mkf();
   eq(show(Tuple(@FI.0, 42)), "(5, 42)")
@@ -800,15 +802,15 @@ def test_control_show_tuple_aliased_future_component() -> None:
 
 
 _SHOW_CTOR_ALIASED_FUTURE_ARG = """\
-data Box<T> { MkB(T) }
+private data Box<T> { MkB(T) }
 type FI = Future<Int>;
 
 private fn mkf(-> @FI)
-  requires(true) ensures(true) effects(pure)
+  requires(true) ensures(true) effects(<Async>)
 { async(5) }
 
 public fn f(-> @Bool)
-  requires(true) ensures(true) effects(pure)
+  requires(true) ensures(true) effects(<Async>)
 {
   let @FI = mkf();
   eq(show(MkB(@FI.0)), "MkB(5)")
@@ -870,7 +872,7 @@ def test_show_refinement_int() -> None:
 
 
 _EQ_REFINEMENT_OVER_ADT = """\
-data Box<T> { MkB(Int, T, Int) }
+private data Box<T> { MkB(Int, T, Int) }
 type NB = { @Box<Int> | true };
 
 private fn a(-> @NB)
@@ -895,7 +897,7 @@ def test_eq_refinement_over_whole_adt_equal() -> None:
 
 
 _EQ_REFINEMENT_OVER_ADT_DISTINCT = """\
-data Box<T> { MkB(Int, T, Int) }
+private data Box<T> { MkB(Int, T, Int) }
 type NB = { @Box<Int> | true };
 
 private fn mk(@Int -> @NB)

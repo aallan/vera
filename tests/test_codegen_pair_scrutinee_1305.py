@@ -187,47 +187,22 @@ public fn main(@Unit -> @Int)
         assert _run(source, fn="main") == 2
 
 
-def _assert_refused(source: str, arm: str, entry: str = "main") -> None:
-    """The match arm *arm* is refused by a LOCATED skip, and nothing runs.
+def _assert_refused(source: str, arm: str) -> None:
+    """The match arm *arm* is refused at check, at its own line (E314): its
+    pattern cannot match the scrutinee's type, so no module is built.
 
-    Three assertions, because the failure modes they catch are different
-    and a subset of them passes on a broken compiler:
-
-    * the module still assembles (no ``i32_pair`` local, no WAT failure) —
-      the #1305 symptom;
-    * a diagnostic names the pair representation AT the offending arm's own
-      line — a skip located on the enclosing function would read as if the
-      whole body were unsupported;
-    * the entry point does not survive, so no value can be returned.  This
-      is the one that separates a refusal from the silent answer: without
-      it, the ``true ->`` arms below still export a ``main`` that returns
-      100 from a heap pointer read as a truth value.
+    The location is what is kept of code generation's located skip, which a
+    refused program no longer reaches: a refusal located on the enclosing
+    function would read as if the whole body were unsupported.
     """
-    result = _compile(source)
-    assert not _PAIR_LOCAL_RE.search(result.wat), (
-        f"emitted an i32_pair local: {_PAIR_LOCAL_RE.findall(result.wat)}")
-    wat_failures = [
-        d for d in result.diagnostics if "WAT compilation failed" in d.description
-    ]
-    assert not wat_failures, (
-        f"module does not assemble: {[d.description[:120] for d in wat_failures]}")
-
     want_line = next(
         i for i, ln in enumerate(source.splitlines(), 1) if arm in ln)
-    located = [
-        d for d in result.diagnostics
-        if "(ptr, len) pair" in d.description
-        and d.location is not None and d.location.line == want_line
-    ]
-    assert located, (
-        f"expected a pair-representation skip located at line {want_line} "
-        f"({arm!r}); got "
-        f"{[(d.location.line if d.location else None, d.description[:90]) for d in result.diagnostics]}"
-    )
-    assert entry not in result.exports, (
-        f"{entry!r} survived the refusal and is still exported "
-        f"(exports={result.exports}) — the arm was lowered, not refused"
-    )
+    errors = pipeline.check(source).errors
+    assert {d.error_code for d in errors} == {"E314"}, [
+        (d.error_code, d.description[:90]) for d in errors]
+    assert any(d.location.line == want_line for d in errors), (
+        f"expected the refusal at line {want_line} ({arm!r}); got "
+        f"{[(d.location.line, d.description[:90]) for d in errors]}")
 
 
 # Every pattern kind that is NOT a wildcard or a binding, over both pair
@@ -262,7 +237,9 @@ class TestPairScrutineeGuardIsAWhitelist:
     late-failure variant: ``vera compile`` exited 0 and shipped a ``.wasm``
     that died at instantiation with no diagnostic and no E-code.
 
-    So the guard is a whitelist, and these cells are what makes it one.
+    So the guard is a whitelist, and these cells are what made it one; the
+    check refuses each of these arms now (E314), at its own line, so no
+    program reaches the guard with one.
     What the whitelist admits is "the forms that HAVE a lowering", which is
     why #1380 could add the string literal over a String scrutinee to it
     without weakening the rule: the arm compares two (ptr, len) pairs
@@ -301,7 +278,7 @@ public fn main(@Unit -> @Int)
 
 
 class TestIssueRepro:
-    """The issue's programs: no invalid WAT, and a located refusal.
+    """The issue's programs: a located refusal, at check now.
 
     ``Some``/``None`` over an ``Array<String>`` is not a lowerable match —
     a pair has no tag word.  What must not happen is what happened at the
@@ -360,8 +337,7 @@ public fn key_count(@Json -> @Int)
     def test_module_assembles_and_the_skip_is_located(
         self, arm: str, source: str,
     ) -> None:
-        entry = "key_blob" if "key_blob" in source else "key_count"
-        _assert_refused(source, arm, entry=entry)
+        _assert_refused(source, arm)
 
 
 def _push_pattern(local: str = r"\d+") -> re.Pattern[str]:

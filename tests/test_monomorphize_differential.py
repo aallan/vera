@@ -393,7 +393,7 @@ def _codegen_emitted(
     *program* is *source* as the caller parsed it; the compile parses
     *source* under the same label, which yields an equal program.
     """
-    compiled = pipeline.compile(source, file=path, checked=False)
+    compiled = pipeline.compile(source, file=path)
     _ = compiled.result  # raises the parse or transform error
     assert compiled.parsed.program == program, (
         "the program handed in is not the one its source parses to")
@@ -462,7 +462,7 @@ def _discovery_scopes(
         # Code generation compiles *source*'s own parse, under the same
         # label, which equals *program*; the verifier registers *program*.
         compiled = pipeline.compile(
-            source, file=path, modules=modules or [], checked=False,  # type: ignore[arg-type]
+            source, file=path, modules=modules or [],  # type: ignore[arg-type]
         )
         _ = compiled.result  # raises the parse or transform error
         assert compiled.parsed.program == program, (
@@ -515,7 +515,7 @@ def _cross_module_sets(
     ``_instances`` (what per-monomorphization verification actually consumes), not
     a fresh recompute, so a registration-seam regression surfaces here."""
     compiled = pipeline.compile(
-        main_src, file="fixture.vera", modules=modules, checked=False,  # type: ignore[arg-type]
+        main_src, file="fixture.vera", modules=modules,  # type: ignore[arg-type]
     )
     _ = compiled.result  # raises the parse or transform error
     codegen_set = getattr(compiled.generator, "_emitted_instances", set())
@@ -718,9 +718,9 @@ private fn mk(@Int -> @Option<Option<Decimal>>)
   requires(true) ensures(true) effects(pure)
 { Some(Some(decimal_from_int(@Int.0))) }
 
-private forall<VeraT> fn pick_last(@VeraT, @VeraT -> @VeraT)
+private forall<T> fn pick_last(@T, @T -> @T)
   requires(true) ensures(true) effects(pure)
-{ @VeraT.0 }
+{ @T.0 }
 
 public fn main(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
@@ -731,9 +731,9 @@ private fn mkr(@Int -> @Result<Option<Decimal>, String>)
   requires(true) ensures(true) effects(pure)
 { Ok(Some(decimal_from_int(@Int.0))) }
 
-private forall<VeraT> fn pick_last(@VeraT, @VeraT -> @VeraT)
+private forall<T> fn pick_last(@T, @T -> @T)
   requires(true) ensures(true) effects(pure)
-{ @VeraT.0 }
+{ @T.0 }
 
 public fn main(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
@@ -746,9 +746,9 @@ private fn mkb(@Int -> @Box<Decimal>)
   requires(true) ensures(true) effects(pure)
 { MkBox(decimal_from_int(@Int.0)) }
 
-private forall<VeraT> fn pick_last(@VeraT, @VeraT -> @VeraT)
+private forall<T> fn pick_last(@T, @T -> @T)
   requires(true) ensures(true) effects(pure)
-{ @VeraT.0 }
+{ @T.0 }
 
 public fn main(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
@@ -828,7 +828,7 @@ def _call_rewrite_desync(source: str) -> tuple[set[str], list[str]]:
 
     CallsMixin._resolve_generic_call = _spy  # type: ignore[assignment]
     try:
-        compiled = pipeline.compile(source, file="fixture.vera", checked=False)
+        compiled = pipeline.compile(source, file="fixture.vera")
     finally:
         CallsMixin._resolve_generic_call = orig  # type: ignore[assignment]
     _ = compiled.result  # raises the parse or transform error
@@ -1659,7 +1659,7 @@ def test_generic_typearg_from_imported_function_return_is_discovered() -> None:
         "{ @T.0 }\n\n"
         "public fn main(@Unit -> @Int)\n"
         "  requires(true) ensures(true) effects(pure)\n"
-        "{ id_g(make_int(@Unit.0)) }\n"
+        "{ id_g(make_int(())) }\n"
     )
 
     mod_a = _resolved_module(("a",), a_src)
@@ -1735,7 +1735,7 @@ def test_imported_private_shadow_fn_return_stays_symmetric() -> None:
         "{ @T.0 }\n\n"
         "public fn main(@Unit -> @Int)\n"
         "  requires(true) ensures(true) effects(pure)\n"
-        "{ id_g(mk(@Unit.0)) }\n"
+        "{ id_g(mk(())) }\n"
     )
 
     mods = [_resolved_module(("a",), a_src), _resolved_module(("b",), b_src)]

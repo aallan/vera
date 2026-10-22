@@ -113,7 +113,6 @@ def _compile(source: str, module_text: str | None = None) -> CompileResult:
     """
     return pipeline.compile(
         source, file="fixture.vera", modules=_modules(module_text),
-        checked=False,
     ).result
 
 
@@ -511,7 +510,7 @@ public fn g(@Nat -> @Nat)
 def _decreases_status(source: str, module_text: str | None = None,
                       kind: str = "decreases") -> list[str]:
     result = pipeline.verify(
-        source, modules=_modules(module_text), past_check=True).result
+        source, modules=_modules(module_text)).result
     return [o.status for o in result.obligations if o.kind == kind]
 
 
@@ -1287,7 +1286,7 @@ def _refine_program(family: str, held: str | None) -> str:
 
 def _refine_verdict(source: str) -> tuple[list[str], list[str]]:
     """The `refine_bind` statuses and the error codes of one program."""
-    result = pipeline.verify(source, past_check=True).result
+    result = pipeline.verify(source).result
     return ([o.status for o in result.obligations if o.kind == "refine_bind"],
             [d.error_code for d in result.diagnostics
              if d.severity == "error"])
