@@ -428,8 +428,7 @@ jobs:
           # version-raising merge's can beat.  A tag with no published
           # Release is no rival.  A failed read stops the step (bash -e),
           # and so does an empty one, which gh's --paginate can return with
-          # exit 0: this repository always has Releases.  A partial read
-          # still decides, since the API lists Releases newest first.
+          # exit 0: this repository always has Releases.
           released="$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
             --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name | ltrimstr("v")')"
           if [ -z "$released" ]; then

@@ -545,10 +545,11 @@ class TestTheReleaseStartsWhenCiCompletes:
 
 
 #: gh as the release step calls it: the tag's read (the tag exists at the
-#: release commit), the listing of the Releases, whose records it runs
-#: through the step's own `--jq` with `jq` (`STUB_FAIL` fails the listing
-#: after its first page, as gh does when a later page's request fails), and
-#: the release's creation.
+#: release commit), the listing of the Releases, whose records it serves in
+#: pages of `STUB_PAGE`, every page under `--paginate` and the first alone
+#: without it, each run through the step's own `--jq` with `jq`
+#: (`STUB_FAIL` fails the listing after its first page, as gh does when a
+#: later page's request fails), and the release's creation.
 _STUB_GH = '''#!{python}
 import json, os, subprocess, sys
 args = sys.argv[1:]
@@ -557,11 +558,15 @@ with open(os.environ["STUB_LOG"], "a", encoding="utf-8") as log:
 if args[:1] == ["api"] and "/git/ref/tags/" in args[1]:
     print(os.environ["RELEASE_SHA"])
 elif args[:1] == ["api"] and args[1].endswith("/releases"):
-    jq = subprocess.run(["jq", "-r", args[args.index("--jq") + 1]], input=os.environ["STUB_RELEASES"],
-                        capture_output=True, text=True, check=True)
-    print(jq.stdout, end="")
-    if os.environ.get("STUB_FAIL"):
-        sys.exit("HTTP 502")
+    records = json.loads(os.environ["STUB_RELEASES"])
+    size = int(os.environ.get("STUB_PAGE", "100"))
+    pages = [records[at:at + size] for at in range(0, len(records), size)] or [[]]
+    for page in pages if "--paginate" in args else pages[:1]:
+        jq = subprocess.run(["jq", "-r", args[args.index("--jq") + 1]], input=json.dumps(page),
+                            capture_output=True, text=True, encoding="utf-8", check=True)
+        print(jq.stdout, end="")
+        if os.environ.get("STUB_FAIL"):
+            sys.exit("HTTP 502")
 elif args[:2] != ["release", "create"]:
     sys.exit(f"unexpected gh call: {{args}}")
 '''
@@ -638,6 +643,15 @@ class TestTheLatestMark:
         code, calls = self._release(tmp_path, "0.2.6", "v0.2.5", STUB_FAIL="1")
         assert code != 0
         assert not [c for c in calls if c[:2] == ["release", "create"]]
+
+    def test_a_higher_release_on_a_later_page_withholds_latest(self, tmp_path: Path) -> None:
+        """The API lists Releases newest first, and a higher version created
+        before the newest can sit on a later page, so the step reads every
+        page: v0.2.7 on the second page keeps v0.2.6 from Latest."""
+        code, calls = self._release(tmp_path, "0.2.6", "v0.2.5 v0.2.4 v0.2.7", STUB_PAGE="2")
+        assert code == 0
+        (create,) = [c for c in calls if c[:2] == ["release", "create"]]
+        assert "--latest=false" in create
 
     def test_an_empty_listing_creates_no_release(self, tmp_path: Path) -> None:
         """This repository always has Releases, and gh's `--paginate` can
