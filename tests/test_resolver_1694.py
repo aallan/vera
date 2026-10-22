@@ -28,8 +28,11 @@ from vera import ast as vast
 from vera.binding import (
     BUILTIN, ENTRY, PRELUDE, SYMBOL_PREFIX, DeclId, bind_program,
 )
+from vera.disclosure import ModuleDisclosureIndex
 from vera.fold import walk as _walk
 from vera.prelude import prelude_declarations
+from vera.smt import resolve_timeout_ms
+from vera.verifier import disclosed_key
 
 pytestmark = pytest.mark.matrix(decides=[
     "vera/binding.py",
@@ -1061,6 +1064,59 @@ def test_class_1694_a_clone_at_a_module_type_is_named_as_written(
         assert clone in frames, frames
         for text in (message, *frames):
             assert "_U24_" not in text and "mod$" not in text, text
+
+
+#: A producer whose `@Nat` payload is disclosed in shipping code: the
+#: handler-clause bind `throw(@Nat)` narrows an `@Int` payload that no guard
+#: covers (`nat_bind`, `tier3_unguarded`, E504).  `f`'s `where` helper `h`
+#: hands the value on, a forwarder (#1407), so its disclosure is recorded in
+#: `VerifyResult.result_disclosed` and not in the obligation stream.
+_FORWARDED_DISCLOSURE = (
+    "public fn mk(@Int -> @Option<Nat>)\n" + _CONTRACT
+    + "{\n  int_to_nat(handle[Exn<Int>] {\n"
+    "    throw(@Nat) -> { nat_to_int(@Nat.0) }\n"
+    "  } in {\n    throw(@Int.0)\n  })\n}\n\n"
+    "public fn f(@Int -> @Option<Nat>)\n" + _CONTRACT
+    + "{\n  h(@Int.0)\n}\nwhere {\n  fn h(@Int -> @Option<Nat>)\n"
+    "    requires(true)\n    ensures(true)\n    effects(pure)\n"
+    "  {\n    mk(@Int.0)\n  }\n}\n")
+
+
+@pytest.mark.parametrize("shape", ["one_file", "across_an_import"])
+def test_repro_1694_a_forwarding_helpers_disclosure_is_keyed_as_written(
+    tmp_path: Path, shape: str,
+) -> None:
+    """A `where` helper that hands on a disclosed value is keyed in
+    `VerifyResult.result_disclosed`, and in the module manifest an importer
+    reads (`vera.disclosure`), by the `disclosed_key` its obligations spell
+    once `ContractVerifier.displayed` names the helper as written: `h` under
+    its owner `f`, never the link name `f$where$h`.  A key spelled two ways
+    is a member a lookup of the union cannot find."""
+    if shape == "one_file":
+        verified = pipeline.verify(_FORWARDED_DISCLOSURE)
+        assert verified.ok, _codes(verified.errors)
+        keys = set(verified.result.result_disclosed)
+    else:
+        entry = _tree(tmp_path, {
+            "lib.vera": "module lib;\n\n" + _FORWARDED_DISCLOSURE,
+            "main.vera": "import lib;\n\n" + _fn(
+                "use_it(@Int -> @Int)",
+                "match lib::f(@Int.0) {\n    Some(@Nat) -> nat_to_int(@Nat.0),"
+                "\n    None -> 0\n  }",
+                visibility="public"),
+        })
+        checked = pipeline.check(entry)
+        assert checked.ok, _codes(checked.errors)
+        assert checked.resolved is not None
+        keys = set(ModuleDisclosureIndex(
+            checked.resolved, resolve_timeout_ms()).disclosed_in(("lib",)))
+        verified = pipeline.verify(tmp_path / "lib.vera")
+        assert verified.ok, _codes(verified.errors)
+    assert any(key.startswith("f\x1fwhere\x1f") for key in keys), (
+        f"the helper's forwarding was not recorded, so this measures "
+        f"nothing about its key: {sorted(keys)}")
+    spelled = {disclosed_key(o.fn_name, o.owner) for o in verified.obligations}
+    assert keys <= spelled, (sorted(keys - spelled), sorted(spelled))
 
 
 def _reserved_data(name: str, visibility: str = "public") -> str:

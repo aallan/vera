@@ -2776,7 +2776,7 @@ class ContractVerifier:
     def _shown_fn_key(self, key: str) -> str:
         """A disclosure key (:func:`disclosed_key`) as :meth:`displayed`
         spells a helper record's function name."""
-        name, sep, owner = key.partition("\x1f")
+        owner, sep, name = key.partition("\x1fwhere\x1f")
         if sep and "$where$" in name:
             return disclosed_key(name.rpartition("$where$")[2], owner)
         return key
