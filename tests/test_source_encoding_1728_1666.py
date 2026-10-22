@@ -57,7 +57,8 @@ import pytest
 from tests import pipeline
 
 pytestmark = pytest.mark.matrix(decides=[
-    "vera/cli.py", "vera/parser.py", "vera/resolver.py", "vera/transform.py",
+    "vera/cli.py", "vera/errors.py", "vera/parser.py", "vera/resolver.py",
+    "vera/transform.py",
 ])
 
 ROOT = Path(__file__).resolve().parent.parent
