@@ -720,7 +720,7 @@ public fn main(-> @Unit)
         stderr stream before trapping — the component path loses
         structured trap frames, so the message is the diagnostic."""
         result = _compile_ok("""\
-fn checked(@Int -> @Int)
+private fn checked(@Int -> @Int)
   requires(@Int.0 > 10) ensures(true) effects(pure)
 {
   @Int.0

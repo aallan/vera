@@ -4,6 +4,8 @@ Split from tests/test_codegen.py (#419). Shared helpers live in tests/codegen_he
 """
 from __future__ import annotations
 
+from tests import pipeline
+
 import re
 
 
@@ -11,8 +13,6 @@ from vera.codegen import (
     compile,
     execute,
 )
-from vera.parser import parse_file
-from vera.transform import transform
 
 import pytest
 
@@ -118,9 +118,8 @@ public fn increment(@Unit -> @Unit)
         from pathlib import Path
         path = Path(__file__).parent.parent / "examples" / "increment.vera"
         source = path.read_text(encoding="utf-8")
-        tree = parse_file(str(path))
-        program = transform(tree)
-        result = compile(program, source=source, file=str(path))
+        result = compile(
+            pipeline.check(path).typed, source=source, file=str(path))
         assert result.ok
         assert "increment" in result.exports
         exec_result = execute(result, fn_name="increment")
@@ -170,16 +169,17 @@ public fn f(-> @Nat)
         assert exec_result.value == 0
 
     def test_state_string_rejected(self) -> None:
-        """State<String> is unsupported — function skipped with warning."""
+        """State<String> is unsupported — refused at check (E340), where
+        code generation skipped the function with a warning."""
         source = """\
 public fn f(-> @Int)
   requires(true) ensures(true) effects(<State<String>>)
 { 42 }
 """
-        result = _compile(source)
-        warnings = [d for d in result.diagnostics if d.severity == "warning"]
-        assert any("unsupported" in w.description.lower() for w in warnings)
-        assert "f" not in result.exports
+        compiled = pipeline.compile(source)
+        assert [d.error_code for d in compiled.checked.errors] == ["E340"], [
+            (d.error_code, d.description[:70]) for d in compiled.checked.errors]
+        assert compiled.generator is None
 
     def test_state_with_io(self) -> None:
         """Mixed effects(<State<Int>, IO>) compiles and both work."""
@@ -519,7 +519,6 @@ public fn test(@Unit -> @Int)
     def test_exn_handler_compiles(self) -> None:
         """Exn<E> handler compiles to WASM using exception handling."""
         src = """\
-private data Option<T> { None, Some(T) }
 public fn test(@Int -> @Option<Int>)
   requires(true) ensures(true) effects(pure)
 {
@@ -1310,15 +1309,11 @@ public fn f(-> @Int)
 """
         assert _run(source, fn="f") == 42
 
-    def test_unit_payload_let_still_skips_loudly(self) -> None:
-        """The loud skip is preserved: `Future<Unit>` wraps a zero-size
-        payload with no WASM representation (Unit is neither a pair nor a
-        scalar), so the let must STILL reach the [E602] skip — never be
-        silently pair-bound.  Exercises the Future recursion directly: it
-        must return False for the Unit payload, so `f` is dropped, not
-        exported.  Green before and after the fix (`_compile` runs codegen
-        without the checker's E183 zero-size gate, so this reaches the
-        codegen skip)."""
+    def test_unit_payload_let_is_refused_at_check(self) -> None:
+        """`Future<Unit>` wraps a zero-size payload with no WASM
+        representation (Unit is neither a pair nor a scalar), so the let is
+        never silently pair-bound: the check's zero-size gate refuses it
+        (E183), where code generation's Future recursion skipped `f`."""
         source = """\
 public fn f(-> @Int)
   requires(true) ensures(true) effects(<Async>)
@@ -1327,10 +1322,10 @@ public fn f(-> @Int)
   42
 }
 """
-        result = _compile(source)
-        warnings = [d for d in result.diagnostics if d.severity == "warning"]
-        assert any("unsupported" in w.description.lower() for w in warnings)
-        assert "f" not in result.exports
+        compiled = pipeline.compile(source)
+        assert [d.error_code for d in compiled.checked.errors] == ["E183"], [
+            (d.error_code, d.description[:70]) for d in compiled.checked.errors]
+        assert compiled.generator is None
 
 
 class TestAliasPairFuture1046:
@@ -2496,7 +2491,7 @@ private fn use_int_pair(@Unit -> @Int)
     put(@Option<Tuple<Int, Int>>) -> { resume(()) }
   } in {
     match get(()) {
-      Some(@Tuple<Int, Int>) -> match @Tuple<Int, Int>.0 { Tuple(@Int) -> @Int.0 },
+      Some(@Tuple<Int, Int>) -> match @Tuple<Int, Int>.0 { Tuple(@Int, @Int) -> @Int.1 },
       None -> 0
     }
   }

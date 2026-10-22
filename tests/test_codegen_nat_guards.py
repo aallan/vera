@@ -213,7 +213,7 @@ public fn neg_sentinel(@Unit -> @Int)
 public fn main(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
-  neg_sentinel()
+  neg_sentinel(())
 }
 """
         result = _compile_ok(src)

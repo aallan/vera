@@ -1127,21 +1127,16 @@ public fn main(@Unit -> @Int)
 
 def test_a_with_update_is_obligated_against_its_handler_s_cell() -> None:
     """A clause's `with` update writes its handler's cell, the effect's
-    `State<T>` argument, whatever the `with` annotation says (#1203).  A
-    generic handler may declare its state at another type than its cell,
-    which the checker leaves to the instantiation (#1206): at `Nat` the
-    declaration is E533, and the update `0 - 5` is refused into the `Nat`
-    cell (E503).  The clause's step cannot see its handler, so the
-    handler's step hands it the cell; a clause handed none reads the `Int`
-    annotation and obligates nothing."""
-    envelope = pipeline.verify(_DIVERGENT_CELL).envelope()
-    records = [(o["kind"], o["status"], o.get("error_code"), o["location"]["line"])
-               for o in envelope["obligations"]
-               if o["kind"] in ("state_decl", "nat_bind")]
-    assert ("state_decl", "violated", "E533",
-            _line_of(_DIVERGENT_CELL, "(@Int = 1)")) in records, records
-    assert ("nat_bind", "violated", "E503",
-            _line_of(_DIVERGENT_CELL, "with @Int = 0 - 5")) in records, records
+    `State<T>` argument, whatever the `with` annotation says (#1203).  The
+    one way an annotation can name another type than the cell is a generic
+    handler that declares its state at a concrete type, which the check now
+    refuses at the call that instantiates it (E533, #1679), so the update
+    `0 - 5` into the `Nat` cell is never verified: the program does not
+    check."""
+    checked = pipeline.check(_DIVERGENT_CELL)
+    assert [(d.error_code, d.location.line) for d in checked.errors] == [
+        ("E533", _line_of(_DIVERGENT_CELL, "h(@Nat.0, 7)"))], [
+        d.format() for d in checked.diagnostics]
 
 
 # =====================================================================
@@ -1231,68 +1226,91 @@ def test_a_handler_declares_its_body_families_before_its_clauses() -> None:
 
 
 _UNSUPPORTED_CELLS = """\
-private fn probe(@Unit -> @Int)
+private forall<A, B> fn probe(@A, @B -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
 {
   handle[Exn<Int>] {
     throw(@Int) -> {
-      handle[State<String>](@String = "a") {
-        get(@Unit) -> { resume(@String.0) },
-        put(@String) -> { resume(()) }
+      handle[State<A>](@A = @A.0) {
+        get(@Unit) -> { resume(@A.0) },
+        put(@A) -> { resume(()) }
       } in {
         @Int.0
       }
     }
   } in {
-    handle[State<Array<Int>>](@Array<Int> = [1]) {
-      get(@Unit) -> { resume(@Array<Int>.0) },
-      put(@Array<Int>) -> { resume(()) }
+    handle[State<B>](@B = @B.0) {
+      get(@Unit) -> { resume(@B.0) },
+      put(@B) -> { resume(()) }
     } in {
       3
     }
   }
 }
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  probe("a", [1])
+}
 """
 
 _UNSUPPORTED_PAYLOADS = """\
-private fn probe(@Unit -> @Int)
+private forall<A> fn probe(@A -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
 {
   handle[Exn<Int>] {
     throw(@Int) -> {
-      handle[Exn<Unit>] {
-        throw(@Unit) -> { 0 }
+      handle[Exn<A>] {
+        throw(@A) -> { 0 }
       } in {
         @Int.0
       }
     }
   } in {
-    handle[Exn<Unit>] {
-      throw(@Unit) -> { 1 }
+    handle[Exn<A>] {
+      throw(@A) -> { 1 }
     } in {
       3
     }
   }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  probe(())
 }
 """
 
 
 def test_the_unsupported_cell_named_is_the_body_s() -> None:
     """A handler whose clause and body each hold a `State` cell (E607) or
-    an `Exn` payload (E612) the backend cannot compile: the diagnostic names
-    the body's, the first the walk meets.  Compiled unchecked, as the
-    checker refuses both types where they are written (E340); a generic
-    clone instantiated at one is how a checked program reaches here."""
-    for source, code, body in (
-            (_UNSUPPORTED_CELLS, "E607", "handle[State<Array<Int>>]"),
-            (_UNSUPPORTED_PAYLOADS, "E612", "handle[Exn<Unit>] {\n      throw(@Unit) -> { 1 }")):
-        result = pipeline.compile(source, checked=False).result
-        named = [d.location.line for d in result.diagnostics if d.error_code == code]
-        assert named == [_line_of(source, body)], (code, named)
+    an `Exn` payload (E612) no instantiation lowers at the types the call
+    chooses: the check refuses each at the call (#1679), the body's first,
+    as the walk meets it.  The checker refuses both types where they are
+    written (E340), so each is a generic's cell at its instantiation, which
+    code generation no longer meets: the program does not check."""
+    for source, code, cells in (
+            (_UNSUPPORTED_CELLS, "E607",
+             ["State<Array<Int>>", "State<String>"]),
+            (_UNSUPPORTED_PAYLOADS, "E612", ["Exn<Unit>", "Exn<Unit>"])):
+        checked = pipeline.check(source)
+        found = [d for d in checked.errors if d.error_code == code]
+        named = [next(c for c in ("State<Array<Int>>", "State<String>",
+                                  "Exn<Unit>") if f"is an {c}" in d.description
+                      or f"is a {c}" in d.description) for d in found]
+        assert named == cells, (code, [d.description for d in found])
+        assert {d.location.line for d in found} == {
+            _line_of(source, "  probe(")}, (code, found)
 
 
 _NESTED_BASES = """\
@@ -1358,8 +1376,7 @@ def test_a_handler_s_body_closures_report_before_its_clauses() -> None:
     signature derivation the pre-scans walk, which met the clause's closure
     first while they were hand walks; E617 (a predicate calling a generic
     function) is reported where the closure is lowered, which met the
-    body's first all along.  Compiled unchecked, as the module tests of
-    both codes are."""
+    body's first all along.  The check accepts both programs."""
     for source, code, clause_line, body_line in (
             (_NESTED_BASES, "E618",
              _line_of(_NESTED_BASES, "let @TinyFn"),
@@ -1367,7 +1384,7 @@ def test_a_handler_s_body_closures_report_before_its_clauses() -> None:
             (_GENERIC_PREDICATES, "E617",
              _line_of(_GENERIC_PREDICATES, "type Checked = "),
              _line_of(_GENERIC_PREDICATES, "type Checked2 = "))):
-        result = pipeline.compile(source, checked=False).result
+        result = pipeline.compile(source).result
         reported = [d.location.line for d in result.diagnostics if d.error_code == code]
         assert reported == [body_line, clause_line], (code, reported)
 
@@ -1386,7 +1403,7 @@ def test_a_handler_s_body_closures_report_before_its_clauses() -> None:
 
 def _make_cg() -> CodeGenerator:
     """Build a fresh CodeGenerator for compilability scans."""
-    return CodeGenerator()
+    return CodeGenerator(pipeline.typed())
 
 
 def _make_ctx() -> WasmContext:

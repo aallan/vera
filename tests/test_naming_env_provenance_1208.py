@@ -89,7 +89,7 @@ def _line_of(source: str, needle: str) -> int:
 
 def _compile_mod(source: str, modules: list[ResolvedModule]) -> object:
     return pipeline.compile(
-        source, file="fixture.vera", modules=modules, checked=False,
+        source, file="fixture.vera", modules=modules,
     ).result
 
 
@@ -453,7 +453,7 @@ class TestImportedGenericCloneEnv:
 
         try:
             Monomorphizer.monomorphize_fn = record("verifier")  # type: ignore[method-assign]
-            verify(prog, _GENERIC_MAIN, resolved_modules=[module])
+            verify(pipeline.typed(_GENERIC_MAIN, modules=[module]), _GENERIC_MAIN)
             Monomorphizer.monomorphize_fn = record("codegen")  # type: ignore[method-assign]
             _compile_mod(_GENERIC_MAIN, [module])
         finally:
@@ -501,33 +501,6 @@ class TestImportedGenericCloneEnv:
                 "the emitted clone satisfied a postcondition the verifier "
                 "reports as violated: verify and run disagree"
             )
-
-    def test_clone_construction_enters_the_modules_source_scope(self) -> None:
-        """The clone-construction door pairs both scopes, like its siblings.
-
-        Codegen enters an imported module's namespace at five doors; the
-        alias scope alone leaves ``file``/``source`` on the IMPORTER, so a
-        diagnostic raised there would pair the importer's path with
-        module-local coordinates — the #1186/#1189 attribution failure, and
-        the reason the E618 dedup (keyed on the resolved location) once
-        merged two modules' reports.  Nothing inside this door reports
-        today; the pairing is what keeps that true of whatever moves into
-        it, so it is asserted structurally rather than through a
-        diagnostic that does not exist.
-        """
-        from vera.codegen.core import CodeGenerator
-
-        module = _resolved(("blib",), _GENERIC_LIB)
-        gen = CodeGenerator(
-            source=_GENERIC_MAIN, file="main.vera", resolved_modules=[module],
-        )
-        gen.compile_program(parse_to_ast(_GENERIC_MAIN))
-        assert gen.file == "main.vera"
-        with gen._clone_alias_env(("blib",)):
-            assert gen.file == str(module.file_path), gen.file
-            assert gen.source == _GENERIC_LIB
-        assert gen.file == "main.vera", "the source scope was not restored"
-        assert gen.source == _GENERIC_MAIN
 
 
 class TestImportedNestedGenericOriginEnv:
@@ -762,7 +735,7 @@ public fn main(@Unit -> @Nat)
         assert not [
             d for d in typecheck(prog, self._V01) if d.severity == "error"
         ]
-        result = verify(prog, self._V01)
+        result = verify(pipeline.typed(self._V01), self._V01)
         codes = {d.error_code for d in result.diagnostics if d.severity == "error"}
         assert "E500" in codes, (
             "a postcondition that is false for every input proved at Tier 1: "
@@ -772,8 +745,7 @@ public fn main(@Unit -> @Nat)
     def test_verifier_control_without_shadowing(self) -> None:
         """probe v01_control: the same program, alias renamed — E500 both ways."""
         src = self._V01.replace("type T = Int;", "type TT = Int;")
-        prog = parse_to_ast(src)
-        result = verify(prog, src)
+        result = verify(pipeline.typed(src), src)
         assert "E500" in {
             d.error_code for d in result.diagnostics if d.severity == "error"
         }
@@ -875,7 +847,7 @@ public forall<T> fn g(@Option<Int>, @Option<T> -> @Pos)
         ContractVerifier._count_slots = staticmethod(  # type: ignore[method-assign]
             patched)
         try:
-            _ = pipeline.verify(source, past_check=True).result
+            _ = pipeline.verify(source).result
         finally:
             ContractVerifier._count_slots = staticmethod(  # type: ignore[method-assign]
                 original)
@@ -1045,7 +1017,7 @@ where {
         self,
     ) -> None:
         from vera import naming
-        from vera.monomorphize import MonoContext, Monomorphizer
+        from vera.monomorphize import Monomorphizer
         from vera.slots import fn_slot_scope
 
         from tests.naming_helpers import alias_env_from_declarations
@@ -1071,11 +1043,7 @@ where {
 
         Monomorphizer._substituted_slot_name = patched  # type: ignore[method-assign]
         try:
-            mono = Monomorphizer(MonoContext(
-                generic_decls={}, ctor_to_adt={}, ctor_tp_indices={},
-                adt_tp_counts={}, type_aliases={}, type_alias_params={},
-                fn_ret_types={},
-            ))
+            mono = Monomorphizer()
             clone = mono.monomorphize_fn(parent, ("Int",), env)
         finally:
             Monomorphizer._substituted_slot_name = original  # type: ignore[method-assign]
@@ -1148,7 +1116,7 @@ where {
         (`#1223 <https://github.com/aallan/vera/issues/1223>`_).
         """
         from vera import naming
-        from vera.monomorphize import MonoContext, Monomorphizer
+        from vera.monomorphize import Monomorphizer
         from vera.slots import fn_slot_scope
 
         from tests.naming_helpers import alias_env_from_declarations
@@ -1174,11 +1142,7 @@ where {
 
         Monomorphizer._substituted_slot_name = patched  # type: ignore[method-assign]
         try:
-            mono = Monomorphizer(MonoContext(
-                generic_decls={}, ctor_to_adt={}, ctor_tp_indices={},
-                adt_tp_counts={}, type_aliases={}, type_alias_params={},
-                fn_ret_types={},
-            ))
+            mono = Monomorphizer()
             # The IDENTITY instantiation: `T` names the module alias here.
             clone = mono.monomorphize_fn(parent, ("T",), env)
         finally:
@@ -1309,7 +1273,7 @@ class TestVerifierModuleAliasEnvs:
 
     def test_module_env_is_the_modules_own_namespace(self) -> None:
         module = _resolved(("clib",), _CONFLICT_LIB)
-        prog = parse_to_ast("""\
+        typed = pipeline.typed("""\
 import clib(need3);
 
 type Cnt = Int;
@@ -1321,9 +1285,9 @@ public fn main(@Unit -> @Int)
 {
   need3(Some(9), Some(3))
 }
-""")
-        v = ContractVerifier(resolved_modules=[module])
-        v.register_program(prog)
+""", modules=[module])
+        v = ContractVerifier(typed)
+        v.register_program(typed.program)
         assert ("clib",) in v._module_alias_envs
         mod_env = v._module_alias_envs[("clib",)]
         # The module's alias under its link name, as the linked program the
@@ -1346,9 +1310,9 @@ public fn main(@Unit -> @Int)
 
     def test_generic_origin_records_the_defining_module(self) -> None:
         module = _resolved(("blib",), _GENERIC_LIB)
-        prog = parse_to_ast(_GENERIC_MAIN)
-        v = ContractVerifier(resolved_modules=[module])
-        v.register_program(prog)
+        typed = pipeline.typed(_GENERIC_MAIN, modules=[module])
+        v = ContractVerifier(typed)
+        v.register_program(typed.program)
         # Keyed by the generic's link name (#1694).
         assert v._generic_origins.get("mod$blib$twolen") == ("blib",)
         assert v._alias_env_for_generic("mod$blib$twolen") is (
@@ -1677,11 +1641,15 @@ class TestDeclOrderIsPerNamespace:
         from vera.codegen.core import CodeGenerator
 
         module = _resolved(("dolib",), _DECL_ORDER_LIB)
+        # The call that checks, as the instruction-stream cell above has it;
+        # the declarations, whose spaces are the subject, are the repro's own.
+        source = _DECL_ORDER_MAIN.replace(
+            "pick(Some(7), Some(MkX(99)))", "pick(Some(7), Some(9))")
         gen = CodeGenerator(
-            source=_DECL_ORDER_MAIN, file="main.vera",
-            resolved_modules=[module],
+            pipeline.typed(source, file="main.vera", modules=[module]),
+            source=source, file="main.vera",
         )
-        gen.compile_program(parse_to_ast(_DECL_ORDER_MAIN))
+        gen.compile_program()
         assert ("dolib",) in gen._module_decl_order
         # The module's declarations by their link names (#1694).
         assert "mod$dolib$X" in gen._module_decl_order[("dolib",)]
@@ -1716,6 +1684,11 @@ public fn main(@Unit -> @Int)
 }
 """
 
+# The program's `main` alone, which the check accepts: it calls a prelude
+# array combinator, so code generation injects the prelude's aliases.
+_PRELUDE_ALIAS_MAIN = _PRELUDE_ALIAS_SRC[_PRELUDE_ALIAS_SRC.index(
+    "public fn main("):]
+
 # The same program spelled with the RESERVED twin the prelude's own
 # combinators resolve through.  Renaming the public names into the reserved
 # namespace only closes #1221 if the reserved namespace is itself unwritable
@@ -1732,7 +1705,7 @@ _PRELUDE_ALIAS_NAMES = (
 
 def _codegen_alias_env(source: str) -> naming.AliasEnv:
     """The naming env codegen renders the MAIN file under."""
-    compiled = pipeline.compile(source, file="<prelude-alias>", checked=False)
+    compiled = pipeline.compile(source, file="<prelude-alias>")
     _ = compiled.result  # raises the parse or transform error
     assert compiled.generator is not None
     return compiled.generator._alias_env
@@ -1785,47 +1758,36 @@ class TestPreludeAliasesAreCodegenInternal:
             "Array<fn(Int -> Bool) effects(pure)>",
         ], names
 
-    def test_codegen_names_the_parameters_the_checker_names(self) -> None:
-        """The differential: one renderer, two envs, and they must agree.
-
-        Both sides go through :func:`vera.naming.slot_name`, so a divergence
-        here is a divergence of the ENVIRONMENTS — exactly the #1213 class.
-        Compared as a list rather than a set: the partition is what decides
-        which parameter a slot reference lands on.
+    def test_the_opaque_spelling_is_refused_before_codegen_names_it(
+        self,
+    ) -> None:
+        """The differential the two envs were held to (one renderer, two
+        envs, #1213's class) has no program left to run on: the name the
+        checker leaves opaque is refused where it is written (E136, #1489),
+        so code generation never names ``f``'s parameters at all.
         """
-        from vera.checker.core import TypeChecker
+        compiled = pipeline.compile(_PRELUDE_ALIAS_SRC, file="<prelude-alias>")
+        errors = compiled.checked.errors
+        assert {d.error_code for d in errors} == {"E136"}, [
+            (d.error_code, d.description[:70]) for d in errors]
+        assert all("ArrayMapFn" in d.description for d in errors), errors
+        assert compiled.generator is None
 
-        prog = parse_to_ast(_PRELUDE_ALIAS_SRC)
-        checker = TypeChecker(source=_PRELUDE_ALIAS_SRC, file="<x01>")
-        checker.check_program(prog)
-        fn = next(
-            tld.decl for tld in prog.declarations
-            if isinstance(tld.decl, ast.FnDecl) and tld.decl.name == "f"
-        )
-        check_env = naming.alias_env_from_environment(checker.env)
-        gen_env = _codegen_alias_env(_PRELUDE_ALIAS_SRC)
-        checker_names = [naming.slot_name(te, check_env) for te in fn.params]
-        codegen_names = [naming.slot_name(te, gen_env) for te in fn.params]
-        assert checker_names == codegen_names, (
-            "codegen and the checker partition f's parameters differently: "
-            f"checker {checker_names} vs codegen {codegen_names}"
-        )
-
-    def test_codegen_reads_the_parameter_the_checker_names(self) -> None:
-        """The same claim in the emitted instruction stream.
-
-        ``@Array<ArrayMapFn<Int, Bool>>.0`` is parameter 1 for the checker, so
-        the exported body must load the first pair of locals.  Asserted on the
-        WAT because no Vera caller can reach this export — only a host can.
+    def test_no_export_reads_a_parameter_through_the_opaque_spelling(
+        self,
+    ) -> None:
+        """The same claim for the instruction stream: the export that read
+        parameter 2 where the binding table said parameter 1 (#1221) is not
+        built, since the check refuses the program that spells the name.
         """
-        wat = _compile_ok(_PRELUDE_ALIAS_SRC).wat
-        body = _fn_body(wat, "f")
-        reads = _local_gets(body)
-        assert {0, 1} <= reads, body
-        assert 2 not in reads, (
-            "codegen still reads parameter 2 — the prelude alias is still "
-            f"resolving on the codegen side only:\n{body}"
-        )
+        compiled = pipeline.compile(_PRELUDE_ALIAS_SRC, file="<prelude-alias>")
+        assert not compiled.ok
+        f_line = _PRELUDE_ALIAS_SRC.splitlines().index(
+            "public fn f(@Array<ArrayMapFn<Int, Bool>>,") + 1
+        assert f_line in {d.location.line for d in compiled.checked.errors
+                          if d.error_code == "E136"}, compiled.checked.errors
+        with pytest.raises(pipeline.StageFailed, match="E136"):
+            compiled.wat
 
     def test_the_user_facing_alias_names_reach_no_namespace(self) -> None:
         """Structural: the six public spellings are injected nowhere.
@@ -1845,7 +1807,7 @@ class TestPreludeAliasesAreCodegenInternal:
         assert not leaked, (
             f"the prelude still injects user-facing aliases: {leaked}"
         )
-        gen_env = _codegen_alias_env(_PRELUDE_ALIAS_SRC)
+        gen_env = _codegen_alias_env(_PRELUDE_ALIAS_MAIN)
         leaked_env = sorted(set(gen_env.aliases) & set(_PRELUDE_ALIAS_NAMES))
         assert not leaked_env, (
             f"codegen still resolves user-facing prelude aliases: {leaked_env}"
@@ -1979,7 +1941,7 @@ def _codegen_env(
     source: str, modules: list[ResolvedModule],
 ) -> naming.AliasEnv:
     compiled = pipeline.compile(
-        source, file="main.vera", modules=modules, checked=False,
+        source, file="main.vera", modules=modules,
     )
     _ = compiled.result  # raises the parse or transform error
     assert compiled.generator is not None
@@ -2142,9 +2104,10 @@ public fn count(@Array<N> -> @Int)
 """
         module = _resolved(("dolib",), lib)
         gen = CodeGenerator(
-            source=_XMOD_ADT_MAIN, file="main.vera", resolved_modules=[module],
+            pipeline.typed(_XMOD_ADT_MAIN, file="main.vera", modules=[module]),
+            source=_XMOD_ADT_MAIN, file="main.vera",
         )
-        gen.compile_program(parse_to_ast(_XMOD_ADT_MAIN))
+        gen.compile_program()
         with gen._module_alias_scope(("dolib",)):
             # The module's own names, as the linked program spells them
             # (#1694).

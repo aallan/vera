@@ -66,8 +66,10 @@ from vera.types import (
 
 
 def _op_signature_text(op: OpInfo) -> str:
-    """An operation's signature as a function type's inside, for E340's
-    fix: ``T -> Int``."""
+    """An operation's REGISTERED signature as a function type's inside, for
+    E340's fix: ``T -> Int``, the resolved types' message form.  Only for an
+    effect or ability the program does not declare
+    (:meth:`CallsMixin._operation_signature_text` reads a declared one)."""
     params = ", ".join(pretty_type(p) for p in op.param_types)
     return f"{params} -> {pretty_type(op.return_type)}"
 
@@ -2714,6 +2716,28 @@ class CallsMixin:
     # Qualified / module calls
     # -----------------------------------------------------------------
 
+    def _operation_signature_text(
+        self, kind: str, owner: str, op: OpInfo,
+    ) -> str:
+        """*op*'s signature as a function type's inside, for E340's fix:
+        ``T -> Int``.  Read from the program's own declaration of the
+        *kind* (``"effect"`` or ``"ability"``) *owner*, which
+        `_forward_effect_decls` and `_ns_first_decls` hold on whichever side
+        of the use it is declared, so the types read as the program writes
+        them and the fix pastes as written (a refinement keeps its
+        predicate); from the registered signature
+        (:func:`_op_signature_text`) for one the program does not declare.
+        """
+        decl = (self._forward_effect_decls.get(owner) if kind == "effect"
+                else self._ns_first_decls.get(("ability", owner)))
+        written = next(
+            (o for o in getattr(decl, "operations", ()) if o.name == op.name),
+            None)
+        if written is None:
+            return _op_signature_text(op)
+        params = ", ".join(ast.format_type(t) for t in written.param_types)
+        return f"{params} -> {ast.format_type(written.return_type)}"
+
     def _refuse_unlowerable_ability(
         self, node: ast.Node, ability: str, *,
         op: OpInfo | None = None,
@@ -2763,7 +2787,7 @@ class CallsMixin:
             sig = "T -> Int"
             if ops is not None and ops.operations:
                 first = next(iter(ops.operations.values()))
-                sig = _op_signature_text(first)
+                sig = self._operation_signature_text("ability", ability, first)
             tv = getattr(node, "type_var", "T")
             self._error(
                 node,
@@ -2787,7 +2811,8 @@ class CallsMixin:
             op.name if op is not None else "?")
         written = (f"the qualified call '{ability}.{name}'"
                    if qualified is not None else f"a call to '{name}'")
-        sig = _op_signature_text(op) if op is not None else "T -> Int"
+        sig = (self._operation_signature_text("ability", ability, op)
+               if op is not None else "T -> Int")
         self._error(
             node,
             f"Code generation cannot lower {written}: '{name}' is an "
@@ -2849,7 +2874,8 @@ class CallsMixin:
             fix=(
                 f"Call a function under its own name in place of the "
                 f"operation: private fn {op_info.name}_of(...) with the "
-                f"operation's signature ({_op_signature_text(op_info)}), "
+                f"operation's signature "
+                f"({self._operation_signature_text('effect', effect, op_info)}), "
                 f"called as {op_info.name}_of(...) in place of "
                 f"{effect}.{op_info.name}(...)."
             ),

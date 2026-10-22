@@ -242,6 +242,9 @@ NOT_NAMESPACES: dict[str, str] = {
     "TypeChecker.instantiations": (
         "keyed by a generic call's node identity, for the typed program "
         "(#1679)"),
+    "TypeChecker.handler_cells": (
+        "keyed by a handler's node identity, the cell an instance's "
+        "judgments read (#1679)"),
     "TypeChecker._literal_soft_results": (
         "keyed by a call's source span, the parts of its result its literals "
         "decided (#1541)"),
@@ -1685,14 +1688,17 @@ def test_the_backstop_does_not_count_references() -> None:
 
 
 @pytest.mark.parametrize("cell_id", ["fn/twice", "where/twice"])
-def test_no_compile_skips_the_checker(cell_id: str) -> None:
-    """The "future path that bypasses" the checker, which the assembly
-    backstop above exists for, is not a path any more: code generation
-    reads the typed program, which only a clean check yields (#1679), so a
-    program the checker refuses for a duplicate name has no compile at
-    all."""
+def test_a_duplicate_definition_never_reaches_the_e699_backstop(
+    cell_id: str,
+) -> None:
+    """The "future path that bypasses" the checker, which the backstop exists
+    for, is a compile of a program the check refuses (E184), and no stage
+    compiles one: the backstop is asserted against hand-built modules above,
+    and the program that would reach it is refused here."""
     cell = next(c for c in CELLS if c.id == cell_id)
-    compiled = pipeline.compile(cell.files["main.vera"], file="main.vera")
-    assert compiled.checked is not None and not compiled.checked.ok
-    with pytest.raises(pipeline.StageFailed):
-        _ = compiled.result
+    source = cell.files["main.vera"]
+    errors = [d for d in typecheck(parse_to_ast(source), source,
+                                   file="main.vera")
+              if d.severity == "error"]
+    assert [d.error_code for d in errors] == ["E184"], [
+        (d.error_code, d.description) for d in errors]

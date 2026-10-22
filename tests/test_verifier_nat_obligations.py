@@ -4,6 +4,8 @@ Split from tests/test_verifier.py (#839). Shared helpers live in tests/verifier_
 """
 from __future__ import annotations
 
+from tests import pipeline
+
 
 from vera.parser import parse_to_ast
 
@@ -11,7 +13,6 @@ from tests.verifier_helpers import (
     _verify,
     _verify_err,
     _verify_ok,
-    _verify_user_effect,
 )
 
 
@@ -647,21 +648,18 @@ private fn f(@Option<Nat> -> @Nat)
         assert [d for d in result.diagnostics if d.severity == "error"] == []
 
     def test_generic_effect_op_formal_nat_obligated(self) -> None:
-        """A generic effect-op formal instantiated to @Nat (`E<Nat>.wait`)
-        narrows an @Int argument.  #747 makes the checker synthesise op
-        arguments against their instantiated formal, recording the @Nat
-        target, so the obligation now fires (deferred pre-#747)."""
-        result = _verify_user_effect("""
-effect E<T> {
-  op wait(T -> Unit);
-}
-
+        """A generic effect-op formal instantiated to @Nat
+        (`State<Nat>`'s `put(T -> Unit)`) narrows an @Int argument.  #747
+        makes the checker synthesise op arguments against their instantiated
+        formal, recording the @Nat target, so the obligation now fires
+        (deferred pre-#747)."""
+        result = _verify("""
 public fn f(@Int -> @Unit)
   requires(true)
   ensures(true)
-  effects(<E<Nat>>)
+  effects(<State<Nat>>)
 {
-  E.wait(@Int.0)
+  State.put(@Int.0)
 }
 """)
         assert [o for o in result.obligations if o.kind == "nat_bind"], \
@@ -673,17 +671,13 @@ public fn f(@Int -> @Unit)
         """The generic effect-op narrowing discharges from a precondition.
         Pins the emitted `nat_bind` status as ``verified`` so a regression to
         *no* obligation can't pass silently (CR #756)."""
-        result = _verify_user_effect("""
-effect E<T> {
-  op wait(T -> Unit);
-}
-
+        result = _verify("""
 public fn f(@Int -> @Unit)
   requires(@Int.0 >= 0)
   ensures(true)
-  effects(<E<Nat>>)
+  effects(<State<Nat>>)
 {
-  E.wait(@Int.0)
+  State.put(@Int.0)
 }
 """)
         assert [o.status for o in result.obligations
@@ -942,19 +936,16 @@ private fn f(@Int -> @Nat)
         assert "@Int.0" in ce and int(ce["@Int.0"]) < 0, ce
 
     def test_non_let_tier3_narrowing_warns_unguarded(self) -> None:
-        """A narrowing at a *genuinely unguarded* site whose value the SMT
-        layer can't translate surfaces an E504 warning + a `tier3_unguarded`
-        obligation — NOT a silent `tier3_runtime` 'runtime check'.  A
-        user-declared effect's operation argument is the canonical
-        unguarded site: a row naming one is refused at check (E340, #1681),
-        so no run reaches its operations, no runtime guard exists there, and
-        the fixture is measured past the check, and an untranslatable narrowing into a @Nat effect-op formal
-        (here `array_length`'s opaque @Int into `E.wait(Nat)`) is neither
-        statically proven nor runtime-checked.  Distinct from the concrete @Nat *call argument*
-        form, which #747 codegen DOES guard (now a `tier3_runtime`) — the
-        `guarded` flag the verifier threads must distinguish them
+        """A user-declared effect's operation argument was the canonical
+        *genuinely unguarded* site an untranslatable narrowing reached
+        (`array_length`'s opaque @Int into `E.wait(Nat)`: E504 and
+        `tier3_unguarded`, not `tier3_runtime`).  A row naming a
+        user-declared effect is refused at check (E340, #1681), and every
+        built-in operation's argument is guarded (#754), so no program the
+        check accepts reaches that site; the check's refusal is asserted.
+        The guarded concrete @Nat *call argument* form stays `tier3_runtime`
         (CodeRabbit, PR #756 round 6)."""
-        result = _verify_user_effect('''
+        verified = pipeline.verify('''
 effect E {
   op wait(Nat -> Unit);
 }
@@ -967,16 +958,8 @@ public fn f(@Unit -> @Unit)
   E.wait(array_length(string_lines("a\\nb")))
 }
 ''')
-        unguarded = [o for o in result.obligations
-                     if o.status == "tier3_unguarded"]
-        assert len(unguarded) == 1, [o.status for o in result.obligations]
-        assert unguarded[0].error_code == "E504"
-        warns = [d for d in result.diagnostics if d.error_code == "E504"]
-        assert len(warns) == 1 and warns[0].severity == "warning"
-        # excluded from the discharged totals (like a violation)
-        assert not any(o.status == "tier3" for o in result.obligations
-                       if o.kind == "nat_bind")
-        assert result.summary.tier3_runtime == 0
+        assert {d.error_code for d in verified.checked.errors} == {"E340"}
+        assert not verified.ran
 
     def test_the_unguarded_disclosure_names_its_actual_cause(self) -> None:
         """The E504 rationale must not claim a cause it did not have (#1251).
@@ -988,20 +971,21 @@ public fn f(@Unit -> @Unit)
         and no solver call was made, let alone timed out; a reader following
         that sentence would go looking for a timeout to raise.
 
-        The same fixture as the test above, read for what it SAYS rather than
-        which tier it lands in.
+        Read off a site that is still unguarded, the call argument a
+        clause's narrowed `throw(@Nat)` binder flows into (#1362's shape),
+        whose value does not translate.
         """
-        result = _verify_user_effect('''
-effect E {
-  op wait(Nat -> Unit);
-}
-
-public fn f(@Unit -> @Unit)
+        result = _verify('''
+public fn f(@Int -> @Int)
   requires(true)
   ensures(true)
-  effects(<E>)
+  effects(pure)
 {
-  E.wait(array_length(string_lines("a\\nb")))
+  handle[Exn<Int>] {
+    throw(@Nat) -> { nat_to_int(@Nat.0) }
+  } in {
+    throw(@Int.0)
+  }
 }
 ''')
         warns = [d for d in result.diagnostics if d.error_code == "E504"]
@@ -1220,7 +1204,7 @@ private fn f(@Int -> @String)
         from vera.smt import SmtContext
         from vera.verifier import ContractVerifier
 
-        verifier = ContractVerifier()
+        verifier = ContractVerifier(pipeline.typed())
         verifier._register_all(parse_to_ast(
             "type Count = Nat;\n"
             "private fn f(@Int -> @Int)\n"
@@ -1257,7 +1241,7 @@ private fn f(@Int -> @String)
         from vera.verifier import ContractVerifier
         from vera.wasm.context import StringPool, WasmContext
 
-        verifier = ContractVerifier()
+        verifier = ContractVerifier(pipeline.typed())
         codegen = WasmContext(StringPool())
         corpus = [
             "@Int.0", "@Nat.0", "0 - 1", "5 - 1", "@Int.0 + 1",
@@ -1318,10 +1302,11 @@ public fn f(@Int -> @Unit)
         """A user-declared effect operation with a @Nat parameter obligates
         an @Int argument the same as built-in IO.sleep. User effects must
         register their OpInfo (operations were previously stored empty), so
-        lookup_effect_op exposes param_types (CodeRabbit, PR #748).  Measured
-        past the check: a row naming a user-declared effect is refused there
-        (E340, #1681)."""
-        result = _verify_user_effect("""
+        lookup_effect_op exposes param_types (CodeRabbit, PR #748).  A row
+        naming a user-declared effect is refused at check (E340, #1681), so
+        no verification reaches the operation; the built-in `IO.sleep` twin
+        above keeps the obligation."""
+        verified = pipeline.verify("""
 effect E {
   op wait(Nat -> Unit);
 }
@@ -1334,16 +1319,16 @@ public fn f(@Int -> @Unit)
   E.wait(@Int.0)
 }
 """)
-        errors = [d for d in result.diagnostics if d.severity == "error"]
-        assert any("may be negative" in e.description.lower() for e in errors)
+        assert {d.error_code for d in verified.checked.errors} == {"E340"}
+        assert not verified.ran
 
     def test_user_effect_op_argument_narrowing_discharged(self) -> None:
         """The user-effect-op narrowing verifies cleanly when the argument
         is constrained non-negative — the discharged companion to
-        test_user_effect_op_argument_narrowing_caught.  Asserts the
-        `nat_bind` obligation actually fired and verified, not merely "no
-        error" (CodeRabbit, PR #748)."""
-        result = _verify_user_effect("""
+        test_user_effect_op_argument_narrowing_caught.  Refused at check
+        with it (E340, #1681); the built-in `IO.sleep` twin above keeps the
+        discharged obligation."""
+        verified = pipeline.verify("""
 effect E {
   op wait(Nat -> Unit);
 }
@@ -1356,9 +1341,8 @@ public fn f(@Int -> @Unit)
   E.wait(@Int.0)
 }
 """)
-        assert [d for d in result.diagnostics if d.severity == "error"] == []
-        assert [o.status for o in result.obligations
-                if o.kind == "nat_bind"] == ["verified"]
+        assert {d.error_code for d in verified.checked.errors} == {"E340"}
+        assert not verified.ran
 
 
 class TestGenericCloneInstantiatedTypes:

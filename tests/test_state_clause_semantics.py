@@ -22,7 +22,20 @@ ARGUMENT is ``@Int.1``.
 
 from __future__ import annotations
 
+from tests import pipeline
 from tests.codegen_helpers import _compile, _run
+
+
+def _refused_at_its_clause(src: str) -> None:
+    """*src* is refused at check, at a clause whose resume code generation
+    cannot lower (E340, `vera/lowering.py`'s clause rule), so no compile
+    reaches it."""
+    compiled = pipeline.compile(src)
+    errors = compiled.checked.errors
+    assert [d.error_code for d in errors] == ["E340"], [
+        (d.error_code, d.description[:70]) for d in errors]
+    assert "resume" in errors[0].description, errors[0].description
+    assert compiled.generator is None
 
 
 class TestClauseTransformsResume:
@@ -163,12 +176,13 @@ public fn test(@Unit -> @Int)
 
 class TestPerArmResumeRejected:
     """A resume per branch arm types the branch as a VOID block while each
-    resume pushes the op's result — invalid WASM.  The walker rejects the
+    resume pushes the op's result — invalid WASM.  The walker rejected the
     shape loudly (PR #1003 review: it was accepted and emitted an invalid
-    module that failed only at instantiation).  The canonical form branches
-    inside the argument: ``resume(if c then a else b)``."""
+    module that failed only at instantiation), and the check refuses it now
+    (E340).  The canonical form branches inside the argument:
+    ``resume(if c then a else b)``."""
 
-    def test_resume_in_both_if_arms_skips_loudly(self) -> None:
+    def test_resume_in_both_if_arms_is_refused_at_check(self) -> None:
         src = """\
 public fn test(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
@@ -184,13 +198,9 @@ public fn test(@Unit -> @Int)
   }
 }
 """
-        result = _compile(src)
-        assert "test" not in result.exports, (
-            "per-arm resume must skip the function, not emit an invalid module"
-        )
-        assert any("resume" in d.description for d in result.diagnostics)
+        _refused_at_its_clause(src)
 
-    def test_resume_per_match_arm_skips_loudly(self) -> None:
+    def test_resume_per_match_arm_is_refused_at_check(self) -> None:
         src = """\
 private data Sign { Neg, Pos }
 public fn test(@Unit -> @Int)
@@ -209,15 +219,13 @@ public fn test(@Unit -> @Int)
   }
 }
 """
-        result = _compile(src)
-        assert "test" not in result.exports
-        assert any("resume" in d.description for d in result.diagnostics)
+        _refused_at_its_clause(src)
 
-    def test_one_arm_resumes_other_does_not_skips_loudly(self) -> None:
+    def test_one_arm_resumes_other_does_not_is_refused_at_check(self) -> None:
         # The nastier variant (PR #1003 review): ONE arm resumes, the other
-        # returns () — both arms type Unit so check AND verify are green,
-        # but the resuming arm pushes the op's result into a void join.
-        # Must skip loudly, never emit the invalid module.
+        # returns () — both arms type Unit, but the resuming arm pushes the
+        # op's result into a void join.  Refused at check (E340), never the
+        # invalid module.
         src = """\
 public fn test(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
@@ -233,11 +241,7 @@ public fn test(@Unit -> @Int)
   }
 }
 """
-        result = _compile(src)
-        assert "test" not in result.exports, (
-            "a mixed resume/non-resume join must skip the function"
-        )
-        assert any("resume" in d.description for d in result.diagnostics)
+        _refused_at_its_clause(src)
 
     def test_nested_handle_in_clause_statement_position_works(self) -> None:
         # A nested handle-expr in a STATEMENT of the clause body is legal:
@@ -555,10 +559,10 @@ public fn test(@Unit -> @Int)
 
 
 class TestNonTailResumeRejected:
-    def test_non_tail_resume_skips_loudly(self) -> None:
+    def test_non_tail_resume_is_refused_at_check(self) -> None:
         # A resume followed by more statements is not lowerable single-shot:
-        # the function is skipped with a diagnostic (loud), never compiled
-        # with silently-wrong semantics.
+        # the check refuses it (E340, loud), and nothing is compiled with
+        # silently-wrong semantics.
         src = """\
 public fn test(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
@@ -571,14 +575,7 @@ public fn test(@Unit -> @Int)
   }
 }
 """
-        result = _compile(src)
-        assert "test" not in result.exports, (
-            "a non-tail resume must skip the function, not compile it with "
-            "wrong single-shot semantics"
-        )
-        assert any(
-            "resume" in d.description for d in result.diagnostics
-        ), f"expected a resume diagnostic: {[d.description for d in result.diagnostics]}"
+        _refused_at_its_clause(src)
 
 
 class TestCanonicalUnchanged:

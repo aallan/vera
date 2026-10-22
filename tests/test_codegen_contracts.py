@@ -335,7 +335,7 @@ public fn double(@Int -> @Int)
     def test_precondition_full_message_format(self) -> None:
         """Full message should have kind, signature, and clause."""
         source = """\
-public fn clamp(@Int, @Int, @Int -> @Int)
+public fn clamp_to(@Int, @Int, @Int -> @Int)
   requires(@Int.0 <= @Int.1)
   ensures(true)
   effects(pure)
@@ -343,12 +343,12 @@ public fn clamp(@Int, @Int, @Int -> @Int)
 """
         result = _compile_ok(source)
         try:
-            execute(result, fn_name="clamp", args=[5, 3, 4])
+            execute(result, fn_name="clamp_to", args=[5, 3, 4])
             assert False, "Expected RuntimeError"
         except RuntimeError as exc:
             msg = str(exc)
             assert "Precondition violation" in msg
-            assert "clamp" in msg
+            assert "clamp_to" in msg
             assert "requires(" in msg
             assert "@Int.0 <= @Int.1" in msg
             assert "failed" in msg

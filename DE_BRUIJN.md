@@ -345,7 +345,7 @@ private fn wrap(@Option<Cnt>, @Cnt, @Int -> @Int)
 ```
 
 ```text
-  fn wrap(@Option<@Cnt>, @Cnt, @Int -> @Int)
+  fn wrap(@Option<Cnt>, @Cnt, @Int -> @Int)
     @Cnt.0  parameter 2 (only @Cnt)
     @Int.0  parameter 3 (only @Int)
     @Option<Int>.0  parameter 1 (only @Option<Int>)
@@ -428,7 +428,7 @@ private fn pick(@Option<Cnt>, @Option<Int> -> @Option<Int>)
 ```
 
 ```text
-  fn pick(@Option<@Cnt>, @Option<@Int> -> @Option<@Int>)
+  fn pick(@Option<Cnt>, @Option<Int> -> @Option<Int>)
     @Option<Int>.0  parameter 2 (last @Option<Int>)
     @Option<Int>.1  parameter 1 (first @Option<Int>)
 ```
@@ -455,7 +455,7 @@ private forall<T> fn split(@Option<Int>, @Option<T> -> @Int)
 ```
 
 ```text
-  fn split(@Option<@Int>, @Option<@T> -> @Int)
+  fn split(@Option<Int>, @Option<T> -> @Int)
     @Option<Int>.0  parameter 1 (only @Option<Int>)
     @Option<T>.0  parameter 2 (only @Option<T>)
 ```

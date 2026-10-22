@@ -42,18 +42,13 @@ clean E613.
 from __future__ import annotations
 
 
+from tests import pipeline
 from tests.codegen_helpers import _compile, _run
 
 
 # ---------------------------------------------------------------------
 # Helpers (mirror tests/test_composite_postcondition_eq_912.py)
 # ---------------------------------------------------------------------
-
-
-def _error_codes(source: str) -> list[str]:
-    """Error-severity diagnostic codes from a compile (no exception raised)."""
-    result = _compile(source)
-    return [d.error_code for d in result.diagnostics if d.severity == "error"]
 
 
 def _diag_codes(source: str) -> list[str]:
@@ -65,6 +60,16 @@ def _diag_codes(source: str) -> list[str]:
     """
     result = _compile(source)
     return [d.error_code for d in result.diagnostics]
+
+
+def _refused_e243(source: str) -> None:
+    """A `Tuple` `==` in a contract is refused at check (E243, `Tuple` is not
+    Eq-derivable, #1654), so code generation never translates it."""
+    compiled = pipeline.compile(source)
+    codes = {d.error_code for d in compiled.checked.errors}
+    assert codes == {"E243"}, [
+        (d.error_code, d.description[:70]) for d in compiled.checked.errors]
+    assert compiled.generator is None
 
 
 # Program bodies -------------------------------------------------------
@@ -103,12 +108,12 @@ public fn main(@Unit -> @Int)
 # =====================================================================
 
 class TestContractPredicateDegradation922:
-    def test_precondition_tuple_eq_is_clean_e613(self) -> None:
+    def test_precondition_tuple_eq_is_refused_at_check(self) -> None:
         # Site 1 — `requires`: a `Tuple<Int, Int> == Tuple<Int, Int>` in a
         # precondition.  `Tuple` is intentionally non-Eq (spec §9.8), so this
-        # reaches the structural-Eq dispatch and raises `AdtEqNotDerivableError`.
+        # reached the structural-Eq dispatch and raised `AdtEqNotDerivableError`.
         # Pre-fix `_compile_preconditions` had no try/except → uncaught
-        # traceback.  Now: a clean E613, function dropped.
+        # traceback; then a clean E613.  Now refused at check (E243).
         src = (
             "private fn f(@Int -> @Int) "
             "requires(Tuple(@Int.0, @Int.0) == Tuple(@Int.0, @Int.0)) "
@@ -116,14 +121,13 @@ class TestContractPredicateDegradation922:
             "public fn main(@Unit -> @Int) "
             "requires(true) ensures(true) effects(pure) { 0 }\n"
         )
-        codes = _error_codes(src)
-        assert "E613" in codes, f"expected E613 (no traceback), got {codes}"
+        _refused_e243(src)
 
-    def test_refinement_guard_tuple_eq_is_clean_e613(self) -> None:
+    def test_refinement_guard_tuple_eq_is_refused_at_check(self) -> None:
         # Site 2 — refinement-type param guard: a `Tuple == Tuple` inside a
         # `{ @Int | P }` refinement predicate.  Pre-fix `_emit_refinement_check`
-        # caught only `CodegenSkip`, so `AdtEqNotDerivableError` escaped.  Now: a
-        # clean E613, function dropped.
+        # caught only `CodegenSkip`, so `AdtEqNotDerivableError` escaped; then
+        # a clean E613.  Now refused at check (E243).
         src = (
             "type Weird = { @Int | Tuple(@Int.0, @Int.0) == Tuple(@Int.0, @Int.0) };\n"
             "private fn g(@Weird -> @Int) "
@@ -131,8 +135,7 @@ class TestContractPredicateDegradation922:
             "public fn main(@Unit -> @Int) "
             "requires(true) ensures(true) effects(pure) { 0 }\n"
         )
-        codes = _error_codes(src)
-        assert "E613" in codes, f"expected E613 (no traceback), got {codes}"
+        _refused_e243(src)
 
     def test_postcondition_hash_unsupported_is_clean_e602(self) -> None:
         # Site 3 — `ensures` with a `CodegenSkip` (not `AdtEqNotDerivableError`):
@@ -216,12 +219,11 @@ class TestValidContractsUnaffected922:
 # =====================================================================
 
 class TestPostcondition912StillDegrades922:
-    def test_tuple_postcondition_still_clean_e613(self) -> None:
+    def test_tuple_postcondition_is_refused_at_check(self) -> None:
         src = (
             "private fn mk(@Int -> @Tuple<Int, Int>) "
             "requires(true) "
             "ensures(@Tuple<Int, Int>.result == Tuple(@Int.0, @Int.0)) "
             "effects(pure) { Tuple(@Int.0, @Int.0) }\n"
         )
-        codes = _error_codes(src)
-        assert "E613" in codes, f"expected E613 (no traceback), got {codes}"
+        _refused_e243(src)

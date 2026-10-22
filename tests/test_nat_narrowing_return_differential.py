@@ -28,6 +28,8 @@ the actual runtime guard, site for site.
 
 from __future__ import annotations
 
+from vera.typed import build as build_typed
+
 import re
 
 import pytest
@@ -1293,9 +1295,8 @@ class TestRefinedNonPlainBaseParity1036:
         )
         with _resolved_pipeline(_NONPLAIN_NAMED_RET) as (prog, arts, res, path):
             module = codegen_compile(
-                prog, source=_NONPLAIN_NAMED_RET, file=path,
-                resolved_modules=res,
-                expr_semantic_types=arts.expr_semantic_types,
+                build_typed(prog, res, arts), source=_NONPLAIN_NAMED_RET,
+                file=path,
             )
         assert checks(module, kind="contract_violation"), (
             "the classification claims a guard the emitted module lacks"
@@ -2554,7 +2555,7 @@ class TestResumeInWithExprRejected:
     silently IGNORED (the lowering counts only the body's tail resume;
     the with-expr just evaluates for its value) — then a loud E602 skip
     (round-3 review, F5), and now refused at check (E340, the clause rule of
-    `vera/lowering.py`), with code generation's site as the backstop."""
+    `vera/lowering.py`), so no compile reaches the update."""
 
     _RESUME_IN_WITH = """\
 public fn go(@Int -> @Int) requires(true) ensures(true) effects(pure)
@@ -2574,11 +2575,6 @@ public fn go(@Int -> @Int) requires(true) ensures(true) effects(pure)
             d.description for d in checked.errors]
         assert "'with' update contains resume" in (
             checked.errors[0].description)
-        past = pipeline.compile(self._RESUME_IN_WITH, past_check=True)
-        msgs = [d.description for d in past.result.diagnostics
-                if d.error_code == "E699"]
-        assert any("resume(...) inside its 'with' state-update" in m
-                   for m in msgs), msgs
 
 
 class TestClauseScopeMixedSpellings:
@@ -2739,9 +2735,8 @@ public fn go(@Nat -> @Int)
         with _resolved_pipeline(self._DEEP_CHAIN) as (
                 program, arts, resolved, path):
             result = codegen_compile(
-                program, source=self._DEEP_CHAIN, file=path,
-                resolved_modules=resolved,
-                expr_semantic_types=arts.expr_semantic_types,
+                build_typed(program, resolved, arts), source=self._DEEP_CHAIN,
+                file=path,
             )
             hard = [(d.error_code, d.description) for d in result.diagnostics
                     if d.severity == "error"]
@@ -2794,9 +2789,8 @@ public fn go(@Int -> @Int)
         with _resolved_pipeline(self._QUAL_USER_SHADOW) as (
                 program, arts, resolved, path):
             result = codegen_compile(
-                program, source=self._QUAL_USER_SHADOW, file=path,
-                resolved_modules=resolved,
-                expr_semantic_types=arts.expr_semantic_types,
+                build_typed(program, resolved, arts), source=self._QUAL_USER_SHADOW,
+                file=path,
             )
             assert result.ok, [d.description for d in result.diagnostics]
             assert wat_calls(result.wat, "vera.state_put_Int")
@@ -2919,8 +2913,8 @@ public fn bump(@Nat -> @Int)
 """
         with _resolved_pipeline(src) as (program, arts, resolved, path):
             result = codegen_compile(
-                program, source=src, file=path, resolved_modules=resolved,
-                expr_semantic_types=arts.expr_semantic_types,
+                build_typed(program, resolved, arts), source=src,
+                file=path,
             )
         hard = [(d.error_code, d.description) for d in result.diagnostics
                 if d.severity == "error"]

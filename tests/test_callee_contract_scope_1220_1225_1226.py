@@ -34,7 +34,7 @@ from vera.checker import typecheck
 from vera.parser import parse_to_ast
 from vera.resolver import ResolvedModule
 from vera.runtime.traps import WasmTrapError
-from vera.verifier import ContractVerifier, VerifyResult, verify
+from vera.verifier import ContractVerifier, VerifyResult
 from tests import pipeline
 
 
@@ -113,12 +113,11 @@ def _run_mod(source: str, modules: list[ResolvedModule]) -> object:
     """Compile *source* with *modules* and call ``main`` — the runtime oracle.
 
     Raises :class:`WasmTrapError` when the program violates a contract at run
-    time, which is exactly what a false Tier 1 has to be caught by.  Compiled
-    unchecked (no type check, none of the checker's tables), as
-    ``fixture.vera``.
+    time, which is exactly what a false Tier 1 has to be caught by.  Checked
+    and compiled with the checker's tables, as ``fixture.vera``.
     """
     result = pipeline.compile(
-        source, file="fixture.vera", modules=modules, checked=False).result
+        source, file="fixture.vera", modules=modules).result
     errors = [d for d in result.diagnostics if d.severity == "error"]
     assert not errors, f"unexpected codegen errors: {errors}"
     return pipeline.run(result, "main", capture_stderr=False).value
@@ -973,12 +972,10 @@ class TestAModulesOwnImportsAreInItsRegistry:
         generation took the IMPORTER's `other`, so the same `mid` passed its
         precondition under one importer and trapped under another.
 
-        The verifier is asked as well, past the checker, because its own
-        scope is the invariant here.  The importer happens to import `other`
-        itself, so a registry that took the whole reachable set (or fell
-        through to the importer's, the pre-#1225 behaviour) would bind it
-        and interpret the callee's contract with a function the callee
-        cannot name.  It must miss instead — loudly, as an E532 demotion.
+        The importer imports `other` itself, so the refusal is located in
+        `mid` by `mid`'s own filter rather than by the importer's.  The
+        verifier is not asked: verification runs only on a program the
+        check accepts, so no registry meets a name its module cannot name.
         """
         mid = _MID_REQ.replace("cap(0)", "other(0)")
         main = _MAIN_REQ.replace("import deep(cap);", "import deep(other);")
@@ -992,15 +989,6 @@ class TestAModulesOwnImportsAreInItsRegistry:
         assert len(refused) == 1, [(d.error_code, d.severity) for d in check]
         assert "other" in refused[0].description
         assert refused[0].location.file != _ENTRY_FILE
-        result = verify(
-            prog, main, file=_ENTRY_FILE, resolved_modules=modules)
-        assert [
-            d for d in result.diagnostics if d.error_code == "E532"
-        ], (
-            "`other` is not in `mid`'s scope, so its contract must not "
-            f"resolve: {[d.error_code for d in result.diagnostics]}"
-        )
-        assert not _codes(result), _codes(result)
 
 
 # =====================================================================
@@ -1159,9 +1147,9 @@ public fn main(@Unit -> @Nat)
     def _predicate(
         self,
     ) -> tuple[ContractVerifier, ast.RefinementType]:
-        prog = pipeline.parse(self._CLOSURE_PREDICATE).program
-        verifier = ContractVerifier(source=self._CLOSURE_PREDICATE)
-        verifier.register_program(prog)
+        typed = pipeline.check(self._CLOSURE_PREDICATE).typed
+        verifier = ContractVerifier(typed, source=self._CLOSURE_PREDICATE)
+        verifier.register_program(typed.program)
         body = verifier.env.type_aliases["Grown"].body
         assert isinstance(body, ast.RefinementType), body
         return verifier, body
@@ -1218,8 +1206,7 @@ class TestObligationsCarryTheirDeclaringFile:
         # against a known value rather than against a literal that agrees
         # with `_ENTRY_FILE` only by habit (PR #1283 review).
         return pipeline.verify(
-            _HELPER_MAIN, file=_ENTRY_FILE, modules=modules,
-            past_check=True).result
+            _HELPER_MAIN, file=_ENTRY_FILE, modules=modules).result
 
     def test_a_module_located_obligation_joins_its_diagnostic(self) -> None:
         result = self._verified()

@@ -821,19 +821,23 @@ class ResolutionMixin:
               if info is not None else None)
         decl = self._forward_effect_decls.get(ref.name)
         first: tuple[str, str] | None = None
-        if op is not None:
+        if decl is not None and decl.operations:
+            # An effect the program declares, above the row or below it
+            # (`_forward_effect_decls` holds each one): the declaration's own
+            # text, a type as the program writes it, so the signature pastes
+            # as written whichever side of the row it is declared on.
+            op_decl = decl.operations[0]
+            first = (op_decl.name,
+                     ", ".join(ast.format_type(t)
+                               for t in op_decl.param_types)
+                     + " -> "
+                     + ast.format_type(op_decl.return_type))
+        elif op is not None:
+            # An effect the program does not declare (an imported one): its
+            # registered signature, the resolved types' message form.
             first = (op.name,
                      ", ".join(pretty_type(p) for p in op.param_types)
                      + " -> " + pretty_type(op.return_type))
-        elif decl is not None and decl.operations:
-            # Declared further down the file, so not registered yet: the
-            # declaration's own text, as the registered signature reads.
-            op_decl = decl.operations[0]
-            first = (op_decl.name,
-                     ", ".join(ast.format_type_expr(t).replace("@", "")
-                               for t in op_decl.param_types)
-                     + " -> "
-                     + ast.format_type_expr(op_decl.return_type).replace("@", ""))
         if first is not None:
             name, sig = first
             replace = (

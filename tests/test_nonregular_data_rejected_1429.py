@@ -440,23 +440,23 @@ def test_the_remedy_names_the_offending_type_not_the_declaration() -> None:
     assert "'B<T>'" in bad[0].fix, bad[0].fix
 
 
-def test_verify_is_not_reachable_on_a_non_regular_type() -> None:
-    """`verify()` takes the typed program, which only a clean check yields
-    (#1679), so a program the checker refuses for a non-regular type (E129)
-    cannot be verified at all.  Measured before #1679: calling `verify()`
-    directly on such a program did not come back within 60 s (PR #1432
-    review); the SMT layer still declines to model the type, and nothing
-    can hand it one now."""
+def test_a_non_regular_type_is_refused_before_verification() -> None:
+    """Measured before the rule: calling `verify()` directly on a program the
+    checker refuses did not come back within 60 s, because the datatype-group
+    closure has no fixed point (PR #1432 review).  The SMT layer asks the same
+    shared derivation (pinned below), and verification runs only on a program
+    the check accepts, which refuses the type (E129) first.
+    """
     source = (
         "private data Nest<T> { N(Nest<Option<T>>), Z }\n"
         "public fn f(@Nest<Int> -> @Int)\n"
         "  requires(true) ensures(true) effects(pure)\n"
         "{ match @Nest<Int>.0 { N(@Nest<Option<Int>>) -> 1, Z -> 0 } }"
     )
-    checked = pipeline.check(source)
-    assert any(d.error_code == "E129" for d in checked.errors), checked.errors
-    with pytest.raises(pipeline.StageFailed):
-        _ = checked.typed
+    verified = pipeline.verify(source)
+    assert any(d.error_code == "E129" for d in verified.checked.errors), (
+        verified.checked.errors)
+    assert not verified.ran
 
 
 def test_one_derivation_serves_both_consumers() -> None:

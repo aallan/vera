@@ -875,16 +875,29 @@ class _TupleDestruct:
 # Source Text Formatting (for error messages)
 # =====================================================================
 
+def format_type(te: TypeExpr) -> str:
+    """*te* as Vera writes it where it is a type ARGUMENT, with no ``@``:
+    ``Array<Int>``, ``{ @Int | @Int.0 > 0 }``, ``fn(Int -> Int) effects(pure)``.
+
+    The canonical formatter's rendering
+    (:func:`vera.formatter.format_type_canonical`), so a message spells a type
+    as ``vera fmt`` writes it, and there is one renderer of a type into text.
+    A refinement's predicate is an expression, and the formatter is the
+    renderer that writes every expression so that it parses back to itself:
+    :func:`format_expr` writes some shapes ``<expr>`` and never
+    parenthesises an operand.  Imported here, as
+    :func:`vera.types.structural_type_key` imports the formatter:
+    :mod:`vera.formatter` imports this module, and pulls in the parser."""
+    from vera.formatter import format_type_canonical
+    return format_type_canonical(te)
+
+
 def format_type_expr(te: TypeExpr) -> str:
-    """Reconstruct Vera source text from a type expression AST node."""
-    if isinstance(te, NamedType):
-        if te.type_args:
-            args = ", ".join(format_type_expr(a) for a in te.type_args)
-            return f"@{te.name}<{args}>"
-        return f"@{te.name}"
-    if isinstance(te, RefinementType):
-        return format_type_expr(te.base_type)
-    return "@?"
+    """*te* as Vera writes it in a SLOT's position (a parameter, a result, a
+    binding): the head takes the ``@`` and its arguments do not,
+    ``@Array<Int>``, ``@{ @Int | @Int.0 > 0 }``.  A type argument is
+    :func:`format_type`'s."""
+    return "@" + format_type(te)
 
 
 def predicate_binder_ref(predicate: "Expr") -> "SlotRef | None":
@@ -963,13 +976,13 @@ def format_expr(expr: Expr) -> str:
     if isinstance(expr, SlotRef):
         base = expr.type_name
         if expr.type_args:
-            args = ", ".join(format_type_expr(a) for a in expr.type_args)
+            args = ", ".join(format_type(a) for a in expr.type_args)
             base = f"{base}<{args}>"
         return f"@{base}.{expr.index}"
     if isinstance(expr, ResultRef):
         base = expr.type_name
         if expr.type_args:
-            args = ", ".join(format_type_expr(a) for a in expr.type_args)
+            args = ", ".join(format_type(a) for a in expr.type_args)
             base = f"{base}<{args}>"
         return f"@{base}.result"
     if (isinstance(expr, (FnCall, ConstructorCall, QualifiedCall, ModuleCall))
@@ -1003,7 +1016,7 @@ def format_expr(expr: Expr) -> str:
         ref = expr.effect_ref
         if isinstance(ref, EffectRef):
             if ref.type_args:
-                args = ", ".join(format_type_expr(a) for a in ref.type_args)
+                args = ", ".join(format_type(a) for a in ref.type_args)
                 return f"old({ref.name}<{args}>)"
             return f"old({ref.name})"
         return "old(...)"
@@ -1011,7 +1024,7 @@ def format_expr(expr: Expr) -> str:
         ref = expr.effect_ref
         if isinstance(ref, EffectRef):
             if ref.type_args:
-                args = ", ".join(format_type_expr(a) for a in ref.type_args)
+                args = ", ".join(format_type(a) for a in ref.type_args)
                 return f"new({ref.name}<{args}>)"
             return f"new({ref.name})"
         return "new(...)"
