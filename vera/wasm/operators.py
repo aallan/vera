@@ -546,14 +546,16 @@ class OperatorsMixin:
         so the composite `==` falls back to the scalar lowering rather than
         crashing the derivability gate.
         """
-        lt = lv.find("<")
+        # A refinement's predicate is one atom (#1674).
+        masked = naming.mask_refinements(lv)
+        lt = masked.find("<")
         if lt == -1:
             return False
-        inner = lv[lt + 1 : lv.rfind(">")]
+        inner = lv[lt + 1 : masked.rfind(">")]
         args: list[str] = []
         depth = 0
         start = 0
-        for i, ch in enumerate(inner):
+        for i, ch in enumerate(masked[lt + 1 : masked.rfind(">")]):
             if ch == "<":
                 depth += 1
             elif ch == ">":
@@ -610,7 +612,7 @@ class OperatorsMixin:
         (`modules.py`, #912) so `_adt_tp_param_names` answers for cross-module
         `Box<T>` too, not just local ADTs.
         """
-        if "<" in lv:
+        if "<" in naming.mask_refinements(lv):
             return self._has_free_type_var_arg(lv)
         return bool(self._adt_tp_param_names.get(lv_base or ""))
 
@@ -622,15 +624,17 @@ class OperatorsMixin:
         nesting depth so a comma inside a nested ``<…>`` does not split).  A bare
         name yields ``(name, [])``.
         """
-        lt = name.find("<")
+        # A refinement's predicate is one atom (#1674).
+        masked = naming.mask_refinements(name)
+        lt = masked.find("<")
         if lt == -1:
             return name.strip(), []
         base = name[:lt].strip()
-        inner = name[lt + 1 : name.rfind(">")]
+        inner = name[lt + 1 : masked.rfind(">")]
         args: list[str] = []
         depth = 0
         start = 0
-        for i, ch in enumerate(inner):
+        for i, ch in enumerate(masked[lt + 1 : masked.rfind(">")]):
             if ch == "<":
                 depth += 1
             elif ch == ">":

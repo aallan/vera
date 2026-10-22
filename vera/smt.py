@@ -4319,7 +4319,9 @@ class SmtContext:
         key = key.strip()
         if not key or "?" in key:
             return None
-        lt = key.find("<")
+        # A refinement's predicate is one atom (#1674).
+        masked = naming.mask_refinements(key)
+        lt = masked.find("<")
         if lt == -1:
             prim = PRIMITIVES.get(key)
             if prim is not None:
@@ -4332,7 +4334,7 @@ class SmtContext:
         args: list[Type] = []
         depth = 0
         start = 0
-        for i, ch in enumerate(inner):
+        for i, ch in enumerate(masked[lt + 1:-1]):
             if ch == "<":
                 depth += 1
             elif ch == ">":

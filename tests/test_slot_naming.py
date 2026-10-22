@@ -160,16 +160,21 @@ def test_refinement_alias_at_top_level_stays_opaque() -> None:
     assert _name("@Pos") == "Pos"
 
 
-def test_refinement_in_argument_position_renders_the_elided_form() -> None:
-    assert _name("@Option<Pos>") == "Option<{@Int | ...}>"
+def test_refinement_in_argument_position_keeps_its_predicate() -> None:
+    """#1674: the predicate is part of what the argument names, so two
+    refinements of one base are two names."""
+    assert _name("@Option<Pos>") == "Option<{@Int | @Int.0 > 0}>"
+    assert _name("@Option<Neg>") == "Option<{@Int | @Int.0 < 0}>"
 
 
 def test_parameterised_refinement_alias_substitutes_before_refining() -> None:
     """Ordering: substitute the alias parameters, THEN take the refinement
     branch — otherwise the binder renders as the un-substituted `{@T | ...}`
-    and never matches the instantiated key."""
-    assert _name("@Option<PosT<Int>>") == "Option<{@Int | ...}>"
-    assert _name("@Option<PosT<MyAlias>>") == "Option<{@Int | ...}>"
+    and never matches the instantiated key.  The predicate keeps the
+    alias's own spelling (`@T.0`), which a reference writes as the alias
+    declares it."""
+    assert _name("@Option<PosT<Int>>") == "Option<{@Int | @T.0 > 0}>"
+    assert _name("@Option<PosT<MyAlias>>") == "Option<{@Int | @T.0 > 0}>"
 
 
 # =====================================================================

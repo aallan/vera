@@ -42,7 +42,8 @@ keyed by, so everything downstream must match it or it matches nothing:
 * type ARGUMENTS are fully resolved: ``@Option<MyAlias>`` where
   ``type MyAlias = Int`` renders ``Option<Int>``;
 * a refinement at top level renders its base; in argument position it
-  renders the predicate-elided ``{@Int | ...}`` form;
+  renders ``{@Int | <predicate>}``, the predicate in canonical form, so two
+  refinements of one base are two names (#1674);
 * a function type renders ``Fn`` at top level, and its full
   ``fn(...) effects(...)`` spelling (effect row SORTED) in argument
   position;
@@ -58,11 +59,12 @@ keyed by, so everything downstream must match it or it matches nothing:
   without a body falls through rather than raising.
 
 Argument resolution is done by rebuilding the checker's own semantic
-:class:`~vera.types.Type` and handing it to the checker's own
-:func:`~vera.types.pretty_type`, rather than by re-implementing the
-rendering; :func:`slot_name` reaches it through :func:`type_arg_name` so
-there is one per-argument answer rather than two compositions of the same
-steps.  Only the ``Head<a, b>`` JOIN is restated here, and the differential
+:class:`~vera.types.Type` and rendering it with :func:`_argument_text`,
+which is :func:`~vera.types.pretty_type` branch for branch except that a
+refinement keeps its predicate (``pretty_type`` is the presentation
+renderer every diagnostic shares, and it elides it); :func:`slot_name`
+reaches it through :func:`type_arg_name` so there is one per-argument answer
+rather than two compositions of the same steps.  Only the ``Head<a, b>`` JOIN is restated here, and the differential
 in ``tests/test_slot_naming_differential.py`` compares against
 ``canonical_type_name`` directly, so a drift in the separator or the
 bracketing goes red across the whole corpus.  Byte-identity with the checker
@@ -117,6 +119,7 @@ from vera.types import (
     EffectInstance,
     EffectRowType,
     FunctionType,
+    PrimitiveType,
     PureEffectRow,
     RefinedType,
     Type,
@@ -124,6 +127,7 @@ from vera.types import (
     UnknownType,
     base_type,
     pretty_type,
+    strip_builtin_typevar_marker,
     structural_type_key,
     substitute,
 )
@@ -143,6 +147,7 @@ __all__ = [
     "display_adt_name",
     "family_base_name",
     "family_name",
+    "mask_refinements",
     "predicate_binder_key",
     "refined_type_chain",
     "refined_type_expr_chain",
@@ -876,16 +881,116 @@ def slot_name_or_none(te: ast.TypeExpr, env: AliasEnv) -> str | None:
 def type_arg_name(te: ast.TypeExpr, env: AliasEnv) -> str:
     """The ARGUMENT-position rendering of a type expression.
 
-    Clause of THE RULE: fully resolved, then rendered by the checker's own
-    :func:`~vera.types.pretty_type` — so a refinement renders its
-    predicate-elided ``{@Int | ...}`` form, a function type its full
+    Clause of THE RULE: fully resolved, then rendered by
+    :func:`_argument_text` — so a refinement renders ``{@Int | @Int.0 > 0}``
+    with its predicate in canonical form (#1674: the predicate is part of
+    which binding a name denotes), a function type its full
     ``fn(...) effects(...)`` spelling with a SORTED effect row, and anything
     unresolvable renders ``?``.  This is exactly the per-argument rendering
     :func:`slot_name`'s join performs — literally, since #1208 review:
     ``slot_name`` calls this per argument rather than composing the same two
     steps itself, so the two answers are one answer by construction.
     """
-    return pretty_type(resolve_type_expr(te, env))
+    return _argument_text(resolve_type_expr(te, env))
+
+
+def _argument_text(ty: Type) -> str:
+    """*ty* as a slot name's argument writes it: :func:`~vera.types.pretty_type`,
+    branch for branch, except that a refinement keeps its predicate, in the
+    canonical form ``vera fmt`` writes it (#1674).
+
+    ``pretty_type`` is the presentation renderer every diagnostic shares,
+    and its ``{@Int | ...}`` elision is right for a message; for a NAME it
+    folds every refinement of one base into one binding, so a reference
+    written with one predicate reached a parameter declared with another.
+    """
+    if isinstance(ty, PrimitiveType):
+        return ty.name
+    if isinstance(ty, AdtType):
+        if ty.type_args:
+            args = ", ".join(_argument_text(a) for a in ty.type_args)
+            return f"{ty.name}<{args}>"
+        return ty.name
+    if isinstance(ty, FunctionType):
+        params = ", ".join(_argument_text(p) for p in ty.params)
+        ret = _argument_text(ty.return_type)
+        return f"fn({params} -> {ret}) {_argument_effect_text(ty.effect)}"
+    if isinstance(ty, RefinedType):
+        # Imported here, as `structural_type_key` does: `vera.formatter`
+        # pulls in the parser, which a module-level edge would make every
+        # importer of this module pay for.
+        from vera.formatter import format_expr_canonical
+        return (f"{{@{_argument_text(ty.base)} | "
+                f"{format_expr_canonical(ty.predicate)}}}")
+    if isinstance(ty, TypeVar):
+        return strip_builtin_typevar_marker(ty.name)
+    if isinstance(ty, UnknownType):
+        return "?"
+    return str(ty)
+
+
+def mask_refinements(name: str) -> str:
+    """*name*, a slot name or a type name rendered like one, with the text
+    inside each refinement's braces replaced by ``_`` and its length kept.
+
+    A slot name's argument keeps its refinement's predicate (#1674), and a
+    predicate is expression text: ``{@Int | @Int.0 > 0}`` holds a ``>``, and
+    ``{@Int | f(@Int.0, 1)}`` a comma.  Every parser of these strings counts
+    angle brackets and splits at commas, so each one reads the brackets and
+    commas from this mask and slices the original at the positions it finds:
+    a refinement is one atom to it.  A string literal in a predicate is one
+    token, so a brace or a quote in it closes nothing.  A name with no
+    refinement is returned unchanged.
+    """
+    if "{" not in name:
+        return name
+    out: list[str] = []
+    depth = 0
+    in_string = False
+    escaped = False
+    for ch in name:
+        if depth == 0:
+            if ch == "{":
+                depth = 1
+            out.append(ch)
+            continue
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            out.append("_")
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                out.append(ch)
+                continue
+        out.append("_")
+    return "".join(out)
+
+
+def _argument_effect_text(eff: EffectRowType) -> str:
+    """:func:`~vera.types.pretty_effect`, with each effect's type arguments
+    rendered by :func:`_argument_text`."""
+    if isinstance(eff, PureEffectRow):
+        return "effects(pure)"
+    if isinstance(eff, ConcreteEffectRow):
+        parts = sorted(
+            f"{e.name}<{', '.join(_argument_text(a) for a in e.type_args)}>"
+            if e.type_args else e.name
+            for e in eff.effects
+        )
+        if eff.row_var:
+            parts.append(eff.row_var)
+        return f"effects(<{', '.join(parts)}>)"
+    return "effects(?)"
 
 
 def slot_ref_key(ref: ast.SlotRef, env: AliasEnv) -> str:

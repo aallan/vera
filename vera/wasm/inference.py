@@ -2131,8 +2131,9 @@ class InferenceMixin:
         of a generic declaration's value is.  *arity* is the argument count
         of a caller that has the name without its arguments.
         """
-        if "<" in type_name:
-            base = type_name.split("<", 1)[0]
+        masked = naming.mask_refinements(type_name)
+        if "<" in masked:
+            base = type_name[:masked.index("<")]
             if arity is None:
                 arity = len(self._split_type_args(type_name))
         else:
@@ -2165,18 +2166,22 @@ class InferenceMixin:
 
     @staticmethod
     def _split_type_args(type_name: str) -> list[str]:
-        """The top-level argument spellings of ``Head<A, B<C>>``."""
-        inner = type_name.split("<", 1)[1]
-        inner = inner[:-1] if inner.endswith(">") else inner
+        """The top-level argument spellings of ``Head<A, B<C>>``, a
+        refinement's predicate read as one atom (#1674)."""
+        masked = naming.mask_refinements(type_name)
+        lt = masked.index("<") + 1
+        inner, shape = type_name[lt:], masked[lt:]
+        if shape.endswith(">"):
+            inner, shape = inner[:-1], shape[:-1]
         out: list[str] = []
         depth = 0
         cur = ""
-        for ch in inner:
-            if ch == "<":
+        for ch, sh in zip(inner, shape):
+            if sh == "<":
                 depth += 1
-            elif ch == ">":
+            elif sh == ">":
                 depth -= 1
-            if ch == "," and depth == 0:
+            if sh == "," and depth == 0:
                 out.append(cur.strip())
                 cur = ""
             else:

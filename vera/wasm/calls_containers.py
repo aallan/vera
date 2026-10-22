@@ -17,7 +17,7 @@ call.
 
 from __future__ import annotations
 
-from vera import ast
+from vera import ast, naming
 from vera.skip import CodegenSkip
 from vera.wasm import hamt
 from vera.wasm.helpers import WasmSlotEnv, gc_shadow_push
@@ -896,7 +896,8 @@ class CallsContainersMixin:
         """
         inner = name[4:-1]  # strip "Map<" and ">"
         depth = 0
-        for i, ch in enumerate(inner):
+        # A refinement's predicate is one atom (#1674).
+        for i, ch in enumerate(naming.mask_refinements(name)[4:-1]):
             if ch == "<":
                 depth += 1
             elif ch == ">":

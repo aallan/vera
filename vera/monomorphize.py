@@ -2812,22 +2812,25 @@ class Monomorphizer:
         NamedType("Int"))).  Handles nested types like
         "Map<String, Array<Int>>".
         """
-        if "<" not in name:
+        # A refinement's predicate is one atom (#1674).
+        masked = naming.mask_refinements(name)
+        if "<" not in masked:
             return ast.NamedType(name=name, type_args=None)
-        base = name[:name.index("<")]
-        inner = name[name.index("<") + 1:-1]  # strip outer < >
+        lt = masked.index("<")
+        base = name[:lt]
+        inner = name[lt + 1:-1]  # strip outer < >
         # Split at top-level commas (respecting nesting)
         args: list[str] = []
         depth = 0
         current: list[str] = []
-        for ch in inner:
-            if ch == "<":
+        for ch, sh in zip(inner, masked[lt + 1:-1]):
+            if sh == "<":
                 depth += 1
                 current.append(ch)
-            elif ch == ">":
+            elif sh == ">":
                 depth -= 1
                 current.append(ch)
-            elif ch == "," and depth == 0:
+            elif sh == "," and depth == 0:
                 args.append("".join(current).strip())
                 current = []
             else:

@@ -36,8 +36,15 @@ pytestmark = pytest.mark.matrix(decides=[
     "vera/resolver.py",
     "vera/prelude.py",
     "vera/naming.py",
+    "vera/registration.py",
     "vera/checker/registration.py",
+    "vera/checker/resolution.py",
+    "vera/verifier.py",
+    "vera/codegen/core.py",
     "vera/codegen/modules.py",
+    "vera/smt.py",
+    "vera/monomorphize.py",
+    "vera/wasm/inference.py",
 ])
 
 
@@ -55,13 +62,6 @@ def _tree(tmp_path: Path, files: dict[str, str]) -> Path:
 
 def _codes(diagnostics: object) -> list[str | None]:
     return [d.error_code for d in diagnostics]  # type: ignore[attr-defined]
-
-
-# The mechanisms still to land, each a strict xfail on the cells it flips:
-# a cell that starts passing fails the run until its mark is removed.
-_SLOTS = pytest.mark.xfail(strict=True, reason=(
-    "#1694: a refinement in a type argument keeps its predicate in the "
-    "slot name (spec 3.8.1)"))
 
 
 def _refused(source: str | Path, code: str) -> None:
@@ -539,7 +539,6 @@ def test_repro_1581_where_helper_beside_a_same_named_generic(
 # #1674: a refinement in a type argument names its own slot stack.
 # =====================================================================
 
-@_SLOTS
 def test_repro_1674_refinements_in_a_type_argument_are_two_stacks() -> None:
     """The reference written with ``> 0`` reaches the parameter declared
     ``> 0``: parameter 1, whose array has one element."""
@@ -552,15 +551,78 @@ def test_repro_1674_refinements_in_a_type_argument_are_two_stacks() -> None:
     assert pipeline.run(source, "main").value == 1
 
 
-@_SLOTS
+_RESULT_1674 = (
+    "type PosInt = { @Int | @Int.0 > 0 };\n\n"
+    "public fn f(@Int -> @Option<PosInt>)\n  requires(true)\n"
+    "  ensures(@Option<{ @Int | @Int.0 > 99 }>.result == None)\n"
+    "  effects(pure)\n{\n  None\n}\n")
+
+
 def test_repro_1674_result_reference_predicate() -> None:
     """A result reference whose refinement the result's type lacks."""
-    source = (
-        "type PosInt = { @Int | @Int.0 > 0 };\n\n"
-        "public fn f(@Int -> @Option<PosInt>)\n  requires(true)\n"
-        "  ensures(@Option<{ @Int | @Int.0 > 99 }>.result == None)\n"
-        "  effects(pure)\n{\n  None\n}\n")
-    _refused(source, "E163")
+    _refused(_RESULT_1674, "E163")
+
+
+def test_e163_fix_for_a_result_reference_predicate_clears_it() -> None:
+    """The E163 fix applied literally: the reference it names is accepted."""
+    checked = pipeline.check(_RESULT_1674)
+    (diag,) = [d for d in checked.errors if d.error_code == "E163"]
+    match = re.fullmatch(r"Write (@\S+\.result)\.", diag.fix or "")
+    assert match is not None, diag.fix
+    fixed = _RESULT_1674.replace(
+        "@Option<{ @Int | @Int.0 > 99 }>.result", match.group(1))
+    assert fixed != _RESULT_1674
+    assert "E163" not in _codes(pipeline.check(fixed).errors)
+
+
+# The class the kept predicate opens: a slot name's argument now carries
+# expression text, and every parser of slot-name strings splits at angle
+# brackets and commas, so each one is fed a predicate holding `<`, `>`, a
+# comma, a quote and a brace, and must read the refinement as one argument.
+_PRED_KEY = "{@Int | f(@Int.0, 1) > 0}"
+_PRED_STR = '{@String | @String.0 != "<}"}'
+_PRED_NAME = f"Map<{_PRED_KEY}, Option<{_PRED_STR}>>"
+
+
+def test_class_1674_every_slot_name_parser_reads_a_predicate_as_one_atom(
+) -> None:
+    from vera.monomorphize import Monomorphizer
+    from vera.naming import mask_refinements
+    from vera.smt import SmtContext
+    from vera.types import AdtType
+    from vera.wasm.calls_containers import CallsContainersMixin
+    from vera.wasm.calls_handlers import CallsHandlersMixin
+    from vera.wasm.inference import InferenceMixin
+    from vera.wasm.operators import OperatorsMixin
+
+    args = [_PRED_KEY, f"Option<{_PRED_STR}>"]
+    assert len(mask_refinements(_PRED_NAME)) == len(_PRED_NAME)
+    assert InferenceMixin._split_type_args(_PRED_NAME) == args
+    assert CallsContainersMixin._split_map_type_args(_PRED_NAME) == tuple(args)
+    assert CallsHandlersMixin._split_param_type(_PRED_NAME) == ("Map", args)
+    assert CallsHandlersMixin._ptype_nesting_depth(_PRED_NAME) == 2
+    assert OperatorsMixin._split_type_name(_PRED_NAME) == ("Map", args)
+    parsed = Monomorphizer._parse_type_name(_PRED_NAME)
+    assert parsed.name == "Map"
+    assert [a.name for a in parsed.type_args] == [_PRED_KEY, "Option"]
+    assert parsed.type_args[1].type_args[0].name == _PRED_STR
+    assert SmtContext._parse_adt_sort_key(_PRED_NAME) == AdtType("Map", (
+        AdtType(_PRED_KEY, ()), AdtType("Option", (AdtType(_PRED_STR, ()),))))
+
+    class _Asked:
+        """The one call `_has_free_type_var_arg` makes per argument."""
+
+        def __init__(self) -> None:
+            self.seen: list[str] = []
+
+        def _type_arg_is_free_var(self, arg: str) -> bool:
+            self.seen.append(arg.strip())
+            return False
+
+    asked = _Asked()
+    assert not OperatorsMixin._has_free_type_var_arg(
+        asked, _PRED_NAME)  # type: ignore[arg-type]
+    assert asked.seen == args
 
 
 # =====================================================================
