@@ -20,6 +20,7 @@ the call; every satisfied pair checks, verifies and runs as at the base.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -30,11 +31,15 @@ from tests import pipeline
 from vera import ast
 
 pytestmark = pytest.mark.matrix(decides=[
+    "vera/typed.py",
     "vera/monomorphize.py",
     "vera/codegen/monomorphize.py",
     "vera/checker/calls.py",
+    "vera/checker/control.py",
     "vera/checker/core.py",
+    "vera/checker/resolution.py",
     "vera/lowering.py",
+    "vera/smt.py",
 ])
 
 
@@ -184,13 +189,7 @@ REPROS: dict[str, Repro] = {
 }
 
 
-#: The instances the change that closes them has landed for.
-FLIPPED = frozenset({"1769_instantiated_row_fits"})
-
-
-@pytest.mark.parametrize("name", [
-    name if name in FLIPPED else pytest.param(name, marks=pytest.mark.xfail(strict=True, reason="red at 94cef528: the typed program (#1679) flips it")) for name in sorted(REPROS)
-])
+@pytest.mark.parametrize("name", sorted(REPROS))
 def test_repro_instance(name: str, tmp_path: Path) -> None:
     repro = REPROS[name]
     repro.expect(pipeline.write_tree(tmp_path, repro.files))
@@ -216,6 +215,8 @@ class Judgment:
     unsat: str              # an argument it refuses
     effects: str = "pure"   # the row the caller declares
     handler: str = ""       # a handler the call is written inside
+    #: A position whose root call an earlier rule refuses, with its code.
+    refused_first: tuple[tuple[str, str], ...] = ()
 
 
 _STATE_INT = ("handle[State<Int>](@Int = 0) { get(@Unit) -> { resume(@Int.0) }, "
@@ -253,6 +254,16 @@ JUDGMENTS: dict[str, Judgment] = {
         _fn("public forall<T> fn g(@Option<T> -> @T)", "get(())",
             effects="<State<T>>"),
         "Int", "1", "true", handler=_STATE_INT),
+    # The cell's twin: an `Exn<T>` payload at a type no tag throws.  Through
+    # another generic, the one between reads its `Unit` argument, which E206
+    # refuses at the root call first.
+    "payload": Judgment(
+        "E612",
+        _fn("public forall<T> fn g(@T -> @Int)",
+            "handle[Exn<T>] {\n    throw(@T) -> { 0 }\n  } in {\n    1\n  }"),
+        _fn("public forall<T> fn g(@Option<T> -> @Int)",
+            "handle[Exn<T>] {\n    throw(@T) -> { 0 }\n  } in {\n    1\n  }"),
+        "Int", "5", "()", refused_first=(("through_generic", "E206"),)),
 }
 
 POSITIONS = ("direct", "through_generic", "through_closure", "through_module",
@@ -302,17 +313,45 @@ MATRIX = [
 ]
 
 
-def _red_at_base(judgment: str, verdict: str) -> bool:
-    """At 94cef528 every unsatisfied ability, cell and key pair passes check,
-    and every satisfied effect-row pair is refused (E125); the effect-row
-    pairs flip with the row instantiated at the call (#1769)."""
-    return verdict == "unsat" and judgment != "effect_row"
+#: At 94cef528 every unsatisfied ability, cell, key and payload pair passed
+#: check (code generation refused it, or compiled an invalid module), and
+#: every satisfied effect-row pair was refused (E125, #1769).
+#:
+#: Each satisfied pair's obligations, (kind/status, count), as `vera verify`
+#: recorded them at 94cef528: the negative space, which the judgments leave
+#: as it was.  The effect-row pairs, refused there, record what the other
+#: judgments' pairs do.
+_SAT_OBLIGATIONS: dict[str, tuple[tuple[str, int], ...]] = {
+    "ability-direct": (("ensures/verified", 2), ("requires/verified", 2)),
+    "ability-nested_in_data": (("ensures/verified", 2), ("requires/verified", 2)),
+    "ability-through_closure": (("ensures/verified", 2), ("requires/verified", 2)),
+    "ability-through_generic": (("ensures/verified", 3), ("requires/verified", 3)),
+    "ability-through_module": (("ensures/verified", 2), ("requires/verified", 2)),
+    "cell-direct": (("ensures/verified", 2), ("requires/verified", 2)),
+    "cell-nested_in_data": (("ensures/verified", 2), ("requires/verified", 2)),
+    "cell-through_closure": (("ensures/verified", 2), ("requires/verified", 2)),
+    "cell-through_generic": (("ensures/verified", 3), ("requires/verified", 3)),
+    "cell-through_module": (("ensures/verified", 2), ("requires/verified", 2)),
+    "collection_key-direct": (("ensures/verified", 2), ("nat_bind/tier3", 1), ("requires/verified", 2)),
+    "collection_key-nested_in_data": (("ensures/verified", 2), ("nat_bind/tier3", 1), ("requires/verified", 2)),
+    "collection_key-through_closure": (("ensures/verified", 2), ("nat_bind/tier3", 1), ("requires/verified", 2)),
+    "collection_key-through_generic": (("ensures/verified", 3), ("nat_bind/tier3", 1), ("requires/verified", 3)),
+    "collection_key-through_module": (("ensures/verified", 2), ("nat_bind/tier3", 1), ("requires/verified", 2)),
+    "effect_row-direct": (("ensures/verified", 2), ("requires/verified", 2)),
+    "effect_row-nested_in_data": (("ensures/verified", 2), ("requires/verified", 2)),
+    "effect_row-through_closure": (("ensures/verified", 2), ("requires/verified", 2)),
+    "effect_row-through_generic": (("ensures/verified", 3), ("requires/verified", 3)),
+    "effect_row-through_module": (("ensures/verified", 2), ("requires/verified", 2)),
+    "payload-direct": (("ensures/verified", 2), ("requires/verified", 2)),
+    "payload-nested_in_data": (("ensures/verified", 2), ("requires/verified", 2)),
+    "payload-through_closure": (("ensures/verified", 2), ("requires/verified", 2)),
+    "payload-through_generic": (("ensures/verified", 3), ("requires/verified", 3)),
+    "payload-through_module": (("ensures/verified", 2), ("requires/verified", 2)),
+}
 
 
 @pytest.mark.parametrize(("judgment", "position", "verdict"), [
-    pytest.param(j, p, v, id=f"{j}-{p}-{v}",
-                 marks=[pytest.mark.xfail(strict=True, reason="red at 94cef528: the typed program (#1679) flips it")] if _red_at_base(j, v) else [])
-    for j, p, v in MATRIX
+    pytest.param(j, p, v, id=f"{j}-{p}-{v}") for j, p, v in MATRIX
 ])
 def test_instantiation_judgment(judgment: str, position: str, verdict: str,
                                 tmp_path: Path) -> None:
@@ -321,14 +360,168 @@ def test_instantiation_judgment(judgment: str, position: str, verdict: str,
     files, line, column = _matrix_program(j, position, arg)
     path = pipeline.write_tree(tmp_path, files)
     if verdict == "unsat":
-        _refused_at(path, j.code, line, column)
+        _refused_at(path, dict(j.refused_first).get(position, j.code),
+                    line, column)
         return
     checked = pipeline.check(path)
     assert checked.ok, [d.format() for d in checked.diagnostics]
     verified = pipeline.verify(path)
     assert verified.ok, [d.format() for d in verified.diagnostics]
+    counts: dict[str, int] = {}
+    for obligation in verified.obligations:
+        key = f"{obligation.kind}/{obligation.status}"
+        counts[key] = counts.get(key, 0) + 1
+    assert tuple(sorted(counts.items())) == _SAT_OBLIGATIONS[
+        f"{judgment}-{position}"]
     ran = pipeline.run(path, "main")
     assert ran.ok, (ran.stderr, ran.trap)
+
+
+# =====================================================================
+# A Map or Set with an Array or zero-size component, as written (#1680)
+# =====================================================================
+#
+# A component that holds no type parameter is judged where it is written:
+# a written type at the type (E135, the zero-size rule's Array sibling), an
+# operation whose component only inference gives at the call.  Each refused
+# shape has its nearest neighbour the check accepts beside it, which checks,
+# verifies and records what it did at 94cef528.
+
+_MAP_SIZE = "nat_to_int(map_size(@{T}.0))"
+_SET_SIZE = "nat_to_int(set_size(@{T}.0))"
+
+
+def _written(ty: str, size: str) -> str:
+    return _fn("public fn main(@Unit -> @Int)",
+               f"let @{ty} = {ty.split('<')[0].lower()}_new();\n  "
+               + size.replace("{T}", ty))
+
+
+#: (refused program, the needle E135 is reported at, the neighbour).
+COMPONENTS: dict[str, tuple[str, str, str]] = {
+    "written_map_key": (
+        _written("Map<Array<Int>, Int>", _MAP_SIZE), "Map<Array<Int>, Int>",
+        _written("Map<String, Int>", _MAP_SIZE)),
+    "written_map_value": (
+        _written("Map<String, Array<Int>>", _MAP_SIZE),
+        "Map<String, Array<Int>>",
+        _written("Map<String, Option<Array<Int>>>", _MAP_SIZE)),
+    "written_set_element": (
+        _written("Set<Array<Int>>", _SET_SIZE), "Set<Array<Int>>",
+        _written("Set<String>", _SET_SIZE)),
+    "inferred_map_key": (
+        _fn("public fn main(@Unit -> @Int)",
+            "nat_to_int(map_size(map_insert(map_new(), [1, 2], 5)))"),
+        "map_insert(",
+        _fn("public fn main(@Unit -> @Int)",
+            "nat_to_int(map_size(map_insert(map_new(), show([1, 2]), 5)))")),
+    "inferred_map_value": (
+        _fn("public fn main(@Unit -> @Int)",
+            'nat_to_int(map_size(map_insert(map_new(), "k", [1, 2])))'),
+        "map_insert(",
+        _fn("public fn main(@Unit -> @Int)",
+            'nat_to_int(map_size(map_insert(map_new(), "k", Some([1, 2]))))')),
+    "inferred_set_element": (
+        _fn("public fn main(@Unit -> @Int)",
+            "nat_to_int(set_size(set_add(set_new(), [1, 2])))"),
+        "set_add(",
+        _fn("public fn main(@Unit -> @Int)",
+            "nat_to_int(set_size(set_add(set_new(), show([1, 2]))))")),
+    "inferred_zero_size_value": (
+        _fn("public fn main(@Unit -> @Int)",
+            'nat_to_int(map_size(map_insert(map_new(), "k", ())))'),
+        "map_insert(",
+        _fn("public fn main(@Unit -> @Int)",
+            'nat_to_int(map_size(map_insert(map_new(), "k", Some(()))))')),
+}
+
+#: Each neighbour's obligations at 94cef528, (kind/status, count).
+_NEIGHBOUR_OBLIGATIONS: dict[str, tuple[tuple[str, int], ...]] = {
+    "inferred_map_key": (("ensures/verified", 1), ("nat_bind/tier3", 1), ("requires/verified", 1)),
+    "inferred_map_value": (("ensures/verified", 1), ("nat_bind/tier3", 1), ("requires/verified", 1)),
+    "inferred_set_element": (("ensures/verified", 1), ("nat_bind/tier3", 1), ("requires/verified", 1)),
+    "inferred_zero_size_value": (("ensures/verified", 1), ("nat_bind/tier3", 1), ("requires/verified", 1)),
+    "written_map_key": (("ensures/verified", 1), ("nat_bind/tier3", 1), ("requires/verified", 1)),
+    "written_map_value": (("ensures/verified", 1), ("nat_bind/tier3", 1), ("requires/verified", 1)),
+    "written_set_element": (("ensures/verified", 1), ("nat_bind/tier3", 1), ("requires/verified", 1)),
+}
+
+
+@pytest.mark.parametrize("name", sorted(COMPONENTS))
+def test_a_component_no_operation_lowers_is_refused_as_written(
+        name: str, tmp_path: Path) -> None:
+    source, needle, _ = COMPONENTS[name]
+    path = pipeline.write_tree(tmp_path, {"main.vera": source})
+    _refused_at_call("E135", needle, 0)(path)
+
+
+@pytest.mark.parametrize("name", sorted(COMPONENTS))
+def test_the_nearest_component_neighbour_is_accepted(
+        name: str, tmp_path: Path) -> None:
+    neighbour = COMPONENTS[name][2]
+    path = pipeline.write_tree(tmp_path, {"main.vera": neighbour})
+    checked = pipeline.check(path)
+    assert checked.ok, [d.format() for d in checked.diagnostics]
+    verified = pipeline.verify(path)
+    assert verified.ok, [d.format() for d in verified.diagnostics]
+    counts: dict[str, int] = {}
+    for obligation in verified.obligations:
+        key = f"{obligation.kind}/{obligation.status}"
+        counts[key] = counts.get(key, 0) + 1
+    assert tuple(sorted(counts.items())) == _NEIGHBOUR_OBLIGATIONS[name]
+    ran = pipeline.run(path, "main")
+    assert ran.ok, (ran.stderr, ran.trap)
+
+
+# =====================================================================
+# Each judgment's fix, applied as written, clears it
+# =====================================================================
+
+_REPLACE = re.compile(r"replace '(.+?)' with '(.+?)'")
+
+
+def _fix_cases() -> dict[str, tuple[dict[str, str], str]]:
+    """Every refused program here whose refusal is a judgment this change
+    makes, with its code."""
+    cases: dict[str, tuple[dict[str, str], str]] = {}
+    for j, p, v in MATRIX:
+        judgment = JUDGMENTS[j]
+        if (v == "unsat" and j != "effect_row"
+                and p not in dict(judgment.refused_first)):
+            cases[f"{j}-{p}"] = (
+                _matrix_program(judgment, p, judgment.unsat)[0],
+                judgment.code)
+    for name, code in (("ord_constraint_at_bool", "E613"),
+                       ("eq_constraint_at_array", "E613"),
+                       ("state_cell_at_string", "E607"),
+                       ("handler_state_declaration_at_instantiation",
+                        "E533")):
+        cases[name] = (REPROS[name].files, code)
+    for name, (source, _, _) in COMPONENTS.items():
+        cases[name] = ({"main.vera": source}, "E135")
+    return cases
+
+
+FIX_CASES = _fix_cases()
+
+
+@pytest.mark.parametrize("name", sorted(FIX_CASES))
+def test_the_fix_applied_as_written_checks_clean(
+        name: str, tmp_path: Path) -> None:
+    """The diagnostic's fix is a replacement in the reported program, and
+    the program it makes checks with no diagnostic of the code."""
+    files, code = FIX_CASES[name]
+    checked = pipeline.check(pipeline.write_tree(tmp_path / "before", files))
+    found = [d for d in checked.errors if d.error_code == code]
+    assert found, [d.format() for d in checked.diagnostics]
+    match = _REPLACE.search(found[0].fix)
+    assert match is not None, found[0].fix
+    old, new = match.groups()
+    fixed = {path: text.replace(old, new) for path, text in files.items()}
+    assert fixed != files, (old, new)
+    after = pipeline.check(pipeline.write_tree(tmp_path / "after", fixed))
+    assert after.ok and code not in _codes(after.diagnostics), [
+        d.format() for d in after.diagnostics]
 
 
 # =====================================================================

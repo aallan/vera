@@ -512,8 +512,18 @@ FIXED_AT_BASE = frozenset({
 })
 
 
+#: The lines the typed program's own clone naming flips (#1679): the clone
+#: of a generic over a data type is named, and so emitted, at the type's
+#: arguments.  The backend's reads of the typed program flip the rest.
+FIXED_BY_THE_TYPED_PROGRAM = frozenset({
+    "1550_show_generic_data_from_module",
+    "1550_show_generic_data_one_file",
+})
+
+
 @pytest.mark.parametrize("name", [
-    name if name in FIXED_AT_BASE else pytest.param(name, marks=pytest.mark.xfail(strict=True, reason="red at 94cef528: the typed program (#1679) flips it"))
+    name if name in FIXED_AT_BASE | FIXED_BY_THE_TYPED_PROGRAM
+    else pytest.param(name, marks=pytest.mark.xfail(strict=True, reason="red at 94cef528: the typed program (#1679) flips it"))
     for name in sorted(REPROS)
 ])
 def test_repro_type_level_line(name: str, tmp_path: Path) -> None:

@@ -930,7 +930,7 @@ ERROR_CODES: dict[str, str] = {
     "E132": "Cyclic type alias",
     "E133": "Type alias arity mismatch",
     "E134": "Type does not take type arguments",
-    "E135": "Array/Map/Set with a zero-size element, key, or value type",
+    "E135": "Array/Map/Set with a zero-size element, key, or value type, or a Map/Set with an Array one",
     "E136": "Unknown type name",
     "E137": "Recursive function declares neither decreases nor Diverge",
     "E138": "Contract calls back into its own function",
@@ -1069,7 +1069,6 @@ ERROR_CODES: dict[str, str] = {
     "E616": "Cannot infer closure return type for call_indirect",
     "E617": "Refinement predicate not compilable to runtime guard",
     "E618": "Nested refinement base unsupported",
-    "E619": "Cannot infer type argument for ability-constrained parameter",
     "E620": "Function dropped: skipped callee or no function table",
     "E699": "Internal compiler error",
     # E7xx — Testing

@@ -1,30 +1,19 @@
-"""Shared generic-function monomorphization: instantiation discovery + AST
-substitution.
+"""Generic-function clones: the AST substitution a clone is built by.
 
-Extracted from ``vera/codegen/monomorphize.py`` so that BOTH codegen (Pass 1.5,
-for WASM emission) and the verifier (#732, per-monomorphization static
-verification) drive the SAME discovery + substitution logic.  Sharing one
-implementation is a *soundness requirement*: the verifier must check exactly the
-instantiation set codegen emits, or a missed instantiation becomes a false
-Tier-1 — ``vera verify`` reports clean while a runtime obligation is left
-unproven.
+The typed program (:mod:`vera.typed`) derives the instances a program needs
+once, from the instantiations the checker inferred, judges each at check, and
+builds each clone with :meth:`Monomorphizer.monomorphize_fn`, so the verifier
+and code generation read one instance set (#1679).  What stays here is the
+clone builder: the substitution of a type argument for a type parameter
+through a declaration, the De Bruijn recount of its binders, the type-name
+parse and render the substitution spells, and the injective clone mangler.
 
 This module is deliberately codegen-free.  It imports :mod:`vera.ast`, the ONE
 naming renderer (:mod:`vera.naming` / :mod:`vera.slots`, #1208), and the pure
 :func:`substitute_type_vars` ``TypeExpr`` walk (relocated here from
 ``vera/wasm/inference.py`` so importing the monomorphizer doesn't pull in the
-``vera.wasm`` backend).  WASM/layout-specific concerns — ability-constraint
-checking (E613) and layout-derived ``Eq`` auto-derivation — stay in
+``vera.wasm`` backend).  Layout-derived ``Eq`` auto-derivation stays in
 ``vera/codegen/monomorphize.py``.
-
-Discovery + substitution are exposed as methods on :class:`Monomorphizer`, which
-holds a :class:`MonoContext` of registration metadata.  Each consumer builds the
-context from its own state (codegen from its layout/signature mixin, the
-verifier from :class:`~vera.environment.TypeEnv`) and runs its own *orchestration*
-(worklist) — codegen filters constraint-failing instances via ``_check_constraints``
-while building WAT; the verifier discovers a constraint-agnostic superset.  The
-leaf inference + substitution they call is identical, which is what keeps the two
-instantiation sets in agreement.
 """
 
 from __future__ import annotations
@@ -1096,16 +1085,6 @@ def unmangle_type_name(mangled: str) -> str:
         out.append(decoded)
         i += 2
     return "".join(out)
-
-
-# Sentinel marking a genuinely-FREE (un-inferred) type-parameter slot in a
-# partially-recovered sparse-multi-parameter ADT name (`Res<?, Int>`, #898).
-# `?` cannot occur in a real Vera type name, so it never collides with a
-# concrete type; such a name reaches only the ability gate (the instance is
-# always rejected), never an emitted clone, and lets the gate tell an
-# under-determined-but-would-derive type (E619, annotate the free param) from
-# one whose known component is already non-Eq (E613, annotation cannot help).
-_FREE_TYPE_PARAM = "?"
 
 
 def checker_clone_type_name(

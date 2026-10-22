@@ -6,14 +6,14 @@ and each clone is built there once, so code generation and the verifier read
 one set.  What stays here is lowering: the order clones are emitted in, and
 the hoisting of each clone's ``where`` helpers into standalone functions
 (#904), with a generic helper's own instances taken from the typed program
-under its parent clone (#1002).  It also still checks ability-constraint
-satisfaction (E613) per instance.
+under its parent clone (#1002).  An instance's ability constraints are
+judged at check, at the call that chooses its type arguments
+(:func:`vera.typed.judge`, E613), so every instance here satisfies them.
 """
 
 from __future__ import annotations
 
 from vera import ast
-from vera.lowering import ability_lowerable
 from vera.monomorphize import (
     collect_nested_generic_decls,
     declared_return_clone_key,
@@ -28,30 +28,6 @@ from vera.slots import type_expr_slot_name
 _EQ_TYPES: frozenset[str] = frozenset({
     "Int", "Nat", "Bool", "Float64", "String", "Byte", "Unit",
 })
-# #921 (PR #929 review): `Bool` is deliberately ABSENT here.  §4.5 orders only
-# Int/Nat/Float64/Byte/String — never Bool — so `Ord<Bool>` must FAIL this
-# constraint gate.  With Bool present, a `forall<T where Ord<T>>` instantiated
-# at Bool slipped past E613 and lowered `compare`/`<` on two Bool i32 values to
-# a signed `i32.lt_s` — a silent order for an unorderable type.
-_ORD_TYPES: frozenset[str] = frozenset({
-    "Int", "Nat", "Float64", "String", "Byte",
-})
-_HASH_TYPES: frozenset[str] = frozenset({
-    "Int", "Nat", "Bool", "Float64", "String", "Byte", "Unit",
-})
-_SHOW_TYPES: frozenset[str] = frozenset({
-    "Int", "Nat", "Bool", "Float64", "String", "Byte", "Unit",
-})
-
-# Maps ability name → (type set, error description fragment).
-_ABILITY_TYPE_SETS: dict[str, tuple[frozenset[str], str]] = {
-    "Eq": (_EQ_TYPES, "primitive types (Int, Bool, Float64, String, Byte, Nat, Unit) and ADTs whose fields are themselves Eq (structural derivation)"),
-    "Ord": (_ORD_TYPES, "the orderable primitive types (Int, Nat, Float64, String, Byte)"),
-    "Hash": (_HASH_TYPES, "primitive types (Int, Nat, Bool, Float64, String, Byte, Unit)"),
-    "Show": (_SHOW_TYPES, "primitive types (Int, Nat, Bool, Float64, String, Byte, Unit)"),
-}
-
-
 def _simple_return_type_name(te: ast.TypeExpr | None) -> str | None:
     """The refinement-unwrapped base type name of a return TypeExpr.
 
@@ -178,9 +154,7 @@ class MonomorphizationMixin:
         transitively, each taken from the typed program.
 
         ``seen`` is the caller's, so a second drain (#1223's re-seed from
-        hoisted helper bodies) neither re-emits nor loses anything.
-        Constraint-failing instances are skipped, so the emitted set
-        excludes anything that would not compile."""
+        hoisted helper bodies) neither re-emits nor loses anything."""
         typed = self._typed
         produced: list[ast.FnDecl] = []
         while worklist:
@@ -194,9 +168,6 @@ class MonomorphizationMixin:
             inst = typed.instance(fn_name, concrete_types)
             if inst is None or inst.clone is None:
                 continue
-            decl = generic_decls[fn_name]
-            if not self._check_constraints(decl, concrete_types):
-                continue  # constraint violation — error emitted
             mono_fn = inst.clone
             produced.append(mono_fn)
             self._record_clone_origin(fn_name, mono_fn.name)
@@ -334,8 +305,6 @@ class MonomorphizationMixin:
                  and inst.clone is not None),
                 key=lambda inst: inst.args)
             for inst in found:
-                if not self._check_constraints(gen, inst.args):
-                    continue
                 assert inst.clone is not None  # noqa: S101
                 clone = _replace(
                     _qualify_generic_subtree_calls(inst.clone, scope),
@@ -446,293 +415,6 @@ class MonomorphizationMixin:
         from vera.monomorphize import rewrite_fn_call_names
 
         return rewrite_fn_call_names(node, rename)
-
-    def _check_constraints(
-        self,
-        decl: ast.FnDecl,
-        concrete_types: tuple[str, ...],
-    ) -> bool:
-        """Verify all ability constraints are satisfied for an instantiation.
-
-        Returns True if all constraints are satisfied, False otherwise
-        (after emitting diagnostics).
-        """
-        if not decl.forall_constraints or not decl.forall_vars:
-            return True
-
-        from vera.errors import Diagnostic, SourceLocation
-
-        mapping = dict(zip(decl.forall_vars, concrete_types))
-        ok = True
-        for constraint in decl.forall_constraints:
-            concrete = mapping.get(constraint.type_var)
-            if concrete is None:
-                continue
-            # Rule 4 (`vera.lowering.ability_lowerable`, #1499) decides which
-            # arm: a lowered ability is checked against its type set, any
-            # other is the backstop below.
-            entry = (_ABILITY_TYPE_SETS.get(constraint.ability_name)
-                     if ability_lowerable(constraint.ability_name) else None)
-            if entry is not None:
-                type_set, desc = entry
-                # For Eq, also check ADT auto-derivation.  A constrained var
-                # bound to a constructor-inferred instance now carries its type
-                # argument (`Box<String>`, not bare `Box`) — see
-                # `_unify_param_arg` — so `_adt_satisfies_eq` resolves the
-                # concrete field type (#772).
-                if concrete in type_set:
-                    continue
-                # #932: the constructor-inferred name may be TRUNCATED one level
-                # (`List<List>` for a `List<List<Int>>` operand — the
-                # clone-mangling residue).  For the Eq-derivability DECISION only,
-                # substitute the fully-recovered nested name recorded at the call
-                # site (`_collect_eq_full_type_names`); the clone name codegen
-                # emits stays the truncated `concrete` (the #772 hard constraint).
-                eq_name = getattr(self, "_eq_full_type_names", {}).get(
-                    concrete, concrete,
-                )
-                if (constraint.ability_name == "Eq"
-                        and self._adt_satisfies_eq(eq_name)):
-                    continue
-                # #1086: an Eq-constrained var bound to an ALIAS or transparent-
-                # `Future` spelling (`MyInt` via `type MyInt = Int;`, `FI` /
-                # `Future<Int>`, an alias of a WHOLE ADT `MyBox`) is neither a
-                # primitive in `type_set` NOR a registered ADT with a layout, so
-                # both checks above missed it and the gate raised a wrong-loud
-                # E613 on a check-green program (the checker, alias-resolving,
-                # accepted the Eq).  `_type_eq_derivable` grounds the spelling
-                # (hop-by-hop alias walk + transparent-Future peel) and re-judges
-                # — the SAME oracle the `$eq` generator's field resolution
-                # mirrors, so the #732 checker↔codegen differential holds at this
-                # entry point too.  A genuinely non-Eq alias (`type BadArr =
-                # Array<Int>;`) grounds to a non-Eq type and still falls through
-                # to the E613 below.  The emitted clone name / message keep the
-                # un-ground `concrete` (the #772/#932 hard constraint).
-                if (constraint.ability_name == "Eq"
-                        and self._type_eq_derivable(eq_name, frozenset())):
-                    continue
-                # #898: a SPARSE multi-type-parameter ADT reached via the
-                # constructor-inferred path (`id1(MkErr(5))` on
-                # `Res<A, B> { MkOk(A), MkErr(B) }`) recovers only the type
-                # parameter present in the argument (`B = Int`) and leaves the
-                # other (`A`) undetermined — the monomorphizer falls back to the
-                # bare ADT name `Res`.  Structural Eq derivation checks EVERY
-                # constructor's fields (`MkOk(A)` included), so derivability
-                # genuinely depends on the free `A` and cannot be decided here.
-                # Rejecting is correct (never unsound — the annotated
-                # `Res<Array, Int>` form is a real E613), but "Res does not
-                # satisfy Eq" misdescribes an under-determined type argument.
-                # Report the clearer E619 for this shape only: a bare/partial
-                # ADT name whose declared type-parameter count exceeds the type
-                # arguments recovered.  A FULLY-determined non-Eq instance
-                # (`Res<Array<Int>, Int>`, both params supplied) has no missing
-                # argument and stays on the E613 path below.
-                if (constraint.ability_name == "Eq"
-                        and self._eq_type_arg_under_determined(concrete)):
-                    # Render user-facing names WITHOUT the internal `?` sentinel:
-                    # the display names each free slot by its declared parameter
-                    # (`Res<A, Int>`), and the fix is a concrete, compilable
-                    # annotation binding the free parameter to an Eq type
-                    # (`let @Res<Int, Int> = ...;`) — #898 round-3 review.
-                    display_name, annotation = (
-                        self._under_determined_display_and_fix(concrete)
-                    )
-                    self.diagnostics.append(Diagnostic(
-                        description=(
-                            f"Cannot infer the type argument(s) for "
-                            f"'{display_name}' from the constructor argument, so "
-                            f"its 'Eq' derivability is under-determined."
-                        ),
-                        location=SourceLocation(file=self.file),
-                        rationale=(
-                            "Structural Eq derivation checks every "
-                            "constructor's fields, so a multi-type-parameter "
-                            "ADT built from a single constructor (which fixes "
-                            "only some parameters) leaves the remaining "
-                            "parameters — and thus whether the type derives "
-                            "Eq — undetermined."
-                        ),
-                        fix=(
-                            f"Annotate the value so every type parameter is "
-                            f"fixed, binding each free parameter to a type that "
-                            f"supports Eq — e.g. 'let @{annotation} = ...;' — "
-                            f"and pass that slot reference; the constructor path "
-                            f"then derives Eq exactly as the annotated form does."
-                        ),
-                        spec_ref='Chapter 9, Section 9.8 "Abilities"',
-                        severity="error",
-                        error_code="E619",
-                    ))
-                    ok = False
-                    continue
-                # Vera has no `derive` construct — for Eq the actionable fix
-                # is structural: make every constructor field itself Eq.
-                if constraint.ability_name == "Eq":
-                    fix_text = (
-                        f"Instantiate the generic with a type that supports "
-                        f"'Eq'. An ADT derives Eq structurally when every "
-                        f"constructor field is itself Eq — restructure "
-                        f"'{concrete}' so its fields are Eq primitives or Eq "
-                        f"ADTs (Array/Map/handle fields are not Eq)."
-                    )
-                else:
-                    fix_text = (
-                        f"Instantiate the generic with a type that supports "
-                        f"'{constraint.ability_name}'."
-                    )
-                self.diagnostics.append(Diagnostic(
-                    description=(
-                        f"Type '{concrete}' does not satisfy ability "
-                        f"'{constraint.ability_name}'. Only {desc} "
-                        f"support {constraint.ability_name}."
-                    ),
-                    location=SourceLocation(file=self.file),
-                    rationale=(
-                        "A monomorphized generic instantiates each type "
-                        "parameter with a concrete type that must satisfy the "
-                        "parameter's ability bounds; this type does not."
-                    ),
-                    fix=fix_text,
-                    spec_ref='Chapter 9, Section 9.8 "Abilities"',
-                    severity="error",
-                    error_code="E613",
-                ))
-                ok = False
-            else:
-                # The backstop: the checker refuses a constraint naming an
-                # ability code generation does not implement where the
-                # constraint is written (E340), so a program reaching here
-                # passed a check that should have refused it.
-                self.diagnostics.append(Diagnostic(
-                    description=(
-                        f"Internal compiler error: a constraint on the "
-                        f"ability '{constraint.ability_name}' reached code "
-                        f"generation, and vera.lowering.ability_lowerable "
-                        f"refuses it; the checker refuses it at the "
-                        f"constraint (E340)."
-                    ),
-                    location=SourceLocation(file=self.file),
-                    rationale=(
-                        "This is a codegen invariant violation — the type "
-                        "checker should have rejected the input before it "
-                        "reached this point.  Please file a bug report with "
-                        "the offending program."
-                    ),
-                    fix=(
-                        "Constrain the type parameter with a built-in ability "
-                        "(Eq, Ord, Hash, or Show) instead."
-                    ),
-                    spec_ref='Chapter 9, Section 9.8 "Abilities"',
-                    severity="error",
-                    error_code="E699",
-                ))
-                ok = False
-        return ok
-
-    def _eq_type_arg_under_determined(self, type_name: str) -> bool:
-        """Is ``type_name`` an under-determined ADT that WOULD derive Eq? (#898)
-
-        Fires only for a sparse multi-parameter ADT reached via the constructor
-        path with a genuinely-FREE type parameter AND whose *known* components
-        are all Eq — so annotating the free parameter to an Eq type makes it
-        derive.  The caller then reports the clearer E619 ("under-determined
-        type argument — annotate it") instead of the misleading E613.
-
-        Distinguishes the two shapes the count-only predecessor conflated
-        (both were wrongly E619):
-
-        - `id1(MkErr(5))` on `Res<A, B>`: `B = Int` (Eq), `A` free →  True (E619,
-          annotating `A` to an Eq type derives).
-        - `id1(MkErr([1]))` on `Res<A, B>` (`B = Array<Int>`, non-Eq recovered),
-          and `id1(K([1], 7))` on `W<A, B> { K(Array<A>, B) }` (a structurally
-          non-Eq `Array<A>` field) →  False (E613: a known/structural component
-          is not Eq, so no annotation of the free parameter can help).
-
-        The monomorphizer materialises a free slot as the ``?`` sentinel
-        (`Res<?, Array>`); a bare name (`Res`, no recovery at all) is treated as
-        all-free.  The predicate is: some slot is free AND, with every free slot
-        provisionally bound to an Eq type, the ADT derives Eq structurally
-        (`_adt_satisfies_eq`), which also rejects a structurally non-Eq field.
-
-        False for a fully-applied instance (`Res<Array<Int>, Int>` — no free
-        slot; a determined-and-non-Eq E613), a parameterless ADT, or a non-ADT.
-        """
-        from vera.monomorphize import _FREE_TYPE_PARAM, Monomorphizer
-
-        parsed = Monomorphizer._parse_type_name(type_name)
-        base = parsed.name
-        if base not in self._adt_layouts:
-            return False
-        declared = self._adt_tp_counts.get(base, 0)
-        if declared == 0:
-            return False
-        # Reconstruct the per-parameter slots: an explicit arg list may carry
-        # the `?` sentinel for free slots; a bare name (`Res`) is all-free.
-        arg_names = [
-            Monomorphizer._format_type_name(a)
-            for a in (parsed.type_args or ())
-            if isinstance(a, ast.NamedType)
-        ]
-        if not arg_names:
-            arg_names = [_FREE_TYPE_PARAM] * declared
-        has_free = any(a == _FREE_TYPE_PARAM for a in arg_names)
-        if not has_free:
-            return False
-        # Provisionally bind each free slot to a known-Eq type (`Int`) and ask
-        # whether the ADT then derives Eq structurally.  If yes, only the free
-        # parameters stand between this type and Eq (→ E619, annotate them); if
-        # no, a known component or a structural field is non-Eq (→ E613).
-        probe_args = [a if a != _FREE_TYPE_PARAM else "Int" for a in arg_names]
-        probe_name = f"{base}<{', '.join(probe_args)}>"
-        return self._adt_satisfies_eq(probe_name)
-
-    def _under_determined_display_and_fix(
-        self, type_name: str,
-    ) -> tuple[str, str]:
-        """Render user-facing names for an under-determined ADT (#898 round 3).
-
-        Returns ``(display_name, annotation)`` for the E619 diagnostic, with the
-        internal ``?`` sentinel (`_FREE_TYPE_PARAM`) never exposed:
-
-        - ``display_name`` shows each free slot as the ADT's *declared* type
-          parameter name (`Res<A, Int>`), so the message names the parameter the
-          writer must pin — not the reserved `?` placeholder.
-        - ``annotation`` is a concrete, compilable Vera type binding each free
-          slot to a known-Eq type (`Res<Int, Int>`), so the suggested
-          `let @Res<Int, Int> = ...;` fix actually type-checks and derives.
-
-        Falls back to a bare parameterised form from the declared parameter names
-        when the recovery carried no explicit slots (a fully-bare `Res`).
-        """
-        from vera.monomorphize import _FREE_TYPE_PARAM, Monomorphizer
-
-        parsed = Monomorphizer._parse_type_name(type_name)
-        base = parsed.name
-        declared = self._adt_tp_counts.get(base, 0)
-        param_names = self._adt_tp_param_names.get(base, ())
-        arg_names = [
-            Monomorphizer._format_type_name(a)
-            for a in (parsed.type_args or ())
-            if isinstance(a, ast.NamedType)
-        ]
-        if not arg_names:
-            arg_names = [_FREE_TYPE_PARAM] * declared
-        display_slots: list[str] = []
-        fix_slots: list[str] = []
-        for i, a in enumerate(arg_names):
-            if a == _FREE_TYPE_PARAM:
-                # Free slot: show its declared parameter name in the message,
-                # and pin it to `Int` (an Eq type) in the actionable fix.
-                display_slots.append(
-                    param_names[i] if i < len(param_names) else f"T{i}"
-                )
-                fix_slots.append("Int")
-            else:
-                display_slots.append(a)
-                fix_slots.append(a)
-        display_name = f"{base}<{', '.join(display_slots)}>"
-        annotation = f"{base}<{', '.join(fix_slots)}>"
-        return display_name, annotation
 
     def _adt_satisfies_eq(
         self, type_name: str, _seen: frozenset[str] = frozenset(),

@@ -971,7 +971,10 @@ KNOWN_MULTI_SITE_ERROR_CODES: dict[str, frozenset[tuple[str, str]]] = {
     # inferred form and the written Array/Map/Set type-expression form.
     "E135": frozenset({
         ("vera/checker/expressions.py", "ExpressionsMixin._check_array_lit"),
+        ("vera/checker/resolution.py",
+         "ResolutionMixin._refuse_array_component"),
         ("vera/checker/resolution.py", "ResolutionMixin._resolve_named_type"),
+        ("vera/typed.py", "_diagnostic"),
     }),
     # Integer-literal range: a generic helper forwarding a caller-supplied
     # description, and the negation special case coded the same way.
@@ -1040,14 +1043,33 @@ KNOWN_MULTI_SITE_ERROR_CODES: dict[str, frozenset[tuple[str, str]]] = {
         ("vera/checker/resolution.py",
          "ResolutionMixin._check_row_entry_lowerable"),
     }),
-    # Ability-not-satisfied: the Eq-derivability failure and the generic
-    # constraint-checking failure both name "Type T does not satisfy
-    # ability A", spec §9.8.
+    # A judgment that depends on what a generic is instantiated at (#1679):
+    # made at check, at the call that chooses the type argument
+    # (`vera.typed.judge`), and kept where it was made before as the
+    # backstop it now is.  E533 at the verifier's per-instance recheck,
+    # which the check refuses every program it fires on before; E607 and
+    # E612 at code generation's cell and tag registration, which also
+    # refuses an oversized family; E613 at code generation's direct `==`
+    # on a type with no derived Eq, spec §9.8.
+    "E533": frozenset({
+        ("vera/typed.py", "_diagnostic"),
+        ("vera/verifier.py",
+         "ContractVerifier._check_state_decl_divergence"),
+    }),
+    "E607": frozenset({
+        ("vera/codegen/compilability.py",
+         "CompilabilityMixin._warn_unsupported_state_cell"),
+        ("vera/typed.py", "_diagnostic"),
+    }),
+    "E612": frozenset({
+        ("vera/codegen/compilability.py",
+         "CompilabilityMixin._warn_unsupported_exn_tag"),
+        ("vera/typed.py", "_diagnostic"),
+    }),
     "E613": frozenset({
         ("vera/codegen/functions.py",
          "FunctionCompilationMixin._emit_adt_eq_not_derivable"),
-        ("vera/codegen/monomorphize.py",
-         "MonomorphizationMixin._check_constraints"),
+        ("vera/typed.py", "_diagnostic"),
     }),
     # Internal-compiler-error envelope: by nature emitted from any
     # unexpected-exception site; the concept is "something crashed",
@@ -1056,10 +1078,8 @@ KNOWN_MULTI_SITE_ERROR_CODES: dict[str, frozenset[tuple[str, str]]] = {
     # an analysis that raised the same way the CLI reports a command
     # that did (#1444), and `_compile_program` reports the #1433
     # backstop: a module binding one function identifier twice.
-    # `_check_constraints` reports the `vera.lowering` rule 4 backstop: a
-    # constraint on a user ability, which the checker refuses (E340), and
-    # `_is_compilable` the rule 6 backstop: a row entry the checker refuses
-    # (E340).
+    # `_is_compilable` reports the `vera.lowering` rule 6 backstop: a row
+    # entry the checker refuses (E340).
     "E699": frozenset({
         ("vera/cli.py", "_internal_error_envelope"),
         ("vera/codegen/compilability.py", "CompilabilityMixin._is_compilable"),
@@ -1067,8 +1087,6 @@ KNOWN_MULTI_SITE_ERROR_CODES: dict[str, frozenset[tuple[str, str]]] = {
         ("vera/codegen/functions.py", "FunctionCompilationMixin._compile_fn"),
         ("vera/codegen/functions.py",
          "FunctionCompilationMixin._lift_closures_or_drop"),
-        ("vera/codegen/monomorphize.py",
-         "MonomorphizationMixin._check_constraints"),
         ("vera/lsp/features.py", "analysis_failure"),
     }),
 }

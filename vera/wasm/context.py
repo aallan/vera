@@ -393,8 +393,8 @@ class WasmContext(
         # generation before the body is stored in ``_adt_eq_helpers``).
         self._adt_eq_pending: set[str] = set()
         # #773 / PR #870 review: derivability oracle for the DIRECT `==` path
-        # — the CodeGenerator's `_adt_satisfies_eq` bound method (the same
-        # E613 gate the generic constraint path consults), injected via
+        # — the CodeGenerator's `_adt_satisfies_eq` bound method (the
+        # structural-Eq oracle the `$eq` generator reads), injected via
         # `set_adt_eq_derivable` in functions.py / closures.py so there is
         # exactly ONE derivability implementation.  When None (a bare
         # WasmContext in unit tests), the gate is skipped and generation

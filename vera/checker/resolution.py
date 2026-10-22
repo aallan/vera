@@ -12,6 +12,7 @@ from vera.lexical import blank_comments
 from vera.lowering import (
     ROW_TYPE_ARGUMENT,
     ROW_VARIABLE,
+    collection_component_refusal,
     effect_row_entry_refusal,
 )
 from vera.checker.registration import (
@@ -44,6 +45,19 @@ from vera.types import (
     substitute,
 )
 
+def _span_text(source: str, span: ast.Span | None) -> str | None:
+    """The text of *source* that *span* covers (1-based, end exclusive)."""
+    if span is None or not source:
+        return None
+    starts = [0]
+    for line in source.splitlines(keepends=True):
+        starts.append(starts[-1] + len(line))
+    if not (1 <= span.line < len(starts) and 1 <= span.end_line < len(starts)):
+        return None
+    return source[starts[span.line - 1] + span.column - 1:
+                  starts[span.end_line - 1] + span.end_column - 1]
+
+
 #: The arithmetic operators a literal-only expression may combine literals
 #: with.
 _LITERAL_ARITH = (ast.BinOp.ADD, ast.BinOp.SUB, ast.BinOp.MUL,
@@ -73,6 +87,45 @@ class ResolutionMixin:
     # -----------------------------------------------------------------
     # Type resolution: AST TypeExpr -> semantic Type
     # -----------------------------------------------------------------
+
+    def _refuse_array_component(self, te: ast.NamedType,
+                                arg_te: ast.TypeExpr, name: str, role: str,
+                                arg: Type) -> None:
+        """E135 for a Map or Set type *te* whose *role* component, written
+        *arg_te*, is an Array (#1680).  The fix replaces the component as
+        written: String for a key or an element, which a map compares by
+        content, and for a value a one-constructor data type holding the
+        array."""
+        written = _span_text(self.source, te.span)
+        component = _span_text(self.source, arg_te.span)
+        if role == "value":
+            advice = ("Store the array by reference, in an Option, which a "
+                      "map holds as a value")
+            stand_in = None if component is None else f"Option<{component}>"
+        else:
+            advice = (f"{'Key the map' if name == 'Map' else 'Hold the set'} "
+                      f"by a type it compares by content, such as String, "
+                      f"the array's show text")
+            stand_in = "String"
+        if (written is not None and component is not None
+                and stand_in is not None):
+            lo = written.find(component)
+            if lo >= 0:
+                fixed = (written[:lo] + stand_in
+                         + written[lo + len(component):])
+                advice += f": replace '{written}' with '{fixed}'"
+        self._error(
+            te,
+            f"'{name}' with an Array {role} type '{pretty_type(arg)}' is not "
+            f"supported.",
+            rationale=(f"A {name} {role} is stored through an operation "
+                       f"generated for its representation, and none is "
+                       f"generated for an Array, a (ptr, len) pair, so the "
+                       f"{name.lower()} operations would not compile."),
+            fix=advice + ".",
+            spec_ref='Chapter 9, Section 9.4 "Built-in Collections"',
+            error_code="E135",
+        )
 
     def _resolve_type(self, te: ast.TypeExpr) -> Type:
         """Convert an AST TypeExpr into a resolved semantic Type."""
@@ -333,6 +386,17 @@ class ResolutionMixin:
                         spec_ref='Chapter 2, Section 2.2 "Primitive Types"',
                         error_code="E135",
                     )
+                # #1680: an Array key, value or element, the pair-represented
+                # sibling of the zero-size case: no Map or Set operation is
+                # generated over a (ptr, len) pair, so code generation
+                # dropped every function that used one.
+                roles = (("key", "value") if name == "Map"
+                         else ("element",) if name == "Set" else ())
+                if len(args) == len(roles):
+                    for role, arg, arg_te in zip(roles, args, te.type_args):
+                        if collection_component_refusal(arg) == "an Array":
+                            self._refuse_array_component(te, arg_te, name,
+                                                         role, arg)
                 return AdtType(name, args)
             return AdtType(name, ())
 

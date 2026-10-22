@@ -654,6 +654,7 @@ class ModulesMixin:
         checker.node_semantic_types = self.node_semantic_types
         checker.node_target_types = self.node_target_types
         checker.instantiations = self.instantiations
+        checker.handler_cells = self.handler_cells
         checker.check_program(mod.program)
         seen = {
             (e.error_code, str(e.location.file), e.location.line,

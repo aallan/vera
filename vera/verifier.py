@@ -2224,6 +2224,10 @@ class ContractVerifier:
         # refinements come with it, through the disclosure gate.
         smt._call_binding_hook = self._call_binding_facts
         smt._call_result_facts_hook = self._call_result_facts
+        # #1468: and let a generic call's precondition be read off the clone
+        # it calls, at its instantiation.  Stateless (reads the typed
+        # program), so safe on the warm (shared) smt too.
+        smt._generic_callee_hook = self._generic_callee_info
         # #994 F1: let the SMT nullary-ctor translation resolve a bare tag's
         # exact instantiation from the checker's recorded (instance-substituted)
         # semantic type, instead of the ambiguous base-name scan that crashed Z3
@@ -2271,6 +2275,23 @@ class ContractVerifier:
         # scopes.
         self._fn_lookup_in_scope = scope.fn_lookup
         smt._callee_scope_lookup = self._callee_scope
+
+    def _generic_callee_info(
+        self, generic: FunctionInfo, call: ast.Node,
+    ) -> FunctionInfo | None:
+        """The info of the clone the generic call *call* calls (#1468): the
+        typed program's instance of the call, so its contract is *generic*'s
+        at the type arguments the check inferred there, read in the scope
+        *generic*'s own contract is read in.  ``None`` for a call no instance
+        answers, a generic template's own."""
+        inst = self._typed.call_target(call)
+        if inst is None or inst.clone is None:
+            return None
+        info = self._fn_info_for_decl(inst.clone)
+        pinned = self._pinned_scope(generic)
+        if pinned is not None and self._pinned_scope(info) is None:
+            self._fn_origins[id(info)] = (info, pinned)
+        return info
 
     def _pinned_scope(self, callee_info: object) -> CalleeScope | None:
         """The scope pinned to *callee_info* at module registration, or None.
@@ -7098,7 +7119,11 @@ class ContractVerifier:
         this recheck cannot drift.  Non-generic code never reaches this
         (the checker's E336 gates first; verify runs only check-clean
         programs), and an UNinstantiated generic still carries the
-        TypeVar and defers."""
+        TypeVar and defers.  The check judges every instance first, at the
+        call that chooses it (E533, :func:`vera.typed.judge`, #1679), so on
+        a checked program this records nothing: it is the backstop, and the
+        `state_decl` obligation kind it records goes with the one obligation
+        table (#1695)."""
         eff = expr.effect
         if (not isinstance(eff, ast.EffectRef)
                 or eff.name != "State"
@@ -10958,6 +10983,7 @@ class ContractVerifier:
         # fast path's body translation models.
         smt._call_binding_hook = self._call_binding_facts
         smt._call_result_facts_hook = self._call_result_facts
+        smt._generic_callee_hook = self._generic_callee_info
         # #994 F1: same recorded-type hint as the main path — a bare nullary
         # ctor in this generic body's refined return must resolve its sort from
         # the recorded type, not the ambiguous base-name scan.

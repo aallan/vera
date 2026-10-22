@@ -27,10 +27,10 @@ applied at the template where the template's answer covers every
 instantiation, and conservatively where the construct lowers at few of them
 (a quantifier position written as a type parameter; a type-parameter cell
 nested in a cell it can coincide with).  A ``State<T>`` cell typed by a type
-parameter lowers at most instantiations, so it is accepted at the template,
-and code generation's E607 stays the report for a clone at ``String``: the
-checker infers each call's type arguments but holds no instantiation set
-(#1679).
+parameter lowers at most instantiations, so it is accepted at the template
+and judged at each instance, at the call that chooses its type argument, as
+an ability constraint and a Map or Set component are (:func:`vera.typed.judge`,
+#1679).
 
 Imports ``vera.ast``, ``vera.fold``, ``vera.types`` and ``vera.narrowing``'s
 effect roster only, so the checker imports this module without importing code
@@ -55,6 +55,7 @@ from vera.types import (
     UnknownType,
     base_type,
     contains_typevar,
+    erases_to_unit,
     has_no_wasm_representation,
     is_pair_represented,
     pretty_type,
@@ -148,7 +149,8 @@ def state_cell_type_lowerable(ty: Type) -> bool:
     ``String`` and ``Array<T>`` are pairs, through refinements and
     ``Future``; ``Unit`` and ``Never`` have no representation.  A type
     parameter answers True: the template's cell is not yet a pair, and an
-    instantiation that makes it one is code generation's E607 (#1679).
+    instantiation that makes it one is refused at the call that chooses it
+    (E607, :func:`vera.typed.judge`, #1679).
     """
     return state_cell_lowerable(
         representable=not has_no_wasm_representation(ty),
@@ -172,6 +174,46 @@ def exn_payload_type_lowerable(ty: Type) -> bool:
     """:func:`exn_payload_lowerable` over the checker's semantic type."""
     return exn_payload_lowerable(
         representable=not has_no_wasm_representation(ty))
+
+
+#: The Map and Set operations code generation lowers through an operation
+#: generated for the representation of a key, a value or an element
+#: (``vera/wasm/calls_containers.py``), each component as (its role, the
+#: argument whose type gives it, and the type argument of that argument's
+#: type, or ``None`` for the argument's own type), read where code
+#: generation reads it.  ``map_new``, ``map_size``, ``set_new`` and
+#: ``set_size`` are lowered at any component.
+COLLECTION_COMPONENTS: dict[str, tuple[tuple[str, int, int | None], ...]] = {
+    "map_insert": (("key", 1, None), ("value", 2, None)),
+    "map_get": (("key", 1, None), ("value", 0, 1)),
+    "map_contains": (("key", 1, None),),
+    "map_remove": (("key", 1, None),),
+    "map_keys": (("key", 0, 0),),
+    "map_values": (("value", 0, 1),),
+    "set_add": (("element", 1, None),),
+    "set_contains": (("element", 1, None),),
+    "set_remove": (("element", 1, None),),
+    "set_to_array": (("element", 0, 0),),
+}
+
+
+def collection_component_refusal(ty: Type) -> str | None:
+    """Why code generation lowers no Map or Set operation over a key, value
+    or element of type *ty* (#1680, #1075), or ``None`` when it does.
+
+    The operation is generated per representation, and none is generated
+    for an ``Array`` (a ``(ptr, len)`` pair) or for a type with no value
+    (``Unit``, or a ``Future`` of one), through refinements and ``Future``.
+    A type parameter answers ``None``: the instantiation decides."""
+    if erases_to_unit(ty):
+        return "a zero-size type"
+    ty = base_type(ty)
+    while (isinstance(ty, AdtType) and ty.name == "Future"
+           and len(ty.type_args) == 1):
+        ty = base_type(ty.type_args[0])
+    if isinstance(ty, AdtType) and ty.name == "Array":
+        return "an Array"
+    return None
 
 
 def cell_type_spelling_lowerable(te: ast.TypeExpr) -> bool:
@@ -379,16 +421,38 @@ def ability_lowerable(ability_name: str) -> bool:
     """Whether code generation lowers *ability_name*'s operations and its
     use as a constraint (#1499).
 
-    Replaces the refusal in ``_check_constraints``
-    (``vera/codegen/monomorphize.py``), "Ability ... is not yet supported for
-    code generation" (E613 at line 0), and the guard rail that met a bare
-    call to a user ability's operation as an undefined function.  The
+    Replaces the refusal code generation's constraint check made, "Ability
+    ... is not yet supported for code generation" (E613 at line 0), and the
+    guard rail that met a bare call to a user ability's operation as an
+    undefined function.  The
     checker refuses a call to an operation of an ability this answers
     False for, a ``where`` constraint naming one, and a qualified
     ``Ability.op(...)`` call, which names an ability where only an effect
     can be named: an ability's operation is called bare.
     """
     return ability_name in LOWERED_ABILITIES
+
+
+#: The types each lowered ability other than ``Eq`` holds for, by name, as
+#: code generation lowers its operation (spec §9.8.3), and the phrase a
+#: message names them by.  ``Eq`` derives structurally
+#: (:func:`vera.checker.eq_ability.is_eq_derivable`, :data:`EQ_TYPES_PHRASE`).
+#: §4.5 orders no ``Bool``: an ``Ord<T>`` instantiated at it lowered
+#: ``compare`` to a signed ``i32.lt_s`` (#921).  A type argument is judged
+#: against these at the call that fixes it (#1679, :func:`vera.typed.judge`).
+ABILITY_TYPES: dict[str, tuple[frozenset[str], str]] = {
+    "Ord": (frozenset({"Int", "Nat", "Float64", "String", "Byte"}),
+            "the orderable primitive types (Int, Nat, Float64, String, Byte)"),
+    "Hash": (frozenset({"Int", "Nat", "Bool", "Float64", "String", "Byte",
+                        "Unit"}),
+             "primitive types (Int, Nat, Bool, Float64, String, Byte, Unit)"),
+    "Show": (frozenset({"Int", "Nat", "Bool", "Float64", "String", "Byte",
+                        "Unit"}),
+             "primitive types (Int, Nat, Bool, Float64, String, Byte, Unit)"),
+}
+EQ_TYPES_PHRASE = (
+    "primitive types (Int, Bool, Float64, String, Byte, Nat, Unit) and ADTs "
+    "whose fields are themselves Eq (structural derivation)")
 
 
 # =====================================================================

@@ -45,7 +45,7 @@ from vera.environment import (
     TypeEnv,
 )
 from vera.regularity import occurrence_grows, suggested_occurrence
-from vera.typed import Instantiation
+from vera.typed import Derivation, HandlerCell, Instantiation
 from vera.types import (
     EffectInstance,
     EffectRowType,
@@ -122,6 +122,8 @@ class CheckTables:
     semantic: dict[int, Type] = field(default_factory=dict)
     target: dict[int, Type] = field(default_factory=dict)
     instantiations: dict[int, Instantiation] = field(default_factory=dict)
+    #: Each `State` or `Exn` handler's cell, as the check resolved it.
+    cells: dict[int, HandlerCell] = field(default_factory=dict)
 
 
 def _check(checker: TypeChecker, program: ast.Program,
@@ -129,17 +131,33 @@ def _check(checker: TypeChecker, program: ast.Program,
     """Check *program* with *checker*, the one sequence both entry points
     run, so their diagnostics are the same (#1679): the program and the
     modules it reaches, then the bodies of the prelude declarations its
-    binding bound, every node typed into one table by its identity."""
+    binding bound, every node typed into one table by its identity; then,
+    on a program that checks clean, the instances it needs, derived once
+    (:func:`vera.typed.derive_checked`), and the judgments that depend on
+    what a generic is instantiated at, made at each call that chooses it
+    (:func:`vera.typed.judge`)."""
+    from vera.typed import derive_checked, judge
+
     tables = tables if tables is not None else CheckTables()
     checker.node_semantic_types = tables.semantic
     checker.node_target_types = tables.target
     checker.instantiations = tables.instantiations
+    checker.handler_cells = tables.cells
     checker.check_program(program)
     # The prelude is checked clean, so an error here is a defect of the
     # compiler's own source, reported on every program it reaches; a
     # warning about the prelude is not the program's to read.
     checker.errors.extend(
         d for d in check_prelude_bodies(checker) if d.severity == "error")
+    if any(d.severity == "error" for d in checker.errors):
+        return
+    prelude, prelude_source = checker._bound_prelude
+    checker.derivation = derive_checked(
+        program, checker._resolved_modules, checker._binding, prelude,
+        prelude_source, tables.instantiations)
+    checker.errors.extend(judge(
+        checker.derivation, tables.semantic, tables.cells, checker.env,
+        checker.file, checker.source))
 
 
 def check_prelude_bodies(checker: TypeChecker) -> list[Diagnostic]:
@@ -163,6 +181,7 @@ def check_prelude_bodies(checker: TypeChecker) -> list[Diagnostic]:
     sub.node_semantic_types = checker.node_semantic_types
     sub.node_target_types = checker.node_target_types
     sub.instantiations = checker.instantiations
+    sub.handler_cells = checker.handler_cells
     sub.check_program(ast.Program(
         module=None, imports=(), declarations=tuple(prelude), span=None))
     return list(sub.errors)
@@ -250,6 +269,11 @@ class CheckArtifacts:
     binding: Binding | None = None
     prelude: tuple[ast.TopLevelDecl, ...] = ()
     prelude_source: str = ""
+    #: Each `State` or `Exn` handler's cell by the handler's identity, and
+    #: the instances the program needs, derived once by a check that
+    #: passes (`vera.typed.Derivation`; `None` for a refused program).
+    handler_cells: dict[int, HandlerCell] = field(default_factory=dict)
+    derivation: Derivation | None = None
 
 
 def typecheck_with_artifacts(
@@ -349,6 +373,8 @@ def typecheck_with_artifacts(
         node_target_types=checker.node_target_types or {},
         instantiations=checker.instantiations or {},
         binding=checker._binding,
+        handler_cells=checker.handler_cells or {},
+        derivation=checker.derivation,
         prelude=checker._bound_prelude[0],
         prelude_source=checker._bound_prelude[1],
     )
@@ -645,6 +671,10 @@ class TypeChecker(
         self.node_semantic_types: dict[int, Type] | None = None
         self.node_target_types: dict[int, Type] | None = None
         self.instantiations: dict[int, Instantiation] | None = None
+        #: Each `State` / `Exn` handler's cell, by the handler's identity,
+        #: and the derivation a clean check makes (`_check`).
+        self.handler_cells: dict[int, HandlerCell] | None = None
+        self.derivation: Derivation | None = None
         # #1679: the prelude declarations the binding of this check's calls
         # bound, and the buffer their spans index into (`_bind`): the
         # declarations whose bodies the prelude's check types.

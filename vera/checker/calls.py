@@ -1842,15 +1842,16 @@ class CallsMixin:
                 arg_base = base_type(arg_ty)
                 # A bare type variable is deferred: inside a
                 # `forall<T where Ord<T>>` body the `Ord<T>` constraint
-                # promises orderability, and the monomorphizer's E613 constraint
-                # gate re-checks each concrete instantiation against the
-                # orderable set (`_ORD_TYPES` in codegen/monomorphize.py).  Any
-                # non-Ord instantiation — a user ADT OR `Bool` (§4.5 orders
-                # neither) — trips E613 there, so deferring here can never
-                # silently miscompile.  (PR #929 review closed a hole: `Bool`
-                # was wrongly IN `_ORD_TYPES`, so `Ord<Bool>` satisfied the gate
-                # and the clone lowered `compare` on two Bool i32s to a signed
-                # `i32.lt_s` — a silent order.  Bool is now out of that set.)
+                # promises orderability, and the check holds each instance's
+                # type argument to the orderable set
+                # (`vera.lowering.ABILITY_TYPES`) at the call that chooses it
+                # (E613, `vera.typed.judge`, #1679).  Any non-Ord
+                # instantiation — a user ADT OR `Bool` (§4.5 orders neither) —
+                # is refused there, so deferring here can never silently
+                # miscompile.  (PR #929 review closed a hole: `Bool` was
+                # wrongly in the orderable set, so `Ord<Bool>` satisfied the
+                # gate and the clone lowered `compare` on two Bool i32s to a
+                # signed `i32.lt_s` — a silent order.)
                 # Rejecting the TypeVar here would break the legitimate
                 # constrained-generic form (ch09_abilities `cmp_sign`).
                 if isinstance(arg_base, TypeVar):
@@ -1891,7 +1892,7 @@ class CallsMixin:
                 if arg_ty is None or isinstance(arg_ty, UnknownType):
                     continue
                 # A bare/nested type variable is deferred to the caller's
-                # `Eq<T>` constraint + the codegen E613 instantiation gate,
+                # `Eq<T>` constraint, judged at each instance (E613, #1679),
                 # exactly as the Ord arm above and the `==` binop gate do —
                 # `_check_eq_ability` short-circuits on `contains_typevar`.
                 self._check_eq_ability(args[i], arg_ty, arg_ty)

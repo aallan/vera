@@ -799,8 +799,8 @@ class ExpressionsMixin:
         structural-Eq dispatch by the #928 differential.
 
         A TypeVar operand (a `forall<T where Eq<T>>` body) is DEFERRED: the
-        `Eq<T>` constraint promises derivability and the monomorphizer's E613
-        gate re-checks every concrete instantiation, so rejecting here would
+        `Eq<T>` constraint promises derivability and the check holds every
+        instance's type argument to it (E613, #1679), so rejecting here would
         break the legitimate constrained-generic form.  `UnknownType` is
         likewise deferred (error recovery — no cascading E243).
         """

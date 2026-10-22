@@ -640,6 +640,9 @@ class SmtContext:
         self._array_element_sorts: dict[str, z3.SortRef] = {}
         # Callee contract verification
         self._fn_lookup = fn_lookup
+        # #1468: given a generic callee's info and its call, the info of the
+        # clone the call calls (`ContractVerifier._generic_callee_info`).
+        self._generic_callee_hook: Callable[[Any, Any], Any] | None = None
         self._call_violations: list[CallViolation] = []
         # #1199: True once any opaque stand-in constant entered this
         # function's body model (see _fresh_opaque_slot).  The verifier's
@@ -1981,13 +1984,11 @@ class SmtContext:
             # a Z3 `DatatypeRef` (ADT) or `BoolRef` (Bool), on which Python's `<`
             # raises `TypeError` — a hard traceback out of the verifier.  The
             # checker rejects `compare` / `<` on a non-orderable type at check
-            # time (E242 / E143), but that gate is NOT a backstop here: the
-            # verifier monomorphizes generics *minus* the E613 constraint filter
-            # (verifier.py), so a `forall<T where Ord<T>>` `compare(@T, @T)`
-            # instantiated at `Bool` reaches this point with two `BoolRef`
-            # operands — and the direct `verify()` API skips the checker gate
-            # entirely.  Both ADT and Bool operands are therefore genuinely
-            # reachable here; degrade the ordering to Tier 3 rather than crash.
+            # time (E242 / E143), and an `Ord<T>` instance at a non-orderable
+            # type at the call that chooses it (E613, #1679), and the verifier
+            # reads only a checked program; so this is defense in depth: a
+            # Bool or ADT operand degrades the ordering to Tier 3 rather than
+            # crash.
             # (EQ/NEQ route datatypes through `_datatype_value_eq`; ordering has
             # no structural counterpart, so there is nothing to translate.)
             if (isinstance(left.sort(), (z3.DatatypeSortRef, z3.BoolSortRef))
@@ -2758,9 +2759,24 @@ class SmtContext:
         )
         if not has_nontrivial_pre:
             return
+        written = callee_info
+        shown: dict[int, ast.Requires] | None = None
         if callee_info.forall_vars:
-            self._record_call_demotion(callee_info, callee_name, call_node)
-            return
+            # #1468: a generic callee's precondition is its clone's at the
+            # call's instantiation (`vera.typed`), checked as a monomorphic
+            # callee's is; with no clone to read, the call demotes.  Each
+            # record names the precondition as the generic writes it, the
+            # clause its runtime check is emitted for.
+            concrete = self._instantiated_callee(callee_info, call_node)
+            if concrete is None:
+                self._record_call_demotion(callee_info, callee_name, call_node)
+                return
+            shown = dict(zip(
+                (id(c) for c in concrete.contracts
+                 if isinstance(c, ast.Requires)),
+                (c for c in callee_info.contracts
+                 if isinstance(c, ast.Requires)), strict=True))
+            callee_info = concrete
         if len(args) != len(callee_info.param_type_exprs):
             return
         zero_size = self._zero_size_params(callee_info)
@@ -2769,11 +2785,23 @@ class SmtContext:
             self._ensure_call_arg_sorts(callee_info.param_type_exprs)
             z3_args = self._translate_call_args(args, env, zero_size)
         if z3_args is None:
-            self._record_call_demotion(callee_info, callee_name, call_node)
+            self._record_call_demotion(written, callee_name, call_node)
             return
         self._check_call_preconditions(
             callee_info, callee_name, z3_args, call_node, zero_size,
+            shown=shown,
         )
+
+    def _instantiated_callee(
+        self, generic: Any, call_node: ast.FnCall | ast.ModuleCall,
+    ) -> Any:
+        """The :class:`FunctionInfo` of the clone the generic call
+        *call_node* calls, whose contract is *generic*'s at the call's
+        instantiation (#1468), or ``None`` where no typed program names one
+        (a generic's own template is verified with its calls uninstantiated).
+        The verifier binds :attr:`_generic_callee_hook`."""
+        hook = self._generic_callee_hook
+        return hook(generic, call_node) if hook is not None else None
 
     def _check_builtin_domain(self, call: ast.FnCall, env: SlotEnv) -> None:
         """Obligate *call*'s declared domain at this call site (#1480).
@@ -2982,6 +3010,7 @@ class SmtContext:
         z3_args: list[z3.ExprRef],
         call_node: ast.FnCall | ast.ModuleCall,
         zero_size: tuple[bool, ...],
+        shown: Mapping[int, ast.Requires] | None = None,
     ) -> bool:
         """Check each of the callee's preconditions at this call site.
 
@@ -2999,6 +3028,10 @@ class SmtContext:
         the facts discharged the argument's own obligation and this check.
         Every path that checks a precondition comes through here, so the one
         push covers them all.
+
+        *shown* maps a generic call's clone's preconditions to the
+        generic's own (#1468): each is checked as the clone states it and
+        recorded as the generic writes it.
         """
         callee_env = self._build_callee_env(callee_info, z3_args, zero_size)
         if callee_env is None:  # pragma: no cover
@@ -3012,6 +3045,8 @@ class SmtContext:
             # Skip trivial requires(true)
             if isinstance(contract.expr, ast.BoolLit) and contract.expr.value:
                 continue
+            recorded = (shown.get(id(contract), contract) if shown is not None
+                        else contract)
             if not bound:
                 binding = self._call_binding(
                     callee_info, call_node, call_node.args, z3_args, zero_size)
@@ -3029,7 +3064,7 @@ class SmtContext:
                 # translated, so this is a real call-pre obligation we simply
                 # can't discharge statically.
                 self._record_call_demotion_for(
-                    callee_name, call_node, contract,
+                    callee_name, call_node, recorded,
                 )
                 return False
             # Check validity: solver state already has caller's assumptions
@@ -3044,7 +3079,7 @@ class SmtContext:
                 # takes the same Tier-3 E532 demotion an untranslatable
                 # precondition takes, so the call keeps its runtime guard.
                 self._record_call_demotion_for(
-                    callee_name, call_node, contract,
+                    callee_name, call_node, recorded,
                 )
                 return False
             if result.status != "verified" and self._rests_on_unknown(
@@ -3053,7 +3088,7 @@ class SmtContext:
                 # state, at a check #1480 records.  The callee's own check
                 # stands behind the call, so it is the E532 demotion.
                 self._record_call_demotion_for(
-                    callee_name, call_node, contract,
+                    callee_name, call_node, recorded,
                 )
                 return False
             if result.status != "verified":
@@ -3069,7 +3104,7 @@ class SmtContext:
                 # nodes fall back to object identity rather than
                 # colliding on None.
                 already = any(
-                    v.precondition is contract
+                    v.precondition is recorded
                     and (
                         v.call_node.span == call_node.span
                         if (
@@ -3084,7 +3119,7 @@ class SmtContext:
                     self._call_violations.append(CallViolation(
                         callee_name=callee_name,
                         call_node=call_node,
-                        precondition=contract,
+                        precondition=recorded,
                         counterexample=result.counterexample,
                     ))
                 return False
@@ -3179,8 +3214,11 @@ class SmtContext:
         # leaves no term to check the postcondition against and the clause
         # never reaches translation (it demotes as E522 instead).
         if callee_info.forall_vars:
+            # #1468: the precondition is checked against the call's clone
+            # (`_check_callee_precondition`), and the result stays opaque.
             if has_nontrivial_pre:
-                self._record_call_demotion(callee_info, callee_name, call_node)
+                self._check_callee_precondition(
+                    callee_info, callee_name, args, call_node, env)
             return None
 
         # Must have matching arity

@@ -1582,6 +1582,17 @@ class ControlFlowMixin:
                         error_code="E336",
                     )
 
+        # #1679: the handler's cell as resolved here, by the handler's
+        # identity, which `vera.typed.judge` reads at each instance of the
+        # generic a cell typed by a type parameter is written in.
+        if (self.handler_cells is not None and expr.node_id is not None
+                and effect_inst.name in ("State", "Exn")
+                and len(effect_inst.type_args) == 1):
+            from vera.typed import HandlerCell
+            self.handler_cells[expr.node_id] = HandlerCell(
+                effect_inst.name, effect_inst.type_args[0],
+                state_type if effect_inst.name == "State" else None)
+
         # Compute handler state canonical type name (for with-clause checks)
         state_tname_outer: str | None = None
         if state_type and expr.state:
