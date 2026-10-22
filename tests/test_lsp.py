@@ -4555,9 +4555,9 @@ WHERE_HANDLERS = "\n".join([
 # Refinement type arguments, top-level and nested.  Both handlers
 # type-check (`vera check` is clean on this program), and neither
 # discharges plain `Exn<Int>` — a call needing it inside either body
-# fails E125.  `format_type_expr` renders a refinement as its bare base
-# type, so a key built straight from it would spell `Exn<Int>` for both
-# and prune those edges.
+# fails E125.  Neither key equals an `Exn<Int>` request: `refined`'s
+# spells the alias, and `nested_refined`'s refinement takes the
+# unmatchable key (`_handled_effect_key`).
 # The refinement is named: a handler keys its cell by a type name, so an
 # inline refinement literal as `Exn<E>` is refused at check (E340).
 REFINED_INSTANCE = "\n".join([
@@ -5009,10 +5009,10 @@ class TestAddEffect:
         assert doc.text.count("effects(<State<Int>>)") == 2
 
     def test_refinement_argument_caller_is_rewritten(self) -> None:
-        """Same shape, one step narrower: a refinement argument reads as
-        its base type when rendered, but does not discharge the base
-        instance.  Collapse the two and both callers keep `pure`, the
-        call sites fail E125, and the gate refuses the whole edit."""
+        """Same shape, one step narrower: a refinement argument does not
+        discharge its base instance.  Key the two alike and both callers
+        keep `pure`, the call sites fail E125, and the gate refuses the
+        whole edit."""
         server = self._server(REFINED_INSTANCE)
         out = _settle(server, lambda: add_effect(server, URI, "target", "Exn<Int>"))
         assert out["applied"] is True

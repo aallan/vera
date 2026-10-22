@@ -38,139 +38,6 @@ pytestmark = pytest.mark.matrix(decides=[
 
 _ROOT = Path(__file__).resolve().parents[1]
 
-#: Red at 94cef528, each as the issue describes: the named cells, the matrix
-#: bar three cells, and the 125 corpus programs (of 323) whose round trip
-#: fails.  Strict, so the renderer's commit, which deletes the marks, is
-#: forced to flip every one.
-_RED = pytest.mark.xfail(strict=True, reason="#1505: red at 94cef528")
-_RED_AT_BASE = frozenset({
-    "examples/array_utilities.vera",
-    "examples/async_futures.vera",
-    "examples/async_http_fanout.vera",
-    "examples/closures.vera",
-    "examples/collections.vera",
-    "examples/copy_bytes.vera",
-    "examples/database.vera",
-    "examples/ephemeris.vera",
-    "examples/generics.vera",
-    "examples/http.vera",
-    "examples/http_server.vera",
-    "examples/increment.vera",
-    "examples/inference.vera",
-    "examples/inference_json.vera",
-    "examples/json.vera",
-    "examples/life.vera",
-    "examples/list_ops.vera",
-    "examples/markdown.vera",
-    "examples/maximum_syntax.vera",
-    "examples/nested_closures.vera",
-    "examples/pattern_matching.vera",
-    "examples/quantifiers.vera",
-    "examples/refinement_types.vera",
-    "examples/regex.vera",
-    "examples/scoreboard.vera",
-    "examples/sqlitedb.vera",
-    "examples/vera/collections.vera",
-    "tests/conformance/ch02_adt_recursive.vera",
-    "tests/conformance/ch02_adt_tuple_recursive.vera",
-    "tests/conformance/ch02_byte_refinement.vera",
-    "tests/conformance/ch02_generic_arg_branch_join.vera",
-    "tests/conformance/ch02_generics.vera",
-    "tests/conformance/ch02_map_unit_value_rejected.vera",
-    "tests/conformance/ch02_nonregular_data_rejected.vera",
-    "tests/conformance/ch02_option_result.vera",
-    "tests/conformance/ch02_refinement_base_param_alias.vera",
-    "tests/conformance/ch02_refinement_types.vera",
-    "tests/conformance/ch02_tuple_basic.vera",
-    "tests/conformance/ch02_tuple_unit_component.vera",
-    "tests/conformance/ch02_type_alias_array.vera",
-    "tests/conformance/ch03_mono_collapse_reindex.vera",
-    "tests/conformance/ch03_slot_alias_type_argument.vera",
-    "tests/conformance/ch03_slot_let_chains.vera",
-    "tests/conformance/ch04_array_construction.vera",
-    "tests/conformance/ch04_array_ops.vera",
-    "tests/conformance/ch04_match_nested.vera",
-    "tests/conformance/ch04_match_nested_missing.vera",
-    "tests/conformance/ch04_match_pair_scrutinee.vera",
-    "tests/conformance/ch04_nat_binding.vera",
-    "tests/conformance/ch04_nested_option_ctor.vera",
-    "tests/conformance/ch04_primitive_obligations.vera",
-    "tests/conformance/ch04_short_circuit.vera",
-    "tests/conformance/ch05_apply_fn_arity.vera",
-    "tests/conformance/ch05_apply_fn_typing.vera",
-    "tests/conformance/ch05_capture_array_index.vera",
-    "tests/conformance/ch05_closure_nat_return.vera",
-    "tests/conformance/ch05_closures.vera",
-    "tests/conformance/ch05_generic_pipe_monomorph.vera",
-    "tests/conformance/ch05_nested_closures.vera",
-    "tests/conformance/ch05_nested_fn_type_alias.vera",
-    "tests/conformance/ch05_unit_arg_closure.vera",
-    "tests/conformance/ch06_adt_sort_disambiguation.vera",
-    "tests/conformance/ch06_composite_postcondition_eq.vera",
-    "tests/conformance/ch06_decreases.vera",
-    "tests/conformance/ch06_quantifier_array_domain_rejected.vera",
-    "tests/conformance/ch06_quantifiers.vera",
-    "tests/conformance/ch07_exn_composite.vera",
-    "tests/conformance/ch07_exn_param_alias.vera",
-    "tests/conformance/ch07_exn_payload_guard.vera",
-    "tests/conformance/ch07_handler_effect_unlowerable.vera",
-    "tests/conformance/ch07_old_outside_ensures_rejected.vera",
-    "tests/conformance/ch07_state_alias_chain.vera",
-    "tests/conformance/ch07_state_alias_op_result_positions.vera",
-    "tests/conformance/ch07_state_clause_alias_slots.vera",
-    "tests/conformance/ch07_state_composite.vera",
-    "tests/conformance/ch07_state_composite_alias.vera",
-    "tests/conformance/ch07_state_composite_alias_cross_spelling.vera",
-    "tests/conformance/ch07_state_fn_type_alias_cross_spelling.vera",
-    "tests/conformance/ch07_state_nested_param_alias.vera",
-    "tests/conformance/ch07_state_new_family.vera",
-    "tests/conformance/ch07_state_old_composite.vera",
-    "tests/conformance/ch07_state_op_array_element.vera",
-    "tests/conformance/ch07_state_op_generic_instantiation.vera",
-    "tests/conformance/ch07_state_refined_cell_family.vera",
-    "tests/conformance/ch08_ctor_field_module_call.vera",
-    "tests/conformance/ch08_prelude_adt_name_alias.vera",
-    "tests/conformance/ch08_reserved_vera_prefix_reference_rejected.vera",
-    "tests/conformance/ch08_state_alias_per_module.vera",
-    "tests/conformance/ch08_state_alias_per_module_lib.vera",
-    "tests/conformance/ch08_xmod_widen_lib.vera",
-    "tests/conformance/ch09_array_utilities.vera",
-    "tests/conformance/ch09_async.vera",
-    "tests/conformance/ch09_base64_bytes.vera",
-    "tests/conformance/ch09_db.vera",
-    "tests/conformance/ch09_decimal_generics.vera",
-    "tests/conformance/ch09_eq_non_derivable_rejected.vera",
-    "tests/conformance/ch09_generic_builtin_typevar.vera",
-    "tests/conformance/ch09_generic_infer_builtin_return.vera",
-    "tests/conformance/ch09_generic_none_nested.vera",
-    "tests/conformance/ch09_generic_none_return.vera",
-    "tests/conformance/ch09_generic_under_generic_prelude_callee.vera",
-    "tests/conformance/ch09_host_store_gc_reachability.vera",
-    "tests/conformance/ch09_http.vera",
-    "tests/conformance/ch09_http_server.vera",
-    "tests/conformance/ch09_inference.vera",
-    "tests/conformance/ch09_json_accessors.vera",
-    "tests/conformance/ch09_map_future_values.vera",
-    "tests/conformance/ch09_markdown.vera",
-    "tests/conformance/ch09_multiparam_ctor_eq.vera",
-    "tests/conformance/ch09_nested_builtin_index.vera",
-    "tests/conformance/ch09_nested_generic_call_eq.vera",
-    "tests/conformance/ch09_nested_generic_ctor_eq.vera",
-    "tests/conformance/ch09_option_result_combinators.vera",
-    "tests/conformance/ch09_prelude.vera",
-    "tests/conformance/ch09_recursive_show_hash.vera",
-    "tests/conformance/ch09_regex.vera",
-    "tests/conformance/ch09_show_hash_composites.vera",
-    "tests/conformance/ch09_sql_injection_rejected.vera",
-    "tests/conformance/ch09_sql_numbered_placeholder_rejected.vera",
-    "tests/conformance/ch09_sql_placeholder_let_mismatch_rejected.vera",
-    "tests/conformance/ch09_sql_placeholder_mismatch_rejected.vera",
-    "tests/conformance/ch09_string_char_utilities.vera",
-    "tests/conformance/ch09_structural_eq.vera",
-    "tests/conformance/ch09_user_show_hash_field.vera",
-    "tests/conformance/ch09_utf8_bytes.vera",
-})
-
 _HEAD = """\
 private fn head(@Array<Int> -> @Int)
   requires(array_length(@Array<Int>.0) > 0)
@@ -205,20 +72,17 @@ def _descriptions(kind: str) -> list[str]:
     return [o.expr_text for o in verified.obligations if o.kind == kind]
 
 
-@_RED
 def test_repro_obligation_descriptions_requires_and_call_pre() -> None:
     assert "array_length(@Array<Int>.0) > 0" in _descriptions("requires")
     assert "array_length(@Array<Int>.0) > 0" in _descriptions("call_pre")
 
 
-@_RED
 def test_repro_obligation_description_index_bounds() -> None:
     assert any("@Array<Int>.0[0]" in text
                for text in _descriptions("index_bounds")), _descriptions(
                    "index_bounds")
 
 
-@_RED
 def test_repro_runtime_contract_message() -> None:
     ran = pipeline.run(_HEAD, "main", file="head.vera")
     assert not ran.ok
@@ -227,7 +91,6 @@ def test_repro_runtime_contract_message() -> None:
     assert "requires(array_length(@Array<Int>.0) > 0) failed" in str(message), message
 
 
-@_RED
 def test_repro_explain_slots_header(tmp_path: Path) -> None:
     path = tmp_path / "head.vera"
     path.write_text(_HEAD, encoding="utf-8")
@@ -235,7 +98,6 @@ def test_repro_explain_slots_header(tmp_path: Path) -> None:
     assert "fn head(@Array<Int> -> @Int)" in result.stdout, result.stdout
 
 
-@_RED
 def test_repro_explain_slots_header_keeps_refinements(tmp_path: Path) -> None:
     path = tmp_path / "f.vera"
     path.write_text(_REFINED, encoding="utf-8")
@@ -291,11 +153,8 @@ def _nodes(node: object) -> list[vast.Node]:
     return found
 
 
-@pytest.mark.parametrize("path", [
-    pytest.param(p, marks=_RED)
-    if p.relative_to(_ROOT).as_posix() in _RED_AT_BASE else p
-    for p in _corpus()
-], ids=lambda p: p.relative_to(_ROOT).as_posix())
+@pytest.mark.parametrize("path", _corpus(),
+                         ids=lambda p: p.relative_to(_ROOT).as_posix())
 def test_every_type_and_slot_reference_renders_back(path: Path) -> None:
     """Every type expression, slot and result reference, `old` and `new`
     argument and function signature of *path*, rendered, parses back to the
@@ -417,19 +276,8 @@ _POSITIONS: dict[str, Callable[[str], _Rendered]] = {
     "signature": _signature,
 }
 
-#: The cells green at 94cef528: a type with no argument, refinement or
-#: function type, where nothing puts it in an argument.  Every other cell
-#: was red there, each as the issue describes.
-_MATRIX_GREEN_AT_BASE = frozenset({
-    ("named", "slot_head"), ("named", "quantifier_binding"),
-    ("named", "signature"),
-})
-
-
 @pytest.mark.parametrize(("shape", "position"), [
-    pytest.param(shape, position, id=f"{shape}-{position}",
-                 marks=() if (shape, position) in _MATRIX_GREEN_AT_BASE
-                 else _RED)
+    pytest.param(shape, position, id=f"{shape}-{position}")
     for shape in _SHAPES for position in _POSITIONS
 ])
 def test_every_shape_renders_as_vera_at_every_position(
@@ -446,7 +294,6 @@ def test_every_shape_renders_as_vera_at_every_position(
 # The consumers that worked around the renderer
 # =====================================================================
 
-@_RED
 def test_no_consumer_strips_the_renderers_at() -> None:
     """No module re-derives the bare form by deleting every `@` from the
     slot form: a refinement's own `@`s are part of the type
@@ -485,7 +332,6 @@ private fn handled(@Nat -> @Nat)
 """
 
 
-@_RED
 def test_repro_add_effect_bounds_a_function_type_argument() -> None:
     """`vera/addEffect` keys a handler's head by the renderer's bare form.
     The program checks, so `handle[Exn<Option<fn(Int -> Int) effects(pure)>>]`
@@ -515,7 +361,6 @@ effect Ping {
 """
 
 
-@_RED
 def test_repro_forward_effect_operation_signature() -> None:
     """E340's fix writes an operation declared further down the file as the
     declaration does, its refined parameter whole: the `@`-stripped
@@ -537,7 +382,6 @@ public fn boom(@Unit -> @Int)
 """
 
 
-@_RED
 def test_repro_exn_boundary_names_the_rows_type() -> None:
     """The message for an exception escaping an entry point names the type as
     the row spells it, so the `handle[Exn<T>]` it asks for catches the
@@ -552,7 +396,7 @@ def test_repro_exn_boundary_names_the_rows_type() -> None:
 
 
 _PREDICATE_DECLARATION = """\
-private fn f(@Array<{ @Array<Nat> | 10 / array_length(@Array<Nat>.0) > 0 }> -> @Int)
+private fn f(@Array<{ @Array<Nat> | 10 / (array_length(@Array<Nat>.0) * 2) > 0 }> -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
@@ -562,19 +406,18 @@ private fn f(@Array<{ @Array<Nat> | 10 / array_length(@Array<Nat>.0) > 0 }> -> @
 """
 
 
-@_RED
 def test_repro_refinement_predicate_names_its_type() -> None:
     """The verifier's text for an operation in a refinement's predicate names
-    the refinement as written.  It rendered the refinement itself, its base
-    through `format_type_expr`, so the base's argument took an `@`."""
+    the refinement as written.  It rendered the refinement itself: its base
+    through `format_type_expr`, so the base's argument took an `@`, and its
+    predicate through `format_expr`, which drops the parentheses."""
     verified = pipeline.verify(_PREDICATE_DECLARATION)
     [error] = [d for d in verified.errors if d.error_code == "E526"]
     assert ("In the refinement predicate of `{ @Array<Nat> | "
-            "10 / array_length(@Array<Nat>.0) > 0 }`") in error.description, (
+            "10 / (array_length(@Array<Nat>.0) * 2) > 0 }`") in error.description, (
                 error.description)
 
 
-@_RED
 def test_obligation_json_descriptions_parse(tmp_path: Path) -> None:
     path = tmp_path / "head.vera"
     path.write_text(_HEAD, encoding="utf-8")

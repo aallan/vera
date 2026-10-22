@@ -1601,7 +1601,7 @@ def test_the_prelude_records_are_the_prelude_bodies() -> None:
     """A `Prelude` record's arity, and a non-generic one's types, are its body's."""
     from vera import prelude
 
-    from vera.ast import FnDecl, format_type_expr
+    from vera.ast import FnDecl, format_type
 
     bodies: dict[str, FnDecl] = {}
     for block in (prelude._OPTION_COMBINATORS, prelude._RESULT_COMBINATORS,
@@ -1611,7 +1611,7 @@ def test_the_prelude_records_are_the_prelude_bodies() -> None:
                 bodies[tld.decl.name] = tld.decl
 
     def written(te: Any) -> str:
-        return format_type_expr(te).replace("@", "")
+        return format_type(te)
 
     prelude_specs = [spec for spec in _ALL if isinstance(spec.lowering, Prelude)]
     assert {s.name for s in prelude_specs} == prelude.overridable_builtin_names()

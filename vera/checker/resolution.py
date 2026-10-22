@@ -766,10 +766,10 @@ class ResolutionMixin:
             # declaration's own text, as the registered signature reads.
             op_decl = decl.operations[0]
             first = (op_decl.name,
-                     ", ".join(ast.format_type_expr(t).replace("@", "")
+                     ", ".join(ast.format_type(t)
                                for t in op_decl.param_types)
                      + " -> "
-                     + ast.format_type_expr(op_decl.return_type).replace("@", ""))
+                     + ast.format_type(op_decl.return_type))
         if first is not None:
             name, sig = first
             replace = (

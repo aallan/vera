@@ -536,13 +536,6 @@ def _refinement_nodes(root: ast.Node) -> Iterator[ast.RefinementType]:
 _NodeT = _TypeVar("_NodeT", bound=ast.Node)
 
 
-def _refinement_text(node: ast.RefinementType) -> str:
-    """``{ @Base | P }`` as written (`ast.format_type_expr` renders a
-    refinement as its base alone)."""
-    return (f"{{ {ast.format_type_expr(node.base_type)} | "
-            f"{ast.format_expr(node.predicate)} }}")
-
-
 def _with_linked_predicates(ty: Type, twins: Mapping[int, ast.Node]) -> Type:
     """*ty* with each refinement predicate in it read as its twin in *twins*
     (:func:`vera.binding.linked_twins`), and *ty* itself where nothing in
@@ -3594,7 +3587,7 @@ class ContractVerifier:
             env = self._fn_naming_scope(
                 self._current_alias_env, decl, site.enclosing)
             lookup = self._scoped_fn_lookup(decl, site.enclosing)
-            type_text = _refinement_text(self._as_written(node))
+            type_text = ast.format_type(self._as_written(node))
             owner_text = owner.name
         else:
             name = getattr(owner, "name", "")
@@ -3617,7 +3610,7 @@ class ContractVerifier:
             # refinement somewhere inside its own text.
             is_alias_body = (isinstance(owner, ast.TypeAliasDecl)
                              and owner.type_expr is node)
-            type_text = name if is_alias_body else _refinement_text(self._as_written(node))
+            type_text = name if is_alias_body else ast.format_type(self._as_written(node))
             owner_text = "" if is_alias_body else name
         self._tainted_reasons = set()
         smt = self._fresh_smt(CalleeScope(env, lookup))
