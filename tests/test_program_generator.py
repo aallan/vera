@@ -1542,6 +1542,73 @@ def test_the_load_differential_reports_a_call_that_traps() -> None:
         (("call", "contract_violation"), "kept", (30,))], finds
 
 
+_TWO_HANDLERS = """\
+public fn one_cell(@Bool -> @Int)
+  requires(true)
+  ensures(@Int.result >= 3 && @Int.result <= 4)
+  effects(pure)
+{
+  if @Bool.0 then {
+    handle[State<Int>](@Int = 0) {
+      get(@Unit) -> { resume(@Int.0) },
+      put(@Int) -> { resume(()) }
+    } in {
+      put(3);
+      get(())
+    }
+  } else {
+    handle[State<Int>](@Int = -2) {
+      get(@Unit) -> { resume(@Int.0) },
+      put(@Int) -> { resume(()) }
+    } in {
+      put(4);
+      get(())
+    }
+  }
+}
+"""
+
+
+def test_the_load_differential_reports_a_module_that_does_not_load() -> None:
+    """An `if` whose arms are each a handler compiles, with no diagnostic,
+    to a module wasmtime refuses (`finds/if_of_two_handlers_invalid_module.vera`):
+    the load differential reports it, once, rather than crash on it.  With
+    the handler bound by a `let` in one arm, the module loads and runs."""
+    calls = (("one_cell", (1,)),)
+    finds = load_finds(_TWO_HANDLERS, calls)
+    assert [f.signature for f in finds] == [("module", "invalid")], finds
+    assert "values remaining on stack" in finds[0].detail, finds[0].detail
+    neighbour = """\
+public fn one_cell(@Bool -> @Int)
+  requires(true)
+  ensures(@Int.result >= 3 && @Int.result <= 4)
+  effects(pure)
+{
+  let @Int = handle[State<Int>](@Int = 0) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) }
+  } in {
+    put(3);
+    get(())
+  };
+  if @Bool.0 then {
+    @Int.0
+  } else {
+    handle[State<Int>](@Int = -2) {
+      get(@Unit) -> { resume(@Int.0) },
+      put(@Int) -> { resume(()) }
+    } in {
+      put(4);
+      get(())
+    }
+  }
+}
+"""
+    assert neighbour != _TWO_HANDLERS
+    assert not contract_finds(neighbour), contract_finds(neighbour)
+    assert load_finds(neighbour, calls) == []
+
+
 def test_the_reconcile_differential_reports_a_mismatch_outside_its_classes(
 ) -> None:
     """The divisor mismatch of #1629 is a known class; with no class to
