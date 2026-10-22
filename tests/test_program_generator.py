@@ -2658,9 +2658,14 @@ def test_a_module_is_written_beside_its_entry_and_imported() -> None:
 def test_a_program_with_a_module_checks_clean(tmp_path: Path) -> None:
     """The entry and its module, written to one directory and checked by the
     entry's path as `vera check` resolves them, report no diagnostic, and
-    each file is in `vera fmt`'s canonical form."""
-    prog = next(p for p in map(gen.generate, range(100))
-                if p.module is not None)
+    each file is in `vera fmt`'s canonical form: the first of a hundred
+    programs that imports the data type and two functions, so an import the
+    writer leaves out is a name the entry cannot resolve."""
+    def imports_enough(p: gen.Program) -> bool:
+        names = gen.imports(p)
+        return gen.TALLY in names and len(names) >= 3
+
+    prog = next(p for p in map(gen.generate, range(100)) if imports_enough(p))
     entry = pipeline.write_tree(tmp_path, prog.files(), entry=gen.ENTRY)
     checked = pipeline.check(entry)
     assert not checked.diagnostics, "\n".join(
