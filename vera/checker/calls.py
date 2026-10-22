@@ -21,7 +21,6 @@ from vera.lowering import (
     effect_operation_lowerable,
     handler_lowerable,
 )
-from vera.slots import bare_call_denotes_user_fn
 from vera.checker.sql import (
     count_placeholders,
     resolve_array_len,
@@ -501,28 +500,24 @@ class CallsMixin:
         if name == "apply_fn":
             return self._check_apply_fn(args, node)
 
-        # Look up function — lexically (#991): the nearest same-named
-        # where-helper in the enclosing scope stack wins over the flat
-        # last-wins registry, so a diamond of same-named helpers with
-        # DIFFERENT signatures checks each parent against its OWN helper
-        # (the flat lookup falsely E121'd a valid program).
+        # The function the resolver pass bound the call to (#1694): the
+        # nearest same-named where-helper in the enclosing functions first
+        # (#991), so a diamond of same-named helpers with DIFFERENT
+        # signatures checks each parent against its OWN helper.
         #
-        # #1284: user-fn-FIRST is not an implementation detail of this
-        # function, it is the language's bare-call ownership rule (spec
-        # §7.4: a bare op resolves only for a name no declaration occupies),
-        # and codegen has to lower every such call site the way this
-        # resolution read it.  Asking through the shared predicate is what
-        # makes the checker's answer and codegen's the same rule over two
-        # tables rather than two rules that happened to agree: the two
-        # codegen legs used to disagree, and a `fn get` called under a
-        # `handle[State<T>]` lowered to the host cell intrinsic — a silently
-        # wrong value, a module WASM validation rejected, or a spurious
-        # [E602] naming a State operation the user never wrote.
-        if bare_call_denotes_user_fn(name, self._user_fn_names):
-            fn_info = self._lookup_function_scoped(name)
-            if fn_info is not None:
-                return self._check_fn_call_with_info(fn_info, args, node,
-                                                     expected=expected)
+        # #1284: a declaration owns every bare call to its name in its scope
+        # before any operation does (spec §7.4: a bare op resolves only for a
+        # name no declaration occupies), and codegen has to lower every such
+        # call site the way this resolution read it.  Code generation asks
+        # `bare_call_denotes_user_fn` over its own scoped table, which the
+        # link step names by the same binding: a `fn get` called under a
+        # `handle[State<T>]` once lowered to the host cell intrinsic — a
+        # silently wrong value, a module WASM validation rejected, or a
+        # spurious [E602] naming a State operation the user never wrote.
+        fn_info = self._bound_function(node)
+        if fn_info is not None:
+            return self._check_fn_call_with_info(fn_info, args, node,
+                                                 expected=expected)
 
         # Maybe it's an effect operation (`_check_op_call` counts its effect
         # for the purity check)
@@ -1237,11 +1232,7 @@ class CallsMixin:
             # thought it had found.  Same predicate as the resolution at the
             # top of this file, so the analysis reasons about the row the
             # checker actually bound.
-            fn_info = (
-                self._lookup_function_scoped(node.name)
-                if bare_call_denotes_user_fn(node.name, self._user_fn_names)
-                else None
-            )
+            fn_info = self._bound_function(node)
             op_info = (
                 self.env.lookup_effect_op(node.name)
                 if fn_info is None else None
@@ -2860,16 +2851,23 @@ class CallsMixin:
                            expected: Type | None = None) -> Type | None:
         """Type-check a module-qualified call: path.to.fn(args).
 
-        Lookup order:
+        The call is checked against the function the resolver pass bound it
+        to (#1694).  A call that binds none is reported by why:
         1. Module not resolved → the file's own path (#1558) or an error.
         2. Name not in selective import list → error.
         2.5. C7c: function is private → error.
-        3. Function found (public) → delegate to ``_check_fn_call_with_info``.
-        4. Function not found in module → error with available list.
+        3. Function not found in module → error with available list.
         """
         mod_path = tuple(expr.path)
         fn_name = expr.name
         mod_label = ".".join(expr.path)
+
+        # The function the resolver pass bound the call to (#1694); what
+        # follows says why a call that binds none names nothing.
+        fn_info = self._bound_function(expr)
+        if fn_info is not None:
+            return self._check_fn_call_with_info(fn_info, expr.args, expr,
+                                                 expected=expected)
 
         # 1. Module not resolved
         if mod_path not in self._resolved_module_paths:
@@ -2946,14 +2944,8 @@ class CallsMixin:
                 self._synth_expr(arg)
             return UnknownType()
 
-        # 3. Look up function in module's registered declarations
+        # 3. Function not found in module
         mod_fns = self._module_functions.get(mod_path, {})
-        fn_info = mod_fns.get(fn_name)
-        if fn_info is not None:
-            return self._check_fn_call_with_info(fn_info, expr.args, expr,
-                                                 expected=expected)
-
-        # 4. Function not found in module
         available = sorted(mod_fns.keys())
         self._error(
             expr,
@@ -2990,10 +2982,8 @@ class CallsMixin:
         lexical helper chain a bare call reads first.
         """
         fn_name = expr.name
-        fn_info = self._top_level_fn_infos.get(fn_name)
-        if fn_info is not None:
-            return self._check_fn_call_with_info(fn_info, expr.args, expr,
-                                                 expected=expected)
+        # The bound call was checked before this (`_check_module_call`); a
+        # call here binds none.
         if fn_name in self._own_fn_names:
             # A declaration registration refused (E151, E153): its own error
             # is the one the program owes, and this use restates it.

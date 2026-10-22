@@ -64,13 +64,12 @@ def bare_call_denotes_user_fn(
     operation's.  Spec §7.4 resolves a bare op only for a name no
     declaration occupies.
 
-    Consumers, each passing its OWN name table:
+    The checker states the rule itself, by reading the resolver pass's
+    binding (``TypeChecker._bound_function``, #1694): a bare call the pass
+    binds to a declaration is that declaration's, and only one it binds to
+    none can be an operation.  The consumers below, each passing its OWN
+    name table, give the same answer:
 
-    * the checker's ``_check_call_with_args`` — the derivation, over its
-      LEXICAL function scope (#991);
-    * the checker's ``_collect_expr_effects``, the ``async(e)``
-      commutativity walk, so the row it reasons about is the row the
-      resolution above bound;
     * ``_translate_call`` in :mod:`vera.wasm.calls` — the bare dispatch, over
       codegen's ``_scoped_fns`` (``_fn_sigs`` narrowed to the compiling
       declaration's lexical scope, #1299): a user-owned name skips the

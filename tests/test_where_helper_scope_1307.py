@@ -20,8 +20,8 @@ module.  Two consequences, both measured on ``origin/release/v0.2.0``
 Spec §5.8 settles which side is right: functions declared inside `where`
 blocks "are always local to the parent function".  So registration stops
 publishing helpers into the flat registry, leaving the frame-stack walk
-``_lookup_function_scoped`` already performs as the only way to reach
-one, and a bare call that names a helper from outside its parent is
+(the resolver pass's bare-call rule, which the checker reads since #1694)
+as the only way to reach one, and a bare call that names a helper from outside its parent is
 refused with E178 — an error naming the parent, rather than E200's
 "Unresolved function 'helperx'. Define 'fn helperx(...)' in this file",
 which is false advice for a name the file already declares.

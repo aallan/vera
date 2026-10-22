@@ -135,11 +135,11 @@ def register_fn(
     bare call in a SIBLING declaration resolve to another function's
     helper, which the checker then accepted and codegen — where a helper
     is emitted as ``parent$where$name`` (#1299) — could not lower.  The
-    checker's :meth:`~vera.checker.core.TypeChecker._lookup_function_scoped`
-    and the verifier's ``_scoped_fn_lookup`` both build a helper's
-    ``FunctionInfo`` on demand from its declaration while walking the
-    enclosing frames, so the lexical scope remains fully reachable
-    without a flat entry — and only from inside it.
+    checker (:meth:`~vera.checker.core.TypeChecker._bound_function`, from
+    the resolver pass's binding) and the verifier's ``_scoped_fn_lookup``
+    both build a helper's ``FunctionInfo`` on demand from its declaration,
+    so the lexical scope remains fully reachable without a flat entry —
+    and only from inside it.
     """
     # Bind this function's forall vars for its own signature resolution: a
     # helper of a generic parent is written over the parent's ``@T`` (spec

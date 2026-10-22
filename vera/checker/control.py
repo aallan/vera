@@ -23,7 +23,6 @@ from vera.lowering import (
     state_clause_refusal,
 )
 from vera.slots import (
-    bare_call_denotes_user_fn,
     family_fallback_name,
     type_expr_slot_name,
 )
@@ -2265,8 +2264,7 @@ class ControlFlowMixin:
                 and node.name in _STATE_OPS):
             return node.name
         if (isinstance(node, ast.FnCall) and node.name in _STATE_OPS
-                and not bare_call_denotes_user_fn(
-                    node.name, self._user_fn_names)):
+                and self._bound_function(node) is None):
             return node.name
         return None
 

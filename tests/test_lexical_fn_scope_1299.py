@@ -979,8 +979,8 @@ class TestTableInvariants:
         """The nesting rule, at the one place it differs from a flat union.
 
         ``b`` is a helper of ``a``, which is a helper of ``top``.  The
-        checker's ``_lookup_function_scoped`` reads each frame's DIRECT
-        helpers, so ``b`` is in ``a``'s scope and in its own, and in neither
+        resolver pass's bare-call rule, which the checker reads, takes each
+        frame's DIRECT helpers, so ``b`` is in ``a``'s scope and in its own, and in neither
         ``top``'s nor its uncle ``c``'s.  A scope built as "every helper
         anywhere under the top-level declaration" would pass every other
         test in this file and reopen #1299 one level down.

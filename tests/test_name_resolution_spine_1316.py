@@ -395,8 +395,17 @@ _EXPECTED_RESERVED_CTORS = ("Future", "Tuple")
 
 
 def _declarable_type_names() -> list[str]:
-    """:func:`_builtin_type_names` minus the names E158 now refuses."""
-    return [n for n in _builtin_type_names() if n not in _UNDECLARABLE]
+    """:func:`_builtin_type_names` minus the names E158 refuses.
+
+    Empty since #1469: the prelude's type names and the built-in data types'
+    are reserved beside the built-in containers', so no ``data`` declaration
+    takes one, and every battery parametrized over this has no cell; each
+    name is refused at check instead (:class:`TestSpecialCasedBuiltinAdtsAreRefused`
+    and tests/test_resolver_1694.py).
+    """
+    from vera.prelude import reserved_type_names
+
+    return [n for n in _builtin_type_names() if n not in reserved_type_names()]
 
 
 def _builtin_type_names() -> list[str]:

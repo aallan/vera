@@ -28,21 +28,21 @@ generation generates for itself (``alloc``, ``gc_collect``, ``anon_0``,
 can, so a declaration and a generated function never share a symbol
 (#1494).
 
-The rule order for a bare call is the checker's (``_lookup_function_scoped``
-and the import injection in ``checker/modules.py``): the ``where`` helpers of
-the innermost enclosing function first and then each ancestor's, the
-namespace's own top-level functions, the built-ins and the prelude's
-functions, and last the functions the namespace's direct imports admit,
-where exactly one supplier binds and two leave the call unbound (E155 is the
-checker's report of that).  An occurrence the rules do not bind is absent
-from :attr:`Binding.calls`; reporting it is the checker's job.
+The rule order for a bare call is this: the ``where`` helpers of the
+innermost enclosing function first and then each ancestor's, the namespace's
+own top-level functions, the built-ins and the prelude's functions, and last
+the functions the namespace's direct imports admit, where exactly one
+supplier binds and two leave the call unbound (E155 is the checker's report
+of that).  The checker resolves every call by reading this binding
+(``TypeChecker._bound_function``).  An occurrence the rules do not bind is
+absent from :attr:`Binding.calls`; reporting it is the checker's job.
 """
 
 from __future__ import annotations
 
 import re
 from collections.abc import (
-    Collection, Iterable, Iterator, Mapping, Sequence,
+    Collection, Container, Iterable, Iterator, Mapping, Sequence,
 )
 from dataclasses import dataclass, field, fields, replace
 from typing import Any, cast
@@ -180,19 +180,29 @@ def _public_data(
             yield tld, tld.decl
 
 
-def _public_fns(program: ast.Program) -> dict[str, ast.FnDecl]:
-    return {
-        tld.decl.name: tld.decl for tld in program.declarations
-        if isinstance(tld.decl, ast.FnDecl) and tld.visibility == "public"
-    }
-
-
-def _top_level_fns(program: ast.Program) -> dict[str, ast.FnDecl]:
-    """The first declaration of each name: a surplus one is refused (E184)
-    and the first stays canonical, as the checker has it (#1433)."""
+def _public_fns(
+    program: ast.Program, refused: Container[int] = frozenset(),
+) -> dict[str, ast.FnDecl]:
+    """The public functions of *program* a call can reach: the first of
+    each name the check registered (*refused* holds what it refused)."""
     out: dict[str, ast.FnDecl] = {}
     for tld in program.declarations:
-        if isinstance(tld.decl, ast.FnDecl):
+        if (isinstance(tld.decl, ast.FnDecl) and tld.visibility == "public"
+                and id(tld.decl) not in refused):
+            out.setdefault(tld.decl.name, tld.decl)
+    return out
+
+
+def _top_level_fns(
+    program: ast.Program, refused: Container[int] = frozenset(),
+) -> dict[str, ast.FnDecl]:
+    """The first declaration of each name the check registered: a surplus
+    one is refused (E184) and the first stays canonical, as the checker has
+    it (#1433), and a declaration it refused (E151, *refused*) takes no
+    name, so the built-in or the prelude function keeps it."""
+    out: dict[str, ast.FnDecl] = {}
+    for tld in program.declarations:
+        if isinstance(tld.decl, ast.FnDecl) and id(tld.decl) not in refused:
             out.setdefault(tld.decl.name, tld.decl)
     return out
 
@@ -226,12 +236,14 @@ class _Binder:
         modules: Mapping[tuple[str, ...], ResolvedModule],
         builtin_types: frozenset[str] = frozenset(),
         builtin_ctors: frozenset[str] = frozenset(),
+        refused: Container[int] = frozenset(),
     ) -> None:
         self.builtins = builtins
         self.prelude_fns = prelude_fns
         self.modules = modules
         self.builtin_types = builtin_types
         self.builtin_ctors = builtin_ctors
+        self.refused = refused
         self.programs = {path: mod.program for path, mod in modules.items()}
         self.out = Binding()
 
@@ -321,18 +333,19 @@ class _Binder:
         )
 
     def declare(self, ns: _Namespace) -> None:
-        for name, decl in _top_level_fns(ns.program).items():
+        for name, decl in _top_level_fns(ns.program, self.refused).items():
             self._declare(DeclId(ns.owner, name), decl)
 
     def _declare(self, ident: DeclId, decl: ast.FnDecl) -> None:
         self.out.decls[ident] = decl
         for wfn in decl.where_fns or ():
-            self._declare(
-                DeclId(ident.owner, wfn.name, (*ident.scope, ident.name)),
-                wfn)
+            if id(wfn) not in self.refused:
+                self._declare(
+                    DeclId(ident.owner, wfn.name, (*ident.scope, ident.name)),
+                    wfn)
 
     def bind(self, ns: _Namespace) -> None:
-        own = _top_level_fns(ns.program)
+        own = _top_level_fns(ns.program, self.refused)
         for name, decl in own.items():
             self._bind_fn(ns, own, decl, [(name, decl)])
         # A call can be written outside every function too: in a refinement
@@ -367,10 +380,11 @@ class _Binder:
     ) -> DeclId | None:
         if name in _HANDLER_OPERATORS:
             return None
-        # The innermost frame's helpers first, then each ancestor's.
+        # The innermost frame's helpers first, then each ancestor's; a
+        # helper the check refused (E151, E184) takes no name.
         for depth in range(len(frames) - 1, -1, -1):
             for wfn in frames[depth][1].where_fns or ():
-                if wfn.name == name:
+                if wfn.name == name and id(wfn) not in self.refused:
                     chain = tuple(n for n, _ in frames[:depth + 1])
                     return DeclId(ns.owner, name, chain)
         if name in own:
@@ -383,7 +397,7 @@ class _Binder:
             path for path, admitted in ns.imports.items()
             if path in self.modules
             and (admitted is None or name in admitted)
-            and name in _public_fns(self.modules[path].program)
+            and name in _public_fns(self.modules[path].program, self.refused)
         ]
         if len(suppliers) == 1:
             return DeclId(suppliers[0], name)
@@ -393,14 +407,14 @@ class _Binder:
         self, ns: _Namespace, path: tuple[str, ...], name: str,
     ) -> DeclId | None:
         if ns.own_path is not None and path == ns.own_path:
-            own = _top_level_fns(ns.program)
+            own = _top_level_fns(ns.program, self.refused)
             return DeclId(ns.owner, name) if name in own else None
         if path not in ns.imports or path not in self.modules:
             return None
         admitted = ns.imports[path]
         if admitted is not None and name not in admitted:
             return None
-        if name in _public_fns(self.modules[path].program):
+        if name in _public_fns(self.modules[path].program, self.refused):
             return DeclId(path, name)
         return None
 
@@ -409,9 +423,17 @@ def bind_program(
     program: ast.Program,
     resolved_modules: Iterable[ResolvedModule] = (),
     prelude_decls: Iterable[ast.TopLevelDecl] = (),
+    *,
+    refused: Container[int] = frozenset(),
 ) -> Binding:
     """Run the pass over *program*, every module it reaches and the prelude
-    declarations *prelude_decls* (those the program is compiled with)."""
+    declarations *prelude_decls* (those the program is compiled with).
+
+    *refused* is the ``id`` of each declaration the check refused (E151,
+    E184): one takes no name, as it takes none in the checker, so on a
+    refused program each call binds where the checker's own resolution
+    would have put it.  Code generation and the verifier pass none, since
+    they run only on programs the check accepted."""
     from vera.environment import TypeEnv
     from vera.prelude import overridable_builtin_names
 
@@ -427,6 +449,7 @@ def bind_program(
         builtins, prelude_fns, modules,
         builtin_types=frozenset(env.data_types),
         builtin_ctors=frozenset(env.constructors),
+        refused=refused,
     )
     namespaces = [binder.namespace(ENTRY, program, None)]
     namespaces.extend(

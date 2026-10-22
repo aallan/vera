@@ -575,6 +575,24 @@ def test_e163_fix_for_a_result_reference_predicate_clears_it() -> None:
     assert "E163" not in _codes(pipeline.check(fixed).errors)
 
 
+def test_class_1694_a_where_helper_shadows_a_top_level_function() -> None:
+    """Negative space for the bare-call rule the checker reads: a helper
+    named like a top-level function is the one its parent's call reaches,
+    and the top-level function the one every other call reaches.  The two
+    take different arities, so reading the call by its name alone is an
+    arity error at check, and the run's 110 is the helper's 10 plus the
+    top-level function's 100."""
+    source = (
+        _fn("scale(@Int, @Int -> @Int)", "@Int.0 * @Int.1") + "\n"
+        "public fn compute(@Int -> @Int)\n" + _CONTRACT
+        + "{\n  scale(@Int.0)\n}\nwhere {\n  fn scale(@Int -> @Int)\n"
+        "    requires(true)\n    ensures(true)\n    effects(pure)\n"
+        "  {\n    @Int.0 * 2\n  }\n}\n\n"
+        + _fn("main(@Unit -> @Int)", "compute(5) + scale(10, 10)",
+              visibility="public"))
+    assert pipeline.run(source, "main").value == 110
+
+
 # The class the kept predicate opens: a slot name's argument now carries
 # expression text, and every parser of slot-name strings splits at angle
 # brackets and commas, so each one is fed a predicate holding `<`, `>`, a

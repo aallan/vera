@@ -55,7 +55,7 @@ from pathlib import Path
 import pytest
 
 from tests.test_check_implies_compile import pipeline, run_main
-from tests.test_name_resolution_spine_1316 import _declarable_type_names
+from tests.test_name_resolution_spine_1316 import _builtin_type_names
 from vera.codegen.core import _CONTAINER_NAMES
 
 _ROOT = Path(__file__).resolve().parent.parent
@@ -375,17 +375,16 @@ class TestABuiltInValueBesideADeclarationOfItsName:
 
 #: A shown built-in value of each built-in data type name.  A name with no
 #: entry says why in `_NO_SHOWN_VALUE`; the completeness cell holds the two
-#: to every declarable name the live registries hold that is not a container.
+#: to every built-in data type name the live registries hold that is not a
+#: container (each one reserved, #1469).
 _ADT_VALUES = {
     "Option": "show(Some(1))",
     "Ordering": "show(compare(1, 2))",
     "Result": 'show(url_parse("http://a.b/c"))',
     "UrlParts": 'show(url_parse("http://a.b/c"))',
 }
-#: A built-in data type whose instances take as many arguments as the
-#: declaration below, so the value renders by the declaration's layout,
-#: on main and the release branch alike.  A prelude data type's name is not
-#: reserved, so this stays a strict xfail on #1496.
+#: A built-in data type with no shown value to render, so its cell would
+#: say nothing; each says why.
 _NO_SHOWN_VALUE = {
     "Json": "show refuses a Json value in any program (E602)",
     "HtmlNode": "show refuses an HtmlNode value in any program (E602)",
@@ -405,7 +404,10 @@ class TestABuiltInAdtName:
     built-in value."""
 
     def test_every_name_is_accounted_for(self) -> None:
-        names = set(_declarable_type_names()) - set(_CONTAINER_NAMES)
+        from vera.prelude import BUILTIN_TYPE_NAMES
+
+        names = (set(_builtin_type_names()) - set(BUILTIN_TYPE_NAMES)
+                 - set(_CONTAINER_NAMES))
         assert set(_ADT_VALUES) | set(_NO_SHOWN_VALUE) == names
         assert not set(_ADT_VALUES) & set(_NO_SHOWN_VALUE)
 

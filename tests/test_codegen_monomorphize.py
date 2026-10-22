@@ -4805,28 +4805,6 @@ public fn main(@Unit -> @Unit)
             f"state binding codegen never pushes (silent variant)"
         )
 
-    def test_prelude_override_not_shadowed_by_dict(self) -> None:
-        """``option_map`` is an E151-EXEMPT, user-overridable prelude
-        combinator (#815).  The shared builtin-name dict must not shadow a
-        user's override: the interpolation types the call by the USER's
-        declared return (Int), not the prelude signature — pre-gate the
-        literal segments were silently dropped (adversarial panel, PR #972)."""
-        out = _run_io(self._OVERRIDE_OPTION_MAP, fn="main")
-        assert out.strip() == "value=42", (
-            f"expected 'value=42'; got {out!r} — the builtin-name dict "
-            f"shadowed a user override of a prelude combinator"
-        )
-
-    def test_prelude_override_json_type_no_trap(self) -> None:
-        """Same gate, trap variant: an overridden ``json_type`` returning
-        Int must not be typed as the prelude's String (pre-gate: WASM
-        validation failure at run time)."""
-        out = _run_io(self._OVERRIDE_JSON_TYPE, fn="main")
-        assert out.strip() == "x=7", (
-            f"expected 'x=7'; got {out!r} — the builtin-name dict shadowed "
-            f"a user override of json_type"
-        )
-
     _OVERRIDE_INTO_GENERIC = _IO + """\
 public fn option_map(@Unit -> @Int)
   requires(true)
@@ -4846,18 +4824,6 @@ public fn main(@Unit -> @Unit)
   IO.print(to_string(ident_ov(option_map(()))))
 }
 """
-
-    def test_prelude_override_binds_generic_by_declared_type(self) -> None:
-        """The override gate must hold on the DISCOVERY side too: a generic
-        bound from an overridden combinator's return must instantiate at the
-        user's declared type (Int), not the prelude signature — else
-        discovery emits ``ident_ov$Option`` while the gated rewrite calls
-        ``ident_ov$Int`` (dangling, ``main`` dropped)."""
-        out = _run_io(self._OVERRIDE_INTO_GENERIC, fn="main")
-        assert out.strip() == "42", (
-            f"expected '42'; got {out!r} — discovery and rewrite gate the "
-            f"override differently"
-        )
 
     _NESTED_WHERE = _IO + """\
 private forall<A> fn outer(@A -> @A)

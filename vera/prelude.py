@@ -5,13 +5,11 @@ The prelude makes ``Option<T>``, ``Result<T, E>``, ``Ordering``, and
 declarations.  It also injects combinator functions for Option/Result
 and higher-order array operations.
 
-All prelude declarations are prepended to the program's AST.  User-
-defined declarations with the same name shadow the prelude versions:
-
-- A user ``data Option<T>`` replaces the prelude's ``data Option<T>``.
-- A user ``fn option_map`` replaces the prelude's combinator.
-- Option/Result combinators are skipped entirely if the user defines
-  a non-standard variant (e.g. ``data Option<T> { None, Just(T) }``).
+All prelude declarations are prepended to the program's AST.  The prelude
+is a module whose names are reserved (#1469): a declaration that takes one
+is refused at check (E151 for a function, E158 for a type), so no
+declaration a program makes stands in for a prelude one, and the prelude
+injects its declarations whatever the program declares.
 """
 
 from __future__ import annotations
@@ -48,7 +46,7 @@ PRELUDE_NAMESPACE: tuple[str, ...] = (PRELUDE_FILE,)
 # Prelude Vera source
 # =====================================================================
 
-# Built-in ADTs — always injected (user definitions shadow these).
+# Built-in ADTs — always injected; their names are reserved (#1469).
 _PRELUDE_DATA = """\
 data Option<T> { None, Some(T) }
 data Result<T, E> { Ok(T), Err(E) }
@@ -559,115 +557,6 @@ def reserved_type_names() -> frozenset[str]:
 # Detection helpers
 # =====================================================================
 
-def _is_type_param_ref(field_type: ast.TypeExpr, param_name: str) -> bool:
-    """Check if a constructor field type is a bare reference to a type param."""
-    return (isinstance(field_type, ast.NamedType)
-            and field_type.name == param_name
-            and not field_type.type_args)
-
-
-def _has_standard_option(program: ast.Program) -> bool:
-    """Check if the program defines Option<T> with exactly {None, Some(T)}.
-
-    Requires exactly 2 constructors with the standard shape:
-    - None: nullary (no fields)
-    - Some: one field that references the type parameter T
-
-    Rejects extra constructors, wrong arities, and concrete field types
-    like ``Some(Int)`` — the prelude combinators are generic and would
-    fail to type-check against a monomorphic variant.
-    """
-    for tld in program.declarations:
-        decl = tld.decl
-        if isinstance(decl, ast.DataDecl) and decl.name == "Option":
-            if decl.type_params and len(decl.type_params) == 1:
-                if len(decl.constructors) != 2:
-                    return False
-                ctors = {c.name: c for c in decl.constructors}
-                if "None" not in ctors or "Some" not in ctors:
-                    return False  # pragma: no cover
-                none_ctor = ctors["None"]
-                some_ctor = ctors["Some"]
-                if none_ctor.fields is not None:
-                    return False  # pragma: no cover
-                if (some_ctor.fields is None
-                        or len(some_ctor.fields) != 1):
-                    return False  # pragma: no cover
-                if not _is_type_param_ref(
-                    some_ctor.fields[0], decl.type_params[0],
-                ):
-                    return False
-                return True
-    return False  # pragma: no cover
-
-
-def _has_standard_result(program: ast.Program) -> bool:
-    """Check if the program defines Result<T, E> with exactly {Ok(T), Err(E)}.
-
-    Requires exactly 2 constructors with the standard shape:
-    - Ok: one field referencing the first type parameter T
-    - Err: one field referencing the second type parameter E
-
-    Rejects concrete field types like ``Ok(Int)`` or ``Err(String)``.
-    """
-    for tld in program.declarations:
-        decl = tld.decl
-        if isinstance(decl, ast.DataDecl) and decl.name == "Result":
-            if decl.type_params and len(decl.type_params) == 2:
-                if len(decl.constructors) != 2:
-                    return False
-                ctors = {c.name: c for c in decl.constructors}
-                if "Ok" not in ctors or "Err" not in ctors:
-                    return False  # pragma: no cover
-                ok_ctor = ctors["Ok"]
-                err_ctor = ctors["Err"]
-                if (ok_ctor.fields is None
-                        or len(ok_ctor.fields) != 1):
-                    return False  # pragma: no cover
-                if (err_ctor.fields is None
-                        or len(err_ctor.fields) != 1):
-                    return False  # pragma: no cover
-                if not _is_type_param_ref(
-                    ok_ctor.fields[0], decl.type_params[0],
-                ):
-                    return False
-                if not _is_type_param_ref(
-                    err_ctor.fields[0], decl.type_params[1],
-                ):
-                    return False  # pragma: no cover
-                return True
-    return False  # pragma: no cover
-
-
-def _has_standard_json(program: ast.Program) -> bool:
-    """Check if user's ``data Json`` has the expected 6 constructors.
-
-    The prelude Json combinators (json_get, json_type, etc.) pattern-match
-    on the standard constructors: JNull, JBool, JNumber, JString, JArray,
-    JObject.  If the user defines ``data Json`` with different constructors,
-    we must skip injecting the combinators to avoid type errors.
-    """
-    _EXPECTED = {"JNull", "JBool", "JNumber", "JString", "JArray", "JObject"}
-    for tld in program.declarations:
-        decl = tld.decl
-        if isinstance(decl, ast.DataDecl) and decl.name == "Json":
-            ctor_names = {c.name for c in decl.constructors}
-            return ctor_names == _EXPECTED
-    return False  # pragma: no cover
-
-
-def _user_defined_names(program: ast.Program) -> set[str]:
-    """Collect all user-defined function and type alias names."""
-    names: set[str] = set()
-    for tld in program.declarations:
-        decl = tld.decl
-        if isinstance(decl, ast.FnDecl):
-            names.add(decl.name)
-        elif isinstance(decl, ast.TypeAliasDecl):
-            names.add(decl.name)
-    return names
-
-
 #: The names through which a program uses each demand-injected block: its
 #: type, its constructors, and the built-ins whose signatures carry it.
 _JSON_NAMES = frozenset({
@@ -751,45 +640,23 @@ def _imported_type_names(
 def _modules_demand(
     modules: Mapping[tuple[str, ...], ast.Program],
     names: frozenset[str],
-    block_types: set[str],
 ) -> bool:
     """Whether an imported module uses a demand-injected prelude block.
 
     A module demands the block when it writes one of the block's *names*
-    that means the PRELUDE's declaration there.  Two kinds of mention mean
-    something else, and demand nothing:
-
-    * every mention in a module that declares a data type of one of the
-      block's type names (*block_types*): it means its OWN declaration by
-      the names it writes (spec §8.4.1);
-    * a type name the module imports, and a constructor of such a type: a
-      module that imports `a`'s `Json` means `a`'s by `Json` (PR #1508
-      review).
-
-    Counting either would inject the prelude's type beside the module's in
-    a program that never used the prelude's (#1277); since #1469 reserves
-    the prelude's type names (E158), neither arises in a program the
-    checker accepts.  Every other mention demands the block: `json_parse`,
-    or a constructor only the prelude's type declares, makes a value of the
+    that means the PRELUDE's declaration there.  A type name the module
+    imports, and a constructor of such a type, means the imported one and
+    demands nothing: a module that imports `a`'s type with a `JNull`
+    constructor means `a`'s by `JNull` (PR #1508 review).  The prelude's
+    own type names are reserved (#1469, E158), so no module declares or
+    exports one; every other mention demands the block: `json_parse`, or a
+    constructor only the prelude's type declares, makes a value of the
     prelude's type.
     """
     for module in modules.values():
-        if block_types & _user_defined_data_names(module):
-            continue
         if _mentions(module, names - _imported_type_names(module, modules)):
             return True
     return False
-
-
-def _has_standard_html(program: ast.Program) -> bool:
-    """Check if user's ``data HtmlNode`` has the expected 3 constructors."""
-    _EXPECTED = {"HtmlElement", "HtmlText", "HtmlComment"}
-    for tld in program.declarations:
-        decl = tld.decl
-        if isinstance(decl, ast.DataDecl) and decl.name == "HtmlNode":
-            ctor_names = {c.name for c in decl.constructors}
-            return ctor_names == _EXPECTED
-    return False  # pragma: no cover
 
 
 def _node_mentions(node: object, names: frozenset[str]) -> bool:
@@ -862,16 +729,6 @@ def _collect_mentioned_fn_names(
                         _collect_mentioned_fn_names(item, targets, found)
             elif hasattr(val, "__dataclass_fields__"):
                 _collect_mentioned_fn_names(val, targets, found)
-
-
-def _user_defined_data_names(program: ast.Program) -> set[str]:
-    """Collect all user-defined data type names."""
-    names: set[str] = set()
-    for tld in program.declarations:
-        decl = tld.decl
-        if isinstance(decl, ast.DataDecl):
-            names.add(decl.name)
-    return names
 
 
 # =====================================================================
@@ -975,34 +832,26 @@ def prelude_declarations(
     The resolver pass (:mod:`vera.binding`) binds these declarations'
     calls, so the consumer that compiles them must compile these objects.
 
-    The prelude provides:
+    The prelude provides, whatever the program declares (every name it
+    takes is reserved, #1469):
 
     - ``data Option<T>``, ``data Result<T, E>``, ``data Ordering``,
-      ``data UrlParts`` — always injected unless the user defines a
-      type with the same name (user definitions shadow the prelude).
+      ``data UrlParts``.
     - Option combinators (``option_unwrap_or``, ``option_map``,
-      ``option_and_then``) — injected unless the user defines a
-      non-standard ``Option<T>`` or shadows the function names.
-    - Result combinators (``result_unwrap_or``, ``result_map``) —
-      injected unless the user defines a non-standard ``Result<T, E>``
-      or shadows the function names.
+      ``option_and_then``) and Result combinators (``result_unwrap_or``,
+      ``result_map``).
     - The closure-parameter type aliases the injected combinators
-      resolve through (``VeraOptionMapFn``, ``VeraArrayMapFn``, …) —
-      injected exactly when those bodies are, and never skipped for a
-      SHADOWING reason (the Option and Result blocks still ride their
-      combinators' own conditions; the Array block has no combinator
-      prerequisite and is appended unconditionally).  Their names are
-      in the prelude's reserved ``Vera`` namespace (#869/#1184/#1221),
-      which E154 keeps user programs out of, so nothing a user
-      declares can re-type them and no user-written type expression
-      resolves through them.  User code that wants a short name for a
-      function type declares its own alias.
+      resolve through (``VeraOptionMapFn``, ``VeraArrayMapFn``, …).
+      Their names are in the prelude's reserved ``Vera`` namespace
+      (#869/#1184/#1221), which E154 keeps user programs out of, so no
+      user-written type expression resolves through them.  User code
+      that wants a short name for a function type declares its own
+      alias.
     - Array combinator bodies — none currently.  All three
       (``array_map``, ``array_filter``, ``array_fold``) are emitted
-      as iterative WASM by codegen (#480).  ``_ARRAY_COMBINATORS`` is
-      empty but still injected when non-empty and ``array_fn_names``
-      isn't a subset of user names, so adding a future recursive
-      helper stays a one-line change.
+      as iterative WASM by codegen (#480), and ``_ARRAY_COMBINATORS`` is
+      empty, so adding a future recursive helper stays a one-line
+      change.
 
     *modules* maps the path of each module *program* imports, directly or
     not, to its program as the checker saw it.  The demand-injected blocks
@@ -1011,161 +860,50 @@ def prelude_declarations(
     *program*'s: a module that uses ``Json`` in a program whose entry never
     names it compiled against no ``Json`` at all (PR #1508 review).  A
     module's mention demands a block only where it means the prelude's
-    declaration there, which its own or an imported type of the name does
-    not (:func:`_modules_demand`).  Code generation and the verifier's
+    declaration there, which an imported type's constructor of the name
+    does not (:func:`_modules_demand`).  Code generation and the verifier's
     monomorphization discovery pass the same programs, so the two sides
     inject the same prelude.
     """
-    user_names = _user_defined_names(program)
-    user_data_names = _user_defined_data_names(program)
-
-    # Determine whether to inject Option/Result combinators.
-    # If the user defines a standard Option/Result, combinators work.
-    # If the user defines a non-standard variant, skip combinators.
-    # If the user doesn't define them at all, the prelude provides both.
-    user_has_option = "Option" in user_data_names
-    user_has_result = "Result" in user_data_names
-    inject_option_combinators = (
-        not user_has_option or _has_standard_option(program)
-    )
-    inject_result_combinators = (
-        not user_has_result or _has_standard_result(program)
-    )
-
-    # Build source text for all prelude declarations
+    # Every name a prelude declaration takes is reserved (#1469: E151 for a
+    # function, E158 for a type), so no declaration a program makes stands
+    # in for one, and none is skipped: the prelude is a module whose names
+    # are its own.
     source_parts: list[str] = [_PRELUDE_DATA]
-
-    option_fn_names = {"option_unwrap_or", "option_map", "option_and_then"}
-    result_fn_names = {"result_unwrap_or", "result_map"}
-    # array_map, array_filter, and array_fold are all built-ins
-    # emitted as iterative WASM (#480); none of them have prelude
-    # bodies any more.  The set stays explicit (rather than becoming
-    # an empty constant) so adding future array helpers that DO need
-    # prelude injection is a one-line change.
-    array_fn_names: set[str] = set()
-
-    # The alias blocks ride the bodies that resolve through them — no
-    # injection is ever skipped for SHADOWING, because their names are in
-    # the reserved prelude namespace (#1221), which no user declaration may
-    # take, so there is no shadowing case to skip an injection for.  The
-    # combinator conditions below still apply: an absent alias is inert
-    # when the bodies that would resolve through it are absent too.
-    if (inject_option_combinators
-            and not option_fn_names.issubset(user_names)):
-        source_parts.append(_OPTION_TYPE_ALIASES)
-        source_parts.append(_OPTION_COMBINATORS)
-
-    if (inject_result_combinators
-            and not result_fn_names.issubset(user_names)):
-        source_parts.append(_RESULT_TYPE_ALIASES)
-        source_parts.append(_RESULT_COMBINATORS)
-
-    # Array operations — always inject the aliases (no ADT
-    # prerequisites); inject the combinator bodies only when needed.
-    # Decoupled after all three combinators migrated to iterative
-    # WASM (#480): ``array_fn_names`` is empty so the combinator-
-    # injection branch is a no-op for current programs.  When a future
-    # array helper lands as a prelude function (not a built-in), just
-    # add it to ``array_fn_names`` and populate ``_ARRAY_COMBINATORS``
-    # — its parameter aliases are already injected here.
+    source_parts.append(_OPTION_TYPE_ALIASES)
+    source_parts.append(_OPTION_COMBINATORS)
+    source_parts.append(_RESULT_TYPE_ALIASES)
+    source_parts.append(_RESULT_COMBINATORS)
+    # Array operations: the aliases always; the combinator bodies only when
+    # there are any.  `array_map`, `array_filter` and `array_fold` are all
+    # built-ins emitted as iterative WASM (#480), so `_ARRAY_COMBINATORS`
+    # is empty, and a future array helper that needs a prelude body is a
+    # one-line change here.
     source_parts.append(_ARRAY_TYPE_ALIASES)
-    if _ARRAY_COMBINATORS and not array_fn_names.issubset(user_names):
+    if _ARRAY_COMBINATORS:
         source_parts.append(_ARRAY_COMBINATORS)
 
-    # Json ADT and utility functions — inject only when Json is referenced
-    # (Json ADT triggers heap allocation; utilities call map_get etc.)
-    json_fn_names = {
-        "json_get", "json_array_get", "json_array_length",
-        "json_keys", "json_has_field", "json_type",
-        # #366 — typed accessors and compound field accessors
-        "json_as_string", "json_as_number", "json_as_bool", "json_as_int",
-        "json_as_array", "json_as_object",
-        "json_get_string", "json_get_number", "json_get_bool",
-        "json_get_int", "json_get_array",
-    }
-    _json_ctors = {"JNull", "JBool", "JNumber", "JString", "JArray", "JObject"}
-    _json_builtins = {"json_parse", "json_stringify"}
-    user_uses_json = bool(
-        (user_names & json_fn_names)
-        or (user_names & _json_ctors)
-        or (user_names & _json_builtins)
-        or _source_mentions_json(program)
-        or _modules_demand(modules, _JSON_NAMES, {"Json"})
-    )
-    if user_uses_json:
-        user_has_json = "Json" in user_data_names
-        if not user_has_json:
-            source_parts.append(_JSON_DATA)
-        # Only inject combinators when the Json ADT has standard
-        # constructors (JNull, JBool, etc.).  A user-defined
-        # non-standard ``data Json`` would break the match arms.
-        inject_json_combinators = (
-            not user_has_json or _has_standard_json(program)
-        )
-        if inject_json_combinators and not json_fn_names.issubset(user_names):
-            source_parts.append(_JSON_COMBINATORS)
-
-    # HtmlNode ADT and html_attr — inject only when HtmlNode is referenced
-    html_fn_names = {"html_attr"}
-    _html_ctors = {"HtmlElement", "HtmlText", "HtmlComment"}
-    _html_builtins = {
-        "html_parse", "html_to_string", "html_query", "html_text",
-    }
-    user_uses_html = bool(
-        (user_names & html_fn_names)
-        or (user_names & _html_ctors)
-        or (user_names & _html_builtins)
-        or _source_mentions_html(program)
-        or _modules_demand(modules, _HTML_NAMES, {"HtmlNode"})
-    )
-    if user_uses_html:
-        user_has_html = "HtmlNode" in user_data_names
-        if not user_has_html:
-            source_parts.append(_HTML_DATA)
-        inject_html_combinators = (
-            not user_has_html or _has_standard_html(program)
-        )
-        if inject_html_combinators and not html_fn_names.issubset(user_names):
-            source_parts.append(_HTML_COMBINATORS)
-
-    # HttpServer handler types (#305) — inject only when referenced;
-    # a user-defined data Request / data Response shadows the prelude
-    # (the extraction loop below skips user-defined names).  A module's
-    # demand is per type: one declaring or importing its own `Request` means
-    # that one by the name, and still needs the prelude's `Response`
-    # (PR #1508 review).
+    # The Json ADT and its utility functions, the HtmlNode ADT and
+    # html_attr, and the HttpServer handler types (#305): each only when
+    # the program or a module it imports uses it (a Json value triggers
+    # heap allocation; the utilities call map_get and the like).  A
+    # module's demand is per type (PR #1508 review).
+    if _source_mentions_json(program) or _modules_demand(modules, _JSON_NAMES):
+        source_parts.append(_JSON_DATA)
+        source_parts.append(_JSON_COMBINATORS)
+    if _source_mentions_html(program) or _modules_demand(modules, _HTML_NAMES):
+        source_parts.append(_HTML_DATA)
+        source_parts.append(_HTML_COMBINATORS)
     entry_http = _source_mentions_http_server(program)
     for http_type, http_source in _HTTP_SERVER_TYPES.items():
-        if http_type not in user_data_names and (
-            entry_http or _modules_demand(
-                modules, _HTTP_SERVER_TYPE_NAMES[http_type], {http_type})
-        ):
+        if entry_http or _modules_demand(
+                modules, _HTTP_SERVER_TYPE_NAMES[http_type]):
             source_parts.append(http_source)
 
     full_source = "\n".join(source_parts)
     parsed = _parse_source(full_source)
-
-    # Extract declarations, skipping those the user already defined.
-    new_decls: list[ast.TopLevelDecl] = []
-    for tld in parsed.declarations:
-        decl = tld.decl
-        if isinstance(decl, ast.DataDecl):
-            if decl.name in user_data_names:
-                continue  # User's data type shadows the prelude's
-        elif isinstance(decl, ast.FnDecl):
-            if decl.name in user_names:
-                continue  # User shadowed this function
-        elif isinstance(decl, ast.TypeAliasDecl):
-            if decl.name in user_names:
-                # User shadowed this type alias.  Only the user-facing
-                # names are reachable here: the reserved twins the
-                # combinators resolve through are not spellable by an
-                # ordinary declaration (#1184).
-                continue
-        new_decls.append(ast.TopLevelDecl(
-            visibility="private",
-            decl=decl,
-            span=None,
-        ))
-
+    new_decls = [
+        ast.TopLevelDecl(visibility="private", decl=tld.decl, span=None)
+        for tld in parsed.declarations
+    ]
     return tuple(new_decls), full_source

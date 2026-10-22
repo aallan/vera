@@ -157,10 +157,11 @@ _KEYWORD_FN_NAMES = frozenset({
 # failing ``[E202]`` against the *user's* Int parameter.  Removing the
 # declaration made the identical handler check clean.  So the declaration is
 # refused here, at the checker: the parser has no keyword to refuse it with.
-# That shadowing is also cut off at its source, in
-# :meth:`TypeChecker._lookup_function_scoped`, which resolves these names
-# against the flat registry alone — otherwise the rejected declaration would
-# still draw a second, misleading error out of the correct clause bodies.
+# That shadowing is also cut off at its source: the resolver pass binds no
+# declaration to these names, and :meth:`TypeChecker._bound_function` reads
+# them from the flat registry alone — otherwise the rejected declaration
+# would still draw a second, misleading error out of the correct clause
+# bodies.
 _HANDLER_OPERATOR_FN_NAMES = frozenset({"resume"})
 
 # 4. The carve-out: names a *host* invokes rather than Vera source, so being

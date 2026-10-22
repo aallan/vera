@@ -1061,7 +1061,7 @@ class CodeGenerator(
         scope in *decl*'s body — the direct helpers of every enclosing
         function, plus *decl*'s own.  It cannot be recovered from *decl*: a
         helper node carries no parent link, and the ancestors' helpers are
-        exactly what the checker's ``_lookup_function_scoped`` walks.  The
+        exactly what the resolver pass's bare-call rule walks.  The
         default is right for a top-level declaration with no helpers, which
         is every caller that omits it.
         """
@@ -3156,11 +3156,9 @@ class CodeGenerator(
 
         The scope of a helper is the direct ``where`` names of every
         enclosing function up to and including itself — spec §5's helper
-        locality, which the checker's ``_lookup_function_scoped`` frame-stack
-        walk also implements, so a grandchild helper is NOT in its
-        grandparent's scope and a sibling is.  ("Also", not "exactly": the
-        checker's env fallback additionally reaches helpers from OUTSIDE the
-        frame stack entirely, which is #1307 and not this walk's rule.)
+        locality, which the resolver pass's bare-call rule (the binding the
+        checker reads) also implements, so a grandchild helper is NOT in its
+        grandparent's scope and a sibling is.
 
         Same traversal, same skip, same order as :meth:`_flatten_where_fns`;
         the two are asserted to enumerate identically rather than kept in

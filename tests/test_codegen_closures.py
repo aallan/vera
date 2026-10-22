@@ -173,9 +173,8 @@ public fn test(@Unit -> @Int)
     def test_closure_in_match(self) -> None:
         """Use a closure inside a match arm with an ADT constructor."""
         src = """\
-private data Option<T> { None, Some(T) }
 type IntMapper = fn(Int -> Int) effects(pure);
-public fn option_map(@Option<Int>, @IntMapper -> @Option<Int>)
+public fn map_option(@Option<Int>, @IntMapper -> @Option<Int>)
   requires(true) ensures(true) effects(pure)
 {
   match @Option<Int>.0 {
@@ -192,7 +191,7 @@ public fn test(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @IntMapper = make_adder(100);
-  let @Option<Int> = option_map(Some(5), @IntMapper.0);
+  let @Option<Int> = map_option(Some(5), @IntMapper.0);
   match @Option<Int>.0 {
     None -> 0,
     Some(@Int) -> @Int.0
@@ -202,11 +201,10 @@ public fn test(@Unit -> @Int)
         assert _run(src, "test") == 105
 
     def test_closure_in_match_none(self) -> None:
-        """option_map on None returns None."""
+        """Mapping None returns None."""
         src = """\
-private data Option<T> { None, Some(T) }
 type IntMapper = fn(Int -> Int) effects(pure);
-public fn option_map(@Option<Int>, @IntMapper -> @Option<Int>)
+public fn map_option(@Option<Int>, @IntMapper -> @Option<Int>)
   requires(true) ensures(true) effects(pure)
 {
   match @Option<Int>.0 {
@@ -223,7 +221,7 @@ public fn test(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @IntMapper = make_adder(100);
-  let @Option<Int> = option_map(None, @IntMapper.0);
+  let @Option<Int> = map_option(None, @IntMapper.0);
   match @Option<Int>.0 {
     None -> -1,
     Some(@Int) -> @Int.0
@@ -510,7 +508,6 @@ public fn test(@Unit -> @Int)
         """Closure capturing ADT value exercises GC pointer tracking
         for captured i32 locals that are not Bool/Byte (line 190-191)."""
         src = """\
-private data Option<T> { None, Some(T) }
 type IntFn = fn(Int -> Int) effects(pure);
 
 public fn make_fn(@Option<Int> -> @IntFn)
