@@ -1825,13 +1825,17 @@ def test_the_counterfactual_writes_every_contract_as_the_program_does() -> None:
 def test_a_find_the_counterfactual_does_not_remove_stays_a_find(
         monkeypatch: pytest.MonkeyPatch) -> None:
     """The class's boundary: in a program of #1525's class, a find that the
-    counterfactual makes too is a find, beside the class's counted ones."""
+    counterfactual makes too is a find, beside the class's counted ones,
+    though its detail moves with the counterfactual's columns, as a
+    mismatch's site does."""
     real = load_finds
 
     def with_another(program: Source, calls: Sequence[tuple[str, Sequence[int] | None]],
                      stages: Stages | None = None) -> list[Find]:
+        column = 9 if isinstance(program, gen.Program) and "{ let @" in program.render() else 5
         return real(program, calls, stages) + [
-            Find("load", ("call", "elsewhere"), "a find no `let` explains", function="f9")]
+            Find("load", ("call", "elsewhere"), f"a find no `let` explains, at 1:{column}",
+                 function="f9")]
 
     monkeypatch.setattr(sys.modules[__name__], "load_finds", with_another)
     finds = differentials(_repro_generic_argument(), warm=False)
@@ -1922,6 +1926,29 @@ def test_a_member_beside_a_known_find_of_its_signature_is_counted() -> None:
     assert [f for f in finds if not f.known] == [], finds
     assert sorted(f.known for f in finds if f.signature[:2] == (
         "guarded_unrecorded", "nat_bind") and f.function == "f9") == ["#1525", "#1695"], finds
+
+
+def test_a_find_that_stays_beside_a_known_one_that_goes_stays_a_find(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """A program's open find beside a known find of its signature, of which
+    the counterfactual makes the open one again and not the known one: as
+    many of the signature as the program made in the classes, but one
+    outside them, so the open one has not vanished."""
+    real = load_finds
+
+    def pair(program: Source, calls: Sequence[tuple[str, Sequence[int] | None]],
+             stages: Stages | None = None) -> list[Find]:
+        bound = isinstance(program, gen.Program) and "{ let @" in program.render()
+        out = real(program, calls, stages) + [
+            Find("load", ("call", "pair"), "open", function="f9")]
+        if not bound:
+            out.append(Find("load", ("call", "pair"), "known", function="f9", known="#1695"))
+        return out
+
+    monkeypatch.setattr(sys.modules[__name__], "load_finds", pair)
+    finds = differentials(_repro_generic_argument(), warm=False)
+    assert [f.known for f in finds if f.signature == ("call", "pair")
+            and f.detail == "open"] == [""], finds
 
 
 def test_two_sites_of_one_signature_where_one_vanishes_stay_finds(
