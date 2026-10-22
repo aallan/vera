@@ -1217,3 +1217,28 @@ def test_repro_1494_every_generated_symbol_beside_a_same_named_function(
         assert re.search(rf"\(func \${re.escape(name)}[\s(]", both), name
     expected = 2 + sum(range(1, len(takeable) + 1))
     assert pipeline.run(source, "main").value == expected
+
+
+# =====================================================================
+# #1469: the reserved set, written out here rather than read from
+# `vera.prelude`, so a name the source stops reserving is a red cell.
+# =====================================================================
+
+_RESERVED_TYPES = (
+    "Array", "Decimal", "Future", "HtmlNode", "Json", "Map", "MdBlock",
+    "MdInline", "Option", "Ordering", "Request", "Response", "Result", "Set",
+    "Tuple", "UrlParts",
+)
+
+
+@pytest.mark.parametrize("name", _RESERVED_TYPES)
+def test_class_1469_a_reserved_type_name_is_refused_as_an_alias(
+    name: str,
+) -> None:
+    _refused(f"type {name} = Int;\n\n"
+             + _fn("main(@Unit -> @Int)", "1", visibility="public"), "E158")
+
+
+def test_class_1469_the_reserved_set_is_the_one_written_here() -> None:
+    from vera.prelude import reserved_type_names
+    assert sorted(reserved_type_names()) == sorted(_RESERVED_TYPES)
