@@ -316,7 +316,7 @@ def _discovered_sets(
     """
     mod = resolved_module(module_path, module_src)
     compiled = pipeline.compile(
-        main_src, file="fixture.vera", modules=[mod], checked=False,
+        main_src, file="fixture.vera", modules=[mod],
     )
     program = compiled.parsed.program  # raises the parse or transform error
     gen = compiled.generator

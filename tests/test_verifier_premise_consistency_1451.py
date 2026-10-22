@@ -394,7 +394,7 @@ public fn caller(@Nat -> @Nat)
 def _verify_in_process(path: Path, timeout_ms: int | None = None) -> object:
     # The file's bound too: a cell here hands the solver 120 s a query.
     return pipeline.verify(
-        path, timeout_ms=timeout_ms, past_check=True, budget_s=_BUDGET_S,
+        path, timeout_ms=timeout_ms, budget_s=_BUDGET_S,
     ).result
 
 

@@ -45,7 +45,7 @@ def _compile_mod(
         f"{[(d.error_code, d.description[:70]) for d in check_errors]}"
     )
     return pipeline.compile(
-        source, file="fixture.vera", modules=modules, checked=False,
+        source, file="fixture.vera", modules=modules,
     ).result
 
 
@@ -68,7 +68,7 @@ def _generator(source: str) -> CodeGenerator:
     derived from them, so the guard derivation is exercised against the same
     environment a real compile uses rather than a hand-built one.
     """
-    compiled = pipeline.compile(source, file="<conv>", checked=False)
+    compiled = pipeline.compile(source, file="<conv>")
     _ = compiled.result  # raises the parse or transform error
     assert compiled.generator is not None
     return compiled.generator

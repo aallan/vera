@@ -922,7 +922,7 @@ class TestWalkerBlindSpots1179:
 
     @staticmethod
     def _decreases_statuses(source: str):
-        vr = pipeline.verify(source, file="fixture.vera", past_check=True).result
+        vr = pipeline.verify(source, file="fixture.vera").result
         return [ob.status for ob in vr.obligations if ob.kind == "decreases"]
 
     def test_handler_clause_recursive_call_not_verified(self) -> None:

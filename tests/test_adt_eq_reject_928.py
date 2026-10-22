@@ -324,7 +324,7 @@ _DIFF_PRIMITIVES: tuple[str, ...] = (
 
 
 def _codegen_gen() -> CodeGenerator:
-    compiled = pipeline.compile(_DIFF_DECLS, file="fixture.vera", checked=False)
+    compiled = pipeline.compile(_DIFF_DECLS, file="fixture.vera")
     _ = compiled.result  # raises the parse or transform error, if any
     assert compiled.generator is not None
     return compiled.generator

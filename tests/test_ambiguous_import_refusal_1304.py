@@ -43,8 +43,8 @@ import pytest
 import vera
 from tests.module_fixture_helpers import (
     build_multi_module,
-    build_multi_module_past_check,
     module_value,
+    refused_multi_module,
 )
 from tests import pipeline
 
@@ -490,7 +490,7 @@ class TestTheDataSideFlapShapes:
             "midc.vera": _ADT_MID,
             "main.vera": _ADT_MAIN,
         }
-        check_errors, _result, _cg_errors = build_multi_module_past_check(
+        check_errors = refused_multi_module(
             tmp_path, files,
         )
         assert [c for c, _ in check_errors if c == "E157"], check_errors
