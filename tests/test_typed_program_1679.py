@@ -1015,6 +1015,12 @@ _WRAPPED_SAME = _fn(
     "private forall<T where Eq<T>> fn wrapped_same(@T, @T -> @Bool)",
     "same(Some(@T.1), Some(@T.0))") + "\n"
 _M_PICK_FIRST = "module m;\n\n" + _PICK_FIRST.replace("private", "public")
+_TWIN_DATA = "private data Twin<T> {\n  MkTwin(Array<T>, Array<T>)\n}\n\n"
+_SECOND_HEAD = _fn(
+    "private forall<T> fn second_head(@Twin<T> -> @Option<T>)",
+    "match @Twin<T>.0 {\n    MkTwin(@Array<T>, @Array<T>) -> "
+    "if array_length(@Array<T>.0) > 0 then {\n      Some(@Array<T>.0[0])\n"
+    "    } else {\n      None\n    }\n  }") + "\n"
 
 
 def _prints(expr: str) -> str:
@@ -1080,6 +1086,16 @@ BUILT: dict[str, Built] = {
         {"main.vera": _prints(
             "array_length(option_unwrap_or(Some([]), [5000000000]))")},
         "option_unwrap_or$Array_LInt_R", "0\n"),
+    # At the constructor door: the field beside the empty literal fixes the
+    # data type's variable, and the type it builds is the generic's only
+    # source (506d2161 read the element at the phantom's width: `0`).
+    "empty_literal_beside_a_constructor_field": Built(
+        {"main.vera": _TWIN_DATA + _SECOND_HEAD + _fn(
+            "public fn main(@Unit -> @Unit)",
+            "match second_head(MkTwin([], [5000000000])) {\n"
+            '    Some(@Int) -> IO.print("\\(@Int.0)\\n"),\n'
+            '    None -> IO.print("none\\n")\n  }', "<IO>")},
+        "second_head$Int", "5000000000\n"),
     # A type variable spelled as one of the callee's: the caller's own, and
     # one a nested call leaves open.
     "a_callers_variable_spelled_as_the_callees": Built(
