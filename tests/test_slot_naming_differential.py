@@ -891,7 +891,7 @@ def test_inline_battery_reaches_the_alias_corners(sweep: Sweep) -> None:
     assert "Option<Cyc2>" in rendered, sorted(rendered)
     forward = {o.legacy for o in battery
                if o.origin == "<battery:forward_reference>"
-               and o.shape in ("@Option<@Fwd>", "@Option<@Later>")}
+               and o.shape in ("@Option<Fwd>", "@Option<Later>")}
     assert forward == {"Option<Int>"}, forward
     # The effect-row corners: a qualified reference keeps its `Module.Effect`
     # spelling, a row VARIABLE renders as its name, and a row carrying both

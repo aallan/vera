@@ -1135,7 +1135,7 @@ class TestProofsNoCheckStandsFor:
         assert (p.category, p.trials_run) == ("verified", 0), p.reason
         # The clause as the verifier's record renders it, as E703 names one.
         assert p.reason.endswith(
-            "`ensures(array_length(@Array<@Int>.result) == 2)`"), p.reason
+            "`ensures(array_length(@Array<Int>.result) == 2)`"), p.reason
         assert _fn(result, "wrap").category == "refuted"
         assert sorted(_codes(result)) == ["E702", "E703", "E703", "E703"]
 
@@ -1324,7 +1324,7 @@ class TestAProofIsRunWhereverACheckStandsForIt:
         assert f.trials_failed == f.trials_run > 0
         assert {t.status for t in f.failures} == {"refuted"}
         assert f.unchecked == [
-            "ensures(array_length(@Array<@Pos>.result) == 2)"]
+            "ensures(array_length(@Array<Pos>.result) == 2)"]
         assert "E702" not in _codes(result)
         rc = cmd_test(_write(tmp_path, SRC_REFINED_ELEMENTS), trials=3,
                       distrust=True)
@@ -1334,7 +1334,7 @@ class TestAProofIsRunWhereverACheckStandsForIt:
         assert re.search(
             r"positives \.+ REFUTED \(\d+/\d+ trials contradict the Tier 1 "
             r"proof; no runtime check for "
-            r"`ensures\(array_length\(@Array<@Pos>\.result\) == 2\)`\)",
+            r"`ensures\(array_length\(@Array<Pos>\.result\) == 2\)`\)",
             out), out
 
     def test_a_component_refined_return_is_a_checked_clause(self) -> None:
@@ -1344,7 +1344,7 @@ class TestAProofIsRunWhereverACheckStandsForIt:
                    and t.decl.name == "pos_pair"]
         index = _index(SRC_REFINED_COMPONENT)
         assert index.proof_clauses(decl, _FILE) == (
-            ["the refinement of its return type `@Tuple<@Pos, @Int>`"], [])
+            ["the refinement of its return type `@Tuple<Pos, Int>`"], [])
         # The component's guard and the return type's both stand for the
         # component's proved record, so every trap refutes it (#1633).
         f = _fn(_run(SRC_REFINED_COMPONENT, distrust=True, trials=3),
