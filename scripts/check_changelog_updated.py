@@ -2,7 +2,7 @@
 """Verify that substantive PRs add a CHANGELOG entry.
 
 Runs at pre-push stage (locally) and in CI.  Compares the current
-branch against the base ref (default ``origin/main``); if any
+branch against the base ref (the argument, else ``origin/main``); if any
 "substantive" files changed, requires the branch to add a CHANGELOG
 fragment under ``changelog.d/`` (#1529; ``changelog.d/README.md``),
 or a new entry in ``CHANGELOG.md`` itself.
@@ -42,13 +42,18 @@ Escape hatches
 Configuration
 -------------
 
-- ``CHANGELOG_CHECK_BASE`` — override the base ref (default
-  ``origin/main``).  Mainly useful for release branches.
+- ``BASE``, the one positional argument — the base ref the branch is
+  diffed against, which must name a commit.  CI passes the pull request's
+  base branch (``origin/<github.base_ref>``), which is ``origin/main`` on
+  every run ci.yml makes, since its pull requests target ``main``.
+- ``CHANGELOG_CHECK_BASE`` — with no argument, the base ref to try first,
+  before ``origin/main`` and ``main``.
 
 Exit codes
 ----------
 
 - ``0`` — check passed, skipped, or not applicable (e.g. no diff).
+- ``2`` — the base the argument names is not a commit.
 - ``1`` — substantive changes detected without a matching CHANGELOG
   update and no escape hatch engaged.
 """
@@ -317,8 +322,20 @@ def _has_skip_trailer(base: str) -> bool:
     return False
 
 
-def main() -> int:
-    base = _resolve_base_ref()
+def main(argv: list[str] | None = None) -> int:
+    args = sys.argv[1:] if argv is None else argv
+    if len(args) > 1:
+        print("usage: check_changelog_updated.py [BASE]", file=sys.stderr)
+        return 2
+    if args:
+        # A base the caller names is the base: one git cannot find is a
+        # misconfigured caller, refused rather than read as some other base.
+        if _run(["git", "rev-parse", "--verify", f"{args[0]}^{{commit}}"]) is None:
+            print(f"ERROR: the base {args[0]!r} is not a commit.", file=sys.stderr)
+            return 2
+        base: str | None = args[0]
+    else:
+        base = _resolve_base_ref()
     if base is None:
         # No base to diff against — likely running outside a git
         # worktree (e.g. inside a tarball) or during the very first

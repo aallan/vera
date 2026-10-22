@@ -3,11 +3,13 @@ name: Mutation (diff)
 # The diff-scoped mutation lane (MUTATION.md § CI): mutmut over the
 # functions a pull request changes, in a scratch tree, with a table of
 # what became of each function's mutants and the survivors' diffs in the
-# job summary, and the JSON record kept as an artifact.  It fails on a
-# survivor (exit 1) and on a run the budget or the engine stops short
-# (exit 2), so it shows red on the pull request.  It is not a required
-# check: branch protection's required list is the maintainer's, synced by
-# hand.
+# job summary, and the JSON record kept as an artifact.  It is red for a
+# defect and green for an unfinished run: it fails on a survivor (exit 1)
+# and on a run the engine or the lane itself stops (exit 2), and a run its
+# budget stops with no survivor passes, its summary's headline and a
+# warning annotation saying the run is incomplete.  No other step reads the
+# script's exit status.  It is not a required check: branch protection's
+# required list is the maintainer's, synced by hand.
 #
 # `pull_request`, not `pull_request_target`: a fork's pull request runs
 # with a read-only token and no secrets.  The job reads the repository and

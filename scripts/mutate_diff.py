@@ -46,14 +46,17 @@ Outputs: a table per function on stdout (and in ``--summary``, the job
 summary in CI), the first ``MAX_SHOWN_SURVIVORS`` survivors' ``mutmut show``
 diffs, and a JSON record (``--json``) that lists every survivor.
 
-The exit code is 0 when no mutant of the diff survives and none is left
-undecided, the headline saying whether every mutant was killed or timed out
-or how many functions no in-process test reaches; 1 when one survives; and 2
-when the run stopped short: the budget ran out, the engine failed, a mutant
-was left undecided (``not checked``, ``suspicious``, ``segfault``,
-interrupted), or mutmut reported a mutant of a function the lane did not
-map to the diff.  A run that cannot finish says so; it never passes.  A
-function no in-process test reaches has every mutant ``no tests``: it is
+The exit code is red for a defect and green for an unfinished run.  It is 1
+when a mutant of the diff survives, whatever else stopped the run; 2 when the
+run itself failed, whether or not the budget ran out first: the engine
+failed, mutmut reported a mutant of a function the lane did not map to the
+diff, or the lane stopped before mutmut decided anything; and 0 otherwise.
+An exit 0 says what it decided in the headline: every mutant killed or timed
+out, or how many functions no in-process test reaches, or, where the budget
+ran out or a mutant was left undecided (``not checked``, ``suspicious``,
+``segfault``, interrupted), that the run is incomplete, which a
+``::warning::`` annotation repeats on the pull request.
+A function no in-process test reaches has every mutant ``no tests``: it is
 reported as not observable in process, the rule MUTATION.md states for
 ``cli.py``, and does not fail the run.
 
@@ -795,14 +798,39 @@ def outside_units(units: Sequence[Unit], results: Mapping[str, str]) -> list[str
     return sorted(n for n in results if unit_of_mutant(n) not in owned)
 
 
+def failed(stopped: str | None, failure: str) -> str:
+    """How the run stopped once ``failure`` (``engine`` or ``unmapped``) is
+    found too.  A failure outranks the budget, which leaves a run only
+    incomplete, so a run the budget stopped that then failed is red; of two
+    failures the first is the one recorded."""
+    return failure if stopped in (None, "budget") else stopped
+
+
 def exit_code(rows: Sequence[UnitResult], *, stopped: str | None) -> int:
-    """0: no survivor and nothing undecided; 1: a survivor; 2: stopped short."""
+    """1: a survivor, whatever stopped the run; 2: the run itself failed (the
+    engine, or a mutant the lane did not map); 0 otherwise, an incomplete run
+    (the budget ran out, a mutant left undecided) included."""
     statuses = {status for row in rows for status, n in row.counts.items() if n}
-    if stopped is not None or any(STATUSES[s] == "undecided" for s in statuses):
-        return 2
     if "survived" in statuses:
         return 1
+    if stopped in ("engine", "unmapped"):
+        return 2
     return 0
+
+
+def _incomplete(rows: Sequence[UnitResult], stopped: str | None) -> str | None:
+    """Why the run did not decide every mutant of the diff, or None."""
+    if stopped == "budget":
+        return "the budget ran out before every mutant was decided"
+    if stopped == "engine":
+        return "the engine stopped before every mutant was decided"
+    if stopped == "unmapped":
+        return ("mutmut reported mutants of functions the lane did not map to the diff, "
+                "so the diff is not decided")
+    statuses = {status for row in rows for status, n in row.counts.items() if n}
+    if any(STATUSES[s] == "undecided" for s in statuses):
+        return "mutants of the diff were left undecided"
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -923,7 +951,11 @@ def render(record: Mapping[str, Any]) -> str:
 def outcome(code: int, rows: Sequence[UnitResult], stopped: str | None) -> str:
     """The headline: what the run decided.  An exit 0 claims every mutant
     killed or timed out only when every changed function had mutants and an
-    in-process test reached them; otherwise it says what was not tested."""
+    in-process test reached them and the run decided every mutant; otherwise
+    it says what was not tested, or that the run is incomplete."""
+    unfinished = _incomplete(rows, stopped)
+    if code == 0 and unfinished is not None:
+        return f"Incomplete: {unfinished}."
     if code == 0:
         if not rows:
             return "Pass: nothing to mutate."
@@ -943,15 +975,19 @@ def outcome(code: int, rows: Sequence[UnitResult], stopped: str | None) -> str:
         return "Pass: no mutant survived; " + "; ".join(parts) + "."
     if code == 1:
         n = sum(len(r.survivors) for r in rows)
+        if stopped is not None and unfinished is not None:
+            return f"Fail: {n} mutant(s) of the diff survive; {unfinished}."
         return f"Fail: {n} mutant(s) of the diff survive."
-    if stopped == "budget":
-        return "Incomplete: the budget ran out before every mutant was decided."
-    if stopped == "engine":
-        return "Incomplete: the engine stopped before every mutant was decided."
-    if stopped == "unmapped":
-        return ("Incomplete: mutmut reported mutants of functions the lane did not map to "
-                "the diff, so the diff is not decided.")
-    return "Incomplete: mutants of the diff were left undecided."
+    return f"Incomplete: {unfinished or 'the run stopped short'}."
+
+
+def annotation(code: int, headline: str) -> str | None:
+    """The workflow command that marks a green check whose run did not
+    finish, on the pull request beside the check; None for a red check or a
+    finished run."""
+    if code == 0 and headline.startswith("Incomplete:"):
+        return f"::warning title=mutation (diff)::{headline}"
+    return None
 
 
 def _engine_call(engine: Sequence[str], args: Sequence[str], *, cwd: Path | None,
@@ -1131,15 +1167,15 @@ def _lane(args: argparse.Namespace, repo: Path, workdir: Path, engine: list[str]
         listed = _engine_call(engine, ["results", "--all", "true"], cwd=tree, env=env)
         results: dict[str, str] = {}
         if listed is None:
-            stopped = stopped or "engine"
+            stopped = failed(stopped, "engine")
             record["engine_tail"] = [f"mutmut results did not finish in {ENGINE_CALL_TIMEOUT_S} s"]
         elif listed.returncode != 0:
-            stopped = stopped or "engine"
+            stopped = failed(stopped, "engine")
         else:
             try:
                 results = parse_results(listed.stdout)
             except ResultsError as exc:
-                stopped = stopped or "engine"
+                stopped = failed(stopped, "engine")
                 record["engine_tail"] = [str(exc)]
         if no_tests:
             results = {name: "no tests" for name in results}
@@ -1148,7 +1184,7 @@ def _lane(args: argparse.Namespace, repo: Path, workdir: Path, engine: list[str]
         if record["outside_diff"]:
             # In the narrowed tree every mutant belongs to a changed unit; one
             # that does not means the mapping or the narrowing went wrong.
-            stopped = stopped or "unmapped"
+            stopped = failed(stopped, "unmapped")
         to_show = [(row, name) for row in rows for name in row.survivors][:MAX_SHOWN_SURVIVORS]
         for row, name in to_show:
             shown = _engine_call(engine, ["show", name], cwd=tree, env=env)
@@ -1173,6 +1209,9 @@ def _lane(args: argparse.Namespace, repo: Path, workdir: Path, engine: list[str]
     ]
     summary = render(record)
     print(summary)
+    warning = annotation(code, record["outcome"])
+    if warning is not None:
+        print(warning)
     if args.summary:
         with open(args.summary, "a", encoding="utf-8") as fh:
             fh.write(summary + "\n")

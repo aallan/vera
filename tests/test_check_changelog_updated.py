@@ -549,8 +549,11 @@ def _setup_repo(tmp_path: Path) -> Path:
     return repo
 
 
-def _run_script(repo: Path, **env_overrides: str) -> subprocess.CompletedProcess[str]:
-    """Run the check script inside ``repo``, diffing against local ``main``."""
+def _run_script(
+    repo: Path, *args: str, **env_overrides: str,
+) -> subprocess.CompletedProcess[str]:
+    """Run the check script inside ``repo``, diffing against local ``main``
+    unless *args* name the base."""
     # _hermetic_env strips GIT_* so the script's own git resolves to ``repo``
     # (not the outer repo) when this suite runs inside the pre-commit hook.
     env = _hermetic_env()
@@ -561,7 +564,7 @@ def _run_script(repo: Path, **env_overrides: str) -> subprocess.CompletedProcess
         env.pop(key, None)
     env.update(env_overrides)
     return subprocess.run(
-        [sys.executable, str(_SCRIPT)],
+        [sys.executable, str(_SCRIPT), *args],
         cwd=repo,
         env=env,
         capture_output=True,
@@ -709,6 +712,36 @@ class TestEndToEnd:
         _git(repo, "commit", "-am", "Tweak cli")
         result = _run_script(repo)
         assert result.returncode == 1, result.stderr
+
+    def test_the_base_named_on_the_command_line_is_the_one_diffed(
+        self, tmp_path: Path,
+    ) -> None:
+        """The base the argument names is the one the branch is diffed
+        against: against ``release``, a change to ``vera/cli.py`` with no
+        fragment of its own fails, where against ``main`` the fragment
+        ``release`` already carries would read as the change's own."""
+        repo = _setup_repo(tmp_path)
+        _git(repo, "checkout", "-q", "-b", "release")
+        _add_fragment(repo, "1500.fixed.md")
+        _git(repo, "commit", "-m", "The integration branch's own entry")
+        _git(repo, "checkout", "-q", "-b", "feature")
+        (repo / "vera" / "cli.py").write_text("# modified\n", encoding="utf-8")
+        _git(repo, "commit", "-am", "Tweak cli")
+        assert _run_script(repo).returncode == 0
+        result = _run_script(repo, "release")
+        assert result.returncode == 1, result.stderr
+        assert "vera/cli.py" in result.stderr
+
+    def test_a_base_named_on_the_command_line_must_be_a_commit(
+        self, tmp_path: Path,
+    ) -> None:
+        """A base CI names and git cannot find is a misconfigured step, not
+        a pass: it is refused, where the environment's override falls back
+        to ``main``."""
+        repo = _setup_repo(tmp_path)
+        result = _run_script(repo, "no-such-branch")
+        assert result.returncode == 2
+        assert "no-such-branch" in result.stderr
 
     def test_two_branches_that_each_add_a_fragment_merge_in_either_order(
         self, tmp_path: Path,

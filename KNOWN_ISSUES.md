@@ -91,7 +91,7 @@ Defensive measures applied in CI (CVE ignores, forced upgrades, etc.) with expli
 
 | Workaround | Where | Rationale | Remove when | Issue |
 |------------|-------|-----------|-------------|-------|
-| `codecov/codecov-action` SHA-pinned to a commit (`e79a696` = v6.0.1) instead of the floating `@v6` tag | Both Codecov upload steps in `.github/workflows/ci.yml` | Codecov was acquired by Harness (June 2026), elevating the risk that the floating tag is repointed and silently flows into CI; pinning to a reviewed commit closes that. Coverage enforcement is unaffected — the 80% gate is the on-runner `--cov-fail-under`, and uploads are `fail_ci_if_error: false`. | The Codecov → Harness migration stabilises — then re-evaluate, including whether to adopt a repo-wide SHA-pin policy. | [#712](https://github.com/aallan/vera/issues/712) |
+| `codecov/codecov-action` SHA-pinned to a commit (`e79a696` = v6.0.1) instead of the floating `@v6` tag | Both Codecov upload steps in `.github/workflows/ci.yml` | Codecov was acquired by Harness (June 2026), elevating the risk that the floating tag is repointed and silently flows into CI; pinning to a reviewed commit closes that. Coverage enforcement is unaffected — the 94% gate is the on-runner `--cov-fail-under`, and uploads are `fail_ci_if_error: false`. | The Codecov → Harness migration stabilises — then re-evaluate, including whether to adopt a repo-wide SHA-pin policy. | [#712](https://github.com/aallan/vera/issues/712) |
 
 ## Runtime workarounds
 
