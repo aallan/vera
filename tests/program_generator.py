@@ -1258,12 +1258,16 @@ class _Generator:
         # A generic no call instantiates has no clone to compile: code
         # generation skips its template (E604), so none is written; nor is
         # an effect helper no handler calls, which would be proved and
-        # never run.
-        called = {id(node.fn) for fn in self.functions for f in [fn, *fn.helpers]
-                  for node in _walk(f.body) if isinstance(node, Call)}
-        self.functions = [f for f in self.functions
-                          if not (f.forall or f.kind in ("state", "exn"))
-                          or id(f) in called]
+        # never run.  A helper another helper calls goes with its caller,
+        # so the pass repeats until nothing more goes.
+        while True:
+            called = {id(node.fn) for fn in self.functions for f in [fn, *fn.helpers]
+                      for node in _walk(f.body) if isinstance(node, Call)}
+            kept = [f for f in self.functions
+                    if not (f.forall or f.kind in ("state", "exn")) or id(f) in called]
+            if len(kept) == len(self.functions):
+                break
+            self.functions = kept
         prints = [f for f in self.functions if f.public]
         prog = Program(self.seed, self.datas, self.functions, prints,
                        self.aliases, self.module)

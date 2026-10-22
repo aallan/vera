@@ -2673,16 +2673,18 @@ def test_the_pinned_seeds_meet_each_counterfactual_class(
 def test_every_effect_helper_is_called_under_a_handler() -> None:
     """A `State` or `Exn` helper is written only where a handler of its cell
     calls it, so a run puts or throws inside a callee under its caller's
-    handler; the census counts a helper by its call, so a program that
-    declares one and calls none reaches no helper construct."""
+    handler, and a generic only where a call instantiates it, over three
+    hundred programs (seeds 223 and 224 once kept a helper only a dropped
+    helper called); the census counts a helper by its call, so a program
+    that declares one and calls none reaches no helper construct."""
     called = 0
-    for seed in range(100):
+    for seed in range(300):
         prog = gen.generate(seed)
         targets = {id(node.fn) for f in gen.all_functions(prog)
                    for node in gen._walk(f.body) if isinstance(node, gen.Call)}
-        helpers = [f for f in prog.functions if f.kind in ("state", "exn")]
-        assert all(id(f) in targets for f in helpers), (seed, [f.name for f in helpers])
-        called += len(helpers)
+        written = [f for f in prog.functions if f.kind in ("state", "exn") or f.forall]
+        assert all(id(f) in targets for f in written), (seed, [f.name for f in written])
+        called += sum(1 for f in written if f.kind in ("state", "exn"))
     assert called, "no helper in a hundred programs"
     cell = gen.Binding("Int", gen.Iv(0, 5), gen.Iv(0, 5))
     writer = gen.Function("f0", False, [cell], "Unit", gen.Block(

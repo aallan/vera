@@ -1434,8 +1434,9 @@ Version two writes type aliases (`type Score = Int;`, and refinements such as
 `type Span = { @Int | @Int.0 >= -3 && @Int.0 <= 9 };`), up to three `data`
 declarations beside a generic one (`Box<T>`) and a recursive one (`Chain`),
 private generic helpers, `State` and `Exn` helpers (each written only where a
-handler of its cell calls it), two to six functions, a module beside the entry (`gen_lib.vera`, which the entry imports by a selective
-list of what it uses), and a `main` that prints each public function's value.
+handler of its cell calls it), two to six functions, a module beside the entry
+(`gen_lib.vera`, which the entry imports by a selective list of what it uses),
+and a `main` that prints each public function's value.
 A function is one of five kinds:
 
 | Kind | What it is | Why its contract holds |
@@ -1532,8 +1533,8 @@ seeds; a hundred seeds reach every construct and keep the generator's
 invariants; each differential reports a hand-written program that breaks it,
 or a session built to break it, and passes its nearest neighbour that does not;
 the known-class pins and their members, and the counterfactual classes' pins,
-members and boundary; and the minimiser's cells.  Nothing
-else of the generator runs on a pull request.
+members and boundary; and the minimiser's cells.  Nothing else of the
+generator runs on a pull request.
 [`nightly-generator.yml`](.github/workflows/nightly-generator.yml)
 runs the night's 1,900 seeds, a short night of 1,000 seeds on a pull request
 that changes the generator, its instrument or the workflow, and any seeds
