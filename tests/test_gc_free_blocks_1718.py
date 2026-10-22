@@ -31,8 +31,8 @@ collection's worklist high-water mark.  A collection marks no free block,
 and its high-water mark is at most the words of the live objects it
 scanned plus its roots (each push is one scanned word of a marked object
 or one root, and only objects off the free list are marked).  The spliced
-module runs in a child process with its fault signals handled, so a probe
-that reads the heap never runs in the test process.
+module runs in a child process, reported as a fault when a signal ends it,
+so a probe that reads the heap never runs in the test process.
 
 The matrix crosses the container a program builds, drops and builds again
 (an `Array<String>`, a `Map<String, Int>` built by `map_insert`, a `String`
@@ -41,7 +41,9 @@ worklist's 16,384 entries and past them (so drains drop pushes and the
 rescan runs), and the collection (`VERA_EAGER_GC=1`, which collects on
 every allocation, and the ordinary collector driven by a churn of 4,096-byte
 strings).  Each cell asserts its premise (a collection met a non-empty free
-list; past the bound, the worklist filled) beside the class.  Products that
+list; past the bound, the worklist filled) beside the class, and a cell
+whose program names free blocks runs again without Phase 1b, the base's
+mark phase, and asserts that it marks them there.  Products that
 are not cells: the string past the bound (a `String` is one block, so its
 pending set stays at a few entries at any length: at 20,000 pieces the
 high-water mark was 8); eager collection past the bound (each allocation
@@ -58,6 +60,8 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -171,20 +175,19 @@ def instrument(wat: str) -> str:
 # The child
 # =====================================================================
 
-#: Runs on the WAT it reads from stdin, in a child process whose fault
-#: signals exit 200.  Mode `main` calls `main` (with the integer arguments
-#: after the mode) and reports its value or trap with the counters; mode
-#: `probe` drives the collector directly (`_PROBE`).  A pure program's
-#: imports are the signals its checks would call, each a stub that fails,
-#: and the `String` hash key, the native host's own.
+#: Runs on the WAT it reads from stdin, in a child process.  Mode `main`
+#: calls `main` (with the integer arguments after the mode) and reports its
+#: value or trap with the counters; mode `probe` drives the collector
+#: directly (`_PROBE`).  A pure program's imports are the signals its checks
+#: would call, each a stub that fails, and the `String` hash key, which is a
+#: constant here: the native host draws a fresh key for each instance, and a
+#: `Map`'s layout, so whether a stale word in it names a free block, would
+#: change from run to run.  Under 1718 every map cell's program names free
+#: blocks (under some keys the ordinary map below the bound names none, and
+#: its run without Phase 1b says so).
 _CHILD = r'''
-import json, os, signal, sys
-for _name in ("SIGSEGV", "SIGBUS"):
-    _sig = getattr(signal, _name, None)
-    if _sig is not None:
-        signal.signal(_sig, lambda *_: os._exit(200))
+import json, sys
 import wasmtime
-from vera.codegen.api import HOST_BINDERS
 
 wat = sys.stdin.buffer.read().decode("utf-8")
 mode, args = sys.argv[1], [int(a) for a in sys.argv[2:]]
@@ -196,12 +199,11 @@ module = wasmtime.Module(engine, wat)
 linker = wasmtime.Linker(engine)
 for imported in module.imports:
     if (imported.module, imported.name) == ("vera", "hash_key"):
+        linker.define_func("vera", "hash_key", imported.type, lambda: 1718)
         continue
     def refuse(*a, _name=imported.name):
         raise RuntimeError(f"the module called the host import {_name}")
     linker.define_func(imported.module, imported.name, imported.type, refuse)
-if any((i.module, i.name) == ("vera", "hash_key") for i in module.imports):
-    HOST_BINDERS["hash"](linker, {"hash_key"}, None)
 exports = linker.instantiate(store, module).exports(store)
 out = {}
 if mode == "main":
@@ -228,17 +230,34 @@ class Outcome:
     probe: dict[str, object]
 
 
-def _child(wat: str, mode: str, args: tuple[int, ...] = (),
-           probe: str = "", timeout: float = 600) -> Outcome:
-    """Run *wat* in a child process (`_CHILD`), from the repository root so
-    it imports this tree's `vera`."""
+#: The status `_spawn` reports for a child a signal ended (a negative return
+#: code): a fault in the engine or in the host code a module calls.  The
+#: child cannot report one itself: a Python-level handler runs at the next
+#: bytecode, and a synchronous fault returns into the faulting instruction,
+#: so the child would spin until its timeout.
+FAULT = 200
+
+
+def _spawn(wat: str, mode: str, args: tuple[int, ...] = (),
+           probe: str = "", timeout: float = 600) -> tuple[int, str, str]:
+    """Run *wat* in a child process (`_CHILD`, after *probe*), from the
+    repository root so it imports this tree's `vera`: its exit status, or
+    `FAULT` for a child a signal ended, its stdout and its stderr."""
     script = (probe or "PROBE = None\n") + _CHILD
     proc = subprocess.run(
         [sys.executable, "-c", script, mode, *map(str, args)],
         input=wat, capture_output=True, text=True, encoding="utf-8",
         cwd=ROOT, timeout=timeout, check=False)
-    assert proc.returncode == 0, (proc.returncode, proc.stderr[-2000:])
-    out = json.loads(proc.stdout)
+    status = FAULT if proc.returncode < 0 else proc.returncode
+    return status, proc.stdout, proc.stderr
+
+
+def _child(wat: str, mode: str, args: tuple[int, ...] = (),
+           probe: str = "", timeout: float = 600) -> Outcome:
+    """What the child (`_spawn`) reported, from a run that exited 0."""
+    status, stdout, stderr = _spawn(wat, mode, args, probe, timeout)
+    assert status == 0, (status, stderr[-2000:])
+    out = json.loads(stdout)
     return Outcome(out.get("value"), out.get("trap"), out["counts"],
                    {k: v for k, v in out.items()
                     if k not in ("value", "trap", "counts")})
@@ -264,6 +283,25 @@ def _counted(source: str, eager: bool, monkeypatch: pytest.MonkeyPatch,
     """*source*'s `main`, run with the counters threaded into its
     collector."""
     return _child(instrument(_wat(source, eager, monkeypatch)), "main", args)
+
+
+@contextmanager
+def _without_phase_1b(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Compile with Phase 1b dropped from `$gc_collect`: the base's mark
+    phase, under which a cell's program marks the free blocks it names, so
+    the cell shows that its run meets the class."""
+    from vera.codegen.assembly import AssemblyMixin
+
+    with monkeypatch.context() as patch:
+        patch.setattr(AssemblyMixin, "_emit_gc_unbase_free",
+                      staticmethod(lambda: ""), raising=False)
+        yield
+
+
+def _assert_the_base_marks_free_blocks(run: Outcome) -> None:
+    """*run*, made `_without_phase_1b`, marked free blocks: the trigger of
+    the cell's `free_marked == 0`."""
+    assert run.counts["free_marked"] > 0, run.counts
 
 
 # =====================================================================
@@ -424,10 +462,18 @@ CHURN = {"eager": 30, "ordinary": 3000}
 SHAPES = ("array", "map", "string", "data")
 
 
+def _names_free_blocks(shape: str, width: str, trigger: str) -> bool:
+    """Whether the cell's program names free blocks: every cell but the
+    ordinary array, string and list below the bound, whose programs name
+    none at that width (at the base those three are green, the rest red)."""
+    return not (trigger == "ordinary" and width == "under" and shape != "map")
+
+
 def _assert_no_free_block_marked(shape: str, width: str, trigger: str,
                                  monkeypatch: pytest.MonkeyPatch) -> None:
     n, churn = WIDTHS[width], CHURN[trigger]
-    run = _counted(_program(shape, n, churn), trigger == "eager", monkeypatch)
+    source, eager = _program(shape, n, churn), trigger == "eager"
+    run = _counted(source, eager, monkeypatch)
     counts = run.counts
     assert run.trap is None, run.trap
     assert run.value == _expected(shape, n, churn), (run.value, counts)
@@ -439,6 +485,10 @@ def _assert_no_free_block_marked(shape: str, width: str, trigger: str,
         assert counts["hwm"] == WORKLIST_ENTRIES, counts
     assert counts["free_marked"] == 0, counts
     assert counts["hwm_over"] == 0, counts
+    if _names_free_blocks(shape, width, trigger):
+        with _without_phase_1b(monkeypatch):
+            _assert_the_base_marks_free_blocks(
+                _counted(source, eager, monkeypatch))
 
 
 def _cells(triggers: tuple[str, ...]) -> list[object]:
@@ -457,8 +507,10 @@ def test_a_collection_marks_no_free_block(
     """Each container, built, dropped and built again, keeps every value it
     holds, and no collection marks a block on the free list or holds more
     entries on its worklist than the live words it scanned and its roots.
-    At 6141d6ad every eager cell and the ordinary map, list, and array past
-    the bound marked free blocks (up to 4,300,544 in one run)."""
+    At 6141d6ad every eager cell, the ordinary map below the bound and the
+    ordinary array, map and list past it marked free blocks, from 59 (the
+    map below the bound) to 42,948 (the eager list) in a run; each of those
+    cells runs again without Phase 1b and marks them there."""
     _assert_no_free_block_marked(shape, width, trigger, monkeypatch)
 
 
@@ -487,12 +539,15 @@ def test_repro_1718_the_issue_program_marks_no_free_block(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The 599-key map returns 599, and collecting on every allocation no
-    collection marks a free block: at 6141d6ad, 24 of its 3,703
-    collections marked one."""
+    collection marks a free block: at 6141d6ad its 3,718 collections
+    marked 45."""
     run = _counted(_ISSUE_PROGRAM, True, monkeypatch)
     assert run.value == 599, run
     assert run.counts["free_seen"] > 0, run.counts
     assert run.counts["free_marked"] == 0, run.counts
+    with _without_phase_1b(monkeypatch):
+        _assert_the_base_marks_free_blocks(
+            _counted(_ISSUE_PROGRAM, True, monkeypatch))
 
 
 #: The list `examples/gc_pressure.vera` builds, three times: a `Nil` (8
@@ -507,13 +562,16 @@ def test_repro_a_reused_block_s_stale_word_marks_no_free_chain(
 ) -> None:
     """`examples/gc_pressure.vera`'s list, built three times collecting on
     every allocation, marks no free block.  At 6141d6ad the stale `next`
-    word in a reused block's slack marked 598 free blocks, the old list
+    word in a reused block's slack marked 300 free blocks, the old list
     and the free chain behind it."""
     assert "repeat(3, 0)" in _GC_PRESSURE
     run = _counted(_GC_PRESSURE, True, monkeypatch)
     assert run.value == 3 * 5050, run
     assert run.counts["free_seen"] > 0, run.counts
     assert run.counts["free_marked"] == 0, run.counts
+    with _without_phase_1b(monkeypatch):
+        _assert_the_base_marks_free_blocks(
+            _counted(_GC_PRESSURE, True, monkeypatch))
 
 
 #: Drives the collector directly, on a module compiled to collect on every
@@ -606,6 +664,8 @@ def test_repro_a_stale_word_to_a_free_block_marks_nothing(
     assert run.probe["s_marked"] == 1 and run.probe["s_word"], run
     assert run.probe["marked"] == 0, run
     assert run.counts["free_marked"] == 0, run.counts
+    with _without_phase_1b(monkeypatch):
+        _assert_the_base_marks_free_blocks(_probe(0, monkeypatch))
 
 
 def test_repro_the_high_water_mark_stays_within_the_live_set(
@@ -622,6 +682,8 @@ def test_repro_the_high_water_mark_stays_within_the_live_set(
     # The setup's collections seed the 65 blocks it roots while it builds
     # them; no collection pushes the 4,095 words the freed block names.
     assert run.counts["hwm"] < 4095, run.counts
+    with _without_phase_1b(monkeypatch):
+        _assert_the_base_marks_free_blocks(_probe(2048, monkeypatch))
 
 
 def test_a_block_reused_from_the_free_list_is_marked(
@@ -646,15 +708,12 @@ def test_check_marks_traps_on_a_mark_of_a_free_block(
     not by reading the bitmap Phase 1b clears: with Phase 1b it holds over
     the list `examples/gc_pressure.vera` builds, and dropped into a
     collector without Phase 1b it traps at the first free block marked."""
-    from vera.codegen.assembly import AssemblyMixin
-
     run = _child(_wat(_GC_PRESSURE, True, monkeypatch, check_marks=True),
                  "main")
     assert run.trap is None and run.value == 3 * 5050, run
-    monkeypatch.setattr(AssemblyMixin, "_emit_gc_unbase_free",
-                        staticmethod(lambda: ""), raising=False)
-    run = _child(_wat(_GC_PRESSURE, True, monkeypatch, check_marks=True),
-                 "main")
+    with _without_phase_1b(monkeypatch):
+        run = _child(_wat(_GC_PRESSURE, True, monkeypatch, check_marks=True),
+                     "main")
     assert run.trap is not None and "unreachable" in run.trap, run
 
 
@@ -705,12 +764,41 @@ def test_repro_an_integer_equal_to_a_free_block_marks_nothing(
     blocks' links."""
     import re
 
-    source = _integers_program(4096)
-    wat = _wat(source, True, monkeypatch)
-    found = re.search(r"\(global \$gc_heap_start i32 \(i32\.const (\d+)\)\)",
-                      wat)
-    assert found is not None
-    run = _child(instrument(wat), "main", (int(found.group(1)),))
+    def run_it() -> Outcome:
+        wat = _wat(_integers_program(4096), True, monkeypatch)
+        found = re.search(
+            r"\(global \$gc_heap_start i32 \(i32\.const (\d+)\)\)", wat)
+        assert found is not None
+        return _child(instrument(wat), "main", (int(found.group(1)),))
+
+    run = run_it()
     assert run.value == 3 * 5050 + 4096 + 50, run
     assert run.counts["free_seen"] > 0, run.counts
     assert run.counts["free_marked"] == 0, run.counts
+    with _without_phase_1b(monkeypatch):
+        _assert_the_base_marks_free_blocks(run_it())
+
+
+# =====================================================================
+# The harness
+# =====================================================================
+
+#: Ends the child with SIGSEGV, its core dump off, before `_CHILD` imports
+#: the engine.
+_SEGV = """\
+import os, resource, signal
+resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+os.kill(os.getpid(), signal.SIGSEGV)
+"""
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="on macOS a SIGSEGV death raises the crash reporter's dialog; on "
+    "Windows os.kill ends the process with status 11 and sends no signal")
+def test_a_child_a_signal_ends_is_reported_as_a_fault() -> None:
+    """A child that a fault signal ends is reported as `FAULT`, read from
+    its return code, not as a run that exited: this child sends itself
+    SIGSEGV."""
+    status, stdout, stderr = _spawn("", "probe", probe=_SEGV)
+    assert status == FAULT and not stdout, (status, stderr[-2000:])
