@@ -112,26 +112,6 @@ _REPRO_ROW = _fn(
     "public fn f(@Int -> @Int)",
     "handle[State<Int>](@Int = 0) { get(@Unit) -> { resume(@Int.0) }, "
     "put(@Int) -> { resume(()) } } in { peek(1) }")
-_REPRO_FUTURE_CELL = (
-    "public fn main(@Unit -> @Int)\n  requires(true)\n  ensures(true)\n"
-    "  effects(<Async>)\n{\n"
-    "  handle[State<Future<Int>>](@Future<Int> = async(0)) {\n"
-    "    get(@Unit) -> { resume(@Future<Int>.0) },\n"
-    "    put(@Future<Int>) -> { resume(()) }\n"
-    "  } in {\n    put(async(5));\n    1\n  }\n}\n")
-_REPRO_WRAP_INDEX = _fn(
-    "private forall<T> fn wrap(@T -> @Array<T>)", "[@T.0]") + "\n" + _fn(
-    "public fn main(@Unit -> @Int)", "wrap(3)[0]")
-_REPRO_SHOW_REVERSE = (
-    "public fn main(@Unit -> @Unit)\n  requires(true)\n  ensures(true)\n"
-    "  effects(<IO>)\n{\n"
-    "  let @Array<Int> = array_reverse(array_range(1, 4));\n"
-    '  IO.print("\\(show(@Array<Int>.0))\\n");\n'
-    '  IO.print("\\(show(array_reverse(array_range(1, 4))))\\n")\n}\n')
-_REPRO_MATCH_FOLD = _fn(
-    "public fn main(@Unit -> @Int)",
-    "match array_fold([Some(1), None], 0, fn(@Int, @Option<Int> -> @Int) "
-    "effects(pure) { @Int.0 }) {\n    0 -> 1,\n    _ -> 2\n  }")
 _M_IMPOSSIBLE = (
     "module m;\n\npublic forall<T> fn impossible(@T -> @T)\n"
     "  requires(false)\n  ensures(true)\n  effects(pure)\n{\n  @T.0\n}\n")
@@ -194,18 +174,6 @@ REPROS: dict[str, Repro] = {
     # #1769: a generic callee's row, instantiated, fits the handler.
     "1769_instantiated_row_fits": Repro(
         {"main.vera": _REPRO_ROW}, _runs("f", [3], value=0)),
-    # #1685 (through #1680): a `State<Future<Int>>` cell loads.
-    "1685_future_cell_loads": Repro(
-        {"main.vera": _REPRO_FUTURE_CELL}, _runs("main", value=1)),
-    # PR #1700's review: an index into a generic call's `Array` result.
-    "index_into_generic_array_result": Repro(
-        {"main.vera": _REPRO_WRAP_INDEX}, _runs("main", value=3)),
-    # The v0.2.5 lanes' sightings.
-    "show_of_generic_builtin_result": Repro(
-        {"main.vera": _REPRO_SHOW_REVERSE},
-        _runs("main", stdout="[3, 2, 1]\n[3, 2, 1]\n")),
-    "match_on_generic_fold_scrutinee": Repro(
-        {"main.vera": _REPRO_MATCH_FOLD}, _runs("main", value=1)),
     # #1468: a false `requires` on a generic callee behind a module
     # boundary is refuted at the call, as on a monomorphic one.
     "1468_false_requires_on_generic_callee": Repro(

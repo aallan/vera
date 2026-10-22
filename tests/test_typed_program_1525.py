@@ -397,6 +397,36 @@ _ALIAS_WIDTH_LET = _source(
 )
 
 
+# ---------------------------------------------------------------------
+# The lines #1679 reported that are a re-derived type (routed to #1525)
+# ---------------------------------------------------------------------
+
+_FUTURE_CELL = _source(
+    "public fn main(@Unit -> @Int)\n  requires(true)\n  ensures(true)\n"
+    "  effects(<Async>)\n{\n"
+    "  handle[State<Future<Int>>](@Future<Int> = async(0)) {\n"
+    "    get(@Unit) -> { resume(@Future<Int>.0) },\n"
+    "    put(@Future<Int>) -> { resume(()) }\n"
+    "  } in {\n    put(async(5));\n    1\n  }\n}",
+)
+_WRAP_INDEX = _source(
+    "private forall<T> fn wrap(@T -> @Array<T>)\n" + _C + "{\n  [@T.0]\n}",
+    "public fn main(@Unit -> @Int)\n" + _C + "{\n  wrap(3)[0]\n}",
+)
+_SHOW_REVERSE = _source(
+    "public fn main(@Unit -> @Unit)\n  requires(true)\n  ensures(true)\n"
+    "  effects(<IO>)\n{\n"
+    "  let @Array<Int> = array_reverse(array_range(1, 4));\n"
+    '  IO.print("\\(show(@Array<Int>.0))\\n");\n'
+    '  IO.print("\\(show(array_reverse(array_range(1, 4))))\\n")\n}',
+)
+_MATCH_FOLD = _source(
+    "public fn main(@Unit -> @Int)\n" + _C + "{\n"
+    "  match array_fold([Some(1), None], 0, fn(@Int, @Option<Int> -> @Int) "
+    "effects(pure) { @Int.0 }) {\n    0 -> 1,\n    _ -> 2\n  }\n}",
+)
+
+
 REPROS: dict[str, Repro] = {
     "1514_let_through_parameterised_alias": Repro(
         {"main.vera": _I1514_LET}, _runs("main", None, 5)),
@@ -462,6 +492,18 @@ REPROS: dict[str, Repro] = {
         {"main.vera": _ALIAS_WIDTH}, _runs("main", None, 42)),
     "parameterised_alias_width_let": Repro(
         {"main.vera": _ALIAS_WIDTH_LET}, _runs("main", None, 42)),
+    # #1685 (through #1680): a `State<Future<Int>>` cell loads.
+    "1685_future_cell_loads": Repro(
+        {"main.vera": _FUTURE_CELL}, _runs("main", None, 1)),
+    # PR #1700's review: an index into a generic call's `Array` result.
+    "index_into_generic_array_result": Repro(
+        {"main.vera": _WRAP_INDEX}, _runs("main", None, 3)),
+    # The v0.2.5 lanes' sightings.
+    "show_of_generic_builtin_result": Repro(
+        {"main.vera": _SHOW_REVERSE},
+        _runs("main", None, stdout="[3, 2, 1]\n[3, 2, 1]\n")),
+    "match_on_generic_fold_scrutinee": Repro(
+        {"main.vera": _MATCH_FOLD}, _runs("main", None, 1)),
 }
 
 
