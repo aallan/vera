@@ -1538,13 +1538,13 @@ members and boundary; and the minimiser's cells.  A pull request that changes
 the generator, its instrument or the workflow also runs the short night below;
 no other generator work runs on a pull request.
 [`nightly-generator.yml`](.github/workflows/nightly-generator.yml)
-runs the night's 1,900 seeds, a short night of 1,000 seeds on a pull request
+runs the night's 1,400 seeds, a short night of 1,000 seeds on a pull request
 that changes the generator, its instrument or the workflow, and any seeds
 `workflow_dispatch` names.  The night is scheduled at 14:17 UTC and starts
 when GitHub runs it, hours later on this repository.  A night's seeds start at
 its day's offset from 2026-10-01 times 100,000, so no two nights share one.
-On the runner's four workers the short night takes 0.92 s a program, 4.3 times
-version one's 0.213 s there, so a night of 1,900 is about 29 minutes of the
+On the runner's four workers the short night takes 1.24 s a program, 5.8 times
+version one's 0.213 s there, so a night of 1,400 is about 29 minutes of the
 step's 45; on a laptop the warm differential is 0.87 s of a program's 1.20 s.
 
 **A find.**  A find outside the known classes is minimised: a function, a
