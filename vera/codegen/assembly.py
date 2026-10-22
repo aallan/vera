@@ -962,6 +962,12 @@ class AssemblyMixin:
         3``, held in byte ``$gc_bm_base + (granule >> 3)`` at position
         ``granule & 7``.  Callers must range-check ``p`` first — both
         call sites do, inside the existing heap-range guards.
+
+        ``$gc_clear_base`` takes a recorded base back out (#1718): Phase
+        1b calls it for every block on the free list, which holds no
+        object, so ``$gc_is_base`` refuses a free block and the mark
+        phase never pushes or marks one.  Its ``p`` is a free-list node,
+        a body address Phase 1 recorded.
         """
         index = (
             "    local.get $p\n"
@@ -993,6 +999,24 @@ class AssemblyMixin:
             "    i32.or\n"
             "    i32.store8\n"
             "  )\n"
+            "  (func $gc_clear_base (param $p i32)\n"
+            "    (local $bi i32)\n"
+            "    (local $ba i32)\n"
+            + index
+            + "    local.set $ba\n"
+            "    local.get $ba\n"
+            "    local.get $ba\n"
+            "    i32.load8_u\n"
+            "    i32.const 1\n"
+            "    local.get $bi\n"
+            "    i32.const 7\n"
+            "    i32.and\n"
+            "    i32.shl\n"
+            "    i32.const -1\n"
+            "    i32.xor\n"
+            "    i32.and\n"
+            "    i32.store8\n"
+            "  )\n"
             "  (func $gc_is_base (param $p i32) (result i32)\n"
             "    (local $bi i32)\n"
             + index
@@ -1010,6 +1034,49 @@ class AssemblyMixin:
                if flag_enabled("VERA_GC_CHECK_MARKS") else "")
         )
 
+    @staticmethod
+    def _emit_gc_unbase_free() -> str:
+        """Emit Phase 1b of ``$gc_collect`` for #1718: a free block is no
+        object.
+
+        Phase 1 records every block on the allocation chain as an object
+        base, the free ones too.  The sweep links a freed block through its
+        first payload word and leaves the rest of its payload, and
+        ``$alloc`` reuses a block whole, so a live object smaller than the
+        block it reused keeps the old payload in its slack.  A word that
+        equals a free block's address, stale or an integer, would mark that
+        block, and through its link the free chain behind it with every
+        stale graph those blocks still name.  Walking the free list and
+        clearing each node's bit makes ``$gc_is_base`` refuse a free block
+        at the seed, the drain and the rescan, so none is pushed or marked.
+        The list is intact here: ``$alloc`` unlinks a block it reuses, and
+        only the sweep rebuilds the list, after marking.  One step per free
+        block, per collection; nothing per allocation.
+        """
+        return (
+            "    ;; === Phase 1b (#1718): a block on the free list is no object ===\n"
+            "    ;; Phase 1 recorded every block as a base.  A free block keeps\n"
+            "    ;; its old payload behind the free-list link, so a word naming\n"
+            "    ;; it would mark the free chain and every stale graph behind\n"
+            "    ;; it; with its bit cleared, $gc_is_base refuses it.\n"
+            "    global.get $gc_free_head\n"
+            "    local.set $ptr\n"
+            "    block $fb_done\n"
+            "    loop $fb_loop\n"
+            "      local.get $ptr\n"
+            "      i32.eqz\n"
+            "      br_if $fb_done\n"
+            "      local.get $ptr\n"
+            "      call $gc_clear_base\n"
+            "      local.get $ptr\n"
+            "      i32.load\n"
+            "      local.set $ptr\n"
+            "      br $fb_loop\n"
+            "    end\n"
+            "    end\n"
+            "\n"
+        )
+
     def _emit_gc_assert_base(self) -> str:
         """Emit ``$gc_assert_base`` — the ``VERA_GC_CHECK_MARKS`` invariant.
 
@@ -1019,12 +1086,35 @@ class AssemblyMixin:
         ``align_up(size + 4, 8)`` chain ``$alloc`` bumps by.  Deliberately
         base-independent, so the same assertion can be dropped into a
         pre-#1382 collector and will fire there — which is what makes it a
-        red-first check rather than a restatement of the fix.  O(heap) per
-        mark store: a debugging knob, never production.
+        red-first check rather than a restatement of the fix.  It also traps
+        when ``$p`` is a block on the free list (#1718), found by walking the
+        list from ``$gc_free_head`` rather than by reading the bitmap Phase
+        1b clears, so dropped into a collector without Phase 1b it fires on
+        the first free block marked.  O(heap) per mark store: a debugging
+        knob, never production.
         """
         return (
             "\n  (func $gc_assert_base (param $p i32)\n"
             "    (local $w i32)\n"
+            "    block $ab_bad\n"
+            "    ;; #1718: a block on the free list is no object.\n"
+            "    global.get $gc_free_head\n"
+            "    local.set $w\n"
+            "    block $ab_free_done\n"
+            "    loop $ab_free\n"
+            "      local.get $w\n"
+            "      i32.eqz\n"
+            "      br_if $ab_free_done\n"
+            "      local.get $w\n"
+            "      local.get $p\n"
+            "      i32.eq\n"
+            "      br_if $ab_bad\n"
+            "      local.get $w\n"
+            "      i32.load\n"
+            "      local.set $w\n"
+            "      br $ab_free\n"
+            "    end\n"
+            "    end\n"
             "    global.get $gc_heap_start\n"
             "    local.set $w\n"
             "    block $ab_found\n"
@@ -1032,9 +1122,7 @@ class AssemblyMixin:
             "      local.get $w\n"
             "      global.get $heap_ptr\n"
             "      i32.ge_u\n"
-            "      if\n"
-            "        unreachable\n"
-            "      end\n"
+            "      br_if $ab_bad\n"
             "      local.get $w\n"
             "      i32.const 4\n"
             "      i32.add\n"
@@ -1055,6 +1143,9 @@ class AssemblyMixin:
             "      br $ab_walk\n"
             "    end\n"
             "    end\n"
+            "    return\n"
+            "    end\n"
+            "    unreachable\n"
             "  )"
         )
 
@@ -1216,7 +1307,9 @@ class AssemblyMixin:
         """Emit the $gc_collect function: mark-sweep garbage collector.
 
         Three phases (plus Phase 2c when the wrap table is enabled):
-          1. Clear all mark bits in the heap.
+          1. Clear all mark bits in the heap, recording every block as an
+             object base; 1b. (#1718) take each block on the free list back
+             out of the base set (``_emit_gc_unbase_free``).
           2. Mark from shadow-stack roots (iterative, conservative):
              seed the worklist from the roots, drain it, and — when a
              full worklist dropped a push (#1510) — rescan the dirty
@@ -1368,7 +1461,8 @@ class AssemblyMixin:
             "    end\n"
             "    end\n"
             "\n"
-            "    ;; === Phase 2: Seed worklist from shadow stack ===\n"
+            + self._emit_gc_unbase_free()
+            + "    ;; === Phase 2: Seed worklist from shadow stack ===\n"
             "    global.get $gc_stack_base\n"
             "    local.set $scan_ptr\n"
             "    block $s_done\n"

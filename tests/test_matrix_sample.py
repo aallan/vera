@@ -699,6 +699,7 @@ MARKED_FILES = (
     "test_typed_program_1525.py",
     "test_typed_program_1679.py",
     "test_clone_suffix_1774.py",
+    "test_gc_free_blocks_1718.py",
 )
 UNMARKED_FILES = (
     "test_obligations.py",
