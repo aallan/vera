@@ -378,6 +378,61 @@ def test_instantiation_judgment(judgment: str, position: str, verdict: str,
 
 
 # =====================================================================
+# A call site's precondition, for every callee (#1468)
+# =====================================================================
+#
+# A generic callee's contract is its clone's at the call's instantiation
+# (the typed program's instance of the call), so the call site judges it as
+# it judges a monomorphic callee's: each precondition shape records the
+# same status and code whatever the callee.  At 94cef528 the generic and
+# the imported generic demoted every shape (E532), the provable and the
+# false alike; the satisfiable-but-unprovable row is the control that keeps
+# a fix from turning every unproven precondition into a refusal.
+
+_CALLEE_SHAPES = ("mono", "forall", "where", "imported")
+
+#: Each precondition, the argument the call passes, and the call site's
+#: records: (status, code).
+_PRECONDITIONS: dict[str, tuple[str, str, list[tuple[str, str]]]] = {
+    "false": ("false", "5", [("violated", "E501")]),
+    "refutable": ("@Int.0 > 10", "3", [("violated", "E501")]),
+    "satisfiable_unprovable": (
+        "array_length(array_range(0, @Int.0)) > 3", "5",
+        [("tier3", "E532")]),
+    "provable": ("@Int.0 > 0", "5", []),
+}
+
+
+def _callee_program(shape: str, pre: str, arg: str) -> dict[str, str]:
+    callee = _fn(
+        "private fn c(@Int -> @Int)" if shape in ("mono", "where")
+        else "private forall<T> fn c(@T, @Int -> @Int)", "@Int.0"
+    ).replace("requires(true)", f"requires({pre})", 1)
+    call = f"c({arg})" if shape in ("mono", "where") else f"c(true, {arg})"
+    main = _fn("public fn main(@Unit -> @Int)", call)
+    if shape == "where":
+        helper = callee.replace("private fn c", "fn c").replace("\n", "\n  ")
+        return {"main.vera": main.rstrip("\n") + "\nwhere {\n  "
+                + helper.rstrip() + "\n}\n"}
+    if shape == "imported":
+        return {"m.vera": "module m;\n\n" + callee.replace("private", "public"),
+                "main.vera": "import m(c);\n\n" + main}
+    return {"main.vera": callee + "\n" + main}
+
+
+@pytest.mark.parametrize("shape", _CALLEE_SHAPES)
+@pytest.mark.parametrize("precondition", list(_PRECONDITIONS))
+def test_a_call_sites_precondition_is_judged_alike_for_every_callee(
+        shape: str, precondition: str, tmp_path: Path) -> None:
+    pre, arg, records = _PRECONDITIONS[precondition]
+    path = pipeline.write_tree(tmp_path, _callee_program(shape, pre, arg))
+    verified = pipeline.verify(path)
+    assert [(o.status, o.error_code) for o in verified.obligations
+            if o.kind == "call_pre"] == records, [
+        d.format() for d in verified.diagnostics]
+
+
+# =====================================================================
 # A Map or Set with an Array or zero-size component, as written (#1680)
 # =====================================================================
 #

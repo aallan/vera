@@ -24,6 +24,7 @@ import pytest
 from tests import pipeline
 
 pytestmark = pytest.mark.matrix(decides=[
+    "vera/typed.py",
     "vera/monomorphize.py",
     "vera/codegen/monomorphize.py",
     "vera/codegen/core.py",

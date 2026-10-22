@@ -20,6 +20,7 @@ from tests.codegen_helpers import (
     _run,
 )
 from tests.module_fixture_helpers import fake_resolved_module
+from tests import pipeline
 from tests.pipeline import checks
 
 
@@ -829,7 +830,6 @@ public fn main(@Unit -> @Int)
         """An imported concrete-@Nat constructor field emits the runtime
         guard (#747 site 4) — the cross-module codegen path the local-ctor
         tests don't exercise."""
-        from vera.parser import parse_to_ast
 
         src = """import boxes(WrapN, NatBox);
 public fn gimp(@Int -> @NatBox)
@@ -837,15 +837,13 @@ public fn gimp(@Int -> @NatBox)
 { WrapN(@Int.0) }
 """
         result = compile(
-            parse_to_ast(src), source=src,
-            resolved_modules=[self._boxes_module()])
+            pipeline.typed(src, modules=[self._boxes_module()]), source=src)
         assert not [d for d in result.diagnostics if d.severity == "error"]
         self._assert_guarded(result.wat, "gimp")
 
     def test_imported_ctor_negative_traps_at_runtime(self) -> None:
         """The imported concrete-@Nat ctor guard traps on a negative arg —
         the cross-module runtime safety net."""
-        from vera.parser import parse_to_ast
 
         src = """import boxes(WrapN, NatBox);
 public fn main(@Unit -> @NatBox)
@@ -853,8 +851,7 @@ public fn main(@Unit -> @NatBox)
 { WrapN(0 - 5) }
 """
         result = compile(
-            parse_to_ast(src), source=src,
-            resolved_modules=[self._boxes_module()])
+            pipeline.typed(src, modules=[self._boxes_module()]), source=src)
         assert not [d for d in result.diagnostics if d.severity == "error"]
         with pytest.raises(
             WasmTrapError
@@ -876,7 +873,6 @@ public fn main(@Unit -> @NatBox)
         emits the runtime guard.  `_register_modules` must harvest the imported
         module's `_fn_nat_params`, or the guard metadata is lost and the
         narrowing stored unchecked (CR #756)."""
-        from vera.parser import parse_to_ast
 
         src = """import natfns(boxNat);
 public fn gimpfn(@Int -> @Nat)
@@ -884,8 +880,7 @@ public fn gimpfn(@Int -> @Nat)
 { boxNat(@Int.0) }
 """
         result = compile(
-            parse_to_ast(src), source=src,
-            resolved_modules=[self._nat_fn_module()])
+            pipeline.typed(src, modules=[self._nat_fn_module()]), source=src)
         assert not [d for d in result.diagnostics if d.severity == "error"]
         self._assert_guarded(result.wat, "gimpfn")
 
@@ -893,7 +888,6 @@ public fn gimpfn(@Int -> @Nat)
         """The imported-function @Nat guard traps on a negative argument at
         run time, not only in the WAT — proves the harvested `_fn_nat_params`
         is enforced end-to-end across the module boundary (CR #756)."""
-        from vera.parser import parse_to_ast
 
         src = """import natfns(boxNat);
 public fn gimpfn(@Int -> @Nat)
@@ -901,8 +895,7 @@ public fn gimpfn(@Int -> @Nat)
 { boxNat(@Int.0) }
 """
         result = compile(
-            parse_to_ast(src), source=src,
-            resolved_modules=[self._nat_fn_module()])
+            pipeline.typed(src, modules=[self._nat_fn_module()]), source=src)
         assert not [d for d in result.diagnostics if d.severity == "error"]
         with pytest.raises(
             WasmTrapError
@@ -989,23 +982,13 @@ public fn main(@Unit -> @Unit)
         `Option<Nat>` has no refinement to carry.  Found in the #1426
         release audit.
         """
-        from vera.checker import typecheck_with_artifacts
-        from vera.parser import parse_to_ast
 
         src = """\
 public fn f(@Unit -> @Option<Nat>)
   requires(true) ensures(true) effects(pure)
 { Some(0 - 5) }
 """
-        program = parse_to_ast(src)
-        diags, arts = typecheck_with_artifacts(program, src)
-        assert not [d for d in diags if d.severity == "error"], diags
-        result = compile(
-            program,
-            source=src,
-            expr_semantic_types=arts.expr_semantic_types,
-            expr_target_types=arts.expr_target_types,
-        )
+        result = compile(pipeline.typed(src), source=src)
         with pytest.raises(WasmTrapError) as caught:
             execute(result, fn_name="f", args=[])
         assert caught.value.kind == "nat_guard", caught.value.kind
@@ -1018,18 +1001,8 @@ public fn f(@Unit -> @Option<Nat>)
   requires(true) ensures(true) effects(pure)
 { Some(5) }
 """
-        ok_program = parse_to_ast(ok_src)
-        ok_diags, ok_arts = typecheck_with_artifacts(ok_program, ok_src)
-        assert not [d for d in ok_diags if d.severity == "error"], ok_diags
-        execute(
-            compile(
-                ok_program,
-                source=ok_src,
-                expr_semantic_types=ok_arts.expr_semantic_types,
-                expr_target_types=ok_arts.expr_target_types,
-            ),
-            fn_name="f", args=[],
-        )
+        execute(compile(pipeline.typed(ok_src), source=ok_src),
+                fn_name="f", args=[])
 
 
 class TestNatReturnRuntimeGuard758:

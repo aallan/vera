@@ -17,7 +17,8 @@ import pytest
 
 from tests import pipeline
 
-pytestmark = pytest.mark.matrix(decides=["vera/binding.py", "vera/monomorphize.py"])
+pytestmark = pytest.mark.matrix(
+    decides=["vera/binding.py", "vera/monomorphize.py", "vera/typed.py"])
 
 _LA = """\
 module la;
@@ -60,7 +61,6 @@ public fn main(@Unit -> @Int)
 """
 
 
-@pytest.mark.xfail(strict=True, reason="red at 94cef528: the typed program (#1679) flips it")
 def test_repro_1774_suffix_qualifies_as_the_signature_does(tmp_path: Path) -> None:
     path = pipeline.write_tree(tmp_path, {"la.vera": _LA, "main.vera": _MAIN})
     result = pipeline.cli("run", str(path))
@@ -68,3 +68,29 @@ def test_repro_1774_suffix_qualifies_as_the_signature_does(tmp_path: Path) -> No
     assert ("Postcondition violation in pair$Shape_Jla.Shape"
             "(@Shape, @la.Shape, @Int -> @Int)") in result.stderr, result.stderr
     assert "in pair$Shape_Jla.Shape  (" in result.stderr, result.stderr
+
+
+#: A clone's name as code generation mangles it, and its spelling: a module
+#: type is qualified where another type of its name meets it, the entry's
+#: own (written bare, in the suffix or in the message) or a second module's,
+#: and is bare where it is the only type of its name.
+_SPELLINGS: dict[str, tuple[str, str]] = {
+    "the entry's beside a module's": (
+        "pair$Shape_Jmod_U24_la_U24_Shape", "pair$Shape_Jla.Shape"),
+    "the entry's in the signature": (
+        "f$mod_U24_la_U24_Shape(@Shape -> @Int)", "f$la.Shape(@Shape -> @Int)"),
+    "a module's alone": ("epick$mod_U24_cm_U24_Shape", "epick$Shape"),
+    "two modules'": ("two$mod_U24_la_U24_Shape_Jmod_U24_lb_U24_Shape",
+                     "two$la.Shape_Jlb.Shape"),
+    "a module's in a type argument": (
+        "g$Box_Lmod_U24_la_U24_Shape_R", "g$Box_LShape_R"),
+}
+
+
+@pytest.mark.parametrize("name", list(_SPELLINGS))
+def test_a_suffix_qualifies_a_type_where_another_of_its_name_meets_it(
+        name: str) -> None:
+    from vera.binding import display_clone_types
+
+    text, shown = _SPELLINGS[name]
+    assert display_clone_types(text) == (shown,)

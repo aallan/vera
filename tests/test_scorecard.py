@@ -57,10 +57,12 @@ def _body(lines: int) -> str:
 
 
 class TestInferFunctions:
-    def test_every_infer_function_in_vera_is_counted(self, tmp_path: Path) -> None:
-        """Three, one nested and one outside `vera/wasm/`, as the audit's 32
-        held 3 in `vera/checker/`; `_inferred` and `infer_type` are not
-        `_infer_*` functions."""
+    def test_every_infer_function_outside_the_checker_is_counted(
+            self, tmp_path: Path) -> None:
+        """Two, one nested, in `vera/wasm/`; the checker's, the one
+        derivation (the audit's 32 held 3 in `vera/checker/`), is not
+        counted; `_inferred` and `infer_type` are not `_infer_*`
+        functions."""
         _write(tmp_path / "vera" / "wasm" / "inference.py", (
             "def _infer_expr(x):\n"
             "    def _infer_inner(y):\n"
@@ -73,7 +75,33 @@ class TestInferFunctions:
             "class Checker:\n"
             "    def _infer_call(self, x):\n        return x\n"
         ))
-        assert SC.infer_functions(tmp_path) == 3
+        assert SC.infer_functions(tmp_path) == 2
+
+
+class TestOptionalTables:
+    def test_an_entry_point_with_a_defaulted_table_is_counted(
+            self, tmp_path: Path) -> None:
+        """`compile` defaults a table, `verify` takes one it must be handed,
+        `test` takes none; a method or a nested function of the name is not
+        the entry point, and a module that is not there counts nothing."""
+        _write(tmp_path / "vera" / "codegen" / "api.py", (
+            "def compile(program, source='', expr_semantic_types=None):\n"
+            "    return program\n"
+        ))
+        _write(tmp_path / "vera" / "verifier.py", (
+            "def verify(program, expr_types, *, timeout_ms=None):\n"
+            "    return program\n"
+            "class V:\n"
+            "    def verify(self, module_artifacts=None):\n"
+            "        return self\n"
+        ))
+        assert SC.optional_tables(tmp_path) == 1
+
+    def test_a_keyword_only_default_is_optional(self, tmp_path: Path) -> None:
+        _write(tmp_path / "vera" / "tester.py", (
+            "def test(typed, *, module_artifacts=None):\n    return typed\n"
+        ))
+        assert SC.optional_tables(tmp_path) == 1
 
 
 class TestNatIntTwins:
@@ -512,7 +540,8 @@ class TestAgainstTheAuditsTree:
         if not tree:
             pytest.skip("VERA_AUDIT_TREE names no export of the audit's tree (6508cc32)")
         root = Path(tree)
-        assert SC.infer_functions(root) == 32
+        assert SC.infer_functions(root) == 29
+        assert SC.optional_tables(root) == 3
         assert len(SC.nat_int_twins(root)) == 12
         assert SC.guarded_claims(root) == 38
         assert SC.expr_dispatchers(root) == 191
@@ -863,7 +892,7 @@ class TestTheBlock:
         assert [row.measure for row in table] == [m.label for m in SC.MEASURES]
         assert {row.measure: row.audit for row in table}["Functions over 500 lines"] == "17"
         text = SC.render(table, "0.2.9")
-        assert "| Functions over 500 lines | 17 | 1,007 | the tree |" in text
+        assert "| Functions over 500 lines | 17 | 1,008 | the tree |" in text
         assert "Measured for v0.2.9 by `scripts/render_status.py`." in text
         assert SC.parse(text) == table
 
