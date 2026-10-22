@@ -1460,9 +1460,12 @@ takes `Int`, `Nat` and `Bool` parameters, and aliases of them, the types
 `vera test` generates.  A generic's call, a fold, a cell's read, an element and
 a handler's value are opaque to the verifier, and so are a `match` on a
 constructor applied in place or on `map_get`'s result, and a call taking a
-generic's call, a fold, a cell's read, a handler or a set's size, whose
-`ensures` the verifier drops: a `let` of one holds an unconstrained value
-(#1696).  No contract the generator writes rests on one.
+generic's call, a fold, a cell's read, a handler, a set's size or a
+constructor of the module's data type (#1525), whose `ensures` the verifier
+drops: a `let` of one holds a fresh value of the `let`'s own type (#1696).
+No contract the generator writes rests on one.  A fold takes its initial
+value's type, as the checker gives it, and a `@Nat` one's run stays
+non-negative.
 
 Each program is held to the generator's contract and four differentials:
 
@@ -1487,7 +1490,8 @@ the shape of its site, which its predicate reads from the program as written:
 #1695 for a `nat_bind` guard on a value the declarations make non-negative and
 code generation's declared-name rule does not read as one (a call's result, a
 refined slot, a `Nat` field's binder and a generic one's at `Nat`, a
-`State<Nat>` read and its handler, an element of a `Nat` array); #1695 for a
+`State<Nat>` read and its handler, an element of a `Nat` array, a fold from a
+`@Nat`, which the checker types `@Nat` over its `@Int` closure); #1695 for a
 narrowing into a refinement of `Nat`, recorded once as the refinement's and
 checked twice; #1695 for #1629 for a refinement check on a value the
 declarations already give the refinement (a refined parameter at entry, a
@@ -1499,9 +1503,9 @@ an unused `let` of every data type it constructs and does not name in its
 signature (`program_generator.name_constructed_types`); the four
 differentials then run over that program.
 A find of the load, reconcile or distrust differential is #1525's when it
-vanishes with each fold (which code generation types by its initial value,
-or not at all) and each argument at a generic's type variable bound in place
-by a `let` of the type the checker gives it (`{ let @Int = …; @Int.0 }`,
+vanishes with each fold and each argument at a generic's type variable bound
+in place by a `let` of the type the checker gives it (`{ let @Int = …;
+@Int.0 }`, a fold's being its initial value's;
 `program_generator.bind_in_place`), which code generation reads off the
 declaration, and #1744's when it vanishes once each handler a branch takes is
 bound too, provided that program checks, verifies and makes no find of its
@@ -1566,10 +1570,10 @@ values beyond `main`'s output and a map's keys, relational preconditions and
 the product of two variables are outside version two's grammar, and so is an
 index into anything but a `let`-bound array literal (#1525's line from #1680:
 code generation infers no element type for an array in place).  The shapes at
-which code generation reads a type of its own, a fold from a `@Nat` initial
-value, as a scrutinee or as a constructor's argument, an argument at a
-generic's type variable and a branch whose every arm is a fold, a `throw` or a
-handler, are inside it, each counted by its counterfactual class above.
+which code generation reads a type of its own, a fold as a scrutinee or as a
+constructor's argument, an argument at a generic's type variable and a branch
+whose every arm is a fold, a `throw` or a handler, are inside it, each counted
+by its counterfactual class above.
 
 ## Adding Tests
 

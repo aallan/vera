@@ -85,12 +85,12 @@ ROOT = Path(__file__).resolve().parent.parent
 #: under: the file name a report gives the program.
 LABEL = gen.ENTRY
 
-#: The pull request lane's seeds: the first eight, 27 and 106, which between
+#: The pull request lane's seeds: the first eight, 27 and 173, which between
 #: them write every construct of the grammar
 #: (:func:`test_the_pinned_seeds_reach_every_construct`) and a find of each
 #: counterfactual class, #1744's at 7 and #1525's at 27
 #: (:data:`PINNED_CLASSES`).
-SEEDS = (0, 1, 2, 3, 4, 5, 6, 7, 27, 106)
+SEEDS = (0, 1, 2, 3, 4, 5, 6, 7, 27, 173)
 
 #: A pinned seed whose program makes a find of each counterfactual class.
 PINNED_CLASSES = (("#1744", 7), ("#1525", 27))
@@ -610,9 +610,9 @@ class Sites:
         """Whether *e*'s value is non-negative by what the program declares:
         a slot of a `Nat` type or a refinement of one, an element of a
         `Nat` array, a call whose callee returns `Nat` (a generic one at a
-        `Nat` argument in every position of its type variable), a `get` of
-        a `Nat` cell, a handler or a branch whose value is one, a
-        non-negative literal, and arithmetic over them."""
+        `Nat` argument in every position of its type variable), a fold
+        from one, a `get` of a `Nat` cell, a handler or a branch whose value
+        is one, a non-negative literal, and arithmetic over them."""
         if isinstance(e, ast.SlotRef):
             tvar = self.type_variable(self.slot_type(e), e)
             if tvar is not None:
@@ -647,6 +647,10 @@ class Sites:
             return self.is_nat(self.cell(e))
         if isinstance(e, (ast.FnCall, ast.ModuleCall)):
             fn = self.returns.get(e.name)
+            if fn is None and e.name == "array_fold" and len(e.args) == 3:
+                # The checker binds a fold's accumulator to its initial
+                # value's type.
+                return self.nat_by_declarations(e.args[1])
             if fn is None:
                 return e.name == "get" and not e.args[1:] and self.is_nat(self.cell(e))
             ret = fn.return_type
@@ -953,7 +957,7 @@ KNOWN_CLASSES: tuple[KnownClass, ...] = (
     # leaves where code generation's own rule reads declared names: a call
     # (#1557), a `Nat` field's binder, a generic one's at `Nat` and a
     # refined slot (#1629), a `State<Nat>` read and its handler, an element
-    # of a `Nat` array.  The typed program's second pull request, in which
+    # of a `Nat` array, a fold from a `Nat` over its `Int` closure.  The typed program's second pull request, in which
     # code generation reads the checker's types, flips this pin: the repro
     # then reports nothing, the cell fails, and the entry comes out.
     KnownClass(
@@ -1623,11 +1627,11 @@ def _measured(step: gen.Expr | None) -> gen.Program:
     return gen.Program(0, [], [fn], [fn])
 
 
-def _member_fold_init() -> gen.Program:
+def _fold_less_its_init() -> gen.Program:
     """`array_fold` from a `@Nat` init over `fn(@Int, @Int -> @Int)`, less
-    the same `@Nat`: code generation types the fold at its init's `Nat`, and
-    the subtraction traps as a `@Nat` one (#1525's #1515 line, at
-    `array_fold`)."""
+    the same `@Nat`: the checker types the fold `@Nat`, so the subtraction
+    is a `@Nat` one, whose check fails on every run of the generated
+    input."""
     n = gen.Binding("Nat", gen.Iv(20, 35), gen.Iv(20, 35))
     items = gen.Binding("Array<Int>", value=gen.ArrayLit("Int", [gen.Lit(20), gen.Lit(-1)]))
     acc, elem = gen.Binding("Int", gen.ANY, gen.Iv(0, 0)), gen.Binding(
@@ -1723,7 +1727,6 @@ def _member_handler_match() -> gen.Program:
 #: finds are counted under.
 _REDERIVED_MEMBERS: dict[str, tuple[str, Callable[[], gen.Program]]] = {
     "generic_argument": ("#1525", _repro_generic_argument),
-    "fold_init": ("#1525", _member_fold_init),
     "fold_argument": ("#1525", _member_fold_argument),
     "fold_scrutinee": ("#1525", _member_fold_scrutinee),
     "fold_arms": ("#1525", _member_fold_arms),
@@ -1834,6 +1837,47 @@ def test_a_counterfactual_that_makes_a_find_of_its_own_classifies_nothing(
     assert codegen and not [f for f in codegen if f.known], finds
 
 
+def test_a_fold_takes_its_initial_values_type() -> None:
+    """The checker binds a fold's accumulator to its initial value's type:
+    a fold from a `@Nat` is a `@Nat`, so `fold - @Nat.0` is a `@Nat`
+    subtraction, which `vera verify` records (`nat_sub`, Tier 3) and the
+    generator writes only where it is provable, so never here; and the
+    counterfactual binds the fold at `Nat`, the checker's type, so the
+    subtraction stays the `@Nat` one it is."""
+    prog = _fold_less_its_init()
+    value = prog.functions[-1].body.result
+    assert isinstance(value, gen.Bin) and isinstance(value.left, gen.Fold)
+    assert gen.static_type(value.left) == "Nat"
+    assert gen.static_type(_sum(_items())) == "Int"
+    statuses = {(o.kind, o.status) for o in Stages.of(prog).verified.obligations}
+    assert ("nat_sub", "tier3") in statuses, statuses
+    assert not gen.well_formed(copy.deepcopy(prog))
+    bound = gen.bind_in_place(prog, [gen.BIND_FOLD])
+    assert bound is not None
+    assert "{ let @Nat = array_fold(" in bound.render(), bound.render()
+
+
+def test_a_fold_from_a_nat_keeps_its_run_non_negative() -> None:
+    """A fold from a `@Nat` is a `@Nat`, so a run of it that goes negative
+    breaks its type at the first binding (the module's guard traps): the
+    generator writes it only where its run stays non-negative, and the
+    minimiser keeps to that."""
+    n = gen.Binding("Nat", gen.Iv(0, 3), gen.Iv(0, 3))
+    items = gen.Binding("Array<Int>", value=gen.ArrayLit("Int", [gen.Lit(1), gen.Lit(2)]))
+
+    def program(step: int) -> gen.Program:
+        acc, elem = gen.Binding("Int", gen.ANY, gen.Iv(0, 0)), gen.Binding(
+            "Int", gen.ANY, gen.Iv(0, 0))
+        fold = gen.Fold(gen.Ref(items), gen.Ref(n), acc, elem,
+                        gen.Bin("+", gen.Ref(acc), gen.Lit(step)))
+        bound = gen.Binding("Nat", value=fold)
+        return _one(gen.Ref(bound), lets=[gen.Let(items), gen.Let(bound)], ret="Nat",
+                    params=[n], example=[1])
+
+    assert gen.well_formed(program(1))
+    assert not gen.well_formed(program(-5))
+
+
 def test_a_counterfactual_that_does_not_check_classifies_nothing(
         monkeypatch: pytest.MonkeyPatch) -> None:
     """A counterfactual `vera check` refuses makes no find of the load,
@@ -1859,8 +1903,17 @@ def _opaque_narrowing(how: str) -> gen.Program:
     datas = [gen.Data("Tally", False, [amber, basalt])]
     functions: list[gen.Function] = []
     lets: list[gen.Let] = []
-    if how == "match":
-        value: gen.Expr = gen.Match(gen.Construct(basalt, []), [
+    module: gen.Module | None = None
+    if how == "imported":
+        amber = gen.Ctor("Amber", gen.TALLY, ["Nat"])
+        module = gen.Module([gen.Data(gen.TALLY, True, [amber, basalt], module=True)], [])
+        datas = []
+        zero = gen.Function("f1", False, [gen.Binding(gen.TALLY)], "Nat",
+                            gen.Block([], gen.Lit(0)), ensure_style="upper")
+        functions = [zero]
+        value: gen.Expr = gen.Call(zero, [gen.Construct(amber, [gen.Lit(0)])])
+    elif how == "match":
+        value = gen.Match(gen.Construct(basalt, []), [
             gen.Arm(gen.Pattern(ctor=amber, binders=[gen.Binding("Bool")]), gen.Lit(1)),
             gen.Arm(gen.Pattern(ctor=basalt), gen.Lit(1))])
     elif how == "map_get":
@@ -1879,27 +1932,31 @@ def _opaque_narrowing(how: str) -> gen.Program:
                                                gen.Construct(basalt, [])], {"T": "Tally"})])
     i = gen.Binding("Int", value=value)
     n = gen.Binding("Nat", value=gen.Ref(i))
-    return _one(gen.Ref(n), lets=[*lets, gen.Let(i), gen.Let(n)], ret="Nat",
+    prog = _one(gen.Ref(n), lets=[*lets, gen.Let(i), gen.Let(n)], ret="Nat",
                 functions=functions, datas=datas)
+    prog.module = module
+    return prog
 
 
-@pytest.mark.parametrize("how", ["match", "map_get", "call"])
-def test_the_model_reads_no_value_the_verifier_does_not_translate(how: str) -> None:
+@pytest.mark.parametrize("how", ["match", "map_get", "call", "imported"])
+def test_the_model_reads_no_value_the_verifier_does_not_translate(
+        how: str, tmp_path: Path) -> None:
     """A `match` on a constructor applied in place or on `map_get`'s
-    result, and a call taking a generic's call at a data type, are values
-    the verifier does not translate (#1696): a `let` of one is
-    unconstrained, and narrowing it into a `@Nat` is refused (E503), though
-    it is 1 or 2 on every run.  The generator models each as unconstrained,
-    so it writes no such narrowing: the program is not one it could have
-    written."""
+    result, a call taking a generic's call at a data type, and a call
+    taking a constructor of the module's data type are values the verifier
+    does not translate (#1696; #1525 for the module's constructor): a `let`
+    of one is unconstrained, and narrowing it into a `@Nat` is refused
+    (E503), though it is 0, 1 or 2 on every run.  The generator models
+    each as unconstrained, so it writes no such narrowing: the program is
+    not one it could have written."""
     prog = _opaque_narrowing(how)
-    finds = contract_finds(prog)
+    finds = contract_finds(prog, Stages.of(prog, tmp_path))
     assert [f.signature for f in finds] == [("verify", "E503")], finds
     assert not gen.well_formed(prog)
     let = prog.functions[-1].body.lets[-2].binding
     assert let.value is not None
-    assert gen.iv(let.value, "v") == gen.ANY
-    assert gen.iv(let.value, "r").within(1, 2)
+    assert gen.iv(gen.Ref(let), "v") == gen.ANY
+    assert gen.iv(let.value, "r").within(0, 2)
 
 
 def test_a_verify_error_is_keyed_without_its_counterexample() -> None:
@@ -2175,6 +2232,17 @@ public fn h(@Nat -> @Nat)
     put(@Nat.0 + 2);
     get(())
   }
+}
+""",
+    "a fold from a Nat": """\
+public fn folded(@Nat -> @Nat)
+  requires(@Nat.0 <= 3)
+  ensures(true)
+  effects(pure)
+{
+  let @Array<Int> = [1, 2];
+  let @Nat = array_fold(@Array<Int>.0, @Nat.0, fn(@Int, @Int -> @Int) effects(pure) { @Int.1 + 1 });
+  @Nat.0
 }
 """,
     "an element of a Nat array": """\

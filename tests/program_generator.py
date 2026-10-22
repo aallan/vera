@@ -35,7 +35,9 @@ What makes a program well formed, by construction rather than by retry:
   ``State`` read, an array element, a map's value and a handler's value are
   opaque to the verifier, and so are a ``match`` on a constructor applied in
   place or on ``map_get``'s result and a call taking an argument the
-  verifier has no term for (issue #1696), so *V* holds their type alone.
+  verifier has no term for (issue #1696), so *V* holds their type alone,
+  and a ``let`` of one holds its own type's alone.  A fold's type is its
+  initial value's, as the checker gives it.
   So an ``ensures``
   written from *V* holds in the verifier's model, an argument whose *V* lies
   inside the callee's ``requires`` meets it, a ``@Nat`` subtraction whose
@@ -78,10 +80,10 @@ code generation infers no element type for an array in place).
 Some shapes it writes make code generation fail on a program the checker
 and the verifier accept, because code generation re-derives a value's type
 from its own reading of the expression (issue #1525): an argument at a
-generic's type variable, which it instantiates the call at, a fold, which
-it types by its initial value or not at all (as a scrutinee or a
-constructor's argument), and a branch whose every arm is a fold, a
-``throw`` or a handler (#1744 for the handlers).  :func:`bind_in_place` writes the program with each such value
+generic's type variable, which it instantiates the call at, a fold as a
+scrutinee or a constructor's argument, which it finds no type for, and a
+branch whose every arm is a fold, a ``throw`` or a handler (#1744 for the
+handlers).  :func:`bind_in_place` writes the program with each such value
 bound in place by a ``let`` of the type the checker gives it, and a find
 that vanishes there is counted under the issue; one that does not vanish
 is reported.
@@ -728,7 +730,11 @@ def static_type(e: Expr) -> str:
         return "Map<String, Int>"
     if isinstance(e, SetBuild):
         return "Set<Nat>"
-    if isinstance(e, (Length, Fold, SetSize)):
+    if isinstance(e, Fold):
+        # The checker binds the accumulator to the initial value's type, so
+        # a fold from a `Nat` is a `Nat` over its `Int` closure.
+        return "Nat" if static_type(e.init) == "Nat" else "Int"
+    if isinstance(e, (Length, SetSize)):
         return "Int"
     if isinstance(e, Index):
         return split_type(static_type(e.arr))[1][0]
@@ -769,7 +775,13 @@ def iv(e: Expr, which: str) -> Iv:
     if isinstance(e, Ref):
         b = e.binding
         if b.value is not None:
-            return iv(b.value, which)
+            out = iv(b.value, which)
+            if which == "v" and _untranslated(b.value):
+                # A `let` of a value the verifier does not translate holds a
+                # fresh value of the `let`'s own type: of a `Nat`, its sign
+                # at most (#1696).
+                return NAT_ANY if b.type == "Nat" and out.lo is not None and out.lo >= 0 else ANY
+            return out
         out = b.v if which == "v" else b.r
         assert out is not None, b
         return out
@@ -865,18 +877,28 @@ def _translatable(e: Expr) -> bool:
 
 def _no_term(e: Expr) -> bool:
     """Whether the verifier translates *e* to no term at all: a generic's
-    call, a fold, a cell's read, a handler or a set's size anywhere in it,
-    or a slot of a type other than ``Int``, ``Nat`` and ``Bool`` bound to
-    one (a ``let`` of one of those three holds a fresh value of its type)."""
+    call, a fold, a cell's read, a handler, a set's size or a constructor
+    of the module's data type anywhere in it, or a slot of a type other
+    than ``Int``, ``Nat`` and ``Bool`` bound to one (a ``let`` of one of
+    those three holds a fresh value of its type)."""
     for node in _walk(e):
         if (isinstance(node, (Fold, Get, Handle, SetSize))
-                or isinstance(node, Call) and node.fn.forall):
+                or isinstance(node, Call) and node.fn.forall
+                or isinstance(node, Construct) and node.ctor.data == TALLY):
             return True
         if (isinstance(node, Ref) and node.binding.value is not None
                 and node.binding.type not in PRIMITIVES
                 and _no_term(node.binding.value)):
             return True
     return False
+
+
+def _untranslated(e: Expr) -> bool:
+    """Whether the verifier translates *e* to no term: one it has no term
+    for, or holding a ``match`` it does not translate."""
+    return _no_term(e) or any(
+        isinstance(node, Match) and isinstance(node.scrutinee, (Construct, MapGet))
+        for node in _walk(e))
 
 
 def _opaque_scrutinee(e: Expr) -> bool:
@@ -2063,7 +2085,11 @@ class _Generator:
         finally:
             self.closure = saved
         e = Fold(arr, init, acc, elem, body)
-        return e if iv(e, "r").safe() else None
+        r = iv(e, "r")
+        if static_type(e) == "Nat" and (r.lo is None or r.lo < 0):
+            # A fold from a `Nat` is a `Nat`: its run stays inside the type.
+            return None
+        return e if r.safe() else None
 
     def boolean(self, env: list[Binding], depth: int, block: bool) -> Expr | None:
         refs = self.refs(env, "Bool")
@@ -2920,9 +2946,11 @@ def name_constructed_types(prog: Program) -> Program | None:
 # =====================================================================
 
 #: What :func:`bind_in_place` binds: each fold that is not a ``let``'s
-#: value, whose type code generation reads off its initial value or finds
-#: none for, and each argument at a generic's type variable (#1525's
-#: class), and each handler that is a branch's value (#1744's).
+#: value, which code generation finds no type for as a scrutinee, a
+#: constructor's argument or a branch's arm, and each argument at a
+#: generic's type variable (#1525's class), and each handler that is a
+#: branch's value (#1744's).  Each is bound at the type the checker gives
+#: it, a fold's being its initial value's.
 BIND_FOLD = "fold"
 BIND_ARGUMENT = "argument"
 BIND_HANDLER_ARM = "handler_arm"
@@ -2995,7 +3023,7 @@ def bind_in_place(prog: Program, kinds: Collection[str]) -> Program | None:
         if isinstance(e, Fold):
             # The closure's body reads its own two parameters alone.
             e.init = walk(e.init)
-            return bind(e, "Int") if BIND_FOLD in kinds and not let else e
+            return bind(e, static_type(e)) if BIND_FOLD in kinds and not let else e
         for f in fields(e):
             value = getattr(e, f.name)
             if isinstance(value, Expr):
@@ -3572,7 +3600,8 @@ def well_formed(prog: Program) -> bool:
     show is non-negative, an argument inside its callee's ``requires``, a
     ``@Nat`` subtraction whose operands cannot cross, a divisor the verifier
     sees is positive, a field inside its construction range, a cell's value
-    inside :data:`CELL_R`, a recursion in its template with its measure
+    inside :data:`CELL_R`, a fold from a ``Nat`` whose run stays
+    non-negative, a recursion in its template with its measure
     decreasing, an instantiation its constraint admits, an effect only where
     a handler or a row admits it, an index only under its bound, a fold's
     closure reading its own parameters alone, and no value a run can reach
@@ -3714,6 +3743,10 @@ def _node_ok(node: object, row: tuple[str, ...], fn: Function) -> bool:
             return d.bounded() and (d.lo or 0) >= 1
         if node.op == "*":
             return isinstance(node.right, Lit)
+    if isinstance(node, Fold) and static_type(node) == "Nat":
+        # A fold from a `Nat` is a `Nat`: its run stays inside the type.
+        r = iv(node, "r")
+        return r.lo is not None and r.lo >= 0
     if isinstance(node, Get):
         return f"State<{node.cell}>" in row
     if isinstance(node, Put):
