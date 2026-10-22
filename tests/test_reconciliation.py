@@ -1,6 +1,6 @@
 """The verifier's runtime-guard claims reconciled with the checks code
-generation emits (the audit's T2a): :mod:`vera.reconcile`,
-``vera verify --reconcile`` and the corpus gate
+generation emits (the audit's T2a): :mod:`vera.reconcile`, ``vera verify``,
+which runs the join unless ``--no-reconcile``, and the corpus gate
 ``scripts/check_reconciliation.py``.
 
 Four layers:
@@ -19,9 +19,11 @@ Four layers:
 * **The join's rules.**  Each location class's pairing is load-bearing: a
   real program's pair, with its check (or its record) taken away, becomes
   the mismatch the rule exists to report.
-* **The command.**  ``cmd_verify(reconcile=True)`` in process, in both
-  output modes, and the envelope of a plain ``vera verify --json``
-  unchanged.
+* **The command.**  ``vera verify`` in process, in both output modes, with
+  the join (the default) and without it (``--no-reconcile``): what the
+  second takes away is exactly what the join adds, a typed hole skips the
+  join with W005, and the flags are refused where they cannot be
+  honoured.
 """
 from __future__ import annotations
 
@@ -794,6 +796,79 @@ def _unguarded(result: object, kind: str) -> set[tuple[int, int]]:
             if m.kind == "recorded_unguarded" and m.obligation == kind}
 
 
+#: A `decreases` measure evaluated twice: on entry, which the verifier
+#: records at the clause, and on the tail call's arguments, which it records
+#: at the call (`ContractVerifier._evaluation_site`).  Code generation
+#: evaluates both with the checks it spans at the measure's own nodes: the
+#: entry's, and the copy it splices before the `return_call`.  `hop` holds a
+#: measure written the same way and calls itself, so a check of one
+#: function's measure must never answer the other's call.
+_MEASURE_AT_A_TAIL_CALL = """\
+private fn walk(@Nat, @Nat -> @Int)
+  requires(@Nat.0 <= @Nat.1 + 1)
+  ensures(@Int.result == 0)
+  decreases(@Nat.1 + 1 - @Nat.0)
+  effects(pure)
+{
+  if @Nat.0 > @Nat.1 then { 0 } else { walk(@Nat.1, @Nat.0 + 1) }
+}
+
+private fn hop(@Nat, @Nat -> @Int)
+  requires(@Nat.0 <= @Nat.1 + 1)
+  ensures(@Int.result == 0)
+  decreases(@Nat.1 + 1 - @Nat.0)
+  effects(pure)
+{
+  if @Nat.0 > @Nat.1 then { 0 } else { hop(@Nat.1, @Nat.0 + 1) }
+}
+
+public fn f(@Nat -> @Int)
+  requires(@Nat.0 < 100)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  walk(@Nat.0, 0) + hop(@Nat.0, 0)
+}
+"""
+
+
+def _measure_record(run: ReconcileRun, line: int) -> ProofObligation:
+    """The `@Nat.1 + 1` overflow record at the tail call on *line*."""
+    (record,) = [r for r in run.verify_result.obligations  # type: ignore[union-attr]
+                 if r.kind == "int_overflow" and r.line == line
+                 and r.expr_text == "@Nat.1 + 1"]
+    return record
+
+
+def test_a_measure_check_answers_its_evaluation_at_a_tail_call(
+    tmp_path: Path,
+) -> None:
+    """The record at each tail call is answered by its own function's
+    measure check, and no mismatch is left."""
+    run = _written(tmp_path, "measure.vera", _MEASURE_AT_A_TAIL_CALL)
+    assert not run.mismatches, run.mismatches
+    for line, function, measure_line in ((7, "walk", 4), (16, "hop", 13)):
+        record = _measure_record(run, line)
+        assert record.status == "tier3"
+        assert {(c.function, c.line, c.column)
+                for r, c in run.reconciliation.pairs  # type: ignore[union-attr]
+                if r is record} == {(function, measure_line, 13)}
+
+
+def test_another_functions_measure_answers_no_tail_call(
+    tmp_path: Path,
+) -> None:
+    """With `walk`'s measure checks gone, the record at `walk`'s tail call
+    is unanswered: `hop`'s measure, written the same way, checks `hop`'s
+    calls, not `walk`'s."""
+    run = _written(tmp_path, "measure.vera", _MEASURE_AT_A_TAIL_CALL)
+    checks = [c for c in run.compile_result.emitted_checks  # type: ignore[union-attr]
+              if not (c.function == "walk" and c.line == 4)]
+    record = _measure_record(run, 7)
+    result = _rejoin(run, checks=checks)
+    assert (record.line, record.column) in _unguarded(result, "int_overflow")
+
+
 @pytest.mark.parametrize("gone", [(25, 58), (25, 74)])
 def test_a_record_at_a_join_needs_the_check_on_every_arm(
     gone: tuple[int, int],
@@ -1313,17 +1388,198 @@ def test_each_mismatch_kind_has_its_diagnostic() -> None:
 
 def _cli_json(capsys: pytest.CaptureFixture[str], path: Path,
               **kwargs: object) -> tuple[int, dict[str, object]]:
-    flags = {"reconcile": "--reconcile", "quiet": "--quiet"}
+    flags = {"reconcile": "--reconcile", "no_reconcile": "--no-reconcile",
+             "quiet": "--quiet"}
     ran = pipeline.cli(
         "verify", "--json", *(flags[k] for k, v in kwargs.items() if v), path)
     return ran.returncode, ran.json()
 
 
-def test_plain_verify_json_carries_no_reconciliation(
+#: The keys of the `reconciliation` object, compiled or not.
+_REPORT_KEYS = {"compiled", "matched", "recorded_unguarded",
+                "guarded_unrecorded", "no_mapping", "absent", "out_of_scope",
+                "mismatches"}
+
+
+def test_verify_json_carries_the_reconciliation_by_default(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    _rc, payload = _cli_json(capsys, EXAMPLES_DIR / "absolute_value.vera")
-    assert "reconciliation" not in payload
+    """The join runs unless `--no-reconcile`, and the envelope it gives is
+    the one without it plus the `reconciliation` object, nothing else."""
+    path = EXAMPLES_DIR / "absolute_value.vera"
+    _rc, plain = _cli_json(capsys, path, no_reconcile=True)
+    _rc, joined = _cli_json(capsys, path)
+    assert "reconciliation" not in plain
+    assert set(joined) == set(plain) | {"reconciliation"}
+    assert {k: v for k, v in joined.items() if k != "reconciliation"} == plain
+    report = joined["reconciliation"]
+    assert isinstance(report, dict) and set(report) == _REPORT_KEYS
+    assert report["compiled"] is True
+    _rc, spelled = _cli_json(capsys, path, reconcile=True)
+    assert spelled == joined
+
+
+#: (program, the default's exit status, error codes and join warnings,
+#: then `--no-reconcile`'s), for each outcome the join can add: nothing, an
+#: E541, a W004, and a typed hole's skip (a refused compile is
+#: `test_reconcile_reports_a_refused_compile`'s).
+_DEFAULT_CELLS: dict[str, tuple[tuple[int, list[str], list[str]],
+                                tuple[int, list[str], list[str]]]] = {
+    "absolute_value": ((0, [], []), (0, [], [])),
+    "repro_1607": ((1, ["E541", "E541"], []), (0, [], [])),
+    "repro_1608": ((0, [], ["W004"]), (0, [], [])),
+    "typed_holes": ((0, [], ["W005"]), (0, [], [])),
+}
+
+#: The warnings only the join gives.
+_JOIN_WARNINGS = ("W004", "W005")
+
+
+def _default_cell_path(name: str, repro_dir: Path) -> Path:
+    if name == "absolute_value":
+        return EXAMPLES_DIR / "absolute_value.vera"
+    if name == "typed_holes":
+        return ROOT / "tests" / "conformance" / "ch03_typed_holes.vera"
+    return repro_dir / f"{name}.vera"
+
+
+@pytest.mark.parametrize("name", sorted(_DEFAULT_CELLS))
+def test_the_default_and_no_reconcile_differ_by_the_join_alone(
+    name: str, capsys: pytest.CaptureFixture[str], repro_dir: Path,
+) -> None:
+    """Exit status, error codes and the join's own warnings, with the join
+    and without it: what `--no-reconcile` takes away is exactly what the
+    join adds."""
+    path = _default_cell_path(name, repro_dir)
+    for flags, (code, errors, joined_warnings) in zip(
+            ({}, {"no_reconcile": True}), _DEFAULT_CELLS[name]):
+        rc, payload = _cli_json(capsys, path, **flags)
+        assert rc == code and payload["ok"] is (code == 0), (flags, payload)
+        assert sorted(d["error_code"] for d in payload["diagnostics"]) == (  # type: ignore[union-attr]
+            errors)
+        assert [w["error_code"] for w in payload["warnings"]  # type: ignore[union-attr]
+                if w["error_code"] in _JOIN_WARNINGS] == joined_warnings
+        assert ("reconciliation" in payload) is (not flags), (flags, payload)
+
+
+def test_a_typed_hole_skips_the_join_and_says_so(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A program holding typed holes verifies as it does without the join:
+    code generation refuses it (E614), so the join is skipped with W005 at
+    the first hole, and the envelope's `reconciliation` says why, with no
+    counts."""
+    path = ROOT / "tests" / "conformance" / "ch03_typed_holes.vera"
+    rc, payload = _cli_json(capsys, path)
+    assert rc == 0 and payload["ok"] is True
+    assert payload["reconciliation"] == {
+        "skipped": "the program holds typed holes, which code generation "
+                   "refuses (E614)"}
+    (skip,) = [w for w in payload["warnings"]  # type: ignore[union-attr]
+               if w["error_code"] == "W005"]
+    first_hole = min(
+        (w["location"]["line"], w["location"]["column"])
+        for w in payload["warnings"] if w["error_code"] == "W001")  # type: ignore[union-attr]
+    assert (skip["location"]["line"], skip["location"]["column"]) == first_hole
+    assert skip["severity"] == "warning" and skip["fix"] and skip["spec_ref"]
+
+
+_FILLED_HOLES = """\
+public fn double(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  {hole}
+}
+"""
+
+
+def test_filling_the_holes_as_the_w005_fix_says_clears_it(
+    tmp_path: Path,
+) -> None:
+    """The fix applied literally: each hole filled with an expression of the
+    type its W001 names, and the join runs with no W005."""
+    holed_path = tmp_path / "holed.vera"
+    holed_path.write_text(_FILLED_HOLES.replace("{hole}", "?"), encoding="utf-8")
+    holed = pipeline.cli("verify", "--json", holed_path).json()
+    assert [w["error_code"] for w in holed["warnings"]] == ["W001", "W005"]
+    assert "expected Int" in holed["warnings"][0]["description"]
+    filled_path = tmp_path / "filled.vera"
+    filled_path.write_text(
+        _FILLED_HOLES.replace("{hole}", "@Int.0 + @Int.0"), encoding="utf-8")
+    filled = pipeline.cli("verify", "--json", filled_path)
+    payload = filled.json()
+    assert filled.returncode == 0 and payload["ok"] is True
+    assert not [w for w in payload["warnings"] if w["error_code"] == "W005"]
+    assert payload["reconciliation"]["compiled"] is True
+
+
+def test_the_default_text_names_the_runtime_checks_it_found(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The summary line comes after the verification summary when the
+    program claims a runtime check, and not when it claims none."""
+    ran = pipeline.cli("verify", EXAMPLES_DIR / "factorial.vera")
+    assert ran.returncode == 0
+    assert ran.stdout.splitlines()[-1] == (
+        "Reconciliation: 1 of 1 runtime checks (Tier 3) found in the "
+        "compiled module")
+    plain = pipeline.cli("verify", "--no-reconcile",
+                         EXAMPLES_DIR / "factorial.vera")
+    assert "Reconciliation" not in plain.stdout
+    assert plain.stdout.splitlines() == ran.stdout.splitlines()[:-1]
+    none = pipeline.cli("verify", EXAMPLES_DIR / "safe_divide.vera")
+    assert none.stdout.splitlines() == [
+        f"OK: {EXAMPLES_DIR / 'safe_divide.vera'}",
+        "Verification: 6 verified (Tier 1)"]
+
+
+@pytest.mark.parametrize("argv, refusal", [
+    (("compile", "--no-reconcile"),
+     "--no-reconcile is only accepted by `vera verify`, not `vera compile`."),
+    (("run", "--no-reconcile"),
+     "--no-reconcile is only accepted by `vera verify`, not `vera run`."),
+    (("verify", "--reconcile", "--no-reconcile"),
+     "`vera verify` takes --reconcile or --no-reconcile, not both."),
+])
+def test_no_reconcile_is_refused_where_it_cannot_be_honoured(
+    argv: tuple[str, ...], refusal: str,
+) -> None:
+    ran = pipeline.cli(*argv, EXAMPLES_DIR / "absolute_value.vera")
+    assert (ran.returncode, ran.stderr) == (1, f"Error: {refusal}\n")
+
+
+_ECHO = """\
+public fn one(@String -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @String.0
+}
+
+public fn two(@String, @String -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  string_concat(@String.1, @String.0)
+}
+"""
+
+
+@pytest.mark.parametrize("flags", [
+    ("--no-reconcile",), ("--reconcile",), ("--reconcile", "--no-reconcile")])
+def test_a_programs_own_arguments_may_spell_the_flags(
+    flags: tuple[str, ...], tmp_path: Path,
+) -> None:
+    """What follows `--` is the called function's, never the command
+    line's: `vera run` hands the flags to it rather than refusing them."""
+    path = tmp_path / "echo.vera"
+    path.write_text(_ECHO, encoding="utf-8")
+    fn = "one" if len(flags) == 1 else "two"
+    ran = pipeline.cli("run", path, "--fn", fn, "--", *flags)
+    assert (ran.returncode, ran.stdout) == (0, "".join(flags) + "\n"), (
+        ran.stderr)
 
 
 def test_reconcile_reports_an_unanswered_claim_as_e541(
@@ -1358,15 +1614,29 @@ def test_reconcile_text_mode_prints_its_summary(
 
 
 def test_reconcile_reports_a_refused_compile(
-    capsys: pytest.CaptureFixture[str],
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A program that verifies but does not compile leaves nothing to join:
-    the compile's own error is the answer."""
-    rc, payload = _cli_json(
-        capsys, ROOT / "tests" / "conformance" / "ch03_typed_holes.vera",
-        reconcile=True)
+    the compile's own error is the answer.  No program the check accepts is
+    refused at compile since the name-collision codes retired (#1694), so
+    the compile is refused here, with an error added to its own result."""
+    from vera import reconcile
+    from vera.errors import Diagnostic, SourceLocation
+
+    real = reconcile.compile_for_reconcile
+
+    def refused(*args: object, **kwargs: object) -> object:
+        result = real(*args, **kwargs)  # type: ignore[arg-type]
+        result.diagnostics.append(Diagnostic(
+            description="refused", location=SourceLocation(file=None),
+            source_line="", rationale="", fix="", spec_ref="",
+            severity="error", error_code="E699"))
+        return result
+
+    monkeypatch.setattr(reconcile, "compile_for_reconcile", refused)
+    rc, payload = _cli_json(capsys, EXAMPLES_DIR / "absolute_value.vera")
     assert rc == 1
-    assert "E614" in {d.get("error_code") for d in payload["diagnostics"]}  # type: ignore[union-attr]
+    assert "E699" in {d.get("error_code") for d in payload["diagnostics"]}  # type: ignore[union-attr]
     assert payload["reconciliation"]["compiled"] is False  # type: ignore[index]
 
 

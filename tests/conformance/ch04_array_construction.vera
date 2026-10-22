@@ -51,13 +51,19 @@ public fn test_append_value(@Unit -> @Int)
   @Array<Int>.0[3]
 }
 
-public fn main(@Unit -> @Bool)
+-- The run: each test's value on a line of its own, and each built-in's array.
+public fn main(@Unit -> @Unit)
   requires(true)
-  ensures(@Bool.result == true)
-  effects(pure)
+  ensures(true)
+  effects(<IO>)
 {
-  let @Int = test_range_length(());
-  let @Int = test_concat_length(());
-  let @Int = test_append_value(());
-  @Int.0 == 99
+  IO.print("range length \(test_range_length(()))\n");
+  IO.print("range element \(test_range_element(()))\n");
+  IO.print("empty range \(test_range_empty(()))\n");
+  IO.print("concat length \(test_concat_length(()))\n");
+  IO.print("concat element \(test_concat_element(()))\n");
+  IO.print("append \(test_append_value(()))\n");
+  IO.print("range \(show(array_range(3, 7)))\n");
+  IO.print("concat \(show(array_concat([10, 20], [30, 40])))\n");
+  IO.print("append \(show(array_append([10, 20, 30], 99)))\n")
 }

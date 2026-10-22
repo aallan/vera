@@ -40,14 +40,15 @@ where {
   }
 }
 
-public fn main(@Unit -> @Int)
+-- The run: outer<Int> runs its T-independent helper (5); wrap<Int> runs its
+-- T-dependent id (7); wrap<Bool>, a second, distinct instantiation of the
+-- T-dependent helper, on both values of its type.
+public fn main(@Unit -> @Unit)
   requires(true)
-  ensures(@Int.result == 12)
-  effects(pure)
+  ensures(true)
+  effects(<IO>)
 {
-  -- outer<Int> runs its T-independent helper (returns 5); wrap<Int> runs its
-  -- T-dependent id (returns 7); 5 + 7 == 12.  wrap<Bool> exercises a second,
-  -- distinct instantiation of the T-dependent helper.
-  let @Bool = wrap(true);
-  outer(99) + wrap(7)
+  IO.print("outer \(outer(99))\n");
+  IO.print("wrap int \(wrap(7))\n");
+  IO.print("wrap bool \(wrap(true)) \(wrap(false))\n")
 }

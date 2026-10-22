@@ -22,12 +22,16 @@ private fn result_or(@Result<Int, String>, @Int -> @Int)
   }
 }
 
-public fn main(@Unit -> @Int)
+-- The run: both arms of each match, `Some` and `None`, `Ok` and `Err`.
+public fn main(@Unit -> @Unit)
   requires(true)
-  ensures(@Int.result == 42)
-  effects(pure)
+  ensures(true)
+  effects(<IO>)
 {
-  unwrap_or(Some(42), 0)
+  IO.print("some \(unwrap_or(Some(42), 0))\n");
+  IO.print("none \(test_none(()))\n");
+  IO.print("ok \(test_ok(()))\n");
+  IO.print("err \(test_err(()))\n")
 }
 
 public fn test_none(@Unit -> @Int)

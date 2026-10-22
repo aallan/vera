@@ -13,9 +13,11 @@ everything around mutmut itself:
   ``[tool.mutmut]``;
 - the parse of ``mutmut results --all true``, over every status mutmut 3
   prints, and the refusal of a line or a status it does not model;
-- the exit code (0 when every mutant is killed or timed out, 1 on a
-  survivor, 2 when the run stops short), the budget that stops it, and the
-  whole run end to end against a stand-in engine;
+- the exit code (1 on a survivor, 2 when the engine or the lane itself
+  fails, and 0 otherwise: a run its budget stops with no survivor passes,
+  its headline and a warning annotation saying it is incomplete), the
+  budget that stops it, and the whole run end to end against a stand-in
+  engine;
 - the workflow that runs it, read as data.
 
 The tests that need mutmut itself (its status table, and its generator
@@ -832,6 +834,10 @@ class TestTally:
 
 # (description, statuses over the diff's mutants, whether the engine
 # stopped short, the exit code)
+# Red for a defect, green for an unfinished run (the maintainer, 2026-10-21):
+# 1 on a survivor, whatever else the run did; 2 when the engine fails or
+# mutmut reports a mutant the lane did not map; 0 otherwise, a run the budget
+# stopped and a mutant left undecided included, which the headline reports.
 DECISIONS = [
     ("every mutant killed", ["killed", "killed"], None, 0),
     ("killed and timed out", ["killed", "timeout"], None, 0),
@@ -839,13 +845,18 @@ DECISIONS = [
     ("one survivor", ["killed", "survived"], None, 1),
     ("not observable in process", ["no tests", "no tests"], None, 0),
     ("skipped by the engine", ["skipped", "killed"], None, 0),
-    ("a mutant never run", ["killed", "not checked"], None, 2),
-    ("an interrupted mutant", ["check was interrupted by user"], None, 2),
-    ("a suspicious exit", ["suspicious"], None, 2),
-    ("a killed process", ["segfault"], None, 2),
-    ("a survivor in a run cut short", ["survived", "not checked"], None, 2),
-    ("the budget stopped it", ["killed"], "budget", 2),
+    ("a mutant never run", ["killed", "not checked"], None, 0),
+    ("an interrupted mutant", ["check was interrupted by user"], None, 0),
+    ("a suspicious exit", ["suspicious"], None, 0),
+    ("a killed process", ["segfault"], None, 0),
+    ("a survivor in a run cut short", ["survived", "not checked"], None, 1),
+    ("the budget stopped it", ["killed"], "budget", 0),
+    ("the budget stopped it with every decided mutant caught",
+     ["killed", "timeout", "not checked"], "budget", 0),
+    ("a survivor before the budget stopped it", ["survived", "not checked"], "budget", 1),
     ("the engine stopped it", [], "engine", 2),
+    ("a survivor before the engine stopped", ["survived"], "engine", 1),
+    ("a mutant the lane did not map", ["killed"], "unmapped", 2),
     ("nothing to mutate", [], None, 0),
 ]
 
@@ -895,6 +906,38 @@ class TestOutcome:
         rows = self._rows({f"{F}1": "killed"}, "x_free", "x_bare")
         assert md.outcome(0, rows, None) == (
             "Pass: no mutant survived; 1 function(s) with no mutant.")
+
+    def test_a_run_the_budget_stopped_passes_and_says_it_is_incomplete(self) -> None:
+        rows = self._rows({f"{F}1": "killed", f"{F}2": "timeout", f"{F}3": "not checked"},
+                          "x_free")
+        assert md.exit_code(rows, stopped="budget") == 0
+        assert md.outcome(0, rows, "budget") == (
+            "Incomplete: the budget ran out before every mutant was decided.")
+
+    def test_a_mutant_left_undecided_passes_and_says_so(self) -> None:
+        rows = self._rows({f"{F}1": "killed", f"{F}2": "segfault"}, "x_free")
+        assert md.exit_code(rows, stopped=None) == 0
+        assert md.outcome(0, rows, None) == "Incomplete: mutants of the diff were left undecided."
+
+    def test_a_survivor_fails_whatever_stopped_the_run(self) -> None:
+        rows = self._rows({f"{F}1": "survived", f"{F}2": "not checked"}, "x_free")
+        assert md.outcome(1, rows, None) == "Fail: 1 mutant(s) of the diff survive."
+        assert md.outcome(1, rows, "budget") == (
+            "Fail: 1 mutant(s) of the diff survive; the budget ran out before every "
+            "mutant was decided.")
+
+    def test_only_an_unfinished_pass_is_annotated(self) -> None:
+        """A green check whose run did not finish carries a warning on the
+        pull request; a red one, or a finished pass, says nothing more."""
+        incomplete = self._rows({f"{F}1": "killed", f"{F}2": "not checked"}, "x_free")
+        assert md.annotation(0, md.outcome(0, incomplete, "budget")) == (
+            "::warning title=mutation (diff)::Incomplete: the budget ran out before every "
+            "mutant was decided.")
+        finished = self._rows({f"{F}1": "killed"}, "x_free")
+        assert md.annotation(0, md.outcome(0, finished, None)) is None
+        survivor = self._rows({f"{F}1": "survived"}, "x_free")
+        assert md.annotation(1, md.outcome(1, survivor, "budget")) is None
+        assert md.annotation(2, md.outcome(2, finished, "engine")) is None
 
 
 # ---------------------------------------------------------------------------
@@ -1133,7 +1176,10 @@ if args[0] == "run":
     if skipped and os.environ.get("MUTATION_ORACLE_SKIPS"):
         with open(os.environ["MUTATION_ORACLE_SKIPS"], "a", encoding="utf-8") as fh:
             fh.write("".join(f"{nodeid}\\n" for nodeid in skipped.split(",")))
-    print(os.environ.get("FAKE_RUN_OUTPUT", ""))
+    print(os.environ.get("FAKE_RUN_OUTPUT", ""), flush=True)
+    if os.environ.get("FAKE_RUN_SLEEP"):
+        import time
+        time.sleep(float(os.environ["FAKE_RUN_SLEEP"]))
     sys.exit(int(os.environ.get("FAKE_RUN_EXIT", "0")))
 if args[0] == "results":
     import time
@@ -1212,6 +1258,7 @@ def repo(tmp_path: Path) -> Path:
 
 def _main(repo: Path, tmp_path: Path, results: str, run_exit: int = 0,
           run_output: str = "", workdir: str | None = None,
+          budget: float | None = None,
           ) -> tuple[int, dict[str, Any], list[dict[str, Any]]]:
     state = tmp_path / "state"
     state.mkdir(exist_ok=True)
@@ -1228,6 +1275,7 @@ def _main(repo: Path, tmp_path: Path, results: str, run_exit: int = 0,
             "--workdir", workdir or str(tmp_path / "work"), "--json", str(out_json),
             "--summary", str(tmp_path / "summary.md"),
             "--engine", sys.executable, str(engine),
+            *(["--budget", str(budget)] if budget is not None else []),
         ])
     finally:
         del os.environ["FAKE_STATE"], os.environ["FAKE_RUN_EXIT"], os.environ["FAKE_RUN_OUTPUT"]
@@ -1423,6 +1471,77 @@ class TestEndToEnd:
         assert summary.count("```diff") == 3
         assert "2 more survivors" in summary
 
+    def test_a_run_the_budget_stops_with_no_survivor_passes_with_a_warning(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """#1753's final head: the budget ran out with every decided mutant
+        killed or timed out and the rest not checked.  The check passes, and
+        the summary and an annotation say the run did not finish."""
+        monkeypatch.setenv("FAKE_RUN_SLEEP", "60")
+        results = ("    vera.m.x_kept__mutmut_1: killed\n    vera.m.x_kept__mutmut_2: timeout\n"
+                   "    vera.m.x_kept__mutmut_3: not checked\n")
+        code, record, _ = _main(repo, tmp_path, results, budget=1)
+        out = capsys.readouterr().out
+        assert (code, record["exit_code"], record["stopped"]) == (0, 0, "budget")
+        headline = "Incomplete: the budget ran out before every mutant was decided."
+        assert record["outcome"] == headline
+        assert f"**{headline}**" in (tmp_path / "summary.md").read_text(encoding="utf-8")
+        assert f"::warning title=mutation (diff)::{headline}" in out.splitlines()
+
+    def test_a_survivor_the_budget_cut_short_fails(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        monkeypatch.setenv("FAKE_RUN_SLEEP", "60")
+        results = "    vera.m.x_kept__mutmut_1: survived\n    vera.m.x_kept__mutmut_2: not checked\n"
+        code, record, _ = _main(repo, tmp_path, results, budget=1)
+        assert (code, record["exit_code"], record["stopped"]) == (1, 1, "budget")
+        assert record["outcome"].startswith("Fail: 1 mutant(s) of the diff survive")
+        assert "::warning" not in capsys.readouterr().out
+
+    @pytest.mark.parametrize(
+        ("results", "env", "code", "stopped"),
+        [
+            pytest.param("    vera.m.x_kept__mutmut_1: killed\n    vera.m.x_kept__mutmut_2: not checked\n",
+                         {"FAKE_RESULTS_SLEEP": "30"}, 2, "engine", id="a hung results call"),
+            pytest.param("    vera.m.x_kept__mutmut_1: survived\n",
+                         {"FAKE_RESULTS_EXIT": "1"}, 2, "engine",
+                         id="a failing results call that lists a survivor"),
+            pytest.param("    vera.m.x_kept__mutmut_1: killed\n    vera.m.x_kept__mutmut_2: survived by proxy\n",
+                         {}, 2, "engine", id="results the lane cannot read"),
+            pytest.param("    vera.m.x_kept__mutmut_1: killed\n    vera.m.x_other__mutmut_1: survived\n",
+                         {}, 2, "unmapped", id="a survivor of a function the lane did not map"),
+            pytest.param("    vera.m.x_kept__mutmut_1: survived\n    vera.m.x_other__mutmut_1: killed\n",
+                         {}, 1, "unmapped", id="a survivor of the diff and an unmapped mutant"),
+        ],
+    )
+    def test_a_failure_after_the_budget_ran_out_is_still_red(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str], results: str, env: dict[str, str], code: int,
+        stopped: str,
+    ) -> None:
+        """The budget leaves a run only incomplete.  A failure of the engine
+        or of the mapping found after it outranks it, so the run is red, as
+        the same failure is with no budget stop; a survivor of the diff
+        outranks both."""
+        monkeypatch.setenv("FAKE_RUN_SLEEP", "60")
+        if "FAKE_RESULTS_SLEEP" in env:
+            monkeypatch.setattr(md, "ENGINE_CALL_TIMEOUT_S", 1)
+        for name, value in env.items():
+            monkeypatch.setenv(name, value)
+        got, record, _ = _main(repo, tmp_path, results, budget=1)
+        assert (got, record["exit_code"], record["stopped"]) == (code, code, stopped)
+        assert "::warning" not in capsys.readouterr().out
+
+    def test_a_finished_run_carries_no_warning(
+        self, repo: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        code, record, _ = _main(repo, tmp_path, "    vera.m.x_kept__mutmut_1: killed\n")
+        assert (code, record["stopped"]) == (0, None)
+        assert record["outcome"] == "Pass: every mutant of the diff is killed or timed out."
+        assert "::warning" not in capsys.readouterr().out
+
     def test_a_status_the_lane_does_not_model_stops_the_run_short(
         self, repo: Path, tmp_path: Path,
     ) -> None:
@@ -1558,6 +1677,15 @@ class TestWorkflow:
         budget = int(re.search(r"--budget (\d+)", step["run"]).group(1))  # type: ignore[union-attr]
         assert job["timeout-minutes"] * 60 >= budget + 10 * 60
         assert "continue-on-error" not in job and "continue-on-error" not in step
+
+    def test_no_step_reads_the_scripts_exit_status(self) -> None:
+        """The job's status is the script's exit status and nothing else:
+        no step's condition reads the script's outcome, so an exit 0 from an
+        incomplete run is a green check and an exit 1 or 2 a red one."""
+        steps = self._job()["steps"]
+        conditions = [str(s["if"]) for s in steps if "if" in s]
+        assert conditions == ["always()"]
+        assert not [s for s in steps if "continue-on-error" in s]
 
     def test_the_record_is_kept_and_summarised_whatever_the_outcome(self) -> None:
         steps = self._job()["steps"]

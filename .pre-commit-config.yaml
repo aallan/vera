@@ -9,13 +9,14 @@
 # minutes.  No hook checks a count: TESTING.md's generated status is
 # regenerated and checked by the release PR (scripts/render_status.py).
 # The slow gates run in CI (.github/workflows/ci.yml), and there
-# only: the full pytest suite, which carries the conformance suite, in Linux
+# only: the full pytest suite, which carries the conformance suite, the
+# examples' check, verify and runs and every document's Vera blocks, in Linux
 # and Windows shards (`shard`) on every pull request, on the whole OS x Python
 # matrix (`test`) on a version-raising pull request, a release and nightly,
 # and once, measuring coverage (`coverage`), on the push event a merged pull
-# request produces on main; the examples' check + verify and their runs, and
-# the E602/E604 compile sweep (`lint`); and the conformance and example runs
-# under VERA_EAGER_GC=1 (`eager-gc`).  CI also runs every gate below, so a commit
+# request produces on main; the E602/E604 compile sweep (`lint`); and the
+# conformance and example runs under VERA_EAGER_GC=1 (`eager-gc`).  CI also
+# runs every gate below, or the suite's tests that do its work, so a commit
 # that reaches it without these hooks is still gated.
 # tests/test_gate_placement.py pins both halves.
 
@@ -116,8 +117,9 @@ repos:
       # DOC_GATES.  Any other document, CHANGELOG.md or TESTING.md say, has
       # no gated block to re-verify.  The rule that every tracked document
       # with Vera blocks is in DOC_GATES or NOT_GATED still runs on every
-      # commit that fires this hook, and on every CI run, which is where a
-      # newly added document is classified.
+      # commit that fires this hook, and on every CI run, through the suite's
+      # tests/test_check_doc_examples.py, which is where a newly added
+      # document is classified.
       - id: doc-examples
         name: doc examples
         entry: .venv/bin/python scripts/check_doc_examples.py

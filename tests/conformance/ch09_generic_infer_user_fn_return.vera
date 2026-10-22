@@ -24,7 +24,8 @@ private fn d(@String -> @Decimal)
 -- option_unwrap_or(decimal_div(...), d("0")) — the fallback @T is a
 -- user-fn call returning @Decimal; the generic must instantiate at Decimal.
 -- 1/3 divides cleanly, so the Some branch is taken and d("0") is the type
--- driver, not the value.
+-- driver, not the value.  The check compares the quotient with its 28-digit
+-- expansion, so a wrong nonzero value fails it as the fallback does.
 -- ================================================================
 public fn test_user_fn_fallback_arg(@Unit -> @Int)
   requires(true)
@@ -32,10 +33,10 @@ public fn test_user_fn_fallback_arg(@Unit -> @Int)
   effects(pure)
 {
   let @Decimal = option_unwrap_or(decimal_div(d("1"), d("3")), d("0"));
-  if decimal_eq(@Decimal.0, d("0")) then {
-    0
-  } else {
+  if decimal_eq(@Decimal.0, d("0.3333333333333333333333333333")) then {
     1
+  } else {
+    0
   }
 }
 
@@ -88,18 +89,15 @@ public fn test_bare_typevar_user_fn(@Unit -> @Int)
   }
 }
 
--- ================================================================
--- main — run all tests, return 0 if all 3 pass (sum == 3)
--- ================================================================
-public fn main(@Unit -> @Int)
+-- The run: each test's verdict, then the quotient the first one compares.
+public fn main(@Unit -> @Unit)
   requires(true)
   ensures(true)
-  effects(pure)
+  effects(<IO>)
 {
-  let @Int = test_user_fn_fallback_arg(()) + test_user_fn_fallback_taken(()) + test_bare_typevar_user_fn(());
-  if @Int.0 == 3 then {
-    0
-  } else {
-    1
-  }
+  IO.print("fallback arg \(test_user_fn_fallback_arg(()))\n");
+  IO.print("fallback taken \(test_user_fn_fallback_taken(()))\n");
+  IO.print("bare type variable \(test_bare_typevar_user_fn(()))\n");
+  let @Decimal = option_unwrap_or(decimal_div(d("1"), d("3")), d("0"));
+  IO.print("1 / 3 = \(decimal_to_string(@Decimal.0))\n")
 }

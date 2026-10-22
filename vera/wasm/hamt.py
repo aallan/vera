@@ -36,13 +36,22 @@ instance's name spells it (``map_insert$ks_vi``): ``i`` an `Int` or `Nat`
 heap pointer (i32).  Its word is the value widened to 64 bits; a `String`'s
 is ``ptr | len << 32``, the pair as it lies in an array cell.
 
-**Keys.**  The hash is the 64-bit finalizer of MurmurHash3 over the `Hash`
-intrinsic's value for the key: an `Int`'s own value, a `Float64`'s bit
-pattern, a `String`'s FNV-1a, a `Bool`'s or `Byte`'s value.  A heap key's is
-its address, as a heap key's equality is (#1732).  Keys compare by
-SameValueZero: a `Float64` key is stored canonical (``-0.0`` as ``0.0``, every
-NaN as one NaN), so equal keys have equal words, and a `String` compares by
-content (``$eq_String``).
+**Keys.**  A `String` key's hash is SipHash-1-3 of its bytes under the
+instantiation's key (below).  Any other key's is the 64-bit finalizer of
+MurmurHash3 over its word: an `Int`'s own value, a `Float64`'s bit pattern, a
+`Bool`'s or `Byte`'s value, and a heap key's address, as a heap key's
+equality is (#1732).  The finalizer is a bijection, so two such keys never
+share a hash.  Keys compare by SameValueZero: a `Float64` key is stored
+canonical (``-0.0`` as ``0.0``, every NaN as one NaN), so equal keys have
+equal words, and a `String` compares by content (``$eq_String``).
+
+**The key.**  A module that hashes a `String` in a trie draws a 128-bit key
+from its host the first time it does: two 64-bit words, each from a call of
+the import ``vera.hash_key``, into ``$hamt$k0`` and ``$hamt$k1``, kept for the
+instance's life (``$hamt$keyed``).  The key is SipHash's, so it enters the
+hash's state: keys that collide under one instantiation's key do not under
+another's, so no set of keys can be chosen in advance to collide (#1736).
+No output depends on it, since the enumerations read insertion order.
 
 **Order.**  An enumeration (``map_keys``, ``map_values``, ``set_to_array``)
 reads the entries in insertion order: an entry keeps its insertion number
@@ -82,12 +91,17 @@ LAST_SHIFT = 60
 _NONE_TAG = 0
 _SOME_TAG = 1
 
-#: MurmurHash3's 64-bit finalizer constants, and FNV-1a's (the `Hash`
-#: intrinsic's string hash, `WasmContext._translate_hash_string`).
+#: MurmurHash3's 64-bit finalizer constants.
 _FMIX_1 = 0xFF51AFD7ED558CCD
 _FMIX_2 = 0xC4CEB9FE1A85EC53
-_FNV_BASIS = 0xCBF29CE484222325
-_FNV_PRIME = 0x100000001B3
+
+#: SipHash's initial state, each word taken with a word of the key.
+_SIP_INIT = (0x736F6D6570736575, 0x646F72616E646F6D,
+             0x6C7967656E657261, 0x7465646279746573)
+
+#: The import a module draws its `String` hash's key through, one 64-bit
+#: word a call (the `hash` row of ``vera.builtins.HOST_IMPORTS``).
+KEY_IMPORT = "hash_key"
 
 
 def _i64(value: int) -> str:
@@ -261,21 +275,77 @@ def _hamt_mix() -> str:
     ])
 
 
+def _sip_round() -> list[str]:
+    """One SipRound over the state in ``$v0`` to ``$v3``."""
+    def add(a: str, b: str) -> list[str]:
+        return [f"local.get ${a}", f"local.get ${b}", "i64.add", f"local.set ${a}"]
+
+    def rotl(a: str, n: int, xor: str | None = None) -> list[str]:
+        mixed = [f"local.get ${xor}", "i64.xor"] if xor else []
+        return [f"local.get ${a}", f"i64.const {n}", "i64.rotl", *mixed, f"local.set ${a}"]
+
+    return [
+        *add("v0", "v1"), *rotl("v1", 13, "v0"), *rotl("v0", 32),
+        *add("v2", "v3"), *rotl("v3", 16, "v2"),
+        *add("v0", "v3"), *rotl("v3", 21, "v0"),
+        *add("v2", "v1"), *rotl("v1", 17, "v2"), *rotl("v2", 32),
+    ]
+
+
+def _absorb(word: str) -> list[str]:
+    """Take the 64-bit *word* into the state: one compression round."""
+    return [
+        "local.get $v3", f"local.get ${word}", "i64.xor", "local.set $v3",
+        *_sip_round(),
+        "local.get $v0", f"local.get ${word}", "i64.xor", "local.set $v0",
+    ]
+
+
 def _hash_body(cls: str) -> list[str]:
-    """The body of ``$hamt_hash$<cls>``: a key's hash, from its word or,
-    for a `String`, from its bytes (FNV-1a, as the `Hash` intrinsic)."""
+    """The body of ``$hamt_hash$<cls>``: a key's hash, from its word or, for
+    a `String`, from its bytes, SipHash-1-3 under the instantiation's key."""
     if cls == "w":
         return ["local.get $w", "call $hamt$mix"]
+    keyed: list[str] = []
+    for v, (k, init) in enumerate(zip(("k0", "k1", "k0", "k1"), _SIP_INIT, strict=True)):
+        keyed += [f"global.get $hamt${k}", _i64(init), "i64.xor", f"local.set $v{v}"]
     return [
-        _i64(_FNV_BASIS), "local.set $h",
+        "global.get $hamt$keyed", "i32.eqz", "if", "call $hamt$key", "end",
+        *keyed,
+        # The whole eight-byte words end at $n; past them, the last word
+        # holds the bytes left and, in its top byte, the length's low byte.
+        "local.get $l", "i32.const -8", "i32.and", "local.set $n",
         "i32.const 0", "local.set $i",
-        "block $done", "loop $byte",
-        "local.get $i", "local.get $l", "i32.ge_u", "br_if $done",
-        "local.get $h", "local.get $p", "local.get $i", "i32.add", "i32.load8_u",
-        "i64.extend_i32_u", "i64.xor", _i64(_FNV_PRIME), "i64.mul", "local.set $h",
-        "local.get $i", "i32.const 1", "i32.add", "local.set $i",
+        "loop $word",
+        "local.get $i", "local.get $n", "i32.lt_u",
+        "if (result i64)",
+        "local.get $p", "local.get $i", "i32.add", "i64.load align=1",
+        "else",
+        "local.get $l", "i64.extend_i32_u", "i64.const 56", "i64.shl", "local.set $m",
+        "local.get $l", "local.set $j",
+        "block $last", "loop $byte",
+        "local.get $j", "local.get $n", "i32.le_u", "br_if $last",
+        "local.get $j", "i32.const 1", "i32.sub", "local.set $j",
+        "local.get $m",
+        "local.get $p", "local.get $j", "i32.add", "i32.load8_u", "i64.extend_i32_u",
+        "local.get $j", "local.get $n", "i32.sub", "i32.const 3", "i32.shl",
+        "i64.extend_i32_u", "i64.shl", "i64.or", "local.set $m",
         "br $byte", "end", "end",
-        "local.get $h", "call $hamt$mix",
+        "local.get $m",
+        "end",
+        "local.set $m",
+        *_absorb("m"),
+        "local.get $i", "i32.const 8", "i32.add", "local.tee $i",
+        "local.get $n", "i32.le_u", "br_if $word",
+        "end",
+        "local.get $v2", "i64.const 255", "i64.xor", "local.set $v2",
+        "i32.const 3", "local.set $j",
+        "loop $final",
+        *_sip_round(),
+        "local.get $j", "i32.const 1", "i32.sub", "local.tee $j", "br_if $final",
+        "end",
+        "local.get $v0", "local.get $v1", "i64.xor", "local.get $v2", "i64.xor",
+        "local.get $v3", "i64.xor",
     ]
 
 
@@ -283,7 +353,24 @@ def _hamt_hash(cls: str) -> str:
     if cls == "w":
         return _func("hamt_hash$w", [("w", "i64")], ["i64"], [], _hash_body("w"))
     return _func("hamt_hash$s", [("p", "i32"), ("l", "i32")], ["i64"],
-                 [("h", "i64"), ("i", "i32")], _hash_body("s"))
+                 [("v0", "i64"), ("v1", "i64"), ("v2", "i64"), ("v3", "i64"),
+                  ("m", "i64"), ("i", "i32"), ("n", "i32"), ("j", "i32")],
+                 _hash_body("s"))
+
+
+def _hamt_key() -> str:
+    """Draw the instantiation's key from the host, two words, once.  The
+    three globals are the helper's own and are emitted with it."""
+    return "\n".join([
+        "  (global $hamt$k0 (mut i64) (i64.const 0))",
+        "  (global $hamt$k1 (mut i64) (i64.const 0))",
+        "  (global $hamt$keyed (mut i32) (i32.const 0))",
+        _func("hamt$key", [], [], [], [
+            f"call $vera.{KEY_IMPORT}", "global.set $hamt$k0",
+            f"call $vera.{KEY_IMPORT}", "global.set $hamt$k1",
+            "i32.const 1", "global.set $hamt$keyed",
+        ]),
+    ])
 
 
 def _hamt_canon() -> str:
@@ -1132,7 +1219,8 @@ def _op_from_arrays(name: str, tags: dict[str, str]) -> tuple[str, tuple[str, ..
 # =====================================================================
 
 _SHARED: dict[str, Callable[[], str]] = {
-    "hamt$new": _hamt_new, "hamt$mix": _hamt_mix, "hamt$canon": _hamt_canon,
+    "hamt$new": _hamt_new, "hamt$mix": _hamt_mix, "hamt$key": _hamt_key,
+    "hamt$canon": _hamt_canon,
     "hamt$entry": _hamt_entry, "hamt$merge": _hamt_merge,
     "hamt$node_set": _hamt_node_set, "hamt$node_add_entry": _hamt_node_add_entry,
     "hamt$node_entry_to_sub": _hamt_node_entry_to_sub,
@@ -1149,6 +1237,9 @@ _SHARED_DEPS: dict[str, tuple[str, ...]] = {
     "hamt$sorted": ("hamt$collect",),
 }
 
+#: The host imports a helper calls, which a module that carries it declares.
+IMPORTS: dict[str, tuple[str, ...]] = {"hamt$key": (KEY_IMPORT,)}
+
 #: The helper ``eq_String`` is ``WasmContext``'s, shared with ``==``.
 EQ_STRING = "eq_String"
 
@@ -1157,7 +1248,7 @@ def _per_class(name: str) -> tuple[str, tuple[str, ...]]:
     base, _, cls = name.partition("$")
     eq: tuple[str, ...] = (EQ_STRING,) if cls == "s" else ()
     if base == "hamt_hash":
-        return _hamt_hash(cls), ("hamt$mix",)
+        return _hamt_hash(cls), ("hamt$key",) if cls == "s" else ("hamt$mix",)
     if base == "hamt_ins":
         return _hamt_ins(cls), ("hamt$entry", "hamt$merge", "hamt$node_set",
                                 "hamt$node_add_entry", "hamt$node_entry_to_sub",
@@ -1206,15 +1297,19 @@ def helper(name: str) -> tuple[str, tuple[str, ...]]:
 
 def register(
     name: str, helpers: dict[str, str], request_eq: Callable[[], None],
+    imports: set[str],
 ) -> None:
     """Add the helper *name* and every helper it calls to *helpers*, each
-    once.  ``$eq_String``, which a `String` key compares by, is the one the
-    trie shares with ``==`` and does not generate, so *request_eq* asks the
-    caller for it."""
+    once, and the host imports they call to *imports*, the module's set of
+    the imports it declares.  ``$eq_String``, which a `String` key compares
+    by, is the one the trie shares with ``==`` and does not generate, so
+    *request_eq* asks the caller for it."""
     for needed in closure(name):
         if needed == EQ_STRING:
             request_eq()
-        elif needed not in helpers:
+            continue
+        imports.update(IMPORTS.get(needed, ()))
+        if needed not in helpers:
             helpers[needed] = helper(needed)[0]
 
 

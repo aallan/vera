@@ -6,18 +6,27 @@ private data Point {
   MkPoint(Int)
 }
 
-private fn same_point(@Point, @Point -> @Bool)
+-- Both points' coordinates, summed, so the run reads what reached the callee.
+private fn coordinate_sum(@Point, @Point -> @Int)
   requires(@Point.1 == @Point.0)
   ensures(true)
   effects(pure)
 {
-  true
+  match @Point.1 {
+    MkPoint(@Int) -> match @Point.0 {
+      MkPoint(@Int) -> @Int.1 + @Int.0
+    }
+  }
 }
 
-public fn main(@Unit -> @Bool)
+-- The run: the callee on two equal constructions, then on one binding passed
+-- twice.
+public fn main(@Unit -> @Unit)
   requires(true)
   ensures(true)
-  effects(pure)
+  effects(<IO>)
 {
-  same_point(MkPoint(3), MkPoint(3))
+  IO.print("constructions \(coordinate_sum(MkPoint(3), MkPoint(3)))\n");
+  let @Point = MkPoint(0 - 20);
+  IO.print("binding \(coordinate_sum(@Point.0, @Point.0))\n")
 }

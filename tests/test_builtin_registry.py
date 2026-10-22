@@ -371,7 +371,9 @@ public fn effects_probe(@String, @Nat -> @Int)
 """
 
 #: The declarations `every_builtin_source()` makes, line for line and in
-#: order, as the base (313c04db) compiled them.
+#: order, as the base (313c04db) compiled them, with the row added since
+#: (`hash_key`, #1736: the JSON host builds a `Map<String, Json>`) where the
+#: registry's order puts it.
 _EVERY_BUILTIN_IMPORTS = (
     '(import "vera" "md_extract_code_blocks" (func $vera.md_extract_code_blocks (param i32 i32 i32) (result i32 i32)))',
     '(import "vera" "md_has_code_block" (func $vera.md_has_code_block (param i32 i32 i32) (result i32)))',
@@ -414,6 +416,7 @@ _EVERY_BUILTIN_IMPORTS = (
     '(import "vera" "acos" (func $vera.acos (param f64) (result f64)))',
     '(import "vera" "atan" (func $vera.atan (param f64) (result f64)))',
     '(import "vera" "atan2" (func $vera.atan2 (param f64 f64) (result f64)))',
+    '(import "vera" "hash_key" (func $vera.hash_key (result i64)))',
     '(import "vera" "contract_fail" (func $vera.contract_fail (param i32 i32)))',
     '(import "vera" "trap" (func $vera.trap (param i32 i32 i32)))',
 )

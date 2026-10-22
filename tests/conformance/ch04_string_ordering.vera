@@ -23,3 +23,16 @@ public fn string_ordering_witness(@Unit -> @Int)
   let @Int = @Int.0 + if "a" < "ab" then { 50 } else { 0 };
   @Int.0 + match compare("hi", "hi") { Less -> 0, Equal -> 6, Greater -> 0 }
 }
+
+-- The run: the witness above, then `compare`'s other two outcomes and a `<`
+-- that must be false, each as a digit of its own.
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Int = string_ordering_witness(()) * 1000;
+  let @Int = @Int.0 + match compare("apple", "banana") { Less -> 700, Equal -> 0, Greater -> 0 };
+  let @Int = @Int.0 + match compare("banana", "apple") { Less -> 0, Equal -> 0, Greater -> 80 };
+  @Int.0 + if "b" < "a" then { 0 } else { 9 }
+}

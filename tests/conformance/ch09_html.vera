@@ -124,3 +124,61 @@ public fn test_html_parse_lenient(@Unit -> @Int)
     Err(@String) -> 0
   }
 }
+
+-- What the parsed document holds, as text, so the run reads more than lengths.
+private fn text_of(@String -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match html_parse(@String.0) {
+    Ok(@HtmlNode) -> html_text(@HtmlNode.0),
+    Err(@String) -> @String.0
+  }
+}
+
+private fn rendered(@String -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match html_parse(@String.0) {
+    Ok(@HtmlNode) -> html_to_string(@HtmlNode.0),
+    Err(@String) -> @String.0
+  }
+}
+
+private fn href_of(@String -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match html_parse(@String.0) {
+    Ok(@HtmlNode) -> match html_attr(@HtmlNode.0, "href") {
+      Some(@String) -> @String.0,
+      None -> "none"
+    },
+    Err(@String) -> @String.0
+  }
+}
+
+-- The run: every test above, then the text, the markup and the attribute
+-- they measure.
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  IO.print("parse \(test_html_parse_ok(())) text length \(test_html_text(()))\n");
+  IO.print("query count \(test_html_query_count(()))\n");
+  IO.print("to string length \(test_html_to_string(()))\n");
+  IO.print("attr \(test_html_attr_present(())) \(test_html_attr_absent(()))\n");
+  IO.print("constructor text \(test_html_constructor_text(()))\n");
+  IO.print("lenient \(test_html_parse_lenient(()))\n");
+  let @String = "<b>bold</b>";
+  let @String = "<p>hello</p>";
+  let @String = "<a href=\"url\">x</a>";
+  IO.print("text \(text_of(@String.1))\n");
+  IO.print("rendered \(rendered(@String.2))\n");
+  IO.print("href \(href_of(@String.0))\n")
+}

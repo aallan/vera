@@ -2,7 +2,8 @@
 
 Each stage is held to the command it stands in for: over every corpus
 program, ``check``, ``verify`` and ``compile`` give exactly the envelope
-``vera <stage> --json`` prints and ``compile`` exactly the WAT ``vera compile
+``vera <stage> --json`` prints (``verify`` that of ``--no-reconcile``, and
+with ``reconcile=True`` that of the default) and ``compile`` exactly the WAT ``vera compile
 --wat`` prints, and over every conformance program whose run is pinned,
 ``run`` gives the envelope ``vera run --json`` prints.  Programs shaped as no
 corpus program is (a trap of each kind after output, an exit status set
@@ -67,6 +68,8 @@ def test_each_stage_reports_what_its_command_reports(path: Path) -> None:
     assert pipeline.check(path).envelope() == (
         pipeline.cli("check", "--json", path).json())
     assert pipeline.verify(path).envelope() == (
+        pipeline.cli("verify", "--json", "--no-reconcile", path).json())
+    assert pipeline.verify(path, reconcile=True).envelope() == (
         pipeline.cli("verify", "--json", path).json())
     compiled = pipeline.compile(path)
     envelope = compiled.envelope()
@@ -138,6 +141,8 @@ def test_each_stage_reports_what_its_command_reports_off_the_corpus(
     assert pipeline.check(path).envelope() == (
         pipeline.cli("check", "--json", path).json())
     assert pipeline.verify(path).envelope() == (
+        pipeline.cli("verify", "--json", "--no-reconcile", path).json())
+    assert pipeline.verify(path, reconcile=True).envelope() == (
         pipeline.cli("verify", "--json", path).json())
     assert pipeline.compile(path).envelope() == (
         pipeline.cli("compile", "--json", path).json())
@@ -318,7 +323,7 @@ def test_each_obligation_status_reaches_the_json_as_itself(
         monkeypatch.setattr(SmtContext, "check_valid", _undecided)
     path = tmp_path / f"{_pair_id(pair)}.vera"
     path.write_text(_STATUS_PROGRAMS[pair], encoding="utf-8")
-    verified = pipeline.verify(path)
+    verified = pipeline.verify(path, reconcile=True)
     records = [(o.status, o.error_code or None) for o in verified.obligations]
     assert pair in records, (
         f"the program for {_pair_id(pair)} no longer verifies to it: {records}")

@@ -325,3 +325,23 @@ where {
     @Int.0
   }
 }
+
+-- ================================================================
+-- The run: every test above, equal beside unequal and each ordering
+-- outcome, the abilities in contracts among them.
+-- ================================================================
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  IO.print("eq int \(test_eq_int_equal(())) \(test_eq_int_unequal(()))\n");
+  IO.print("eq bool \(test_eq_bool_equal(())) \(test_eq_bool_unequal(()))\n");
+  IO.print("eq direct \(test_eq_direct(())) \(test_eq_direct_unequal(()))\n");
+  IO.print("eq data \(test_eq_adt_equal(())) \(test_eq_adt_unequal(()))\n");
+  IO.print("compare \(test_compare_less(())) \(test_compare_equal(())) \(test_compare_greater(())), generic \(test_compare_generic(()))\n");
+  IO.print("show \(test_show_int(())) \(test_show_bool(())) \(test_show_string(()))\n");
+  IO.print("hash \(test_hash_int(())) \(test_hash_bool(())) \(test_hash_consistent(()))\n");
+  IO.print("eq in contracts \(test_eq_in_ensures(())) \(test_eq_in_requires(())) \(test_eq_in_where_fn_contract(()))\n");
+  IO.print("compare in contracts \(test_compare_in_ensures(4)) \(test_compare_in_contract_driver(()))\n")
+}

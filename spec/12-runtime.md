@@ -64,13 +64,14 @@ The module imports host functions from the runtime for two distinct reasons. The
 | `vera.state_pop_{T}` | `() -> ()` | Program uses `State<T>` |
 | `vera.contract_fail` | `(i32, i32) -> ()` | Program has runtime contracts |
 | `vera.trap` | `(i32, i32, i32) -> ()` | Program has a named runtime check (Section 12.4.6), or allocates |
+| `vera.hash_key` | `() -> (i64)` | Program hashes a `String` key in a `Map` or `Set` (Section 12.4.7) |
 | `vera.md_parse` | `(i32, i32) -> (i32)` | Program uses `md_parse` |
 | `vera.md_render` | `(i32) -> (i32, i32)` | Program uses `md_render` |
 | `vera.md_has_heading` | `(i32, i64) -> (i32)` | Program uses `md_has_heading` |
 | `vera.md_has_code_block` | `(i32, i32, i32) -> (i32)` | Program uses `md_has_code_block` |
 | `vera.md_extract_code_blocks` | `(i32, i32, i32) -> (i32, i32)` | Program uses `md_extract_code_blocks` |
 
-Imports are only emitted when the program actually uses the corresponding host-backed feature — either an effect operation (`IO.*`, `Http.*`, `State.*`, `Random.*`, …) or a pure host-backed built-in (`vera.log`, `vera.sin`, `vera.atan2`, …). A pure program that uses only inlined built-ins (`pi()`, `sign`, `clamp`, arithmetic operators) imports no effect operation and no host-backed built-in; the only imports it can carry are the two trap signals, `vera.contract_fail` and `vera.trap`, and each only when a runtime check calls it — an arithmetic operator the verifier cannot prove in range, for instance, carries an overflow check that signals through `vera.trap`.
+Imports are only emitted when the program actually uses the corresponding host-backed feature — either an effect operation (`IO.*`, `Http.*`, `State.*`, `Random.*`, …) or a pure host-backed built-in (`vera.log`, `vera.sin`, `vera.atan2`, …). A pure program that uses only inlined built-ins (`pi()`, `sign`, `clamp`, arithmetic operators, `Map` and `Set` operations) imports no effect operation and no host-backed built-in; the only imports it can carry are the two trap signals, `vera.contract_fail` and `vera.trap`, each only when a runtime check calls it — an arithmetic operator the verifier cannot prove in range, for instance, carries an overflow check that signals through `vera.trap` — and `vera.hash_key`, when it hashes a `String` key in a `Map` or `Set`.
 
 ### 12.2.3 Linear Memory
 
@@ -497,6 +498,16 @@ The `Random` effect provides three host-backed operations for non-deterministic 
 2. Store the kind and the message for later reporting.
 
 As with `contract_fail`, the WASM code always follows a `call $vera.trap` with `unreachable`, and the host reports the trap under the stored kind: its message, or the kind's own description when it carries none, and the kind's Fix paragraph (Section 12.7.1).  One import carries every kind, so a new named check needs a code rather than an import of its own.  The import is emitted when the program contains a named runtime check (Chapter 11, Section 11.8.5) or allocates: the allocator reports heap exhaustion through it.
+
+### 12.4.7 The String Hash's Key
+
+**Import:** `(import "vera" "hash_key" (func $vera.hash_key (result i64)))`
+
+**Parameters:** none.
+
+**Returns:** `i64` — a fresh random word at each call.
+
+**Behaviour:** The Python runtime returns eight bytes of `os.urandom`; the browser runtime fills a `BigInt64Array` of one element with `crypto.getRandomValues`; a WASI component's adapter returns `wasi:random/random.get-random-u64` (Chapter 13, Section 13.4).  The module calls it twice, on its first `String` hash, and keeps the two words as the 128-bit key its `Map` and `Set` hash `String` keys under for the rest of the instantiation (Chapter 9, Section 9.4.3).  The import is emitted when the program hashes a `String` key in a `Map` or `Set`, including the maps a host builds through the module's exports: a JSON object's members, an HTML element's attributes, and a request's headers.
 
 ## 12.5 Memory Model
 

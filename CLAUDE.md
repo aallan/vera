@@ -25,15 +25,16 @@ vera check file.vera              # Parse and type-check
 vera check --json file.vera       # Type-check with JSON diagnostics
 vera check --quiet file.vera      # Type-check, suppress success output
 vera check --explain-slots file.vera  # Show slot resolution table (which @T.n maps to which param)
-vera verify file.vera             # Type-check + verify contracts via Z3
+vera verify file.vera             # Type-check + verify contracts via Z3, then compile in
+                                  #   process and check every Tier 3 claim against the
+                                  #   checks the module holds (E541 claim with no check,
+                                  #   W004 check with no record)
 vera verify --json file.vera      # Verify with JSON diagnostics
 vera verify --quiet file.vera     # Verify, suppress success output
 vera verify --timeout-ms 60000 file.vera  # Per-query Z3 budget in ms (default 10000;
                                   #   env VERA_Z3_TIMEOUT_MS; raise it to tell a
                                   #   needs-more-time Tier 3 from a never one, #1350)
-vera verify --reconcile file.vera # Also compile in process and check every Tier 3
-                                  #   claim against the checks the module holds
-                                  #   (E541 claim with no check, W004 check with no record)
+vera verify --no-reconcile file.vera  # Verify without compiling: no reconciliation
 vera compile file.vera                    # Compile to .wasm binary
 vera compile --wat file.vera              # Print WAT text (human-readable WASM)
 vera compile --target browser file.vera   # Compile + emit browser bundle
@@ -147,7 +148,7 @@ A bug fix closes the **class** the report belongs to — the set of inputs the s
 
 ## What not to break
 
-- The pre-commit hook runs the fast gates on every commit — ruff, mypy, the doc and consistency gates, and the test files the commit stages. A pull request runs lint, typecheck, the full pytest suite (which carries the conformance suite and example validation) in Python 3.12 shards on Linux and Windows with each class-instrument matrix sampled bar the ones whose file or deciding module the PR changes, eager-GC, browser parity, and the security and supply-chain jobs, plus every gate the hook runs. The full OS × Python matrix runs on a pull request that raises `[project].version`, on the push event its merge produces on `main`, and every night, and a failed cell on that push or a nightly run, bar the advisory aarch64 cell, files an issue; the push event any other merge produces runs the suite once, measuring coverage with every matrix cell (TESTING.md §Pre-commit Hooks)
+- The pre-commit hook runs the fast gates on every commit — ruff, mypy, the doc and consistency gates, and the test files the commit stages. A pull request runs lint, typecheck, the full pytest suite (which carries the conformance suite, example validation and the documentation gate) in Python 3.12 shards on Linux and Windows with each class-instrument matrix sampled bar the ones whose file or deciding module the PR changes, eager-GC, browser parity, and the security and supply-chain jobs, plus every gate the hook runs; a PR whose every file is one of the VS Code extension's own (`scripts/ci_changes.py`) runs plan, lint, security and matrix-gate, and the rest stand down. The full OS × Python matrix runs on a pull request that raises `[project].version`, on the push event its merge produces on `main`, and every night, and a failed cell on that push or a nightly run, bar the advisory aarch64 cell, files an issue; the push event any other merge produces runs the suite once, measuring coverage with every matrix cell (TESTING.md §Pre-commit Hooks)
 - Every conformance program in `tests/conformance/` must hold at its declared level — positive entries pass, and the negative fixtures (the entries with `expected_error` in `tests/conformance/manifest.json`) must *fail* with their `expected_error` E-code, at the stage `expected_error_stage` names — `check` by default, or `compile` for a diagnostic the checker accepts and codegen refuses, which also asserts the program type-checks cleanly first
 - Every example in `examples/` must pass `vera check` and `vera verify`
 - Every Vera block in the agent-facing docs must pass `scripts/check_doc_examples.py`: it parses, checks, verifies and prints what each `vera:run` marker says, or carries a `vera:skip-<stage>` marker with a category, the codes it fails with, and a reason (`scripts/doc_annotations.py`); a block that exports a function names a `vera:run` invocation or a `vera:no-run` property
@@ -191,7 +192,7 @@ So `total == tier1_verified + tier3_runtime`, and the array — which is the com
 
 `assumptions` sits beside those counts and is NOT part of that identity: it counts the `assume` statements this run took on trust (one W003 warning each, spec §6.2.6), which are not obligations and discharge to no tier. It is derived from the assembled diagnostics, so a consumer reproduces it by counting W003 rather than by reading any obligation's status. A non-zero value is the honest measure of how much of a "verified" result rests on something nobody proved.
 
-`vera verify --reconcile` also compiles the program in process and joins the `obligations` array with the checks the compiled module holds, adding a `reconciliation` object (its counts and each mismatch) to the envelope: a `tier3` or `timeout` obligation that no emitted check answers is an **E541** error, and an emitted check that no obligation accounts for is a **W004** warning.
+`vera verify` also compiles the program in process and joins the `obligations` array with the checks the compiled module holds, adding a `reconciliation` object (its counts and each mismatch) to the envelope: a `tier3` or `timeout` obligation that no emitted check answers is an **E541** error, and an emitted check that no obligation accounts for is a **W004** warning. A program code generation refuses fails `vera verify` with that refusal, except a program holding typed holes: the join is skipped with a **W005** warning, and `reconciliation` is `{"skipped": "<reason>"}` with no counts. `--no-reconcile` skips the join, and the envelope carries no `reconciliation`.
 
 
 ### Error codes

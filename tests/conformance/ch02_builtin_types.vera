@@ -48,11 +48,17 @@ public fn test_byte(@Byte -> @Byte)
   @Byte.0
 }
 
+-- The run: a value of each built-in type, each on a line of its own (the
+-- `Byte` through `byte_to_int`, as its number).
 public fn main(@Unit -> @Unit)
   requires(true)
   ensures(true)
   effects(<IO>)
 {
-  IO.print("types ok");
-  ()
+  IO.print("int \(test_int(()))\n");
+  IO.print("nat \(test_nat(()))\n");
+  IO.print("bool \(test_bool(()))\n");
+  IO.print("string \(test_string(()))\n");
+  IO.print("float \(test_float(()))\n");
+  IO.print("byte \(byte_to_int(test_byte(7)))\n")
 }

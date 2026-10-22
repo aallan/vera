@@ -633,6 +633,18 @@ function hostTrap(code, ptr, len) {
   lastTrap = { code, message: len ? readString(ptr, len) : '' };
 }
 
+/**
+ * vera.hash_key() → one 64-bit word of the key a module's String hash draws,
+ * from the platform's cryptographic random source (#1736).  The module calls
+ * it twice, on its first String hash, and keeps the two words as the key of
+ * this instantiation (mirrors `_bind_hash_key` in vera/codegen/api.py).
+ */
+function hostHashKey() {
+  const word = new BigInt64Array(1);
+  globalThis.crypto.getRandomValues(word);
+  return word[0];
+}
+
 /** A runtime trap, named: `kind`, the message, and the kind's Fix paragraph. */
 class VeraTrap extends Error {
   constructor(kind, message, fix) {
@@ -2033,6 +2045,7 @@ const HOST_IMPORT_ROWS = new Map([
   ["acos", "math", ""],
   ["atan", "math", ""],
   ["atan2", "math", ""],
+  ["hash_key", "hash", ""],
   ["contract_fail", "contract", ""],
   ["trap", "trap", ""],
   ["state_get", "state", "cell"],
@@ -2086,6 +2099,11 @@ function buildImportObject(module, moduleBytes) {
   // #1479: the one trap signal every named check (and the allocator) calls
   if (needed.has('trap')) {
     imports.vera.trap = hostTrap;
+  }
+
+  // #1736: the key a String-keyed Map's or Set's hash draws
+  if (needed.has('hash_key')) {
+    imports.vera.hash_key = hostHashKey;
   }
 
   // State<T> bindings — dynamically created from import names.

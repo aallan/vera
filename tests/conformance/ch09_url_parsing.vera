@@ -1,28 +1,35 @@
 -- Conformance: url_parse, url_join (Chapter 9)
 -- Tests: url_parse returning Result<UrlParts, String>, url_join (types from prelude)
-public fn test_parse_full(@Unit -> @Int)
+-- Every part, scheme first, each in brackets so an empty part shows.
+private fn parts(@UrlParts -> @String)
   requires(true)
-  ensures(@Int.result == 5)
+  ensures(true)
   effects(pure)
 {
-  match url_parse("https://example.com/path?q=1#frag") {
-    Ok(@UrlParts) -> match @UrlParts.0 {
-      UrlParts(@String, @String, @String, @String, @String) -> string_length(@String.4)
-    },
-    Err(_) -> 0 - 1
+  match @UrlParts.0 {
+    UrlParts(@String, @String, @String, @String, @String) -> "[\(@String.4)] [\(@String.3)] [\(@String.2)] [\(@String.1)] [\(@String.0)]"
   }
 }
 
-public fn test_parse_no_query(@Unit -> @Int)
+public fn test_parse_full(@Unit -> @String)
   requires(true)
-  ensures(@Int.result == 5)
+  ensures(true)
+  effects(pure)
+{
+  match url_parse("https://example.com/path?q=1#frag") {
+    Ok(@UrlParts) -> parts(@UrlParts.0),
+    Err(@String) -> @String.0
+  }
+}
+
+public fn test_parse_no_query(@Unit -> @String)
+  requires(true)
+  ensures(true)
   effects(pure)
 {
   match url_parse("https://example.com/path") {
-    Ok(@UrlParts) -> match @UrlParts.0 {
-      UrlParts(@String, @String, @String, @String, @String) -> string_length(@String.2)
-    },
-    Err(_) -> 0 - 1
+    Ok(@UrlParts) -> parts(@UrlParts.0),
+    Err(@String) -> @String.0
   }
 }
 
@@ -51,43 +58,42 @@ public fn test_parse_empty_scheme(@Unit -> @Int)
   }
 }
 
-public fn test_join_full(@Unit -> @Int)
+public fn test_join_full(@Unit -> @String)
   requires(true)
-  ensures(@Int.result == 33)
+  ensures(true)
   effects(pure)
 {
   match url_parse("https://example.com/path?q=1#frag") {
-    Ok(@UrlParts) -> string_length(url_join(@UrlParts.0)),
-    Err(_) -> 0 - 1
+    Ok(@UrlParts) -> url_join(@UrlParts.0),
+    Err(@String) -> @String.0
   }
 }
 
-public fn test_roundtrip(@Unit -> @Int)
+public fn test_roundtrip(@Unit -> @String)
   requires(true)
-  ensures(@Int.result == 5)
+  ensures(true)
   effects(pure)
 {
   match url_parse("https://example.com/path?q=1#frag") {
     Ok(@UrlParts) -> match url_parse(url_join(@UrlParts.0)) {
-      Ok(@UrlParts) -> match @UrlParts.0 {
-        UrlParts(@String, @String, @String, @String, @String) -> string_length(@String.4)
-      },
-      Err(_) -> 0 - 2
+      Ok(@UrlParts) -> parts(@UrlParts.0),
+      Err(@String) -> @String.0
     },
-    Err(_) -> 0 - 1
+    Err(@String) -> @String.0
   }
 }
 
+-- The run: every part each parse produced, the joined URL, and the two
+-- rejected inputs.
 public fn main(@Unit -> @Unit)
   requires(true)
   ensures(true)
   effects(<IO>)
 {
-  IO.print(to_string(test_parse_full(())));
-  IO.print(to_string(test_parse_no_query(())));
-  IO.print(to_string(test_parse_err(())));
-  IO.print(to_string(test_parse_empty_scheme(())));
-  IO.print(to_string(test_join_full(())));
-  IO.print(to_string(test_roundtrip(())));
-  ()
+  IO.print("full \(test_parse_full(()))\n");
+  IO.print("no query \(test_parse_no_query(()))\n");
+  IO.print("no scheme \(test_parse_err(()))\n");
+  IO.print("empty scheme \(test_parse_empty_scheme(()))\n");
+  IO.print("join \(test_join_full(()))\n");
+  IO.print("roundtrip \(test_roundtrip(()))\n")
 }

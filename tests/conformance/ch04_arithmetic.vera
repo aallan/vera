@@ -48,10 +48,16 @@ public fn test_unary_neg(@Unit -> @Int)
   -42
 }
 
-public fn main(@Unit -> @Int)
+-- The run: every operator above, each test's value on a line of its own.
+public fn main(@Unit -> @Unit)
   requires(true)
-  ensures(@Int.result == 15)
-  effects(pure)
+  ensures(true)
+  effects(<IO>)
 {
-  10 + 5
+  IO.print("add \(test_add(()))\n");
+  IO.print("sub \(test_sub(()))\n");
+  IO.print("mul \(test_mul(()))\n");
+  IO.print("div \(test_div(()))\n");
+  IO.print("mod \(test_mod(()))\n");
+  IO.print("neg \(test_unary_neg(()))\n")
 }

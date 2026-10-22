@@ -41,10 +41,14 @@ private fn bool_match(@Bool -> @String)
   }
 }
 
-public fn main(@Unit -> @Int)
+-- The run: every arm of each match above, the constructor, literal, wildcard
+-- and `Bool` patterns among them.
+public fn main(@Unit -> @Unit)
   requires(true)
-  ensures(@Int.result == 2)
-  effects(pure)
+  ensures(true)
+  effects(<IO>)
 {
-  color_to_int(Green)
+  IO.print("color \(color_to_int(Red)) \(color_to_int(Green)) \(color_to_int(Blue))\n");
+  IO.print("classify \(classify(0)) \(classify(1)) \(classify(7))\n");
+  IO.print("bool \(bool_match(true)) \(bool_match(false))\n")
 }

@@ -6,11 +6,13 @@ Usage:
     vera check     --json <file.vera>       Type-check and output JSON diagnostics
     vera check     --explain-slots <file>   Show slot resolution table (@T.n → parameter)
     vera typecheck <file.vera>              Same as check (explicit alias)
-    vera verify    <file.vera>              Type-check and verify contracts
+    vera verify    <file.vera>              Type-check, verify contracts, and
+                                            reconcile the runtime-check claims
+                                            with the checks the compiled
+                                            module holds
     vera verify    --json <file.vera>       Verify and output JSON diagnostics
-    vera verify    --reconcile <file.vera>  Verify, compile, and reconcile the
-                                            runtime-check claims with the
-                                            checks the module holds
+    vera verify    --no-reconcile <file>    Verify without compiling: no
+                                            reconciliation
     vera compile   <file.vera>              Compile to .wasm binary
     vera compile   --wat <file.vera>        Print WAT text to stdout
     vera compile   -o out.wasm <file.vera>  Specify output path
@@ -566,14 +568,17 @@ def cmd_check(
 
 
 def cmd_verify(path: str, as_json: bool = False, quiet: bool = False,
-               timeout_ms: int | None = None, reconcile: bool = False) -> int:
+               timeout_ms: int | None = None, reconcile: bool = True) -> int:
     """Parse, transform, type-check, and verify a .vera file.
 
-    With *reconcile*, also compile the program in process, exactly as
-    ``vera compile`` does, and join the verifier's obligation records with
-    the checks the module holds (:mod:`vera.reconcile`): a ``tier3`` record
-    no emitted check answers is an E541 error, a check no record accounts
-    for a W004 warning.  Without it, nothing here compiles.
+    With *reconcile* (the default; ``--no-reconcile`` turns it off), also
+    compile the program in process, exactly as ``vera compile`` does, and
+    join the verifier's obligation records with the checks the module holds
+    (:mod:`vera.reconcile`): a ``tier3`` record no emitted check answers is
+    an E541 error, a check no record accounts for a W004 warning, and a
+    program code generation refuses fails with that refusal, bar one holding
+    typed holes, for which the join is skipped with a W005 warning.  Without
+    it, nothing here compiles.
     """
     try:
         # INSIDE the try (#1361 review): these are function-scope imports, and
@@ -629,45 +634,28 @@ def cmd_verify(path: str, as_json: bool = False, quiet: bool = False,
         all_warnings = type_warnings + warnings
 
         reconciled = None
-        reconcile_report: dict[str, object] | None = None
         if reconcile:
-            from vera.reconcile import (
-                compile_for_reconcile,
-                join,
-                mismatch_diagnostics,
-                report_dict,
-            )
-            compiled = compile_for_reconcile(
-                ast, source, str(p), resolved, artifacts)
-            compile_diags = list(compiled.diagnostics)
+            from vera.reconcile import reconcile_verified
+
             # The compile's own diagnostics are this run's too: a function
             # code generation drops (E602) is one whose records have no code
             # to be about, and a refused compile leaves nothing to join.
-            errors += [d for d in compile_diags if d.severity == "error"]
-            all_warnings += [d for d in compile_diags
+            reconciled = reconcile_verified(
+                ast, source, str(p), resolved, artifacts, result)
+            errors += [d for d in reconciled.diagnostics
+                       if d.severity == "error"]
+            all_warnings += [d for d in reconciled.diagnostics
                              if d.severity == "warning"]
-            if compiled.ok:
-                reconciled = join(
-                    result, compiled, program=ast, file=str(p),
-                    resolved_modules=resolved,
-                )
-                sources = {str(p): source}
-                for module in resolved:
-                    sources[str(module.file_path)] = module.source
-                found = mismatch_diagnostics(reconciled.mismatches, sources)
-                errors += [d for d in found if d.severity == "error"]
-                all_warnings += [d for d in found if d.severity == "warning"]
-            reconcile_report = report_dict(reconciled)
 
         if as_json:
             result_dict = verify_envelope(
                 path, result, errors, all_warnings,
                 timeout_ms=timeout_ms, default_file=str(p),
             )
-            if reconcile:
-                # Present only when asked for, so the envelope of a plain
-                # `vera verify --json` is unchanged.
-                result_dict["reconciliation"] = reconcile_report
+            if reconciled is not None:
+                # Absent under `--no-reconcile`, whose envelope is the
+                # verifier's alone.
+                result_dict["reconciliation"] = reconciled.report()
             print(json.dumps(result_dict, indent=2))
             return 1 if errors else 0
 
@@ -691,9 +679,12 @@ def cmd_verify(path: str, as_json: bool = False, quiet: bool = False,
         if not quiet:
             print(f"OK: {path}")
             print(f"Verification: {summary_str}")
-            if reconciled is not None:
+            if reconciled is not None and reconciled.reconciliation is not None:
                 from vera.reconcile import summary_line
-                print(summary_line(reconciled))
+
+                line = summary_line(reconciled.reconciliation)
+                if line is not None:
+                    print(line)
         return 0
     except FileNotFoundError:
         # The sibling handlers are inside the backstop's reach too (#1361
@@ -2082,7 +2073,7 @@ Commands:
     parse                Parse a .vera file and print the parse tree
     check [--json|--quiet|--explain-slots]       Parse and type-check a .vera file
     typecheck [--json|--quiet|--explain-slots]   Same as check (explicit alias)
-    verify [--json|--quiet|--timeout-ms n|--reconcile]   Parse, type-check, and verify contracts
+    verify [--json|--quiet|--timeout-ms n|--no-reconcile]   Parse, type-check, and verify contracts
     test [--json|--distrust]  Test contracts via Z3-guided input generation
     compile [--wat]      Compile a .vera file to WebAssembly
     compile --target browser  Emit browser bundle (wasm + JS + HTML)
@@ -2114,10 +2105,12 @@ Options:
                          fallback when the flag is absent, and it is the only
                          route for vera test and the language server, which
                          take no such flag
-    --reconcile          Also compile, and check every runtime-check claim
-                         (Tier 3) against the checks the compiled module
-                         holds, for vera verify: E541 for a claim with no
-                         check, W004 for a check with no record
+    --no-reconcile       Skip what vera verify does by default: compile the
+                         program and check every runtime-check claim (Tier 3)
+                         against the checks the compiled module holds (E541
+                         for a claim with no check, W004 for a check with no
+                         record, the compile's own refusal); --reconcile
+                         names the default
     --port <n>           Port to serve on (default: 8000, for vera serve)
     --host <h>           Host/interface to bind (default: 127.0.0.1, for vera serve)
     -o <path>            Output path for .wasm binary (or directory for --target browser)
@@ -2267,14 +2260,26 @@ def main() -> None:
         else:
             print(f"Error: {_ds_msg}", file=sys.stderr)
         sys.exit(1)
-    # `--reconcile` is verify-only for the same reason: a command that cannot
-    # honour it must refuse it rather than ignore it.
-    if "--reconcile" in args and args[0] != "verify":
-        _rc_msg = (
-            f"--reconcile is only accepted by `vera verify`, not "
-            f"`vera {args[0]}`."
-        )
-        if "--json" in args:
+    # `--reconcile` and `--no-reconcile` are verify-only for the same reason:
+    # a command that cannot honour one must refuse it rather than ignore it.
+    # `vera verify` reconciles by default, which `--reconcile` states and
+    # `--no-reconcile` turns off, so the two together contradict each other.
+    # As for `--distrust`, only the arguments before `--` are read.
+    _rc_msg = ""
+    for _rc_flag in ("--reconcile", "--no-reconcile"):
+        if _rc_flag in _own_args and args[0] != "verify":
+            _rc_msg = (
+                f"{_rc_flag} is only accepted by `vera verify`, not "
+                f"`vera {args[0]}`."
+            )
+            break
+    else:
+        if "--reconcile" in _own_args and "--no-reconcile" in _own_args:
+            _rc_msg = (
+                "`vera verify` takes --reconcile or --no-reconcile, not both."
+            )
+    if _rc_msg:
+        if "--json" in _own_args:
             print(json.dumps({"ok": False, "file": "",
                               "diagnostics": [{"severity": "error",
                                                "description": _rc_msg}]},
@@ -2317,7 +2322,7 @@ def main() -> None:
     use_check_fmt = "--check" in args and command == "fmt"
     use_explain_slots = "--explain-slots" in args
     use_distrust = command == "test" and "--distrust" in args
-    use_reconcile = "--reconcile" in args
+    use_reconcile = "--no-reconcile" not in _own_args
 
     # Parse --fn <name> option
     fn_name: str | None = None
@@ -2455,7 +2460,8 @@ def main() -> None:
 
     # Remove flags from remaining args to find the filepath
     skip_flags = {"--json", "--quiet", "--wat", "--write", "--check",
-                  "--explain-slots", "--distrust", "--reconcile"}
+                  "--explain-slots", "--distrust", "--reconcile",
+                  "--no-reconcile"}
     skip_next = {"--fn", "-o", "--trials", "--target", "--port", "--host",
                  "--world", "--timeout-ms"}
     remaining: list[str] = []

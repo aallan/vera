@@ -12,7 +12,7 @@ Each program of the corpus (every `.vera` file under `examples/` and
 `tests/conformance/`, at any depth, as `check_corpus_canonical.py` reads it)
 goes through check, verify, compile and the join of
 :func:`vera.reconcile.join`, in process and with the calls
-`vera verify --reconcile` makes.  The gate fails on:
+`vera verify` makes.  The gate fails on:
 
 * a mismatch :data:`KNOWN` does not list: a `tier3` record no emitted check
   answers, an emitted check no record accounts for, or a site the join
@@ -289,6 +289,36 @@ def joined_problem(program: Program) -> str | None:
     if program.rel in FRAGMENTS:
         return "listed in FRAGMENTS, but it type-checks on its own"
     return None
+
+
+#: An error `vera verify` reports, as the conformance runners read one:
+#: (code, file, line, column).
+VerifyError = tuple[str | None, str | None, int, int]
+
+
+def unlisted_verify_errors(
+    rel: str, errors: list[VerifyError],
+) -> list[VerifyError]:
+    """The errors of the program at *rel* (repository-relative) that are not
+    an E541 :data:`KNOWN` lists for it, in order.
+
+    ``vera verify`` runs the reconciliation by default, so a program whose
+    join reports a ``recorded_unguarded`` mismatch today fails it with that
+    E541, and the conformance run (scripts/check_conformance.py,
+    tests/test_conformance.py) reads this list, under the entry's open
+    issue, as the one failure its verify stage may carry.  Any other error,
+    the same code at a site the list does not name included, fails the
+    stage."""
+    known = {
+        entry.site for entry in KNOWN
+        if entry.program == rel and entry.kind == "recorded_unguarded"
+    }
+    return [
+        error for error in errors
+        if not (error[0] == "E541"
+                and f"{Path(error[1]).name if error[1] else '?'}:"
+                    f"{error[2]}:{error[3]}" in known)
+    ]
 
 
 def shared_keys(program: Program, mismatches: list[object]) -> list[str]:

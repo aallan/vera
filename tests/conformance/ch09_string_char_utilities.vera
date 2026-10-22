@@ -258,3 +258,30 @@ public fn test_string_words(@Unit -> @Int)
   -- "  foo  bar " has 2 words
   nat_to_int(array_length(string_words("  foo  bar ")))
 }
+
+-- ================================================================
+-- The run: every test above (1 where both directions hold), and the
+-- splitters' arrays themselves.
+-- ================================================================
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  IO.print("is digit \(test_is_digit(()))\n");
+  IO.print("is alpha \(test_is_alpha(()))\n");
+  IO.print("is alphanumeric \(test_is_alphanumeric(()))\n");
+  IO.print("is whitespace \(test_is_whitespace(()))\n");
+  IO.print("is upper and lower \(test_is_upper_lower(()))\n");
+  IO.print("empty string \(test_empty_string_classifier(()))\n");
+  IO.print("char to upper and lower \(test_char_to_upper_lower(()))\n");
+  IO.print("reverse \(test_string_reverse(()))\n");
+  IO.print("trim \(test_string_trim_variants(()))\n");
+  IO.print("pad \(test_string_pad(()))\n");
+  let @Array<String> = string_chars("abc");
+  IO.print("chars \(test_string_chars(())) \(show(@Array<String>.0))\n");
+  let @Array<String> = string_lines("a\nb\nc");
+  IO.print("lines \(test_string_lines(())) \(show(@Array<String>.0))\n");
+  let @Array<String> = string_words("  foo  bar ");
+  IO.print("words \(test_string_words(())) \(show(@Array<String>.0))\n")
+}

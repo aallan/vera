@@ -805,6 +805,7 @@ OK: examples/modules.vera
 $ vera verify examples/modules.vera
 OK: examples/modules.vera
 Verification: 9 verified (Tier 1), 1 runtime checks (Tier 3)
+Reconciliation: 1 of 1 runtime checks (Tier 3) found in the compiled module
 
 $ vera run examples/modules.vera --fn abs_max -- -3 -5
 3

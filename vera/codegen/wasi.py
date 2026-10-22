@@ -219,9 +219,13 @@ _OPS: dict[str, _OpSpec] = {
         ("io/error", "io/streams", "cli/stderr"),
         ("get-stderr", "bwf"), ("error",),
     ),
+    # #1736: one word of the key a `String` key's hash draws, twice per
+    # instantiation, from the component's own `wasi:random`, so a stock host
+    # supplies it.  Slots 16 to 25 held the server world's map ops until
+    # #1676 made a map the module's own code.
+    "hash_key": _op(16, "", "i64", ("random/random",), ("rand64",)),
     # #1711: a file's bytes, through read_file's and write_file's adapter
-    # bodies, which move the bytes as they are.  Past the server world's
-    # map ops (16..25), with which these slots share one index space.
+    # bodies, which move the bytes as they are.
     "read_bytes": _op(
         26, "i32 i32", "i32",
         ("io/error", "io/streams", "filesystem/types",
@@ -1813,6 +1817,15 @@ def _op_random_bool(lay: _Layout) -> str:
     )
 
 
+def _op_hash_key(lay: _Layout) -> str:
+    # #1736: a word of the `String` hash's key, as `wasi:random` gives it.
+    return (
+        "  (func $op_hash_key (result i64)\n"
+        "    call $l_rand64\n"
+        "  )"
+    )
+
+
 def _op_get_env(lay: _Layout) -> str:
     env = lay.slab("env")
     return (
@@ -2561,6 +2574,7 @@ _OP_EMITTERS: dict[str, Callable[[_Layout], str]] = {
     "random_int": _op_random_int,
     "random_float": _op_random_float,
     "random_bool": _op_random_bool,
+    "hash_key": _op_hash_key,
     "contract_fail": _op_contract_fail,
     "trap": _op_trap,
     "read_bytes": lambda lay: _op_read_file(lay, "read_bytes"),
