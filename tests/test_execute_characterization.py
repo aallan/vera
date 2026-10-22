@@ -62,7 +62,7 @@ from tests import pipeline
 def _compile(source: str) -> CompileResult:
     """Parse + compile a Vera source string, unchecked, asserting no compile
     errors (no temp file, Windows-portable)."""
-    result = pipeline.compile(source, checked=False).result
+    result = pipeline.compile(source).result
     assert result.ok, (
         f"compile failed: {[d.description for d in result.diagnostics]}"
     )

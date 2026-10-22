@@ -13,8 +13,8 @@ the program whose every export is dropped, with the status ``vera run`` exits
 with in both modes.  The CLI side runs in process through
 ``pipeline.cli``, which is itself held to the CLI run as a process.  The
 rest pins the driver's own rules: what a stage takes, what reading an
-artefact a stage did not make raises, the unchecked compile, and what ``cli``
-borrows and gives back.
+artefact a stage did not make raises, that no stage after the check runs on
+a program it refuses, and what ``cli`` borrows and gives back.
 """
 
 from __future__ import annotations
@@ -673,36 +673,6 @@ def test_compile_builds_the_module_vera_codegen_compile_builds() -> None:
     assert built.wat == expected.wat
 
 
-_UNCHECKED = """fn helper(@Int -> @Int)
-  requires(true)
-  ensures(true)
-  effects(pure)
-{
-  @Int.0 + 1
-}
-
-public fn f(@Int -> @Int)
-  requires(true)
-  ensures(true)
-  effects(pure)
-{
-  helper(@Int.0)
-}
-"""
-
-
-def test_an_unchecked_compile_builds_what_the_check_refuses() -> None:
-    assert not pipeline.check(_UNCHECKED).ok
-    refused = pipeline.compile(_UNCHECKED)
-    assert not refused.ok and refused.generator is None
-    with pytest.raises(pipeline.StageFailed, match="Missing visibility"):
-        refused.result
-    built = pipeline.compile(_UNCHECKED, checked=False)
-    assert built.ok and built.checked is None
-    assert pipeline.run(built, fn="f", args=[41]).value == 42
-    assert pipeline.run(_UNCHECKED, fn="f", args=[41], checked=False).value == 42
-
-
 # =====================================================================
 # Reading what a stage did not make
 # =====================================================================
@@ -753,22 +723,64 @@ def test_a_refusing_check_stops_the_stages_after_it() -> None:
         ran.value
 
 
-def test_a_verify_past_the_check_verifies_what_the_check_refused() -> None:
-    past = pipeline.verify(_ILL_TYPED, past_check=True)
-    assert past.ran and not past.ok
-    assert past.checked.errors
-    assert past.result.obligations is not None
-    assert pipeline.verify(_UNPARSED, past_check=True).ran is False
+def test_a_verify_of_a_program_the_check_refuses_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``verify`` runs on a program the check accepts, as ``vera verify``
+    does: for one the check refuses, the verifier is not entered, reading
+    the result raises, and no keyword runs it past the check.  The accepted
+    program beside it enters the verifier, so the spy is not blind."""
+    entered: list[str | None] = []
+    real = pipeline._verify_program
+
+    def spy(*args: Any, **kwargs: Any) -> Any:
+        entered.append(kwargs.get("file"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline, "_verify_program", spy)
+    assert pipeline.verify(_TRAPS, file="accepted.vera").ran
+    assert entered == ["accepted.vera"]
+    refused = pipeline.verify(_ILL_TYPED, file="refused.vera")
+    assert not refused.ran and refused.checked.errors
+    with pytest.raises(pipeline.StageFailed, match="the check reported"):
+        refused.result
+    with pytest.raises(TypeError, match="past_check"):
+        pipeline.verify(_ILL_TYPED, file="refused.vera", past_check=True)
+    assert entered == ["accepted.vera"]
 
 
-def test_a_compile_past_the_check_builds_what_the_check_refused() -> None:
-    refused = pipeline.compile(_ILL_TYPED)
-    assert refused.generator is None
-    past = pipeline.compile(_ILL_TYPED, past_check=True)
-    assert past.generator is not None
-    assert past.checked is not None and past.checked.errors
-    assert not past.ok
-    assert "f" in past.result.exports
+def test_a_compile_of_a_program_the_check_refuses_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``compile`` and ``run`` generate code for a program the check
+    accepts, as ``vera compile`` and ``vera run`` do: for one the check
+    refuses, code generation is not entered, reading the module raises, and
+    no keyword builds it past the check or without one.  The accepted
+    program beside it enters code generation, so the spy is not blind."""
+    entered: list[str | None] = []
+    real = pipeline.CodeGenerator
+
+    def spy(*args: Any, **kwargs: Any) -> Any:
+        entered.append(kwargs.get("file"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline, "CodeGenerator", spy)
+    assert pipeline.compile(_TRAPS, file="accepted.vera").ok
+    assert entered == ["accepted.vera"]
+    refused = pipeline.compile(_ILL_TYPED, file="refused.vera")
+    assert refused.generator is None and refused.checked.errors
+    with pytest.raises(pipeline.StageFailed, match="the check reported"):
+        refused.result
+    ran = pipeline.run(_ILL_TYPED, fn="f", args=[1], file="refused.vera")
+    assert not ran.ok and ran.module is None
+    with pytest.raises(TypeError, match="past_check"):
+        pipeline.compile(_ILL_TYPED, file="refused.vera", past_check=True)
+    with pytest.raises(TypeError, match="checked"):
+        pipeline.compile(_ILL_TYPED, file="refused.vera", checked=False)
+    with pytest.raises(TypeError, match="checked"):
+        pipeline.run(_ILL_TYPED, fn="f", args=[1], file="refused.vera",
+                     checked=False)
+    assert entered == ["accepted.vera"]
 
 
 def test_a_trap_is_a_result_and_reading_the_value_raises_it() -> None:
@@ -929,4 +941,4 @@ def test_the_compile_stage_reads_its_own_record() -> None:
     assert compiled.checks(kind="overflow", function="g") == pipeline.checks(
         compiled.result, kind="overflow", function="g")
     with pytest.raises(pipeline.StageFailed):
-        pipeline.compile(_UNCHECKED).checks()
+        pipeline.compile(_ILL_TYPED).checks()

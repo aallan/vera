@@ -99,7 +99,7 @@ def _compile_vera(source: str, tmp_path: Path) -> tuple[Path, list[str]]:
     # Code generation is handed the resolved modules but none of the
     # checker's tables, as this helper has always compiled.
     result = pipeline.compile(
-        vera_file, modules=checked.resolved, checked=False).result
+        vera_file, modules=checked.resolved).result
     assert result.ok, f"Compile errors: {result.diagnostics}"
 
     wasm_path = tmp_path / "test.wasm"
@@ -114,7 +114,7 @@ def _compile_state_default(source: str, tmp_path: Path) -> tuple[Path, Any]:
     full codegen ``result`` so :func:`_run_python` can execute it — used by the
     #920 State-default parity tests.
     """
-    result = pipeline.compile(source, file="fixture.vera", checked=False).result
+    result = pipeline.compile(source, file="fixture.vera").result
     assert result.ok, f"Compile errors: {result.diagnostics}"
     wasm_path = tmp_path / "state_default.wasm"
     wasm_path.write_bytes(result.wasm_bytes)
@@ -130,7 +130,7 @@ def _compile_file(path: Path, tmp_path: Path) -> tuple[Path, Any]:
 
     # Code generation is handed the resolved modules but none of the
     # checker's tables, as this helper has always compiled.
-    result = pipeline.compile(path, modules=checked.resolved, checked=False).result
+    result = pipeline.compile(path, modules=checked.resolved).result
     assert result.ok, f"Compile errors in {path.name}: {result.diagnostics}"
 
     wasm_path = tmp_path / "test.wasm"

@@ -78,7 +78,7 @@ def _compile(tmp_path: Path, files: dict[str, str]) -> CodeGenerator:
     checked = pipeline.check(main_path, root=tmp_path)
     _ = checked.program  # raises the parse or transform error
     compiled = pipeline.compile(
-        main_path, modules=checked.resolved or [], checked=False)
+        main_path, modules=checked.resolved or [])
     result = compiled.result
     gen = compiled.generator
     assert gen is not None

@@ -96,6 +96,16 @@ def _check(source: str) -> list[object]:
     return list(_errors(source))
 
 
+def _reserved(source: str, name: str) -> None:
+    """*source* is refused at check, at *name*: a built-in or prelude type's
+    name is reserved (E158, #1469), so no stage after the check runs on it."""
+    errors = [d for d in _check(source)
+              if getattr(d, "severity", "error") == "error"]
+    reserved = [d for d in errors if d.error_code == "E158"]
+    assert reserved and f"{name!r}" in reserved[0].description, [
+        (d.error_code, d.description) for d in errors]
+
+
 def _nt(name: str, args: tuple[ast.TypeExpr, ...] | None = None) -> ast.NamedType:
     return ast.NamedType(name=name, type_args=args)
 
@@ -731,6 +741,17 @@ def _alias_program(name: str) -> str:
     )
 
 
+def _json_alias_program(name: str) -> str:
+    """:func:`_alias_program`, with a ``main`` that also reads a JSON value,
+    so the prelude's ``Json`` family is compiled beside the alias."""
+    return _alias_program(name).replace(
+        "  twice(21)\n",
+        '  match json_parse("[1,2,3]") {\n'
+        "    Ok(@Json) -> json_array_length(@Json.0) + twice(21),\n"
+        "    Err(@String) -> 0\n"
+        "  }\n")
+
+
 _MODULE_SHADOW = """\
 module tlib;
 
@@ -830,9 +851,9 @@ class TestSpecialCasedBuiltinAdtsAreRefused:
         the checker happened to be asked first would leave the other door
         open, so the module door is measured rather than assumed.
         """
-        from tests.module_fixture_helpers import build_multi_module_past_check
+        from tests.module_fixture_helpers import refused_multi_module
 
-        check_errors, _result, _cg = build_multi_module_past_check(
+        check_errors = refused_multi_module(
             tmp_path,
             {
                 "tlib.vera": _MODULE_SHADOW.format(name=name),
@@ -842,11 +863,10 @@ class TestSpecialCasedBuiltinAdtsAreRefused:
         assert "E158" in [code for code, _ in check_errors], check_errors
 
     @pytest.mark.parametrize("name", _EXPECTED_RESERVED)
-    def test_an_alias_of_the_same_name_is_still_legal(self, name: str) -> None:
-        """Only the DATA namespace is reserved.  `type Tuple = Int;` shadows
-        nothing the compiler special-cases by name — it resolves through the
-        spine like any other alias, and #1309's battery covers it."""
-        assert _run(_alias_program(name), fn="main") == 42
+    def test_an_alias_of_the_same_name_is_refused_too(self, name: str) -> None:
+        """The alias namespace is reserved as well since #1469: `type Tuple
+        = Int;` is refused at check by the same code as `data Tuple`."""
+        _reserved(_alias_program(name), name)
 
     @pytest.mark.parametrize(
         "name", ["Option", "Result", "Ordering", "UrlParts", "Json"])
@@ -964,7 +984,7 @@ public fn hashes_alike(@Unit -> @Int)
         constructions exactly as an entry-file one does.  Measured at
         `release/v0.2.0`: accepted in a module, for both names.
         """
-        from tests.module_fixture_helpers import build_multi_module_past_check
+        from tests.module_fixture_helpers import refused_multi_module
 
         module = (
             "module tlib;\n\n"
@@ -973,7 +993,7 @@ public fn hashes_alike(@Unit -> @Int)
             "  requires(true)\n  ensures(true)\n  effects(pure)\n"
             "{\n  @Int.0\n}\n"
         )
-        check_errors, _result, _cg = build_multi_module_past_check(
+        check_errors = refused_multi_module(
             tmp_path,
             {"tlib.vera": module, "main.vera": _MODULE_SHADOW_MAIN},
         )
@@ -1796,7 +1816,7 @@ class TestPreludeNamespaceScope:
     """A main-file shadow reaches the main file's bodies and nothing else."""
 
     @pytest.mark.parametrize("name", ["Json", "HtmlNode"])
-    def test_the_two_residuals_of_the_1309_battery_now_run(
+    def test_the_two_residuals_of_the_1309_battery_are_refused(
         self, name: str,
     ) -> None:
         """Base: the module failed to LOAD.
@@ -1804,15 +1824,15 @@ class TestPreludeNamespaceScope:
         ``type Json = Int;`` — with no json call anywhere in the program —
         died at ``Invalid input WebAssembly code … type mismatch: expected
         i32, found i64`` inside the prelude's own ``json_get``, and ``type
-        HtmlNode = Int;`` inside ``html_attr``.  Both programs are
-        check-green and verify-green.
+        HtmlNode = Int;`` inside ``html_attr``, on programs that were then
+        check-green and verify-green.  Both names are reserved now (#1469).
         """
-        assert _run(_alias_program(name), fn="main") == 42
+        _reserved(_alias_program(name), name)
 
     @pytest.mark.parametrize("name", _builtin_type_names())
-    def test_an_alias_of_any_builtin_name_runs(self, name: str) -> None:
-        """The whole-name sweep, now with no residuals."""
-        assert _run(_alias_program(name), fn="main") == 42
+    def test_an_alias_of_any_builtin_name_is_refused(self, name: str) -> None:
+        """The whole-name sweep: every built-in type's name is reserved."""
+        _reserved(_alias_program(name), name)
 
     @pytest.mark.parametrize("name", _declarable_type_names())
     def test_a_data_shadow_of_any_builtin_name_leaves_the_prelude_alone(
@@ -1834,7 +1854,9 @@ class TestPreludeNamespaceScope:
 
         A behavioural test passes as soon as ONE name is fixed; this one
         fails if any prelude body is ever compiled in the entry's scope
-        again, which is the mechanism rather than a symptom of it.
+        again, which is the mechanism rather than a symptom of it.  The
+        entry's alias takes a fresh name, the prelude's being reserved
+        (#1469).
         """
         seen: list[tuple[str, object]] = []
         original = CodeGenerator._compile_fn_tracked
@@ -1845,7 +1867,7 @@ class TestPreludeNamespaceScope:
 
         CodeGenerator._compile_fn_tracked = recording  # type: ignore[method-assign,assignment]
         try:
-            _compile_ok(_alias_program("Json"))
+            _compile_ok(_json_alias_program(_CONTROL_ADT))
         finally:
             CodeGenerator._compile_fn_tracked = original  # type: ignore[method-assign]
 
@@ -1858,24 +1880,18 @@ class TestPreludeNamespaceScope:
             "a user declaration left the entry namespace"
         )
 
-    def test_an_entry_data_array_leaves_the_prelude_s_own_arrays_alone(
-        self,
-    ) -> None:
-        """The membership scoping, end to end and behaviourally.
+    def test_an_entry_data_array_is_refused(self) -> None:
+        """The membership scoping's end-to-end shape, refused at check.
 
         The prelude's ``Json`` combinators carry ``Array<Json>`` fields and
         ``@Array<Json>`` parameters.  If the WASM layer's ADT-name set were
-        the FLAT layout map rather than this namespace's data types, the
-        entry file's ``data Array`` would be a data type inside the prelude's
-        own bodies and those parameters would lower as a one-word ADT
-        pointer instead of the container's (ptr, len) pair.
-
-        The scoping is what stops that, and only a program that declares the
-        name AND demands the prelude family can tell: the shadow battery
-        above compiles no prelude body that mentions ``Array``.
-
-        The checker refuses this declaration (E158, #1547); the cell drives
-        code generation directly, which is where the scoping lives.
+        the FLAT layout map rather than this namespace's data types, an
+        entry file's ``data Array`` would be a data type inside the
+        prelude's own bodies and those parameters would lower as a one-word
+        ADT pointer instead of the container's (ptr, len) pair.  The
+        checker refuses the declaration (E158, #1547), so no program
+        reaches code generation with one; the membership itself is asked
+        of a fresh name below.
         """
         source = """\
 private data Array { MkArr(Int) }
@@ -1901,7 +1917,7 @@ public fn main(@Unit -> @Int)
   }
 }
 """
-        assert _run(source, fn="main") == 7
+        _reserved(source, "Array")
 
     def test_the_prelude_registry_records_the_prelude_s_own_widths(
         self,
@@ -1916,13 +1932,15 @@ public fn main(@Unit -> @Int)
         directly rather than left to a behaviour test: `_fn_sigs` is what
         call sites and the `fn_param_types` consumers read, and an entry
         that says i64 where the function takes i32 is a falsehood waiting
-        for its first consumer.
+        for its first consumer.  The entry's alias takes a fresh name:
+        ``type Json = Int;`` itself is refused at check (#1469).
         """
-        _result, gen = _compile_with_generator(_alias_program("Json"))
+        _reserved(_alias_program("Json"), "Json")
+        _result, gen = _compile_with_generator(
+            _json_alias_program(_CONTROL_ADT))
         params, _ret = gen._fn_sigs["json_get"]
         assert params[0] == "i32", (
-            "json_get's registered parameter took the entry file's `type "
-            f"Json = Int;` width: {params}"
+            f"json_get's registered parameter took the entry's width: {params}"
         )
 
     def test_the_entry_declarations_are_not_prelude_members(self) -> None:
@@ -1931,10 +1949,11 @@ public fn main(@Unit -> @Int)
         ``_adt_members_in_scope`` must answer the prelude's own view — global
         infrastructure only — whatever the entry file declares, and must do
         so for a SINGLE-FILE program, where the permissive ``None`` would
-        otherwise hand the prelude the entry's declarations.  Code generation
-        is driven directly: the checker refuses ``data Array`` (E158, #1547).
+        otherwise hand the prelude the entry's declarations.  The entry
+        declares a fresh name: the checker refuses ``data Array`` (E158,
+        #1547).
         """
-        result, gen = _compile_with_generator(_shadow_program("Array"))
+        result, gen = _compile_with_generator(_shadow_program(_CONTROL_ADT))
         assert isinstance(result, CompileResult) and result.ok
         saved = gen._active_module_path
         try:
@@ -1945,9 +1964,9 @@ public fn main(@Unit -> @Int)
         finally:
             gen._active_module_path = saved
         assert prelude_members is not None
-        assert "Array" not in prelude_members
+        assert _CONTROL_ADT not in prelude_members
         assert "Option" in prelude_members
-        assert entry_members is None or "Array" in entry_members
+        assert entry_members is None or _CONTROL_ADT in entry_members
 
 
 # =====================================================================
@@ -2024,17 +2043,17 @@ class TestCrossDerivationDifferential:
         assert shadowed["element wasm type"] == "i32", shadowed
 
     @pytest.mark.parametrize("name", _builtin_type_names())
-    def test_an_alias_shadow_answers_as_a_fresh_alias_does(
+    def test_an_alias_shadow_is_refused_and_a_fresh_alias_answers(
         self, name: str,
     ) -> None:
-        """The alias half of the same invariant (#1309's axis, kept)."""
-        shadowed = self._answers(_alias_program(name), name)
+        """The alias half of the same invariant (#1309's axis): an alias of
+        a built-in name is refused at check since #1469, and the fresh alias
+        beside it, its nearest accepted neighbour, answers the alias's
+        width at every site."""
+        _reserved(_alias_program(name), name)
         control = self._answers(_alias_program(_CONTROL_ADT), _CONTROL_ADT)
-        assert shadowed == control, (
-            f"{name}: an alias shadow reads differently from a fresh alias "
-            f"— {shadowed} vs {control}"
-        )
-        assert shadowed["codegen width"] == "i64", shadowed
+        assert control["codegen width"] == "i64", control
+        assert control["wasm canonical width"] == "i64", control
 
     def test_every_derivation_consults_the_spine(self) -> None:
         """STRUCTURAL, because one of the five is inert TODAY.

@@ -77,7 +77,7 @@ def _run(
 
 def _checks(source: str) -> list[EmittedCheck]:
     """The module's record of its checks, compiled as `_run` compiles it."""
-    result = pipeline.compile(source, file=_FILE, past_check=True).result
+    result = pipeline.compile(source, file=_FILE).result
     assert result.ok, [d.description for d in result.diagnostics]
     return result.emitted_checks
 
@@ -86,8 +86,8 @@ def _index(source: str) -> _TrapIndex:
     """The engine's `_TrapIndex` for *source*: its checks, its obligations,
     its module text and the reconciliation's relation between the two, built
     as `_run` builds them."""
-    verified = pipeline.verify(source, file=_FILE, past_check=True)
-    compiled = pipeline.compile(source, file=_FILE, past_check=True).result
+    verified = pipeline.verify(source, file=_FILE)
+    compiled = pipeline.compile(source, file=_FILE).result
     return _TrapIndex.joined(
         verified.result, compiled, program=verified.checked.program,
         file=_FILE, resolved_modules=[])
@@ -1988,8 +1988,8 @@ def test_a_call_is_written_in_the_innermost_function_holding_it() -> None:
     """The join places each call into an entry check's function in the
     narrowest region of the source map that holds its line: a closure's
     call is the closure's, not its enclosing function's."""
-    verified = pipeline.verify(SRC_CALL_IN_A_CLOSURE, file=_FILE, past_check=True)
-    compiled = pipeline.compile(SRC_CALL_IN_A_CLOSURE, file=_FILE, past_check=True).result
+    verified = pipeline.verify(SRC_CALL_IN_A_CLOSURE, file=_FILE)
+    compiled = pipeline.compile(SRC_CALL_IN_A_CLOSURE, file=_FILE).result
     joined = join(verified.result, compiled, program=verified.checked.program,
                   file=_FILE, resolved_modules=[])
     (check,) = [c for c in joined.entry if c.function == "g"]
@@ -2073,10 +2073,8 @@ def test_a_refined_argument_that_is_a_call_answers_the_call_it_feeds() -> None:
 
 
 def test_each_call_argument_is_placed_at_the_call_it_feeds() -> None:
-    verified = pipeline.verify(SRC_CALL_ARGUMENTS_PROVED_AND_NOT, file=_FILE,
-                               past_check=True)
-    compiled = pipeline.compile(SRC_CALL_ARGUMENTS_PROVED_AND_NOT, file=_FILE,
-                                past_check=True).result
+    verified = pipeline.verify(SRC_CALL_ARGUMENTS_PROVED_AND_NOT, file=_FILE)
+    compiled = pipeline.compile(SRC_CALL_ARGUMENTS_PROVED_AND_NOT, file=_FILE).result
     joined = join(verified.result, compiled, program=verified.checked.program,
                   file=_FILE, resolved_modules=[])
     (check,) = [c for c in joined.entry if c.function == "g"]

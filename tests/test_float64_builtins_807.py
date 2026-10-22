@@ -78,7 +78,7 @@ def _run_float_expr(body: str) -> float:
         "  requires(true) ensures(true) effects(pure)\n"
         f"{{ {body} }}\n"
     )
-    result = pipeline.compile(src, file="fixture.vera", checked=False).result
+    result = pipeline.compile(src, file="fixture.vera").result
     errors = [d for d in result.diagnostics if d.severity == "error"]
     assert not errors, f"compile errors: {[d.description for d in errors]}"
     value = pipeline.run(result, "f", capture_stderr=False).value
@@ -293,7 +293,7 @@ def _run_int_expr(body: str, sig: str = "@Unit -> @Int") -> int:
         "  requires(true) ensures(true) effects(pure)\n"
         f"{{ {body} }}\n"
     )
-    result = pipeline.compile(src, file="fixture.vera", checked=False).result
+    result = pipeline.compile(src, file="fixture.vera").result
     errors = [d for d in result.diagnostics if d.severity == "error"]
     assert not errors, f"compile errors: {[d.description for d in errors]}"
     value = pipeline.run(result, "f", capture_stderr=False).value

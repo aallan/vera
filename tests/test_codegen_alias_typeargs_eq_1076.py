@@ -57,20 +57,21 @@ def _warnings(source: str) -> list[str]:
 # =====================================================================
 
 def _eq_box(alias_decl: str, arg: str, pay_a: str, pay_b: str) -> str:
+    eff = "<Async>" if "async(" in pay_a + pay_b else "pure"
     return f"""\
 {alias_decl}
-data Box<T> {{ MkB(Int, T, Int) }}
+private data Box<T> {{ MkB(Int, T, Int) }}
 
 private fn a(-> @Box<{arg}>)
-  requires(true) ensures(true) effects(pure)
+  requires(true) ensures(true) effects({eff})
 {{ MkB(11, {pay_a}, 22) }}
 
 private fn b(-> @Box<{arg}>)
-  requires(true) ensures(true) effects(pure)
+  requires(true) ensures(true) effects({eff})
 {{ MkB(11, {pay_b}, 22) }}
 
 public fn f(-> @Bool)
-  requires(true) ensures(true) effects(pure)
+  requires(true) ensures(true) effects({eff})
 {{
   let @Box<{arg}> = a();
   let @Box<{arg}> = b();
@@ -157,16 +158,17 @@ def test_eq_alias_to_future_int_equal() -> None:
 # -- i32_pair-vs-i32) width mistake shifts the read and manifests.
 
 def _wild_bool(alias_decl: str, arg: str, pay: str) -> str:
+    eff = "<Async>" if "async(" in pay else "pure"
     return f"""\
 {alias_decl}
-data Bx<T> {{ MkBx(Int, T, Bool) }}
+private data Bx<T> {{ MkBx(Int, T, Bool) }}
 
 private fn mk(-> @Bx<{arg}>)
-  requires(true) ensures(true) effects(pure)
+  requires(true) ensures(true) effects({eff})
 {{ MkBx(11, {pay}, true) }}
 
 public fn f(-> @Bool)
-  requires(true) ensures(true) effects(pure)
+  requires(true) ensures(true) effects({eff})
 {{
   let @Bx<{arg}> = mk();
   match @Bx<{arg}>.0 {{
@@ -213,9 +215,9 @@ def test_control_wildcard_literal_int() -> None:
 
 
 _FREE_VAR_CONTROL = """\
-data Box<T> { MkB(T) }
+private data Box<T> { MkB(T) }
 
-forall<T where Eq<T>>
+private forall<T where Eq<T>>
 fn same(@Box<T>, @Box<T> -> @Bool)
   requires(true) ensures(true) effects(pure)
 { @Box<T>.1 == @Box<T>.0 }
@@ -356,7 +358,7 @@ def test_control_show_bare_literal_unit() -> None:
 def _arr_eq(alias_decl: str, arg: str, pay: str) -> str:
     return f"""\
 {alias_decl}
-data Box<T> {{ MkB(Int, T, Int) }}
+private data Box<T> {{ MkB(Int, T, Int) }}
 
 private fn mkbox(-> @Box<{arg}>)
   requires(true) ensures(true) effects(pure)
@@ -392,7 +394,7 @@ def test_array_element_eq_box_myint_alias() -> None:
 
 
 _ARR_DISTINCT = """\
-data Box<T> { MkB(Int, T, Int) }
+private data Box<T> { MkB(Int, T, Int) }
 
 private fn mk(@Int -> @Box<Int>)
   requires(true) ensures(true) effects(pure)
@@ -414,7 +416,7 @@ def test_array_element_eq_distinct_stays_false() -> None:
 
 
 _ARR_ABOVE_2_32 = """\
-data Box<T> { MkB(Int, T, Int) }
+private data Box<T> { MkB(Int, T, Int) }
 
 private fn mk(@Int -> @Box<Int>)
   requires(true) ensures(true) effects(pure)
@@ -434,7 +436,7 @@ def test_array_element_eq_equal_above_2_32() -> None:
 
 
 _ARR_ABOVE_2_32_DISTINCT = """\
-data Box<T> { MkB(Int, T, Int) }
+private data Box<T> { MkB(Int, T, Int) }
 
 private fn mk(@Int -> @Box<Int>)
   requires(true) ensures(true) effects(pure)
@@ -456,7 +458,7 @@ def test_array_element_eq_distinct_above_2_32_low_bits_collide() -> None:
 
 
 _ARR_NON_GENERIC_CONTROL = """\
-data P { MkP(Int, Int) }
+private data P { MkP(Int, Int) }
 
 private fn mk(-> @P)
   requires(true) ensures(true) effects(pure)
@@ -477,7 +479,7 @@ def test_control_array_element_eq_non_generic() -> None:
 
 
 _DIRECT_COMPARE_CONTROL = """\
-data Box<T> { MkB(Int, T, Int) }
+private data Box<T> { MkB(Int, T, Int) }
 
 private fn mk(-> @Box<Int>)
   requires(true) ensures(true) effects(pure)

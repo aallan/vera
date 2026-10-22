@@ -9,6 +9,7 @@ from unittest import mock
 
 import pytest
 
+from tests import pipeline
 from tests.codegen_helpers import (
     _compile,
     _compile_ok,
@@ -153,7 +154,7 @@ public fn main(-> @Unit)
         with both args correctly typed as i32_pair.
         """
         source = """\
-private fn make(-> @String)
+private fn make(@Unit -> @String)
   requires(true) ensures(true) effects(pure)
 { "hello" }
 
@@ -172,7 +173,7 @@ public fn main(-> @Unit)
         exercises both halves of the inference path together.
         """
         source = """\
-private fn make_arr(-> @Array<Int>)
+private fn make_arr(@Unit -> @Array<Int>)
   requires(true) ensures(true) effects(pure)
 { [10, 20, 30] }
 
@@ -201,7 +202,7 @@ public fn main(-> @Unit)
         `RefinementType` (unwrap to base, then resolve).
         """
         source = """\
-private fn make(-> @{ @String | string_length(@String.0) > 0 })
+private fn make(@Unit -> @{ @String | string_length(@String.0) > 0 })
   requires(true) ensures(true) effects(pure)
 { "hello" }
 
@@ -230,7 +231,7 @@ public fn main(-> @Unit)
         inference path.
         """
         source = """\
-private fn make(-> @{ @{ @String | string_length(@String.0) > 0 } | string_length(@String.0) < 100 })
+private fn make(@Unit -> @{ @{ @String | string_length(@String.0) > 0 } | string_length(@String.0) < 100 })
   requires(true) ensures(true) effects(pure)
 { "hello" }
 
@@ -421,7 +422,7 @@ public fn main(-> @Unit)
         source = """\
 type Str = String;
 
-private fn make(-> @{ @Str | string_length(@Str.0) > 0 })
+private fn make(@Unit -> @{ @Str | string_length(@Str.0) > 0 })
   requires(true) ensures(true) effects(pure)
 { "hello" }
 
@@ -455,7 +456,7 @@ public fn main(-> @Unit)
         `_infer_index_element_type_expr`'s FnCall branch.
         """
         source = """\
-private fn make(-> @{ @{ @Array<Int> | array_length(@Array<Int>.0) > 0 } | array_length(@Array<Int>.0) < 100 })
+private fn make(@Unit -> @{ @{ @Array<Int> | array_length(@Array<Int>.0) > 0 } | array_length(@Array<Int>.0) < 100 })
   requires(true) ensures(true) effects(pure)
 { [10, 20, 30] }
 
@@ -469,7 +470,7 @@ public fn main(-> @Unit)
 
     def test_type_alias_string_in_interpolation(self) -> None:
         """A fn returning a type alias of `String` (e.g. `type Str =
-        String; fn make(-> @Str)`) used in interpolation.
+        String; fn make(@Unit -> @Str)`) used in interpolation.
 
         Surfaced during PR #627's review (CodeRabbit, post-#602 fix):
         my initial fix returned `ret_te.name` directly from the
@@ -490,7 +491,7 @@ public fn main(-> @Unit)
         source = """\
 type Str = String;
 
-private fn make(-> @Str)
+private fn make(@Unit -> @Str)
   requires(true) ensures(true) effects(pure)
 { "hello" }
 
@@ -525,7 +526,7 @@ public fn main(-> @Unit)
         coincidence.
         """
         source = """\
-private fn make(-> @String)
+private fn make(@Unit -> @String)
   requires(true) ensures(true) effects(pure)
 { "hello" }
 
@@ -624,16 +625,10 @@ class TestE615LoudInterpolationFallthrough630:
     a specific E-code, not invalid WASM.
     """
 
-    def test_e615_fires_on_adt_in_interpolation(self) -> None:
-        """Interpolating an ADT-typed slot — `IO.print("\\(@Option<Int>.0)")`
-        — yields a non-recognised `vera_type` name (`"Option<Int>"`)
-        and trips the post-#630 E615 fallthrough.
-
-        Pre-#630 this would have wrapped the slot in `to_string(...)`
-        and produced invalid WASM at instantiation; post-#630 it
-        emits [E615] and the function is skipped with [E602] before
-        any invalid emission.
-        """
+    def test_an_adt_in_interpolation_is_refused_at_check(self) -> None:
+        """Interpolating an ADT-typed slot — `IO.print("\\(@Option<Int>.0)")` —
+        is refused at check (E148), so code generation's E615 fallthrough is
+        never reached."""
         source = """\
 public fn main(-> @Unit)
   requires(true) ensures(true) effects(<IO>)
@@ -642,109 +637,12 @@ public fn main(-> @Unit)
   IO.print("\\(@Option<Int>.0)\\n")
 }
 """
-        result = _compile(source)
-        # No errors — the program parses + type-checks cleanly.
-        errors = [d for d in result.diagnostics if d.severity == "error"]
-        assert not errors, (
-            f"Expected no errors, got: {errors}"
-        )
-        # E615 fires on the interpolation segment.
-        warnings = [
-            d for d in result.diagnostics if d.severity == "warning"
-        ]
-        e615 = [d for d in warnings if d.error_code == "E615"]
-        assert e615, (
-            f"Expected an [E615] diagnostic; got warnings: {warnings}"
-        )
-        assert "interpolate" in e615[0].description.lower(), (
-            f"E615 message should mention interpolation; got: "
-            f"{e615[0].description}"
-        )
-        # Function gets dropped with the existing [E602] mechanism —
-        # E615 is the *specific* annotation, E602 is the loud skip.
-        e602 = [d for d in warnings if d.error_code == "E602"]
-        assert e602, (
-            f"Expected an [E602] skip diagnostic alongside E615; "
-            f"warnings were: {warnings}"
-        )
-        # E615 must precede the *matching* E602 — the one for the
-        # function that contained the offending interpolation — so
-        # the specific-cause-then-generic-skip narrative reads
-        # correctly per function.  Other E602s may interleave
-        # (e.g. prelude combinators that are independently skipped
-        # via #604), so we filter to the E602 mentioning `main` and
-        # assert the per-function ordering invariant only.
-        main_e602 = [d for d in e602 if "main" in d.description]
-        assert main_e602, (
-            f"Expected an [E602] mentioning `main`; e602: {e602}"
-        )
-        e615_idx = warnings.index(e615[0])
-        main_e602_idx = warnings.index(main_e602[0])
-        assert e615_idx < main_e602_idx, (
-            f"E615 should precede the matching E602 (main) in the "
-            f"warnings stream; got E615 at index {e615_idx}, "
-            f"main's E602 at {main_e602_idx}"
-        )
-        # The E615 has a source location attached pointing at the
-        # offending interpolation segment.  Source layout:
-        #
-        #     line 1: public fn main(-> @Unit)
-        #     line 2:   requires(true) ensures(true) effects(<IO>)
-        #     line 3: {
-        #     line 4:   let @Option<Int> = Some(42);
-        #     line 5:   IO.print("\(@Option<Int>.0)\n")
-        #     line 6: }
-        #
-        # The SlotRef ``@Option<Int>.0`` starts at line 5, column 15
-        # (cols 1-2 indent, 3-4 ``IO``, 5 ``.``, 6-10 ``print``,
-        # 11 ``(``, 12 ``"``, 13-14 ``\(``, 15 ``@``).  Pre-#634 the
-        # span landed on the synthetic parse-wrapper's content line
-        # because spans inside interpolated expressions were never
-        # remapped from wrapper coordinates back to original-source
-        # coordinates.  Closes #634.
-        assert e615[0].location.line == 5, (
-            f"E615 should point at the string literal on line 5 "
-            f"(post-#634 span remap); got line "
-            f"{e615[0].location.line}"
-        )
-        assert e615[0].location.column == 15, (
-            f"E615 should point at column 15 (start of the SlotRef "
-            f"inside the interpolation segment); got column "
-            f"{e615[0].location.column}"
-        )
-        # `main` is not in exports because the body was dropped.
-        assert "main" not in result.exports, (
-            f"main should be skipped; exports: {result.exports}"
-        )
+        errors = pipeline.check(source).errors
+        assert [d.error_code for d in errors] == ["E148"], errors
 
-    def test_e615_in_closure_body_emits_diagnostic(self) -> None:
-        """Closure-body parallel of the top-level E615 path.
-        Pre-this-PR the harvest in `_compile_fn` only ran for top-
-        level functions; `_compile_lifted_closure` returned None
-        without emitting [E615], silently dropping the closure from
-        the function table.  The call_indirect at the use site then
-        referenced a missing entry and WASM validation rejected the
-        module — same silent-drop shape that #614/#615 fixed for
-        translation failures, but for the post-#630 interpolation
-        path inside closure bodies.
-
-        Fix in PR #631: extracted the harvest into
-        `CodeGenerator._harvest_interp_inference_failures` and
-        called it from both functions.py and closures.py — closure
-        bodies now emit [E615] for inference failures.
-
-        Fix in PR #631 (review pass, closing #636):
-        `_lift_pending_closures` now reports whether any closure
-        body failed; `_compile_fn` checks the flag and drops the
-        enclosing top-level fn with a specific [E602] noting the
-        closure-failure cause.  Pre-fix the enclosing fn was
-        emitted with a `call_indirect` to a missing function-table
-        entry, producing a WASM-validation trap with no
-        source-located parent-fn diagnostic.
-
-        (silent-failure-hunter finding C1 + later CodeRabbit follow-up
-        on PR #631.)
-        """
+    def test_an_adt_in_a_closure_body_interpolation_is_refused_at_check(self) -> None:
+        """The same interpolation inside a closure body is refused at check
+        (E148) too."""
         source = """\
 public fn main(-> @Unit)
   requires(true) ensures(true) effects(<IO>)
@@ -755,59 +653,14 @@ public fn main(-> @Unit)
   }, ())
 }
 """
-        result = _compile(source)
-        warnings = [
-            d for d in result.diagnostics if d.severity == "warning"
-        ]
-        e615 = [d for d in warnings if d.error_code == "E615"]
-        # The closure-body harvest must emit at least one [E615].
-        # Pre-#631 the closure was silently dropped with no [E615]
-        # anywhere.
-        assert e615, (
-            f"Expected at least one [E615] from the closure body; "
-            f"warnings were: {warnings}"
-        )
-        # The enclosing fn must be dropped via [E602].  Pre-#636
-        # main remained in exports despite the closure failure,
-        # producing a runtime WASM-validation trap; post-#636 the
-        # parent is dropped cleanly.
-        e602_main = [
-            d for d in warnings
-            if d.error_code == "E602" and "main" in d.description
-        ]
-        assert e602_main, (
-            f"Expected an [E602] for `main` after closure failure; "
-            f"warnings were: {warnings}"
-        )
-        assert "main" not in result.exports, (
-            f"main should be dropped when its closure body fails to "
-            f"compile (#636); exports: {result.exports}"
-        )
+        errors = pipeline.check(source).errors
+        assert [d.error_code for d in errors] == ["E148"], errors
 
-    def test_per_function_isolation_of_failures_list(self) -> None:
-        """`_interp_inference_failures` lives on `WasmContext`,
-        which `_compile_fn` constructs fresh per top-level function.
-        This test pins per-function isolation: a clean function
-        compiled **after** a function that triggers E615 must not
-        inherit the failure list and falsely emit E615.
-
-        Test layout: `clean_before` → `dirty` → `clean_after`.
-        Both `clean_*` functions must remain in exports.  Without
-        the `clean_after` (only `clean_before`), a forward leak
-        from `dirty` would never reach a clean function and the
-        test would silently pass even with broken isolation —
-        the pre-PR-#631-review-pass version of this test had this
-        gap (CodeRabbit finding 2 on PR #631).
-
-        Pre-#630: not testable because the silent fallthrough
-        wrapped with `to_string`; cross-function leak wouldn't
-        manifest as [E615] regardless.  Post-#630: load-bearing —
-        if a future refactor reuses a context across functions or
-        forgets to clear the failure list, this test fires.
-
-        (comment-analyzer finding I4 + later CodeRabbit finding 2
-        on PR #631.)
-        """
+    def test_one_function_s_unconvertible_interpolation_is_refused(self) -> None:
+        """The one unconvertible interpolation, in `dirty` between two clean
+        functions, is refused at check at its segment (E148); the
+        per-function failure list behind code generation's E615 is never
+        reached."""
         source = """\
 public fn clean_before(-> @Unit)
   requires(true) ensures(true) effects(<IO>)
@@ -828,53 +681,12 @@ public fn clean_after(-> @Unit)
   IO.print("clean_after\\n")
 }
 """
-        result = _compile(source)
-        warnings = [
-            d for d in result.diagnostics if d.severity == "warning"
-        ]
-        e615 = [d for d in warnings if d.error_code == "E615"]
-        # E615 fires exactly once — for `dirty` (Option<Int> in
-        # interpolation).  If `clean_after` inherited `dirty`'s
-        # failure list, we'd see a second E615 (or `clean_after`
-        # would be dropped via E602).
-        assert e615, (
-            f"Expected [E615] for `dirty`; got warnings: {warnings}"
-        )
-        assert len(e615) == 1, (
-            f"Expected exactly one [E615]; got {len(e615)}: {e615}"
-        )
-        # Both clean functions must remain in exports.  The
-        # `clean_after` assertion is the one that catches forward
-        # leakage — pre-fix would still pass `clean_before` but
-        # fail this.
-        assert "clean_before" in result.exports, (
-            f"clean_before should be exported; "
-            f"exports: {result.exports}"
-        )
-        assert "clean_after" in result.exports, (
-            f"clean_after should be exported (no inference failures "
-            f"in its own body, must not inherit dirty's failure "
-            f"list); exports: {result.exports}"
-        )
-        # `dirty` is dropped via the [E602] mechanism.
-        assert "dirty" not in result.exports, (
-            f"dirty should be skipped; exports: {result.exports}"
-        )
+        errors = pipeline.check(source).errors
+        assert [d.error_code for d in errors] == ["E148"], errors
+        assert errors[0].location.line == 11, errors[0].location
 
-    def test_e615_fires_on_result_in_interpolation(self) -> None:
-        """Adjacent E615 shape — `Result<T,E>` in interpolation.
-        Distinct from Option (separate ADT), pre-emptively pinned
-        so that a future change to canonicalisation or interpolation
-        narrowing that broadens `Option<T>` handling doesn't
-        accidentally regress the parallel `Result` path.
-
-        Pins the full loud-skip surface (parallel to the ADT test):
-        E615 fires for the inference miss, E602 fires for the
-        function skip, and `main` is dropped from `result.exports`.
-
-        (test-analyzer finding C3 + later CodeRabbit follow-up on
-        PR #631.)
-        """
+    def test_a_result_in_interpolation_is_refused_at_check(self) -> None:
+        """Interpolating a `Result` slot is refused at check (E148)."""
         source = """\
 public fn main(-> @Unit)
   requires(true) ensures(true) effects(<IO>)
@@ -883,43 +695,12 @@ public fn main(-> @Unit)
   IO.print("\\(@Result<Int, String>.0)\\n")
 }
 """
-        result = _compile(source)
-        warnings = [
-            d for d in result.diagnostics if d.severity == "warning"
-        ]
-        e615 = [d for d in warnings if d.error_code == "E615"]
-        assert e615, (
-            f"Expected [E615] for Result<Int, String> interpolation; "
-            f"got warnings: {warnings}"
-        )
-        # Loud-skip surface: E602 must also fire for `main`, and
-        # main must be dropped from exports.  Parallel to the ADT
-        # test's assertions — without these, a regression that
-        # emits E615 but fails to propagate the function-skip
-        # would silently slip past this test.
-        e602_main = [
-            d for d in warnings
-            if d.error_code == "E602" and "main" in d.description
-        ]
-        assert e602_main, (
-            f"Expected an [E602] for `main` after Result-in-"
-            f"interpolation E615; warnings: {warnings}"
-        )
-        assert "main" not in result.exports, (
-            f"main should be skipped when interpolation E615 fires; "
-            f"exports: {result.exports}"
-        )
+        errors = pipeline.check(source).errors
+        assert [d.error_code for d in errors] == ["E148"], errors
 
-    def test_multiple_e615_in_one_interpolation(self) -> None:
-        """One [E615] per failing segment — not "first failure
-        aborts loop".  Pre-this-PR the silent-fallthrough returned
-        None on the first failure, so a user with N bad segments
-        in one interpolation got one [E615] per recompile, N
-        round-trips total.  Now the loop continues and records every
-        failing segment, then bails at the end if any failed.
-
-        (silent-failure-hunter finding H2 on PR #631.)
-        """
+    def test_every_unconvertible_segment_of_one_interpolation_is_refused(self) -> None:
+        """Every unconvertible segment of one interpolation is refused at check,
+        each with its own E148."""
         source = """\
 public fn main(-> @Unit)
   requires(true) ensures(true) effects(<IO>)
@@ -929,41 +710,8 @@ public fn main(-> @Unit)
   IO.print("\\(@Option<Int>.0) and \\(@Result<Int, String>.0)\\n")
 }
 """
-        result = _compile(source)
-        warnings = [
-            d for d in result.diagnostics if d.severity == "warning"
-        ]
-        e615 = [d for d in warnings if d.error_code == "E615"]
-        # Two failing segments → exactly two distinct E615
-        # diagnostics.  Pinning the exact count (rather than `>= 2`)
-        # catches a duplicate-emit regression where the harvest
-        # accidentally walks the failures list more than once or
-        # the per-segment recording emits N>1 entries per failure.
-        assert len(e615) == 2, (
-            f"Expected exactly 2 [E615] diagnostics for two failing "
-            f"interpolation segments; got {len(e615)}: {e615}"
-        )
-        # Per-segment span fidelity (#634).  Source layout:
-        #
-        #     line 6:   IO.print("\(@Option<Int>.0) and \(@Result<Int, String>.0)\n")
-        #     cols ^^   ^^      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-        #     12 ".  13-14 \(.  15 @Option starts.
-        #     35-36 \(.  37 @Result starts.
-        #
-        # Both diagnostics must land on line 6; their columns must
-        # differ and match the column of their respective SlotRef.
-        # Pre-#634 both would have landed on the synthetic parse-wrapper's
-        # content line with column 3 — the bug this test pins as fixed.
-        assert all(d.location.line == 6 for d in e615), (
-            f"Both E615s should point at line 6; got lines "
-            f"{[d.location.line for d in e615]}"
-        )
-        cols = sorted(d.location.column for d in e615)
-        assert cols == [15, 37], (
-            f"Per-segment column fidelity broken — expected first "
-            f"SlotRef at col 15 (`@Option<Int>.0`) and second at col "
-            f"37 (`@Result<Int, String>.0`); got {cols}"
-        )
+        errors = pipeline.check(source).errors
+        assert [d.error_code for d in errors] == ["E148", "E148"], errors
 
     def test_canonical_named_type_terminal_args_propagation(
         self,
@@ -1167,30 +915,12 @@ public fn main(-> @Unit)
         # 5 + 3 = 8; runs end-to-end via correct closure-pointer ABI.
         assert _run_io(source, fn="main") == "8"
 
-    def test_closure_orphans_not_committed_on_partial_fail(
+    def test_a_partly_unconvertible_closure_interpolation_is_refused(
         self,
     ) -> None:
-        """When `_lift_pending_closures` fails on any closure in
-        the worklist, the parent fn is dropped (#636) — but the
-        successful sibling closures must NOT be left in the
-        module-level `_closure_fns_wat` / `_closure_table` state,
-        otherwise their entries shift table indices for
-        *subsequent* top-level fns' closures.
-
-        Concretely: `bad` has one closure that fails E615, `good`
-        compiled afterwards has its own closure.  Without
-        commit-on-success, `bad`'s would-be orphan would land in
-        `_closure_table` and `good`'s closure_id would no longer
-        match its actual table index, producing a `call_indirect`
-        to the wrong function at runtime.
-
-        Fix: accumulate worklist results in local buffers; only
-        extend `_closure_fns_wat` / `_closure_table` /
-        `_fn_source_map` / `_closure_sigs` if every closure
-        succeeded.
-
-        (CodeRabbit finding 1, third review pass on PR #631.)
-        """
+        """An interpolation that fails part way inside a closure is refused at
+        check (E148), so code generation never lifts the closure it would
+        have had to roll back."""
         source = """\
 public fn bad(-> @Unit)
   requires(true) ensures(true) effects(<IO>)
@@ -1211,32 +941,8 @@ public fn good(-> @Unit)
   IO.print(int_to_string(@Array<Int>.0[1]))
 }
 """
-        result = _compile(source)
-        # `bad` is dropped via the closure-fail propagation (#636).
-        assert "bad" not in result.exports, (
-            f"bad should be dropped; exports: {result.exports}"
-        )
-        # `good` must remain — its closure is independent.
-        assert "good" in result.exports, (
-            f"good should be exported; exports: {result.exports}"
-        )
-        # Run `good` to confirm its closure references the correct
-        # table entry.  Pre-fix `bad`'s orphan closure would have
-        # been at table index 0, shifting `good`'s closure to index
-        # 1 while its closure_id stored in the closure struct
-        # remained 1 (because `_next_closure_id` is module-monotonic)
-        # — call_indirect would target index 1 expecting `$anon_1`
-        # but actually find `good`'s closure (originally meant for
-        # index 1 with $anon_2 closure_id).  In this specific
-        # fixture either trap or wrong output; the `_run_io` below
-        # exercises the path.
-        from vera.codegen import execute
-        exec_result = execute(result, fn_name="good")
-        # `good` is `Unit`-returning so no value to assert beyond
-        # not trapping.
-        assert exec_result.value is None or exec_result.value == 0, (
-            f"good() should run cleanly; got: {exec_result.value!r}"
-        )
+        errors = pipeline.check(source).errors
+        assert [d.error_code for d in errors] == ["E148"], errors
 
     def test_array_map_refinement_returning_closure(self) -> None:
         """`_infer_closure_return_vera_type` in `calls_arrays.py`

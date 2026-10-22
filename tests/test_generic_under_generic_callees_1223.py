@@ -237,7 +237,7 @@ def _registered_and_resolved(source: str) -> tuple[set[str], set[str]]:
     MonomorphizationMixin._monomorphize = _mono_spy  # type: ignore[assignment,method-assign]
     CallsMixin._resolve_generic_call = _resolve_spy  # type: ignore[assignment]
     try:
-        _ = pipeline.compile(source, file="fixture.vera", checked=False).result
+        _ = pipeline.compile(source, file="fixture.vera").result
     finally:
         MonomorphizationMixin._monomorphize = orig_mono  # type: ignore[assignment,method-assign]
         CallsMixin._resolve_generic_call = orig_resolve  # type: ignore[assignment]

@@ -907,7 +907,7 @@ def _compile_xmod(tmp_path: Path) -> CompileResult:
     resolver_errors = checked.resolution_diagnostics
     assert not resolver_errors, [e.description for e in resolver_errors]
     result = pipeline.compile(
-        main_file, modules=checked.resolved, checked=False).result
+        main_file, modules=checked.resolved).result
     errors = [d for d in result.diagnostics if d.severity == "error"]
     assert not errors, [d.description for d in errors]
     return result

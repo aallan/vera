@@ -84,7 +84,7 @@ def _errors(source: str) -> list[str]:
 # =====================================================================
 
 _BOX_UNIT = """\
-data Box<T> { MkB(Int, T, Int) }
+private data Box<T> { MkB(Int, T, Int) }
 
 private fn mk(-> @Box<Unit>)
   requires(true) ensures(true) effects(pure)
@@ -107,7 +107,7 @@ def test_box_unit_wildcard_reads_trailing_int() -> None:
 
 
 _BOX_UNIT_FIRST = """\
-data Box<T> { MkB(Int, T, Int) }
+private data Box<T> { MkB(Int, T, Int) }
 
 private fn mk(-> @Box<Unit>)
   requires(true) ensures(true) effects(pure)
@@ -130,7 +130,7 @@ def test_box_unit_field_before_erased_is_unaffected() -> None:
 
 
 _NAMED_UNIT = """\
-data Named<T> { N(T, String) }
+private data Named<T> { N(T, String) }
 
 private fn mk(-> @Named<Unit>)
   requires(true) ensures(true) effects(pure)
@@ -153,8 +153,8 @@ def test_named_unit_wildcard_reads_string_at_right_offset() -> None:
 
 
 _ENTRY_UNIT = """\
-data BB { MkBox(Int), MkNot(Int) }
-data Entry<T> { En(T, BB) }
+private data BB { MkBox(Int), MkNot(Int) }
+private data Entry<T> { En(T, BB) }
 
 private fn mk(-> @Entry<Unit>)
   requires(true) ensures(true) effects(pure)
@@ -180,7 +180,7 @@ def test_entry_unit_wildcard_before_nested_ctor() -> None:
 
 
 _BOOL_FOLLOWING = """\
-data Bx<T> { MkBx(T, Bool) }
+private data Bx<T> { MkBx(T, Bool) }
 
 private fn mk(-> @Bx<Unit>)
   requires(true) ensures(true) effects(pure)
@@ -204,7 +204,7 @@ def test_bool_following_erased_typeparam() -> None:
 
 
 _SECOND_TYPEPARAM = """\
-data P2<A, B> { MkP2(Int, B, Int) }
+private data P2<A, B> { MkP2(Int, B, Int) }
 
 private fn mk(-> @P2<Int, Unit>)
   requires(true) ensures(true) effects(pure)
@@ -228,8 +228,8 @@ def test_second_type_parameter_instantiated_to_unit() -> None:
 
 
 _NESTED_GENERIC = """\
-data Inner<T> { MkI(Int, T, Int) }
-data Outer<T> { MkO(Inner<T>) }
+private data Inner<T> { MkI(Int, T, Int) }
+private data Outer<T> { MkO(Inner<T>) }
 
 private fn mk(-> @Outer<Unit>)
   requires(true) ensures(true) effects(pure)
@@ -301,7 +301,7 @@ def test_result_unit_ok_wildcard() -> None:
 # =====================================================================
 
 _BOX_STRING = """\
-data Box<T> { MkB(Int, T, Int) }
+private data Box<T> { MkB(Int, T, Int) }
 
 private fn mk(-> @Box<String>)
   requires(true) ensures(true) effects(pure)
@@ -325,7 +325,7 @@ def test_box_string_wildcard_recomputes_i32_pair_width() -> None:
 
 
 _BOX_INT = """\
-data Box<T> { MkB(Int, T, Int) }
+private data Box<T> { MkB(Int, T, Int) }
 
 private fn mk(-> @Box<Int>)
   requires(true) ensures(true) effects(pure)
@@ -348,7 +348,7 @@ def test_box_int_wildcard_control() -> None:
 
 
 _TAGGED_UNIT = """\
-data Tagged<T> { Tag(T, Int) }
+private data Tagged<T> { Tag(T, Int) }
 
 private fn mk(-> @Tagged<Unit>)
   requires(true) ensures(true) effects(pure)
@@ -378,7 +378,7 @@ def test_tagged_unit_alignment_masked_control() -> None:
 # =====================================================================
 
 _TRAILING_SLOT = """\
-data W<T> { MkW(Int, T) }
+private data W<T> { MkW(Int, T) }
 
 private fn mk(-> @W<Unit>)
   requires(true) ensures(true) effects(pure)
@@ -409,7 +409,7 @@ def test_trailing_typeparam_wildcard_slot() -> None:
 # =====================================================================
 
 _DIRECT_CALL_READ = """\
-data Box<T> { MkB(Int, T, Int) }
+private data Box<T> { MkB(Int, T, Int) }
 
 private fn mk(-> @Box<Unit>)
   requires(true) ensures(true) effects(pure)
@@ -436,8 +436,8 @@ def test_direct_call_wildcard_reads_trailing_int() -> None:
 
 
 _DIRECT_CALL_NESTED = """\
-data BB { MkBox(Int), MkNot(Int) }
-data Entry<T> { En(T, BB) }
+private data BB { MkBox(Int), MkNot(Int) }
+private data Entry<T> { En(T, BB) }
 
 private fn mk(-> @Entry<Unit>)
   requires(true) ensures(true) effects(pure)
@@ -464,7 +464,7 @@ def test_direct_call_wildcard_before_nested_ctor() -> None:
 
 
 _DIRECT_CALL_NAMED_STRING = """\
-data Named<T> { N(T, String) }
+private data Named<T> { N(T, String) }
 
 private fn mk(-> @Named<Unit>)
   requires(true) ensures(true) effects(pure)
@@ -489,7 +489,7 @@ def test_direct_call_wildcard_reads_string_at_right_offset() -> None:
 
 
 _DIRECT_CALL_TRAILING = """\
-data W<T> { MkW(Int, T) }
+private data W<T> { MkW(Int, T) }
 
 private fn mk(-> @W<Unit>)
   requires(true) ensures(true) effects(pure)
@@ -526,9 +526,9 @@ def test_direct_call_trailing_wildcard_compiles() -> None:
 # =====================================================================
 
 _GENERIC_CALL_READ = """\
-data P2<A, B> { MkP2(Int, B, Int) }
+private data P2<A, B> { MkP2(Int, B, Int) }
 
-forall<T> fn wrap(@T -> @P2<T, Unit>)
+private forall<T> fn wrap(@T -> @P2<T, Unit>)
   requires(true) ensures(true) effects(pure)
 { MkP2(11, (), 22) }
 
@@ -553,9 +553,9 @@ def test_generic_call_wildcard_reads_trailing_int() -> None:
 
 
 _GENERIC_CALL_STRING_WIDTH = """\
-data Box<T> { MkB(Int, T, Int) }
+private data Box<T> { MkB(Int, T, Int) }
 
-forall<T> fn wrap(@T -> @Box<T>)
+private forall<T> fn wrap(@T -> @Box<T>)
   requires(true) ensures(true) effects(pure)
 { MkB(11, @T.0, 22) }
 
@@ -578,9 +578,9 @@ def test_generic_call_string_typeparam_width() -> None:
 
 
 _GENERIC_CALL_CONCRETE_RET = """\
-data Box<T> { MkB(Int, T, Int) }
+private data Box<T> { MkB(Int, T, Int) }
 
-forall<T> fn wrap(@T -> @Box<Unit>)
+private forall<T> fn wrap(@T -> @Box<Unit>)
   requires(true) ensures(true) effects(pure)
 { MkB(11, (), 22) }
 
@@ -603,10 +603,10 @@ def test_generic_call_concrete_parameterized_return() -> None:
 
 
 _GENERIC_CALL_NESTED = """\
-data BB { MkBox(Int), MkNot(Int) }
-data EntryAB<A, B> { En(B, BB) }
+private data BB { MkBox(Int), MkNot(Int) }
+private data EntryAB<A, B> { En(B, BB) }
 
-forall<T> fn wrap(@T -> @EntryAB<T, Unit>)
+private forall<T> fn wrap(@T -> @EntryAB<T, Unit>)
   requires(true) ensures(true) effects(pure)
 { En((), MkBox(314)) }
 
@@ -631,9 +631,9 @@ def test_generic_call_wildcard_before_nested_ctor() -> None:
 
 
 _GENERIC_CALL_NAMED_STRING = """\
-data NamedAB<A, B> { N(B, String) }
+private data NamedAB<A, B> { N(B, String) }
 
-forall<T> fn wrap(@T -> @NamedAB<T, Unit>)
+private forall<T> fn wrap(@T -> @NamedAB<T, Unit>)
   requires(true) ensures(true) effects(pure)
 { N((), "payload") }
 
@@ -656,9 +656,9 @@ def test_generic_call_wildcard_reads_string_at_right_offset() -> None:
 
 
 _GENERIC_CALL_TRAILING = """\
-data WAB<A, B> { MkW(Int, B) }
+private data WAB<A, B> { MkW(Int, B) }
 
-forall<T> fn wrap(@T -> @WAB<T, Unit>)
+private forall<T> fn wrap(@T -> @WAB<T, Unit>)
   requires(true) ensures(true) effects(pure)
 { MkW(5, ()) }
 
@@ -695,7 +695,7 @@ def _compile_with_module(
     """Compile *main_source* with one resolved module (Windows-safe temps)."""
     resolved = resolved_module(module_path, module_source)
     return pipeline.compile(
-        main_source, file="fixture.vera", modules=[resolved], checked=False,
+        main_source, file="fixture.vera", modules=[resolved],
     ).result
 
 
@@ -786,7 +786,7 @@ def test_module_call_generic_wildcard_reads_trailing_int() -> None:
 # =====================================================================
 
 _EQ_EQUAL = """\
-data Box<T> { MkB(Int, T, Int) }
+private data Box<T> { MkB(Int, T, Int) }
 
 private fn a(-> @Box<Unit>)
   requires(true) ensures(true) effects(pure)
@@ -807,7 +807,7 @@ def test_eq_box_unit_equal_control() -> None:
 
 
 _EQ_DISTINCT = """\
-data Box<T> { MkB(Int, T, Int) }
+private data Box<T> { MkB(Int, T, Int) }
 
 private fn a(-> @Box<Unit>)
   requires(true) ensures(true) effects(pure)
@@ -833,7 +833,7 @@ def test_eq_box_unit_distinct_trailing_int_control() -> None:
 
 
 _SHOW_NAMED = """\
-data Named<T> { N(T, String) }
+private data Named<T> { N(T, String) }
 
 private fn a(-> @Named<Unit>)
   requires(true) ensures(true) effects(pure)

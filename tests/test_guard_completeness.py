@@ -67,14 +67,11 @@ def _run(tmp_path: Path, source: str, *args: str, name: str = "p.vera") -> str:
 
 
 def _obligations(tmp_path: Path, source: str,
-                 name: str = "p.vera", *,
-                 past_check: bool = False) -> tuple[list[dict], dict]:
+                 name: str = "p.vera") -> tuple[list[dict], dict]:
     """What ``vera verify --json`` prints for *source*, and its obligations:
-    the verify stage's envelope (*past_check*: measured on a program the
-    check refuses, with the tables the check collected)."""
+    the verify stage's envelope."""
     envelope = pipeline.verify(_write(tmp_path, source, name),
-                               budget_s=_BUDGET_S,
-                               past_check=past_check).envelope()
+                               budget_s=_BUDGET_S).envelope()
     return envelope["obligations"], envelope
 
 
@@ -666,20 +663,17 @@ class TestEffectOperationArgumentsAreGuarded754:
         """The over-claiming control, and the reason the roster is consulted.
 
         A row naming a user-declared effect is refused at check (E340,
-        #1681), so there is no run for a guard to protect, and the verifier's
-        classification is measured past the check.  Recording
-        `guarded` there would be #1268's mistake one boundary over — a
-        Tier-3 promise about a runtime that is never reached — so the
+        #1681), so there is no run for a guard to protect.  The verifier's
         classification intersects the formal's base with
         `narrowing.COMPILABLE_EFFECTS`, the roster codegen itself decides
-        compilability from.
+        compilability from, so that recording `guarded` cannot repeat
+        #1268's mistake one boundary over; every built-in effect is in the
+        roster, so only a refused program could reach the other branch, and
+        no stage after the check runs on a program it refuses.
         """
-        obs, envelope = _obligations(
-            tmp_path, _754_USER_EFFECT, name="user754.vera", past_check=True)
-        binds = [o for o in obs if o["kind"] == "nat_bind"]
-        assert [o["status"] for o in binds] == ["tier3_unguarded"], binds
-        assert [o.get("error_code") for o in binds] == ["E504"], binds
-        _assert_partition(envelope)
+        checked = pipeline.check(_754_USER_EFFECT)
+        assert [d.error_code for d in checked.errors] == ["E340"], [
+            (d.error_code, d.description) for d in checked.errors]
 
         proc = pipeline.cli("compile", "--wat",
                             str(_write(tmp_path, _754_USER_EFFECT, "user754c.vera")), budget_s=_BUDGET_S)
@@ -1368,17 +1362,11 @@ class TestADeclinedChainGuardDoesNotRunTheMeasure1222:
 
     def test_the_program_still_returns_rather_than_throwing(self) -> None:
         """A measure is held to purity (#1708), so the check refuses this
-        one (E187); code generation, driven past the check, still evaluates
-        nothing at entry."""
+        one (E187), and no stage after the check runs on a program it
+        refuses: an effectful measure never reaches code generation."""
         checked = pipeline.check(_1222_EFFECTFUL_MEASURE)
         assert [d.error_code for d in checked.errors] == ["E187"], [
             (d.error_code, d.description) for d in checked.errors]
-        module = pipeline.compile(_1222_EFFECTFUL_MEASURE, past_check=True).result
-        ran = pipeline.run(module, fn="walk", args=[4])
-        assert ran.ok and ran.value == 0, (
-            f"an effectful measure was evaluated at entry, so a program "
-            f"that returned 0 now throws: {ran.trap}"
-        )
 
 
 _1222_RANKABLE_ADT_SIBLING = """\

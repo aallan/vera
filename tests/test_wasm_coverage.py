@@ -33,6 +33,7 @@ from vera.wasm.helpers import (
     wasm_type,
     wasm_type_or_none,
 )
+from tests import pipeline
 from tests.codegen_helpers import _compile, _run, _run_float, _run_io, _run_trap
 
 
@@ -533,8 +534,6 @@ public fn make_red(@Unit -> @Int)
     def test_block_result_nullary_constructor(self) -> None:
         """NullaryConstructor in block ending position compiles."""
         source = """\
-private data Option<T> { None, Some(T) }
-
 public fn mk_none(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
@@ -815,7 +814,6 @@ public fn test_let_capture(@Unit -> @Int)
     def test_closure_with_match_capture(self) -> None:
         """Closure that captures a variable and uses match expression."""
         source = """\
-private data Option<T> { None, Some(T) }
 type IntFn = fn(Int -> Int) effects(pure);
 
 private fn make_default(@Int -> @IntFn)
@@ -842,7 +840,6 @@ public fn test_match_capture(@Unit -> @Int)
     def test_closure_map_option(self) -> None:
         """Closure application inside a match arm (map over Option)."""
         source = """\
-private data Option<T> { None, Some(T) }
 type IntMapper = fn(Int -> Int) effects(pure);
 
 private fn map_opt(@Option<Int>, @IntMapper -> @Option<Int>)
@@ -1059,8 +1056,6 @@ public fn classify(@Int -> @Int)
     def test_option_some_none(self) -> None:
         """Option<Int> with Some and None constructors."""
         source = """\
-private data Option<T> { None, Some(T) }
-
 public fn unwrap_or(@Option<Int>, @Int -> @Int)
   requires(true) ensures(true) effects(pure)
 {
@@ -1197,8 +1192,6 @@ public fn test_first(@Unit -> @Int)
     def test_generic_with_adt(self) -> None:
         """Generic function applied to ADT type."""
         source = """\
-private data Option<T> { None, Some(T) }
-
 private forall<T> fn is_some(@Option<T> -> @Bool)
   requires(true) ensures(true) effects(pure)
 {
@@ -1367,8 +1360,6 @@ public fn choose(@Bool, @Bit -> @Int)
         """ConstructorCall as if-branch body triggers _infer_block_result_type
         ConstructorCall branch (line 235)."""
         source = """\
-private data Option<T> { None, Some(T) }
-
 public fn maybe(@Bool, @Int -> @Int)
   requires(true) ensures(true) effects(pure)
 {
@@ -1390,8 +1381,6 @@ public fn maybe(@Bool, @Int -> @Int)
         """NullaryConstructor as if-branch body triggers
         _infer_block_result_type NullaryConstructor branch."""
         source = """\
-private data Option<T> { None, Some(T) }
-
 public fn mk_opt(@Bool -> @Int)
   requires(true) ensures(true) effects(pure)
 {
@@ -1824,8 +1813,6 @@ public fn test_fn(@Unit -> @Int)
         """ConstructorCall argument to generic function triggers
         _infer_vera_type ConstructorCall branch (line 372-373)."""
         source = """\
-private data Option<T> { None, Some(T) }
-
 private forall<T> fn id(@T -> @T)
   requires(true) ensures(true) effects(pure)
 { @T.0 }
@@ -1846,8 +1833,6 @@ public fn test_ctor(@Unit -> @Int)
         """NullaryConstructor argument to generic function triggers
         _infer_vera_type NullaryConstructor branch (line 374-375)."""
         source = """\
-private data Option<T> { None, Some(T) }
-
 private forall<T> fn id(@T -> @T)
   requires(true) ensures(true) effects(pure)
 { @T.0 }
@@ -1882,8 +1867,9 @@ public fn test_float(@Unit -> @Float64)
         assert result.wasm_bytes is not None
 
     def test_infer_vera_type_unit_lit(self) -> None:
-        """UnitLit argument to generic function triggers
-        _infer_vera_type UnitLit branch (line 368-369)."""
+        """A UnitLit argument to a generic function would reach
+        _infer_vera_type's UnitLit branch; instantiating a generic at
+        ``Unit`` is refused at check (E206), so no program reaches it."""
         source = """\
 private forall<T> fn id(@T -> @T)
   requires(true) ensures(true) effects(pure)
@@ -1896,8 +1882,8 @@ public fn test_unit(@Unit -> @Unit)
   IO.print("done")
 }
 """
-        result = _compile_ok(source)
-        assert result.wasm_bytes is not None
+        errors = pipeline.check(source).errors
+        assert [d.error_code for d in errors] == ["E206"], errors
 
 
 # =====================================================================
@@ -2187,8 +2173,6 @@ public fn cond_contains(@Bool -> @Bool)
     def test_fncall_wasm_string_index_of(self) -> None:
         """string_index_of in if-branch triggers line 222-223."""
         source = """\
-private data Option<T> { None, Some(T) }
-
 public fn cond_idx(@Bool -> @Int)
   requires(true) ensures(true) effects(pure)
 {
@@ -2294,8 +2278,6 @@ public fn cond_ftoi(@Bool -> @Int)
     def test_fncall_wasm_int_to_nat(self) -> None:
         """int_to_nat() in if-branch triggers line 269-270."""
         source = """\
-private data Option<T> { None, Some(T) }
-
 public fn cond_iton(@Bool -> @Int)
   requires(true) ensures(true) effects(pure)
 {
@@ -2328,7 +2310,7 @@ public fn cond_nan(@Bool -> @Bool)
 public fn cond_mknan(@Bool -> @Float64)
   requires(true) ensures(true) effects(pure)
 {
-  if @Bool.0 then { nan(()) } else { 0.0 }
+  if @Bool.0 then { nan() } else { 0.0 }
 }
 """
         result = _compile_ok(source)
@@ -2462,8 +2444,6 @@ public fn color_num(@Color -> @Int)
         """ConstructorCall in let triggers _infer_expr_wasm_type
         ConstructorCall branch (line 134-135)."""
         source = """\
-private data Option<T> { None, Some(T) }
-
 public fn wrap(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 {
@@ -2480,8 +2460,6 @@ public fn wrap(@Int -> @Int)
         """NullaryConstructor in let triggers _infer_expr_wasm_type
         NullaryConstructor branch (line 136-137)."""
         source = """\
-private data Option<T> { None, Some(T) }
-
 public fn mk_none(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
@@ -3130,12 +3108,12 @@ public fn test_pairs_diff(@Unit -> @Bool)
     def test_adt_eq_mixed_fieldless_and_fields(self) -> None:
         """ADT with both fieldless and field-bearing constructors."""
         source = """\
-private data Option { None, Some(Int) }
+private data Opt { None, Some(Int) }
 
-public fn opts_eq(@Option, @Option -> @Bool)
+public fn opts_eq(@Opt, @Opt -> @Bool)
   requires(true) ensures(true) effects(pure)
 {
-  @Option.0 == @Option.1
+  @Opt.0 == @Opt.1
 }
 
 public fn test_none_none(@Unit -> @Bool)
@@ -3552,7 +3530,6 @@ public fn classify(@Color, @Size -> @Int)
         _infer_expr_wasm_type ConstructorCall branch (line 134-135)
         via data.py arm body inference."""
         source = """\
-private data Option<T> { None, Some(T) }
 private data Color { Red, Green, Blue }
 
 public fn color_opt(@Color -> @Int)
@@ -3765,7 +3742,6 @@ public fn bit_arr(@Bit -> @Int)
         """NullaryConstructor as match arm body triggers
         _infer_expr_wasm_type NullaryConstructor branch (line 136-137)."""
         source = """\
-private data Option<T> { None, Some(T) }
 private data Bit { Zero, One }
 
 public fn bit_opt(@Bit -> @Int)

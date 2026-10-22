@@ -248,7 +248,7 @@ class TestBudgetReachesTheSolver:
     )
 
     def _cold(self, **kwargs) -> None:
-        pipeline.verify(self.SOURCE, past_check=True, **kwargs)
+        pipeline.verify(self.SOURCE, **kwargs)
 
     def test_explicit_argument_reaches_the_solver_cold(self) -> None:
         seen = self._timeouts_set(lambda: self._cold(timeout_ms=33_000))

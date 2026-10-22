@@ -98,7 +98,7 @@ def _compile_and_run(source: str, fn: str) -> int:
 
     Compiled unchecked (no type check, none of the checker's tables), as
     ``fixture.vera``."""
-    result = pipeline.compile(source, file="fixture.vera", checked=False).result
+    result = pipeline.compile(source, file="fixture.vera").result
     assert result.wasm_bytes is not None, \
         f"Compile failed: {result.errors}"
     exec_result = pipeline.run(result, fn, [], capture_stderr=False).execution
