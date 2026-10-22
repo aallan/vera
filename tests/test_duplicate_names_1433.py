@@ -54,15 +54,12 @@ from vera import ast
 import vera.checker as vera_checker_pkg
 from vera.checker import typecheck
 from vera.checker.core import TypeChecker
-from vera.codegen import compile as codegen_compile
 from vera.codegen.assembly import AssemblyMixin
 from vera.environment import TypeEnv
 from vera.errors import Diagnostic, VeraError
-from vera.monomorphize import MonoContext, Monomorphizer
+from vera.monomorphize import Monomorphizer
 from vera.parser import parse_to_ast
-from vera.resolver import ModuleResolver
 from vera.skip import CodegenInvariantError
-from vera.verifier import verify
 from tests import pipeline
 from tests.module_fixture_helpers import build_multi_module, module_value
 
@@ -238,6 +235,13 @@ NOT_NAMESPACES: dict[str, str] = {
     "TypeChecker.expr_types": "keyed by source span, the LSP's side table",
     "TypeChecker.expr_semantic_types": "keyed by source span, for the verifier",
     "TypeChecker.expr_target_types": "keyed by source span, for codegen",
+    "TypeChecker.node_semantic_types": (
+        "keyed by node identity, for the typed program (#1679)"),
+    "TypeChecker.node_target_types": (
+        "keyed by node identity, for the typed program (#1679)"),
+    "TypeChecker.instantiations": (
+        "keyed by a generic call's node identity, for the typed program "
+        "(#1679)"),
     "TypeChecker._literal_soft_results": (
         "keyed by a call's source span, the parts of its result its literals "
         "decided (#1541)"),
@@ -1362,12 +1366,7 @@ def test_a_renamed_binder_takes_its_constraint_with_it() -> None:
     program = parse_to_ast(cell.files["main.vera"])
     parent = next(tld.decl for tld in program.declarations
                   if isinstance(tld.decl, ast.FnDecl) and tld.decl.name == "f")
-    ctx = MonoContext(
-        generic_decls={}, ctor_to_adt={}, ctor_tp_indices={},
-        adt_tp_counts={}, type_aliases={}, type_alias_params={},
-        fn_ret_types={},
-    )
-    clone = Monomorphizer(ctx).monomorphize_fn(parent, ("Int",))
+    clone = Monomorphizer().monomorphize_fn(parent, ("Int",))
     (helper,) = clone.where_fns or ()
     assert helper.forall_vars is not None
     assert helper.forall_vars != ("Int",), helper.forall_vars
@@ -1574,12 +1573,7 @@ def test_the_verifier_obligates_a_call_the_first_list_admits(
                      + _main("f(0) + g(1)"),
     }
     assert _check(tmp_path, files) == []
-    main_path = tmp_path / "main.vera"
-    program = parse_to_ast(files["main.vera"])
-    resolved = ModuleResolver(_root=tmp_path).resolve_imports(
-        program, main_path)
-    result = verify(program, files["main.vera"], file=str(main_path),
-                    resolved_modules=resolved)
+    result = pipeline.verify(pipeline.write_tree(tmp_path, files)).result
     codes = [d.error_code for d in result.diagnostics
              if d.severity == "error"]
     assert codes == ["E501"], codes
@@ -1690,25 +1684,15 @@ def test_the_backstop_does_not_count_references() -> None:
     AssemblyMixin._assert_unique_func_names(wat)  # must not raise
 
 
-@pytest.mark.parametrize(
-    "cell_id,symbol",
-    [("fn/twice", r"\$:f\b"), ("where/twice", r"\$:f\$where\$h")],
-)
-def test_a_compile_that_skips_the_checker_ends_in_an_e699(
-    cell_id: str, symbol: str,
-) -> None:
-    """End to end through the real code generator, with the checker skipped
-    — the "future path that bypasses it" the backstop exists for.  The
-    compile reports one E699 naming the symbol and produces no binary, and
-    wasm-tools' own message never appears."""
+@pytest.mark.parametrize("cell_id", ["fn/twice", "where/twice"])
+def test_no_compile_skips_the_checker(cell_id: str) -> None:
+    """The "future path that bypasses" the checker, which the assembly
+    backstop above exists for, is not a path any more: code generation
+    reads the typed program, which only a clean check yields (#1679), so a
+    program the checker refuses for a duplicate name has no compile at
+    all."""
     cell = next(c for c in CELLS if c.id == cell_id)
-    source = cell.files["main.vera"]
-    result = codegen_compile(parse_to_ast(source), source=source,
-                             file="main.vera")
-    errors = [d for d in result.diagnostics if d.severity == "error"]
-    assert [d.error_code for d in errors] == ["E699"], [
-        (d.error_code, d.description) for d in errors]
-    assert re.search(symbol, errors[0].description), errors[0].description
-    assert "duplicate func identifier" in errors[0].description
-    assert "WAT compilation failed" not in errors[0].description
-    assert result.wasm_bytes == b""
+    compiled = pipeline.compile(cell.files["main.vera"], file="main.vera")
+    assert compiled.checked is not None and not compiled.checked.ok
+    with pytest.raises(pipeline.StageFailed):
+        _ = compiled.result

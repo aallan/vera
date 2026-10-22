@@ -306,7 +306,7 @@ def _same_clones_verified_and_compiled(path: Path) -> None:
     """The clones the verifier verifies are the clones the module holds."""
     from vera.verifier import ContractVerifier
 
-    checked = pipeline.check(path, collect_module_artifacts=True)
+    checked = pipeline.check(path)
     assert checked.ok, [d.format() for d in checked.diagnostics]
     compiled = pipeline.compile(path)
     assert compiled.ok, [d.format() for d in compiled.diagnostics]
@@ -315,12 +315,7 @@ def _same_clones_verified_and_compiled(path: Path) -> None:
         if "$" in name and "$where$" not in name and not name.startswith("mod$ma$bar")
     }
     verifier = ContractVerifier(
-        source=checked.source, file=checked.file,
-        resolved_modules=checked.resolved,
-        expr_types=checked.artifacts.expr_semantic_types,
-        expr_target_types=checked.artifacts.expr_target_types,
-        module_artifacts=checked.artifacts.module_artifacts,
-    )
+        checked.typed, source=checked.source, file=checked.file)
     verifier.register_program(checked.program)
     from vera.monomorphize import Monomorphizer
     verified = {

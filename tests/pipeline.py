@@ -86,7 +86,7 @@ import sys
 import tempfile
 import time
 from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -114,6 +114,8 @@ from vera.tester import TestResult
 from vera.tester import test as _test_program
 from vera.transform import transform
 from vera.trap_registry import TRAP_EMITTERS, EmittedCheck
+from vera.typed import TypedProgram
+from vera.typed import build as _build_typed
 from vera.verifier import VerifyResult
 from vera.verifier import verify as _verify_program
 
@@ -134,6 +136,7 @@ __all__ = [
     "Verified",
     "assert_no_orphan_call_indirect",
     "check",
+    "typed",
     "checks",
     "cli",
     "compile",
@@ -358,6 +361,9 @@ class Checked:
     #: The checker's diagnostics.
     checker_diagnostics: tuple[Diagnostic, ...]
     _artifacts: CheckArtifacts | None
+    #: The typed program, built on first read (:attr:`typed`).
+    _typed: list[TypedProgram] = field(default_factory=list, repr=False,
+                                       compare=False)
 
     @property
     def diagnostics(self) -> tuple[Diagnostic, ...]:
@@ -400,6 +406,22 @@ class Checked:
     def resolved(self) -> list[ResolvedModule] | None:
         """:attr:`modules` as the stage functions take them."""
         return list(self.modules) if self.modules is not None else None
+
+    @property
+    def typed(self) -> TypedProgram:
+        """The typed program of a clean check (:func:`vera.typed.build`),
+        the one input verification, code generation and contract testing
+        read; the parse error, raised, or :class:`StageFailed` naming the
+        check's errors for a program the check refused, which has none."""
+        _raise_front_end_error(self.parsed)
+        if not self.ok:
+            raise StageFailed(
+                "the check refused the program, so it has no typed program:\n"
+                + _describe(self.errors))
+        if not self._typed:
+            self._typed.append(_build_typed(
+                self.program, list(self.modules or ()), self.artifacts))
+        return self._typed[0]
 
     def envelope(self) -> dict[str, Any]:
         """What ``vera check --json`` prints for this program."""
@@ -449,6 +471,20 @@ def check(
             parsed, resolved, tuple(resolver_diagnostics), tuple(diagnostics),
             artifacts,
         )
+
+
+def typed(
+    source: Source = "",
+    *,
+    file: str | None = None,
+    root: Path | None = None,
+    modules: Sequence[ResolvedModule] | None = None,
+) -> TypedProgram:
+    """The typed program of *source* (an empty program by default), which
+    must check clean: the input :class:`CodeGenerator` and
+    :class:`~vera.verifier.ContractVerifier` take, for a test that drives
+    one of their methods itself."""
+    return check(source, file=file, root=root, modules=modules).typed
 
 
 # =====================================================================
@@ -544,24 +580,15 @@ def verify(
     and envelope are the command's default ones.
     """
     with _budget(budget_s):
-        checked = check(
-            source, file=file, root=root, modules=modules,
-            collect_module_artifacts=True,
-        )
+        checked = check(source, file=file, root=root, modules=modules)
         if not checked.ok:
             return Verified(checked, timeout_ms, None)
-        artifacts = checked.artifacts
+        typed = checked.typed
         result = _verify_program(
-            checked.program, checked.source, file=checked.file,
-            timeout_ms=timeout_ms,
-            resolved_modules=checked.resolved,
-            expr_types=artifacts.expr_semantic_types,
-            expr_target_types=artifacts.expr_target_types,
-            module_artifacts=artifacts.module_artifacts,
+            typed, checked.source, file=checked.file, timeout_ms=timeout_ms,
         )
         reconciled = reconcile_verified(
-            checked.program, checked.source, checked.file,
-            list(checked.resolved or ()), artifacts, result,
+            typed, checked.source, checked.file, result,
         ) if reconcile else None
         return Verified(checked, timeout_ms, result, reconciled)
 
@@ -779,22 +806,13 @@ def compile(
     checker's tables for the program and each module it imports.
     """
     with _budget(budget_s):
-        front = check(
-            source, file=file, root=root, modules=modules,
-            collect_module_artifacts=True,
-        )
+        front = check(source, file=file, root=root, modules=modules)
         parsed = front.parsed
         if not front.ok:
             return Compiled(parsed, front, None, None)
-        artifacts = front.artifacts
         generator = CodeGenerator(
-            source=parsed.source, file=parsed.file,
-            resolved_modules=front.resolved,
-            expr_semantic_types=artifacts.expr_semantic_types,
-            expr_target_types=artifacts.expr_target_types,
-            module_artifacts=artifacts.module_artifacts,
-        )
-        result = generator.compile_program(parsed.program)
+            front.typed, source=parsed.source, file=parsed.file)
+        result = generator.compile_program()
         assert_no_orphan_call_indirect(result.wat)
         return Compiled(parsed, front, result, generator)
 
@@ -1010,20 +1028,13 @@ def contract_test(
     the functions the verifier proved (``vera test --distrust``).
     """
     with _budget(budget_s):
-        checked = check(
-            source, file=file, root=root, modules=modules,
-            collect_module_artifacts=True,
-        )
+        checked = check(source, file=file, root=root, modules=modules)
         if not checked.ok:
             return Tested(checked, None)
-        artifacts = checked.artifacts
         result = _test_program(
-            checked.program, source=checked.source, file=checked.file,
-            trials=trials, fn_name=fn, resolved_modules=checked.resolved,
-            expr_semantic_types=artifacts.expr_semantic_types,
-            expr_target_types=artifacts.expr_target_types,
-            module_artifacts=artifacts.module_artifacts,
-            alias_env=artifacts.alias_env, distrust=distrust,
+            checked.typed, source=checked.source, file=checked.file,
+            trials=trials, fn_name=fn,
+            alias_env=checked.artifacts.alias_env, distrust=distrust,
         )
         return Tested(checked, result)
 

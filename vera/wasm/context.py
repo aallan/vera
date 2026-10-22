@@ -586,17 +586,18 @@ class WasmContext(
         # ``int_overflow`` obligation uses, so codegen guards exactly the
         # sites the verifier obligates.  ``None`` when typecheck was skipped
         # (AST-only fallback).
-        self._expr_semantic_types: (
-            dict[tuple[int, int, int, int], object] | None
-        ) = None
+        self._expr_semantic_types: Mapping[int, object] = {}
         # #820: the checker's TARGET-type side-table (``expected`` per expr
         # span).  Consulted by ``_target_codegen_type`` — the codegen dual of
         # the verifier's ``_target_type_of`` — so the narrowing guards fire
         # at a tuple component / array element exactly where the verifier
         # obligates them.  ``None`` when typecheck was skipped.
-        self._expr_target_types: (
-            dict[tuple[int, int, int, int], object] | None
-        ) = None
+        self._expr_target_types: Mapping[int, object] = {}
+        # #1679: the instance each generic call calls, by the call's node
+        # identity (`TypedProgram.call_targets`): a generic call is lowered
+        # as a call of that instance's clone, named once from the typed
+        # instantiation.
+        self._call_targets: Mapping[int, Any] = {}
 
     def _owned_ctor_layout(
         self, owner: str | None, ctor_name: str,
@@ -645,19 +646,17 @@ class WasmContext(
             return own[ctor_name]
         return None
 
-    def set_expr_semantic_types(
-        self,
-        types: dict[tuple[int, int, int, int], object] | None,
-    ) -> None:
+    def set_expr_semantic_types(self, types: Mapping[int, object]) -> None:
         """Seed the checker's resolved-type side-table for the #798 overflow
         guard's Int/Nat operand classifier (mirrors the verifier's
         ``_resolved_type_of`` / ``_overflow_int_type``)."""
         self._expr_semantic_types = types
 
-    def set_expr_target_types(
-        self,
-        types: dict[tuple[int, int, int, int], object] | None,
-    ) -> None:
+    def set_call_targets(self, targets: Mapping[int, Any]) -> None:
+        """Seed the instance each generic call calls (#1679)."""
+        self._call_targets = targets
+
+    def set_expr_target_types(self, types: Mapping[int, object]) -> None:
         """Seed the checker's TARGET-type side-table (#820) for the
         narrowing guards' per-component target-type recovery
         (``_target_codegen_type`` — the dual of the verifier's

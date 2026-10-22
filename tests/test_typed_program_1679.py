@@ -184,8 +184,12 @@ REPROS: dict[str, Repro] = {
 }
 
 
+#: The instances the change that closes them has landed for.
+FLIPPED = frozenset({"1769_instantiated_row_fits"})
+
+
 @pytest.mark.parametrize("name", [
-    pytest.param(name, marks=pytest.mark.xfail(strict=True, reason="red at 94cef528: the typed program (#1679) flips it")) for name in sorted(REPROS)
+    name if name in FLIPPED else pytest.param(name, marks=pytest.mark.xfail(strict=True, reason="red at 94cef528: the typed program (#1679) flips it")) for name in sorted(REPROS)
 ])
 def test_repro_instance(name: str, tmp_path: Path) -> None:
     repro = REPROS[name]
@@ -272,8 +276,9 @@ def _matrix_program(judgment: Judgment, position: str, arg: str
                     effects=row) + "\n"
         call = f"outer({call_arg})"
     if position == "through_closure":
-        inner_row = "<State<Int>>" if judgment.code == "E125" and arg == judgment.sat else (
-            "<State<Bool>>" if judgment.code == "E125" else "pure")
+        # The closure declares the handler's row, so what an unsatisfied
+        # pair is refused for is the generic's row at its instantiation.
+        inner_row = "<State<Int>>" if judgment.code == "E125" else "pure"
         body = (f"{open_h}apply_fn(fn(@Unit -> @{ret}) effects({inner_row}) "
                 f"{{ {call} }}, ()){close_h}")
     else:
@@ -299,8 +304,9 @@ MATRIX = [
 
 def _red_at_base(judgment: str, verdict: str) -> bool:
     """At 94cef528 every unsatisfied ability, cell and key pair passes check,
-    and every satisfied effect-row pair is refused (E125)."""
-    return (verdict == "sat") == (judgment == "effect_row")
+    and every satisfied effect-row pair is refused (E125); the effect-row
+    pairs flip with the row instantiated at the call (#1769)."""
+    return verdict == "unsat" and judgment != "effect_row"
 
 
 @pytest.mark.parametrize(("judgment", "position", "verdict"), [

@@ -60,6 +60,7 @@ from vera.types import (
     pretty_inferred_type,
     strip_builtin_typevar_marker,
     substitute,
+    substitute_effect,
     types_equal,
 )
 
@@ -746,6 +747,11 @@ class CallsMixin:
         param_types = fn_info.param_types
         return_type = fn_info.return_type
         type_arg_conflict = False
+        # #1769: the callee's row as this call instantiates it.  A generic's
+        # row can name its type parameters (`effects(<State<T>>)`), and the
+        # call is held to the row at the type arguments it fixes, as its
+        # parameters and its return are.
+        call_effect = fn_info.effect
         if fn_info.forall_vars:
             conflicts: set[str] = set()
             # #1541/#1565: an argument's literals take their type from the
@@ -756,6 +762,8 @@ class CallsMixin:
                 result_type=fn_info.return_type, expected=expected,
                 conflicts=conflicts)
             self._record_instantiation(node, fn_info, mapping)
+            if mapping:
+                call_effect = substitute_effect(fn_info.effect, dict(mapping))
             self._record_literal_soft_result(
                 node, substitute(fn_info.return_type, soft_mapping))
             if conflicts:
@@ -966,17 +974,17 @@ class CallsMixin:
         # #1708: in a contract predicate, a callee whose row names an effect
         # no handler written inside the predicate handles is refused, and
         # the call is neither counted nor held to the row in force.
-        impure = (self._impure_in_predicate(fn_info.effect.effects)
-                  if isinstance(fn_info.effect, ConcreteEffectRow) else None)
+        impure = (self._impure_in_predicate(call_effect.effects)
+                  if isinstance(call_effect, ConcreteEffectRow) else None)
         if impure is not None:
             self._refuse_impure_predicate(
                 node, f"Call to '{fn_info.name}'",
                 f"the call to '{fn_info.name}'", impure)
 
         # Track effects
-        if not isinstance(fn_info.effect, PureEffectRow) and impure is None:
-            if isinstance(fn_info.effect, ConcreteEffectRow):
-                for ei in fn_info.effect.effects:
+        if not isinstance(call_effect, PureEffectRow) and impure is None:
+            if isinstance(call_effect, ConcreteEffectRow):
+                for ei in call_effect.effects:
                     self._effect_ops_used.add(ei.name)
 
         # #841: concurrency-eligibility warning for async().  The runtime
@@ -990,12 +998,12 @@ class CallsMixin:
         # Call-site effect check: callee's effects must be permitted
         # by the caller's context (Spec §7.8 subeffecting).
         if self.env.current_effect_row is not None and impure is None:
-            if not is_effect_subtype(fn_info.effect,
+            if not is_effect_subtype(call_effect,
                                      self.env.current_effect_row):
                 self._error(
                     node,
                     f"Function '{fn_info.name}' requires "
-                    f"{pretty_effect(fn_info.effect)} but call site only "
+                    f"{pretty_effect(call_effect)} but call site only "
                     f"allows {pretty_effect(self.env.current_effect_row)}.",
                     rationale="A function can only be called from a context "
                               "that permits all of its declared effects "

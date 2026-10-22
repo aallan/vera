@@ -440,38 +440,23 @@ def test_the_remedy_names_the_offending_type_not_the_declaration() -> None:
     assert "'B<T>'" in bad[0].fix, bad[0].fix
 
 
-def test_verify_declines_a_non_regular_type_without_the_checker() -> None:
-    """`verify()` is a public entry point, and its check-clean precondition is
-    the caller's to keep.
-
-    Measured before this: calling `verify()` directly on a program the checker
-    refuses did not come back within 60 s, because the datatype-group closure
-    has no fixed point — the rule protected the CLI path and nothing else
-    (PR #1432 review).  The SMT layer now asks the same shared derivation and
-    declines to model such a type, so the walk terminates by the RULE rather
-    than by a bound on how far it may go.
-    """
-    import time
-
-    from vera.checker import typecheck_with_artifacts
-    from vera.parser import parse_to_ast
-    from vera.verifier import verify
-
+def test_verify_is_not_reachable_on_a_non_regular_type() -> None:
+    """`verify()` takes the typed program, which only a clean check yields
+    (#1679), so a program the checker refuses for a non-regular type (E129)
+    cannot be verified at all.  Measured before #1679: calling `verify()`
+    directly on such a program did not come back within 60 s (PR #1432
+    review); the SMT layer still declines to model the type, and nothing
+    can hand it one now."""
     source = (
         "private data Nest<T> { N(Nest<Option<T>>), Z }\n"
         "public fn f(@Nest<Int> -> @Int)\n"
         "  requires(true) ensures(true) effects(pure)\n"
         "{ match @Nest<Int>.0 { N(@Nest<Option<Int>>) -> 1, Z -> 0 } }"
     )
-    program = parse_to_ast(source)
-    diags, artifacts = typecheck_with_artifacts(program, source)
-    assert any(d.error_code == "E129" for d in diags), diags
-
-    started = time.monotonic()
-    verify(program, source,
-           expr_types=artifacts.expr_semantic_types,
-           expr_target_types=artifacts.expr_target_types)
-    assert time.monotonic() - started < 30, "verify() did not decline promptly"
+    checked = pipeline.check(source)
+    assert any(d.error_code == "E129" for d in checked.errors), checked.errors
+    with pytest.raises(pipeline.StageFailed):
+        _ = checked.typed
 
 
 def test_one_derivation_serves_both_consumers() -> None:
@@ -584,7 +569,11 @@ def test_the_index_is_built_once_per_module(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(regularity_mod.RegularityIndex, "__init__", _counted)
     source = _chain_source(50, linked=True)
     checker_core.typecheck(parse_to_ast(source), source)
-    assert len(built) == 1, f"{len(built)} indexes built for one module"
+    # The prelude's bodies are checked in a namespace of their own (#1679),
+    # which builds its own index once; the module's is the one holding its
+    # declarations.
+    own = [registry for registry in built if "D0" in registry]
+    assert len(own) == 1, f"{len(own)} indexes built for one module"
 
 
 def test_regularity_does_not_dominate_the_check(tmp_path: Path) -> None:

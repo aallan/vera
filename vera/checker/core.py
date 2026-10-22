@@ -108,14 +108,32 @@ def typecheck(
     return checker.errors
 
 
-def _check(checker: TypeChecker, program: ast.Program) -> None:
+@dataclass
+class CheckTables:
+    """The tables a check types nodes into by their identity (#1679): each
+    expression's type and target, and each generic call's instantiation.
+
+    A batch of checks that shares a body-check memo
+    (``typecheck_with_artifacts(body_check_memo=...)``) shares these too: a
+    module whose bodies one check of the batch typed is not checked again
+    by the next, so its nodes' entries have to be where that one wrote
+    them.  Identities are unique, so the batch's checks never collide."""
+
+    semantic: dict[int, Type] = field(default_factory=dict)
+    target: dict[int, Type] = field(default_factory=dict)
+    instantiations: dict[int, Instantiation] = field(default_factory=dict)
+
+
+def _check(checker: TypeChecker, program: ast.Program,
+           tables: CheckTables | None = None) -> None:
     """Check *program* with *checker*, the one sequence both entry points
     run, so their diagnostics are the same (#1679): the program and the
     modules it reaches, then the bodies of the prelude declarations its
     binding bound, every node typed into one table by its identity."""
-    checker.node_semantic_types = {}
-    checker.node_target_types = {}
-    checker.instantiations = {}
+    tables = tables if tables is not None else CheckTables()
+    checker.node_semantic_types = tables.semantic
+    checker.node_target_types = tables.target
+    checker.instantiations = tables.instantiations
     checker.check_program(program)
     # The prelude is checked clean, so an error here is a defect of the
     # compiler's own source, reported on every program it reaches; a
@@ -241,6 +259,7 @@ def typecheck_with_artifacts(
     resolved_modules: list[ResolvedModule] | None = None,
     collect_module_artifacts: bool = False,
     body_check_memo: set[tuple[str, ...]] | None = None,
+    tables: CheckTables | None = None,
 ) -> tuple[list[Diagnostic], CheckArtifacts]:
     """Type-check and additionally collect LSP artifacts (#222 Phase D).
 
@@ -298,7 +317,7 @@ def typecheck_with_artifacts(
     checker.expr_target_types = {}
     checker.hole_sites = []
     try:
-        _check(checker, program)
+        _check(checker, program, tables)
     except BaseException as exc:
         # #1429, as in `typecheck` above — and this is the entry every `vera`
         # command actually calls, so wiring only the other one would have left

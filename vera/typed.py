@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, fields
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from vera import ast
 from vera.types import (
@@ -29,6 +29,11 @@ from vera.types import (
     strip_builtin_typevar_marker,
     substitute,
 )
+
+if TYPE_CHECKING:
+    from vera.binding import Binding, Linked
+    from vera.checker.core import CheckArtifacts
+    from vera.resolver import ResolvedModule
 
 
 @dataclass(frozen=True)
@@ -215,10 +220,14 @@ class Instance:
         """The clone's name: the declaration's link name and its arguments,
         for a helper of a generic under its parent clone's name, as code
         generation names the helper it hoists out of that clone."""
-        from vera.monomorphize import Monomorphizer, where_helper_name
+        from vera.monomorphize import Monomorphizer
         base = self.key
         if self.parent is not None:
-            base = f"{self.parent.name}$where${where_helper_name(self.key)}"
+            # The helper's link name is its generic ancestor's key and the
+            # chain of helpers down to it (`f$where$g$where$h`), and code
+            # generation hoists it under the parent clone along that chain.
+            assert self.key.startswith(self.parent.key + "$where$")  # noqa: S101
+            base = self.parent.name + self.key[len(self.parent.key):]
         return Monomorphizer._mangle_fn_name(base, self.args)
 
 
@@ -331,21 +340,20 @@ def derive_instances(
 # =====================================================================
 
 
-def link_checked(program: ast.Program, modules: Sequence[object],
-                 binding: object, prelude: Sequence[ast.TopLevelDecl],
-                 prelude_source: str) -> object:
+def link_checked(program: ast.Program, modules: Sequence[ResolvedModule],
+                 binding: Binding | None,
+                 prelude: Sequence[ast.TopLevelDecl],
+                 prelude_source: str) -> Linked:
     """The linked program (:class:`vera.binding.Linked`) of a checked
     *program*, from the binding its check bound and the prelude
     declarations that binding covers, so the nodes the checker typed are the
     nodes the verifier and code generation read."""
     from dataclasses import replace
 
-    from vera.binding import PRELUDE, Binding, DeclId, Linked, _link_fn, link
-    from vera.resolver import ResolvedModule
+    from vera.binding import PRELUDE, DeclId, Linked, _link_fn, link
 
-    assert isinstance(binding, Binding)  # noqa: S101
-    mods = [m for m in modules if isinstance(m, ResolvedModule)]
-    linked_program, linked_modules = link(program, mods, binding)
+    assert binding is not None  # every check binds  # noqa: S101
+    linked_program, linked_modules = link(program, modules, binding)
     return Linked(
         program=linked_program,
         modules=linked_modules,
@@ -379,14 +387,35 @@ class TypedProgram:
     this, and derive no type and no instantiation of their own."""
 
     program: ast.Program
-    modules: list[object]
-    linked: object
+    modules: list[ResolvedModule]
+    linked: Linked
     templates: dict[str, Template]
     instances: list[Instance]
     semantic: dict[int, Type]
     target: dict[int, Type]
     call_targets: dict[int, Instance]
     origin: dict[int, int]
+    #: The instances a body that is not generic calls, each once, in the
+    #: order the bodies are read.
+    seeds: list[Instance] = field(default_factory=list)
+    _by_ident: dict[tuple[object, ...], Instance] | None = field(
+        default=None, repr=False)
+    _by_name: dict[str, Instance] | None = field(default=None, repr=False)
+
+    def instance(self, key: str, args: tuple[str, ...],
+                 parent: Instance | None = None) -> Instance | None:
+        """The instance of *key* at *args* (under *parent*), if the program
+        needs it."""
+        if self._by_ident is None:
+            self._by_ident = {inst.ident: inst for inst in self.instances}
+        return self._by_ident.get(
+            (key, args, parent.ident if parent is not None else None))
+
+    def instance_named(self, name: str) -> Instance | None:
+        """The instance whose clone is named *name*."""
+        if self._by_name is None:
+            self._by_name = {inst.name: inst for inst in self.instances}
+        return self._by_name.get(name)
 
     def semantic_type(self, node: ast.Node) -> Type | None:
         """The checker's type of *node*, or ``None`` for a node it did not
@@ -458,8 +487,8 @@ def _walk(node: object) -> Iterator[ast.Node]:
             stack.extend(item)
 
 
-def build(program: ast.Program, modules: Sequence[object],
-          artifacts: object) -> TypedProgram:
+def build(program: ast.Program, modules: Sequence[ResolvedModule],
+          artifacts: CheckArtifacts) -> TypedProgram:
     """The typed program of the checked *program*, from its check's
     *artifacts* (:class:`vera.checker.core.CheckArtifacts`).
 
@@ -470,21 +499,18 @@ def build(program: ast.Program, modules: Sequence[object],
     environment (#1208)."""
     from dataclasses import replace
 
-    from vera.binding import Linked
-    from vera.monomorphize import MonoContext, Monomorphizer
+    from vera.monomorphize import Monomorphizer
     from vera.naming import AliasEnv, alias_env_from_program
 
     arts = artifacts
-    linked = link_checked(
-        program, modules, arts.binding,  # type: ignore[attr-defined]
-        arts.prelude, arts.prelude_source)  # type: ignore[attr-defined]
-    assert isinstance(linked, Linked)  # noqa: S101
-    recorded = arts.instantiations  # type: ignore[attr-defined]
+    linked = link_checked(program, modules, arts.binding, arts.prelude,
+                          arts.prelude_source)
+    recorded = arts.instantiations
     templates, instances, seed_targets = derive_instances(
         linked.program, [(m.path, m.program) for m in linked.modules],
         linked.prelude, recorded)
-    checked_semantic: dict[int, Type] = arts.node_semantic_types  # type: ignore[attr-defined]
-    checked_target: dict[int, Type] = arts.node_target_types  # type: ignore[attr-defined]
+    checked_semantic: dict[int, Type] = arts.node_semantic_types
+    checked_target: dict[int, Type] = arts.node_target_types
     semantic = dict(checked_semantic)
     target = dict(checked_target)
     call_targets: dict[int, Instance] = dict(seed_targets)
@@ -495,7 +521,7 @@ def build(program: ast.Program, modules: Sequence[object],
             declarations=(*linked.prelude, *linked.program.declarations))),
         **{m.path: alias_env_from_program(m.program) for m in linked.modules},
     }
-    mono = Monomorphizer(MonoContext({}, {}, {}, {}, {}, {}, {}))
+    mono = Monomorphizer()
     for inst in instances:
         if inst.parent is None:
             template: ast.FnDecl | None = templates[inst.key].decl
@@ -521,7 +547,12 @@ def build(program: ast.Program, modules: Sequence[object],
             callee = inst.calls.get(source)
             if callee is not None:
                 call_targets[node.node_id] = callee
+    seeds: list[Instance] = []
+    for inst in seed_targets.values():
+        if all(inst is not seen for seen in seeds):
+            seeds.append(inst)
     return TypedProgram(
         program=program, modules=list(modules), linked=linked,
         templates=templates, instances=instances, semantic=semantic,
-        target=target, call_targets=call_targets, origin=origin)
+        target=target, call_targets=call_targets, origin=origin,
+        seeds=seeds)

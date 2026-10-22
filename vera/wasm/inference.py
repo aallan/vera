@@ -936,18 +936,11 @@ class InferenceMixin:
                 if decl_ret.name in forall_vars:
                     return mapping.get(decl_ret.name)
                 return decl_ret.name
-            parts = []
-            for tv in forall_vars:
-                if tv not in mapping:
-                    return None
-                parts.append(mapping[tv])
-            # Shared injective mangler (#775) — the registry below is keyed
-            # by the clone names Pass 1.5 emitted, so the lookup key must be
-            # built by the same encoding.  (The pre-#775 site joined RAW
-            # type names with "_", which additionally missed every
-            # parameterized instantiation like Map<String, Int>.)
-            mangled = Monomorphizer._mangle_fn_name(
-                call.name, self._canonical_type_args(parts))
+            # #1679: the clone this call calls is the typed program's, named
+            # from the instantiation the checker inferred at the call.
+            mangled = self._resolve_generic_call(call)
+            if mangled is None:
+                return None
             # Look up WASM return type and map back
             ret_wt = self._fn_ret_types.get(mangled)
             if ret_wt == "i64":
