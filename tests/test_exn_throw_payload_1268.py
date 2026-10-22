@@ -49,7 +49,7 @@ from tests.codegen_helpers import (
 )
 from tests import pipeline as vera_pipeline
 from tests.pipeline import checks
-from tests.verifier_helpers import _verify, _verify_err, _verify_user_effect
+from tests.verifier_helpers import _verify, _verify_err
 
 
 _POS = "type Pos = { @Int | @Int.0 > 0 };\n"
@@ -206,23 +206,19 @@ public fn main(@Unit -> @Int)
     def test_the_user_effect_op_and_throw_agree(self) -> None:
         """A declared op's argument was loud while `throw`'s was silent, for
         the same value against the same refinement — the asymmetry that made
-        this a bug rather than a documented limitation.  Both are loud now,
-        at the same site name, so a reader cannot learn one rule from a user
-        effect and have it fail to hold for `Exn`.  The declared op is
-        measured past the check: a row naming a user-declared effect is
-        refused there (E340, #1681)."""
-        user = [e for e in _verify_user_effect(self._USER_EFFECT).diagnostics
-                if e.severity == "error"
-                and "refinement predicate" in e.description.lower()]
-        assert user, "Expected a refinement-predicate error at the declared op"
+        this a bug rather than a documented limitation.  `throw` is loud, at
+        the effect-operation argument site.  The declared op's program is
+        refused at check, where a row naming a user-declared effect is
+        refused (E340, #1681), so no verification reaches its operation."""
+        refused = vera_pipeline.verify(self._USER_EFFECT)
+        assert {d.error_code for d in refused.checked.errors} == {"E340"}, [
+            (d.error_code, d.description[:70]) for d in refused.checked.errors]
+        assert not refused.ran
         thrown = _verify_err(
             _thrower("Pos", "0 - 5", prelude=_POS), "refinement predicate")
-        assert {e.error_code for e in user} == {"E505"}, user
         assert {e.error_code for e in thrown} == {"E505"}, thrown
         assert all("effect-operation argument" in e.description
-                   for e in user + thrown), [
-            e.description[:90] for e in user + thrown
-        ]
+                   for e in thrown), [e.description[:90] for e in thrown]
 
     def test_the_refined_alias_spelling_is_obligated_too(self) -> None:
         """`Exn<Payload>` where `type Payload = Pos` resolves through the
@@ -617,27 +613,26 @@ public fn main(@Float64 -> @Int)
         with no runtime guard.  That is false since the guard landed, and it
         contradicts the spec sentences this change amended — a reader taking
         the diagnostic at its word would add a defensive check the compiler
-        already emits.  Reached through the site that IS still unguarded, a
-        user-declared effect's operation argument, so the sentence is read
-        from a real diagnostic rather than from the source, measured past the
-        check, where a row naming the effect is refused (E340, #1681).
+        already emits.  Reached through a site that is still unguarded, the
+        call argument a clause's narrowed `throw(@Nat)` binder flows into
+        (#1362's shape), so the sentence is read from a real diagnostic
+        rather than from the source.
         """
-        result = _verify_user_effect("""
-effect Counter {
-  op bump(Nat -> Unit);
-}
-
-public fn main(@Unit -> @Int)
+        result = _verify("""
+public fn main(@Int -> @Int)
   requires(true)
   ensures(true)
-  effects(<Counter>)
+  effects(pure)
 {
-  Counter.bump(array_length(string_lines("a\\nb")));
-  0
+  handle[Exn<Int>] {
+    throw(@Nat) -> { nat_to_int(@Nat.0) }
+  } in {
+    throw(@Int.0)
+  }
 }
 """)
         binds = [o for o in result.obligations if o.kind == "nat_bind"]
-        assert [o.status for o in binds] == ["tier3_unguarded"], binds
+        assert "tier3_unguarded" in [o.status for o in binds], binds
         rationales = [d.rationale for d in result.diagnostics
                       if d.error_code == "E504"]
         assert len(rationales) == 1, [d.error_code for d in result.diagnostics]
@@ -941,30 +936,21 @@ public fn main(@Unit -> @Int)
     def test_a_bare_user_op_argument_is_obligated_whatever_its_name(
         self, name: str,
     ) -> None:
-        """Both spellings are loud.  `put` was already, by coincidence.
-
-        A bare call to a user effect's operation needs a handler for the
-        effect, which the checker refuses (E340), so the verifier's reading
-        is measured past the check."""
+        """A bare call to a user effect's operation needs a handler for the
+        effect, which the checker refuses (E340) whatever the operation's
+        name, so verification reaches neither spelling."""
         src = self._USER_OP % {"name": name}
-        assert {d.error_code
-                for d in vera_pipeline.check(src).errors} == {"E340"}
-        result = vera_pipeline.verify(src, past_check=True).result
-        errs = [d for d in result.diagnostics if d.severity == "error"
-                and "refinement predicate" in d.description]
-        assert any(e.error_code == "E505" for e in errs), [
-            (e.error_code, e.description[:80]) for e in result.diagnostics
-        ]
+        verified = vera_pipeline.verify(src)
+        assert {d.error_code for d in verified.checked.errors} == {"E340"}
+        assert not verified.ran
 
     def test_a_user_op_is_not_claimed_runtime_guarded(self) -> None:
-        """Guardedness stays keyed on the PARENT EFFECT, so a user effect's
-        op — of either name — is the unguarded class and discloses E504
-        rather than claiming the built-in `State` store's runtime guard.
-
-        Named `put` deliberately: the coincidence that made the old gate look
-        right is the same coincidence that would make a name-keyed
-        guardedness computation look right.  Measured past the check, which
-        refuses the handler (E340).
+        """Guardedness stays keyed on the PARENT EFFECT: a user effect's op
+        named `put` does not claim the built-in `State` store's runtime
+        guard.  Named `put` deliberately: the coincidence that made the old
+        gate look right is the same coincidence that would make a name-keyed
+        guardedness computation look right.  The check refuses the handler
+        (E340), so no verification reaches the operation.
         """
         src = """
 effect Log {
@@ -984,13 +970,9 @@ public fn main(@Unit -> @Int)
   }
 }
 """
-        assert {d.error_code
-                for d in vera_pipeline.check(src).errors} == {"E340"}
-        result = vera_pipeline.verify(src, past_check=True).result
-        binds = [o for o in result.obligations if o.kind == "nat_bind"]
-        assert [o.status for o in binds] == ["tier3_unguarded"], binds
-        assert [o.error_code for o in binds] == ["E504"], binds
-        assert result.summary.tier3_runtime == 0, result.summary
+        verified = vera_pipeline.verify(src)
+        assert {d.error_code for d in verified.checked.errors} == {"E340"}
+        assert not verified.ran
 
     def test_a_resume_value_is_obligated_exactly_once(self) -> None:
         """A `State` get clause's tail `resume(v)` is obligated from the

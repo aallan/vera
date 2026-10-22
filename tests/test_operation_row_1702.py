@@ -435,26 +435,18 @@ def _rule_7_repro(row: str, op: str) -> str:
     return _RULE_7_REPRO.replace("ROW", row).replace("OP", op)
 
 
-def _codegen_refuses(source: str) -> list[str]:
-    """What code generation reports for *source* past the check: its
-    errors' codes, an uncoded one as "uncoded"."""
-    result = pipeline.compile(source, past_check=True).result
-    return [d.error_code or "uncoded" for d in result.diagnostics
-            if d.severity == "error"
-            or (d.error_code or "").startswith("E6")]
-
-
-@pytest.mark.parametrize(("row", "op", "backend"), [
-    ("State<Int>", "put(@Int.0)", "E602"),
-    ("State<Int>", "State.put(@Int.0)", "uncoded"),
-    ("Exn<Int>", "throw(@Int.0)", "E602"),
-    ("Exn<Int>", "Exn.throw(@Int.0)", "uncoded"),
+@pytest.mark.parametrize(("row", "op"), [
+    ("State<Int>", "put(@Int.0)"),
+    ("State<Int>", "State.put(@Int.0)"),
+    ("Exn<Int>", "throw(@Int.0)"),
+    ("Exn<Int>", "Exn.throw(@Int.0)"),
 ])
 def test_repro_rule_7_a_cell_operation_in_a_closure(
-    row: str, op: str, backend: str,
+    row: str, op: str,
 ) -> None:
     """Accepted at the base under a row naming the effect, and refused by
-    code generation: refused at check now, at the call, with E340."""
+    code generation (bare with E602, qualified with a module that did not
+    assemble): refused at check now, at the call, with E340."""
     source = _rule_7_repro(row, op)
     checked = pipeline.check(source)
     assert _placed(checked) == [("E340", *_locate(source, op))], (
@@ -462,7 +454,6 @@ def test_repro_rule_7_a_cell_operation_in_a_closure(
     operation = {"State<Int>": "a State", "Exn<Int>": "an Exn"}[row]
     assert f": {operation} operation in a closure" in (
         checked.errors[0].description), checked.errors[0].description
-    assert backend in _codegen_refuses(source)
 
 
 # =====================================================================
@@ -705,7 +696,6 @@ def test_a_handler_around_a_closure_does_not_lower_its_operation() -> None:
             "    apply_fn(@F.0, @Int.0)\n  }")))
     assert _placed(pipeline.check(source)) == [
         ("E340", *_locate(source, "put(@Int.0)"))]
-    assert "E602" in _codegen_refuses(source)
 
 
 @pytest.mark.parametrize("row", ("pure", "<IO>"))

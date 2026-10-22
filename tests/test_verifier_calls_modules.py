@@ -1547,13 +1547,13 @@ class TestCrossModuleVerification:
 
     # Reusable module sources
     MATH_MODULE = """\
-public fn abs(@Int -> @Int)
+public fn iabs(@Int -> @Int)
   requires(true)
   ensures(@Int.result >= 0)
   effects(pure)
 { if @Int.0 < 0 then { 0 - @Int.0 } else { @Int.0 } }
 
-public fn max(@Int, @Int -> @Int)
+public fn imax(@Int, @Int -> @Int)
   requires(true)
   ensures(@Int.result >= @Int.0)
   ensures(@Int.result >= @Int.1)
@@ -1595,20 +1595,20 @@ private fn internal(@Int -> @Int)
     ) -> VerifyResult:
         """Parse, type-check, and verify with resolved modules."""
         return pipeline.verify(
-            source, modules=modules, past_check=True).result
+            source, modules=modules).result
 
     # -- Postcondition assumption -----------------------------------------
 
     def test_imported_postcondition_assumed(self) -> None:
-        """abs(x) ensures result >= 0, so caller's ensures(@Int.result >= 0) verifies."""
+        """iabs(x) ensures result >= 0, so caller's ensures(@Int.result >= 0) verifies."""
         mod = self._resolved(("math",), self.MATH_MODULE)
         result = self._verify_mod("""\
-import math(abs);
+import math(iabs);
 private fn wrap(@Int -> @Int)
   requires(true)
   ensures(@Int.result >= 0)
   effects(pure)
-{ abs(@Int.0) }
+{ iabs(@Int.0) }
 """, [mod])
         errors = [d for d in result.diagnostics if d.severity == "error"]
         assert errors == [], [e.description for e in errors]
@@ -1681,15 +1681,15 @@ private fn good(@Int -> @Int)
     # -- Chained imported calls -------------------------------------------
 
     def test_chained_imported_calls(self) -> None:
-        """abs(max(x, y)) >= 0 verifies via composed postconditions."""
+        """iabs(imax(x, y)) >= 0 verifies via composed postconditions."""
         mod = self._resolved(("math",), self.MATH_MODULE)
         result = self._verify_mod("""\
-import math(abs, max);
+import math(iabs, imax);
 private fn abs_max(@Int, @Int -> @Int)
   requires(true)
   ensures(@Int.result >= 0)
   effects(pure)
-{ abs(max(@Int.0, @Int.1)) }
+{ iabs(imax(@Int.0, @Int.1)) }
 """, [mod])
         errors = [d for d in result.diagnostics if d.severity == "error"]
         assert errors == [], [e.description for e in errors]
@@ -1700,15 +1700,15 @@ private fn abs_max(@Int, @Int -> @Int)
         """Function not in import list falls back to Tier 3."""
         mod = self._resolved(("math",), self.MATH_MODULE)
         result = self._verify_mod("""\
-import math(abs);
+import math(iabs);
 private fn wrap(@Int -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
-{ abs(@Int.0) }
+{ iabs(@Int.0) }
 """, [mod])
-        # abs is imported, max is not — but we're only calling abs here
-        # abs should be Tier 1 verified (postcondition is trivial ensures(true))
+        # iabs is imported, imax is not — but we're only calling iabs here
+        # iabs should be Tier 1 verified (postcondition is trivial ensures(true))
         errors = [d for d in result.diagnostics if d.severity == "error"]
         assert errors == [], [e.description for e in errors]
 
@@ -1740,14 +1740,14 @@ private fn wrap(@Int -> @Int)
         """Imported calls promote to Tier 1 instead of Tier 3."""
         mod = self._resolved(("math",), self.MATH_MODULE)
         result = self._verify_mod("""\
-import math(abs);
+import math(iabs);
 private fn wrap(@Int -> @Int)
   requires(true)
   ensures(@Int.result >= 0)
   effects(pure)
-{ abs(@Int.0) }
+{ iabs(@Int.0) }
 """, [mod])
-        # requires(true) → Tier 1, ensures(@Int.result >= 0) → Tier 1 (via abs postcondition)
+        # requires(true) → Tier 1, ensures(@Int.result >= 0) → Tier 1 (via iabs postcondition)
         assert result.summary.tier1_verified >= 2
 
     # -- No regression on single-module -----------------------------------
@@ -2016,12 +2016,14 @@ private fn f(@Int -> @Box<Nat>)
         the two helpers DISTINCTLY, so a LYING one is verified independently.
 
         `ma`'s `gid` tells the truth (``ensures(@T.result == @T.0)``); `mb`'s LIES
-        (``ensures(@T.result == 9)`` over body `@T.0`).  Pre-fix both qualified to
-        the bare `compute$where$gid` and collapsed first-seen-wins, so only `ma`'s
-        truthful helper was verified and `mb`'s lie was a false Tier-1.
+        (``ensures(@T.result != @T.0)`` over body `@T.0`).  Pre-fix both qualified
+        to the bare `compute$where$gid` and collapsed first-seen-wins, so only
+        `ma`'s truthful helper was verified and `mb`'s lie was a false Tier-1.
         Namespacing the qualification by module path
         (`mod$ma$compute$where$gid` vs `mod$mb$compute$where$gid`) keeps them
-        distinct and catches the lie."""
+        distinct and catches the lie.  `mb`'s `compute` reaches the program
+        through `mc`, since one namespace importing both bare `compute`s is
+        refused at check (E155)."""
         ma = self._resolved(("ma",), (
             "public fn compute(@Int -> @Int)"
             " requires(true) ensures(true) effects(pure) { gid(@Int.0) }\n"
@@ -2036,16 +2038,22 @@ private fn f(@Int -> @Box<Nat>)
             " requires(true) ensures(true) effects(pure) { gid(@Int.0) }\n"
             "where {\n"
             "  forall<T> fn gid(@T -> @T)"
-            "    requires(true) ensures(@T.result == 9) effects(pure) { @T.0 }\n"
+            "    requires(true) ensures(@T.result != @T.0) effects(pure)"
+            " { @T.0 }\n"
             "}\n"
+        ))
+        mc = self._resolved(("mc",), (
+            "import mb(compute);\n"
+            "public fn run(@Int -> @Int)"
+            " requires(true) ensures(true) effects(pure) { compute(@Int.0) }\n"
         ))
         result = self._verify_mod(
             "import ma(compute);\n"
-            "import mb(compute);\n"
+            "import mc(run);\n"
             "public fn main(@Unit -> @Int)"
             " requires(true) ensures(true) effects(pure)"
-            " { ma::compute(1) + mb::compute(1) }\n",
-            [ma, mb],
+            " { compute(1) + run(1) }\n",
+            [ma, mb, mc],
         )
         e500s = [d for d in result.diagnostics if d.error_code == "E500"]
         assert len(e500s) == 1, (
@@ -2062,7 +2070,8 @@ private fn f(@Int -> @Box<Nat>)
         obligation stream carries the module generic's instances."""
         g = self._resolved(("g",), (
             "public forall<T> fn gen(@T, @Int -> @Int)"
-            " requires(@Int.0 >= 0) ensures(true) effects(pure)\n"
+            " requires(@Int.0 >= 0) ensures(true) decreases(@Int.0)"
+            " effects(pure)\n"
             "{ if @Int.0 == 0 then { 0 } else"
             " { gen(@T.0, @Int.0 - 1) + 1 } }\n"
         ))
