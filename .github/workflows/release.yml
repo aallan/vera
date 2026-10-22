@@ -426,9 +426,16 @@ jobs:
           # Latest only when no higher version is released: releases start
           # in the order their merges' CI runs complete, which a second
           # version-raising merge's can beat.  A tag with no published
-          # Release is no rival.  A failed read stops the step (bash -e).
+          # Release is no rival.  A failed read stops the step (bash -e),
+          # and so does an empty one, which gh's --paginate can return with
+          # exit 0: this repository always has Releases.  A partial read
+          # still decides, since the API lists Releases newest first.
           released="$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
             --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name | ltrimstr("v")')"
+          if [ -z "$released" ]; then
+            echo "::error::the Releases listing came back empty, so Latest cannot be decided"
+            exit 1
+          fi
           highest="$(printf '%s\n%s\n' "$released" "$VERSION" \
             | grep -xE '[0-9]+\.[0-9]+\.[0-9]+' | sort -V | tail -n 1)"
           latest=false

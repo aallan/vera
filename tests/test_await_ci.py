@@ -545,33 +545,47 @@ class TestTheReleaseStartsWhenCiCompletes:
 
 
 #: gh as the release step calls it: the tag's read (the tag exists at the
-#: release commit), the listing of the published Releases, which answers
-#: with what the step's `--jq` makes of them (`STUB_FAIL` fails it), and the
-#: release's creation.
+#: release commit), the listing of the Releases, whose records it runs
+#: through the step's own `--jq` with `jq` (`STUB_FAIL` fails the listing
+#: after its first page, as gh does when a later page's request fails), and
+#: the release's creation.
 _STUB_GH = '''#!{python}
-import json, os, sys
+import json, os, subprocess, sys
 args = sys.argv[1:]
 with open(os.environ["STUB_LOG"], "a", encoding="utf-8") as log:
     log.write(json.dumps(args) + "\\n")
 if args[:1] == ["api"] and "/git/ref/tags/" in args[1]:
     print(os.environ["RELEASE_SHA"])
 elif args[:1] == ["api"] and args[1].endswith("/releases"):
+    jq = subprocess.run(["jq", "-r", args[args.index("--jq") + 1]], input=os.environ["STUB_RELEASES"],
+                        capture_output=True, text=True, check=True)
+    print(jq.stdout, end="")
     if os.environ.get("STUB_FAIL"):
         sys.exit("HTTP 502")
-    print("\\n".join(os.environ["STUB_RELEASES"].split()))
 elif args[:2] != ["release", "create"]:
     sys.exit(f"unexpected gh call: {{args}}")
 '''
 
 
-@pytest.mark.skipif(os.name == "nt" or shutil.which("bash") is None,
-                    reason="the step is a bash script for ubuntu-latest")
+def _releases(spec: str) -> str:
+    """The Releases API's records for ``spec``, tag names with `draft:` or
+    `pre:` before a draft's or a pre-release's."""
+    records = []
+    for name in spec.split():
+        kind, _, tag = name.rpartition(":")
+        records.append({"tag_name": tag, "draft": kind == "draft", "prerelease": kind == "pre"})
+    return json.dumps(records)
+
+
+@pytest.mark.skipif(os.name == "nt" or shutil.which("bash") is None or shutil.which("jq") is None,
+                    reason="the step is a bash script for ubuntu-latest; the stand-in gh needs jq")
 class TestTheLatestMark:
     """Releases start in the order their merges' CI runs complete, and a
     second version-raising merge's run can complete first, so the GitHub
     Release is marked Latest only when no higher version is already
     released.  The tag and release step runs here as the runner runs it
-    (`bash -e`), with a stand-in `gh`."""
+    (`bash -e`), with a stand-in `gh` that runs the Releases' records
+    through the step's own `--jq`."""
 
     def _release(self, tmp_path: Path, version: str, released: str,
                  **extra: str) -> tuple[int, list[list[str]]]:
@@ -589,28 +603,28 @@ class TestTheLatestMark:
         env = {name: value for name, value in os.environ.items() if name not in ("BASH_ENV", "ENV")}
         env.update({"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
                     "GITHUB_REPOSITORY": "aallan/vera", "GH_TOKEN": "token", "VERSION": version,
-                    "RELEASE_SHA": "a" * 40, "STUB_LOG": str(log), "STUB_RELEASES": released,
-                    **extra})
+                    "RELEASE_SHA": "a" * 40, "STUB_LOG": str(log),
+                    "STUB_RELEASES": _releases(released), **extra})
         proc = subprocess.run(["bash", "-e", str(script)], cwd=tmp_path, env=env, check=False,
                               capture_output=True, text=True, encoding="utf-8")
         calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
         return proc.returncode, calls
 
     @pytest.mark.parametrize(("version", "released", "latest"), [
-        ("0.2.6", "0.2.4 0.2.5", "true"),
-        ("0.2.6", "0.2.5 0.2.7", "false"),
-        ("0.2.10", "0.2.8 0.2.9", "true"),
-        ("0.2.9", "0.2.8 0.2.10", "false"),
-        ("0.3.0", "0.2.9 scode-1.0.0 1.0.0rc1", "true"),
-        ("0.1.0", "", "true"),
+        ("0.2.6", "v0.2.4 v0.2.5", "true"),
+        ("0.2.6", "v0.2.5 v0.2.7", "false"),
+        ("0.2.10", "v0.2.8 v0.2.9", "true"),
+        ("0.2.9", "v0.2.8 v0.2.10", "false"),
+        ("0.3.0", "v0.2.9 vscode-1.0.0 v1.0.0rc1", "true"),
+        ("0.2.6", "v0.2.5 draft:v0.2.7 pre:v0.2.8", "true"),
     ])
     def test_a_release_is_latest_only_when_no_higher_version_is_released(
         self, tmp_path: Path, version: str, released: str, latest: str,
     ) -> None:
-        """Versions compare as versions, not as text; a Release that is not
-        a release version (`vscode-1.0.0` reads as `scode-1.0.0` once the
-        prefix goes) is no rival, and nor is a tag with no published Release,
-        which the listing does not hold; the first release is Latest."""
+        """Versions compare as versions, not as text; a Release that is not a
+        release version (`vscode-1.0.0`), a draft and a pre-release are no
+        rivals, and nor is a tag with no published Release, which the
+        listing does not hold."""
         code, calls = self._release(tmp_path, version, released)
         assert code == 0
         (create,) = [c for c in calls if c[:2] == ["release", "create"]]
@@ -618,8 +632,18 @@ class TestTheLatestMark:
         assert "--latest" not in create
 
     def test_a_failed_read_of_the_releases_creates_no_release(self, tmp_path: Path) -> None:
-        """A listing that fails says nothing about the versions released, so
-        the step stops before the release is created, rather than mark it."""
-        code, calls = self._release(tmp_path, "0.2.6", "0.2.5", STUB_FAIL="1")
+        """A listing that fails after its first page has said only part of
+        what is released, so the step stops before the release is created,
+        rather than mark it from that part."""
+        code, calls = self._release(tmp_path, "0.2.6", "v0.2.5", STUB_FAIL="1")
+        assert code != 0
+        assert not [c for c in calls if c[:2] == ["release", "create"]]
+
+    def test_an_empty_listing_creates_no_release(self, tmp_path: Path) -> None:
+        """This repository always has Releases, and gh's `--paginate` can
+        answer with nothing and exit 0, so an empty listing is a failed read
+        too: the step stops before the release, which would otherwise be
+        marked Latest over a higher version already released."""
+        code, calls = self._release(tmp_path, "0.2.6", "")
         assert code != 0
         assert not [c for c in calls if c[:2] == ["release", "create"]]

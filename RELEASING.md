@@ -154,7 +154,9 @@ After merge, CI's run on the merge commit runs the full test matrix, and
 7. verifies PyPI exposes exactly those filenames and SHA-256 hashes; and
 8. creates `vX.Y.Z` and the GitHub Release at the merge SHA, attaching the same
    archives and checksum manifest, and marks it Latest unless a higher
-   version has a published Release.
+   version has a published Release. An empty listing of the Releases stops
+   the step before the Release is created, and a partial one still decides
+   right, since the API lists Releases newest first.
 
 Approve the `pypi` deployment only after checking that the commit the first
 job's summary names is the intended release merge and the displayed version is

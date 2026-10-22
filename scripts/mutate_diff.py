@@ -68,8 +68,8 @@ when a mutant of the diff survives, whatever else stopped the run; 2 when the
 run itself failed, whether or not the budget ran out first: the engine
 failed or counted no window, mutmut reported a mutant of a function the lane
 did not map to the diff or more or fewer of a function's mutants than its
-window holds, or the lane stopped before mutmut decided anything; and 0
-otherwise.
+window holds, or the lane itself failed before mutmut decided anything; and
+0 otherwise, a run the budget stopped included.
 An exit 0 says what it decided in the headline: every mutant killed or timed
 out, or how many functions no in-process test reaches, or, where the budget
 ran out or a mutant was left undecided (``not checked``, ``suspicious``,
