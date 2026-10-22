@@ -1325,8 +1325,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "tree and logs (default: a new temporary directory)")
     parser.add_argument("--json", help="write the JSON record here")
     parser.add_argument("--summary", help="append the Markdown summary here")
-    parser.add_argument("--engine", nargs="+", help="the mutmut command (default: the "
-                        "mutmut beside this interpreter)")
+    parser.add_argument("--engine", nargs="+", help="the mutmut command (default: this "
+                        f"script run with {ENGINE_ARG} under this interpreter)")
     args = parser.parse_args(argv)
 
     repo = Path(args.repo).resolve()
