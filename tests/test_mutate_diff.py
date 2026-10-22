@@ -248,8 +248,31 @@ class TestTheWindow:
 
     def test_the_rule_names_its_context(self) -> None:
         assert md.rule(2) == ("the mutants whose node starts within 2 lines of a line the diff "
-                              "adds or of a point where it removes lines")
+                              "adds or of a point where it removes lines, or on the first line "
+                              "of a call, match, assignment, operation, comparison, conditional "
+                              "expression or lambda that spans one of those lines")
         assert "within 1 line of" in md.rule(1)
+
+    @pytest.mark.parametrize(("span", "joins"), [
+        ((3, 9), True),      # holds the window's first lines
+        ((1, 8), True),      # ends on its first line
+        ((12, 20), True),    # starts on its last line
+        ((9, 10), True),     # lies inside it
+        ((1, 7), False),     # ends above it
+        ((13, 20), False),   # starts below it
+    ])
+    def test_a_span_that_holds_a_window_line_adds_its_first_line(
+        self, span: tuple[int, int], joins: bool,
+    ) -> None:
+        """mutmut places the mutants of a call, a match and the other
+        enclosing kinds on the node's first line, so a node whose lines meet
+        the window's (8 to 12) adds that line, and one that misses them adds
+        nothing."""
+        assert md.first_lines([span], range(8, 13)) == (frozenset({span[0]}) if joins
+                                                        else frozenset())
+
+    def test_a_span_between_two_window_lines_adds_nothing(self) -> None:
+        assert md.first_lines([(5, 8), (4, 4), (2, 9)], [4, 9]) == frozenset({4, 2})
 
 
 #: A unit of seven lines, the one the window test edits at line 4.
@@ -353,6 +376,340 @@ class TestTheWindowInTheEngine:
 
     def test_the_default_engine_is_this_script_under_this_interpreter(self) -> None:
         assert md._default_engine() == [sys.executable, str(_SCRIPT.resolve()), md.ENGINE_ARG]
+
+
+# ---------------------------------------------------------------------------
+# The enclosing nodes: mutants mutmut places above the line they change
+# ---------------------------------------------------------------------------
+
+
+#: vera/checker/control.py's shape at 94cef528 in small: a diagnostic's
+#: `error_code=` six lines below the first line of the call that passes it
+#: (there, :430 below :419).
+ANCHORED = _src("""
+    class Checker:
+        def check(self, expr):
+            if expr.bad:
+                self._error(
+                    expr,
+                    "a message",
+                    rationale="why",
+                    fix="how",
+                    spec_ref="ch04",
+                    error_code="E302",
+                )
+            return expr
+""")
+
+#: A `case` five lines below its `match`.
+MATCHED = _src("""
+    def pick(x):
+        match x:
+            case "a":
+                return 1
+            case "b":
+                return 2
+            case "z":
+                return 26
+        return 0
+""")
+
+#: One node of each of the enclosing kinds, each with text its mutants
+#: change three or more lines below its first line, where no node of another
+#: kind starts on that first line and spans the same lines.
+ENCLOSING = _src("""
+    class Shapes:
+        def call(self, x):
+            return self.pick(
+                x,
+                1,
+                key="k",
+            )
+
+        def keyword(self, x):
+            return dict(
+                a=x,
+                b=x,
+                c=x,
+                d=x,
+            )
+
+        def method(self, x):
+            return (x
+                    .strip()
+                    .replace("a", "b")
+                    .replace("c", "d")
+                    .lower())
+
+        def assign(self, x):
+            y = [
+                x,
+                x * 2,
+                "s",
+            ]
+            return y
+
+        def annotated(self, x):
+            y: list[int] = [
+                x,
+                2,
+                3,
+            ]
+            return y
+
+        def augmented(self, x):
+            self.totals[
+                x
+                * 2
+                - 3
+            ] += 1
+            return x
+
+        def binary(self, x):
+            return (x
+                    + 1
+                    + 2
+                    + 3
+                    + 4)
+
+        def boolean(self, x, y, z):
+            return (x
+                    and y
+                    and z
+                    and x
+                    and y)
+
+        def comparison(self, x):
+            return (self.size(x)
+                    == self.limit(
+                        x,
+                        2,
+                    ))
+
+        def conditional(self, x):
+            return (
+                self.big(
+                    x,
+                )
+                if x > 0
+                else 0
+            )
+
+        def anonymous(self):
+            return (lambda v:
+                    self.big(
+                        v,
+                        1,
+                    ))
+
+        def selection(self, x):
+            match x:
+                case 1:
+                    return "one"
+                case 2:
+                    return "two"
+                case 3:
+                    return "three"
+            return "other"
+""")
+
+
+def _placed_mutations(path: str, source: str) -> list[tuple[str, int | None, frozenset[int], str]]:
+    """Every mutation mutmut's visitor makes inside a unit of ``source``, as
+    (the unit's key, the line mutmut places it on, the lines whose text it
+    changes, its node's kind).
+
+    The lines it changes are those of the non-whitespace characters its
+    mutated node removes or replaces from the original node's text (an
+    insertion counts on the line of the character before it), placed from
+    where the original node's text starts.  Each placement is checked against
+    the source, character by character, so a misplaced line fails here
+    rather than hiding a mutant."""
+    import difflib
+
+    import libcst as cst
+    from libcst.metadata import (
+        MetadataWrapper,
+        PositionProvider,
+        WhitespaceInclusivePositionProvider,
+    )
+    from mutmut.mutation.file_mutation import create_mutations
+
+    module, mutations, _classes, _functions = create_mutations(path, source, None)
+    wrapper = MetadataWrapper(module, unsafe_skip_copy=True)
+    starts = wrapper.resolve(PositionProvider)
+    texts = wrapper.resolve(WhitespaceInclusivePositionProvider)
+    keys: dict[Any, str] = {}
+    for stmt in module.body:
+        if isinstance(stmt, cst.FunctionDef):
+            keys[stmt] = md._key(stmt.name.value, None)
+        elif isinstance(stmt, cst.ClassDef) and isinstance(stmt.body, cst.IndentedBlock):
+            keys.update({m: md._key(m.name.value, stmt.name.value) for m in stmt.body.body
+                         if isinstance(m, cst.FunctionDef)})
+    rows = source.splitlines()
+    placed = []
+    for mutation in mutations:
+        unit = keys.get(mutation.contained_by_top_level_function)
+        if unit is None:
+            continue
+        node = mutation.original_node
+        where = texts[node]
+        chunk = rows[where.start.line - 1:where.end.line]
+        chunk[-1] = chunk[-1][:where.end.column]
+        chunk[0] = chunk[0][where.start.column:]
+        in_source = [(ch, n) for n, row in enumerate(chunk, start=where.start.line)
+                     for ch in row if not ch.isspace()]
+        chars: list[tuple[str, int]] = []
+        line = where.start.line
+        for ch in module.code_for_node(node):
+            if ch == "\n":
+                line += 1
+            elif not ch.isspace():
+                chars.append((ch, line))
+        assert chars == in_source, f"{path}: a mutation of line {where.start.line} is misplaced"
+        mutated = [ch for ch in module.code_for_node(mutation.mutated_node) if not ch.isspace()]
+        changed: set[int] = set()
+        opcodes = difflib.SequenceMatcher(None, [c for c, _ in chars], mutated,
+                                          autojunk=False).get_opcodes()
+        for tag, i1, i2, _j1, _j2 in opcodes:
+            if tag != "equal":
+                changed.update(n for _c, n in (chars[i1:i2] if i2 > i1 else chars[max(i1 - 1, 0):][:1]))
+        start = starts.get(node)
+        placed.append((unit, None if start is None else start.start.line, frozenset(changed),
+                       type(node).__name__))
+    return placed
+
+
+def _misses(path: str, source: str) -> list[str]:
+    """Each mutation that changes a line of the window of a one-line edit,
+    at every line of every unit of ``source``, but that mutmut's covered-lines
+    filter drops when handed the window the engine builds: the window's lines
+    clipped to the unit, as the lane hands them over, and the first lines
+    :func:`md.first_lines` adds for them."""
+    spans = md.enclosing_spans(source)
+    by_unit: dict[str, list[tuple[int | None, frozenset[int], str]]] = {}
+    for unit, anchor, changed, kind in _placed_mutations(path, source):
+        by_unit.setdefault(unit, []).append((anchor, changed, kind))
+    found = []
+    for key, unit in md.scan_units(source, path).items():
+        lines = set(range(unit.start, unit.end + 1))
+        for edited in sorted(lines):
+            named = md.window(_change(path, {edited})) & lines
+            covered = named | md.first_lines(spans, named)
+            found += [f"{path}:{edited}: {kind} placed on {anchor} changes {sorted(changed)}"
+                      for anchor, changed, kind in by_unit.get(key, [])
+                      if changed & named and anchor is not None and anchor not in covered]
+    return found
+
+
+class TestTheEnclosingNodes:
+    """mutmut places a mutant on the first line of the node it mutates, and
+    a call's, a match's and the other enclosing kinds' mutants change text
+    further down: an argument, a `case`, an operator after a long operand.
+    The window holds the first line of each such node that spans one of its
+    lines, so a change to those lines keeps the mutants that change them."""
+
+    def test_a_comparison_starts_on_the_line_above_its_operator(self) -> None:
+        """A comparison's operator and right operand start with the line break
+        before the operator, so mutmut places its swap on the line above."""
+        pytest.importorskip("libcst")
+        source = _src("""
+            def f(x):
+                return (x
+                        == 3)
+        """)
+        assert md.enclosing_spans(source) == [(2, 3)]
+
+    def _generate(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: str,
+                  edited: int) -> tuple[list[ast.FunctionDef], set[int]]:
+        """mutmut's own generation of ``source`` with the window of a one-line
+        edit at line ``edited`` installed, as the engine installs it: the
+        mutant functions it writes, and the lines its filter was handed."""
+        pytest.importorskip("mutmut")
+        import mutmut.__main__ as engine
+        from mutmut.configuration import reset_config
+
+        (tmp_path / "pyproject.toml").write_text(
+            '[tool.mutmut]\nsource_paths = ["."]\n', encoding="utf-8")
+        (tmp_path / "m.py").write_text(source, encoding="utf-8")
+        (unit,) = [u for u in md.scan_units(source, "m.py").values()
+                   if u.start <= edited <= u.end]
+        named = md.window(_change("m.py", {edited})) & set(range(unit.start, unit.end + 1))
+        window_file, _record = _window_file(tmp_path, {"m.py": sorted(named)})
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(engine, "get_covered_lines_for_file", engine.get_covered_lines_for_file)
+        reset_config()
+        try:
+            md.install_window(engine, window_file)
+            covered = set(engine.get_covered_lines_for_file("m.py", None))
+            code = engine.write_all_mutants_to_file(
+                out=io.StringIO(), source=source, filename=Path("m.py")).code
+        finally:
+            reset_config()
+        mutants = [node for node in ast.walk(ast.parse(code))
+                   if isinstance(node, ast.FunctionDef) and "__mutmut_" in node.name
+                   and not node.name.endswith("_orig")]
+        return mutants, covered
+
+    def test_a_changed_argument_keeps_the_mutants_its_call_places_above_repro(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """R96's repro: an edit to `error_code="E302",` keeps the argument's
+        `None` and its removal, which mutmut places on `self._error(`, six
+        lines up; the window of the edit's lines alone dropped both."""
+        mutants, covered = self._generate(tmp_path, monkeypatch, ANCHORED,
+                                          _line_of(ANCHORED, 'error_code="E302"'))
+        assert _line_of(ANCHORED, "self._error(") in covered
+
+        def error_code(fn: ast.FunctionDef) -> list[Any]:
+            (call,) = [n for n in ast.walk(fn) if isinstance(n, ast.Call)
+                       and isinstance(n.func, ast.Attribute) and n.func.attr == "_error"]
+            return [k.value for k in call.keywords if k.arg == "error_code"]
+
+        codes = [error_code(fn) for fn in mutants]
+        assert [] in codes, "the removal of `error_code=` was not generated"
+        assert any(len(c) == 1 and isinstance(c[0], ast.Constant) and c[0].value is None
+                   for c in codes), "`error_code=None` was not generated"
+
+    def test_a_changed_case_keeps_its_removal_repro(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An edit to `case "z":` keeps the removal of that case, which
+        mutmut places on the `match` line, five lines up."""
+        mutants, covered = self._generate(tmp_path, monkeypatch, MATCHED,
+                                          _line_of(MATCHED, 'case "z"'))
+        assert _line_of(MATCHED, "match x:") in covered
+
+        def cases(fn: ast.FunctionDef) -> list[Any]:
+            (match,) = [n for n in ast.walk(fn) if isinstance(n, ast.Match)]
+            return [c.pattern.value.value for c in match.cases
+                    if isinstance(c.pattern, ast.MatchValue)
+                    and isinstance(c.pattern.value, ast.Constant)]
+
+        assert ["a", "b"] in [cases(fn) for fn in mutants], "the removal of `case \"z\"` was not generated"
+
+    @pytest.mark.parametrize("target", ["ENCLOSING", "vera/checker/control.py", "vera/smt.py"])
+    def test_every_mutant_that_changes_a_window_line_is_generated(self, target: str) -> None:
+        """The class: at every line of every function, the window of a
+        one-line edit there holds the line mutmut places each mutant on whose
+        text meets the window, over the enclosing kinds in small and over two
+        of the compiler's modules."""
+        pytest.importorskip("mutmut")
+        source = ENCLOSING if target == "ENCLOSING" else (ROOT / target).read_text(encoding="utf-8")
+        misses = _misses(target, source)
+        assert not misses, f"{len(misses)} dropped, the first: {misses[:5]}"
+
+    @pytest.mark.parametrize("kind", md.ENCLOSING_KINDS)
+    def test_each_enclosing_kind_keeps_mutants_no_other_kind_keeps(
+        self, kind: str, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Every kind the window reads is needed: without it, a mutant of a
+        node of that kind, and of no other, is dropped from a window it
+        changes a line of."""
+        pytest.importorskip("mutmut")
+        monkeypatch.setattr(md, "ENCLOSING_KINDS", tuple(k for k in md.ENCLOSING_KINDS if k != kind))
+        misses = _misses("ENCLOSING", ENCLOSING)
+        assert misses and {m.split(": ", 1)[1].split(" ", 1)[0] for m in misses} == {kind}
 
 
 # ---------------------------------------------------------------------------
@@ -1581,6 +1938,22 @@ class TestEndToEnd:
         assert (code, record["stopped"]) == (2, "unmapped")
         assert record["outside_window"] == ["`vera/m.py` `kept`: 2 generated, 1 in the window"]
 
+    def test_fewer_mutants_than_the_window_stop_the_run_short(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A unit mutmut generated with fewer mutants than its window holds
+        was not generated through the window either: exit 2, the unit named,
+        and the summary says the counts differ."""
+        monkeypatch.setenv("FAKE_WINDOW_COUNTS",
+                           json.dumps({"vera/m.py": {"x_kept": {"held": 5, "window": 3}}}))
+        results = "    vera.m.x_kept__mutmut_1: killed\n    vera.m.x_kept__mutmut_2: killed\n"
+        code, record, _ = _main(repo, tmp_path, results)
+        assert (code, record["stopped"]) == (2, "unmapped")
+        assert record["outside_window"] == ["`vera/m.py` `kept`: 2 generated, 3 in the window"]
+        summary = (tmp_path / "summary.md").read_text(encoding="utf-8")
+        assert ("functions whose generated mutants differ in number from their window's, which "
+                "stops the run short: `vera/m.py` `kept`: 2 generated, 3 in the window") in summary
+
     def test_a_unit_the_run_did_not_reach_is_not_judged_by_the_window(
         self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -1609,8 +1982,10 @@ class TestEndToEnd:
         assert [(f["held"], f["window"]) for f in record["functions"]] == [(5, 2)]
         summary = (tmp_path / "summary.md").read_text(encoding="utf-8")
         assert ("Selection: the mutants whose node starts within 2 lines of a line the diff adds "
-                "or of a point where it removes lines. 1 function(s) hold 5 mutant(s), 2 of them "
-                "in the window; mutmut generated 2, decided 2, and 1 survived.") in summary
+                "or of a point where it removes lines, or on the first line of a call, match, "
+                "assignment, operation, comparison, conditional expression or lambda that spans "
+                "one of those lines. 1 function(s) hold 5 mutant(s), 2 of them in the window; "
+                "mutmut generated 2, decided 2, and 1 survived.") in summary
 
     def test_no_in_process_test_for_any_mutant_is_not_observable_and_passes(
         self, repo: Path, tmp_path: Path,

@@ -41,8 +41,12 @@ _LOST_PLATFORM = "you have dropped a platform"
 
 
 def _python_without_pip(where: Path) -> Path:
-    """A virtual environment's interpreter, made without pip as ``uv`` makes one."""
-    venv.create(where, with_pip=False, clear=True)
+    """A virtual environment's interpreter, made without pip as ``uv`` makes one.
+
+    It links to the interpreter, as ``python -m venv`` does off Windows: a
+    copy of a relocatable build such as ``uv``'s looks for its library
+    relative to itself, in a ``lib/`` the new environment does not hold."""
+    venv.create(where, with_pip=False, clear=True, symlinks=os.name != "nt")
     return where / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
 

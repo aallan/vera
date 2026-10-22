@@ -18,7 +18,10 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import os
 import re
+import shutil
+import subprocess
 import sys
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -534,3 +537,83 @@ class TestTheReleaseStartsWhenCiCompletes:
                 if str(step.get("uses", "")).startswith("actions/checkout@"):
                     ref = str((step.get("with") or {}).get("ref", ""))
                     assert re.fullmatch(r"\$\{\{ (needs\.\w+|steps\.\w+)\.outputs\.sha \}\}", ref), (name, ref)
+
+
+# ---------------------------------------------------------------------------
+# The Latest mark
+# ---------------------------------------------------------------------------
+
+
+#: gh as the release step calls it: the tag's read (the tag exists at the
+#: release commit), the listing of the `v` tags, which answers with what the
+#: step's `--jq` makes of the refs, and the release's creation.
+_STUB_GH = '''#!{python}
+import json, os, sys
+args = sys.argv[1:]
+with open(os.environ["STUB_LOG"], "a", encoding="utf-8") as log:
+    log.write(json.dumps(args) + "\\n")
+if args[:1] == ["api"] and "/git/ref/tags/" in args[1]:
+    print(os.environ["RELEASE_SHA"])
+elif args[:1] == ["api"] and args[1].endswith("/git/matching-refs/tags/v"):
+    print("\\n".join(os.environ["STUB_TAGS"].split()))
+elif args[:2] != ["release", "create"]:
+    sys.exit(f"unexpected gh call: {{args}}")
+'''
+
+
+@pytest.mark.skipif(os.name == "nt" or shutil.which("bash") is None,
+                    reason="the step is a bash script for ubuntu-latest")
+class TestTheLatestMark:
+    """Releases start in the order their merges' CI runs complete, and a
+    second version-raising merge's run can complete first, so the GitHub
+    Release is marked Latest only when no higher version is tagged.  The
+    tag and release step runs here as the runner runs it (`bash -e`), with a
+    stand-in `gh`."""
+
+    def _release(self, tmp_path: Path, version: str, tags: str) -> tuple[int, list[list[str]]]:
+        (step,) = [s for s in _release_jobs()["github-release"]["steps"]
+                   if s.get("name") == "Create immutable tag and GitHub Release"]
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        gh = bin_dir / "gh"
+        gh.write_text(_STUB_GH.format(python=sys.executable), encoding="utf-8")
+        gh.chmod(0o755)
+        script = tmp_path / "step.sh"
+        script.write_text(str(step["run"]), encoding="utf-8")
+        log = tmp_path / "gh.jsonl"
+        # No startup file: one that sets PATH would find the real gh first.
+        env = {name: value for name, value in os.environ.items() if name not in ("BASH_ENV", "ENV")}
+        env.update({"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+                    "GITHUB_REPOSITORY": "aallan/vera", "GH_TOKEN": "token", "VERSION": version,
+                    "RELEASE_SHA": "a" * 40, "STUB_LOG": str(log), "STUB_TAGS": tags})
+        proc = subprocess.run(["bash", "-e", str(script)], cwd=tmp_path, env=env, check=False,
+                              capture_output=True, text=True, encoding="utf-8")
+        calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        return proc.returncode, calls
+
+    @pytest.mark.parametrize(("version", "tags", "latest"), [
+        ("0.2.6", "0.2.4 0.2.5 0.2.6", "true"),
+        ("0.2.6", "0.2.5 0.2.6 0.2.7", "false"),
+        ("0.2.10", "0.2.8 0.2.9 0.2.10", "true"),
+        ("0.2.9", "0.2.9 0.2.10", "false"),
+        ("0.3.0", "0.2.9 0.3.0 scode-1.0.0 1.0.0rc1", "true"),
+    ])
+    def test_a_release_is_latest_only_when_no_higher_version_is_tagged(
+        self, tmp_path: Path, version: str, tags: str, latest: str,
+    ) -> None:
+        """Versions compare as versions, not as text, and a `v` tag that is
+        not a release version (`vscode-1.0.0` reads as `scode-1.0.0` once the
+        prefix goes) is no rival."""
+        code, calls = self._release(tmp_path, version, tags)
+        assert code == 0
+        (create,) = [c for c in calls if c[:2] == ["release", "create"]]
+        assert create[2] == f"v{version}" and f"--latest={latest}" in create
+        assert "--latest" not in create
+
+    def test_no_tag_read_back_creates_no_release(self, tmp_path: Path) -> None:
+        """The step has just made or found the release's tag, so a listing
+        that holds no version is a failed read: the step stops before the
+        release is created, rather than leave it unmarked."""
+        code, calls = self._release(tmp_path, "0.2.6", "")
+        assert code == 1
+        assert not [c for c in calls if c[:2] == ["release", "create"]]

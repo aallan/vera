@@ -423,12 +423,26 @@ jobs:
             exit 1
           fi
 
+          # Latest only when no higher version is tagged: releases start in
+          # the order their merges' CI runs complete, which a second
+          # version-raising merge's can beat.
+          highest="$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v" --paginate \
+            --jq '.[].ref | ltrimstr("refs/tags/v")' | grep -xE '[0-9]+\.[0-9]+\.[0-9]+' | sort -V | tail -n 1)"
+          if [ -z "$highest" ]; then
+            echo "::error::no vX.Y.Z tag read back after tagging v${VERSION}"
+            exit 1
+          fi
+          latest=false
+          if [ "$highest" = "$VERSION" ]; then
+            latest=true
+          fi
+
           gh release create "v${VERSION}" \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
             --title "v${VERSION}" \
             --notes-file artifact/release/RELEASE_NOTES.md \
-            --latest \
+            --latest="$latest" \
             artifact/dist/*.whl \
             artifact/dist/*.tar.gz \
             artifact/release/SHA256SUMS

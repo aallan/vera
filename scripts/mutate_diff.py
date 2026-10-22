@@ -26,17 +26,19 @@ mutmut over the lines of those functions near the diff:
    only, and the script checks the file's ``ast`` and line count are
    unchanged.
 3. Inside those units, mutmut generates only the mutants whose node starts
-   within two lines (``--context``) of a line the diff adds, or of a point
-   where it removes lines and adds none: the window.  A one-line edit inside
-   a long function so mutates the lines near it, not the function: the 330
-   mutants of the four functions pull request #1760 changed ran out the
-   budget at 97 decided (CI run 39664225706), and 85 of them lie in the
-   window.  The engine is this script run with ``--as-engine``
-   (:func:`engine_main`), which counts each unit's mutants on every line and
-   in the window with mutmut's own visitor, then hands each narrowed file's
-   window to mutmut's covered-lines hook, the filter it reads a node's start
-   line against; the lane checks the mutants mutmut lists against those
-   counts.
+   in the window: within two lines (``--context``) of a line the diff adds,
+   or of a point where it removes lines and adds none, or on the first line
+   of a node of :data:`ENCLOSING_KINDS` that spans such a line, since mutmut
+   places a mutant on the line its node starts on, and some nodes' mutants
+   change a line further down (a call's argument, a ``match``'s ``case``).
+   A one-line edit inside a long function so mutates the lines near it, not
+   the function: the 330 mutants of the four functions pull request #1760
+   changed ran out the budget at 97 decided (CI run 39664225706).  The
+   engine is this script run with ``--as-engine`` (:func:`engine_main`),
+   which counts each unit's mutants on every line and in the window with
+   mutmut's own visitor, then hands each narrowed file's window to mutmut's
+   covered-lines hook, the filter it reads a node's start line against; the
+   lane checks the mutants mutmut lists against those counts.
 4. The scratch tree's ``[tool.mutmut]`` is the repository's, with
    ``only_mutate`` set to those files and the pull request's own changed
    test files that reach the compiler in process (they import ``vera``,
@@ -65,8 +67,9 @@ The exit code is red for a defect and green for an unfinished run.  It is 1
 when a mutant of the diff survives, whatever else stopped the run; 2 when the
 run itself failed, whether or not the budget ran out first: the engine
 failed or counted no window, mutmut reported a mutant of a function the lane
-did not map to the diff or more of a function's mutants than its window
-holds, or the lane stopped before mutmut decided anything; and 0 otherwise.
+did not map to the diff or more or fewer of a function's mutants than its
+window holds, or the lane stopped before mutmut decided anything; and 0
+otherwise.
 An exit 0 says what it decided in the headline: every mutant killed or timed
 out, or how many functions no in-process test reaches, or, where the budget
 ran out or a mutant was left undecided (``not checked``, ``suspicious``,
@@ -86,6 +89,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import bisect
 import fnmatch
 import io
 import json
@@ -168,11 +172,26 @@ ENGINE_ARG = "--as-engine"
 #: failure to the lane, never a survivor's 1.
 NO_WINDOW_EXIT = 3
 
+#: The kinds of node (libcst's names) whose mutants mutmut 3.8 places on the
+#: node's first line though the text they change can lie below it
+#: (``mutation_operators`` in ``mutmut.mutation.mutators``): a call (an
+#: argument's ``None`` and its removal, a ``dict`` keyword's rename, a string
+#: method's swap after a receiver of several lines), a ``match`` (a ``case``'s
+#: removal), an assignment, plain or annotated (its value), an augmented
+#: assignment (its operator, after its target), a binary or boolean operation
+#: (its operator, after its left operand), a comparison's operator and right
+#: operand, which start with the line break before the operator, a
+#: conditional expression (its test, after its value) and a lambda (its body).
+ENCLOSING_KINDS = ("Call", "Match", "Assign", "AnnAssign", "AugAssign", "BinaryOperation",
+                   "BooleanOperation", "ComparisonTarget", "IfExp", "Lambda")
+
 
 def rule(context: int) -> str:
     """The selection rule's name, as the summary prints it."""
     return (f"the mutants whose node starts within {context} line{'s' if context != 1 else ''} "
-            "of a line the diff adds or of a point where it removes lines")
+            "of a line the diff adds or of a point where it removes lines, or on the first "
+            "line of a call, match, assignment, operation, comparison, conditional expression "
+            "or lambda that spans one of those lines")
 
 #: Seconds for each short engine command (``results``, ``show``, ``--version``).
 ENGINE_CALL_TIMEOUT_S = 300
@@ -709,6 +728,33 @@ class WindowError(RuntimeError):
     """The installed mutmut cannot generate only the window's mutants."""
 
 
+def enclosing_spans(source: str) -> list[tuple[int, int]]:
+    """The first and last line of every node of :data:`ENCLOSING_KINDS` in
+    ``source``, by the position provider mutmut's visitor reads a node's
+    start line from."""
+    import libcst as cst
+    from libcst.metadata import MetadataWrapper, PositionProvider
+
+    kinds = tuple(getattr(cst, name) for name in ENCLOSING_KINDS)
+    positions = MetadataWrapper(cst.parse_module(source), unsafe_skip_copy=True).resolve(
+        PositionProvider)
+    return sorted((p.start.line, p.end.line) for node, p in positions.items()
+                  if isinstance(node, kinds))
+
+
+def first_lines(spans: Iterable[tuple[int, int]], lines: Iterable[int]) -> frozenset[int]:
+    """The first line of each span that holds one of ``lines``: the line
+    mutmut places the mutants of a node of :data:`ENCLOSING_KINDS` on, when
+    the text they change can lie on one of ``lines``."""
+    ordered = sorted(set(lines))
+    found: set[int] = set()
+    for first, last in spans:
+        at = bisect.bisect_left(ordered, first)
+        if at < len(ordered) and ordered[at] <= last:
+            found.add(first)
+    return frozenset(found)
+
+
 def _unit_counts(create_mutations: Callable[..., Any], path: str, source: str,
                  lines: Iterable[int] | None) -> Counter[str]:
     """How many mutants mutmut's own visitor makes in each unit of
@@ -738,13 +784,14 @@ def install_window(engine: Any, window_file: Path) -> None:
     mutmut generates a mutant only for a node that starts on a line its
     covered-lines hook names (``get_covered_lines_for_file``, the filter
     ``mutate_only_covered_lines`` feeds); the hook here names each narrowed
-    file's window, and leaves every other file to the hook it replaces.
+    file's window, and leaves every other file to the hook it replaces.  The
+    window is the lines the lane names and the first line of each node of
+    :data:`ENCLOSING_KINDS` that spans one of them (:func:`first_lines`).
     Before that, each file's mutants are counted per unit by mutmut's own
     visitor, of every line and of the window's (:func:`_unit_counts`), so
     the lane can check what the engine generated against the window.  A
     mutmut without the hook or the visitor raises :class:`WindowError`."""
     spec = json.loads(window_file.read_text(encoding="utf-8"))
-    kept = {path: frozenset(lines) for path, lines in spec["lines"].items()}
     hook = getattr(engine, "get_covered_lines_for_file", None)
     if not callable(hook):
         raise WindowError("mutmut.__main__ has no get_covered_lines_for_file, the hook mutmut 3.8 "
@@ -753,9 +800,11 @@ def install_window(engine: Any, window_file: Path) -> None:
         from mutmut.mutation.file_mutation import create_mutations
     except ImportError as exc:
         raise WindowError(f"mutmut's visitor is not there to count the window by: {exc}") from exc
+    kept: dict[str, frozenset[int]] = {}
     counts: dict[str, dict[str, dict[str, int]]] = {}
-    for path, lines in kept.items():
+    for path, named in spec["lines"].items():
         source = Path(path).read_text(encoding="utf-8")
+        lines = kept[path] = frozenset(named) | first_lines(enclosing_spans(source), named)
         held = _unit_counts(create_mutations, path, source, None)
         inside = _unit_counts(create_mutations, path, source, lines)
         counts[path] = {key: {"held": held[key], "window": inside[key]}
@@ -1018,7 +1067,7 @@ def _incomplete(rows: Sequence[UnitResult], stopped: str | None) -> str | None:
     if stopped == "engine":
         return "the engine stopped before every mutant was decided"
     if stopped == "unmapped":
-        return ("mutmut reported mutants outside the functions or the window the lane mapped "
+        return ("mutmut's mutants do not match the functions or the window the lane mapped "
                 "to the diff, so the diff is not decided")
     statuses = {status for row in rows for status, n in row.counts.items() if n}
     if any(STATUSES[s] == "undecided" for s in statuses):
@@ -1138,8 +1187,8 @@ def render(record: Mapping[str, Any]) -> str:
         notes.append(f"{len(record['outside_diff'])} mutant(s) mutmut reported for functions the "
                      f"lane did not map to the diff, which stops the run short: {names}")
     if record.get("outside_window"):
-        notes.append("mutants generated outside the window, which stops the run short: "
-                     + "; ".join(record["outside_window"][:10]))
+        notes.append("functions whose generated mutants differ in number from their window's, "
+                     "which stops the run short: " + "; ".join(record["outside_window"][:10]))
     if record["extra_tests"]:
         notes.append("the pull request's own test files, added to the selection: "
                      + ", ".join(f"`{t}`" for t in record["extra_tests"]))
