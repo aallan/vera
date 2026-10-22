@@ -681,6 +681,31 @@ class CallsMixin:
             self._synth_expr(arg)
         return UnknownType()
 
+    def _record_instantiation(self, node: ast.Node, fn_info: FunctionInfo,
+                              mapping: typing.Mapping[str, Type]) -> None:
+        """Record the instantiation the check inferred at the generic call
+        *node* (#1679), keyed by the call's identity.
+
+        Only a call the binding binds to a declaration is recorded: a
+        built-in generic has no declaration to instantiate, and code
+        generation lowers each of its calls itself.  A call checked twice
+        (an argument re-synthesised against its formal) records the later
+        inference, which is the one its node's type records too."""
+        from vera.binding import BUILTIN
+        from vera.typed import Instantiation
+
+        if self.instantiations is None or node.node_id is None:
+            return
+        ident = self._binding.of(node) if self._binding is not None else None
+        if ident is None or ident.owner == BUILTIN:
+            return
+        self.instantiations[node.node_id] = Instantiation(
+            callee=ident.link_name,
+            forall_vars=tuple(fn_info.forall_vars or ()),
+            mapping={tv: mapping[tv] for tv in fn_info.forall_vars or ()
+                     if tv in mapping},
+        )
+
     def _check_fn_call_with_info(self, fn_info: FunctionInfo,
                                  args: tuple[ast.Expr, ...],
                                  node: ast.Node, *,
@@ -730,6 +755,7 @@ class CallsMixin:
                 fn_info.forall_vars, fn_info.param_types, arg_types, args,
                 result_type=fn_info.return_type, expected=expected,
                 conflicts=conflicts)
+            self._record_instantiation(node, fn_info, mapping)
             self._record_literal_soft_result(
                 node, substitute(fn_info.return_type, soft_mapping))
             if conflicts:
@@ -850,6 +876,11 @@ class CallsMixin:
                         if key is None or contains_typevar(c_pt):
                             continue
                         self.expr_target_types[key] = c_pt
+                if self.node_target_types is not None:
+                    for c_arg, c_pt in zip(args, param_types):
+                        if (c_arg.node_id is not None
+                                and not contains_typevar(c_pt)):
+                            self.node_target_types[c_arg.node_id] = c_pt
 
         # Check each argument.  When a type-argument conflict was already
         # reported (#898), skip the per-argument subtype check: the merged

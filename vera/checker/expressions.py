@@ -157,6 +157,14 @@ class ExpressionsMixin:
             if pattern_key is not None:
                 expected = self._pattern_arg_targets.get(pattern_key)
         result = self._synth_expr_impl(expr, expected=expected)
+        # #1679: the same two types by the node's identity, which every
+        # check records: the typed program reads them, a span table being
+        # unable to tell a clone's node from its template's.
+        if self.node_semantic_types is not None and expr.node_id is not None:
+            if result is not None:
+                self.node_semantic_types[expr.node_id] = result
+            if expected is not None and self.node_target_types is not None:
+                self.node_target_types[expr.node_id] = expected
         if self.expr_types is not None and expr.span is not None:
             key = ast.span_key(expr)
             if result is not None:

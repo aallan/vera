@@ -403,3 +403,79 @@ def test_identity_is_not_serialised() -> None:
     assert "node_id" not in program.pretty()
     rebuilt = replace(program)
     assert rebuilt == program and rebuilt.node_id == program.node_id
+
+
+# =====================================================================
+# The checker's tables by identity
+# =====================================================================
+#
+# The check types every node of the entry file, of each module it reaches
+# and of the prelude (whose bodies it now checks, in the prelude's own
+# namespace), and records each generic call's instantiation, all keyed by
+# node identity.
+
+
+def _checked_corpus_program(path: Path) -> pipeline.Checked:
+    checked = pipeline.check(path)
+    if not checked.ok:
+        pytest.skip("a library module or a negative fixture: refused at check")
+    return checked
+
+
+def _roots(checked: pipeline.Checked) -> list[object]:
+    return [checked.program, *(m.program for m in checked.resolved or ()),
+            checked.artifacts.prelude]
+
+
+@pytest.mark.parametrize("path", _CORPUS, ids=lambda p: p.name)
+def test_the_prelude_a_program_binds_checks_clean(path: Path) -> None:
+    """The prelude bodies a program is compiled with check in their own
+    namespace with no diagnostic of any severity: one there would be a
+    defect of the compiler's own source."""
+    from vera.checker.core import TypeChecker, check_prelude_bodies
+
+    arts = _checked_corpus_program(path).artifacts
+    assert arts.prelude
+    checker = TypeChecker()
+    checker._bound_prelude = (arts.prelude, arts.prelude_source)
+    checker.node_semantic_types, checker.node_target_types = {}, {}
+    checker.instantiations = {}
+    assert [d.format() for d in check_prelude_bodies(checker)] == []
+    assert checker.node_semantic_types
+
+
+@pytest.mark.parametrize("path", _CORPUS, ids=lambda p: p.name)
+def test_every_expression_is_typed_by_its_identity(path: Path) -> None:
+    """Every expression of a checked program, its modules and its prelude
+    has the checker's type in the table keyed by node identity."""
+    checked = _checked_corpus_program(path)
+    table = checked.artifacts.node_semantic_types
+    untyped = [type(node).__name__ for root in _roots(checked)
+               for node in _nodes(root)
+               if isinstance(node, ast.Expr) and node.node_id not in table]
+    assert untyped == []
+
+
+@pytest.mark.parametrize("path", _CORPUS, ids=lambda p: p.name)
+def test_every_generic_call_records_its_instantiation(path: Path) -> None:
+    """Every call the binding binds to a generic declaration has the
+    instantiation the check inferred there, naming that declaration by its
+    link name; a built-in's call records none."""
+    from vera.binding import BUILTIN
+
+    checked = _checked_corpus_program(path)
+    arts = checked.artifacts
+    assert arts.binding is not None
+    for root in _roots(checked):
+        for node in _nodes(root):
+            if not isinstance(node, (ast.FnCall, ast.ModuleCall)):
+                continue
+            ident = arts.binding.of(node)
+            record = arts.instantiations.get(node.node_id)
+            if ident is None or ident.owner == BUILTIN:
+                assert record is None, node
+                continue
+            decl = arts.binding.decls.get(ident)
+            if decl is not None and decl.forall_vars:
+                assert record is not None, ast.format_expr(node)
+                assert record.callee == ident.link_name
