@@ -346,7 +346,13 @@ def test_repro_add_effect_bounds_a_function_type_argument() -> None:
         "Exn<Option<fn(Int -> Int) effects(pure)>>") == ["target"]
 
 
-_FORWARD_EFFECT = """\
+_PING_EFFECT = """\
+effect Ping {
+  op ping({ @Int | @Int.0 > 0 }, Array<Int> -> Option<Int>);
+}
+"""
+
+_PING_ROW = """\
 private fn f(@Int -> @Int)
   requires(true)
   ensures(true)
@@ -354,21 +360,163 @@ private fn f(@Int -> @Int)
 {
   @Int.0
 }
-
-effect Ping {
-  op ping({ @Int | @Int.0 > 0 }, Array<Int> -> Option<Int>);
-}
 """
+
+#: The effect declared below the row that names it, and above it.
+_FORWARD_EFFECT = _PING_ROW + "\n" + _PING_EFFECT
+_REGISTERED_EFFECT = _PING_EFFECT + "\n" + _PING_ROW
+
+#: `Ping.ping`'s signature as its declaration writes it.
+_PING_SIGNATURE = "({ @Int | @Int.0 > 0 }, Array<Int> -> Option<Int>)"
+
+
+def _top_level_split(text: str, sep: str) -> list[str]:
+    """*text* split at each *sep* outside every bracket.  A refinement's
+    predicate is opaque (its `<`, `>` and `,` are an expression's, and a
+    string literal in it is one token), and `->` is an arrow, not a
+    bracket."""
+    parts: list[str] = []
+    angle = brace = paren = 0
+    start = i = 0
+    while i < len(text):
+        if not (angle or brace or paren) and text.startswith(sep, i):
+            parts.append(text[start:i])
+            i += len(sep)
+            start = i
+            continue
+        if text.startswith("->", i):
+            i += 2
+            continue
+        ch = text[i]
+        if brace:
+            if ch == '"':
+                i += 1
+                while i < len(text) and text[i] != '"':
+                    i += 2 if text[i] == "\\" else 1
+            brace += {"{": 1, "}": -1}.get(ch, 0)
+        else:
+            brace += ch == "{"
+            paren += {"(": 1, ")": -1}.get(ch, 0)
+            angle += {"<": 1, ">": -1}.get(ch, 0)
+        i += 1
+    parts.append(text[start:])
+    return parts
+
+
+def _check_operation_signature_fix(source: str) -> None:
+    """E340's fix for *source*'s row names `Ping.ping`'s signature as its
+    declaration writes it, and the function the fix asks for, written with
+    that signature (each parameter and the result in a slot's position),
+    passes `vera check`."""
+    [error] = pipeline.check(source).errors
+    assert error.error_code == "E340"
+    assert f"with the operation's signature {_PING_SIGNATURE}" in error.fix, (
+        error.fix)
+    signature = error.fix.split("with the operation's signature (", 1)[1]
+    signature = signature.split("), called ", 1)[0]
+    params, result = _top_level_split(signature, " -> ")
+    pasted = (
+        "private fn ping_of("
+        + ", ".join(f"@{p}" for p in _top_level_split(params, ", "))
+        + f" -> @{result})\n  requires(true)\n  ensures(true)\n"
+        "  effects(pure)\n{\n  None\n}\n")
+    checked = pipeline.check(pasted)
+    assert checked.ok, (pasted, checked.diagnostics)
 
 
 def test_repro_forward_effect_operation_signature() -> None:
     """E340's fix writes an operation declared further down the file as the
     declaration does, its refined parameter whole: the `@`-stripped
     rendering read it `Int`, the refinement's base."""
-    [error] = pipeline.check(_FORWARD_EFFECT).errors
-    assert error.error_code == "E340"
-    assert ("with the operation's signature ({ @Int | @Int.0 > 0 }, "
-            "Array<Int> -> Option<Int>)") in error.fix, error.fix
+    _check_operation_signature_fix(_FORWARD_EFFECT)
+
+
+def test_repro_registered_effect_operation_signature() -> None:
+    """Declared above the row, the same operation reads the same: the fix
+    rendered a registered effect's operation through `pretty_type`, which
+    writes the refinement `{@Int | ...}`, a signature that does not parse
+    (E005) when the function is written with it."""
+    _check_operation_signature_fix(_REGISTERED_EFFECT)
+
+
+_PING_CALL = """\
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  match Ping.ping(1, [2]) {
+    Some(@Int) -> @Int.0,
+    None -> 0
+  }
+}
+"""
+
+
+def test_repro_operation_call_signature() -> None:
+    """E340's fix for an operation called under a row without its effect
+    (rule 6) writes the signature from the declaration, declared above the
+    call or below it: it rendered the registered operation through
+    `pretty_type`, `({@Int | ...}, Array<Int> -> Option<Int>)`."""
+    for source in (_PING_EFFECT + "\n" + _PING_CALL,
+                   _PING_CALL + "\n" + _PING_EFFECT):
+        _check_operation_signature_fix(source)
+
+
+_WEIGH_ABILITY = """\
+ability Weigh<T> {
+  op weigh({ @Int | @Int.0 > 0 }, T -> Int);
+}
+"""
+
+_WEIGH_CONSTRAINT = """\
+private forall<T where Weigh<T>> fn f(@T -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  7
+}
+"""
+
+_WEIGH_CALL = """\
+private fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  weigh(1, @Int.0)
+}
+"""
+
+#: The function type E340's fix for a user-declared ability declares, its
+#: operation's signature as the ability writes it.
+_WEIGH_OP = "type WeighOp<T> = fn({ @Int | @Int.0 > 0 }, T -> Int) effects(pure);"
+
+
+def _check_function_value_fix(use: str) -> None:
+    """E340's fix for *use* of `Weigh`, declared above it or below it,
+    declares `_WEIGH_OP`, and that declaration, pasted as written, passes
+    `vera check`."""
+    for source in (_WEIGH_ABILITY + "\n" + use, use + "\n" + _WEIGH_ABILITY):
+        [error] = pipeline.check(source).errors
+        assert error.error_code == "E340"
+        assert _WEIGH_OP in error.fix, error.fix
+        pasted = "type " + error.fix.split("type ", 1)[1].split("; then", 1)[0]
+        checked = pipeline.check(pasted + ";\n")
+        assert checked.ok, (pasted, checked.diagnostics)
+
+
+def test_repro_ability_constraint_signature() -> None:
+    """A `where` constraint naming a user-declared ability: the fix's
+    function type wrote the operation through `pretty_type`,
+    `fn({@Int | ...}, T -> Int)`."""
+    _check_function_value_fix(_WEIGH_CONSTRAINT)
+
+
+def test_repro_ability_call_signature() -> None:
+    """A call to a user-declared ability's operation, the same."""
+    _check_function_value_fix(_WEIGH_CALL)
 
 
 _EXN_BOUNDARY = """\
