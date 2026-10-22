@@ -1288,3 +1288,16 @@ def test_a_shared_body_check_memo_needs_the_tables_it_was_filled_with(
     program = pipeline.parse(_fn("public fn main(@Unit -> @Int)", "1")).program
     with pytest.raises(ValueError, match="tables"):
         typecheck_with_artifacts(program, body_check_memo=set())
+
+
+def test_an_unknown_is_never_an_instance_type() -> None:
+    """A type the check could not infer is refused where an instance would
+    be built at it, at any depth: the check makes an unknown in an
+    argument's type a hole, so one reaching the derivation is a compiler
+    defect, reported loud rather than built at the phantom (PR #1791
+    review)."""
+    from vera.typed import UnknownInstantiation, ground
+    from vera.types import AdtType, UnknownType
+
+    with pytest.raises(UnknownInstantiation):
+        ground(AdtType("Option", (UnknownType(),)))
