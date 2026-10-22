@@ -323,6 +323,13 @@ def typecheck_with_artifacts(
     per-module registration (``ContractVerifier._module_alias_envs``) — and a
     third, unread copy here would only be one more table to drift.
     """
+    if body_check_memo is not None and tables is None:
+        # #1679: a module whose bodies an earlier check of the batch typed
+        # is skipped, and its nodes' entries are in that check's tables, so
+        # a shared memo needs the shared tables (PR #1791 review).
+        raise ValueError(
+            "a shared body-check memo needs the identity tables of the "
+            "batch it was filled by: pass tables= with body_check_memo=")
     checker = TypeChecker(
         source=source, file=file, resolved_modules=resolved_modules,
     )

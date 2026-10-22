@@ -3685,6 +3685,7 @@ Diagnostics carry stable codes, grouped by compiler phase; the list after the ta
 - **E136**: Unknown type name
 - **E137**: Recursive function declares neither decreases nor Diverge
 - **E138**: Contract calls back into its own function
+- **E139**: Generic instances that grow without bound
 - **E140**: Arithmetic requires numeric operands
 - **E141**: Arithmetic requires matching numeric types
 - **E142**: Cannot compare incompatible types

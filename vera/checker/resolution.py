@@ -45,8 +45,9 @@ from vera.types import (
     substitute,
 )
 
-def _span_text(source: str, span: ast.Span | None) -> str | None:
-    """The text of *source* that *span* covers (1-based, end exclusive)."""
+def _span_bounds(source: str, span: ast.Span | None) -> tuple[int, int] | None:
+    """Where the text *span* covers starts and ends in *source* (1-based,
+    end exclusive)."""
     if span is None or not source:
         return None
     starts = [0]
@@ -54,8 +55,14 @@ def _span_text(source: str, span: ast.Span | None) -> str | None:
         starts.append(starts[-1] + len(line))
     if not (1 <= span.line < len(starts) and 1 <= span.end_line < len(starts)):
         return None
-    return source[starts[span.line - 1] + span.column - 1:
-                  starts[span.end_line - 1] + span.end_column - 1]
+    return (starts[span.line - 1] + span.column - 1,
+            starts[span.end_line - 1] + span.end_column - 1)
+
+
+def _span_text(source: str, span: ast.Span | None) -> str | None:
+    """The text of *source* that *span* covers (1-based, end exclusive)."""
+    bounds = _span_bounds(source, span)
+    return None if bounds is None else source[bounds[0]:bounds[1]]
 
 
 #: The arithmetic operators a literal-only expression may combine literals
@@ -98,6 +105,8 @@ class ResolutionMixin:
         array."""
         written = _span_text(self.source, te.span)
         component = _span_text(self.source, arg_te.span)
+        outer = _span_bounds(self.source, te.span)
+        inner = _span_bounds(self.source, arg_te.span)
         if role == "value":
             advice = ("Store the array by reference, in an Option, which a "
                       "map holds as a value")
@@ -108,11 +117,13 @@ class ResolutionMixin:
                       f"the array's show text")
             stand_in = "String"
         if (written is not None and component is not None
-                and stand_in is not None):
-            lo = written.find(component)
-            if lo >= 0:
-                fixed = (written[:lo] + stand_in
-                         + written[lo + len(component):])
+                and stand_in is not None and outer is not None
+                and inner is not None):
+            # By the component's position, not its text, which the type's
+            # other component can share (`Map<Array<Int>, Array<Int>>`).
+            lo, hi = inner[0] - outer[0], inner[1] - outer[0]
+            if written[lo:hi] == component:
+                fixed = written[:lo] + stand_in + written[hi:]
                 advice += f": replace '{written}' with '{fixed}'"
         self._error(
             te,
@@ -1057,12 +1068,21 @@ class ResolutionMixin:
         parts of its result a literal decided and an enclosing call can
         treat them as literal in turn.
 
-        *callee_vars_opaque* is the function door's rule that an argument
-        type still carrying the callee's own variables binds nothing
-        (``_unify_for_inference``); the constructor door never applied it.
+        *callee_vars_opaque* is the function door's rule that a type
+        variable of the callee's own, left unresolved in an argument's type
+        by a nested call, fixes nothing; the constructor door never applied
+        it.  What an argument's type does not fix is a hole
+        (:meth:`_as_holes`), never a binding, so the instantiation the check
+        records holds what the arguments fix and nothing else (#1679, PR
+        #1791 review).
         """
-        forall_set: set[str] | None = (
-            set(forall_vars) if callee_vars_opaque else None)
+        # A variable of the function the call is written in is that
+        # function's, however it is spelled: only one no enclosing `forall`
+        # binds is the callee's own, leaked from a nested call.
+        own: frozenset[str] = (
+            frozenset(forall_vars) - frozenset(self.env.type_params)
+            if callee_vars_opaque else frozenset())
+        forall_set: set[str] | None = set(own) if own else None
         mapping: dict[str, Type] = {}
         for param_ty, arg, arg_ty in zip(param_types, args, arg_types):
             if arg_ty is None or isinstance(arg_ty, UnknownType):
@@ -1070,8 +1090,8 @@ class ResolutionMixin:
             soft_ty = self._literal_soft_type(arg, arg_ty)
             if soft_ty is None:
                 continue
-            self._unify_for_inference(param_ty, soft_ty, mapping,
-                                      forall_set, conflicts)
+            self._unify_for_inference(param_ty, self._as_holes(soft_ty, own),
+                                      mapping, None, conflicts)
         holed = [tv for tv, b in mapping.items() if contains_literal_hole(b)]
         if not holed:
             return mapping, dict(mapping)
@@ -1087,6 +1107,28 @@ class ResolutionMixin:
         for tv in holed:
             mapping[tv] = default_literal_holes(mapping[tv])
         return mapping, soft
+
+    def _as_holes(self, ty: Type, own: frozenset[str]) -> Type:
+        """*ty*, an argument's type, with each position it does not fix a
+        hole: an unknown (an empty array literal's element type) and a type
+        variable spelled as one of *own*, the callee's own, which a nested
+        call left unresolved.  A hole is a fresh variable (``$``): a later
+        argument fills it, and one nothing fills is a variable no argument
+        fixes, which no value of the call's arguments holds."""
+        if isinstance(ty, UnknownType):
+            return self._fresh_typevar("?")
+        if isinstance(ty, TypeVar):
+            return self._fresh_typevar(ty.name) if ty.name in own else ty
+        if isinstance(ty, AdtType):
+            return AdtType(ty.name, tuple(self._as_holes(a, own)
+                                          for a in ty.type_args))
+        if isinstance(ty, FunctionType):
+            return FunctionType(
+                tuple(self._as_holes(p, own) for p in ty.params),
+                self._as_holes(ty.return_type, own), ty.effect)
+        if isinstance(ty, RefinedType):
+            return RefinedType(self._as_holes(ty.base, own), ty.predicate)
+        return ty
 
     def _infer_type_args(self, forall_vars: tuple[str, ...],
                          param_types: tuple[Type, ...],

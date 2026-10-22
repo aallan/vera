@@ -192,14 +192,16 @@ MAP_INSERT_SKIP = (
 def skip_map_inserts(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make code generation drop every function holding a `map_insert`.
 
-    No construct the check accepts is one code generation drops: a Map or
-    Set over an Array key, value or element, the drop these fixtures were
-    written with, is refused at check (E135, #1680).  So the drop machinery
-    a skip starts, the E602 warning, its propagation to every caller as
-    E620 (#1100) and the refusal of a dropped entry (#1183, #1186), is
-    reached by injection: `map_insert`'s translator raises the skip it
-    raised for an Array-valued map, and a fixture writes a map the check
-    accepts."""
+    A Map or Set over an Array key, value or element, the drop these
+    fixtures were written with, is refused at check (E135, #1680).  So the
+    drop machinery a skip starts, the E602 warning, its propagation to
+    every caller as E620 (#1100) and the refusal of a dropped entry (#1183,
+    #1186), is reached by injection: `map_insert`'s translator raises the
+    skip it raised for an Array-valued map, and a fixture writes a map the
+    check accepts.  The two check-green drops left are bugs, no fixture: a
+    function type at a generic's type argument (#1783), and an array
+    literal of closures, whose element type code generation does not read
+    from the check (E602)."""
     from vera.skip import CodegenSkip
     from vera.wasm.calls_containers import CallsContainersMixin
 

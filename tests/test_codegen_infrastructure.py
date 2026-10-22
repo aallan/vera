@@ -456,3 +456,52 @@ public fn main(@Unit -> @Unit)
             f"enclosing-fn span).  Any other line means the catch "
             f"handler drifted off the offending FnCall node."
         )
+
+
+# =====================================================================
+# The signature guards behind the compilable filter (E600, E601)
+# =====================================================================
+
+
+class TestSignatureGuards:
+    """`_compile_fn` refuses a parameter or a return type with no WebAssembly
+    representation (E600, E601).  `_is_compilable` drops such a function
+    first (E605), so the guards are reached only past it: with the filter
+    patched open, as `skip_map_inserts` injects its drop, on a program the
+    check accepts.  `Never` is the type with no representation."""
+
+    _SOURCE = """\
+private fn absurd(@Never -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 0 }
+
+private fn stop(@Int -> @Never)
+  requires(true) ensures(true) effects(<Diverge>)
+{ stop(@Int.0) }
+
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 1 }
+"""
+
+    def _guarded(self, monkeypatch: pytest.MonkeyPatch,
+                 ) -> list[tuple[str | None, str]]:
+        from vera.codegen import CodeGenerator
+
+        assert pipeline.check(self._SOURCE, file="guards.vera").ok
+        monkeypatch.setattr(CodeGenerator, "_is_compilable",
+                            lambda self, decl: True)
+        compiled = pipeline.compile(self._SOURCE, file="guards.vera")
+        return [(d.error_code, d.description) for d in compiled.diagnostics]
+
+    def test_e600_refuses_a_parameter_type_with_no_representation(
+            self, monkeypatch: pytest.MonkeyPatch) -> None:
+        found = self._guarded(monkeypatch)
+        assert ("E600", "Function 'absurd' has unsupported parameter type."
+                ) in found, found
+
+    def test_e601_refuses_a_return_type_with_no_representation(
+            self, monkeypatch: pytest.MonkeyPatch) -> None:
+        found = self._guarded(monkeypatch)
+        assert ("E601", "Function 'stop' has unsupported return type."
+                ) in found, found

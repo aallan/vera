@@ -829,3 +829,462 @@ def test_every_expression_of_every_clone_is_typed(path: Path) -> None:
                 callee = typed.call_target(node)
                 assert callee is not None and callee.clone is not None, (
                     inst.name, ast.format_expr(node))
+
+
+# =====================================================================
+# A recorded instance holds what its call's arguments fix
+# =====================================================================
+#
+# Code generation compiles each generic call against the instance the
+# check's record of it fixes.  A record that holds less than the call's
+# arguments fix -- an empty array literal's unknown element bound first, a
+# type variable taken for the callee's own because it is spelled like one
+# -- builds the instance at the phantom type, and the call runs against the
+# wrong clone.  The oracle derives each call's instance on its own: it
+# matches the callee's declared parameter types against the checked types
+# of the call's own arguments, and every position an argument fixes must be
+# the instance's.
+
+_INTEGERS = frozenset({"Int", "Nat", "Byte"})
+
+
+def _bare_type(ty: object) -> object:
+    from vera.types import RefinedType
+
+    while isinstance(ty, RefinedType):
+        ty = ty.base
+    return ty
+
+
+def _fixed_by(pattern: object, actual: object, variables: frozenset[str],
+              out: dict[str, list[object]]) -> None:
+    """Add to *out* the type *actual* holds at each position where
+    *pattern* holds one of *variables*."""
+    from vera.types import AdtType, FunctionType, TypeVar
+
+    pattern, actual = _bare_type(pattern), _bare_type(actual)
+    if isinstance(pattern, TypeVar) and pattern.name in variables:
+        out.setdefault(pattern.name, []).append(actual)
+    elif (isinstance(pattern, AdtType) and isinstance(actual, AdtType)
+          and pattern.name == actual.name
+          and len(pattern.type_args) == len(actual.type_args)):
+        for p, a in zip(pattern.type_args, actual.type_args, strict=True):
+            _fixed_by(p, a, variables, out)
+    elif (isinstance(pattern, FunctionType) and isinstance(actual, FunctionType)
+          and len(pattern.params) == len(actual.params)):
+        for p, a in zip(pattern.params, actual.params, strict=True):
+            _fixed_by(p, a, variables, out)
+        _fixed_by(pattern.return_type, actual.return_type, variables, out)
+
+
+def _agrees(fixed: object, built: object) -> bool:
+    """Whether *built*, an instance's type argument, holds *fixed* at every
+    position *fixed* determines: a type variable or an unknown there
+    determines nothing, and the integer types are one (a literal's type is
+    its context's)."""
+    from vera.types import (
+        AdtType,
+        FunctionType,
+        PrimitiveType,
+        TypeVar,
+        UnknownType,
+    )
+
+    fixed, built = _bare_type(fixed), _bare_type(built)
+    if isinstance(fixed, (TypeVar, UnknownType)):
+        return True
+    if isinstance(fixed, PrimitiveType) and isinstance(built, PrimitiveType):
+        return (fixed.name == built.name
+                or {fixed.name, built.name} <= _INTEGERS)
+    if isinstance(fixed, AdtType) and isinstance(built, AdtType):
+        return (fixed.name == built.name
+                and len(fixed.type_args) == len(built.type_args)
+                and all(_agrees(f, b) for f, b in zip(
+                    fixed.type_args, built.type_args, strict=True)))
+    if isinstance(fixed, FunctionType) and isinstance(built, FunctionType):
+        return (len(fixed.params) == len(built.params)
+                and all(_agrees(f, b) for f, b in zip(
+                    fixed.params, built.params, strict=True))
+                and _agrees(fixed.return_type, built.return_type))
+    return False
+
+
+def _disagreements(checked: pipeline.Checked) -> list[str]:
+    """Each generic call the typed program compiles whose instance does not
+    hold what the call's own arguments fix."""
+    from dataclasses import replace as dc_replace
+
+    from vera.naming import resolve_type_expr
+
+    typed = checked.typed
+    linked = typed.linked
+
+    def variables(key: str) -> frozenset[str]:
+        names: set[str] = set()
+        template = typed.templates.get(key)
+        while template is not None:
+            names.update(template.decl.forall_vars or ())
+            template = (typed.templates.get(template.ancestor)
+                        if template.ancestor else None)
+        return frozenset(names)
+
+    nodes = [node for root in (linked.program,
+                               *(m.program for m in linked.modules),
+                               linked.prelude)
+             for node in _nodes(root)]
+    nodes.extend(node for inst in typed.instances
+                 for node in inst.compiled_nodes())
+    found: list[str] = []
+    for node in nodes:
+        if not isinstance(node, (ast.FnCall, ast.ModuleCall)):
+            continue
+        callee = typed.call_target(node)
+        if callee is None:
+            continue
+        scope = variables(callee.key)
+        env = dc_replace(checked.artifacts.alias_env, type_params=scope)
+        fixed: dict[str, list[object]] = {}
+        decl = typed.templates[callee.key].decl
+        for te, arg in zip(decl.params, node.args, strict=True):
+            actual = typed.semantic_type(arg)
+            if actual is not None:
+                _fixed_by(resolve_type_expr(te, env), actual, scope, fixed)
+        for var, types in fixed.items():
+            built = callee.sigma.get(var)
+            found.extend(
+                f"{ast.format_expr(node)} -> {callee.name}: {var} = {built}, "
+                f"where an argument fixes {ty}"
+                for ty in types if built is None or not _agrees(ty, built))
+    return found
+
+
+def _holds_unknown(ty: object) -> bool:
+    from vera.types import AdtType, FunctionType, RefinedType, UnknownType
+
+    if isinstance(ty, UnknownType):
+        return True
+    if isinstance(ty, RefinedType):
+        return _holds_unknown(ty.base)
+    if isinstance(ty, AdtType):
+        return any(_holds_unknown(a) for a in ty.type_args)
+    if isinstance(ty, FunctionType):
+        return (_holds_unknown(ty.return_type)
+                or any(_holds_unknown(p) for p in ty.params))
+    return False
+
+
+def _unknown_records(checked: pipeline.Checked) -> list[str]:
+    return [f"{record.callee}: {var} = {ty}"
+            for record in checked.artifacts.instantiations.values()
+            for var, ty in record.mapping.items() if _holds_unknown(ty)]
+
+
+@pytest.mark.parametrize("path", _CORPUS, ids=lambda p: p.name)
+def test_every_instance_holds_what_its_calls_arguments_fix(path: Path) -> None:
+    """Every generic call of a corpus program is compiled against an
+    instance that holds, at each position, what the call's own arguments
+    fix there: the instance derived again, from the argument types alone."""
+    assert _disagreements(_checked_corpus_program(path)) == []
+
+
+@pytest.mark.parametrize("path", _CORPUS, ids=lambda p: p.name)
+def test_no_recorded_instantiation_holds_an_unknown(path: Path) -> None:
+    """An unknown in an argument's type is a hole a later argument fills,
+    never a binding: the typed program refuses one, so a record holding one
+    would be a check-green program code generation cannot build."""
+    assert _unknown_records(_checked_corpus_program(path)) == []
+
+
+_BOX_DATA = "private data Box<T> {\n  MkBox(T)\n}\n\n"
+_TAG_DATA = ("private data Color {\n  Red,\n  Green\n}\n\n"
+             "private data Tag {\n  MkTag(String, Color)\n}\n\n")
+_EQ_OR = _fn("private forall<T where Eq<T>> fn eq_or(@Array<T>, @T, @T -> @Bool)",
+             "if array_length(@Array<T>.0) > 0 then {\n    false\n  } else {\n"
+             "    @T.1 == @T.0\n  }") + "\n"
+_PICK_FIRST = _fn("private forall<T> fn pick_first(@Array<T>, @T -> @T)",
+                  "@T.0") + "\n"
+_PICK_LAST = _fn("private forall<T> fn pick_last(@T, @Array<T> -> @T)",
+                 "@T.0") + "\n"
+_COUNT_IF = _fn("private forall<T> fn count_if(@Array<T>, "
+                "@fn(T -> Bool) effects(pure) -> @Int)",
+                "array_length(@Array<T>.0)") + "\n"
+_SAME_AT = _fn("private forall<T where Eq<T>> fn same(@T, @T -> @Bool)",
+               "@T.1 == @T.0") + "\n"
+_EMPTY = _fn("private forall<T> fn empty(@Unit -> @Option<T>)", "None") + "\n"
+_WRAPPED_SAME = _fn(
+    "private forall<T where Eq<T>> fn wrapped_same(@T, @T -> @Bool)",
+    "same(Some(@T.1), Some(@T.0))") + "\n"
+_M_PICK_FIRST = "module m;\n\n" + _PICK_FIRST.replace("private", "public")
+
+
+def _prints(expr: str) -> str:
+    return _fn("public fn main(@Unit -> @Unit)",
+               f'IO.print("\\({expr})\\n")', "<IO>")
+
+
+@dataclass(frozen=True)
+class Built:
+    files: dict[str, str]
+    #: The instance the call is compiled against, as the module names it.
+    clone: str
+    stdout: str
+
+
+BUILT: dict[str, Built] = {
+    # An empty array literal's element type is unknown; the argument beside
+    # it fixes the variable (PR #1791 review).
+    "empty_literal_beside_a_data_type": Built(
+        {"main.vera": _BOX_DATA + _EQ_OR
+         + _prints("eq_or([], MkBox(1), MkBox(1))")},
+        "eq_or$Box_LInt_R", "true\n"),
+    "empty_literal_beside_an_int": Built(
+        {"main.vera": _PICK_FIRST + _prints("pick_first([], 5000000000)")},
+        "pick_first$Int", "5000000000\n"),
+    "empty_literal_after_an_int": Built(
+        {"main.vera": _PICK_LAST + _prints("pick_last(5000000000, [])")},
+        "pick_last$Int", "5000000000\n"),
+    "empty_literal_to_a_module_generic": Built(
+        {"m.vera": _M_PICK_FIRST,
+         "main.vera": "import m(pick_first);\n\n"
+         + _prints("pick_first([], 5000000000)")},
+        "mod$m$pick_first$Int", "5000000000\n"),
+    "empty_literal_beside_an_entry_data_type": Built(
+        {"main.vera": _TAG_DATA + _PICK_FIRST + _fn(
+            "public fn main(@Unit -> @Unit)",
+            'match pick_first([], MkTag("q", Red)) {\n'
+            '    MkTag(@String, @Color) -> IO.print("\\(@String.0)\\n")\n  }',
+            "<IO>")},
+        "pick_first$Tag", "q\n"),
+    "empty_literal_beside_an_entry_data_type_bound_by_a_let": Built(
+        {"main.vera": _TAG_DATA + _PICK_FIRST + _fn(
+            "public fn main(@Unit -> @Unit)",
+            'let @Tag = pick_first([], MkTag("q", Red));\n'
+            '  match @Tag.0 {\n'
+            '    MkTag(@String, @Color) -> IO.print("\\(@String.0)\\n")\n  }',
+            "<IO>")},
+        "pick_first$Tag", "q\n"),
+    "empty_literal_beside_a_string": Built(
+        {"main.vera": _EQ_OR + _fn(
+            "public fn main(@Unit -> @Unit)",
+            'let @Bool = eq_or([], string_concat("a", "b"), "ab");\n'
+            '  IO.print("\\(@Bool.0)\\n")', "<IO>")},
+        "eq_or$String", "true\n"),
+    "empty_literal_beside_a_float": Built(
+        {"main.vera": _PICK_FIRST + _prints("pick_first([], 2.5)")},
+        "pick_first$Float64", "2.5\n"),
+    "empty_literal_beside_a_closure": Built(
+        {"main.vera": _COUNT_IF + _prints(
+            "count_if([], fn(@Int -> @Bool) effects(pure) { @Int.0 > 0 })")},
+        "count_if$Int", "0\n"),
+    "empty_literal_inside_a_constructor": Built(
+        {"main.vera": _prints(
+            "array_length(option_unwrap_or(Some([]), [5000000000]))")},
+        "option_unwrap_or$Array_LInt_R", "0\n"),
+    # A type variable spelled as one of the callee's: the caller's own, and
+    # one a nested call leaves open.
+    "a_callers_variable_spelled_as_the_callees": Built(
+        {"main.vera": _SAME_AT + _WRAPPED_SAME + _prints("wrapped_same(7, 7)")},
+        "same$Option_LInt_R", "true\n"),
+    "a_variable_a_nested_call_leaves_open": Built(
+        {"main.vera": _SAME_AT + _EMPTY
+         + _prints("same(empty(()), empty(()))")},
+        "same$Option_LBool_R", "true\n"),
+    "a_variable_a_nested_call_leaves_open_fixed_beside_it": Built(
+        {"main.vera": _SAME_AT + _EMPTY + _prints("same(empty(()), Some(3))")},
+        "same$Option_LInt_R", "false\n"),
+}
+
+
+@pytest.mark.parametrize("name", sorted(BUILT))
+def test_a_call_runs_against_the_instance_its_arguments_fix(
+        name: str, tmp_path: Path) -> None:
+    """The call is compiled against the instance its arguments fix, named
+    so in the module, and prints what that instance computes; the oracle
+    and the record agree with it."""
+    case = BUILT[name]
+    path = pipeline.write_tree(tmp_path, case.files)
+    checked = pipeline.check(path)
+    assert checked.ok, [d.format() for d in checked.diagnostics]
+    assert _disagreements(checked) == []
+    assert _unknown_records(checked) == []
+    wat = pipeline.compile(path).result.wat
+    names = set(re.findall(r"(?m)^\s*\(func \$:?([^\s()]+)", wat))
+    assert case.clone in names, sorted(n for n in names if "$" in n)
+    ran = pipeline.run(path, "main")
+    assert ran.ok, (ran.stderr, ran.trap)
+    assert ran.stdout == case.stdout
+
+
+# =====================================================================
+# Instances that grow without bound are refused at check (E139)
+# =====================================================================
+#
+# A call in a cycle of generic calls that instantiates the cycle at a type
+# strictly containing one of its type variables needs, for every instance,
+# one at a larger type: `f<T>` calling `g` at `Option<T>` and `g<U>` calling
+# `f` at `Option<U>` reach `f<Option<Option<T>>>` and never stop.  No
+# finite set of instances compiles the program, so the check refuses each
+# such call, as it refuses a data declaration whose recursion is not
+# regular (E129).
+
+_REC_C = ("  requires(true)\n  ensures(true)\n  decreases(@Nat.0)\n"
+          "  effects(pure)\n")
+
+
+def _rec(head: str, base: str, step: str) -> str:
+    return (f"{head}\n{_REC_C}{{\n  if @Nat.0 == 0 then {{\n    {base}\n"
+            f"  }} else {{\n    {step}\n  }}\n}}\n\n")
+
+
+_GROW_MUTUAL = (
+    _rec("private forall<T> fn f(@T, @Nat -> @Int)", "0",
+         "g(Some(@T.0), @Nat.0 - 1)")
+    + _rec("private forall<U> fn g(@U, @Nat -> @Int)", "1",
+           "f(Some(@U.0), @Nat.0 - 1)")
+    + _fn("public fn main(@Unit -> @Int)", "f(7, 3)"))
+_GROW_SELF = (
+    _rec("private forall<T where Eq<T>> fn same_deep(@T, @T, @Nat -> @Bool)",
+         "@T.1 == @T.0", "same_deep(Some(@T.1), Some(@T.0), @Nat.0 - 1)")
+    + _fn("public fn main(@Unit -> @Bool)", "same_deep(7, 7, 1)"))
+#: Never called: the cycle is the declarations', as a data declaration's is.
+_GROW_UNCALLED = (
+    _rec("private forall<T> fn deepen(@T, @Nat -> @Int)", "0",
+         "deepen([@T.0], @Nat.0 - 1)")
+    + _fn("public fn main(@Unit -> @Int)", "1"))
+
+GROWING: dict[str, tuple[str, tuple[str, ...], str]] = {
+    "mutual": (_GROW_MUTUAL,
+               ("g(Some(@T.0), @Nat.0 - 1)", "f(Some(@U.0), @Nat.0 - 1)"),
+               "f<T> -> g<Option<T>> -> f<Option<Option<T>>>"),
+    "self": (_GROW_SELF,
+             ("same_deep(Some(@T.1), Some(@T.0), @Nat.0 - 1)",),
+             "same_deep<T> -> same_deep<Option<T>>"),
+    "uncalled": (_GROW_UNCALLED, ("deepen([@T.0], @Nat.0 - 1)",),
+                 "deepen<T> -> deepen<Array<T>>"),
+}
+
+
+@pytest.mark.parametrize("name", sorted(GROWING))
+def test_a_call_whose_instances_grow_without_bound_is_refused(
+        name: str, tmp_path: Path) -> None:
+    """Each call of the cycle that instantiates it at a larger type is
+    refused at check with E139, at the call, naming the cycle and the type
+    it grows by; nothing else is reported and nothing crashes."""
+    source, calls, chain = GROWING[name]
+    path = pipeline.write_tree(tmp_path, {"main.vera": source})
+    checked = pipeline.check(path)
+    found = [d for d in checked.errors if d.error_code == "E139"]
+    assert [d.error_code for d in checked.errors] == ["E139"] * len(calls), [
+        d.format() for d in checked.diagnostics]
+    where = {(d.location.line, d.location.column) for d in found}
+    assert where == {_position(source, call) for call in calls}
+    assert chain in found[0].description, found[0].description
+
+
+@pytest.mark.parametrize("name", sorted(GROWING))
+def test_each_growing_calls_fix_applied_checks_clean(
+        name: str, tmp_path: Path) -> None:
+    """Every E139's fix is a replacement at its call, and the program they
+    make together checks clean."""
+    source, calls, _ = GROWING[name]
+    checked = pipeline.check(pipeline.write_tree(tmp_path / "before",
+                                                 {"main.vera": source}))
+    fixes = [_REPLACE.search(d.fix) for d in checked.errors
+             if d.error_code == "E139"]
+    assert len(fixes) == len(calls) and all(fixes), [
+        d.fix for d in checked.errors]
+    fixed = source
+    for match in fixes:
+        assert match is not None
+        old, new = match.groups()
+        assert fixed.count(old) == 1, old
+        fixed = fixed.replace(old, new)
+    after = pipeline.check(pipeline.write_tree(tmp_path / "after",
+                                               {"main.vera": fixed}))
+    assert after.ok, [d.format() for d in after.diagnostics]
+
+
+#: Cycles whose instances stay finite: a variable passed on unchanged, and
+#: a call at a type that holds none of the cycle's variables.
+FINITE_CYCLES: dict[str, tuple[str, str]] = {
+    "mutual_at_the_variable": (
+        _rec("private forall<T> fn f(@T, @Nat -> @Int)", "0",
+             "g(@T.0, @Nat.0 - 1)")
+        + _rec("private forall<U> fn g(@U, @Nat -> @Int)", "1",
+               "f(@U.0, @Nat.0 - 1)")
+        + _fn("public fn main(@Unit -> @Int)", "f(7, 3)"), "1"),
+    "self_at_a_closed_type": (
+        _rec("private forall<T> fn closed(@T, @Nat -> @Int)", "0",
+             "closed(Some(5), @Nat.0 - 1)")
+        + _fn("public fn main(@Unit -> @Int)", 'closed("x", 2)'), "0"),
+}
+
+
+@pytest.mark.parametrize("name", sorted(FINITE_CYCLES))
+def test_a_cycle_whose_instances_stay_finite_runs(
+        name: str, tmp_path: Path) -> None:
+    source, value = FINITE_CYCLES[name]
+    path = pipeline.write_tree(tmp_path, {"main.vera": source})
+    _runs("main", value=int(value))(path)
+
+
+# A variable only the result mentions is fixed by no argument, so the
+# result's annotation does not reach it (the expected type fills only a
+# literal's hole): the fix names the edit that fixes it (PR #1791 review).
+_NONE_ORD = _fn("private forall<T where Ord<T>> fn none_ord(@Unit -> @Option<T>)",
+                "None") + "\n"
+_NONE_ORD_MAIN = _fn(
+    "public fn main(@Unit -> @Int)",
+    "let @Option<Int> = none_ord(());\n  match @Option<Int>.0 {\n"
+    "    None -> 7,\n    Some(@Int) -> @Int.0\n  }")
+
+
+def test_the_fix_for_a_variable_no_argument_fixes_names_a_parameter(
+        tmp_path: Path) -> None:
+    """E613 at a variable no argument mentions says no argument fixes it
+    and names the edit that does, a parameter that carries it; that edit
+    made, the program checks clean and runs."""
+    source = _NONE_ORD + _NONE_ORD_MAIN
+    checked = pipeline.check(pipeline.write_tree(tmp_path / "before",
+                                                 {"main.vera": source}))
+    (found,) = [d for d in checked.errors if d.error_code == "E613"]
+    assert "No argument of 'none_ord(())' fixes T" in found.fix, found.fix
+    assert "a parameter that carries T" in found.fix, found.fix
+    assert "annotating" not in found.fix, found.fix
+    edited = source.replace("fn none_ord(@Unit -> @Option<T>)",
+                            "fn none_ord(@T -> @Option<T>)").replace(
+                                "none_ord(())", "none_ord(0)")
+    _runs("main", value=7)(pipeline.write_tree(tmp_path / "after",
+                                               {"main.vera": edited}))
+
+
+def test_each_array_components_fix_replaces_its_own_component(
+        tmp_path: Path) -> None:
+    """A Map whose key and value are both written `Array<Int>` is refused
+    once for each, and each fix replaces its own component, found by its
+    position in the type as written rather than by its text, which both
+    share (PR #1791 review)."""
+    written = "Map<Array<Int>, Array<Int>>"
+    source = _fn("public fn main(@Unit -> @Int)",
+                 f"let @{written} = map_new();\n"
+                 f"  nat_to_int(map_size(@{written}.0))")
+    checked = pipeline.check(pipeline.write_tree(tmp_path,
+                                                 {"main.vera": source}))
+    fixes = {d.fix for d in checked.errors if d.error_code == "E135"}
+    replaced = {m.group(2) for m in map(_REPLACE.search, fixes) if m}
+    assert replaced == {"Map<String, Array<Int>>",
+                        "Map<Array<Int>, Option<Array<Int>>>"}, fixes
+
+
+def test_a_shared_body_check_memo_needs_the_tables_it_was_filled_with(
+) -> None:
+    """A check that skips a module's bodies because an earlier check of the
+    batch typed them reads those nodes' entries from the batch's tables, so
+    a memo handed over without them is refused rather than left to give the
+    verifier and code generation no type for those nodes (PR #1791
+    review)."""
+    from vera.checker import typecheck_with_artifacts
+
+    program = pipeline.parse(_fn("public fn main(@Unit -> @Int)", "1")).program
+    with pytest.raises(ValueError, match="tables"):
+        typecheck_with_artifacts(program, body_check_memo=set())

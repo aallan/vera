@@ -26,6 +26,8 @@ from vera.types import (
     PrimitiveType,
     RefinedType,
     Type,
+    TypeVar,
+    UnknownType,
     strip_builtin_typevar_marker,
     substitute,
 )
@@ -233,9 +235,18 @@ class Instance:
         return Monomorphizer._mangle_fn_name(base, self.args)
 
 
+class UnknownInstantiation(Exception):
+    """A recorded instantiation holds an unknown type.  The check makes an
+    unknown in an argument's type a hole, never a binding, so one here is a
+    compiler defect, and no instance is built at it (PR #1791 review)."""
+
+
 def ground(ty: Type) -> Type:
     """*ty* as an instance is built at it: a refinement by its base, and a
-    type variable left unbound, or an unknown, by :data:`PHANTOM_TYPE`."""
+    type variable left unbound -- a hole no argument fixed -- by
+    :data:`PHANTOM_TYPE`.  An unknown is refused
+    (:class:`UnknownInstantiation`): it is a type the check could not
+    infer, which no instance can be built at."""
     if isinstance(ty, RefinedType):
         return ground(ty.base)
     if isinstance(ty, AdtType):
@@ -245,31 +256,218 @@ def ground(ty: Type) -> Type:
                             ground(ty.return_type), ty.effect)
     if isinstance(ty, PrimitiveType):
         return ty
+    if isinstance(ty, UnknownType):
+        raise UnknownInstantiation(
+            "a recorded instantiation holds an unknown type")
     return PHANTOM_TYPE
+
+
+def _recorded_names(template: Template,
+                    record: Instantiation) -> dict[str, str]:
+    """Each of *template*'s variables by the name *record* gives it.
+
+    A record names the variables as the callee's signature does, which for
+    a prelude function is the built-in registry's (``T#b``): unmarked, they
+    are the declaration's names, and where they are not they are taken by
+    position, the order both declare them in."""
+    decl_vars = template.decl.forall_vars or ()
+    unmarked = [strip_builtin_typevar_marker(v) for v in record.forall_vars]
+    if set(unmarked) == set(decl_vars):
+        return dict(zip(unmarked, record.forall_vars))
+    return dict(zip(decl_vars, record.forall_vars))
 
 
 def _own_args(template: Template, record: Instantiation,
               sigma: Mapping[str, Type]) -> list[Type]:
     """The type arguments *record* fixes for *template*'s variables, read
-    under *sigma*, in the declaration's order.
-
-    A record names the variables as the callee's signature does, which for
-    a prelude function is the built-in registry's (``T#b``): unmarked, they
-    are the declaration's names, and where they are not they are taken by
-    position, the order both declare them in.  A variable no argument fixes
-    is instantiated at :data:`PHANTOM_TYPE`."""
-    decl_vars = template.decl.forall_vars or ()
-    unmarked = [strip_builtin_typevar_marker(v) for v in record.forall_vars]
-    if set(unmarked) == set(decl_vars):
-        recorded_as = dict(zip(unmarked, record.forall_vars))
-    else:
-        recorded_as = dict(zip(decl_vars, record.forall_vars))
+    under *sigma*, in the declaration's order.  A variable no argument
+    fixes is instantiated at :data:`PHANTOM_TYPE`."""
+    recorded_as = _recorded_names(template, record)
     types: list[Type] = []
-    for var in decl_vars:
+    for var in template.decl.forall_vars or ():
         ty = record.mapping.get(recorded_as.get(var, ""))
         types.append(PHANTOM_TYPE if ty is None
                      else ground(substitute(ty, dict(sigma))))
     return types
+
+
+# =====================================================================
+# Instances that grow without bound (E139)
+# =====================================================================
+#
+# Each recorded call in a template's scope instantiates its callee's
+# variables at types over the caller's.  A variable flows from the caller's
+# variable each type holds to the callee's, and the flow GROWS where the
+# type is more than the variable itself (`Option<T>` for `T`).  A cycle of
+# flows through a growing one needs, for every instance, an instance at a
+# larger type, so the instances never end; a program holding one is
+# refused at check, at each growing call of the cycle, before any instance
+# is derived.  The rule is the one ECMA-335 states for generic expansion
+# (II.9.2), and the one spec section 2.4 states for a data declaration's
+# recursion (E129).
+
+
+@dataclass(frozen=True)
+class _Flow:
+    """The call *call*, in the scope of the template *caller*, instantiates
+    the variable ``target[1]`` of the template ``target[0]`` at a type that
+    holds the variable ``source[1]``, which the template ``source[0]``
+    declares; *grows* when that type is more than the variable."""
+
+    source: tuple[str, str]
+    target: tuple[str, str]
+    grows: bool
+    call: ast.Node
+    caller: str
+    record: Instantiation
+
+
+def _variables_in(ty: Type) -> Iterator[str]:
+    if isinstance(ty, TypeVar):
+        yield ty.name
+    elif isinstance(ty, RefinedType):
+        yield from _variables_in(ty.base)
+    elif isinstance(ty, AdtType):
+        for arg in ty.type_args:
+            yield from _variables_in(arg)
+    elif isinstance(ty, FunctionType):
+        for param in ty.params:
+            yield from _variables_in(param)
+        yield from _variables_in(ty.return_type)
+
+
+def _declarers(templates: Mapping[str, Template],
+               key: str) -> dict[str, str]:
+    """Each type variable in scope in the template *key*, by the key of the
+    template that declares it: its own, then its ancestors'."""
+    found: dict[str, str] = {}
+    template = templates.get(key)
+    while template is not None:
+        for var in template.decl.forall_vars or ():
+            found.setdefault(var, template.decl.name)
+        template = (templates.get(template.ancestor)
+                    if template.ancestor is not None else None)
+    return found
+
+
+def _flows(templates: Mapping[str, Template],
+           recorded: Mapping[int, Instantiation]) -> list[_Flow]:
+    flows: list[_Flow] = []
+    for key, template in templates.items():
+        declarers = _declarers(templates, key)
+        for call in template.calls:
+            record = recorded[call.node_id]  # type: ignore[index]
+            callee = templates.get(record.callee)
+            if callee is None:
+                continue
+            names = _recorded_names(callee, record)
+            for var in callee.decl.forall_vars or ():
+                ty = record.mapping.get(names.get(var, ""))
+                if ty is None:
+                    continue
+                bare = ty.base if isinstance(ty, RefinedType) else ty
+                for used in dict.fromkeys(_variables_in(ty)):
+                    owner = declarers.get(used)
+                    if owner is None:
+                        continue  # a hole: a variable no argument fixed
+                    grows = not (isinstance(bare, TypeVar)
+                                 and bare.name == used)
+                    flows.append(_Flow((owner, used), (record.callee, var),
+                                       grows, call, key, record))
+    return flows
+
+
+def _components(flows: Sequence[_Flow]) -> dict[tuple[str, str], int]:
+    """The strongly connected component of each variable the flows join
+    (Tarjan's algorithm, iteratively)."""
+    successors: dict[tuple[str, str], list[tuple[str, str]]] = {}
+    for flow in flows:
+        successors.setdefault(flow.source, []).append(flow.target)
+        successors.setdefault(flow.target, [])
+    index: dict[tuple[str, str], int] = {}
+    low: dict[tuple[str, str], int] = {}
+    component: dict[tuple[str, str], int] = {}
+    stack: list[tuple[str, str]] = []
+    on_stack: set[tuple[str, str]] = set()
+    for root in successors:
+        if root in index:
+            continue
+        index[root] = low[root] = len(index)
+        stack.append(root)
+        on_stack.add(root)
+        work = [(root, iter(successors[root]))]
+        while work:
+            node, pending = work[-1]
+            for nxt in pending:
+                if nxt not in index:
+                    index[nxt] = low[nxt] = len(index)
+                    stack.append(nxt)
+                    on_stack.add(nxt)
+                    work.append((nxt, iter(successors[nxt])))
+                    break
+                if nxt in on_stack:
+                    low[node] = min(low[node], index[nxt])
+            else:
+                work.pop()
+                if work:
+                    parent = work[-1][0]
+                    low[parent] = min(low[parent], low[node])
+                if low[node] == index[node]:
+                    number = len(set(component.values()))
+                    while True:
+                        member = stack.pop()
+                        on_stack.discard(member)
+                        component[member] = number
+                        if member == node:
+                            break
+    return component
+
+
+@dataclass(frozen=True)
+class Growth:
+    """A recorded call whose instances grow without bound: *flow* is its
+    first growing flow, *cycle* the flows that lead from that flow's callee
+    variable back to its caller's, the calls that close the cycle, and
+    *grown* each of the call's growing flows inside a cycle."""
+
+    flow: _Flow
+    cycle: tuple[_Flow, ...]
+    grown: tuple[_Flow, ...]
+
+
+def growing_calls(templates: Mapping[str, Template],
+                  recorded: Mapping[int, Instantiation]) -> list[Growth]:
+    """Each recorded call in a template's scope that grows a cycle of
+    instantiations, once, in the order the templates and their calls are
+    reached."""
+    flows = _flows(templates, recorded)
+    component = _components(flows)
+    by_source: dict[tuple[str, str], list[_Flow]] = {}
+    for flow in flows:
+        by_source.setdefault(flow.source, []).append(flow)
+    at_call: dict[int, list[_Flow]] = {}
+    for flow in flows:
+        if flow.grows and component[flow.source] == component[flow.target]:
+            at_call.setdefault(id(flow.call), []).append(flow)
+    return [Growth(grown[0], _path_back(grown[0], by_source, component),
+                   tuple(grown)) for grown in at_call.values()]
+
+
+def _path_back(flow: _Flow,
+               by_source: Mapping[tuple[str, str], list[_Flow]],
+               component: Mapping[tuple[str, str], int]) -> tuple[_Flow, ...]:
+    """The shortest run of flows from *flow*'s target back to its source,
+    inside their component."""
+    goal, number = flow.source, component[flow.source]
+    paths: dict[tuple[str, str], tuple[_Flow, ...]] = {flow.target: ()}
+    queue = [flow.target]
+    while queue and goal not in paths:
+        node = queue.pop(0)
+        for nxt in by_source.get(node, ()):
+            if component[nxt.target] == number and nxt.target not in paths:
+                paths[nxt.target] = (*paths[node], nxt)
+                queue.append(nxt.target)
+    return paths.get(goal, ())
 
 
 def derive_instances(
@@ -277,10 +475,12 @@ def derive_instances(
     modules: Sequence[tuple[tuple[str, ...], ast.Program]],
     prelude: Sequence[ast.TopLevelDecl],
     recorded: Mapping[int, Instantiation],
-) -> tuple[dict[str, Template], list[Instance], dict[int, Instance]]:
+) -> tuple[dict[str, Template], list[Instance], dict[int, Instance],
+           list[Growth]]:
     """The templates of the linked program, the instances it needs, in the
-    order they are reached, and the instance each recorded call in a body
-    that is not generic calls.
+    order they are reached, the instance each recorded call in a body that
+    is not generic calls, and the calls whose instances grow without bound
+    (E139), in a program with one of which no instance is derived.
 
     Each recorded call in a body that is not generic fixes an instance at
     its recorded arguments; each recorded call in an instance's scope fixes
@@ -294,6 +494,11 @@ def derive_instances(
     instances: list[Instance] = []
     by_ident: dict[tuple[object, ...], Instance] = {}
     seed_targets: dict[int, Instance] = {}
+    growing = growing_calls(templates, recorded)
+    if growing:
+        # E139: the instances never end, so none is derived; the check
+        # reports each growing call (`judge`).
+        return templates, instances, seed_targets, growing
 
     def reach(call: ast.Node, within: Instance | None) -> Instance | None:
         record = recorded[call.node_id]  # type: ignore[index]
@@ -334,7 +539,7 @@ def derive_instances(
             target = reach(call, inst)
             if target is not None:
                 inst.calls[call.node_id] = target  # type: ignore[index]
-    return templates, instances, seed_targets
+    return templates, instances, seed_targets, growing
 
 
 # =====================================================================
@@ -384,6 +589,9 @@ class Derivation:
     seed_targets: dict[int, Instance]
     #: The typed program :func:`build` built from this derivation.
     typed: TypedProgram | None = None
+    #: The calls whose instances grow without bound (E139); when there is
+    #: one, no instance is derived.
+    growing: list[Growth] = field(default_factory=list)
 
 
 def derive_checked(program: ast.Program, modules: Sequence[ResolvedModule],
@@ -393,10 +601,11 @@ def derive_checked(program: ast.Program, modules: Sequence[ResolvedModule],
     """The :class:`Derivation` of a checked *program*: its one link, and
     the instances its *recorded* instantiations reach."""
     linked = link_checked(program, modules, binding, prelude, prelude_source)
-    templates, instances, seed_targets = derive_instances(
+    templates, instances, seed_targets, growing = derive_instances(
         linked.program, [(m.path, m.program) for m in linked.modules],
         linked.prelude, recorded)
-    return Derivation(linked, templates, instances, seed_targets)
+    return Derivation(linked, templates, instances, seed_targets,
+                      growing=growing)
 
 
 # =====================================================================
@@ -675,12 +884,24 @@ def _call_fix(call: ast.Node, source: str, root: Template, needs: str) -> str:
     """The root call's fix: instantiate its generic at Int, which every
     judgment here holds for, written as the call with each argument whose
     formal holds one of the generic's type parameters replaced by a value
-    at Int, where each such formal has one."""
-    advice = (f"Instantiate '{_bare(root.decl.name)}' at a type that "
-              f"{needs}, Int for example")
+    at Int, where each such formal has one.  A generic no formal of which
+    holds a type parameter is instantiated at the phantom type whatever its
+    result is bound to, since the type a result is expected at fills only a
+    literal's hole, so its fix is a parameter that carries one."""
+    generic = _bare(root.decl.name)
+    advice = f"Instantiate '{generic}' at a type that {needs}, Int for example"
     text = _source_text(source, call.span)
     args: tuple[ast.Expr, ...] = getattr(call, "args", ())
     variables = frozenset(root.decl.forall_vars or ())
+    if not any(_mentions(formal, variables) for formal in root.decl.params):
+        var = (root.decl.forall_vars or ("T",))[0]
+        return (f"No argument of '{text or generic}' fixes "
+                f"{', '.join(root.decl.forall_vars or (var,))}, so the call "
+                f"instantiates '{generic}' at "
+                f"{type_arg_name(PHANTOM_TYPE)} whatever its result is bound "
+                f"to: give '{generic}' a parameter that carries {var} "
+                f"('@{var}' for example) and pass it a value at a type that "
+                f"{needs}, Int for example.")
     if text is None or call.span is None or len(args) != len(root.decl.params):
         return advice + "."
     edits: list[tuple[int, int, str]] = []
@@ -693,8 +914,6 @@ def _call_fix(call: ast.Node, source: str, root: Template, needs: str) -> str:
         if example is None or lo is None or hi is None:
             return advice + ", by annotating the value it is fixed from."
         edits.append((lo, hi, example))
-    if not edits:
-        return advice + ", by annotating the value it is fixed from."
     fixed = text
     for lo, hi, example in sorted(edits, reverse=True):
         fixed = fixed[:lo] + example + fixed[hi:]
@@ -734,6 +953,12 @@ def judge(derivation: Derivation, types: Mapping[int, Type],
         for m in derivation.linked.modules}
     found: list[Diagnostic] = []
     refusals: dict[int, list[_Refusal]] = {}
+    for growth in derivation.growing:
+        origin = templates[growth.flow.caller].origin
+        file, source = ((entry_file, entry_source) if origin is None
+                        else files.get(origin, (None, "")))
+        found.append(_growth_diagnostic(growth, templates, types, file,
+                                        source))
 
     def of(inst: Instance) -> list[_Refusal]:
         done = refusals.get(id(inst))
@@ -841,6 +1066,109 @@ def _component_fix(node: ast.FnCall, role: str, source: str) -> str:
             f"'{text[:lo] + wrapped + text[hi:]}'.")
 
 
+_GROWTH_RATIONALE = (
+    "A generic is compiled once for each type it is instantiated at.  A "
+    "call that instantiates a generic of its own cycle of calls at a type "
+    "strictly larger than one of the cycle's type variables needs, for "
+    "every instance, an instance at a larger type, so the instances never "
+    "end and no module can hold them: the rule a data declaration's "
+    "recursion keeps (E129).")
+
+
+def _growth_chain(growth: Growth, templates: Mapping[str, Template]) -> str:
+    """The cycle *growth* closes, each generic at the types it reaches from
+    its first one's variables: ``f<T> -> g<Option<T>> -> f<Option<Option<T>>>``."""
+    start = templates[growth.flow.source[0]].decl
+    current: dict[str, Type] = {
+        v: TypeVar(v) for v in _declarers(templates, growth.flow.caller)}
+    parts = [f"{_bare(start.name)}<{', '.join(start.forall_vars or ())}>"]
+    for flow in (growth.flow, *growth.cycle):
+        callee = templates[flow.record.callee]
+        names = _recorded_names(callee, flow.record)
+        reached: dict[str, Type] = {}
+        for var in callee.decl.forall_vars or ():
+            ty = flow.record.mapping.get(names.get(var, ""))
+            reached[var] = (PHANTOM_TYPE if ty is None
+                            else substitute(ty, current))
+        current = {**current, **reached}
+        parts.append(f"{_bare(callee.decl.name)}<"
+                     + ", ".join(_type_text(t) for t in reached.values())
+                     + ">")
+    return " -> ".join(parts)
+
+
+def _growth_fix(growth: Growth, templates: Mapping[str, Template],
+                types: Mapping[int, Type], source: str) -> str:
+    """The growing call's fix: each argument that grows a variable passed
+    as the caller's variable it wraps, written as the call with each such
+    argument replaced by the part of it that has the caller's variable's
+    type, where its formal is the callee's variable itself and it has one."""
+    call, flow = growth.flow.call, growth.flow
+    callee = templates[flow.record.callee].decl
+    advice = (f"Call '{_bare(callee.name)}' at the caller's type variable "
+              f"itself, not at a type built from it, or carry the nesting "
+              f"in a value of a recursive data type")
+    grown = {g.target[1]: g.source[1] for g in growth.grown}
+    text = _source_text(source, call.span)
+    args: tuple[ast.Expr, ...] = getattr(call, "args", ())
+    if text is None or call.span is None or len(args) != len(callee.params):
+        return advice + "."
+    edits: list[tuple[int, int, str]] = []
+    for arg, formal in zip(args, callee.params, strict=True):
+        if not _mentions(formal, frozenset(grown)):
+            continue
+        if not (isinstance(formal, ast.NamedType) and not formal.type_args
+                and formal.name in grown):
+            return advice + "."
+        inner = _part_typed(arg, TypeVar(grown[formal.name]), types)
+        inner_text = (None if inner is None
+                      else _source_text(source, inner.span))
+        lo = _offset(text, call.span, arg.span, start=True)
+        hi = _offset(text, call.span, arg.span, start=False)
+        if inner_text is None or lo is None or hi is None:
+            return advice + "."
+        edits.append((lo, hi, inner_text))
+    if not edits:
+        return advice + "."
+    fixed = text
+    for lo, hi, inner_text in sorted(edits, reverse=True):
+        fixed = fixed[:lo] + inner_text + fixed[hi:]
+    return f"{advice}: replace '{text}' with '{fixed}'."
+
+
+def _part_typed(expr: ast.Expr, ty: TypeVar,
+                types: Mapping[int, Type]) -> ast.Expr | None:
+    """The outermost part of *expr*, itself left out, whose type is the
+    variable *ty*."""
+    for node in _walk(expr):
+        if (node is not expr and isinstance(node, ast.Expr)
+                and node.node_id is not None):
+            found = types.get(node.node_id)
+            if isinstance(found, TypeVar) and found.name == ty.name:
+                return node
+    return None
+
+
+def _growth_diagnostic(growth: Growth, templates: Mapping[str, Template],
+                       types: Mapping[int, Type], file: str | None,
+                       source: str) -> Diagnostic:
+    flow = growth.flow
+    callee = templates[flow.record.callee].decl
+    names = _recorded_names(templates[flow.record.callee], flow.record)
+    ty = flow.record.mapping.get(names.get(flow.target[1], ""))
+    text = (_source_text(source, flow.call.span)
+            or _bare(flow.record.callee))
+    at = "?" if ty is None else _type_text(ty)
+    return _diagnostic(
+        "E139", file, source, flow.call,
+        f"The call '{text}' in '{_bare(flow.caller)}' instantiates "
+        f"'{_bare(callee.name)}' at {flow.target[1]} = {at}, and the cycle "
+        f"of calls it closes grows that type at every turn: "
+        f"{_growth_chain(growth, templates)} -> ..., so no finite set of "
+        f"instances compiles the program.",
+        _growth_fix(growth, templates, types, source))
+
+
 def _chain(path: Sequence[Instance], templates: Mapping[str, Template]) -> str:
     """The instances from a root call's to the failing one, as a message
     names them: each generic and the types its variables are at."""
@@ -891,6 +1219,12 @@ def _diagnostic(code: str, file: str | None, source: str, node: ast.Node,
             rationale=_STATE_RATIONALE, fix=fix,
             spec_ref='Chapter 7, Section 7.5.1 "Handler Syntax"',
             severity="error", error_code="E533")
+    if code == "E139":
+        return Diagnostic(
+            description=description, location=loc, source_line=line,
+            rationale=_GROWTH_RATIONALE, fix=fix,
+            spec_ref='Chapter 11, Section 11.4.1 "Compilable Subset"',
+            severity="error", error_code="E139")
     assert code == "E135", code  # noqa: S101
     return Diagnostic(
         description=description, location=loc, source_line=line,

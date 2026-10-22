@@ -401,14 +401,11 @@ class WasmContext(
         # proceeds as before.
         self._adt_eq_derivable: Callable[[str], bool] | None = None
         # #932: TRUNCATED one-level constrained-var name → FULLY-recovered nested
-        # name (`List<List>` → `List<List<Int>>`).  Populated by Pass 1.5
-        # monomorphization (`_collect_eq_full_type_names`) and consulted for the
-        # Eq-derivability DECISION only — by the constraint gate
-        # (`_check_constraints`) and by the direct-`==` path inside a clone body
-        # (`_translate_binary`).  Never keys a clone symbol, so the clone-mangling
-        # contract stays the truncated one-level name (the #772 hard constraint).
-        # Empty for a bare WasmContext (no mono pass) — a plain dict lookup then
-        # leaves every name unchanged.
+        # name (`List<List>` → `List<List<Int>>`), read by the direct-`==` path
+        # inside a clone body (`_translate_binary`).  The discovery pass that
+        # filled it is gone (#1679): a clone is named at its full type
+        # arguments, so the table stays empty, every lookup leaves its name
+        # unchanged, and it goes with the backend's remaining readers (#1525).
         self._eq_full_type_names: dict[str, str] = {}
         # #924: generated recursive show/hash helper functions, keyed by the
         # mangled `$show_<type>` / `$hash_<type>` function name → its full WAT
