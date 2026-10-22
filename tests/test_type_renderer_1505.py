@@ -32,8 +32,8 @@ from vera.lsp.workflows import transitive_callers
 
 pytestmark = pytest.mark.matrix(decides=[
     "vera/ast.py", "vera/formatter.py", "vera/lsp/workflows.py",
-    "vera/checker/resolution.py", "vera/codegen/functions.py",
-    "vera/verifier.py",
+    "vera/checker/calls.py", "vera/checker/resolution.py",
+    "vera/codegen/functions.py", "vera/verifier.py",
 ])
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -344,6 +344,55 @@ def test_repro_add_effect_bounds_a_function_type_argument() -> None:
     assert transitive_callers(
         checked.program, "target",
         "Exn<Option<fn(Int -> Int) effects(pure)>>") == ["target"]
+
+
+_STRING_REFINED_HANDLER = """\
+private fn target(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(<Exn<Array<{ @String | @String.0 == "a b" }>>>)
+{
+  @Nat.0
+}
+
+private fn handled(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[Exn<Array<{ @String | @String.0 == "a b" }>>] {
+    throw(@Array<{ @String | @String.0 == "a b" }>) -> { 0 }
+  } in {
+    target(@Nat.0)
+  }
+}
+"""
+
+
+def test_a_refinement_argument_keys_no_handler() -> None:
+    """A handler whose argument holds a refinement bounds no request, a
+    request spelled the same included.  The key drops whitespace, and a
+    predicate's spaces can be its meaning: keyed by its rendering, the
+    handler over `"a b"` would bound a request over `"ab"`, an instance
+    the checker keeps apart, and the caller would lose a row it needs."""
+    program = pipeline.parse(_STRING_REFINED_HANDLER).program
+    for request in ('Exn<Array<{ @String | @String.0 == "ab" }>>',
+                    'Exn<Array<{ @String | @String.0 == "a b" }>>'):
+        assert transitive_callers(program, "target", request) == [
+            "target", "handled"], request
+
+
+def test_a_handler_key_joins_its_arguments() -> None:
+    """Each argument of a handler's head in the key, in order, comma-joined
+    as a request string is: `Pair<Int, Option<String>>` keys
+    `Pair<Int,Option<String>>`."""
+    from vera.lsp.workflows import _handled_effect_key
+    ref = vast.EffectRef(name="Pair", type_args=(
+        vast.NamedType(name="Int", type_args=None),
+        vast.NamedType(name="Option", type_args=(
+            vast.NamedType(name="String", type_args=None),)),
+    ))
+    assert _handled_effect_key(ref) == "Pair<Int,Option<String>>"
 
 
 _PING_EFFECT = """\

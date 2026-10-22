@@ -746,7 +746,7 @@ def _handled_effect_key(ref: ast.EffectRefNode) -> str:
     elif isinstance(ref, ast.EffectRef):
         base, args = ref.name, ref.type_args
     else:  # pragma: no cover — the parser produces only those two
-        return ""
+        return ""  # pragma: no mutate — unreachable, as the line above says
     if not args:
         return base
     if any(
