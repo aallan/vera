@@ -1577,15 +1577,21 @@ private fn internal(@Int -> @Int)
 
     @staticmethod
     def _resolved(
-        path: tuple[str, ...], source: str,
+        path: tuple[str, ...], source: str, *, direct: bool = True,
     ) -> ResolvedModule:
-        """Build a ResolvedModule from source text."""
+        """Build a ResolvedModule from source text.
+
+        ``direct`` is the resolver's tag: ``True`` for a module the entry
+        program imports itself, ``False`` for one it reaches only through
+        another module's imports (name injection is gated on it).
+        """
         prog = pipeline.parse(source).program
         return ResolvedModule(
             path=path,
             file_path=Path(f"/fake/{'/'.join(path)}.vera"),
             program=prog,
             source=source,
+            direct=direct,
         )
 
     @staticmethod
@@ -2041,7 +2047,7 @@ private fn f(@Int -> @Box<Nat>)
             "    requires(true) ensures(@T.result != @T.0) effects(pure)"
             " { @T.0 }\n"
             "}\n"
-        ))
+        ), direct=False)
         mc = self._resolved(("mc",), (
             "import mb(compute);\n"
             "public fn run(@Int -> @Int)"
