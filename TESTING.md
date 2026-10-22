@@ -1480,10 +1480,9 @@ Each program is held to the generator's contract and four differentials:
 | (4) Warm | the program and the four edits `program_generator.edits` writes for it (a literal moved inside its interval, a `let` added, a non-commutative pair's operands swapped, a function added with a call to it, a `requires` tightened inside its callers' arguments, a contract broken and then restored) go in order to one `VerificationSession`, as the language server sends a document's text, and each text alone to a fresh session; the two report the same obligations, with the same statuses at the same places, and the same diagnostics | a warm session that replays a stale verdict |
 
 A counterexample is the model the solver returned, one of the many that refute
-a clause, and which one it returns depends on the solver work the process did
-before, so the warm differential compares a diagnostic without its
-counterexample's values; an edit whose two sessions differ in a counterexample
-alone is #1785's class.
+a clause, and one text has met two of them (#1785), so the warm differential
+compares a diagnostic without its counterexample's values; an edit whose two
+sessions differ in a counterexample alone is #1785's class.
 
 **Known classes.**  `KNOWN_CLASSES` reads `scripts/check_reconciliation.py`'s
 `KNOWN` as classes, each by its mismatch's kind, obligation and emitter and by
@@ -1510,13 +1509,15 @@ in place by a `let` of the type the checker gives it (`{ let @Int = …;
 @Int.0 }`, a fold's being its initial value's;
 `program_generator.bind_in_place`), which code generation reads off the
 declaration, and #1744's when it vanishes once each handler a branch takes is
-bound too, provided that program checks, verifies and makes no find of its
-own; the distrust run counted is then that program's.
+bound too, provided that program checks, verifies and makes no find outside
+the known classes that the program does not; a find it makes again, in a known
+class or not, has not vanished, and the distrust run counted is then that
+program's.
 A find at those shapes that does not vanish under the `let` is reported.
 A warm find whose two sessions differ in a counterexample alone is #1785's: the
-model the solver returns depends on the solver work the process did before,
-which a fresh session inherits as a warm one does, so no seed shows one in a new
-process and the class has no pin.
+differences seen came in a four-worker run, after other programs, and not when
+the seed ran alone in a new process, so the mechanism is not established and
+the class has no pin.
 A find inside a known class is counted under its issue, with its class and the
 evidence in its record, and fails nothing; the night's report gives each class
 its count, its programs and its first seeds.  Each class but #1785's is pinned
@@ -1533,8 +1534,9 @@ seeds; a hundred seeds reach every construct and keep the generator's
 invariants; each differential reports a hand-written program that breaks it,
 or a session built to break it, and passes its nearest neighbour that does not;
 the known-class pins and their members, and the counterfactual classes' pins,
-members and boundary; and the minimiser's cells.  Nothing else of the
-generator runs on a pull request.
+members and boundary; and the minimiser's cells.  A pull request that changes
+the generator, its instrument or the workflow also runs the short night below;
+no other generator work runs on a pull request.
 [`nightly-generator.yml`](.github/workflows/nightly-generator.yml)
 runs the night's 1,900 seeds, a short night of 1,000 seeds on a pull request
 that changes the generator, its instrument or the workflow, and any seeds

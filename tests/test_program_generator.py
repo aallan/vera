@@ -1076,10 +1076,11 @@ def _obligation_prints(result: object) -> list[tuple[str, str, str, int, int, st
 
 
 #: The class of a warm differential's find in which the two sessions differ
-#: in a counterexample alone: the model the solver returns, one of many that
-#: refute a clause, depends on the solver work the process did before, which
-#: a fresh session inherits as a warm one does (#1785).  No seed shows it in
-#: a new process, so the class has no pin: it is counted, and fails nothing.
+#: in a counterexample alone (#1785): the model the solver returns is one of
+#: many that refute a clause, and the differences seen came in a four-worker
+#: run, after other programs, and not when the seed ran alone in a new
+#: process.  The mechanism is not established, and no seed shows one in a
+#: new process, so the class has no pin: it is counted, and fails nothing.
 WARM_MODEL_ISSUE = "#1785"
 WARM_MODEL_SHAPE = "a counterexample the warm session and a fresh one model apart"
 
@@ -1224,7 +1225,10 @@ def _codegen_finds(prog: gen.Program, stages: Stages, trials: int,
 
 def _alike(a: Find, b: Find) -> bool:
     """Whether two finds are the same find of two programs that differ in
-    columns only: their differential, signature and function."""
+    columns only: their differential, signature and function.  Two sites
+    of one signature in one function are alike, so one of them vanishing
+    while the other stays marks neither: the classification only ever
+    keeps a find a find."""
     return (a.differential, a.signature, a.function) == (
         b.differential, b.signature, b.function)
 
@@ -1238,10 +1242,14 @@ def classify_rederived(
     (:data:`REDERIVED`) marked with the class's issue.
 
     Each class's counterfactual binds its values on top of the classes
-    before it, and a find is the first class's under which it vanishes.  A
+    before it, and a find is the first class's under which it vanishes: no
+    find of the counterfactual, in a known class or not, is alike it.  A
     counterfactual that does not check and verify clean, or that makes a
-    find the program does not, isolates nothing, and classifies nothing
-    more.  A find that vanishes under none stays a find.  Where every find
+    find outside the known classes the program does not, isolates nothing,
+    and classifies nothing more.  A known find the counterfactual makes
+    anew, as binding a fold from a `Nat` in a `let @Nat` makes the
+    `nat_bind` class's guard, does not.  A find that vanishes under none
+    stays a find.  Where every find
     vanishes, *stats* takes the counterfactual's distrust run, which ran
     the functions the program's module could not."""
     open_ = [f for f in finds if not f.known and f.differential in _CODEGEN]
@@ -1259,10 +1267,12 @@ def classify_rederived(
         if [f for f in contract_finds(bound, stages) if f.signature != ("fmt",)]:
             break
         served = {}
-        after = [f for f in _codegen_finds(bound, stages, trials, served) if not f.known]
-        if any(not any(_alike(f, g) for g in open_) for f in after):
+        after = _codegen_finds(bound, stages, trials, served)
+        if any(not any(_alike(f, g) for g in open_) for f in after if not f.known):
             break
         for f in open_:
+            # A find the counterfactual makes again, in a known class or out
+            # of one, has not vanished: a class may hold its site there.
             if id(f) not in marked and not any(_alike(f, g) for g in after):
                 marked[id(f)] = cls
         if len(marked) == len(open_):
@@ -1878,6 +1888,49 @@ def test_a_fold_from_a_nat_keeps_its_run_non_negative() -> None:
     assert not gen.well_formed(program(-5))
 
 
+def test_two_sites_of_one_signature_where_one_vanishes_stay_finds(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """Two finds of one signature in one function, of which the
+    counterfactual makes one again: their sites cannot be told apart across
+    the counterfactual's columns, so neither is marked, and the one that
+    stays is never counted under the class."""
+    real = load_finds
+
+    def two_sites(program: Source, calls: Sequence[tuple[str, Sequence[int] | None]],
+                  stages: Stages | None = None) -> list[Find]:
+        bound = isinstance(program, gen.Program) and "{ let @" in program.render()
+        return real(program, calls, stages) + [
+            Find("load", ("call", "twin"), f"site {n}", function="f9")
+            for n in range(1 if bound else 2)]
+
+    monkeypatch.setattr(sys.modules[__name__], "load_finds", two_sites)
+    finds = differentials(_repro_generic_argument(), warm=False)
+    twins = [f for f in finds if f.signature == ("call", "twin")]
+    assert len(twins) == 2 and not [f for f in twins if f.known], finds
+    assert [f for f in finds if f.known == "#1525"], finds
+
+
+def test_a_find_the_counterfactual_makes_again_in_a_known_class_stays_a_find(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """A find the counterfactual makes again, now inside a known class, has
+    not vanished: the class holds its site in the counterfactual, not in the
+    program, so it stays a find."""
+    real = load_finds
+
+    def reclassified(program: Source, calls: Sequence[tuple[str, Sequence[int] | None]],
+                     stages: Stages | None = None) -> list[Find]:
+        bound = isinstance(program, gen.Program) and "{ let @" in program.render()
+        return real(program, calls, stages) + [
+            Find("load", ("call", "again"), "a find", function="f9",
+                 known="#1695" if bound else "")]
+
+    monkeypatch.setattr(sys.modules[__name__], "load_finds", reclassified)
+    finds = differentials(_repro_generic_argument(), warm=False)
+    again = [f for f in finds if f.signature == ("call", "again")]
+    assert [f.known for f in again] == [""], finds
+    assert [f for f in finds if f.known == "#1525"], finds
+
+
 def test_a_counterfactual_that_does_not_check_classifies_nothing(
         monkeypatch: pytest.MonkeyPatch) -> None:
     """A counterfactual `vera check` refuses makes no find of the load,
@@ -1897,16 +1950,19 @@ def test_a_counterfactual_that_does_not_check_classifies_nothing(
 def _opaque_narrowing(how: str) -> gen.Program:
     """`let @Int = value; let @Nat = @Int.0;`, *value* a `match` taking 1 in
     each arm whose scrutinee is a constructor applied in place or
-    `map_get`'s result, or a call whose `ensures` states 2 taking a
-    generic's call at a data type."""
-    amber, basalt = gen.Ctor("Amber", "Tally", ["Bool"]), gen.Ctor("Basalt", "Tally", [])
-    datas = [gen.Data("Tally", False, [amber, basalt])]
+    `map_get`'s result, or a call whose `ensures` states 2 or 0 taking a
+    generic's call at a data type, the module's constructor, or a data slot
+    bound to a `match` on `map_get`.  The entry's own data type is `Shade`,
+    not the module's `Tally`, so each case meets its own rule."""
+    amber, basalt = gen.Ctor("Amber", "Shade", ["Bool"]), gen.Ctor("Basalt", "Shade", [])
+    datas = [gen.Data("Shade", False, [amber, basalt])]
     functions: list[gen.Function] = []
     lets: list[gen.Let] = []
     module: gen.Module | None = None
     if how == "imported":
         amber = gen.Ctor("Amber", gen.TALLY, ["Nat"])
-        module = gen.Module([gen.Data(gen.TALLY, True, [amber, basalt], module=True)], [])
+        module = gen.Module([gen.Data(gen.TALLY, True, [amber, gen.Ctor("Basalt", gen.TALLY, [])],
+                                      module=True)], [])
         datas = []
         zero = gen.Function("f1", False, [gen.Binding(gen.TALLY)], "Nat",
                             gen.Block([], gen.Lit(0)), ensure_style="upper")
@@ -1916,6 +1972,16 @@ def _opaque_narrowing(how: str) -> gen.Program:
         value = gen.Match(gen.Construct(basalt, []), [
             gen.Arm(gen.Pattern(ctor=amber, binders=[gen.Binding("Bool")]), gen.Lit(1)),
             gen.Arm(gen.Pattern(ctor=basalt), gen.Lit(1))])
+    elif how == "data_let":
+        table = gen.Binding("Map<String, Int>", value=gen.MapBuild([("a", gen.Lit(1))]))
+        shade = gen.Binding("Shade", value=gen.Match(gen.MapGet(gen.Ref(table), "a"), [
+            gen.Arm(gen.Pattern(ctor=gen.SOME, binders=[gen.Binding("Int", gen.ANY, gen.Iv(1, 1))]),
+                    gen.Construct(basalt, [])),
+            gen.Arm(gen.Pattern(ctor=gen.NONE), gen.Construct(amber, [gen.Lit(True)]))]))
+        two = gen.Function("f1", False, [gen.Binding("Shade")], "Int",
+                           gen.Block([], gen.Lit(2)), ensure_style="exact")
+        functions, lets = [two], [gen.Let(table), gen.Let(shade)]
+        value = gen.Call(two, [gen.Ref(shade)])
     elif how == "map_get":
         table = gen.Binding("Map<String, Int>", value=gen.MapBuild([("a", gen.Lit(1))]))
         lets = [gen.Let(table)]
@@ -1925,11 +1991,11 @@ def _opaque_narrowing(how: str) -> gen.Program:
             gen.Arm(gen.Pattern(ctor=gen.NONE), gen.Lit(1))])
     else:
         pick = _pick()
-        two = gen.Function("f1", False, [gen.Binding("Tally")], "Int",
+        two = gen.Function("f1", False, [gen.Binding("Shade")], "Int",
                            gen.Block([], gen.Lit(2)), ensure_style="exact")
         functions = [pick, two]
         value = gen.Call(two, [gen.Call(pick, [gen.Lit(True), gen.Construct(basalt, []),
-                                               gen.Construct(basalt, [])], {"T": "Tally"})])
+                                               gen.Construct(basalt, [])], {"T": "Shade"})])
     i = gen.Binding("Int", value=value)
     n = gen.Binding("Nat", value=gen.Ref(i))
     prog = _one(gen.Ref(n), lets=[*lets, gen.Let(i), gen.Let(n)], ret="Nat",
@@ -1938,15 +2004,16 @@ def _opaque_narrowing(how: str) -> gen.Program:
     return prog
 
 
-@pytest.mark.parametrize("how", ["match", "map_get", "call", "imported"])
+@pytest.mark.parametrize("how", ["match", "map_get", "call", "imported", "data_let"])
 def test_the_model_reads_no_value_the_verifier_does_not_translate(
         how: str, tmp_path: Path) -> None:
     """A `match` on a constructor applied in place or on `map_get`'s
-    result, a call taking a generic's call at a data type, and a call
-    taking a constructor of the module's data type are values the verifier
-    does not translate (#1696; #1525 for the module's constructor): a `let`
-    of one is unconstrained, and narrowing it into a `@Nat` is refused
-    (E503), though it is 0, 1 or 2 on every run.  The generator models
+    result, a call taking a generic's call at a data type, a call taking a
+    constructor of the module's data type, and a call taking a data slot
+    bound to a `match` on `map_get` are values the verifier does not
+    translate (#1696; #1525 for the module's constructor): a `let` of one
+    is unconstrained, and narrowing it into a `@Nat` is refused (E503),
+    though it is 0, 1 or 2 on every run.  The generator models
     each as unconstrained, so it writes no such narrowing: the program is
     not one it could have written."""
     prog = _opaque_narrowing(how)
