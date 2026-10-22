@@ -993,11 +993,19 @@ class TestModuloSymbols:
         assert (_MOD.normalise_symbols(renamed)
                 == _MOD.normalise_symbols(_WAT))
 
+    def test_the_runtime_export_prefix_alone_is_not_a_difference(
+            self) -> None:
+        wat = '(module\n  (memory (export "memory") 1)\n)\n'
+        prefixed = wat.replace('(export "memory")', '(export "vera.memory")')
+        assert (_MOD.normalise_symbols(prefixed)
+                == _MOD.normalise_symbols(wat))
+
     @pytest.mark.parametrize("change", [
         ("i64.const 1", "i64.const 2"),
         ('"in f("', '"in mod$m$f("'),
         ("    call $f\n    call $alloc", "    call $alloc\n    call $f"),
-    ], ids=["an-instruction", "literal-data", "an-order"])
+        ('(module', '(module\n  (memory (export "mem") 1)'),
+    ], ids=["an-instruction", "literal-data", "an-order", "an-export"])
     def test_any_other_change_still_differs(
             self, change: tuple[str, str]) -> None:
         old, new = change

@@ -208,6 +208,12 @@ class RunInfo(NamedTuple):
 _WAT_IDENTIFIER = re.compile(r"\$[0-9A-Za-z!#$%&'*+\-./:<=>?@\\^_`|~]+")
 
 
+#: The runtime's own exports (``memory``, the allocator, the GC's) are
+#: named under this prefix since #1694, so that no public user function can
+#: take one's name: a rename of the runtime's names, as a symbol's is.
+_RUNTIME_EXPORT = re.compile(r'\(export "vera\.')
+
+
 def normalise_symbols(wat: str) -> str:
     """*wat* with every symbolic identifier renamed by its first occurrence.
 
@@ -216,14 +222,16 @@ def normalise_symbols(wat: str) -> str:
     functions, globals, locals, types and labels are called normalise to
     one text, while a module whose structure, order or literal data
     differs does not (#1694: the resolver renames every declaration's
-    symbol and nothing else).
+    symbol and nothing else).  A runtime export's ``vera.`` prefix is read
+    the same way (:data:`_RUNTIME_EXPORT`); every other export name is
+    literal data, and a change to it still differs.
     """
     names: dict[str, str] = {}
 
     def rename(match: re.Match[str]) -> str:
         return names.setdefault(match.group(0), f"$s{len(names)}")
 
-    return _WAT_IDENTIFIER.sub(rename, wat)
+    return _WAT_IDENTIFIER.sub(rename, _RUNTIME_EXPORT.sub('(export "', wat))
 
 
 # ---------------------------------------------------------------------------
