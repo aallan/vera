@@ -1092,6 +1092,13 @@ BUILT: dict[str, Built] = {
     "a_variable_a_nested_call_leaves_open_fixed_beside_it": Built(
         {"main.vera": _SAME_AT + _EMPTY + _prints("same(empty(()), Some(3))")},
         "same$Option_LInt_R", "false\n"),
+    # Kept as itself, the open variable met the caller's own beside it as
+    # two different variables: a false E205 conflict.
+    "a_variable_a_nested_call_leaves_open_beside_the_callers_own": Built(
+        {"main.vera": _SAME_AT + _EMPTY + _fn(
+            "private forall<U where Eq<U>> fn h(@U -> @Bool)",
+            "same(empty(()), Some(@U.0))") + "\n" + _prints("h(3)")},
+        "same$Option_LInt_R", "false\n"),
 }
 
 
