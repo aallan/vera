@@ -633,3 +633,246 @@ def test_an_escape_that_names_a_scalar_value_compiles(digits: str) -> None:
     source = _ISSUE_1728.replace("D800", digits)
     assert pipeline.check(source).ok
     pipeline.compile(source)
+
+
+# =====================================================================
+# One cell per mechanism, unparametrised: the diff lane's mutmut copy runs
+# the matrix above sampled, so a mechanism only a matrix cell asserts is one
+# the lane counts as unasserted (CLAUDE.md § Fix the class, not the
+# instance: the mutant killers are unparametrised).
+# =====================================================================
+
+#: The note E024's fix adds when it guesses Latin-1.
+_LATIN1_NOTE = (
+    " That command reads the source as Latin-1 (ISO-8859-1); a source in "
+    "another encoding names its own after `-f`. In a string literal, a "
+    "character can also be written as an escape of its code point, such as "
+    "`\\u{E9}` for é."
+)
+
+
+def _e024(raw: bytes, file: str | None = "main.vera") -> Any:
+    """The diagnostic *raw* raises where a command decodes it as *file*."""
+    from vera.errors import SourceEncodingError
+    from vera.parser import decode_source
+
+    with pytest.raises(SourceEncodingError) as caught:
+        decode_source(raw, file)
+    return caught.value.diagnostic
+
+
+def test_e024_counts_lines_and_columns_as_the_reader_does() -> None:
+    """E024's line counts `\\r\\n`, a lone `\\r` and `\\n` as one line end
+    each, as the reader does, whichever comes first, and its column counts
+    the characters along the line, not its bytes."""
+    cases = [
+        (b"one\r\ntwo\r  caf\xe9\n", (3, 6)),
+        (b"one\rtwo\r\n  caf\xe9\n", (3, 6)),
+        (b"one\ntwo\n  caf\xe9\n", (3, 6)),
+        ("été".encode("utf-8") + b"\xff", (1, 4)),
+    ]
+    for raw, position in cases:
+        location = _e024(raw).location
+        assert (location.line, location.column) == position, (raw, location)
+
+
+def test_e024_quotes_the_line_that_holds_the_byte() -> None:
+    """E024's `source_line` is the line that holds the byte, from the line
+    end before it to the line end after it, of whichever kind each is, the
+    byte shown as U+FFFD: between lines of each kind and of mixed kinds,
+    after a line end at offset 0, and on the first and the last line, the
+    last with no line end after it."""
+    cases = [
+        (b"one\ntwo\n  caf\xe9 x\nfour\nfive\n", "  caf� x"),
+        (b"one\rtwo\r  caf\xe9 x\rfour\rfive\r", "  caf� x"),
+        (b"one\r\ntwo\r\n  caf\xe9 x\r\nfour\r\n", "  caf� x"),
+        (b"one\r\ntwo\r  caf\xe9 x\nfour\n", "  caf� x"),
+        (b"\n  caf\xe9\n", "  caf�"),
+        (b"\r  caf\xe9\r", "  caf�"),
+        (b"  caf\xe9 x\nmore\n", "  caf� x"),
+        (b"one\n  caf\xe9", "  caf�"),
+    ]
+    for raw, quoted in cases:
+        assert _e024(raw).source_line == quoted, raw
+
+
+def test_e024_s_text_names_the_byte_its_offset_line_and_column() -> None:
+    """E024 as a command reports it, every field: the byte and its offset,
+    the line and column it sits at, the line it quotes, why, the fix, the
+    spec section and the code."""
+    found = _e024(b"one\n  caf\xe9\n", "dir/main.vera")
+    assert found.to_dict() == {
+        "severity": "error",
+        "description": (
+            "Source file is not valid UTF-8: the byte 0xE9 at offset 9 "
+            "(line 2, column 6) does not begin a valid UTF-8 sequence."),
+        "location": {"line": 2, "column": 6, "file": "dir/main.vera"},
+        "source_line": "  caf�",
+        "rationale": (
+            "Vera source is UTF-8: every command reads the program, and each "
+            "module it imports, as UTF-8. A byte sequence that is not UTF-8 "
+            "names no character, so what the file says is undefined; a file "
+            "saved in another encoding, such as Latin-1 or UTF-16, converts "
+            "to UTF-8 with its text unchanged."),
+        "fix": (
+            "Save the file as UTF-8: in its directory, `iconv -f ISO-8859-1 "
+            "-t UTF-8 main.vera > main.utf8.vera` writes a UTF-8 copy, which "
+            "then replaces main.vera." + _LATIN1_NOTE),
+        "spec_ref": 'Chapter 1, Section 1.1 "Source Encoding"',
+        "error_code": "E024",
+    }
+
+
+def test_e024_names_each_byte_order_mark_and_quotes_no_line() -> None:
+    """A file that begins with a UTF-16 or a UTF-32 byte-order mark, in
+    either byte order, is named as that encoding, in the description and in
+    the fix's `iconv` command, and quotes no line: what follows the mark is
+    no line of UTF-8.  A little-endian UTF-32 mark begins with the UTF-16
+    one, so the longer mark is the one named."""
+    text = "public fn f(@Unit -> @Unit)\n"
+    cases = [
+        (b"\xff\xfe" + text.encode("utf-16-le"), "UTF-16", 0xFF, 0),
+        (b"\xfe\xff" + text.encode("utf-16-be"), "UTF-16", 0xFE, 0),
+        (b"\xff\xfe\x00\x00" + text.encode("utf-32-le"), "UTF-32", 0xFF, 0),
+        (b"\x00\x00\xfe\xff" + text.encode("utf-32-be"), "UTF-32", 0xFE, 2),
+    ]
+    for raw, mark, byte, offset in cases:
+        found = _e024(raw)
+        assert found.description == (
+            f"Source file is not valid UTF-8: the byte 0x{byte:02X} at offset "
+            f"{offset} (line 1, column {offset + 1}) does not begin a valid "
+            f"UTF-8 sequence. The file begins with a {mark} byte-order mark: "
+            f"it is {mark}, not UTF-8."), raw[:4]
+        assert found.source_line == "", raw[:4]
+        assert found.fix == (
+            f"Save the file as UTF-8: in its directory, `iconv -f {mark} -t "
+            f"UTF-8 main.vera > main.utf8.vera` writes a UTF-8 copy, which "
+            f"then replaces main.vera."), raw[:4]
+
+
+def test_e024_s_fix_converts_the_file_it_names_or_the_pipe() -> None:
+    """E024's fix converts a file into a UTF-8 copy beside it, its names
+    quoted for the shell, and converts stdin (`-`, `/dev/stdin`, or no file
+    at all) in the pipe that feeds `vera`."""
+    raw = b'  IO.print("caf\xe9")\n'
+    assert _e024(raw, "dir/my prog.vera").fix == (
+        "Save the file as UTF-8: in its directory, `iconv -f ISO-8859-1 -t "
+        "UTF-8 'my prog.vera' > 'my prog.utf8.vera'` writes a UTF-8 copy, "
+        "which then replaces my prog.vera." + _LATIN1_NOTE)
+    for label in ("-", "/dev/stdin", None):
+        assert _e024(raw, label).fix == (
+            "Convert the source to UTF-8 before `vera` reads it: pipe it "
+            "through `iconv -f ISO-8859-1 -t UTF-8`." + _LATIN1_NOTE), label
+
+
+def _canonical() -> str:
+    """A canonical program with a comment: a comment runs to its line's end,
+    so a line end the reader did not translate would run into it."""
+    from vera.formatter import format_source
+
+    return format_source("-- a comment\n" + _MAIN.replace("LIT", '"cafe"'))
+
+
+def test_fmt_check_calls_a_file_with_carriage_returns_not_canonical(
+    tmp_path: Path,
+) -> None:
+    """`vera fmt --check` passes a canonical file and refuses the same text
+    with `\\r\\n` line ends: canonical Vera is LF-only (spec 1.8 rule 10)."""
+    canonical = _canonical()
+    lf, crlf = tmp_path / "lf.vera", tmp_path / "crlf.vera"
+    lf.write_bytes(canonical.encode("utf-8"))
+    crlf.write_bytes(canonical.replace("\n", "\r\n").encode("utf-8"))
+    assert _vera("fmt", "--check", str(lf)).returncode == 0
+    run = _vera("fmt", "--check", str(crlf))
+    assert run.returncode == 1 and "Would reformat" in run.stderr, run
+
+
+def test_fmt_formats_crlf_and_lone_cr_line_ends_as_lf(tmp_path: Path) -> None:
+    """`vera fmt` reads `\\r\\n` and a lone `\\r` as line ends and prints
+    the file's canonical, LF-only form."""
+    canonical = _canonical()
+    path = tmp_path / "main.vera"
+    for newline in ("\r\n", "\r"):
+        path.write_bytes(canonical.replace("\n", newline).encode("utf-8"))
+        run = _vera("fmt", str(path))
+        assert (run.returncode, run.stdout) == (0, canonical), newline
+
+
+def test_fmt_reports_e024_and_a_parse_error_at_the_file(tmp_path: Path) -> None:
+    """`vera fmt` names the file it was given in the diagnostics it reads
+    the file into: E024 for bytes that are not UTF-8, and the parse error
+    of a file that does not parse."""
+    raw, position = _spell("latin1", _MAIN)
+    latin1 = tmp_path / "latin1.vera"
+    latin1.write_bytes(raw)
+    run = _vera("fmt", str(latin1))
+    assert run.returncode == 1, run
+    assert (f"[E024] Error at {latin1}, line {position[0]}, "
+            f"column {position[1]}:") in run.stderr, run.stderr
+    broken = tmp_path / "broken.vera"
+    broken.write_bytes(b"public fn f(\n")
+    run = _vera("fmt", str(broken))
+    assert run.returncode == 1 and f"Error at {broken}, line" in run.stderr, run
+
+
+def test_ast_on_a_missing_file_exits_1(tmp_path: Path) -> None:
+    """`vera ast` on a path that names no file exits 1 with the message the
+    other commands print."""
+    missing = tmp_path / "missing.vera"
+    run = _vera("ast", str(missing))
+    assert (run.returncode, run.stderr) == (
+        1, f"Error: file not found: {missing}\n"), run
+
+
+def test_reconcile_file_records_e024_and_runs_a_utf8_program_to_the_join(
+    tmp_path: Path,
+) -> None:
+    """`reconcile_file` records a source that is not UTF-8 as its refusal,
+    E024's description, and runs the same program in UTF-8 to the join."""
+    from vera.reconcile import reconcile_file
+
+    for name in ("refused", "accepted"):
+        (tmp_path / name).mkdir()
+    refused = _write("latin1", "entry", tmp_path / "refused")
+    run = reconcile_file(refused.entry)
+    assert run.path == refused.entry and run.program is None, run
+    assert run.check_errors == [_e024(refused.entry.read_bytes()).description]
+    accepted = _write("utf8", "entry", tmp_path / "accepted")
+    run = reconcile_file(accepted.entry)
+    assert run.path == accepted.entry and run.check_errors == [], run
+    assert run.program is not None and run.compile_result is not None, run
+
+
+def test_e009_s_surrogate_diagnostic_is_exact() -> None:
+    """The E009 a surrogate escape raises, every field: the escape as
+    written, at the literal, with the surrogate rationale and fix."""
+    from vera.transform import (
+        _E009_ESCAPE_SPEC,
+        _E009_SURROGATE_FIX,
+        _E009_SURROGATE_RATIONALE,
+    )
+
+    (found,) = [d for d in pipeline.check(_ISSUE_1728).diagnostics
+                if d.error_code == "E009"]
+    assert found.description == (
+        "Unicode escape names a surrogate, not a Unicode scalar value: "
+        "\\u{D800}")
+    assert (found.location.line, found.location.column) == (6, 17)
+    assert (found.rationale, found.fix, found.spec_ref) == (
+        _E009_SURROGATE_RATIONALE, _E009_SURROGATE_FIX, _E009_ESCAPE_SPEC)
+
+
+def test_the_parser_s_file_functions_report_a_parse_error_at_the_path(
+    tmp_path: Path,
+) -> None:
+    """`vera.parser`'s file functions parse the file under its path: a file
+    that does not parse raises a parse error located at it."""
+    import vera.parser
+    from vera.errors import ParseError
+
+    path = tmp_path / "broken.vera"
+    path.write_bytes(b"public fn f(\n")
+    for api in ("parse_file", "typecheck_file", "verify_file"):
+        with pytest.raises(ParseError) as caught:
+            getattr(vera.parser, api)(path)
+        assert caught.value.diagnostic.location.file == str(path), api
