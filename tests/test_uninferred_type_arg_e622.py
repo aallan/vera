@@ -671,7 +671,7 @@ class TestDiagnosticIsActionable:
             fn_ret_types={},
             # A non-None table is what puts the manager on its COMMON branch —
             # the one that leaked.  Its contents are irrelevant here.
-            namespace_fn_names=NamespaceFnNames({}, frozenset(), {}),
+            namespace_fn_names=NamespaceFnNames({}, {}),
         )
         mono = Monomorphizer(ctx)
         assert mono._namespace_path is None

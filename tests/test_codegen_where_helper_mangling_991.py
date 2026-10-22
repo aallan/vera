@@ -386,7 +386,7 @@ def _run(source: str, fn: str, args: list[int]) -> int:
 
 
 def _func_names(wat: str) -> list[str]:
-    return re.findall(r"\(func \$([^\s)]+)", wat)
+    return re.findall(r"\(func \$:?([^\s)]+)", wat)
 
 
 class TestWhereHelperNameCollision991:
@@ -525,10 +525,11 @@ class TestCheckerHelperScope991:
     differ in SIGNATURE was falsely rejected — branchA's `leaf(@Int.0)` call
     synthesized against branchB's `@Int -> @String` leaf (registered last),
     E121 "branchA body has type String, expected Int" on a valid program.
-    The scoped lookup (`_lookup_function_scoped`) resolves the nearest
-    same-named helper in the `_fn_scope_stack` (innermost-out), then the
-    top-level function, then the flat registry — mirroring the verifier's
-    `_scoped_fn_lookup` and codegen's parent-qualified hoist.
+    The resolver pass's binding, which the checker reads
+    (`TypeChecker._bound_function`), resolves the nearest same-named helper
+    of the enclosing functions (innermost-out), then the top-level function,
+    then the built-ins, the prelude and the imports — mirroring the
+    verifier's `_scoped_fn_lookup` and codegen's parent-qualified hoist.
     """
 
     def test_diamond_different_signatures_checks_clean(self) -> None:

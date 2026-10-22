@@ -1856,7 +1856,7 @@ def test_1418_g2_a_generic_refined_return_reads_its_own_scope(
 
 
 # ---------------------------------------------------------------------------
-# #1418 review G3 — the F3 residual, pinned as measured
+# #1418 review G3 — the F3 residual, closed by the linked program (#1694)
 # ---------------------------------------------------------------------------
 
 _G3_RESIDUAL = _POSINT + _MK_DISCLOSED + """
@@ -1899,31 +1899,25 @@ private fn mk_ok(@Float64 -> @Option<PosInt>)
 """)
 
 
-def test_1418_g3_the_scope_key_residual_errs_toward_demotion(
+def test_1418_g3_two_helpers_of_one_name_under_one_owner_are_two_keys(
     tmp_path: Path,
 ) -> None:
-    """Two helpers under ONE owner still share a key — pinned, not claimed fixed.
+    """Two helpers of one name under ONE owner no longer share a key.
 
     `_result_disclosed_key` qualifies a `where` helper by its top-level owner,
     which separates helpers in DIFFERENT owners.  Two helpers under the same
-    owner — here `h` (clean) beside a nested `h2` (disclosed) — still share
-    that owner, so the outer caller reading the CLEAN helper is demoted along
-    with the tainted one.
-
-    That is the safe direction: a Tier-3 report where a Tier-1 proof was
-    available, never the reverse.  Narrowing it further means carrying the
-    whole lexical chain as the key rather than its root, which is a bigger
-    change than the soundness fix needed.  Pinned so the cost is a
-    measurement rather than a claim, and so narrowing it later is visible.
+    owner — here `h` (clean) beside a nested `h` (disclosed) — shared it
+    while a helper was keyed by its bare name, so the outer caller reading the
+    CLEAN helper was demoted along with the tainted one (`tier3`/E534, the
+    residual this cell pinned).  The verifier reads the linked program
+    (#1694), where each helper is named by its whole lexical chain, so the
+    two are two keys and the caller of the clean one proves at Tier 1.
     """
     result = _verify(tmp_path, _G3_RESIDUAL)
     assert result["ok"] is True, result.get("diagnostics")
-    assert _f_ensures(result) == ("tier3", "E534"), (
-        f"the residual moved — if that was intended, this cell records the "
-        f"state it moved from: {_f_ensures(result)}"
-    )
-    # The safe direction, demonstrated: the value `f` actually returns is the
-    # CLEAN helper's, so the demotion costs a proof and never soundness.
+    assert _f_ensures(result) == ("verified", None), _f_ensures(result)
+    # Sound, demonstrated: the value `f` actually returns is the CLEAN
+    # helper's, which is what its Tier-1 proof is about.
     out = _run(tmp_path, _G3_RESIDUAL)
     assert "violation" not in out, out[-400:]
     assert out.strip().split()[-1] == "7", out[-400:]

@@ -266,10 +266,10 @@ class _Gc:
     ) -> None:
         e = instance.exports(store)
         self.store = store
-        self.mem = e["memory"]
-        self.alloc = e["alloc"]
-        self.sp = e["gc_sp"]
-        self.heap_ptr = e["heap_ptr"]
+        self.mem = e["vera.memory"]
+        self.alloc = e["vera.alloc"]
+        self.sp = e["vera.gc_sp"]
+        self.heap_ptr = e["vera.heap_ptr"]
 
     def read_u32(self, addr: int) -> int:
         buf = self.mem.data_ptr(self.store)

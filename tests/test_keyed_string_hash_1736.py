@@ -207,7 +207,7 @@ def _run_keyed(result: CompileResult) -> tuple[object, bytes]:
     main = exports["main"]
     assert isinstance(main, wasmtime.Func)
     value = main(store, *([0] if main.type(store).params else []))
-    memory = exports["memory"]
+    memory = exports["vera.memory"]
     assert isinstance(memory, wasmtime.Memory)
     return value, memory.read(store, 0, memory.data_len(store))
 

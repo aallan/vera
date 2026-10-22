@@ -508,7 +508,7 @@ def test_the_clone_is_named_for_the_real_instantiation(
     inferred" from "the default happened to work".
 
     Membership is tested against `wat_fn_names` / `wat_calls` rather than
-    `"$idg$Int" in wat` (PR review): a substring test is a PREFIX test, so it
+    `"$:idg$Int" in wat` (PR review): a substring test is a PREFIX test, so it
     would also accept a longer mangled symbol — `$idg$IntAlias` satisfies a
     check for `$idg$Int`, and a clone impersonating another clone is precisely
     the failure this assertion exists to catch.  Both helpers anchor on a

@@ -49,6 +49,7 @@ from dataclasses import replace
 import pytest
 import wasmtime
 
+from tests import pipeline
 from tests.codegen_helpers import _compile_ok
 from vera.codegen.wasi import emit_wasi_component
 from vera.runtime.heap import (
@@ -244,45 +245,31 @@ class TestTheGuardReadsVeraTypes:
 class TestOwnershipAware:
     """Identity, not spelling: whose ``Request`` is it?"""
 
-    def test_an_entry_declared_request_is_not_the_prelude_request(
-        self,
-    ) -> None:
-        result = _compile_ok(SHADOWED_REQUEST)
-        # The premise: the name IS in the layout map, so a name-only
-        # check would accept this program.
-        assert "Request" in result.adt_layouts
-        with pytest.raises(ValueError, match="Request"):
-            validate_handler(result)
+    def test_an_entry_declared_request_is_refused_at_check(self) -> None:
+        """A program declaring its own ``Request`` never reaches a server:
+        the prelude's type names are reserved (#1469, E158)."""
+        checked = pipeline.check(SHADOWED_REQUEST)
+        assert "E158" in [d.error_code for d in checked.errors]
 
     def test_the_prelude_set_records_who_supplied_each_adt(self) -> None:
-        shadowed = _compile_ok(SHADOWED_REQUEST)
-        assert "Request" not in shadowed.prelude_injected_adts
-        # `Response` was NOT shadowed, so the prelude still supplied it.
-        assert "Response" in shadowed.prelude_injected_adts
         both = _compile_ok(VALID)
         assert {"Request", "Response"} <= both.prelude_injected_adts
 
 
 class TestTheRefusalNamesTheRemedy:
-    """Three ways to be wrong, three remedies, three messages.
+    """Each way to be wrong names its remedy.
 
     A single "must take @Request and return @Response" tells a reader
-    with a shadowing `data Request` nothing at all — their program DOES
-    say `@Request`.  These pin that each branch says which thing to
-    change, not merely that something is wrong.
+    which signature they need but not which part of theirs to change.
+    These pin that each branch says which thing to change, not merely
+    that something is wrong.  A program declaring its own `Request` is
+    refused at check (#1469, E158), so no shadowing reaches the guard.
     """
 
     def _message(self, src: str) -> str:
         with pytest.raises(ValueError) as exc:
             validate_handler(_compile_ok(src))
         return str(exc.value)
-
-    def test_a_shadowing_declaration_is_named_as_such(self) -> None:
-        msg = self._message(SHADOWED_REQUEST)
-        assert "shadows the prelude" in msg
-        # And it must NOT read as the flat contradiction "its parameter
-        # is @Request, not the prelude @Request".
-        assert "not the prelude @Request" not in msg
 
     def test_a_different_data_type_is_named(self) -> None:
         msg = self._message(UNRELATED_ADT_HANDLER)
@@ -379,7 +366,7 @@ class TestTheDecodersAreBoundsChecked:
         A ``String`` return forces a ``memory`` export and pulls in no
         host imports, so the module instantiates with an empty import
         list.  ``_FakeCaller`` supplies the only two surfaces the
-        readers use: ``caller["memory"]`` and the ``_context()`` every
+        readers use: ``caller["vera.memory"]`` and the ``_context()`` every
         wasmtime memory accessor calls on a store-like object.
         """
         result = _compile_ok(MEMORY_PROBE)
@@ -387,11 +374,11 @@ class TestTheDecodersAreBoundsChecked:
         store = wasmtime.Store(engine)
         module = wasmtime.Module(engine, result.wasm_bytes)
         instance = wasmtime.Instance(store, module, [])
-        memory = instance.exports(store)["memory"]
+        memory = instance.exports(store)["vera.memory"]
 
         class _FakeCaller:
             def __getitem__(self, key: str) -> object:
-                if key == "memory":
+                if key == "vera.memory":
                     return memory
                 raise KeyError(key)
 
@@ -403,7 +390,7 @@ class TestTheDecodersAreBoundsChecked:
     def test_the_predicate_refuses_directly(self) -> None:
         """``_require_readable`` decides without reading, so start here."""
         size, caller = self._memory_and_caller()
-        memory = caller["memory"]
+        memory = caller["vera.memory"]
         for offset, nbytes, why in [
             (size + 4096, 4, "past the end"),
             (size - 2, 4, "straddling the end"),
@@ -492,7 +479,7 @@ class TestTheDecodersAreBoundsChecked:
             with pytest.raises(wasmtime.WasmtimeError, match="out of bounds"):
                 _md_read_string(caller, ptr, length)
         # The control: an in-range pair still decodes the bytes that are there.
-        memory = caller["memory"]
+        memory = caller["vera.memory"]
         memory.write(caller, b"hello, guest", 0)
         assert _md_read_string(caller, 0, 12) == "hello, guest"
         assert _md_read_string(caller, size - 4, 4) is not None  # exactly at the limit

@@ -669,7 +669,8 @@ _PRELUDE_VALUES = {
 
 @pytest.mark.parametrize("spec", _ALL, ids=_IDS)
 def test_a_declaration_of_its_name(spec: BuiltinSpec) -> None:
-    """E151, or for a prelude body the accepted override."""
+    """E151, for a prelude body's name as for every other built-in's
+    (#1469 reserved the prelude's function names)."""
     aliases, formals, ret, call = probe_parts(spec, closures=False)
     decls = "".join(f"type {n} = {d};\n\n" for n, d in aliases.items())
     if isinstance(spec.lowering, Prelude):
@@ -682,10 +683,7 @@ def test_a_declaration_of_its_name(spec: BuiltinSpec) -> None:
         spec.name, formals, ret, _effect_clause(spec), body, "private")
     checked = pipeline.check(source)
     codes = [d.error_code for d in checked.errors]
-    if isinstance(spec.lowering, Prelude):
-        assert codes == [], [d.description for d in checked.errors]
-    else:
-        assert codes == ["E151"], [d.description for d in checked.errors]
+    assert codes == ["E151"], [d.description for d in checked.errors]
 
 
 # ---------------------------------------------------------------------
@@ -1500,7 +1498,7 @@ public fn main(@Unit -> @Int)
         pytest.param(_STATE_CLAUSES, 42, "i64.mul", id="state_clause_and_resume"),
         pytest.param(_STATE_OPS, 42, "call $vera.state_put_Int", id="effect_op_put_get"),
         pytest.param(_THROW, 42, "throw $exn_Int", id="effect_op_throw"),
-        pytest.param(_GENERIC, 7, "call $pick$Int", id="generic_rewrite"),
+        pytest.param(_GENERIC, 7, "call $:pick$Int", id="generic_rewrite"),
     ],
 )
 def test_an_explicit_branch_keeps_its_lowering(source: str, value: int, wat: str) -> None:
@@ -1649,13 +1647,13 @@ _IO_ROWS = [row for row in HOST_IMPORTS if row.family == "io"]
 
 @pytest.mark.parametrize("row", _IO_ROWS, ids=[row.name for row in _IO_ROWS])
 def test_an_import_the_host_allocates_through_exports_the_allocator(row: Any) -> None:
-    """A module calling one IO operation exports `alloc`, which the host
+    """A module calling one IO operation exports `vera.alloc`, which the host
     builds the result in, exactly when the operation's row needs it."""
     source = _fn_source("main", "@Unit", "Unit", "effects(<IO>)", _io_call(row.name))
     compiled = pipeline.compile(source)
     assert compiled.ok, [d.description for d in compiled.diagnostics]
     assert (row.name in _declared(compiled.wat)) is True
-    assert ('(export "alloc" (func $alloc))' in compiled.wat) is row.needs_alloc
+    assert ('(export "vera.alloc" (func $alloc))' in compiled.wat) is row.needs_alloc
 
 
 def _served_effects() -> list[str]:

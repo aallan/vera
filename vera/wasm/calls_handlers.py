@@ -578,7 +578,8 @@ class CallsHandlersMixin:
         """
         depth = 0
         max_depth = 0
-        for c in ptype:
+        # A refinement's predicate is one atom (#1674).
+        for c in naming.mask_refinements(ptype):
             if c == "<":
                 depth += 1
                 max_depth = max(max_depth, depth)
@@ -593,25 +594,30 @@ class CallsHandlersMixin:
         Nested generics in the last argument keep their closing ``>``:
         ``"Result<Int, Option<Int>>"`` → ``("Result", ["Int", "Option<Int>"])``.
         """
-        if "<" not in ptype:
+        # A refinement's predicate is one atom (#1674).
+        masked = naming.mask_refinements(ptype)
+        if "<" not in masked:
             return ptype, []
-        base, rest = ptype.split("<", 1)
+        lt = masked.index("<")
+        base, rest, shape = ptype[:lt], ptype[lt + 1:], masked[lt + 1:]
         # Drop exactly ONE trailing ``>`` (the one matching this ``<``).  A
         # bare `rstrip(">")` strips EVERY trailing ``>``, corrupting a nested
         # generic in the last arg (`Option<Int>>` → `Option<Int`).
-        inner = rest[:-1] if rest.endswith(">") else rest
+        if shape.endswith(">"):
+            rest, shape = rest[:-1], shape[:-1]
+        inner = rest
         # Split on top-level commas (nested generics keep their commas).
         args: list[str] = []
         depth = 0
         cur = ""
-        for ch in inner:
-            if ch == "<":
+        for ch, sh in zip(inner, shape):
+            if sh == "<":
                 depth += 1
                 cur += ch
-            elif ch == ">":
+            elif sh == ">":
                 depth -= 1
                 cur += ch
-            elif ch == "," and depth == 0:
+            elif sh == "," and depth == 0:
                 args.append(cur.strip())
                 cur = ""
             else:

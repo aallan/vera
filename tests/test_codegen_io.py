@@ -498,7 +498,7 @@ public fn main(-> @Unit)
 }
 """
         result = _compile_ok(source)
-        assert '(export "alloc"' in result.wat
+        assert '(export "vera.alloc"' in result.wat
 
     def test_alloc_not_exported_for_print_only(self) -> None:
         """WAT does not export $alloc when only IO.print is used."""
@@ -508,7 +508,7 @@ public fn main(-> @Unit)
 { IO.print("hello") }
 """
         result = _compile_ok(source)
-        assert '(export "alloc"' not in result.wat
+        assert '(export "vera.alloc"' not in result.wat
 
 
 # =====================================================================

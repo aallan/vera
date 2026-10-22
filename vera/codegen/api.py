@@ -24,6 +24,7 @@ import wasmtime
 
 from vera import ast
 from vera.builtins import HOST_FAMILIES, host_import
+from vera.runtime import runtime_export
 from vera.runtime.async_http import register_async
 from vera.wasm.helpers import CellNames
 from vera.runtime.decimal import register_decimal
@@ -175,6 +176,10 @@ class CompileResult:
     # code.  Without it the CLI's suppression-marker collapse cannot
     # fire for traps that go through prelude functions.
     prelude_fn_names: set[str] = field(default_factory=set)
+    # #1694: each module declaration's link name (``mod$<path>$<name>``) to
+    # the name it is declared under, so a trap frame shows the user's
+    # spelling (`vera.binding.display_names`).
+    fn_display_names: dict[str, str] = field(default_factory=dict)
     # #1183: user-declared top-level functions that were DROPPED from the
     # emitted module by the #1100 skip propagation, mapped to the
     # diagnostic explaining the drop (the function's own `[E602]`-class
@@ -1228,7 +1233,7 @@ def execute(
         for modules compiled without the GC runtime (no ``heap_ptr``
         export).
         """
-        hp = instance.exports(store).get("heap_ptr")
+        hp = instance.exports(store).get(runtime_export("heap_ptr"))
         if not isinstance(hp, wasmtime.Global):
             return 0
         val = hp.value(store)
@@ -1279,17 +1284,19 @@ def execute(
             )
             raise RuntimeError(msg)
 
-        memory_export = instance.exports(store).get("memory")
-        alloc_export = instance.exports(store).get("alloc")
+        memory_export = instance.exports(store).get(runtime_export("memory"))
+        alloc_export = instance.exports(store).get(runtime_export("alloc"))
 
         def _alloc_string_arg(s: str) -> tuple[int, int]:
             if not isinstance(memory_export, wasmtime.Memory):
                 raise RuntimeError(
-                    "Cannot allocate String argument: module has no 'memory' export"
+                    "Cannot allocate String argument: module has no "
+                    f"'{runtime_export('memory')}' export"
                 )
             if not isinstance(alloc_export, wasmtime.Func):
                 raise RuntimeError(
-                    "Cannot allocate String argument: module has no 'alloc' export"
+                    "Cannot allocate String argument: module has no "
+                    f"'{runtime_export('alloc')}' export"
                 )
             encoded = s.encode("utf-8")
             ptr = alloc_export(store, len(encoded))
@@ -1559,6 +1566,7 @@ def execute(
         # which resolves to the empty list the field already allows.
         frames = _resolve_trap_frames(
             exc, result.fn_source_map, result.prelude_fn_names,
+            result.fn_display_names,
         )
         raise WasmTrapError(
             message,
@@ -1588,7 +1596,7 @@ def execute(
             and isinstance(raw_result[1], int)
         ):
             ptr, length = raw_result[0], raw_result[1]
-            memory_export = instance.exports(store).get("memory")
+            memory_export = instance.exports(store).get(runtime_export("memory"))
             if isinstance(memory_export, wasmtime.Memory):
                 # `_read_string_export` decodes via `safe_utf8_decode`
                 # (errors="replace") rather than the previous try/except →

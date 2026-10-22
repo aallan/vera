@@ -129,7 +129,7 @@ class TestCrossModuleSpanCollision:
         # imported body resolves the colliding span in `collidelib`'s OWN
         # table (`Tuple<Int, Int>`) — genuinely no narrowing, so no trap.
         result = _compile_main(tmp_path)
-        assert pipeline.checks(result, function="lw") == ()
+        assert pipeline.checks(result, function="mod$collidelib$lw") == ()
         exec_result = execute(result, fn_name="callit", args=[])
         # `lw` is the @Int identity, so -5 must round-trip exactly — "no trap"
         # alone would miss a silent clamp.
@@ -144,7 +144,7 @@ class TestCrossModuleSpanCollision:
         # `Tuple<Nat, Nat>` target cannot leak in.  Without this suppression
         # fallback, `callit` would trap on a legal negative @Int.
         result = _compile_main(tmp_path, thread_modules=False)
-        assert pipeline.checks(result, function="lw") == ()
+        assert pipeline.checks(result, function="mod$collidelib$lw") == ()
         exec_result = execute(result, fn_name="callit", args=[])
         assert exec_result.value == -5
 

@@ -160,16 +160,21 @@ def test_refinement_alias_at_top_level_stays_opaque() -> None:
     assert _name("@Pos") == "Pos"
 
 
-def test_refinement_in_argument_position_renders_the_elided_form() -> None:
-    assert _name("@Option<Pos>") == "Option<{@Int | ...}>"
+def test_refinement_in_argument_position_keeps_its_predicate() -> None:
+    """#1674: the predicate is part of what the argument names, so two
+    refinements of one base are two names."""
+    assert _name("@Option<Pos>") == "Option<{@Int | @Int.0 > 0}>"
+    assert _name("@Option<Neg>") == "Option<{@Int | @Int.0 < 0}>"
 
 
 def test_parameterised_refinement_alias_substitutes_before_refining() -> None:
     """Ordering: substitute the alias parameters, THEN take the refinement
     branch — otherwise the binder renders as the un-substituted `{@T | ...}`
-    and never matches the instantiated key."""
-    assert _name("@Option<PosT<Int>>") == "Option<{@Int | ...}>"
-    assert _name("@Option<PosT<MyAlias>>") == "Option<{@Int | ...}>"
+    and never matches the instantiated key.  The predicate keeps the
+    alias's own spelling (`@T.0`), which a reference writes as the alias
+    declares it."""
+    assert _name("@Option<PosT<Int>>") == "Option<{@Int | @T.0 > 0}>"
+    assert _name("@Option<PosT<MyAlias>>") == "Option<{@Int | @T.0 > 0}>"
 
 
 # =====================================================================
@@ -245,36 +250,32 @@ def test_an_alias_still_outranks_a_same_named_adt() -> None:
     assert _name("@Option<MyAlias>", prelude=prelude) == "Option<Int>"
 
 
-def test_adt_visibility_is_bounded_by_declaration_index() -> None:
-    """ADT visibility is bounded by declaration index, exactly as alias
-    visibility is — the two registries share ONE index space (#1208).
-
-    An alias body naming a special-cased ADT declared BELOW it resolves
-    against the table as it stood when `_register_alias` ran, which did not
-    yet hold the ADT: the built-in `Decimal` branch, arguments dropped.  The
-    ADT is only reachable from an alias declared AFTER it.  Both directions
-    are asserted, because a bound applied in the wrong direction would agree
-    with the checker on one ordering and not the other."""
+def test_adt_visibility_is_not_bounded_by_declaration_order() -> None:
+    """A declared ADT is in scope in an alias body wherever it is declared
+    (#1552): an alias body naming a special-cased ADT declared BELOW it
+    resolves to the ADT, arguments kept, as it does declared above it.  Both
+    directions are asserted, because a bound left in one direction would
+    agree with the checker on one ordering and not the other."""
     forward = "type M = Decimal<Int>;\nprivate data Decimal { MkDec(Int) }\n"
-    assert _name("@Option<M>", prelude=forward) == "Option<Decimal>"
+    assert _name("@Option<M>", prelude=forward) == "Option<Decimal<Int>>"
     backward = "private data Decimal { MkDec(Int) }\ntype M = Decimal<Int>;\n"
     assert _name("@Option<M>", prelude=backward) == "Option<Decimal<Int>>"
 
 
-def test_removed_alias_adt_visibility_is_bounded_the_same_way() -> None:
+def test_removed_alias_adt_visibility_is_not_bounded_either() -> None:
     """The mirror spelling of the corner: a `data Float` declared below the
-    alias leaves the removed-alias branch reachable (`?`); declared above it,
-    the ADT branch wins."""
+    alias is the ADT the alias names, as it is declared above it; the
+    removed-alias branch (`?`) is never reached."""
     forward = "type F = Float;\nprivate data Float { MkFl(Int) }\n"
-    assert _name("@Option<F>", prelude=forward) == "Option<?>"
+    assert _name("@Option<F>", prelude=forward) == "Option<Float>"
     backward = "private data Float { MkFl(Int) }\ntype F = Float;\n"
     assert _name("@Option<F>", prelude=backward) == "Option<Float>"
 
 
-def test_adt_visibility_bound_does_not_reach_the_top_level() -> None:
-    """The bound applies INSIDE an alias body only.  A slot named directly
-    for the ADT renders against the whole table, whatever the declaration
-    order — the checker resolves those after registration has finished."""
+def test_adt_visibility_at_the_top_level_ignores_declaration_order() -> None:
+    """A slot named directly for the ADT renders against the whole table,
+    whatever the declaration order — the checker resolves those after
+    registration has finished."""
     forward = "type M = Decimal<Int>;\nprivate data Decimal { MkDec(Int) }\n"
     assert _name("@Option<Decimal<Int>>", prelude=forward) \
         == "Option<Decimal<Int>>"
@@ -312,39 +313,39 @@ def test_type_parameter_argument_renders_as_the_variable() -> None:
 
 
 # =====================================================================
-# Clause: alias visibility follows declaration order
+# Clause: alias visibility follows THE ALIAS RULE (#1552)
 # =====================================================================
 
 def test_alias_cycle_terminates_on_the_opaque_placeholder() -> None:
     """`type Cyc1 = Cyc2; type Cyc2 = Cyc1;` — E132 at check.  The renderer
-    neither hangs nor raises: an alias body sees only the aliases declared
-    before it, so the cycle bottoms out exactly where the checker's
-    registration-order resolution bottoms out."""
+    neither hangs nor raises: inside a cycle of mentions an alias body sees
+    only the aliases of the cycle declared before it, so the cycle bottoms
+    out exactly where the checker's resolution bottoms out."""
     assert _name("@Option<Cyc1>") == "Option<Cyc2>"
     assert _name("@Option<Cyc2>") == "Option<Cyc2>"
 
 
-def test_forward_reference_stays_opaque() -> None:
-    """`type Fwd = Later;` is declared before `Later`, so its body resolved
-    against a table that did not yet contain `Later`."""
-    assert _name("@Option<Fwd>") == "Option<Later>"
+def test_forward_reference_resolves() -> None:
+    """`type Fwd = Later;` is declared before `Later`, and its body resolves
+    to `Later`'s, as it would declared after it (#1552)."""
+    assert _name("@Option<Fwd>") == "Option<Int>"
     assert _name("@Option<Later>") == "Option<Int>"
 
 
 def test_deep_alias_chain_resolves_without_a_depth_bound() -> None:
-    """The naming walk is bounded by declaration order, not by a depth
-    limit, so a 40-deep chain resolves rather than degrading."""
+    """The naming walk is iterative, not bounded by a depth limit, so a
+    40-deep chain resolves rather than degrading."""
     depth = 40
     chain = f"type L{depth} = Int;\n" + "".join(
         f"type L{i} = L{i + 1};\n" for i in reversed(range(depth))
     )
     assert _name("@Option<L0>", prelude=chain) == "Option<Int>"
-    # Declared the other way round, every link is a forward reference and
-    # each one stays opaque — the registration-order rule, not a bound.
+    # Declared the other way round, every link is a forward reference, and
+    # the chain resolves the same (#1552).
     forward = "".join(
         f"type F{i} = F{i + 1};\n" for i in range(depth)
     ) + f"type F{depth} = Int;\n"
-    assert _name("@Option<F0>", prelude=forward) == "Option<F1>"
+    assert _name("@Option<F0>", prelude=forward) == "Option<Int>"
 
 
 # =====================================================================

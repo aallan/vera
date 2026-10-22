@@ -513,8 +513,8 @@ def test_bare_fn_type_cell_still_takes_the_fallback_and_is_refused(
     }, result.wat[:400]
     codes = {d.error_code for d in result.diagnostics}
     assert {"E602", "E620"} <= codes, codes
-    assert "(func $probe" not in result.wat
-    assert "(func $main" not in result.wat
+    assert "(func $:probe" not in result.wat
+    assert "(func $:main" not in result.wat
 
 
 def test_two_refinements_of_one_base_in_argument_position_stay_apart(
@@ -1122,7 +1122,7 @@ def test_the_cap_refusal_reaches_the_browser_target_too(
 
     result = _compile_source(_conjunct_program(200), tmp_path)
     assert "E607" in {d.error_code for d in result.diagnostics}
-    assert "(func $main" not in result.wat, "the enclosing function is dropped"
+    assert "(func $:main" not in result.wat, "the enclosing function is dropped"
 
     out_dir = tmp_path / "bundle"
     emit_browser_bundle(result.wasm_bytes, out_dir)

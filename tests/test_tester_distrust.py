@@ -1394,21 +1394,78 @@ class TestAProofIsRunWhereverACheckStandsForIt:
         wat = (
             "  (table 1 funcref)\n"
             "  (elem (i32.const 0) func $anon_0)\n"
-            "  (func $f (param $p0 i64) (result i64)\n"
+            "  (func $:f (param $p0 i64) (result i64)\n"
             "    call_indirect (type $closure_sig_0)\n"
             "  )\n"
             "  (func $anon_0 (param $env i32) (result i64)\n"
-            "    call $helper\n"
+            "    call $:helper\n"
             "  )\n"
-            "  (func $helper (result i64)\n"
+            "  (func $:helper (result i64)\n"
             "    i64.const 1\n"
             "  )\n"
-            "  (func $unrelated (result i64)\n"
+            "  (func $:unrelated (result i64)\n"
             "    i64.const 2\n"
             "  )\n")
         index = _TrapIndex([], [], wat)
         assert index.reachable("f") == {"f", "anon_0", "helper"}
         assert index.reachable("helper") == {"helper"}
+
+    # A user function named like a function code generation generates (the
+    # allocator, a lifted closure): `$:anon_0` and `$anon_0` are two
+    # functions (#1694), read as one node of the graph.
+    _GENERATED_NAMES = """\
+private fn g(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+
+public fn anon_0(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if @Int.0 > 5 then { g(@Int.0) } else { 1 }
+}
+
+public fn alloc(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0 + 1
+}
+
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  array_length(array_map([1, 2, 3], fn(@Int -> @Int) effects(pure) {
+    @Int.0 + 1
+  })) + anon_0(@Int.0) + string_length(int_to_string(alloc(@Int.0)))
+}
+"""
+
+    def test_a_declaration_keeps_its_callees_beside_a_generated_namesake(
+        self,
+    ) -> None:
+        """The lifted closure `$anon_0` follows the user's `$:anon_0` in the
+        module, and a node holding only the later body's callees lost `g`:
+        what the user's function calls is reached through a call of it."""
+        index = _index(self._GENERATED_NAMES)
+        assert {"anon_0", "g", "alloc"} <= index.reachable("f")
+
+    def test_distrust_runs_a_program_naming_generated_functions(self) -> None:
+        """`--distrust` over a user `alloc` and `anon_0` beside the runtime's
+        allocator and a lifted closure: every proved function runs, and no
+        trap is read as a refuted proof."""
+        result = _run(self._GENERATED_NAMES, distrust=True)
+        assert not [c for c in _codes(result) if c.startswith("E7")], (
+            _codes(result))
+        assert {f.fn_name for f in result.functions} >= {"anon_0", "alloc", "f"}
 
 
 # =====================================================================
@@ -1812,9 +1869,9 @@ _EXERCISE_CELLS: dict[str, tuple[str, bool, bool]] = {
 }
 
 _EXERCISE_WAT = (
-    "  (func $f (param $p0 i64) (result i64)\n    call $g\n  )\n"
-    "  (func $g (param $p0 i64) (result i64)\n    i64.const 1\n  )\n"
-    "  (func $h (result i64)\n    i64.const 2\n  )\n")
+    "  (func $:f (param $p0 i64) (result i64)\n    call $:g\n  )\n"
+    "  (func $:g (param $p0 i64) (result i64)\n    i64.const 1\n  )\n"
+    "  (func $:h (result i64)\n    i64.const 2\n  )\n")
 
 
 @pytest.mark.parametrize("cell", list(_EXERCISE_CELLS))

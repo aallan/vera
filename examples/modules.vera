@@ -1,7 +1,7 @@
 module vera.examples.modules;
 
 import vera.math(magnitude, larger);
-import vera.collections(List, Option);
+import vera.collections(List, Maybe);
 
 -- Public function — visible to importers
 public fn clamp_to_range(@Int, @Int, @Int -> @Int)

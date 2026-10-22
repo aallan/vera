@@ -1223,7 +1223,7 @@ private fn bad(@Unit -> @Int)
         """A program with only data declarations type-checks cleanly."""
         _check_ok("""
 private data Color { Red, Green, Blue }
-private data Option<T> { None, Some(T) }
+private data Maybe<T> { Nothing, Just(T) }
 """)
 
     def test_type_error_has_location(self) -> None:

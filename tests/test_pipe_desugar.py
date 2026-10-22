@@ -327,7 +327,7 @@ class TestTheReportedPrograms:
             "count(@Nat -> @Nat)",
             "if @Nat.0 == 0 then { 0 } else { @Nat.0 - 1 |> count() }",
             vis="public", dec="@Nat.0"))
-        assert "return_call $count" in built.wat
+        assert "return_call $:count" in built.wat
         assert ("count", "decreases", "verified") in {
             o[:3] for o in built.obligations}, built.obligations
         assert "E525" not in {code for code, _s in built.verify}

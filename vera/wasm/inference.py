@@ -2131,8 +2131,9 @@ class InferenceMixin:
         of a generic declaration's value is.  *arity* is the argument count
         of a caller that has the name without its arguments.
         """
-        if "<" in type_name:
-            base = type_name.split("<", 1)[0]
+        masked = naming.mask_refinements(type_name)
+        if "<" in masked:
+            base = type_name[:masked.index("<")]
             if arity is None:
                 arity = len(self._split_type_args(type_name))
         else:
@@ -2165,18 +2166,22 @@ class InferenceMixin:
 
     @staticmethod
     def _split_type_args(type_name: str) -> list[str]:
-        """The top-level argument spellings of ``Head<A, B<C>>``."""
-        inner = type_name.split("<", 1)[1]
-        inner = inner[:-1] if inner.endswith(">") else inner
+        """The top-level argument spellings of ``Head<A, B<C>>``, a
+        refinement's predicate read as one atom (#1674)."""
+        masked = naming.mask_refinements(type_name)
+        lt = masked.index("<") + 1
+        inner, shape = type_name[lt:], masked[lt:]
+        if shape.endswith(">"):
+            inner, shape = inner[:-1], shape[:-1]
         out: list[str] = []
         depth = 0
         cur = ""
-        for ch in inner:
-            if ch == "<":
+        for ch, sh in zip(inner, shape):
+            if sh == "<":
                 depth += 1
-            elif ch == ">":
+            elif sh == ">":
                 depth -= 1
-            if ch == "," and depth == 0:
+            if sh == "," and depth == 0:
                 out.append(cur.strip())
                 cur = ""
             else:
@@ -2763,25 +2768,9 @@ def _wt_block(ctx: InferenceMixin, expr: ast.Block) -> str | None:
 
 
 def _wt_module_call(ctx: InferenceMixin, expr: ast.ModuleCall) -> str | None:
-    # #905: a non-void ModuleCall used *directly* as a constructor argument
-    # (a Tuple/ADT field) reaches this helper via
-    # `_translate_constructor_call`, which needs the field's WASM type to lay
-    # out offsets.  Resolve the qualified target through the SAME single
-    # resolver the desugar and the statement-position result-shape predicates
-    # (`_is_void_expr` / `_is_pair_result_expr`) already use —
-    # `_resolve_module_call_wasm_name` returns the bare name, the `mod$…`
-    # name when a local shadows it, or a shadowed generic's per-
-    # instantiation clone — then reuse the FnCall inference on that resolved
-    # target.  This does NOT drop the path (the earlier #597 concern): the
-    # resolver consumes it, so a same-name local from a different module can
-    # never be matched.  Keeping all four sites on one resolver means they
-    # can never disagree on which function `m::f(...)` reaches.  Before this,
-    # returning None made `_translate_constructor_call` raise CodegenSkip and
-    # silently drop the enclosing function — a check-green program then
-    # dangled its call at run (`unknown func $mkt`).
-    target = ctx._resolve_module_call_wasm_name(expr)
-    return ctx._infer_fncall_wasm_type(
-        ast.FnCall(name=target, args=expr.args, span=expr.span))
+    # #1694: no qualified call survives the link step (`vera.binding.link`);
+    # one that reaches code generation is refused when it is translated.
+    return None
 
 
 def _wt_state_read(ctx: InferenceMixin, expr: ast.OldExpr | ast.NewExpr) -> str | None:
@@ -2961,19 +2950,8 @@ def _vt_handle(ctx: InferenceMixin, expr: ast.HandleExpr) -> str | None:
 
 
 def _vt_module_call(ctx: InferenceMixin, expr: ast.ModuleCall) -> str | None:
-    # #905 (array-literal sibling): a ModuleCall used as the FIRST element
-    # of an array literal reaches here via `_infer_array_element_type`,
-    # which needs the element's Vera type name to lay the array out.
-    # Resolve the qualified target through the SAME single resolver the
-    # desugar uses (`_resolve_module_call_wasm_name` — it CONSUMES `path`,
-    # so no same-name-local mismatch, the earlier #597 concern) and delegate
-    # to the FnCall Vera-type inference.  Without this, `[m::f(x), …]` inferred
-    # a None element type → the array-let binding was dropped and the
-    # enclosing function silently vanished from the exports on a check-green
-    # program (same class as the constructor-field crash, quieter symptom).
-    target = ctx._resolve_module_call_wasm_name(expr)
-    return ctx._infer_fncall_vera_type(
-        ast.FnCall(name=target, args=expr.args, span=expr.span))
+    # #1694: as `_wt_module_call`.
+    return None
 
 
 #: The Vera type name of an expression, read off its syntax, by class.

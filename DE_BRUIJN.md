@@ -353,6 +353,8 @@ private fn wrap(@Option<Cnt>, @Cnt, @Int -> @Int)
 
 Three parameters, three separate stacks. Parameters 2 and 3 stay apart because the head is opaque; parameter 1 is reached by `@Option<Int>.0` rather than `@Option<Cnt>.0` because the argument resolved.
 
+**A refinement in an argument keeps its predicate.** An argument that resolves to a refinement type is written with its predicate, in canonical form, so `@Array<{ @Int | @Int.0 > 0 }>` and `@Array<{ @Int | @Int.0 < 0 }>` are two slot names and two stacks, and a reference to either writes the predicate as its binding's type does: `@Array<{ @Int | @Int.0 > 0 }>.0`. `vera check --explain-slots` prints each binding's name with its predicate.
+
 **`State` and `Exn` cells resolve through the head too.** A cell's identity is its *resolved* type rather than its spelling — §6.5, which also carries the one exception.
 
 ### 6.2 Naming your parameters with aliases

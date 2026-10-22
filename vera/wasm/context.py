@@ -138,8 +138,13 @@ class WasmContext(
         value_data_types: frozenset[str] | None = None,
         adt_ctor_tp_indices: (
             dict[str, dict[str, tuple[int | None, ...]]] | None) = None,
+        fn_display_names: Mapping[str, str] | None = None,
     ) -> None:
         self.string_pool = string_pool
+        # #1694: each module declaration's link name to the name a message
+        # shows for it (`vera.binding.display_names`), which every site
+        # message `_emit_trap` interns is spelled through.
+        self._fn_display_names: Mapping[str, str] = fn_display_names or {}
         self._next_local: int = 0
         self._locals: list[tuple[str, str]] = []  # (name, wat_type)
         self._result_local: int | None = None
@@ -339,10 +344,6 @@ class WasmContext(
         # in vera/codegen/core.py (compute_future_ret_fns) and shared
         # with the compilability pre-scan; set via set_future_ret_fns.
         self._future_ret_fns: frozenset[str] = frozenset()
-        # #841 round 2: qualified companion for ModuleCall awaits.
-        self._future_ret_module_fns: frozenset[
-            tuple[tuple[str, ...], str]
-        ] = frozenset()
         # #1479: set by `_emit_trap` beside every `vera.trap` call it emits
         # — the one signal every named check raises, its kind a code rather
         # than an import of its own — so assembly declares the import.
@@ -451,23 +452,6 @@ class WasmContext(
         # Function return WASM types for type inference:
         # fn_name → return_wasm_type (str | None)
         self._fn_ret_types: dict[str, str | None] = {}
-        # #814 §8.5.3: (module path, fn name) → WASM target name for a
-        # module-qualified call.  Lets `m::f` bypass a local shadow.
-        self._module_qualified_targets: dict[
-            tuple[tuple[str, ...], str], str
-        ] = {}
-        # #814/#774: (module path, generic name) → the ``mod$…`` mono BASE for
-        # an imported generic whose bare name a local shadows.  The ModuleCall
-        # desugar rewrites `m::gen(…)` to a FnCall on this base, which is a key
-        # in `_generic_fn_info`, so `_resolve_generic_call` mangles it to the
-        # emitted clone (`mod$m$gen$Int`) instead of the local shadow's bare
-        # `gen`.  Empty unless the program qualified-calls a shadowed generic.
-        self._module_qualified_generic_bases: dict[
-            tuple[tuple[str, ...], str], str
-        ] = {}
-        # #814 C2: bare name → mod$ name, set only while compiling a `mod$…`
-        # body so an intra-module sibling call reaches the module's version.
-        self._intra_module_renames: dict[str, str] = {}
         # Function return *Vera* type expressions, retained alongside
         # `_fn_ret_types` because some inference paths need the full
         # NamedType (with type_args) — e.g. resolving the element type
@@ -710,36 +694,10 @@ class WasmContext(
         """
         self._eq_full_type_names = full_names
 
-    def set_future_ret_fns(
-        self,
-        names: frozenset[str],
-        module_fns: frozenset[tuple[tuple[str, ...], str]] = frozenset(),
-    ) -> None:
-        """Set the Future<Result<String, String>>-returning fn sets (#841)."""
+    def set_future_ret_fns(self, names: frozenset[str]) -> None:
+        """Set the Future<Result<String, String>>-returning fn set (#841):
+        link names, so a qualified call is classified by its target."""
         self._future_ret_fns = names
-        self._future_ret_module_fns = module_fns
-
-    def set_module_qualified_targets(
-        self, targets: dict[tuple[tuple[str, ...], str], str],
-    ) -> None:
-        """Set the (module path, fn name) → WASM target map (#814 §8.5.3)."""
-        self._module_qualified_targets = targets
-
-    def set_module_qualified_generic_bases(
-        self, bases: dict[tuple[tuple[str, ...], str], str],
-    ) -> None:
-        """Set the (module path, generic name) → ``mod$…`` mono base map
-        for a shadowed imported generic reached via ``m::gen`` (#814/#774)."""
-        self._module_qualified_generic_bases = bases
-
-    def set_intra_module_renames(self, renames: dict[str, str]) -> None:
-        """Set the intra-module bare-call rename map (#814 C2).
-
-        Non-empty only while compiling a ``mod$…`` body; redirects a bare
-        call to a locally-shadowed same-module function to the module's
-        ``mod$`` version instead of the main program's local shadow.
-        """
-        self._intra_module_renames = renames
 
     def set_fn_ret_type_exprs(
         self, ret_type_exprs: dict[str, ast.TypeExpr],
@@ -944,6 +902,13 @@ class WasmContext(
                    else "reports its canonical description, not a message"),
                 at,
             )
+        if message:
+            # Composed from the linked program, whose declarations carry
+            # link names (#1694); the reader is shown the names as written,
+            # a function's and a helper's included, so no site composes its
+            # own spelling.
+            from vera.binding import display_message
+            message = display_message(message, self._fn_display_names)
         ptr, length = self.string_pool.intern(message) if message else (0, 0)
         if row.kind == "contract_violation":
             self._needs_contract_fail = True
@@ -1623,46 +1588,8 @@ class WasmContext(
         if isinstance(expr, ast.QualifiedCall):
             ret = self._infer_qualified_call_wasm_type(expr)
             return ret == "i32_pair"
-        if isinstance(expr, ast.ModuleCall):
-            # Resolve the qualified target (bare name, the ``mod$…`` name when
-            # shadowed, or a shadowed generic's per-instantiation clone) and
-            # reuse the FnCall inference so a String/Array-returning ``m::f()``
-            # in statement position drops both stack values, not one (#814).
-            target = self._resolve_module_call_wasm_name(expr)
-            ret = self._infer_fncall_wasm_type(
-                ast.FnCall(name=target, args=expr.args, span=expr.span))
-            return ret == "i32_pair"
         return False
 
-    def _resolve_module_call_wasm_name(self, expr: ast.ModuleCall) -> str:
-        """Resolve a ``ast.ModuleCall`` to the WASM function name it will call.
-
-        The single target-resolution consulted by BOTH the desugar
-        (``translate_expr``) and the statement-position result-shape predicates
-        (``_is_void_expr`` / ``_is_pair_result_expr``), so they can never
-        disagree on which function ``m::f(...)`` reaches (the #774 review, CR
-        3518737022): if the result-shape checks resolved differently from the
-        desugar, a shadowed generic's ``String``/``@Unit`` clone could drop the
-        wrong number of stack values → a WASM validation failure on a
-        check-green program.
-
-        Order mirrors the desugar exactly:
-          1. a shadowed imported GENERIC (``_module_qualified_generic_bases``) →
-             its per-instantiation clone (via ``_resolve_generic_call`` on the
-             ``mod$…`` base, which mangles in the inferred type args);
-          2. a shadowed NON-generic (``_module_qualified_targets``) → its
-             ``mod$…`` name;
-          3. otherwise the bare name.
-        """
-        qkey = (tuple(expr.path), expr.name)
-        gen_base = self._module_qualified_generic_bases.get(qkey)
-        if gen_base is not None:
-            resolved = self._resolve_generic_call(
-                ast.FnCall(name=gen_base, args=expr.args, span=expr.span))
-            if resolved is not None:
-                return resolved
-            return gen_base
-        return self._module_qualified_targets.get(qkey, expr.name)
 
 
 # =====================================================================
@@ -1714,15 +1641,8 @@ def _void_fn_call(ctx: WasmContext, expr: ast.FnCall) -> bool:
 
 
 def _void_module_call(ctx: WasmContext, expr: ast.ModuleCall) -> bool:
-    # A module-qualified call is void iff its resolved target returns
-    # @Unit — mirror the FnCall clause on the resolved WASM target (bare
-    # name, the ``mod$…`` name when the bare name is locally shadowed, or a
-    # shadowed generic's per-instantiation clone), so a unit-returning
-    # ``m::f()`` in statement position gets no stray drop (#814; same class
-    # as the user-@Unit-fn case #584).
-    target = ctx._resolve_module_call_wasm_name(expr)
-    if target in ctx._fn_ret_types:
-        return ctx._fn_ret_types[target] is None
+    # #1694: no qualified call survives the link step; one that reaches here
+    # is refused when it is translated (`_translate_module_call`).
     return False
 
 
@@ -1798,39 +1718,16 @@ def _translate_int_lit(
 def _translate_module_call(
     ctx: WasmContext, expr: ast.ModuleCall, env: WasmSlotEnv,
 ) -> list[str] | None:
-    # C7e: desugar to flat FnCall — imported function is compiled
-    # into the same WASM module via flattening.  #814 §8.5.3: a
-    # module-qualified call MUST reach the module's function even
-    # when a local shadows its bare name, so resolve the WASM target
-    # via the qualified-target table (mod$… name for a shadowed fn,
-    # else the bare name) rather than blindly dropping the path.
-    #
-    # #814/#774: an imported GENERIC whose bare name a local shadows
-    # resolves through a separate table to its ``mod$…`` mono BASE; the
-    # base is a `_generic_fn_info` key, so the resulting FnCall is
-    # rewritten by `_resolve_generic_call` to the per-instantiation clone
-    # (`mod$m$gen$Int`) rather than the local shadow's bare `gen`.
-    #
-    # The desugar and the statement-position result-shape predicates
-    # (`_is_void_expr` / `_is_pair_result_expr`) share ONE target
-    # resolver so they can never disagree on which function is called
-    # (CR 3518737022): `_resolve_module_call_wasm_name` returns a shadowed
-    # generic's fully-resolved clone (`mod$m$gen$Int`, which
-    # `_translate_call` then calls directly) or the bare name of an
-    # UNshadowed generic (which `_translate_call` mangles itself).
-    target = ctx._resolve_module_call_wasm_name(expr)
-    desugared = ast.FnCall(
-        name=target,
-        args=expr.args,
-        span=expr.span,
-    )
-    # #1558: a tail call by the module's own path is marked on the
-    # `ModuleCall` (`compute_tail_call_sites`), and the fresh node
-    # above is no key of that set, so the mark is carried across —
-    # after the #983/#820 subtractions, which remove this node's id
-    # like any other call's.
-    return ctx._translate_call(
-        desugared, env, tail=id(expr) in ctx._tail_call_sites)
+    # #1694: the link step (`vera.binding.link`) rewrites every qualified
+    # call the resolver pass binds into a plain call of its target's link
+    # name, and the checker refuses every one it cannot bind, so a
+    # qualified call reaching code generation is a program that was not
+    # checked.  Refused loudly, never lowered to whatever a bare name
+    # happens to reach.
+    raise CodegenSkip(
+        expr,
+        f"qualified call '{'.'.join(expr.path)}::{expr.name}' was not bound "
+        "to a declaration by the resolver pass")
 
 
 def _no_translator(

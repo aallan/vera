@@ -17,8 +17,7 @@ reconciliation gate's ``KNOWN`` list names for the program
 (scripts/check_reconciliation.py's ``unlisted_verify_errors``, which
 tests/test_conformance.py shares).  A negative entry never reaches the verify
 stage: it stops at the stage its ``expected_error_stage`` names, ``check``
-or ``compile``, with the code its ``expected_error`` names there, the
-contention negative's E621 at compile among them.
+or ``compile``, with the code its ``expected_error`` names there.
 """
 
 import json
@@ -106,8 +105,8 @@ def main() -> int:
         # the pipeline stage the diagnostic fires at — "check" (the default)
         # or "compile".  A COMPILE-stage negative additionally asserts that
         # `check` is clean, which is the whole point of the class it exists
-        # to pin: a program the checker accepts and codegen must refuse
-        # (#1277's E621).  Either way the positive pipeline is skipped.
+        # to pin: a program the checker accepts and codegen must refuse.
+        # Either way the positive pipeline is skipped.
         expected_error = entry.get("expected_error")
         if expected_error is not None:
             stage = entry.get("expected_error_stage", "check")

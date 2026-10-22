@@ -28,6 +28,7 @@ from typing import ClassVar
 
 import pytest
 
+from vera.binding import Binding
 from vera.codegen.api import CompileResult
 
 from tests import pipeline
@@ -1421,13 +1422,19 @@ class TestBothSidesDiscoverTheSameClone:
         emitted, discovered = _emitted_and_discovered(
             tmp_path, _matrix_files(carrier, shadow))
         assert emitted == discovered, (emitted ^ discovered)
+        # The module's own ADT by its link name (#1694); a prelude type
+        # keeps its own name.
         owner = _CARRIER_OWNER[carrier]
+        if carrier != "prelude":
+            owner = "mod$mlib$" + owner
         assert any(
-            name == "gid" and any(owner == t.split("<")[0] for t in types)
+            name == "mod$mlib$gid"
+            and any(owner == t.split("<")[0] for t in types)
             for name, types in emitted
         ), (owner, sorted(emitted))
         assert not any(
-            name == "gid" and any(t.split("<")[0] in _SHADOW_ADTS
+            name == "mod$mlib$gid"
+            and any(t.split("<")[0] in _SHADOW_ADTS
                                   for t in types)
             for name, types in emitted
         ), sorted(emitted)
@@ -1684,199 +1691,148 @@ def _prelude_name_files(
     return files
 
 
+def _bind_sources(
+    entry: str, modules: dict[tuple[str, ...], str],
+) -> Binding:
+    """The resolver pass's binding of *entry* and its *modules* (path to
+    source), each module parsed as the resolver would hand it over."""
+    from vera.binding import bind_program
+    from vera.resolver import ResolvedModule
+
+    resolved = [
+        ResolvedModule(path, Path("/x", *path).with_suffix(".vera"),
+                       pipeline.parse(source).program, source)
+        for path, source in modules.items()
+    ]
+    return bind_program(pipeline.parse(entry).program, resolved)
+
+
 @pytest.fixture(scope="module")
 def prelude_name_builds(
     tmp_path_factory: pytest.TempPathFactory,
-) -> dict[tuple[str, str, str], tuple[
+) -> dict[str, tuple[
     list[tuple[str, str]], CompileResult, list[tuple[str, str]],
 ]]:
-    """One build per (type, shape, reach); every cell below reads one.
-
-    `observation` does not change the program, so parametrizing over it
-    would compile the same 24 programs seven times each (PR #1454 review).
-    """
+    """One build of the control program per reach; every cell below reads
+    one.  The control declares no prelude name, so it is the same program
+    for every name."""
     return {
-        (name, shape, reach): build_multi_module(
-            tmp_path_factory.mktemp(f"{name}_{shape}_{reach}"),
-            _prelude_name_files(name, shape, reach),
+        reach: build_multi_module(
+            tmp_path_factory.mktemp(f"control_{reach}"),
+            _prelude_name_files("Json", "control", reach),
         )
-        for name in _PRELUDE_RESTATEMENTS
-        for shape in ("differing", "identical", "control")
         for reach in ("direct", "transitive")
     }
 
 
 class TestAPreludeNamedDeclarationKeepsItsOwnNamespace:
-    """A module's declaration under a PRELUDE type's name (#1454 review, 1).
+    """A module's declaration under a PRELUDE type's name (#1454, #1469).
 
-    §8.4.1 lets a module declare a differently-shaped type of a prelude
-    name that nothing demands — it "stands alone until" the prelude's is
-    needed — and the first form of the scoping treated every declaration
-    under a prelude NAME as infrastructure, so its constructors overwrote
-    the prelude's in every namespace: `show(Some(42))` rendered
-    `Some(false)`, `hash(Some(42)) == hash(Some(43))` was true, and
-    `match parse_int("42")` took the `Err` arm — in the entry, inside an
-    unrelated module, and in the prelude's own combinator bodies, with no
-    diagnostic from any stage.
-
-    The carve-out is keyed on SHAPE now: a declaration that restates the
-    prelude's type IS the one layout and belongs everywhere; one that only
-    borrows the name is an ordinary ADT of the module that wrote it.  Four
-    namespaces are observed per cell — the declaring module, the entry, a
-    module that can name neither, and the prelude's own bodies — across the
-    four demand-injected types, both shapes, and both reaches.
+    The first form of #1454's scoping treated every declaration under a
+    prelude NAME as infrastructure, so its constructors overwrote the
+    prelude's in every namespace: `show(Some(42))` rendered `Some(false)`,
+    `hash(Some(42)) == hash(Some(43))` was true, and `match parse_int("42")`
+    took the `Err` arm, with no diagnostic from any stage.  #1469 reserved
+    every prelude type name, so a module's declaration under one, whatever
+    its shape, is refused at check (E158), and the prelude's constructors
+    are the only ones of their names.  The control (a module type with
+    constructors named like none of the prelude's) is observed in four
+    namespaces per reach: the declaring module, the entry, a module that
+    can name neither, and the prelude's own bodies.
     """
+
+    @pytest.mark.parametrize("reach", ["direct", "transitive"])
+    @pytest.mark.parametrize("shape", ["differing", "identical"])
+    @pytest.mark.parametrize("name", sorted(_PRELUDE_RESTATEMENTS))
+    def test_a_prelude_named_declaration_is_refused(
+        self, name: str, shape: str, reach: str, tmp_path: Path,
+    ) -> None:
+        root = pipeline.write_tree(
+            tmp_path, _prelude_name_files(name, shape, reach))
+        checked = pipeline.check(root)
+        assert not checked.ok
+        first = checked.errors[0]
+        assert first.error_code == "E158", checked.errors
+        assert Path(first.location.file).name == "tlib.vera", first.location
 
     @pytest.mark.parametrize("observation", sorted(_PRELUDE_EXPECTED))
     @pytest.mark.parametrize("reach", ["direct", "transitive"])
-    @pytest.mark.parametrize("shape", ["differing", "identical", "control"])
-    @pytest.mark.parametrize(
-        "name", sorted(_PRELUDE_RESTATEMENTS))
     def test_the_prelude_keeps_its_constructors(
-        self, name: str, shape: str, reach: str, observation: str,
-        prelude_name_builds: dict[tuple[str, str, str], tuple[
+        self, reach: str, observation: str,
+        prelude_name_builds: dict[str, tuple[
             list[tuple[str, str]], CompileResult, list[tuple[str, str]],
         ]],
     ) -> None:
-        _verify, result, _cg = prelude_name_builds[(name, shape, reach)]
+        _verify, result, _cg = prelude_name_builds[reach]
         assert module_value(result, observation) == (
             "ok", _PRELUDE_EXPECTED[observation])
 
     @pytest.mark.parametrize("reach", ["direct", "transitive"])
-    @pytest.mark.parametrize("shape", ["differing", "identical", "control"])
-    @pytest.mark.parametrize("name", sorted(_PRELUDE_RESTATEMENTS))
     def test_nothing_is_reported_and_nothing_is_dropped(
-        self, name: str, shape: str, reach: str,
-        prelude_name_builds: dict[tuple[str, str, str], tuple[
+        self, reach: str,
+        prelude_name_builds: dict[str, tuple[
             list[tuple[str, str]], CompileResult, list[tuple[str, str]],
         ]],
     ) -> None:
-        """The silence around each program, asserted once per build.
-
-        These programs are legal under §8.4.1 and this PR does not reach
-        for a new refusal: whether a differently-shaped declaration of a
-        demand-injected prelude name should be REFUSED is a language
-        question, deliberately left open.  The cells above pin the VALUES;
-        this one pins that nothing was reported to get them, and that no
-        function was skipped on the way.
-        """
-        verify_errors, result, cg_errors = prelude_name_builds[
-            (name, shape, reach)]
+        """The silence around each control program, asserted once per
+        build: nothing was reported to get the values above, and no
+        function was skipped on the way."""
+        verify_errors, result, cg_errors = prelude_name_builds[reach]
         assert not verify_errors and not cg_errors, (verify_errors, cg_errors)
         assert [d.error_code for d in result.diagnostics] == [], (
             result.diagnostics)
 
-    @pytest.mark.parametrize("shape", ["differing", "identical", "control"])
-    @pytest.mark.parametrize("name", sorted(_PRELUDE_RESTATEMENTS))
-    def test_both_sides_agree_over_an_imported_prelude_name(
-        self, name: str, shape: str, tmp_path: Path,
-    ) -> None:
-        """The same equality where the collision is with INFRASTRUCTURE.
-
-        An imported ADT whose constructors are spelled `Some`, `Ok` or
-        `Err` reaches each side's owner table through a different door —
-        codegen's projection applies imports without displacing
-        infrastructure, and the shared derivation has to say the same or
-        the two name different clones and the caller is dropped (E602/E620).
-        The cell the carrier matrix runs cannot see this: its collisions are
-        with another namespace's ADT, never with the prelude's own.
-        """
+    def test_both_sides_agree_over_the_control(self, tmp_path: Path) -> None:
+        """Codegen's emitted clones and the verifier's discovered ones are
+        the same set, and the entry's `ent_gid` clone is named after the
+        prelude's `Option`."""
         emitted, discovered = _emitted_and_discovered(
-            tmp_path, _prelude_name_files(name, shape, "direct"))
-        # Premise first: two empty sets are equal, and these programs are
-        # only a differential at all because the entry instantiates its own
-        # `forall` over a value built with the contended constructor.
+            tmp_path, _prelude_name_files("Json", "control", "direct"))
+        # Premise first: two empty sets are equal, and the program is only
+        # a differential at all because the entry instantiates its own
+        # `forall` over a value built with a prelude constructor.
         assert any(fn == "ent_gid" for fn, _types in emitted), sorted(emitted)
         assert emitted == discovered, (emitted ^ discovered)
-        # ... and the clone is named after the PRELUDE's type, not the
-        # imported declaration that borrowed its constructor's spelling.
-        assert all(
-            not any(t.split("<")[0] == name for t in types)
+        assert any(
+            any(t.split("<")[0] == "Option" for t in types)
             for fn, types in emitted if fn == "ent_gid"
         ), sorted(emitted)
 
-    @pytest.mark.parametrize("name", sorted(_PRELUDE_RESTATEMENTS))
-    def test_an_import_does_not_take_an_infrastructure_name(
-        self, name: str,
-    ) -> None:
-        """The rule itself, asked of the shared owner table (#1454 review).
+    def test_an_import_does_not_take_an_infrastructure_name(self) -> None:
+        """The rule itself, asked of the resolver pass (#1454 review, #1694).
 
-        Codegen's projection applies `foreign` without displacing
-        infrastructure; the derivation the verifier's discovery narrows by
-        has to say the same, or the two name different clones.  Asked of the
-        table directly rather than through a program, because the checker's
-        span-keyed type table answers a `ConstructorCall` first and would
-        mask a disagreement here until some shape outran it — which is
+        Constructors are not reserved (#1469), so a module's public type may
+        name its own `Some`, `Ok` and `Err`; imported, they do not take those
+        names from `Option` and `Result` in the importer, where they are the
+        prelude's as in every namespace and so have no entry of their own,
+        while the declaring module keeps its own reading.  Asked of the
+        binding directly rather than through a program, because the
+        checker's span-keyed type table answers a `ConstructorCall` first and
+        would mask a disagreement here until some shape outran it — which is
         exactly the kind of latency a structural cell exists to remove.
         """
-        from vera.monomorphize import namespace_ctor_owners
-        from vera.parser import parse_to_ast
+        from vera.binding import ENTRY, DeclId
 
-        files = _prelude_name_files(name, "differing", "direct")
-        lib = parse_to_ast(files["tlib.vera"])
-        entry = parse_to_ast(files["main.vera"])
-        owners = namespace_ctor_owners(
-            entry, [(("tlib",), lib)],
-            {"Option": ("None", "Some"), "Result": ("Ok", "Err"),
-             name: tuple(_PRELUDE_NAME_DIFFERING_CTORS)},
-        )
-        entry_owners = owners.visible(None) or {}
-        for ctor, owner in (("Some", "Option"), ("Ok", "Result"),
-                            ("Err", "Result")):
-            assert entry_owners.get(ctor) == owner, (
-                f"the entry's {ctor} resolves to {entry_owners.get(ctor)!r}, "
-                f"not the prelude's {owner}")
-        # The declaring module keeps its own reading of the same names.
-        assert (owners.visible(("tlib",)) or {}).get("Some") == name
-
-    @pytest.mark.parametrize("name", sorted(_PRELUDE_RESTATEMENTS))
-    def test_the_declaring_module_reads_its_own(
-        self, name: str, tmp_path: Path,
-    ) -> None:
-        """Inside the module that wrote it, the borrowed name is ITS type.
-
-        The other half of the rule, and the one a fix that simply hid the
-        declaration would break: codegen follows the checker's owner in the
-        declaring namespace too, where the local declaration shadows the
-        prelude's constructor (§8.5.2).
-        """
-        files = _prelude_name_files(name, "differing", "direct")
-        files["tlib.vera"] += """
-public fn t_show(@Unit -> @String)
-  requires(true)
-  ensures(true)
-  effects(pure)
-{
-  show(Some(true))
-}
-"""
-        files["main.vera"] += """
-public fn mod_show(@Unit -> @String)
-  requires(true)
-  ensures(true)
-  effects(pure)
-{
-  tlib::t_show(())
-}
-"""
-        verify_errors, result, cg_errors = build_multi_module(tmp_path, files)
-        assert not verify_errors and not cg_errors, (verify_errors, cg_errors)
-        assert module_value(result, "mod_show") == ("ok", "Some(true)")
-        # ... while the entry still reads the prelude's.
-        assert module_value(result, "ent_show") == ("ok", "Some(42)")
+        binding = _bind_sources("import tlib;\n\n" + _s_fn("main", "0"), {
+            ("tlib",): _PRELUDE_LIB % {"decl": _PRELUDE_NAME_DIFFERING % "Zt"},
+        })
+        for ctor in _PRELUDE_NAME_DIFFERING_CTORS:
+            assert ctor not in binding.ctors[ENTRY], (
+                f"the entry's {ctor} is bound to "
+                f"{binding.ctors[ENTRY][ctor]!r}, not left the prelude's")
+            assert binding.ctors[("tlib",)][ctor] == DeclId(
+                ("tlib",), ctor, ("Zt",), kind="ctor")
 
 
 class TestTheTwoOwnerDerivationsAdmitByTheSameKey:
-    """Both owner tables admit a constructor by its TYPE's name (#1454
-    review, finding 4).
+    """The checker and the resolver pass admit a constructor by its TYPE's
+    name (#1454 review, finding 4; #1694).
 
-    Codegen's `_build_adt_membership` and the shared
-    `namespace_ctor_owners` answer one question — which constructors a
-    namespace can name — and a selective import admits them by naming the
-    PARENT type (§8.5.4).  Naming the constructor itself is not a form the
-    checker accepts, so a derivation that admitted it would differ from
-    both the other layer and the language, and nothing would notice until
-    the shape became reachable.
+    Both answer one question — which constructors a namespace can name — and
+    a selective import admits them by naming the PARENT type (§8.5.4).
+    Naming the constructor itself is not a form the checker accepts, so a
+    binding that admitted it would differ from both the checker and the
+    language, and nothing would notice until the shape became reachable.
     """
 
     _LIB = """\
@@ -1949,47 +1905,36 @@ public fn go(@Unit -> @Int)
 
     @pytest.mark.parametrize(
         "names,admits", [(None, True), (("Shape",), True), (("Sq",), False)])
-    def test_the_shared_derivation_admits_only_by_type_name(
+    def test_the_resolver_admits_only_by_type_name(
         self, names: tuple[str, ...] | None, admits: bool,
     ) -> None:
-        """And the shared table agrees, cell by cell.
+        """And the resolver pass agrees, cell by cell.
 
-        Driven directly rather than through a program, so the table's own
-        answer is what is read.  A second module the entry can see, `jlib`,
-        declares `Sq` too: the #1513 fallback fills a name only where one
-        unimported type declares it, so here it cannot answer for the import
-        list, and `Sq` is in the entry's table exactly when the import
-        admitted it.
+        Driven directly rather than through a program, so the binding's own
+        answer is what is read.  A second module the entry imports a
+        function of, `jlib`, declares `Sq` too: the #1513 fallback binds a
+        name only where one unimported type declares it, so here it cannot
+        answer for the import list, and `Sq` is bound in the entry exactly
+        when the import admitted it.
         """
-        from vera.monomorphize import namespace_ctor_owners
-        from vera.parser import parse_to_ast
+        from vera.binding import ENTRY, DeclId
 
-        lib = parse_to_ast(self._LIB)
-        jlib = parse_to_ast(
-            "module jlib;\n\npublic data Tile {\n  Sq(Bool)\n}\n")
         imp = "import ilib;" if names is None else (
             f"import ilib({', '.join(names)});")
-        entry = parse_to_ast(imp + """
-
-public fn go(@Unit -> @Int)
-  requires(true)
-  ensures(true)
-  effects(pure)
-{
-  0
-}
-""")
-        owners = namespace_ctor_owners(
-            entry, [(("ilib",), lib), (("jlib",), jlib)],
-            {"Shape": ("Sq", "Circ"), "Tile": ("Sq",)},
-        )
-        visible = owners.visible(None) or {}
+        binding = _bind_sources(
+            imp + "\nimport jlib(jping);\n\n" + _s_fn("go", "0"), {
+                ("ilib",): self._LIB,
+                ("jlib",): "module jlib;\n\npublic data Tile {\n  Sq(Bool)\n}"
+                           "\n\n" + _s_fn("jping", "0"),
+            })
+        sq = DeclId(("ilib",), "Sq", ("Shape",), kind="ctor")
+        visible = binding.ctors[ENTRY]
         assert ("Sq" in visible) is admits, (names, sorted(visible))
         if admits:
-            assert visible["Sq"] == "Shape", visible
+            assert visible["Sq"] == sq, visible
         # The declaring module always names its own, whatever the importer
         # asked for.
-        assert (owners.visible(("ilib",)) or {}).get("Sq") == "Shape"
+        assert binding.ctors[("ilib",)]["Sq"] == sq
 
 
 class TestTheScopedProjectionIsTheOnlyLookupPath:
@@ -2332,7 +2277,7 @@ _STRANGER_CALLS: dict[str, tuple[str, str, str, frozenset[tuple[str, ...]]]] = {
         frozenset({("gget", "Int")})),
     "entry_nested_constructor": (
         "entry", "import ga(gcount, gget);\n", "gcount(GMk(GMk(3)))",
-        frozenset({("gcount", "GBox")})),
+        frozenset({("gcount", "mod$gboxb$GBox")})),
     "module_body": (
         "module", "import ga(gcount);\n",
         "gcount(GMk(1)) + gcount(GMk(false))",
@@ -2386,62 +2331,61 @@ class TestAStrangerConstructorNamesOneClone:
         assert named == set(_STRANGER_CALLS[shape][3]), sorted(named)
 
     def test_the_fallback_reads_each_namespaces_own_reach(self) -> None:
-        """The table fills a name from the modules THAT namespace's checker
-        sees, where one unimported type alone declares it.
+        """The resolver pass binds a name among the modules THAT
+        namespace's checker sees, where one unimported type alone declares
+        it (#1694).
 
-        `other` declares a second public type with a `GMk`.  The entry's
-        checker is handed every resolved module, `other` included, so `GMk`
-        names two types there and stays unfilled; `gm`
-        reaches only `ga` and `gboxb` through its imports, so there `GMk` is
-        `GBox`'s.  Asked of the shared derivation directly, since the
-        checker refuses the entry's ambiguous use before any program built
-        from it could reach discovery.
+        `other` declares a second public type with a `GMk`, and the entry
+        imports a function of it, so the entry's checker sees both types and
+        `GMk` stays unbound there; `gm` reaches only `ga` and `gboxb`
+        through its imports, so there `GMk` is `GBox`'s.  Asked of the
+        binding directly, since the checker refuses the entry's ambiguous
+        use before any program built from it could reach discovery.
         """
-        from vera.monomorphize import namespace_ctor_owners
-        from vera.parser import parse_to_ast
+        from vera.binding import ENTRY, DeclId
 
-        modules = [
-            (("gboxb",), parse_to_ast(_S_GBOXB)),
-            (("ga",), parse_to_ast(_S_GA)),
-            (("gm",), parse_to_ast(
-                "module gm;\n\nimport ga(gcount);\n\n"
-                + _s_fn("twice", "gcount(GMk(1))"))),
-            (("other",), parse_to_ast(
-                "module other;\n\npublic data OBox<T> {\n  GMk(T)\n}\n")),
-        ]
-        entry = parse_to_ast("import gm(twice);\n\n" + _s_fn("main", "0"))
-        owners = namespace_ctor_owners(entry, modules, {})
-        assert "GMk" not in (owners.visible(None) or {})
-        assert (owners.visible(("gm",)) or {}).get("GMk") == "GBox"
+        binding = _bind_sources(
+            "import gm(twice);\nimport other(oping);\n\n" + _s_fn("main", "0"),
+            {
+                ("gboxb",): _S_GBOXB,
+                ("ga",): _S_GA,
+                ("gm",): "module gm;\n\nimport ga(gcount);\n\n"
+                         + _s_fn("twice", "gcount(GMk(1))"),
+                ("other",): "module other;\n\npublic data OBox<T> {\n"
+                            "  GMk(T)\n}\n\n" + _s_fn("oping", "0"),
+            })
+        gbox = DeclId(("gboxb",), "GMk", ("GBox",), kind="ctor")
+        assert "GMk" not in binding.ctors[ENTRY]
+        assert binding.ctors[("gm",)]["GMk"] == gbox
         # `ga` imports the type, and `other` declares its own: neither is
         # the fallback's.
-        assert (owners.visible(("ga",)) or {}).get("GMk") == "GBox"
-        assert (owners.visible(("other",)) or {}).get("GMk") == "OBox"
+        assert binding.ctors[("ga",)]["GMk"] == gbox
+        assert binding.ctors[("other",)]["GMk"] == DeclId(
+            ("other",), "GMk", ("OBox",), kind="ctor")
 
     def test_the_fallback_fills_and_never_displaces(self) -> None:
         """A name the namespace's own declaration, an import or the
         infrastructure holds keeps that owner, though one unimported type
-        in reach also declares it: the fallback only fills gaps, as
-        codegen's does, which is what keeps #1436's guarantee for every
+        in reach also declares it: the fallback only fills gaps, as the
+        checker's does, which is what keeps #1436's guarantee for every
         name the three classes resolve."""
-        from vera.monomorphize import namespace_ctor_owners
-        from vera.parser import parse_to_ast
+        from vera.binding import ENTRY, DeclId
 
-        modules = [
-            (("gboxb",), parse_to_ast(_S_GBOXB)),
-            (("ga",), parse_to_ast(_S_GA)),
-            (("sib",), parse_to_ast(
-                "module sib;\n\npublic data Tag {\n  Mark(Int),\n  Some(Bool)\n}"
-                "\n\npublic data Pair {\n  Two(Int)\n}\n")),
-        ]
-        entry = parse_to_ast(
+        binding = _bind_sources(
             "import ga(gcount);\nimport sib(Pair);\n\n"
-            "private data Mine {\n  Mark(Int)\n}\n\n"
-            + _s_fn("main", "0"))
-        registry = {"Option": ("None", "Some")}
-        owners = namespace_ctor_owners(entry, modules, registry)
-        visible = owners.visible(None) or {}
-        assert visible.get("Mark") == "Mine", visible     # own declaration
-        assert visible.get("Some") == "Option", visible   # infrastructure
-        assert visible.get("Two") == "Pair", visible      # an import
-        assert visible.get("GMk") == "GBox", visible      # the fallback
+            "private data Mine {\n  Mark(Int)\n}\n\n" + _s_fn("main", "0"),
+            {
+                ("gboxb",): _S_GBOXB,
+                ("ga",): _S_GA,
+                ("sib",): "module sib;\n\npublic data Tag {\n  Mark(Int),\n"
+                          "  Some(Bool)\n}\n\npublic data Pair {\n"
+                          "  Two(Int)\n}\n",
+            })
+        visible = binding.ctors[ENTRY]
+        # The own declaration; the infrastructure, which is the prelude's in
+        # every namespace and so has no entry; an import; the fallback.
+        assert visible["Mark"] == DeclId(ENTRY, "Mark", ("Mine",), kind="ctor")
+        assert "Some" not in visible, visible
+        assert visible["Two"] == DeclId(("sib",), "Two", ("Pair",), kind="ctor")
+        assert visible["GMk"] == DeclId(
+            ("gboxb",), "GMk", ("GBox",), kind="ctor")

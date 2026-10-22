@@ -199,6 +199,44 @@ class RunInfo(NamedTuple):
     base_sha: str
     base_root: str
     head_root: str
+    #: Whether each WAT was compared modulo its symbol names (``--symbols``).
+    modulo_symbols: bool = False
+
+
+#: A WebAssembly text-format string literal, its escapes included, or a
+#: symbolic identifier: ``$`` and one or more identifier characters.  The
+#: literal is matched first, so a ``$`` inside one is the literal's text.
+_WAT_TOKEN = re.compile(
+    r'"(?:[^"\\]|\\.)*"|\$[0-9A-Za-z!#$%&\'*+\-./:<=>?@\\^_`|~]+')
+
+
+#: The runtime's own exports (``memory``, the allocator, the GC's) are
+#: named under this prefix since #1694, so that no public user function can
+#: take one's name: a rename of the runtime's names, as a symbol's is.
+_RUNTIME_EXPORT = re.compile(r'\(export "vera\.')
+
+
+def normalise_symbols(wat: str) -> str:
+    """*wat* with every symbolic identifier renamed by its first occurrence.
+
+    The first identifier the text names becomes ``$s0``, the next new one
+    ``$s1``, and so on, so two modules that differ only in what their
+    functions, globals, locals, types and labels are called normalise to
+    one text, while a module whose structure, order or literal data
+    differs does not (#1694: the resolver renames every declaration's
+    symbol and nothing else).  A runtime export's ``vera.`` prefix is read
+    the same way (:data:`_RUNTIME_EXPORT`); every other export name is
+    literal data, and a change to it still differs.
+    """
+    names: dict[str, str] = {}
+
+    def rename(match: re.Match[str]) -> str:
+        token = match.group(0)
+        if token.startswith('"'):
+            return token
+        return names.setdefault(token, f"$s{len(names)}")
+
+    return _WAT_TOKEN.sub(rename, _RUNTIME_EXPORT.sub('(export "', wat))
 
 
 # ---------------------------------------------------------------------------
@@ -424,7 +462,8 @@ def _first_error(stderr: str, path: PurePath) -> str:
 
 
 def compile_one(
-    python: str, compiler_root: Path, timeout: int, path: Path
+    python: str, compiler_root: Path, timeout: int, path: Path,
+    *, modulo_symbols: bool = False,
 ) -> Artifact:
     """Compile one program with one side's compiler.
 
@@ -470,6 +509,8 @@ def compile_one(
         )
 
     wat = result.stdout
+    if modulo_symbols:
+        wat = normalise_symbols(wat)
     digest = hashlib.sha256(wat.encode("utf-8")).hexdigest()
     return Artifact(ok=True, digest=digest, size=len(wat), error="")
 
@@ -650,6 +691,7 @@ def json_payload(info: RunInfo, comparison: Comparison) -> dict[str, object]:
         "base_sha": info.base_sha,
         "base_root": info.base_root,
         "head_root": info.head_root,
+        "modulo_symbols": info.modulo_symbols,
         "compared": comparison.compared,
         "identical": comparison.identical,
         "both_failed": comparison.both_failed,
@@ -665,6 +707,8 @@ def summary_lines(info: RunInfo, comparison: Comparison) -> list[str]:
         f"both revisions.",
         f"  base: {info.base_ref} ({info.base_sha[:12]}) -> {info.base_root}",
         f"  head: working tree -> {info.head_root}",
+        *(["  WAT compared modulo symbol names (--symbols)"]
+          if info.modulo_symbols else []),
         f"  identical WAT: {comparison.identical}",
         f"  compiled at neither revision: {comparison.both_failed} "
         f"(vacuous agreement — nothing was compared for these)",
@@ -776,6 +820,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--json", action="store_true", dest="as_json",
         help="emit the verdict as JSON on stdout",
     )
+    parser.add_argument(
+        "--symbols", action="store_true", dest="modulo_symbols",
+        help="compare each WAT modulo its symbol names: every $identifier "
+             "is renamed by its first occurrence on both sides first",
+    )
     return parser.parse_args(argv)
 
 
@@ -842,6 +891,7 @@ def _run(
         base_sha=sha,
         base_root=str(base_root),
         head_root=str(repo_root),
+        modulo_symbols=args.modulo_symbols,
     )
 
     sides: dict[str, dict[str, Artifact]] = {}
@@ -851,14 +901,13 @@ def _run(
             f"({root})...",
             file=sys.stderr,
         )
-        sides[side] = collect(
-            files,
-            repo_root,
-            lambda path, root=root: compile_one(
-                sys.executable, root, args.timeout, path
-            ),
-            jobs=args.jobs,
-        )
+        def compile_fn(path: Path, root: Path = root) -> Artifact:
+            return compile_one(
+                sys.executable, root, args.timeout, path,
+                modulo_symbols=args.modulo_symbols,
+            )
+
+        sides[side] = collect(files, repo_root, compile_fn, jobs=args.jobs)
 
     return emit(
         info,

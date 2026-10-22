@@ -368,7 +368,7 @@ public fn imp(@Bool, @Bool -> @Bool)
 }
 """
         result = _compile_ok(source)
-        body = result.wat.split("(func $imp", 1)[1].split("(func ", 1)[0]
+        body = result.wat.split("(func $:imp", 1)[1].split("(func ", 1)[0]
         assert "if (result i32)" in body and "i32.or" not in body
         # `@Bool.0` is the second parameter: `imp(a, b)` is `b ==> a`.
         assert _run(source, "imp", [0, 0]) == 1
@@ -3422,20 +3422,24 @@ public fn main(@Unit -> @Unit)
 
 
 class TestOperatorsPipeModuleCall:
-    """Tests for pipe operator with module-qualified calls.
-
-    Targets missed lines in operators.py: pipe with ModuleCall (63-69).
-    """
+    """Tests for pipe operator with module-qualified calls."""
 
     def test_pipe_module_call(self) -> None:
-        """Pipe with module-qualified call desugars correctly."""
+        """A piped call by the file's own module path runs the function the
+        path names (the link step makes it the plain call, #1694)."""
         source = """\
-import vera.math(abs);
+module mm;
+
+private fn absx(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  if @Int.0 < 0 then { 0 - @Int.0 } else { @Int.0 }
+}
 
 public fn test_pipe(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
-  -5 |> vera.math::abs()
+  -5 |> mm::absx()
 }
 """
         assert _run(source, "test_pipe") == 5

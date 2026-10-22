@@ -1421,13 +1421,13 @@ def test_verify_json_carries_the_reconciliation_by_default(
 
 #: (program, the default's exit status, error codes and join warnings,
 #: then `--no-reconcile`'s), for each outcome the join can add: nothing, an
-#: E541, a W004, a refused compile, and a typed hole's skip.
+#: E541, a W004, and a typed hole's skip (a refused compile is
+#: `test_reconcile_reports_a_refused_compile`'s).
 _DEFAULT_CELLS: dict[str, tuple[tuple[int, list[str], list[str]],
                                 tuple[int, list[str], list[str]]]] = {
     "absolute_value": ((0, [], []), (0, [], [])),
     "repro_1607": ((1, ["E541", "E541"], []), (0, [], [])),
     "repro_1608": ((0, [], ["W004"]), (0, [], [])),
-    "contention": ((1, ["E621"], []), (0, [], [])),
     "typed_holes": ((0, [], ["W005"]), (0, [], [])),
 }
 
@@ -1440,9 +1440,6 @@ def _default_cell_path(name: str, repro_dir: Path) -> Path:
         return EXAMPLES_DIR / "absolute_value.vera"
     if name == "typed_holes":
         return ROOT / "tests" / "conformance" / "ch03_typed_holes.vera"
-    if name == "contention":
-        return (ROOT / "tests" / "conformance"
-                / "ch08_module_prelude_adt_contention_rejected.vera")
     return repro_dir / f"{name}.vera"
 
 
@@ -1617,15 +1614,29 @@ def test_reconcile_text_mode_prints_its_summary(
 
 
 def test_reconcile_reports_a_refused_compile(
-    capsys: pytest.CaptureFixture[str],
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A program that verifies but does not compile leaves nothing to join:
-    the compile's own error is the answer."""
-    rc, payload = _cli_json(
-        capsys, ROOT / "tests" / "conformance"
-        / "ch08_module_prelude_adt_contention_rejected.vera")
+    the compile's own error is the answer.  No program the check accepts is
+    refused at compile since the name-collision codes retired (#1694), so
+    the compile is refused here, with an error added to its own result."""
+    from vera import reconcile
+    from vera.errors import Diagnostic, SourceLocation
+
+    real = reconcile.compile_for_reconcile
+
+    def refused(*args: object, **kwargs: object) -> object:
+        result = real(*args, **kwargs)  # type: ignore[arg-type]
+        result.diagnostics.append(Diagnostic(
+            description="refused", location=SourceLocation(file=None),
+            source_line="", rationale="", fix="", spec_ref="",
+            severity="error", error_code="E699"))
+        return result
+
+    monkeypatch.setattr(reconcile, "compile_for_reconcile", refused)
+    rc, payload = _cli_json(capsys, EXAMPLES_DIR / "absolute_value.vera")
     assert rc == 1
-    assert "E621" in {d.get("error_code") for d in payload["diagnostics"]}  # type: ignore[union-attr]
+    assert "E699" in {d.get("error_code") for d in payload["diagnostics"]}  # type: ignore[union-attr]
     assert payload["reconciliation"]["compiled"] is False  # type: ignore[index]
 
 

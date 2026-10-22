@@ -1296,17 +1296,20 @@ class _TrapIndex:
                 callees = set(_WAT_CALL.findall(body))
                 if "call_indirect" in body:
                     callees |= table
-                graph[header.group(1)] = callees
+                # A declaration's `$:alloc` and the runtime's `$alloc` are
+                # one node (#1694): it holds what either body calls, so a
+                # reach never loses a declaration's callees.
+                graph.setdefault(header.group(1), set()).update(callees)
             self._graph = graph
         return self._graph
 
 
 #: A function definition in the module text, as code generation writes one.
-_WAT_FUNC = re.compile(r"^\s*\(func \$([^\s()]+)", re.MULTILINE)
+_WAT_FUNC = re.compile(r"^\s*\(func \$:?([^\s()]+)", re.MULTILINE)
 #: A direct call, and a tail call, to a function the module defines (an
 #: import's name matches too, and is in no body of the graph).
-_WAT_CALL = re.compile(r"\b(?:return_call|call) \$([^\s()]+)")
-_WAT_NAME = re.compile(r"\$([^\s()]+)")
+_WAT_CALL = re.compile(r"\b(?:return_call|call) \$:?([^\s()]+)")
+_WAT_NAME = re.compile(r"\$:?([^\s()]+)")
 
 
 def _returned_parts(expr: ast.Expr) -> list[ast.Expr]:

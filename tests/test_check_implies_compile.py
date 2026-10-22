@@ -1206,8 +1206,8 @@ class Topology:
         if self.label == "diamond":
             # Two modules import B; the entry imports both and B.  ``paint``
             # is declared by ``mc`` alone: a second module declaring it too
-            # is #1498's shape (E608 between two modules no namespace can
-            # name together), which is not this class.
+            # is #1498's shape (two modules' same-named functions, E608
+            # until #1694), which is not this class.
             return {
                 "mb.vera": _MB,
                 "ma.vera": "module ma;\n\nimport mb(Colour);\n" + _PICK,
@@ -1554,11 +1554,6 @@ KNOWN_CHECK_GREEN_REFUSALS: dict[str, tuple[tuple[str, ...], str]] = {
         ("E614", "missing-export"),
         "a typed hole is a W001 warning at check and refused at compile — "
         "spec §4.17 makes that the contract of `?`",
-    ),
-    "tests/conformance/ch08_module_prelude_adt_contention_rejected.vera": (
-        ("E621", "missing-export", "missing-export"),
-        "a conformance NEGATIVE whose manifest names the compile stage "
-        "(`expected_error_stage: compile`): the checker accepts it by design",
     ),
     "tests/conformance/ch08_ambiguous_import_lib_bool.vera": (
         ("E604",), _UNINSTANTIATED_GENERIC),
@@ -3086,17 +3081,15 @@ class TestGenericsAtATypeAlias:
             outcome.describe())
         assert run_main(outcome) == ("ok", 7)
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "#1519: the substituted data type `Shape` reads as the declaring "
-        "module's alias of `Int` inside the clone"))
     @pytest.mark.parametrize("call", ("idg(Circle(4))", "gl::idg(Circle(4))"))
     def test_a_data_type_named_like_the_declaring_modules_alias(
         self, call: str, tmp_path: Path,
     ) -> None:
         """The other direction: `gl` declares `type Shape = Int;`, and the
         entry calls `gl`'s generic at its own `data Shape`.  The clone is
-        rightly keyed on the entry's type, and is then built into a module
-        that fails to load (#1519, on `main` as well)."""
+        keyed on the entry's type, and in `gl`'s namespace the alias is
+        `gl`'s link name, so the substituted `Shape` is the entry's
+        (#1519)."""
         gl = (_GL.rstrip("\n") + "\n\ntype Shape = Int;\n\n"
               "public fn seven(@Unit -> @Int)\n" + _NC
               + "{\n  let @Shape = 7;\n  @Shape.0\n}\n")

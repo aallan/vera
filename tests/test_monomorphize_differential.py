@@ -945,8 +945,9 @@ def test_imported_generic_symmetric_between_codegen_and_verifier(
     finally:
         os.unlink(bp)
 
-    # Both sides monomorphize the imported generic at exactly ext_id<Int>.
-    assert ("ext_id", ("Int",)) in codegen_set, (
+    # Both sides monomorphize the imported generic at exactly ext_id<Int>,
+    # under its link name.
+    assert ("mod$a$ext_id", ("Int",)) in codegen_set, (
         f"codegen must emit ext_id<Int> for the {call_form} call, "
         f"got {sorted(codegen_set)}"
     )
@@ -1084,11 +1085,9 @@ def test_transitive_shadowed_generic_symmetric(inner_shadowed: bool) -> None:
     )
     codegen_set, verifier_set = _cross_module_sets(b_src, [mod_a])
 
-    # The shadowed outer is keyed under its mod$… base; the transitive inner is
-    # keyed `mod$g$inner` when a local shadows it, else the bare `inner`.
-    inner_key = ("mod$g$inner", ("Int",)) if inner_shadowed else (
-        ("inner", ("Int",))
-    )
+    # Both module generics are keyed by their link names, whether or not a
+    # local shadows the bare name (#1694).
+    inner_key = ("mod$g$inner", ("Int",))
     assert ("mod$g$outer", ("Int",)) in codegen_set and (
         inner_key in codegen_set
     ), (
@@ -1171,7 +1170,7 @@ def test_private_module_generic_symmetric_between_codegen_and_verifier() -> None
     )
     codegen_set, verifier_set = _cross_module_sets(main_src, [mod])
 
-    assert ("outer", ("Int",)) in codegen_set and (
+    assert ("mod$lib_priv$outer", ("Int",)) in codegen_set and (
         ("mod$lib_priv$inner", ("Int",)) in codegen_set
     ), (
         f"codegen must emit outer<Int> and its transitive private "
@@ -1216,7 +1215,7 @@ def test_local_shadowing_private_module_generic_symmetric() -> None:
     )
     codegen_set, verifier_set = _cross_module_sets(main_src, [mod])
 
-    assert ("caller", ("Int",)) in codegen_set and (
+    assert ("mod$lib$caller", ("Int",)) in codegen_set and (
         ("mod$lib$dup", ("Int",)) in codegen_set
     ), (
         f"codegen must emit caller<Int> and the module's private "
@@ -1479,13 +1478,12 @@ def test_module_generic_qualified_only_symmetric_1274(
     )
 
 
-def test_module_generic_owning_bare_name_stays_unqualified_1274() -> None:
-    """The complement: a module generic that DOES own the importer's bare name
-    (public, in-filter, unshadowed) keeps that bare name on both sides.
-
-    Without this the widened predicate would be a blanket rename, and #774's
-    bare-call routing (`ext_id(42)` reaching the imported generic) would break
-    silently — the fix must move exactly the qualified-only families.
+def test_module_generic_owning_bare_name_is_keyed_by_its_link_name_1274(
+) -> None:
+    """The complement: a module generic that owns the importer's bare name
+    (public, in-filter, unshadowed) is keyed by its link name on both sides,
+    as every module declaration is (#1694), and the importer's bare call and
+    the module's own call reach the same clones.
     """
     mod = _resolved_module(("lib",), (
         "public forall<T> fn gen2(@T -> @Int)\n"
@@ -1503,13 +1501,13 @@ def test_module_generic_owning_bare_name_stays_unqualified_1274() -> None:
     )
     codegen_set, verifier_set = _cross_module_sets(main_src, [mod])
 
-    assert ("gen2", ("Bool",)) in codegen_set, (
-        f"an unshadowed in-filter public module generic must keep the bare "
-        f"clone name, got {sorted(codegen_set)}"
+    assert {("mod$lib$gen2", ("Bool",)), ("mod$lib$gen2", ("Int",))} <= (
+        codegen_set), (
+        f"the module's call and the importer's bare call must both reach the "
+        f"module generic's clones, got {sorted(codegen_set)}"
     )
-    assert not any(n.startswith("mod$lib$gen2") for n, _ in codegen_set), (
-        f"it must NOT be renamed — it owns the importer's bare name, "
-        f"got {sorted(codegen_set)}"
+    assert not any(n == "gen2" for n, _ in codegen_set), (
+        f"no clone is keyed by the bare name, got {sorted(codegen_set)}"
     )
     assert verifier_set == codegen_set, (
         f"verifier ({sorted(verifier_set)}) must discover exactly codegen's "
@@ -1625,8 +1623,10 @@ def test_generic_typearg_from_imported_constructor_is_discovered() -> None:
     finally:
         os.unlink(bp)
 
-    assert cg == {("Box",)}, f"codegen should emit exactly id2<Box>, got {cg}"
-    assert ver == {("Box",)}, (
+    # The module's `Box`, by its link name (#1694).
+    assert cg == {("mod$a$Box",)}, (
+        f"codegen should emit exactly id2<Box>, got {cg}")
+    assert ver == {("mod$a$Box",)}, (
         f"verifier should discover exactly id2<Box> (discovered {ver}) — "
         f"imported-constructor discovery gap, false Tier-1"
     )
@@ -1975,13 +1975,12 @@ def test_discovery_scopes_agree_between_the_two_sides(rel: str) -> None:
     _assert_scopes_agree(rel, cg, ver)
 
 
-# Module shapes whose clones are reached by the SHADOWED-generic worklist and
-# the nested-helper chase — walks the repo corpus above never enters, and each
-# with its own namespace-selection site on both sides.
+# Module shapes whose clones are reached through a module generic the entry
+# shadows and through the nested-helper chase — walks the repo corpus above
+# never enters, each with its namespace-selection site on both sides.
 _SCOPE_MODULE_CASES: dict[str, tuple[str, str, tuple[str, ...]]] = {
-    # A shadowed module generic whose body reaches a normal (unshadowed) one:
-    # codegen's `_chase_normal_transitive` / the verifier's
-    # `_chase_normal_from_clone`, rooted at the shadowed clone.
+    # A module generic the entry shadows, whose body reaches another of the
+    # module's generics: both clones are the module's, under link names.
     "shadowed_reaching_normal": (
         "sh",
         "public forall<T> fn plain(@T -> @Int)\n"
@@ -1990,14 +1989,10 @@ _SCOPE_MODULE_CASES: dict[str, tuple[str, str, tuple[str, ...]]] = {
         "public forall<T> fn gen(@T -> @Int)\n"
         "  requires(true) ensures(true) effects(pure)\n"
         "{ plain(@T.0) }\n",
-        # The local shadow is NON-generic on purpose.  It still makes the
-        # module's `gen` qualified-only — `importer_occupied_bare_names`
-        # counts every top-level name, generic or not — which is what routes
-        # the clone through the shadowed worklist and its normal-closure
-        # chase.  A generic shadow would ALSO mint a clone under the same
-        # pre-rename name `gen$Int`, and the two sides' scope sets would then
-        # differ for a reason that has nothing to do with which namespace
-        # either picked.
+        # The local shadow is NON-generic on purpose: a generic shadow would
+        # also mint a clone `gen$Int`, beside the module's `mod$sh$gen$Int`,
+        # and the two sides' scope sets would then differ for a reason that
+        # has nothing to do with which namespace either picked.
         (
             "import sh;\n\n"
             "private fn gen(@Int -> @Int)\n"
@@ -2102,11 +2097,12 @@ def test_nested_helper_clone_walks_in_its_chains_module() -> None:
     Asserted directly rather than through the equality above, because that
     comparison is keyed by declaration NAME and the two sides name this one
     clone differently by design: codegen hoists it per instantiation
-    (``mod$nh$priv_outer$Int$where$ginner$Int``) while the verifier keeps the
-    mangled bare name (``ginner$Int``).  Not a scope divergence — a naming
-    scheme difference — so the equality cell cannot see this site, and it
-    gets its own discriminator: ``onlyhere`` is module-PRIVATE, so it is in
-    the walk's scope only if the walk entered ``nh``'s namespace.
+    (``mod$nh$priv_outer$Int$where$ginner$Int``) while the verifier names it
+    from the helper's link name (``mod$nh$priv_outer$where$ginner$Int``).
+    Not a scope divergence — a naming scheme difference — so the equality
+    cell cannot see this site, and it gets its own discriminator:
+    ``onlyhere`` is module-PRIVATE, so its link name is in the walk's scope
+    only if the walk entered ``nh``'s namespace.
     """
     mod_name, mod_src, main_src = _SCOPE_MODULE_CASES[
         "nested_helper_under_private_generic"
@@ -2123,12 +2119,13 @@ def test_nested_helper_clone_walks_in_its_chains_module() -> None:
     finally:
         os.unlink(mp)
 
-    assert "ginner$Int" in ver, (
+    clone = "mod$nh$priv_outer$where$ginner$Int"
+    assert clone in ver, (
         f"the nested helper's clone was never walked in a discovery scope — "
         f"the assertion below would be vacuous; keys were {sorted(ver)}"
     )
-    for scope in ver["ginner$Int"]:
-        assert "onlyhere" in scope, (
+    for scope in ver[clone]:
+        assert "mod$nh$onlyhere" in scope, (
             f"the nested helper's clone was walked in the wrong namespace: "
             f"its module's private `onlyhere` is not in scope {sorted(scope)}"
         )
@@ -2142,8 +2139,9 @@ def test_codegen_helper_family_leaf_walks_in_its_parents_module() -> None:
     (``mod$nh$priv_outer$Int$where$ginner$Int``) where the verifier keeps the
     mangled bare one — so the two are never a shared key and the equality
     cell cannot compare them.  Each side therefore gets a direct
-    discriminator: ``onlyhere`` is module-private, in scope only if the leaf
-    entered ``nh``'s namespace rather than the entry program's.
+    discriminator: ``onlyhere`` is module-private, its link name in scope
+    only if the leaf entered ``nh``'s namespace rather than the entry
+    program's.
     """
     mod_name, mod_src, main_src = _SCOPE_MODULE_CASES[
         "nested_helper_under_private_generic"
@@ -2167,7 +2165,7 @@ def test_codegen_helper_family_leaf_walks_in_its_parents_module() -> None:
     )
     for name in walked:
         for scope in cg[name]:
-            assert "onlyhere" in scope, (
+            assert "mod$nh$onlyhere" in scope, (
                 f"{name} was walked in the wrong namespace: its module's "
                 f"private `onlyhere` is not in scope {sorted(scope)}"
             )

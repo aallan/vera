@@ -65,10 +65,10 @@ def _cmd_test_capturing_wat(source: str, monkeypatch) -> str:
 
 
 def _wat_function(wat: str, name: str) -> str:
-    """Slice the ``(func $name ...)`` s-expression out of a WAT module by
+    """Slice the ``(func $:name ...)`` s-expression out of a WAT module by
     paren-matching, so the guard assertion is scoped to that function rather
     than the runtime prelude (which has its own unrelated traps)."""
-    start = wat.index(f"(func ${name} ")
+    start = wat.index(f"(func $:{name} ")
     depth = 0
     for i in range(start, len(wat)):
         if wat[i] == "(":

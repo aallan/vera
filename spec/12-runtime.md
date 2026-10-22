@@ -75,9 +75,9 @@ Imports are only emitted when the program actually uses the corresponding host-b
 
 ### 12.2.3 Linear Memory
 
-The module exports one page (64 KiB) of linear memory as `"memory"`. The host runtime uses this export to read string data for `IO.print` and to write data returned by host functions (e.g., `IO.read_line`, `IO.read_file`).
+The module exports one page (64 KiB) of linear memory as `"vera.memory"`. The host runtime uses this export to read string data for `IO.print` and to write data returned by host functions (e.g., `IO.read_line`, `IO.read_file`).
 
-When the program uses IO operations that return strings or ADTs — `IO.read_line`, `IO.read_char`, `IO.read_file`, `IO.write_file`, `IO.read_bytes`, `IO.write_bytes`, `IO.args`, `IO.get_env` — the module also exports the `$alloc` function so the host can allocate memory in the WASM linear memory for return values. The fire-and-forget operations (`IO.print`, `IO.exit`, `IO.sleep`, `IO.time`, `IO.stderr`) don't allocate: `vera.print`, `vera.stderr`, and `vera.sleep` take only primitive parameters and return nothing; `vera.time` returns an `i64` scalar; `vera.exit` traps without returning. Modules that use only these operations don't need `$alloc` exported.
+When the program uses IO operations that return strings or ADTs — `IO.read_line`, `IO.read_char`, `IO.read_file`, `IO.write_file`, `IO.read_bytes`, `IO.write_bytes`, `IO.args`, `IO.get_env` — the module also exports the `$alloc` function, as `"vera.alloc"`, so the host can allocate memory in the WASM linear memory for return values. The fire-and-forget operations (`IO.print`, `IO.exit`, `IO.sleep`, `IO.time`, `IO.stderr`) don't allocate: `vera.print`, `vera.stderr`, and `vera.sleep` take only primitive parameters and return nothing; `vera.time` returns an `i64` scalar; `vera.exit` traps without returning. Modules that use only these operations don't need `$alloc` exported.
 
 For the memory layout, see Section 12.5.
 
@@ -583,9 +583,9 @@ The runtime implements a conservative mark-sweep garbage collector entirely in W
 
 | Global | Type | Purpose |
 |--------|------|---------|
-| `$gc_sp` | `mut i32` | Shadow stack pointer (current top); exported so host helpers can root pointers they hold |
+| `$gc_sp` | `mut i32` | Shadow stack pointer (current top); exported as `"vera.gc_sp"` so host helpers can root pointers they hold |
 | `$gc_stack_base` | `i32` | Shadow stack base address (`data_end`) |
-| `$gc_stack_limit` | `i32` | Shadow stack end (`data_end + 16384`); exported |
+| `$gc_stack_limit` | `i32` | Shadow stack end (`data_end + 16384`); exported as `"vera.gc_stack_limit"` |
 | `$gc_worklist_end` | `i32` | Mark worklist end (`data_end + 81920`) |
 | `$gc_heap_start` | `i32` | Heap start address (`data_end + 81920`, or `data_end + 147456` with the wrapper table; Section 12.5.1) |
 | `$gc_free_head` | `mut i32` | Free list head pointer |

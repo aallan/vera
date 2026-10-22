@@ -892,6 +892,14 @@ class ContractsMixin:
                 yield from self._component_guard_predicates(
                     site.nested, _depth + 1)
 
+    def _displayed_decl(self, decl: ast.FnDecl) -> ast.FnDecl:
+        """*decl* under the name a runtime message shows for it (#1694)."""
+        shown = self._display_fn_name(decl.name)
+        if shown == decl.name:
+            return decl
+        import dataclasses
+        return dataclasses.replace(decl, name=shown)
+
     def _format_contract_message(
         self,
         decl: ast.FnDecl,
@@ -913,7 +921,7 @@ class ContractsMixin:
         else:
             kind = "Postcondition"
             clause = "ensures"
-        sig = ast.format_fn_signature(decl)
+        sig = ast.format_fn_signature(self._displayed_decl(decl))
         expr_text = ast.format_expr(contract.expr)
         return f"{kind} violation in {sig}\n  {clause}({expr_text}) failed"
 
@@ -929,7 +937,7 @@ class ContractsMixin:
         / return value: @Int.0 >= 0 && @Int.0 <= 100 failed``.  *role* is
         ``"parameter"`` or ``"return value"``.
         """
-        sig = ast.format_fn_signature(decl)
+        sig = ast.format_fn_signature(self._displayed_decl(decl))
         parts = self._refinement_guard_parts(te)
         pred_text = ast.format_expr(parts[0]) if parts is not None else "?"
         return (

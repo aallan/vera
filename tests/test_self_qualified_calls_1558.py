@@ -60,6 +60,7 @@ The instrument:
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -1468,7 +1469,9 @@ def _wat(path: Path) -> str:
 
 def _wat_fn(wat: str, name: str) -> str:
     """The text of the WAT function `$name`, up to the next function."""
-    start = wat.index(f"(func ${name} ")
+    found = re.search(rf"\(func \$:?{re.escape(name)} ", wat)
+    assert found is not None, f"no `(func ${name}` in the emitted WAT"
+    start = found.start()
     end = wat.find("(func $", start + 1)
     return wat[start:end if end != -1 else len(wat)]
 
@@ -1500,8 +1503,8 @@ class TestATailCallByThePath:
     def test_the_call_compiles_to_return_call(
         self, placement: str, tmp_path: Path,
     ) -> None:
-        """The WAT of `count` holds `return_call $count` for the qualified
-        spelling as for the bare one, and no plain `call $count`."""
+        """The WAT of `count` holds `return_call $:count` for the qualified
+        spelling as for the bare one, and no plain `call $:count`."""
         bodies = []
         for q in ("ma::", ""):
             root = tmp_path / (q.rstrip(":") or "bare")
@@ -1513,12 +1516,15 @@ class TestATailCallByThePath:
                     _entry("import ma(run_it);", "run_it(3)"),
                     encoding="utf-8")
                 target = root / "main.vera"
-            bodies.append(_wat_fn(_wat(target), "count"))
+            # `ma`'s `count` under its link name when `ma` is a module
+            # (#1694).
+            name = "count" if placement == "entry" else "mod$ma$count"
+            bodies.append(_wat_fn(_wat(target), name))
         qualified, bare = bodies
-        assert "return_call $count" in bare, bare
-        assert "return_call $count" in qualified, qualified
-        assert "call $count" not in qualified.replace(
-            "return_call $count", ""), qualified
+        assert f"return_call $:{name}" in bare, bare
+        assert f"return_call $:{name}" in qualified, qualified
+        assert f"call $:{name}" not in qualified.replace(
+            f"return_call $:{name}", ""), qualified
 
     @pytest.mark.parametrize("q", ["ma::", ""], ids=["qualified", "bare"])
     def test_a_narrowing_tail_call_keeps_its_guard(

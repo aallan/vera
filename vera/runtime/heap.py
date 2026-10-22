@@ -4,7 +4,7 @@ Memory read/write, shadow-stack GC rooting, wrapper-ADT handle tagging,
 building and reading a map through the module's own exports, and
 Result/Option/Array allocation -- all
 parameterised by the `wasmtime.Caller` (memory is reached via
-`caller["memory"]` / `caller["alloc"]`), so they are plain module-level
+`caller[runtime_export("memory")]` / `caller[runtime_export("alloc")]`), so they are plain module-level
 functions.  Extracted from `execute()` in `vera/codegen/api.py` (#421).
 """
 
@@ -17,6 +17,7 @@ from typing import TypeVar
 import wasmtime
 
 from vera.runtime.text import safe_utf8_decode
+from vera.runtime import runtime_export
 
 
 def _slice_and_decode(
@@ -67,7 +68,7 @@ def _read_wasm_string(
     file-content consumers then surface their own "not found" errors when the
     replacement chars match nothing — a strict improvement over a traceback.
     """
-    memory = caller["memory"]
+    memory = caller[runtime_export("memory")]
     assert isinstance(memory, wasmtime.Memory)  # noqa: S101
     mem_size = memory.data_len(caller)
     if length < 0 or ptr < 0 or ptr + length > mem_size:
@@ -114,7 +115,7 @@ def _write_bytes(
     O(n) Python-level assignments and turned bucket-array writes into
     an O(N²) hot path on large Map / Set chains (#706).
     """
-    memory = caller["memory"]
+    memory = caller[runtime_export("memory")]
     assert isinstance(memory, wasmtime.Memory)  # noqa: S101
     memory.write(caller, data, offset)
 
@@ -126,7 +127,7 @@ def _write_i32(
 
 def _call_alloc(caller: wasmtime.Caller, size: int) -> int:
     """Call the exported $alloc to allocate WASM heap memory."""
-    alloc_fn = caller["alloc"]
+    alloc_fn = caller[runtime_export("alloc")]
     assert isinstance(alloc_fn, wasmtime.Func)  # noqa: S101
     ptr = alloc_fn(caller, size)
     assert isinstance(ptr, int)  # noqa: S101
@@ -197,7 +198,7 @@ def _read_i32_at(caller: wasmtime.Caller, offset: int) -> int:
     Bounds-checked via :func:`_require_readable` before the raw slice
     (#1442) — see there for why the check cannot live in the ctypes read.
     """
-    memory = caller["memory"]
+    memory = caller[runtime_export("memory")]
     assert isinstance(memory, wasmtime.Memory)  # noqa: S101
     _require_readable(memory, caller, offset, 4, "i32")
     buf = memory.data_ptr(caller)
@@ -211,7 +212,7 @@ def _read_bytes_at(
     Bounds-checked via :func:`_require_readable` before the raw slice
     (#1442) — see there for why the check cannot live in the ctypes read.
     """
-    memory = caller["memory"]
+    memory = caller[runtime_export("memory")]
     assert isinstance(memory, wasmtime.Memory)  # noqa: S101
     _require_readable(memory, caller, offset, length, "byte-range")
     buf = memory.data_ptr(caller)
@@ -266,8 +267,8 @@ class _ShadowGuard:
         # rather than a bare ``KeyError`` becoming a generic
         # "python exception" trap.
         try:
-            sp_global = caller["gc_sp"]
-            limit_global = caller["gc_stack_limit"]
+            sp_global = caller[runtime_export("gc_sp")]
+            limit_global = caller[runtime_export("gc_stack_limit")]
         except KeyError as exc:
             raise RuntimeError(
                 "#692: host walker requires the module to "
@@ -328,7 +329,7 @@ class _ShadowGuard:
         # NOT work here because wasmtime-py's ``data_ptr``
         # returns an LP_c_ubyte, which lacks the buffer
         # protocol that ``pack_into`` requires.
-        memory = self._caller["memory"]
+        memory = self._caller[runtime_export("memory")]
         assert isinstance(memory, wasmtime.Memory)  # noqa: S101
         buf = memory.data_ptr(self._caller)
         packed = struct.pack("<I", ptr & 0xFFFF_FFFF)
@@ -389,7 +390,7 @@ def _call_register_wrapper(
     Decimal use); host-side JSON / HTML parsers can call this
     unconditionally and it'll just skip.
     """
-    register_fn = caller["register_wrapper"]
+    register_fn = caller[runtime_export("register_wrapper")]
     if register_fn is None:  # pragma: no cover — wrap table disabled
         return
     assert isinstance(register_fn, wasmtime.Func)  # noqa: S101
@@ -819,7 +820,7 @@ def _read_i32(caller: wasmtime.Caller, offset: int) -> int:
     derives from guest memory contents rather than from an allocator,
     which is exactly the shape that must not be trusted to a raw slice.
     """
-    memory = caller["memory"]
+    memory = caller[runtime_export("memory")]
     assert isinstance(memory, wasmtime.Memory)  # noqa: S101
     _require_readable(memory, caller, offset, 4, "i32")
     buf = memory.data_ptr(caller)
@@ -835,7 +836,7 @@ def _read_f64(caller: wasmtime.Caller, offset: int) -> float:
     ``read_json`` sibling of :func:`_read_i32` above, and reached the
     same way.
     """
-    memory = caller["memory"]
+    memory = caller[runtime_export("memory")]
     assert isinstance(memory, wasmtime.Memory)  # noqa: S101
     _require_readable(memory, caller, offset, 8, "f64")
     buf = memory.data_ptr(caller)
@@ -917,7 +918,7 @@ def _read_wasm_array_of_options_of_string(
         )
     if count == 0:
         return []
-    memory = caller["memory"]
+    memory = caller[runtime_export("memory")]
     assert isinstance(memory, wasmtime.Memory)  # noqa: S101
     mem_size = memory.data_len(caller)
 
@@ -1027,7 +1028,7 @@ class InstanceCaller:
     """Adapt a (Store, Instance) pair to the ``caller`` protocol.
 
     The heap helpers above take a ``wasmtime.Caller`` and use exactly
-    two of its capabilities: export lookup (``caller["memory"]``) and
+    two of its capabilities: export lookup (``caller[runtime_export("memory")]``) and
     being passed back to wasmtime calls as the store context
     (``memory.write(caller, ...)``, ``alloc_fn(caller, size)``).  The
     #305 serve driver runs OUTSIDE any host import — there is no

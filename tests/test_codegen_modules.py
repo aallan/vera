@@ -699,7 +699,7 @@ class TestCrossModuleGenerics774:
     ``program.declarations`` (the imported generic isn't there) and the defining
     module only monomorphized its own instantiations, so the clone was emitted
     NOWHERE — ``vera check`` passed but ``vera run`` failed WASM validation at
-    ``call $gid`` (both call forms).  The #814 asymmetric variant (a generic
+    ``call $:gid`` (both call forms).  The #814 asymmetric variant (a generic
     shadowed by a local AND qualified-called) false-Tier-1'd instead: verify
     resolved the module generic's contract while codegen fell back to the local
     shadow.
@@ -722,7 +722,7 @@ public forall<T> fn gid(@T -> @T)
     def test_imported_generic_bare_call_executes(self) -> None:
         """`gid(42)` (bare) runs, returning 42 — the importer emits gid$Int.
 
-        Pre-fix this failed WASM validation at ``call $gid`` (no clone).  The
+        Pre-fix this failed WASM validation at ``call $:gid`` (no clone).  The
         observable output (42) cannot coincide with the phantom-var default
         (Bool/i32), so a discovery miss can't masquerade as a pass.
         """
@@ -740,7 +740,7 @@ public fn main(@Unit -> @Int)
 
         The qualified form is an ``ast.ModuleCall`` the shared discovery now
         walks; it desugars to the bare mono target at codegen.  Pre-fix it
-        crashed identically at ``call $gid``.
+        crashed identically at ``call $:gid``.
         """
         mod = self._resolved(("genmod",), self.GEN_MODULE)
         val = self._run_mod("""\
@@ -1402,7 +1402,9 @@ class TestNameCollisionDetection:
         return TestCrossModuleCodegen._compile_mod(source, modules)
 
     def test_fn_collision_two_modules(self) -> None:
-        """Same function name in two imported modules produces E608."""
+        """Two imports that both supply ``process`` leave the bare call bound
+        to neither declaration (the checker reports it, E155), so code
+        generation refuses the unchecked program rather than pick one."""
         mod_a = self._resolved(("mod_a",), """\
 public fn process(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
@@ -1421,15 +1423,15 @@ public fn main(@Int -> @Int)
 { process(@Int.0) }
 """, [mod_a, mod_b])
         errors = [d for d in result.diagnostics if d.severity == "error"]
-        assert len(errors) >= 1
-        assert "process" in errors[0].description
-        assert "mod_a" in errors[0].description
-        assert "mod_b" in errors[0].description
-        assert errors[0].error_code == "E608"
+        assert any(
+            "process" in e.description and "not defined" in e.description
+            for e in errors
+        ), errors
         assert result.ok is False
 
     def test_private_helper_collision(self) -> None:
-        """Private helpers with same name across modules produce E608."""
+        """Private helpers with the same name in two modules are two
+        declarations (#1498): each module's body calls its own."""
         mod_a = self._resolved(("mod_a",), """\
 public fn double(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
@@ -1446,43 +1448,18 @@ private fn helper(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 }
 """)
-        result = self._compile_mod("""\
+        assert TestCrossModuleCodegen._run_mod("""\
 import mod_a(double);
 import mod_b(triple);
 public fn main(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { double(@Int.0) + triple(@Int.0) }
-""", [mod_a, mod_b])
-        errors = [d for d in result.diagnostics if d.severity == "error"]
-        assert any(
-            e.error_code == "E608" and "helper" in e.description
-            for e in errors
-        )
-
-    def test_adt_type_collision(self) -> None:
-        """Same ADT name in two modules produces E609."""
-        mod_a = self._resolved(("mod_a",), """\
-public data Color { Red, Green, Blue }
-""")
-        mod_b = self._resolved(("mod_b",), """\
-public data Color { Cyan, Magenta, Yellow }
-""")
-        result = self._compile_mod("""\
-import mod_a(Color);
-import mod_b(Color);
-public fn main(-> @Int)
-  requires(true) ensures(true) effects(pure)
-{ 0 }
-""", [mod_a, mod_b])
-        errors = [d for d in result.diagnostics if d.severity == "error"]
-        assert any(
-            e.error_code == "E609" and "Color" in e.description
-            for e in errors
-        )
+""", [mod_a, mod_b], fn="main", args=[1]) == 5
 
     def test_prelude_types_not_flagged_as_collision(self) -> None:
         """Builtin ADTs (Option, Result, etc.) shared across two imported modules
-        must NOT produce E609. Regression test for #360.
+        compile: a regression test for #360, where they drew E609 (code
+        generation's ADT collision rail, retired by #1694).
 
         Both modules explicitly return builtin ADTs so that Option and Result
         appear in each module's _adt_layouts when the temp CodeGenerators are
@@ -1511,35 +1488,8 @@ public fn main(@Int -> @Int)
         errors = [d for d in result.diagnostics if d.severity == "error"]
         # Option, Result, Ordering, UrlParts, Tuple, MdInline, MdBlock are
         # builtins registered in every CodeGenerator — must not collide.
-        assert not any(
-            e.error_code == "E609" for e in errors
-        ), f"False E609 for builtin ADTs: {[e.description for e in errors if e.error_code == 'E609']}"
+        assert not errors, [(e.error_code, e.description) for e in errors]
         assert result.ok is True
-
-    def test_ctor_collision_across_adts(self) -> None:
-        """Same constructor name in different ADTs produces E610."""
-        mod_a = self._resolved(("colors",), """\
-public data Color { Red, Green, Blue }
-""")
-        mod_b = self._resolved(("shapes",), """\
-public data Shape { Red, Green, Triangle }
-""")
-        result = self._compile_mod("""\
-import colors(Color);
-import shapes(Shape);
-public fn main(-> @Int)
-  requires(true) ensures(true) effects(pure)
-{ 0 }
-""", [mod_a, mod_b])
-        errors = [d for d in result.diagnostics if d.severity == "error"]
-        assert any(
-            e.error_code == "E610" and "Red" in e.description
-            for e in errors
-        )
-        assert any(
-            e.error_code == "E610" and "Green" in e.description
-            for e in errors
-        )
 
     def test_local_shadows_import_no_collision(self) -> None:
         """Local definition shadowing an import is NOT a collision."""
@@ -1569,30 +1519,6 @@ public fn main(@Int -> @Int)
 """, [mod, mod])
         errors = [d for d in result.diagnostics if d.severity == "error"]
         assert not errors
-
-    def test_collision_message_includes_both_modules(self) -> None:
-        """Collision diagnostic mentions both conflicting module paths."""
-        mod_a = self._resolved(("alpha",), """\
-public fn compute(@Int -> @Int)
-  requires(true) ensures(true) effects(pure)
-{ @Int.0 }
-""")
-        mod_b = self._resolved(("beta",), """\
-public fn compute(@Int -> @Int)
-  requires(true) ensures(true) effects(pure)
-{ @Int.0 }
-""")
-        result = self._compile_mod("""\
-import alpha(compute);
-import beta(compute);
-public fn main(-> @Int)
-  requires(true) ensures(true) effects(pure)
-{ 0 }
-""", [mod_a, mod_b])
-        errors = [d for d in result.diagnostics if d.severity == "error"]
-        assert len(errors) >= 1
-        desc = errors[0].description
-        assert "alpha" in desc and "beta" in desc
 
 
 class TestCrossModuleFusedAwait841:
@@ -2426,7 +2352,7 @@ public fn show(@Int -> @Int)
     def test_module_user_show_in_tuple_field_runs(self) -> None:
         """``Tuple(m::show(@Int.0), 9)`` where ``m::show`` returns @Int (i64) —
         the canonical #908 repro.  Before the fix, the field was sized as the
-        ability-op ``i32_pair`` while the emitted ``call $show`` returned i64.
+        ability-op ``i32_pair`` while the emitted ``call $:show`` returned i64.
         Extracts the trailing literal ``9`` (De Bruijn ``@Int.0`` = LAST)."""
         mod = self._resolved(("m",), self.SHOW_INT_MODULE)
         val = self._run_mod("""\
@@ -2651,7 +2577,7 @@ public fn main(@Unit -> @Int)
 
         ``top(5)`` → ``a(5)`` → ``b(6)`` → ``c(16)`` → ``16 + 100`` = 116.  The
         registration walk must reach ``c`` (a great-grandchild), not just ``a``
-        and ``b``, or ``b``'s ``call $c`` dangles.
+        and ``b``, or ``b``'s ``call $:c`` dangles.
         """
         lib_src = """\
 public fn top(@Int -> @Int)
@@ -2979,7 +2905,7 @@ public fn main(@Unit -> @Int)
         """#1029 (R1): a NON-generic imported fn (`use_it`) that calls a private
         module generic (`inner`) must reach the module's own `mod$lib$inner`
         clone.  Pre-fix only the public-generic branch rerouted, so `use_it`'s
-        bare `inner(@Int.0)` compiled to a `call $inner` that dangled at run
+        bare `inner(@Int.0)` compiled to a `call $:inner` that dangled at run
         (`unknown func`).  `inner` is identity, so `use_it(4) = 4 + 1 = 5`."""
         mod = self._resolved(("lib",), """\
 private forall<T> fn inner(@T -> @T)
@@ -3109,8 +3035,8 @@ public fn main(@Unit -> @Int)
         result = self._compile_mod(self.MAIN, mods)
         errors = [d for d in result.diagnostics if d.severity == "error"]
         assert not errors, f"Unexpected errors: {[e.description for e in errors]}"
-        assert "(func $gc (result i64)" in result.wat
-        assert "(func $gd (result i32 i32)" in result.wat
+        assert "(func $:mod$ca$gc (result i64)" in result.wat
+        assert "(func $:mod$da$gd (result i32 i32)" in result.wat
 
     def test_local_alias_never_leaks_into_module_body(self) -> None:
         """A main-file ``type F = Bool`` must not re-type an imported
@@ -3274,7 +3200,8 @@ public fn main(@Unit -> @Int)
         result = gen.compile_program(prog)
         errors = [d for d in result.diagnostics if d.severity == "error"]
         assert not errors, [e.description for e in errors]
-        clone_keys = [k for k in gen._fn_ret_type_exprs if "$" in k and k.startswith("pick")]
+        clone_keys = [k for k in gen._fn_ret_type_exprs
+                      if k.startswith("mod$ga$pick$")]
         assert clone_keys, (
             f"expected a pick clone key, got: "
             f"{sorted(gen._fn_ret_type_exprs)}"
@@ -3731,16 +3658,23 @@ public fn main(@Unit -> @Int)
             "VeraA", "VeraB",
         ), "prelude alias params missing — test no longer probes the hole"
 
+        # The module's alias is named by its link name (#1694), so it takes
+        # no slot of the prelude's: each keeps its own target and its own
+        # parameters, inside the module's scope as everywhere else.
+        own = "mod$mc$VeraOptionMapFn"
         with gen._module_alias_scope(("mc",)):
             assert isinstance(
-                gen._type_aliases["VeraOptionMapFn"], ast.NamedType,
-            ) and gen._type_aliases["VeraOptionMapFn"].name == "Int", (
+                gen._type_aliases[own], ast.NamedType,
+            ) and gen._type_aliases[own].name == "Int", (
                 "module alias lost its own target inside its scope"
             )
-            assert "VeraOptionMapFn" not in gen._type_alias_params, (
+            assert own not in gen._type_alias_params, (
                 "module's non-parameterized alias is paired with the "
                 "prelude's stale param list"
             )
+            assert gen._type_alias_params.get("VeraOptionMapFn") == (
+                "VeraA", "VeraB",
+            ), "the module's alias took the prelude's parameter list"
 
     def test_parameterized_module_alias_takes_its_own_params(self) -> None:
         """A parameterized module alias pairs with ITS params (PR #1191 review).

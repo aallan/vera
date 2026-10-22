@@ -1002,49 +1002,6 @@ class TestAModulesOwnImportsAreInItsRegistry:
         )
         assert not _codes(result), _codes(result)
 
-    def test_the_module_does_not_re_export_what_it_imports(self) -> None:
-        """The mirror gate: filling `mid`'s registry must not widen `main`'s.
-
-        What a module can CALL and what it EXPORTS are different sets — §8.6.4
-        gives the importer only `mid`'s own public declarations — so the
-        injection feeds the first and never the second.  Asserted on the
-        registries rather than through a program, because the checker does not
-        enforce this leg either (see the sibling test's note): a behavioural
-        assertion would be pinning the checker's gap, not this fix's invariant.
-        """
-        main = """\
-import mid(guarded);
-
-public fn main(@Unit -> @Int)
-  requires(true)
-  ensures(true)
-  effects(pure)
-{
-  guarded(5)
-}
-"""
-        prog = parse_to_ast(main)
-        # `deep` is transitive HERE — `main` imports only `mid`.
-        modules = [
-            _resolved(("mid",), _MID_REQ),
-            _resolved(("deep",), _DEEP, direct=False),
-        ]
-        typecheck(prog, main, resolved_modules=modules)
-        verifier = ContractVerifier(source=main, resolved_modules=modules)
-        verifier.register_program(prog)
-        exported = verifier._module_functions[("mid",)]
-        assert set(exported) == {"guarded"}, sorted(exported)
-        assert "cap" not in verifier.env.functions, (
-            "`mid` re-exported a name it merely imports"
-        )
-        # ... while the registry `mid`'s OWN contracts resolve in does have it.
-        mid_scope = verifier._pinned_scope(exported["guarded"])
-        assert mid_scope is not None
-        assert mid_scope.fn_lookup is not None
-        assert mid_scope.fn_lookup("cap") is not None, (
-            "`mid`'s own registry lost the name its file imports"
-        )
-
 
 # =====================================================================
 # The rest of the message points at the declaring file too

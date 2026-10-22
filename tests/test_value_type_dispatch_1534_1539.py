@@ -55,7 +55,7 @@ from pathlib import Path
 import pytest
 
 from tests.test_check_implies_compile import pipeline, run_main
-from tests.test_name_resolution_spine_1316 import _declarable_type_names
+from tests.test_name_resolution_spine_1316 import _builtin_type_names
 from vera.codegen.core import _CONTAINER_NAMES
 
 _ROOT = Path(__file__).resolve().parent.parent
@@ -65,11 +65,6 @@ _CONTRACT = "  requires(true)\n  ensures(true)\n  effects(pure)\n"
 #: arity one type, so neither the WASM layer's string nor the checker's
 #: record says which a value is.  For a container name the declaration is
 #: refused (#1547); a prelude data type's name is #1496's.
-_CONFLATION = (
-    "#1496: the checker gives a prelude data type and a same-named "
-    "declaration one type")
-
-
 def _fn(name: str, sig: str, body: str) -> str:
     return f"public fn {name}({sig})\n{_CONTRACT}{{\n  {body}\n}}\n"
 
@@ -380,18 +375,16 @@ class TestABuiltInValueBesideADeclarationOfItsName:
 
 #: A shown built-in value of each built-in data type name.  A name with no
 #: entry says why in `_NO_SHOWN_VALUE`; the completeness cell holds the two
-#: to every declarable name the live registries hold that is not a container.
+#: to every built-in data type name the live registries hold that is not a
+#: container (each one reserved, #1469).
 _ADT_VALUES = {
     "Option": "show(Some(1))",
     "Ordering": "show(compare(1, 2))",
     "Result": 'show(url_parse("http://a.b/c"))',
     "UrlParts": 'show(url_parse("http://a.b/c"))',
 }
-#: A built-in data type whose instances take as many arguments as the
-#: declaration below, so the value renders by the declaration's layout,
-#: on main and the release branch alike.  A prelude data type's name is not
-#: reserved, so this stays a strict xfail on #1496.
-_SAME_ARITY_ADTS = frozenset({"UrlParts"})
+#: A built-in data type with no shown value to render, so its cell would
+#: say nothing; each says why.
 _NO_SHOWN_VALUE = {
     "Json": "show refuses a Json value in any program (E602)",
     "HtmlNode": "show refuses an HtmlNode value in any program (E602)",
@@ -403,37 +396,29 @@ _NO_SHOWN_VALUE = {
 
 
 class TestABuiltInAdtName:
-    """A declaration named like a built-in data type takes that name's
-    layout slot, so the built-in value has no layout left to render by:
-    it renders as in the control, or the program is refused loudly (E6xx).
-    It never renders as the declaration, and never builds a module that
-    fails to load."""
+    """A declaration named like a built-in data type took that name's
+    layout slot, so the built-in value had no layout left to render by,
+    and a same-arity declaration of `UrlParts` was given one type with the
+    prelude's (#1496).  Every such name is reserved (#1469): the
+    declaration is refused at check (E158), and the control renders the
+    built-in value."""
 
     def test_every_name_is_accounted_for(self) -> None:
-        names = set(_declarable_type_names()) - set(_CONTAINER_NAMES)
+        from vera.prelude import BUILTIN_TYPE_NAMES
+
+        names = (set(_builtin_type_names()) - set(BUILTIN_TYPE_NAMES)
+                 - set(_CONTAINER_NAMES))
         assert set(_ADT_VALUES) | set(_NO_SHOWN_VALUE) == names
         assert not set(_ADT_VALUES) & set(_NO_SHOWN_VALUE)
 
-    @pytest.mark.parametrize("name", [
-        pytest.param(name, marks=[pytest.mark.xfail(
-            strict=True, reason=_CONFLATION)] if name in _SAME_ARITY_ADTS
-            else [])
-        for name in sorted(_ADT_VALUES)
-    ])
+    @pytest.mark.parametrize("name", sorted(_ADT_VALUES))
     def test_right_or_refused(self, tmp_path: Path, name: str) -> None:
         body = _ADT_VALUES[name]
         control = _run(tmp_path / "control", {
             "main.vera": _entry("", "String", body)})
         assert control[0] == "ok", control
-        out = pipeline(tmp_path / "variant", {
+        _refused(tmp_path / "variant", {
             "main.vera": _entry("", "String", body, _SHADOW.format(N=name))})
-        if not out.accepted:
-            return
-        if not out.compiles_clean:
-            assert any((d.error_code or "").startswith("E6")
-                       for d in out.drops), out.describe()
-            return
-        assert run_main(out) == control
 
 
 # =====================================================================

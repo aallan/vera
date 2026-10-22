@@ -158,9 +158,7 @@ def build_multi_module(
 
     Each error is an ``(error_code, description)`` pair rather than a bare
     description, so a caller pinning a specific diagnostic matches on the
-    CODE.  ``_emit_collision_error`` renders E608, E609 and E610 from one
-    format string, so a description-substring match cannot tell a function
-    collision from an ADT one.
+    CODE, which the description never contains.
 
     Resolution and type-check errors RAISE instead of being returned: every
     caller's fixture is well-formed and check-green by construction, so
@@ -272,12 +270,10 @@ def build_multi_module_past_check(
     :func:`build_multi_module` raises on a check error because every one of
     its callers builds a check-green fixture, so an error there means the
     fixture is broken.  This one exists for the opposite case: a shape the
-    CHECKER now refuses, whose codegen rail must still be shown refusing it
-    too.  Once #1304 moved the two-supplier refusal to the checker, no
-    check-green program reaches E608's ambiguity condition any more, and a
-    rail nothing exercises is a rail that can rot into a relaxation nobody
-    measures — so the shape is driven through both doors and asserted at
-    both, rather than at whichever one happens to answer first.
+    CHECKER refuses, whose compile is still measured — what code generation
+    does with a program the check refused (it refuses a call bound to
+    nothing, spec §8.9.3) — so the shape is driven through both doors and
+    asserted at both, rather than at whichever one happens to answer first.
 
     Verification is skipped: the program is already rejected, so a verify
     verdict over it would describe a program the toolchain will not build.
@@ -293,6 +289,23 @@ def build_multi_module_past_check(
     )
     result, cg_errors = _compiled(compiled)
     return check_errors, result, cg_errors
+
+
+def refused_at_check(
+    tmp_path: Path, files: dict[str, str],
+) -> tuple[list[str], str]:
+    """The error codes `vera check` refuses ``main.vera`` with, and their
+    messages joined.
+
+    Two owners' same-named types are two types (#1694), so a value of one
+    meeting the other is refused at check, as an ordinary mismatch whose
+    message names both owners.
+    """
+    main_path = pipeline.write_tree(tmp_path, files)
+    checked = pipeline.check(main_path, root=tmp_path)
+    errors = checked.errors
+    return (sorted({d.error_code or "" for d in errors}),
+            "\n".join(d.description for d in errors))
 
 
 def _resolve_and_check(

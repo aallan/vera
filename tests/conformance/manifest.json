@@ -3742,48 +3742,44 @@
     "id": "ch08_prelude_adt_name_alias",
     "file": "ch08_prelude_adt_name_alias.vera",
     "chapter": 8,
-    "title": "A type alias may reuse a prelude data type's name",
-    "level": "run",
+    "title": "A type alias may not reuse a prelude data type's name",
+    "level": "check",
     "spec_ref": "Section 8.4.1",
-    "expected_stdout": "above 3: 4\nabove 9: -1\n",
-    "expected_exit": 0,
+    "expected_error": "E158",
     "features": [
       "type_alias",
       "prelude_shadowing",
-      "cross_module",
-      "declaration_order"
+      "check_error"
     ]
   },
   {
     "id": "ch08_module_prelude_adt_name",
     "file": "ch08_module_prelude_adt_name.vera",
     "chapter": 8,
-    "title": "A module may declare a data type named after a prelude one",
-    "level": "run",
+    "title": "A module may not declare a data type named after a prelude one",
+    "level": "check",
     "spec_ref": "Section 8.4.1",
-    "expected_stdout": "7\n",
-    "expected_exit": 0,
+    "expected_error": "E158",
     "features": [
       "cross_module",
       "prelude_shadowing",
       "adt",
-      "visibility_private"
+      "check_error"
     ]
   },
   {
     "id": "ch08_module_prelude_adt_contention_rejected",
     "file": "ch08_module_prelude_adt_contention_rejected.vera",
     "chapter": 8,
-    "title": "A module data type contending with a prelude one is a codegen error (#1277)",
+    "title": "A module data type named after a prelude one is refused at check",
     "level": "check",
     "spec_ref": "Section 8.4.1",
-    "expected_error": "E621",
-    "expected_error_stage": "compile",
+    "expected_error": "E158",
     "features": [
       "cross_module",
       "prelude_shadowing",
       "adt",
-      "codegen_error"
+      "check_error"
     ]
   },
   {
@@ -3912,16 +3908,14 @@
     "id": "ch08_alias_shadows_prelude_adt_name",
     "file": "ch08_alias_shadows_prelude_adt_name.vera",
     "chapter": 8,
-    "title": "Type alias shadowing a prelude ADT name",
-    "level": "run",
+    "title": "A type alias may not take a prelude data type's name",
+    "level": "check",
     "spec_ref": "Section 8.4.1",
-    "expected_stdout": "42\n",
-    "expected_exit": 0,
+    "expected_error": "E158",
     "features": [
       "type_alias",
       "prelude_adt_shadow",
-      "alias_resolution",
-      "assert"
+      "check_error"
     ]
   },
   {

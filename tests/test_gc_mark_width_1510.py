@@ -617,8 +617,8 @@ class _Walked(NamedTuple):
 #: headers walked so far, and one where marking ends, given the words and
 #: the headers walked by then.
 _PROBES = (
-    '  (import "probe" "walk" (func $probe_walk (param i32 i32 i32 i32)))\n'
-    '  (import "probe" "marked" (func $probe_marked (param i32 i32)))\n'
+    '  (import "probe" "walk" (func $:probe_walk (param i32 i32 i32 i32)))\n'
+    '  (import "probe" "marked" (func $:probe_marked (param i32 i32)))\n'
 )
 
 
@@ -660,7 +660,7 @@ def _counted_run(
          _bump("walks") + "global.get $walking\ni32.eqz\nif\n"
          + _bump("walked") + "i32.const 1\nglobal.set $walking\nend\n"
          + "local.get $ptr\nlocal.get $rs_end\n" + counts
-         + "call $probe_walk\n"
+         + "call $:probe_walk\n"
          # No resume point: nothing the walks before scanned is pending.
          + "global.get $gc_rs_stop\ni32.eqz\nif\ni32.const 0\n"
          + "global.set $rs_high\nend\n"
@@ -689,7 +689,7 @@ def _counted_run(
          "    i32.const 0\n    global.set $walking\n"
          "    ;; Worklist region: gc_stack_limit .. gc_worklist_end.\n"),
         ("    ;; === Phase 3: Sweep — build free list ===\n",
-         counts + "call $probe_marked\n"
+         counts + "call $:probe_marked\n"
          "    ;; === Phase 3: Sweep — build free list ===\n"),
     ):
         assert wat.count(label) == 1, label
@@ -705,7 +705,7 @@ def _counted_run(
 
     def walk(first: int, top: int, words: int, headers: int) -> None:
         header = int.from_bytes(
-            exports["memory"].read(store, top, top + 4), "little")
+            exports["vera.memory"].read(store, top, top + 4), "little")
         end = top + (((header >> 1) + 11) & ~7)  # the walk's own advance
         starts.append((first, top, end, words, headers))
 

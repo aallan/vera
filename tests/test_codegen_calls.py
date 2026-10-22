@@ -54,12 +54,12 @@ public fn main(@Unit -> @Unit)
 """
         result = _compile_ok(source)
         # The helper must be called.
-        assert "call $pure_helper" in result.wat, (
-            f"Expected `call $pure_helper` in WAT; got:\n{result.wat}"
+        assert "call $:pure_helper" in result.wat, (
+            f"Expected `call $:pure_helper` in WAT; got:\n{result.wat}"
         )
         # No stray drop on the Unit-returning call — that's what
         # tripped the validator pre-#584.
-        main_func = result.wat.split('(func $main')[1].split('(func ')[0]
+        main_func = result.wat.split('(func $:main')[1].split('(func ')[0]
         assert "drop" not in main_func, (
             f"Expected no `drop` in `$main` (Unit-returning user fn "
             f"in statement position must not leave a stack value "
@@ -106,8 +106,8 @@ class TestTailCallOptimization517:
 
     The fix is a per-fn analyzer (`vera/tail_position.py`)
     that marks `id(FnCall)` AST nodes in syntactic tail position;
-    `_translate_call` emits ``return_call $foo`` instead of
-    ``call $foo`` when the call's id is in the marked set AND the
+    `_translate_call` emits ``return_call $:foo`` instead of
+    ``call $:foo`` when the call's id is in the marked set AND the
     callee's WASM return type matches the caller's (required for
     WASM `return_call` semantics — the signature must match).
 
@@ -200,8 +200,8 @@ public fn f(-> @Int)
         # without a WAT $-prefixed name, so it doesn't get the
         # return_call treatment.  count_down's recursive call
         # does — assert at least one return_call emission.
-        assert "return_call $count_down" in result.wat, (
-            f"Expected return_call $count_down in WAT.  WAT excerpt:\n"
+        assert "return_call $:count_down" in result.wat, (
+            f"Expected return_call $:count_down in WAT.  WAT excerpt:\n"
             f"{result.wat[:2000]}"
         )
 
@@ -232,14 +232,14 @@ public fn caller(-> @Int)
         # In `caller`, the call to `count_down(10)` is the value of
         # a let binding — NOT tail position.  The trailing
         # `@Nat.0 + 1` consumes the bound value.  Assert that the
-        # WAT contains a plain `call $count_down` from `caller`
-        # AND a `return_call $count_down` from the recursive call
+        # WAT contains a plain `call $:count_down` from `caller`
+        # AND a `return_call $:count_down` from the recursive call
         # inside count_down's else-branch.  Both must coexist.
-        assert "call $count_down" in result.wat
+        assert "call $:count_down" in result.wat
         # Look for the let-bound call: it should be plain `call`,
         # not `return_call`.  Find the function body of `caller`
         # and inspect.
-        f_body_start = result.wat.find("(func $caller")
+        f_body_start = result.wat.find("(func $:caller")
         assert f_body_start >= 0, "caller function not found in WAT"
         f_body_end = result.wat.find("(func ", f_body_start + 1)
         if f_body_end < 0:
@@ -248,9 +248,9 @@ public fn caller(-> @Int)
         # Inside caller's body, the count_down call must be plain
         # `call`, never `return_call`.  Pre-fix safety: a buggy
         # analyzer that marked non-tail calls would emit
-        # `return_call $count_down` here and the let-binding
+        # `return_call $:count_down` here and the let-binding
         # would lose its value.
-        assert "return_call $count_down" not in caller_body, (
+        assert "return_call $:count_down" not in caller_body, (
             f"caller's count_down call should NOT be return_call "
             f"(it's bound by `let`, NOT tail position).  Body:\n"
             f"{caller_body}"
@@ -261,15 +261,15 @@ public fn caller(-> @Int)
         # function body via `if`-transparency), so the optimization
         # must fire there even though it doesn't fire in `caller`.
         # Without this check, a buggy analyzer that marked NOTHING
-        # would silently pass `assert "return_call $count_down" not
+        # would silently pass `assert "return_call $:count_down" not
         # in caller_body` while regressing the actual TCO behaviour.
-        cd_body_start = result.wat.find("(func $count_down")
+        cd_body_start = result.wat.find("(func $:count_down")
         assert cd_body_start >= 0, "count_down function not found"
         cd_body_end = result.wat.find("(func ", cd_body_start + 1)
         if cd_body_end < 0:
             cd_body_end = len(result.wat)
         count_down_body = result.wat[cd_body_start:cd_body_end]
-        assert "return_call $count_down" in count_down_body, (
+        assert "return_call $:count_down" in count_down_body, (
             f"count_down's recursive call should be return_call "
             f"(tail position via if-else transparency).  Body:\n"
             f"{count_down_body}"
@@ -317,7 +317,7 @@ public fn f(-> @Int)
 }
 """
         result = _compile_ok(source)
-        cd_body_start = result.wat.find("(func $count_down")
+        cd_body_start = result.wat.find("(func $:count_down")
         assert cd_body_start >= 0
         cd_body_end = result.wat.find("(func ", cd_body_start + 1)
         if cd_body_end < 0:
@@ -328,8 +328,8 @@ public fn f(-> @Int)
         # run after every recursive call's return — `return_call`
         # would skip it.  Post-process must have reverted the
         # emission to plain `call`.
-        assert "call $count_down" in count_down_body
-        assert "return_call $count_down" not in count_down_body, (
+        assert "call $:count_down" in count_down_body
+        assert "return_call $:count_down" not in count_down_body, (
             f"count_down has a non-trivial postcondition (ensures "
             f"@Nat.result >= 0); return_call would skip the runtime "
             f"check.  Post-process should have reverted to plain "
@@ -362,7 +362,7 @@ public fn f(-> @Int)
         atomically to the callee.
 
         This test pins the new contract: an allocating function
-        with a tail call must emit `return_call $foo` PRECEDED by
+        with a tail call must emit `return_call $:foo` PRECEDED by
         the `$gc_sp` restore sequence.
         """
         # Function that allocates (constructor call) AND has a
@@ -387,7 +387,7 @@ public fn f(-> @Int)
         result = _compile_ok(source)
         # build allocates (the MkBox constructor) AND has a tail-
         # recursive call.  Post-process must have KEPT the
-        # `return_call $build` (TCO preserved) but prepended the
+        # `return_call $:build` (TCO preserved) but prepended the
         # $gc_sp restore (shadow-stack invariant preserved).
         #
         # Use boundary-safe regex (\b after `$build`) so a future
@@ -395,9 +395,9 @@ public fn f(-> @Int)
         # checks.  WAT symbol chars are `[A-Za-z0-9_]` plus `$`;
         # `\b` correctly excludes `$build_x` while still matching
         # `$build ` or `$build(`.
-        build_match = re.search(r"\(func \$build\b", result.wat)
+        build_match = re.search(r"\(func \$:build\b", result.wat)
         assert build_match is not None, (
-            "Could not locate `(func $build` in WAT"
+            "Could not locate `(func $:build` in WAT"
         )
         build_start = build_match.start()
         next_fn = re.search(r"\(func \$", result.wat[build_start + 1:])
@@ -407,7 +407,7 @@ public fn f(-> @Int)
             else len(result.wat)
         )
         build_body = result.wat[build_start:build_end]
-        assert re.search(r"return_call \$build\b", build_body), (
+        assert re.search(r"return_call \$:build\b", build_body), (
             f"Allocating function `build` did not emit return_call. "
             f"#549's GC-aware TCO should preserve return_call for "
             f"allocating fns. Body:\n{build_body}"
@@ -439,15 +439,15 @@ public fn f(-> @Int)
         )
         gc_sp_save_local = prologue_set[len("local.set "):]
         expected_preamble_get = f"local.get {gc_sp_save_local}"
-        # Find every `return_call $build` site and verify the two
+        # Find every `return_call $:build` site and verify the two
         # instructions immediately before it are the exact preamble:
         #     local.get <gc_sp_save_local>
         #     global.set $gc_sp
         return_call_indices = [
             i for i, line in enumerate(lines)
-            if re.search(r"return_call \$build\b", line)
+            if re.search(r"return_call \$:build\b", line)
         ]
-        assert return_call_indices, "no return_call $build site found"
+        assert return_call_indices, "no return_call $:build site found"
         for idx in return_call_indices:
             assert idx >= 2, (
                 f"return_call at line {idx} has no room for the "
@@ -484,7 +484,7 @@ public fn f(-> @Int)
         ending in a tail-recursive `build` call.  The analyzer
         marks both arms as tail position (see
         `test_analyzer_marks_match_arm_bodies`), so the codegen
-        emits two `return_call $build` sites with DIFFERENT
+        emits two `return_call $:build` sites with DIFFERENT
         leading-whitespace prefixes (one for each match arm).
         Both must have the `local.get N; global.set $gc_sp`
         preamble; the local index N must be the same one captured
@@ -512,9 +512,9 @@ public fn f(-> @Int)
 }
 """
         result = _compile_ok(source)
-        build_match = re.search(r"\(func \$build\b", result.wat)
+        build_match = re.search(r"\(func \$:build\b", result.wat)
         assert build_match is not None, (
-            "Could not locate `(func $build` in WAT"
+            "Could not locate `(func $:build` in WAT"
         )
         build_start = build_match.start()
         next_fn = re.search(r"\(func \$", result.wat[build_start + 1:])
@@ -545,7 +545,7 @@ public fn f(-> @Int)
         # the restore.
         return_call_indices = [
             i for i, line in enumerate(lines)
-            if re.search(r"return_call \$build\b", line)
+            if re.search(r"return_call \$:build\b", line)
         ]
         assert len(return_call_indices) >= 2, (
             f"Expected at least 2 return_call sites (one per "
@@ -613,9 +613,9 @@ public fn f(-> @Int)
         # Boundary-safe extraction (\b after `$build`) — see the
         # rationale in test_allocating_function_uses_gc_aware_tco_549
         # above.
-        build_match = re.search(r"\(func \$build\b", result.wat)
+        build_match = re.search(r"\(func \$:build\b", result.wat)
         assert build_match is not None, (
-            "Could not locate `(func $build` in WAT"
+            "Could not locate `(func $:build` in WAT"
         )
         build_start = build_match.start()
         next_fn = re.search(r"\(func \$", result.wat[build_start + 1:])
@@ -627,21 +627,21 @@ public fn f(-> @Int)
         build_body = result.wat[build_start:build_end]
         # post_instrs are present, so return_call must revert to
         # plain call (so the postcondition check actually runs).
-        # `\bcall \$build\b` rules out both `return_call` (leading
+        # `\bcall \$:build\b` rules out both `return_call` (leading
         # `\b` requires non-word char before `c`) AND `$build_x`
         # (trailing `\b` requires non-word char after `d`).
-        assert re.search(r"\bcall \$build\b", build_body), (
-            f"Expected plain `call $build` in post-revert body. "
+        assert re.search(r"\bcall \$:build\b", build_body), (
+            f"Expected plain `call $:build` in post-revert body. "
             f"Body:\n{build_body}"
         )
-        assert not re.search(r"return_call \$build\b", build_body), (
+        assert not re.search(r"return_call \$:build\b", build_body), (
             f"build has a runtime postcondition; return_call would "
             f"skip it. Post-process should have reverted to plain "
             f"call. Body:\n{build_body}"
         )
         # Tighten: the GC-restore preamble (`local.get <N>;
         # global.set $gc_sp`) must NOT precede the reverted
-        # `call $build`.  The preamble belongs to #549's GC-aware
+        # `call $:build`.  The preamble belongs to #549's GC-aware
         # TCO path; once we've taken the postcondition-revert path
         # the preamble has no purpose (we're keeping the frame, not
         # discarding it via return_call), and injecting it anyway
@@ -654,15 +654,15 @@ public fn f(-> @Int)
         # appears in the GC EPILOGUE at the end of every allocating
         # function (it restores $gc_sp before returning).  We can't
         # forbid the sequence outright; we can only forbid it
-        # immediately preceding a `call $build` site.
+        # immediately preceding a `call $:build` site.
         lines = build_body.splitlines()
-        # Boundary-safe regex distinguishes plain `call $build`
-        # from `return_call $build` AND excludes `$build_anything`.
+        # Boundary-safe regex distinguishes plain `call $:build`
+        # from `return_call $:build` AND excludes `$build_anything`.
         call_indices = [
             i for i, line in enumerate(lines)
-            if re.search(r"\bcall \$build\b", line)
+            if re.search(r"\bcall \$:build\b", line)
         ]
-        assert call_indices, "no plain call $build site found"
+        assert call_indices, "no plain call $:build site found"
         for idx in call_indices:
             if idx < 2:
                 continue
@@ -673,7 +673,7 @@ public fn f(-> @Int)
                 and prev2.startswith("local.get ")
             ), (
                 f"Postcondition-revert path mistakenly injected the "
-                f"#549 GC-restore preamble before `call $build` at "
+                f"#549 GC-restore preamble before `call $:build` at "
                 f"line {idx}.  Preamble lines: {prev2!r}, {prev1!r}. "
                 f"Dispatch precedence violated: post_instrs revert "
                 f"and GC-aware patch should be mutually exclusive. "
@@ -871,7 +871,7 @@ public fn f(-> @Int)
         # the function body).  The argument call is NOT — its result
         # is consumed by `inner`'s parameter binding.  A buggy
         # analyzer that marked argument calls would emit
-        # `return_call $arg_producer` and the discarded frame would
+        # `return_call $:arg_producer` and the discarded frame would
         # mean `inner` never receives its argument.
         assert id(outer_call) in sites, (
             f"Outer call `inner(...)` should be marked tail position; "

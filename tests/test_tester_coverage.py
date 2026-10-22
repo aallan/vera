@@ -690,13 +690,12 @@ class TestTesterUnitFunctions:
         assert result == "Array<Int>"
 
     def test_type_expr_to_slot_name_refinement_type_arg(self) -> None:
-        """A refinement type ARGUMENT resolves to its base name.
+        """A refinement type ARGUMENT keeps its predicate.
 
         #1208: the tester names through `vera.naming.slot_name`, which
-        resolves a `RefinementType` ARGUMENT to the checker's own
-        predicate-elided form — here `{@Int | ...}`, since the predicate is
-        a literal `true` with no alias to see through.  (The pre-dedup
-        tester copy bailed to `"?"` on any non-`NamedType` arg.)"""
+        renders a `RefinementType` ARGUMENT with its predicate (#1674) —
+        here `{@Int | true}`.  (The pre-dedup tester copy bailed to `"?"` on
+        any non-`NamedType` arg.)"""
         from vera.naming import EMPTY_ALIAS_ENV
         from vera.tester import _type_expr_to_slot_name
         from vera import ast as vera_ast
@@ -709,7 +708,7 @@ class TestTesterUnitFunctions:
         )
         te = vera_ast.NamedType(name="Array", type_args=[ref_type])
         result = _type_expr_to_slot_name(te, EMPTY_ALIAS_ENV)
-        assert result == "Array<{@Int | ...}>"
+        assert result == "Array<{@Int | true}>"
 
     def test_type_expr_to_slot_name_refinement(self) -> None:
         """Cover lines 725-727: RefinementType delegates to base_type."""

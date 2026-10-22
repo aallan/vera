@@ -14,13 +14,13 @@ import typing
 from typing import Any, cast
 
 from vera import ast, narrowing
+from vera.binding import bare_name
 from vera.lowering import (
     ability_lowerable,
     closure_operation_lowerable,
     effect_operation_lowerable,
     handler_lowerable,
 )
-from vera.slots import bare_call_denotes_user_fn
 from vera.checker.sql import (
     count_placeholders,
     resolve_array_len,
@@ -500,28 +500,24 @@ class CallsMixin:
         if name == "apply_fn":
             return self._check_apply_fn(args, node)
 
-        # Look up function — lexically (#991): the nearest same-named
-        # where-helper in the enclosing scope stack wins over the flat
-        # last-wins registry, so a diamond of same-named helpers with
-        # DIFFERENT signatures checks each parent against its OWN helper
-        # (the flat lookup falsely E121'd a valid program).
+        # The function the resolver pass bound the call to (#1694): the
+        # nearest same-named where-helper in the enclosing functions first
+        # (#991), so a diamond of same-named helpers with DIFFERENT
+        # signatures checks each parent against its OWN helper.
         #
-        # #1284: user-fn-FIRST is not an implementation detail of this
-        # function, it is the language's bare-call ownership rule (spec
-        # §7.4: a bare op resolves only for a name no declaration occupies),
-        # and codegen has to lower every such call site the way this
-        # resolution read it.  Asking through the shared predicate is what
-        # makes the checker's answer and codegen's the same rule over two
-        # tables rather than two rules that happened to agree: the two
-        # codegen legs used to disagree, and a `fn get` called under a
-        # `handle[State<T>]` lowered to the host cell intrinsic — a silently
-        # wrong value, a module WASM validation rejected, or a spurious
-        # [E602] naming a State operation the user never wrote.
-        if bare_call_denotes_user_fn(name, self._user_fn_names):
-            fn_info = self._lookup_function_scoped(name)
-            if fn_info is not None:
-                return self._check_fn_call_with_info(fn_info, args, node,
-                                                     expected=expected)
+        # #1284: a declaration owns every bare call to its name in its scope
+        # before any operation does (spec §7.4: a bare op resolves only for a
+        # name no declaration occupies), and codegen has to lower every such
+        # call site the way this resolution read it.  Code generation asks
+        # `bare_call_denotes_user_fn` over its own scoped table, which the
+        # link step names by the same binding: a `fn get` called under a
+        # `handle[State<T>]` once lowered to the host cell intrinsic — a
+        # silently wrong value, a module WASM validation rejected, or a
+        # spurious [E602] naming a State operation the user never wrote.
+        fn_info = self._bound_function(node)
+        if fn_info is not None:
+            return self._check_fn_call_with_info(fn_info, args, node,
+                                                 expected=expected)
 
         # Maybe it's an effect operation (`_check_op_call` counts its effect
         # for the purity check)
@@ -927,10 +923,11 @@ class CallsMixin:
                     f"{pretty_type(param_ty)}.",
                     rationale="Each argument's type must be a subtype of the "
                               "corresponding declared parameter type.",
-                    fix=f"Pass a value of type {pretty_type(param_ty)} for "
-                        f"argument {i}, or convert the current value (e.g. "
-                        f"int_to_nat(...), int_to_float(...)) to "
-                        f"{pretty_type(param_ty)}.",
+                    fix=(self._cross_owner_fix(fn_info.name, arg_ty, param_ty)
+                         or f"Pass a value of type {pretty_type(param_ty)} "
+                            f"for argument {i}, or convert the current value "
+                            f"(e.g. int_to_nat(...), int_to_float(...)) to "
+                            f"{pretty_type(param_ty)}."),
                     spec_ref='Chapter 5, Section 5.2 "Function Declaration Syntax"',
                     error_code="E202",
                 )
@@ -1259,11 +1256,7 @@ class CallsMixin:
             # thought it had found.  Same predicate as the resolution at the
             # top of this file, so the analysis reasons about the row the
             # checker actually bound.
-            fn_info = (
-                self._lookup_function_scoped(node.name)
-                if bare_call_denotes_user_fn(node.name, self._user_fn_names)
-                else None
-            )
+            fn_info = self._bound_function(node)
             op_info = (
                 self.env.lookup_effect_op(node.name)
                 if fn_info is None else None
@@ -1902,6 +1895,40 @@ class CallsMixin:
     # Constructors
     # -----------------------------------------------------------------
 
+    def _cross_owner_fix(
+        self, fn_name: str, arg_ty: Type, param_ty: Type,
+    ) -> str | None:
+        """The fix for an argument of one owner's type where another owner's
+        type of the same name is expected (#1694), or ``None``.
+
+        Two declarations that share a name are two types, so no conversion
+        exists between them: the argument has to be built as a value of the
+        type the parameter names.  The fix says whose type that is, how this
+        file names it, and which constructors build one.
+        """
+        arg, param = base_type(arg_ty), base_type(param_ty)
+        if not (isinstance(arg, AdtType) and isinstance(param, AdtType)):
+            return None
+        name = bare_name(param.name)
+        if arg.name == param.name or bare_name(arg.name) != name:
+            return None
+        info = self.env.lookup_type(param.name)
+        ctors = ", ".join(
+            f"{ctor}(...)" if ci.field_types else ctor
+            for ctor, ci in (info.constructors.items() if info else ()))
+        build = (f" and pass one of its constructors: {ctors}" if ctors
+                 else "")
+        if not param.name.startswith("mod$"):
+            return (f"'{fn_name}' takes this file's own '{name}', a "
+                    f"different type from the imported one of that name. "
+                    f"Build the argument with this file's '{name}'{build}.")
+        path = tuple(param.name.split("$")[1:-1])
+        owner = ".".join(path)
+        return (f"'{fn_name}' takes the '{name}' of module '{owner}', a "
+                f"different type from the '{name}' this value has. Build the "
+                f"argument as a value of that type: name it in this file's "
+                f"import, {self._import_line(path, name)},{build}.")
+
     def _import_line(self, mod_path: tuple[str, ...], name: str) -> str:
         """The import line that brings *name* in from *mod_path* (#1513).
 
@@ -1911,6 +1938,9 @@ class CallsMixin:
         beside the first.
         """
         label = ".".join(mod_path)
+        # An import names a type by the name its module declares it under,
+        # whatever identity the type carries here (#1694).
+        name = bare_name(name)
         existing = self._import_names.get(mod_path)
         names = sorted(existing | {name}) if existing else [name]
         return f"'import {label}({', '.join(names)});'"
@@ -1931,12 +1961,14 @@ class CallsMixin:
         same question of the same modules).
 
         Returns every module whose public types declare *name*, sorted by
-        path, and the one constructor the name denotes, or
-        ``None`` when it denotes no single declaration.  It denotes one only
-        when exactly one module declares it and its type is one
-        `_stranger_data_type` resolves: a value of it is typed by the bare
-        type name, so a second meaning of that name would let one value pass
-        for another type's.
+        path, which a message names, and the constructor the resolver pass
+        binds the name to here by that rule (:attr:`vera.binding.Binding.
+        stranger_ctors`, #1694), or ``None`` when it binds none.  It binds one
+        only when exactly one module declares it and its type's name denotes
+        one declaration: no data type of that name is declared or imported
+        here, and exactly one module the file can see declares one, so a
+        second meaning of that name cannot let one value pass for another
+        type's.
 
         A construction and a pattern resolve through here alike, so a
         pattern is typed by the same declaration: its fields bind at their
@@ -1951,12 +1983,14 @@ class CallsMixin:
              if name in self._module_constructors.get(mod.path, {})),
             key=lambda pair: pair[0],
         )
-        if len(candidates) != 1:
+        names = self._names
+        owner = self._namespace_owner()
+        if (names is None
+                or name not in names.stranger_ctors.get(owner, frozenset())):
             return candidates, None
-        ci = candidates[0][1]
-        if self._stranger_data_type(ci.parent_type) is None:
-            return candidates, None
-        return candidates, ci
+        ident = names.ctors[owner][name]
+        return candidates, self._module_constructors.get(
+            ident.owner, {}).get(ident.name)
 
     def _stranger_data_type(self, type_name: str) -> AdtInfo | None:
         """The declaration a data type name this file does not import
@@ -1980,7 +2014,10 @@ class CallsMixin:
         # same value, was an error.  Such a value meets the prelude's type
         # by the bare name in this file whichever way it arrives (#1560), so
         # barring the construction guarded nothing.
-        bound = self.env.data_types.get(type_name)
+        # The NAME the type is declared under, which is what this file would
+        # write for it: *type_name* may be the type's identity (#1694).
+        type_name = bare_name(type_name)
+        bound = self.env.lookup_type(type_name)
         if (bound is not None
                 and bound is not self._builtin_data_types.get(type_name)):
             return None
@@ -2032,14 +2069,15 @@ class CallsMixin:
         """The description and fix of the stranger-constructor warning."""
         mod_path = candidates[0][0]
         mod_label = ".".join(mod_path)
-        line = self._import_line(mod_path, ci.parent_type)
+        type_name = bare_name(ci.parent_type)
+        line = self._import_line(mod_path, type_name)
         if self._import_names.get(mod_path):
-            fix = (f"Add '{ci.parent_type}' to this file's import of "
+            fix = (f"Add '{type_name}' to this file's import of "
                    f"'{mod_label}': {line}.")
         else:
             fix = f"Add the import: {line}."
         return (
-            f"Constructor '{name}' belongs to data type '{ci.parent_type}' "
+            f"Constructor '{name}' belongs to data type '{type_name}' "
             f"of module '{mod_label}', which this file does not import.",
             fix,
         )
@@ -2863,16 +2901,23 @@ class CallsMixin:
                            expected: Type | None = None) -> Type | None:
         """Type-check a module-qualified call: path.to.fn(args).
 
-        Lookup order:
+        The call is checked against the function the resolver pass bound it
+        to (#1694).  A call that binds none is reported by why:
         1. Module not resolved → the file's own path (#1558) or an error.
         2. Name not in selective import list → error.
         2.5. C7c: function is private → error.
-        3. Function found (public) → delegate to ``_check_fn_call_with_info``.
-        4. Function not found in module → error with available list.
+        3. Function not found in module → error with available list.
         """
         mod_path = tuple(expr.path)
         fn_name = expr.name
         mod_label = ".".join(expr.path)
+
+        # The function the resolver pass bound the call to (#1694); what
+        # follows says why a call that binds none names nothing.
+        fn_info = self._bound_function(expr)
+        if fn_info is not None:
+            return self._check_fn_call_with_info(fn_info, expr.args, expr,
+                                                 expected=expected)
 
         # 1. Module not resolved
         if mod_path not in self._resolved_module_paths:
@@ -2949,14 +2994,8 @@ class CallsMixin:
                 self._synth_expr(arg)
             return UnknownType()
 
-        # 3. Look up function in module's registered declarations
+        # 3. Function not found in module
         mod_fns = self._module_functions.get(mod_path, {})
-        fn_info = mod_fns.get(fn_name)
-        if fn_info is not None:
-            return self._check_fn_call_with_info(fn_info, expr.args, expr,
-                                                 expected=expected)
-
-        # 4. Function not found in module
         available = sorted(mod_fns.keys())
         self._error(
             expr,
@@ -2993,10 +3032,8 @@ class CallsMixin:
         lexical helper chain a bare call reads first.
         """
         fn_name = expr.name
-        fn_info = self._top_level_fn_infos.get(fn_name)
-        if fn_info is not None:
-            return self._check_fn_call_with_info(fn_info, expr.args, expr,
-                                                 expected=expected)
+        # The bound call was checked before this (`_check_module_call`); a
+        # call here binds none.
         if fn_name in self._own_fn_names:
             # A declaration registration refused (E151, E153): its own error
             # is the one the program owes, and this use restates it.

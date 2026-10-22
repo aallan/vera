@@ -13,13 +13,15 @@ value, and the MODULE side was :func:`vera.naming.slot_name`.  Once the
 checker delegates, that comparison is the module against itself and proves
 nothing.  So the legacy side is now ``_reference_slot_name`` below: the
 historical in-checker composition — syntactic head, arguments through
-``checker._resolve_type`` and joined by ``canonical_type_name``, the
-refined-top recursion, ``Fn``, ``?`` — rebuilt from checker machinery that
-is still live and still used broadly (``_resolve_type`` /
-``canonical_type_name`` did not move).  It is deliberately NOT imported from
-:mod:`vera.naming`: an independent statement of the rule is what pins the
-rule in place, so a future edit to the module has to disagree with a written
--down reference rather than silently re-baseline both sides at once.
+``checker._resolve_type`` and joined as ``canonical_type_name`` joins them,
+the refined-top recursion, ``Fn``, ``?`` — rebuilt from checker machinery
+that is still live and still used broadly (``_resolve_type`` did not move),
+with an argument rendered as ``pretty_type`` renders it except that a
+refinement keeps its predicate (#1674, :func:`_reference_argument`).  It is
+deliberately NOT imported from :mod:`vera.naming`: an independent statement
+of the rule is what pins the rule in place, so a future edit to the module
+has to disagree with a written-down reference rather than silently
+re-baseline both sides at once.
 
 This instruments the checker's two naming entry points, runs it over the
 whole ``.vera`` corpus (examples, conformance programs and their module
@@ -59,7 +61,15 @@ import pytest
 from vera import ast, naming
 from vera.checker.core import TypeChecker
 from vera.errors import VeraError
-from vera.types import canonical_type_name
+from vera.types import (
+    AdtType,
+    ConcreteEffectRow,
+    FunctionType,
+    PureEffectRow,
+    RefinedType,
+    Type,
+    pretty_type,
+)
 from tests import pipeline
 
 _ROOT = Path(__file__).resolve().parent.parent
@@ -77,12 +87,13 @@ _CORPUS_DIRS = (
 def _reference_slot_name(checker: TypeChecker, te: ast.TypeExpr) -> str:
     """The historical in-checker rendering, rebuilt from live machinery.
 
-    Byte-for-byte the composition ``TypeChecker._type_expr_to_slot_name``
-    carried before it delegated to :mod:`vera.naming`, expressed against the
-    parts that stayed in the checker: ``_resolve_type`` (argument-position
-    resolution) and ``canonical_type_name`` (the join).  ``_slot_type_name``'s
-    historical body was the ``NamedType`` case of this, so one reference
-    covers both entry points.
+    The composition ``TypeChecker._type_expr_to_slot_name`` carried before
+    it delegated to :mod:`vera.naming`, expressed against the parts that
+    stayed in the checker: ``_resolve_type`` (argument-position resolution)
+    and ``canonical_type_name``'s join, each argument written by
+    :func:`_reference_argument` (#1674).  ``_slot_type_name``'s historical
+    body was the ``NamedType`` case of this, so one reference covers both
+    entry points.
 
     Kept here, not in ``vera/``, precisely because it is the thing the module
     is being checked AGAINST — see the module docstring.
@@ -90,13 +101,47 @@ def _reference_slot_name(checker: TypeChecker, te: ast.TypeExpr) -> str:
     if isinstance(te, ast.NamedType):
         if te.type_args:
             resolved = tuple(checker._resolve_type(a) for a in te.type_args)
-            return canonical_type_name(te.name, resolved)
+            return "{}<{}>".format(
+                te.name, ", ".join(_reference_argument(a) for a in resolved))
         return te.name
     if isinstance(te, ast.RefinementType):
         return _reference_slot_name(checker, te.base_type)
     if isinstance(te, ast.FnType):
         return "Fn"
     return "?"
+
+
+def _reference_argument(ty: Type) -> str:
+    """A slot name's argument as the rule writes it: ``pretty_type``, with a
+    refinement's predicate in the canonical form ``vera fmt`` writes it in
+    place of the ellipsis, at any depth, an effect's arguments included
+    (#1674)."""
+    from vera.formatter import format_expr_canonical
+
+    if isinstance(ty, RefinedType):
+        return (f"{{@{_reference_argument(ty.base)} | "
+                f"{format_expr_canonical(ty.predicate)}}}")
+    if isinstance(ty, AdtType) and ty.type_args:
+        return "{}<{}>".format(
+            ty.name, ", ".join(_reference_argument(a) for a in ty.type_args))
+    if isinstance(ty, FunctionType):
+        params = ", ".join(_reference_argument(p) for p in ty.params)
+        if isinstance(ty.effect, PureEffectRow):
+            row = "effects(pure)"
+        elif isinstance(ty.effect, ConcreteEffectRow):
+            parts = sorted(
+                "{}<{}>".format(e.name, ", ".join(
+                    _reference_argument(a) for a in e.type_args))
+                if e.type_args else e.name
+                for e in ty.effect.effects)
+            if ty.effect.row_var:
+                parts.append(ty.effect.row_var)
+            row = "effects(<{}>)".format(", ".join(parts))
+        else:
+            row = "effects(?)"
+        return (f"fn({params} -> {_reference_argument(ty.return_type)}) "
+                f"{row}")
+    return pretty_type(ty)
 
 
 @dataclass
@@ -664,9 +709,10 @@ public fn b25(
 # The declaration-ORDER corner (#1208) needs its own preludes: the whole
 # point is where the `data` sits relative to the `type`, so these cannot ride
 # the shared prelude.  An ADT named after a built-in special case (`Decimal`)
-# or a removed alias (`Float`) is the only shape whose rendering the ordering
-# can change, and each is swept in BOTH orders — a visibility bound applied
-# in the wrong direction agrees with the checker on one ordering only.
+# or a removed alias (`Float`) is the only shape whose rendering a
+# declaration-order bound would change, and each is swept in BOTH orders,
+# which render alike (#1552) — a bound left in one direction agrees with the
+# checker on one ordering only.
 _ORDERING_FN = """\
 public fn ord(@Option<{alias}>, @{adt}<Int> -> @Int)
   requires(true)
@@ -830,17 +876,23 @@ def test_inline_battery_reaches_the_alias_corners(sweep: Sweep) -> None:
     # The corners themselves, by rendered shape.
     rendered = {o.legacy for o in battery}
     assert "Option<Int>" in rendered          # alias resolved in argument
-    assert "Option<{@Int | ...}>" in rendered  # refinement, elided
+    assert "Option<{@Int | @Int.0 > 0}>" in rendered  # refinement, kept
     assert "Fn" in rendered                    # function type at top level
     assert "Option<?>" in rendered             # arity mismatch / removed
     assert any(r.startswith("Option<fn(") for r in rendered)
     # #1208 review: the two ORDERING corners named, not merely counted.  A
     # battery entry that self-destructs (or is silently dropped) contributes
     # no observations at all, which a count-based floor reads as agreement —
-    # so each corner asserts the exact string it must render.  `Cyc1`'s body
-    # sees only the declarations before it, so the cycle terminates on the
-    # opaque `Cyc2`; `Fwd`'s forward reference stays opaque as `Later`.
-    assert {"Option<Cyc2>", "Option<Later>"} <= rendered, sorted(rendered)
+    # so each corner asserts the exact strings it must render.  Inside the
+    # cycle `Cyc1`'s body sees only the cycle's declarations before it, so
+    # the cycle terminates on the opaque `Cyc2`; `Fwd`'s forward reference
+    # resolves (#1552), so both of its program's parameters render
+    # `Option<Int>`.
+    assert "Option<Cyc2>" in rendered, sorted(rendered)
+    forward = {o.legacy for o in battery
+               if o.origin == "<battery:forward_reference>"
+               and o.shape in ("@Option<@Fwd>", "@Option<@Later>")}
+    assert forward == {"Option<Int>"}, forward
     # The effect-row corners: a qualified reference keeps its `Module.Effect`
     # spelling, a row VARIABLE renders as its name, and a row carrying both
     # renders sorted.
@@ -859,15 +911,22 @@ def test_inline_battery_reaches_the_alias_corners(sweep: Sweep) -> None:
     assert "Option<ArrayMapFn<Int, Bool>>" in rendered
     assert "Option<OptionMapFn<Int, Bool>>" in rendered
     assert "Option<fn(Int -> Bool) effects(pure)>" in rendered
-    # #1208: the declaration-ORDER corner, in both directions.  An ADT
-    # declared below the alias that names it is invisible to that body (the
-    # built-in `Decimal` branch, arguments dropped; `?` for the removed
-    # `Float`); declared above it, the ADT branch wins and keeps them.  A
-    # bound applied in one direction only still renders three of these four.
-    ordering = {o.legacy for o in sweep.observations
-                if o.origin.startswith("<battery:decl_order_")}
-    assert {"Option<Decimal>", "Option<Decimal<Int>>",
-            "Option<?>", "Option<Float<Int>>"} <= ordering, ordering
+    # The declaration-ORDER corner, in both directions (#1208, #1552).  An
+    # ADT declared below the alias that names it is the ADT that body names,
+    # arguments kept, as it is declared above it: each `alias_first` program
+    # renders exactly what its `adt_first` twin renders.  A bound left in one
+    # direction renders `Option<Decimal>` or `Option<?>` in one of the four.
+    by_program: dict[str, set[str]] = {}
+    for o in sweep.observations:
+        if o.origin.startswith("<battery:decl_order_"):
+            by_program.setdefault(o.origin, set()).add(o.legacy)
+    for adt in ("decimal", "float"):
+        first = by_program[f"<battery:decl_order_{adt}_alias_first>"]
+        second = by_program[f"<battery:decl_order_{adt}_adt_first>"]
+        assert first == second, (adt, first, second)
+    ordering = set().union(*by_program.values())
+    assert {"Option<Decimal<Int>>", "Option<Float<Int>>"} <= ordering, ordering
+    assert not {"Option<Decimal>", "Option<?>"} & ordering, ordering
 
 
 def test_differential_gate_detects_divergence() -> None:
@@ -877,9 +936,9 @@ def test_differential_gate_detects_divergence() -> None:
     harness records nothing it compares".  This is also what keeps the gate
     non-vacuous after the delegation: the perturbation moves the checker's
     answer (it now routes through :func:`vera.naming.slot_name`) while
-    ``_reference_slot_name`` — which reaches ``_resolve_type`` and
-    ``canonical_type_name`` directly — stands still, so the two sides really
-    are two sides.
+    ``_reference_slot_name`` — which reaches ``_resolve_type`` directly and
+    writes its own join — stands still, so the two sides really are two
+    sides.
     """
     source = _BATTERY_PRELUDE + _BATTERY[1][1]
     clean = Sweep()

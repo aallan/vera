@@ -71,7 +71,7 @@ public fn f(-> @Int)
 """
         result = _compile_ok(source)
         assert "global $heap_ptr" in result.wat
-        assert 'export "heap_ptr"' in result.wat
+        assert 'export "vera.heap_ptr"' in result.wat
 
     def test_alloc_function_emitted(self) -> None:
         """When ADTs are declared, $alloc function appears in WAT."""
@@ -116,7 +116,7 @@ public fn main(@Unit -> @Unit)
         # constant in $alloc that happens to land on the same value)
         # can't satisfy the assertion on its own.
         assert (
-            '(global $heap_ptr (export "heap_ptr") (mut i32) (i32.const 81925))'
+            '(global $heap_ptr (export "vera.heap_ptr") (mut i32) (i32.const 81925))'
             in result.wat
         )
 
@@ -133,7 +133,7 @@ public fn f(-> @Int)
         # Combined declaration + initializer match (see
         # test_heap_ptr_starts_after_strings for the rationale).
         assert (
-            '(global $heap_ptr (export "heap_ptr") (mut i32) (i32.const 81920))'
+            '(global $heap_ptr (export "vera.heap_ptr") (mut i32) (i32.const 81920))'
             in result.wat
         )
 
@@ -602,7 +602,7 @@ public fn main(@Unit -> @Int)
         # future symbol like `$overflow_helper` couldn't false-
         # match the function-start search.
         compiled = _compile_ok(src)
-        overflow_match = re.search(r"\(func \$overflow\b", compiled.wat)
+        overflow_match = re.search(r"\(func \$:overflow\b", compiled.wat)
         assert overflow_match is not None, (
             "`$overflow` function not found in emitted WAT"
         )
@@ -849,7 +849,7 @@ public fn main(-> @Int)
         # #692: $gc_stack_limit is now exported so host walkers
         # can check shadow-stack overflow before pushing.
         assert (
-            '(global $gc_stack_limit (export "gc_stack_limit") '
+            '(global $gc_stack_limit (export "vera.gc_stack_limit") '
             'i32 (i32.const 16384))'
         ) in result.wat
         assert "(global $gc_heap_start i32 (i32.const 81920))" in result.wat

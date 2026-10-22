@@ -84,7 +84,6 @@ private fn f(@String -> @Nat)
 
     def test_parse_float64_ok(self) -> None:
         _check_ok("""
-private data Result<T, E> { Ok(T), Err(E) }
 private fn f(@String -> @Result<Float64, String>)
   requires(true) ensures(true) effects(pure)
 { parse_float64(@String.0) }
@@ -99,7 +98,6 @@ private fn f(@String -> @Float64)
 
     def test_parse_int_ok(self) -> None:
         _check_ok("""
-private data Result<T, E> { Ok(T), Err(E) }
 private fn f(@String -> @Result<Int, String>)
   requires(true) ensures(true) effects(pure)
 { parse_int(@String.0) }
@@ -114,7 +112,6 @@ private fn f(@String -> @Int)
 
     def test_parse_bool_ok(self) -> None:
         _check_ok("""
-private data Result<T, E> { Ok(T), Err(E) }
 private fn f(@String -> @Result<Bool, String>)
   requires(true) ensures(true) effects(pure)
 { parse_bool(@String.0) }
@@ -143,7 +140,6 @@ private fn f(@Int -> @String)
 
     def test_base64_decode_ok(self) -> None:
         _check_ok("""
-private data Result<T, E> { Ok(T), Err(E) }
 private fn f(@String -> @Result<String, String>)
   requires(true) ensures(true) effects(pure)
 { base64_decode(@String.0) }
@@ -172,7 +168,6 @@ private fn f(@Int -> @String)
 
     def test_url_decode_ok(self) -> None:
         _check_ok("""
-private data Result<T, E> { Ok(T), Err(E) }
 private fn f(@String -> @Result<String, String>)
   requires(true) ensures(true) effects(pure)
 { url_decode(@String.0) }
@@ -187,8 +182,6 @@ private fn f(@Int -> @String)
 
     def test_url_parse_ok(self) -> None:
         _check_ok("""
-private data UrlParts { UrlParts(String, String, String, String, String) }
-private data Result<T, E> { Ok(T), Err(E) }
 private fn f(@String -> @Result<UrlParts, String>)
   requires(true) ensures(true) effects(pure)
 { url_parse(@String.0) }
@@ -203,7 +196,6 @@ private fn f(@Int -> @String)
 
     def test_url_join_ok(self) -> None:
         _check_ok("""
-private data UrlParts { UrlParts(String, String, String, String, String) }
 private fn f(@UrlParts -> @String)
   requires(true) ensures(true) effects(pure)
 { url_join(@UrlParts.0) }
@@ -728,7 +720,6 @@ private fn f(@Int, @String -> @Bool)
 
     def test_string_index_of_ok(self) -> None:
         _check_ok("""
-private data Option<T> { Some(T), None }
 private fn f(@String, @String -> @Option<Nat>)
   requires(true) ensures(true) effects(pure)
 { string_index_of(@String.0, @String.1) }

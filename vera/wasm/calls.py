@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from vera import ast
+from vera.binding import symbol
 from vera.builtins import INTRINSICS, Binding, Intrinsic
 from vera.monomorphize import (
     Monomorphizer,
@@ -274,17 +275,6 @@ class CallsMixin:
             if resolved is not None:
                 call_target = resolved
 
-        # #814 C2: inside an emitted ``mod$…`` body, redirect a bare call to a
-        # locally-shadowed same-module sibling to the module's ``mod$``
-        # version (the rename map is empty for every non-mod$ body, so normal
-        # compilation is unaffected).  Shadowed siblings are non-generic, so
-        # this never collides with the generic rewrite above.  A module's own
-        # top-level sibling reaches here already renamed (`_register_modules`
-        # renames the module's calls before anything names them), so the
-        # generic rewrite cannot take its bare name first.
-        if call_target in self._intra_module_renames:
-            call_target = self._intra_module_renames[call_target]
-
         # Guard rail: reject calls to functions not defined in this module.
         # In practice the cross-module check upstream has already emitted
         # a diagnostic for genuine unknown-fn cases.  This path also fires
@@ -370,9 +360,9 @@ class CallsMixin:
             sig = self._fn_ret_types.get(call_target)
             callee_ret_wt = sig if isinstance(sig, str) else None
         if is_tail and callee_ret_wt == self._self_ret_wt:
-            instructions.append(f"return_call ${call_target}")
+            instructions.append(f"return_call ${symbol(call_target)}")
         else:
-            instructions.append(f"call ${call_target}")
+            instructions.append(f"call ${symbol(call_target)}")
         return instructions
 
     def _lower_intrinsic(

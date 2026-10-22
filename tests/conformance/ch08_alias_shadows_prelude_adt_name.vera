@@ -1,13 +1,10 @@
--- Conformance: a type alias shadowing a prelude ADT name (Chapter 8)
--- Tests: alias-over-ADT resolution reaching the emitted WASM width
--- Spec 8.4.1: the prelude's data types are ordinary public declarations a
--- program names, and shadows, like any other.  The alias target's width is
--- what the slot emits, not the shadowed ADT's pointer width (#1309).
--- `Option` aliases a scalar (i64 where the ADT pointer is i32) and `Result`
--- aliases a pair (two words where the ADT pointer is one), so a resolution
--- that took the ADT branch traps on the first and silently drops the length
--- word on the second.  Both asserts are Tier-3 runtime checks, so either
--- wrong width trips one of them.
+-- Conformance: a type alias may not take a prelude data type's name
+-- (Chapter 8, Section 8.4.1).
+-- Tests: E158 -- the prelude's data types are reserved names (#1469), so
+-- `type Option = Int;` and `type Result = String;` are refused at check, at
+-- each alias.  An alias used to shadow the prelude's type, its target's width
+-- being what a slot emitted (#1309); a second meaning of `Option` in one
+-- program is now a check error instead.
 type Option = Int;
 
 type Result = String;

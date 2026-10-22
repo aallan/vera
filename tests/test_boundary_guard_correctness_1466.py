@@ -2117,7 +2117,7 @@ def test_the_record_and_registration_agree_about_a_state_cell(
         # What the row is FOR: a record read against an artifact that
         # exists.  Without this the whole positive arm passes for a module
         # the compiler dropped.
-        assert "$f" in wat, (
+        assert "$:f" in wat, (
             f"`State<{cell_type}>` is registered and the module carries no "
             f"`$f`, so the record is being compared against nothing"
         )

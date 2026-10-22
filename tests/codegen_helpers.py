@@ -59,7 +59,7 @@ def wat_calls(wat: str, symbol: str) -> bool:
     pins a dispatch target must not go red just because TCO fired.
     """
     return re.search(
-        rf"call \${re.escape(symbol)}{_WAT_NAME_TAIL}", wat,
+        rf"call \$:?{re.escape(symbol)}{_WAT_NAME_TAIL}", wat,
     ) is not None
 
 
@@ -78,7 +78,7 @@ def wat_fn_body(wat: str, name: str) -> str:
     is precisely the failure this helper exists to prevent.
     """
     match = re.search(
-        rf"(?m)^\s*\(func \${re.escape(name)}{_WAT_NAME_TAIL}", wat,
+        rf"(?m)^\s*\(func \$:?{re.escape(name)}{_WAT_NAME_TAIL}", wat,
     )
     if match is None:
         raise AssertionError(
@@ -105,7 +105,7 @@ def wat_fn_names(wat: str) -> list[str]:
     """
     return sorted(
         m.group(1)
-        for m in re.finditer(r"(?m)^\s*\(func \$([^\s()]+)", wat)
+        for m in re.finditer(r"(?m)^\s*\(func \$:?([^\s()]+)", wat)
     )
 
 

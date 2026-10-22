@@ -20,8 +20,9 @@ constrained-expressiveness (§0.2.6) priorities rule out.
 
 DEFINITION-GATED, matching the rail it generalises.  The clash is refused
 because the import pair exists, not because a body names it: an entry program
-importing two suppliers and never calling either is E608 today, so the
-check-phase refusal fires there too (:class:`TestTheRefusalIsDefinitionGated`).
+importing two suppliers and never calling either was E608 at the branch point,
+so the check-phase refusal fires there too
+(:class:`TestTheRefusalIsDefinitionGated`).
 Replacing a bare call with the qualified form therefore does NOT clear it —
 that shape is E608 at base and E155 here, asserted rather than assumed.  What
 does clear it is either supplier being kept out of the bare namespace:
@@ -422,8 +423,9 @@ class TestTheDataSideFlapShapes:
         """Two DIFFERENTLY-named ADTs sharing a constructor name.
 
         The shape that makes three codes the right split rather than one: the
-        type names do not clash at all, only `Sq` does, and codegen separates
-        the two cases as E609 and E610 for the same reason.  It flapped too —
+        type names do not clash at all, only `Sq` does, and codegen separated
+        the two cases as E609 and E610 for the same reason until #1694.  It
+        flapped too —
         `OK` on the same seeds the type-name shape accepted on.
         """
         files = {
@@ -444,13 +446,12 @@ class TestTheDataSideFlapShapes:
     ) -> None:
         """The fix text names three routes, and each is measured here.
 
-        Renaming was the only one that worked until #1317: E609 refused two
-        modules' same-named data declarations by DECLARATION, with none of
-        the visibility, filter or shadowing relaxation E608 received in
-        #1281.  Per-owner ADT identity added the other two, under one
-        condition the text states — no namespace may reach both
-        declarations — so the cell asserts the text offers all three and
-        the sibling cells above run each of them.
+        Narrowing an import and declaring the name locally clear the clash,
+        and the sibling cells run each of them; since #1694 each module's
+        declaration is a type of its own, so the third route, for a value
+        that must cross between the two modules, is declaring the type once
+        and importing it.  Renaming both names in one module, run here, is
+        a program with no clash at all.
         """
         files = dict(_ADT_FILES["ab"])
         # BOTH names, because both namespaces clashed: renaming the type
@@ -464,26 +465,24 @@ class TestTheDataSideFlapShapes:
                    if d["error_code"] == "E156")
         assert "Import at most one supplier" in fix
         assert "in this file resolves it" in fix
-        assert "rename" in fix
-        assert "no namespace can reach both declarations" in fix
+        assert "declare the type once" in fix
+        assert "rename" not in fix and "reach both" not in fix, fix
 
-    def test_a_shared_constructor_is_backstopped_by_E610(
+    def test_a_shared_constructor_is_refused_at_check(
         self, tmp_path: Path,
     ) -> None:
-        """The E610 axis, pinned at both layers.
+        """The constructor axis, refused at check (E157).
 
         Two DIFFERENTLY-named types sharing one constructor: the checker
-        refuses `Sq` (E157) and codegen's constructor rail refuses the pair
-        (E610), so the sibling of the E609 cell above is measured rather
-        than assumed.  It is the shape that shows the collision is not about
-        the type name — `Alpha` and `Beta` never clash — which is why the
-        two codes are separate on both sides.
-
-        `midc` imports both modules wholesale, so it can name both `Alpha`
-        and `Beta` and therefore both suppliers of `Sq`; that is the
-        AMBIGUOUS shape, which #1317's per-owner identity declines to
-        qualify apart (§8.5.2.2 refuses it rather than picking) and which
-        the codegen rail therefore still backstops.
+        refuses `Sq`, so the sibling of the E156 cell above is measured
+        rather than assumed.  It is the shape that shows the collision is
+        not about the type name — `Alpha` and `Beta` never clash — which is
+        why the two codes are separate.  `midc` imports both modules
+        wholesale, so it can name both `Alpha` and `Beta` and therefore both
+        suppliers of `Sq`: the AMBIGUOUS shape §8.5.2.2 refuses rather than
+        picks.  Code generation keeps no rail of its own for it: every
+        constructor is named by its link name there (#1694), so two
+        declarations never contend for one slot.
         """
         files = {
             "liba.vera": _ADT_A.replace("data Shape", "data Alpha"),
@@ -491,12 +490,11 @@ class TestTheDataSideFlapShapes:
             "midc.vera": _ADT_MID,
             "main.vera": _ADT_MAIN,
         }
-        check_errors, _result, cg_errors = build_multi_module_past_check(
+        check_errors, _result, _cg_errors = build_multi_module_past_check(
             tmp_path, files,
         )
         assert [c for c, _ in check_errors if c == "E157"], check_errors
         assert not [c for c, _ in check_errors if c == "E156"], check_errors
-        assert [c for c, _ in cg_errors if c == "E610"], cg_errors
 
     @pytest.mark.parametrize("remedy", ["selective", "local", "private"])
     def test_the_function_remedies_now_clear_a_data_clash(
@@ -623,10 +621,10 @@ class TestABuiltinOwnedNameIsNeverAmbiguous:
     """The incumbent wins, so two imports of it are not a clash (#1304 review).
 
     Every injection in `_register_modules` is a `setdefault` onto a `TypeEnv`
-    the built-in registry populated first, so a dependency exporting its own
-    `option_map` never wins the bare name — measured as `E201` against the
-    PRELUDE's two-argument signature, from a program importing exactly one
-    such module.  Two of them are therefore not ambiguous either, and the
+    the built-in registry populated first, so an import never takes a bare
+    name the built-ins or the prelude hold, and since #1469 a dependency's
+    own declaration of one is refused at check (E151 for a function, E158
+    for a type).  Two of them are therefore not ambiguous either, and the
     first version of this refusal reported them anyway: a new rejection where
     the branch point was green.
 
@@ -676,28 +674,31 @@ public fn main(@Unit -> @Int)
     def test_a_function_the_prelude_owns_is_not_reported(
         self, tmp_path: Path,
     ) -> None:
+        """Each module's `option_map` takes a reserved name (#1469), so each
+        declaration is refused (E151), and the two imports are not reported
+        as ambiguous besides."""
         payload = _check(_write(tmp_path, self._two_libs(self._PRELUDE_NAMED_LIB)))
-        assert _error_codes(payload) == []
+        assert _error_codes(payload) == ["E151", "E151"]
 
     def test_a_data_type_the_builtins_own_is_not_reported(
         self, tmp_path: Path,
     ) -> None:
-        """`Option` is the prelude's, so two modules exporting one do not
-        make it ambiguous HERE — whatever the other rails make of them."""
+        """`Option` is the prelude's, so each module's declaration of it is
+        refused (E158, #1469), and two modules exporting one do not make it
+        ambiguous besides."""
         payload = _check(_write(tmp_path, self._two_libs(self._PRELUDE_NAMED_ADT)))
-        assert _error_codes(payload) == []
+        assert _error_codes(payload) == ["E158", "E158"]
 
     def test_the_prelude_argument_changes_the_ambiguity_half(self) -> None:
-        """Pins the corrected `namespace_fn_names` docstring (#1304 review).
+        """Pins the `namespace_fn_names` docstring (#1304 review).
 
-        The old text claimed the ambiguity half was identical whether or not
-        the prelude names were passed, "since a prelude name is imported from
-        nowhere".  It is not: the combinators are overridable rather than
-        reserved, so a dependency may export one, and the two answers differ.
-        Codegen's two calls pass different preludes and its E608 rail reads
-        the first; the checker passes its built-in snapshot and reads the
-        populated one.  That ordering is load-bearing, so the difference is
-        asserted rather than described.
+        The prelude names join the "declared here" set, so a prelude
+        function's name is never ambiguous: two dependencies exporting
+        `option_map` clash under ``prelude=()`` and not under the populated
+        set the checker passes.  Each such declaration is refused at check
+        (E151, #1469, the cell above), and the populated set is what keeps
+        the two imports from also being reported as E155: asserted on the
+        derivation, as the cell above asserts it on the verdict.
         """
         from vera.monomorphize import namespace_fn_names
         from vera.parser import parse_to_ast
@@ -706,20 +707,21 @@ public fn main(@Unit -> @Int)
         entry = parse_to_ast(files["main.vera"])
         mods = [((name[: -len(".vera")],), parse_to_ast(src))
                 for name, src in files.items() if name != "main.vera"]
-        assert namespace_fn_names(entry, mods).ambiguous == {"option_map"}
+        assert namespace_fn_names(entry, mods).ambiguous_in(None) == {
+            "option_map": (("liba",), ("libb",))}
         assert namespace_fn_names(
             entry, mods, prelude={"option_map"},
-        ).ambiguous == frozenset()
+        ).ambiguous_in(None) == {}
 
 
 class TestTheTwoViewsOfOneWalk:
-    """``ambiguous`` and ``ambiguous_sources`` cannot drift apart.
+    """The clash table is kept per namespace, in import order (#1304).
 
-    The checker refuses a namespace's OWN clashes and codegen's rail reads
-    the union over every namespace.  Both claim to be views of one walk, and
-    that claim is what lets the two layers be described as one rule — so it
-    is asserted on the structure rather than inferred from the two of them
-    happening to agree on the fixtures above.
+    The checker refuses a namespace's OWN clashes, at the import that
+    completes the clash, so the table records each clash against the
+    namespace that holds it and lists the suppliers in import order —
+    asserted on the structure rather than inferred from the verdicts on the
+    fixtures above.
     """
 
     def _tables(self, files: dict[str, str]) -> object:
@@ -731,16 +733,6 @@ class TestTheTwoViewsOfOneWalk:
             for name, src in files.items() if name != "main.vera"
         ]
         return namespace_fn_names(entry, modules)
-
-    def test_the_union_is_exactly_the_per_namespace_keys(self) -> None:
-        tables = self._tables(_FLAP_FILES["ab"])
-        union = {
-            name
-            for clashes in tables.ambiguous_sources.values()  # type: ignore[attr-defined]
-            for name in clashes
-        }
-        assert tables.ambiguous == frozenset(union)  # type: ignore[attr-defined]
-        assert union == {"gen"}, union
 
     def test_the_clash_is_recorded_against_the_namespace_holding_it(
         self,
@@ -895,7 +887,7 @@ class TestTheFlapShapes:
 
 
 class TestTheRefusalIsDefinitionGated:
-    """It fires on the import PAIR, not on a use — as E608 always has."""
+    """It fires on the import PAIR, not on a use — as E608 did."""
 
     _NO_CALL_MAIN = """\
 import libint;
@@ -926,10 +918,9 @@ public fn doorc(@Bool -> @Int)
     ) -> None:
         """No body names ``gen``; the program is refused anyway.
 
-        This is the semantics codegen's rail already had — the same program
-        is E608 at the branch point, with `vera check` green — so the two
-        layers now answer one question the same way instead of disagreeing
-        about when the shape becomes illegal.
+        This is the semantics codegen's rail had — the same program was
+        E608 at the branch point, with `vera check` green — so the check
+        answers that question the same way, at the layer it belongs to.
         """
         main_path = _write(tmp_path, {
             "libint.vera": _LIB_INT, "libbool.vera": _LIB_BOOL,
@@ -1155,12 +1146,11 @@ public fn main(@Unit -> @Int)
         supplies nothing to an importer, so the bare name has one supplier
         and no refusal is owed.
 
-        Asserted at CHECK only, unlike its function counterpart, because
-        this program cannot reach a runtime value: E609 refuses two modules'
-        same-named data declarations without consulting visibility either, so
-        a private namesake is enough to stop compilation.  That is the rail's
-        breadth rather than this refusal's, and asserting silence here is
-        what keeps the two from being confused.
+        Asserted through to the runtime value, as its function counterpart
+        is: each module's declaration is a type of its own (#1694), so the
+        private namesake no longer stops compilation, as it did while code
+        generation's collision rail (E609) refused two modules' same-named
+        declarations without consulting visibility.
         """
         libpriv = """\
 module libpriv;
@@ -1184,7 +1174,8 @@ public fn door_priv(@Unit -> @Int)
             "midc.vera": _ADT_MID.replace("import libb;", "import libpriv;"),
             "main.vera": _ADT_MAIN,
         }
-        assert _error_codes(_check(_write(tmp_path, files))) == []
+        assert _error_codes(_check(_write(tmp_path / "c", files))) == []
+        assert _answer(tmp_path / "run", files) == 3
 
     def test_an_out_of_filter_namesake_is_not_a_supplier(
         self, tmp_path: Path,

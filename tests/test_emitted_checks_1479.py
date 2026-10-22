@@ -236,8 +236,8 @@ def test_a_self_tail_check_is_recorded_once_per_splice() -> None:
         "else { f(@Nat.1 - 1, 7) }\n  }\n}\n")
     tail = _by_emitter(result, "codegen/contracts.py:_dec_self_tail_prefix")
     body = wat_fn_body(result.wat, "f")
-    assert len(tail) == body.count("return_call $f") == 2, (
-        len(tail), body.count("return_call $f"))
+    assert len(tail) == body.count("return_call $:f") == 2, (
+        len(tail), body.count("return_call $:f"))
 
 
 # ---------------------------------------------------------------------------
@@ -405,7 +405,7 @@ def test_the_self_tail_prefix_records_its_measure_per_splice(
     never reaches."""
     result = _compile(_ARITHMETIC_MEASURE)
     body = wat_fn_body(result.wat, function)
-    assert body.count(f"return_call ${function}") == splices, body
+    assert body.count(f"return_call $:{function}") == splices, body
     assert not _record_mismatches(result, function)
 
 
@@ -519,7 +519,7 @@ def test_a_program_string_that_spells_a_marker_is_left_alone() -> None:
 
 
 def _marked(body: str) -> str:
-    return f"(module\n  (func $f\n{body}\n  )\n)\n"
+    return f"(module\n  (func $:f\n{body}\n  )\n)\n"
 
 
 def test_a_marker_naming_no_entry_is_an_invariant_error() -> None:

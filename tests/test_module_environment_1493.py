@@ -161,29 +161,26 @@ def signature_mismatches(entry: Path) -> list[str]:
     """Every module function whose imported signature differs from the one
     it has when its module is the entry.
 
-    Compared over names that denote ONE declaration in the importer's
-    registry: a name the entry also declares, or that two modules declare,
-    is keyed by a rule of its own (#814, E608) and is not this question.
+    The importer registers each module function under its link name
+    (`vera.binding.DeclId.link_name`), which no other declaration has, so
+    every one of them is compared: a name the entry or another module also
+    declares is still one declaration under its own key (#1694).
     """
     importer = _generator(entry)
-    source = entry.read_text(encoding="utf-8")
-    entry_names = set(_own_functions(vera_pipeline.parse(source).program))
-    mods = importer._resolved_modules
-    declared: dict[str, int] = {}
-    for mod in mods:
-        for name in _own_functions(mod.program):
-            declared[name] = declared.get(name, 0) + 1
+    assert importer._binding is not None
+    files = {mod.path: mod.file_path for mod in importer._resolved_modules}
+    as_entry: dict[tuple[str, ...], CodeGenerator] = {}
     out: list[str] = []
-    for mod in mods:
-        as_entry = _generator(mod.file_path)
-        for name in _own_functions(mod.program):
-            if name in entry_names or declared[name] > 1 or "$" in name:
-                continue
-            got = importer._fn_sigs.get(name)
-            want = as_entry._fn_sigs.get(name)
-            if got != want:
-                out.append(f"{'.'.join(mod.path)}::{name}: imported {got}, "
-                           f"as the entry {want}")
+    for ident, decl in importer._binding.decls.items():
+        if ident.owner not in files or ident.scope or decl.forall_vars:
+            continue
+        if ident.owner not in as_entry:
+            as_entry[ident.owner] = _generator(files[ident.owner])
+        got = importer._fn_sigs.get(ident.link_name)
+        want = as_entry[ident.owner]._fn_sigs.get(ident.name)
+        if got != want:
+            out.append(f"{'.'.join(ident.owner)}::{ident.name}: imported "
+                       f"{got}, as the entry {want}")
     return out
 
 
@@ -246,7 +243,7 @@ class TestSignaturesDoNotDependOnTheEntry:
                                                "which(1)"))):
             (tmp_path / name).write_text(text, encoding="utf-8")
 
-        def blind(self, mod, programs, renames):  # type: ignore[no-untyped-def]
+        def blind(self, mod):  # type: ignore[no-untyped-def]
             temp = CodeGenerator(source=mod.source, file=str(mod.file_path))
             temp._register_all(mod.program)
             return temp
@@ -370,27 +367,20 @@ class TestPreludeTypesInAModule:
         assert _generator(tmp_path / "ma.vera")._fn_sigs["mk"] == (
             ["i64"], "i32")
 
-    @pytest.mark.parametrize(("declared", "used"), (
-        ("Request", "Response"), ("Response", "Request"),
-    ))
-    def test_a_module_declaring_one_http_type_uses_the_other(
-        self, declared: str, used: str, tmp_path: Path,
+    @pytest.mark.parametrize("declared", ("Request", "Response"))
+    def test_a_module_declaring_an_http_type_is_refused(
+        self, declared: str, tmp_path: Path,
     ) -> None:
-        """The HttpServer block holds two types, and a module's demand is
-        per type: one that declares its own ``Request`` still demands the
-        prelude's ``Response`` (PR #1508 review).  Refusing the whole block
-        left it compiled against no ``Response`` at all (E602, E620), on
-        ``main`` as on the release branch."""
-        ty = next(t for t in PRELUDE_TYPES if t.name == used)
-        out = pipeline(tmp_path, {
+        """A module's own ``Request`` or ``Response`` takes a prelude type's
+        name, which #1469 reserves: refused at its declaration (E158), where
+        code generation once read the module's demand for the other one
+        type by type (PR #1508 review)."""
+        root = _write(tmp_path, {
             "ma.vera": (
-                f"module ma;\n\npublic data {declared} {{\n  Mine(Int)\n}}\n\n"
-                "public fn use(@Int -> @Int)\n" + _CONTRACT + "{\n  "
-                + ty.use.replace("{X}", ty.make) + "\n}\n"),
-            "main.vera": _main("import ma(use);\n", "use(1)"),
+                f"module ma;\n\npublic data {declared} {{\n  Mine(Int)\n}}\n"),
+            "main.vera": _main("import ma;\n", "1"),
         })
-        assert out.accepted and out.compiles_clean, out.describe()
-        assert run_main(out) == ("ok", ty.value)
+        _assert_reserved_at(root, "ma.vera")
 
     def test_every_block_reads_every_module(self) -> None:
         """Every demand-injected block asks every module, the last block as
@@ -426,19 +416,14 @@ class TestPreludeTypesInAModule:
 
 
 # =====================================================================
-# A module that imports a type named like a prelude type (PR #1508 review)
 # =====================================================================
 #
 # The prelude's `Json`, `HtmlNode`, `Request` and `Response` are injected
-# only on demand, and a module's demand counts since this PR.  A module `b`
-# that imports module `a`'s own, differently shaped `Json` and names it was
-# read as demanding the prelude's, which then contended with `a`'s for the
-# one layout the name has (E621), where `main` ran the program.  A name
-# means what the module that writes it holds, so an imported type and its
-# constructors demand nothing.  A program that uses the prelude's type as
-# well — through `json_parse`, or a constructor only the prelude's type
-# declares — holds two different types of one name, and is still refused:
-# `main` compiled two of those shapes to garbage.
+# only on demand, and PR #1508 read a module's demand off what it writes: a
+# module `b` meeting module `a`'s own, differently shaped `Json` demanded
+# nothing of the prelude.  #1469 reserved every prelude type name, so `a`'s
+# declaration (or `b`'s own) is refused at check, and every program of the
+# matrix with it, whichever way `b` meets the name.
 
 #: Each prelude type name, and the constructor of `a`'s differently shaped
 #: declaration of it.
@@ -533,99 +518,65 @@ def _named_like_files(name: str, shape: str) -> dict[str, str]:
     raise AssertionError(shape)
 
 
-#: (name, shape, what `main` (6dc41d40) does, what this branch does), both
-#: measured: 41 is the program's value, a code the refusal, and "garbage"
-#: a wrong value.  Only the last is asserted.
-_NAMED_LIKE_CELLS: list[tuple[str, str, int | str, int | str]] = [
-    (name, shape, 41, 41)
-    for name in _NAMED_LIKE
-    for shape in ("names it in a signature", "imports it by wildcard",
-                  "is reached transitively", "does not name it",
-                  "declares its own")
+_SHAPES = (
+    "names it in a signature", "imports it by wildcard",
+    "is reached transitively", "does not name it", "declares its own",
+    "constructs it", "uses the prelude's type as well",
+    "passes a prelude value to the imported type's function",
+)
+
+#: Every (name, shape) the program builder writes.  The shapes that read the
+#: prelude's own type (`_PRELUDE_USE`, `json_parse`, `html_parse`) exist for
+#: `Json` and `HtmlNode` only.
+_NAMED_LIKE_CELLS: list[tuple[str, str]] = [
+    (name, shape) for name in _NAMED_LIKE for shape in _SHAPES
+    if name in _PRELUDE_USE or shape not in (
+        "uses the prelude's type as well",
+        "passes a prelude value to the imported type's function")
 ] + [
-    ("Json", "names a constructor the prelude's type also has", 41, 41),
-    # Both types in one program: refused as two types of one name.  The
-    # first two are garbage on `main` (the prelude's value read through
-    # `a`'s layout); the third reads nothing, but mentions exactly what the
-    # first does, and a demand is read off what a module mentions.
-    ("Json", "uses the prelude's type as well", "E602", "E621"),
-    ("HtmlNode", "uses the prelude's type as well", "E602", "E621"),
-    ("Json", "passes a prelude value to the imported type's function",
-     "garbage", "E621"),
-    ("HtmlNode", "passes a prelude value to the imported type's function",
-     "garbage", "E621"),
-    ("Json", "holds a prelude value it never reads", 41, "E621"),
+    ("Json", "names a constructor the prelude's type also has"),
+    ("Json", "holds a prelude value it never reads"),
 ]
 
 
-def _named_like_param(
-    name: str, shape: str, on_main: int | str, here: int | str,
-) -> object:
-    return pytest.param(name, shape, here, id=f"{name}-{shape}")
+def _assert_reserved_at(entry: Path, declaring: str) -> None:
+    """The program at *entry* is refused at check, and its first error is
+    E158 at the declaration in *declaring*."""
+    checked = vera_pipeline.check(entry)
+    assert not checked.ok, "the program passed check"
+    first = checked.errors[0]
+    assert first.error_code == "E158", [d.error_code for d in checked.errors]
+    assert Path(first.location.file).name == declaring, first.location
 
 
 class TestAModuleImportingATypeNamedLikeThePrelude:
-    """A module's mention of a type it imports, or of one of that type's
-    constructors, demands nothing of the prelude (PR #1508 review)."""
+    """A module's own type named like a prelude type is refused at its
+    declaration, however another module meets it."""
 
     @pytest.mark.parametrize(
-        ("name", "shape", "expected"),
-        [_named_like_param(*cell) for cell in _NAMED_LIKE_CELLS])
+        ("name", "shape"),
+        [pytest.param(name, shape, id=f"{name}-{shape}")
+         for name, shape in _NAMED_LIKE_CELLS])
     def test_the_boundary(
-        self, name: str, shape: str, expected: int | str, tmp_path: Path,
+        self, name: str, shape: str, tmp_path: Path,
     ) -> None:
-        out = pipeline(tmp_path, _named_like_files(name, shape))
-        assert out.accepted, out.describe()
-        if isinstance(expected, str):
-            assert expected in out.signature, out.describe()
-            return
-        assert out.compiles_clean, out.describe()
-        assert run_main(out) == ("ok", expected)
+        files = _named_like_files(name, shape)
+        declaring = "b.vera" if shape == "declares its own" else "a.vera"
+        _assert_reserved_at(_write(tmp_path, files), declaring)
 
     @pytest.mark.parametrize("name", _NAMED_LIKE)
-    def test_a_module_constructing_the_imported_type(
+    def test_the_entry_file_importing_one_is_refused(
         self, name: str, tmp_path: Path,
     ) -> None:
-        """The check accepts the construction (#1559), and code generation
-        builds it without injecting the prelude's type beside `a`'s, which
-        would be E621: it runs to `main`'s 41, as on `main`."""
-        out = pipeline(tmp_path, _named_like_files(name, "constructs it"))
-        assert out.accepted and out.compiles_clean, out.describe()
-        assert run_main(out) == ("ok", 41)
-
-    @pytest.mark.parametrize(("imported", "used"), (
-        ("Request", "Response"), ("Response", "Request"),
-    ))
-    def test_a_module_importing_one_http_type_uses_the_other(
-        self, imported: str, used: str, tmp_path: Path,
-    ) -> None:
-        """The HttpServer types are demanded one by one: `b` imports `a`'s
-        `Request` and still uses the prelude's `Response`, as a module that
-        declares its own `Request` does.  `main` refused it (E602, E620)."""
-        ty = next(t for t in PRELUDE_TYPES if t.name == used)
-        out = pipeline(tmp_path, {
-            "a.vera": _a_module(imported), "main.vera": _VAL_41,
-            "b.vera": _b_module(
-                f"import a({imported}, mk, unwrap);\n",
-                "unwrap(mk(@Int.0)) + " + ty.use.replace(
-                    "{X}", ty.make.replace("@Int.0", "1"))
-                + f" - {ty.value}")})
-        assert out.accepted and out.compiles_clean, out.describe()
-        assert run_main(out) == ("ok", 41)
-
-    def test_the_entry_file_importing_one_is_unchanged(
-        self, tmp_path: Path,
-    ) -> None:
-        """The entry's own demand is `main`'s rule, and this branch leaves
-        it alone: the entry importing `a`'s `Json` and naming it demands the
-        prelude's, and is E621 on `main` too."""
-        out = pipeline(tmp_path, {
-            "a.vera": _a_module("Json"),
-            "main.vera": "import a(Json, mk, unwrap);\n\n"
-                         "private fn id2(@Json -> @Json)\n" + _CONTRACT
-                         + "{\n  @Json.0\n}\n" + _main("", "unwrap(id2(mk(41)))")})
-        assert out.accepted, out.describe()
-        assert "E621" in out.signature, out.describe()
+        """The entry importing `a`'s type and naming it: refused at `a`'s
+        declaration, where code generation once refused it (E621)."""
+        root = _write(tmp_path, {
+            "a.vera": _a_module(name),
+            "main.vera": f"import a({name}, mk, unwrap);\n\n"
+                         f"private fn id2(@{name} -> @{name})\n" + _CONTRACT
+                         + f"{{\n  @{name}.0\n}}\n"
+                         + _main("", "unwrap(id2(mk(41)))")})
+        _assert_reserved_at(root, "a.vera")
 
 
 # =====================================================================
@@ -812,26 +763,27 @@ class TestOneDerivation:
     def test_every_reach_is_one_walk(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """The modules a module's checker sees and the modules the
-        constructor fallback resolves among (#1513) are one walk,
-        ``reachable_paths``: taken away, both see nothing."""
-        from vera import module_view
-        from vera.monomorphize import namespace_module_reach
+        """The modules a module's checker sees and the modules the resolver
+        pass binds a constructor of an unimported type among (#1513, #1694)
+        are one walk, ``reachable_paths``: taken away, both see nothing."""
+        from vera import binding, module_view
         from vera.resolver import ResolvedModule
 
         root = parse_to_ast("module r;\n\nimport mid;\n")
         mids = parse_to_ast("module mid;\n\nimport deep;\n")
-        deep = parse_to_ast("module deep;\n")
+        deep = parse_to_ast("module deep;\n\npublic data D {\n  Dk(Int)\n}\n")
         resolved = [
             ResolvedModule(("deep",), Path("/x/deep.vera"), deep, "", True),
             ResolvedModule(("mid",), Path("/x/mid.vera"), mids, "", False),
             ResolvedModule(("r",), Path("/x/r.vera"), root, "", False),
         ]
-        pairs = [(m.path, m.program) for m in resolved]
-        assert namespace_module_reach(pairs)[("r",)] == {("mid",), ("deep",)}
+        entry = parse_to_ast("import r;\n")
+        dk = binding.DeclId(("deep",), "Dk", ("D",), kind="ctor")
+        assert binding.reachable_paths is module_view.reachable_paths
+        assert binding.bind_program(entry, resolved).ctors[("r",)]["Dk"] == dk
         monkeypatch.setattr(
             module_view, "reachable_paths", lambda program, programs: [])
+        monkeypatch.setattr(
+            binding, "reachable_paths", module_view.reachable_paths)
         assert module_view.modules_visible_to(root, resolved) == []
-        reach = namespace_module_reach(pairs)
-        assert all(not paths for key, paths in reach.items()
-                   if key is not None), reach
+        assert "Dk" not in binding.bind_program(entry, resolved).ctors[("r",)]

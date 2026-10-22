@@ -5,7 +5,7 @@ from __future__ import annotations
 import functools
 import re
 from collections.abc import Iterator
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar, cast
 
 from vera import ast
 from vera.environment import (
@@ -16,7 +16,11 @@ from vera.environment import (
     OpInfo,
     TypeAliasInfo,
 )
+from vera.prelude import BUILTIN_TYPE_NAMES
 from vera.types import PRIMITIVES, TypeVar
+
+if TYPE_CHECKING:
+    from vera.checker.core import TypeChecker
 
 # #1191: the prelude's generated-declaration namespace — "Vera" + an
 # uppercase letter or digit ("VeraOptionMapFn", "VeraA").  Anchored, so
@@ -26,17 +30,18 @@ _RESERVED_TYPE_PREFIX_RE = re.compile(r"\AVera[A-Z0-9]")
 
 @functools.lru_cache(maxsize=1)
 def _builtin_reject_names() -> frozenset[str]:
-    """Built-in function names a user/module ``fn`` must not redefine (E151).
+    """Function names a user/module ``fn`` must not take (E151).
 
-    The full built-in registry minus the prelude-injected combinators, which
-    the prelude lets the user override soundly (see
-    :func:`vera.prelude.overridable_builtin_names`).  Cached: the built-in
-    set is static.  Drives the #815 "one canonical form" check — redefining
-    an opaque, verifier-modelled built-in (``abs`` / ``min`` / ``max`` / …)
-    is the silent verifier↔runtime unsoundness that motivates the error.
+    The full built-in registry and every prelude function, which are
+    reserved (#1469, :func:`vera.prelude.reserved_function_names`).
+    Cached: both sets are static.  Drives the #815 "one canonical form"
+    check — redefining an opaque, verifier-modelled built-in (``abs`` /
+    ``min`` / ``max`` / …) is the silent verifier↔runtime unsoundness that
+    motivates the error, and a second declaration of a prelude function's
+    name would be a second meaning of one name.
     """
     from vera.environment import TypeEnv
-    from vera.prelude import overridable_builtin_names
+    from vera.prelude import reserved_function_names
 
     # #854: apply_fn is a checker special form (variadic and
     # effect-polymorphic — see CallsMixin._check_apply_fn), not a
@@ -44,8 +49,8 @@ def _builtin_reject_names() -> frozenset[str]:
     # explicitly.  Codegen unconditionally translates the name to
     # call_indirect (vera/wasm/calls.py), so a user redefinition is the
     # same checker↔codegen desync #815 guards against.
-    return (frozenset(TypeEnv().functions)
-            | {"apply_fn"}) - overridable_builtin_names()
+    return (frozenset(TypeEnv().functions) | {"apply_fn"}
+            | reserved_function_names())
 
 
 @functools.lru_cache(maxsize=1)
@@ -152,10 +157,11 @@ _KEYWORD_FN_NAMES = frozenset({
 # failing ``[E202]`` against the *user's* Int parameter.  Removing the
 # declaration made the identical handler check clean.  So the declaration is
 # refused here, at the checker: the parser has no keyword to refuse it with.
-# That shadowing is also cut off at its source, in
-# :meth:`TypeChecker._lookup_function_scoped`, which resolves these names
-# against the flat registry alone — otherwise the rejected declaration would
-# still draw a second, misleading error out of the correct clause bodies.
+# That shadowing is also cut off at its source: the resolver pass binds no
+# declaration to these names, and :meth:`TypeChecker._bound_function` reads
+# them from the flat registry alone — otherwise the rejected declaration
+# would still draw a second, misleading error out of the correct clause
+# bodies.
 _HANDLER_OPERATOR_FN_NAMES = frozenset({"resume"})
 
 # 4. The carve-out: names a *host* invokes rather than Vera source, so being
@@ -278,10 +284,21 @@ class RegistrationMixin:
             tld.decl.name for tld in program.declarations
             if isinstance(tld.decl, (ast.DataDecl, ast.TypeAliasDecl))
         )
+        self._forward_data_names = frozenset(
+            tld.decl.name for tld in program.declarations
+            if isinstance(tld.decl, ast.DataDecl)
+        )
         self._forward_effect_names = frozenset(
             tld.decl.name for tld in program.declarations
             if isinstance(tld.decl, ast.EffectDecl)
         )
+        # #1552: and the aliases it declares, so a type expression this pass
+        # resolves (an alias body, a constructor field, an operation's
+        # signature) reads an alias declared further down by THE ALIAS RULE
+        # instead of meeting a name not registered yet.
+        from vera.registration import NamespaceAliases
+        self._ns_aliases = NamespaceAliases.of_program(
+            cast("TypeChecker", self), program)
         # The first declaration of each, for what an E340 at a row naming
         # one says before the declaration is registered (#1681).
         self._forward_effect_decls: dict[str, ast.EffectDecl] = {}
@@ -385,12 +402,39 @@ class RegistrationMixin:
         into ``where_fns`` so a helper named after a built-in is caught too —
         otherwise the verifier models the call with the built-in's idealized
         model while codegen runs the where-body, the exact
-        verify-proves / run-violates desync one scope deeper.  The
-        prelude-injected combinators are exempt (see
-        :func:`_builtin_reject_names`).
+        verify-proves / run-violates desync one scope deeper.  A prelude
+        function's name is refused the same way (#1469): the prelude is a
+        module whose names are reserved.
         """
+        from vera.prelude import reserved_function_names
+
         rejected = decl.name in _builtin_reject_names()
-        if rejected:
+        if rejected and decl.name in reserved_function_names():
+            self._refused_decl_ids.add(id(decl))
+            bn = decl.name
+            self._error(
+                decl,
+                f"Function '{bn}' takes the name of a prelude function, "
+                f"which is reserved.",
+                rationale=(
+                    f"'{bn}' is declared by the prelude (spec §9.1.2), which "
+                    f"is in scope in every file as a module whose names are "
+                    f"reserved. A second declaration of the name would give "
+                    f"it two meanings in one program: the prelude's own "
+                    f"functions call '{bn}' by name, and a program that "
+                    f"calls it beside them would read whichever one a "
+                    f"namespace happened to see."
+                ),
+                fix=(
+                    f"Rename the function (for example '{bn}_custom') and "
+                    f"update every call to it. If you meant the prelude's "
+                    f"'{bn}', delete this definition and call it directly — "
+                    f"it needs no import."
+                ),
+                spec_ref='Chapter 9, Section 9.1.2 "Standard Prelude"',
+                error_code="E151",
+            )
+        elif rejected:
             self._refused_decl_ids.add(id(decl))
             bn = decl.name
             self._error(
@@ -578,6 +622,10 @@ class RegistrationMixin:
         else:
             binders = decl.type_params or ()
         for name in binders:
+            # #1469: a binder under a reserved prelude or built-in type name
+            # makes every mention of the name in the declaration mean the
+            # type variable (#1556), so it is refused where it is bound.
+            self._check_special_cased_builtin_adt(decl, name, "type parameter")
             if not _RESERVED_TYPE_PREFIX_RE.match(name):
                 continue
             self._error(
@@ -1293,22 +1341,12 @@ class RegistrationMixin:
     #: name that meant the container at one count and the declaration at
     #: another is a trap, so the name is reserved at every count.
     #:
-    #: NOT the prelude's data types.  §8.4.1 makes them ordinary declarations
-    #: a program may shadow: the MODULE ``examples/vera/collections.vera``
-    #: ships a ``public data Option<T>`` (legal because it restates the
-    #: prelude's shape, §11.16 / #1277), and #1312's E623 rail is built on
-    #: entry-file shadowing being legal.  Both doors would close if these
-    #: names were reserved, since E158 fires in ``_register_data`` wherever
-    #: the declaration is; whether to reserve them is #1496.
-    #:
-    #: The complement is what keeps this honest rather than a hand list left
-    #: to rot: every name NOT here is exercised end to end — declared, run,
-    #: shown, compared, WAT-differenced against a fresh-name control — by
-    #: ``tests/test_name_resolution_spine_1316.py``, which reads this tuple
-    #: instead of restating it.  A new special-cased built-in that nobody
-    #: adds here fails there.
-    _SPECIAL_CASED_BUILTIN_ADTS = (
-        "Array", "Decimal", "Future", "Map", "Set", "Tuple")
+    #: The prelude's data types are reserved too (#1469), at every binder:
+    #: :func:`vera.prelude.reserved_type_names` composes the whole set, and
+    #: this tuple is its built-in-type part, which the two rationales below
+    #: explain.  ``tests/test_name_resolution_spine_1316.py`` reads this
+    #: tuple instead of restating it.
+    _SPECIAL_CASED_BUILTIN_ADTS = BUILTIN_TYPE_NAMES
 
     #: The names reserved in the CONSTRUCTOR namespace as well: the two whose
     #: built-in has a constructor of that name, whose layout slot a user's
@@ -1363,6 +1401,9 @@ class RegistrationMixin:
         register the declaration: registered, it drew secondary errors that
         named the same type on both sides ("has type Int, expected Int").
         """
+        from vera.prelude import prelude_adt_names, reserved_type_names
+
+        reserved = False
         primitive = name in PRIMITIVES and kind in ("data type", "type alias")
         if primitive:
             subject = f"declared as a {kind}"
@@ -1388,8 +1429,7 @@ class RegistrationMixin:
         elif kind == "data type" and name in self._SPECIAL_CASED_BUILTIN_ADTS:
             subject = "redeclared as a data type"
             rationale = (
-                f"Unlike the prelude's data types, which a program may "
-                f"shadow, '{name}' is recognised by name throughout "
+                f"'{name}' is recognised by name throughout "
                 f"code generation — how it is rendered, compared and laid "
                 f"out. A declaration of that name cannot be told apart from "
                 f"the built-in, so the program would compile against a "
@@ -1408,22 +1448,44 @@ class RegistrationMixin:
                 f"uses elsewhere in the program are compiled against this "
                 f"declaration's layout."
             )
+        elif (kind in ("data type", "type alias", "type parameter")
+                and name in reserved_type_names()):
+            # #1469: the prelude is a module whose names are reserved, and
+            # so are the built-in types', at every binder that declares a
+            # type name.  Refused, and not registered, so every use of the
+            # name keeps meaning the prelude's or the built-in's type.
+            reserved = True
+            subject = f"declared as a {kind}"
+            owner = ("the prelude declares it"
+                     if name in prelude_adt_names()
+                     else "it is a built-in type")
+            rationale = (
+                f"'{name}' is reserved: {owner}, and it is in scope in "
+                f"every file. A second type of that name would let a value "
+                f"of one be accepted where the other is expected and read "
+                f"through the wrong layout, or a built-in build the one the "
+                f"program did not mean. The name is reserved in every file "
+                f"and at every number of type arguments, so that it has one "
+                f"meaning."
+            )
         else:
             return False
+        what = "prelude" if name in prelude_adt_names() else "built-in"
         self._error(
             node,
-            f"'{name}' is a reserved built-in type name, so it cannot be "
+            f"'{name}' is a reserved {what} type name, so it cannot be "
             f"{subject}.",
             rationale=rationale,
             fix=(
-                f"Rename the {kind} to a name no built-in type uses, and "
-                f"update every use of it. If you meant the built-in "
-                f"'{name}', use it directly instead of declaring it."
+                f"Rename the {kind} to a name no prelude or built-in type "
+                f"uses (for example 'My{name}'), and update every use of "
+                f"it. If you meant the {what} '{name}', use it directly "
+                f"instead of declaring it."
             ),
             spec_ref='Chapter 8, Section 8.4.1 "Visibility Rules"',
             error_code="E158",
         )
-        return primitive
+        return primitive or reserved
 
     def _check_sibling_ctor_collision(
         self, ctor: ast.Constructor, owner: str,
@@ -1431,11 +1493,10 @@ class RegistrationMixin:
         """Refuse two data declarations in one namespace sharing a
         constructor name (#1425, spec §8.4).
 
-        The intra-namespace sibling of E610 (two modules) and E157 (two
-        imports).  Spec §8.4 puts all three under one rule — a constructor
-        name clash is "rejected at check time, in whichever namespace holds
-        the clash: the entry program's, or any module's" — and this is the
-        namespace that had no rail.
+        The intra-namespace sibling of E157 (two imports).  Spec §8.4 puts
+        both under one rule — a constructor name clash is "rejected at check
+        time, in whichever namespace holds the clash: the entry program's,
+        or any module's" — and this is the namespace that had no rail.
 
         Accepting it was not merely untidy: resolution is by bare name with
         the last declaration winning, so the pair produced diagnostics that
@@ -1445,9 +1506,10 @@ class RegistrationMixin:
 
         Deliberately NOT fired for the two shadowing shapes §8.4.1 and
         §8.5.2 make legal, neither of which is a second declaration in this
-        namespace: restating a PRELUDE type (``examples/vera/
-        collections.vera`` declares `None` and `Some`), and shadowing an
-        IMPORTED constructor.
+        namespace: a constructor named like a PRELUDE one (#1469 reserves
+        the prelude's type and function names, not its constructors;
+        ``tests/conformance/ch09_user_ctor_shadows_prelude_ctor.vera``), and
+        shadowing an IMPORTED constructor.
         """
         first = self._ns_ctor_owners.get(ctor.name)
         if first is None:
@@ -1504,6 +1566,7 @@ class RegistrationMixin:
             for tv in decl.type_params:
                 self.env.type_params[tv] = TypeVar(tv)
 
+        identity = self._type_identity(decl.name)
         ctors: dict[str, ConstructorInfo] = {}
         first_ctors: dict[str, ast.Constructor] = {}
         for ctor in decl.constructors:
@@ -1540,22 +1603,35 @@ class RegistrationMixin:
                     self._resolve_type(f) for f in ctor.fields)
             ci = ConstructorInfo(
                 name=ctor.name,
-                parent_type=decl.name,
+                parent_type=identity,
                 parent_type_params=decl.type_params,
                 field_types=field_types,
             )
             ctors[ctor.name] = ci
             self.env.constructors[ctor.name] = ci
 
-        self.env.data_types[decl.name] = AdtInfo(
-            name=decl.name,
+        self.env.data_types[identity] = AdtInfo(
+            name=identity,
             type_params=decl.type_params,
             constructors=ctors,
             visibility=visibility,
             decl_index=decl_index,
         )
+        # The name denotes this declaration here, whatever an import would
+        # have it denote (§8.5.2), as the resolver pass binds it
+        # (`_take_type_names`).
 
         self.env.type_params = saved_params
+
+    def _type_identity(self, name: str) -> str:
+        """The identity of the data type *name* this namespace declares
+        (#1694): its name in the entry file, its link name in a module
+        (:class:`vera.binding.DeclId`), so two modules' same-named types are
+        two types and a value of one never passes for the other."""
+        if self._resolved_as is None:
+            return name
+        from vera.binding import DeclId
+        return DeclId(self._resolved_as, name, kind="data").link_name
 
     def _register_alias(self, decl: ast.TypeAliasDecl) -> None:
         """Register a type alias."""
@@ -1566,12 +1642,9 @@ class RegistrationMixin:
         self._check_reserved_type_params(decl)
         self._check_duplicate_type_params(decl, f"type alias '{decl.name}'")
         decl_index = self.env.next_decl_index()
-        saved_params = dict(self.env.type_params)
-        if decl.type_params:
-            for tv in decl.type_params:
-                self.env.type_params[tv] = TypeVar(tv)
-
-        resolved = self._resolve_type(decl.type_expr)
+        # #1552: resolved as THE ALIAS RULE reads the namespace, or already,
+        # when a declaration above this one named it.
+        resolved = self._ns_aliases.resolve_decl(decl).resolved_type
         self.env.type_aliases[decl.name] = TypeAliasInfo(
             name=decl.name,
             type_params=decl.type_params,
@@ -1579,8 +1652,6 @@ class RegistrationMixin:
             body=decl.type_expr,
             decl_index=decl_index,
         )
-
-        self.env.type_params = saved_params
 
     def _register_effect(self, decl: ast.EffectDecl) -> None:
         """Register an effect and its operations."""

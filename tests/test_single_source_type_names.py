@@ -128,11 +128,11 @@ def _run_checked(source: str, fn: str = "main", args: list | None = None):
 def _clone_names(wat: str, base: str) -> list[str]:
     """Every emitted clone of *base*, as an exact sorted list.
 
-    Read off the ``(func $name`` headers rather than by substring: `"idg$Int"
+    Read off the ``(func $:name`` headers rather than by substring: `"idg$Int"
     in wat` is a prefix test that ``idg$IntBox`` satisfies, which is precisely
     how one clone impersonates another.
     """
-    names = re.findall(r"\(func \$([A-Za-z_0-9$<>, ]+?)\s", wat)
+    names = re.findall(r"\(func \$:?([A-Za-z_0-9$<>, ]+?)\s", wat)
     return sorted(n for n in names if n.startswith(base + "$"))
 
 
@@ -1043,7 +1043,7 @@ def test_old_state_composite_compares_values_not_addresses() -> None:
     assert _errors(result) == [], _errors(result)
     assert any(
         n.startswith("eq_Option") for n in re.findall(
-            r"\(func \$([A-Za-z_0-9$<>, ]+?)\s", result.wat)
+            r"\(func \$:?([A-Za-z_0-9$<>, ]+?)\s", result.wat)
     ), result.wat
     assert _run_checked(_OLD_COMPOSITE_FRESH_ALLOCATION) == 1
 

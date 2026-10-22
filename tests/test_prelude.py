@@ -66,26 +66,6 @@ class TestPreludeADTs:
         names = _data_names(prog)
         assert _PRELUDE_DATA_NAMES.issubset(names)
 
-    def test_user_data_shadows_prelude(self) -> None:
-        """User-defined Option replaces the prelude's Option."""
-        prog = _make_program(
-            "public data Option<T> { None, Some(T) }\n"
-            "public fn main(@Unit -> @Int)\n"
-            "  requires(true) ensures(true) effects(pure)\n"
-            "{ 0 }\n"
-        )
-        inject_prelude(prog)
-        # Count Option definitions — should be exactly 1 (user's)
-        option_count = sum(
-            1 for tld in prog.declarations
-            if isinstance(tld.decl, ast.DataDecl) and tld.decl.name == "Option"
-        )
-        assert option_count == 1
-        # Other prelude ADTs still injected
-        names = _data_names(prog)
-        assert {"Result", "Ordering", "UrlParts"}.issubset(names)
-
-
 class TestPreludeCombinators:
     """Tests for combinator injection."""
 
@@ -148,92 +128,6 @@ class TestPreludeCombinators:
         inject_prelude(prog)
         names = _fn_names(prog)
         assert _OPTION_FN_NAMES.issubset(names)
-
-    def test_non_standard_option_skips_combinators(self) -> None:
-        """Non-standard Option (Just instead of Some) skips combinators.
-
-        The user's data type shadows the prelude's Option, but since
-        the constructors don't match, Option combinators are not injected.
-        Other prelude declarations (Result, Ordering, array ops) still are.
-        """
-        prog = _make_program(
-            "public data Option<T> { None, Just(T) }\n"
-            "public fn main(@Unit -> @Int)\n"
-            "  requires(true) ensures(true) effects(pure)\n"
-            "{ 0 }\n"
-        )
-        inject_prelude(prog)
-        names = _fn_names(prog)
-        # Option combinators NOT injected
-        assert not _OPTION_FN_NAMES.intersection(names)
-        # Result combinators and array ops still injected
-        assert _RESULT_FN_NAMES.issubset(names)
-        assert _ARRAY_FN_NAMES.issubset(names)
-
-
-    def test_non_standard_result_skips_combinators(self) -> None:
-        """Non-standard Result (Fail instead of Err) skips combinators."""
-        prog = _make_program(
-            "public data Result<T, E> { Ok(T), Fail(E) }\n"
-            "public fn main(@Unit -> @Int)\n"
-            "  requires(true) ensures(true) effects(pure)\n"
-            "{ 0 }\n"
-        )
-        inject_prelude(prog)
-        names = _fn_names(prog)
-        assert not _RESULT_FN_NAMES.intersection(names)
-        # Option combinators and array ops still injected
-        assert _OPTION_FN_NAMES.issubset(names)
-        assert _ARRAY_FN_NAMES.issubset(names)
-
-    def test_extra_constructor_option_skips_combinators(self) -> None:
-        """Option with extra constructor skips combinators."""
-        prog = _make_program(
-            "public data Option<T> { None, Some(T), Unknown }\n"
-            "public fn main(@Unit -> @Int)\n"
-            "  requires(true) ensures(true) effects(pure)\n"
-            "{ 0 }\n"
-        )
-        inject_prelude(prog)
-        names = _fn_names(prog)
-        assert not _OPTION_FN_NAMES.intersection(names)
-
-    def test_extra_constructor_result_skips_combinators(self) -> None:
-        """Result with extra constructor skips combinators."""
-        prog = _make_program(
-            "public data Result<T, E> { Ok(T), Err(E), Retry }\n"
-            "public fn main(@Unit -> @Int)\n"
-            "  requires(true) ensures(true) effects(pure)\n"
-            "{ 0 }\n"
-        )
-        inject_prelude(prog)
-        names = _fn_names(prog)
-        assert not _RESULT_FN_NAMES.intersection(names)
-
-    def test_concrete_option_skips_combinators(self) -> None:
-        """Option with concrete field type (Some(Int)) skips combinators."""
-        prog = _make_program(
-            "public data Option<T> { None, Some(Int) }\n"
-            "public fn main(@Unit -> @Int)\n"
-            "  requires(true) ensures(true) effects(pure)\n"
-            "{ 0 }\n"
-        )
-        inject_prelude(prog)
-        names = _fn_names(prog)
-        assert not _OPTION_FN_NAMES.intersection(names)
-
-    def test_concrete_result_skips_combinators(self) -> None:
-        """Result with concrete field types (Ok(Int), Err(String)) skips."""
-        prog = _make_program(
-            "public data Result<T, E> { Ok(Int), Err(String) }\n"
-            "public fn main(@Unit -> @Int)\n"
-            "  requires(true) ensures(true) effects(pure)\n"
-            "{ 0 }\n"
-        )
-        inject_prelude(prog)
-        names = _fn_names(prog)
-        assert not _RESULT_FN_NAMES.intersection(names)
-
 
 class TestPreludeShadowing:
     """Tests for user-defined function shadowing."""
@@ -468,7 +362,6 @@ class TestPreludeEndToEnd:
         """option_unwrap_or(Some(42), 0) returns 42."""
         from tests.test_codegen_closures import _run
         src = """\
-public data Option<T> { None, Some(T) }
 public fn test(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
@@ -481,7 +374,6 @@ public fn test(@Unit -> @Int)
         """option_map(Some(10), +1) returns Some(11)."""
         from tests.test_codegen_closures import _run
         src = """\
-public data Option<T> { None, Some(T) }
 public fn test(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
@@ -497,7 +389,6 @@ public fn test(@Unit -> @Int)
         """option_and_then(Some(5), *2) returns Some(10)."""
         from tests.test_codegen_closures import _run
         src = """\
-public data Option<T> { None, Some(T) }
 public fn test(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
@@ -515,7 +406,6 @@ public fn test(@Unit -> @Int)
         """result_unwrap_or(Ok(77), 0) returns 77."""
         from tests.test_codegen_closures import _run
         src = """\
-public data Result<T, E> { Ok(T), Err(E) }
 public fn test(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
@@ -528,7 +418,6 @@ public fn test(@Unit -> @Int)
         """result_map(Ok(100), -1) returns Ok(99)."""
         from tests.test_codegen_closures import _run
         src = """\
-public data Result<T, E> { Ok(T), Err(E) }
 public fn test(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {

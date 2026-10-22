@@ -300,7 +300,7 @@ class TestNatReturnNarrowingDifferential758:
         assert statuses == ["tier3"], (
             f"{label}: expected a single tier3 return nat_bind, got {statuses}"
         )
-        idx = wat.find(f"(func ${fn} ")
+        idx = wat.find(f"(func $:{fn} ")
         assert idx >= 0, f"{label}: function {fn} not found in WAT"
         end = wat.find("\n  (func ", idx + 1)
         body = wat[idx:end if end >= 0 else len(wat)]
@@ -769,7 +769,7 @@ class TestApplyFnArgNarrowingDifferential1017:
         assert statuses == ["tier3"], (
             f"{label}: expected a single tier3 arg nat_bind, got {statuses}"
         )
-        idx = wat.find(f"(func ${fn} ")
+        idx = wat.find(f"(func $:{fn} ")
         assert idx >= 0, f"{label}: function {fn} not found in WAT"
         end = wat.find("\n  (func ", idx + 1)
         body = wat[idx:end if end >= 0 else len(wat)]
@@ -2802,7 +2802,7 @@ public fn go(@Int -> @Int)
             assert wat_calls(result.wat, "vera.state_put_Int")
             # The user's own `put` is still emitted and still callable — it
             # is simply not what the qualified site denotes.  Exact
-            # membership, not a substring: `"(func $put " in wat` depends on
+            # membership, not a substring: `"(func $:put " in wat` depends on
             # a space following the symbol and would also accept a longer
             # mangled name under a different emitter layout.
             emitted = wat_fn_names(result.wat)

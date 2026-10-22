@@ -1,45 +1,37 @@
-"""#1317 / #187 (data half) — per-owner ADT identity.
+"""#1317 / #187 (data half) / #1694 — per-owner ADT identity.
 
-Codegen keys every ADT registry by BARE name — layouts, constructor
+Codegen keyed every ADT registry by BARE name — layouts, constructor
 layouts, type-parameter metadata, the structural-``Eq`` helper namer, the
 declaration index, the export table — so two modules declaring
 ``data Shape`` contended for one slot and E609/E610 refused the pair by
-DECLARATION: no visibility gate, no import-filter gate, no shadowing
-relaxation.  #1317 measured the consequence — there was no data-side escape
-hatch at all, and renaming in a dependency's source was the only remedy —
-and #187 named the mechanism that closes it.
+DECLARATION.  #1317 renamed a CONTENDED module declaration to
+``mod$<path>$<Name>`` at absorb time.  #1694 makes that name the identity
+of every module data type in every stage: the resolver pass names each
+module ``data`` declaration, alias and constructor by its link name
+(:mod:`vera.binding`), the checker types a module's ADT by it, and code
+generation compiles the linked program, so ADT identity is
+``(owner, name)`` BY CONSTRUCTION and no stage asks which owner a name
+means.
 
-The fix is one rename, in one place.  A CONTENDED module declaration and
-its constructors are renamed to ``mod$<path>$<Name>`` at absorb time
-(``CrossModuleMixin._register_modules``), inside every namespace that can
-name them, so ADT identity is ``(owner, name)`` BY CONSTRUCTION and each of
-the downstream registries is correct without knowing the rule exists.  That
-is the #1029 device applied to the data namespace, and the reason the fix
-is not a per-owner lookup threaded through every name-keyed consumer.
-
-**What still refuses, and why each is not an oversight.**
+**What refuses, and why each is not an oversight.**
 
 * **Two suppliers.**  A name two of one namespace's imports both supply is
-  ambiguous, and §8.5.2.2 refuses it rather than picking (E156 at check,
-  E609/E610 as the codegen backstop).  Nothing is renamed for such a name.
-* **A flow.**  Two owners' declarations can MEET in a namespace that can
-  name neither, because a value crosses between them through the
-  signatures it imports: with ``liba::aone(@Int -> @Shape)`` and
-  ``libb::bone(@Shape -> @Int)``, an entry may write ``bone(aone(6))``
-  even under filters that exclude the type, because the checker unifies
-  two same-named cross-module ADTs.  Measured with the rename in place and
-  the flow condition removed: a check-green, verify-green program
-  returning ``100`` where ``7`` is the answer — a silent wrong answer, and
-  strictly worse than the refusal it replaced.  :class:`TestMeeting` is
-  that measurement, kept.
-* **A prelude name.**  Maintainer ruling R7: ``Option``, ``Result``,
-  ``Ordering`` and every name the prelude can provide stay E621's, exactly
-  as built-in function names stay E151's, effect names E152's and built-in
-  ADT names E158's.  Per-owner identity is a rule between USER modules.
-* **The entry's own declaration.**  Its contention with a module's is
-  E623's (#1312) and that rail is untouched — see
-  :class:`TestTheEntryIsNotAParty` for the one direction in which the two
-  interact.
+  ambiguous, and §8.5.2.2 refuses it at check rather than picking (E156,
+  E157).
+* **A meeting.**  Two owners' declarations are two types, so a value of
+  one that reaches a place expecting the other — ``bone(aone(6))`` with
+  ``liba::aone(@Int -> @Shape)`` and ``libb::bone(@Shape -> @Int)`` — is
+  an ordinary mismatch at check whose message names both owners.  Before
+  #1694 the checker unified two same-named cross-module ADTs, and with the
+  rename in place and the flow condition removed the program returned
+  ``100`` where ``7`` is the answer; :class:`TestMeeting` keeps that
+  measurement.
+* **A prelude name.**  ``Option``, ``Result``, ``Ordering`` and every type
+  name the prelude can provide are reserved (E158, #1469), as built-in
+  function names are E151's and effect names E152's.
+* **The entry's own declaration** is an owner like a module's: an entry
+  ``data Shape`` beside a module's is two types
+  (:class:`TestTheEntryIsAnOwnerToo`).
 """
 from __future__ import annotations
 
@@ -54,6 +46,7 @@ from tests.module_fixture_helpers import (
     build_multi_module,
     build_multi_module_past_check,
     module_value,
+    refused_at_check as _refused_at_check,
 )
 
 # =====================================================================
@@ -214,9 +207,8 @@ class TestTheThreeRemedies:
         """#1317 measurement 2: the shadowing §8.5.4 describes for names
         did not lift the collision.
 
-        E623 is silent here too, and correctly: the entry can name neither
-        module's ``Shape``, so once both are qualified there is no pair
-        left for the entry-versus-module rail to report.
+        Nothing is refused: the entry's ``Shape`` and each module's are
+        three types (#1694).
         """
         verify, codes, answer = _cell(
             tmp_path / "local",
@@ -255,19 +247,19 @@ class TestTheThreeRemedies:
         assert verify == [], verify
         assert answer == ("ok", 7), answer
 
-    def test_the_keeper_is_the_declaration_the_entry_names(
+    def test_no_declaration_keeps_the_bare_name(
         self, tmp_path: Path,
     ) -> None:
-        """And it is ``liba``'s, not whichever module resolved first."""
+        """Whichever one the entry names, each module's declaration is under
+        its own link name (#1694): there is no keeper."""
         gen = _generator(
             tmp_path / "keeper-sym",
             {"liba.vera": _LIBA, "libb.vera": _LIBB,
              "main.vera": _ENTRY_NAMES_LIBA},
         )
-        assert "Shape" in gen._adt_layouts, sorted(gen._adt_layouts)
-        assert gen._adt_layout_owners.get("Shape") == ("liba",)
+        assert "Shape" not in gen._adt_layouts, sorted(gen._adt_layouts)
+        assert gen._adt_layout_owners.get("mod$liba$Shape") == ("liba",)
         assert "mod$libb$Shape" in gen._adt_layouts, sorted(gen._adt_layouts)
-        assert "mod$liba$Shape" not in gen._adt_layouts
 
 
 # =====================================================================
@@ -286,8 +278,10 @@ class TestTwoOwnersOneEntry:
         )
         assert "mod$liba$Shape" in gen._adt_layouts
         assert "mod$libb$Shape" in gen._adt_layouts
-        assert list(gen._adt_layouts["mod$liba$Shape"]) == ["mod$liba$Sq"]
-        assert list(gen._adt_layouts["mod$libb$Shape"]) == ["mod$libb$Cr"]
+        assert list(gen._adt_layouts["mod$liba$Shape"]) == [
+            "mod$liba$Shape$Sq"]
+        assert list(gen._adt_layouts["mod$libb$Shape"]) == [
+            "mod$libb$Shape$Cr"]
 
     def test_the_bare_name_is_left_to_nobody(self, tmp_path: Path) -> None:
         """No keeper, so no registry anywhere holds the bare spelling.
@@ -384,34 +378,31 @@ public fn bone(@Int -> @Int)
 """
 
 
-class TestThePreludeIsReserved:
-    """R7: a prelude name bypasses the RENAME, and E621 decides it
-    unchanged.
+def _check_refusals(
+    tmp_path: Path, files: dict[str, str],
+) -> list[tuple[str | None, str]]:
+    """``(code, file name)`` of each check error for the program."""
+    checked = pipeline.check(pipeline.write_tree(tmp_path, files))
+    return [(d.error_code, Path(d.location.file or "").name)
+            for d in checked.errors]
 
-    Per-owner ADT identity is a rule between USER modules, so the rename
-    holds back from every name the prelude can provide — otherwise it would
-    dissolve the very pairs E621 exists to refuse.  What the exemption is
-    NOT is a ban on the name: E621 is a CONTENTION check, and a module
-    restating the prelude's exact shape shares the one layout and compiles.
-    ``examples/vera/collections.vera`` is that shape in this repository —
-    a module declaring ``public data Option<T> { None, Some(T) }`` that
-    ``examples/modules.vera`` imports — so a blanket refusal would refuse a
-    shipped example.  :meth:`test_a_module_restating_the_prelude_still_
-    compiles` is the cell that keeps the two apart.
+
+class TestThePreludeIsReserved:
+    """R7: a prelude name is never qualified apart; since #1469 it is
+    reserved outright.
+
+    Per-owner ADT identity is a rule between USER modules.  A module's
+    declaration under a name the prelude provides is refused at check
+    (E158), whatever its shape, a restatement of the prelude's own included,
+    where code generation once decided the pair by contention (E621).
     """
 
-    def test_a_module_restating_the_prelude_still_compiles(
+    def test_a_module_restating_the_prelude_is_refused(
         self, tmp_path: Path,
     ) -> None:
-        """The half a blanket refusal would break.
-
-        ``liba`` declares the prelude's ``Option`` with the prelude's own
-        shape, beside a module whose unrelated ``Shape`` is not contended
-        at all.  E621 is silent — the single registered layout serves both
-        declarations — and the program runs.  Read against the two cells
-        below, this is what shows the exemption withholds the RENAME and
-        leaves E621's shape test to decide, rather than refusing the name.
-        """
+        """``liba`` declares the prelude's ``Option`` with the prelude's own
+        shape: refused at its declaration, where E621 once found nothing to
+        contend with and let the single layout serve both."""
         liba = """\
 module liba;
 
@@ -428,43 +419,42 @@ public fn aone(@Int -> @Int)
   }
 }
 """
-        verify, codes, answer = _cell(
+        refusals = _check_refusals(
             tmp_path / "restate-prelude",
             {"liba.vera": liba, "libb.vera": _LIBB, "main.vera": _ENTRY},
         )
-        assert codes == [], codes
-        assert verify == [], verify
-        assert answer == ("ok", 7), answer
+        assert refusals == [("E158", "liba.vera")], refusals
 
-    def test_two_modules_declaring_a_prelude_name_stay_e621(
+    def test_two_modules_declaring_a_prelude_name_are_refused(
         self, tmp_path: Path,
     ) -> None:
-        _verify, codes, _answer = _cell(
+        refusals = _check_refusals(
             tmp_path / "prelude",
             {"liba.vera": _PRELUDE_A, "libb.vera": _PRELUDE_B,
              "main.vera": _ENTRY},
         )
-        assert "E621" in codes, codes
+        assert ("E158", "liba.vera") in refusals, refusals
+        assert ("E158", "libb.vera") in refusals, refusals
 
-    def test_a_single_module_declaring_a_prelude_name_stays_e621(
+    def test_a_single_module_declaring_a_prelude_name_is_refused(
         self, tmp_path: Path,
     ) -> None:
-        """The other direction: nothing to contend with among modules, so
-        the rename has no reason to fire — and E621 still does."""
+        """Nothing to contend with among modules, and the declaration is
+        refused all the same."""
         entry = _ENTRY.replace("import libb(bone);\n", "").replace(
             " + bone(4)", " + 4")
-        _verify, codes, _answer = _cell(
+        refusals = _check_refusals(
             tmp_path / "prelude-one",
             {"liba.vera": _PRELUDE_A, "main.vera": entry},
         )
-        assert "E621" in codes, codes
+        assert refusals and refusals[0] == ("E158", "liba.vera"), refusals
 
     def test_the_same_shape_under_a_user_name_is_admitted(
         self, tmp_path: Path,
     ) -> None:
         """The control that isolates the RESERVATION from the shapes.
 
-        Byte-identical declarations to the E621 cell above, renamed to a
+        Byte-identical declarations to the reserved-name cell above, renamed to a
         name the prelude does not own: it compiles and runs, so what
         refuses the pair above is the prelude's ownership of ``Option``
         and nothing else about those two declarations.
@@ -479,20 +469,12 @@ public fn aone(@Int -> @Int)
         assert answer == ("ok", 7), answer
 
     def test_every_reserved_name_is_held_back(self, tmp_path: Path) -> None:
-        """MEASURED over the LIVE reservation, not grepped (PR review).
-
-        An earlier version of this cell asserted that the source of
-        ``_contended_adt_renames`` contained the string
-        ``builtin_adt_names | prelude_adt_names()`` — which tests the
-        spelling of one line and would stay green through any change that
-        computed the set and then ignored it.  This drives the rename
-        itself, once per name the prelude can provide, and asserts each is
-        left in the bare slot: two modules declaring it differently reach
-        E621 rather than being qualified apart.
+        """MEASURED over the LIVE reservation, once per name the prelude
+        provides: two modules declaring it differently are each refused at
+        check (E158), never qualified apart.
 
         Parameterless over the LIVE set, so a prelude ADT added later is
-        covered without this cell being edited.  Mutation: replacing
-        ``reserved`` with an empty frozenset reds every name here.
+        covered without this cell being edited.
         """
         from vera.prelude import prelude_adt_names
 
@@ -530,19 +512,12 @@ public fn bone(@Int -> @Int)
   }}
 }}
 """
-            _verify, _result, cg_errors = build_multi_module(
+            refusals = _check_refusals(
                 tmp_path / f"reserved-{name}",
                 {"liba.vera": liba, "libb.vera": libb, "main.vera": _ENTRY},
             )
-            codes = _codes(cg_errors)
-            # Every prelude name must refuse this pair rather than qualify
-            # it apart.  Which CODE depends on whether the program demands
-            # the block (`Json`, `HtmlNode`, `Request`, `Response` inject
-            # only on demand, so an undemanded one falls to the ordinary
-            # module-versus-module rail); what is asserted is that the pair
-            # is REFUSED, never renamed.
-            assert codes, f"{name}: qualified apart instead of refused"
-            assert set(codes) <= {"E609", "E610", "E621"}, (name, codes)
+            assert ("E158", "liba.vera") in refusals, (name, refusals)
+            assert ("E158", "libb.vera") in refusals, (name, refusals)
             checked += 1
         assert checked == len(reserved)
 
@@ -742,8 +717,10 @@ class TestTheConstructorAxis:
             tmp_path / "ctor-sym",
             {"liba.vera": _ALPHA, "libb.vera": _BETA, "main.vera": _ENTRY},
         )
-        assert list(gen._adt_layouts["mod$liba$Alpha"]) == ["mod$liba$Sq"]
-        assert list(gen._adt_layouts["mod$libb$Beta"]) == ["mod$libb$Sq"]
+        assert list(gen._adt_layouts["mod$liba$Alpha"]) == [
+            "mod$liba$Alpha$Sq"]
+        assert list(gen._adt_layouts["mod$libb$Beta"]) == [
+            "mod$libb$Beta$Sq"]
         assert "Alpha" not in gen._adt_layouts
         assert "Beta" not in gen._adt_layouts
 
@@ -855,19 +832,21 @@ class TestMeeting:
     Measured with the rename in place and the flow condition removed: a
     check-green, verify-green program compiling to exit 0 and answering
     ``100`` where ``7`` is correct.  A silent wrong answer is worse than
-    the refusal it replaced, so the pair stays E609's.
+    the refusal it replaced.  The two declarations are two types (#1694),
+    so the meeting is refused at check, an ordinary mismatch naming both
+    owners.
     """
 
     def test_a_value_flowing_between_two_owners_is_refused(
         self, tmp_path: Path,
     ) -> None:
-        _verify, codes, answer = _cell(
+        codes, text = _refused_at_check(
             tmp_path / "flow",
             {"liba.vera": _FLOW_A, "libb.vera": _FLOW_B,
              "main.vera": _ENTRY_FLOW},
         )
-        assert "E609" in codes, codes
-        assert answer == ("no-run", "compilation had errors"), answer
+        assert "E202" in codes, codes
+        assert "liba.Shape" in text and "libb.Shape" in text, text
 
     def test_the_same_two_modules_without_the_flow_are_admitted(
         self, tmp_path: Path,
@@ -916,13 +895,13 @@ class TestMeeting:
         ).replace("public fn bone(@Shape -> @Int)",
                   "public fn bone(@Sh -> @Int)").replace(
             "  match @Shape.0 {", "  match @Sh.0 {")
-        _verify, codes, answer = _cell(
+        codes, text = _refused_at_check(
             tmp_path / "alias-flow",
             {"liba.vera": liba, "libb.vera": libb,
              "main.vera": _ENTRY_FLOW},
         )
-        assert "E609" in codes, codes
-        assert answer == ("no-run", "compilation had errors"), answer
+        assert "E202" in codes, codes
+        assert "liba.Shape" in text and "libb.Shape" in text, text
 
     def test_a_flow_through_an_imported_adts_field_is_a_flow_too(
         self, tmp_path: Path,
@@ -952,11 +931,12 @@ public fn main(@Unit -> @Int)
   }
 }
 """
-        _verify, codes, _answer = _cell(
+        codes, text = _refused_at_check(
             tmp_path / "field-flow",
             {"liba.vera": liba, "libb.vera": _FLOW_B, "main.vera": entry},
         )
-        assert "E609" in codes, codes
+        assert "E202" in codes, codes
+        assert "liba.Shape" in text and "libb.Shape" in text, text
 
 
 class TestTheEntryIsAnOwnerToo:
@@ -966,15 +946,10 @@ class TestTheEntryIsAnOwnerToo:
     DIFFERENT question from E609, and the two disagreed: an entry declaring
     ``Shape`` beside one contending module was refused, and adding a second
     contending module qualified both away and lifted the refusal.  The
-    entry is now a party to the same rule — it owns its declarations, keeps
-    the bare slot (its program is the one codegen was handed and is never
-    rewritten), and a module declaration it cannot MEET is qualified away
-    exactly as a second module's would be.
-
-    E623 keeps its own code and its own location, at the entry declaration
-    naming the module's file and line: which pair meets decides which code
-    speaks, and the entry-versus-module pair is the one whose diagnostic
-    can point at the file `vera compile` was given.
+    entry is a party to the same rule (#1694): its declaration is a type of
+    its own beside each module's, keeping its bare name, which is its link
+    name, and a module's value that meets the entry's type is an ordinary
+    mismatch at check, located where the value meets it.
     """
 
     def test_a_module_the_entry_cannot_name_is_qualified_away(
@@ -1005,15 +980,15 @@ public fn main(@Unit -> @Int)
         assert verify == [], verify
         assert answer == ("ok", 3), answer
 
-    def test_a_module_whose_value_reaches_the_entry_is_still_e623(
+    def test_a_module_value_meeting_the_entrys_type_is_refused(
         self, tmp_path: Path,
     ) -> None:
-        """And the half #1312 exists for, unchanged in substance.
+        """And the half #1312 exists for, refused at check (#1694).
 
         ``aone`` RETURNS ``liba``'s ``Shape``, so a value of it reaches the
-        entry, whose own declaration of the name is a different layout.
-        The two meet, neither can be qualified away, and the rail refuses
-        the pair at the entry declaration.
+        entry, whose own declaration of the name is another type.  The
+        entry's constructor cannot match it, and the pattern mismatch names
+        both owners.
         """
         liba = _LIBA.replace(
             "public fn aone(@Int -> @Int)", "public fn aone(@Int -> @Shape)",
@@ -1035,12 +1010,12 @@ public fn main(@Unit -> @Int)
   }
 }
 """
-        _verify, codes, answer = _cell(
+        codes, text = _refused_at_check(
             tmp_path / "e623-meets",
             {"liba.vera": liba, "main.vera": entry},
         )
-        assert "E623" in codes, codes
-        assert answer == ("no-run", "compilation had errors"), answer
+        assert "E314" in codes, codes
+        assert "liba.Shape" in text, text
 
     def test_the_entrys_declaration_counts_as_an_owner(
         self, tmp_path: Path,
@@ -1049,10 +1024,10 @@ public fn main(@Unit -> @Int)
 
         The entry declares ``Shape`` AND receives ``liba``'s through
         ``aone``'s return type, while ``libb`` declares a third.  Renaming
-        the modules apart would leave E623 with no pair to refuse while the
-        entry's own constructors still read ``liba``'s value — so the
-        entry's declaration is counted as an owner and the name is not
-        renamed at all.
+        the modules apart would leave the entry's own constructors reading
+        ``liba``'s value, so the entry's declaration is an owner like any
+        other: its constructors cannot match ``liba``'s type, refused at
+        check (#1694).
         """
         libb = """\
 module libb;
@@ -1086,19 +1061,20 @@ public fn main(@Unit -> @Int)
   } + bone(1)
 }
 """
-        _verify, codes, answer = _cell(
+        codes, text = _refused_at_check(
             tmp_path / "entry-owner",
             {"liba.vera": _FLOW_A, "libb.vera": libb, "main.vera": entry},
         )
-        assert "E623" in codes, codes
-        assert answer == ("no-run", "compilation had errors"), answer
+        assert "E314" in codes, codes
+        assert "liba.Shape" in text, text
 
 
-class TestRestatementIsStillNotAContention:
-    """The #1312 relaxation is unchanged: identical layouts share the one
-    slot, which is why no corpus program's emitted WAT moves."""
+class TestARestatementIsATypeOfItsOwn:
+    """Two modules declaring one layout under one name declare two types
+    (#1694): each is under its own link name, as any two modules'
+    same-named types are, and a program that keeps them apart runs."""
 
-    def test_two_modules_restating_one_type_are_not_renamed(
+    def test_two_modules_restating_one_type_are_two_types(
         self, tmp_path: Path,
     ) -> None:
         libb = _LIBA.replace("module liba", "module libb").replace(
@@ -1107,14 +1083,20 @@ class TestRestatementIsStillNotAContention:
             tmp_path / "restate",
             {"liba.vera": _LIBA, "libb.vera": libb, "main.vera": _ENTRY},
         )
-        assert "Shape" in gen._adt_layouts
-        assert gen._contended_adt_display_names == {}
+        assert "Shape" not in gen._adt_layouts
+        assert "mod$liba$Shape" in gen._adt_layouts
+        assert "mod$libb$Shape" in gen._adt_layouts
+        assert module_value(
+            gen._result,  # type: ignore[attr-defined]
+        ) == ("ok", 7)
 
-    def test_a_restatement_spelled_through_an_alias_is_not_renamed(
+    def test_a_restatement_spelled_through_an_alias_is_two_types(
         self, tmp_path: Path,
     ) -> None:
-        """The rename asks the shape question with the SAME inputs the
-        other three rails are given (PR review).
+        """A restatement spelled through a module's own alias is the same
+        case: two declarations, two types.  The rename this replaced asked
+        the shape question with the SAME inputs the other three rails were
+        given (PR review).
 
         §8.4.1 makes an alias module-local, so ``type Count = Int;`` beside
         ``data Shape { Sq(Count) }`` is a restatement of ``Sq(Int)`` and
@@ -1154,9 +1136,8 @@ public fn bone(@Int -> @Int)
             tmp_path / "alias-restate",
             {"liba.vera": _LIBA, "libb.vera": libb, "main.vera": _ENTRY},
         )
-        assert gen._contended_adt_display_names == {}
-        assert "Shape" in gen._adt_layouts
-        assert not [k for k in gen._adt_layouts if k.startswith("mod$")]
+        assert "Shape" not in gen._adt_layouts
+        assert {"mod$liba$Shape", "mod$libb$Shape"} <= set(gen._adt_layouts)
         assert module_value(
             gen._result,  # type: ignore[attr-defined]
         ) == ("ok", 7)
@@ -1210,8 +1191,9 @@ class TestOneSymbolPerOwnerEverywhere:
         self, tmp_path: Path,
     ) -> None:
         gen = _generator(tmp_path / "diff-keys", _DIFFERENTIAL_FILES)
-        renamed_bare = set(gen._contended_adt_display_names.values())
-        assert renamed_bare == {"Shape", "Sq", "Cr"}, renamed_bare
+        # Every module type and user constructor is under its link name
+        # (#1694), so none of the names the two modules declare is a key.
+        renamed_bare = {"Shape", "Sq", "Cr"}
         for attr, value in vars(gen).items():
             if not isinstance(value, dict):
                 continue
@@ -1229,11 +1211,8 @@ class TestOneSymbolPerOwnerEverywhere:
         with the constructor-to-owner map agreeing.
         """
         gen = _generator(tmp_path / "diff-count", _DIFFERENTIAL_FILES)
-        table = gen._contended_adt_display_names
-        types = {m for m in table if table[m] == "Shape"}
-        ctors = {m for m in table if table[m] in {"Sq", "Cr"}}
-        assert len(types) == 2, sorted(types)
-        assert len(ctors) == 2, sorted(ctors)
+        types = {"mod$liba$Shape", "mod$libb$Shape"}
+        ctors = {"mod$liba$Shape$Sq", "mod$libb$Shape$Cr"}
         for mangled in types:
             assert mangled in gen._adt_layouts, (
                 f"{mangled} has no registered layout — the rename dropped it"
@@ -1556,7 +1535,12 @@ public fn main(@Unit -> @String)
             text = path.read_text(encoding="utf-8")
             assert "mod$" not in text, (path.name, text[:300])
         wasm = (tmp_path / "bundle" / "module.wasm").read_bytes()
-        for mangled in gen._contended_adt_display_names:
+        linked_ctors = [
+            ctor for ctors in gen._adt_layouts.values() for ctor in ctors
+            if "$" in ctor
+        ]
+        assert linked_ctors, "no constructor under a link name: vacuous"
+        for mangled in linked_ctors:
             # The constructor STRINGS live in the data section; the symbol
             # may appear elsewhere in the binary as a WAT identifier, which
             # is the identity itself.  What must not be there is a rendered
@@ -1588,31 +1572,32 @@ public fn main(@Unit -> @String)
         )
         wat = gen._result.wat  # type: ignore[attr-defined]
         # `mangle_type_name` escapes `$` for a WAT identifier, so the
-        # qualified identity appears as `mod_U24_<path>_U24_<Name>` — which
-        # is also why no WAT symbol can ever read as a `mod$` leak in text
-        # output, and why the battery's grep and this assertion do not
-        # contradict each other.
+        # qualified TYPE identity appears as `mod_U24_<path>_U24_<Name>`, and
+        # no symbol derived from the renamed type reads as its `mod$` spelling
+        # in text output.  A FUNCTION's symbol is its link name
+        # (`mod$<path>$<name>`, #1694), which is not this rename.
         assert "mod_U24_liba_U24_" in wat, wat[-400:]
         assert "mod_U24_libb_U24_" in wat, wat[-400:]
-        assert "mod$" not in wat
+        assert "mod$liba$Shape" not in wat and "mod$libb$Shape" not in wat
 
-    def test_the_strip_and_the_rename_table_are_one_derivation(
+    def test_the_strip_names_every_link_name_as_it_is_declared(
         self, tmp_path: Path,
     ) -> None:
-        """The prose rewrite and the constructor head cannot disagree.
-
-        The diagnostic boundary substitutes inside sentences and so needs
-        the table; ``show`` strips a bare symbol and so needs the function.
-        The table's VALUES are produced by the function, which is what makes
-        that one answer rather than two.
-        """
+        """The constructor head and the diagnostic boundary cannot
+        disagree: both strip a link name to the name it was declared under
+        (`display_adt_name`, #1694), for every type and constructor the
+        generator holds under one."""
         from vera.naming import display_adt_name
 
         gen = _generator(tmp_path / "one-derivation", _DIFFERENTIAL_FILES)
-        table = gen._contended_adt_display_names
-        assert table, "no rename happened, so the claim is untested here"
-        for mangled, bare in table.items():
-            assert display_adt_name(mangled) == bare, (mangled, bare)
+        linked = {
+            name: ctors for name, ctors in gen._adt_layouts.items()
+            if name.startswith("mod$")
+        }
+        assert linked, "no type under a link name: vacuous"
+        for name, ctors in linked.items():
+            assert display_adt_name(name) == "Shape", name
+            assert {display_adt_name(c) for c in ctors} <= {"Sq", "Cr"}, ctors
 
     def test_the_strip_leaves_an_unqualified_name_alone(self) -> None:
         """Total and idempotent, so applying it at a surface that never
@@ -1624,64 +1609,60 @@ public fn main(@Unit -> @String)
         assert display_adt_name("mod$a$b$Shape") == "Shape"
         assert display_adt_name(display_adt_name("mod$liba$Sq")) == "Sq"
 
-    def test_the_strip_uses_the_rename_table_not_a_pattern(
+    def test_the_diagnostic_boundary_spells_every_link_name_as_written(
         self, tmp_path: Path,
     ) -> None:
-        """The DIAGNOSTIC boundary rewrites inside prose from the table, so
-        a FUNCTION mangled by #814's rerouting — a different rename with its
-        own reporting — is left exactly as it was."""
+        """The DIAGNOSTIC boundary rewrites inside prose: a type's and a
+        constructor's link name to the name it is declared under, a
+        function's to the name the binding's display table gives it
+        (#1694)."""
         from vera.errors import Diagnostic, SourceLocation
 
         gen = _generator(tmp_path / "unmangle", _DIFFERENTIAL_FILES)
         diag = Diagnostic(
             description="Type 'mod$liba$Shape' and fn 'mod$liba$aone'.",
             location=SourceLocation(file="x.vera"),
-            fix="Rename 'mod$libb$Cr'.",
+            fix="Rename 'mod$libb$Shape$Cr'.",
         )
-        gen._unmangle_adt_names([diag])
-        assert diag.description == "Type 'Shape' and fn 'mod$liba$aone'."
+        gen._unmangle_fn_names([diag])
+        assert diag.description == "Type 'Shape' and fn 'aone'."
         assert diag.fix == "Rename 'Cr'."
 
-    def test_it_is_a_no_op_without_a_rename(self, tmp_path: Path) -> None:
+    def test_a_diagnostic_without_a_link_name_is_unchanged(
+        self, tmp_path: Path,
+    ) -> None:
         from vera.errors import Diagnostic, SourceLocation
 
-        gen = _generator(
-            tmp_path / "no-rename",
-            {"liba.vera": _LIBA, "main.vera": _ENTRY.replace(
-                "import libb(bone);\n", "").replace(" + bone(4)", " + 4")},
-        )
-        assert gen._contended_adt_display_names == {}
+        gen = _generator(tmp_path / "no-rename", _DIFFERENTIAL_FILES)
         diag = Diagnostic(
-            description="mod$liba$Shape",
+            description="Type 'Shape' of 'liba'.",
             location=SourceLocation(file="x.vera"),
         )
-        gen._unmangle_adt_names([diag])
-        assert diag.description == "mod$liba$Shape"
+        gen._unmangle_fn_names([diag])
+        assert diag.description == "Type 'Shape' of 'liba'."
 
 
 # =====================================================================
-# Alias-hidden shapes, and the E623 asymmetry — both measured
+# Alias-hidden shapes, and the entry's verdict with one owner or two
 # =====================================================================
 
 
 class TestShapesReadThroughTheDeclaringModulesAliases:
-    """Contention is decided on RESOLVED shapes, not on spellings.
+    """Two modules' declarations are two types whatever their spellings.
 
     §8.4.1 makes an alias module-local, so two modules can spell one layout
-    differently and two layouts identically.  The rename is decided at the
-    top of ``_register_modules``, before the harvest fills
-    ``_module_type_aliases`` — so it builds each module's alias maps from
-    that module's own declarations rather than reading tables that are
-    still empty.  Both directions are measured, because reading unresolved
-    spellings gets each one wrong in the opposite way.
+    differently and two layouts identically.  Each module's type is its own
+    (#1694), laid out under its link name through its own module's
+    aliases; both directions are measured, because reading unresolved
+    spellings got each one wrong in the opposite way before.
     """
 
-    def test_one_layout_spelled_two_ways_is_not_contended(
+    def test_one_layout_spelled_two_ways_is_two_types(
         self, tmp_path: Path,
     ) -> None:
         """Covered in full by
-        :meth:`TestRestatementIsStillNotAContention
-        .test_a_restatement_spelled_through_an_alias_is_not_renamed`; kept
+        :meth:`TestARestatementIsATypeOfItsOwn
+        .test_a_restatement_spelled_through_an_alias_is_two_types`; kept
         here as the sibling of the cell below so the pair reads together."""
         libb = _LIBA.replace("module liba", "module libb").replace(
             "aone", "bone").replace(
@@ -1692,7 +1673,7 @@ class TestShapesReadThroughTheDeclaringModulesAliases:
             tmp_path / "one-layout",
             {"liba.vera": _LIBA, "libb.vera": libb, "main.vera": _ENTRY},
         )
-        assert gen._contended_adt_display_names == {}
+        assert {"mod$liba$Shape", "mod$libb$Shape"} <= set(gen._adt_layouts)
 
     def test_two_layouts_spelled_one_way_are_contended(
         self, tmp_path: Path,
@@ -1701,10 +1682,10 @@ class TestShapesReadThroughTheDeclaringModulesAliases:
 
         Both modules write ``data Shape { Sq(Count) }`` — the SAME
         spelling — while ``Count`` is ``Int`` in one and ``Bool`` in the
-        other.  Compared as text the two look identical, so no contention
-        is seen, nothing is renamed, and the pair lands back on E609 with
-        both of #1317's import-side remedies failing.  Compared as resolved
-        layouts they are distinct, are qualified apart, and run.
+        other.  Compared as text the two looked identical, so before #1694
+        a reading of the spelling saw no contention, renamed nothing, and
+        the pair landed on E609.  Each is its own type, laid out through
+        its own module's alias, and the program runs.
         """
         liba = """\
 module liba;
@@ -1806,14 +1787,12 @@ class TestTheEntryRailIsMonotonic:
     the two modules contend with each other, qualified both away, left the
     entry alone in the bare slot, and lifted the refusal.
 
-    Making the entry an owner in the same rule settles it in the accepting
-    direction, and both cells below assert the SAME verdict: neither module
-    can meet the entry's declaration, so each is qualified away whether
-    there is one of them or two.  The refusing direction is asserted by
-    :class:`TestTheEntryIsAnOwnerToo` — a module whose value reaches the
-    entry is still refused with one module or with two, because the rename
-    declines for the pair that meets rather than for the pair that happens
-    to be there.
+    Typing each declaration by its own identity (#1694) settles it in both
+    directions, and both cells below assert the SAME verdict: each module's
+    ``Shape`` is a type of its own whether there is one of them or two.
+    The refusing direction is asserted by :class:`TestTheEntryIsAnOwnerToo`:
+    a module's value that reaches the entry's ``Shape`` is a mismatch at
+    check with one module or with two.
     """
 
     def test_one_contending_module_beside_the_entry(
@@ -1875,16 +1854,15 @@ public fn main(@Unit -> @Int)
             "import liba(aone);", "import liba(aone);\nimport libb(bone);",
         ).replace("    Own(@Int) -> @Int.0\n  }\n",
                   "    Own(@Int) -> @Int.0\n  } + bone(1)\n")
-        _v1, one, ans1 = _cell(
+        one, _text1 = _refused_at_check(
             tmp_path / "meet-one",
             {"liba.vera": liba, "main.vera": entry_one})
-        _v2, two, ans2 = _cell(
+        two, _text2 = _refused_at_check(
             tmp_path / "meet-two",
             {"liba.vera": liba, "libb.vera": _E623_LIBB,
              "main.vera": entry_two})
-        assert "E623" in one, one
-        assert "E623" in two, two
-        assert ans1 == ans2 == ("no-run", "compilation had errors")
+        assert "E314" in one, one
+        assert "E314" in two, two
 
 
 class TestTheFlowSurfaceFailsClosed:
@@ -1894,32 +1872,6 @@ class TestTheFlowSurfaceFailsClosed:
     both used to fail OPEN — reading "no crossing" from an input they did
     not understand, which is the direction that admits an unsound rename.
     """
-
-    def test_an_unknown_declaration_kind_is_walked_whole(self) -> None:
-        """A declaration kind the surface dispatch has not learned must
-        over-count mentions, not report none (PR review).
-
-        An ``else: surface = []`` reads such a kind as mentioning no types
-        at all, so the flow condition stops seeing what it carries.  The
-        fallback walks the whole declaration instead: an extra mention can
-        only refuse a rename, never admit one.
-        """
-        from dataclasses import dataclass
-
-        from vera import ast
-        from vera.codegen.modules import CrossModuleMixin
-
-        @dataclass(frozen=True)
-        class _FutureDecl(ast.Decl):
-            """A declaration kind the dispatch does not know."""
-
-            name: str = "Zz"
-            carried: ast.TypeExpr = ast.NamedType(name="Shape", type_args=None)
-
-        mentions = CrossModuleMixin._exported_type_mentions(
-            _FutureDecl(), {},
-        )
-        assert "Shape" in mentions, mentions
 
     def test_repeated_imports_of_one_module_union_their_filters(
         self, tmp_path: Path,
@@ -1977,12 +1929,12 @@ public fn helper(@Int -> @Int)
 """
         entry = _ENTRY_FLOW.replace(
             "import liba(aone);", "import liba(aone);\nimport liba(helper);")
-        _verify, codes, answer = _cell(
+        codes, text = _refused_at_check(
             tmp_path / "dup-import",
             {"liba.vera": liba, "libb.vera": _FLOW_B, "main.vera": entry},
         )
-        assert "E609" in codes, codes
-        assert answer == ("no-run", "compilation had errors"), answer
+        assert "E202" in codes, codes
+        assert "liba.Shape" in text and "libb.Shape" in text, text
 
 
 class TestADiagnosticStreamThatIsNotEmpty:
@@ -1995,12 +1947,11 @@ class TestADiagnosticStreamThatIsNotEmpty:
     class covers the diagnostic stream itself, by compiling a program that
     HAS a rename and also reports.
 
-    What cannot be built today is a diagnostic that NAMES a renamed type:
-    the codegen diagnostics that interpolate an ADT name are the collision
-    rails (E609/E610/E621/E623), and a declaration those report on is by
-    construction one the rename declined to touch.  That is why the strip
-    at the diagnostic boundary is defence in depth and is pinned directly
-    on ``_unmangle_adt_names`` as well as here.
+    Every module type reaches code generation under its link name (#1694),
+    so a code-generation diagnostic that names a type names it so, and the
+    display pass at the diagnostic boundary (``_unmangle_fn_names``, over
+    :func:`vera.binding.display_link_names`) spells it as the reader
+    writes it; the cell below drives one that does.
     """
 
     def test_a_renamed_program_with_real_diagnostics_leaks_nothing(
@@ -2040,13 +1991,14 @@ public fn broken(@Int -> @Int)
     ) -> None:
         """The cell that makes the strip LOAD-BEARING (PR review, N1).
 
-        Deleting the ``_unmangle_adt_names`` call from ``compile_program``
-        was inert against every other cell here: the sweeps run over
+        Deleting the display pass from ``compile_program`` (then
+        ``_unmangle_adt_names``, now ``_unmangle_fn_names``) was inert
+        against every other cell here: the sweeps run over
         programs whose diagnostics never mention an ADT, so nothing read
         the one thing the strip exists to change.  This drives a diagnostic
         that DOES name the type — ``liba``'s ``Shape`` has an ``Array``
         field, so codegen's structural-``Eq`` rail reports E613 about it —
-        on a program where ``Shape`` is contended and therefore renamed.
+        on a program where ``Shape`` carries its link name.
         Measured with the call deleted: ``Type 'mod$liba$Shape' does not
         satisfy ability 'Eq'``.
 
@@ -2089,14 +2041,13 @@ public fn aone(@Int -> @Int)
 
 
 class TestOneRuleDecidesBothPairs:
-    """E609 and E623 stop deciding different questions (#1423).
+    """One rule decides both pairs (#1423, #1694).
 
-    Per-owner identity applied to the modules alone left two rails asking
-    different things about the same slot, and a verdict that changed when
-    an unrelated module joined the build.  The entry is now a party to the
-    same rule, so a `data` declaration is refused exactly when some
-    namespace can MEET another of the same name — and which CODE reports it
-    says which pair was caught, not which test was run.
+    Per-owner identity applied to the modules alone left two rails (E609,
+    E623) asking different things about the same slot, and a verdict that
+    changed when an unrelated module joined the build.  Every declaration
+    is now a type of its own, the entry's included, so a program is refused
+    exactly where a value of one meets another, at check.
     """
 
     def test_the_entry_keeps_the_bare_slot(self, tmp_path: Path) -> None:
@@ -2116,20 +2067,16 @@ class TestOneRuleDecidesBothPairs:
             {"liba.vera": _LIBA, "libb.vera": _LIBB, "main.vera": entry},
         )
         assert "Shape" in gen._adt_layouts
-        assert list(gen._adt_layouts["Shape"]) == ["Own"]
+        assert list(gen._adt_layouts["Shape"]) == ["Shape$Own"]
         assert "mod$liba$Shape" in gen._adt_layouts
         assert "mod$libb$Shape" in gen._adt_layouts
 
-    def test_a_module_restating_the_entrys_type_still_shares_the_slot(
+    def test_a_module_restating_the_entrys_type_is_a_type_of_its_own(
         self, tmp_path: Path,
     ) -> None:
-        """Shape still decides, so the relaxation costs no sharing.
-
-        A module whose declaration matches the entry's describes the one
-        layout, so it keeps the bare name beside it rather than being given
-        a second registration of the same thing — which is what keeps the
-        corpus's emitted WAT where it is.
-        """
+        """A module whose declaration matches the entry's declares a second
+        type all the same (#1694): the entry's keeps its name, the module's
+        takes its link name."""
         libb = _LIBB.replace(
             "public data Shape { Cr(Bool) }",
             "public data Shape { Own(Int) }").replace(
@@ -2145,21 +2092,17 @@ class TestOneRuleDecidesBothPairs:
             {"libb.vera": libb, "main.vera": entry.replace(
                 "import liba(aone);\n", "").replace("aone(3) + ", "3 + ")},
         )
-        assert gen._contended_adt_display_names == {}
-        assert list(gen._adt_layouts["Shape"]) == ["Own"]
+        assert list(gen._adt_layouts["Shape"]) == ["Shape$Own"]
+        assert list(gen._adt_layouts["mod$libb$Shape"]) == [
+            "mod$libb$Shape$Own"]
 
     def test_a_reserved_name_meets_whatever_either_can_reach(
         self, tmp_path: Path,
     ) -> None:
-        """The one pair that meets without either side reaching the other.
-
-        The prelude's names are never qualified away (R7), so an entry
-        ``data Json`` and a module's share the one slot however the
-        importer filters or shadows them — they meet by construction, and
-        the rail refuses them on the same rule rather than by an exception
-        to it.  This is why #1312's own cells for `Json` stay exactly as
-        they were.
-        """
+        """The one pair that once met without either side reaching the
+        other: an entry ``data Json`` and a module's shared the prelude's
+        slot (E623).  Both take a reserved name (#1469), so each is refused
+        at check."""
         libb = """\
 module blib;
 
@@ -2188,21 +2131,20 @@ public fn main(@Unit -> @Int)
   probe(3)
 }
 """
-        _verify, codes, _answer = _cell(
+        refusals = _check_refusals(
             tmp_path / "reserved-meets",
             {"blib.vera": libb, "main.vera": entry},
         )
-        assert "E623" in codes, codes
+        assert sorted(refusals) == [
+            ("E158", "blib.vera"), ("E158", "main.vera")], refusals
 
     def test_the_code_says_which_pair_was_caught(
         self, tmp_path: Path,
     ) -> None:
-        """One rule, two codes, and the code is not a second opinion.
-
-        The same shape — declarations that meet and cannot share a layout —
-        reports E623 when the entry is one of the pair and E609 when both
-        are modules.  E623 is the one that can point the reader at the file
-        they compiled, which is why the distinction is kept.
+        """One rule for both pairs: declarations that meet are two types,
+        refused at check wherever the meeting is (#1694) — a pattern of the
+        entry's own type against a module's value, an argument of one
+        module's type where another's is expected — each naming the owners.
         """
         flowing = _LIBA.replace(
             "public fn aone(@Int -> @Int)", "public fn aone(@Int -> @Shape)",
@@ -2224,19 +2166,21 @@ public fn main(@Unit -> @Int)
   }
 }
 """
-        _v, entry_codes, _a = _cell(
+        entry_codes, entry_text = _refused_at_check(
             tmp_path / "pair-entry",
             {"liba.vera": flowing, "main.vera": entry_pair},
         )
-        assert entry_codes == ["E623"], entry_codes
+        assert "E314" in entry_codes, entry_codes
+        assert "liba.Shape" in entry_text, entry_text
 
         # The same meeting, between two MODULES instead.
-        _v2, module_codes, _a2 = _cell(
+        module_codes, module_text = _refused_at_check(
             tmp_path / "pair-modules",
             {"liba.vera": _FLOW_A, "libb.vera": _FLOW_B,
              "main.vera": _ENTRY_FLOW},
         )
-        assert module_codes == ["E609"], module_codes
+        assert module_codes == ["E202"], module_codes
+        assert "liba.Shape" in module_text and "libb.Shape" in module_text
 
     def test_the_entry_keeps_its_constructors_on_the_ctor_axis_too(
         self, tmp_path: Path,
@@ -2298,6 +2242,7 @@ public fn main(@Unit -> @Int)
             tmp_path / "ctor-entry-sym",
             {"liba.vera": liba, "main.vera": entry},
         )
-        assert list(gen._adt_layouts["Own"]) == ["Sq"]
+        assert list(gen._adt_layouts["Own"]) == ["Own$Sq"]
         assert "mod$liba$Alpha" in gen._adt_layouts
-        assert list(gen._adt_layouts["mod$liba$Alpha"]) == ["mod$liba$Sq"]
+        assert list(gen._adt_layouts["mod$liba$Alpha"]) == [
+            "mod$liba$Alpha$Sq"]

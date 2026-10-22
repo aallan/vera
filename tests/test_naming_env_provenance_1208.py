@@ -27,6 +27,7 @@ import re
 import pytest
 
 from vera import ast, naming
+from vera.binding import display_type_names
 from vera.checker import typecheck
 from vera.codegen import execute
 from vera.monomorphize import Monomorphizer
@@ -107,15 +108,15 @@ def _local_gets(body: str) -> set[int]:
 
 
 def _fn_body(wat: str, symbol: str) -> str:
-    """The WAT body of ``(func $symbol …)``, matched on the WHOLE symbol.
+    """The WAT body of ``(func $:symbol …)``, matched on the WHOLE symbol.
 
-    ``wat.split("(func $pick")`` also lands on ``(func $pick$Int`` — the
+    ``wat.split("(func $:pick")`` also lands on ``(func $:pick$Int`` — the
     mangled clone — and on any longer name sharing the prefix, so the split
     can silently return a different function's body (PR #1224 review).
     """
-    m = re.search(r"\(func \$" + re.escape(symbol) + r"(?![\w$])", wat)
+    m = re.search(r"\(func \$:?" + re.escape(symbol) + r"(?![\w$])", wat)
     if m is None:
-        raise AssertionError(f"no `(func ${symbol}` in the emitted WAT:\n{wat}")
+        raise AssertionError(f"no `(func $:{symbol}` in the emitted WAT:\n{wat}")
     rest = wat[m.end():]
     nxt = rest.find("(func ")
     return rest if nxt < 0 else rest[:nxt]
@@ -443,7 +444,9 @@ class TestImportedGenericCloneEnv:
         def record(side: str):
             def patched(self, decl, concrete_types, alias_env=None):
                 out = original(self, decl, concrete_types, alias_env)
-                if decl.name == "twolen":
+                # The module generic under its link name, or as the checker
+                # saw it (the verifier verifies that one) (#1694).
+                if decl.name in ("twolen", "mod$blib$twolen"):
                     clones.setdefault(side, _slot_refs(out))
                 return out
             return patched
@@ -608,10 +611,21 @@ public fn main(@Unit -> @Int)
             self: Monomorphizer, decl: ast.FnDecl,
             concrete_types: tuple[str, ...], alias_env: object = None,
         ) -> ast.FnDecl:
-            seen.append((decl.name, "<default>" if alias_env is None
-                         else naming.type_arg_name(
-                             ast.NamedType(name="Elem", type_args=None),
-                             alias_env)))  # type: ignore[arg-type]
+            # The alias by either spelling: discovery and verification clone
+            # the linked declaration in the linked env, where ng's alias is
+            # `mod$ng$Elem` (#1694); a module verified on its own clones it
+            # as the checker saw it.  An env holds one of the two.
+            if alias_env is None:
+                rendered = "<default>"
+            else:
+                rendered = "<unresolved>"
+                for elem in ("Elem", "mod$ng$Elem"):
+                    shown = naming.type_arg_name(
+                        ast.NamedType(name=elem, type_args=None),
+                        alias_env)  # type: ignore[arg-type]
+                    if shown != elem:
+                        rendered = shown
+            seen.append((decl.name, rendered))
             return original(self, decl, concrete_types, alias_env)  # type: ignore[arg-type]
 
         Monomorphizer.monomorphize_fn = patched  # type: ignore[method-assign]
@@ -621,7 +635,11 @@ public fn main(@Unit -> @Int)
             Monomorphizer.monomorphize_fn = original  # type: ignore[method-assign]
 
         assert not _codes(result), _codes(result)
-        inner_envs = {rendered for name, rendered in seen if name == "inner"}
+        # The helper by its own name, under whichever chain names it: the
+        # linked program names it `<parent>$where$inner` (#1694).
+        inner_envs = {
+            rendered for name, rendered in seen
+            if name.rpartition("$where$")[2] == "inner"}
         assert inner_envs, (
             f"the nested generic was never monomorphized; saw {seen}"
         )
@@ -1308,7 +1326,10 @@ public fn main(@Unit -> @Int)
         v.register_program(prog)
         assert ("clib",) in v._module_alias_envs
         mod_env = v._module_alias_envs[("clib",)]
-        assert mod_env.aliases["Cnt"].name == "Nat"  # type: ignore[union-attr]
+        # The module's alias under its link name, as the linked program the
+        # verifier reads names it (#1694); the importer's keeps its own.
+        assert mod_env.aliases["mod$clib$Cnt"].name == "Nat"  # type: ignore[union-attr]
+        assert "Cnt" not in mod_env.aliases
         assert v._alias_env.aliases["Cnt"].name == "Int"  # type: ignore[union-attr]
 
     def test_check_artifacts_carry_no_per_module_env(self) -> None:
@@ -1328,8 +1349,10 @@ public fn main(@Unit -> @Int)
         prog = parse_to_ast(_GENERIC_MAIN)
         v = ContractVerifier(resolved_modules=[module])
         v.register_program(prog)
-        assert v._generic_origins.get("twolen") == ("blib",)
-        assert v._alias_env_for_generic("twolen") is v._module_alias_envs[("blib",)]
+        # Keyed by the generic's link name (#1694).
+        assert v._generic_origins.get("mod$blib$twolen") == ("blib",)
+        assert v._alias_env_for_generic("mod$blib$twolen") is (
+            v._module_alias_envs[("blib",)])
         # A main-file generic has no origin and keeps this program's env.
         assert v._alias_env_for_generic("no_such_generic") is v._alias_env
 
@@ -1514,12 +1537,18 @@ class TestRefinedReturnTranslatesInTheCalleeNamespace:
             if window["open"]:
                 window["open"] = False
                 # How the ACTIVE env renders the conflicting alias — inspected
-                # through the RENDERING, not by object identity.
-                resolved = naming_mod.resolve_type_expr(
-                    ast.NamedType(name="Cnt", type_args=None),
-                    self._alias_env,  # type: ignore[attr-defined]
-                )
-                seen.append(naming_mod.pretty_type(resolved))
+                # through the RENDERING, not by object identity — by either
+                # spelling: the linked program names the module's alias
+                # `mod$rlib$Cnt` (#1694), the module verified on its own
+                # `Cnt`.  An env holds one of the two.
+                for spelling in ("Cnt", "mod$rlib$Cnt"):
+                    shown = naming_mod.pretty_type(naming_mod.resolve_type_expr(
+                        ast.NamedType(name=spelling, type_args=None),
+                        self._alias_env,  # type: ignore[attr-defined]
+                    ))
+                    if shown != spelling:
+                        break
+                seen.append(shown)
             return orig_translate(self, expr, env)  # type: ignore[arg-type]
 
         naming_mod.predicate_binder_key = binder_spy  # type: ignore[assignment]
@@ -1582,46 +1611,46 @@ public fn main(@Unit -> @Int)
 class TestDeclOrderIsPerNamespace:
     """Codegen's declaration-index space is keyed to its owning namespace.
 
-    The index answers "was this name already declared when this alias body
-    was registered?" — a question about ONE namespace (§8.4.1: aliases are
-    module-local).  Codegen shared a single first-wins space across every
-    absorbed namespace, and modules register at Pass 0.5 while the main file
-    registers at Pass 1, so a name a module had already stamped kept that
-    EARLIER index inside the main file — turning the main file's FORWARD
-    reference into a backward one (PR #1224 review).
+    The index answers one question, about ONE namespace (§8.4.1: aliases are
+    module-local): inside a cycle of mentions, which alias is declared first
+    (THE ALIAS RULE, #1552).  Codegen once shared a single first-wins space
+    across every absorbed namespace, and modules register at Pass 0.5 while
+    the main file registers at Pass 1, so a name a module had already stamped
+    kept that EARLIER index inside the main file (PR #1224 review).
 
-    ``type Z = X;`` precedes ``type X = Nat;`` here, so ``Z``'s body sees only
-    the imported ADT ``X``, and the checker keeps ``@Option<Nat>`` and
-    ``@Option<Z>`` as two stacks.  With the shared space codegen resolved
-    ``Z`` through the LATER ``type X = Nat``, merged the two stacks, and
-    ``@Option<Nat>.0`` became parameter 2 — a check-clean, verify-clean
-    program that reads the wrong parameter and returns a garbage value from
-    valid WASM (both parameters erase to ``i32``, so nothing traps).
+    ``type Z = X;`` precedes ``type X = Nat;`` here, beside an imported ``data
+    X``.  An alias body sees every alias of its namespace wherever it is
+    declared (#1552), and a declaration shadows an import throughout the
+    file, so ``Z`` is ``Nat`` on both sides: ``@Option<Nat>`` and
+    ``@Option<Z>`` are one stack, ``@Option<Nat>.0`` is parameter 2, and the
+    call passing an ``X`` where ``Z`` is expected is refused at check.
     """
 
-    def test_the_program_returns_its_first_parameter(self) -> None:
+    def test_the_forward_alias_is_the_local_one(self) -> None:
+        """``Z`` names the main file's ``X``, declared below it, not the
+        imported ADT, so passing an ``X`` for it is an argument mismatch."""
         module = _resolved(("dolib",), _DECL_ORDER_LIB)
-        result = _compile_mod(_DECL_ORDER_MAIN, [module])
-        errors = [
-            d for d in result.diagnostics  # type: ignore[attr-defined]
-            if d.severity == "error"
-        ]
-        assert not errors, f"unexpected codegen errors: {errors}"
-        ran = execute(result, fn_name="main")  # type: ignore[arg-type]
-        assert ran.value == 7, (
-            "codegen merged two parameter stacks the checker kept apart — a "
-            f"module's declaration index leaked into the main file's: got "
-            f"{ran.value}"
-        )
+        checked = pipeline.check(
+            _DECL_ORDER_MAIN, file="main.vera", modules=[module])
+        assert not checked.ok
+        assert [d.error_code for d in checked.errors] == ["E202"], [
+            (d.error_code, d.description) for d in checked.errors]
 
     def test_codegen_reads_the_parameter_the_checker_names(self) -> None:
-        """The same claim in the instruction stream, so a coincidence of
-        values cannot satisfy it."""
+        """The one stack in the instruction stream: with a call that checks,
+        ``@Option<Nat>.0`` is the LAST of the two parameters on both sides,
+        so the program returns 9 and the body reads parameter 2 only."""
         module = _resolved(("dolib",), _DECL_ORDER_LIB)
-        result = _compile_mod(_DECL_ORDER_MAIN, [module])
+        source = _DECL_ORDER_MAIN.replace(
+            "pick(Some(7), Some(MkX(99)))", "pick(Some(7), Some(9))")
+        assert pipeline.check(
+            source, file="main.vera", modules=[module]).ok
+        result = _compile_mod(source, [module])
+        assert execute(  # type: ignore[arg-type]
+            result, fn_name="main").value == 9
         body = _fn_body(result.wat, "pick")  # type: ignore[attr-defined]
-        assert 0 in _local_gets(body), (
-            "the emitted body does not read parameter 1:\n" + body
+        assert _local_gets(body) == {1}, (
+            "the emitted body does not read parameter 2 alone:\n" + body
         )
 
     def test_the_control_without_the_shadowing_alias_is_unchanged(
@@ -1654,8 +1683,10 @@ class TestDeclOrderIsPerNamespace:
         )
         gen.compile_program(parse_to_ast(_DECL_ORDER_MAIN))
         assert ("dolib",) in gen._module_decl_order
-        assert "X" in gen._module_decl_order[("dolib",)]
+        # The module's declarations by their link names (#1694).
+        assert "mod$dolib$X" in gen._module_decl_order[("dolib",)]
         assert "Z" not in gen._module_decl_order[("dolib",)]
+        assert "mod$dolib$Z" not in gen._module_decl_order[("dolib",)]
         # The main file's own space orders its two aliases as written, and
         # the module's `X` is NOT what stamped the main file's.
         assert gen._decl_order["Z"] < gen._decl_order["X"], gen._decl_order
@@ -1955,6 +1986,30 @@ def _codegen_env(
     return compiled.generator._alias_env
 
 
+def _linked_params_of(
+    source: str, fn_name: str, owner: tuple[str, ...] | None,
+    modules: list[ResolvedModule] | None = None,
+) -> tuple[ast.TypeExpr, ...]:
+    """*fn_name*'s parameters in the linked program (`vera.binding.link`):
+    *source* as the entry when *owner* is ``None``, else as the module
+    *owner*, spelled by link names as code generation compiles them."""
+    from vera.binding import link_program
+    prog = pipeline.parse(source).program
+    if owner is None:
+        linked = link_program(prog, modules or []).program
+        name = fn_name
+    else:
+        mod = _resolved(owner, source)
+        linked = link_program(
+            pipeline.parse("").program, [mod]).modules[0].program
+        name = "mod$" + "$".join(owner) + "$" + fn_name
+    fn = next(
+        tld.decl for tld in linked.declarations
+        if isinstance(tld.decl, ast.FnDecl) and tld.decl.name == name
+    )
+    return fn.params
+
+
 def _params_of(source: str, fn_name: str) -> tuple[ast.TypeExpr, ...]:
     prog = pipeline.parse(source).program
     fn = next(
@@ -1969,29 +2024,34 @@ class TestImportedAdtIndexIsPerOwningNamespace:
 
     Codegen's ``_adt_layouts`` is one map across every absorbed namespace,
     while the alias maps and the declaration-index space are module-scoped
-    (§8.4.1, PR #1224).  An imported ADT therefore reached the main file's
-    naming environment with no index of its own and took the
-    before-everything fallback every built-in takes — so a main-file alias
-    naming it resolved THROUGH it, while the checker (which carries the
-    ADT's own module-space index) left the alias body opaque.
+    (§8.4.1, PR #1224).  An imported ADT once reached the main file's naming
+    environment with no index of its own, so a main-file alias naming it
+    resolved THROUGH it in codegen while the checker left the alias body
+    opaque (#1227).
 
     ``type M = Float;`` over an imported ``data Float`` is the shape that
-    exhibits it: the checker partitions ``['Array<?>', 'Array<Float>']`` and
-    codegen rendered ``['Array<Float>', 'Array<Float>']``, merging two
-    parameter stacks the binding table keeps apart (#1227).  A user ADT
-    named after a removed built-in alias is what makes the divergence
-    visible rather than merely latent — the alias falls back to ``?`` on the
-    side that cannot see the ADT.
+    exhibits it.  A declared ADT is in scope in an alias body wherever it is
+    declared (#1552), so both sides now resolve ``M`` to the imported
+    ``Float`` and render ``['Array<Float>', 'Array<Float>']``: one parameter
+    stack, as the binding table keys it.  A user ADT named after a removed
+    built-in alias is the shape a bound would make visible — the alias falls
+    back to ``?`` on a side that cannot see the ADT.
     """
 
     def test_codegen_partitions_what_the_checker_partitions(self) -> None:
         """The differential, on the rendering both sides key off."""
         module = _resolved(("dolib",), _XMOD_ADT_LIB)
-        params = _params_of(_XMOD_ADT_MAIN, "pick")
         check_env = _checker_env(_XMOD_ADT_MAIN, [module])
         gen_env = _codegen_env(_XMOD_ADT_MAIN, [module])
-        checker_names = [naming.slot_name(te, check_env) for te in params]
-        codegen_names = [naming.slot_name(te, gen_env) for te in params]
+        # Each side renders the program it compiles: the checker the source,
+        # code generation the linked program, whose names are link names
+        # (#1694); shown as a reader writes them, the two must agree.
+        checker_names = [naming.slot_name(te, check_env)
+                         for te in _params_of(_XMOD_ADT_MAIN, "pick")]
+        codegen_names = [
+            display_type_names(naming.slot_name(te, gen_env))[0]
+            for te in _linked_params_of(
+                _XMOD_ADT_MAIN, "pick", None, [module])]
         assert checker_names == codegen_names, (
             "codegen and the checker partition pick's parameters "
             f"differently: checker {checker_names} vs codegen {codegen_names}"
@@ -2000,9 +2060,9 @@ class TestImportedAdtIndexIsPerOwningNamespace:
     def test_the_export_reads_the_parameter_the_checker_names(self) -> None:
         """The consequence, in the emitted instruction stream.
 
-        ``@Array<M>.0`` is parameter 1 for the checker — one of two stacks.
-        Merged into one stack, index 0 is the LAST occurrence, so the body
-        loads the second array's locals instead.
+        ``@Array<M>`` and ``@Array<Float>`` are one stack for the checker, so
+        ``@Array<M>.0`` is its LAST occurrence: the body loads the second
+        array's locals and not the first's.
         """
         module = _resolved(("dolib",), _XMOD_ADT_LIB)
         result = _compile_mod(_XMOD_ADT_MAIN, [module])
@@ -2013,12 +2073,12 @@ class TestImportedAdtIndexIsPerOwningNamespace:
         assert not errors, f"unexpected codegen errors: {errors}"
         body = _fn_body(result.wat, "pick")  # type: ignore[attr-defined]
         reads = _local_gets(body)
-        assert {0, 1} & reads, (
-            "the emitted body does not read parameter 1:\n" + body
+        assert {2, 3} <= reads, (
+            "the emitted body does not read parameter 2:\n" + body
         )
-        assert not ({2, 3} & reads), (
-            "the emitted body reads parameter 2 — the imported ADT is still "
-            f"ordered ahead of the main file's aliases:\n{body}"
+        assert not ({0, 1} & reads), (
+            "the emitted body reads parameter 1 — the alias body is still "
+            f"bounded by the imported ADT's index:\n{body}"
         )
 
     def test_the_index_is_the_modules_own_position(self) -> None:
@@ -2032,10 +2092,12 @@ class TestImportedAdtIndexIsPerOwningNamespace:
         module = _resolved(("dolib",), _XMOD_ADT_LIB_PADDED)
         check_env = _checker_env(_XMOD_ADT_MAIN, [module])
         gen_env = _codegen_env(_XMOD_ADT_MAIN, [module])
+        # Codegen names the module's type by its link name (#1694).
+        linked = "mod$dolib$Float"
         assert check_env.data_types["Float"] == 1, check_env.data_types
-        assert gen_env.data_types["Float"] == check_env.data_types["Float"], (
+        assert gen_env.data_types[linked] == check_env.data_types["Float"], (
             f"codegen orders the imported ADT at "
-            f"{gen_env.data_types['Float']}, the checker at "
+            f"{gen_env.data_types[linked]}, the checker at "
             f"{check_env.data_types['Float']}"
         )
 
@@ -2084,8 +2146,11 @@ public fn count(@Array<N> -> @Int)
         )
         gen.compile_program(parse_to_ast(_XMOD_ADT_MAIN))
         with gen._module_alias_scope(("dolib",)):
-            assert gen._alias_env.data_types["Float"] == 0, (
+            # The module's own names, as the linked program spells them
+            # (#1694).
+            assert gen._alias_env.data_types["mod$dolib$Float"] == 0, (
                 gen._alias_env.data_types
             )
-            te = _params_of(lib, "count")[0]
-            assert naming.slot_name(te, gen._alias_env) == "Array<Float>"
+            te = _linked_params_of(lib, "count", ("dolib",))[0]
+            assert (naming.slot_name(te, gen._alias_env)
+                    == "Array<mod$dolib$Float>")

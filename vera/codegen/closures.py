@@ -360,6 +360,7 @@ class ClosureLiftingMixin:
             ctor_adt_tp_indices=ns_tp_indices,
             adt_tp_counts=getattr(self, "_adt_tp_counts", None),
             adt_tp_param_names=getattr(self, "_adt_tp_param_names", None),
+            fn_display_names=self._fn_display_names,
         )
         # #773 / PR #870 review: direct `==` derivability gate inside closure
         # bodies — same oracle as the per-function ctx in functions.py.
@@ -388,9 +389,7 @@ class ClosureLiftingMixin:
         ctx.set_fn_ret_type_exprs(self._fn_ret_type_exprs)
         # #841: Future<Result<String, String>>-returning fn names, so an
         # await inside a closure body gets the fused-handle check too.
-        ctx.set_future_ret_fns(
-            self._future_ret_fns, self._future_ret_module_fns,
-        )
+        ctx.set_future_ret_fns(self._future_ret_fns)
         # #798: resolved-type side-table for the integer-overflow guard's
         # Int/Nat operand classifier, inside closure bodies too.
         ctx.set_expr_semantic_types(self._expr_semantic_types)
@@ -424,14 +423,6 @@ class ClosureLiftingMixin:
         ctx.set_refinement_guard_emitter(
             functools.partial(self._emit_boundary_refinement_guard, ctx),
         )
-        # #814/#774: a qualified call inside a closure body must resolve the
-        # same way it does in a top-level body — to the module's function
-        # (`mod$…` for a shadowed fn) and, for a shadowed imported generic, to
-        # the module generic's clone rather than the local shadow.
-        ctx.set_module_qualified_targets(self._module_qualified_targets)
-        ctx.set_module_qualified_generic_bases(
-            self._module_qualified_generic_bases,
-        )
         env = WasmSlotEnv()
 
         # Parameter 0: $env (i32 — closure environment pointer)
@@ -463,9 +454,10 @@ class ClosureLiftingMixin:
                 # suppressed once a clone compiles: the wrapper by the #604
                 # description-prefix filter, THIS one by that filter's #913
                 # forall-origin arm (`vera/codegen/core.py`), which matches a
-                # template-body E602 by its source line falling inside a
-                # compiled-clone template's span (its description names the
-                # closure, not the enclosing fn, so the prefix match misses it).
+                # template-body E602 by the declaration being compiled when
+                # it was emitted, a compiled-clone template (#1549; its
+                # description names the closure, not the enclosing fn, so the
+                # prefix match misses it).
                 self._harvest_interp_inference_failures(ctx)
                 self._warning(
                     anon_fn,

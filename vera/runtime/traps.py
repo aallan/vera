@@ -11,7 +11,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
+
+from vera.binding import SYMBOL_PREFIX, display_name, source_name
 
 from vera.trap_registry import (
     NATIVE_TRAP_OPCODES,
@@ -211,6 +214,7 @@ def _resolve_trap_frames(
     exc: BaseException,
     fn_source_map: dict[str, tuple[str, int, int]],
     prelude_fn_names: set[str] | None = None,
+    display_names: Mapping[str, str] | None = None,
 ) -> list[TrapFrame]:
     """Resolve ``wasmtime.Trap.frames`` against the codegen source map.
 
@@ -295,6 +299,11 @@ def _resolve_trap_frames(
         # strip would otherwise silently break every lookup below.
         if name.startswith("$"):
             name = name[1:]
+        # #1694: a declaration's function is `$:` + its link name; every
+        # other name is one code generation generated for itself, so a user
+        # function named `alloc` is not the allocator.
+        declared = name.startswith(SYMBOL_PREFIX)
+        name = source_name(name)
 
         # Prelude / built-in injection check.  Match either the exact
         # WAT name or, for monomorphized generics, the base name (the
@@ -313,10 +322,9 @@ def _resolve_trap_frames(
                 if base in prelude_fn_names:
                     is_prelude = True
 
-        is_builtin = (
+        is_builtin = is_prelude or not declared and (
             name in _BUILTIN_NAMES
             or any(name.startswith(p) for p in _BUILTIN_PREFIXES)
-            or is_prelude
         )
         if is_builtin:
             resolved.append(TrapFrame(
@@ -355,7 +363,9 @@ def _resolve_trap_frames(
 
         file_path, line_start, line_end = loc
         resolved.append(TrapFrame(
-            func=name,
+            # A module declaration's frame shows the name it is declared
+            # under; the file says which module (#1694).
+            func=display_name(name, display_names or {}),
             file=file_path,
             line_start=line_start,
             line_end=line_end,

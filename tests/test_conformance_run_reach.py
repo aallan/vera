@@ -68,7 +68,7 @@ LISTED: tuple[str, ...] = (
     # A check too weak to see a wrong value.
     "ch01_byte_literals", "ch06_requires_adt_arg", "ch05_nested_closures",
     "ch05_capture_array_index", "ch09_nested_helper_family_op_name",
-    "ch08_prelude_adt_name_alias", "ch09_url_parsing",
+    "ch09_url_parsing",
     "ch09_generic_where_helper", "ch09_generic_infer_user_fn_return",
 )
 
@@ -163,7 +163,7 @@ def test_the_run_calls_every_builtin_the_entry_names(entry_id: str) -> None:
 
 
 def test_every_listed_program_is_a_run_level_entry() -> None:
-    assert len(set(LISTED)) == len(LISTED) == 42
+    assert len(set(LISTED)) == len(LISTED) == 41
     assert {MANIFEST[i]["level"] for i in LISTED} == {"run"}
 
 

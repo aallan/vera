@@ -20,7 +20,7 @@ each handle a specific concern:
 
 from __future__ import annotations
 
-from collections.abc import Callable, Container, Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, NamedTuple
@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from vera.resolver import ResolvedModule
 
 from vera import ast, naming
+from vera.binding import Binding, DeclId, display_type_names
 from vera.callgraph import CallGraph
 from vera.errors import (
     Diagnostic,
@@ -37,7 +38,7 @@ from vera.errors import (
 )
 from vera.lowering import ability_lowerable
 from vera.naming import AliasEnv
-from vera.registration import where_helper_parents
+from vera.registration import NamespaceAliases, where_helper_parents
 from vera.environment import (
     AdtInfo,
     FunctionInfo,
@@ -69,23 +70,6 @@ from vera.checker.registration import RegistrationMixin
 from vera.checker.expressions import ExpressionsMixin
 from vera.checker.calls import CallsMixin
 from vera.checker.control import ControlFlowMixin
-
-
-class _ScopedFnNames:
-    """Membership over the checker's LEXICAL function scope (#1284).
-
-    A view rather than a set because the scope is a stack that changes as
-    checking descends: materialising it would freeze an answer the checker
-    itself would give differently one frame later.
-    """
-
-    __slots__ = ("_lookup",)
-
-    def __init__(self, lookup: Callable[[str], object | None]) -> None:
-        self._lookup = lookup
-
-    def __contains__(self, name: object) -> bool:
-        return isinstance(name, str) and self._lookup(name) is not None
 
 
 # =====================================================================
@@ -384,6 +368,10 @@ def _collect_module_artifacts(
         )
         sub._module_body_check_memo = body_check_memo
         sub._module_registration_cache = registration_cache
+        # The path the program reaches the module by, as its body check has
+        # it (`ModulesMixin._check_module_bodies`): its own data types are
+        # typed by their link names here too, as code generation names them.
+        sub._resolved_as = mod.path
         sub.expr_types = {}
         sub.expr_semantic_types = sub_semantic
         sub.expr_target_types = sub_target
@@ -650,8 +638,25 @@ class TypeChecker(
         # is not registered yet, and it is a forward reference, not an
         # unknown name (E136 / E338).
         self._forward_type_names: frozenset[str] = frozenset()
+        self._forward_data_names: frozenset[str] = frozenset()
         self._forward_effect_names: frozenset[str] = frozenset()
         self._forward_effect_decls: dict[str, ast.EffectDecl] = {}
+        # #1552: the aliases THIS namespace declares, which a type expression
+        # resolved during registration reads through, so one naming an alias
+        # further down resolves it rather than meeting an unregistered name.
+        # `_register_all` replaces it with the namespace's own.
+        self._ns_aliases = NamespaceAliases(self)
+        # #1694: the resolver pass's binding of the program being checked,
+        # made once registration has settled what it refuses: every call is
+        # resolved by reading it (`_bound_function`).
+        self._binding: Binding | None = None
+        # #1694: the same pass's binding of the data type, alias and
+        # constructor names this namespace writes, made before registration
+        # resolves a type expression, since no declaration a check refuses
+        # takes a type name (E158 is refused by name).  What each name
+        # denotes here is read from it (`_take_type_names`,
+        # `_take_imported_constructors`, `_stranger_constructor`).
+        self._names: Binding | None = None
         # #1489: each import whose module did not resolve, with its name list
         # (``None`` for a wildcard), so an E136 on a name it lists can say
         # which import to fix.  Set by `_register_modules`.
@@ -725,6 +730,10 @@ class TypeChecker(
         if key in self._seen_diag_keys:
             return
         self._seen_diag_keys.add(key)
+        # A module's data type is typed by its identity (#1694); a reader is
+        # shown the type's name.
+        description, rationale, fix = display_type_names(
+            description, rationale, fix)
         self.errors.append(Diagnostic(
             description=description,
             location=loc,
@@ -841,8 +850,11 @@ class TypeChecker(
 
     def check_program(self, program: ast.Program) -> None:
         """Entry point: register modules, then local declarations, then check."""
+        self._names = self._bind(program, frozenset())
+        self._take_type_names(self._names.types.get(self._namespace_owner(), {}))
         self._register_modules(program)  # C7b: cross-module imports
         self._register_all(program)  # local declarations shadow imports
+        self._binding = self._bind_calls(program)
         self._declared_module_path, self._own_module_path = (
             self._own_module_paths(program))
         self._own_fn_names = frozenset(
@@ -896,11 +908,14 @@ class TypeChecker(
         regularity = self.env.regularity_index()
         for tld in program.declarations:
             decl = tld.decl
-            if (isinstance(decl, ast.DataDecl)
-                    and id(decl) not in self._refused_decl_ids
-                    and decl.name in self.env.data_types
-                    and not regularity.is_regular(decl.name)):
-                self.env.refused_non_regular.add(decl.name)
+            if not isinstance(decl, ast.DataDecl):
+                continue
+            # The registry is keyed by the type's identity (#1694).
+            identity = self._type_identity(decl.name)
+            if (id(decl) not in self._refused_decl_ids
+                    and identity in self.env.data_types
+                    and not regularity.is_regular(identity)):
+                self.env.refused_non_regular.add(identity)
         for tld in program.declarations:
             # #815/#1433: a refused declaration — a built-in redefinition
             # (E151) or a name's surplus declaration (E184) — is already
@@ -1131,7 +1146,8 @@ class TypeChecker(
         does not return.  Two copies would be free to drift into one consumer
         refusing what the other models.
         """
-        found = self.env.regularity_index().irregular(decl.name)
+        identity = self._type_identity(decl.name)
+        found = self.env.regularity_index().irregular(identity)
         if found is None:
             return
         ctor_name, index, bad = found
@@ -1142,8 +1158,8 @@ class TypeChecker(
         # runs that pre-pass first, and a mutation removing this line left the
         # suite green while removing the pre-pass took it red.
         expected = tuple(
-            self.env.data_types[decl.name].type_params or ()
-        ) if decl.name in self.env.data_types else ()
+            self.env.data_types[identity].type_params or ()
+        ) if identity in self.env.data_types else ()
         params = ", ".join(expected)
         # Built from the OCCURRENCE, with each growing argument unwrapped to
         # the parameter it wraps.  Taking the enclosing declaration's
@@ -1151,7 +1167,7 @@ class TypeChecker(
         # mixed-arity pair was told to write `Body` — and would misstate the
         # arity whenever the two members' parameter counts differ
         # (PR #1432 re-verification).
-        remedy = suggested_occurrence(bad, expected, decl.name)
+        remedy = suggested_occurrence(bad, expected, identity)
         # A permutation has no varying part to lift out — every argument is
         # already a bare parameter, just in the wrong position — so the
         # remedy is worded per shape (PR #1432 re-verification).
@@ -1449,74 +1465,100 @@ class TypeChecker(
             self._scoped_fn_info_cache[key] = info
         return info
 
-    def _lookup_function_scoped(self, name: str) -> FunctionInfo | None:
-        """Resolve a bare call name lexically (#991 checker leg).
+    def _bind_calls(self, program: ast.Program) -> Binding:
+        """The resolver pass over *program* (#1694), as this check sees it.
 
-        The nearest same-named ``where``-helper visible from the function
-        currently being checked wins: the innermost stack frame's helpers
-        first, then each ancestor's, then the top-level function of that
-        name, and finally the flat registry (built-ins / prelude / imports).
-        Matches the verifier's ``_scoped_fn_lookup`` and codegen's
-        parent-qualified hoist, so all three subsystems agree on
-        helper-name scoping.  A helper rejected for redefining a built-in
-        (E151, #815) or repeating a name its block already declares (E184,
-        #1433) is skipped — the built-in, or the first helper, stays
-        canonical.  With an empty stack (data invariants, op signatures)
-        this is exactly the flat lookup.
-
-        The frame walk is the ONLY route to a helper: since #1307 the flat
-        registry holds none, so this returns ``None`` for a helper named
-        from outside its parent (reported as E178 at the call site) rather
-        than another declaration's helper.
-
-        A handler-clause operator name skips both scoped tiers and resolves
-        against the flat registry alone, because that is the only place its
-        binding can live: ``check_handle_expr`` installs one there for the
-        duration of each clause body.  In a valid program this changes
-        nothing — the name is reserved (E153), so no declaration of it
-        exists to be found in either tier.  In a program that declares one
-        anyway, it stops the rejected declaration from shadowing the clause
-        binding and turning correct clause bodies into argument-type errors
-        against the user's signature, a second error chasing the first.  The
-        other reserved names need no such carve-out: nothing resolves to
-        ``old`` or ``match`` at all.
+        Bound after registration, with every declaration this check and each
+        module's registration refused (E151, E184), so a refused declaration
+        takes no name on a refused program either: each call binds where the
+        checker's resolution put it before the binding replaced it (the gate
+        that measured the two over the corpus and the suite found them
+        identical on every accepted program).
         """
+        refused: set[int] = set(self._refused_decl_ids)
+        for reg in (self._module_registration_cache or {}).values():
+            refused |= reg.checker._refused_decl_ids
+        return self._bind(program, frozenset(refused))
+
+    def _namespace_owner(self) -> tuple[str, ...]:
+        """The owner of this namespace's declarations in a binding: the
+        module's path for a module checked as itself, else the entry's."""
+        from vera.binding import ENTRY
+        return self._resolved_as or ENTRY
+
+    def _take_type_names(self, types: Mapping[str, DeclId]) -> None:
+        """Each module data type this namespace names, by the name it
+        writes, to its identity (#1694): what the resolver pass binds the
+        name to, a type the namespace declares or the one an import
+        supplies.  A name whose identity is the name needs no entry."""
+        self.env.type_names = {
+            name: ident.link_name for name, ident in types.items()
+            if ident.kind == "data" and ident.link_name != name
+        }
+
+    def _bind(
+        self, program: ast.Program, refused: frozenset[int],
+    ) -> Binding:
+        """The resolver pass over *program* and the modules it reaches, with
+        the declarations in *refused* taking no name.  A module's own bodies
+        are bound as that module's namespace, beside the other modules."""
+        from pathlib import Path
+
+        from vera.binding import bind_program
+        from vera.prelude import prelude_declarations
+        from vera.resolver import ResolvedModule
+
+        modules = list(self._resolved_modules)
+        entry = program
+        own = self._resolved_as
+        if own is not None:
+            modules = [
+                ResolvedModule(own, Path(self.file or "<module>"), program,
+                               self.source),
+                *(m for m in modules if m.path != own),
+            ]
+            entry = ast.Program(
+                module=None, imports=(), declarations=(), span=None)
+        prelude, _source = prelude_declarations(
+            entry, {m.path: m.program for m in modules})
+        return bind_program(entry, modules, prelude, refused=refused)
+
+    def _bound_function(self, node: ast.Node) -> FunctionInfo | None:
+        """The function the call *node* binds to, read from the binding.
+
+        A bare call binds to the nearest ``where`` helper in its enclosing
+        functions, then this namespace's own function, a built-in, a prelude
+        function, or the one direct import that supplies the name; a
+        qualified call to its module's public function or this file's own
+        (spec §5.8, §8.5.3, §8.6).  A refused declaration takes no name, so
+        the built-in or the first declaration stays canonical (#815,
+        #1433).  ``None`` is a call that binds no function: an effect
+        operation, or a name nothing declares.
+
+        A handler clause's operator is not a declaration and the pass binds
+        none: ``check_handle_expr`` installs its binding in the flat registry
+        for the clause body, which is where it is read.  The name is
+        reserved (E153), so no declaration of it can exist to be found.
+        """
+        from vera.binding import BUILTIN, ENTRY, PRELUDE
         from vera.checker.registration import _HANDLER_OPERATOR_FN_NAMES
-        if name in _HANDLER_OPERATOR_FN_NAMES:
-            return self.env.lookup_function(name)
-        for frame in reversed(self._fn_scope_stack):
-            for wfn in frame.where_fns or ():
-                if (wfn.name == name
-                        and id(wfn) not in self._refused_decl_ids):
-                    return self._fn_info_for_decl(wfn)
-        top = self._top_level_fn_infos.get(name)
-        if top is not None:
-            return top
-        return self.env.lookup_function(name)
 
-    @property
-    def _user_fn_names(self) -> Container[str]:
-        """The checker's function table, as a membership view (#1284).
-
-        What :func:`~vera.slots.bare_call_denotes_user_fn` consults on this
-        side: a name is the user's declaration here exactly when
-        :meth:`_lookup_function_scoped` resolves it, so the ownership
-        predicate reads whatever this checker actually resolves against
-        rather than a separate copy that could answer differently.  Codegen
-        passes ``_scoped_fns`` — its registry narrowed to the compiling
-        declaration's lexical scope (#1299).
-
-        The two are the same scope since #1307: ``register_fn`` no longer
-        recurses ``where`` helpers into the flat ``TypeEnv``, so the
-        fallback below reaches built-ins, the prelude and imports but no
-        helper, and a helper is reachable only through the frame walk —
-        exactly the declarations codegen's ``_scoped_fns`` narrows to.  A
-        bare call naming a helper from outside its parent therefore
-        resolves to nothing on both tables: the checker reports E178 where
-        codegen would have had no target, and where the name is an
-        operation's, both lower the operation spec §7.4 prescribes.
-        """
-        return _ScopedFnNames(self._lookup_function_scoped)
+        ident = self._binding.of(node) if self._binding is not None else None
+        if ident is None:
+            name = getattr(node, "name", None)
+            if (isinstance(node, ast.FnCall)
+                    and name in _HANDLER_OPERATOR_FN_NAMES):
+                return self.env.lookup_function(name)
+            return None
+        if ident.owner in (BUILTIN, PRELUDE):
+            return self.env.lookup_function(ident.name)
+        if ident.scope:
+            decl = self._binding.decls.get(ident) if self._binding else None
+            return self._fn_info_for_decl(decl) if decl is not None else None
+        if ident.owner == (self._resolved_as or ENTRY):
+            return self._top_level_fn_infos.get(ident.name)
+        info = self._module_functions.get(ident.owner, {}).get(ident.name)
+        return info if isinstance(info, FunctionInfo) else None
 
     def _type_expr_to_slot_name(self, te: ast.TypeExpr) -> str:
         """Extract the canonical slot name from a type expression used as a

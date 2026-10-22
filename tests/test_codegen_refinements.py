@@ -1175,8 +1175,8 @@ public fn main(@Unit -> @Int)
         # `$head` must appear as a defined function in the WAT (not
         # dropped via [E602]).
         wat = result.wat or ""
-        assert re.search(r"\(func \$head\b", wat), (
-            f"Expected `(func $head ...)` definition in WAT after "
+        assert re.search(r"\(func \$:head\b", wat), (
+            f"Expected `(func $:head ...)` definition in WAT after "
             f"#655 Shape B fix.  Pre-fix `head` was dropped via "
             f"[E602] and the call site referenced an absent "
             f"`$head`.  WAT excerpt: "

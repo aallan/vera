@@ -244,8 +244,10 @@ class TestPrivateImportRoute:
         assert wat_calls(main_body, "vera.state_get_Int")
         assert not wat_calls(main_body, "get")
         # The module's own body is the control: its private helper is still
-        # in ITS scope, so that call must survive untouched.
-        assert wat_calls(wat_fn_body(result.wat, "touch"), "get")
+        # in ITS scope, so that call must survive, naming the helper's link
+        # name (#1694).
+        assert wat_calls(wat_fn_body(result.wat, "mod$lib$touch"),
+                         "mod$lib$get")
 
     def test_rename_control_answers_the_same(self, tmp_path: Path) -> None:
         """The same program with the invisible declaration renamed.  It must
@@ -977,8 +979,8 @@ class TestTableInvariants:
         """The nesting rule, at the one place it differs from a flat union.
 
         ``b`` is a helper of ``a``, which is a helper of ``top``.  The
-        checker's ``_lookup_function_scoped`` reads each frame's DIRECT
-        helpers, so ``b`` is in ``a``'s scope and in its own, and in neither
+        resolver pass's bare-call rule, which the checker reads, takes each
+        frame's DIRECT helpers, so ``b`` is in ``a``'s scope and in its own, and in neither
         ``top``'s nor its uncle ``c``'s.  A scope built as "every helper
         anywhere under the top-level declaration" would pass every other
         test in this file and reopen #1299 one level down.
@@ -1064,7 +1066,8 @@ public fn touch(@Unit -> @Int)
         )
         assert not cg_errors, f"codegen errors: {cg_errors}"
         template = wat_fn_body(result.wat, "holder")
-        assert wat_calls(template, "get")
+        # The helper under its link name (#1694).
+        assert wat_calls(template, "holder$where$get")
         assert not wat_calls(template, "vera.state_get_Int")
         # And the clone the call site actually reaches answers the same.
         assert module_value(result) == ("ok", LIB)
@@ -1101,8 +1104,8 @@ where {{
             tmp_path, {"main.vera": source},
         )
         assert not cg_errors, f"codegen errors: {cg_errors}"
-        helper = wat_fn_body(result.wat, "a")
-        assert wat_calls(helper, "get")
+        helper = wat_fn_body(result.wat, "holder$where$a")
+        assert wat_calls(helper, "holder$where$get")
         assert not wat_calls(helper, "vera.state_get_Int")
         assert module_value(result) == ("ok", LIB)
 
@@ -1321,7 +1324,7 @@ class TestDiscoveryWalkContract:
             adt_tp_counts={}, type_aliases={}, type_alias_params={},
             fn_ret_types={},
             fn_names=frozenset({"get", "holder", "holder$Bool$where$get"}),
-            namespace_fn_names=NamespaceFnNames({None: scope}, frozenset()),
+            namespace_fn_names=NamespaceFnNames({None: scope}),
         )
         return Monomorphizer(ctx)
 

@@ -417,9 +417,10 @@ class ExpressionsMixin:
         if key == ret_key or self._return_type_refused(fn.return_type, ret):
             return ret
         # The message spells each type as the program does (`_as_written`): a
-        # key elides a refinement's predicate, so it is a name to match and
-        # not one to write.  The name the fix gives is the return type's own
-        # spelling, which keys as the declaration does, so it is accepted.
+        # key writes a refinement's predicate in canonical form and resolves
+        # every alias in an argument, so it is a name to match and not one to
+        # write.  The name the fix gives is the return type's own spelling,
+        # which keys as the declaration does, so it is accepted.
         written = self._written_slot_name(fn.return_type, ret_key)
         self._error(
             ref,

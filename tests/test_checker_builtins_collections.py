@@ -590,14 +590,15 @@ private fn foo(@Unit -> @String)
 { json_type(42) }
 """, "type")
 
-    def test_json_custom_data_shadows_prelude(self) -> None:
-        """User-defined data Json with non-standard constructors shadows prelude."""
-        _check_ok("""
+    def test_json_custom_data_is_refused(self) -> None:
+        """A user `data Json` takes a reserved prelude name (#1469): E158."""
+        errs = _check_err("""
 private data Json { MyNode(Int) }
 private fn foo(@Unit -> @Json)
   requires(true) ensures(true) effects(pure)
 { MyNode(42) }
-""")
+""", "reserved")
+        assert errs[0].error_code == "E158", [e.error_code for e in errs]
 
 
 class TestHtmlChecker:

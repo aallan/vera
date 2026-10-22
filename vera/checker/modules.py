@@ -7,13 +7,13 @@ single-module checking.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from vera import ast
 from vera.environment import AdtInfo, ConstructorInfo, FunctionInfo, TypeEnv
 from vera.errors import Diagnostic
-from vera.module_view import imported_data_types, modules_visible_to
+from vera.module_view import modules_visible_to
 from vera.monomorphize import namespace_adt_names, namespace_fn_names
 from vera.registration import where_helper_parents
 from vera.resolver import (
@@ -54,6 +54,11 @@ class ModuleRegistration:
     functions: dict[str, FunctionInfo]
     data_types: dict[str, AdtInfo]
     constructors: dict[str, ConstructorInfo]
+    #: The constructor names of each public data type the registration
+    #: refused and left unregistered (a reserved name, #1469, #1497), by the
+    #: type's name: an importer's use of one draws no error of its own,
+    #: since the module's refusal is the one the program owes.
+    refused_ctors: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 def _module_exports(
@@ -67,10 +72,10 @@ def _module_exports(
     it names but does not export.  No function is injected into a
     registration, so its function table is the module's own.
     """
-    own_data = {
+    own_data = [
         tld.decl.name for tld in program.declarations
         if isinstance(tld.decl, ast.DataDecl)
-    }
+    ]
     all_fns = {
         k: v for k, v in temp.env.functions.items()
         if k not in builtin_fns or v.span is not None
@@ -82,11 +87,15 @@ def _module_exports(
     # (§8.3.3) was an unknown constructor.  A declaration registers a new
     # `AdtInfo`, so of the names the module declares, the entries that are
     # not the built-ins' own -- `temp`'s snapshot of them, taken before
-    # anything was injected or registered -- are the module's.
-    all_data = {
-        k: v for k, v in temp.env.data_types.items()
-        if k in own_data and temp._builtin_data_types.get(k) is not v
-    }
+    # anything was injected or registered -- are the module's.  Keyed by the
+    # name the module declares each under, which is what an import names;
+    # each `AdtInfo` carries the type's identity (#1694).
+    all_data: dict[str, AdtInfo] = {}
+    for name in own_data:
+        info = temp.env.lookup_type(name)
+        if (info is not None and name not in all_data
+                and temp._builtin_data_types.get(name) is not info):
+            all_data[name] = info
     public_fns = {
         k: v for k, v in all_fns.items() if v.visibility == "public"
     }
@@ -101,6 +110,13 @@ def _module_exports(
         k: v for k, v in temp.env.constructors.items()
         if k not in builtin_ctors and k in public_ctors
     }
+    refused_ctors = {
+        tld.decl.name: tuple(c.name for c in tld.decl.constructors)
+        for tld in program.declarations
+        if isinstance(tld.decl, ast.DataDecl)
+        and tld.visibility == "public"
+        and id(tld.decl) in temp._refused_decl_ids
+    }
     return ModuleRegistration(
         checker=temp,
         surfaced=tuple(
@@ -112,6 +128,7 @@ def _module_exports(
         functions=public_fns,
         data_types=public_data,
         constructors=ctors,
+        refused_ctors=refused_ctors,
     )
 
 
@@ -248,6 +265,12 @@ class ModulesMixin:
             all_data = reg.all_data_types
             self._module_all_functions[mod.path] = all_fns
             self._module_all_data_types[mod.path] = all_data
+            # #1694: and every one of them is a type a value can carry here,
+            # through an imported signature, whether or not this namespace
+            # can name it.  Keyed by identity, which no name spells, so this
+            # grants no name: an import does (step 5).
+            for dt_info in all_data.values():
+                self.env.data_types.setdefault(dt_info.name, dt_info)
 
             # 3. C7c: the public ones, and the constructors of public ADTs.
             #    Shared by every checker that can see the module, and never
@@ -259,6 +282,14 @@ class ModulesMixin:
             self._module_functions[mod.path] = mod_fns
             self._module_data_types[mod.path] = mod_data
             self._module_constructors[mod.path] = mod_ctors
+            # #1469: a refused public type's constructors, for an import
+            # that admits the type: like a refused declaration's own
+            # (#1497), a use of one draws no error after the module's.
+            if mod.path in self._import_names:
+                admitted = self._import_names[mod.path]
+                for type_name, ctor_names in reg.refused_ctors.items():
+                    if admitted is None or type_name in admitted:
+                        self._refused_ctor_names.update(ctor_names)
 
             # 4. C7c: check selective imports for private names
             name_filter = self._import_names.get(mod.path)
@@ -370,21 +401,31 @@ class ModulesMixin:
                     continue
                 if name_filter is None or fn_name in name_filter:
                     self.env.functions.setdefault(fn_name, fn_info)
-            # #1304, data side: same rule and same reason as the functions
-            # above.  A type name two imports supply denotes nothing here, and
-            # so does a constructor name — which is filtered by its PARENT
-            # type (spec §8.5.4), so the two sets are consulted separately.
-            for dt_name, dt_info in mod_data.items():
-                if dt_name in self._ambiguous_import_type_names:
-                    continue
-                if name_filter is None or dt_name in name_filter:
-                    self.env.data_types.setdefault(dt_name, dt_info)
-            for ct_name, ct_info in mod_ctors.items():
-                if ct_name in self._ambiguous_import_ctor_names:
-                    continue
-                parent = ct_info.parent_type
-                if name_filter is None or parent in name_filter:
-                    self.env.constructors.setdefault(ct_name, ct_info)
+        # 5b. #1694: the data type and constructor names an import supplies
+        #     are what the resolver pass binds them to (the type names were
+        #     taken before registration, `_take_type_names`): one supplier
+        #     binds, two leave the name denoting nothing (#1304), and an
+        #     import names a constructor by its TYPE (spec §8.5.4).
+        self._take_imported_constructors()
+
+    def _take_imported_constructors(self) -> None:
+        """Each constructor name an import supplies this namespace, to the
+        constructor the resolver pass binds it to (#1694).  The namespace's
+        own constructors are registered with their types, and one of a type
+        it imports none of is read where it is met
+        (:meth:`_stranger_constructor`)."""
+        names = self._names
+        if names is None:
+            return
+        owner = self._namespace_owner()
+        strangers = names.stranger_ctors.get(owner, frozenset())
+        for name, ident in names.ctors.get(owner, {}).items():
+            if ident.owner == owner or name in strangers:
+                continue
+            info = self._module_constructors.get(ident.owner, {}).get(
+                ident.name)
+            if info is not None:
+                self.env.constructors.setdefault(name, info)
 
     def _reject_ambiguous_imports(
         self, program: ast.Program,
@@ -405,15 +446,12 @@ class ModulesMixin:
         export silently rebind a downstream bare call.
 
         DEFINITION-GATED, not use-gated: the clash is refused because the
-        import pair exists, whether or not any body names it.  That is the
-        semantics codegen's E608 rail already has — a program importing two
-        suppliers and never calling either is E608 today — so the two layers
-        answer one question the same way, which is the whole of #1304's
-        complaint about three phases each deciding independently.  Both read
-        :func:`~vera.monomorphize.namespace_fn_names`; this side asks for its
-        OWN namespace's clashes (to report at its own import, and to keep the
-        name unbound), the E608 side asks the union (to decide whether a PAIR
-        of modules may share the flat namespace).
+        import pair exists, whether or not any body names it, so the verdict
+        is a function of the import lists alone.  It reads
+        :func:`~vera.monomorphize.namespace_fn_names` for its OWN namespace's
+        clashes, to report at its own import and to keep the name unbound;
+        the resolver pass leaves a bare call two imports supply unbound by
+        the same rule (:mod:`vera.binding`).
 
         Reported once per clashing name, at the LAST import that supplies it
         — the one whose presence completes the clash — and in sorted name
@@ -422,39 +460,31 @@ class ModulesMixin:
         Every namespace gets its own pass: the entry program here, and each
         module's through the fresh checker :meth:`_check_module_bodies`
         builds for it, whose diagnostics are surfaced into this one.  That is
-        what makes the refusal reach a module the entry program only imports
-        — the shape §8.5 left undefined and the only one where the flap was
-        observable, since E608 already refused the entry-visible pair.
+        what makes the refusal reach a module the entry program only imports,
+        the shape §8.5 left undefined and the one where the flap was
+        observable (#1304).
 
-        THREE NAMESPACES, three codes, mirroring the split codegen's rails
-        already use: functions (E155, backstopped by E608), data types (E156,
-        by E609) and constructors (E157, by E610).  One code would have been
-        cheaper and wrong — a constructor clash is not a type clash (two
-        modules exporting differently-named ADTs can share a constructor
-        name, and only E610 catches that today), and the registry's existing
-        convention is one code per declaration namespace.
+        THREE NAMESPACES, three codes: functions (E155), data types (E156)
+        and constructors (E157).  One code would have been cheaper and
+        wrong: a constructor clash is not a type clash (two modules
+        exporting differently-named ADTs can share a constructor name), and
+        the registry's convention is one code per declaration namespace.
 
         The data side flapped exactly as the function side did — measured on
         two modules each exporting a ``public data Shape`` with different
         constructor field types, where ``Sq(3)`` type-checked on some hash
         seeds and was ``E213`` on others.  Its accepting seeds were the worse
         half: ``check`` and ``verify`` both passed, and the program then died
-        at ``run`` with an ``E609`` located at line 0 of the entry file,
-        naming two modules the entry never imported.
+        at ``run`` with a code-generation collision error located at line 0
+        of the entry file, naming two modules the entry never imported.
 
-        The data side's escape hatches are the function side's, with one
-        extra condition (#1317).  E609/E610 once refused two modules'
-        same-named ADTs by DECLARATION, so neither narrowing an import nor
-        declaring the type locally made such a program compile and these
-        diagnostics prescribed renaming alone.  Per-owner ADT identity
-        changed that: a ``data`` declaration no namespace can reach is
-        compiled under ``mod$<path>$<Name>``, so both remedies carry
-        through — while the two declarations cannot MEET, by name or
-        through an imported signature that carries a value of the type.
-        :meth:`_ambiguous_data_fix` states the condition rather than
-        leaving it to be discovered at compile.  Every program these codes
-        refuse is one E609/E610 already refused later and less precisely,
-        so this moves a rejection rather than adding one.
+        The data side's escape hatches are the function side's: narrowing
+        an import or declaring the name locally clears the clash.  Each
+        module's declaration is a type of its own (#1694), named by its link
+        name ``mod$<path>$<Name>``, so two declarations never contend in
+        code generation; a value of one that reaches a place expecting the
+        other is an ordinary type mismatch whose message names both owners.
+        :meth:`_ambiguous_data_fix` says so.
 
         A name the BUILT-IN registry already owns is never ambiguous: every
         injection below is a ``setdefault`` onto an environment the built-ins
@@ -555,27 +585,22 @@ class ModulesMixin:
     def _ambiguous_data_fix(name: str, kind: str, labels: list[str]) -> str:
         """The remedies that work for a clashing TYPE or CONSTRUCTOR name.
 
-        The same two the function side offers, with the condition that
-        makes them work stated rather than left to be discovered (#1317).
-        Until per-owner ADT identity landed neither of them did: E609/E610
-        refused two modules' same-named ``data`` declarations however the
-        importer filtered or shadowed them, so this text prescribed
-        renaming alone.  Now a declaration no namespace can reach is
-        compiled under its own owner-qualified symbol, and both remedies
-        carry through to the runtime value — but only while the two
-        declarations cannot MEET, which the compilation rail decides and
-        reports as E609/E610 when they can (spec §11.16).
+        The two the function side offers, and the one a crossing value
+        needs.  Each module's ``data`` declaration is a type of its own
+        (#1694), so narrowing an import or declaring the name locally clears
+        the clash, and a value of one module's type that must reach code
+        expecting the other's is a type mismatch whatever the names:
+        declaring the type once and importing it is the remedy for that.
         """
         return (
             f"Import at most one supplier of '{name}': name the other "
             f"import's declarations selectively, as "
             f"'import {labels[-1]}(<other-name>);' (replace <other-name> "
             f"with a declaration you need from that module). Declaring "
-            f"'{name}' in this file resolves it too. Either works while no "
-            "namespace can reach both declarations — neither by importing "
-            "the name nor through an imported signature that carries a "
-            f"value of it; where one can, rename the {kind} '{name}' in "
-            f"'{labels[0]}' or '{labels[-1]}'."
+            f"'{name}' in this file resolves it too. Each module's "
+            "declaration is a type of its own, so where a value made by "
+            f"'{labels[0]}' must reach '{labels[-1]}', declare the type "
+            "once, in one module, and import it in the other."
         )
 
     def _check_module_bodies(self, mod: ResolvedModule) -> None:
@@ -700,26 +725,28 @@ class ModulesMixin:
             # A nested checker: the run's first checker registered them all.
             return cache
         by_path = {m.path: m for m in self._resolved_modules}
-        programs = {m.path: m.program for m in self._resolved_modules}
+        names = self._names
+        assert names is not None  # bound by `check_program`  # noqa: S101
         for path in _dependency_order(by_path):
             if path in cache:
                 continue
             mod = by_path[path]
             temp = TypeChecker(source=mod.source, file=str(mod.file_path))
-            for name, suppliers in imported_data_types(
-                    mod.program, programs).items():
-                if len(suppliers) != 1:
-                    # Two imports supply it, so it denotes neither (#1304):
-                    # the module's own check reports E156 at the import.
-                    continue
-                dep = cache.get(suppliers[0])
-                info = (None if dep is None
-                        else dep.checker.env.data_types.get(name))
+            # The module's own data types take their identities (#1694), and
+            # each data type name it writes denotes what the resolver pass
+            # binds it to there: its own declaration, or the one import that
+            # supplies it (two supply none, #1304: the module's own check
+            # reports E156 at the import).
+            temp._resolved_as = path
+            types = names.types.get(path, {})
+            temp._take_type_names(types)
+            for ident in types.values():
+                dep = cache.get(ident.owner)
+                info = (None if dep is None or ident.kind != "data"
+                        else dep.data_types.get(ident.name))
                 if info is not None:
-                    # `setdefault`, as the importer-side injection does: a
-                    # name the built-in registry holds is never won by an
-                    # import.
-                    temp.env.data_types.setdefault(name, info)
+                    # The type is held by its identity.
+                    temp.env.data_types.setdefault(info.name, info)
             temp._register_all(mod.program)
             cache[path] = _module_exports(
                 temp, mod.program, builtin_fns, builtin_ctors,

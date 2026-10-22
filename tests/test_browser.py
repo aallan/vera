@@ -2334,6 +2334,52 @@ class TestBrowserExports:
         assert "main" in result.exports
         assert "main" in node_result["exports"]
 
+    @pytest.mark.parametrize("path", [
+        *(EXAMPLES_DIR / f"{example}.vera" for example in EXAMPLES_WITH_MAIN),
+        # A Decimal program: its module exports the wrapper registration too.
+        ROOT / "tests" / "conformance" / "ch09_decimal.vera",
+    ], ids=lambda path: path.stem)
+    def test_the_list_is_the_programs_exports_and_none_of_the_runtimes(
+        self, path: Path, tmp_path: Path,
+    ) -> None:
+        """``getExports()`` lists exactly the program's exports: the
+        runtime's own, ``vera.alloc`` and ``vera.register_wrapper``, are
+        exported under the runtime prefix (#1694) and listed nowhere."""
+        wasm_path, result = _compile_file(path, tmp_path)
+        node_result = _run_node(wasm_path)
+
+        assert sorted(node_result["exports"]) == sorted(result.exports)
+
+    def test_a_public_alloc_is_listed_and_called(
+        self, tmp_path: Path,
+    ) -> None:
+        """A program's public ``alloc`` is its own export, beside the
+        runtime's ``vera.alloc`` (#1494, #1694): the list names it and a
+        call reaches it, not the allocator."""
+        source = """\
+public fn alloc(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0 + 1
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  alloc(41)
+}
+"""
+        wasm_path, exports = _compile_vera(source, tmp_path)
+        node_result = _run_node(wasm_path, fn="alloc", fn_args=["5"])
+
+        assert sorted(node_result["exports"]) == sorted(exports)
+        assert sorted(exports) == ["alloc", "main"]
+        assert node_result["value"] == 6
+
 
 class TestBrowserMapHostStoreGCReachability695:
     """Browser-runtime parallel of

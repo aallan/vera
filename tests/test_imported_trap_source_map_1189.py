@@ -193,7 +193,9 @@ class TestImportedTrapNamesTheModuleFile:
     def test_shadowed_import_frame_names_the_module(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """The `mod$…` emission of a locally-shadowed import (#814)."""
+        """A locally-shadowed import (#814): its frame shows the name it is
+        declared under, and its module's file says which `scaled` it is
+        (#1694)."""
         path = _write(
             tmp_path,
             {_MODULE_NAME: _MODULE, _IMPORTER_NAME: _SHADOWING_IMPORTER},
@@ -202,7 +204,7 @@ class TestImportedTrapNamesTheModuleFile:
         err = capsys.readouterr().err
 
         assert rc != 0
-        frame = _frame_line(err, "mod$chinchilla$scaled")
+        frame = _frame_line(err, "scaled")
         assert _MODULE_NAME in frame, (
             f"qualified module emission must name its module's file; "
             f"got {frame!r}"
@@ -243,11 +245,13 @@ class TestImportedTrapNamesTheModuleFile:
             {_MODULE_NAME: _MODULE, _IMPORTER_NAME: _IMPORTER},
             _IMPORTER_NAME,
         )
-        assert "scaled" in result.fn_source_map, (
+        # Keyed by the function's WASM name, its link name (#1694).
+        assert "mod$chinchilla$scaled" in result.fn_source_map, (
             "an imported function must have a source-map entry at all; "
             f"got keys {sorted(result.fn_source_map)}"
         )
-        file_path, line_start, line_end = result.fn_source_map["scaled"]
+        file_path, line_start, line_end = result.fn_source_map[
+            "mod$chinchilla$scaled"]
         assert file_path.endswith(_MODULE_NAME), file_path
         # The coordinates were already module-local; only the file moves.
         assert (line_start, line_end) == (1, 5), (line_start, line_end)

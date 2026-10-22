@@ -282,7 +282,7 @@ def test_discovery_and_rewrite_name_one_clone(
     assert "E620" not in codes, (
         f"caller dropped: {[d.description for d in result.diagnostics]}"
     )
-    assert f"(func ${clone} " in result.wat, (
+    assert f"(func $:{clone} " in result.wat, (
         f"expected the clone {clone!r} in the emitted WAT; "
         f"got {sorted(_clone_names(result.wat))}"
     )
@@ -338,4 +338,4 @@ public fn main(@Unit -> @Int)
     assert "E602" not in [d.error_code for d in result.diagnostics], (
         f"{[d.description for d in result.diagnostics]}"
     )
-    assert "(func $pick$Bool " in result.wat, sorted(_clone_names(result.wat))
+    assert "(func $:pick$Bool " in result.wat, sorted(_clone_names(result.wat))

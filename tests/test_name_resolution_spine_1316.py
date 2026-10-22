@@ -243,22 +243,30 @@ class TestClassifyNamedIsTheOrder:
             is NameSort.BUILTIN
         )
 
-    def test_the_declaration_index_bound_applies_to_both_registries(
-        self,
-    ) -> None:
-        """An alias body sees only what was declared BEFORE it (#1208), and
-        the bound orders the alias and ADT registries against each other."""
+    def test_the_alias_rule_bounds_only_a_cycle(self) -> None:
+        """Inside an alias body every alias of the namespace is in scope
+        except one declared after it on a cycle of mentions with it, and a
+        declared ADT is in scope wherever it is declared (#1552)."""
         env = AliasEnv(
-            aliases={"A": _nt("Int")}, alias_params={"A": None},
-            data_types={"Decimal": 5}, _order={"A": 3},
+            aliases={"A": _nt("B"), "B": _nt("A"), "C": _nt("D"),
+                     "D": _nt("Int")},
+            alias_params={"A": None, "B": None, "C": None, "D": None},
+            data_types={"Decimal": 5},
+            _order={"A": 0, "B": 1, "C": 2, "D": 3},
         )
-        assert classify_named(_nt("A"), env, limit=9) is NameSort.ALIAS
-        assert classify_named(_nt("A"), env, limit=2) is NameSort.BUILTIN
+        # On a cycle, the earlier body does not see the later alias; the
+        # later body sees the earlier one.
+        assert classify_named(_nt("B"), env, scope="A") is NameSort.BUILTIN
+        assert classify_named(_nt("A"), env, scope="B") is NameSort.ALIAS
+        # Off a cycle, an alias declared later is in scope.
+        assert classify_named(_nt("D"), env, scope="C") is NameSort.ALIAS
+        # Outside every alias body, every alias is.
+        assert classify_named(_nt("B"), env) is NameSort.ALIAS
+        # A declared ADT, from any alias body.
         assert (
-            classify_named(_nt("Decimal"), env, limit=9)
+            classify_named(_nt("Decimal"), env, scope="A")
             is NameSort.DECLARED_ADT
         )
-        assert classify_named(_nt("Decimal"), env, limit=4) is NameSort.BUILTIN
 
     def test_an_order_entry_with_no_body_falls_through(self) -> None:
         """The branch stays TOTAL for an env assembled elsewhere."""
@@ -387,8 +395,17 @@ _EXPECTED_RESERVED_CTORS = ("Future", "Tuple")
 
 
 def _declarable_type_names() -> list[str]:
-    """:func:`_builtin_type_names` minus the names E158 now refuses."""
-    return [n for n in _builtin_type_names() if n not in _UNDECLARABLE]
+    """:func:`_builtin_type_names` minus the names E158 refuses.
+
+    Empty since #1469: the prelude's type names and the built-in data types'
+    are reserved beside the built-in containers', so no ``data`` declaration
+    takes one, and every battery parametrized over this has no cell; each
+    name is refused at check instead (:class:`TestSpecialCasedBuiltinAdtsAreRefused`
+    and tests/test_resolver_1694.py).
+    """
+    from vera.prelude import reserved_type_names
+
+    return [n for n in _builtin_type_names() if n not in reserved_type_names()]
 
 
 def _builtin_type_names() -> list[str]:
@@ -807,9 +824,9 @@ class TestSpecialCasedBuiltinAdtsAreRefused:
         """One rule, both declaration sites.
 
         The entry file and a module are separate registration passes, and
-        the neighbouring data-namespace rails answer them differently — a
-        module `data Option` is E621 at CODEGEN while the entry's is
-        accepted (#1312's asymmetry).  A reservation that held only where
+        the data-namespace rails once answered them differently (a module
+        `data Option` was E621 at code generation while the entry's was
+        accepted, #1312's asymmetry).  A reservation that held only where
         the checker happened to be asked first would leave the other door
         open, so the module door is measured rather than assumed.
         """
@@ -833,19 +850,13 @@ class TestSpecialCasedBuiltinAdtsAreRefused:
 
     @pytest.mark.parametrize(
         "name", ["Option", "Result", "Ordering", "UrlParts", "Json"])
-    def test_every_other_builtin_name_stays_declarable(
+    def test_every_prelude_type_name_is_refused_too(
         self, name: str,
     ) -> None:
-        """The reservation is exactly the reserved names.
-
-        §8.4.1 makes the prelude's data types ordinary declarations a program
-        may shadow, `examples/vera/collections.vera` ships a `public data
-        Option<T>`, and #1312's E623 rail is built on entry-file shadowing
-        being legal — so widening this would refuse programs the language
-        documents as valid.  Whether to reserve them is #1496's question,
-        not this one.
-        """
-        assert "E158" not in [
+        """The prelude's own data types are reserved as well (#1469): a
+        declaration under one of their names is refused at check by the
+        same code, whatever its shape."""
+        assert "E158" in [
             d.error_code for d in _check(_shadow_program(name))]
 
     def test_every_reserved_name_is_one_the_compiler_knows(self) -> None:
@@ -1381,18 +1392,21 @@ public fn cmp_eq(@Unit -> @Bool)
 }
 """
 
-    def test_leg1_the_flat_enumeration_really_does_lose_a_constructor(
+    def test_leg1_the_flat_enumeration_loses_no_constructor(
         self,
     ) -> None:
-        """The collision is real at this site — the conversion is not a
-        no-op dressed up as one."""
+        """The collision this site once had cannot arise: every user
+        constructor is named under its type (`ZzBox$Less`, #1694), so the
+        flat map holds `Ordering`'s `Less` beside the user's, each with its
+        own owner."""
         _result, gen = _compile_with_generator(self._SRC)
         flat_owner = {
             c: adt for adt, ls in gen._adt_layouts.items() for c in ls
         }
-        assert flat_owner["Less"] == "ZzBox", flat_owner["Less"]
+        assert flat_owner["Less"] == "Ordering", flat_owner["Less"]
+        assert flat_owner["ZzBox$Less"] == "ZzBox", flat_owner
         flat_enum = sorted(c for c, p in flat_owner.items() if p == "Ordering")
-        assert flat_enum == ["Equal", "Greater"], flat_enum
+        assert flat_enum == ["Equal", "Greater", "Less"], flat_enum
         assert sorted(gen._adt_layouts["Ordering"]) == [
             "Equal", "Greater", "Less"]
 
@@ -1451,25 +1465,15 @@ public fn main(@Unit -> @Int)
 
 
 class TestRedeclaringAPreludeAdtNeverICEs:
-    """#1419 finding B — a legal redeclaration must not reach an internal
-    compiler error.
+    """#1419 finding B — a redeclaration of a prelude data type, including
+    one with FEWER constructors, must not reach an internal compiler error.
 
-    §8.4.1 lets a program redeclare a prelude data type, including with
-    FEWER constructors.  `_owned_ctor_layout` briefly raised
-    `CodegenInvariantError` when an owner-stamped reference named a
-    constructor its owner did not declare, and `private data Ordering {
-    Less, Equal }` + `show(compare(1, 2))` — check-clean and verify-clean —
-    became "Internal compiler error … Please file a bug report".  The door
-    degrades to no-layout instead, so the caller's `CodegenSkip` reports the
-    construct and drops the function, which is what the compiler did before
-    #1414.
-
-    What is NOT yet true, and is deliberately not asserted: that `compare`
-    still WORKS beside a user `Ordering`.  Making it work needs the render
-    side to become owner-aware at the same time — resolving only the
-    constructor against the built-in table was measured producing a module
-    that fails to load, which is worse than the skip.  That is the same
-    per-(owner, ADT, constructor) keying finding A needs.
+    `_owned_ctor_layout` briefly raised `CodegenInvariantError` when an
+    owner-stamped reference named a constructor its owner did not declare,
+    and `private data Ordering { Less, Equal }` + `show(compare(1, 2))`
+    became "Internal compiler error … Please file a bug report".  #1469
+    reserved the prelude's type names, so each declaration is refused at
+    check (E158) and code generation never meets it.
     """
 
     @pytest.mark.parametrize("decl", [
@@ -1477,7 +1481,7 @@ class TestRedeclaringAPreludeAdtNeverICEs:
         "public data Ordering { Lt, Eq, Gt }",
         "private data Ordering { Less, Equal, Greater }",
     ])
-    def test_no_internal_compiler_error(self, decl: str) -> None:
+    def test_the_redeclaration_is_refused_at_check(self, decl: str) -> None:
         source = decl + """
 
 public fn probe(@Unit -> @String)
@@ -1488,13 +1492,8 @@ public fn probe(@Unit -> @String)
   show(compare(1, 2))
 }
 """
-        assert not _check(source), [d.error_code for d in _check(source)]
-        result = _compile(source)
-        # Either it compiles, or it is refused with a located diagnostic —
-        # never an invariant violation.
-        for d in result.diagnostics:
-            assert "Internal compiler error" not in d.description, d.description
-            assert d.error_code != "E999", d.description
+        codes = [d.error_code for d in _check(source)]
+        assert codes and codes[0] == "E158", codes
 
 
 class TestNoUnannotatedBareConstructorLookup:
@@ -1710,8 +1709,8 @@ public fn f(@Unit -> @Ordering)
 class TestSiblingConstructorCollision:
     """#1425 — constructor names are unique per NAMESPACE (spec §8.4).
 
-    The intra-namespace sibling of E610 (two modules) and E157 (two
-    imports).  Before it, two declarations sharing a constructor name were
+    The intra-namespace sibling of E157 (two imports).  Before it, two
+    declarations sharing a constructor name were
     accepted with no diagnostic, and a USE of the name produced `[E212]` /
     `[E213]` describing whichever declaration registered last rather than
     the collision — measured, `Rose<T> { Leaf(T), Node(T, Rose<T>) }` beside

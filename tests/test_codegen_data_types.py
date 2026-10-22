@@ -32,7 +32,7 @@ public fn f(-> @Int)
 { 42 }
 """
         _result, gen = _compile_with_generator(source)
-        layout = gen._adt_layouts["Unit2"]["MkUnit"]
+        layout = gen._adt_layouts["Unit2"]["Unit2$MkUnit"]
         assert layout.tag == 0
         assert layout.field_offsets == ()
         assert layout.total_size == 8
@@ -47,7 +47,7 @@ public fn f(-> @Int)
 { 42 }
 """
         _result, gen = _compile_with_generator(source)
-        layout = gen._adt_layouts["Wrapper"]["Wrap"]
+        layout = gen._adt_layouts["Wrapper"]["Wrapper$Wrap"]
         assert layout.tag == 0
         assert layout.field_offsets == ((8, "i64"),)
         assert layout.total_size == 16
@@ -62,7 +62,7 @@ public fn f(-> @Int)
 { 42 }
 """
         _result, gen = _compile_with_generator(source)
-        layout = gen._adt_layouts["Pair"]["MkPair"]
+        layout = gen._adt_layouts["Pair"]["Pair$MkPair"]
         assert layout.tag == 0
         assert layout.field_offsets[0] == (8, "i64")   # Int at offset 8
         assert layout.field_offsets[1] == (16, "i32")   # Bool at offset 16
@@ -79,9 +79,9 @@ public fn f(-> @Int)
 """
         _result, gen = _compile_with_generator(source)
         layouts = gen._adt_layouts["Color"]
-        assert layouts["Red"].tag == 0
-        assert layouts["Green"].tag == 1
-        assert layouts["Blue"].tag == 2
+        assert layouts["Color$Red"].tag == 0
+        assert layouts["Color$Green"].tag == 1
+        assert layouts["Color$Blue"].tag == 2
 
     def test_float64_field_layout(self) -> None:
         """Constructor with Float64 field: tag(4) + pad(4) + f64(8) = 16."""
@@ -93,7 +93,7 @@ public fn f(-> @Int)
 { 42 }
 """
         _result, gen = _compile_with_generator(source)
-        layout = gen._adt_layouts["Box"]["MkBox"]
+        layout = gen._adt_layouts["Box"]["Box$MkBox"]
         assert layout.field_offsets == ((8, "f64"),)
         assert layout.total_size == 16
 
@@ -107,7 +107,7 @@ public fn f(-> @Int)
 { 42 }
 """
         _result, gen = _compile_with_generator(source)
-        layout = gen._adt_layouts["Toggle"]["MkToggle"]
+        layout = gen._adt_layouts["Toggle"]["Toggle$MkToggle"]
         assert layout.field_offsets == ((4, "i32"),)  # i32 aligns to 4
         assert layout.total_size == 8
 
@@ -121,7 +121,7 @@ public fn f(-> @Int)
 { 42 }
 """
         _result, gen = _compile_with_generator(source)
-        layout = gen._adt_layouts["Box"]["MkBox"]
+        layout = gen._adt_layouts["Box"]["Box$MkBox"]
         assert layout.field_offsets == ((4, "i32"),)  # T → pointer
         assert layout.total_size == 8
 
@@ -136,12 +136,12 @@ public fn f(-> @Int)
 """
         _result, gen = _compile_with_generator(source)
         layouts = gen._adt_layouts["MyOption"]
-        assert layouts["MyNone"].tag == 0
-        assert layouts["MyNone"].field_offsets == ()
-        assert layouts["MyNone"].total_size == 8
-        assert layouts["MySome"].tag == 1
-        assert layouts["MySome"].field_offsets == ((4, "i32"),)  # T → pointer
-        assert layouts["MySome"].total_size == 8
+        assert layouts["MyOption$MyNone"].tag == 0
+        assert layouts["MyOption$MyNone"].field_offsets == ()
+        assert layouts["MyOption$MyNone"].total_size == 8
+        assert layouts["MyOption$MySome"].tag == 1
+        assert layouts["MyOption$MySome"].field_offsets == ((4, "i32"),)  # T → pointer
+        assert layouts["MyOption$MySome"].total_size == 8
 
 
 # =====================================================================
@@ -1565,20 +1565,20 @@ public fn main(@Unit -> @Int)
         # like `$option_map$Int_JInt_JX` don't slip past as substrings
         # of the expected token.
         wat = result.wat or ""
-        assert re.search(r"\$option_map\$Int_JInt(?![A-Za-z0-9_])", wat), (
+        assert re.search(r"\$:option_map\$Int_JInt(?![A-Za-z0-9_])", wat), (
             f"Expected correctly-suffixed mono clone "
             f"`$option_map$Int_JInt` in WAT; got WAT containing "
             f"option_map suffixes: "
             f"{[line for line in wat.splitlines() if 'option_map$' in line]}"
         )
-        assert not re.search(r"\$option_map\$Int_JBool(?![A-Za-z0-9_])", wat), (
+        assert not re.search(r"\$:option_map\$Int_JBool(?![A-Za-z0-9_])", wat), (
             "Wrong-suffix mono clone `$option_map$Int_JBool` "
             "should not appear post-#604 fix; found in WAT"
         )
         # F8 on PR #659 review — independently pin the WASM-side
         # call-site rewriter (`vera/wasm/calls.py::_resolve_arg_fn_shape_wasm`
         # + `_infer_fn_alias_type_args_wasm`).  The function
-        # definition `(func $option_map$Int_JInt ...)` is emitted by
+        # definition `(func $:option_map$Int_JInt ...)` is emitted by
         # the monomorphizer at Pass 1.5; the `call` instruction is
         # emitted later by the WASM call-site rewriter, which has
         # an independent SlotRef-FnType-alias resolution path.  A
@@ -1586,14 +1586,14 @@ public fn main(@Unit -> @Int)
         # the rewriter mangles the call to a different name would
         # pass the function-definition assertion above but fail at
         # WASM validation with `unknown function $option_map$<wrong>`.
-        # Assert both names match by counting `call $option_map$Int_JInt`
-        # (or `return_call $option_map$Int_JInt`) occurrences.
+        # Assert both names match by counting `call $:option_map$Int_JInt`
+        # (or `return_call $:option_map$Int_JInt`) occurrences.
         call_pattern = (
-            r"(?:^|\s)(?:return_)?call\s+\$option_map\$Int_JInt"
+            r"(?:^|\s)(?:return_)?call\s+\$:option_map\$Int_JInt"
             r"(?![A-Za-z0-9_])"
         )
         assert re.search(call_pattern, wat, re.MULTILINE), (
-            f"Expected a `call $option_map$Int_JInt` (or "
+            f"Expected a `call $:option_map$Int_JInt` (or "
             f"`return_call`) instruction in WAT — without it the "
             f"call-site rewriter's mangled name doesn't match the "
             f"mono clone's definition.  Got option_map references: "
@@ -1642,7 +1642,7 @@ public fn main(@Unit -> @Int)
         result = _compile_ok(src)
         wat = result.wat or ""
         # Boundary-safe regex (CR-10 on PR #659) — see sibling test.
-        assert re.search(r"\$option_map\$Int_JInt(?![A-Za-z0-9_])", wat), (
+        assert re.search(r"\$:option_map\$Int_JInt(?![A-Za-z0-9_])", wat), (
             f"Expected `$option_map$Int_JInt` from parameterised "
             f"alias `Mapper<Int>`; got option_map suffixes: "
             f"{[line for line in wat.splitlines() if 'option_map$' in line]}"
@@ -1652,7 +1652,7 @@ public fn main(@Unit -> @Int)
         # one.  A bug that produced both (e.g. partial substitution
         # leaking the raw alias body into a second registration) would
         # otherwise slip past the positive assertion.
-        assert not re.search(r"\$option_map\$T_JT(?![A-Za-z0-9_])", wat), (
+        assert not re.search(r"\$:option_map\$T_JT(?![A-Za-z0-9_])", wat), (
             "Unsubstituted parameterised-alias clone "
             "`$option_map$T_JT` should not appear after the "
             "`T → Int` substitution fix; found in WAT"
@@ -1829,7 +1829,7 @@ public fn main(@Unit -> @Int)
         not be emitted as bare-named functions when a ``data A`` is present.
 
         This is the mechanism behind the ``unknown table 0`` trap: a
-        bare ``(func $option_map ...)`` in the module carries a
+        bare ``(func $:option_map ...)`` in the module carries a
         ``call_indirect`` with no backing table.  Assert the bare
         definitions are absent (mono clones, if any, carry a ``$`` suffix
         and are fine — but this program never calls the combinators, so
@@ -1837,9 +1837,9 @@ public fn main(@Unit -> @Int)
         wat = _compile_ok(self._prog("A")).wat or ""
         for tmpl in ("option_map", "option_and_then"):
             assert not re.search(
-                rf"\(func \${tmpl}(?![A-Za-z0-9_$])", wat
+                rf"\(func \$:{tmpl}(?![A-Za-z0-9_$])", wat
             ), (
-                f"bare template `(func ${tmpl} ...)` leaked into WAT for a "
+                f"bare template `(func $:{tmpl} ...)` leaked into WAT for a "
                 f"`data A` program — the #869 collision emitted an "
                 f"uncalled generic template with a table-less "
                 f"call_indirect.  WAT lines: "

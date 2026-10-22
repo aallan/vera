@@ -48,7 +48,7 @@ Every Vera program implicitly has access to a **standard prelude** that provides
 
 In addition, Option/Result combinators (`option_unwrap_or`, `option_map`, `option_and_then`, `result_unwrap_or`, `result_map`) and array operations (`array_slice`, `array_map`, `array_filter`, `array_fold`) are automatically available.
 
-User-defined `data` declarations with the same name **shadow** the prelude definition. If a user defines a non-standard variant (e.g. `data Option<T> { None, Just(T) }` instead of the standard `None, Some(T)`), the related combinators are suppressed — they rely on the standard constructor names.
+The prelude is a module whose names are **reserved** (§8.4.1): a `data` declaration, a `type` alias or a type parameter named after one of its data types is refused at check (**E158**), and a function or a `where` helper named after one of its functions (**E151**), in the entry file and in every module, so each prelude name means the prelude's declaration everywhere. A program that wants a variant of its own declares it under a name of its own (`data Maybe<T> { Nothing, Just(T) }`). Constructor names are not reserved.
 
 ## 9.2 Primitive Types
 
@@ -58,6 +58,7 @@ The primitive types (`Int`, `Nat`, `Bool`, `Byte`, `Float64`, `String`, `Unit`, 
 
 ### 9.3.1 Option\<T\>
 
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E158" reason="the prelude's own declaration of a reserved name, shown as the compiler injects it (#1469)" -->
 ```
 public data Option<T> {
   Some(T),
@@ -89,6 +90,7 @@ private fn safe_head(@Array<Int> -> @Option<Int>)
 
 ### 9.3.2 Result\<T, E\>
 
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E158" reason="the prelude's own declaration of a reserved name, shown as the compiler injects it (#1469)" -->
 ```
 public data Result<T, E> {
   Ok(T),
@@ -120,7 +122,7 @@ private fn checked_nat(@Int -> @Result<Nat, String>)
 
 ### 9.3.3 UrlParts
 
-<!-- vera:skip-check category="ILLUSTRATIVE" code="none" reason="prelude-injected UrlParts declaration shown without visibility" -->
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E158 none" reason="the prelude's own UrlParts declaration, a reserved name, shown without visibility (#1469)" -->
 ```
 data UrlParts {
   UrlParts(String, String, String, String, String)
@@ -150,6 +152,7 @@ See §9.5.4 for the `async` and `await` function specifications.
 
 ### 9.3.5 MdInline
 
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E158" reason="the prelude's own declaration of a reserved name, shown as the compiler injects it (#1469)" -->
 ```
 public data MdInline {
   MdText(String),
@@ -175,6 +178,7 @@ See §9.7.3 for the Markdown function specifications.
 
 ### 9.3.6 MdBlock
 
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E158" reason="the prelude's own declaration of a reserved name, shown as the compiler injects it (#1469)" -->
 ```
 public data MdBlock {
   MdParagraph(Array<MdInline>),
@@ -204,7 +208,7 @@ See §9.7.3 for the Markdown function specifications.
 
 ### 9.3.7 Option and Result Combinators
 
-The standard prelude (§9.1.2) provides combinator functions that eliminate common match boilerplate for `Option<T>` and `Result<T, E>`. These are injected automatically unless the user defines a non-standard variant (different constructors or arities) or shadows the function names.
+The standard prelude (§9.1.2) provides combinator functions that eliminate common match boilerplate for `Option<T>` and `Result<T, E>`. These are injected automatically; their names are reserved (§9.1.2), so no declaration shadows them.
 
 **Option combinators:**
 
@@ -225,7 +229,7 @@ The standard prelude (§9.1.2) provides combinator functions that eliminate comm
 | `result_map` | `forall<A, B, E> Result<A, E>, fn(A -> B) -> Result<B, E>` | Transform the `Ok` value |
 <!-- render_lists:end signatures-result -->
 
-Combinators follow the `domain_verb` naming convention (see §5). They are injected as private generic functions before compilation and undergo normal monomorphization. A combinator is not injected if the user defines a function with the same name.
+Combinators follow the `domain_verb` naming convention (see §5). They are injected as private generic functions before compilation and undergo normal monomorphization.
 
 ## 9.4 Built-in Collections
 
@@ -617,9 +621,9 @@ public fn handle(@Request -> @Response)
 }
 ```
 
-**Built-in types** (prelude ADTs, injected when referenced; user definitions shadow them):
+**Built-in types** (prelude ADTs, injected when referenced; their names are reserved):
 
-<!-- vera:skip-check category="ILLUSTRATIVE" code="none none" reason="prelude-injected Request/Response decls shown without visibility (#305)" -->
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E158 E158 none none" reason="the prelude's own Request/Response declarations, reserved names, shown without visibility (#305, #1469)" -->
 ```
 data Request { Request(String, String, Map<String, String>, String) }
 data Response { Response(Int, Map<String, String>, String) }
@@ -636,11 +640,11 @@ lowered ABI cannot answer it — `Bool`, every heap ADT and every boxed
 value share the `i32` shape — and neither can the presence of the
 `Request` / `Response` layouts, which the prelude injects whenever the
 *program* mentions those types, so any other function can supply them
-while `handle` has some unrelated signature.  The check is
-ownership-aware in the sense of §11.16: an entry file that declares its
-own `data Request` shadows the prelude's, and the handler is then typed
-by a different type that happens to share the name, so it is refused
-too.  This matters because the host marshals raw bytes through those
+while `handle` has some unrelated signature.  No program can declare
+a `Request` or `Response` of its own: the prelude's names are reserved
+(§8.4.1), so `vera check` refuses such a declaration (E158) before either
+surface validates the handler, and a `Request` the handler names is the
+prelude's.  This matters because the host marshals raw bytes through those
 layouts — it builds the `Request` in guest memory and decodes the
 returned pointer as a `Response` — and a wrong type there is not a
 type error but a read at an address that was never a `Response`.
@@ -690,7 +694,7 @@ Parameters travel the same shape one level down: the `Array<Option<String>>` sec
 
 ## 9.6 Built-in Functions
 
-Built-in functions are always in scope as the single canonical definition of each operation. A user or module function whose name matches a built-in is a compile error (**E151**): there is one canonical form, so a second definition is redundant, and for the verifier-modelled built-ins it is silently unsound — the verifier would reason with the built-in's idealized model while code generation runs the user's body, letting a postcondition be *proved* against the built-in yet *violated at runtime*. Call the built-in directly (no import is needed) or choose a distinct name for genuinely different behaviour. The Option/Result/Json/Html combinators listed in the standard prelude (Section 9.1.2) are the exception: they are ordinary Vera functions the prelude injects, so a same-named user definition soundly replaces them.
+Built-in functions are always in scope as the single canonical definition of each operation. A user or module function whose name matches a built-in is a compile error (**E151**): there is one canonical form, so a second definition is redundant, and for the verifier-modelled built-ins it is silently unsound — the verifier would reason with the built-in's idealized model while code generation runs the user's body, letting a postcondition be *proved* against the built-in yet *violated at runtime*. Call the built-in directly (no import is needed) or choose a distinct name for genuinely different behaviour. The Option/Result/Json/Html combinators listed in the standard prelude (Section 9.1.2) are ordinary Vera functions the prelude injects, and their names are reserved: a function or a `where` helper named after one is refused with **E151** too.
 
 ### 9.6.1 array\_length
 
@@ -1526,6 +1530,7 @@ Parsing functions convert strings to typed values, returning `Result<T, String>`
 
 The `Result` type used by parsing functions is the standard ADT:
 
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E158" reason="the prelude's own declaration of a reserved name, shown as the compiler injects it (#1469)" -->
 ```vera
 private data Result<T, E> { Ok(T), Err(E) }
 ```
@@ -2233,6 +2238,7 @@ json_get_int(obj, "name")                  -- None (wrong type)
 
 `Json` is a standard library ADT for structured data interchange. Tracked in [#58](https://github.com/aallan/vera/issues/58).
 
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E158" reason="the prelude's own declaration of a reserved name, shown as the compiler injects it (#1469)" -->
 ```vera
 public data Json {
   JNull,
@@ -2413,6 +2419,7 @@ Markdown is the lingua franca of large language models — they understand it na
 
 Markdown is represented as two mutually defined ADTs: `MdBlock` for block-level elements (§9.3.6) and `MdInline` for inline-level content (§9.3.5). The two-level design makes illegal states unrepresentable — a heading cannot contain another heading at the type level.
 
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E158" reason="the prelude's own declaration of a reserved name, shown as the compiler injects it (#1469)" -->
 ```
 public data MdInline {
   MdText(String),
@@ -2432,6 +2439,7 @@ public data MdInline {
 - `MdLink(@Array<MdInline>, @String)` — hyperlink: display text (inline content) and target URL.
 - `MdImage(@String, @String)` — image: alt text and source URL.
 
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E158" reason="the prelude's own declaration of a reserved name, shown as the compiler injects it (#1469)" -->
 ```
 public data MdBlock {
   MdParagraph(Array<MdInline>),
@@ -2656,6 +2664,7 @@ HTML is the primary output format of web applications and the most common docume
 
 HTML is represented as a single ADT `HtmlNode` with three constructors:
 
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E158" reason="the prelude's own declaration of a reserved name, shown as the compiler injects it (#1469)" -->
 ```
 public data HtmlNode {
   HtmlElement(String, Map<String, String>, Array<HtmlNode>),
@@ -2800,6 +2809,7 @@ Operation: `compare(@T, @T -> @Ordering)`. Returns `Less`, `Equal`, or `Greater`
 
 The `Ordering` ADT is a built-in type:
 
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E158" reason="the prelude's own declaration of a reserved name, shown as the compiler injects it (#1469)" -->
 ```
 public data Ordering {
   Less,

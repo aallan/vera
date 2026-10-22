@@ -115,7 +115,7 @@ public fn main(@Unit -> @Nat)
         wat = result.wat
         # Both the comparison and the trap must appear inside `unsafe`
         # (the function with the @Nat-Nat subtraction).
-        unsafe_idx = wat.find("(func $unsafe")
+        unsafe_idx = wat.find("(func $:unsafe")
         assert unsafe_idx >= 0, "unsafe function not found in WAT"
         # Slice out the `unsafe` body up to the next top-level paren.
         body_end = wat.find("\n  (func ", unsafe_idx + 1)
@@ -170,7 +170,7 @@ public fn main(@Unit -> @Int)
 """
         result = _compile_ok(src)
         wat = result.wat
-        int_sub_idx = wat.find("(func $int_sub")
+        int_sub_idx = wat.find("(func $:int_sub")
         assert int_sub_idx >= 0
         body_end = wat.find("\n  (func ", int_sub_idx + 1)
         if body_end < 0:
@@ -267,7 +267,7 @@ public fn main(@Unit -> @Nat)
         # regardless of static discharge status).
         result = _compile_ok(src)
         wat = result.wat
-        countdown_idx = wat.find("(func $countdown")
+        countdown_idx = wat.find("(func $:countdown")
         assert countdown_idx >= 0, "countdown not found in WAT"
         body_end = wat.find("\n  (func ", countdown_idx + 1)
         if body_end < 0:
@@ -284,16 +284,17 @@ public fn main(@Unit -> @Nat)
         assert checks(result, kind="nat_underflow", function="countdown") == ()
 
     def test_modulecall_provenance_emits_guard_and_traps(self) -> None:
-        """ModuleCall with @Nat return type carries provenance.
+        """A module-qualified call with a @Nat return type carries provenance.
 
-        `vera.math::abs(...)` returns `@Nat` per spec/09 §9.x, so
-        `vera.math::abs(a) - vera.math::abs(b)` is a `@Nat - @Nat`
-        site where both operands have @Nat provenance via
-        ast.ModuleCall (not ast.FnCall).  The CodeRabbit review on
-        PR #554 (round 1) identified that the original codegen
-        helpers `_is_static_nat_typed` and `_has_nat_origin_codegen`
-        only handled ast.FnCall — module-qualified callees with
-        @Nat return types would have slipped past the guard.
+        `nm::absn(...)` returns `@Nat`, so `nm::absn(a) - nm::absn(b)` is a
+        `@Nat - @Nat` site where both operands have @Nat provenance through
+        a qualified call.  The CodeRabbit review on PR #554 (round 1)
+        identified that the original codegen helpers `_is_static_nat_typed`
+        and `_has_nat_origin_codegen` only handled ast.FnCall — module-
+        qualified callees with @Nat return types would have slipped past the
+        guard.  The link step (#1694) makes the qualified call the plain call
+        of its target's link name, whose declared return carries the
+        provenance.
 
         This test exercises the fix by:
           (1) confirming the guard is emitted in the WAT for the
@@ -303,14 +304,20 @@ public fn main(@Unit -> @Nat)
               produces -5 without the guard, traps with it).
         """
         unsafe_src = """
-import vera.math(abs);
+module nm;
+
+private fn absn(@Int -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  abs(@Int.0)
+}
 
 private fn unsafe_modcall(@Int, @Int -> @Nat)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  vera.math::abs(@Int.1) - vera.math::abs(@Int.0)
+  nm::absn(@Int.1) - nm::absn(@Int.0)
 }
 
 public fn main(@Unit -> @Nat)
@@ -326,7 +333,7 @@ public fn main(@Unit -> @Nat)
         # Structural assertion: guard emitted in unsafe_modcall body.
         result = _compile_ok(unsafe_src)
         wat = result.wat
-        fn_idx = wat.find("(func $unsafe_modcall")
+        fn_idx = wat.find("(func $:unsafe_modcall")
         assert fn_idx >= 0, "unsafe_modcall not found in WAT"
         body_end = wat.find("\n  (func ", fn_idx + 1)
         if body_end < 0:
@@ -351,14 +358,20 @@ public fn main(@Unit -> @Nat)
 
         # Safe case: passing args where lhs >= rhs runs cleanly.
         safe_src = """
-import vera.math(abs);
+module nm;
+
+private fn absn(@Int -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  abs(@Int.0)
+}
 
 private fn safe_modcall(@Int, @Int -> @Nat)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  vera.math::abs(@Int.1) - vera.math::abs(@Int.0)
+  nm::absn(@Int.1) - nm::absn(@Int.0)
 }
 
 public fn main(@Unit -> @Nat)
@@ -481,7 +494,7 @@ public fn main(@Unit -> @Nat)
         """The `narrow` body contains the `i64.lt_s` + `unreachable` guard."""
         result = _compile_ok(self._GUARDED_LET)
         wat = result.wat
-        idx = wat.find("(func $narrow")
+        idx = wat.find("(func $:narrow")
         assert idx >= 0, "narrow function not found in WAT"
         body_end = wat.find("\n  (func ", idx + 1)
         if body_end < 0:
@@ -522,7 +535,7 @@ public fn main(@Unit -> @Nat)
 """
         result = _compile_ok(src)
         wat = result.wat
-        idx = wat.find("(func $narrow_len")
+        idx = wat.find("(func $:narrow_len")
         assert idx >= 0, "narrow_len function not found in WAT"
         body_end = wat.find("\n  (func ", idx + 1)
         if body_end < 0:
@@ -560,7 +573,7 @@ public fn main(@Unit -> @Nat)
 """
         result = _compile_ok(src)
         wat = result.wat
-        idx = wat.find("(func $passthru")
+        idx = wat.find("(func $:passthru")
         assert idx >= 0
         body_end = wat.find("\n  (func ", idx + 1)
         if body_end < 0:
@@ -613,7 +626,7 @@ class TestNatBindingRuntimeGuard747:
         """
         # Boundary-safe so `$gcall` does not match `$gcall_helper` — a plain
         # substring `find` would slice the wrong body (CR #756).
-        m = re.search(rf"\(func \${re.escape(fn)}(?![A-Za-z0-9_$.])", wat)
+        m = re.search(rf"\(func \$:?{re.escape(fn)}(?![A-Za-z0-9_$.])", wat)
         assert m is not None, f"{fn} not found in WAT"
         idx = m.start()
         end = wat.find("\n  (func ", idx + 1)
@@ -1059,7 +1072,7 @@ public fn f(@Int -> @Nat)
         """The `to_nat` body carries the `i64.lt_s` + `unreachable` guard."""
         result = _compile_ok(self._BARE_SLOT)
         wat = result.wat
-        idx = wat.find("(func $to_nat ")
+        idx = wat.find("(func $:to_nat ")
         assert idx >= 0, "to_nat function not found in WAT"
         body_end = wat.find("\n  (func ", idx + 1)
         if body_end < 0:
@@ -1102,7 +1115,7 @@ public fn f(@Array<Int> -> @Nat)
 { array_length(@Array<Int>.0) }
 """)
         wat = result.wat
-        idx = wat.find("(func $f ")
+        idx = wat.find("(func $:f ")
         assert idx >= 0, "f function not found in WAT"
         body_end = wat.find("\n  (func ", idx + 1)
         if body_end < 0:
@@ -1130,7 +1143,7 @@ def _fn_body(wat: str, fn: str) -> str:
     in this slice; that uniquely identifies the @Nat guard only because the
     fixtures contain no other ``i64.lt_s`` emitter — keep them to plain
     arithmetic / slot / call bodies."""
-    m = re.search(rf"\(func \${re.escape(fn)}(?![A-Za-z0-9_$.])", wat)
+    m = re.search(rf"\(func \$:?{re.escape(fn)}(?![A-Za-z0-9_$.])", wat)
     assert m is not None, f"{fn} not found in WAT"
     idx = m.start()
     end = wat.find("\n  (func ", idx + 1)
@@ -1407,11 +1420,11 @@ public fn drain(@Int -> @Nat)
 """
 
     def test_recursive_tail_call_keeps_return_call(self) -> None:
-        """The @Nat->@Nat recursive tail call keeps ``return_call $drain`` — TCO
+        """The @Nat->@Nat recursive tail call keeps ``return_call $:drain`` — TCO
         is no longer reverted by the sibling narrowing arm's guard."""
         result = _compile_ok(self._DRAIN)
         body = _fn_body(result.wat, "drain")
-        assert "return_call $drain" in body, (
+        assert "return_call $:drain" in body, (
             f"recursive tail call lost TCO (reverted to plain call):\n{body}"
         )
 

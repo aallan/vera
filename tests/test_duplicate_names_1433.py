@@ -145,6 +145,7 @@ NAMESPACES: dict[str, Namespace] = {
                    "TypeChecker._where_helper_parents"}), "`where` block"),
     "type": Namespace(
         frozenset({"TypeEnv.data_types", "TypeEnv.type_aliases",
+                   "TypeEnv.type_names",
                    "DataDecl", "TypeAliasDecl", "DataDecl.name",
                    "TypeAliasDecl.name", "Program.declarations",
                    "TypeChecker._ns_first_decls",
@@ -571,18 +572,18 @@ CELLS: list[Cell] = [
     _c("fn/two-imports-supply-one-name", "function", "across_modules",
        "import libf;\nimport libg;\n\n" + _main("f(1)"),
        "E155", modules={"libf": _LIBF, "libg": _LIBG}),
+    # The prelude's functions are reserved (#1469), its combinators too.
     _c("fn/shadows-prelude-combinator", "function", "builtin",
        _fn("option_unwrap_or", sig="@Option<Int>, @Int -> @Int", body="99")
        + "\n" + _main("option_unwrap_or(None, 5)"),
-       "legal", value=99),
+       "E151"),
     _c("fn/redefines-built-in", "function", "builtin",
        _fn("string_length", sig="@String -> @Int", body="1") + "\n"
        + _main('string_length("ab")'),
        "E151"),
-    # A prelude BODY calls the user's override: `json_get_string` reaches
-    # this `json_get`, so the program returns 0 where the prelude's own
-    # `json_get` gives 2.  Pinned at 0 until owner-qualified prelude
-    # symbols (#1495) make it 2.
+    # A prelude BODY once called the user's override: `json_get_string`
+    # reached this `json_get` and the program returned 0 where the prelude's
+    # own `json_get` gives 2 (#1495).  The name is reserved now (#1469).
     _c("fn/prelude-body-calls-an-override", "function", "builtin",
        _fn("json_get", sig="@Json, @String -> @Option<Json>", body="None",
            vis="private ") + "\n"
@@ -591,9 +592,7 @@ CELLS: list[Cell] = [
                '      Some(@String) -> string_length(@String.0),\n'
                '      None -> 0\n    },\n'
                '    Err(@String) -> 0 - 1\n  }'),
-       "legal", value=0,
-       pinned="#1495: a prelude body binds to the program's override of a "
-              "prelude function; the correct value is 2"),
+       "E151"),
 
     # -- where helpers -----------------------------------------------------
     _c("where/twice", "where_helper", "same_scope",
@@ -747,10 +746,11 @@ CELLS: list[Cell] = [
     _c("type/data-named-Tuple", "type", "builtin",
        "public data Tuple { T1(Int) }\n\n" + _main("1"),
        "E158"),
+    # Reserved whatever the shape, a restatement included (#1469).
     _c("type/entry-restates-prelude-type", "type", "builtin",
        "public data Option<T> { None, Some(T) }\n\n"
        + _main("match Some(4) { Some(@Int) -> @Int.0, None -> 0 }"),
-       "legal", value=4),
+       "E158"),
 
     # -- constructors ------------------------------------------------------
     _c("ctor/listed-twice-in-one-data", "constructor", "same_scope",
@@ -1345,7 +1345,7 @@ def test_a_helper_binder_renamed_apart_leaves_no_trace(
     no function symbol carries it and no skip warning names one."""
     _, result, _ = build_multi_module(tmp_path, cell.files)
     assert "shadowed" not in result.wat, (cell.id, re.findall(
-        r"\(func \$(\S*shadowed\S*)", result.wat))
+        r"\(func \$:?(\S*shadowed\S*)", result.wat))
     skips = [(d.error_code, d.description) for d in result.diagnostics
              if d.error_code in {"E602", "E604", "E605"}]
     assert skips == [], (cell.id, skips)
@@ -1643,7 +1643,7 @@ def test_a_repeated_type_parameter_names_its_place_in_the_list(
 # The codegen backstop
 # ---------------------------------------------------------------------------
 
-_DEF_H = "  (func $f$where$h (param $p0 i64) (result i64)\n    local.get $p0)"
+_DEF_H = "  (func $:f$where$h (param $p0 i64) (result i64)\n    local.get $p0)"
 
 
 def test_the_backstop_refuses_one_identifier_defined_twice() -> None:
@@ -1651,9 +1651,9 @@ def test_the_backstop_refuses_one_identifier_defined_twice() -> None:
     reaches it, so it is asserted against hand-built modules rather than
     left an unmeasured comment.  It names the symbol, because the reader of
     an internal error is a compiler author."""
-    wat = "\n".join(["(module", _DEF_H, "  (func $other (result i64)\n"
+    wat = "\n".join(["(module", _DEF_H, "  (func $:other (result i64)\n"
                      "    i64.const 0)", _DEF_H, ")"])
-    with pytest.raises(CodegenInvariantError, match=r"\$f\$where\$h"):
+    with pytest.raises(CodegenInvariantError, match=r"\$:f\$where\$h"):
         AssemblyMixin._assert_unique_func_names(wat)
 
 
@@ -1679,12 +1679,12 @@ def test_the_backstop_does_not_count_references() -> None:
         '  (import "vera" "print" (func $vera.print (param i32 i32)))',
         "  (type $closure_sig_0 (func (param i32) (result i32)))",
         "  (table 1 funcref)",
-        "  (elem (i32.const 0) func $f$where$h)",
-        '  (export "f" (func $f))',
+        "  (elem (i32.const 0) func $:f$where$h)",
+        '  (export "f" (func $:f))',
         _DEF_H,
-        '  (func $f (export "f") (param $p0 i64) (result i64)',
+        '  (func $:f (export "f") (param $p0 i64) (result i64)',
         "    local.get $p0",
-        "    call $f$where$h)",
+        "    call $:f$where$h)",
         ")",
     ])
     AssemblyMixin._assert_unique_func_names(wat)  # must not raise
@@ -1692,7 +1692,7 @@ def test_the_backstop_does_not_count_references() -> None:
 
 @pytest.mark.parametrize(
     "cell_id,symbol",
-    [("fn/twice", r"\$f\b"), ("where/twice", r"\$f\$where\$h")],
+    [("fn/twice", r"\$:f\b"), ("where/twice", r"\$:f\$where\$h")],
 )
 def test_a_compile_that_skips_the_checker_ends_in_an_e699(
     cell_id: str, symbol: str,

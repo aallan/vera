@@ -1,42 +1,24 @@
-"""#1312 / #1317 — the data-collision rails, asked about LAYOUTS.
+"""#1312 / #1317 / #1694 — two namespaces' same-named data types.
 
-Codegen's ``_adt_layouts`` holds ONE layout per bare name across the whole
-program, so two ``data`` declarations of a name can coexist exactly when they
-describe the same layout.  Three PAIRS can meet in that slot, and before this
-change the rails answered all three differently:
+Codegen's ``_adt_layouts`` held ONE layout per bare name across the whole
+program, so three PAIRS could meet in one slot, and before #1312 the rails
+answered all three differently: module versus prelude (E621, shape-based
+since #1277), entry file versus module (nothing at all: a `vera
+check`-green program compiled to a module whose ``main`` was simply absent,
+#1312), and module versus module (E609/E610, keyed on PROVENANCE, #1317).
+#1312 and #1317 made the last two one question about LAYOUTS (E623, and
+E609/E610 relaxed for a restatement).
 
-* **module versus prelude** — E621, shape-based since #1277: a module that
-  restates the prelude's type shares the slot and compiles.
-* **entry file versus module** — nothing at all (#1312).  Pass 1 registers the
-  entry file's ``data`` over the Pass-0.5 module harvest, which only
-  ``setdefault``s, so the entry's declaration took the slot and the module's
-  own constructors became ``unknown constructor`` inside the module's own
-  bodies: an ``[E602]`` skip, an ``[E620]`` cascade, both WARNINGS.  A
-  `vera check`-green program compiled with **exit 0** to a module whose
-  ``main`` was simply absent from the exports.  The prelude rail could not be
-  asked about this pair — an entry declaration SUPPRESSES the prelude's
-  injection, so no prelude declaration exists to contend with.
-* **module versus module** — E609/E610, keyed on PROVENANCE alone (#1317).
-  Two modules whose declarations describe the SAME layout were refused
-  anyway, and renaming in a dependency's source was the only remedy.
+#1694 replaces the question.  The prelude's type names are reserved (E158,
+#1469), and every other declaration is a type of its own, named by its link
+name in every stage (:mod:`vera.binding`): an entry file's ``Shape`` and a
+module's, or two modules', never share a slot, so their layouts no longer
+decide anything.  A program is refused exactly where a value of one meets
+the other, at check, by an ordinary mismatch whose message names both
+owners — a restatement included, which is the breaking change (declare the
+type once and import it).
 
-Both are now the same question, asked through the same
-:func:`~vera.prelude.data_decl_shape` derivation:
-
-* the entry-versus-module pair is **E623**, an error located at the entry
-  declaration naming the module's file and line;
-* the module-versus-module pair admits a restatement, with E610 relaxed in
-  LOCKSTEP — two modules restating one type share its constructor names too,
-  so relaxing E609 alone would close nothing.
-
-Two modules whose declarations describe DIFFERENT layouts each get their
-OWN layout, under an owner-qualified ``mod$<path>$<Name>`` symbol (#1317) —
-both modules' bodies are compiled into the one WASM module (Passes 2.5/2.6)
-and each needs its own layout for its own constructor sites, which per-owner
-identity gives them.  What still refuses is a pair some namespace can MEET:
-by importing the bare name from both, or through an imported signature that
-carries a value of the type from one while the namespace can reach the
-other.  :class:`TestDifferingShapesAdmittedWhenNothingMeetsThem` and
+:class:`TestDifferingShapesAdmittedWhenNothingMeetsThem` and
 :class:`TestMeetingStillRefused` pin the two sides of that boundary;
 ``tests/test_per_owner_adt_identity_1317.py`` holds the full matrix.
 """
@@ -44,14 +26,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 
-from vera.errors import ERROR_CODES
 
 from tests.module_fixture_helpers import (
     build_multi_module,
     build_multi_module_past_check,
     module_value,
+    refused_at_check as _refused_at_check,
 )
 
 
@@ -62,9 +43,9 @@ from tests.module_fixture_helpers import (
 _BLIB_OWN_JSON = """\
 module blib;
 
-private data Json { JBlob(Int) }
+private data Jbox { JBlob(Int) }
 
-private fn wrap(@Int -> @Json)
+private fn wrap(@Int -> @Jbox)
   requires(true)
   ensures(true)
   effects(pure)
@@ -86,14 +67,14 @@ public fn probe(@Int -> @Int)
 _ENTRY_OWN_JSON = """\
 import blib(probe);
 
-private data Json { JMine(Int) }
+private data Jbox { JMine(Int) }
 
-public fn consume(@Json -> @Int)
+public fn consume(@Jbox -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  match @Json.0 {
+  match @Jbox.0 {
     JMine(@Int) -> @Int.0
   }
 }
@@ -107,14 +88,13 @@ public fn main(@Unit -> @Int)
 }
 """
 
-# The issue's own repro, verbatim: the module never touches its `Json`, so
-# nothing inside it drops — but the two declarations still contend for the
-# one slot, and the rail must fire on the DECLARATIONS rather than on the
-# wreckage they happen to produce.
+# The issue's own repro, renamed off the reserved `Json` (#1469): the module
+# never touches its `Jbox`, so nothing inside it drops, and the two
+# declarations are two types (#1694).
 _BLIB_UNUSED_JSON = """\
 module blib;
 
-private data Json { JBlob(Int) }
+private data Jbox { JBlob(Int) }
 
 public fn probe(@Int -> @Int)
   requires(true)
@@ -128,9 +108,9 @@ public fn probe(@Int -> @Int)
 _ENTRY_UNUSED_JSON = """\
 import blib(probe);
 
-private data Json { JMine(Int) }
+private data Jbox { JMine(Int) }
 
-public fn consume(@Json -> @Int)
+public fn consume(@Jbox -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
@@ -178,14 +158,12 @@ public fn main(@Unit -> @Int)
 """
 
 
-# The two axes a single-constructor fixture cannot reach (PR #1372 review).
-# `data_decl_shape` compares an ORDERED tuple of constructors, because the tag
-# is the position, and compares type-parameter arity positionally — and every
-# other fixture in this file differs in constructor NAMES or FIELD TYPES, or
-# matches with one constructor.  A derivation that compared constructor SETS,
-# or ignored arity, would pass every one of them.  These two pairs vary only
-# the axis named, which is the same discipline a non-commutative operand pair
-# needs to catch a slot-order bug.
+# The two axes a single-constructor fixture cannot reach (PR #1372 review):
+# constructor ORDER, because the tag is the position, and type-parameter
+# ARITY.  The layout-sharing rail compared both; since #1694 neither decides
+# anything, since two declarations are two types, and the cells below hold
+# that a pair differing on one axis alone is refused or admitted exactly as
+# a pair matching on both.
 
 _MODULE_TWO_CTORS = """\
 module blib;
@@ -268,74 +246,53 @@ def _codes(errors: list[tuple[str, str]]) -> list[str]:
 
 
 class TestEntryVersusModule:
-    """E623 where the entry's declaration cannot share the module's layout."""
+    """The entry file against a module: two types, refused only where they
+    meet (#1312, #1694)."""
 
-    def test_differing_shapes_are_refused_not_silently_dropped(
+    def test_differing_private_shapes_each_keep_their_own(
         self, tmp_path: Path,
     ) -> None:
-        """Base: exit 0, ``ok: true``, warnings only, ``exports ==
-        ['consume']`` — ``main`` silently gone."""
+        """The issue's pair, under a name the prelude does not hold (its
+        own `Json` is reserved since #1469): the entry's private `Jbox` and
+        the module's private `Jbox` each keep their own layout, so nothing
+        is refused and ``main`` runs."""
         _verr, result, cg_errors = build_multi_module(
             tmp_path / "differ",
             {"blib.vera": _BLIB_OWN_JSON, "main.vera": _ENTRY_OWN_JSON},
         )
-        assert _codes(cg_errors) == ["E623"], cg_errors
-        assert not result.ok
+        assert cg_errors == [], cg_errors
+        assert "main" in result.exports and "consume" in result.exports
+        assert module_value(result) == ("ok", 7)
 
     def test_the_issues_own_repro(self, tmp_path: Path) -> None:
-        """The issue's fixture verbatim, where the module never touches its
-        own ``Json``.
-
-        Measured green at the base — nothing inside the module drops,
-        because nothing inside it constructs the type — which is why the
-        rail keys on the DECLARATIONS and not on the E602 wreckage.  Its
-        sibling above is the shape that loses ``main``.
-        """
+        """The issue's fixture, renamed the same way, where the module never
+        touches its own type: nothing is refused either."""
         _verr, result, cg_errors = build_multi_module(
             tmp_path / "verbatim",
             {"blib.vera": _BLIB_UNUSED_JSON, "main.vera": _ENTRY_UNUSED_JSON},
         )
-        assert _codes(cg_errors) == ["E623"], cg_errors
-        assert not result.ok
+        assert cg_errors == [], cg_errors
+        assert module_value(result) == ("ok", 7)
 
-    def test_it_is_located_at_the_entry_declaration(
-        self, tmp_path: Path,
-    ) -> None:
-        """One diagnostic, at the declaration whose registration wins the
-        slot, naming the module's own file and line so the other half is
-        reachable."""
-        _verr, result, _cg = build_multi_module(
-            tmp_path / "located",
-            {"blib.vera": _BLIB_OWN_JSON, "main.vera": _ENTRY_OWN_JSON},
-        )
-        diag = next(d for d in result.diagnostics if d.error_code == "E623")
-        assert diag.severity == "error"
-        assert diag.location.file is not None
-        assert diag.location.file.endswith("main.vera")
-        assert diag.location.line == 3, diag.location.line
-        assert "private data Json" in diag.source_line
-        assert "blib" in diag.description
-        assert "blib.vera:3" in diag.description
-        assert diag.rationale and diag.fix and diag.spec_ref
-
-    def test_identical_shapes_stay_legal_and_run(self, tmp_path: Path) -> None:
-        """The relaxation the rail must not break: an entry file restating a
-        module's public type is served by the one registered layout, and the
-        program compiles and runs."""
-        _verr, result, cg_errors = build_multi_module(
+    def test_identical_shapes_are_two_types(self, tmp_path: Path) -> None:
+        """An entry file restating a module's public type declares a second
+        type (#1694), so where the module's value meets the entry's
+        constructors the program is refused at check, naming the module's
+        type."""
+        codes, text = _refused_at_check(
             tmp_path / "restate",
             {"blib.vera": _SHARED_SHAPE_MODULE,
              "main.vera": _ENTRY_RESTATES_SHAPE},
         )
-        assert cg_errors == [], cg_errors
-        assert module_value(result) == ("ok", 7)
+        assert "E314" in codes, codes
+        assert "blib.Shape" in text, text
 
     def test_an_entry_declaration_no_module_shares_is_untouched(
         self, tmp_path: Path,
     ) -> None:
         """Control: the rail fires on a CONTENDED name, not on any entry
         ``data`` in a program that happens to import something."""
-        entry = _ENTRY_OWN_JSON.replace("Json", "Zbox").replace(
+        entry = _ENTRY_OWN_JSON.replace("Jbox", "Zbox").replace(
             "JMine", "MkZbox")
         _verr, result, cg_errors = build_multi_module(
             tmp_path / "control",
@@ -347,52 +304,42 @@ class TestEntryVersusModule:
     def test_constructor_ORDER_alone_is_a_different_layout(
         self, tmp_path: Path,
     ) -> None:
-        """The tag IS the position, so swapping two constructors is a
-        different layout even though the names and field types match.
-
-        The axis no other cell in this file varies: every other differing
-        pair also differs in constructor names or field types, and every
-        matching pair has a single constructor — so a `data_decl_shape` that
-        compared constructor SETS would pass all of them and fail only here.
-        """
-        _verr, result, cg_errors = build_multi_module(
+        """The tag is the position, so swapping two constructors made a
+        different layout to the layout-sharing rail, though the names and
+        field types match.  Under #1694 the pair is two types like any
+        other, refused where the module's value meets the entry's
+        constructors (E314)."""
+        codes, text = _refused_at_check(
             tmp_path / "order",
             {"blib.vera": _MODULE_TWO_CTORS,
              "main.vera": _ENTRY_SWAPPED_ORDER},
         )
-        assert _codes(cg_errors) == ["E623"], cg_errors
-        assert not result.ok
+        assert "E314" in codes, codes
+        assert "blib.Pair" in text, text
 
-    def test_the_same_two_constructors_in_the_same_order_still_share(
+    def test_the_same_two_constructors_in_the_same_order_are_two_types(
         self, tmp_path: Path,
     ) -> None:
-        """The control that makes the cell above mean something.
-
-        Without it, "swapped order is refused" would also be satisfied by a
-        rail that refused every two-constructor declaration.
-        """
-        _verr, result, cg_errors = build_multi_module(
+        """The same order is no exception: the layout no longer decides,
+        the declaration does (#1694)."""
+        codes, text = _refused_at_check(
             tmp_path / "order-ok",
             {"blib.vera": _MODULE_TWO_CTORS,
              "main.vera": _ENTRY_SAME_ORDER},
         )
-        assert cg_errors == [], cg_errors
-        assert module_value(result) == ("ok", 7)
+        assert "E314" in codes, codes
+        assert "blib.Pair" in text, text
 
-    def test_type_parameter_ARITY_alone_is_a_different_layout(
+    def test_a_signature_carrying_the_other_type_is_no_meeting_unused(
         self, tmp_path: Path,
     ) -> None:
-        """The second axis a single-constructor fixture cannot reach: same
-        constructor, same field type, different declared arity.
+        """Two types of one name coexist until a value crosses (#1694).
 
-        Asked here where the two declarations MEET, because since #1423 a
-        different arity is only refused when they do.  ``probe`` carries no
-        ``Box`` — it is ``@Int -> @Int`` — so the fixture ADDS ``boxer``,
-        whose ``@Int -> @Box<Int>`` signature is what reaches the entry, and
-        imports it.  The entry declares a zero-arity ``Box`` of its own, so
-        neither declaration can be qualified away and the pair is refused at
-        the entry declaration.  The sibling below is the same two
-        declarations with no signature carrying one to the other.
+        ``boxer``'s ``@Int -> @Box<Int>`` signature carries the module's
+        ``Box<T>`` to the entry, which declares a zero-arity ``Box`` of its
+        own, and imports ``boxer`` without calling it.  The two are two
+        types, so nothing meets, and the program runs.  The layout-sharing
+        rail this replaced refused the import itself (E623, before #1694).
         """
         module = _MODULE_ARITY_ONE + """
 public fn boxer(@Int -> @Box<Int>)
@@ -405,18 +352,13 @@ public fn boxer(@Int -> @Box<Int>)
 """
         entry = _ENTRY_ARITY_ZERO.replace(
             "import blib(probe);", "import blib(probe, boxer);")
-        _verr, result, cg_errors = build_multi_module(
+        verify_errors, result, cg_errors = build_multi_module(
             tmp_path / "arity",
             {"blib.vera": module, "main.vera": entry},
         )
-        assert _codes(cg_errors) == ["E623"], cg_errors
-        # The refusal REACHES the result, which the code alone does not say:
-        # E623 is emitted at the entry declaration and the Pass-1.9 severity
-        # gate is what turns it into a refused compile.  Carried over from
-        # the cell this one was restated from (PR review) — without it a
-        # regression that downgraded the diagnostic to a warning would leave
-        # the program compiling and this cell green.
-        assert not result.ok
+        assert verify_errors == [], verify_errors
+        assert cg_errors == [], cg_errors
+        assert module_value(result) == ("ok", 7)
 
     def test_a_differing_arity_the_entry_cannot_reach_is_admitted(
         self, tmp_path: Path,
@@ -447,11 +389,6 @@ public fn boxer(@Int -> @Box<Int>)
         assert verify_errors == [], verify_errors
         assert cg_errors == [], cg_errors
         assert module_value(result) == ("ok", 7)
-
-    def test_the_code_is_registered(self) -> None:
-        assert "E623" in ERROR_CODES
-        assert ERROR_CODES["E623"]
-
 
 # =====================================================================
 # #1317 — two modules that describe one layout
@@ -504,39 +441,25 @@ public fn main(@Unit -> @Int)
 class TestModuleRestatementDiamond:
     """Two dependencies declaring one layout are no longer a collision."""
 
-    def test_the_restatement_diamond_compiles_and_runs(
+    def test_the_restatement_diamond_is_two_types(
         self, tmp_path: Path,
     ) -> None:
-        """Base: ``[E609] Name collision: ADT type`` at compile, on a
-        check-green, verify-green program, with renaming in a dependency's
-        source as the only remedy."""
-        _verr, result, cg_errors = build_multi_module(
+        """Two dependencies restating one layout declare two types (#1694),
+        so the diamond's crossing is refused at check, naming both owners;
+        declaring the type once, in one module the other imports, is the
+        program that compiles."""
+        codes, text = _refused_at_check(
             tmp_path / "diamond",
             {"liba.vera": _LIBA_RESTATE, "libb.vera": _LIBB_RESTATE,
              "main.vera": _ENTRY_DIAMOND},
         )
-        assert cg_errors == [], cg_errors
-        assert module_value(result) == ("ok", 7)
-
-    def test_e610_is_relaxed_in_lockstep(self, tmp_path: Path) -> None:
-        """The restatement shares CONSTRUCTOR names too.
-
-        Relaxing E609 alone would close nothing — E610 would refuse exactly
-        the programs E609 just admitted — so this asserts on the code, not
-        merely on the absence of E609.
-        """
-        _verr, _result, cg_errors = build_multi_module(
-            tmp_path / "lockstep",
-            {"liba.vera": _LIBA_RESTATE, "libb.vera": _LIBB_RESTATE,
-             "main.vera": _ENTRY_DIAMOND},
-        )
-        assert "E610" not in _codes(cg_errors), cg_errors
+        assert "E202" in codes, codes
+        assert "liba.Shape" in text and "libb.Shape" in text, text
 
     def test_constructor_ORDER_alone_refuses_the_module_pair_too(
         self, tmp_path: Path,
     ) -> None:
-        """The same axis on the E609 rail, so the three rails cannot drift
-        apart on the question they all delegate to `data_decl_shape`."""
+        """The same axis between two modules, refused at check."""
         liba = _LIBA_RESTATE.replace(
             "public data Shape { Sq(Int) }",
             "public data Shape { Sq(Int), Cr(Int) }")
@@ -545,17 +468,18 @@ class TestModuleRestatementDiamond:
             "public data Shape { Cr(Int), Sq(Int) }").replace(
             "    Sq(@Int) -> @Int.0 + 1\n",
             "    Sq(@Int) -> @Int.0 + 1,\n    Cr(@Int) -> 0\n")
-        _verr, _result, cg_errors = build_multi_module(
+        codes, text = _refused_at_check(
             tmp_path / "mod-order",
             {"liba.vera": liba, "libb.vera": libb,
              "main.vera": _ENTRY_DIAMOND},
         )
-        assert "E609" in _codes(cg_errors), cg_errors
+        assert "E202" in codes, codes
+        assert "liba.Shape" in text and "libb.Shape" in text, text
 
-    def test_the_same_two_constructors_in_the_same_order_share_the_slot(
+    def test_the_same_two_constructors_in_the_same_order_are_two_types(
         self, tmp_path: Path,
     ) -> None:
-        """Its control, for the same reason as on the entry rail."""
+        """The same order between two modules is no exception either."""
         both = _LIBA_RESTATE.replace(
             "public data Shape { Sq(Int) }",
             "public data Shape { Sq(Int), Cr(Int) }")
@@ -564,25 +488,25 @@ class TestModuleRestatementDiamond:
             "public data Shape { Sq(Int), Cr(Int) }").replace(
             "    Sq(@Int) -> @Int.0 + 1\n",
             "    Sq(@Int) -> @Int.0 + 1,\n    Cr(@Int) -> 0\n")
-        _verr, result, cg_errors = build_multi_module(
+        codes, text = _refused_at_check(
             tmp_path / "mod-order-ok",
             {"liba.vera": both, "libb.vera": libb,
              "main.vera": _ENTRY_DIAMOND},
         )
-        assert cg_errors == [], cg_errors
-        assert module_value(result) == ("ok", 7)
+        assert "E202" in codes, codes
+        assert "liba.Shape" in text and "libb.Shape" in text, text
 
     def test_both_imports_supplying_the_name_is_still_ambiguous(
         self, tmp_path: Path,
     ) -> None:
-        """Sharing a layout settles COMPILATION, not SCOPE (PR #1372 review).
+        """Two imports supplying one bare name are refused at check whatever
+        the declarations are (PR #1372 review).
 
-        The E609/E610 relaxation is a compile-phase rail.  Where both imports
-        actually supply the bare name, §8.5.2.2's ambiguity refusal applies
-        first and independently of the layouts — `namespace_adt_names` never
-        compares them — so two IDENTICAL declarations are still E156/E157 at
-        check.  The diamond cells above pass because the entry imports only
-        the functions, naming the type through neither.
+        §8.5.2.2's ambiguity refusal reads the import lists alone —
+        `namespace_adt_names` never compares the declarations — so two
+        IDENTICAL declarations are E156/E157.  The diamond cells above are
+        refused for another reason: their entry imports only the functions,
+        and the value crossing between the two types is the mismatch.
 
         Pinned so the documentation cannot drift into promising that matching
         layouts make an ambiguous import legal.
@@ -606,15 +530,9 @@ class TestModuleRestatementDiamond:
     def test_a_restatement_spelled_through_the_modules_own_alias(
         self, tmp_path: Path,
     ) -> None:
-        """Each declaration's field types resolve through ITS OWN module's
-        aliases (§8.4.1), so a restatement spelled through a local alias is
-        still a restatement.
-
-        This is what makes the alias-map capture's POSITION load-bearing: it
-        now runs before the ADT harvest, where the shape comparison reads it.
-        Captured after, ``libb``'s own maps were still empty when its
-        declaration was compared and the program was refused.
-        """
+        """A restatement spelled through a module's own alias (§8.4.1) is a
+        type of its own like any restatement, and its meeting is refused at
+        check (#1694)."""
         libb = (
             "module libb;\n\n"
             "type Count = Int;\n\n"
@@ -629,13 +547,13 @@ class TestModuleRestatementDiamond:
             "  }\n"
             "}\n"
         )
-        _verr, result, cg_errors = build_multi_module(
+        codes, text = _refused_at_check(
             tmp_path / "aliased",
             {"liba.vera": _LIBA_RESTATE, "libb.vera": libb,
              "main.vera": _ENTRY_DIAMOND},
         )
-        assert cg_errors == [], cg_errors
-        assert module_value(result) == ("ok", 7)
+        assert "E202" in codes, codes
+        assert "liba.Shape" in text and "libb.Shape" in text, text
 
 
 _LIBA_DIFFER = """\
@@ -696,7 +614,7 @@ class TestDifferingShapesAdmittedWhenNothingMeetsThem:
 
     They stay in this file, opposite :class:`TestMeetingStillRefused`, so
     the boundary between the two is visible in one place: what decides it
-    is not the declarations but whether any namespace can reach both.
+    is not the declarations but whether a value of one meets the other.
     ``tests/test_per_owner_adt_identity_1317.py`` holds the full matrix.
     """
 
@@ -724,17 +642,14 @@ class TestDifferingShapesAdmittedWhenNothingMeetsThem:
         assert cg_errors == [], cg_errors
         assert module_value(result) == ("ok", 7)
 
-    def test_a_local_shadow_lifts_it_and_leaves_e623_nothing_to_report(
+    def test_a_local_shadow_lifts_it(
         self, tmp_path: Path,
     ) -> None:
-        """The one direction in which the two rails interact.
-
-        The entry declares ``Shape`` too, and can name neither module's —
-        so both modules' declarations are qualified away, and the entry's
-        is then alone in the slot.  E623 is silent because there is no pair
-        left, not because it was relaxed: :class:`TestEntryVersusModule`
-        above is unchanged, and a SINGLE module contending with the entry
-        still reports.
+        """The entry declares ``Shape`` too, and can name neither module's:
+        the three are three types (#1694) and nothing meets, so the program
+        runs.  Before #1694 both modules' declarations were qualified away
+        and the entry's left alone in the slot, the one direction in which
+        the two rails (E609, E623) interacted.
         """
         entry = _ENTRY_DIFFER.replace(
             "import libb(bone);\n",
@@ -772,17 +687,16 @@ class TestDifferingShapesAdmittedWhenNothingMeetsThem:
 
 
 class TestMeetingStillRefused:
-    """And what did NOT move: two owners a namespace can still MEET.
+    """Two owners a value can still MEET (#1694).
 
-    Nameability is not the whole condition.  Two same-named cross-module
-    ADTs unify, so a value can cross between them through the signatures a
-    namespace imports even under filters that exclude the type — and
-    qualifying the two apart would then read one module's value through the
-    other's tags.  Measured with the flow condition removed: a check-green,
-    verify-green program answering ``100`` where ``7`` is correct.
+    Two same-named cross-module ADTs are two types, so a value crossing
+    between them through the signatures a namespace imports is a mismatch
+    at check, even under filters that exclude the type.  Before #1694 the
+    checker unified them, and with the flow condition removed the program
+    answered ``100`` where ``7`` is correct.
     """
 
-    def test_a_value_crossing_between_two_owners_stays_e609(
+    def test_a_value_crossing_between_two_owners_is_refused_at_check(
         self, tmp_path: Path,
     ) -> None:
         liba = _LIBA_DIFFER.replace(
@@ -801,65 +715,12 @@ class TestMeetingStillRefused:
             "    Sq(@Bool) -> if @Bool.0 then { 1 } else { 0 }\n  }\n")
         entry = _ENTRY_DIFFER.replace(
             "  aone(3) + bone(4)\n", "  bone(aone(3))\n")
-        _verr, _result, cg_errors = build_multi_module(
+        codes, text = _refused_at_check(
             tmp_path / "meet",
             {"liba.vera": liba, "libb.vera": libb, "main.vera": entry},
         )
-        assert "E609" in _codes(cg_errors), cg_errors
-
-
-@pytest.mark.parametrize("builder", [build_multi_module])
-def test_the_three_rails_share_one_shape_derivation(
-    builder: object, tmp_path: Path,
-) -> None:
-    """Prelude-vs-module (E621), entry-vs-module (E623) and module-vs-module
-    (E609) all decide compatibility with ``data_decl_shape``.
-
-    Asserted structurally rather than by three separate behaviour cells: a
-    second copy of "can one layout serve both" is a second thing to keep in
-    step, and the three rails would then be free to disagree about which
-    declarations are compatible.
-    """
-    import inspect
-
-    from vera.codegen.core import CodeGenerator
-    from vera.codegen.modules import CrossModuleMixin
-
-    sources = [
-        inspect.getsource(CodeGenerator._contends_with_prelude),
-        inspect.getsource(CodeGenerator._check_entry_module_adt_contention),
-        inspect.getsource(CrossModuleMixin._adt_decls_share_a_layout),
-    ]
-    for src in sources:
-        assert "data_decl_shape" in src, src[:200]
-
-
-def test_a_past_check_program_still_reaches_the_rail(tmp_path: Path) -> None:
-    """The codegen rails must keep refusing a shape the CHECKER also refuses.
-
-    A rail nothing exercises can rot into a relaxation nobody measures, so
-    the ambiguous-import shape — which #1304 moved to the checker — is driven
-    through the codegen door too.
-    """
-    entry = """\
-import liba(Shape);
-import libb(Shape);
-
-public fn main(@Unit -> @Int)
-  requires(true)
-  ensures(true)
-  effects(pure)
-{
-  0
-}
-"""
-    check_errors, _result, cg_errors = build_multi_module_past_check(
-        tmp_path / "past",
-        {"liba.vera": _LIBA_DIFFER, "libb.vera": _LIBB_DIFFER,
-         "main.vera": entry},
-    )
-    assert check_errors, "the checker accepted an ambiguous data import"
-    assert "E609" in _codes(cg_errors), cg_errors
+        assert "E202" in codes, codes
+        assert "liba.Shape" in text and "libb.Shape" in text, text
 
 
 # =====================================================================
@@ -916,65 +777,37 @@ public fn main(@Unit -> @Int)
 
 
 class TestOneDiagnosticPerContendedName:
-    """E623 reports the NAME it refuses, not each declarer of it (#1446).
+    """One conflict, one diagnostic (#1446, #1694).
 
-    Refusal granularity is the name (§11.16): when any two declarations of
-    a name can meet, none is qualified away and all of them stay in the one
-    bare slot.  The rail walked the declarers and emitted one diagnostic per
-    module, so a name held by the entry and two modules arrived as a first
-    error plus a cascade — and the cascade resolves itself, because renaming
-    the declaration that meets makes the name renameable again and qualifies
-    the other away untouched.  Two errors, one thing to fix.
-
-    The semantics are unchanged: the same programs are refused, for the same
-    reason, and the two-declaration case keeps its wording.  What changes is
-    that one conflict produces one diagnostic, naming every declaration in
-    the slot.
+    E623 walked the declarers of a contended name and emitted one
+    diagnostic per module, so a name held by the entry and two modules
+    arrived as a first error plus a cascade.  Since #1694 each declaration
+    is a type of its own and the refusal is the meeting itself: the one
+    value that crosses is the one diagnostic, and a declaration nothing
+    meets is refused nothing.
     """
 
-    def test_three_declarations_report_once(self, tmp_path: Path) -> None:
-        """The entry meets ``liba`` through ``aone``'s return type; ``libb``
-        reaches nothing but stays in the slot because the NAME is refused."""
-        _verr, result, cg_errors = build_multi_module(
+    def test_the_one_meeting_is_the_one_refusal(self, tmp_path: Path) -> None:
+        """The entry meets ``liba`` through ``aone``'s return type, and that
+        meeting is the refusal, at check (#1694); ``libb``'s own type meets
+        nothing and is refused nothing."""
+        codes, text = _refused_at_check(
             tmp_path / "three-way",
             {"liba.vera": _THREE_WAY_LIBA, "libb.vera": _THREE_WAY_LIBB,
              "main.vera": _THREE_WAY_ENTRY},
         )
-        e623 = [d for d in result.diagnostics if d.error_code == "E623"]
-        assert len(e623) == 1, [d.description for d in e623]
-        # E609 stands beside it, and correctly: `liba` and `libb` are a
-        # module-versus-module pair that can meet, which is that rail's
-        # business.  What this cell is about is that the entry-versus-module
-        # conflict arrives once rather than once per module.
-        assert _codes(cg_errors) == ["E609", "E623"], cg_errors
+        assert "E314" in codes, codes
+        assert "liba.Shape" in text, text
+        assert "libb" not in text, text
 
-    def test_the_one_report_names_every_declaration_in_the_slot(
+    def test_the_two_way_private_case_reports_nothing(
         self, tmp_path: Path,
     ) -> None:
-        """All three owners, so the reader is not left to discover the third
-        by fixing the first two."""
-        _verr, result, _cg = build_multi_module(
-            tmp_path / "three-way-text",
-            {"liba.vera": _THREE_WAY_LIBA, "libb.vera": _THREE_WAY_LIBB,
-             "main.vera": _THREE_WAY_ENTRY},
-        )
-        diag = next(d for d in result.diagnostics if d.error_code == "E623")
-        text = " ".join(
-            (getattr(diag, a, None) or "")
-            for a in ("description", "rationale", "fix")
-        )
-        assert "liba" in text, text
-        assert "libb" in text, text
-        assert "Shape" in text, text
-
-    def test_the_two_way_case_is_unchanged(self, tmp_path: Path) -> None:
-        """One module beside the entry still reports once, naming it — the
-        shape #1312's own cells pin, and this change must not move it."""
+        """One module's private type beside the entry's own of its name:
+        two types, nothing meets, nothing is reported."""
         _verr, result, cg_errors = build_multi_module(
             tmp_path / "two-way",
             {"blib.vera": _BLIB_OWN_JSON, "main.vera": _ENTRY_OWN_JSON},
         )
-        e623 = [d for d in result.diagnostics if d.error_code == "E623"]
-        assert len(e623) == 1, [d.description for d in e623]
-        assert "blib" in (e623[0].description or ""), e623[0].description
-        assert _codes(cg_errors) == ["E623"], cg_errors
+        assert [d.error_code for d in result.diagnostics] == []
+        assert cg_errors == [], cg_errors

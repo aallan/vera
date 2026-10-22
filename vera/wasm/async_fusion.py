@@ -241,29 +241,6 @@ def compute_future_ret_fns(
     return frozenset(names)
 
 
-def compute_future_ret_module_fns(
-    module_fn_ret_type_exprs: dict[tuple[tuple[str, ...], str], ast.TypeExpr],
-    type_aliases: dict[str, ast.TypeExpr] | None = None,
-    type_alias_params: dict[str, tuple[str, ...]] | None = None,
-) -> frozenset[tuple[tuple[str, ...], str]]:
-    """(module path, name) pairs returning ``Future<Result<String, String>>``.
-
-    The qualified companion to :func:`compute_future_ret_fns`: a
-    module-qualified ``await(m::grab(...))`` must classify by the
-    resolved target's return type, not by the bare name — a colliding
-    local ``grab`` with a different future shape would otherwise
-    misclassify the qualified call in both directions (PR #842 review
-    round 2, confirmed with a name-collision repro).
-    """
-    aliases = type_aliases if type_aliases is not None else {}
-    alias_params = type_alias_params if type_alias_params is not None else {}
-    pairs: set[tuple[tuple[str, ...], str]] = set()
-    for key, ret in module_fn_ret_type_exprs.items():
-        if _resolves_to_future_result_string(ret, aliases, alias_params):
-            pairs.add(key)
-    return frozenset(pairs)
-
-
 # `resolve_fn_type_alias` — the single transitive-alias-to-fn-type
 # resolver every consultor shares — moved to `vera/monomorphize.py`
 # (the codegen-free shared home, #732 precedent) when the PR #880
@@ -368,10 +345,6 @@ def apply_fn_awaits_fused_future(
 def await_needs_check(
     arg: ast.Expr,
     future_ret_fns: frozenset[str] | set[str],
-    future_ret_module_fns: (
-        frozenset[tuple[tuple[str, ...], str]]
-        | set[tuple[tuple[str, ...], str]]
-    ) = frozenset(),
     type_aliases: Mapping[str, ast.TypeExpr] | None = None,
     type_alias_params: Mapping[str, tuple[str, ...] | None] | None = None,
 ) -> bool:
@@ -405,27 +378,25 @@ def await_needs_check(
         if arg.name == "apply_fn":
             return apply_fn_awaits_fused_future(arg, aliases, alias_params)
         return arg.name in future_ret_fns
-    if isinstance(arg, ast.ModuleCall):
-        return (tuple(arg.path), arg.name) in future_ret_module_fns
     if isinstance(arg, ast.Block):
         return arg.expr is not None and await_needs_check(
-            arg.expr, future_ret_fns, future_ret_module_fns,
+            arg.expr, future_ret_fns,
             aliases, alias_params,
         )
     if isinstance(arg, ast.IfExpr):
         if await_needs_check(
-            arg.then_branch, future_ret_fns, future_ret_module_fns,
+            arg.then_branch, future_ret_fns,
             aliases, alias_params,
         ):
             return True
         return arg.else_branch is not None and await_needs_check(
-            arg.else_branch, future_ret_fns, future_ret_module_fns,
+            arg.else_branch, future_ret_fns,
             aliases, alias_params,
         )
     if isinstance(arg, ast.MatchExpr):
         return any(
             await_needs_check(
-                arm.body, future_ret_fns, future_ret_module_fns,
+                arm.body, future_ret_fns,
                 aliases, alias_params,
             )
             for arm in arg.arms
