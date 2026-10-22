@@ -973,13 +973,12 @@ class DataMixin:
             ret_te = ret_te.base_type
         if not (isinstance(ret_te, ast.NamedType) and ret_te.type_args):
             return None
-        forall_vars, param_types = self._generic_fn_info[call.name]
-        constrained_vars = self._generic_constrained_vars.get(
-            call.name, frozenset())
-        mapping: dict[str, str] = {}
-        for pt, arg in zip(param_types, call.args):
-            self._unify_param_arg_wasm(
-                pt, arg, forall_vars, mapping, constrained_vars)
+        forall_vars, _params = self._generic_fn_info[call.name]
+        # #1679: the instantiation the checker inferred at the call, which
+        # names the clone the call calls.
+        mapping = self._call_target_mapping(call, forall_vars)
+        if mapping is None:
+            return None
         return self._render_type_substituted(ret_te, forall_vars, mapping)
 
     def _render_type_substituted(

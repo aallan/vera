@@ -908,13 +908,13 @@ class InferenceMixin:
             if builtin_simple is not None:
                 return builtin_simple
         if call.name in self._generic_fn_info:
-            forall_vars, param_types = self._generic_fn_info[call.name]
-            constrained_vars = self._generic_constrained_vars.get(
-                call.name, frozenset())
-            mapping: dict[str, str] = {}
-            for pt, arg in zip(param_types, call.args):
-                self._unify_param_arg_wasm(
-                    pt, arg, forall_vars, mapping, constrained_vars)
+            forall_vars, _params = self._generic_fn_info[call.name]
+            # #1679: the instantiation the checker inferred at the call, which
+            # names the clone the call calls, so the call's type is the
+            # clone's and not a re-derivation from its arguments.
+            mapping = self._call_target_mapping(call, forall_vars)
+            if mapping is None:
+                return None
             # #769: prefer the callee's DECLARED return TypeExpr substituted
             # with the inferred instantiation — exactly the substitution
             # discovery performs (Monomorphizer._generic_return_name), so

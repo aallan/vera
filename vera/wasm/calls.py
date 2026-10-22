@@ -553,6 +553,19 @@ class CallsMixin:
         target = self._call_targets.get(call.node_id) if call.node_id else None
         return None if target is None else target.name
 
+    def _call_target_mapping(
+        self, call: ast.FnCall, forall_vars: tuple[str, ...],
+    ) -> dict[str, str] | None:
+        """Each of the generic callee's type variables, by the canonical name
+        of the type *call* instantiates it at (#1679): the instance the typed
+        program built for the call, whose clone the call calls, so a reading
+        of the call's type is the clone's.  ``None`` for a call the typed
+        program holds no instance for."""
+        target = self._call_targets.get(call.node_id) if call.node_id else None
+        if target is None:
+            return None
+        return dict(zip(forall_vars, target.args))
+
     def _unify_param_arg_wasm(
         self,
         param_te: ast.TypeExpr,
