@@ -712,8 +712,8 @@ class Compiled:
 
     @property
     def ok(self) -> bool:
-        """The check accepted the program (when it ran), and code generation
-        ran and reported no error."""
+        """The check accepted the program, and code generation ran and
+        reported no error."""
         return self._result is not None and not self.errors
 
     @property

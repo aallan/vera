@@ -23,12 +23,23 @@ from __future__ import annotations
 import pytest
 
 from vera.codegen import execute
+from tests import pipeline
 from tests.codegen_helpers import _compile, _compile_ok, _run
 
 
 def _errors(source: str) -> list[str]:
     result = _compile(source)
     return [d.error_code for d in result.diagnostics if d.severity == "error"]
+
+
+def _refused_e243(source: str) -> None:
+    """A direct `==` on a type that is not Eq-derivable is refused at check
+    (E243), so code generation's direct-path gate never meets it."""
+    compiled = pipeline.compile(source)
+    codes = {d.error_code for d in compiled.checked.errors}
+    assert codes == {"E243"}, [
+        (d.error_code, d.description[:70]) for d in compiled.checked.errors]
+    assert compiled.generator is None
 
 
 # ---------------------------------------------------------------------------
@@ -466,12 +477,13 @@ public fn main(@Unit -> @Bool) requires(true) ensures(true) effects(pure)
 # Direct == gate (PR #870 review): a direct comparison has no generic-
 # constraint gate in front of it, so `_translate_adt_eq` itself must check
 # derivability and reject with a clean E613 — never an E699 invariant, and
-# never a wrong-answer helper.
+# never a wrong-answer helper.  The check refuses a direct `==` on a type
+# that is not Eq-derivable (E243), so these shapes stop there.
 # ---------------------------------------------------------------------------
 
 
-def test_direct_eq_map_field_rejected_e613() -> None:
-    """Direct `==` on a Map-field ADT is a clean E613, not an E699."""
+def test_direct_eq_map_field_is_refused_at_check() -> None:
+    """Direct `==` on a Map-field ADT is refused at check (E243)."""
     source = """\
 public data HasMap { MkHasMap(Map<String, Int>) }
 public fn main(@Unit -> @Bool) requires(true) ensures(true) effects(pure)
@@ -481,24 +493,21 @@ public fn main(@Unit -> @Bool) requires(true) ensures(true) effects(pure)
   @HasMap.1 == @HasMap.0
 }
 """
-    codes = _errors(source)
-    assert "E613" in codes, f"expected E613, got {codes}"
-    assert "E699" not in codes, f"invariant leak on the direct path: {codes}"
+    _refused_e243(source)
 
 
-def test_direct_eq_md_builtin_rejected_e613() -> None:
-    """Direct `==` on an Md builtin (empty field_types) is E613, not E699.
+def test_direct_eq_md_builtin_is_refused_at_check() -> None:
+    """Direct `==` on an Md builtin (empty field_types) is refused at check.
 
     The #872 shape: `MdText("a") == MdText("a")` passed check and crashed
-    codegen with an invariant; the direct-path gate rejects it cleanly.
+    codegen with an invariant; the direct-path gate rejected it cleanly, and
+    the check refuses it now (E243).
     """
     source = """\
 public fn main(@Unit -> @Bool) requires(true) ensures(true) effects(pure)
 { MdText("a") == MdText("a") }
 """
-    codes = _errors(source)
-    assert "E613" in codes, f"expected E613, got {codes}"
-    assert "E699" not in codes, f"invariant leak on the direct path: {codes}"
+    _refused_e243(source)
 
 
 def test_tuple_eq_rejected_both_paths() -> None:
@@ -508,7 +517,8 @@ def test_tuple_eq_rejected_both_paths() -> None:
     layouts are recomputed per construction), so treating it as a fieldless
     enum generated an ALWAYS-TRUE `$eq_Tuple` — `Tuple(1, 2) == Tuple(3, 4)`
     returned true through both the Eq-constrained generic and the direct
-    `==` (PR #870 review, Critical).  Both must be a loud E613 instead.
+    `==` (PR #870 review, Critical).  Both must be loud instead: the generic
+    path a code-generation E613, the direct one a check refusal (E243).
     """
     generic = """\
 private forall<T where Eq<T>> fn eq2(@T, @T -> @Bool)
@@ -528,10 +538,10 @@ public fn main(@Unit -> @Bool) requires(true) ensures(true) effects(pure)
   @Tuple<Int, Int>.1 == @Tuple<Int, Int>.0
 }
 """
-    for name, source in (("generic", generic), ("direct", direct)):
-        codes = _errors(source)
-        assert "E613" in codes, f"{name}: expected E613, got {codes}"
-        assert "E699" not in codes, f"{name}: invariant leak: {codes}"
+    codes = _errors(generic)
+    assert "E613" in codes, f"generic: expected E613, got {codes}"
+    assert "E699" not in codes, f"generic: invariant leak: {codes}"
+    _refused_e243(direct)
 
 
 def test_direct_eq_ctor_inferred_option_accepts_and_runs() -> None:
@@ -1179,12 +1189,12 @@ def test_923_mixed_nested_generic_direct_eq() -> None:
     assert _run(diff) == 0
 
 
-def test_923_nested_generic_non_eq_component_still_rejected_e613() -> None:
+def test_923_nested_generic_non_eq_component_is_refused_at_check() -> None:
     """#923 soundness gate: a genuinely non-Eq nested component STILL rejects.
 
     `List<List<Array<Int>>>` — the innermost component is `Array<Int>`, which
-    has no Eq semantics — must be a clean E613, never over-accepted by the
-    fuller recovery, and never an E699 codegen-invariant leak.
+    has no Eq semantics — is refused at check (E243), never over-accepted by
+    the fuller recovery, and never an E699 codegen-invariant leak.
     """
     source = (
         _NESTED_GENERIC_LIST
@@ -1193,11 +1203,7 @@ def test_923_nested_generic_non_eq_component_still_rejected_e613() -> None:
         "{ if Cons(Cons([1], Nil), Nil) == Cons(Cons([1], Nil), Nil)\n"
         "  then { 1 } else { 0 } }\n"
     )
-    codes = _errors(source)
-    assert "E613" in codes, (
-        f"non-Eq nested component (Array) must reject, got {codes}"
-    )
-    assert "E699" not in codes, f"invariant leak on rejection: {codes}"
+    _refused_e243(source)
 
 
 # ---------------------------------------------------------------------------

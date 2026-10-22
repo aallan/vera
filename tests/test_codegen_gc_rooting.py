@@ -1187,7 +1187,7 @@ public fn fire_and_forget(@Unit -> @Int)
 }
 
 public fn spin(@Int -> @Int)
-  requires(true) ensures(true) effects(<Http, Async>)
+  requires(true) ensures(true) decreases(@Int.0) effects(<Http, Async>)
 {
   if @Int.0 <= 0 then { 0 } else {
     let @Int = fire_and_forget(());

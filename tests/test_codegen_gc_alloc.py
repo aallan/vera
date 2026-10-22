@@ -318,7 +318,7 @@ public fn f(-> @Int)
 private data List { Nil, Cons(Int, List) }
 
 public fn sum(@List -> @Int)
-  requires(true) ensures(true) effects(pure)
+  requires(true) ensures(true) decreases(@List.0) effects(pure)
 {
   match @List.0 {
     Nil -> 0,

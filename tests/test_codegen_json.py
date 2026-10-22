@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import pytest
 
+from tests import pipeline
 from tests.codegen_helpers import (
     _compile_ok,
     _run,
@@ -296,8 +297,10 @@ public fn main(-> @Int)
 """
         assert _run(source) == 20
 
-    def test_json_custom_data_no_combinators(self) -> None:
-        """User-defined non-standard data Json skips combinator injection."""
+    def test_a_user_data_json_is_refused_at_check(self) -> None:
+        """A user-defined `data Json`, whose declaration skipped the
+        prelude's combinator injection, is refused at check: `Json` is a
+        reserved prelude name (E158, #1469)."""
         source = """
 private data Json { MyNode(Int) }
 public fn main(-> @Int)
@@ -309,7 +312,10 @@ public fn main(-> @Int)
   }
 }
 """
-        assert _run(source) == 42
+        compiled = pipeline.compile(source)
+        assert "E158" in {d.error_code for d in compiled.checked.errors}, [
+            (d.error_code, d.description[:70]) for d in compiled.checked.errors]
+        assert compiled.generator is None
 
     def test_json_array_get_out_of_bounds(self) -> None:
         """json_array_get with out-of-bounds index returns None."""

@@ -542,16 +542,16 @@ public fn absolute_value(@Int -> @Int)
 
     def test_nested_if(self) -> None:
         source = """\
-public fn clamp(@Int -> @Int)
+public fn clamp_pct(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   if @Int.0 < 0 then { 0 }
   else { if @Int.0 > 100 then { 100 } else { @Int.0 } }
 }
 """
-        assert _run(source, fn="clamp", args=[-10]) == 0
-        assert _run(source, fn="clamp", args=[50]) == 50
-        assert _run(source, fn="clamp", args=[200]) == 100
+        assert _run(source, fn="clamp_pct", args=[-10]) == 0
+        assert _run(source, fn="clamp_pct", args=[50]) == 50
+        assert _run(source, fn="clamp_pct", args=[200]) == 100
 
     def test_if_bool_result(self) -> None:
         source = """\

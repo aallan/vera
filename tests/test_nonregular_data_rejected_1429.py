@@ -440,38 +440,23 @@ def test_the_remedy_names_the_offending_type_not_the_declaration() -> None:
     assert "'B<T>'" in bad[0].fix, bad[0].fix
 
 
-def test_verify_declines_a_non_regular_type_without_the_checker() -> None:
-    """`verify()` is a public entry point, and its check-clean precondition is
-    the caller's to keep.
-
-    Measured before this: calling `verify()` directly on a program the checker
-    refuses did not come back within 60 s, because the datatype-group closure
-    has no fixed point — the rule protected the CLI path and nothing else
-    (PR #1432 review).  The SMT layer now asks the same shared derivation and
-    declines to model such a type, so the walk terminates by the RULE rather
-    than by a bound on how far it may go.
+def test_a_non_regular_type_is_refused_before_verification() -> None:
+    """Measured before the rule: calling `verify()` directly on a program the
+    checker refuses did not come back within 60 s, because the datatype-group
+    closure has no fixed point (PR #1432 review).  The SMT layer asks the same
+    shared derivation (pinned below), and verification runs only on a program
+    the check accepts, which refuses the type (E129) first.
     """
-    import time
-
-    from vera.checker import typecheck_with_artifacts
-    from vera.parser import parse_to_ast
-    from vera.verifier import verify
-
     source = (
         "private data Nest<T> { N(Nest<Option<T>>), Z }\n"
         "public fn f(@Nest<Int> -> @Int)\n"
         "  requires(true) ensures(true) effects(pure)\n"
         "{ match @Nest<Int>.0 { N(@Nest<Option<Int>>) -> 1, Z -> 0 } }"
     )
-    program = parse_to_ast(source)
-    diags, artifacts = typecheck_with_artifacts(program, source)
-    assert any(d.error_code == "E129" for d in diags), diags
-
-    started = time.monotonic()
-    verify(program, source,
-           expr_types=artifacts.expr_semantic_types,
-           expr_target_types=artifacts.expr_target_types)
-    assert time.monotonic() - started < 30, "verify() did not decline promptly"
+    verified = pipeline.verify(source)
+    assert any(d.error_code == "E129" for d in verified.checked.errors), (
+        verified.checked.errors)
+    assert not verified.ran
 
 
 def test_one_derivation_serves_both_consumers() -> None:
