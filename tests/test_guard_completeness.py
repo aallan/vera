@@ -1664,7 +1664,7 @@ public fn f(@Int -> @Int)
 #: The closure prologue's own component guard, measured from the trap.  It
 #: names the CLOSURE's rendered signature rather than a caller's, which is
 #: what pins the check to the boundary the obligation points at.
-_A1_TUPLE_TRAP_SITE = "Refinement violation in fn(@Tuple<@PosInt, @Int> -> @Int)"
+_A1_TUPLE_TRAP_SITE = "Refinement violation in fn(@Tuple<PosInt, Int> -> @Int)"
 _A1_TUPLE_TRAP_WHAT = "parameter (tuple component): @Int.0 > 0 failed"
 
 

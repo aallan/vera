@@ -425,7 +425,7 @@ class TestFormatExpr:
             type_args=(NamedType(name="Int", type_args=None),),
             index=0,
         )
-        assert format_expr(expr) == "@Option<@Int>.0"
+        assert format_expr(expr) == "@Option<Int>.0"
 
     def test_result_ref(self) -> None:
         from vera.ast import ResultRef, format_expr

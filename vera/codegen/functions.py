@@ -113,11 +113,9 @@ class FunctionCompilationMixin:
             if any(t[0] == tag for t in tags):
                 continue
             # The message names the type as the row spells it — `Exn<Pos>`,
-            # not the refinement it resolves to (the slot form without its
-            # `@`s) — so the `handle[Exn<T>]` the Fix asks for is one the
-            # reader can write.
-            tags.append((tag, params,
-                         ast.format_type_expr(te).replace("@", ""),
+            # not the refinement it resolves to (its bare form) — so the
+            # `handle[Exn<T>]` the Fix asks for is one the reader can write.
+            tags.append((tag, params, ast.format_type(te),
                          self._family_base_te(te) or family))
         if not tags:
             return None

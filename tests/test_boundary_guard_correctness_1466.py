@@ -240,20 +240,20 @@ _REPRS: dict[str, _Repr] = {
     "array": _Repr(
         decls=_R % ("Array<Int>", "array_length(@Array<Int>.0) > 0"),
         base="Array<Int>", good="[1]", bad="[]", repr_class="pair",
-        safe="[1]", witness="array_length(@Array<@Int>.0) > 0",
+        safe="[1]", witness="array_length(@Array<Int>.0) > 0",
     ),
     "map": _Repr(
         decls=_R % ("Map<String, Int>", "map_size(@Map<String, Int>.0) > 0"),
         base="Map<String, Int>", good='map_insert(map_new(), "a", 1)',
         bad="map_new()", repr_class="handle",
         safe='map_insert(map_new(), "a", 1)',
-        witness="map_size(@Map<@String, @Int>.0) > 0",
+        witness="map_size(@Map<String, Int>.0) > 0",
     ),
     "set": _Repr(
         decls=_R % ("Set<Int>", "set_size(@Set<Int>.0) > 0"),
         base="Set<Int>", good="set_add(set_new(), 1)", bad="set_new()",
         repr_class="handle", safe="set_add(set_new(), 1)",
-        witness="set_size(@Set<@Int>.0) > 0",
+        witness="set_size(@Set<Int>.0) > 0",
     ),
     # A `Tuple` value is not Eq-comparable (E243 at the base tip), so the
     # predicate reads a component through a helper.  A vacuous `| true` would
@@ -268,7 +268,7 @@ _REPRS: dict[str, _Repr] = {
         ),
         base="Tuple<Int, Int>", good="Tuple(1, 1)", bad="Tuple(0 - 1, 1)",
         repr_class="handle", safe="Tuple(1, 1)",
-        witness="fst(@Tuple<@Int, @Int>.0) > 0",
+        witness="fst(@Tuple<Int, Int>.0) > 0",
     ),
     # The trap renders a constructor call in a predicate as `<expr>`, so the
     # witness stops at the comparison rather than claiming text the message
@@ -277,7 +277,7 @@ _REPRS: dict[str, _Repr] = {
         decls=_R % ("Option<Int>", "@Option<Int>.0 == Some(1)"),
         base="Option<Int>", good="Some(1)", bad="None",
         repr_class="handle", safe="Some(1)",
-        witness="@Option<@Int>.0 == ",
+        witness="@Option<Int>.0 == ",
     ),
 }
 
