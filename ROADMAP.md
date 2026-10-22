@@ -89,7 +89,7 @@ Exit criterion: no function is over 500 lines, and the spec carries no implement
 |---|---|
 | Decomposition | `ContractVerifier`, `WasmContext` and `CodeGenerator` split along the seams Stages 25 to 27 create. |
 | The spec states the language | Implementation status moves out of the spec to KNOWN_ISSUES.md and the limitation data file. |
-| Fixes that clear | A gate applies each diagnostic's `Fix` template to its repro, and the diagnostic must no longer fire. |
+| Fixes that clear | A gate applies each diagnostic's `Fix` template to its repro, and the diagnostic must no longer fire; the six fix texts written as literal slot examples ([#1763](https://github.com/aallan/vera/issues/1763)) are computed from the site first. |
 | Debt, second batch | Whatever remains of the debt track. |
 
 ## Stage 29 — The sound base (v0.3.0)
