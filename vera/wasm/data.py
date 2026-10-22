@@ -664,6 +664,7 @@ class DataMixin:
         scr_local = self.alloc_local("i32")
         instrs: list[str] = list(val_instrs)
         instrs.append(f"local.set {scr_local}")
+        value_type = self._match_scrutinee_vera_type(stmt.value)
 
         # Extract each field through the same layout rule construction lays
         # the object out by (`helpers.field_layout`), rather than a second
@@ -733,7 +734,9 @@ class DataMixin:
             # `_resolve_base_type_name` so a `type Age = Nat` alias / refined
             # @Nat target is guarded too (CR #756), matching the alias-aware
             # call-arg / ctor-field metadata.
-            if self._resolve_base_type_name(type_name) == "Nat":
+            if (self._resolve_base_type_name(type_name) == "Nat"
+                    and not self._field_instantiated_at_nat(
+                        stmt.constructor, idx, value_type)):
                 load = self._emit_nat_bind_guard(load, at=te)
             instrs.extend(load)
             instrs.append(f"local.set {local_idx}")
@@ -1493,7 +1496,9 @@ class DataMixin:
                 # backstop; never trips on a valid @Nat in [0, 2^63)).
                 # Alias-aware (`type Age = Nat`) via `_resolve_base_type_name`
                 # (CR #756).
-                if self._resolve_base_type_name(type_name) == "Nat":
+                if (self._resolve_base_type_name(type_name) == "Nat"
+                        and not self._field_instantiated_at_nat(
+                            pattern.name, i, scrutinee_type)):
                     load = self._emit_nat_bind_guard(load, at=sub_pat)
                 instrs.extend(load)
                 instrs.append(f"local.set {local_idx}")
@@ -1730,6 +1735,27 @@ class DataMixin:
                 f"at an offset that depends on this field's erased width",
             )
         return generic_wt
+
+    def _field_instantiated_at_nat(
+        self, ctor_name: str, field_index: int, scrutinee_type: str | None,
+    ) -> bool:
+        """Whether *ctor_name*'s field *field_index* is a type parameter its
+        scrutinee's type spells as exactly ``Nat`` (a clone's ``Some(@Nat)``
+        on ``Option<T>`` at ``T = Nat``, #1679): the field's value was
+        checked where it was stored, so its bind needs no sign guard.  Any
+        other spelling, an alias or a refinement of ``Nat`` included, keeps
+        the guard: a dead guard costs a check, a dropped live one a wrong
+        value."""
+        # ctor-owner-exempt: a parsed sub-pattern, resolved in the compiling
+        # namespace's scoped projection (#1436)
+        tp_idx = self._ctor_adt_tp_indices.get(ctor_name)
+        if (tp_idx is None or field_index >= len(tp_idx)
+                or tp_idx[field_index] is None or not scrutinee_type):
+            return False
+        position = tp_idx[field_index]
+        _, type_args = self._split_param_type(scrutinee_type)
+        return (position is not None and position < len(type_args)
+                and type_args[position] == "Nat")
 
     def _resolve_nested_scrutinee_type(
         self,

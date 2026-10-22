@@ -1223,14 +1223,6 @@ def checker_arg_type_info(
     return ty.name, tuple(_type_clone_name(a) for a in ty.type_args)
 
 
-#: The simple names the rewrite chain has always used where they are not the
-#: record's: `string_length` returns `Nat` and is named by the WAT-collapsed
-#: `Int` here.  Clone-NAME agreement between the two consultors is the
-#: invariant, not name precision, so changing a value is a clone-granularity
-#: decision, not a completion (#769).
-_HISTORICAL_RETURN_NAMES: dict[str, str] = {"string_length": "Int"}
-
-
 def _builtin_return_tables() -> tuple[
     dict[str, str], dict[str, tuple[str, tuple[str, ...]]]
 ]:
@@ -1256,7 +1248,7 @@ def _builtin_return_tables() -> tuple[
     for name, spec in BUILTINS.items():
         ret = spec.signature.ret
         if isinstance(ret, (PrimitiveType, AdtType)):
-            simple[name] = _HISTORICAL_RETURN_NAMES.get(name, ret.name)
+            simple[name] = ret.name
         if isinstance(ret, AdtType) and ret.type_args and concrete(ret):
             parameterized[name] = (
                 ret.name, tuple(pretty_type(a) for a in ret.type_args))
