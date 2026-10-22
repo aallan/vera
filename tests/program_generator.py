@@ -33,11 +33,11 @@ What makes a program well formed, by construction rather than by retry:
   call is what the callee's ``ensures`` states; a ``requires`` or a
   refinement bounds each numeric parameter; a call to a generic, a fold, a
   ``State`` read, an array element, a map's value and a handler's value are
-  opaque to the verifier, and so are a ``match`` on a constructor applied in
-  place or on ``map_get``'s result and a call taking an argument the
-  verifier has no term for (issue #1696), so *V* holds their type alone,
-  and a ``let`` of one holds its own type's alone.  A fold's type is its
-  initial value's, as the checker gives it.
+  opaque to the verifier, so *V* holds their type alone; a ``let`` of
+  what the verifier does not translate (those, a ``match`` on a constructor
+  applied in place or on ``map_get``'s result, a call taking one) holds the
+  ``let``'s own type alone (issue #1696).  A fold's type is its initial
+  value's, as the checker gives it.
   So an ``ensures``
   written from *V* holds in the verifier's model, an argument whose *V* lies
   inside the callee's ``requires`` meets it, a ``@Nat`` subtraction whose
@@ -810,11 +810,6 @@ def iv(e: Expr, which: str) -> Iv:
     if isinstance(e, Guarded):
         return iv_hull(iv(e.then, which), iv(e.other, which))
     if isinstance(e, Match):
-        if which == "v" and _opaque_scrutinee(e.scrutinee):
-            # The verifier translates no `match` on a constructor applied in
-            # place, on `map_get`'s result or on what it has no term for: its
-            # value is unconstrained (#1696).
-            return _default(static_type(e))
         out = _hull_all([iv(arm.body, which) for arm in e.arms
                          if not isinstance(arm.body, Throw)])
         assert out is not None, e
@@ -823,11 +818,6 @@ def iv(e: Expr, which: str) -> Iv:
         if e.fn.forall:
             return (_default(static_type(e)) if which == "v"
                     else _generic_r(e))
-        if which == "v" and any(_no_term(a) for a in e.args):
-            # A call taking an argument the verifier has no term for does
-            # not translate either: its value is unconstrained, and the
-            # callee's `ensures` is dropped (#1696).
-            return _default(static_type(e))
         return visible(e.fn) if which == "v" else body_r(e.fn)
     if isinstance(e, Get):
         return ANY if which == "v" else CELL_R[e.cell]
@@ -895,17 +885,14 @@ def _no_term(e: Expr) -> bool:
 
 def _untranslated(e: Expr) -> bool:
     """Whether the verifier translates *e* to no term: one it has no term
-    for, or holding a ``match`` it does not translate."""
+    for, a call taking one (whose ``ensures`` it then drops), or holding a
+    ``match`` on a constructor applied in place or on ``map_get``'s result.
+    In place, an obligation over such a value is left to Tier 3; a ``let``
+    of one holds a fresh value of the ``let``'s own type, which a later
+    obligation is refuted over (#1696)."""
     return _no_term(e) or any(
         isinstance(node, Match) and isinstance(node.scrutinee, (Construct, MapGet))
         for node in _walk(e))
-
-
-def _opaque_scrutinee(e: Expr) -> bool:
-    """Whether the verifier translates no ``match`` on *e*: a constructor
-    applied in place, ``map_get``'s result, or an expression it has no term
-    for."""
-    return isinstance(e, (Construct, MapGet)) or _no_term(e)
 
 
 def _cell_of(fn: Function) -> str:

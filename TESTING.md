@@ -1458,12 +1458,13 @@ helper's call under one; `handle[Exn<Int>]` and `handle[Exn<Nat>]` over a
 aliases, a refined parameter and a refined `let` among them.  A public function
 takes `Int`, `Nat` and `Bool` parameters, and aliases of them, the types
 `vera test` generates.  A generic's call, a fold, a cell's read, an element and
-a handler's value are opaque to the verifier, and so are a `match` on a
-constructor applied in place or on `map_get`'s result, and a call taking a
-generic's call, a fold, a cell's read, a handler, a set's size or a
-constructor of the module's data type (#1525), whose `ensures` the verifier
-drops: a `let` of one holds a fresh value of the `let`'s own type (#1696).
-No contract the generator writes rests on one.  A fold takes its initial
+a handler's value are opaque to the verifier, so no contract the generator
+writes rests on one.  So are a `match` on a constructor applied in place or on
+`map_get`'s result, and a call taking a generic's call, a fold, a cell's read,
+a handler, a set's size or a constructor of the module's data type (#1525),
+whose `ensures` the verifier drops: in place an obligation over one is left to
+Tier 3, and a `let` of one holds a fresh value of the `let`'s own type
+(#1696), which is all the generator reads of it.  A fold takes its initial
 value's type, as the checker gives it, and a `@Nat` one's run stays
 non-negative.
 
