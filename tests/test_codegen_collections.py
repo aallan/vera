@@ -176,13 +176,14 @@ public fn main(-> @Int)
         assert _run(source) == 0
 
     def test_map_get_after_remove(self) -> None:
-        """map_get after map_remove returns None."""
+        """map_get after map_remove returns None, so the default comes back
+        (an `Int` default, the map's value type)."""
         source = """
 public fn main(-> @Int)
   requires(true) ensures(true) effects(pure)
 {
-  let @Map<String, Nat> = map_remove(map_insert(map_new(), "k", 42), "k");
-  option_unwrap_or(map_get(@Map<String, Nat>.0, "k"), -1)
+  let @Map<String, Int> = map_remove(map_insert(map_new(), "k", 42), "k");
+  option_unwrap_or(map_get(@Map<String, Int>.0, "k"), -1)
 }
 """
         assert _run(source) == -1

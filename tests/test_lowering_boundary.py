@@ -11,6 +11,14 @@ the checker should have applied.
 The reported programs are the unparametrised ``test_repro_*`` tests below:
 each was accepted by `vera check` and refused by code generation, and each is
 now refused at check, at the construct, with its code.
+
+No cell compiles a program the check refuses to show code generation refuses
+it too.  The lowering rules are one module, `vera/lowering.py`, that the
+checker applies and code generation calls, and a refused program has no
+typed program to compile.  Where a rule is wider than what code generation
+cannot build, the cell says so (`test_an_unreached_clause_is_refused_too`,
+the quantifier signature rules).  The nearest accepted neighbours, which
+keep compiling and running, are the over-refusal instrument that remains.
 """
 
 from __future__ import annotations
@@ -60,22 +68,6 @@ def _locate(source: str, marker: str, occurrence: int = 0) -> tuple[int, int]:
 
 def _placed(errors: tuple[Diagnostic, ...]) -> list[tuple[str, int, int]]:
     return [(d.error_code, d.location.line, d.location.column) for d in errors]
-
-
-def _codegen_refuses(source: str) -> bool:
-    """The premise of every repro: past the check, code generation refuses
-    the program — a diagnostic of its own (an E6xx, or an error it emits
-    without a code) or a module that does not load."""
-    compiled = vera_pipeline.compile(source, past_check=True)
-    result = compiled.result
-    if any((d.error_code or "").startswith("E6") or d.severity == "error"
-           for d in result.diagnostics):
-        return True
-    try:
-        ran = vera_pipeline.run(result, fn="main")
-    except wasmtime.WasmtimeError:
-        return True  # the module does not load
-    return not ran.ok
 
 
 # =====================================================================
@@ -374,7 +366,6 @@ public fn main(@Unit -> @Int)
 def test_repro_1681_user_declared_effect_in_a_row() -> None:
     """`effects(<Counter>)`: E603 at compile, `bump` not exported.  Refused
     at the row entry."""
-    assert _codegen_refuses(_REPRO_1681_USER)
     checked = vera_pipeline.check(_REPRO_1681_USER)
     assert _placed(checked.errors) == [
         ("E340", *_locate(_REPRO_1681_USER, "Counter>)"))]
@@ -382,9 +373,6 @@ def test_repro_1681_user_declared_effect_in_a_row() -> None:
 
 def _bare_row_holds(effect: str) -> None:
     source = _REPRO_1681_BARE.replace("EFFECT", effect)
-    assert _codegen_refuses(source)
-    assert "f" not in vera_pipeline.compile(
-        source, past_check=True).result.exports
     checked = vera_pipeline.check(source)
     assert _placed(checked.errors) == [
         ("E340", *_locate(source, f"{effect}>)"))]
@@ -459,7 +447,6 @@ public fn main(@Unit -> @Int)
 
 def _row_variable_holds(row: str, main: str) -> None:
     source = _REPRO_ROW_VARIABLE.replace("ROW", row).replace("MAIN", main)
-    assert _codegen_refuses(source)
     assert _placed(vera_pipeline.check(source).errors) == [
         ("E340", *_locate(source, "E>)"))]
 
@@ -486,7 +473,6 @@ def test_repro_1681_user_operation_through_a_row_variable() -> None:
     The row variable is refused at the function's own row and the operation
     at the call; the parameter's function type keeps its `<E>`."""
     source = _REPRO_OPERATION_THROUGH_A_ROW_VARIABLE
-    assert _codegen_refuses(source)
     assert _placed(vera_pipeline.check(source).errors) == [
         ("E340", *_locate(source, "E>)", 1)),
         ("E340", *_locate(source, "Counter.tick")),
@@ -510,7 +496,6 @@ def test_repro_1681_user_operation_under_a_row_without_it() -> None:
     """`Counter.tick(())` under `effects(<IO>)`: check and verify passed,
     and code generation emitted a call to a host import no host provides.
     Refused at the call."""
-    assert _codegen_refuses(_REPRO_USER_OPERATION)
     assert _placed(vera_pipeline.check(_REPRO_USER_OPERATION).errors) == [
         ("E340", *_locate(_REPRO_USER_OPERATION, "Counter.tick"))]
 
@@ -518,7 +503,6 @@ def test_repro_1681_user_operation_under_a_row_without_it() -> None:
 def test_repro_1597_handler_for_http() -> None:
     """A `handle[Http]` mock: check accepted it and code generation dropped
     `test_fetch` (E602).  Refused at the handler."""
-    assert _codegen_refuses(_REPRO_1597)
     checked = vera_pipeline.check(_REPRO_1597)
     assert _placed(checked.errors) == [
         ("E340", *_locate(_REPRO_1597, "handle[Http]"))]
@@ -527,7 +511,6 @@ def test_repro_1597_handler_for_http() -> None:
 def test_repro_1512_state_string_cell() -> None:
     """A `State<String>` cell: code generation refused it (E607).  Refused
     at the cell type."""
-    assert _codegen_refuses(_REPRO_1512)
     checked = vera_pipeline.check(_REPRO_1512)
     assert _placed(checked.errors) == [
         ("E340", *_locate(_REPRO_1512, "String>"))]
@@ -536,7 +519,6 @@ def test_repro_1512_state_string_cell() -> None:
 def test_repro_1499_bare_user_ability_operation() -> None:
     """`size(1)` for a user ability's operation: code generation found no
     function to call.  Refused at the call."""
-    assert _codegen_refuses(_REPRO_1499_BARE)
     checked = vera_pipeline.check(_REPRO_1499_BARE)
     assert _placed(checked.errors) == [
         ("E340", *_locate(_REPRO_1499_BARE, "size(1)"))]
@@ -545,7 +527,6 @@ def test_repro_1499_bare_user_ability_operation() -> None:
 def test_repro_1499_operation_through_a_user_ability_constraint() -> None:
     """`size(@T.0)` under `where Sz<T>`: E613 at line 0.  Refused at the
     constraint and at the call."""
-    assert _codegen_refuses(_REPRO_1499_CONSTRAINED)
     checked = vera_pipeline.check(_REPRO_1499_CONSTRAINED)
     assert _placed(checked.errors) == [
         ("E340", *_locate(_REPRO_1499_CONSTRAINED, "Sz<T>>")),
@@ -556,7 +537,6 @@ def test_repro_1499_operation_through_a_user_ability_constraint() -> None:
 def test_repro_1499_user_ability_constraint_alone() -> None:
     """The constraint with no operation called: still E613 at compile, so
     the constraint itself is the construct refused."""
-    assert _codegen_refuses(_REPRO_1499_CONSTRAINT_ONLY)
     checked = vera_pipeline.check(_REPRO_1499_CONSTRAINT_ONLY)
     assert _placed(checked.errors) == [
         ("E340", *_locate(_REPRO_1499_CONSTRAINT_ONLY, "Sz<T>>"))]
@@ -576,7 +556,6 @@ def test_repro_1522_generic_cell_nested_in_same_family() -> None:
     """`State<T>` nested in `State<Int>` with a clause-body `put`: at
     `T = Int` code generation dropped `g$Int` (E602, E620).  E339 at the
     operation, naming the instantiation."""
-    assert _codegen_refuses(_REPRO_1522)
     checked = vera_pipeline.check(_REPRO_1522)
     assert _placed(checked.errors) == [
         ("E339", *_locate(_REPRO_1522, "put(1)"))]
@@ -585,7 +564,6 @@ def test_repro_1522_generic_cell_nested_in_same_family() -> None:
 
 def test_repro_1506_predicate_parameter_type_parameter() -> None:
     """`fn(@T -> @Bool)` read at `T = Bool`: the module failed to load."""
-    assert _codegen_refuses(_REPRO_1506_PARAMETER)
     checked = vera_pipeline.check(_REPRO_1506_PARAMETER)
     assert _placed(checked.errors) == [
         ("E179", *_locate(_REPRO_1506_PARAMETER, "T -> @Bool) effects"))]
@@ -593,7 +571,6 @@ def test_repro_1506_predicate_parameter_type_parameter() -> None:
 
 def test_repro_1506_predicate_result_type_parameter() -> None:
     """`fn(@Nat -> @T)` at `T = Int`: the module failed to load."""
-    assert _codegen_refuses(_REPRO_1506_RESULT)
     checked = vera_pipeline.check(_REPRO_1506_RESULT)
     assert _placed(checked.errors) == [
         ("E179", *_locate(_REPRO_1506_RESULT, "T) effects"))]
@@ -602,7 +579,6 @@ def test_repro_1506_predicate_result_type_parameter() -> None:
 def test_repro_1506_bound_type_parameter() -> None:
     """A bound typed by a type parameter at `T = Bool`: the module failed
     to load."""
-    assert _codegen_refuses(_REPRO_1506_BOUND)
     checked = vera_pipeline.check(_REPRO_1506_BOUND)
     assert _placed(checked.errors) == [
         ("E128", *_locate(_REPRO_1506_BOUND, "@T.0, fn"))]
@@ -615,10 +591,9 @@ def test_repro_1506_bound_type_parameter() -> None:
 # Each cell is a program and the verdict a stated rule gives it, written in
 # the cell (never computed by `vera/lowering.py`, which is what is under
 # test).  Every cell asserts THE invariant: refused at check with the rule's
-# code, XOR checked clean, compiled, loaded and run to its value.  A refused
-# cell also asserts the refusal is the backend's: past the check, code
-# generation refuses the program too, so a rule cannot refuse what lowers.
-# Every refusal has its nearest accepted neighbour as a cell beside it.
+# code, compiling nothing, XOR checked clean, compiled, loaded and run to its
+# value.  Every refusal has its nearest accepted neighbour as a cell beside
+# it.
 
 
 @dataclass(frozen=True)
@@ -658,18 +633,13 @@ def _verdict(source: str) -> Verdict:
 
 
 def _holds(source: str, refused: tuple[str, ...] | None,
-           value: object, *, backend: bool = True) -> None:
+           value: object) -> None:
     """THE invariant, for a cell whose rule gives *refused* (its codes) or
-    *value*.  With *backend*, a refused cell is also refused by code
-    generation past the check: the rule refuses only what does not lower."""
+    *value*."""
     verdict = _verdict(source)
     if refused is not None:
         assert verdict.check_codes == refused, (
             f"{verdict.describe()}\n{source}")
-        if backend:
-            assert _codegen_refuses(source), (
-                f"refused at check, and code generation lowers it:\n"
-                f"{source}")
         return
     assert verdict.loads and verdict.value == value, (
         f"{verdict.describe()}\n{source}")
@@ -1033,8 +1003,6 @@ class TestStateClause:
         have built the program."""
         source = _clause_source("resume(@Int.0)", "()", body="7")
         assert _verdict(source).check_codes == ("E340",)
-        compiled = vera_pipeline.compile(source, past_check=True)
-        assert vera_pipeline.run(compiled.result, fn="main").value == 7
 
 
 def _handler_clauses(node: object) -> list[ast.HandlerClause]:
@@ -1176,21 +1144,21 @@ class TestQuantifierSignature:
     E179 and E128 are the spec's signature rules (§6.3.3), wider than what
     the loop cannot build: a refinement parameter is bound and refused
     because the counter takes values it excludes, and a parameter the body
-    never reads leaves nothing to fail.  So these cells assert the rule, and
-    the backend half is the #1506 repros above, each a module that failed to
-    load."""
+    never reads leaves nothing to fail.  So these cells assert the rule, as
+    the #1506 repros above do, each a module that failed to load at the
+    base."""
 
     @pytest.mark.parametrize("param", sorted(_PREDICATE_PARAMS))
     def test_predicate_parameter(self, param: str) -> None:
         lowers = _PREDICATE_PARAMS[param]
         _holds(_quant_source(param, "Bool"),
-               None if lowers else ("E179",), 1, backend=False)
+               None if lowers else ("E179",), 1)
 
     @pytest.mark.parametrize("result", sorted(_PREDICATE_RESULTS))
     def test_predicate_result(self, result: str) -> None:
         lowers = _PREDICATE_RESULTS[result]
         _holds(_quant_source("Nat", result), None if lowers else ("E179",),
-               1, backend=False)
+               1)
 
     @pytest.mark.parametrize("arity", (0, 2))
     def test_predicate_arity(self, arity: int) -> None:
@@ -1291,8 +1259,7 @@ class TestAbility:
         refused = _ability_refusal(ability, form)
         # A qualified call was E220 before, and never reached code
         # generation, so its refusal is the check's alone.
-        _holds(_ability_source(ability, form), refused, 1,
-               backend=form != "qualified")
+        _holds(_ability_source(ability, form), refused, 1)
 
     @pytest.mark.parametrize("ability", sorted(_ABILITIES))
     def test_a_qualified_call_to_an_operation_the_ability_lacks(
@@ -1382,10 +1349,10 @@ def _one_family_at(outer: str, inner: str, at: str) -> bool:
 
 class TestGenericCellNesting:
     """Rule 5: E339 treats a cell named by a type parameter as able to be
-    any family it unifies with.  Conservative: past the check, code
-    generation refuses the refused cells whose instantiation makes the two
-    cells one family, and builds and runs the others (`g(true)` over
-    `Int`/`T`, which ran at the base), and both kinds occur."""
+    any family it unifies with.  Conservative: the refused cells include
+    ones whose instantiation keeps the two cells apart, which code
+    generation builds (`g(true)` over `Int`/`T`, which ran at the base), as
+    well as ones it makes one family, and both kinds occur."""
 
     @pytest.mark.parametrize(("outer", "inner", "op_place", "at"),
                              _NEST_CELLS)
@@ -1399,11 +1366,6 @@ class TestGenericCellNesting:
             return
         verdict = _verdict(source)
         assert verdict.check_codes == ("E339",), verdict.describe()
-        if _one_family_at(outer, inner, at):
-            assert _codegen_refuses(source), source
-        else:
-            past = vera_pipeline.compile(source, past_check=True).result
-            assert vera_pipeline.run(past, fn="main").value == 1, source
 
     def test_both_kinds_of_refusal_occur(self) -> None:
         """Not vacuous: among the refused cells, some instantiations make the
@@ -1418,12 +1380,10 @@ class TestGenericCellNesting:
         self,
     ) -> None:
         """#1522's report: at T = Int code generation dropped the clone; at
-        T = Bool the program ran.  Both are refused now, and past the check
-        the Int clone is still the one code generation cannot build."""
+        T = Bool the program ran.  Both are refused now."""
         for at in ("5", "true"):
             source = _nest_source("Int", "T", "clause body", at)
             assert _verdict(source).check_codes == ("E339",), at
-        assert _codegen_refuses(_nest_source("Int", "T", "clause body", "5"))
 
 
 
@@ -1635,8 +1595,7 @@ class TestEffectRow:
                 (o.kind, o.status) for o in verified.obligations]
             return
         rows = _row_template(kind, place).count("ROW")
-        _holds(source, ("E340",) * rows, None,
-               backend=place in _ROW_DECLARATIONS)
+        _holds(source, ("E340",) * rows, None)
         entry = kind.split(", ")[-1]
         placed = sorted(_placed(vera_pipeline.check(source).errors))
         assert placed == sorted(
@@ -1654,13 +1613,12 @@ class TestEffectRow:
         """Why the rule refuses a closure's row and a function type's too,
         which code generation compiles: applying such a value needs the
         effect in the caller's row, a declaration's, which code generation
-        refuses past the check."""
+        cannot lower."""
         source = _COUNTER + (
             "type F = fn(Unit -> Int) effects(<Counter>);\n\n"
             + _main("let @F = fn(@Unit -> @Int) effects(<Counter>) { 1 };\n"
                     "  apply_fn(@F.0, ())", eff="<Counter>"))
         assert _verdict(source).check_codes == ("E340",) * 3
-        assert _codegen_refuses(source)
 
     @pytest.mark.parametrize("kind", sorted(_ROW_VARIABLE_KINDS))
     def test_a_row_variable_on_a_parameter_is_applied(self, kind: str) -> None:
@@ -1689,7 +1647,7 @@ class TestEffectRow:
     ) -> None:
         source = _op_source(row, use, enclosing, op)
         refused = _op_refusal(row, use, enclosing, op)
-        _holds(source, refused, None, backend=op == "user")
+        _holds(source, refused, None)
         placed = _placed(vera_pipeline.check(source).errors)
         if op == "user":
             assert ("E340", *_locate(source, "Counter.tick")) in placed
@@ -1720,7 +1678,7 @@ class TestEffectRow:
             assert _placed(vera_pipeline.check(source).errors) == [
                 ("E340", *_locate(source, "Counter.tick"))]
             return
-        _holds(source, ("E187",), None, backend=False)
+        _holds(source, ("E187",), None)
         assert _placed(vera_pipeline.check(source).errors) == [
             ("E187", *_locate(source, "Random.random_int"))]
 

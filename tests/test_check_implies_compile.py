@@ -41,9 +41,15 @@ of the entry file is exported (a drop that reports nothing is still a drop).
     a reason outside this class are held in an exact roster, each with the
     reason; a new one fails, and so does a stale entry.
 (d) :class:`TestClauseOperationMatrix` — a handler-clause State operation
-    code generation cannot lower is refused at check (E339, #1233), and the
-    check-time walk must agree with code generation's own gate in both
-    directions: handler nesting shapes × clause-body positions.
+    code generation cannot lower is refused at check (E339, #1233), over
+    handler nesting shapes × clause-body positions.  Each cell states the
+    verdict the shadowing rule gives it: refused at check with E339, compiling
+    nothing, or checked and compiled clean.  The cells no longer compile a
+    refused program to hold the check against code generation's own gate:
+    the lowering rules are one module, ``vera/lowering.py``, that the checker
+    applies and code generation calls, and a refused program has no typed
+    program to compile.  The nearest accepted neighbours, which keep
+    compiling and running, are the over-refusal instrument that remains.
 (e) :class:`TestNestedGenericCalls` — a generic call nested inside another
     compiles wherever it is written (#1509): every prelude generic as the
     outer call around every producer of its argument, in a function, a
@@ -144,24 +150,17 @@ class Outcome:
         )
 
 
-def build(
-    main_path: Path, source: str, root: Path, *, past_check: bool = False,
-) -> Outcome:
+def build(main_path: Path, source: str, root: Path) -> Outcome:
     """Resolve, check and (if accepted) compile, as ``vera run`` does.
 
-    *past_check* compiles a refused program too, so a refusal at check can
-    be compared with what code generation would have done (the #1233
-    differential): the check errors are still reported.  *source* is the
-    text *main_path* holds, which is what is compiled.
+    *source* is the text *main_path* holds, which is what is compiled.
     """
-    compiled = vera_pipeline.compile(
-        main_path, root=root, past_check=past_check)
+    compiled = vera_pipeline.compile(main_path, root=root)
     program = compiled.parsed.program  # raises the parse or transform error
     assert compiled.parsed.source == source, (
         f"{main_path} does not hold the source handed in")
-    assert compiled.checked is not None
     errors = list(compiled.checked.errors)
-    if errors and not past_check:
+    if errors:
         return Outcome(errors, None, [], [])
     result = compiled.result
     drops = [
@@ -179,14 +178,12 @@ def build(
 
 def pipeline(
     tmp_path: Path, files: dict[str, str], main: str = "main.vera",
-    *, past_check: bool = False,
 ) -> Outcome:
     """Write *files* into *tmp_path* and :func:`build` *main*."""
     tmp_path.mkdir(parents=True, exist_ok=True)
     for name, text in files.items():
         (tmp_path / name).write_text(text, encoding="utf-8")
-    return build(tmp_path / main, files[main], tmp_path,
-                 past_check=past_check)
+    return build(tmp_path / main, files[main], tmp_path)
 
 
 def run_main(outcome: Outcome) -> tuple[str, object]:
@@ -1632,20 +1629,17 @@ class TestCorpusCheckImpliesCompile:
 #
 # A `get`/`put` in a handler clause body is the ENCLOSING context's
 # operation (spec §7.5.2), lowered by inlining the clause where an
-# operation reaches it.  Code generation refuses the ones it cannot lower
-# — a cell shadowed by a same-family cell pushed since (#1233), and a
-# re-entry chain past STATE_CLAUSE_INLINE_DEPTH_CAP — and the checker now
-# refuses the same ones with E339.  Two derivations of one decision, so the
-# proof is a DIFFERENTIAL: every cell is compiled past the check, and the
-# checker's E339 must coincide with code generation's own refusal, while a
-# cell neither refuses must compile clean.
+# operation reaches it.  Code generation cannot lower a cell shadowed by a
+# same-family cell pushed since (#1233), nor a re-entry chain past
+# STATE_CLAUSE_INLINE_DEPTH_CAP, and the checker refuses both with E339.
+# The rule is `vera/lowering.py`'s `shadowing_cell`, which the checker
+# applies and code generation calls, so each cell states the verdict the
+# rule gives it: refused at check with E339 and nothing else, compiling
+# nothing, or checked clean and compiled clean.
 
 #: The cell families the nests are built from.  Two integer families, so a
 #: `get(())` result types in every position whichever cell it reaches.
 _FAMILIES = ("Int", "Nat")
-
-#: A clause-body refusal code generation makes for exactly this rule.
-_GATE_MARKERS = ("the host cell intrinsics address only", "nest more than")
 
 
 def _handler(family: str, put_clause: str, body: str,
@@ -1679,6 +1673,24 @@ class NestCell:
     def label(self) -> str:
         return (f"{self.row}|{'/'.join(self.families)}|L{self.level}|"
                 f"{self.trigger}|{self.op}")
+
+    @property
+    def refused(self) -> bool:
+        """The verdict E339's rule gives this nest.  A clause's operation
+        reaches the cell of the scope outside its handler (the handler one
+        level out, or the row's `State<Int>` at level 0), and is refused
+        where a cell pushed since that scope, at the site the clause is
+        inlined, is the same family.  A `direct` trigger inlines the level's
+        own clause in that handler's body; a `chain` inlines every clause
+        from the innermost out to the level, at the innermost body."""
+        fams = self.families
+        if self.trigger == "direct":
+            inlined = [(self.level, fams[self.level:self.level + 1])]
+        else:
+            inlined = [(i, fams[i:])
+                       for i in range(len(fams) - 1, self.level - 1, -1)]
+        return any((fams[i - 1] if i > 0 else "Int") in pushed
+                   for i, pushed in inlined)
 
     def source(self) -> str:
         body = "put(1);\n    1"
@@ -1864,24 +1876,15 @@ POSITION_CELLS: tuple[PositionCell, ...] = tuple(
 )
 
 
-def _gate_refused(outcome: Outcome) -> bool:
-    """Whether code generation's own clause-op gate refused ``f``: an
-    internal error (E699), since the gate is the backstop for E339."""
-    return any(
-        d.error_code == "E699" and "'f'" in d.description
-        and any(m in d.description for m in _GATE_MARKERS)
-        for d in outcome.drops
-    )
-
-
-def _differential(outcome: Outcome) -> None:
-    """E339 at check exactly when code generation's gate refuses."""
+def _holds(outcome: Outcome, refused: bool) -> None:
+    """The verdict the rule gives the cell: refused at check with E339 and
+    nothing else, compiling nothing, or checked and compiled clean."""
     codes = {d.error_code for d in outcome.check_errors}
-    others = codes - {"E339"}
-    assert not others, outcome.describe()
-    refused = "E339" in codes
-    assert refused == _gate_refused(outcome), outcome.describe()
-    if not refused:
+    if refused:
+        assert codes == {"E339"}, outcome.describe()
+        assert outcome.result is None, outcome.describe()
+    else:
+        assert not codes, outcome.describe()
         assert outcome.compiles_clean, outcome.describe()
 
 
@@ -1906,18 +1909,16 @@ def _depth_chain(levels: int) -> str:
 
 
 class TestClauseOperationMatrix:
-    """(d): #1233 — the checker refuses exactly what code generation can't."""
+    """(d): #1233 — the checker refuses what the rule says code generation
+    can't lower, and every other cell compiles clean."""
 
     @pytest.mark.parametrize("levels", (
         STATE_CLAUSE_INLINE_DEPTH_CAP, STATE_CLAUSE_INLINE_DEPTH_CAP + 1,
     ))
     def test_reentry_depth(self, levels: int, tmp_path: Path) -> None:
-        """At the cap the chain compiles; one level past it both refuse."""
-        outcome = pipeline(tmp_path, {"main.vera": _depth_chain(levels)},
-                           past_check=True)
-        _differential(outcome)
-        refused = "E339" in {d.error_code for d in outcome.check_errors}
-        assert refused == (levels > STATE_CLAUSE_INLINE_DEPTH_CAP)
+        """At the cap the chain compiles; one level past it is refused."""
+        outcome = pipeline(tmp_path, {"main.vera": _depth_chain(levels)})
+        _holds(outcome, levels > STATE_CLAUSE_INLINE_DEPTH_CAP)
 
     def test_every_clause_position_has_a_cell(self) -> None:
         """Every AST expression field is a cell or an excluded position."""
@@ -1936,7 +1937,7 @@ class TestClauseOperationMatrix:
         verdicts = {}
         for cell in NEST_CELLS:
             out = pipeline(tmp_path / str(len(verdicts)),
-                           {"main.vera": cell.source()}, past_check=True)
+                           {"main.vera": cell.source()})
             verdicts[cell.label] = "E339" in {
                 d.error_code for d in out.check_errors}
         assert any(verdicts.values()) and not all(verdicts.values())
@@ -1953,33 +1954,30 @@ class TestClauseOperationMatrix:
 
     @pytest.mark.parametrize("cell", NEST_CELLS, ids=lambda c: c.label)
     def test_nesting_shape(self, cell: NestCell, tmp_path: Path) -> None:
-        _differential(pipeline(tmp_path, {"main.vera": cell.source()},
-                               past_check=True))
+        _holds(pipeline(tmp_path, {"main.vera": cell.source()}),
+               cell.refused)
 
     @pytest.mark.parametrize("cell", POSITION_CELLS, ids=lambda c: c.label)
     def test_clause_position(self, cell: PositionCell, tmp_path: Path) -> None:
-        outcome = pipeline(tmp_path, {"main.vera": cell.source()},
-                           past_check=True)
+        outcome = pipeline(tmp_path, {"main.vera": cell.source()})
         if cell.position.label == "lambda":
             # A closure is lifted with no State cells, so the checker refuses
             # the operation inside it for its own reasons; the rule here is
             # only that no E339 is claimed for it.
             assert "E339" not in {d.error_code for d in outcome.check_errors}
             return
-        emitted = cell.position.label != "assume"
+        # The handler's cell shadows the row's where both are `Int`; an
+        # operation in an `assume` is never lowered, so never refused.
+        refused = cell.shadowed and cell.position.label != "assume"
         if cell.position.label in ("assert", "assume"):
             # A predicate is held to purity (#1708), so the operation in an
             # `assert` or an `assume` is refused for that too (E187); E339
-            # is claimed as before, exactly where the gate refuses.
+            # is claimed as before, exactly where the rule refuses.
             codes = {d.error_code for d in outcome.check_errors}
-            assert codes - {"E339"} == {"E187"}, outcome.describe()
-            assert ("E339" in codes) == _gate_refused(outcome), outcome.describe()
-            assert ("E339" in codes) == (cell.shadowed and emitted), \
+            assert codes == ({"E187", "E339"} if refused else {"E187"}), \
                 outcome.describe()
             return
-        _differential(outcome)
-        assert ("E339" in {d.error_code for d in outcome.check_errors}) \
-            == (cell.shadowed and emitted), outcome.describe()
+        _holds(outcome, refused)
 
 
 # =====================================================================
@@ -2263,7 +2261,6 @@ def _emitted_and_discovered(
 
     compiled = vera_pipeline.compile(
         vera_pipeline.write_tree(tmp_path, files), root=tmp_path,
-        past_check=True,
     )
     _ = compiled.parsed.program  # raises the parse or transform error
     gen = compiled.generator
@@ -3736,7 +3733,7 @@ def _e137s(diags: list[Diagnostic]) -> set[tuple[str, str]]:
 
 def _verify_file(path: Path, root: Path) -> VerifyResult:
     """Resolve and verify *path* as a program of its own."""
-    verified = vera_pipeline.verify(path, root=root, past_check=True)
+    verified = vera_pipeline.verify(path, root=root)
     _ = verified.checked.program  # raises the parse or transform error
     resolution_errors = list(verified.checked.resolution_diagnostics)
     assert not resolution_errors, resolution_errors

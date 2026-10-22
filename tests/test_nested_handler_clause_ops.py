@@ -821,11 +821,10 @@ def test_same_family_clause_body_op_is_refused(source: str) -> None:
 
     The clause TRANSFORM half routes outward correctly; the CELL half cannot,
     because `state_put_Int` addresses only the innermost `Int` cell.  The
-    checker refuses the operation where it is written (E339), and code
-    generation's own gate — the backstop for a program that reaches it
-    without the checker — is an internal error (E699) that drops the
-    function.  Without them each of these programs compiles to a value the
-    spec rule does not describe.
+    checker refuses the operation where it is written (E339), and no stage
+    after the check runs on a program it refuses; code generation's own gate
+    (E699) is the backstop.  Without the refusal each of these programs
+    would compile to a value the spec rule does not describe.
     """
     errors = _errors(source)
     assert errors and {d.error_code for d in errors} == {"E339"}, [
@@ -833,14 +832,6 @@ def test_same_family_clause_body_op_is_refused(source: str) -> None:
     ]
     assert all("shadows it" in d.description for d in errors), errors
     assert all("1233" in d.rationale for d in errors), errors
-    result = _compile(source)
-    codes = {d.error_code for d in result.diagnostics}
-    assert "E699" in codes, (
-        "expected the same-family codegen backstop, got: "
-        f"{[(d.error_code, d.description[:90]) for d in result.diagnostics]}"
-    )
-    joined = " ".join(d.description for d in result.diagnostics)
-    assert "1233" in joined, joined
 
 
 def test_different_family_nesting_is_untouched_by_the_same_family_gate() -> None:
@@ -977,10 +968,7 @@ def test_outward_reentry_one_past_the_cap_is_the_first_refusal() -> None:
     exact transition unpinned — an off-by-one in the comparison would move
     the boundary by one level and both of those would still pass.  The
     checker refuses the operations that re-enter too deep (E339), at the
-    depth code generation does.  This also pins the CALLER's fate in code
-    generation's backstop: the dropped `probe` takes `main` with it, so the
-    program surfaces E699 **and** the E620 dropped-caller diagnostic rather
-    than silently exporting a `main` that cannot run.
+    depth code generation's own gate does.
     """
     source = _deep_nest(STATE_CLAUSE_INLINE_DEPTH_CAP + 1)
     errors = _errors(source)
@@ -990,37 +978,17 @@ def test_outward_reentry_one_past_the_cap_is_the_first_refusal() -> None:
     assert all(
         str(STATE_CLAUSE_INLINE_DEPTH_CAP) in d.description for d in errors
     ), errors
-    result = _compile(source)
-    codes = {d.error_code for d in result.diagnostics}
-    assert {"E699", "E620"} <= codes, (
-        f"expected the depth-cap backstop AND the dropped-caller diagnostic at "
-        f"depth {STATE_CLAUSE_INLINE_DEPTH_CAP + 1}, got: "
-        f"{[(d.error_code, d.description[:90]) for d in result.diagnostics]}"
-    )
-    joined = " ".join(d.description for d in result.diagnostics)
-    assert str(STATE_CLAUSE_INLINE_DEPTH_CAP) in joined, joined
-    assert "exponential" in joined, joined
 
 
 def test_outward_reentry_past_the_cap_is_refused() -> None:
-    """Past the cap the checker refuses it, and code generation drops it.
+    """Past the cap the checker refuses it.
 
     Without the bound, an 18-deep nest of 106 source lines expanded to ~2M
     lines of WAT — the runaway this turns into a diagnostic: E339 where the
-    operations are written, and code generation's located E699 naming the
-    function as the backstop.
+    operations are written.
     """
     source = _deep_nest(STATE_CLAUSE_INLINE_DEPTH_CAP + 2)
     errors = _errors(source)
     assert errors and {d.error_code for d in errors} == {"E339"}, [
         (d.error_code, d.description[:90]) for d in errors
     ]
-    result = _compile(source)
-    codes = {d.error_code for d in result.diagnostics}
-    assert "E699" in codes, (
-        f"expected the depth-cap backstop, got: "
-        f"{[(d.error_code, d.description[:90]) for d in result.diagnostics]}"
-    )
-    joined = " ".join(d.description for d in result.diagnostics)
-    assert str(STATE_CLAUSE_INLINE_DEPTH_CAP) in joined, joined
-    assert "exponential" in joined, joined

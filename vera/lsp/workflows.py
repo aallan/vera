@@ -738,14 +738,15 @@ def _handled_effect_key(ref: ast.EffectRefNode) -> str:
     wrongly pruned one leaves the caller on ``pure`` and the whole
     candidate dies on E125.  An almost-right spelling is the trap, so
     the refinement case below is pushed onto the unmatchable path
-    rather than allowed to collide with a base-type request.
+    rather than allowed to collide with a request for another
+    refinement.
     """
     if isinstance(ref, ast.QualifiedEffectRef):
         base, args = f"{ref.module}.{ref.name}", ref.type_args
     elif isinstance(ref, ast.EffectRef):
         base, args = ref.name, ref.type_args
     else:  # pragma: no cover — the parser produces only those two
-        return ""
+        return ""  # pragma: no mutate — unreachable, as the line above says
     if not args:
         return base
     if any(
@@ -753,20 +754,20 @@ def _handled_effect_key(ref: ast.EffectRefNode) -> str:
         for a in args
         for n in walk_nodes(a)
     ):
-        # ``format_type_expr`` drops a refinement's predicate, so
-        # ``Exn<{ @Int | p }>`` renders as ``Exn<Int>`` — the checker
-        # keeps those two instances distinct (the call site fails E125
-        # without its own row), so a collapsed key would prune an edge
-        # the program needs.  The walk covers a refinement nested
-        # inside an argument (``Exn<Array<{ @Int | p }>>``), which
-        # collapses exactly the same way.
+        # The key is compared with its whitespace removed, and a
+        # refinement's predicate is an expression whose spaces can be
+        # part of its meaning: ``Exn<Array<{ @String | @String.0 == "a b" }>>``
+        # and ``Exn<Array<{ @String | @String.0 == "ab" }>>`` are two
+        # instances the checker keeps apart (the call site fails E125
+        # without its own row) and would be one key, so a match could
+        # prune an edge the program needs.  The walk covers a refinement
+        # nested inside an argument, which is the only place a handled
+        # refinement is written (a top-level one is refused, E340).
         return f"{base}<?>"
-    # ``format_type_expr`` spells parameter position (``@Int``); an
-    # effect argument is written bare.  A shape it cannot render comes
-    # back as "@?", which survives as "?" — never a valid request.
+    # An effect's arguments are written bare, as ``format_type`` renders
+    # them.
     rendered = ",".join(
-        _effect_instance_key(ast.format_type_expr(a)).replace("@", "")
-        for a in args
+        _effect_instance_key(ast.format_type(a)) for a in args
     )
     return f"{base}<{rendered}>"
 

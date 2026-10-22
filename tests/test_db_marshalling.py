@@ -60,7 +60,7 @@ def _gc_caller() -> InstanceCaller:
     ``InstanceCaller``.  Read ``VERA_EAGER_GC`` at COMPILE time (it is baked
     into ``$alloc`` by ``AssemblyMixin._emit_alloc``), so a caller wanting the
     eager-GC stress must ``monkeypatch.setenv`` *before* calling this."""
-    res = pipeline.compile(_HARNESS_SRC, checked=False).result
+    res = pipeline.compile(_HARNESS_SRC).result
     assert res.ok, res.diagnostics
     engine = wasmtime.Engine()
     store = wasmtime.Store(engine)

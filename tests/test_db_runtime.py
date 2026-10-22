@@ -205,7 +205,8 @@ public fn main(-> @Int)
 {
   let @Result<Int, String> = DB.execute("CREATE TABLE t (name TEXT)", []);
   let @Result<Int, String> = DB.execute("INSERT INTO t VALUES (?)", [Some("alice")]);
-  let @Result<Int, String> = DB.execute("INSERT INTO t VALUES (?)", [None]);
+  let @Option<String> = None;
+  let @Result<Int, String> = DB.execute("INSERT INTO t VALUES (?)", [@Option<String>.0]);
   match DB.query("SELECT name FROM t", []) {
     Ok(@Array<Array<Option<String>>>) -> array_length(@Array<Array<Option<String>>>.0),
     Err(@String) -> 0 - 1

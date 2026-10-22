@@ -29,7 +29,7 @@ from tests import pipeline
 
 def _verify(source: str) -> VerifyResult:
     # Verified past a check refusal, as this helper always has.
-    return pipeline.verify(source, past_check=True).result
+    return pipeline.verify(source).result
 
 
 def _ok(result: VerifyResult) -> bool:

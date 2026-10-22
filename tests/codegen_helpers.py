@@ -8,9 +8,10 @@ The established pattern:
     _run_trap(source, fn, args) -> assert WASM trap
 (plus _run_float / _run_refine_trap / _run_state / _compile_with_generator
 and the WAT/GC assertion helpers further down).  The drivers compile through
-``tests/pipeline.py``'s unchecked ``compile`` (``checked=False``: the parsed
-program alone, no type check and none of the checker's tables, which is what
-these suites were written against) and run through its ``run``.
+``tests/pipeline.py``'s ``compile``, which checks the program and hands code
+generation the checker's tables, as ``vera compile`` does, and run through
+its ``run``: a fixture checks clean, or reading its module raises the
+check's errors.
 """
 from __future__ import annotations
 
@@ -181,12 +182,13 @@ _SOURCE_FILE = "fixture.vera"
 
 
 def _compile(source: str) -> CompileResult:
-    """Compile a Vera source string to WASM, unchecked, as ``fixture.vera``.
+    """Check, then compile a Vera source string to WASM, as ``fixture.vera``.
 
-    A parse or transform error is raised, and the #1185 invariant is
-    asserted on the module, by ``tests/pipeline.py``'s ``compile``.
+    A parse or transform error is raised, as is the check's refusal
+    (``StageFailed``), and the #1185 invariant is asserted on the module, by
+    ``tests/pipeline.py``'s ``compile``.
     """
-    return pipeline.compile(source, file=_SOURCE_FILE, checked=False).result
+    return pipeline.compile(source, file=_SOURCE_FILE).result
 
 
 def _compile_ok(source: str) -> CompileResult:
@@ -198,10 +200,10 @@ def _compile_ok(source: str) -> CompileResult:
 
 
 def _compile_example(name: str) -> CompileResult:
-    """Compile a .vera file from examples/ by name, unchecked, labelled with
-    its path, as the file-based pipeline labels it."""
+    """Check, then compile a .vera file from examples/ by name, labelled
+    with its path, as the file-based pipeline labels it."""
     path = Path(__file__).parent.parent / "examples" / name
-    return pipeline.compile(path, checked=False).result
+    return pipeline.compile(path).result
 
 
 def _run(source: str, fn: str | None = None, args: list[int] | None = None) -> int:
@@ -267,18 +269,17 @@ def _run_refine_trap(
 # =====================================================================
 # The checked pipeline
 # =====================================================================
-# The helpers above compile unchecked.  A test about a code-generation rule
-# that reads the checker's tables (the overflow and widening classifiers, the
-# target-type widths, monomorphization) compiles through these instead, which
-# check the program first and hand code generation the checker's tables, as
-# `vera compile` and `vera run` do.  Their programs must type-check.
+# The helpers above check the program too, and reading a module the check
+# refused raises the check's errors.  A test about a code-generation rule that
+# reads the checker's tables (the overflow and widening classifiers, the
+# target-type widths, monomorphization) compiles through these, which assert
+# the check is clean first and name its errors when it is not.
 
 
 def _compile_checked(source: str) -> CompileResult:
     """Check *source* (which must pass), then compile it with the checker's
     tables, as ``fixture.vera``."""
     compiled = pipeline.compile(source, file=_SOURCE_FILE)
-    assert compiled.checked is not None
     _ = compiled.parsed.program  # raises the parse or transform error, if any
     errors = compiled.checked.errors
     assert not errors, f"typecheck errors: {[d.description for d in errors]}"
@@ -335,9 +336,9 @@ def _run_state(
 
 
 def _compile_with_generator(source: str) -> tuple[CompileResult, CodeGenerator]:
-    """Compile, unchecked, and return both result and CodeGenerator for
+    """Check and compile, and return both result and CodeGenerator for
     metadata inspection."""
-    compiled = pipeline.compile(source, file=_SOURCE_FILE, checked=False)
+    compiled = pipeline.compile(source, file=_SOURCE_FILE)
     result = compiled.result
     assert compiled.generator is not None
     return result, compiled.generator

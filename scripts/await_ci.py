@@ -1,21 +1,24 @@
 #!/usr/bin/env python
 """Wait for CI's run on a commit, and pass only if it succeeded.
 
-``release.yml``'s first job runs this before anything of a release starts,
-since the full test matrix runs after the merge rather than on the pull
-request: the push event a version-raising merge produces on ``main`` runs it
-in CI, and the release publishes only once that run has succeeded.  The
-script asks ``gh run list`` for the runs of the CI workflow on the commit,
-every thirty seconds, and the newest one decides:
+The full test matrix runs after the merge rather than on the pull request:
+the push event a version-raising merge produces on ``main`` runs it in CI.
+``release.yml`` starts when that run completes, so an ordinary release does
+not wait; a production recovery, dispatched by hand, has no CI run behind
+it, and ``release.yml``'s first job runs this before anything of it starts,
+so it publishes only once CI's run on the dispatched commit has succeeded.
+The script asks ``gh run list`` for the runs of the CI workflow on the
+commit, every thirty seconds, and the newest one decides:
 
 - a run that completed with the conclusion ``success`` passes;
 - a run that completed with any other conclusion fails;
 - a run not yet completed, no run yet, or a listing ``gh`` could not make is
   waited for, until the timeout, where it fails.
 
-The timeout is 100 minutes by default and at most: the post-merge run of the
-full matrix takes about half that, including the wait for macOS runners.
-A failure prints a ``::error::`` line, which Actions shows on the run.
+The timeout is 180 minutes by default and at most: the push run of the full
+matrix on v0.2.5's release commit took 106 minutes, its macOS cells waiting
+31 to 70 minutes for a runner.  A failure prints a ``::error::`` line, which
+Actions shows on the run.
 """
 
 from __future__ import annotations
@@ -28,7 +31,7 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
-CAP_MINUTES = 100
+CAP_MINUTES = 180
 INTERVAL_SECONDS = 30
 
 

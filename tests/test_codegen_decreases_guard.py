@@ -682,10 +682,6 @@ public fn main(-> @Int)
         Exn-declaring function therefore gets no runtime guard (the
         static tier still discloses the obligation)."""
         source = """\
-effect Exn<E> {
-  op throw(E -> Never);
-}
-
 private fn dig(@Int -> @Int)
   requires(true)
   ensures(true)

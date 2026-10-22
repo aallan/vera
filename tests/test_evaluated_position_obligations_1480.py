@@ -27,7 +27,6 @@ import pytest
 from vera.checker import typecheck_with_artifacts
 from vera.obligations.core import ProofObligation
 from vera.parser import parse_to_ast
-from vera.verifier import verify
 
 from tests import pipeline
 
@@ -91,10 +90,9 @@ def _run(source: str, fn: str, args: list[int | float]) -> Ran:
     threaded into code generation, which decides from them where a
     `@Nat` subtraction or an overflow is guarded.  Without them a guard
     can be missing that the real artifact carries, and a cell would read
-    the absence as the record's error.  The check's own verdict is not
-    consulted (``past_check``), as it never was here.
+    the absence as the record's error.
     """
-    compiled = pipeline.compile(source, past_check=True).result
+    compiled = pipeline.compile(source).result
     errors = [d for d in compiled.diagnostics if d.severity == "error"]
     assert not errors, (
         f"fixture must compile, got: "
@@ -1308,9 +1306,9 @@ def test_the_termination_proof_sees_every_call_in_its_scope(
 
 # The rendering walk behind `show` asks whether a type holds a `@Float64`
 # by descending its constructor fields.  A non-regular declaration gives that
-# descent no fixed point, and `verify()` is a public entry point whose
-# check-clean precondition is its caller's to keep, so the walk must decline
-# the type rather than recurse without end (#1429's rule).
+# descent no fixed point; the check refuses the declaration (E129, #1429's
+# rule), and verification runs only on a program the check accepts, so the
+# walk never meets one.
 NON_REGULAR_SHOWN = """\
 private data Nest<T> { N(Nest<Option<T>>), Z }
 
@@ -1324,16 +1322,11 @@ public fn f(@Nest<Int> -> @String)
 """
 
 
-def test_a_non_regular_type_is_declined_by_the_rendering_walk() -> None:
-    import time
-
-    started = time.monotonic()
-    result = verify(parse_to_ast(NON_REGULAR_SHOWN), NON_REGULAR_SHOWN)
-    assert time.monotonic() - started < 60
-    show = _at(NON_REGULAR_SHOWN, "show(")
-    assert [o.status for o in result.obligations
-            if o.kind == "float_to_int_domain"
-            and (o.line, o.column) == show] == ["tier3"]
+def test_a_non_regular_type_is_refused_before_the_rendering_walk() -> None:
+    verified = pipeline.verify(NON_REGULAR_SHOWN)
+    assert [d.error_code for d in verified.checked.errors] == ["E129"], [
+        (d.error_code, d.description[:70]) for d in verified.checked.errors]
+    assert not verified.ran
 
 
 def test_the_call_pre_table_keeps_no_record_alive() -> None:
@@ -4395,7 +4388,7 @@ public fn main(@Unit -> @String)
   {call}
 }}
 """
-    result = pipeline.verify(source, past_check=True).result
+    result = pipeline.verify(source).result
     [diag] = [d for d in result.diagnostics if d.error_code == "E529"]
     return diag.rationale
 

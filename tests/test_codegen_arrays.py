@@ -1464,7 +1464,7 @@ public fn g(-> @Int) requires(true) ensures(true) effects(pure) {
         argument.  The emission had no user-fn arm; String keys came back as
         garbage (length 0) under the `$kb` mis-tag."""
         src = """
-fn mkm(-> @Map<String, Int>) requires(true) ensures(true) effects(pure) {
+private fn mkm(-> @Map<String, Int>) requires(true) ensures(true) effects(pure) {
   map_insert(map_new(), "abcde", 99)
 }
 
@@ -1480,7 +1480,7 @@ public fn g(-> @Int) requires(true) ensures(true) effects(pure) {
         helper's blind args[0] recursion used to swallow this shape before
         any declared-return consultation."""
         src = """
-fn mkm2(@Int -> @Map<String, Int>) requires(true) ensures(true) effects(pure) {
+private fn mkm2(@Int -> @Map<String, Int>) requires(true) ensures(true) effects(pure) {
   map_insert(map_new(), "abcde", @Int.0)
 }
 
@@ -1495,7 +1495,7 @@ public fn g(-> @Int) requires(true) ensures(true) effects(pure) {
         """map_values(mkm()) with a value above 2^32 — truncated to 7 under
         the mis-tag."""
         src = """
-fn mkm(-> @Map<String, Int>) requires(true) ensures(true) effects(pure) {
+private fn mkm(-> @Map<String, Int>) requires(true) ensures(true) effects(pure) {
   map_insert(map_new(), "k", 8589934599)
 }
 
@@ -1510,7 +1510,7 @@ public fn g(-> @Int) requires(true) ensures(true) effects(pure) {
         """set_to_array(mks()) — user fn returning Set<Int>, element above
         2^32."""
         src = """
-fn mks(-> @Set<Int>) requires(true) ensures(true) effects(pure) {
+private fn mks(-> @Set<Int>) requires(true) ensures(true) effects(pure) {
   set_add(set_new(), 8589934600)
 }
 
@@ -1532,7 +1532,7 @@ public fn g(-> @Int) requires(true) ensures(true) effects(pure) {
         src = """
 type M = Map<String, Int>;
 
-fn mkm(-> @M) requires(true) ensures(true) effects(pure) {
+private fn mkm(-> @M) requires(true) ensures(true) effects(pure) {
   map_insert(map_new(), "abcde", 8589934599)
 }
 
@@ -1549,7 +1549,7 @@ public fn g(-> @Int) requires(true) ensures(true) effects(pure) {
         src = """
 type M = Map<String, Int>;
 
-fn mkm(-> @M) requires(true) ensures(true) effects(pure) {
+private fn mkm(-> @M) requires(true) ensures(true) effects(pure) {
   map_insert(map_new(), "abcde", 99)
 }
 
@@ -1566,7 +1566,7 @@ public fn g(-> @Int) requires(true) ensures(true) effects(pure) {
         src = """
 type M = Map<String, Int>;
 
-fn mkm(-> @M) requires(true) ensures(true) effects(pure) {
+private fn mkm(-> @M) requires(true) ensures(true) effects(pure) {
   map_insert(map_new(), "abcde", 8589934599)
 }
 
@@ -1582,7 +1582,7 @@ public fn g(-> @Int) requires(true) ensures(true) effects(pure) {
         src = """
 type S = Set<Int>;
 
-fn mks(-> @S) requires(true) ensures(true) effects(pure) {
+private fn mks(-> @S) requires(true) ensures(true) effects(pure) {
   set_add(set_new(), 8589934600)
 }
 
@@ -1654,7 +1654,7 @@ class TestUserFnArrayArg:
     def test_reverse_user_fn_arg(self) -> None:
         """array_reverse(mk())[0] -> 30 (pin: resolved by the #1053 fallback)."""
         src = """
-fn mk(-> @Array<Int>) requires(true) ensures(true) effects(pure) {
+private fn mk(-> @Array<Int>) requires(true) ensures(true) effects(pure) {
   [10, 20, 30]
 }
 
@@ -1667,7 +1667,7 @@ public fn g(-> @Int) requires(true) ensures(true) effects(pure) {
     def test_reverse_user_fn_arg_letbound(self) -> None:
         """Let-bound variant of the same pin."""
         src = """
-fn mk(-> @Array<Int>) requires(true) ensures(true) effects(pure) {
+private fn mk(-> @Array<Int>) requires(true) ensures(true) effects(pure) {
   [10, 20, 30]
 }
 
@@ -1681,7 +1681,7 @@ public fn g(-> @Int) requires(true) ensures(true) effects(pure) {
     def test_sort_by_user_fn_arg(self) -> None:
         """array_sort_by(mk(), asc)[0] -> 10 (pin)."""
         src = """
-fn mk(-> @Array<Int>) requires(true) ensures(true) effects(pure) {
+private fn mk(-> @Array<Int>) requires(true) ensures(true) effects(pure) {
   [30, 10, 20]
 }
 
@@ -1699,7 +1699,7 @@ public fn g(-> @Int) requires(true) ensures(true) effects(pure) {
         """array_flatten(mkn()) — user fn returning Array<Array<Int>>.
         Dropped at the input-shape gate before the nested-return recovery."""
         src = """
-fn mkn(-> @Array<Array<Int>>) requires(true) ensures(true) effects(pure) {
+private fn mkn(-> @Array<Array<Int>>) requires(true) ensures(true) effects(pure) {
   [[10, 20], [30, 40]]
 }
 
@@ -1714,7 +1714,7 @@ public fn g(-> @Int) requires(true) ensures(true) effects(pure) {
         """array_flatten(mkn())[2] -> 30 — the indexed form exercises the
         index-side derivation through the same nested-return recovery."""
         src = """
-fn mkn(-> @Array<Array<Int>>) requires(true) ensures(true) effects(pure) {
+private fn mkn(-> @Array<Array<Int>>) requires(true) ensures(true) effects(pure) {
   [[10, 20], [30, 40]]
 }
 
@@ -1887,7 +1887,7 @@ class TestGenericAliasContainerArg:
         src = """
 type MyMap<V> = Map<String, V>;
 
-fn mk(-> @MyMap<Int>) requires(true) ensures(true) effects(pure) {
+private fn mk(-> @MyMap<Int>) requires(true) ensures(true) effects(pure) {
   map_insert(map_new(), "abcde", 99)
 }
 
@@ -1904,7 +1904,7 @@ public fn g(-> @Int) requires(true) ensures(true) effects(pure) {
         src = """
 type MyMap<V> = Map<String, V>;
 
-fn mk(-> @MyMap<Int>) requires(true) ensures(true) effects(pure) {
+private fn mk(-> @MyMap<Int>) requires(true) ensures(true) effects(pure) {
   map_insert(map_new(), "k", 8589934597)
 }
 
@@ -2105,8 +2105,6 @@ class TestCompoundArrays:
     def test_option_array_some(self) -> None:
         """Array<Option<Int>> — construct and index Some element."""
         src = """
-private data Option<T> { None, Some(T) }
-
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
   let @Array<Option<Int>> = [Some(10), None, Some(30)];
   match @Array<Option<Int>>.0[0] {
@@ -2120,8 +2118,6 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
     def test_option_array_none(self) -> None:
         """Array<Option<Int>> — index None element."""
         src = """
-private data Option<T> { None, Some(T) }
-
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
   let @Array<Option<Int>> = [Some(10), None, Some(30)];
   match @Array<Option<Int>>.0[1] {
@@ -2135,8 +2131,6 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
     def test_option_array_index_2(self) -> None:
         """Array<Option<Int>> — index third element."""
         src = """
-private data Option<T> { None, Some(T) }
-
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
   let @Array<Option<Int>> = [Some(10), None, Some(30)];
   match @Array<Option<Int>>.0[2] {
@@ -2150,8 +2144,6 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
     def test_option_array_length(self) -> None:
         """array_length() on Array<Option<Int>>."""
         src = """
-private data Option<T> { None, Some(T) }
-
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
   let @Array<Option<Int>> = [Some(1), None, Some(3), None];
   array_length(@Array<Option<Int>>.0)
@@ -2285,8 +2277,6 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
     def test_result_array(self) -> None:
         """Array<Result<Int, String>> — construct and match on indexed element."""
         src = """
-private data Result<T, E> { Ok(T), Err(E) }
-
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
   let @Array<Result<Int, String>> = [Ok(42), Err("bad")];
   match @Array<Result<Int, String>>.0[0] {
@@ -2300,8 +2290,6 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
     def test_result_array_err(self) -> None:
         """Array<Result<Int, String>> — index Err element."""
         src = """
-private data Result<T, E> { Ok(T), Err(E) }
-
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
   let @Array<Result<Int, String>> = [Ok(42), Err("bad")];
   match @Array<Result<Int, String>>.0[1] {

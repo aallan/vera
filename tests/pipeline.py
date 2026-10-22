@@ -60,22 +60,12 @@ emitter, obligation, function, path or prelude: the one way a test asks
 whether a module holds a check.  The WAT text answers how a check is
 rendered.
 
-Three options name the configurations the CLI never runs, which some suites
-measure on purpose:
-
-- ``compile(..., checked=False)`` (and ``run``) generates code from the
-  parsed program alone, with no resolution, no type check and none of the
-  checker's tables, which is how the code-generation suites drive code
-  generation: their programs need not type-check.
-- ``verify(..., past_check=True)`` and ``compile(..., past_check=True)``
-  verify, or generate code for, a program the check refused, with the
-  tables that check collected: a test of what the verifier or code
-  generation does with a program the checker refuses (that the verifier
-  does not crash on one, or a code-generation refusal that sits behind a
-  check refusal).
-- ``check``'s *collect_module_artifacts* collects each imported module's own
-  tables, as ``vera verify``, ``compile`` and ``run`` do and ``vera check``
-  does not.
+Every stage after the check runs on a program the check accepts, as the
+commands do: for a program the check refuses, ``verify``, ``compile``, ``run``
+and ``contract_test`` stop at the check, and reading what they did not make
+raises :class:`StageFailed` naming the check's errors.  ``check``'s
+*collect_module_artifacts* collects each imported module's own tables, as
+``vera verify``, ``compile`` and ``run`` do and ``vera check`` does not.
 
 ``tests/checker_helpers.py``, ``tests/verifier_helpers.py``,
 ``tests/codegen_helpers.py`` and ``tests/module_fixture_helpers.py`` keep
@@ -468,9 +458,9 @@ def check(
 
 @dataclass(frozen=True)
 class Verified:
-    """``check``, then contract verification when the check passed (or
-    past it, with ``past_check``), and, with ``reconcile``, the compile and
-    the join ``vera verify`` adds by default."""
+    """``check``, then contract verification when the check passed, and,
+    with ``reconcile``, the compile and the join ``vera verify`` adds by
+    default."""
 
     checked: Checked
     #: The budget each solver query had, as the caller gave it.
@@ -481,8 +471,7 @@ class Verified:
 
     @property
     def ran(self) -> bool:
-        """Whether verification ran: it does not when the check refused,
-        unless asked to run past it."""
+        """Whether verification ran: it does not when the check refused."""
         return self._result is not None
 
     @property
@@ -542,7 +531,6 @@ def verify(
     root: Path | None = None,
     modules: Sequence[ResolvedModule] | None = None,
     timeout_ms: int | None = None,
-    past_check: bool = False,
     budget_s: float | None = None,
     reconcile: bool = False,
 ) -> Verified:
@@ -551,18 +539,16 @@ def verify(
 
     Verification runs only on a program the check accepts, with the
     checker's tables for the program and for each module it imports.  With
-    ``past_check=True`` it runs on a program the check refuses too, with the
-    tables that check collected.  With ``reconcile=True`` the program is
-    then compiled with the same tables and its records joined with the
-    module's checks, and the stage's diagnostics and envelope are the
-    command's default ones.
+    ``reconcile=True`` the program is then compiled with the same tables and
+    its records joined with the module's checks, and the stage's diagnostics
+    and envelope are the command's default ones.
     """
     with _budget(budget_s):
         checked = check(
             source, file=file, root=root, modules=modules,
             collect_module_artifacts=True,
         )
-        if not checked.parsed.ok or (not checked.ok and not past_check):
+        if not checked.ok:
             return Verified(checked, timeout_ms, None)
         artifacts = checked.artifacts
         result = _verify_program(
@@ -690,11 +676,11 @@ def checks(
 
 @dataclass(frozen=True)
 class Compiled:
-    """``check`` (or ``parse`` alone, unchecked), then code generation."""
+    """``check``, then code generation."""
 
     parsed: Parsed
-    #: The check, or ``None`` for an unchecked compile.
-    checked: Checked | None
+    #: The check.
+    checked: Checked
     _result: CompileResult | None
     #: The generator that built the module, for a test that reads what it
     #: registered; ``None`` when code generation did not run.
@@ -705,7 +691,6 @@ class Compiled:
         """The compiled module; raises what stopped the check, if it did."""
         if self._result is None:
             _raise_front_end_error(self.parsed)
-            assert self.checked is not None
             raise StageFailed(
                 "code generation did not run: the check reported "
                 + _describe(self.checked.errors))
@@ -714,10 +699,8 @@ class Compiled:
     @property
     def diagnostics(self) -> tuple[Diagnostic, ...]:
         """The check's diagnostics, then code generation's."""
-        front = (self.checked.diagnostics if self.checked is not None
-                 else self.parsed.diagnostics)
         own = tuple(self._result.diagnostics) if self._result is not None else ()
-        return front + own
+        return self.checked.diagnostics + own
 
     @property
     def errors(self) -> tuple[Diagnostic, ...]:
@@ -729,8 +712,8 @@ class Compiled:
 
     @property
     def ok(self) -> bool:
-        """The check accepted the program (when it ran), and code generation
-        ran and reported no error."""
+        """The check accepted the program, and code generation ran and
+        reported no error."""
         return self._result is not None and not self.errors
 
     @property
@@ -768,7 +751,7 @@ class Compiled:
         module's exports."""
         label = self.parsed.file
         if self._result is None:
-            if self.checked is None or not self.parsed.ok:
+            if not self.parsed.ok:
                 return diagnostics_envelope(label, self.parsed.diagnostics, ())
             return self.checked.envelope()
         result = self._result
@@ -788,47 +771,29 @@ def compile(
     file: str | None = None,
     root: Path | None = None,
     modules: Sequence[ResolvedModule] | None = None,
-    checked: bool = True,
-    past_check: bool = False,
     budget_s: float | None = None,
 ) -> Compiled:
     """Check *source*, then compile it, as ``vera compile`` does.
 
     Code generation runs only on a program the check accepts, with the
-    checker's tables for the program and each module it imports.  With
-    ``past_check=True`` it runs on a program the check refuses too, with the
-    tables that check collected, so a code-generation refusal behind a
-    check refusal is still driven.  With ``checked=False`` it runs on the
-    parsed program alone (and *modules*, if given): no resolution, no check
-    and no tables.
+    checker's tables for the program and each module it imports.
     """
     with _budget(budget_s):
-        front: Checked | None
-        if checked:
-            front = check(
-                source, file=file, root=root, modules=modules,
-                collect_module_artifacts=True,
-            )
-            parsed = front.parsed
-            if not parsed.ok or (not front.ok and not past_check):
-                return Compiled(parsed, front, None, None)
-            artifacts = front.artifacts
-            generator = CodeGenerator(
-                source=parsed.source, file=parsed.file,
-                resolved_modules=front.resolved,
-                expr_semantic_types=artifacts.expr_semantic_types,
-                expr_target_types=artifacts.expr_target_types,
-                module_artifacts=artifacts.module_artifacts,
-            )
-        else:
-            front = None
-            parsed = parse(source, file=file)
-            if not parsed.ok:
-                return Compiled(parsed, None, None, None)
-            generator = CodeGenerator(
-                source=parsed.source, file=parsed.file,
-                resolved_modules=list(modules) if modules is not None else None,
-            )
+        front = check(
+            source, file=file, root=root, modules=modules,
+            collect_module_artifacts=True,
+        )
+        parsed = front.parsed
+        if not front.ok:
+            return Compiled(parsed, front, None, None)
+        artifacts = front.artifacts
+        generator = CodeGenerator(
+            source=parsed.source, file=parsed.file,
+            resolved_modules=front.resolved,
+            expr_semantic_types=artifacts.expr_semantic_types,
+            expr_target_types=artifacts.expr_target_types,
+            module_artifacts=artifacts.module_artifacts,
+        )
         result = generator.compile_program(parsed.program)
         assert_no_orphan_call_indirect(result.wat)
         return Compiled(parsed, front, result, generator)
@@ -862,8 +827,6 @@ class Ran:
         """The errors of the stage that refused the program."""
         assert self.compiled is not None
         if self.compiled._result is None:
-            if self.compiled.checked is None:
-                return self.compiled.parsed.diagnostics
             return self.compiled.checked.errors
         return _errors(self.compiled._result.diagnostics)
 
@@ -942,7 +905,6 @@ def run(
     file: str | None = None,
     root: Path | None = None,
     modules: Sequence[ResolvedModule] | None = None,
-    checked: bool = True,
     raw_args: list[str] | None = None,
     initial_state: dict[str, int | float] | None = None,
     stdin: str | None = None,
@@ -956,7 +918,7 @@ def run(
     """Compile *target* (unless it is compiled already) and call *fn*.
 
     *target* is source text, a path, or a module :func:`compile` (or
-    ``vera.codegen.compile``) built.  The keyword arguments after *checked*,
+    ``vera.codegen.compile``) built.  The keyword arguments after *modules*,
     bar *budget_s*, are :func:`vera.codegen.execute`'s own.
     ``capture_stderr`` is on, as ``vera run`` has it, so a program's
     ``IO.stderr`` is the result's :attr:`Ran.stderr`; off, it reaches
@@ -969,8 +931,7 @@ def run(
         elif isinstance(target, CompileResult):
             compiled, module = None, target
         else:
-            compiled = compile(target, file=file, root=root, modules=modules,
-                               checked=checked)
+            compiled = compile(target, file=file, root=root, modules=modules)
             module = compiled._result
         if compiled is not None and not compiled.ok:
             return Ran(compiled, None, fn, None, None)

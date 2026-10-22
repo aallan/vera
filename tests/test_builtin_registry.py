@@ -769,15 +769,17 @@ def test_the_call_is_the_site_of_its_checks(spec: BuiltinSpec) -> None:
 @pytest.mark.parametrize("name", sorted(INTRINSICS))
 def test_a_call_at_another_arity_is_an_ordinary_call(name: str) -> None:
     """The dispatch lowers a name in place only at its record's arity: one
-    argument more falls through to the ordinary call, which code generation
-    without the checker's tables skips as a call to no function (E602)."""
+    argument more is a call to no function of that arity, which the check
+    refuses (E201, or E240 for an ability's operation), so code generation
+    never meets it."""
     intrinsic = INTRINSICS[name]
     args = ", ".join(["1"] * (intrinsic.arity + 1))
     source = _fn_source("probe", "@Unit", "Int", "effects(pure)", f"{name}({args})")
-    compiled = pipeline.compile(source, checked=False)
-    skips = [d for d in compiled.diagnostics if d.error_code == "E602"]
-    assert len(skips) == 1, [(d.error_code, d.description) for d in compiled.diagnostics]
-    assert f"call target {name!r} not registered" in skips[0].description
+    errors = pipeline.check(source).errors
+    refusals = [d for d in errors if d.error_code in ("E201", "E240")]
+    assert len(refusals) == 1, [(d.error_code, d.description) for d in errors]
+    assert (f"{name!r} expects {intrinsic.arity} argument(s), got "
+            f"{intrinsic.arity + 1}") in refusals[0].description
 
 
 # ---------------------------------------------------------------------
@@ -1601,7 +1603,7 @@ def test_the_prelude_records_are_the_prelude_bodies() -> None:
     """A `Prelude` record's arity, and a non-generic one's types, are its body's."""
     from vera import prelude
 
-    from vera.ast import FnDecl, format_type_expr
+    from vera.ast import FnDecl, format_type
 
     bodies: dict[str, FnDecl] = {}
     for block in (prelude._OPTION_COMBINATORS, prelude._RESULT_COMBINATORS,
@@ -1611,7 +1613,7 @@ def test_the_prelude_records_are_the_prelude_bodies() -> None:
                 bodies[tld.decl.name] = tld.decl
 
     def written(te: Any) -> str:
-        return format_type_expr(te).replace("@", "")
+        return format_type(te)
 
     prelude_specs = [spec for spec in _ALL if isinstance(spec.lowering, Prelude)]
     assert {s.name for s in prelude_specs} == prelude.overridable_builtin_names()

@@ -1226,52 +1226,68 @@ def test_a_handler_declares_its_body_families_before_its_clauses() -> None:
 
 
 _UNSUPPORTED_CELLS = """\
-private fn probe(@Unit -> @Int)
+private forall<A, B> fn probe(@A, @B -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
 {
   handle[Exn<Int>] {
     throw(@Int) -> {
-      handle[State<String>](@String = "a") {
-        get(@Unit) -> { resume(@String.0) },
-        put(@String) -> { resume(()) }
+      handle[State<A>](@A = @A.0) {
+        get(@Unit) -> { resume(@A.0) },
+        put(@A) -> { resume(()) }
       } in {
         @Int.0
       }
     }
   } in {
-    handle[State<Array<Int>>](@Array<Int> = [1]) {
-      get(@Unit) -> { resume(@Array<Int>.0) },
-      put(@Array<Int>) -> { resume(()) }
+    handle[State<B>](@B = @B.0) {
+      get(@Unit) -> { resume(@B.0) },
+      put(@B) -> { resume(()) }
     } in {
       3
     }
   }
 }
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  probe("a", [1])
+}
 """
 
 _UNSUPPORTED_PAYLOADS = """\
-private fn probe(@Unit -> @Int)
+private forall<A> fn probe(@A -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
 {
   handle[Exn<Int>] {
     throw(@Int) -> {
-      handle[Exn<Unit>] {
-        throw(@Unit) -> { 0 }
+      handle[Exn<A>] {
+        throw(@A) -> { 0 }
       } in {
         @Int.0
       }
     }
   } in {
-    handle[Exn<Unit>] {
-      throw(@Unit) -> { 1 }
+    handle[Exn<A>] {
+      throw(@A) -> { 1 }
     } in {
       3
     }
   }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  probe(())
 }
 """
 
@@ -1279,13 +1295,13 @@ private fn probe(@Unit -> @Int)
 def test_the_unsupported_cell_named_is_the_body_s() -> None:
     """A handler whose clause and body each hold a `State` cell (E607) or
     an `Exn` payload (E612) the backend cannot compile: the diagnostic names
-    the body's, the first the walk meets.  Compiled unchecked, as the
-    checker refuses both types where they are written (E340); a generic
-    clone instantiated at one is how a checked program reaches here."""
+    the body's, the first the walk meets.  The checker refuses both types
+    where they are written (E340), so each is a generic clone's, the
+    instantiation that reaches here from a program the check accepts."""
     for source, code, body in (
-            (_UNSUPPORTED_CELLS, "E607", "handle[State<Array<Int>>]"),
-            (_UNSUPPORTED_PAYLOADS, "E612", "handle[Exn<Unit>] {\n      throw(@Unit) -> { 1 }")):
-        result = pipeline.compile(source, checked=False).result
+            (_UNSUPPORTED_CELLS, "E607", "handle[State<B>]"),
+            (_UNSUPPORTED_PAYLOADS, "E612", "handle[Exn<A>] {\n      throw(@A) -> { 1 }")):
+        result = pipeline.compile(source).result
         named = [d.location.line for d in result.diagnostics if d.error_code == code]
         assert named == [_line_of(source, body)], (code, named)
 
@@ -1353,8 +1369,7 @@ def test_a_handler_s_body_closures_report_before_its_clauses() -> None:
     signature derivation the pre-scans walk, which met the clause's closure
     first while they were hand walks; E617 (a predicate calling a generic
     function) is reported where the closure is lowered, which met the
-    body's first all along.  Compiled unchecked, as the module tests of
-    both codes are."""
+    body's first all along.  The check accepts both programs."""
     for source, code, clause_line, body_line in (
             (_NESTED_BASES, "E618",
              _line_of(_NESTED_BASES, "let @TinyFn"),
@@ -1362,7 +1377,7 @@ def test_a_handler_s_body_closures_report_before_its_clauses() -> None:
             (_GENERIC_PREDICATES, "E617",
              _line_of(_GENERIC_PREDICATES, "type Checked = "),
              _line_of(_GENERIC_PREDICATES, "type Checked2 = "))):
-        result = pipeline.compile(source, checked=False).result
+        result = pipeline.compile(source).result
         reported = [d.location.line for d in result.diagnostics if d.error_code == code]
         assert reported == [body_line, clause_line], (code, reported)
 
