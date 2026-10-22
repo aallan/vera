@@ -23,6 +23,8 @@ The cells here hold those two properties:
 """
 from __future__ import annotations
 
+from vera.typed import build as build_typed
+
 import json
 from collections import Counter
 from pathlib import Path
@@ -262,10 +264,7 @@ def test_a_dropped_function_takes_its_checks_with_it() -> None:
     program = parse_to_ast(source)
     _diags, arts = typecheck_with_artifacts(program, source, file="d.vera")
     result = codegen_compile(
-        program, source=source, file="d.vera",
-        expr_semantic_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-    )
+        build_typed(program, [], arts), source=source, file="d.vera")
     assert "g" not in result.exports and "h" in result.exports
     div = _by_emitter(result, "wasm/operators.py:_translate_binary")
     assert [c.function for c in div] == ["h"], div
@@ -523,14 +522,14 @@ def _marked(body: str) -> str:
 
 
 def test_a_marker_naming_no_entry_is_an_invariant_error() -> None:
-    generator = CodeGenerator(source="", file="x.vera")
+    generator = CodeGenerator(pipeline.typed(), source="", file="x.vera")
     with pytest.raises(CodegenInvariantError, match="names no entry"):
         generator._assemble_emitted_checks(
             _marked("    i64.div_s (;vera-check:424242;)"))
 
 
 def test_a_marker_outside_every_function_is_an_invariant_error() -> None:
-    generator = CodeGenerator(source="", file="x.vera")
+    generator = CodeGenerator(pipeline.typed(), source="", file="x.vera")
     generator._emitted_checks[424243] = (
         "wasm/operators.py:_translate_binary", None, ())
     with pytest.raises(CodegenInvariantError, match="outside every function"):
@@ -581,10 +580,7 @@ def test_a_stubbed_closure_takes_its_checks_with_it() -> None:
     program = parse_to_ast(source)
     _diags, arts = typecheck_with_artifacts(program, source, file="d.vera")
     result = codegen_compile(
-        program, source=source, file="d.vera",
-        expr_semantic_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-    )
+        build_typed(program, [], arts), source=source, file="d.vera")
     assert "(func $anon_0 unreachable)" in result.wat, (
         "the fixture no longer produces a stubbed closure")
     div = _by_emitter(result, "wasm/operators.py:_translate_binary")

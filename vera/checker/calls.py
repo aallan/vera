@@ -2308,6 +2308,18 @@ class CallsMixin:
                 if (isinstance(c_arg, ast.ConstructorCall)
                         and c_arg.name != "Tuple"):
                     self._record_nested_ctor_targets(c_arg, recorded)
+        # #1679: the same gap fill in the table by node identity, which the
+        # typed program reads.
+        if self.node_target_types is not None:
+            for c_arg, c_ft in zip(expr.args, field_types):
+                if c_arg.node_id is None or contains_typevar(c_ft):
+                    continue
+                recorded = self.node_target_types.setdefault(
+                    c_arg.node_id, c_ft)
+                if (isinstance(c_arg, ast.ConstructorCall)
+                        and c_arg.name != "Tuple"):
+                    self._record_nested_ctor_targets(
+                        c_arg, recorded, by_identity=True)
 
         for i, (arg_ty, field_ty) in enumerate(zip(arg_types, field_types)):
             if arg_ty is None or isinstance(arg_ty, UnknownType):
@@ -2460,7 +2472,8 @@ class CallsMixin:
             self._reported_reserved_type_refs = reserved
 
     def _record_nested_ctor_targets(
-        self, ctor: ast.ConstructorCall, target: Type,
+        self, ctor: ast.ConstructorCall, target: Type, *,
+        by_identity: bool = False,
     ) -> None:
         """Carry a target recorded for a constructor application DOWN to
         its own arguments (#1503).
@@ -2479,7 +2492,9 @@ class CallsMixin:
         `Tuple` carrier is left alone: its readers take a component's target
         from the tuple's own node, which the parent has just recorded.
         """
-        if self.expr_target_types is None:
+        table: dict[typing.Any, Type] | None = (
+            self.node_target_types if by_identity else self.expr_target_types)
+        if table is None:
             return
         info = self.env.lookup_constructor(ctor.name)
         base = base_type(target)
@@ -2492,12 +2507,13 @@ class CallsMixin:
         mapping = dict(zip(info.parent_type_params, base.type_args))
         for arg, field_ty in zip(ctor.args, info.field_types):
             instantiated = substitute(field_ty, mapping)
-            key = ast.span_key(arg)
+            key: object = arg.node_id if by_identity else ast.span_key(arg)
             if key is None or contains_typevar(instantiated):
                 continue
-            recorded = self.expr_target_types.setdefault(key, instantiated)
+            recorded = table.setdefault(key, instantiated)
             if isinstance(arg, ast.ConstructorCall) and arg.name != "Tuple":
-                self._record_nested_ctor_targets(arg, recorded)
+                self._record_nested_ctor_targets(
+                    arg, recorded, by_identity=by_identity)
 
     def _check_tuple_constructor(
         self, expr: ast.ConstructorCall, *,

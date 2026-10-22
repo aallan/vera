@@ -659,15 +659,9 @@ def test_compile_builds_the_module_vera_codegen_compile_builds() -> None:
     """The stage builds its own generator, to hand it back; the module it
     builds is the one the public function builds from the same tables."""
     path = EXAMPLES / "modules.vera"
-    checked = pipeline.check(path, collect_module_artifacts=True)
-    artifacts = checked.artifacts
+    checked = pipeline.check(path)
     expected = codegen_compile(
-        checked.program, source=checked.source, file=checked.file,
-        resolved_modules=checked.resolved,
-        expr_semantic_types=artifacts.expr_semantic_types,
-        expr_target_types=artifacts.expr_target_types,
-        module_artifacts=artifacts.module_artifacts,
-    )
+        checked.typed, source=checked.source, file=checked.file)
     built = pipeline.compile(path)
     assert built.generator is not None
     assert built.wat == expected.wat

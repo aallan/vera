@@ -99,7 +99,7 @@ def _both_oracles(source: str, declared: str) -> tuple[bool, bool]:
     declared_te = next(d for d in decls if d.name == "h").params[0]
     source_te = next(d for d in decls if d.name == "f").params[0]
 
-    verifier = ContractVerifier(source=text)
+    verifier = ContractVerifier(checked.typed, source=text)
     verifier._register_all(program)
     alias_env = alias_env_from_environment(verifier.env)
 

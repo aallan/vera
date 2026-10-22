@@ -1147,7 +1147,7 @@ def checker_clone_type_name(
     Returns ``None`` when there is no table, no entry for this node, or a type
     with no clone-name spelling (a still-generic ``TypeVar``, a function type,
     the checker's unknown) — in which case the caller is exactly as informed as
-    it was before, and [E622] reports the hole rather than guessing at it.
+    it was before.
     """
     if table is None:
         return None

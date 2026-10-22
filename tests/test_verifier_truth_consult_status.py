@@ -572,7 +572,8 @@ def test_the_disclosure_rerun_iterates_to_a_fixpoint(tmp_path: Path) -> None:
 
     source = "public fn f(@Int -> @Int)\n  requires(true) ensures(true) effects(pure)\n{ @Int.0 }\n"
     program = _program_ast(source)
-    verifier = ContractVerifier(source=source, file="f.vera")
+    verifier = ContractVerifier(
+        pipeline.typed(source, file="f.vera"), source=source, file="f.vera")
 
     # {} -> {a} -> {a, b} -> {a, b}: two growths, then a repeat that settles.
     sequence = [
@@ -621,7 +622,8 @@ def test_the_disclosure_rerun_does_not_run_when_nothing_is_disclosed(
 
     source = "public fn f(@Int -> @Int)\n  requires(true) ensures(true) effects(pure)\n{ @Int.0 }\n"
     program = _program_ast(source)
-    verifier = ContractVerifier(source=source, file="f.vera")
+    verifier = ContractVerifier(
+        pipeline.typed(source, file="f.vera"), source=source, file="f.vera")
 
     passes: list[object] = []
     verifier._disclosed_fn_names = lambda: frozenset()  # type: ignore[method-assign]
@@ -812,7 +814,8 @@ public fn f(@Nat -> @Int)
 
     from vera.verifier import ContractVerifier
 
-    verifier = ContractVerifier(source=source, file="f.vera")
+    verifier = ContractVerifier(
+        pipeline.typed(source, file="f.vera"), source=source, file="f.vera")
     assert verifier._call_arg_nat_guarded("nat_to_int", arg) is True, (
         "the verifier's `guarded` claim disagrees with the guard code "
         "generation emits for the same argument"

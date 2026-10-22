@@ -21,9 +21,7 @@ import tempfile
 from pathlib import Path
 
 from vera.codegen import compile
-from vera.parser import parse_file
 from vera.skip import CodegenInvariantError
-from vera.transform import transform
 from vera.wasm import WasmContext
 from tests import pipeline
 
@@ -127,21 +125,23 @@ def test_closure_body_invariant_error_surfaces_as_e699(monkeypatch) -> None:
         f.write(closure_prog)
         path = f.name
     try:
-        program = transform(parse_file(path))
-        anon = _find_anon_fn(program)
+        typed = pipeline.typed(closure_prog, file=path)
+        anon = _find_anon_fn(typed.program)
         assert anon is not None, "test program must contain a closure"
         closure_body = anon.body
 
         original_translate_block = WasmContext.translate_block
 
         def _boom(self, block, env):
-            if block is closure_body:
+            # By identity, which the link keeps (#1679): code generation
+            # translates the linked program's copy of the closure.
+            if block.node_id == closure_body.node_id:
                 raise CodegenInvariantError(
                     "forced closure-body invariant (#657 test)", None)
             return original_translate_block(self, block, env)
 
         monkeypatch.setattr(WasmContext, "translate_block", _boom)
-        result = compile(program, source=closure_prog, file=path)
+        result = compile(typed, source=closure_prog, file=path)
     finally:
         Path(path).unlink()
 

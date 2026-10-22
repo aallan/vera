@@ -382,15 +382,12 @@ public fn main(@Unit -> @Int)
             for stem in ("deep", "mid")
         ]
         mainp = tmp_path / "main.vera"
-        gen = CodeGenerator(
-            source=self._MAIN_LOUD, file=str(mainp), resolved_modules=mods,
-        )
-        gen.compile_program(parse_to_ast(self._MAIN_LOUD))
+        typed = pipeline.typed(self._MAIN_LOUD, file=str(mainp), modules=mods)
+        gen = CodeGenerator(typed, source=self._MAIN_LOUD, file=str(mainp))
+        gen.compile_program()
         codegen_set = set(getattr(gen, "_emitted_instances", set()))
-        verifier = ContractVerifier(
-            source=self._MAIN_LOUD, file=str(mainp), resolved_modules=mods,
-        )
-        verifier.register_program(parse_to_ast(self._MAIN_LOUD))
+        verifier = ContractVerifier(typed, source=self._MAIN_LOUD, file=str(mainp))
+        verifier.register_program(typed.program)
         verifier_set = {
             (n, ct) for n, cts in verifier._instances.items() for ct in cts
         }
@@ -617,15 +614,12 @@ public fn main(@Unit -> @Int)
         resolved = ModuleResolver(_root=tmp_path).resolve_imports(
             program, mainp,
         )
-        gen = CodeGenerator(
-            source=self._MAIN, file=str(mainp), resolved_modules=resolved,
-        )
-        gen.compile_program(parse_to_ast(self._MAIN))
+        typed = pipeline.typed(self._MAIN, file=str(mainp), modules=resolved)
+        gen = CodeGenerator(typed, source=self._MAIN, file=str(mainp))
+        gen.compile_program()
         codegen_set = set(getattr(gen, "_emitted_instances", set()))
-        verifier = ContractVerifier(
-            source=self._MAIN, file=str(mainp), resolved_modules=resolved,
-        )
-        verifier.register_program(parse_to_ast(self._MAIN))
+        verifier = ContractVerifier(typed, source=self._MAIN, file=str(mainp))
+        verifier.register_program(typed.program)
         verifier_set = {
             (n, ct) for n, cts in verifier._instances.items() for ct in cts
         }
@@ -723,15 +717,12 @@ public fn main(@Unit -> @Int)
             path=("lib",), file_path=libp,
             program=parse_to_ast(self._LIB), source=self._LIB,
         )
-        gen = CodeGenerator(
-            source=main_src, file=str(mainp), resolved_modules=[mod],
-        )
-        gen.compile_program(parse_to_ast(main_src))
+        typed = pipeline.typed(main_src, file=str(mainp), modules=[mod])
+        gen = CodeGenerator(typed, source=main_src, file=str(mainp))
+        gen.compile_program()
         codegen_set = set(getattr(gen, "_emitted_instances", set()))
-        verifier = ContractVerifier(
-            source=main_src, file=str(mainp), resolved_modules=[mod],
-        )
-        verifier.register_program(parse_to_ast(main_src))
+        verifier = ContractVerifier(typed, source=main_src, file=str(mainp))
+        verifier.register_program(typed.program)
         verifier_set = {
             (n, ct) for n, cts in verifier._instances.items() for ct in cts
         }

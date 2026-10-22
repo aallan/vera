@@ -1071,7 +1071,6 @@ ERROR_CODES: dict[str, str] = {
     "E618": "Nested refinement base unsupported",
     "E619": "Cannot infer type argument for ability-constrained parameter",
     "E620": "Function dropped: skipped callee or no function table",
-    "E622": "Cannot infer a generic call's type argument",
     "E699": "Internal compiler error",
     # E7xx — Testing
     "E700": "Contract violation during testing",

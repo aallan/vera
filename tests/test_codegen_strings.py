@@ -4,6 +4,8 @@ Split from tests/test_codegen.py (#419). Shared helpers live in tests/codegen_he
 """
 from __future__ import annotations
 
+from tests import pipeline
+
 import json
 
 import pytest
@@ -13,8 +15,6 @@ from vera.codegen import (
     execute,
 )
 from vera.codegen.api import WasmTrapError
-from vera.parser import parse_file
-from vera.transform import transform
 
 from tests.codegen_helpers import (
     _assert_no_host_imports_for_inline_builtins,
@@ -99,9 +99,8 @@ public fn main(@Unit -> @Unit)
         from pathlib import Path
         example_path = Path(__file__).parent.parent / "examples" / "hello_world.vera"
         source = example_path.read_text(encoding="utf-8")
-        tree = parse_file(str(example_path))
-        ast = transform(tree)
-        result = compile(ast, source=source, file=str(example_path))
+        result = compile(
+            pipeline.check(example_path).typed, source=source, file=str(example_path))
         assert result.ok
         exec_result = execute(result, fn_name="main")
         assert exec_result.stdout == "Hello, World!"

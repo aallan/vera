@@ -470,7 +470,7 @@ The spec defines three verification tiers. The compiler implements Tiers 1 and 3
 | **2** | Extended: quantifiers, function call reasoning, array access | Z3 with hints/timeouts | Not implemented |
 | **3** | Everything else | Runtime assertion fallback | Warning emitted |
 
-When a contract or function body contains constructs that can't be translated to Z3, the verifier **does not error** — it classifies the contract as Tier 3 and emits a warning. So an untranslatable construct never fails verification on its own; a program can still be refused for something verification must know first, such as a generic call's type argument (`E622`, see Design Pattern 4).
+When a contract or function body contains constructs that can't be translated to Z3, the verifier **does not error** — it classifies the contract as Tier 3 and emits a warning. So an untranslatable construct never fails verification on its own.
 
 ### Verification condition generation
 
@@ -736,7 +736,7 @@ The type checker and verifier never stop at the first error. All diagnostics are
 
 ### 4. Tiered verification with graceful degradation
 
-`SmtContext.translate_expr()` returns `None` for any construct it can't handle. The verifier interprets `None` as "Tier 3: warn and assume runtime check". This means an untranslatable CONTRACT never fails verification — a predicate Z3 cannot prove gets a warning and a runtime guard, not an error. It is a statement about the SMT translation, not a blanket guarantee that verification accepts every type-checking program: a program can still be refused for something verification must know before it can tier anything, and `E622` is that shape — a generic call whose type argument no walker could name has no determined specialisation to verify, so it is refused rather than tiered against a guess. As the SMT translation grows (Tier 2, quantifiers, etc.), constructs graduate from Tier 3 to Tier 1.
+`SmtContext.translate_expr()` returns `None` for any construct it can't handle. The verifier interprets `None` as "Tier 3: warn and assume runtime check". This means an untranslatable CONTRACT never fails verification — a predicate Z3 cannot prove gets a warning and a runtime guard, not an error. It is a statement about the SMT translation, not a blanket guarantee that verification accepts every type-checking program. As the SMT translation grows (Tier 2, quantifiers, etc.), constructs graduate from Tier 3 to Tier 1.
 
 The same pattern applies to code generation: `WasmContext.translate_expr()` returns `None` for unsupported expressions, and the code generator skips those functions with a warning. As codegen support grows, more functions become compilable.
 

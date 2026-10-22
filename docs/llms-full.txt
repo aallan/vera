@@ -3818,7 +3818,6 @@ Diagnostics carry stable codes, grouped by compiler phase; the list after the ta
 - **E618**: Nested refinement base unsupported
 - **E619**: Cannot infer type argument for ability-constrained parameter
 - **E620**: Function dropped: skipped callee or no function table
-- **E622**: Cannot infer a generic call's type argument
 - **E699**: Internal compiler error
 - **E700**: Contract violation during testing
 - **E701**: Cannot generate test inputs

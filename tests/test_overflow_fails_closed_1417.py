@@ -24,6 +24,10 @@ and would prove nothing.
 
 from __future__ import annotations
 
+import dataclasses
+
+from vera.typed import build as build_typed
+
 import pytest
 
 from tests.pipeline import checks
@@ -55,14 +59,11 @@ def _compiled(*, semantic_types: dict | None = None):
     diags, arts = typecheck_with_artifacts(program, _ADD,
                                            collect_module_artifacts=True)
     assert not [d for d in diags if d.severity == "error"], diags
-    return compile(
-        program,
-        source=_ADD,
-        expr_semantic_types=(arts.expr_semantic_types
-                             if semantic_types is None else semantic_types),
-        expr_target_types=arts.expr_target_types,
-        module_artifacts=arts.module_artifacts,
-    )
+    typed = build_typed(program, [], arts)
+    if semantic_types is not None:
+        # The cell's own fault: the table the guards read, replaced.
+        typed = dataclasses.replace(typed, semantic=semantic_types)
+    return compile(typed, source=_ADD)
 
 
 def _wat(*, semantic_types: dict | None = None) -> str:
@@ -243,11 +244,7 @@ def test_the_verifier_fails_closed_on_the_same_answer(
     assert not [d for d in diags if d.severity == "error"], diags
     from vera.verifier import verify
 
-    result = verify(
-        program, _ADD,
-        expr_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-    )
+    result = verify(build_typed(program, [], arts), _ADD)
     kinds = [o.kind for o in result.obligations]
     assert "int_overflow" in kinds, (
         f"the verifier dropped the overflow obligation for operands it "

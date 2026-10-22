@@ -1506,7 +1506,6 @@ def test_the_guard_pre_scan_sees_the_element_predicate(
     """
     from vera import ast
     from vera.codegen.core import CodeGenerator
-    from vera.parser import parse_to_ast
 
     source = (
         "type PosInt = { @Int | @Int.0 > 0 };\n\n"
@@ -1514,9 +1513,10 @@ def test_the_guard_pre_scan_sees_the_element_predicate(
         "  requires(true)\n  ensures(true)\n  effects(pure)\n"
         "{\n  array_length(@Array<PosInt>.0)\n}\n"
     )
-    program = parse_to_ast(source)
-    gen = CodeGenerator(source)
-    gen.compile_program(program)
+    typed = pipeline.typed(source)
+    program = typed.program
+    gen = CodeGenerator(typed, source)
+    gen.compile_program()
     decl = next(
         d for d in (getattr(x, "decl", x) for x in program.declarations)
         if isinstance(d, ast.FnDecl) and d.name == "f"

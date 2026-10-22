@@ -2804,6 +2804,19 @@ class ContractVerifier:
                 return self._typed.instance(key, args, parent)
         return None
 
+    @property
+    def summary(self) -> VerifySummary:
+        """Derived on read from the reified obligation stream (#967).
+
+        A computed property, not a stored field, so a caller that drives
+        verification piecemeal (``register_program`` + ``_verify_fn``, the
+        :class:`~vera.obligations.session.VerificationSession` pattern) can
+        never observe a stale value — the tier counts always reflect exactly
+        the obligations recorded so far.  The warm session derives its own
+        summaries the same way, per function slice.
+        """
+        return summarize(self.obligations, self.errors)
+
     def verify_program(self, program: ast.Program) -> None:
         """Entry point: register modules, then local declarations, then verify.
 

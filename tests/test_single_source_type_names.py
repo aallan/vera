@@ -152,11 +152,8 @@ def _discovery_differential(
     _assert_typechecks(compiled.checked)
     _ = compiled.result
     codegen_set = set(getattr(compiled.generator, "_emitted_instances", set()))
-    arts = compiled.checked.artifacts
     verifier = ContractVerifier(
-        source=source, file="fixture.vera",
-        expr_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
+        compiled.checked.typed, source=source, file="fixture.vera",
     )
     verifier.register_program(compiled.parsed.program)
     verifier_set = {
@@ -756,7 +753,8 @@ class TestGenuinePhantomIsUntouched:
 
     def test_it_verifies_clean(self) -> None:
         program, _arts = _check(_GENUINE_PHANTOM)
-        res = verify_program(program, _GENUINE_PHANTOM)
+        res = verify_program(
+            pipeline.check(_GENUINE_PHANTOM).typed, _GENUINE_PHANTOM)
         assert [d for d in res.diagnostics if d.severity == "error"] == []
 
     def test_a_var_nothing_determines_keeps_the_default(self) -> None:
@@ -769,9 +767,8 @@ class TestGenuinePhantomIsUntouched:
         # `ch09_prelude` has a `result_unwrap_or` whose argument's error type
         # IS determined, and that one goes from `$Int_JBool` to
         # `$Int_JString`.  The distinction the second pass draws is not
-        # "phantom versus real" but "un-nameable versus nameable", which is
-        # the distinction [E622] draws — a default survives exactly where
-        # nothing can do better.
+        # "phantom versus real" but "unfixed versus fixed": a default
+        # survives exactly where no argument fixes the variable.
         result = _compile_checked(_GENUINE_PHANTOM)
         emitted = _clone_names(result.wat, "result_unwrap_or")
         assert emitted == ["result_unwrap_or$Int_JBool"], emitted
@@ -858,12 +855,8 @@ def _discovery_differential_modules(
     assert not check_errors, check_errors
     _ = compiled.result
     codegen_set = set(getattr(compiled.generator, "_emitted_instances", set()))
-    arts = checked.artifacts
     verifier = ContractVerifier(
-        source=checked.source, file=checked.file,
-        resolved_modules=checked.resolved,
-        expr_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
+        checked.typed, source=checked.source, file=checked.file,
     )
     verifier.register_program(compiled.parsed.program)
     verifier_set = {
@@ -906,75 +899,6 @@ def test_module_matrix_discovery_matches_the_rewrite(
 # the #1368 review established that the earlier "exactly one" assertion — a
 # single-level entry-file call, walked once — pinned existence rather than
 # deduplication.  With the guard removed the verifier reports it twice.
-_DUPLICATING_SHAPE = {
-    "plib.vera": """\
-module plib;
-
-type IntToInt = fn(Int -> Int) effects(pure);
-
-private forall<U> fn idg(@U -> @U)
-  requires(true)
-  ensures(true)
-  effects(pure)
-{
-  @U.0
-}
-
-public forall<T> fn outer(@T -> @Int)
-  requires(true)
-  ensures(true)
-  effects(pure)
-{
-  let @IntToInt = idg(fn(@Int -> @Int) effects(pure) { @Int.0 * 2 });
-  apply_fn(@IntToInt.0, 21)
-}
-""",
-    "main.vera": """\
-import plib;
-
-private fn outer(@Int -> @Int)
-  requires(true)
-  ensures(true)
-  effects(pure)
-{
-  @Int.0
-}
-
-public fn main(@Unit -> @Int)
-  requires(true)
-  ensures(true)
-  effects(pure)
-{
-  let @Int = plib::outer(1);
-  let @Bool = true;
-  let @Int = plib::outer(@Bool.0);
-  @Int.0
-}
-""",
-}
-
-
-def test_one_argument_yields_one_diagnostic_per_consultor(
-    tmp_path: Path,
-) -> None:
-    """Two instantiations of one body report the argument once, not twice.
-
-    The rule lives in exactly one place — the walker's `_uninferred_seen`.
-    Two drain-side copies of it were removed with this change: with either of
-    them stripped and the walker's kept the count stays at one, so nothing
-    could tell their presence from their absence, and three copies of a rule
-    is three places for it to drift.  Removing the walker's own guard makes
-    this cell red.
-    """
-    verify_errors, result, cg_errors = build_multi_module(
-        tmp_path / "dup", _DUPLICATING_SHAPE,
-    )
-    assert [c for c, _ in cg_errors] == ["E622"], cg_errors
-    assert [c for c, _ in verify_errors] == ["E622"], verify_errors
-    assert len(
-        [d for d in result.diagnostics if d.error_code == "E622"]) == 1
-
-
 # ---------------------------------------------------------------------
 # A composite `==` the rewrite could not name compared POINTERS
 # ---------------------------------------------------------------------
@@ -1046,76 +970,6 @@ def test_old_state_composite_compares_values_not_addresses() -> None:
             r"\(func \$:?([A-Za-z_0-9$<>, ]+?)\s", result.wat)
     ), result.wat
     assert _run_checked(_OLD_COMPOSITE_FRESH_ALLOCATION) == 1
-
-
-# ---------------------------------------------------------------------
-# A refusal names the file the call is written in
-# ---------------------------------------------------------------------
-
-# An un-nameable argument PIPED into a shadowed module generic, inside the
-# module's own body.  It reaches the verifier's shadowed-qualified discovery
-# as the module call it is, and `walk_seed` calls `_infer_type_args_from_args`
-# directly — outside any namespace scope until #1389's review round threaded
-# the origin through `walk_seed`.  Without it the record claims the ENTRY
-# program and the [E622] names `main.vera` while quoting `mlib.vera`'s line.
-_PIPED_UNNAMEABLE_IN_MODULE = {
-    "mlib.vera": """\
-module mlib;
-
-type IntToInt = fn(Int -> Int) effects(pure);
-
-public forall<T> fn idg(@T -> @T)
-  requires(true)
-  ensures(true)
-  effects(pure)
-{
-  @T.0
-}
-
-public fn compute(@Unit -> @Int)
-  requires(true)
-  ensures(true)
-  effects(pure)
-{
-  let @IntToInt = fn(@Int -> @Int) effects(pure) { @Int.0 * 2 } |> idg();
-  apply_fn(@IntToInt.0, 21)
-}
-""",
-    "main.vera": """\
-import mlib(compute);
-
-private fn idg(@Int -> @Int)
-  requires(true)
-  ensures(true)
-  effects(pure)
-{
-  @Int.0 + 1
-}
-
-public fn main(@Unit -> @Int)
-  requires(true)
-  ensures(true)
-  effects(pure)
-{
-  compute(())
-}
-""",
-}
-
-
-def test_a_piped_module_refusal_names_the_module_file(tmp_path: Path) -> None:
-    """[E622] from a desugared pipe in an imported body names that body.
-
-    The verifier's `walk_seed` infers type arguments outside any namespace
-    scope, so the record's origin was whatever the previous scope left — the
-    entry program in practice.  Red without the origin threaded through
-    `walk_seed`'s recursion.
-    """
-    verify_errors, _result, _cg = build_multi_module(
-        tmp_path / "piped_mod", _PIPED_UNNAMEABLE_IN_MODULE,
-    )
-    e622 = [d for c, d in verify_errors if c == "E622"]
-    assert e622, verify_errors
 
 
 # ---------------------------------------------------------------------

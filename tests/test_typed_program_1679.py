@@ -463,6 +463,31 @@ def test_every_expression_is_typed_by_its_identity(path: Path) -> None:
 
 
 @pytest.mark.parametrize("path", _CORPUS, ids=lambda p: p.name)
+def test_the_identity_tables_hold_what_the_span_tables_hold(path: Path) -> None:
+    """Every type and target the check records by span it records by node
+    identity too: for each expression of the entry file whose span no other
+    node shares, the two tables give the same answer.  A recording site that
+    writes only the span table (the constructor-field gap fill of #1503 did)
+    leaves its node unanswered for the verifier and code generation, which
+    read only the identity tables."""
+    checked = _checked_corpus_program(path)
+    arts = checked.artifacts
+    by_span: dict[object, list[ast.Node]] = {}
+    for node in _nodes(checked.program):
+        if isinstance(node, ast.Expr) and node.span is not None:
+            by_span.setdefault(ast.span_key(node), []).append(node)
+    for key, nodes in by_span.items():
+        if len(nodes) != 1:
+            continue
+        (node,) = nodes
+        for spans, ids in ((arts.expr_semantic_types, arts.node_semantic_types),
+                           (arts.expr_target_types, arts.node_target_types)):
+            if key in spans:
+                assert ids.get(node.node_id) == spans[key], (
+                    ast.format_expr(node), key)
+
+
+@pytest.mark.parametrize("path", _CORPUS, ids=lambda p: p.name)
 def test_every_generic_call_records_its_instantiation(path: Path) -> None:
     """Every call the binding binds to a generic declaration has the
     instantiation the check inferred there, naming that declaration by its

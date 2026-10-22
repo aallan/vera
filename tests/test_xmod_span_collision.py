@@ -29,6 +29,8 @@ land at the identical span — the test asserts that coincidence up front, so a
 
 from __future__ import annotations
 
+from vera.typed import build as build_typed
+
 import pytest
 
 from vera import ast
@@ -72,7 +74,7 @@ def _tuple_ctor_spans(source: str) -> set:
     }
 
 
-def _compile_main(tmp_path, *, thread_modules: bool = True):
+def _compile_main(tmp_path):
     """Write both fixtures, resolve + artifact-typecheck main, compile the
     flat module the way ``cmd_run`` does.
 
@@ -102,10 +104,8 @@ def _compile_main(tmp_path, *, thread_modules: bool = True):
     errors = [d for d in diags if d.severity == "error"]
     assert not errors, f"typecheck errors: {[d.description for d in errors]}"
     result = codegen_compile(
-        program, source=_MAIN, file=str(main_path), resolved_modules=resolved,
-        expr_semantic_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-        module_artifacts=arts.module_artifacts if thread_modules else None,
+        build_typed(program, resolved, arts), source=_MAIN,
+        file=str(main_path),
     )
     errs = [d for d in result.diagnostics if d.severity == "error"]
     assert not errs, f"codegen errors: {[d.description for d in errs]}"
@@ -133,19 +133,6 @@ class TestCrossModuleSpanCollision:
         exec_result = execute(result, fn_name="callit", args=[])
         # `lw` is the @Int identity, so -5 must round-trip exactly — "no trap"
         # alone would miss a silent clamp.
-        assert exec_result.value == -5
-
-    def test_imported_body_not_false_guarded_without_module_tables(
-        self, tmp_path,
-    ) -> None:
-        # Pin the FALLBACK (#986): a caller that threads no module artifacts must
-        # still not false-guard the imported all-@Int `lw` — the imported body's
-        # span-keyed lookups are suppressed, so the colliding main-file
-        # `Tuple<Nat, Nat>` target cannot leak in.  Without this suppression
-        # fallback, `callit` would trap on a legal negative @Int.
-        result = _compile_main(tmp_path, thread_modules=False)
-        assert pipeline.checks(result, function="mod$collidelib$lw") == ()
-        exec_result = execute(result, fn_name="callit", args=[])
         assert exec_result.value == -5
 
     def test_same_file_top_level_guard_unaffected(self, tmp_path) -> None:

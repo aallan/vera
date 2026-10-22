@@ -35,8 +35,6 @@ import pytest
 from tests import pipeline
 from vera.errors import Diagnostic
 from vera.obligations import ProofObligation, VerificationSession
-from vera.parser import parse
-from vera.transform import transform
 from vera.verifier import ContractVerifier, VerifyResult, summarize
 
 REPO_ROOT = Path(__file__).parent.parent
@@ -419,8 +417,9 @@ class TestSummaryDerivedOnRead:
 
         path = EXAMPLES_DIR / "increment.vera"
         source = path.read_text(encoding="utf-8")
-        program = transform(parse(source, file=str(path)))
-        verifier = ContractVerifier(source=source, file=str(path))
+        typed = pipeline.check(path).typed
+        program = typed.program
+        verifier = ContractVerifier(typed, source=source, file=str(path))
         verifier.register_program(program)
         assert verifier.summary == summarize(verifier.obligations)
         for tld in program.declarations:

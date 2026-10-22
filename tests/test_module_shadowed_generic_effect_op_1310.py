@@ -323,7 +323,7 @@ def _discovered_sets(
     assert gen is not None
     codegen_set = getattr(gen, "_emitted_instances", set())
     verifier = ContractVerifier(
-        source=main_src, file="fixture.vera", resolved_modules=[mod],
+        compiled.checked.typed, source=main_src, file="fixture.vera",
     )
     verifier.register_program(program)
     verifier_set = {
