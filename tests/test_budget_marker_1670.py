@@ -14,7 +14,8 @@ and without it, with the default lowered to 0.5 s and a stage call that takes
 test the call that passes ``budget_s=0.5`` is ended at its own budget: either
 way the run names the test.  Marked ``budget(5)``, or ``stress``, the test
 passes.  Each child test first asserts the budget in force when it starts, to
-within a second: none, 5 s, or 600 s for the ``stress`` test.
+within a second: none, 5 s, or 600 s for the ``stress`` test.  The bound
+allows the float rounding of a read in the tick the deadline was set (#1689).
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -57,7 +59,9 @@ def _parse_slowly(monkeypatch, in_force, **budget):
     if in_force is None:
         assert left is None, left
     else:
-        assert left is not None and in_force - 1 < left <= in_force, left
+        # Read in the tick the deadline was set, left is (t + s) - t, which
+        # rounds above s by up to an ulp of the deadline (#1689).
+        assert left is not None and in_force - 1 < left <= in_force + 1e-6, left
     monkeypatch.setattr(pipeline, "DEFAULT_BUDGET_S", 0.5)
     monkeypatch.setattr(pipeline, "_parse_tree", _slow_parse_tree)
     assert pipeline.parse(_SOURCE, **budget).ok
@@ -126,3 +130,43 @@ def test_a_test_runs_under_the_budget_its_marker_names(
         assert f"crashed while running 'test_slow_stage.py::{test}'" in output, output
     else:
         assert proc.returncode == 1, output
+
+
+#: A ``time.monotonic()`` sample whose deadline rounds up: ``(t + 5) - t``
+#: is ``5.000000000000057``, the value the Windows runner reported (#1689).
+#: ``t + 5`` crosses into the next binade there (512), so its last bit of
+#: ``t`` is rounded away.
+_ROUNDING_SAMPLE = 507.007
+
+
+def test_the_bound_admits_a_read_in_the_tick_the_deadline_was_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The child's first assertion reads the budget left as
+    ``deadline - time.monotonic()``, where the deadline was
+    ``time.monotonic() + seconds``.  On a clock that has not advanced
+    between the two reads, as Windows' often has not, that is
+    ``(t + 5) - t``, which floating point can round above 5; the bound
+    allows it.  The child's own assertion runs here, in process, with its
+    first clock read being the deadline's sample and its stage at the
+    parser's own speed."""
+    from tests import pipeline
+
+    assert (_ROUNDING_SAMPLE + 5) - _ROUNDING_SAMPLE > 5
+    cells: dict[str, object] = {}
+    exec(compile(_CELLS, "test_slow_stage.py", "exec"), cells)
+    cells["_slow_parse_tree"] = pipeline._parse_tree
+    real = time.monotonic
+    first = [True]
+
+    def clock() -> float:
+        if first[0]:
+            first[0] = False
+            return _ROUNDING_SAMPLE
+        return real()
+
+    monkeypatch.setattr(pipeline, "_deadlines", [_ROUNDING_SAMPLE + 5])
+    monkeypatch.setattr(time, "monotonic", clock)
+    parse_slowly = cells["_parse_slowly"]
+    assert callable(parse_slowly)
+    parse_slowly(monkeypatch, 5)

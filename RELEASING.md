@@ -126,14 +126,23 @@ The release-prep PR must:
    agree — that is the point at which the file is the published list.
 6. Pass the ordinary protected-branch CI and review process.
 
-After merge, `release.yml` detects the version increase on `main`. It then:
+The release PR merges by merge commit or squash, the only methods the
+repository allows: the release reads the version rise against the merge
+commit's first parent, which both methods make the pre-merge `main`.
 
-1. waits for CI's run on the merge commit, which runs the full test matrix, and
-   goes on only once that run has succeeded, failing after 100 minutes without
-   it. A second version-raising merge inside that window queues behind the
-   first. On a version-raising pull request, re-run failed matrix jobs as a
-   set, never one leg: `matrix-gate` reads each cell's latest run from the
-   run's job listing, so it stays red while any blocking cell is still failed;
+After merge, CI's run on the merge commit runs the full test matrix, and
+`release.yml` starts when that run completes. It then:
+
+1. goes on only when that run succeeded, for the push event on `main`, and
+   detects the version increase against the merge commit's first parent.
+   Every later step reads the commit that run tested, which the first job's
+   summary names beside the CI run. Two version-raising merges release one
+   at a time, in the order their CI runs complete, which need not be the
+   order of the merges, and step 8 marks a release Latest only when no
+   higher version is released. On a version-raising pull request, re-run failed
+   matrix jobs as a set, never one leg: `matrix-gate` reads each cell's latest
+   run from the run's job listing, so it stays red while any blocking cell is
+   still failed;
 2. validates the version, CHANGELOG section, and absence of the version/tag;
 3. builds, inspects, installs, and smoke-tests exactly one universal wheel and
    one source distribution in a job without OIDC permission;
@@ -144,13 +153,26 @@ After merge, `release.yml` detects the version increase on `main`. It then:
    digital attestations enabled;
 7. verifies PyPI exposes exactly those filenames and SHA-256 hashes; and
 8. creates `vX.Y.Z` and the GitHub Release at the merge SHA, attaching the same
-   archives and checksum manifest.
+   archives and checksum manifest, and marks it Latest unless a higher
+   version has a published Release. An empty listing of the Releases stops
+   the step before the Release is created.
 
-Approve the `pypi` deployment only after checking that the workflow SHA is the
-intended release merge and the displayed version is correct.
+Approve the `pypi` deployment only after checking that the commit the first
+job's summary names is the intended release merge and the displayed version is
+correct: the run's own commit is `main`'s tip when CI's run completed.
 
 ## Failure and recovery
 
+- When CI's run on the release merge fails, re-run its failed jobs. A
+  successful re-run completes that run again, and its completion starts the
+  release: GitHub's `workflow_run` documentation excludes only the
+  `requested` activity from a re-run; the first failed release merge is the
+  first live case of it. A re-run that starts no release, or a fix merged
+  after the release merge, is recovered by dispatching
+  **production-recovery**: the fix does not raise the version, so its own
+  CI run starts no release, and the recovery waits for CI's run on the
+  dispatched commit, at most 180 minutes. Releases have started from CI's
+  completion since v0.2.6, whose cut is the first live run.
 - Before PyPI accepts files, fix the cause and rerun failed jobs. If the whole
   run can no longer be resumed, **production-recovery** may be dispatched from
   `main` with the exact version. It refuses to run if the version, tag, or
