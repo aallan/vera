@@ -181,6 +181,34 @@ def _assert_call_indirect_iff_table(wat: str) -> None:
 _SOURCE_FILE = "fixture.vera"
 
 
+#: The skip a Map or Set operation with no generated operation raises,
+#: as :func:`skip_map_inserts` injects it.
+MAP_INSERT_SKIP = (
+    "Map/Set with an Array-typed or zero-size key, value, or element is not "
+    "supported")
+
+
+@pytest.fixture
+def skip_map_inserts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make code generation drop every function holding a `map_insert`.
+
+    No construct the check accepts is one code generation drops: a Map or
+    Set over an Array key, value or element, the drop these fixtures were
+    written with, is refused at check (E135, #1680).  So the drop machinery
+    a skip starts, the E602 warning, its propagation to every caller as
+    E620 (#1100) and the refusal of a dropped entry (#1183, #1186), is
+    reached by injection: `map_insert`'s translator raises the skip it
+    raised for an Array-valued map, and a fixture writes a map the check
+    accepts."""
+    from vera.skip import CodegenSkip
+    from vera.wasm.calls_containers import CallsContainersMixin
+
+    def skip(self: object, call: object, env: object) -> None:
+        raise CodegenSkip(call, MAP_INSERT_SKIP)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(CallsContainersMixin, "_translate_map_insert", skip)
+
+
 def _compile(source: str) -> CompileResult:
     """Check, then compile a Vera source string to WASM, as ``fixture.vera``.
 

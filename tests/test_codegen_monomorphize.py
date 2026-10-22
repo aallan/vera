@@ -681,8 +681,8 @@ public fn main(-> @Int)
   }
 }
 """
-        result = _compile(source)
-        errors = [d for d in result.diagnostics if d.severity == "error"]
+        # Refused at the call that instantiates it (E613 at check, #1679).
+        errors = pipeline.check(source).errors
         assert any(d.error_code == "E613" for d in errors), (
             f"Expected E613, got: {[d.error_code for d in errors]}"
         )
@@ -3943,16 +3943,15 @@ class TestBuiltinReturnTables769:
         )
 
     def test_simple_table_values_chain_parity(self) -> None:
-        """VALUE pins: the simple names must equal what the WASM call-rewrite
-        chain historically produced (clone-name agreement, warts included —
-        ``string_length`` is "Int" not "Nat" there, ``string_char_code`` is
-        "Nat").  Changing these is a clone-granularity decision out of #769's
-        scope; agreement is the invariant."""
+        """VALUE pins: the simple names are the records' (``string_length``
+        is "Nat", ``string_char_code`` is "Nat"): clone names come from the
+        checker's instantiation (#1679), so no name is kept for agreement
+        with a second clone namer."""
         from vera.monomorphize import _BUILTIN_VERA_RETURN_TYPES as S
 
         assert S.get("string_chars") == "Array"
         assert S.get("string_split") == "Array"
-        assert S.get("string_length") == "Int"
+        assert S.get("string_length") == "Nat"
         assert S.get("string_char_code") == "Nat"
         assert S.get("parse_int") == "Result"
         assert S.get("int_to_string") == "String"

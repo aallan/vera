@@ -61,7 +61,7 @@ from tests.checker_helpers import _check_ok
 from tests.verifier_helpers import _verify_ok
 from vera import ast
 from vera.errors import VeraError
-from vera.parser import parse_file, parse_to_ast
+from vera.parser import parse_file
 from vera.resolver import ModuleResolver, ResolvedModule
 from vera.transform import transform
 from vera.codegen import CodeGenerator, compile as codegen_compile, execute
@@ -688,8 +688,9 @@ def test_the_closure_signature_leg_is_cycle_guarded() -> None:
     passes just as well when the cycle was never reachable.
     """
     gen = CodeGenerator(
+        pipeline.typed(_SELF_REFERENTIAL_REFINEMENT, file="<cycle>"),
         source=_SELF_REFERENTIAL_REFINEMENT, file="<cycle>")
-    gen.compile_program(parse_to_ast(_SELF_REFERENTIAL_REFINEMENT))
+    gen.compile_program()
     parts = gen._refinement_guard_parts(
         ast.NamedType(name="SelfRef", type_args=None))
     assert parts is not None, (
@@ -720,15 +721,13 @@ def test_uncompilable_cell_type_in_a_handled_body_is_loud() -> None:
     body walk must agree rather than skipping registration and leaving the
     lowering to emit calls to imports that were never declared.
     """
-    result = _compile(_STATE_STRING_IN_PURE_FN)
-    codes = {d.error_code for d in result.diagnostics}
-    assert "E607" in codes, (
+    # The cell is a generic's, at the type its call chooses: the check
+    # refuses it there (E607, #1679), so code generation never meets it.
+    checked = pipeline.check(_STATE_STRING_IN_PURE_FN)
+    assert {d.error_code for d in checked.errors} == {"E607"}, (
         "expected the E607 unsupported-State-cell diagnostic, got: "
-        f"{[(d.error_code, d.description[:80]) for d in result.diagnostics]}"
+        f"{[(d.error_code, d.description[:80]) for d in checked.errors]}"
     )
-    # And specifically NOT the symptom it used to produce.
-    joined = " ".join(d.description for d in result.diagnostics)
-    assert "state_push_String" not in joined, joined
 
 
 # --- the Exn twin of the i32_pair cell --------------------------------
@@ -815,14 +814,13 @@ def test_uncompilable_exn_payload_is_the_same_verdict_either_way(
     the boolean away, so only the State arm could drop a function — the Exn
     arm registered nothing and compiled the calls anyway.
     """
-    result = _compile(source + _MAIN)
-    codes = {d.error_code for d in result.diagnostics}
-    assert "E612" in codes, (
+    # The payload is a generic's, at the type its call chooses: the check
+    # refuses it there (E612, #1679), whichever handler holds it.
+    checked = pipeline.check(source + _MAIN)
+    assert {d.error_code for d in checked.errors} == {"E612"}, (
         "expected the E612 unsupported-Exn-payload diagnostic, got: "
-        f"{[(d.error_code, d.description[:80]) for d in result.diagnostics]}"
+        f"{[(d.error_code, d.description[:80]) for d in checked.errors]}"
     )
-    # The tag is never declared, so it must never be referenced either.
-    assert "$exn_Unit" not in (result.wat or "")
 
 
 def test_a_declared_exn_unit_row_is_refused_at_check() -> None:
@@ -918,9 +916,7 @@ def test_handler_in_a_module_call_argument_is_registered(
     argument wrongly still fails.
     """
     result = codegen_compile(
-        parse_to_ast(source), source=source,
-        resolved_modules=[_lib_module()],
-    )
+        pipeline.typed(source, modules=[_lib_module()]), source=source)
     errors = [d for d in result.diagnostics if d.severity == "error"]
     assert not errors, [d.description for d in errors]
     assert execute(result, fn_name="main", args=[]).value == expected
@@ -1197,8 +1193,11 @@ def test_every_referenced_state_exn_symbol_is_declared() -> None:
         resolver = ModuleResolver(_root=path.parent)
         modules = resolver.resolve_imports(program, path)
         assert not resolver.errors, (path.name, resolver.errors)
-        result = codegen_compile(program, source=source, file=str(path),
-                                 resolved_modules=modules)
+        # Code generation compiles a program the check accepts (#1679).
+        checked = pipeline.check(source, file=str(path), modules=modules)
+        if not checked.ok:
+            continue
+        result = codegen_compile(checked.typed, source=source, file=str(path))
         wat = result.wat
         if not wat:
             continue

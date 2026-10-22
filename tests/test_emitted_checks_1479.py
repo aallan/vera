@@ -31,6 +31,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.codegen_helpers import skip_map_inserts  # noqa: F401  (the fixture)
 from tests.codegen_helpers import wat_fn_body
 from tests.module_fixture_helpers import build_multi_module
 from vera.checker import typecheck_with_artifacts
@@ -246,13 +247,17 @@ def test_a_self_tail_check_is_recorded_once_per_splice() -> None:
 # What is NOT listed
 # ---------------------------------------------------------------------------
 
+#: A helper code generation drops: its `map_insert` raises the injected skip
+#: (`skip_map_inserts`), as an Array-valued map's did before the check
+#: refused one (E135, #1680).
 _SKIPPED_HELPER = (
     "private fn tally(-> @Int) requires(true) ensures(true) effects(pure) {\n"
-    '  let @Map<String, Array<Int>> = map_insert(map_new(), "a", [1, 2]);\n'
-    "  map_size(@Map<String, Array<Int>>.0)\n}\n"
+    '  let @Map<String, Int> = map_insert(map_new(), "a", 1);\n'
+    "  map_size(@Map<String, Int>.0)\n}\n"
 )
 
 
+@pytest.mark.usefixtures("skip_map_inserts")
 def test_a_dropped_function_takes_its_checks_with_it() -> None:
     """`g` compiles — emitting its division check — and is then dropped as
     a caller of a skipped function ([E620]); its check is not the module's.
@@ -568,6 +573,7 @@ def test_a_division_lists_its_overflow_condition_where_it_can_occur(
                   if c.function == "f" and c.emitter in division) == kinds
 
 
+@pytest.mark.usefixtures("skip_map_inserts")
 def test_a_stubbed_closure_takes_its_checks_with_it() -> None:
     """A closure calling a skipped function is kept as a one-instruction
     `unreachable` stub (its table slot must survive), so the division its

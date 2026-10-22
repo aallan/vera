@@ -1343,6 +1343,7 @@ _BY_NAME_INVENTORY: dict[tuple[str, str, str], int] = {
     ("vera/wasm/data.py", "DataMixin._ctor_field_targets_byte", "_ctor_adt_tp_indices"): 1,
     ("vera/wasm/data.py", "DataMixin._ctor_field_tp_index", "_ctor_adt_tp_indices"): 1,
     ("vera/wasm/data.py", "DataMixin._extract_constructor_fields", "_ctor_layouts"): 1,
+    ("vera/wasm/data.py", "DataMixin._field_instantiated_at_nat", "_ctor_adt_tp_indices"): 1,
     ("vera/wasm/data.py", "DataMixin._resolve_nested_scrutinee_type", "_ctor_adt_tp_indices"): 1,
     ("vera/wasm/data.py", "DataMixin._resolve_nested_scrutinee_type", "_ctor_layouts"): 1,
     ("vera/wasm/data.py", "DataMixin._setup_match_arm_env", "_ctor_layouts"): 1,

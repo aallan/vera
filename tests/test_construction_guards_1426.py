@@ -731,9 +731,15 @@ def test_the_match_twin_reads_its_arm_condition_too(
     _assert_partition(envelope)
 
 
+#: The callees' preconditions are ones the verifier cannot state, so each
+#: call demotes (E532), whatever its instantiation: a generic callee's
+#: decidable precondition is checked at its clone (#1468), which these
+#: fixtures, about one record per call site, are not about.
+_UNDECIDED_PRE = "array_length(array_range(0, array_length(@Array<{}>.0))) > 0"
+
 _1459_GENERIC_CALLEE = _PRELUDE + """\
 private forall<T> fn head(@Array<T> -> @Option<T>)
-  requires(array_length(@Array<T>.0) > 0)
+  requires(""" + _UNDECIDED_PRE.format("T") + """)
   ensures(true) effects(pure)
 {
   Some(@Array<T>.0[0])
@@ -761,14 +767,14 @@ public fn f(@Array<Int> -> @Int)
 
 _1459_TWO_INSTANCES = """\
 private forall<T> fn head(@Array<T> -> @Option<T>)
-  requires(array_length(@Array<T>.0) > 0)
+  requires(""" + _UNDECIDED_PRE.format("T") + """)
   ensures(true) effects(pure)
 {
   Some(@Array<T>.0[0])
 }
 
 private forall<U> fn wrap(@Array<U> -> @Int)
-  requires(array_length(@Array<U>.0) > 0)
+  requires(""" + _UNDECIDED_PRE.format("U") + """)
   ensures(true) effects(pure)
 {
   match head(@Array<U>.0) {

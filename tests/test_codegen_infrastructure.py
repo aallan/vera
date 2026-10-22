@@ -13,6 +13,7 @@ from vera.codegen import (
 from vera.codegen.api import WasmTrapError
 
 from tests import pipeline
+from tests.codegen_helpers import skip_map_inserts  # noqa: F401  (the fixture)
 from tests.codegen_helpers import (
     _compile,
     _compile_example,
@@ -374,15 +375,19 @@ class TestE602NodeLevelReasons626Layer3:
     ``[E602]`` shape.
     """
 
+    # A map the check accepts, whose `map_insert` the injected skip drops
+    # (`skip_map_inserts`): an Array-valued map, the skip this was written
+    # against, is refused at check now (E135, #1680).
     _MAP_OF_ARRAY_SRC = """
 public fn main(@Unit -> @Unit)
   requires(true) ensures(true) effects(<IO>)
 {
-  let @Map<Nat, Array<Nat>> = map_insert(map_new(), 1, [1, 2, 3]);
+  let @Map<Nat, Nat> = map_insert(map_new(), 1, 3);
   IO.print("ok")
 }
 """
 
+    @pytest.mark.usefixtures("skip_map_inserts")
     def test_e602_description_contains_node_specific_reason(self) -> None:
         """The `[E602]` description for `Map<Nat, Array<Nat>>` carries
         the specific reason text from the `_translate_map_insert`
@@ -416,6 +421,7 @@ public fn main(@Unit -> @Unit)
             f"got: {e602[0].description!r}"
         )
 
+    @pytest.mark.usefixtures("skip_map_inserts")
     def test_e602_location_points_at_offending_call_not_fn_header(
         self,
     ) -> None:
@@ -436,7 +442,7 @@ public fn main(@Unit -> @Unit)
             f"Expected an [E602] for `main`; got: {result.diagnostics}"
         )
         # `public fn main(@Unit -> @Unit)` is line 2 in _MAP_OF_ARRAY_SRC;
-        # the offending `map_insert(...)` is line 5, column 31.  The
+        # the offending `map_insert(...)` is line 5.  The
         # diagnostic must point exactly at the call, not the declaration
         # (line 2) or any later statement.  Pin the line precisely so
         # any future refactor that drops back to enclosing-function

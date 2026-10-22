@@ -31,6 +31,7 @@ from typing import Any
 
 import pytest
 
+from tests.codegen_helpers import skip_map_inserts  # noqa: F401  (the fixture)
 from tests import pipeline
 from vera.codegen import compile as codegen_compile
 from vera.errors import ParseError
@@ -115,10 +116,12 @@ _OFF_CORPUS: dict[str, str] = {
     "no-main": (
         "public fn only_one(-> @Int)\n"
         "  requires(true)\n  ensures(true)\n  effects(pure)\n{\n  4243\n}\n"),
+    # The drop is injected (`skip_map_inserts`): the Array-valued map it was
+    # written with is refused at check now (E135, #1680).
     "every-export-dropped": (
         "private fn tally(-> @Int) requires(true) ensures(true) effects(pure) {\n"
-        '  let @Map<String, Array<Int>> = map_insert(map_new(), "a", [1, 2]);\n'
-        "  map_size(@Map<String, Array<Int>>.0)\n}\n\n"
+        '  let @Map<String, Int> = map_insert(map_new(), "a", 1);\n'
+        "  map_size(@Map<String, Int>.0)\n}\n\n"
         "public fn main(-> @Int) requires(true) ensures(true) effects(pure) {\n"
         "  tally()\n}\n"),
     "ill-typed": (
@@ -132,6 +135,7 @@ _OFF_CORPUS: dict[str, str] = {
 _RUN_REFUSED_BY_THE_CLI = {"every-export-dropped"}
 
 
+@pytest.mark.usefixtures("skip_map_inserts")
 @pytest.mark.parametrize("name", sorted(_OFF_CORPUS))
 def test_each_stage_reports_what_its_command_reports_off_the_corpus(
     name: str, tmp_path: Path,
@@ -155,6 +159,7 @@ def test_each_stage_reports_what_its_command_reports_off_the_corpus(
         pipeline.cli("run", path).returncode)
 
 
+@pytest.mark.usefixtures("skip_map_inserts")
 def test_the_off_corpus_shapes_are_the_ones_named() -> None:
     """Each cell above reaches the branch it is there for."""
     def ran(name: str) -> pipeline.Ran:

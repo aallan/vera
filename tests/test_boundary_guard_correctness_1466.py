@@ -1476,8 +1476,8 @@ _UNSUPPORTED_SHAPES: dict[tuple[str, int, str], str] = {
         for repr_name in ("string", "array")
     },
     ("map value", 0, "array"):
-        "Map/Set with an Array-typed or zero-size key, value, or element is "
-        "not supported — function skipped",
+        # Refused at check where the value's type is written (E135, #1680).
+        "' with an Array value type '",
 }
 
 #: (position, route index, representation) -> a product whose SATISFYING twin
