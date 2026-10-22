@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import io
 import json
 import os
 import re
@@ -37,6 +38,7 @@ import subprocess
 import sys
 import textwrap
 import tomllib
+import types
 from pathlib import Path
 from typing import Any
 
@@ -196,6 +198,161 @@ class TestDiffParse:
     def test_a_hunk_outside_any_file_section_is_refused(self) -> None:
         with pytest.raises(md.DiffError):
             md.parse_diff("@@ -1 +1 @@\n-a\n+b\n")
+
+    def test_a_pure_deletion_records_the_head_line_it_follows(self) -> None:
+        """`@@ -40,2 +42,0 @@` removes two lines after head line 42 and adds
+        none, so no added line marks the place; the window reads it here."""
+        assert self._by_new()["vera/smt.py"].deleted_after == frozenset({42})
+        assert self._by_new()["vera/after.py"].deleted_after == frozenset()
+
+
+# ---------------------------------------------------------------------------
+# The window: the lines whose mutants the lane keeps
+# ---------------------------------------------------------------------------
+
+
+class TestTheWindow:
+    """Within two lines of a line the diff adds, or of a point where it
+    removes lines and adds none.  mutmut places a mutant on the line its
+    node starts on, and generates only those the window keeps."""
+
+    def test_an_added_line_keeps_two_lines_either_side(self) -> None:
+        assert md.window(_change("vera/m.py", {10})) == frozenset(range(8, 13))
+
+    def test_an_added_block_keeps_two_lines_beyond_each_end(self) -> None:
+        assert md.window(_change("vera/m.py", {21, 22, 23})) == frozenset(range(19, 26))
+
+    def test_a_pure_deletion_keeps_two_lines_either_side_of_its_point(self) -> None:
+        change = md.FileChange(old_path="vera/m.py", new_path="vera/m.py", added=frozenset(),
+                               removed=frozenset({40, 41}), deleted_after=frozenset({42}))
+        assert md.window(change) == frozenset({41, 42, 43, 44})
+
+    def test_two_changes_close_together_make_one_window(self) -> None:
+        assert md.window(_change("vera/m.py", {4, 9})) == frozenset(range(2, 12))
+
+    def test_the_window_starts_at_the_first_line(self) -> None:
+        assert md.window(_change("vera/m.py", {1})) == frozenset({1, 2, 3})
+
+    @pytest.mark.parametrize("context", [0, 1, 5])
+    def test_the_context_is_the_lines_kept_either_side(self, context: int) -> None:
+        assert md.window(_change("vera/m.py", {50}), context) == frozenset(
+            range(50 - context, 51 + context))
+
+    @pytest.mark.parametrize("value", ["-1", "two"])
+    def test_the_context_is_a_whole_number_of_lines(
+        self, value: str, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        with pytest.raises(SystemExit):
+            md.main(["--context", value])
+        assert "argument --context:" in capsys.readouterr().err
+
+    def test_the_rule_names_its_context(self) -> None:
+        assert md.rule(2) == ("the mutants whose node starts within 2 lines of a line the diff "
+                              "adds or of a point where it removes lines")
+        assert "within 1 line of" in md.rule(1)
+
+
+#: A unit of seven lines, the one the window test edits at line 4.
+WINDOWED = _src("""
+    def long(x):
+        a = x + 1
+        b = a * 2
+        c = b - 3
+        d = c // 4
+        e = d % 5
+        return a + b + c + d + e
+
+
+    def other(x):
+        return x * 2
+""")
+
+
+def _window_file(where: Path, lines: dict[str, list[int]], context: int = 0) -> tuple[Path, Path]:
+    window_file, record = where / "window.json", where / "window-counts.json"
+    window_file.write_text(json.dumps({"context": context, "record": str(record), "lines": lines}),
+                           encoding="utf-8")
+    return window_file, record
+
+
+class TestTheWindowInTheEngine:
+    """The window reaches mutmut's own generator through its covered-lines
+    hook, and an engine without that hook stops before it generates."""
+
+    def test_mutmuts_generation_makes_the_windows_mutants_alone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """With the window installed, mutmut's own generation of a file (the
+        call its pool makes for each file) makes the mutants whose node
+        starts on a kept line, exactly those its visitor gives for that
+        line, and the counts written are the unit's mutants on every line
+        and in the window."""
+        pytest.importorskip("mutmut")
+        import mutmut.__main__ as engine
+        from mutmut.configuration import reset_config
+        from mutmut.mutation.file_mutation import mutate_file_contents
+
+        (tmp_path / "pyproject.toml").write_text(
+            '[tool.mutmut]\nsource_paths = ["."]\n', encoding="utf-8")
+        narrowed = md.narrow(WINDOWED, {"x_long"})
+        (tmp_path / "m.py").write_text(narrowed, encoding="utf-8")
+        window_file, record = _window_file(tmp_path, {"m.py": [4]})
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(engine, "get_covered_lines_for_file", engine.get_covered_lines_for_file)
+        reset_config()
+        try:
+            md.install_window(engine, window_file)
+            generated = engine.write_all_mutants_to_file(
+                out=io.StringIO(), source=narrowed, filename=Path("m.py")).mutant_names
+            every = mutate_file_contents("m.py", narrowed).mutant_names
+            on_the_line = mutate_file_contents("m.py", narrowed, {4}).mutant_names
+        finally:
+            reset_config()
+        assert generated and sorted(generated) == sorted(on_the_line)
+        assert len(every) > len(generated)
+        counts = json.loads(record.read_text(encoding="utf-8"))["files"]
+        assert counts == {"m.py": {"x_long": {"held": len(every), "window": len(generated)}}}
+
+    def _stub_engine(self, monkeypatch: pytest.MonkeyPatch, **attrs: Any) -> list[dict[str, Any]]:
+        """An engine module with only ``attrs`` and a command line that
+        records its calls, in place of mutmut's."""
+        calls: list[dict[str, Any]] = []
+        package = types.ModuleType("mutmut")
+        package.__path__ = []
+        stub = types.ModuleType("mutmut.__main__")
+        stub.cli = lambda **kwargs: calls.append(kwargs)  # type: ignore[attr-defined]
+        for name, value in attrs.items():
+            setattr(stub, name, value)
+        monkeypatch.setitem(sys.modules, "mutmut", package)
+        monkeypatch.setitem(sys.modules, "mutmut.__main__", stub)
+        return calls
+
+    def test_an_engine_without_the_hook_stops_before_it_generates(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A mutmut with no covered-lines hook cannot keep the window, so the
+        engine stops with its own status, which the lane reads as an engine
+        failure (exit 2), and mutmut's command line never runs."""
+        calls = self._stub_engine(monkeypatch)
+        window_file, record = _window_file(tmp_path, {})
+        monkeypatch.setenv(md.WINDOW_ENV, str(window_file))
+        assert md.engine_main(["run", "--max-children", "1"]) == md.NO_WINDOW_EXIT
+        assert calls == [] and not record.exists()
+
+    def test_the_window_is_applied_to_a_run_alone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """`results` and `show` read what a run generated, so the window is
+        not applied to them, and an engine that could not apply it still
+        answers them."""
+        calls = self._stub_engine(monkeypatch)
+        window_file, _record = _window_file(tmp_path, {})
+        monkeypatch.setenv(md.WINDOW_ENV, str(window_file))
+        assert md.engine_main(["results", "--all", "true"]) == 0
+        assert calls == [{"args": ["results", "--all", "true"], "prog_name": "mutmut"}]
+
+    def test_the_default_engine_is_this_script_under_this_interpreter(self) -> None:
+        assert md._default_engine() == [sys.executable, str(_SCRIPT.resolve()), md.ENGINE_ARG]
 
 
 # ---------------------------------------------------------------------------
@@ -1161,9 +1318,29 @@ from pathlib import Path
 state = Path(os.environ["FAKE_STATE"])
 args = sys.argv[1:]
 log = state / "calls.jsonl"
+window_file = os.environ.get("MUTATE_DIFF_WINDOW")
+window = json.loads(Path(window_file).read_text(encoding="utf-8")) if window_file else None
 with log.open("a", encoding="utf-8") as fh:
-    fh.write(json.dumps({"cwd": os.getcwd(), "args": args,
+    fh.write(json.dumps({"cwd": os.getcwd(), "args": args, "window": window,
                          "git_dir": os.environ.get("GIT_DIR")}) + "\\n")
+if args[0] == "run" and window is not None and not os.environ.get("FAKE_NO_WINDOW"):
+    # As the engine launcher does: each unit's mutants on every line and in
+    # the window, here the mutants results.txt lists for it unless the test
+    # names the counts.
+    counts = json.loads(os.environ.get("FAKE_WINDOW_COUNTS", "null"))
+    if counts is None:
+        counts = {}
+        listed = (state / "results.txt").read_text(encoding="utf-8").split()
+        for path in window["lines"]:
+            module = path[:-3].replace("/", ".")
+            for token in listed:
+                name = token.rstrip(":")
+                if name.startswith(module + ".") and "__mutmut_" in name:
+                    key = name.partition("__mutmut_")[0][len(module) + 1:]
+                    unit = counts.setdefault(path, {}).setdefault(key, {"held": 0, "window": 0})
+                    unit["held"] += 1
+                    unit["window"] += 1
+    Path(window["record"]).write_text(json.dumps({"files": counts}), encoding="utf-8")
 if args[0] == "run":
     failing = os.environ.get("FAKE_COPY_FAILURE", "")
     config = Path("pyproject.toml").read_text(encoding="utf-8")
@@ -1343,6 +1520,97 @@ class TestEndToEnd:
         summary = (tmp_path / "summary.md").read_text(encoding="utf-8")
         assert "| `vera/m.py` `kept` | 2 | 1 | 0 | 1 |" in summary
         assert "`vera.m.x_kept__mutmut_2`" in summary and "+    return x - 1" in summary
+
+    def test_the_engines_run_is_handed_the_window_alone(self, repo: Path, tmp_path: Path) -> None:
+        """The run is handed each narrowed file's window, inside the units
+        the diff changes: `kept` spans lines 1 and 2, and the edit is line 2.
+        `results` and `show` are not."""
+        code, record, calls = _main(repo, tmp_path, "    vera.m.x_kept__mutmut_1: killed\n")
+        assert code == 0
+        (run,) = [c for c in calls if c["args"][0] == "run"]
+        assert run["window"]["lines"] == {"vera/m.py": [1, 2]} and run["window"]["context"] == 2
+        assert all(c["window"] is None for c in calls if c["args"][0] != "run")
+        assert record["window"]["lines"] == {"vera/m.py": [1, 2]}
+
+    def test_a_one_line_edit_in_a_long_function_hands_the_engine_its_lines(
+        self, tmp_path: Path,
+    ) -> None:
+        """The lane's case: one line edited in the middle of a long function.
+        The engine is handed the two lines either side of the edit, not the
+        function's other lines."""
+        root = tmp_path / "long"
+        (root / "vera").mkdir(parents=True)
+        (root / "pyproject.toml").write_text(
+            '[tool.mutmut]\nsource_paths = ["vera/"]\n', encoding="utf-8")
+        body = [f"    v{i} = x + {i}" for i in range(1, 20)]
+        (root / "vera" / "m.py").write_text(
+            "def long(x):\n" + "\n".join(body) + "\n    return x\n", encoding="utf-8")
+        _git(root, "init", "-q", "-b", "main")
+        _git(root, "add", "-A")
+        _git(root, "commit", "-q", "-m", "base")
+        body[9] = "    v10 = x - 10"  # line 11
+        (root / "vera" / "m.py").write_text(
+            "def long(x):\n" + "\n".join(body) + "\n    return x\n", encoding="utf-8")
+        _git(root, "commit", "-q", "-am", "head")
+        code, record, calls = _main(root, tmp_path, "    vera.m.x_long__mutmut_1: killed\n")
+        assert code == 0
+        (run,) = [c for c in calls if c["args"][0] == "run"]
+        assert run["window"]["lines"] == {"vera/m.py": [9, 10, 11, 12, 13]}
+
+    def test_an_engine_that_counted_no_window_stops_the_run_short(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Nothing says what such an engine generated was the window's, so
+        the run is the engine's failure, exit 2, whatever it decided."""
+        monkeypatch.setenv("FAKE_NO_WINDOW", "1")
+        code, record, _ = _main(repo, tmp_path, "    vera.m.x_kept__mutmut_1: killed\n")
+        assert (code, record["stopped"]) == (2, "engine")
+        assert "no count of the window" in record["window"]["error"]
+        summary = (tmp_path / "summary.md").read_text(encoding="utf-8")
+        assert "Not checked: the engine wrote no count of the window" in summary
+
+    def test_mutants_outside_the_window_stop_the_run_short(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A unit whose generated mutants outnumber its window's was not
+        generated through the window: exit 2, the unit named."""
+        monkeypatch.setenv("FAKE_WINDOW_COUNTS",
+                           json.dumps({"vera/m.py": {"x_kept": {"held": 5, "window": 1}}}))
+        results = "    vera.m.x_kept__mutmut_1: killed\n    vera.m.x_kept__mutmut_2: killed\n"
+        code, record, _ = _main(repo, tmp_path, results)
+        assert (code, record["stopped"]) == (2, "unmapped")
+        assert record["outside_window"] == ["`vera/m.py` `kept`: 2 generated, 1 in the window"]
+
+    def test_a_unit_the_run_did_not_reach_is_not_judged_by_the_window(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The nearest accepted neighbour: a run the budget stopped before it
+        generated a unit lists none of its mutants, which says nothing about
+        the window; the run is incomplete, and green."""
+        monkeypatch.setenv("FAKE_WINDOW_COUNTS",
+                           json.dumps({"vera/m.py": {"x_kept": {"held": 5, "window": 2}}}))
+        monkeypatch.setenv("FAKE_RUN_SLEEP", "5")
+        code, record, _ = _main(repo, tmp_path, "", budget=1)
+        assert (code, record["stopped"], record["outside_window"]) == (0, "budget", [])
+
+    def test_the_summary_names_the_rule_and_what_it_measured(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The counts the next measurement of the lane needs: the functions
+        selected, their mutants and the window's, what mutmut generated and
+        decided, and the survivors."""
+        monkeypatch.setenv("FAKE_WINDOW_COUNTS",
+                           json.dumps({"vera/m.py": {"x_kept": {"held": 5, "window": 2}}}))
+        results = "    vera.m.x_kept__mutmut_1: killed\n    vera.m.x_kept__mutmut_2: survived\n"
+        code, record, _ = _main(repo, tmp_path, results)
+        assert code == 1
+        assert record["window"]["selection"] == {
+            "functions": 1, "held": 5, "window": 2, "generated": 2, "decided": 2, "survived": 1}
+        assert [(f["held"], f["window"]) for f in record["functions"]] == [(5, 2)]
+        summary = (tmp_path / "summary.md").read_text(encoding="utf-8")
+        assert ("Selection: the mutants whose node starts within 2 lines of a line the diff adds "
+                "or of a point where it removes lines. 1 function(s) hold 5 mutant(s), 2 of them "
+                "in the window; mutmut generated 2, decided 2, and 1 survived.") in summary
 
     def test_no_in_process_test_for_any_mutant_is_not_observable_and_passes(
         self, repo: Path, tmp_path: Path,

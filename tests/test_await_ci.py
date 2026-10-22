@@ -1,13 +1,16 @@
-"""The release waits for CI (scripts/await_ci.py).
+"""The release goes on only from CI's successful run on its commit.
 
-`release.yml`'s first job waits for the CI workflow's run on the commit it
-releases and lets the release go on only when that run succeeded.  The
-decision is a function of what `gh run list` reports and the time spent: a
-completed run passes when it concluded `success` and fails on any other
-conclusion; a run that has not appeared, has not completed, or cannot be
-listed is waited for until the timeout, and fails there.  The newest run on
-the commit decides, the wait is capped at 100 minutes, and the job is one
-that every other job of the release needs.
+`release.yml` starts when CI's run completes: its first job, the gate, goes
+on only for a successful push run of this repository on main, and every
+later job reads the commit that run tested.  A dispatched production
+recovery, which no CI run started, waits for CI's run on its commit
+(scripts/await_ci.py).  The wait's decision is a function of what `gh run
+list` reports and the time spent: a completed run passes when it concluded
+`success` and fails on any other conclusion; a run that has not appeared,
+has not completed, or cannot be listed is waited for until the timeout, and
+fails there.  The newest run on the commit decides, the wait is capped at
+180 minutes, and the gate is a job that every other job of the release
+needs.
 """
 
 from __future__ import annotations
@@ -15,6 +18,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import re
 import sys
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -41,7 +45,7 @@ def _load() -> Any:
 ac = _load()
 
 MINUTE = 60.0
-TIMEOUT = 100 * MINUTE
+TIMEOUT = 180 * MINUTE
 
 
 def _run(id_: int, status: str, conclusion: str = "") -> Any:
@@ -80,7 +84,7 @@ class TestTheDecision:
     def test_no_run_within_the_timeout_fails(self) -> None:
         verdict, why = ac.decide([], TIMEOUT, TIMEOUT)
         assert verdict == "fail"
-        assert "100 minutes" in why
+        assert "180 minutes" in why
 
     def test_a_run_still_going_at_the_timeout_fails(self) -> None:
         verdict, why = ac.decide([_run(7, "in_progress")], TIMEOUT + 1, TIMEOUT)
@@ -113,7 +117,7 @@ class TestTheDecision:
 
 
 class _Clock:
-    """A clock the fake sleep moves, so a 100-minute wait takes no time."""
+    """A clock the fake sleep moves, so a 180-minute wait takes no time."""
 
     def __init__(self) -> None:
         self.now = 0.0
@@ -147,7 +151,7 @@ def _listing(*answers: Any) -> Callable[[], list[Any]]:
     return list_runs
 
 
-def _wait(list_runs: Callable[[], list[Any]], clock: _Clock, timeout_minutes: int = 100) -> tuple[int, list[str]]:
+def _wait(list_runs: Callable[[], list[Any]], clock: _Clock, timeout_minutes: int = 180) -> tuple[int, list[str]]:
     lines: list[str] = []
     status = ac.wait(
         list_runs, timeout_minutes=timeout_minutes, interval_seconds=30,
@@ -196,7 +200,7 @@ class TestTheWait:
 
     def test_each_line_reaches_the_log_when_it_is_printed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Actions' stdout is not a terminal, so Python buffers it: a line
-        not flushed would show only when the wait ends, up to 100 minutes
+        not flushed would show only when the wait ends, up to 180 minutes
         later."""
 
         class Recorder(io.StringIO):
@@ -229,13 +233,26 @@ class TestTheWait:
 
 
 class TestTheCommand:
-    def test_the_timeout_is_a_hundred_minutes_by_default(self) -> None:
-        assert ac.parse_args(["--commit", "abc"]).timeout_minutes == 100
+    def test_the_timeout_is_180_minutes_by_default(self) -> None:
+        """The full matrix's push run on v0.2.5's release commit took 106
+        minutes (CI run 39744875795), past the 100 the wait then allowed."""
+        assert ac.parse_args(["--commit", "abc"]).timeout_minutes == 180
 
-    @pytest.mark.parametrize("minutes", ["101", "1000", "0", "-5", "ten"])
-    def test_the_timeout_is_capped_at_a_hundred_minutes(self, minutes: str) -> None:
+    @pytest.mark.parametrize("minutes", ["1", "100", "180"])
+    def test_the_timeout_is_any_whole_number_of_minutes_up_to_the_cap(self, minutes: str) -> None:
+        assert ac.parse_args(["--commit", "abc", "--timeout-minutes", minutes]).timeout_minutes == int(minutes)
+
+    @pytest.mark.parametrize("minutes", ["181", "1000", "0", "-5", "ten"])
+    def test_the_timeout_is_capped_at_180_minutes(self, minutes: str) -> None:
         with pytest.raises(SystemExit):
             ac.parse_args(["--commit", "abc", "--timeout-minutes", minutes])
+
+    def test_the_wait_fits_inside_its_job(self) -> None:
+        """The job that waits outlasts the longest wait, so a run that fails
+        at the cap reports its `::error::` line rather than the job's
+        timeout."""
+        jobs = _release_jobs()
+        assert int(jobs[_waiting_job(jobs)]["timeout-minutes"]) > ac.CAP_MINUTES
 
     def test_it_asks_gh_for_the_workflow_runs_on_the_commit(self) -> None:
         assert ac.gh_command("abc123", "ci.yml", "push") == [
@@ -295,7 +312,7 @@ def _push(sha: str) -> dict[str, object]:
 
 
 def test_every_push_run_to_main_runs() -> None:
-    """The release waits for CI's push run on its commit, so that run must
+    """The release starts from CI's push run on its commit, so that run must
     not be dropped.  A concurrency group holds one pending run and a newer
     arrival replaces it, so a push run has a group of its own, its commit:
     two pushes never share one, and a push run is never cancelled.  A pull
@@ -350,9 +367,9 @@ def _waiting_job(jobs: dict[str, Any]) -> str:
 
 class TestTheReleaseWorkflow:
     def test_every_other_job_waits_for_ci(self) -> None:
-        """The waiting job needs nothing, and every other job needs it, at
-        first hand or through the jobs it needs, so nothing of a release
-        starts before CI's run on the commit succeeded."""
+        """The gate needs nothing, and every other job needs it, at first
+        hand or through the jobs it needs, so nothing of a release starts
+        before the gate has seen CI's run on the commit succeed."""
         jobs = _release_jobs()
         first = _waiting_job(jobs)
         assert _needs(jobs[first]) == []
@@ -369,11 +386,11 @@ class TestTheReleaseWorkflow:
                 assert first in ancestors(name), name
 
     def test_it_asks_prepare_its_own_questions(self) -> None:
-        """The waiting job plans a push and a production recovery with the
-        very steps `prepare` runs, the same command under the same
-        condition and environment, so it waits exactly where `prepare`
-        will publish to PyPI, and a run `prepare` refuses fails at once
-        rather than after a wait for a CI run that never comes."""
+        """The gate plans the merge and a production recovery with the very
+        steps `prepare` runs, the same command under the same condition and
+        environment, so a recovery waits exactly where `prepare` will
+        publish to PyPI, and a run `prepare` refuses fails at once rather
+        than after a wait for a CI run that never comes."""
         jobs = _release_jobs()
         waiting = {step.get("id"): step for step in jobs[_waiting_job(jobs)]["steps"] if step.get("id")}
         planning = {step.get("id"): step for step in jobs["prepare"]["steps"] if step.get("id")}
@@ -385,18 +402,20 @@ class TestTheReleaseWorkflow:
     @pytest.mark.parametrize(
         ("context", "waits"),
         [
-            ({"github.event_name": "push", "steps.push.outputs.publish": "true"}, True),
-            ({"github.event_name": "push", "steps.push.outputs.publish": "false"}, False),
+            ({"github.event_name": "workflow_run", "steps.push.outputs.publish": "true"}, False),
+            ({"github.event_name": "workflow_run", "steps.push.outputs.publish": "false"}, False),
             ({"github.event_name": "workflow_dispatch", "steps.recovery.outputs.publish": "true"}, True),
             ({"github.event_name": "workflow_dispatch"}, False),
         ],
     )
-    def test_it_waits_wherever_the_release_publishes_to_pypi(
+    def test_it_waits_where_a_recovery_publishes_to_pypi(
         self, context: dict[str, str], waits: bool,
     ) -> None:
-        """A push that raises the version and a production recovery publish
-        to PyPI, so they wait; a push that releases nothing does not, and
-        neither does a TestPyPI staging run, where neither planning step
+        """A production recovery publishes to PyPI with no CI run behind it,
+        so it waits for CI's push run on the dispatched commit.  A run CI's
+        completion started does not wait, whether the merge raises the
+        version or not: the gate let it through because that run succeeded.
+        Neither does a TestPyPI staging run, where neither planning step
         runs."""
         from tests.test_gate_placement import evaluate
 
@@ -405,4 +424,113 @@ class TestTheReleaseWorkflow:
         context = {"steps.push.outputs.publish": "", "steps.recovery.outputs.publish": "", **context}
         wait = next(step for step in job["steps"] if "scripts/await_ci.py" in str(step.get("run", "")))
         assert bool(evaluate(str(wait["if"]), context)) is waits
-        assert '--commit "$GITHUB_SHA"' in str(wait["run"])
+        assert '--commit "$RELEASE_SHA"' in str(wait["run"])
+        assert wait["env"]["RELEASE_SHA"] == "${{ steps.commit.outputs.sha }}"
+
+
+# ---------------------------------------------------------------------------
+# The release starts when CI's run on the commit completes
+# ---------------------------------------------------------------------------
+
+
+def _release() -> dict[Any, Any]:
+    return dict(yaml.safe_load(RELEASE.read_text(encoding="utf-8")))
+
+
+def _triggers(workflow: dict[Any, Any]) -> dict[str, Any]:
+    """The workflow's `on:` block, which YAML 1.1 reads as the key True."""
+    return dict(workflow["on"] if "on" in workflow else workflow[True])
+
+
+_REPOSITORY = "aallan/vera"
+
+#: Every conclusion a completed workflow run can carry.
+_CONCLUSIONS = ["success", "failure", "cancelled", "timed_out", "skipped", "neutral",
+                "action_required", "startup_failure", "stale"]
+
+
+def _completed_run(conclusion: str, event: str, branch: str, repository: str) -> dict[str, object]:
+    """The context of a release run that CI's completed run started."""
+    return {
+        "github.event_name": "workflow_run", "github.repository": _REPOSITORY,
+        "github.event.workflow_run.conclusion": conclusion,
+        "github.event.workflow_run.event": event,
+        "github.event.workflow_run.head_branch": branch,
+        "github.event.workflow_run.head_repository.full_name": repository,
+    }
+
+
+class TestTheReleaseStartsWhenCiCompletes:
+    """`release.yml` starts when CI's run completes, rather than polling for
+    it from a push run of its own: its first job is a gate that goes on only
+    for a successful push run of this repository on main, and every later
+    use of the commit reads the one that run tested.  Under `workflow_run`,
+    `github.sha` is the default branch's tip when the event fires, which a
+    later merge can have moved past the commit the run tested."""
+
+    def test_it_starts_when_ci_completes_on_main(self) -> None:
+        """A `workflow_run` trigger on CI's completed runs on main, named as
+        ci.yml names itself, and no `push` trigger, which would start a
+        second run on every merge.  The dispatch path keeps its inputs."""
+        on = _triggers(_release())
+        ci_name = yaml.safe_load((ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"))["name"]
+        assert set(on) == {"workflow_run", "workflow_dispatch"}, on
+        assert on["workflow_run"] == {"workflows": [ci_name], "types": ["completed"], "branches": ["main"]}
+        assert set(on["workflow_dispatch"]["inputs"]) == {"target", "confirm_version"}
+
+    @pytest.mark.parametrize("conclusion", _CONCLUSIONS)
+    @pytest.mark.parametrize("event", ["push", "pull_request", "schedule", "workflow_dispatch"])
+    @pytest.mark.parametrize("branch", ["main", "feature"])
+    @pytest.mark.parametrize("repository", [_REPOSITORY, "someone/vera"])
+    def test_the_gate_admits_only_a_successful_push_run_of_this_repository_on_main(
+        self, conclusion: str, event: str, branch: str, repository: str,
+    ) -> None:
+        """`branches: [main]` matches a run's head branch, which a fork's
+        pull request can name `main` too, and CI also completes for pull
+        requests and the nightly run; so the gate reads the conclusion, the
+        event, the branch and the repository, and goes on for one cell of
+        the 144: a successful push run of this repository on main."""
+        from tests.test_gate_placement import evaluate
+
+        jobs = _release_jobs()
+        gate = jobs[_waiting_job(jobs)]
+        assert "if" in gate, "the first job has no condition: every completed CI run would start a release"
+        admitted = bool(evaluate(str(gate["if"]), _completed_run(conclusion, event, branch, repository)))
+        expected = (conclusion, event, branch, repository) == ("success", "push", "main", _REPOSITORY)
+        assert admitted is expected
+
+    @pytest.mark.parametrize("target", ["testpypi", "production-recovery"])
+    def test_a_dispatched_run_passes_the_gate(self, target: str) -> None:
+        """A dispatch has no CI run behind it: the gate lets it through, and
+        its own steps plan it (`prepare`) and wait for CI where it publishes
+        to PyPI (`await_ci.py`)."""
+        from tests.test_gate_placement import evaluate
+
+        jobs = _release_jobs()
+        gate = jobs[_waiting_job(jobs)]
+        context: dict[str, object] = {
+            **{key: None for key in _completed_run("", "", "", "")},
+            "github.event_name": "workflow_dispatch", "github.repository": _REPOSITORY,
+            "inputs.target": target,
+        }
+        assert bool(evaluate(str(gate.get("if", "true")), context)) is True
+
+    def test_every_step_reads_the_commit_ci_ran_on(self) -> None:
+        """`github.sha` is read in one place, where the gate names the commit
+        (`github.event.workflow_run.head_sha` under `workflow_run`, and
+        `github.sha` itself on a dispatch, where it is the dispatched
+        commit), and nowhere else: not as `$GITHUB_SHA` in a shell, not
+        through an `actions/checkout` that names no `ref:`, whose default is
+        `github.sha`, and not through `github.event.before`, which a
+        `workflow_run` event does not carry."""
+        text = RELEASE.read_text(encoding="utf-8")
+        reads = [line.strip() for line in text.splitlines()
+                 if ("github.sha" in line or "GITHUB_SHA" in line)
+                 and not line.strip().startswith("#")]
+        assert reads == ["SHA: ${{ github.event.workflow_run.head_sha || github.sha }}"], reads
+        assert "github.event.before" not in text
+        for name, job in _release_jobs().items():
+            for step in job.get("steps", []):
+                if str(step.get("uses", "")).startswith("actions/checkout@"):
+                    ref = str((step.get("with") or {}).get("ref", ""))
+                    assert re.fullmatch(r"\$\{\{ (needs\.\w+|steps\.\w+)\.outputs\.sha \}\}", ref), (name, ref)

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Mutation testing scoped to a diff: mutate the functions a change touches.
+"""Mutation testing scoped to a diff: mutate the lines a change touches.
 
 The pull request lane of MUTATION.md § CI.  From ``git diff <base>...<head>``
 over ``vera/``, the script finds the functions mutmut mutates as units (a
 top-level function, or a method of a top-level class; a nested function is
 part of the one that encloses it) whose code the diff changes, and runs
-mutmut over exactly those functions:
+mutmut over the lines of those functions near the diff:
 
 1. Each changed line is mapped to the unit that holds it, by ``ast``: an
    added line to the head's unit, a removed line to the base's.  A unit
@@ -25,7 +25,19 @@ mutmut over exactly those functions:
    generate; the changed units alone took 41 s).  The edit adds comments
    only, and the script checks the file's ``ast`` and line count are
    unchanged.
-3. The scratch tree's ``[tool.mutmut]`` is the repository's, with
+3. Inside those units, mutmut generates only the mutants whose node starts
+   within two lines (``--context``) of a line the diff adds, or of a point
+   where it removes lines and adds none: the window.  A one-line edit inside
+   a long function so mutates the lines near it, not the function: the 330
+   mutants of the four functions pull request #1760 changed ran out the
+   budget at 97 decided (CI run 39664225706), and 85 of them lie in the
+   window.  The engine is this script run with ``--as-engine``
+   (:func:`engine_main`), which counts each unit's mutants on every line and
+   in the window with mutmut's own visitor, then hands each narrowed file's
+   window to mutmut's covered-lines hook, the filter it reads a node's start
+   line against; the lane checks the mutants mutmut lists against those
+   counts.
+4. The scratch tree's ``[tool.mutmut]`` is the repository's, with
    ``only_mutate`` set to those files and the pull request's own changed
    test files that reach the compiler in process (they import ``vera``,
    directly or through a ``tests/`` helper) added to the test selection, bar
@@ -38,19 +50,23 @@ mutmut over exactly those functions:
    is mutmut's generated file, does) stops that pass; it is no oracle there,
    so the lane drops it, runs again, and names it in the summary and the
    record.
-4. The run has a wall-clock budget.  When it runs out, mutmut is
+5. The run has a wall-clock budget.  When it runs out, mutmut is
    interrupted, then its process group terminated, then killed, and what it
    decided so far is reported.
 
 Outputs: a table per function on stdout (and in ``--summary``, the job
-summary in CI), the first ``MAX_SHOWN_SURVIVORS`` survivors' ``mutmut show``
-diffs, and a JSON record (``--json``) that lists every survivor.
+summary in CI), under a line that names the selection rule and counts the
+functions, their mutants on every line and in the window, and the mutants
+generated, decided and surviving; the first ``MAX_SHOWN_SURVIVORS``
+survivors' ``mutmut show`` diffs; and a JSON record (``--json``) that lists
+every survivor.
 
 The exit code is red for a defect and green for an unfinished run.  It is 1
 when a mutant of the diff survives, whatever else stopped the run; 2 when the
 run itself failed, whether or not the budget ran out first: the engine
-failed, mutmut reported a mutant of a function the lane did not map to the
-diff, or the lane stopped before mutmut decided anything; and 0 otherwise.
+failed or counted no window, mutmut reported a mutant of a function the lane
+did not map to the diff or more of a function's mutants than its window
+holds, or the lane stopped before mutmut decided anything; and 0 otherwise.
 An exit 0 says what it decided in the headline: every mutant killed or timed
 out, or how many functions no in-process test reaches, or, where the budget
 ran out or a mutant was left undecided (``not checked``, ``suspicious``,
@@ -139,6 +155,25 @@ NO_TESTS_SENTENCE = "could not find any test case for any mutant"
 
 DEFAULT_BUDGET_S = 2400
 
+#: Lines either side of a changed line whose mutants the lane keeps.
+CONTEXT_LINES = 2
+
+#: The variable that names the window file for the engine's ``run``.
+WINDOW_ENV = "MUTATE_DIFF_WINDOW"
+
+#: The first argument that runs this script as the engine (:func:`engine_main`).
+ENGINE_ARG = "--as-engine"
+
+#: The exit status of an engine that cannot apply the window: an engine
+#: failure to the lane, never a survivor's 1.
+NO_WINDOW_EXIT = 3
+
+
+def rule(context: int) -> str:
+    """The selection rule's name, as the summary prints it."""
+    return (f"the mutants whose node starts within {context} line{'s' if context != 1 else ''} "
+            "of a line the diff adds or of a point where it removes lines")
+
 #: Seconds for each short engine command (``results``, ``show``, ``--version``).
 ENGINE_CALL_TIMEOUT_S = 300
 
@@ -182,12 +217,14 @@ class LaneError(RuntimeError):
 @dataclass(frozen=True)
 class FileChange:
     """One file's changes: the head lines a hunk adds (a changed line is
-    removed and added), and the base lines it removes."""
+    removed and added), the base lines it removes, and, for each hunk that
+    removes lines and adds none, the head line it removes them after."""
 
     old_path: str | None
     new_path: str | None
     added: frozenset[int]
     removed: frozenset[int]
+    deleted_after: frozenset[int] = frozenset()
 
 
 _HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
@@ -219,6 +256,7 @@ def parse_diff(text: str) -> list[FileChange]:
                 old_path=section["old"], new_path=section["new"],
                 added=frozenset(section["added"]),
                 removed=frozenset(section["removed"]),
+                deleted_after=frozenset(section["deleted_after"]),
             ))
 
     for line in text.splitlines():
@@ -228,7 +266,8 @@ def parse_diff(text: str) -> list[FileChange]:
             if match is None:
                 raise DiffError(f"unsupported file header: {line}")
             section = {"old": match.group(1), "new": match.group(2),
-                       "added": set(), "removed": set(), "hunks": False}
+                       "added": set(), "removed": set(), "deleted_after": set(),
+                       "hunks": False}
             continue
         if section is None:
             if line.startswith("@@"):
@@ -251,8 +290,23 @@ def parse_diff(text: str) -> list[FileChange]:
             new_count = 1 if hunk.group(4) is None else int(hunk.group(4))
             section["removed"].update(range(old_start, old_start + old_count))
             section["added"].update(range(new_start, new_start + new_count))
+            if new_count == 0:
+                # `+n,0`: the hunk's lines went after head line n.
+                section["deleted_after"].add(new_start)
     flush()
     return changes
+
+
+def window(change: FileChange, context: int = CONTEXT_LINES) -> frozenset[int]:
+    """The head lines whose mutants the lane keeps: those within ``context``
+    lines of a line the change adds, or of a point where it removes lines
+    and adds none (between head lines ``n`` and ``n + 1``)."""
+    lines: set[int] = set()
+    for line in change.added:
+        lines.update(range(line - context, line + context + 1))
+    for after in change.deleted_after:
+        lines.update(range(after + 1 - context, after + context + 1))
+    return frozenset(n for n in lines if n >= 1)
 
 
 # ---------------------------------------------------------------------------
@@ -647,6 +701,98 @@ def oracle_tests(changed: Iterable[str], tree: Path) -> tuple[list[str], list[st
 
 
 # ---------------------------------------------------------------------------
+# The window, inside the engine
+# ---------------------------------------------------------------------------
+
+
+class WindowError(RuntimeError):
+    """The installed mutmut cannot generate only the window's mutants."""
+
+
+def _unit_counts(create_mutations: Callable[..., Any], path: str, source: str,
+                 lines: Iterable[int] | None) -> Counter[str]:
+    """How many mutants mutmut's own visitor makes in each unit of
+    ``source``, of every line or of ``lines`` alone: a mutation counts for the
+    top-level function or top-level class's method that holds it, the ones
+    mutmut writes a copy of each mutant for (``_compute_mutated_function_hashes``
+    indexes them the same way)."""
+    import libcst as cst
+
+    module, mutations, _classes, _functions = create_mutations(
+        path, source, None if lines is None else set(lines))
+    keys: dict[Any, str] = {}
+    for stmt in module.body:
+        if isinstance(stmt, cst.FunctionDef):
+            keys[stmt] = _key(stmt.name.value, None)
+        elif isinstance(stmt, cst.ClassDef) and isinstance(stmt.body, cst.IndentedBlock):
+            keys.update({m: _key(m.name.value, stmt.name.value) for m in stmt.body.body
+                         if isinstance(m, cst.FunctionDef)})
+    return Counter(keys[m.contained_by_top_level_function] for m in mutations
+                   if m.contained_by_top_level_function in keys)
+
+
+def install_window(engine: Any, window_file: Path) -> None:
+    """Make the engine module ``engine`` (``mutmut.__main__``) generate only
+    the mutants the window keeps, and write the counts the lane checks it by.
+
+    mutmut generates a mutant only for a node that starts on a line its
+    covered-lines hook names (``get_covered_lines_for_file``, the filter
+    ``mutate_only_covered_lines`` feeds); the hook here names each narrowed
+    file's window, and leaves every other file to the hook it replaces.
+    Before that, each file's mutants are counted per unit by mutmut's own
+    visitor, of every line and of the window's (:func:`_unit_counts`), so
+    the lane can check what the engine generated against the window.  A
+    mutmut without the hook or the visitor raises :class:`WindowError`."""
+    spec = json.loads(window_file.read_text(encoding="utf-8"))
+    kept = {path: frozenset(lines) for path, lines in spec["lines"].items()}
+    hook = getattr(engine, "get_covered_lines_for_file", None)
+    if not callable(hook):
+        raise WindowError("mutmut.__main__ has no get_covered_lines_for_file, the hook mutmut 3.8 "
+                          "reads the lines to mutate from, so the window cannot reach its generator")
+    try:
+        from mutmut.mutation.file_mutation import create_mutations
+    except ImportError as exc:
+        raise WindowError(f"mutmut's visitor is not there to count the window by: {exc}") from exc
+    counts: dict[str, dict[str, dict[str, int]]] = {}
+    for path, lines in kept.items():
+        source = Path(path).read_text(encoding="utf-8")
+        held = _unit_counts(create_mutations, path, source, None)
+        inside = _unit_counts(create_mutations, path, source, lines)
+        counts[path] = {key: {"held": held[key], "window": inside[key]}
+                        for key in sorted(set(held) | set(inside))}
+    Path(spec["record"]).write_text(json.dumps({"files": counts}, indent=1) + "\n", encoding="utf-8")
+
+    def covered(filename: str, covered_lines: Any) -> Any:
+        lines = kept.get(Path(filename).as_posix())
+        return hook(filename, covered_lines) if lines is None else set(lines)
+
+    engine.get_covered_lines_for_file = covered
+
+
+def engine_main(args: Sequence[str]) -> int:
+    """mutmut's command line, its ``run`` generating only the window's
+    mutants when :data:`WINDOW_ENV` names the lane's window file: the lane's
+    default engine, this script run with :data:`ENGINE_ARG` first.  An engine
+    that cannot apply the window stops with :data:`NO_WINDOW_EXIT` before it
+    generates anything, which the lane reads as an engine failure."""
+    import mutmut.__main__ as engine
+
+    window_file = os.environ.get(WINDOW_ENV)
+    if window_file and args[:1] == ["run"]:
+        try:
+            install_window(engine, Path(window_file))
+        except (WindowError, OSError, ValueError, KeyError) as exc:
+            print(f"mutate_diff: the window cannot be applied: {exc}", file=sys.stderr)
+            return NO_WINDOW_EXIT
+    try:
+        engine.cli(args=list(args), prog_name="mutmut")
+    except SystemExit as exit_:
+        code = exit_.code
+        return code if isinstance(code, int) else (0 if code is None else 1)
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # The engine
 # ---------------------------------------------------------------------------
 
@@ -770,6 +916,10 @@ class UnitResult:
     survivors: list[str]
     observable: bool
     diffs: dict[str, str] = field(default_factory=dict)
+    #: The unit's mutants on every line, and in the window, by mutmut's own
+    #: visitor; None where the engine counted none.
+    held: int | None = None
+    window: int | None = None
 
 
 def tally(units: Sequence[Unit], results: Mapping[str, str]) -> list[UnitResult]:
@@ -796,6 +946,49 @@ def outside_units(units: Sequence[Unit], results: Mapping[str, str]) -> list[str
     """The mutants mutmut reported for a unit the diff does not change."""
     owned = {(module_name(u.path), u.key) for u in units}
     return sorted(n for n in results if unit_of_mutant(n) not in owned)
+
+
+def read_window_counts(path: Path) -> dict[tuple[str, str], tuple[int, int]] | None:
+    """The engine's count of each unit's mutants, ``(path, key) -> (held,
+    window)`` (:func:`install_window`), or None when it wrote none that reads."""
+    try:
+        files = json.loads(path.read_text(encoding="utf-8"))["files"]
+        return {(file, key): (int(n["held"]), int(n["window"]))
+                for file, units in files.items() for key, n in units.items()}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+
+
+def place_in_window(rows: Sequence[UnitResult],
+                    counts: Mapping[tuple[str, str], tuple[int, int]]) -> list[str]:
+    """Give each row its unit's counts, and name each unit whose mutants
+    mutmut lists differ in number from the window's.  The engine writes a
+    file's mutants together, so a unit with any listed was generated whole,
+    and its count is the window's when the window reached the generator; a
+    unit with none listed (the run stopped before its file) is not judged."""
+    outside: list[str] = []
+    for row in rows:
+        row.held, row.window = counts.get((row.path, row.key), (0, 0))
+        if row.mutants and row.mutants != row.window:
+            outside.append(f"`{row.path}` `{row.qualname}`: {row.mutants} generated, "
+                           f"{row.window} in the window")
+    return outside
+
+
+def selection(rows: Sequence[UnitResult]) -> dict[str, int | None]:
+    """What the selection measured: the functions, their mutants on every
+    line and in the window, the mutants generated and decided, and the
+    survivors."""
+    counted = all(r.held is not None and r.window is not None for r in rows)
+    return {
+        "functions": len(rows),
+        "held": sum(r.held or 0 for r in rows) if counted else None,
+        "window": sum(r.window or 0 for r in rows) if counted else None,
+        "generated": sum(r.mutants for r in rows),
+        "decided": sum(n for r in rows for status, n in r.counts.items()
+                       if STATUSES[status] != "undecided"),
+        "survived": sum(len(r.survivors) for r in rows),
+    }
 
 
 def failed(stopped: str | None, failure: str) -> str:
@@ -825,8 +1018,8 @@ def _incomplete(rows: Sequence[UnitResult], stopped: str | None) -> str | None:
     if stopped == "engine":
         return "the engine stopped before every mutant was decided"
     if stopped == "unmapped":
-        return ("mutmut reported mutants of functions the lane did not map to the diff, "
-                "so the diff is not decided")
+        return ("mutmut reported mutants outside the functions or the window the lane mapped "
+                "to the diff, so the diff is not decided")
     statuses = {status for row in rows for status, n in row.counts.items() if n}
     if any(STATUSES[s] == "undecided" for s in statuses):
         return "mutants of the diff were left undecided"
@@ -841,6 +1034,21 @@ def _incomplete(rows: Sequence[UnitResult], stopped: str | None) -> str | None:
 _COLUMNS = ("killed", "timeout", "survived")
 
 
+def selection_line(window_: Mapping[str, Any]) -> str:
+    """The selection rule and what it measured, for the summary's head:
+    the functions, their mutants and the window's, and what became of the
+    generated ones."""
+    head = f"Selection: {window_['rule']}."
+    if window_.get("error"):
+        return f"{head} Not checked: {window_['error']}."
+    sel = window_.get("selection") or {}
+    held = "?" if sel.get("held") is None else sel["held"]
+    inside = "?" if sel.get("window") is None else sel["window"]
+    return (f"{head} {sel.get('functions', 0)} function(s) hold {held} mutant(s), {inside} of "
+            f"them in the window; mutmut generated {sel.get('generated', 0)}, decided "
+            f"{sel.get('decided', 0)}, and {sel.get('survived', 0)} survived.")
+
+
 def render(record: Mapping[str, Any]) -> str:
     """The job summary: the run's outcome, a row per changed function, the
     survivors' diffs, and what the diff changes that mutmut cannot mutate."""
@@ -851,6 +1059,9 @@ def render(record: Mapping[str, Any]) -> str:
     out.append("")
     out.append(f"**{record['outcome']}**")
     out.append("")
+    if record.get("window"):
+        out.append(selection_line(record["window"]))
+        out.append("")
     functions = record["functions"]
     if functions:
         out.append("| Function | Mutants | Killed | Timeout | Survived | Other |")
@@ -926,6 +1137,9 @@ def render(record: Mapping[str, Any]) -> str:
         names = ", ".join(f"`{n}`" for n in record["outside_diff"][:10])
         notes.append(f"{len(record['outside_diff'])} mutant(s) mutmut reported for functions the "
                      f"lane did not map to the diff, which stops the run short: {names}")
+    if record.get("outside_window"):
+        notes.append("mutants generated outside the window, which stops the run short: "
+                     + "; ".join(record["outside_window"][:10]))
     if record["extra_tests"]:
         notes.append("the pull request's own test files, added to the selection: "
                      + ", ".join(f"`{t}`" for t in record["extra_tests"]))
@@ -1008,8 +1222,9 @@ def _engine_version(engine: Sequence[str], env: Mapping[str, str]) -> str:
 
 
 def _default_engine() -> list[str]:
-    beside = Path(sys.executable).with_name("mutmut")
-    return [str(beside)] if beside.exists() else ["mutmut"]
+    """This script as the engine (:func:`engine_main`), under this
+    interpreter, which the ``[mutation]`` extra gives mutmut."""
+    return [sys.executable, str(Path(__file__).resolve()), ENGINE_ARG]
 
 
 def _tail(path: Path, lines: int = 40) -> list[str]:
@@ -1033,6 +1248,16 @@ def _tail(path: Path, lines: int = 40) -> list[str]:
     return rows[-lines:]
 
 
+def _context(value: str) -> int:
+    try:
+        lines = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{value!r} is not a whole number of lines") from exc
+    if lines < 0:
+        raise argparse.ArgumentTypeError(f"the context is 0 lines or more, not {lines}")
+    return lines
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the lane; return its exit code."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -1042,6 +1267,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--head", default="HEAD", help="the head commit (default HEAD)")
     parser.add_argument("--budget", type=float, default=DEFAULT_BUDGET_S,
                         help=f"wall-clock seconds for mutmut (default {DEFAULT_BUDGET_S})")
+    parser.add_argument("--context", type=_context, default=CONTEXT_LINES,
+                        help="lines either side of a changed line whose mutants are kept "
+                        f"(default {CONTEXT_LINES})")
     parser.add_argument("--max-children", type=int, default=os.cpu_count() or 1,
                         help="mutmut's parallel workers (default: every CPU)")
     parser.add_argument("--workdir", help="an empty or absent directory for the scratch "
@@ -1104,10 +1332,12 @@ def _lane(args: argparse.Namespace, repo: Path, workdir: Path, engine: list[str]
                 "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", "-M",
                 merge_base, head, "--", "vera/")
     verdicts: list[FileVerdict] = []
+    change_of: dict[str, FileChange] = {}
     for change in parse_diff(diff):
         base_src = _git(repo, "show", f"{merge_base}:{change.old_path}") if change.old_path else None
         head_src = _git(repo, "show", f"{head}:{change.new_path}") if change.new_path else None
         verdicts.append(classify(change, base_src, head_src))
+        change_of[verdicts[-1].path] = change
     units = [u for v in verdicts for u in v.changed]
     mutable = [u for u in units if u.excluded is None]
     changed_tests = _git(repo, "diff", "--name-only", "--diff-filter=d", merge_base, head,
@@ -1122,15 +1352,15 @@ def _lane(args: argparse.Namespace, repo: Path, workdir: Path, engine: list[str]
     skips = workdir / "oracle-skips.txt"
     env["MUTATION_ORACLE_SKIPS"] = str(skips)
     record: dict[str, Any] = {
-        "schema": 1, "base": base, "merge_base": merge_base, "head": head,
+        "schema": 2, "base": base, "merge_base": merge_base, "head": head,
         "engine_version": "", "budget_s": args.budget, "elapsed_s": 0.0,
         "workdir": workdir.as_posix(), "extra_tests": [], "tests_left_out": [],
         "files": [{"path": v.path, "changed": [u.qualname for u in v.changed],
                    "deleted": v.deleted, "outside": v.outside,
                    "outside_removed": v.outside_removed,
                    "unchanged_code": v.unchanged_code} for v in verdicts],
-        "stopped": None, "engine_exit": None, "outside_diff": [], "engine_tail": [],
-        "dropped_tests": [], "subprocess_tests": [],
+        "stopped": None, "engine_exit": None, "outside_diff": [], "outside_window": [],
+        "engine_tail": [], "dropped_tests": [], "subprocess_tests": [], "window": None,
     }
     rows: list[UnitResult] = []
     stopped: str | None = None
@@ -1147,11 +1377,22 @@ def _lane(args: argparse.Namespace, repo: Path, workdir: Path, engine: list[str]
             (tree / path).write_text(narrow(source, keep), encoding="utf-8")
         pyproject = tree / "pyproject.toml"
         config = pyproject.read_text(encoding="utf-8")
+        # The window: each narrowed file's lines near the diff, inside the
+        # units it changes, which the engine's run alone is handed.
+        kept = {path: sorted(window(change_of[path], args.context) & {
+                    n for u in mutable if u.path == path for n in range(u.start, u.end + 1)})
+                for path in files}
+        counts_file = workdir / "window-counts.json"
+        window_file = workdir / "window.json"
+        window_file.write_text(json.dumps({"context": args.context, "record": str(counts_file),
+                                           "lines": kept}, indent=1) + "\n", encoding="utf-8")
+        record["window"] = {"context": args.context, "rule": rule(args.context), "lines": kept}
         record["engine_version"] = _engine_version(engine, env)
         globs = [mutant_glob(u.path, u.key) for u in mutable]
         run, log, dropped = run_dropping(
             [*engine, "run", "--max-children", str(args.max_children), *globs],
-            tree=tree, pyproject=pyproject, budget_s=args.budget, workdir=workdir, env=env,
+            tree=tree, pyproject=pyproject, budget_s=args.budget, workdir=workdir,
+            env={**env, WINDOW_ENV: str(window_file)},
             config_for=lambda dropped: rewrite_config(
                 config, only_mutate=files, extra_tests=extra_tests,
                 extra_args=[f"--deselect={test}" for test in dropped]))
@@ -1185,6 +1426,17 @@ def _lane(args: argparse.Namespace, repo: Path, workdir: Path, engine: list[str]
             # In the narrowed tree every mutant belongs to a changed unit; one
             # that does not means the mapping or the narrowing went wrong.
             stopped = failed(stopped, "unmapped")
+        counts = read_window_counts(counts_file)
+        if counts is None:
+            # Nothing says the engine generated the window's mutants alone.
+            stopped = failed(stopped, "engine")
+            record["window"]["error"] = (
+                "the engine wrote no count of the window, so what it generated cannot be "
+                "checked against the window")
+        else:
+            record["outside_window"] = place_in_window(rows, counts)
+            if record["outside_window"]:
+                stopped = failed(stopped, "unmapped")
         to_show = [(row, name) for row in rows for name in row.survivors][:MAX_SHOWN_SURVIVORS]
         for row, name in to_show:
             shown = _engine_call(engine, ["show", name], cwd=tree, env=env)
@@ -1198,6 +1450,8 @@ def _lane(args: argparse.Namespace, repo: Path, workdir: Path, engine: list[str]
                                 excluded=u.excluded, mutants=0, counts={}, survivors=[],
                                 observable=True) for u in units if u.excluded is not None]
     code = exit_code(rows, stopped=stopped)
+    if record["window"] is not None:
+        record["window"]["selection"] = selection(rows)
     record["stopped"] = stopped
     record["exit_code"] = code
     record["outcome"] = outcome(code, rows, stopped)
@@ -1222,4 +1476,6 @@ def _lane(args: argparse.Namespace, repo: Path, workdir: Path, engine: list[str]
 
 
 if __name__ == "__main__":
+    if sys.argv[1:2] == [ENGINE_ARG]:
+        raise SystemExit(engine_main(sys.argv[2:]))
     raise SystemExit(main())

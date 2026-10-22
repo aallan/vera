@@ -1,7 +1,13 @@
 name: Release
 
 on:
-  push:
+  # The full test matrix runs after the merge, not on the pull request
+  # (ci.yml, the push event the merge produces on main), so a release
+  # starts when CI's run on the commit completes, and the gate below goes
+  # on only when that run succeeded.
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
     branches: [main]
   workflow_dispatch:
     inputs:
@@ -31,25 +37,59 @@ concurrency:
 permissions: {}
 
 jobs:
-  # The full test matrix runs after the merge, not on the pull request, so a
-  # release waits for CI's run on the commit it releases (ci.yml, the push
-  # event the merge produces) and goes on only once that run succeeded
-  # (scripts/await_ci.py, at most 100 minutes).  Every other job needs this
-  # one.  It plans a push and a production recovery with prepare's own
-  # steps, and waits where they will publish to PyPI; a run they refuse
-  # fails here at once.  A push that releases nothing and a TestPyPI
-  # staging run do not wait, so a merge that is not a release holds the
-  # release group for seconds.
+  # The gate.  A completed CI run starts this workflow, and the gate goes
+  # on only for a successful run of the push event on main in this
+  # repository: CI also completes for pull requests, a fork's among them,
+  # whose head branch can be named main too, and for the nightly run.  It
+  # names the commit that run tested, and every later job reads that one:
+  # under workflow_run the event's own commit is main's tip when the event
+  # fires, which a later merge can have moved past the tested commit.  A
+  # dispatch passes the gate.  Every other job needs this one.  It plans the
+  # merge and a production recovery with prepare's own steps, so a run they
+  # refuse fails here at once, and a recovery, which no CI run started,
+  # waits where it will publish to PyPI for CI's push run on the dispatched
+  # commit (scripts/await_ci.py, at most 180 minutes).  A merge that
+  # releases nothing holds the release group for seconds.
   ci:
-    name: Wait for CI on this commit
+    name: Gate on CI's run for this commit
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || (github.event.workflow_run.conclusion == 'success'
+      && github.event.workflow_run.event == 'push'
+      && github.event.workflow_run.head_branch == 'main'
+      && github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
-    timeout-minutes: 110
+    timeout-minutes: 190
     permissions:
       actions: read
       contents: read
+    outputs:
+      sha: ${{ steps.commit.outputs.sha }}
     steps:
+      # The pypi environment's approval page shows the event's commit,
+      # main's tip, so the summary names the one this run releases.
+      - name: Name the commit this run releases
+        id: commit
+        env:
+          SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          CI_RUN: ${{ github.event.workflow_run.html_url }}
+        run: |
+          if ! printf '%s' "$SHA" | grep -qE '^[0-9a-f]{40}$'; then
+            echo "::error::not a commit SHA: '$SHA'"
+            exit 1
+          fi
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          {
+            echo "Commit: \`$SHA\`"
+            if [ -n "$CI_RUN" ]; then
+              echo ""
+              echo "CI run: $CI_RUN"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - uses: actions/checkout@v7
         with:
+          ref: ${{ steps.commit.outputs.sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -58,15 +98,15 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Does this push publish to PyPI?
+      # The checkout is the commit, so its first parent is the main the
+      # merge went into.
+      - name: Does this merge publish to PyPI?
         id: push
-        if: github.event_name == 'push'
-        env:
-          BEFORE_REF: ${{ github.event.before }}
+        if: github.event_name == 'workflow_run'
         run: >-
           python scripts/release.py prepare
           --mode push
-          --before-ref "$BEFORE_REF"
+          --before-ref "HEAD^1"
           --github-output "$GITHUB_OUTPUT"
 
       - name: Does this recovery publish to PyPI?
@@ -83,11 +123,12 @@ jobs:
           --github-output "$GITHUB_OUTPUT"
 
       - name: Wait for CI's run on this commit to succeed
-        if: steps.push.outputs.publish == 'true' || steps.recovery.outputs.publish == 'true'
+        if: steps.recovery.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        run: python scripts/await_ci.py --commit "$GITHUB_SHA" --workflow ci.yml --event push
+          RELEASE_SHA: ${{ steps.commit.outputs.sha }}
+        run: python scripts/await_ci.py --commit "$RELEASE_SHA" --workflow ci.yml --event push
 
   prepare:
     name: Plan and validate release
@@ -100,9 +141,11 @@ jobs:
       target: ${{ steps.push.outputs.target || steps.testpypi.outputs.target || steps.recovery.outputs.target }}
       version: ${{ steps.push.outputs.version || steps.testpypi.outputs.version || steps.recovery.outputs.version }}
       artifact: ${{ steps.push.outputs.artifact || steps.testpypi.outputs.artifact || steps.recovery.outputs.artifact }}
+      sha: ${{ needs.ci.outputs.sha }}
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ needs.ci.outputs.sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -113,13 +156,11 @@ jobs:
 
       - name: Detect a production version bump
         id: push
-        if: github.event_name == 'push'
-        env:
-          BEFORE_REF: ${{ github.event.before }}
+        if: github.event_name == 'workflow_run'
         run: >-
           python scripts/release.py prepare
           --mode push
-          --before-ref "$BEFORE_REF"
+          --before-ref "HEAD^1"
           --github-output "$GITHUB_OUTPUT"
 
       - name: Validate an explicit TestPyPI staging run
@@ -185,6 +226,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ needs.prepare.outputs.sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -274,6 +316,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ needs.prepare.outputs.sha }}
           persist-credentials: false
 
       - name: Download the tested release artifact
@@ -323,6 +366,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ needs.prepare.outputs.sha }}
           persist-credentials: false
 
       - name: Download the tested release artifact
@@ -358,6 +402,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.prepare.outputs.version }}
+          RELEASE_SHA: ${{ needs.prepare.outputs.sha }}
         run: |
           tag_sha="$(gh api \
             "repos/$GITHUB_REPOSITORY/git/ref/tags/v${VERSION}" \
@@ -372,9 +417,9 @@ jobs:
             gh api --method POST \
               "repos/$GITHUB_REPOSITORY/git/refs" \
               -f ref="refs/tags/v${VERSION}" \
-              -f sha="$GITHUB_SHA"
-          elif [ "$tag_sha" != "$GITHUB_SHA" ]; then
-            echo "::error::immutable tag v${VERSION} points at ${tag_sha}, not ${GITHUB_SHA}"
+              -f sha="$RELEASE_SHA"
+          elif [ "$tag_sha" != "$RELEASE_SHA" ]; then
+            echo "::error::immutable tag v${VERSION} points at ${tag_sha}, not ${RELEASE_SHA}"
             exit 1
           fi
 
