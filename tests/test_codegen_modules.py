@@ -73,33 +73,33 @@ def _parse_from_temp_file(source: str) -> tuple[ast.Program, str]:
 
 
 class TestCrossModuleGuardRail:
-    """Calls to undefined functions produce a proper diagnostic."""
+    """Calls to undefined functions produce a proper diagnostic: the check's
+    (E200, #1513), so code generation's own rail behind it is never met."""
 
     def test_undefined_fn_call_diagnostic(self) -> None:
-        """Calling a function not defined in this module emits a diagnostic."""
+        """Calling a function not defined in this module is refused at
+        check, naming the call."""
         source = """\
 public fn f(-> @Int)
   requires(true) ensures(true) effects(pure)
 { unknown_fn(42) }
 """
-        result = _compile(source)
-        errors = [d for d in result.diagnostics if d.severity == "error"]
-        assert len(errors) == 1
+        errors = pipeline.check(source).errors
+        assert [d.error_code for d in errors] == ["E200"], errors
         assert "unknown_fn" in errors[0].description
-        assert "not defined in this module" in errors[0].description
-        assert "not found in any imported module" in errors[0].description
-        assert result.ok is False
 
     def test_undefined_fn_no_raw_wasmtime_error(self) -> None:
-        """No raw WAT compilation error -- guard rail catches it first."""
+        """No raw WAT compilation error: the check refuses the call first,
+        so no module is built."""
         source = """\
 public fn f(-> @Int)
   requires(true) ensures(true) effects(pure)
 { missing(1) }
 """
-        result = _compile(source)
-        errors = [d for d in result.diagnostics if d.severity == "error"]
-        assert all("WAT compilation failed" not in e.description for e in errors)
+        compiled = pipeline.compile(source)
+        assert compiled.generator is None
+        assert [d.error_code for d in compiled.errors] == ["E200"], (
+            compiled.errors)
 
     def test_locally_defined_fn_compiles(self) -> None:
         """Calls to locally defined functions still work."""
@@ -121,13 +121,13 @@ class TestCrossModuleCodegen:
 
     # Reusable module sources
     MATH_MODULE = """\
-public fn abs(@Int -> @Int)
+public fn iabs(@Int -> @Int)
   requires(true)
   ensures(@Int.result >= 0)
   effects(pure)
 { if @Int.0 < 0 then { 0 - @Int.0 } else { @Int.0 } }
 
-public fn max(@Int, @Int -> @Int)
+public fn imax(@Int, @Int -> @Int)
   requires(true)
   ensures(@Int.result >= @Int.0)
   ensures(@Int.result >= @Int.1)
@@ -157,7 +157,7 @@ private fn internal(@Int -> @Int)
     ) -> CompileResult:
         """Compile with resolved modules."""
         return pipeline.compile(
-            source, file="fixture.vera", modules=modules, checked=False,
+            source, file="fixture.vera", modules=modules,
         ).result
 
     @classmethod
@@ -179,35 +179,35 @@ private fn internal(@Int -> @Int)
         """Imported function produces valid WASM."""
         mod = self._resolved(("math",), self.MATH_MODULE)
         result = self._compile_mod("""\
-import math(abs);
+import math(iabs);
 public fn wrap(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
-{ abs(@Int.0) }
+{ iabs(@Int.0) }
 """, [mod])
         assert result.ok, [d.description for d in result.diagnostics]
-        assert "$abs" in result.wat
+        assert "$iabs" in result.wat
 
     def test_imported_function_executes(self) -> None:
-        """abs(-5) returns 5 via cross-module call."""
+        """iabs(-5) returns 5 via cross-module call."""
         mod = self._resolved(("math",), self.MATH_MODULE)
         val = self._run_mod("""\
-import math(abs);
+import math(iabs);
 public fn wrap(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
-{ abs(@Int.0) }
+{ iabs(@Int.0) }
 """, [mod], fn="wrap", args=[-5])
         assert val == 5
 
     def test_multiple_imports_execute(self) -> None:
-        """abs(max(x, y)) compiles and runs correctly."""
+        """iabs(imax(x, y)) compiles and runs correctly."""
         mod = self._resolved(("math",), self.MATH_MODULE)
         val = self._run_mod("""\
-import math(abs, max);
+import math(iabs, imax);
 public fn abs_max(@Int, @Int -> @Int)
   requires(true) ensures(true) effects(pure)
-{ abs(max(@Int.0, @Int.1)) }
+{ iabs(imax(@Int.0, @Int.1)) }
 """, [mod], fn="abs_max", args=[-3, -5])
-        assert val == 3  # abs(max(-3, -5)) = abs(-3) = 3
+        assert val == 3  # iabs(imax(-3, -5)) = iabs(-3) = 3
 
     # -- Export / visibility -------------------------------------------------
 
@@ -215,29 +215,29 @@ public fn abs_max(@Int, @Int -> @Int)
         """Imported functions are internal, not WASM exports."""
         mod = self._resolved(("math",), self.MATH_MODULE)
         result = self._compile_mod("""\
-import math(abs);
+import math(iabs);
 public fn wrap(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
-{ abs(@Int.0) }
+{ iabs(@Int.0) }
 """, [mod])
         assert result.ok
         # Only local public functions are exported
         assert "wrap" in result.exports
-        assert "abs" not in result.exports
+        assert "iabs" not in result.exports
 
     def test_local_shadows_import(self) -> None:
-        """Local definition of abs shadows the imported one."""
+        """Local definition of iabs shadows the imported one."""
         mod = self._resolved(("math",), self.MATH_MODULE)
         val = self._run_mod("""\
-import math(abs);
-public fn abs(@Int -> @Int)
+import math(iabs);
+public fn iabs(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { 999 }
 public fn main(-> @Int)
   requires(true) ensures(true) effects(pure)
-{ abs(42) }
+{ iabs(42) }
 """, [mod], fn="main")
-        assert val == 999  # local abs, not imported
+        assert val == 999  # local iabs, not imported
 
     def test_qualified_call_bypasses_local_shadow(self) -> None:
         """§8.5.3: a module-qualified call bypasses a local shadow.
@@ -565,18 +565,17 @@ where {
     # -- Guard rail ----------------------------------------------------------
 
     def test_guard_rail_still_catches_unknowns(self) -> None:
-        """Unknown function still produces an error even with modules."""
+        """Unknown function is still refused even with modules: at check
+        (E200, #1513), so code generation never meets the call."""
         mod = self._resolved(("math",), self.MATH_MODULE)
-        result = self._compile_mod("""\
-import math(abs);
+        errors = pipeline.check("""\
+import math(iabs);
 public fn f(-> @Int)
   requires(true) ensures(true) effects(pure)
 { totally_undefined(1) }
-""", [mod])
-        errors = [d for d in result.diagnostics if d.severity == "error"]
-        assert len(errors) == 1
+""", file="fixture.vera", modules=[mod]).errors
+        assert [d.error_code for d in errors] == ["E200"], errors
         assert "totally_undefined" in errors[0].description
-        assert result.ok is False
 
     # -- Private helper compilation ------------------------------------------
 
@@ -1403,8 +1402,8 @@ class TestNameCollisionDetection:
 
     def test_fn_collision_two_modules(self) -> None:
         """Two imports that both supply ``process`` leave the bare call bound
-        to neither declaration (the checker reports it, E155), so code
-        generation refuses the unchecked program rather than pick one."""
+        to neither declaration: the check refuses it (E155), so code
+        generation never picks one."""
         mod_a = self._resolved(("mod_a",), """\
 public fn process(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
@@ -1415,19 +1414,15 @@ public fn process(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 + 2 }
 """)
-        result = self._compile_mod("""\
+        errors = pipeline.check("""\
 import mod_a(process);
 import mod_b(process);
 public fn main(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { process(@Int.0) }
-""", [mod_a, mod_b])
-        errors = [d for d in result.diagnostics if d.severity == "error"]
-        assert any(
-            "process" in e.description and "not defined" in e.description
-            for e in errors
-        ), errors
-        assert result.ok is False
+""", file="fixture.vera", modules=[mod_a, mod_b]).errors
+        assert [d.error_code for d in errors] == ["E155"], errors
+        assert "process" in errors[0].description
 
     def test_private_helper_collision(self) -> None:
         """Private helpers with the same name in two modules are two
@@ -1495,13 +1490,13 @@ public fn main(@Int -> @Int)
         """Local definition shadowing an import is NOT a collision."""
         mod = self._resolved(("math",), TestCrossModuleCodegen.MATH_MODULE)
         result = self._compile_mod("""\
-import math(abs);
-public fn abs(@Int -> @Int)
+import math(iabs);
+public fn iabs(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { 999 }
 public fn main(-> @Int)
   requires(true) ensures(true) effects(pure)
-{ abs(42) }
+{ iabs(42) }
 """, [mod])
         errors = [d for d in result.diagnostics if d.severity == "error"]
         assert not errors, (
@@ -1512,10 +1507,10 @@ public fn main(-> @Int)
         """Same module path in resolved list twice is not a collision."""
         mod = self._resolved(("math",), TestCrossModuleCodegen.MATH_MODULE)
         result = self._compile_mod("""\
-import math(abs);
+import math(iabs);
 public fn main(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
-{ abs(@Int.0) }
+{ iabs(@Int.0) }
 """, [mod, mod])
         errors = [d for d in result.diagnostics if d.severity == "error"]
         assert not errors
@@ -2018,7 +2013,7 @@ class TestTransitiveModuleImport890:
             f"resolution errors: {[e.description for e in resolution_errors]}"
         )
         result = pipeline.compile(
-            main_file, modules=checked.resolved, checked=False,
+            main_file, modules=checked.resolved,
         ).result
         errors = [d for d in result.diagnostics if d.severity == "error"]
         assert not errors, (
@@ -2070,9 +2065,8 @@ public fn main(@Unit -> @Int)
     ) -> None:
         """spec §8.6.4: ``base``'s ``wrap40`` is NOT bare-callable from
         ``main`` — only ``mid``'s public declarations are visible to the
-        top-level importer.  A bare ``wrap40(...)`` in ``main`` must fail to
-        compile even though ``base`` is now in the resolved-module closure."""
-        from vera.resolver import ModuleResolver
+        top-level importer.  A bare ``wrap40(...)`` in ``main`` is refused at
+        check even though ``base`` is in the resolved-module closure."""
 
         (tmp_path / "base.vera").write_text(self.BASE, encoding="utf-8")
         (tmp_path / "mid.vera").write_text(self.MID, encoding="utf-8")
@@ -2085,21 +2079,11 @@ public fn main(@Unit -> @Int)
 """,
             encoding="utf-8",
         )
-        resolver = ModuleResolver(_root=tmp_path)
-        tree = parse_file(str(main_file))
-        prog = transform(tree)
-        resolved = resolver.resolve_imports(prog, main_file)
-        assert not resolver.errors
-        result = compile(
-            prog,
-            source=main_file.read_text(encoding="utf-8"),
-            file=str(main_file),
-            resolved_modules=resolved,
-        )
-        errors = [d for d in result.diagnostics if d.severity == "error"]
-        assert errors, (
-            "expected a cross-module error: base::wrap40 must not be "
-            "bare-callable from main (spec §8.6.4)"
+        checked = pipeline.check(main_file, root=tmp_path)
+        assert not checked.resolution_diagnostics
+        assert [d.error_code for d in checked.errors] == ["E200"], (
+            "expected a cross-module refusal: base::wrap40 must not be "
+            f"bare-callable from main (spec §8.6.4): {checked.errors}"
         )
 
     def test_diamond_transitive_runs(self, tmp_path: Path) -> None:
@@ -3620,16 +3604,15 @@ public fn main(@Unit -> @Int)
         with two type args — which is exactly how the prelude's own
         ``@VeraOptionMapFn<VeraA, VeraB>`` parameter used to resolve to
         the module's ``Int``.  Asserted on the maps rather than end to
-        end, and driven straight at ``CodeGenerator``: every prelude
-        alias now lives in the reserved namespace (#1221), so the module
-        below is a shape ``vera check`` refuses (E154) and only this
-        layer can still be handed.  The pairing is what keeps that
-        refusal from being the only thing standing between a module
-        alias and the prelude's parameter list."""
+        end.  The module's alias takes a name of its own: a prelude
+        alias's name is reserved (E154, #1221), and a module alias is
+        named by its link name (#1694), so the two share no slot, and the
+        maps are still held paired beside the prelude's parameterized
+        entry."""
         from vera.codegen.core import CodeGenerator
 
         mods = [self._resolved(("mc",), """\
-type VeraOptionMapFn = Int;
+type OptMapFn = Int;
 
 public fn ident(@Int -> @Int)
   requires(true)
@@ -3661,7 +3644,7 @@ public fn main(@Unit -> @Int)
         # The module's alias is named by its link name (#1694), so it takes
         # no slot of the prelude's: each keeps its own target and its own
         # parameters, inside the module's scope as everywhere else.
-        own = "mod$mc$VeraOptionMapFn"
+        own = "mod$mc$OptMapFn"
         with gen._module_alias_scope(("mc",)):
             assert isinstance(
                 gen._type_aliases[own], ast.NamedType,

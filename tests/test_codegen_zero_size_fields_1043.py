@@ -300,11 +300,11 @@ private data BB { MkBox(Int), MkNot(Int) }
 private data PF { MkPF(Future<Unit>, BB) }
 
 private fn mk(@Int -> @PF)
-  requires(true) ensures(true) effects(pure)
+  requires(true) ensures(true) effects(<Async>)
 { MkPF(async(()), MkBox(@Int.0)) }
 
 public fn f(-> @Int)
-  requires(true) ensures(true) effects(pure)
+  requires(true) ensures(true) effects(<Async>)
 {
   let @PF = mk(4242);
   match @PF.0 {
@@ -325,7 +325,7 @@ private data BB { MkBox(Int), MkNot(Int) }
 private data PF { MkPF(Future<Unit>, BB) }
 
 public fn f(-> @Bool)
-  requires(true) ensures(true) effects(pure)
+  requires(true) ensures(true) effects(<Async>)
 {
   let @PF = MkPF(async(()), MkBox(7));
   let @PF = MkPF(async(()), MkBox(7));
@@ -345,7 +345,7 @@ private data BB { MkBox(Int), MkNot(Int) }
 private data PF { MkPF(Future<Unit>, BB) }
 
 public fn f(-> @Bool)
-  requires(true) ensures(true) effects(pure)
+  requires(true) ensures(true) effects(<Async>)
 {
   let @PF = MkPF(async(()), MkBox(7));
   let @PF = MkPF(async(()), MkBox(9));
@@ -364,7 +364,7 @@ private data BB { MkBox(Int), MkNot(Int) }
 private data PF { MkPF(Future<Unit>, BB) }
 
 public fn f(-> @Bool)
-  requires(true) ensures(true) effects(pure)
+  requires(true) ensures(true) effects(<Async>)
 { eq(show(MkPF(async(()), MkBox(7))), "MkPF(unit, MkBox(7))") }
 """
 
@@ -455,7 +455,8 @@ public fn f(-> @Int)
 {
   let @Tuple<Unit, BB> = mkt(4242);
   match @Tuple<Unit, BB>.0 {
-    Tuple(_, MkBox(@Int)) -> @Int.0
+    Tuple(_, MkBox(@Int)) -> @Int.0,
+    Tuple(_, MkNot(@Int)) -> 0 - @Int.0
   }
 }
 """

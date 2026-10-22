@@ -50,11 +50,9 @@ the defect that lands at run.  Both #1274's and #1299's matrices drive
 them, so the two issues' cells can never be built against subtly
 different pipelines.
 
-:func:`build_multi_module_past_check` (#1304) is the same pipeline for a
-program the CHECKER refuses: it compiles anyway, with the tables that check
-collected (``tests/pipeline.py``'s ``compile(..., past_check=True)``), so a
-codegen rail that now sits behind an earlier refusal is still driven and
-still asserted.
+:func:`refused_multi_module` (#1304) is the same front half for a program
+the CHECKER refuses: it returns the refusal's errors and compiles nothing,
+since no stage after the check runs on a program it refuses.
 
 :func:`check_multi_module` and :func:`verify_multi_module` stop earlier
 and return more: every check diagnostic, warnings and locations included,
@@ -171,10 +169,8 @@ def build_multi_module(
     than a hand-built fixture's default.
 
     Shares its resolve-and-check front half with
-    :func:`build_multi_module_past_check`, which keeps going where this one
-    raises; the two differ only in what they do about a rejected program, so
-    a codegen rail measured through one is measured against the same
-    resolution and the same artifacts as through the other.
+    :func:`refused_multi_module`, which returns the check's errors where this
+    one raises.
     """
     entry = pipeline.write_tree(tmp_path, files, main_name)
     verified = pipeline.verify(entry, root=tmp_path)
@@ -199,7 +195,6 @@ def compile_multi_module(
     type-check errors raise, as for :func:`build_multi_module`."""
     compiled = pipeline.compile(
         pipeline.write_tree(tmp_path, files, main_name), root=tmp_path)
-    assert compiled.checked is not None
     check_errors = _check_errors(compiled.checked)
     assert not check_errors, (
         f"typecheck errors: {[d for _, d in check_errors]}"
@@ -257,38 +252,27 @@ def verify_multi_module(
     return list(checked.checker_diagnostics), verified.result
 
 
-def build_multi_module_past_check(
+def refused_multi_module(
     tmp_path: Path, files: dict[str, str],
     main_name: str = "main.vera",
-) -> tuple[
-    list[tuple[str, str]], CompileResult, list[tuple[str, str]],
-]:
-    """Resolve + check + compile, CONTINUING past a rejected check (#1304).
-
-    Returns ``(check_errors, compile_result, codegen_errors)``.
+) -> list[tuple[str, str]]:
+    """Resolve and check *main_name*, which the check must refuse, and return
+    its errors as ``(error_code, description)`` pairs (#1304).
 
     :func:`build_multi_module` raises on a check error because every one of
     its callers builds a check-green fixture, so an error there means the
-    fixture is broken.  This one exists for the opposite case: a shape the
-    CHECKER refuses, whose compile is still measured — what code generation
-    does with a program the check refused (it refuses a call bound to
-    nothing, spec §8.9.3) — so the shape is driven through both doors and
-    asserted at both, rather than at whichever one happens to answer first.
-
-    Verification is skipped: the program is already rejected, so a verify
-    verdict over it would describe a program the toolchain will not build.
+    fixture is broken.  This one is for the opposite case, a shape the
+    CHECKER refuses.  Nothing is compiled or verified: no stage after the
+    check runs on a program it refuses.  A resolution error raises, so the
+    refusal returned is the checker's.
     """
-    compiled = pipeline.compile(
-        pipeline.write_tree(tmp_path, files, main_name), root=tmp_path,
-        past_check=True,
-    )
-    assert compiled.checked is not None
-    check_errors = _check_errors(compiled.checked)
+    checked = pipeline.check(
+        pipeline.write_tree(tmp_path, files, main_name), root=tmp_path)
+    check_errors = _check_errors(checked)
     assert check_errors, (
         "expected the checker to refuse this program; it was accepted"
     )
-    result, cg_errors = _compiled(compiled)
-    return check_errors, result, cg_errors
+    return check_errors
 
 
 def refused_at_check(

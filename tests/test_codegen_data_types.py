@@ -222,8 +222,6 @@ public fn toggle(@Bool -> @Toggle)
     def test_option_none(self) -> None:
         """None as Option<Int> compiles (nullary constructor)."""
         source = """\
-private data Option<T> { None, Some(T) }
-
 public fn make_none(-> @Option<Int>)
   requires(true) ensures(true) effects(pure)
 { None }
@@ -236,8 +234,6 @@ public fn make_none(-> @Option<Int>)
     def test_option_some(self) -> None:
         """Some(@Int.0) as Option<Int> compiles."""
         source = """\
-private data Option<T> { None, Some(T) }
-
 public fn make_some(@Int -> @Option<Int>)
   requires(true) ensures(true) effects(pure)
 { Some(@Int.0) }
@@ -306,8 +302,6 @@ public fn make_wrap(@Int -> @Wrapper)
     def test_constructor_in_if_branches(self) -> None:
         """Constructors in both branches of if-then-else compile."""
         source = """\
-private data Option<T> { None, Some(T) }
-
 public fn maybe(@Bool -> @Option<Int>)
   requires(true) ensures(true) effects(pure)
 {
@@ -348,8 +342,6 @@ class TestMatchExpressions:
     def test_match_option_none_arm(self) -> None:
         """Match on None arm returns 0."""
         source = """\
-private data Option<T> { None, Some(T) }
-
 public fn test_none(-> @Int)
   requires(true) ensures(true) effects(pure)
 {
@@ -365,8 +357,6 @@ public fn test_none(-> @Int)
     def test_match_option_some_arm(self) -> None:
         """Match on Some arm extracts value."""
         source = """\
-private data Option<T> { None, Some(T) }
-
 public fn test_some(-> @Int)
   requires(true) ensures(true) effects(pure)
 {
@@ -436,8 +426,6 @@ public fn test_blue(-> @Int)
     def test_match_extracts_int(self) -> None:
         """Match extracts Int field and uses it in body."""
         source = """\
-private data Option<T> { None, Some(T) }
-
 public fn test(-> @Int)
   requires(true) ensures(true) effects(pure)
 {
@@ -485,8 +473,6 @@ public fn test(-> @Int)
     def test_match_wildcard_catchall(self) -> None:
         """Wildcard catch-all matches None."""
         source = """\
-private data Option<T> { None, Some(T) }
-
 public fn test(-> @Int)
   requires(true) ensures(true) effects(pure)
 {
@@ -515,8 +501,6 @@ public fn test(@Int -> @Int)
     def test_match_wildcard_sub_pattern(self) -> None:
         """Wildcard inside constructor sub-pattern."""
         source = """\
-private data Option<T> { None, Some(T) }
-
 public fn test(-> @Int)
   requires(true) ensures(true) effects(pure)
 {
@@ -605,8 +589,6 @@ public fn test(@Int -> @Int)
     def test_match_binding_catchall(self) -> None:
         """Binding pattern as catch-all."""
         source = """\
-private data Option<T> { None, Some(T) }
-
 public fn test(-> @Int)
   requires(true) ensures(true) effects(pure)
 {
@@ -622,8 +604,6 @@ public fn test(-> @Int)
     def test_match_in_let_binding(self) -> None:
         """Match result used in a let binding."""
         source = """\
-private data Option<T> { None, Some(T) }
-
 public fn test(-> @Int)
   requires(true) ensures(true) effects(pure)
 {
@@ -659,8 +639,6 @@ public fn test(-> @Int)
     def test_match_function_compiles(self) -> None:
         """Function with match is now exported (not skipped)."""
         source = """\
-private data Option<T> { None, Some(T) }
-
 public fn unwrap_or(@Option<Int> -> @Int)
   requires(true) ensures(true) effects(pure)
 {
@@ -676,7 +654,6 @@ public fn unwrap_or(@Option<Int> -> @Int)
     def test_match_nested_some(self) -> None:
         """Nested constructor: Cons(Some(@Int), _) extracts the inner Int."""
         source = """\
-private data Option<T> { None, Some(T) }
 private data List<T> { Nil, Cons(T, List<T>) }
 
 public fn first_val(-> @Int)
@@ -694,7 +671,6 @@ public fn first_val(-> @Int)
     def test_match_nested_none(self) -> None:
         """Nested nullary: Cons(None, _) arm is selected."""
         source = """\
-private data Option<T> { None, Some(T) }
 private data List<T> { Nil, Cons(T, List<T>) }
 
 public fn test_none(-> @Int)
@@ -713,7 +689,6 @@ public fn test_none(-> @Int)
     def test_match_nested_multi_field(self) -> None:
         """Nested constructor with both fields used."""
         source = """\
-private data Option<T> { None, Some(T) }
 private data Pair<A, B> { MkPair(A, B) }
 
 public fn test(-> @Int)
@@ -731,7 +706,6 @@ public fn test(-> @Int)
     def test_match_nested_different_arms(self) -> None:
         """Different nesting per arm selects correct arm."""
         source = """\
-private data Option<T> { None, Some(T) }
 private data List<T> { Nil, Cons(T, List<T>) }
 
 public fn test(-> @Int)
@@ -750,7 +724,6 @@ public fn test(-> @Int)
     def test_match_nested_fallthrough(self) -> None:
         """Nested Some doesn't match None, falls through to wildcard."""
         source = """\
-private data Option<T> { None, Some(T) }
 private data List<T> { Nil, Cons(T, List<T>) }
 
 public fn test(-> @Int)
@@ -872,8 +845,6 @@ public fn f(-> @Int)
     def test_tuple_in_result(self) -> None:
         """Ok(Tuple(1, 2)) — nested Tuple inside Result."""
         source = """\
-private data Result<T, E> { Ok(T), Err(E) }
-
 public fn f(-> @Int)
   requires(true) ensures(true) effects(pure)
 {
@@ -905,8 +876,6 @@ public fn f(-> @Int)
     def test_let_destruct_urlparts(self) -> None:
         """LetDestruct with UrlParts (5-field ADT, knock-on effect)."""
         source = """\
-private data UrlParts { UrlParts(String, String, String, String, String) }
-
 public fn main(-> @Unit)
   requires(true) ensures(true) effects(<IO>)
 {

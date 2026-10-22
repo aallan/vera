@@ -13,12 +13,8 @@ from tests.codegen_helpers import (
 class TestParseNat:
     """parse_nat returns Result<Nat, String>."""
 
-    _PREAMBLE = """
-private data Result<T, E> { Ok(T), Err(E) }
-"""
-
     def _ok_prog(self, literal: str) -> str:
-        return self._PREAMBLE + f"""
+        return f"""
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {{
   match parse_nat("{literal}") {{
     Ok(@Nat) -> @Nat.0,
@@ -28,7 +24,7 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {{
 """
 
     def _err_prog(self, literal: str) -> str:
-        return self._PREAMBLE + f"""
+        return f"""
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {{
   match parse_nat("{literal}") {{
     Ok(_) -> 0,
@@ -63,7 +59,7 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {{
 
     def test_err_string_extraction(self) -> None:
         """Err arm can bind and use the error string."""
-        src = self._PREAMBLE + """
+        src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
   match parse_nat("abc") {
     Ok(_) -> 0,
@@ -78,17 +74,13 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
 class TestParseFloat64:
     """parse_float64 returns Result<Float64, String>."""
 
-    _PREAMBLE = """
-private data Result<T, E> { Ok(T), Err(E) }
-"""
-
     def _ok_prog(self, literal: str, expect_int: int) -> str:
         """Build a program that parses a float and compares to expected value.
 
         Returns 1 if the float matches the expected integer value, 0 otherwise.
         This avoids returning f64 directly since Result wrapping returns i32.
         """
-        return self._PREAMBLE + f"""
+        return f"""
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {{
   match parse_float64("{literal}") {{
     Ok(@Float64) -> float_to_int(@Float64.0),
@@ -98,7 +90,7 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {{
 """
 
     def _err_prog(self, literal: str) -> str:
-        return self._PREAMBLE + f"""
+        return f"""
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {{
   match parse_float64("{literal}") {{
     Ok(_) -> 0,
@@ -132,7 +124,7 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {{
 
     def test_err_string_extraction(self) -> None:
         """Err arm can bind and use the error string."""
-        src = self._PREAMBLE + """
+        src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
   match parse_float64("abc") {
     Ok(_) -> 0,
@@ -147,12 +139,8 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
 class TestParseInt:
     """parse_int returns Result<Int, String>."""
 
-    _PREAMBLE = """
-private data Result<T, E> { Ok(T), Err(E) }
-"""
-
     def _ok_prog(self, literal: str) -> str:
-        return self._PREAMBLE + f"""
+        return f"""
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {{
   match parse_int("{literal}") {{
     Ok(@Int) -> @Int.0,
@@ -162,7 +150,7 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {{
 """
 
     def _err_prog(self, literal: str) -> str:
-        return self._PREAMBLE + f"""
+        return f"""
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {{
   match parse_int("{literal}") {{
     Ok(_) -> 0,
@@ -194,7 +182,7 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {{
 
     def test_err_string_extraction(self) -> None:
         """Err arm can bind and use the error string."""
-        src = self._PREAMBLE + """
+        src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
   match parse_int("abc") {
     Ok(_) -> 0,
@@ -209,12 +197,8 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
 class TestParseBool:
     """parse_bool returns Result<Bool, String>."""
 
-    _PREAMBLE = """
-private data Result<T, E> { Ok(T), Err(E) }
-"""
-
     def _ok_prog(self, literal: str, expect_true: bool) -> str:
-        return self._PREAMBLE + f"""
+        return f"""
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {{
   match parse_bool("{literal}") {{
     Ok(@Bool) -> if @Bool.0 then {{ 1 }} else {{ 0 }},
@@ -224,7 +208,7 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {{
 """
 
     def _err_prog(self, literal: str) -> str:
-        return self._PREAMBLE + f"""
+        return f"""
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {{
   match parse_bool("{literal}") {{
     Ok(_) -> 0,
@@ -250,7 +234,7 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {{
 
     def test_err_string_extraction(self) -> None:
         """Err arm can bind and use the error string."""
-        src = self._PREAMBLE + """
+        src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
   match parse_bool("yes") {
     Ok(_) -> 0,
@@ -309,12 +293,8 @@ public fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<IO>) {{
 class TestBase64Decode:
     """base64_decode returns Result<String, String>."""
 
-    _PREAMBLE = """
-private data Result<T, E> { Ok(T), Err(E) }
-"""
-
     def _ok_prog(self, literal: str) -> str:
-        return self._PREAMBLE + f"""
+        return f"""
 public fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<IO>) {{
   match base64_decode("{literal}") {{
     Ok(@String) -> IO.print(@String.0),
@@ -324,7 +304,7 @@ public fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<IO>) {{
 """
 
     def _ok_len_prog(self, literal: str) -> str:
-        return self._PREAMBLE + f"""
+        return f"""
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {{
   match base64_decode("{literal}") {{
     Ok(@String) -> string_length(@String.0),
@@ -334,7 +314,7 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {{
 """
 
     def _err_prog(self, literal: str) -> str:
-        return self._PREAMBLE + f"""
+        return f"""
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {{
   match base64_decode("{literal}") {{
     Ok(_) -> 0,
@@ -374,7 +354,7 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {{
 
     def test_roundtrip(self) -> None:
         """Encode then decode round-trips correctly."""
-        src = self._PREAMBLE + """
+        src = """
 public fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<IO>) {
   let @String = base64_encode("Hello, World!");
   match base64_decode(@String.0) {
@@ -422,12 +402,8 @@ public fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<IO>) {{
 class TestUrlDecode:
     """url_decode returns Result<String, String>."""
 
-    _PREAMBLE = """
-private data Result<T, E> { Ok(T), Err(E) }
-"""
-
     def _ok_prog(self, literal: str) -> str:
-        return self._PREAMBLE + f"""
+        return f"""
 public fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<IO>) {{
   match url_decode("{literal}") {{
     Ok(@String) -> IO.print(@String.0),
@@ -437,7 +413,7 @@ public fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<IO>) {{
 """
 
     def _err_prog(self, literal: str) -> str:
-        return self._PREAMBLE + f"""
+        return f"""
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {{
   match url_decode("{literal}") {{
     Ok(_) -> 0,
@@ -475,7 +451,7 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {{
 
     def test_roundtrip(self) -> None:
         """Encode then decode round-trips correctly."""
-        src = self._PREAMBLE + """
+        src = """
 public fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<IO>) {
   match url_decode(url_encode("Hello, World!")) {
     Ok(@String) -> IO.print(@String.0),
@@ -489,11 +465,6 @@ public fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<IO>) {
 class TestUrlParse:
     """url_parse returns Result<UrlParts, String>."""
 
-    _PREAMBLE = """
-private data UrlParts { UrlParts(String, String, String, String, String) }
-private data Result<T, E> { Ok(T), Err(E) }
-"""
-
     def _component_prog(self, url: str, index: int) -> str:
         """Extract a single component from a parsed URL by field index.
 
@@ -502,7 +473,7 @@ private data Result<T, E> { Ok(T), Err(E) }
         .1=query, .0=fragment.
         """
         slot = 4 - index
-        return self._PREAMBLE + f"""
+        return f"""
 public fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<IO>) {{
   match url_parse("{url}") {{
     Ok(@UrlParts) -> match @UrlParts.0 {{
@@ -515,7 +486,7 @@ public fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<IO>) {{
 """
 
     def _err_prog(self, url: str) -> str:
-        return self._PREAMBLE + f"""
+        return f"""
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {{
   match url_parse("{url}") {{
     Ok(_) -> 0,
@@ -525,7 +496,7 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {{
 """
 
     def _join_prog(self, url: str) -> str:
-        return self._PREAMBLE + f"""
+        return f"""
 public fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<IO>) {{
   match url_parse("{url}") {{
     Ok(@UrlParts) -> IO.print(url_join(@UrlParts.0)),
@@ -620,12 +591,8 @@ public fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<IO>) {{
 class TestUrlJoin:
     """url_join reassembles a UrlParts into a URL string."""
 
-    _PREAMBLE = """
-private data UrlParts { UrlParts(String, String, String, String, String) }
-"""
-
     def test_all_components(self) -> None:
-        src = self._PREAMBLE + """
+        src = """
 public fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<IO>) {
   IO.print(url_join(UrlParts("https", "example.com", "/path", "q=1", "frag")))
 }
@@ -633,7 +600,7 @@ public fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<IO>) {
         assert _run_io(src) == "https://example.com/path?q=1#frag"
 
     def test_scheme_authority_path(self) -> None:
-        src = self._PREAMBLE + """
+        src = """
 public fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<IO>) {
   IO.print(url_join(UrlParts("https", "example.com", "/path", "", "")))
 }
@@ -641,7 +608,7 @@ public fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<IO>) {
         assert _run_io(src) == "https://example.com/path"
 
     def test_with_query_no_fragment(self) -> None:
-        src = self._PREAMBLE + """
+        src = """
 public fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<IO>) {
   IO.print(url_join(UrlParts("https", "example.com", "/", "key=val", "")))
 }
@@ -649,7 +616,7 @@ public fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<IO>) {
         assert _run_io(src) == "https://example.com/?key=val"
 
     def test_with_fragment_no_query(self) -> None:
-        src = self._PREAMBLE + """
+        src = """
 public fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<IO>) {
   IO.print(url_join(UrlParts("https", "example.com", "", "", "top")))
 }
@@ -657,7 +624,7 @@ public fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<IO>) {
         assert _run_io(src) == "https://example.com#top"
 
     def test_scheme_only(self) -> None:
-        src = self._PREAMBLE + """
+        src = """
 public fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<IO>) {
   IO.print(url_join(UrlParts("http", "", "", "", "")))
 }
@@ -665,7 +632,7 @@ public fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<IO>) {
         assert _run_io(src) == "http://"
 
     def test_empty_parts(self) -> None:
-        src = self._PREAMBLE + """
+        src = """
 public fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<IO>) {
   IO.print(url_join(UrlParts("", "", "", "", "")))
 }
@@ -716,8 +683,6 @@ public fn main(@Unit -> @Unit)
 
     def test_roundtrip(self) -> None:
         src = """
-private data Result<T, E> { Ok(T), Err(E) }
-
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
   match parse_nat(to_string(123)) {
     Ok(@Nat) -> @Nat.0,
@@ -779,8 +744,6 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
 
     def test_string_strip_then_parse(self) -> None:
         src = """
-private data Result<T, E> { Ok(T), Err(E) }
-
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
   match parse_nat(string_strip("  42  ")) {
     Ok(@Nat) -> @Nat.0,

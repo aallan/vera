@@ -72,7 +72,7 @@ def _run(source: str) -> object:
     Compiled unchecked (no type check, none of the checker's tables), as
     ``fixture.vera``.
     """
-    result = pipeline.compile(source, file="fixture.vera", checked=False).result
+    result = pipeline.compile(source, file="fixture.vera").result
     errors = [d for d in result.diagnostics if d.severity == "error"]
     assert not errors, f"unexpected codegen errors: {errors}"
     return pipeline.run(result, "main", capture_stderr=False).value

@@ -114,8 +114,6 @@ public fn main(-> @Int)
     def test_generic_with_adt_match(self) -> None:
         """forall<T> fn is_some with ADT match (Some case)."""
         source = """\
-private data Option<T> { None, Some(T) }
-
 private forall<T> fn is_some(@Option<T> -> @Bool)
   requires(true) ensures(true) effects(pure)
 {
@@ -134,8 +132,6 @@ public fn main(-> @Bool)
     def test_generic_with_adt_match_none(self) -> None:
         """forall<T> fn is_some with ADT match (None case)."""
         source = """\
-private data Option<T> { None, Some(T) }
-
 private forall<T> fn is_some(@Option<T> -> @Bool)
   requires(true) ensures(true) effects(pure)
 {
@@ -1047,7 +1043,7 @@ public fn main(-> @Nat)
 { string_length(show(build(100))) }
 
 private fn build(@Nat -> @List<Nat>)
-  requires(true) ensures(true) effects(pure)
+  requires(true) ensures(true) decreases(@Nat.0) effects(pure)
 {
   if @Nat.0 == 0 then { Nil } else { Cons(@Nat.0, build(@Nat.0 - 1)) }
 }
@@ -1077,7 +1073,7 @@ public fn main(-> @Bool)
 }
 
 private fn build(@Nat -> @List<Nat>)
-  requires(true) ensures(true) effects(pure)
+  requires(true) ensures(true) decreases(@Nat.0) effects(pure)
 {
   if @Nat.0 == 0 then { Nil } else { Cons(@Nat.0, build(@Nat.0 - 1)) }
 }
@@ -1179,12 +1175,13 @@ public fn main(-> @Bool)
         # Different payloads must not collide → eq of hashes is false (0).
         assert _run(source, fn="main") == 0
 
-    def test_generic_mutual_non_eq_leaf_is_loud_e613(self) -> None:
-        """A generic-mutual ADT with a non-Eq leaf still raises E613 (#934).
+    def test_generic_mutual_non_eq_leaf_is_refused(self) -> None:
+        """A generic-mutual ADT with a non-Eq leaf is refused (#934).
 
         No silent over-accept: an `Array<Int>` field is not Eq-derivable, so
-        `eq` on the recovered generic-mutual type must be a clean, loud E613 —
-        never a silent wrong result, never a traceback.
+        `eq` on the recovered generic-mutual type is refused loudly, at check
+        (E243), before code generation's own E613 — never a silent wrong
+        result, never a traceback.
         """
         source = """\
 private data Forest<T> { Empty, Grove(Rose<T>, Forest<T>) }
@@ -1194,11 +1191,8 @@ public fn main(-> @Int)
   requires(true) ensures(true) effects(pure)
 { if eq(Grove(Bloom(1, Empty, [1]), Empty), Grove(Bloom(1, Empty, [1]), Empty)) then { 1 } else { 0 } }
 """
-        result = _compile(source)
-        errors = [d for d in result.diagnostics if d.severity == "error"]
-        assert any(d.error_code == "E613" for d in errors), (
-            f"Expected E613, got: {[d.error_code for d in errors]}"
-        )
+        errors = pipeline.check(source).errors
+        assert {d.error_code for d in errors} == {"E243"}, errors
 
     def test_generic_mutual_non_show_leaf_is_loud_e602(self) -> None:
         """A generic-mutual ADT with a non-Show leaf still drops loud E602 (#934).
@@ -1352,50 +1346,41 @@ public fn main(-> @Bool)
 
     _BOX_DECL = "private data Box<T> { BNil, BCons(T, Box<Box<T>>) }\n"
 
-    def test_show_non_uniform_recursive_skips_cleanly(self) -> None:
-        """`show` on a `Box<Box<T>>` degrades to a clean E602, not a traceback."""
+    def test_show_non_uniform_recursive_is_refused(self) -> None:
+        """`show` on a `Box<Box<T>>`: pre-#933 an uncaught RecursionError
+        inside codegen, then a clean E602 skip; the non-regular declaration
+        is refused at check now (E129, #1429), so no stage after the check
+        meets it."""
         source = self._BOX_DECL + """
 public fn main(-> @String)
   requires(true) ensures(true) effects(pure)
 { show(BCons(1, BNil)) }
 """
-        # Pre-#933 this raised an uncaught RecursionError inside codegen.
-        result = _compile(source)
-        # `main` is dropped (unsupported show), not exported — the clean skip.
-        assert "main" not in result.exports
-        e602 = [d for d in result.diagnostics if d.error_code == "E602"]
-        assert e602, "expected a clean [E602] skip, got none"
-        # No error-severity diagnostic — a dropped-fn skip is a warning.
-        assert not [d for d in result.diagnostics if d.severity == "error"]
+        errors = pipeline.check(source).errors
+        assert [d.error_code for d in errors] == ["E129"], errors
 
-    def test_hash_non_uniform_recursive_skips_cleanly(self) -> None:
-        """`hash` on a `Box<Box<T>>` degrades to a clean E602, not a traceback."""
+    def test_hash_non_uniform_recursive_is_refused(self) -> None:
+        """`hash` on a `Box<Box<T>>`: refused at check (E129, #1429)."""
         source = self._BOX_DECL + """
 public fn main(-> @Nat)
   requires(true) ensures(true) effects(pure)
 { hash(BCons(1, BNil)) }
 """
-        result = _compile(source)
-        assert "main" not in result.exports
-        assert [d for d in result.diagnostics if d.error_code == "E602"]
-        assert not [d for d in result.diagnostics if d.severity == "error"]
+        errors = pipeline.check(source).errors
+        assert [d.error_code for d in errors] == ["E129"], errors
 
-    def test_eq_non_uniform_recursive_skips_cleanly(self) -> None:
-        """`eq` on a `Box<Box<T>>` degrades to a clean E613, not a traceback.
-
-        The Eq-derivability gate (`_adt_satisfies_eq`) recurs unboundedly on
-        the same non-uniform shape and crashed on the pre-#933 branch head
-        (base crashed here too — this is a strict improvement: a loud E613
-        replaces an uncaught traceback).
-        """
+    def test_eq_non_uniform_recursive_is_refused(self) -> None:
+        """`eq` on a `Box<Box<T>>`: the Eq-derivability gate
+        (`_adt_satisfies_eq`) recurred unboundedly on the non-uniform shape
+        and crashed before #933, then gave a loud E613; the declaration is
+        refused at check now (E129, #1429)."""
         source = self._BOX_DECL + """
 public fn main(-> @Bool)
   requires(true) ensures(true) effects(pure)
 { eq(BCons(1, BNil), BCons(2, BNil)) }
 """
-        result = _compile(source)
-        e613 = [d for d in result.diagnostics if d.error_code == "E613"]
-        assert e613, "expected a clean [E613] not-derivable diagnostic"
+        errors = pipeline.check(source).errors
+        assert [d.error_code for d in errors] == ["E129"], errors
 
     def test_non_uniform_recursion_leaves_uniform_shapes_intact(self) -> None:
         """The #933 bound must not clip legitimate uniform show/hash/eq.
@@ -2827,7 +2812,7 @@ public fn main(@Unit -> @Unit)
             f"{[str(d.description) for d in skip_notes]}"
         )
 
-    # A generic bound SOLELY by a user fn in bare ``@VeraT`` position: no
+    # A generic bound SOLELY by a user fn in bare ``@T`` position: no
     # builtin, no constructor arg masks the resolution.  ``mkdec`` returns a
     # ``Decimal`` (i32 handle) — pre-fix both codegen discovery AND the WASM
     # call-rewrite collapse it to ``Bool``, so the discovery desyncs from the
@@ -2839,9 +2824,9 @@ private fn mkdec(@Unit -> @Decimal)
   requires(true) ensures(true) effects(pure)
 { decimal_from_int(7) }
 
-private forall<VeraT> fn pick_first(@VeraT, @VeraT -> @VeraT)
+private forall<T> fn pick_first(@T, @T -> @T)
   requires(true) ensures(true) effects(pure)
-{ @VeraT.0 }
+{ @T.0 }
 
 public fn main(@Unit -> @String)
   requires(true) ensures(true) effects(pure)
@@ -3034,9 +3019,9 @@ private fn mk(@Int -> @Option<Option<Decimal>>)
   requires(true) ensures(true) effects(pure)
 { Some(Some(decimal_from_int(@Int.0))) }
 
-private forall<VeraT> fn pick_last(@VeraT, @VeraT -> @VeraT)
+private forall<T> fn pick_last(@T, @T -> @T)
   requires(true) ensures(true) effects(pure)
-{ @VeraT.0 }
+{ @T.0 }
 
 public fn main(@Unit -> @Int)
   requires(true) ensures(@Int.result == 0) effects(pure)
@@ -3053,9 +3038,9 @@ private fn mkr(@Int -> @Result<Option<Decimal>, String>)
   requires(true) ensures(true) effects(pure)
 { Ok(Some(decimal_from_int(@Int.0))) }
 
-private forall<VeraT> fn pick_last(@VeraT, @VeraT -> @VeraT)
+private forall<T> fn pick_last(@T, @T -> @T)
   requires(true) ensures(true) effects(pure)
-{ @VeraT.0 }
+{ @T.0 }
 
 public fn main(@Unit -> @Int)
   requires(true) ensures(@Int.result == 0) effects(pure)
@@ -3074,9 +3059,9 @@ private fn mkb(@Int -> @Box<Decimal>)
   requires(true) ensures(true) effects(pure)
 { MkBox(decimal_from_int(@Int.0)) }
 
-private forall<VeraT> fn pick_last(@VeraT, @VeraT -> @VeraT)
+private forall<T> fn pick_last(@T, @T -> @T)
   requires(true) ensures(true) effects(pure)
-{ @VeraT.0 }
+{ @T.0 }
 
 public fn main(@Unit -> @Int)
   requires(true) ensures(@Int.result == 0) effects(pure)
@@ -3088,17 +3073,17 @@ public fn main(@Unit -> @Int)
 """
 
     def test_issue3_param_return_into_bare_typevar_runs(self) -> None:
-        """`Option<…>` return bound to bare `@VeraT`: discovery emits
+        """`Option<…>` return bound to bare `@T`: discovery emits
         `pick_last$Option`, so the call site must reference it, not the
         i32→`Bool` collapse.  Pre-round-3 `main` was dropped."""
         assert _run(self._ISSUE3_PARAM_RETURN_BARE_T, fn="main") == 0
 
     def test_issue3_result_return_into_bare_typevar_runs(self) -> None:
-        """`Result<Option<Decimal>, String>` return bound to bare `@VeraT`."""
+        """`Result<Option<Decimal>, String>` return bound to bare `@T`."""
         assert _run(self._ISSUE3_RESULT_RETURN_BARE_T, fn="main") == 0
 
     def test_issue3_box_return_into_bare_typevar_runs(self) -> None:
-        """User ADT `Box<Decimal>` return bound to bare `@VeraT`."""
+        """User ADT `Box<Decimal>` return bound to bare `@T`."""
         assert _run(self._ISSUE3_BOX_RETURN_BARE_T, fn="main") == 0
 
     def test_issue3_discovery_matches_call_rewrite(self) -> None:
@@ -3139,9 +3124,9 @@ private fn mki(@Int -> @Option<Int>)
   requires(true) ensures(true) effects(pure)
 { Some(@Int.0) }
 
-private forall<VeraT> fn pick_last(@VeraT, @VeraT -> @VeraT)
+private forall<T> fn pick_last(@T, @T -> @T)
   requires(true) ensures(true) effects(pure)
-{ @VeraT.0 }
+{ @T.0 }
 
 public fn main(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)

@@ -119,7 +119,7 @@ def _compile_spied(source: str) -> tuple[CompileResult, set[str]]:
 
     MonomorphizationMixin._monomorphize = _spy  # type: ignore[assignment,method-assign]
     try:
-        result = pipeline.compile(source, file="fixture.vera", checked=False).result
+        result = pipeline.compile(source, file="fixture.vera").result
     finally:
         MonomorphizationMixin._monomorphize = orig  # type: ignore[assignment,method-assign]
     return result, registered

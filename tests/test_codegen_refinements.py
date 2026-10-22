@@ -12,6 +12,7 @@ from vera.codegen import (
     execute,
 )
 
+from tests import pipeline
 from tests.codegen_helpers import (
     _compile,
     _compile_ok,
@@ -273,7 +274,6 @@ class TestRefinementTypeAlias:
 
     _PREAMBLE = """
 type PosInt = { @Int | @Int.0 > 0 };
-type Nat = { @Int | @Int.0 >= 0 };
 type Percentage = { @Int | @Int.0 >= 0 && @Int.0 <= 100 };
 """
 
@@ -341,7 +341,7 @@ public fn f(@Int -> @Int)
     def test_refined_return_in_expr(self) -> None:
         """Function returning a refined type works in expressions."""
         val = _run(self._PREAMBLE + """
-public fn clamp(@Int -> @Percentage)
+public fn clamp_pct(@Int -> @Percentage)
   requires(true) ensures(true) effects(pure)
 {
   if @Int.0 < 0 then { 0 }
@@ -349,7 +349,7 @@ public fn clamp(@Int -> @Percentage)
 }
 
 public fn main(-> @Int) requires(true) ensures(true) effects(pure) {
-  clamp(200) + clamp(50)
+  clamp_pct(200) + clamp_pct(50)
 }
 """)
         assert val == 150
@@ -602,9 +602,10 @@ public fn entry(@Unit -> @Int)
         _run_refine_trap(src, fn="entry")
 
     def test_nat_tuple_component_guard_traps(self) -> None:
-        """A bare `@Nat` tuple component is guarded with the synthesised
-        implicit `>= 0` (the message proves the base invariant is what fired),
-        so a negative component into `Tuple<Nat, Int>` traps at the boundary."""
+        """A negative component into `Tuple<Nat, Int>` traps.  Compiled with
+        the checker's tables, as `vera run` compiles it, the construction is
+        guarded at the component's `@Nat` target (#820), so the narrowing
+        guard fires there, before `natc`'s parameter guard."""
         src = """
 public fn natc(@Tuple<Nat, Int> -> @Int)
   requires(true) ensures(true) effects(pure)
@@ -614,7 +615,8 @@ public fn entry(@Unit -> @Int)
 { natc(Tuple(0 - 4, 3)) }
 """
         result = _compile_ok(src)
-        with pytest.raises(RuntimeError, match=r"@Nat\.0 >= 0"):
+        with pytest.raises(RuntimeError,
+                           match="Negative value bound into a @Nat slot"):
             execute(result, fn_name="entry")
 
     def test_valid_tuple_components_pass_both_guards(self) -> None:
@@ -654,12 +656,11 @@ public fn entry_ok(@Unit -> @Int)
         _run_refine_trap(src, fn="entry_bad")
         assert _run(src, fn="entry_ok") == 0
 
-    def test_infinite_tuple_alias_fails_closed_with_e617(self) -> None:
+    def test_infinite_tuple_alias_is_refused_at_check(self) -> None:
         """A mutually-recursive (infinite) tuple alias would recurse forever
-        through the component-guard decomposition; the depth limit FAILS CLOSED
-        with a loud E617 rather than silently emitting partial guards (or
-        hanging) — never a silent `return []` that drops deep components (CR
-        PR-review)."""
+        through the component-guard decomposition, where code generation's
+        depth limit failed closed with a loud E617 (CR PR-review); the check
+        refuses the cycle first (E132), so no stage after it meets one."""
         src = """
 type A = Tuple<B, Int>;
 type B = Tuple<A, Int>;
@@ -667,13 +668,8 @@ public fn f(@A -> @Int)
   requires(true) ensures(true) effects(pure)
 { 0 }
 """
-        result = _compile(src)
-        errs = [d for d in result.diagnostics
-                if d.severity == "error" and d.error_code == "E617"]
-        assert errs, (
-            f"expected a fail-closed E617 for the infinite tuple alias; "
-            f"diagnostics: {result.diagnostics}"
-        )
+        errors = pipeline.check(src).errors
+        assert [d.error_code for d in errors] == ["E132"], errors
 
     def test_refinement_over_tuple_component_guard_traps(self) -> None:
         """A refinement OVER a tuple (`type Pair = { @Tuple<PosInt, Int> | true
@@ -876,27 +872,21 @@ public fn f(@Mid -> @Byte)
         _run_refine_trap(src, fn="f", args=[42])  # 42 fails `< 10`
         assert _run(src, fn="f", args=[7]) == 7
 
-    def test_byte_base_param_guard_arithmetic_predicate(self) -> None:
+    def test_byte_arithmetic_in_a_predicate_is_refused(self) -> None:
         """A Byte refinement whose predicate does arithmetic on the Byte
-        (`@Byte.0 + 1 < 10`) lowers the `+` and `<` at `i32` — the arithmetic
-        emission site had the same `i64`-on-`i32` width bug as the comparison
-        site (#766) — so it compiles to valid WASM and the guard fires.
-
-        NOTE (#861): through the real CLI this shape no longer reaches
-        codegen — the checker now types refinement predicates, and Byte is
-        excluded from arithmetic at type-check time (E140, the documented
-        universal rule), so `vera check` gates it.  This test's `_run` path
-        deliberately bypasses the TypeChecker (parse → transform → compile),
-        so it documents CODEGEN-LAYER robustness only: the i32 arithmetic
-        lowering stays correct should the checker rule ever change."""
+        (`@Byte.0 + 1 < 10`): the arithmetic emission site had the same
+        `i64`-on-`i32` width bug as the comparison site (#766).  The checker
+        types refinement predicates and excludes Byte from arithmetic (E140,
+        #861), so the shape is refused at check and never reaches code
+        generation."""
         src = """
 type UnderTen = { @Byte | @Byte.0 + 1 < 10 };
 public fn f(@UnderTen -> @Byte)
   requires(true) ensures(true) effects(pure)
 { @UnderTen.0 }
 """
-        _run_refine_trap(src, fn="f", args=[50])  # 50 + 1 = 51, not < 10
-        assert _run(src, fn="f", args=[8]) == 8   # 8 + 1 = 9 < 10
+        errors = pipeline.check(src).errors
+        assert {d.error_code for d in errors} == {"E140"}, errors
 
     def test_byte_base_param_guard_fncall_predicate(self) -> None:
         """A Byte refinement whose predicate calls a `@Byte`-returning USER

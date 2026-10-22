@@ -81,11 +81,10 @@ def _cli(*args: str, eager_gc: bool = False) -> pipeline.CliResult:
     return pipeline.cli(*args, env={"VERA_EAGER_GC": "1" if eager_gc else None})
 
 
-def _verify(tmp_path: Path, source: str, name: str, *,
-            past_check: bool = False) -> dict:
+def _verify(tmp_path: Path, source: str, name: str) -> dict:
     p = tmp_path / f"{name}.vera"
     p.write_text(source, encoding="utf-8")
-    return pipeline.verify(p, past_check=past_check).envelope()
+    return pipeline.verify(p).envelope()
 
 
 def _refine_bind_statuses(envelope: dict) -> Counter:
@@ -1390,13 +1389,19 @@ def test_the_element_arm_answers_what_the_scalar_arm_answers(
     """
     header = "type Pos = { @Int | @Int.0 > 0 };\n\n"
     scalar_src, element_src = _PRODUCERS[producer]
-    past_check = producer == "effect-operation"
+    if producer == "effect-operation":
+        # A user-declared effect's operation is refused at check (E340,
+        # #1681) and no built-in operation returns an array to stand in for
+        # it, so both depths are refused programs, and no stage after the
+        # check runs on them.
+        for src in (scalar_src, element_src):
+            codes = {d.error_code for d in pipeline.check(header + src).errors}
+            assert codes == {"E340"}, codes
+        return
     scalar = _refine_bind_statuses(_verify(
-        tmp_path, header + scalar_src, f"scalar-{producer}",
-        past_check=past_check))
+        tmp_path, header + scalar_src, f"scalar-{producer}"))
     element = _refine_bind_statuses(_verify(
-        tmp_path, header + element_src, f"element-{producer}",
-        past_check=past_check))
+        tmp_path, header + element_src, f"element-{producer}"))
     assert scalar, f"the scalar twin raised no refine_bind at all: {scalar}"
     assert element, f"the element case raised no refine_bind at all: {element}"
     worst = ["violated", "tier3_unguarded", "tier3", "verified"]

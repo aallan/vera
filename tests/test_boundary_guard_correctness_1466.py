@@ -1988,11 +1988,8 @@ def test_a_pair_state_cell_is_refused_and_says_so(
     matrix's three readings cannot run, because there is no artifact to run.
 
     The checker refuses the cell where it is written (E340, #1512), so no
-    such program reaches verification or code generation.  Past the check
-    the two must still agree, as they did when this was the only refusal:
-    the obligation discloses `tier3_unguarded` rather than claiming a check
-    inside a function the module does not contain (#1439, #1268's lesson at
-    this boundary), and code generation names the refusal in its own words.
+    such program reaches verification or code generation, and the refusal
+    names the lowering it cannot make.
     """
     cell = ("State write boundary", route, repr_name)
     good_src, _bad = _sources(cell)
@@ -2002,22 +1999,6 @@ def test_a_pair_state_cell_is_refused_and_says_so(
         (d.error_code, d.description) for d in checked.errors]
     assert all("Code generation cannot lower a State<" in d.description
                for d in checked.errors), checked.errors
-    envelope = pipeline.verify(
-        path, past_check=True, budget_s=_BUDGET_S).envelope()
-    statuses = _statuses(envelope)
-    assert "tier3_unguarded" in statuses, (
-        f"a pair `State` cell is registered by nobody, and the record says "
-        f"{sorted(statuses)}"
-    )
-    assert "tier3" not in statuses, (
-        f"the record claims a runtime check for a write inside a function "
-        f"code generation drops: {sorted(statuses)}"
-    )
-    compiled = pipeline.compile(path, past_check=True, budget_s=_BUDGET_S)
-    said = " ".join(d.description for d in compiled.result.diagnostics)
-    assert "uses State with unsupported type" in said, (
-        f"code generation no longer names the refusal: {said[-400:]}"
-    )
 
 
 #: A value of `Never` for the cells whose type has no other value to write:
@@ -2034,36 +2015,31 @@ _THROWS = "<Exn<Int>>"
 
 #: Cell types whose REPRESENTATION decides whether code generation
 #: registers a `State<T>` cell, each with the value written into it, the
-#: declarations it needs, the enclosing function's effect row, and whether
-#: the record must DISCLOSE the write.  A row the backend REGISTERS carries
-#: a real literal and the cell asserts the artifact exists: an undeclared
-#: initialiser made code generation drop the whole function before
-#: `_register_state_cell` was reached, and the registered rows then compared
-#: a `tier3` claim against a module containing no `$f` at all — the #1268
-#: shape inside the cell that exists to detect it (PR #1478 review, F12).
-#: A row the backend REFUSES must never be recorded `tier3`, a claim of a
-#: runtime check the refused registration never emits.  Its write is
-#: disclosed (`tier3_unguarded`) where the verifier cannot state the
-#: predicate over the cell's type; a `String` literal against `true` it
-#: proves outright, so that row's record is Tier 1 and discloses nothing.
+#: declarations it needs and the enclosing function's effect row.  A row the
+#: backend REGISTERS carries a real literal and the cell asserts the artifact
+#: exists: an undeclared initialiser made code generation drop the whole
+#: function before `_register_state_cell` was reached, and the registered
+#: rows then compared a `tier3` claim against a module containing no `$f` at
+#: all — the #1268 shape inside the cell that exists to detect it (PR #1478
+#: review, F12).  A row the backend REFUSES is refused at check (E340,
+#: #1512), so no stage after the check runs on it.
 #:
 #: `Future<Future<Never>>` and an ALIAS to `Never` are listed because the
 #: shared rule answers for them too and nothing said so: both recorded
 #: `tier3` at `8557dc24` beside `Never` itself (PR #1478 review).
-_CELL_REPRESENTATIONS: dict[str, tuple[bool, str, str, str, bool]] = {
-    # cell type: (registered, initial value, extra declarations,
-    #             effect row, disclosed)
-    "Int": (True, "5", "", "pure", False),
-    "Float64": (True, "1.0", "", "pure", False),
-    "Option<Int>": (True, "Some(1)", "", "pure", False),
-    "String": (False, '"s"', "", "pure", False),      # a pair: no way
-    "Array<Int>": (False, "[1]", "", "pure", True),   #   through a one-word
-    "Unit": (False, "()", "", "pure", True),          # zero-size
-    "Never": (False, _NEVER, _NEVER_FN, _THROWS, True),  # no representation
-    "Future<Never>": (False, _NEVER, _NEVER_FN, _THROWS, True),  # the same
-    "Future<Future<Never>>": (False, _NEVER, _NEVER_FN, _THROWS, True),
+_CELL_REPRESENTATIONS: dict[str, tuple[bool, str, str, str]] = {
+    # cell type: (registered, initial value, extra declarations, effect row)
+    "Int": (True, "5", "", "pure"),
+    "Float64": (True, "1.0", "", "pure"),
+    "Option<Int>": (True, "Some(1)", "", "pure"),
+    "String": (False, '"s"', "", "pure"),      # a pair: no way
+    "Array<Int>": (False, "[1]", "", "pure"),  #   through a one-word
+    "Unit": (False, "()", "", "pure"),         # zero-size
+    "Never": (False, _NEVER, _NEVER_FN, _THROWS),  # no representation
+    "Future<Never>": (False, _NEVER, _NEVER_FN, _THROWS),  # the same
+    "Future<Future<Never>>": (False, _NEVER, _NEVER_FN, _THROWS),
     "NeverAlias": (False, _NEVER, "type NeverAlias = Never;\n\n" + _NEVER_FN,
-                   _THROWS, True),
+                   _THROWS),
 }
 
 
@@ -2076,18 +2052,18 @@ def test_the_record_and_registration_agree_about_a_state_cell(
     `vera.lowering.state_cell_lowerable` is asked by `_register_state_cell`
     from the cell's TYPE EXPRESSION and by the checker and the verifier
     from the semantic type.  The checker refuses a cell the rule refuses
-    (E340, #1512), so the refused rows are measured past the check.  Two oracles is exactly the shape that drifts invisibly —
+    (E340, #1512), and no stage after the check runs on a refused row, so
+    the record and the registration are compared over the rows the backend
+    registers.  Two oracles is exactly the shape that drifts invisibly —
     the verifier's answer is a claim about the backend's — so this drives
     both over the representations that decide the question and asserts they
-    agree: a cell the backend registers may be recorded `tier3`, and one it
-    refuses must be disclosed.
+    agree: a cell the backend registers may be recorded `tier3`.
 
     Measured before the fix: a refined `State<Never>` and
     `State<Future<Never>>` recorded `tier3` while registration dropped the
     function with E607, because the verifier asked only about erasure.
     """
-    expected, init, prelude, effects, disclosed = (
-        _CELL_REPRESENTATIONS[cell_type])
+    expected, init, prelude, effects = _CELL_REPRESENTATIONS[cell_type]
     source = (
         f"{prelude}type R = {{ @{cell_type} | true }};\n\n"
         "public fn f(@Unit -> @Int)\n"
@@ -2101,56 +2077,39 @@ def test_the_record_and_registration_agree_about_a_state_cell(
     checked = pipeline.check(path)
     assert {d.error_code for d in checked.errors} == (
         set() if expected else {"E340"}), checked.errors
+    if not expected:
+        return
     envelope = pipeline.verify(
-        path, past_check=True, budget_s=_BUDGET_S).envelope()
+        path, budget_s=_BUDGET_S).envelope()
     statuses = _statuses(envelope)
-    compiled = pipeline.compile(path, past_check=True, budget_s=_BUDGET_S)
+    compiled = pipeline.compile(path, budget_s=_BUDGET_S)
     registered = "uses State with unsupported type" not in " ".join(
         d.description for d in compiled.result.diagnostics)
     wat = compiled.result.wat
 
-    assert registered == expected, (
-        f"`State<{cell_type}>` registration changed: the backend "
-        f"{'registers' if registered else 'refuses'} it"
+    assert registered, (
+        f"`State<{cell_type}>` registration changed: the backend refuses it"
     )
-    if registered:
-        # What the row is FOR: a record read against an artifact that
-        # exists.  Without this the whole positive arm passes for a module
-        # the compiler dropped.
-        assert "$:f" in wat, (
-            f"`State<{cell_type}>` is registered and the module carries no "
-            f"`$f`, so the record is being compared against nothing"
+    # What the row is FOR: a record read against an artifact that exists.
+    # Without this the whole positive arm passes for a module the compiler
+    # dropped.
+    assert "$:f" in wat, (
+        f"`State<{cell_type}>` is registered and the module carries no "
+        f"`$f`, so the record is being compared against nothing"
+    )
+    assert "tier3_unguarded" not in statuses, (
+        f"`State<{cell_type}>` is registered and the record discloses "
+        f"the write as unguarded: {sorted(statuses)}"
+    )
+    if "tier3" in statuses:
+        assert pipeline.compile(path).checks(kind="contract_violation"), (
+            f"`State<{cell_type}>`: the record claims a runtime check "
+            f"and the module carries none"
         )
-        assert "tier3_unguarded" not in statuses, (
-            f"`State<{cell_type}>` is registered and the record discloses "
-            f"the write as unguarded: {sorted(statuses)}"
-        )
-        if "tier3" in statuses:
-            assert pipeline.compile(path).checks(kind="contract_violation"), (
-                f"`State<{cell_type}>`: the record claims a runtime check "
-                f"and the module carries none"
-            )
-        else:
-            # `@Int` and `@Float64` discharge statically against `true`;
-            # a claim of neither kind would mean the write raised no
-            # obligation at all.
-            assert "verified" in statuses, sorted(statuses)
     else:
-        assert "$f" not in wat, (
-            f"`State<{cell_type}>` is refused at registration and the "
-            f"module carries `$f` anyway"
-        )
-        assert "tier3" not in statuses, (
-            f"`State<{cell_type}>` is refused at registration and the record "
-            f"claims a runtime check: {sorted(statuses)}"
-        )
-        if disclosed:
-            assert "tier3_unguarded" in statuses, (
-                f"`State<{cell_type}>` is refused at registration and the "
-                f"record says {sorted(statuses)}"
-            )
-        else:
-            assert statuses == {"verified"}, sorted(statuses)
+        # `@Int` and `@Float64` discharge statically against `true`; a claim
+        # of neither kind would mean the write raised no obligation at all.
+        assert "verified" in statuses, sorted(statuses)
 
 
 #: What the module docstring says the `@Byte` literal tally is, as

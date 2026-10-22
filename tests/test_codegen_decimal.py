@@ -700,7 +700,8 @@ public fn main(-> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @Option<Map<String, Int>> = Some(map_insert(map_new(), "a", 1));
-  let @Map<String, Int> = option_unwrap_or(@Option<Map<String, Int>>.0, map_new());
+  let @Map<String, Int> = map_new();
+  let @Map<String, Int> = option_unwrap_or(@Option<Map<String, Int>>.0, @Map<String, Int>.0);
   map_size(@Map<String, Int>.0)
 }
 """
@@ -713,7 +714,8 @@ public fn main(-> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @Option<Set<Int>> = Some(set_add(set_new(), 42));
-  let @Set<Int> = option_unwrap_or(@Option<Set<Int>>.0, set_new());
+  let @Set<Int> = set_new();
+  let @Set<Int> = option_unwrap_or(@Option<Set<Int>>.0, @Set<Int>.0);
   set_size(@Set<Int>.0)
 }
 """
@@ -770,9 +772,11 @@ public fn main(-> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @Option<Map<String, Int>> = Some(map_insert(map_new(), "a", 1));
-  let @Map<String, Int> = option_unwrap_or(@Option<Map<String, Int>>.0, map_new());
+  let @Map<String, Int> = map_new();
+  let @Map<String, Int> = option_unwrap_or(@Option<Map<String, Int>>.0, @Map<String, Int>.0);
   let @Option<Map<Int, Int>> = Some(map_insert(map_new(), 42, 2));
-  let @Map<Int, Int> = option_unwrap_or(@Option<Map<Int, Int>>.0, map_new());
+  let @Map<Int, Int> = map_new();
+  let @Map<Int, Int> = option_unwrap_or(@Option<Map<Int, Int>>.0, @Map<Int, Int>.0);
   map_size(@Map<String, Int>.0) + map_size(@Map<Int, Int>.0)
 }
 """

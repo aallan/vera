@@ -12,6 +12,7 @@ from vera.codegen import (
 )
 from vera.codegen.api import WasmTrapError
 
+from tests import pipeline
 from tests.codegen_helpers import (
     _compile,
     _compile_example,
@@ -29,8 +30,6 @@ class TestUnsupportedSkipped:
     def test_adt_function_compiles(self) -> None:
         """Functions with ADT types now compile (not skipped)."""
         source = """\
-private data Option<T> { None, Some(T) }
-
 public fn make_none(-> @Option<Int>)
   requires(true) ensures(true) effects(pure)
 { None }
@@ -46,11 +45,11 @@ public fn simple(-> @Int)
         assert "make_none" in result.exports
         assert "simple" in result.exports
 
-    def test_unsupported_effect_skipped(self) -> None:
-        """A function whose row names an effect code generation does not
-        lower is dropped, with `vera.lowering` rule 6's internal error
-        (E699): the checker refuses the row (E340, #1681), so only an
-        unchecked compile reaches it.  The rest of the module compiles."""
+    def test_unsupported_effect_is_refused_at_check(self) -> None:
+        """A row naming an effect code generation does not lower is refused
+        at check (E340, #1681, `vera.lowering` rule 6), where code generation
+        dropped the function with an internal error (E699): the program is
+        refused whole, and nothing is compiled."""
         source = """\
 effect Counter {
   op tick(Unit -> Unit);
@@ -66,12 +65,10 @@ public fn simple(-> @Int)
   requires(true) ensures(true) effects(pure)
 { 42 }
 """
-        result = _compile(source)
-        assert [d.error_code for d in result.diagnostics] == ["E699"]
-        # The function whose row names the effect is dropped
-        assert "count" not in result.exports
-        # Pure function still compiles
-        assert "simple" in result.exports
+        compiled = pipeline.compile(source)
+        assert [d.error_code for d in compiled.checked.errors] == ["E340"], [
+            (d.error_code, d.description[:70]) for d in compiled.checked.errors]
+        assert compiled.generator is None
 
 
 # =====================================================================

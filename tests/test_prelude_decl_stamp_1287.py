@@ -33,6 +33,12 @@ rendering that cannot distinguish it.
 
 The control in every case is the SAME program without the shadowing
 alias: the claim is an invariance, so the fixture states it as one.
+
+Since #1469 the prelude's names are reserved: the shadowing alias is
+refused at check (E158), so no program the check accepts reaches the guard
+with a prelude name, and the cells assert the refusal beside the control's
+own index.  The guard's already-stamped branch is pinned directly
+(`test_the_prelude_stamp_is_idempotent_by_name`).
 """
 
 from __future__ import annotations
@@ -52,13 +58,9 @@ public fn tag(@Unit -> @Int)
 }
 """
 
-# `Option` is a prelude ADT, and a main-file `type` of the same name is
-# accepted (spec §8.4.1: the prelude's data types are ordinary public
-# declarations a program names and shadows; the reserved namespace is the
-# `Vera` prefix alone, E154).  `inject_prelude` skips a prelude DataDecl
-# only when the user declared a `data` of that name, so the prelude's
-# `data Option<T>` is still injected here — which is what makes the two
-# programs below inject exactly the same prelude.
+# `Option` is a prelude ADT, and a main-file `type` of the same name was
+# accepted when #1287 was found; the prelude's names are reserved since
+# #1469, so the check refuses it (E158).
 _SHADOWING = """
 import mlib(tag);
 
@@ -92,16 +94,14 @@ def _compiled(tmp_path: Path, main_src: str) -> CodeGenerator:
     The compile RESULT is asserted clean before the generator is handed
     back.  Every claim below is about the bookkeeping of a program the
     compiler accepts, and discarding the result would let these cases go
-    on passing over a program codegen had started refusing — a shadowing
-    `type Option = Int` is legal under §8.4.1 today, and the whole point
-    of the fixture is that it stays that way.
+    on passing over a program codegen had started refusing.
     """
     main_path = pipeline.write_tree(
         tmp_path, {"mlib.vera": _MLIB, "main.vera": main_src})
     checked = pipeline.check(main_path, root=tmp_path)
     _ = checked.program  # raises the parse or transform error
     compiled = pipeline.compile(
-        main_path, modules=checked.resolved or [], checked=False)
+        main_path, modules=checked.resolved or [])
     result = compiled.result
     gen = compiled.generator
     assert gen is not None
@@ -110,6 +110,19 @@ def _compiled(tmp_path: Path, main_src: str) -> CodeGenerator:
         (d.error_code, d.description) for d in errors]
     assert result.exports == ["main"], result.exports
     return gen
+
+
+def _refused(tmp_path: Path, main_src: str) -> None:
+    """*main_src* is refused at check at its `type Option` (E158), so no
+    stage after the check runs on it."""
+    main_path = pipeline.write_tree(
+        tmp_path, {"mlib.vera": _MLIB, "main.vera": main_src})
+    compiled = pipeline.compile(main_path, root=tmp_path)
+    errors = compiled.checked.errors
+    assert [(d.error_code, d.location.line) for d in errors] == [
+        ("E158", main_src.splitlines().index("type Option = Int;") + 1)
+    ], [(d.error_code, d.description[:70]) for d in errors]
+    assert compiled.generator is None
 
 
 def test_prelude_block_does_not_depend_on_the_main_file(
@@ -123,9 +136,10 @@ def test_prelude_block_does_not_depend_on_the_main_file(
     must be identical too.  At the branch point the shadowing program's
     block is missing `Option` AND has every later prelude declaration
     shifted one place earlier, because the skipped stamp never advanced
-    `_prelude_decl_order_next`.
+    `_prelude_decl_order_next`.  The shadowing program is refused at
+    check now (E158), so the block it would stamp is never built.
     """
-    shadowing = _compiled(tmp_path / "s", _SHADOWING)
+    _refused(tmp_path / "s", _SHADOWING)
     control = _compiled(tmp_path / "c", _CONTROL)
 
     # The control is the oracle for what the prelude actually injected —
@@ -136,18 +150,6 @@ def test_prelude_block_does_not_depend_on_the_main_file(
     assert control._prelude_decl_order["Option"] == min(
         control._prelude_decl_order.values())
 
-    missing = set(control._prelude_decl_order) - set(
-        shadowing._prelude_decl_order)
-    assert not missing, (
-        f"a main-file `type` removed {sorted(missing)} from the prelude's "
-        f"own index block"
-    )
-    assert shadowing._prelude_decl_order == control._prelude_decl_order, {
-        name: (shadowing._prelude_decl_order.get(name), idx)
-        for name, idx in control._prelude_decl_order.items()
-        if shadowing._prelude_decl_order.get(name) != idx
-    }
-
 
 def test_module_namespace_keeps_the_prelude_index(tmp_path: Path) -> None:
     """Inside a module, the shadowed prelude ADT sits where the prelude put it.
@@ -156,25 +158,21 @@ def test_module_namespace_keeps_the_prelude_index(tmp_path: Path) -> None:
     where it is asserted.  `_BUILTIN_DECL_INDEX` is the wrong answer
     twice over: it is not the prelude's position, and it is *below*
     `_PRELUDE_DECL_BASE`, so it orders the prelude's `Option` ahead of
-    every other prelude declaration rather than among them.
+    every other prelude declaration rather than among them.  The shadowing
+    program is refused at check now (E158); the control's module namespace
+    reads the prelude's own index.
     """
-    shadowing = _compiled(tmp_path / "s", _SHADOWING)
+    _refused(tmp_path / "s", _SHADOWING)
     control = _compiled(tmp_path / "c", _CONTROL)
 
     with control._module_alias_scope(("mlib",)):
         expected = control._alias_env.data_types["Option"]
-    with shadowing._module_alias_scope(("mlib",)):
-        actual = shadowing._alias_env.data_types["Option"]
 
     assert expected != _BUILTIN_DECL_INDEX, (
-        "the control already reads the builtin floor — the fixture no "
-        "longer distinguishes anything"
+        "the control reads the builtin floor inside the module namespace"
     )
-    assert actual != _BUILTIN_DECL_INDEX, (
-        f"prelude `Option` fell back to the builtin floor "
-        f"({_BUILTIN_DECL_INDEX}) inside the module namespace"
-    )
-    assert actual == expected, (f"{actual} != {expected}")
+    assert expected == control._prelude_decl_order["Option"], (
+        expected, control._prelude_decl_order["Option"])
 
 
 def test_the_prelude_stamp_is_idempotent_by_name() -> None:
@@ -216,21 +214,11 @@ def test_the_prelude_stamp_is_idempotent_by_name() -> None:
         "the prelude block skipped a name the main file had declared")
 
 
-def test_the_main_file_declaration_still_wins_its_own_namespace(
+def test_a_main_file_declaration_of_a_prelude_name_is_refused(
     tmp_path: Path,
 ) -> None:
-    """The shadow keeps the main namespace; only the prelude BLOCK changes.
-
-    Green before and after — the control that separates "record the
-    prelude's own order" from "let the prelude overwrite the main file's
-    stamp".  A fix that stamped `_decl_order` unconditionally would make
-    the main file's `type Option` order AFTER the prelude's ADT of the
-    same name and fail here.
-    """
-    gen = _compiled(tmp_path, _SHADOWING)
-    # `type Option = Int` is the main file's first (and only) type-space
-    # declaration, so it holds index 0 in its own namespace — a value no
-    # fallback and no prelude index can coincide with (the prelude block
-    # is negative, the builtin floor more negative still).
-    assert gen._decl_order["Option"] == 0, gen._decl_order
-    assert gen._alias_env.data_types["Option"] == 0
+    """The shadow that kept the main namespace (index 0 for `type Option`,
+    while the prelude block kept its own) is refused at check since #1469
+    (E158), so no main-file stamp of a prelude name is ever made; the
+    method's already-stamped branch keeps its direct pin above."""
+    _refused(tmp_path, _SHADOWING)

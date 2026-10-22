@@ -349,23 +349,19 @@ class TestPairScrutineeGuard:
 
     An `Array<T>` has the same (ptr, len) representation and none of the
     semantics: comparing one to an interned literal would read the
-    element buffer as UTF-8.  The checker refuses that program (E314),
-    and codegen refuses it independently — the guard is not allowed to
+    element buffer as UTF-8.  The checker refuses that program (E314), so
+    no compile meets the guard with it — the guard is not allowed to
     become "this is a pair, therefore it is a String".
     """
 
-    def test_string_literal_over_an_array_is_refused_by_both(self) -> None:
+    def test_string_literal_over_an_array_is_refused_at_check(self) -> None:
         source = _classify(
             "@Array<Int>", '    "yes" -> 11,\n    _ -> 33', "array_range(0, 3)",
         )
         assert any(d.error_code == "E314" for d in _errors(source))
-        result = _compile(source)
-        assert "classify" not in result.exports or result.dropped_fns
 
     def test_constructor_pattern_over_a_pair_is_still_refused(self) -> None:
         source = _classify(
             "@String", "    Some(@Int) -> 11,\n    _ -> 33", '"x"',
         )
         assert any(d.error_code == "E314" for d in _errors(source))
-        result = _compile(source)
-        assert "classify" not in result.exports or result.dropped_fns

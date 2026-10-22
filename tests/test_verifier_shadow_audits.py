@@ -6,7 +6,6 @@ from __future__ import annotations
 
 
 from tests.verifier_helpers import (
-    _verify_user_effect,
     _MK,
     _nat_sub_status,
     _verify,
@@ -668,16 +667,12 @@ private fn f(@Int -> @Int)
         outer `@Int` param carries `requires(@Int.0 != 0)`.  The matched field
         can be 0; discharging against the outer guard would be a silent
         false-discharge."""
-        result = _verify_user_effect("""
-effect Source {
-  op next(Unit -> Option<Int>);
-}
-
+        result = _verify("""
 private fn f(@Int -> @Int)
   requires(@Int.0 != 0)
   ensures(true)
-  effects(<Source>)
-{ match Source.next(()) { Some(@Int) -> 1 / @Int.0, None -> 1 } }
+  effects(<State<Option<Int>>>)
+{ match get(()) { Some(@Int) -> 1 / @Int.0, None -> 1 } }
 """)
         errors = [d for d in result.diagnostics if d.severity == "error"]
         assert errors == [], [e.error_code for e in errors]
@@ -747,15 +742,13 @@ private fn c(@Nat -> @Nat)
 
     def test_opaque_match_bound_operand_is_tier3(self) -> None:
         """A @Nat bound by matching `Some(@Nat)` over an opaque effect-op
-        scrutinee (`Src.g(()) : Option<Nat>`) is opaque; `@Nat.0 - 1` in the
+        scrutinee (`get(()) : Option<Nat>`) is opaque; `@Nat.0 - 1` in the
         arm is undecidable -> Tier-3, never a false E502."""
         st = _nat_sub_status("""
-effect Src { op g(Unit -> Option<Nat>); }
-
 private fn m(@Nat -> @Nat)
-  requires(true) ensures(true) effects(<Src>)
-{ match Src.g(()) { Some(@Nat) -> @Nat.0 - string_length("a"), None -> 0 } }
-""", past_check=True)
+  requires(true) ensures(true) effects(<State<Option<Nat>>>)
+{ match get(()) { Some(@Nat) -> @Nat.0 - string_length("a"), None -> 0 } }
+""")
         assert st == ["tier3"], st
 
     def test_a_literal_subtrahend_is_narrowed_where_the_value_binds(
@@ -1274,14 +1267,10 @@ private fn f(@Int -> @Int)
         SMT layer returns None for a match over an effect op), so a later
         `1 / @Int.0` is Tier-3 even when both arms are non-zero literals (the
         arm taken is unknown)."""
-        result = _verify_user_effect("""
-effect Src {
-  op g(Unit -> Option<Int>);
-}
-
+        result = _verify("""
 private fn f(@Int -> @Int)
-  requires(@Int.0 != 0) ensures(true) effects(<Src>)
-{ let @Int = match Src.g(()) { Some(@Int) -> 7, None -> 1 }; 1 / @Int.0 }
+  requires(@Int.0 != 0) ensures(true) effects(<State<Option<Int>>>)
+{ let @Int = match get(()) { Some(@Int) -> 7, None -> 1 }; 1 / @Int.0 }
 """)
         assert [d for d in result.diagnostics if d.severity == "error"] == []
         divs = [o for o in result.obligations if o.kind == "div_zero"]
@@ -1292,16 +1281,12 @@ private fn f(@Int -> @Int)
         opaque effect-op scrutinee, is Tier-3 — `_fresh_pattern_env` shadows the
         inner pattern slot through two arm levels, never discharging against the
         outer `requires(@Int.0 != 0)`."""
-        result = _verify_user_effect("""
-effect Src {
-  op g(Unit -> Option<Int>);
-}
-
+        result = _verify("""
 private fn f(@Int -> @Int)
-  requires(@Int.0 != 0) ensures(true) effects(<Src>)
+  requires(@Int.0 != 0) ensures(true) effects(<State<Option<Int>>>)
 {
-  match Src.g(()) {
-    Some(@Int) -> match Src.g(()) { Some(@Int) -> 1 / @Int.0, None -> 1 },
+  match get(()) {
+    Some(@Int) -> match get(()) { Some(@Int) -> 1 / @Int.0, None -> 1 },
     None -> 1
   }
 }
@@ -1388,14 +1373,10 @@ private fn f(@Int -> @Int)
         """The modulo analogue of the opaque-match-scrutinee case: `1 % @Int.0`
         in an arm over an opaque effect op is Tier-3 (modulo carries the same
         `!= 0` obligation)."""
-        result = _verify_user_effect("""
-effect Src {
-  op g(Unit -> Option<Int>);
-}
-
+        result = _verify("""
 private fn f(@Int -> @Int)
-  requires(@Int.0 != 0) ensures(true) effects(<Src>)
-{ match Src.g(()) { Some(@Int) -> 1 % @Int.0, None -> 1 } }
+  requires(@Int.0 != 0) ensures(true) effects(<State<Option<Int>>>)
+{ match get(()) { Some(@Int) -> 1 % @Int.0, None -> 1 } }
 """)
         assert [d for d in result.diagnostics if d.severity == "error"] == []
         divs = [o for o in result.obligations if o.kind == "div_zero"]
@@ -1405,14 +1386,10 @@ private fn f(@Int -> @Int)
         """The subtraction analogue: `@Nat.0 - @Nat.1` in an arm over an opaque
         effect op (returning Option<Nat>) is Tier-3 — the matched field is an
         opaque shadow, so the underflow obligation can't discharge against it."""
-        result = _verify_user_effect("""
-effect SrcN {
-  op g(Unit -> Option<Nat>);
-}
-
+        result = _verify("""
 private fn f(@Nat -> @Nat)
-  requires(true) ensures(true) effects(<SrcN>)
-{ match SrcN.g(()) { Some(@Nat) -> @Nat.0 - @Nat.1, None -> 0 } }
+  requires(true) ensures(true) effects(<State<Option<Nat>>>)
+{ match get(()) { Some(@Nat) -> @Nat.0 - @Nat.1, None -> 0 } }
 """)
         assert [d for d in result.diagnostics if d.severity == "error"] == []
         subs = [o for o in result.obligations if o.kind == "nat_sub"]

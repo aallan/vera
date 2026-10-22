@@ -2554,7 +2554,7 @@ class TestResumeInWithExprRejected:
     silently IGNORED (the lowering counts only the body's tail resume;
     the with-expr just evaluates for its value) — then a loud E602 skip
     (round-3 review, F5), and now refused at check (E340, the clause rule of
-    `vera/lowering.py`), with code generation's site as the backstop."""
+    `vera/lowering.py`), so no compile reaches the update."""
 
     _RESUME_IN_WITH = """\
 public fn go(@Int -> @Int) requires(true) ensures(true) effects(pure)
@@ -2574,11 +2574,6 @@ public fn go(@Int -> @Int) requires(true) ensures(true) effects(pure)
             d.description for d in checked.errors]
         assert "'with' update contains resume" in (
             checked.errors[0].description)
-        past = pipeline.compile(self._RESUME_IN_WITH, past_check=True)
-        msgs = [d.description for d in past.result.diagnostics
-                if d.error_code == "E699"]
-        assert any("resume(...) inside its 'with' state-update" in m
-                   for m in msgs), msgs
 
 
 class TestClauseScopeMixedSpellings:

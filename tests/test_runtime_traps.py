@@ -1696,7 +1696,7 @@ class TestSourceMapPopulation516:
 
     @staticmethod
     def _compile(source: str) -> object:
-        return pipeline.compile(source, checked=False).result
+        return pipeline.compile(source).result
 
     def test_top_level_fn_in_source_map(self) -> None:
         result = self._compile("""\
@@ -3066,7 +3066,7 @@ class TestHostErrorDebugKnob1302:
     def _compile(self, tmp_path: Path) -> CompileResult:
         path = tmp_path / "knob.vera"
         path.write_text(self._SRC, encoding="utf-8")
-        result = pipeline.compile(path, checked=False).result
+        result = pipeline.compile(path).result
         assert result.ok
         return result
 
@@ -3182,7 +3182,7 @@ class TestHostCallbackBaseExceptionBoundary1302:
     def _compile(self, tmp_path: Path) -> CompileResult:
         path = tmp_path / "baseexc.vera"
         path.write_text(self._SRC, encoding="utf-8")
-        result = pipeline.compile(path, checked=False).result
+        result = pipeline.compile(path).result
         assert result.ok
         return result
 

@@ -56,7 +56,7 @@ def _warnings(source: str) -> list[str]:
 
 _WILD = """\
 type U = Unit;
-data Box<T> {{ MkB(Int, T, Int) }}
+private data Box<T> {{ MkB(Int, T, Int) }}
 
 private fn mk(-> @Box<{arg}>)
   requires(true) ensures(true) effects(pure)
@@ -79,20 +79,24 @@ def test_wildcard_alias_to_unit() -> None:
 
 
 def test_wildcard_future_unit_arg() -> None:
-    """Box<Future<Unit>>: the transparent compound erases → 22."""
-    assert _run(_WILD.format(arg="Future<Unit>"), fn="f") == 22
+    """Box<Future<Unit>>: the transparent compound erases → 22.  The field is
+    a `Future`, so its value is `async(())`, under the `Async` row."""
+    source = (_WILD.format(arg="Future<Unit>")
+              .replace("MkB(11, (), 22)", "MkB(11, async(()), 22)")
+              .replace("effects(pure)", "effects(<Async>)"))
+    assert _run(source, fn="f") == 22
 
 
 _WILD_FU = """\
 type FU = Future<Unit>;
-data Box<T> { MkB(Int, T, Int) }
+private data Box<T> { MkB(Int, T, Int) }
 
 private fn mk(-> @Box<FU>)
-  requires(true) ensures(true) effects(pure)
-{ MkB(11, (), 22) }
+  requires(true) ensures(true) effects(<Async>)
+{ MkB(11, async(()), 22) }
 
 public fn f(-> @Int)
-  requires(true) ensures(true) effects(pure)
+  requires(true) ensures(true) effects(<Async>)
 {
   let @Box<FU> = mk();
   match @Box<FU>.0 {
@@ -110,7 +114,7 @@ def test_wildcard_alias_to_future_unit() -> None:
 _WILD_CHAIN = """\
 type U = Unit;
 type U2 = U;
-data Box<T> { MkB(Int, T, Int) }
+private data Box<T> { MkB(Int, T, Int) }
 
 private fn mk(-> @Box<U2>)
   requires(true) ensures(true) effects(pure)
@@ -134,8 +138,8 @@ def test_wildcard_alias_chain_to_unit() -> None:
 
 _ENTRY_U = """\
 type U = Unit;
-data BB { MkBox(Int), MkNot(Int) }
-data Entry<T> { En(T, BB) }
+private data BB { MkBox(Int), MkNot(Int) }
+private data Entry<T> { En(T, BB) }
 
 private fn mk(-> @Entry<U>)
   requires(true) ensures(true) effects(pure)
@@ -167,7 +171,7 @@ def test_wildcard_alias_before_nested_ctor() -> None:
 
 _EQ_U = """\
 type U = Unit;
-data Box<T> { MkB(Int, T, Int) }
+private data Box<T> { MkB(Int, T, Int) }
 
 private fn a(-> @Box<U>)
   requires(true) ensures(true) effects(pure)
@@ -191,7 +195,7 @@ def test_eq_alias_to_unit_equal_structs() -> None:
 
 _EQ_U_DISTINCT = """\
 type U = Unit;
-data Box<T> { MkB(Int, T, Int) }
+private data Box<T> { MkB(Int, T, Int) }
 
 private fn a(-> @Box<U>)
   requires(true) ensures(true) effects(pure)
@@ -218,14 +222,14 @@ def test_eq_alias_to_unit_distinct_stays_false() -> None:
 
 
 _EQ_FUTURE = """\
-data Box<T> { MkB(Int, T, Int) }
+private data Box<T> { MkB(Int, T, Int) }
 
 private fn a(-> @Box<Future<Unit>>)
-  requires(true) ensures(true) effects(pure)
-{ MkB(11, (), 22) }
+  requires(true) ensures(true) effects(<Async>)
+{ MkB(11, async(()), 22) }
 
 public fn f(-> @Bool)
-  requires(true) ensures(true) effects(pure)
+  requires(true) ensures(true) effects(<Async>)
 {
   let @Box<Future<Unit>> = a();
   let @Box<Future<Unit>> = a();
@@ -246,7 +250,7 @@ def test_eq_future_unit_arg_equal_structs() -> None:
 
 _SHOW_U = """\
 type U = Unit;
-data Box<T> { MkB(Int, T, Int) }
+private data Box<T> { MkB(Int, T, Int) }
 
 private fn a(-> @Box<U>)
   requires(true) ensures(true) effects(pure)
@@ -270,7 +274,7 @@ def test_show_alias_to_unit_renders() -> None:
 
 _HASH_U_DISTINCT = """\
 type U = Unit;
-data Box<T> { MkB(Int, T, Int) }
+private data Box<T> { MkB(Int, T, Int) }
 
 private fn a(@Int -> @Box<U>)
   requires(true) ensures(true) effects(pure)
@@ -290,7 +294,7 @@ def test_hash_alias_to_unit_payload_sensitive() -> None:
 
 _HASH_U_EQUAL = """\
 type U = Unit;
-data Box<T> { MkB(Int, T, Int) }
+private data Box<T> { MkB(Int, T, Int) }
 
 private fn a(@Int -> @Box<U>)
   requires(true) ensures(true) effects(pure)
@@ -316,7 +320,7 @@ def test_control_wildcard_literal_unit() -> None:
 
 
 _EQ_LITERAL = """\
-data Box<T> { MkB(Int, T, Int) }
+private data Box<T> { MkB(Int, T, Int) }
 
 private fn a(-> @Box<Unit>)
   requires(true) ensures(true) effects(pure)
@@ -343,7 +347,7 @@ def test_control_eq_literal_unit() -> None:
 # =====================================================================
 
 _TRAILING_UNIT_BINDING = """\
-data B3<T> { MkB3(Int, T, Unit) }
+private data B3<T> { MkB3(Int, T, Unit) }
 
 private fn mk(-> @B3<Bool>)
   requires(true) ensures(true) effects(pure)
@@ -369,7 +373,7 @@ def test_trailing_unit_binding_after_unrecoverable_wildcard() -> None:
 
 
 _DIRECT_CALL_READ_AFTER_UNIT_BINDING = """\
-data B4<T> { MkB4(Int, T, Unit, Int) }
+private data B4<T> { MkB4(Int, T, Unit, Int) }
 
 private fn mk(-> @B4<Bool>)
   requires(true) ensures(true) effects(pure)

@@ -1166,18 +1166,26 @@ class TestTheGuardRail:
 
     The checker refuses a call that names nothing (E200, E230, E233) and a
     call to a user ability's operation (E340, #1499), so a call reaching the
-    rail was compiled without being checked, and both texts say so.
+    rail was compiled without being checked, and both texts say so.  No
+    stage compiles a program the check refuses, so the rail's text is read
+    from the emitter itself.
     """
 
     def test_the_checker_refuses_the_call_and_the_rail_says_so(
         self, tmp_path: Path,
     ) -> None:
+        from vera.codegen import CodeGenerator
+
         path = _write(tmp_path, {"main.vera": _ABILITY_CALL})
         check = _cli("check", path)
         assert check["ok"] is False, check
         assert [d["error_code"] for d in check["diagnostics"]] == ["E340"]
-        unchecked = pipeline.compile(path, checked=False)
-        (rail,) = [d for d in unchecked.result.diagnostics
+        assert pipeline.compile(path).generator is None
+        main = pipeline.parse(_ABILITY_CALL).program.declarations[1].decl
+        call = main.body.expr  # type: ignore[attr-defined]
+        gen = CodeGenerator(source=_ABILITY_CALL, file=str(path))
+        gen._emit_cross_module_error(call, "size")
+        (rail,) = [d for d in gen.diagnostics
                    if "is not defined in this module" in d.description]
         assert "compiled without being checked" in rail.rationale, rail
         assert "E340" in rail.rationale, rail

@@ -86,7 +86,7 @@ def _run(
             "scoped env-var lifetime"
         )
         monkeypatch.setenv("VERA_EAGER_GC", "1")
-    result = pipeline.compile(src, file="fixture.vera", checked=False).result
+    result = pipeline.compile(src, file="fixture.vera").result
     errors = [d for d in result.diagnostics if d.severity == "error"]
     assert not errors, (
         "Compilation failed:\n"
@@ -496,7 +496,7 @@ def test_10k_io_print_calls() -> None:
     """
     src = """
 private fn loop(@Int -> @Unit)
-  requires(@Int.0 >= 0) ensures(true)
+  requires(@Int.0 >= 0) ensures(true) decreases(@Int.0)
   effects(<IO>)
 {
   if @Int.0 == 0 then {

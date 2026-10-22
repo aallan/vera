@@ -125,7 +125,7 @@ def _build(
     Returns ``(verify_errors, compile_result_or_None, codegen_errors)``.
     """
     entry = pipeline.write_tree(tmp_path, files, main_name)
-    verified = pipeline.verify(entry, root=tmp_path, past_check=True)
+    verified = pipeline.verify(entry, root=tmp_path)
     _ = verified.checked.program  # raises the parse or transform error
     check_errors = [
         d.description for d in verified.checked.checker_diagnostics
@@ -136,7 +136,7 @@ def _build(
         d.description for d in verified.result.diagnostics
         if d.severity == "error"
     ]
-    result = pipeline.compile(entry, root=tmp_path, past_check=True).result
+    result = pipeline.compile(entry, root=tmp_path).result
     cg_errors = [
         d.description for d in result.diagnostics if d.severity == "error"
     ]

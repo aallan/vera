@@ -144,7 +144,7 @@ def _generator(entry: Path) -> CodeGenerator:
     could not see a module's measurement of it (PR #1508 review).  What is
     compared is what the compile leaves registered.
     """
-    compiled = vera_pipeline.compile(entry, past_check=True)
+    compiled = vera_pipeline.compile(entry)
     _ = compiled.parsed.program  # raises the parse or transform error
     assert compiled.generator is not None
     return compiled.generator
@@ -185,12 +185,14 @@ def signature_mismatches(entry: Path) -> list[str]:
 
 
 def _multi_module_corpus() -> list[Path]:
+    """Every corpus program that imports a module and that the check
+    accepts: a refused program (a negative fixture) has no compile, so no
+    signatures to compare."""
     found = []
     for path in corpus_programs():
         program = vera_pipeline.parse(path).program
-        if program.imports:
-            if not vera_pipeline.check(path).resolution_diagnostics:
-                found.append(path)
+        if program.imports and vera_pipeline.check(path).ok:
+            found.append(path)
     return found
 
 
@@ -216,11 +218,13 @@ class TestSignaturesDoNotDependOnTheEntry:
         "public data Decimal<T> {\n  Dec(T)\n}\n",
         "public data Map {\n  MkMap(Int)\n}\n",
     ), ids=("Array", "Decimal", "Map"))
-    def test_an_import_named_like_a_builtin(
+    def test_an_import_named_like_a_builtin_is_refused(
         self, decl: str, tmp_path: Path,
     ) -> None:
         """A module importing a user type named like a built-in container
-        measured it as the CONTAINER in the registrar (`Array`: a pair)."""
+        measured it as the CONTAINER in the registrar (`Array`: a pair).  The
+        name is reserved now (E158, #1469): the declaring module is refused
+        at check, so no signature is measured."""
         name = decl.split()[2].split("<")[0]
         spelled = f"{name}<Int>" if "<T>" in decl else name
         (tmp_path / "mb.vera").write_text(
@@ -231,7 +235,8 @@ class TestSignaturesDoNotDependOnTheEntry:
             + f"{{\n  @{spelled}.0\n}}\n", encoding="utf-8")
         (tmp_path / "main.vera").write_text(
             _main("import ma(keep);\n", "1"), encoding="utf-8")
-        assert not signature_mismatches(tmp_path / "main.vera")
+        errors = vera_pipeline.check(tmp_path / "main.vera").errors
+        assert "E158" in {d.error_code for d in errors}, errors
 
     def test_the_differential_can_fail(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,

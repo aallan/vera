@@ -54,7 +54,6 @@ from vera import ast
 import vera.checker as vera_checker_pkg
 from vera.checker import typecheck
 from vera.checker.core import TypeChecker
-from vera.codegen import compile as codegen_compile
 from vera.codegen.assembly import AssemblyMixin
 from vera.environment import TypeEnv
 from vera.errors import Diagnostic, VeraError
@@ -1690,25 +1689,18 @@ def test_the_backstop_does_not_count_references() -> None:
     AssemblyMixin._assert_unique_func_names(wat)  # must not raise
 
 
-@pytest.mark.parametrize(
-    "cell_id,symbol",
-    [("fn/twice", r"\$:f\b"), ("where/twice", r"\$:f\$where\$h")],
-)
-def test_a_compile_that_skips_the_checker_ends_in_an_e699(
-    cell_id: str, symbol: str,
+@pytest.mark.parametrize("cell_id", ["fn/twice", "where/twice"])
+def test_a_duplicate_definition_never_reaches_the_e699_backstop(
+    cell_id: str,
 ) -> None:
-    """End to end through the real code generator, with the checker skipped
-    — the "future path that bypasses it" the backstop exists for.  The
-    compile reports one E699 naming the symbol and produces no binary, and
-    wasm-tools' own message never appears."""
+    """The "future path that bypasses" the checker, which the backstop exists
+    for, is a compile of a program the check refuses (E184), and no stage
+    compiles one: the backstop is asserted against hand-built modules above,
+    and the program that would reach it is refused here."""
     cell = next(c for c in CELLS if c.id == cell_id)
     source = cell.files["main.vera"]
-    result = codegen_compile(parse_to_ast(source), source=source,
-                             file="main.vera")
-    errors = [d for d in result.diagnostics if d.severity == "error"]
-    assert [d.error_code for d in errors] == ["E699"], [
+    errors = [d for d in typecheck(parse_to_ast(source), source,
+                                   file="main.vera")
+              if d.severity == "error"]
+    assert [d.error_code for d in errors] == ["E184"], [
         (d.error_code, d.description) for d in errors]
-    assert re.search(symbol, errors[0].description), errors[0].description
-    assert "duplicate func identifier" in errors[0].description
-    assert "WAT compilation failed" not in errors[0].description
-    assert result.wasm_bytes == b""

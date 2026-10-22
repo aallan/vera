@@ -62,7 +62,7 @@ from tests.verifier_helpers import _verify_ok
 from vera import ast
 from vera.errors import VeraError
 from vera.parser import parse_file, parse_to_ast
-from vera.resolver import ResolvedModule
+from vera.resolver import ModuleResolver, ResolvedModule
 from vera.transform import transform
 from vera.codegen import CodeGenerator, compile as codegen_compile, execute
 from tests import pipeline
@@ -457,19 +457,28 @@ _SHAPES = [
 # runs on `probe` — the body walk is the only thing that sees this cell, and
 # it refused to register it without saying so while the lowering emitted
 # `state_push_String`.  Must be the same loud diagnostic the declared path
-# gives, not invalid WASM.
+# gives, not invalid WASM.  A `State<String>` cell written as such is refused
+# at check (E340), so this one is a generic clone's, instantiated at `String`.
 _STATE_STRING_IN_PURE_FN = """
-private fn probe(@Unit -> @Int)
+private forall<T> fn probe(@T -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  handle[State<String>](@String = "hi") {
-    get(@Unit) -> { resume(@String.0) },
-    put(@String) -> { resume(()) }
+  handle[State<T>](@T = @T.0) {
+    get(@Unit) -> { resume(@T.0) },
+    put(@T) -> { resume(()) }
   } in {
-    string_length(get(()))
+    7
   }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  probe("hi")
 }
 """
 
@@ -627,7 +636,8 @@ def test_a_closure_tuple_formal_registers_what_it_now_lowers() -> None:
 
 def test_the_nested_refinement_bail_registers_nothing() -> None:
     """E618 rejects the guard, so nothing about it may be registered."""
-    result = _compile(_NESTED_REFINEMENT_BASE + _MAIN)
+    result = _compile(
+        _NESTED_REFINEMENT_BASE + _MAIN.replace("probe(())", "probe(5)"))
     codes = [d.error_code for d in result.diagnostics if d.severity == "error"]
     assert "E618" in codes, (
         f"expected the nested-refinement rejection, got: {result.diagnostics}"
@@ -710,7 +720,7 @@ def test_uncompilable_cell_type_in_a_handled_body_is_loud() -> None:
     body walk must agree rather than skipping registration and leaving the
     lowering to emit calls to imports that were never declared.
     """
-    result = _compile(_STATE_STRING_IN_PURE_FN + _MAIN)
+    result = _compile(_STATE_STRING_IN_PURE_FN)
     codes = {d.error_code for d in result.diagnostics}
     assert "E607" in codes, (
         "expected the E607 unsupported-State-cell diagnostic, got: "
@@ -726,23 +736,29 @@ def test_uncompilable_cell_type_in_a_handled_body_is_loud() -> None:
 # DECLARED-row spelling has always been a clean E612 function drop; the
 # handler-walk spelling registered nothing, DISCARDED the verdict, and let
 # the function compile — `unknown tag $exn_Unit` at whole-module WAT.  The
-# two paths must reach the same verdict on the same payload type.
+# two paths must reach the same verdict on the same payload type.  An
+# `Exn<Unit>` written as such is refused at check (E340), so the handlers
+# below are generic clones', instantiated at `Unit` (`probe(())`); their
+# bodies throw nothing, a generic throw of a `Unit` being a read of a
+# zero-size slot (E206).
 _EXN_UNIT_IN_PURE_FN = """
-private fn probe(@Unit -> @Int)
+private forall<A> fn probe(@A -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  handle[Exn<Unit>] {
-    throw(@Unit) -> { 0 - 1 }
+  handle[Exn<A>] {
+    throw(@A) -> { 0 - 1 }
   } in {
-    throw(());
     5
   }
 }
 """
 
 # Its declared-row twin: the same payload type reached by the gate instead.
+# A row naming `Exn<Unit>` is refused at check (E340), and a generic row
+# instantiated at `Unit` needs a handler for `Exn<Unit>` above it, refused
+# the same way, so no program the check accepts reaches this gate with it.
 _EXN_UNIT_DECLARED_ROW = """
 private fn probe(@Unit -> @Int)
   requires(true)
@@ -768,13 +784,13 @@ private fn pair(@Int -> @Tuple<Int, Int>)
   Tuple(@Int.0, 4)
 }
 
-private fn probe(@Unit -> @Int)
+private forall<A> fn probe(@A -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  let Tuple<@Int, @Int> = pair(handle[Exn<Unit>] {
-    throw(@Unit) -> { 0 - 1 }
+  let Tuple<@Int, @Int> = pair(handle[Exn<A>] {
+    throw(@A) -> { 0 - 1 }
   } in {
     7
   });
@@ -787,7 +803,6 @@ private fn probe(@Unit -> @Int)
     "source",
     [
         pytest.param(_EXN_UNIT_IN_PURE_FN, id="handler_walk"),
-        pytest.param(_EXN_UNIT_DECLARED_ROW, id="declared_row"),
         pytest.param(_EXN_UNIT_IN_LETDESTRUCT, id="letdestruct_value"),
     ],
 )
@@ -808,6 +823,14 @@ def test_uncompilable_exn_payload_is_the_same_verdict_either_way(
     )
     # The tag is never declared, so it must never be referenced either.
     assert "$exn_Unit" not in (result.wat or "")
+
+
+def test_a_declared_exn_unit_row_is_refused_at_check() -> None:
+    """The declared-row spelling of the same payload is refused at check
+    (E340), so code generation's gate never meets it."""
+    checked = pipeline.check(_EXN_UNIT_DECLARED_ROW)
+    assert {d.error_code for d in checked.errors} == {"E340"}, [
+        (d.error_code, d.description[:70]) for d in checked.errors]
 
 
 # --- handlers in a MODULE CALL's arguments -----------------------------
@@ -1121,10 +1144,10 @@ def test_every_referenced_state_exn_symbol_is_declared() -> None:
     proposal defaults on, does not settle the question).
 
     TWO LIMITS, stated rather than implied.  First, this builds each module
-    through `transform` → `codegen_compile` — a CHECKER-LESS shortcut.  The
-    real toolchain threads the resolver and the checker's artifacts
-    (`expr_semantic_types`, `expr_target_types`, `module_artifacts`), and the
-    WAT it produces is not always the same text: a substantial minority of the
+    through `transform` → `codegen_compile`, with the program's imports
+    resolved — a shortcut past the checker's artifacts.  The real toolchain
+    also threads those (`expr_semantic_types`, `expr_target_types`,
+    `module_artifacts`), and the WAT it produces is not always the same text: a substantial minority of the
     corpus differs between the two builds (de-counted for the same reason as
     the floors below — the proportion moves with every corpus addition and
     nothing here is gated on it).  The invariant under test (registration ⊇ lowering) is a property
@@ -1167,7 +1190,15 @@ def test_every_referenced_state_exn_symbol_is_declared() -> None:
             program = transform(parse_file(str(path)))
         except VeraError:
             continue
-        result = codegen_compile(program, source=source, file=str(path))
+        # The program's imports, resolved from its directory as the
+        # toolchain resolves them: without them a corpus program that
+        # imports a module names functions nothing declares (E200, E230),
+        # which the check refuses.
+        resolver = ModuleResolver(_root=path.parent)
+        modules = resolver.resolve_imports(program, path)
+        assert not resolver.errors, (path.name, resolver.errors)
+        result = codegen_compile(program, source=source, file=str(path),
+                                 resolved_modules=modules)
         wat = result.wat
         if not wat:
             continue
