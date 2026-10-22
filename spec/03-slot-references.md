@@ -406,6 +406,8 @@ private fn unwrap(@Option<Cnt>, @Cnt -> @Int)
 }
 ```
 
+An argument that resolves to a refinement type is written with its predicate, in canonical form: under `@Array<{ @Int | @Int.0 > 0 }>` and `@Array<{ @Int | @Int.0 < 0 }>` two parameters bind two names, each its own stack counted from `.0`, and a reference writes the predicate as its binding's type does (`@Array<{ @Int | @Int.0 > 0 }>.0`).  An argument's refinement is part of the type it names, so two predicates are two namespaces as two element types are.
+
 `vera check --explain-slots` prints the resolved name of every parameter, for `where`-block helpers as well as top-level functions.
 
 ## 3.9 Index Elision

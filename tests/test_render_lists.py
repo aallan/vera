@@ -226,6 +226,9 @@ _REGISTRY_FILES = {
         "export function f() {}\n"
     ),
     RL.SPEC: _signature_tables(),
+    **{path: ("# A document\n\n<!-- render_lists:begin reserved-names -->\n"
+              "- stale\n<!-- render_lists:end reserved-names -->\n")
+       for path in RL.RESERVED_TARGETS},
 }
 
 _ALL_FILES = {**_EFFECT_FILES, **_DOCS, **_REGISTRY_FILES}
@@ -790,7 +793,7 @@ class TestCheckAndWrite:
         data = RL.load_limitations(ROOT)
         assert not isinstance(data, list), data
         expected = (len(RL.EFFECT_TARGETS) + len(data.tables) + 1
-                    + len(RL.SIGNATURE_BLOCKS))
+                    + len(RL.SIGNATURE_BLOCKS) + len(RL.RESERVED_TARGETS))
         assert len({(b.path, b.name) for b in blocks}) == len(blocks) == expected
 
 

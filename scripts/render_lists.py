@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Write the lists that have one source into the files that show them.
 
-A list has one source and is rendered, never copied.  Four lists are
+A list has one source and is rendered, never copied.  Five lists are
 rendered here, each between a pair of `render_lists` markers in the file
 that shows it:
 
@@ -28,6 +28,9 @@ that shows it:
   registry's records and the effects' operations (``vera effects``).  Within
   a table only each row's Signature cell is written; its name and its
   description are the spec's own.
+- ``reserved-names``: the names no declaration may take (#1469), from
+  ``vera.prelude.reserved_function_names()`` and ``reserved_type_names()``,
+  into KNOWN_ISSUES.md and SKILL.md.
 
 A marker is a whole line in the file's own comment syntax:
 ``<!-- render_lists:begin NAME -->`` and ``<!-- render_lists:end NAME -->``
@@ -611,6 +614,57 @@ def roster_blocks(
 
 
 # ---------------------------------------------------------------------------
+# The reserved names
+# ---------------------------------------------------------------------------
+
+#: The files that show the names no declaration may take (#1469).
+RESERVED_TARGETS = ("KNOWN_ISSUES.md", "SKILL.md")
+
+
+def reserved_names() -> tuple[list[str], list[str]]:
+    """The reserved function names and type names, sorted, from the prelude
+    module that is their one source.  The caller puts the tree's root first
+    on `sys.path`."""
+    from vera.prelude import reserved_function_names, reserved_type_names
+
+    return sorted(reserved_function_names()), sorted(reserved_type_names())
+
+
+def render_reserved(functions: Sequence[str], types: Sequence[str]) -> str:
+    """The reserved names, as they belong between their markers."""
+    def names(group: Sequence[str]) -> str:
+        return ", ".join(f"`{name}`" for name in group)
+
+    return (
+        f"- A function or a `where` helper (`E151`): {names(functions)}.\n"
+        "- A `data` declaration, a `type` alias or a type parameter (`E158`):"
+        f" {names(types)}.\n"
+    )
+
+
+def reserved_blocks(
+    root: Path, names: tuple[Sequence[str], Sequence[str]],
+) -> tuple[list[Rendered], list[str]]:
+    """Each reserved-names block as it is and as `names` render it, and
+    every reason one cannot be rendered."""
+    functions, types = names
+    if not functions or not types:
+        return [], ["the prelude reserves no name"]
+    blocks: list[Rendered] = []
+    errors: list[str] = []
+    new = render_reserved(functions, types)
+    for path in RESERVED_TARGETS:
+        read = _read(root, path, {"reserved-names"})
+        if isinstance(read, str):
+            errors.append(read)
+            continue
+        text, spans = read
+        start, end = spans["reserved-names"]
+        blocks.append(Rendered(path, "reserved-names", text[start:end], new))
+    return blocks, errors
+
+
+# ---------------------------------------------------------------------------
 # The signature tables
 # ---------------------------------------------------------------------------
 
@@ -736,6 +790,8 @@ def _targets(root: Path) -> dict[str, set[str]]:
     targets: dict[str, set[str]] = {path: {"effects"} for path in EFFECT_TARGETS}
     targets.setdefault(ROSTER, set()).add("host-imports")
     targets.setdefault(SPEC, set()).update(SIGNATURE_BLOCKS)
+    for path in RESERVED_TARGETS:
+        targets.setdefault(path, set()).add("reserved-names")
     data = load_limitations(root)
     if not isinstance(data, list):
         for table in data.tables:
@@ -747,11 +803,12 @@ def plan(
     root: Path, *, effects: Sequence[str] | None = None,
     host_rows: Sequence[tuple[str, str, str]] | None = None,
     known_signatures: dict[str | None, dict[str, str]] | None = None,
+    reserved: tuple[Sequence[str], Sequence[str]] | None = None,
 ) -> tuple[list[Rendered], list[str]]:
     """Every block in the tree, as it is and as its source renders it, and
-    every reason a block cannot be rendered.  `effects`, `host_rows` and
-    `known_signatures` stand in for the registries; by default the tree's
-    own are read."""
+    every reason a block cannot be rendered.  `effects`, `host_rows`,
+    `known_signatures` and `reserved` stand in for the registries; by
+    default the tree's own are read."""
     names = list(effects) if effects is not None else effect_names()
     blocks, errors = effect_blocks(root, names)
     for more, more_errors in (
@@ -759,6 +816,8 @@ def plan(
         roster_blocks(root, host_rows if host_rows is not None else host_import_rows()),
         signature_blocks(
             root, known_signatures if known_signatures is not None else signatures()),
+        reserved_blocks(
+            root, reserved if reserved is not None else reserved_names()),
     ):
         blocks += more
         errors += more_errors
