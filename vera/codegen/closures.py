@@ -360,6 +360,7 @@ class ClosureLiftingMixin:
             ctor_adt_tp_indices=ns_tp_indices,
             adt_tp_counts=getattr(self, "_adt_tp_counts", None),
             adt_tp_param_names=getattr(self, "_adt_tp_param_names", None),
+            fn_display_names=self._fn_display_names,
         )
         # #773 / PR #870 review: direct `==` derivability gate inside closure
         # bodies — same oracle as the per-function ctx in functions.py.

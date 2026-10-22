@@ -695,6 +695,7 @@ class FunctionCompilationMixin:
             ctor_adt_tp_indices=ns_tp_indices,
             adt_tp_counts=getattr(self, "_adt_tp_counts", None),
             adt_tp_param_names=getattr(self, "_adt_tp_param_names", None),
+            fn_display_names=self._fn_display_names,
         )
         # #773 / PR #870 review: the direct `==` path checks structural-Eq
         # derivability through the SAME gate the generic constraint path uses.

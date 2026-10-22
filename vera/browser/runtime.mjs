@@ -3992,13 +3992,15 @@ export function reset() {
   stdinQueue = [];
 }
 
-/** Return list of exported function names. */
+/** Return the program's exported function names: the runtime's own
+ *  (`vera.alloc`, `vera.register_wrapper`) are left out by their prefix,
+ *  so a program's public `alloc` is listed (#1694). */
 export function getExports() {
   if (!wasm) return [];
   return Object.entries(wasm)
     .filter(([_, v]) => typeof v === 'function')
     .map(([k]) => k)
-    .filter(k => k !== 'alloc');
+    .filter(k => !k.startsWith(RUNTIME_EXPORT_PREFIX));
 }
 
 export { VeraExit, VeraTrap };

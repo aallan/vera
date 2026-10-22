@@ -1296,7 +1296,10 @@ class _TrapIndex:
                 callees = set(_WAT_CALL.findall(body))
                 if "call_indirect" in body:
                     callees |= table
-                graph[header.group(1)] = callees
+                # A declaration's `$:alloc` and the runtime's `$alloc` are
+                # one node (#1694): it holds what either body calls, so a
+                # reach never loses a declaration's callees.
+                graph.setdefault(header.group(1), set()).update(callees)
             self._graph = graph
         return self._graph
 

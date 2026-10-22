@@ -229,7 +229,7 @@ The standard prelude (§9.1.2) provides combinator functions that eliminate comm
 | `result_map` | `forall<A, B, E> Result<A, E>, fn(A -> B) -> Result<B, E>` | Transform the `Ok` value |
 <!-- render_lists:end signatures-result -->
 
-Combinators follow the `domain_verb` naming convention (see §5). They are injected as private generic functions before compilation and undergo normal monomorphization. A combinator is not injected if the user defines a function with the same name.
+Combinators follow the `domain_verb` naming convention (see §5). They are injected as private generic functions before compilation and undergo normal monomorphization.
 
 ## 9.4 Built-in Collections
 
@@ -640,11 +640,11 @@ lowered ABI cannot answer it — `Bool`, every heap ADT and every boxed
 value share the `i32` shape — and neither can the presence of the
 `Request` / `Response` layouts, which the prelude injects whenever the
 *program* mentions those types, so any other function can supply them
-while `handle` has some unrelated signature.  The check is
-ownership-aware in the sense of §11.16: an entry file that declares its
-own `data Request` shadows the prelude's, and the handler is then typed
-by a different type that happens to share the name, so it is refused
-too.  This matters because the host marshals raw bytes through those
+while `handle` has some unrelated signature.  No program can declare
+a `Request` or `Response` of its own: the prelude's names are reserved
+(§8.4.1), so `vera check` refuses such a declaration (E158) before either
+surface validates the handler, and a `Request` the handler names is the
+prelude's.  This matters because the host marshals raw bytes through those
 layouts — it builds the `Request` in guest memory and decodes the
 returned pointer as a `Response` — and a wrong type there is not a
 type error but a read at an address that was never a `Response`.

@@ -7,7 +7,7 @@ single-module checking.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from vera import ast
@@ -54,6 +54,11 @@ class ModuleRegistration:
     functions: dict[str, FunctionInfo]
     data_types: dict[str, AdtInfo]
     constructors: dict[str, ConstructorInfo]
+    #: The constructor names of each public data type the registration
+    #: refused and left unregistered (a reserved name, #1469, #1497), by the
+    #: type's name: an importer's use of one draws no error of its own,
+    #: since the module's refusal is the one the program owes.
+    refused_ctors: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 def _module_exports(
@@ -105,6 +110,13 @@ def _module_exports(
         k: v for k, v in temp.env.constructors.items()
         if k not in builtin_ctors and k in public_ctors
     }
+    refused_ctors = {
+        tld.decl.name: tuple(c.name for c in tld.decl.constructors)
+        for tld in program.declarations
+        if isinstance(tld.decl, ast.DataDecl)
+        and tld.visibility == "public"
+        and id(tld.decl) in temp._refused_decl_ids
+    }
     return ModuleRegistration(
         checker=temp,
         surfaced=tuple(
@@ -116,6 +128,7 @@ def _module_exports(
         functions=public_fns,
         data_types=public_data,
         constructors=ctors,
+        refused_ctors=refused_ctors,
     )
 
 
@@ -269,6 +282,14 @@ class ModulesMixin:
             self._module_functions[mod.path] = mod_fns
             self._module_data_types[mod.path] = mod_data
             self._module_constructors[mod.path] = mod_ctors
+            # #1469: a refused public type's constructors, for an import
+            # that admits the type: like a refused declaration's own
+            # (#1497), a use of one draws no error after the module's.
+            if mod.path in self._import_names:
+                admitted = self._import_names[mod.path]
+                for type_name, ctor_names in reg.refused_ctors.items():
+                    if admitted is None or type_name in admitted:
+                        self._refused_ctor_names.update(ctor_names)
 
             # 4. C7c: check selective imports for private names
             name_filter = self._import_names.get(mod.path)

@@ -203,9 +203,11 @@ class RunInfo(NamedTuple):
     modulo_symbols: bool = False
 
 
-#: A WebAssembly text-format symbolic identifier: ``$`` and one or more
-#: identifier characters.
-_WAT_IDENTIFIER = re.compile(r"\$[0-9A-Za-z!#$%&'*+\-./:<=>?@\\^_`|~]+")
+#: A WebAssembly text-format string literal, its escapes included, or a
+#: symbolic identifier: ``$`` and one or more identifier characters.  The
+#: literal is matched first, so a ``$`` inside one is the literal's text.
+_WAT_TOKEN = re.compile(
+    r'"(?:[^"\\]|\\.)*"|\$[0-9A-Za-z!#$%&\'*+\-./:<=>?@\\^_`|~]+')
 
 
 #: The runtime's own exports (``memory``, the allocator, the GC's) are
@@ -229,9 +231,12 @@ def normalise_symbols(wat: str) -> str:
     names: dict[str, str] = {}
 
     def rename(match: re.Match[str]) -> str:
-        return names.setdefault(match.group(0), f"$s{len(names)}")
+        token = match.group(0)
+        if token.startswith('"'):
+            return token
+        return names.setdefault(token, f"$s{len(names)}")
 
-    return _WAT_IDENTIFIER.sub(rename, _RUNTIME_EXPORT.sub('(export "', wat))
+    return _WAT_TOKEN.sub(rename, _RUNTIME_EXPORT.sub('(export "', wat))
 
 
 # ---------------------------------------------------------------------------

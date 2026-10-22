@@ -687,7 +687,43 @@ def display_name(name: str, names: Mapping[str, str]) -> str:
         if (len(link_name) > len(best)
                 and name.startswith(link_name + "$")):
             best = link_name
-    return names[best] + name[len(best):] if best else name
+    shown = names[best] + name[len(best):] if best else name
+    return display_clone_types(shown)[0]
+
+
+#: A module data type's identity (:data:`_TYPE_LINK_NAME`) as a clone's
+#: name carries it, escaped by :func:`vera.monomorphize.mangle_type_name`:
+#: `$` is ``_U24_`` and ``_`` is ``__``, so each path segment and the type's
+#: name are whole escape units and the run ends where the next unit
+#: (``_R``, ``_C``, ``_J``) or the name does.
+_MANGLED_TYPE_LINK_NAME = re.compile(
+    r"mod_U24_((?:[a-z](?:[A-Za-z0-9]|__)*_U24_)+)([A-Z](?:[A-Za-z0-9]|__)*)")
+
+
+def display_clone_types(*texts: str) -> tuple[str, ...]:
+    """*texts*, one message's or one frame's parts, with every module data
+    type a clone's name carries spelled as :func:`display_type_names`
+    spells a type (#1694): ``epick$Shape`` for the clone of ``epick`` at
+    ``mod$cm$Shape``, and the module's name before the type's
+    (``cm.Shape``) where two modules' types of one name meet."""
+    if not any("_U24_" in text for text in texts):
+        return texts
+    found: dict[str, tuple[str, str]] = {}
+    for text in texts:
+        for match in _MANGLED_TYPE_LINK_NAME.finditer(text):
+            segments = match.group(1).split("_U24_")[:-1]
+            found[match.group(0)] = (
+                ".".join(seg.replace("__", "_") for seg in segments),
+                match.group(2).replace("__", "_"))
+    owners: dict[str, set[str]] = {}
+    for path, name in found.values():
+        owners.setdefault(name, set()).add(path)
+
+    def spelled(match: re.Match[str]) -> str:
+        path, name = found[match.group(0)]
+        return f"{path}.{name}" if len(owners[name]) > 1 else name
+
+    return tuple(_MANGLED_TYPE_LINK_NAME.sub(spelled, text) for text in texts)
 
 
 def display_text(text: str, names: Mapping[str, str]) -> str:
@@ -763,18 +799,22 @@ def display_link_names(
              for text in texts]
     shown = [_CTOR_LINK_NAME.sub(lambda m: m.group(1), text)
              if "$" in text else text for text in shown]
-    return display_type_names(*shown)
+    return display_type_names(*display_clone_types(*shown))
 
 
 #: A string literal as `vera.ast.format_expr` renders one, escapes included.
 _STRING_LITERAL = re.compile(r'"(?:[^"\\]|\\.)*"')
 
 
-def display_message(message: str) -> str:
+def display_message(
+    message: str, fn_names: Mapping[str, str] | None = None,
+) -> str:
     """A runtime message the compiler composed from the linked program,
-    with every constructor's and data type's link name spelled as a reader
-    writes it (:func:`display_link_names`).  A string literal the message
-    quotes is the program's text and is left as written."""
+    with every link name in it spelled as a reader writes it: a function's
+    and a helper's through *fn_names* (:func:`display_names`), a
+    constructor's and a data type's as :func:`display_link_names` spells
+    them.  A string literal the message quotes is the program's text and is
+    left as written."""
     if "$" not in message:
         return message
     pieces: list[str] = []
@@ -784,7 +824,7 @@ def display_message(message: str) -> str:
         pieces.append(match.group(0))
         last = match.end()
     pieces.append(message[last:])
-    outside = display_link_names(pieces[0::2], {})
+    outside = display_link_names(pieces[0::2], fn_names or {})
     pieces[0::2] = outside
     return "".join(pieces)
 
@@ -871,17 +911,44 @@ def source_twins(
     with its path, each name as declared.
     """
     out: dict[int, ast.Node] = {} if into is None else into
+    for old, new in _rebuilt_nodes(written, linked):
+        out[id(new)] = old
+    return out
+
+
+def linked_twins(
+    written: object, linked: object, into: dict[int, ast.Node] | None = None,
+) -> dict[int, ast.Node]:
+    """Each node of *written* the link step rebuilt, by ``id``, to the node
+    of *linked* it became: :func:`source_twins` read the other way.
+
+    A refinement type the checker computed holds its predicate as the
+    program writes it (``vera.types.RefinedType``), and the verifier
+    verifies the linked program, whose tables are keyed by the linked
+    nodes.  The predicate's twin is the one the verifier reads: its calls,
+    types and constructors are spelled by their link names, so each names
+    the declaration its own namespace binds it to (#1694)."""
+    out: dict[int, ast.Node] = {} if into is None else into
+    for old, new in _rebuilt_nodes(written, linked):
+        out[id(old)] = new
+    return out
+
+
+def _rebuilt_nodes(
+    written: object, linked: object,
+) -> Iterator[tuple[ast.Node, ast.Node]]:
+    """Each node of *linked* the link step rebuilt, with the node of
+    *written* it was rebuilt from (:func:`source_twins`)."""
     stack: list[tuple[object, object]] = [(written, linked)]
     while stack:
         old, new = stack.pop()
         if new is old:
             continue
         if isinstance(new, ast.Node) and isinstance(old, ast.Node):
-            out[id(new)] = old
+            yield old, new
             for f in fields(new):
                 if hasattr(old, f.name):
                     stack.append((getattr(old, f.name), getattr(new, f.name)))
         elif (isinstance(new, tuple) and isinstance(old, tuple)
                 and len(new) == len(old)):
             stack.extend(zip(old, new))
-    return out

@@ -138,8 +138,13 @@ class WasmContext(
         value_data_types: frozenset[str] | None = None,
         adt_ctor_tp_indices: (
             dict[str, dict[str, tuple[int | None, ...]]] | None) = None,
+        fn_display_names: Mapping[str, str] | None = None,
     ) -> None:
         self.string_pool = string_pool
+        # #1694: each module declaration's link name to the name a message
+        # shows for it (`vera.binding.display_names`), which every site
+        # message `_emit_trap` interns is spelled through.
+        self._fn_display_names: Mapping[str, str] = fn_display_names or {}
         self._next_local: int = 0
         self._locals: list[tuple[str, str]] = []  # (name, wat_type)
         self._result_local: int | None = None
@@ -899,9 +904,11 @@ class WasmContext(
             )
         if message:
             # Composed from the linked program, whose declarations carry
-            # link names (#1694); the reader is shown the names as written.
+            # link names (#1694); the reader is shown the names as written,
+            # a function's and a helper's included, so no site composes its
+            # own spelling.
             from vera.binding import display_message
-            message = display_message(message)
+            message = display_message(message, self._fn_display_names)
         ptr, length = self.string_pool.intern(message) if message else (0, 0)
         if row.kind == "contract_violation":
             self._needs_contract_fail = True

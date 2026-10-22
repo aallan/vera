@@ -1429,8 +1429,7 @@ class RegistrationMixin:
         elif kind == "data type" and name in self._SPECIAL_CASED_BUILTIN_ADTS:
             subject = "redeclared as a data type"
             rationale = (
-                f"Unlike the prelude's data types, which a program may "
-                f"shadow, '{name}' is recognised by name throughout "
+                f"'{name}' is recognised by name throughout "
                 f"code generation — how it is rendered, compared and laid "
                 f"out. A declaration of that name cannot be told apart from "
                 f"the built-in, so the program would compile against a "

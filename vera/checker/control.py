@@ -1162,8 +1162,8 @@ class ControlFlowMixin:
                   else None)
         # A data type's name is read as the type it denotes here, which is
         # typed by its identity (#1694); a constructor's name stays a name.
-        written = self.env.lookup_type(name)
-        identity = written.name if written is not None else name
+        declared = self.env.lookup_type(name)
+        identity = declared.name if declared is not None else name
         head = target.name if isinstance(target, AdtType) else identity
         ci: ConstructorInfo | None = None
         # The data type the head names by its type name, the value's own

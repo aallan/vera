@@ -19,7 +19,7 @@ import weakref
 
 import z3
 
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from dataclasses import fields as ast_fields
 from fractions import Fraction
@@ -90,6 +90,8 @@ from vera.types import (
     STRING,
     UNIT,
     AdtType,
+    ConcreteEffectRow,
+    EffectInstance,
     EffectRowType,
     FunctionType,
     ModuleArtifacts,
@@ -539,6 +541,44 @@ def _refinement_text(node: ast.RefinementType) -> str:
     refinement as its base alone)."""
     return (f"{{ {ast.format_type_expr(node.base_type)} | "
             f"{ast.format_expr(node.predicate)} }}")
+
+
+def _with_linked_predicates(ty: Type, twins: Mapping[int, ast.Node]) -> Type:
+    """*ty* with each refinement predicate in it read as its twin in *twins*
+    (:func:`vera.binding.linked_twins`), and *ty* itself where nothing in
+    it has a twin (#1694)."""
+    if isinstance(ty, RefinedType):
+        base = _with_linked_predicates(ty.base, twins)
+        predicate = cast(ast.Expr, twins.get(id(ty.predicate), ty.predicate))
+        if base is ty.base and predicate is ty.predicate:
+            return ty
+        return RefinedType(base, predicate)
+    if isinstance(ty, AdtType):
+        args = tuple(_with_linked_predicates(a, twins) for a in ty.type_args)
+        if all(a is b for a, b in zip(args, ty.type_args)):
+            return ty
+        return AdtType(ty.name, args)
+    if isinstance(ty, FunctionType):
+        params = tuple(_with_linked_predicates(p, twins) for p in ty.params)
+        ret = _with_linked_predicates(ty.return_type, twins)
+        effect = ty.effect
+        if isinstance(effect, ConcreteEffectRow):
+            instances = {
+                inst: tuple(_with_linked_predicates(a, twins)
+                            for a in inst.type_args)
+                for inst in effect.effects
+            }
+            if any(any(a is not b for a, b in zip(args, inst.type_args))
+                   for inst, args in instances.items()):
+                effect = ConcreteEffectRow(
+                    frozenset(EffectInstance(inst.name, args)
+                              for inst, args in instances.items()),
+                    effect.row_var)
+        if (ret is ty.return_type and effect is ty.effect
+                and all(a is b for a, b in zip(params, ty.params))):
+            return ty
+        return FunctionType(params, ret, effect)
+    return ty
 
 
 def _calls_in(node: object) -> Iterator[ast.Node]:
@@ -1298,6 +1338,14 @@ class ContractVerifier:
         #: Each node `link` rebuilt, by id, to the node it was rebuilt from
         #: (:func:`vera.binding.source_twins`): what a message quotes.
         self._twins: dict[int, ast.Node] = {}
+        #: The same pairs read the other way (:func:`vera.binding.
+        #: linked_twins`): the node of the linked program a node of the
+        #: program as written became, which is what a predicate in a type
+        #: the checker recorded is read as (`_linked_type`).
+        self._linked_twins: dict[int, ast.Node] = {}
+        #: `_linked_type`'s answers, by the checker type's id, the type kept
+        #: beside its answer so the id is never another type's.
+        self._linked_types: dict[int, tuple[Type, Type]] = {}
         #: Each function declaration's link name to its identity: the module
         #: a call of an imported function names (#1399's manifest consult).
         self._decl_of_link: dict[str, DeclId] = {}
@@ -1418,7 +1466,7 @@ class ContractVerifier:
         """
         key = self._span_key(expr)
         ty = self._expr_types.get(key) if key is not None else None
-        return self._substitute_instance(ty)
+        return self._substitute_instance(self._linked_type(ty))
 
     def _target_type_of(self, expr: ast.Expr) -> Type | None:
         """The instantiated *expected* type *expr* was checked against
@@ -1427,7 +1475,28 @@ class ContractVerifier:
         """
         key = self._span_key(expr)
         ty = self._expr_target_types.get(key) if key is not None else None
-        return self._substitute_instance(ty)
+        return self._substitute_instance(self._linked_type(ty))
+
+    def _linked_type(self, ty: Type | None) -> Type | None:
+        """*ty*, a type the checker recorded over the program as written,
+        with each refinement predicate in it read as the linked program's
+        node it became (#1694).
+
+        The checker keeps a refinement's predicate as the node the program
+        writes, and this verifier verifies the linked program: there a call
+        in the predicate names the declaration its own namespace binds it
+        to, and the predicate's calls are the nodes `_predicate_call_ids`
+        holds.  Read as written, a module type's `pos(@Int.0)` would be
+        looked up by its bare name, and a call the predicate's declaration
+        obligates would be obligated again where the type is checked."""
+        if ty is None or not self._linked_twins:
+            return ty
+        seen = self._linked_types.get(id(ty))
+        if seen is not None and seen[0] is ty:
+            return seen[1]
+        linked = _with_linked_predicates(ty, self._linked_twins)
+        self._linked_types[id(ty)] = (ty, linked)
+        return linked
 
     def _substitute_instance(self, ty: Type | None) -> Type | None:
         """Apply the in-flight clone's TypeVar → concrete-Type mapping.
@@ -2609,7 +2678,7 @@ class ContractVerifier:
         if self._linked is not None and program is self._linked_source:
             assert self._linked_program is not None  # noqa: S101
             return self._linked_program
-        from vera.binding import link_program, source_twins
+        from vera.binding import link_program, linked_twins, source_twins
 
         linked = link_program(program, self._source_modules)
         self._linked = linked
@@ -2619,9 +2688,12 @@ class ContractVerifier:
         self._decl_of_link = {
             ident.link_name: ident for ident in linked.binding.decls}
         self._twins = source_twins(program, linked.program)
+        self._linked_twins = linked_twins(program, linked.program)
+        self._linked_types = {}
         for mod, lmod in zip(self._source_modules, linked.modules,
                              strict=True):
             source_twins(mod.program, lmod.program, self._twins)
+            linked_twins(mod.program, lmod.program, self._linked_twins)
         return linked.program
 
     def _as_written(self, node: _NodeT) -> _NodeT:

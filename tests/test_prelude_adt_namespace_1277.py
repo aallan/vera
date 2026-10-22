@@ -185,22 +185,6 @@ def _two_module_cell(
     )
 
 
-def _two_module_cell(
-    tmp_path: Path, decl_a: str, decl_b: str, *,
-    a_first: bool, uses_ordering: bool = True,
-) -> tuple[list[str], list[str]]:
-    """(codes, exports) for two modules that each declare one name."""
-    gen = _two_module_gen(
-        tmp_path, decl_a, decl_b,
-        a_first=a_first, uses_ordering=uses_ordering,
-    )
-    result = gen._result  # type: ignore[attr-defined]
-    return (
-        sorted({d.error_code for d in result.diagnostics if d.error_code}),
-        sorted(result.exports),
-    )
-
-
 @pytest.mark.parametrize("a_first", [True, False], ids=["alib1st", "blib1st"])
 def test_two_modules_declaring_a_NON_prelude_name_are_admitted(
     tmp_path: Path, a_first: bool,

@@ -1000,6 +1000,15 @@ class TestModuloSymbols:
         assert (_MOD.normalise_symbols(prefixed)
                 == _MOD.normalise_symbols(wat))
 
+    def test_a_name_inside_a_string_literal_is_data(self) -> None:
+        """A `$` inside a WAT string is the literal's text, never a symbol:
+        a message naming `$old` and one naming `$new` differ, where renaming
+        both by first occurrence made them one text."""
+        wat = '(module\n  (data (i32.const 0) "id=$old")\n)\n'
+        assert (_MOD.normalise_symbols(wat.replace("$old", "$new"))
+                != _MOD.normalise_symbols(wat))
+        assert '"id=$old"' in _MOD.normalise_symbols(wat)
+
     @pytest.mark.parametrize("change", [
         ("i64.const 1", "i64.const 2"),
         ('"in f("', '"in mod$m$f("'),

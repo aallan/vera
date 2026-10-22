@@ -46,6 +46,7 @@ from tests.module_fixture_helpers import (
     build_multi_module,
     build_multi_module_past_check,
     module_value,
+    refused_at_check as _refused_at_check,
 )
 
 # =====================================================================
@@ -132,23 +133,6 @@ def _cell(
         else module_value(result)
     )
     return _codes(verify_errors), codes, answer
-
-
-def _refused_at_check(
-    tmp_path: Path, files: dict[str, str],
-) -> tuple[list[str], str]:
-    """The error codes `vera check` refuses ``main.vera`` with, and their
-    messages joined.
-
-    Two owners' same-named types are two types (#1694), so a value of one
-    meeting the other is refused at check, as an ordinary mismatch whose
-    message names both owners.
-    """
-    main_path = pipeline.write_tree(tmp_path, files)
-    checked = pipeline.check(main_path, root=tmp_path)
-    errors = checked.errors
-    return (sorted({d.error_code or "" for d in errors}),
-            "\n".join(d.description for d in errors))
 
 
 def _generator(tmp_path: Path, files: dict[str, str]) -> CodeGenerator:

@@ -17,8 +17,7 @@ reconciliation gate's ``KNOWN`` list names for the program
 (scripts/check_reconciliation.py's ``unlisted_verify_errors``, which
 tests/test_conformance.py shares).  A negative entry never reaches the verify
 stage: it stops at the stage its ``expected_error_stage`` names, ``check``
-or ``compile``, with the code its ``expected_error`` names there, the
-contention negative's E621 at compile among them.
+or ``compile``, with the code its ``expected_error`` names there.
 """
 
 import json

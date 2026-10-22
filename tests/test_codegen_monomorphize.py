@@ -13,7 +13,9 @@ from vera.codegen import (
 from vera.parser import parse_file
 from vera.transform import transform
 from tests import pipeline
-from tests.codegen_helpers import _compile, _compile_ok, _run, _run_io
+from tests.codegen_helpers import (
+    _compile, _compile_ok, _run, _run_io, wat_calls, wat_fn_names,
+)
 
 
 # =====================================================================
@@ -2725,7 +2727,7 @@ public fn main(@Unit -> @Int)
         wat = result.wat or ""
         # Clone names use the #775 injective encoding: multi-arg
         # instantiation vectors join with `_J` (`my_map$Int_JInt`).
-        assert "$:my_map$Int_JInt" in wat, (
+        assert "my_map$Int_JInt" in wat_fn_names(wat), (
             "expected the closure-bound instantiation my_map$Int_JInt; "
             "got: "
             + repr([ln for ln in wat.splitlines() if "my_map$" in ln][:4]))
@@ -2804,7 +2806,7 @@ public fn main(@Unit -> @Unit)
         never the ``$Bool`` phantom-default clone."""
         result = _compile_ok(self._REPRO_IO)
         wat = result.wat or ""
-        assert "$:option_unwrap_or$Decimal" in wat, (
+        assert wat_calls(wat, "option_unwrap_or$Decimal"), (
             "expected the Decimal instantiation option_unwrap_or$Decimal"
         )
         assert "$:option_unwrap_or$Bool" not in wat, (
@@ -2942,7 +2944,7 @@ public fn main(@Unit -> @Int)
         `$Decimal` clone, never the `$Bool` phantom default."""
         result = _compile_ok(self._ISSUE1_PARAM_RETURN)
         wat = result.wat or ""
-        assert "$:first_opt$Decimal" in wat, (
+        assert "first_opt$Decimal" in wat_fn_names(wat), (
             "discovery did not emit first_opt$Decimal for a parameterized "
             "user-fn return (#899 issue 1)"
         )
@@ -2999,7 +3001,7 @@ public fn main(@Unit -> @Int)
         alias name (`pick_last$Age`)."""
         result = _compile_ok(self._ISSUE2_ALIAS_SCALAR_RETURN)
         wat = result.wat or ""
-        assert "$:pick_last$Int" in wat, (
+        assert "pick_last$Int" in wat_fn_names(wat), (
             "discovery emitted no canonical clone pick_last$Int (#1511)"
         )
         assert "$:pick_last$Age" not in wat, wat
@@ -3104,7 +3106,7 @@ public fn main(@Unit -> @Int)
         agree — the call site must not reference the phantom `pick_last$Bool`."""
         result = _compile_ok(self._ISSUE3_PARAM_RETURN_BARE_T)
         wat = result.wat or ""
-        assert "$:pick_last$Option" in wat, (
+        assert "pick_last$Option" in wat_fn_names(wat), (
             "discovery's base-name clone pick_last$Option is absent from the "
             "WAT (#899 issue 3)"
         )
@@ -4264,7 +4266,7 @@ public fn main(@Unit -> @Unit)
     def test_builtin_parameterized_return_mangles_string(self) -> None:
         result = _compile_ok(self._FIRST_CHARS)
         wat = result.wat or ""
-        assert "$:first$String" in wat
+        assert "first$String" in wat_fn_names(wat)
         assert "$:first$Bool" not in wat, (
             "phantom Bool clone emitted — _BUILTIN_PARAMETERIZED_RETURNS is "
             "missing string_chars (#769 gap 1)"
@@ -4321,7 +4323,7 @@ public fn main(@Unit -> @Unit)
         skip notes, and the call site must reference ``$ident$String``."""
         result = _compile_ok(self._IDENT_SCALAR)
         wat = result.wat or ""
-        assert "$:ident$String" in wat
+        assert wat_calls(wat, "ident$String")
         assert "$:ident$Bool" not in wat, (
             "discovery emitted the phantom Bool clone the rewrite never "
             "calls (#769 gap 1b)"
@@ -4373,7 +4375,7 @@ public fn main(@Unit -> @Unit)
     def test_nested_unification_mangles_int(self) -> None:
         result = _compile_ok(self._HEAD_HEAD)
         wat = result.wat or ""
-        assert "$:head_head$Int" in wat
+        assert "head_head$Int" in wat_fn_names(wat)
         assert "$:head_head$Bool" not in wat, (
             "phantom Bool clone — _unify_param_arg did not recurse into "
             "nested type args (#769 gap 2)"
@@ -4664,7 +4666,7 @@ public fn main(@Unit -> @Unit)
     def test_apply_fn_arg_mangles_int(self) -> None:
         result = _compile_ok(self._APPLY_FN_ARG)
         wat = result.wat or ""
-        assert "$:ident$Int" in wat
+        assert "ident$Int" in wat_fn_names(wat)
         assert "$:ident$Bool" not in wat, (
             "discovery emitted the phantom Bool clone for an apply_fn "
             "argument the rewrite manglings as $Int (#769)"
@@ -4750,38 +4752,6 @@ public fn main(@Unit -> @Unit)
 }
 """
 
-    _OVERRIDE_OPTION_MAP = _IO + """\
-public fn option_map(@Unit -> @Int)
-  requires(true)
-  ensures(@Int.result == 42)
-  effects(pure)
-{
-  42
-}
-
-public fn main(@Unit -> @Unit)
-  requires(true) ensures(true) effects(<IO>)
-{
-  IO.print("value=\\(option_map(()))")
-}
-"""
-
-    _OVERRIDE_JSON_TYPE = _IO + """\
-public fn json_type(@Unit -> @Int)
-  requires(true)
-  ensures(@Int.result == 7)
-  effects(pure)
-{
-  7
-}
-
-public fn main(@Unit -> @Unit)
-  requires(true) ensures(true) effects(<IO>)
-{
-  IO.print("x=\\(json_type(()))")
-}
-"""
-
     def test_reindex_state_handler_body(self) -> None:
         """A ``State<T>``-handled body carries NO state slot binding in
         codegen (state lives in host-side cells; ``_translate_handle_state``
@@ -4804,26 +4774,6 @@ public fn main(@Unit -> @Unit)
             f"expected '100'; got {out!r} — the reindex counted a handler "
             f"state binding codegen never pushes (silent variant)"
         )
-
-    _OVERRIDE_INTO_GENERIC = _IO + """\
-public fn option_map(@Unit -> @Int)
-  requires(true)
-  ensures(@Int.result == 42)
-  effects(pure)
-{
-  42
-}
-
-private forall<T> fn ident_ov(@T -> @T)
-  requires(true) ensures(true) effects(pure)
-{ @T.0 }
-
-public fn main(@Unit -> @Unit)
-  requires(true) ensures(true) effects(<IO>)
-{
-  IO.print(to_string(ident_ov(option_map(()))))
-}
-"""
 
     _NESTED_WHERE = _IO + """\
 private forall<A> fn outer(@A -> @A)

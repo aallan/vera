@@ -32,6 +32,7 @@ from tests.module_fixture_helpers import (
     build_multi_module,
     build_multi_module_past_check,
     module_value,
+    refused_at_check as _refused_at_check,
 )
 
 
@@ -237,21 +238,6 @@ public fn main(@Unit -> @Int)
 
 def _codes(errors: list[tuple[str, str]]) -> list[str]:
     return [code for code, _ in errors]
-
-
-def _refused_at_check(
-    tmp_path: Path, files: dict[str, str],
-) -> tuple[list[str], str]:
-    """The error codes `vera check` refuses ``main.vera`` with, and their
-    messages joined.  Two namespaces' same-named data types are two types
-    (#1694), so where a value of one meets the other the program is refused
-    at check, by an ordinary mismatch naming both owners."""
-    from tests import pipeline
-
-    main_path = pipeline.write_tree(tmp_path, files)
-    checked = pipeline.check(main_path, root=tmp_path)
-    return (sorted({d.error_code or "" for d in checked.errors}),
-            "\n".join(d.description for d in checked.errors))
 
 
 # =====================================================================

@@ -960,6 +960,155 @@ def test_class_1694_a_message_quotes_the_program_as_written(
     assert {o.fn_name for o in verified.obligations} >= {"g", "h"}
 
 
+def test_class_1694_a_module_types_predicate_calls_its_modules_function(
+    tmp_path: Path,
+) -> None:
+    """A refinement predicate a module's alias writes calls the function its
+    module binds the name to, wherever a value is checked against the type:
+    the entry's own `pos`, whose `ensures` makes the predicate hold, is not
+    the one `Pos` calls.  The verifier reads the type the checker recorded
+    at the call as the linked program's, so the violation the run traps on
+    is the one it reports, and the trap's message spells the call as the
+    module writes it."""
+    entry = _tree(tmp_path, {
+        "lib.vera": (
+            "module lib;\n\ntype Pos = { @Int | pos(@Int.0) };\n\n"
+            "public fn pos(@Int -> @Bool)\n  requires(true)\n"
+            "  ensures(@Bool.result == (@Int.0 > 0))\n  effects(pure)\n"
+            "{\n  @Int.0 > 0\n}\n\n"
+            + _fn("take(@Tuple<Pos, Int> -> @Int)", "1",
+                  visibility="public")),
+        "main.vera": (
+            "import lib(take);\n\n"
+            "private fn pos(@Int -> @Bool)\n  requires(true)\n"
+            "  ensures(@Bool.result == true)\n  effects(pure)\n"
+            "{\n  true\n}\n\n"
+            + _fn("main(@Unit -> @Int)", "take(Tuple(-3, 1))",
+                  visibility="public")),
+    })
+    verified = pipeline.verify(entry)
+    assert "E505" in _codes(verified.errors), _codes(verified.errors)
+    ran = pipeline.run(entry, "main")
+    assert ran.trap is not None
+    assert "pos(@Int.0) failed" in str(ran.trap), str(ran.trap)
+    assert "$" not in str(ran.trap), str(ran.trap)
+
+
+_MEASURE = (
+    "  requires(true)\n  ensures(true)\n  decreases(@Int.0)\n"
+    "  effects(pure)\n")
+
+
+def test_class_1694_a_failed_measure_names_the_function_as_declared(
+    tmp_path: Path,
+) -> None:
+    """The `decreases` trap of a module function and of a module function's
+    `where` helper names each as it is declared (`cnt`, `top$where$cnt`),
+    never by its link name."""
+    body = "if @Int.0 == 0 then { 0 } else { cnt(@Int.0 + 1) }"
+    entry = _tree(tmp_path, {
+        "tm.vera": (
+            "module tm;\n\npublic fn cnt(@Int -> @Int)\n" + _MEASURE
+            + "{\n  " + body + "\n}\n\n"
+            + "public fn top(@Int -> @Int)\n" + _CONTRACT + "{\n  cnt(@Int.0)\n}\n"
+            "where {\n  fn cnt(@Int -> @Int)\n    requires(true)\n"
+            "    ensures(true)\n    decreases(@Int.0)\n    effects(pure)\n"
+            "  {\n    " + body + "\n  }\n}\n"),
+        "main.vera": (
+            "import tm;\n\n"
+            + _fn("main(@Int -> @Int)",
+                  "if @Int.0 == 0 then { cnt(3) } else { top(3) }",
+                  visibility="public")),
+    })
+    for arg, shown in ((0, "'cnt'"), (1, "'top$where$cnt'")):
+        ran = pipeline.run(entry, "main", [arg])
+        assert ran.trap is not None
+        message = str(ran.trap)
+        assert f"measure in {shown} failed" in message, message
+        assert "mod$" not in message, message
+
+
+def test_class_1694_a_clone_at_a_module_type_is_named_as_written(
+    tmp_path: Path,
+) -> None:
+    """A generic clone instantiated at a module's data type, the entry's
+    and the module's own, is named in its contract message and its trap
+    frame by the type as a reader writes it (`epick$Shape`): the type's
+    link name escaped into the clone's symbol (`mod_U24_cm_U24_Shape`) is
+    a WebAssembly detail."""
+    generic = (
+        "forall<T> fn {name}(@T, @Int -> @Int)\n  requires(true)\n"
+        "  ensures(@Int.result > @Int.0)\n  effects(pure)\n"
+        "{{\n  @Int.0 - 1\n}}\n")
+    entry = _tree(tmp_path, {
+        "cm.vera": (
+            "module cm;\n\npublic data Shape {\n  Sq(Int)\n}\n\n"
+            + _fn("mk(@Int -> @Shape)", "Sq(@Int.0)", visibility="public")
+            + "\npublic " + generic.format(name="gpick")),
+        "main.vera": (
+            "import cm;\n\nprivate " + generic.format(name="epick") + "\n"
+            + _fn("main(@Int -> @Int)",
+                  "if @Int.0 == 0 then { epick(mk(1), 5) } "
+                  "else { gpick(mk(1), 5) }",
+                  visibility="public")),
+    })
+    for arg, clone in ((0, "epick$Shape"), (1, "gpick$Shape")):
+        ran = pipeline.run(entry, "main", [arg])
+        assert ran.trap is not None
+        message = str(ran.trap)
+        assert f"Postcondition violation in {clone}(" in message, message
+        frames = [frame.func for frame in ran.trap.frames]
+        assert clone in frames, frames
+        for text in (message, *frames):
+            assert "_U24_" not in text and "mod$" not in text, text
+
+
+def _reserved_data(name: str, visibility: str = "public") -> str:
+    return f"{visibility} data {name} {{\n  Mine(Int)\n}}\n"
+
+
+def _uses_reserved(name: str) -> str:
+    """A function over the type *name* and a construction of its `Mine`."""
+    return (
+        f"private fn un(@{name} -> @Int)\n" + _CONTRACT
+        + f"{{\n  match @{name}.0 {{\n    Mine(@Int) -> @Int.0\n  }}\n}}\n\n"
+        + _fn("main(@Unit -> @Int)", "un(Mine(4))", visibility="public"))
+
+
+@pytest.mark.parametrize("name", ["Array", "Json"])
+def test_class_1469_a_refused_entry_data_type_draws_one_error(
+    name: str,
+) -> None:
+    """An entry file's `data` of a reserved name is refused with its E158,
+    and its uses draw nothing after it."""
+    source = _reserved_data(name, "private") + "\n" + _uses_reserved(name)
+    checked = pipeline.check(source)
+    assert _codes(checked.diagnostics) == ["E158"], [
+        (d.error_code, d.description) for d in checked.diagnostics]
+
+
+@pytest.mark.parametrize("name", ["Array", "Json"])
+@pytest.mark.parametrize("selective", [False, True],
+                         ids=["import", "selective-import"])
+def test_class_1469_a_refused_module_data_type_draws_one_error(
+    tmp_path: Path, name: str, selective: bool,
+) -> None:
+    """A module's `data` of a reserved name is refused with its E158, and
+    the importing file's uses of the type and its constructor draw nothing
+    after it: like the entry's own refused declaration, the module's is the
+    one error the program owes."""
+    entry = _tree(tmp_path, {
+        "mj.vera": "module mj;\n\n" + _reserved_data(name),
+        "main.vera": (
+            (f"import mj({name});\n\n" if selective else "import mj;\n\n")
+            + _uses_reserved(name)),
+    })
+    checked = pipeline.check(entry)
+    assert [(d.error_code, Path(d.location.file or "").name)
+            for d in checked.diagnostics] == [("E158", "mj.vera")], [
+        (d.error_code, d.description) for d in checked.diagnostics]
+
+
 # =====================================================================
 # The class matrix (#1694): a declaration of each kind, in each relation
 # between namespaces, at each position, beside a declaration of the same
