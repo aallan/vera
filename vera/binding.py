@@ -493,7 +493,8 @@ def _relinked_call(
     if target is not None and target.owner not in (BUILTIN, PRELUDE):
         return ast.FnCall(
             name=target.link_name, args=args, piped=node.piped,
-            stage_span=node.stage_span, span=node.span)
+            stage_span=node.stage_span, span=node.span,
+            node_id=node.node_id)
     if args is node.args:
         return node
     return replace(node, args=args)
@@ -502,8 +503,8 @@ def _relinked_call(
 def _relink(node: object, calls: Mapping[int, DeclId]) -> object:
     """*node* with every call the binding binds naming its target's link
     name.  Nodes are rebuilt only where something under them changed, and
-    every rebuilt node keeps its span, so the checker's span-keyed tables
-    still answer for it."""
+    every rebuilt node keeps its span and its identity (``node_id``), so
+    the checker's tables still answer for it."""
     if isinstance(node, (ast.FnCall, ast.ModuleCall)):
         args = cast(tuple[ast.Expr, ...], _relink(node.args, calls))
         return _relinked_call(node, calls.get(id(node)), args)

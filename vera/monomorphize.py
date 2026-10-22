@@ -2123,7 +2123,8 @@ class Monomorphizer:
             # pointing here — so the enumeration is checked against the
             # dataclass rather than trusted.
             enumerated = {"effect", "state", "clauses", "body"}
-            declared = {f.name for f in fields(node)} - {"span"}
+            declared = {f.name for f in fields(node)
+                        if not f.metadata.get("identity")} - {"span"}
             if declared != enumerated:  # pragma: no cover — guard
                 msg = (
                     f"HandleExpr fields changed: {sorted(declared)}; this arm "
@@ -3661,8 +3662,10 @@ class Monomorphizer:
             mapped = mapping.get(node.name)
             if mapped is not None and "<" in mapped:
                 # Parameterized type like "Map<String, Int>" — parse into
-                # NamedType with type_args
-                return self._parse_type_name(mapped)
+                # NamedType with type_args, standing where *node* stood
+                # (its identity, #1679).
+                return replace(self._parse_type_name(mapped),
+                               node_id=node.node_id)
             new_name = mapped if mapped is not None else node.name
             new_args: tuple[ast.TypeExpr, ...] | None = node.type_args
             if node.type_args:

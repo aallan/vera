@@ -60,9 +60,9 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Callable, Iterable, Iterator, Mapping
-from dataclasses import dataclass, fields
+from dataclasses import Field, dataclass, fields
 from types import MappingProxyType
-from typing import Generic, TypeVar
+from typing import Any, Generic, TypeVar
 
 from vera import ast
 from vera.binders import BINDER_FIELDS
@@ -130,6 +130,13 @@ ORDER: dict[type[ast.Node], FieldOrder] = {
 _FIELD_ORDERS: dict[type, tuple[str, ...]] = {}
 
 
+def _visited(f: Field[Any]) -> bool:
+    """Whether the fold names field *f*: every field but a node's span and
+    its identity (``node_id``), which say where a node is, not what it
+    holds."""
+    return f.name != "span" and not f.metadata.get("identity")
+
+
 def field_order(cls: type[ast.Node]) -> tuple[str, ...]:
     """The fields of *cls* the fold visits, in order: declaration order, or
     the order :data:`ORDER` gives the class."""
@@ -137,14 +144,14 @@ def field_order(cls: type[ast.Node]) -> tuple[str, ...]:
     if order is None:
         entry = ORDER.get(cls)
         order = entry.fields if entry is not None else tuple(
-            f.name for f in fields(cls) if f.name != "span")
+            f.name for f in fields(cls) if _visited(f))
         _FIELD_ORDERS[cls] = order
     return order
 
 
 def _check_order() -> None:
     for cls, entry in ORDER.items():
-        declared = {f.name for f in fields(cls) if f.name != "span"}
+        declared = {f.name for f in fields(cls) if _visited(f)}
         if set(entry.fields) != declared or len(entry.fields) != len(declared):
             raise TypeError(
                 f"vera.fold.ORDER names {entry.fields} for {cls.__name__}, "

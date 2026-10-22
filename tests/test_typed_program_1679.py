@@ -19,13 +19,15 @@ the call; every satisfied pair checks, verifies and runs as at the base.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pytest
 
 from tests import pipeline
+from vera import ast
 
 pytestmark = pytest.mark.matrix(decides=[
     "vera/monomorphize.py",
@@ -321,3 +323,83 @@ def test_instantiation_judgment(judgment: str, position: str, verdict: str,
     assert verified.ok, [d.format() for d in verified.diagnostics]
     ran = pipeline.run(path, "main")
     assert ran.ok, (ran.stderr, ran.trap)
+
+
+# =====================================================================
+# Node identity: the key the typed program's tables are keyed by
+# =====================================================================
+#
+# A span cannot tell a clone's node from its template's (a clone keeps the
+# template's spans), so the tables are keyed by a node's identity, which
+# the parser's transform gives every node once and the link step keeps.
+
+_ROOT = Path(__file__).resolve().parents[1]
+_CORPUS = sorted((_ROOT / "examples").glob("*.vera")) + sorted(
+    (_ROOT / "tests" / "conformance").glob("*.vera"))
+
+
+def _nodes(root: object) -> list[ast.Node]:
+    """Every node object under *root*, each once."""
+    from dataclasses import fields as dc_fields
+
+    seen: set[int] = set()
+    found: list[ast.Node] = []
+    stack: list[object] = [root]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, ast.Node):
+            if id(node) in seen:
+                continue
+            seen.add(id(node))
+            found.append(node)
+            stack.extend(getattr(node, f.name) for f in dc_fields(node)
+                         if f.name != "span")
+        elif isinstance(node, tuple):
+            stack.extend(node)
+    return found
+
+
+@pytest.mark.parametrize("path", _CORPUS, ids=lambda p: p.name)
+def test_every_node_has_one_identity(path: Path) -> None:
+    """Every node a corpus program parses to has an identity, and no two
+    node objects share one."""
+    nodes = _nodes(pipeline.parse(path).program)
+    assert nodes
+    assert all(node.node_id is not None for node in nodes), [
+        type(n).__name__ for n in nodes if n.node_id is None][:5]
+    ids = [node.node_id for node in nodes]
+    assert len(ids) == len(set(ids))
+
+
+@pytest.mark.parametrize("path", _CORPUS, ids=lambda p: p.name)
+def test_the_link_keeps_every_identity(path: Path) -> None:
+    """The linked program, its modules and its prelude hold only numbered
+    nodes, and a node the link step rebuilt keeps the identity of the node
+    it was rebuilt from, so the checker's table answers for it."""
+    from vera.binding import link_program, source_twins
+
+    checked = pipeline.check(path)
+    if not checked.ok:
+        pytest.skip("a library module or a negative fixture: no link")
+    resolved = list(checked.resolved or ())
+    linked = link_program(checked.program, resolved)
+    twins = source_twins(checked.program, linked.program)
+    for mod, lmod in zip(resolved, linked.modules, strict=True):
+        source_twins(mod.program, lmod.program, twins)
+    for root in (linked.program, *(m.program for m in linked.modules),
+                 linked.prelude):
+        for node in _nodes(root):
+            assert node.node_id is not None, type(node).__name__
+            twin = twins.get(id(node))
+            if twin is not None:
+                assert node.node_id == twin.node_id, type(node).__name__
+
+
+def test_identity_is_not_serialised() -> None:
+    """`vera ast --json` and `vera parse`'s tree carry no identity: it is a
+    position, as a span is, not part of what the program says."""
+    program = pipeline.parse(_CORPUS[0]).program
+    assert "node_id" not in json.dumps(program.to_dict())
+    assert "node_id" not in program.pretty()
+    rebuilt = replace(program)
+    assert rebuilt == program and rebuilt.node_id == program.node_id

@@ -903,7 +903,8 @@ def prelude_declarations(
     full_source = "\n".join(source_parts)
     parsed = _parse_source(full_source)
     new_decls = [
-        ast.TopLevelDecl(visibility="private", decl=tld.decl, span=None)
+        ast.TopLevelDecl(visibility="private", decl=tld.decl, span=None,
+                         node_id=tld.node_id)
         for tld in parsed.declarations
     ]
     return tuple(new_decls), full_source
