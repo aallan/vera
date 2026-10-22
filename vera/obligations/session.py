@@ -260,6 +260,9 @@ class VerificationSession:
             expr_target_types=artifacts.expr_target_types,
             module_artifacts=artifacts.module_artifacts,
         )
+        # #1694: the program as the verifier verifies it, every declaration
+        # under its link name; the slices below are its declarations.
+        program = verifier.link(program)
         verifier.register_program(program)
 
         # Phase B incremental drive: walk declarations in order,
@@ -472,6 +475,9 @@ class VerificationSession:
                 source, file=file, resolved_modules=resolved_modules,
             )
 
+        # #1694: every link name spelled as the program writes it, as the
+        # cold path's `ContractVerifier.result` spells it.
+        out_diags, out_obls = verifier.displayed(out_diags, out_obls)
         summary = summarize(out_obls, out_diags)
 
         self.last_program = program

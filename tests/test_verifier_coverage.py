@@ -1586,10 +1586,12 @@ class TestSmtTranslateEdgeCases:
         assert result is None
 
     def test_module_call_no_lookup(self) -> None:
-        """ModuleCall with no module_fn_lookup returns None."""
+        """A ModuleCall is not translated: the program the verifier reads is
+        linked (#1694), where a qualified call is a plain call of its
+        target's link name, so none reaches the SMT layer."""
         from vera.smt import SmtContext, SlotEnv
         from vera.ast import ModuleCall, IntLit
-        ctx = SmtContext(module_fn_lookup=None)
+        ctx = SmtContext()
         env = SlotEnv()
         expr = ModuleCall(
             path=("mod",),

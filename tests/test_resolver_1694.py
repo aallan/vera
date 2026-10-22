@@ -867,3 +867,94 @@ def test_e202_fix_for_a_meeting_of_two_owners_types_clears_it(
     assert fixed.ok and "E202" not in _codes(fixed.diagnostics), (
         _codes(fixed.errors))
     assert pipeline.run(main, "main").value == 7
+
+
+# =====================================================================
+# The verifier reads the linked program (#1694): a callee is the
+# declaration its call is bound to, never a declaration of its name.
+# =====================================================================
+
+def _ensures_of(verified: object, fn: str) -> list[str]:
+    """The statuses of the `ensures` obligations of *fn*."""
+    return [o.status for o in verified.obligations  # type: ignore[attr-defined]
+            if o.kind == "ensures" and o.fn_name == fn]
+
+
+def test_class_1694_the_verifier_reads_the_helper_a_call_is_bound_to(
+) -> None:
+    """A `where` helper named like a top-level function, with a different
+    contract: `compute`'s postcondition holds by the helper's `ensures` and
+    is refuted by the top-level function's, so a verifier that read the call
+    by its name would report it violated.  The run agrees with the proof."""
+    source = (
+        "private fn bump(@Int -> @Int)\n  requires(true)\n"
+        "  ensures(@Int.result == @Int.0 - 1)\n  effects(pure)\n"
+        "{\n  @Int.0 - 1\n}\n\n"
+        "public fn compute(@Int -> @Int)\n  requires(true)\n"
+        "  ensures(@Int.result == @Int.0 + 1)\n  effects(pure)\n"
+        "{\n  bump(@Int.0)\n}\nwhere {\n  fn bump(@Int -> @Int)\n"
+        "    requires(true)\n    ensures(@Int.result == @Int.0 + 1)\n"
+        "    effects(pure)\n  {\n    @Int.0 + 1\n  }\n}\n\n"
+        + _fn("main(@Unit -> @Int)", "compute(5) + bump(10)",
+              visibility="public"))
+    verified = pipeline.verify(source)
+    assert verified.ok, _codes(verified.errors)
+    assert _ensures_of(verified, "compute") == ["verified"]
+    assert pipeline.run(source, "main").value == 15
+
+
+def test_class_1694_the_verifier_reads_the_module_a_qualified_call_names(
+    tmp_path: Path,
+) -> None:
+    """A qualified call of a module's function beside the entry's own
+    function of that name: `g`'s postcondition holds by the module's
+    `ensures` and is refuted by the entry's, so a verifier that read the
+    call by its name would report it violated.  The run agrees."""
+    entry = _tree(tmp_path, {
+        "lib.vera": (
+            "module lib;\n\npublic fn f(@Int -> @Int)\n  requires(true)\n"
+            "  ensures(@Int.result == @Int.0 + 1)\n  effects(pure)\n"
+            "{\n  @Int.0 + 1\n}\n"),
+        "main.vera": (
+            "import lib(f);\n\n"
+            "private fn f(@Int -> @Int)\n  requires(true)\n"
+            "  ensures(@Int.result == 0)\n  effects(pure)\n{\n  0\n}\n\n"
+            "public fn g(@Int -> @Int)\n  requires(true)\n"
+            "  ensures(@Int.result == @Int.0 + 1)\n  effects(pure)\n"
+            "{\n  lib::f(@Int.0)\n}\n\n"
+            + _fn("main(@Unit -> @Int)", "g(5) + f(9)",
+                  visibility="public")),
+    })
+    verified = pipeline.verify(entry)
+    assert verified.ok, _codes(verified.errors)
+    assert _ensures_of(verified, "g") == ["verified"]
+    assert pipeline.run(entry, "main").value == 6
+
+
+def test_class_1694_a_message_quotes_the_program_as_written(
+    tmp_path: Path,
+) -> None:
+    """The verifier reads the linked program, and a message about it quotes
+    the program as it is written (`vera.binding.source_twins`): a qualified
+    call with its path, and a helper and a module function by their own
+    names, never a link name."""
+    entry = _tree(tmp_path, {
+        "lib.vera": (
+            "module lib;\n\npublic fn need(@Int -> @Int)\n"
+            "  requires(@Int.0 > 0)\n  ensures(true)\n  effects(pure)\n"
+            "{\n  @Int.0\n}\n"),
+        "main.vera": (
+            "import lib(need);\n\n"
+            "public fn g(@Int -> @Int)\n  requires(true)\n  ensures(true)\n"
+            "  effects(pure)\n{\n  lib::need(@Int.0) + h(@Int.0)\n}\n"
+            "where {\n  fn h(@Int -> @Int)\n    requires(true)\n"
+            "    ensures(true)\n    effects(pure)\n  {\n"
+            "    need(@Int.0)\n  }\n}\n"),
+    })
+    verified = pipeline.verify(entry)
+    texts = [o.expr_text for o in verified.obligations] + [
+        text for d in verified.diagnostics
+        for text in (d.description, d.fix or "")]
+    assert any("lib::need(@Int.0)" in t for t in texts), texts
+    assert not [t for t in texts if "$" in t], texts
+    assert {o.fn_name for o in verified.obligations} >= {"g", "h"}

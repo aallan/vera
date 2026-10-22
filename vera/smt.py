@@ -288,29 +288,13 @@ class CalleeScope:
     fallback for a callee nothing pins — so an unpinned callee reads in the
     scope currently in force, never in a mix of two.
 
-    One lookup deliberately stays outside this record: ``_module_fn_lookup``,
-    which resolves a ``mod::fn`` call.  It is keyed by module PATH, so it
-    already carries the dimension this record exists to supply and cannot
-    resolve to the wrong module's function.  What it can do is MISS — a
-    qualified call to a module this program did not resolve returns ``None``,
-    the call summary is not built, and the obligation demotes loudly (E532)
-    rather than binding something else (PR #1239 review).
-
-    The one path that lookup cannot answer is the scope's OWN (#1558): inside
-    ``module ma;``, ``ma::two(3)`` names ``ma``'s own top-level ``two``, and a
-    module is not among the modules it resolves.  So the scope carries its
-    module's path, *own_path*, and its own top-level functions, *own_fns* —
-    private ones too, and never a ``where`` helper, which does not shadow a
-    qualified call.  They travel with the other two because they answer the
-    same question for the same module: read in another module's scope, the
-    path would name the wrong file.  ``None`` where the scope's file has no
-    path of its own (:func:`vera.resolver.own_module_path`).
+    The program the verifier reads is linked (#1694): a qualified call is a
+    plain call of its target's link name, which names one declaration, so a
+    call is looked up the same way whichever spelling the program wrote.
     """
 
     alias_env: AliasEnv
     fn_lookup: Callable[[str], Any] | None
-    own_path: tuple[str, ...] | None = None
-    own_fns: Mapping[str, Any] | None = None
 
 
 # =====================================================================
@@ -614,9 +598,6 @@ class SmtContext:
         self,
         timeout_ms: int = DEFAULT_Z3_TIMEOUT_MS,
         fn_lookup: Callable[[str], Any] | None = None,
-        module_fn_lookup: (
-            Callable[[tuple[str, ...], str], Any] | None
-        ) = None,
         alias_env: AliasEnv = EMPTY_ALIAS_ENV,
     ) -> None:
         self.solver = z3.Solver()
@@ -659,11 +640,6 @@ class SmtContext:
         self._array_element_sorts: dict[str, z3.SortRef] = {}
         # Callee contract verification
         self._fn_lookup = fn_lookup
-        self._module_fn_lookup = module_fn_lookup
-        # #1558: the scope's own module path and top-level functions — see
-        # :class:`CalleeScope`.  Bound with the rest of the scope.
-        self._own_path: tuple[str, ...] | None = None
-        self._own_fns: Mapping[str, Any] | None = None
         self._call_violations: list[CallViolation] = []
         # #1199: True once any opaque stand-in constant entered this
         # function's body model (see _fresh_opaque_slot).  The verifier's
@@ -2745,21 +2721,15 @@ class SmtContext:
         the walk enters without its values.
         """
         info: Any
-        if isinstance(call, ast.FnCall):
-            if self._resolves_to_builtin(call.name):
-                if call.name in BUILTIN_DOMAIN_NAMES:
-                    self._check_builtin_domain(call, env)
-                return
-            if self._fn_lookup is None:  # pragma: no cover — resolved above
-                return
-            info = self._fn_lookup(call.name)
-        else:
-            # The ONE resolution the call's translation uses (#1558): an
-            # imported module's function, else the scope's own top-level
-            # function when the path is its own.  Reading the imports alone
-            # left `ma::need_pos(x)` inside `module ma;` unobligated wherever
-            # only this walk reaches it, while its check trapped.
-            info = self.module_callee(tuple(call.path), call.name)
+        if not isinstance(call, ast.FnCall):
+            return
+        if self._resolves_to_builtin(call.name):
+            if call.name in BUILTIN_DOMAIN_NAMES:
+                self._check_builtin_domain(call, env)
+            return
+        if self._fn_lookup is None:  # pragma: no cover — resolved above
+            return
+        info = self._fn_lookup(call.name)
         if info is None:
             return
         self._check_callee_precondition(info, call.name, call.args, call, env)
@@ -2862,23 +2832,6 @@ class SmtContext:
                 counterexample=result.counterexample,
             ))
 
-    def _translate_module_call(
-        self, call: ast.ModuleCall, env: SlotEnv
-    ) -> z3.ExprRef | None:
-        """Translate a module-qualified call (C7d).
-
-        Looks up the callee through :meth:`module_callee` — an imported
-        module's, or the scope's own (#1558) — then delegates to the shared
-        contract verification logic.
-        """
-        callee_info = self.module_callee(tuple(call.path), call.name)
-        if callee_info is None:
-            return None
-
-        return self._translate_call_with_info(
-            callee_info, call.name, call.args, call, env,
-        )
-
     def _zero_size_params(self, callee_info: Any) -> tuple[bool, ...]:
         """Which of *callee_info*'s formals have NO runtime representation (#1214).
 
@@ -2973,8 +2926,7 @@ class SmtContext:
         if self._callee_scope_lookup is None:
             yield
             return
-        saved = CalleeScope(self._alias_env, self._fn_lookup,
-                            self._own_path, self._own_fns)
+        saved = CalleeScope(self._alias_env, self._fn_lookup)
         scope = self._callee_scope_lookup(callee_info, saved)
         self._apply_scope(scope)
         try:
@@ -2983,27 +2935,8 @@ class SmtContext:
             self._apply_scope(saved)
 
     def _apply_scope(self, scope: CalleeScope) -> None:
-        """Put every half of *scope* in force at once (#1208, #1558)."""
+        """Put both halves of *scope* in force at once (#1208)."""
         self._alias_env, self._fn_lookup = scope.alias_env, scope.fn_lookup
-        self._own_path, self._own_fns = scope.own_path, scope.own_fns
-
-    def module_callee(self, path: tuple[str, ...], name: str) -> Any:
-        """THE declaration ``path::name`` names in the scope in force.
-
-        A module the program imports first, as the checker resolves it; then
-        the scope's own path, which names its own top-level functions
-        (#1558).  Both the call translation and the verifier's obligation
-        walk read it, so a qualified call's callee — and with it the
-        precondition obligated at the call — is the same declaration for
-        both, as it is for a bare call.
-        """
-        found = None
-        if self._module_fn_lookup is not None:
-            found = self._module_fn_lookup(path, name)
-        if (found is None and self._own_fns is not None
-                and path == self._own_path):
-            found = self._own_fns.get(name)
-        return found
 
     def _build_callee_env(
         self,
@@ -5152,7 +5085,6 @@ _SMT_ARMS: Mapping[type[ast.Expr], _SmtArm] = fold.dispatch(
         # axiomatised translation.
         ast.FnCall: lambda ctx, e, env: ctx._translate_call(e, env),
         # A cross-module function, looked up by its module path.
-        ast.ModuleCall: lambda ctx, e, env: ctx._translate_module_call(e, env),
         # The block's trailing expression.
         ast.Block: lambda ctx, e, env: ctx._translate_block(e, env),
         ast.MatchExpr: lambda ctx, e, env: ctx._translate_match(e, env),
@@ -5168,6 +5100,9 @@ _SMT_ARMS: Mapping[type[ast.Expr], _SmtArm] = fold.dispatch(
                      ast.OldExpr, ast.NewExpr, ast.AssertExpr, ast.AssumeExpr,
                      ast.UnitLit), _untranslated),
         # Cannot occur: an interpolation is not in a contract predicate, and
-        # the check rejects a hole.
-        **fold.each((ast.InterpolatedString, ast.HoleExpr), _untranslated),
+        # the check rejects a hole.  Nor a qualified call: the program the
+        # verifier reads is linked (#1694), where one is a plain call of its
+        # target's link name.
+        **fold.each((ast.InterpolatedString, ast.HoleExpr, ast.ModuleCall),
+                    _untranslated),
     })

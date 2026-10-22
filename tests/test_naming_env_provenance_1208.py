@@ -611,10 +611,10 @@ public fn main(@Unit -> @Int)
             self: Monomorphizer, decl: ast.FnDecl,
             concrete_types: tuple[str, ...], alias_env: object = None,
         ) -> ast.FnDecl:
-            # The alias by either spelling: discovery clones the linked
-            # declaration in the linked env, where ng's alias is
-            # `mod$ng$Elem` (#1694); verification clones the declaration as
-            # the checker saw it, in its env.  An env holds one of the two.
+            # The alias by either spelling: discovery and verification clone
+            # the linked declaration in the linked env, where ng's alias is
+            # `mod$ng$Elem` (#1694); a module verified on its own clones it
+            # as the checker saw it.  An env holds one of the two.
             if alias_env is None:
                 rendered = "<default>"
             else:
@@ -635,7 +635,11 @@ public fn main(@Unit -> @Int)
             Monomorphizer.monomorphize_fn = original  # type: ignore[method-assign]
 
         assert not _codes(result), _codes(result)
-        inner_envs = {rendered for name, rendered in seen if name == "inner"}
+        # The helper by its own name, under whichever chain names it: the
+        # linked program names it `<parent>$where$inner` (#1694).
+        inner_envs = {
+            rendered for name, rendered in seen
+            if name.rpartition("$where$")[2] == "inner"}
         assert inner_envs, (
             f"the nested generic was never monomorphized; saw {seen}"
         )
@@ -1322,7 +1326,10 @@ public fn main(@Unit -> @Int)
         v.register_program(prog)
         assert ("clib",) in v._module_alias_envs
         mod_env = v._module_alias_envs[("clib",)]
-        assert mod_env.aliases["Cnt"].name == "Nat"  # type: ignore[union-attr]
+        # The module's alias under its link name, as the linked program the
+        # verifier reads names it (#1694); the importer's keeps its own.
+        assert mod_env.aliases["mod$clib$Cnt"].name == "Nat"  # type: ignore[union-attr]
+        assert "Cnt" not in mod_env.aliases
         assert v._alias_env.aliases["Cnt"].name == "Int"  # type: ignore[union-attr]
 
     def test_check_artifacts_carry_no_per_module_env(self) -> None:
@@ -1530,12 +1537,18 @@ class TestRefinedReturnTranslatesInTheCalleeNamespace:
             if window["open"]:
                 window["open"] = False
                 # How the ACTIVE env renders the conflicting alias — inspected
-                # through the RENDERING, not by object identity.
-                resolved = naming_mod.resolve_type_expr(
-                    ast.NamedType(name="Cnt", type_args=None),
-                    self._alias_env,  # type: ignore[attr-defined]
-                )
-                seen.append(naming_mod.pretty_type(resolved))
+                # through the RENDERING, not by object identity — by either
+                # spelling: the linked program names the module's alias
+                # `mod$rlib$Cnt` (#1694), the module verified on its own
+                # `Cnt`.  An env holds one of the two.
+                for spelling in ("Cnt", "mod$rlib$Cnt"):
+                    shown = naming_mod.pretty_type(naming_mod.resolve_type_expr(
+                        ast.NamedType(name=spelling, type_args=None),
+                        self._alias_env,  # type: ignore[attr-defined]
+                    ))
+                    if shown != spelling:
+                        break
+                seen.append(shown)
             return orig_translate(self, expr, env)  # type: ignore[arg-type]
 
         naming_mod.predicate_binder_key = binder_spy  # type: ignore[assignment]

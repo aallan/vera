@@ -776,15 +776,17 @@ def test_1399_imported_generic_clone_is_named_by_its_module(
 
     This is the fact that makes a bare-name lookup wrong (CR 3519156263, cited
     in #1399): the importer DOES verify this clone — its obligations are in
-    this run's stream — but under a key `ModuleCall.name` does not spell.  The
-    key is derived from `_module_qualified_base`, not typed as a literal, so
-    the cell tracks the mangling rather than restating it.
+    this run's stream — under the generic's link name, which the linked
+    program the verifier reads calls it by (#1694).  The key is derived from
+    `vera.binding.DeclId.link_name`, not typed as a literal, so the cell
+    tracks the mangling rather than restating it.
     """
+    from vera.binding import DeclId
     from vera.checker import typecheck_with_artifacts
     from vera.parser import parse
     from vera.resolver import ModuleResolver
     from vera.transform import transform
-    from vera.verifier import ContractVerifier, verify
+    from vera.verifier import verify
 
     paths = _tree(tmp_path, {"glib": _GENERIC_LIB, "gmain": _GENERIC_MAIN})
     entry = paths["gmain"]
@@ -801,7 +803,7 @@ def test_1399_imported_generic_clone_is_named_by_its_module(
         expr_types=artifacts.expr_semantic_types,
         expr_target_types=artifacts.expr_target_types,
     )
-    clone_key = ContractVerifier._module_qualified_base(("glib",), "gen")
+    clone_key = DeclId(("glib",), "gen").link_name
     names = {o.fn_name for o in result.obligations}
     assert clone_key in names, (
         f"expected the clone's obligations under {clone_key!r}, got "
@@ -811,38 +813,38 @@ def test_1399_imported_generic_clone_is_named_by_its_module(
 
 
 def test_1399_a_module_call_resolves_to_the_clone_key(tmp_path: Path) -> None:
-    """... and the lookup answers for a call spelled the other way.
+    """... and the lookup answers for the call, which names that key.
 
     Asserted at the method rather than through a program, deliberately.  The
     end-to-end shape cannot be built today: the demotion is driven by a match
     scrutinee's declared-type facts, and a GENERIC call does not translate to
     an SMT term, so `_subpattern_source_facts` returns before consulting
     anything (traced on the fixture above — `_scrutinee_is_disclosed_call` is
-    never reached for `glib::gen(...)`).  The mismatch is therefore latent
-    rather than live, and what closes it is an agreement between two spellings
-    of one name, which is exactly what this checks.  Without the clone-key arm
-    the lookup answers False for a call whose obligations this very run
-    recorded as disclosed.
+    never reached for `glib::gen(...)`).  The linked program spells that call,
+    bare or qualified, by the generic's link name (#1694), which is the key
+    the clone's obligations are recorded under, so the lookup answers True
+    for a call whose obligations this very run recorded as disclosed.
     """
     from vera import ast
+    from vera.binding import DeclId
     from vera.verifier import ContractVerifier
 
     verifier = ContractVerifier(source=_GENERIC_MAIN, file="gmain.vera")
-    clone_key = ContractVerifier._module_qualified_base(("glib",), "gen")
-    call = ast.ModuleCall(path=("glib",), name="gen", args=())
+    clone_key = DeclId(("glib",), "gen").link_name
+    call = ast.FnCall(name=clone_key, args=())
 
     verifier._disclosed_fns = frozenset()
     assert verifier._scrutinee_is_disclosed_call(call) is False
 
     verifier._disclosed_fns = frozenset({clone_key})
     assert verifier._scrutinee_is_disclosed_call(call) is True, (
-        f"a ModuleCall named 'gen' did not resolve to {clone_key!r}, the key "
+        f"a call of {clone_key!r} did not answer for the key "
         f"its own clone's obligations are recorded under"
     )
 
     # ... and does not answer True for a DIFFERENT module's same-named clone.
     verifier._disclosed_fns = frozenset({
-        ContractVerifier._module_qualified_base(("other",), "gen"),
+        DeclId(("other",), "gen").link_name,
     })
     assert verifier._scrutinee_is_disclosed_call(call) is False
 

@@ -589,7 +589,10 @@ def _oracle_readings(source: str) -> tuple[object, ...]:
     original = verifier_module.ContractVerifier._nat_fn_call
 
     def spy(self, decl, expr, path, smt):  # type: ignore[no-untyped-def]
-        if isinstance(expr, vast.FnCall) and expr.name == "h" and not seen:
+        # The helper by its own name: the linked program the verifier walks
+        # names it `<parent>$where$h` (#1694).
+        if (isinstance(expr, vast.FnCall)
+                and expr.name.rpartition("$where$")[2] == "h" and not seen):
             seen["r"] = (
                 self._declared_ret_type_name(expr),
                 self._is_nat_typed(expr),

@@ -685,7 +685,7 @@ def display_name(name: str, names: Mapping[str, str]) -> str:
 def display_text(text: str, names: Mapping[str, str]) -> str:
     """*text* with every link name in it spelled as :func:`display_name`
     spells it, the longest first so no name is rewritten inside another."""
-    if "mod$" not in text:
+    if "$" not in text:
         return text
     for link_name in sorted(names, key=len, reverse=True):
         if link_name in text:
@@ -846,3 +846,34 @@ def link_program(
         prelude_source=prelude_source,
         binding=binding,
     )
+
+
+def source_twins(
+    written: object, linked: object, into: dict[int, ast.Node] | None = None,
+) -> dict[int, ast.Node]:
+    """Each node the link step rebuilt in *linked*, by ``id``, to the node
+    of *written* it was rebuilt from (:func:`link`).
+
+    The link step rebuilds a node only where a name under it changed and
+    keeps every other node as it is, so the two trees are walked in step: a
+    node that is *written*'s own stops the walk, and a rebuilt one is
+    recorded and descended field by field.  A qualified call is rebuilt as a
+    plain one, whose arguments are its own.  So a message about a node of
+    the linked program quotes the program as it is written: a qualified call
+    with its path, each name as declared.
+    """
+    out: dict[int, ast.Node] = {} if into is None else into
+    stack: list[tuple[object, object]] = [(written, linked)]
+    while stack:
+        old, new = stack.pop()
+        if new is old:
+            continue
+        if isinstance(new, ast.Node) and isinstance(old, ast.Node):
+            out[id(new)] = old
+            for f in fields(new):
+                if hasattr(old, f.name):
+                    stack.append((getattr(old, f.name), getattr(new, f.name)))
+        elif (isinstance(new, tuple) and isinstance(old, tuple)
+                and len(new) == len(old)):
+            stack.extend(zip(old, new))
+    return out
