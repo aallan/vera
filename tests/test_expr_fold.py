@@ -227,7 +227,12 @@ def _documented_order(cls: type[ast.Node]) -> list[str]:
     """Declaration order, unless the order table names the class."""
     if cls in fold.ORDER:
         return list(fold.ORDER[cls].fields)
-    return [f.name for f in dataclasses.fields(cls) if f.name != "span"]
+    return [f.name for f in dataclasses.fields(cls) if _visited(f)]
+
+
+def _visited(f: dataclasses.Field[object]) -> bool:
+    """A field the fold names: all but a node's span and its identity."""
+    return f.name != "span" and not f.metadata.get("identity")
 
 
 def _reached(root: ast.Node) -> list[int]:
@@ -252,7 +257,7 @@ def test_the_order_table_is_the_documented_one() -> None:
         "effect", "state", "body", "clauses")
     for cls, order in fold.ORDER.items():
         assert order.why, cls
-        declared = [f.name for f in dataclasses.fields(cls) if f.name != "span"]
+        declared = [f.name for f in dataclasses.fields(cls) if _visited(f)]
         assert sorted(order.fields) == sorted(declared), cls
 
 

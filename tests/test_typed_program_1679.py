@@ -479,3 +479,35 @@ def test_every_generic_call_records_its_instantiation(path: Path) -> None:
             if decl is not None and decl.forall_vars:
                 assert record is not None, ast.format_expr(node)
                 assert record.callee == ident.link_name
+
+
+# =====================================================================
+# The typed program: every instance built once, every clone node typed
+# =====================================================================
+
+
+@pytest.mark.parametrize("path", _CORPUS, ids=lambda p: p.name)
+def test_every_expression_of_every_clone_is_typed(path: Path) -> None:
+    """Every expression of every clone the typed program builds has a type
+    of its own, under its own identity, and every generic call a clone
+    compiles names the instance it calls, which is built."""
+    from vera.typed import build
+
+    checked = _checked_corpus_program(path)
+    typed = build(checked.program, list(checked.resolved or ()),
+                  checked.artifacts)
+    recorded = checked.artifacts.instantiations
+    template_ids = {node.node_id for root in _roots(checked)
+                    for node in _nodes(root)}
+    for inst in typed.instances:
+        assert inst.clone is not None and inst.clone.name == inst.name
+        for node in inst.compiled_nodes():
+            assert node.node_id not in template_ids, inst.name
+            if isinstance(node, ast.Expr):
+                assert typed.semantic_type(node) is not None, (
+                    inst.name, ast.format_expr(node))
+            if (isinstance(node, (ast.FnCall, ast.ModuleCall))
+                    and typed.origin.get(node.node_id) in recorded):
+                callee = typed.call_target(node)
+                assert callee is not None and callee.clone is not None, (
+                    inst.name, ast.format_expr(node))
