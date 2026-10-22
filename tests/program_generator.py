@@ -2,9 +2,9 @@
 
 ``generate(seed)`` writes a program from a seed: type aliases and
 refinements, up to three ``data`` declarations with a generic one and a
-recursive one beside them, generic helpers, ``State`` and ``Exn`` helpers,
-two to six functions whose contracts hold of every input their ``requires``
-admits, a module beside the entry holding declarations the entry imports,
+recursive one beside them, generic helpers, ``State`` and ``Exn`` helpers
+each called under a handler of its cell, two to six functions whose
+contracts hold of every input their ``requires`` admits, a module beside the entry holding declarations the entry imports,
 and a ``main`` that prints the value of each public function.
 ``tests/test_program_generator.py`` runs it through check, verify, compile,
 load, the reconciliation join, ``vera test --distrust``, and a sequence of
@@ -33,7 +33,10 @@ What makes a program well formed, by construction rather than by retry:
   call is what the callee's ``ensures`` states; a ``requires`` or a
   refinement bounds each numeric parameter; a call to a generic, a fold, a
   ``State`` read, an array element, a map's value and a handler's value are
-  opaque to the verifier, so *V* holds their type alone.  So an ``ensures``
+  opaque to the verifier, and so are a ``match`` on a constructor applied in
+  place or on ``map_get``'s result and a call taking an argument the
+  verifier has no term for (issue #1696), so *V* holds their type alone.
+  So an ``ensures``
   written from *V* holds in the verifier's model, an argument whose *V* lies
   inside the callee's ``requires`` meets it, a ``@Nat`` subtraction whose
   operands' *V* cannot cross is provable, and an *R* far inside the 64-bit
@@ -68,9 +71,20 @@ records (``VERA_GENERATOR_OUT``) into the report the workflow posts.
 Version two leaves out closures beyond ``array_fold``'s argument, effect-row
 variables, parameterised aliases, user effects and abilities, ``String``,
 ``Float64`` and ``Byte`` values beyond ``main``'s output and a map's keys,
-relational preconditions, the product of two variables, and the shapes
-issue #1525 lists as dropped at compile (a ``match`` on or a constructor
-applied to a fold, an index into a call's result).
+relational preconditions, the product of two variables, and an index into
+anything but a ``let``-bound array literal (issue #1525's line from #1680:
+code generation infers no element type for an array in place).
+
+Some shapes it writes make code generation fail on a program the checker
+and the verifier accept, because code generation re-derives a value's type
+from its own reading of the expression (issue #1525): an argument at a
+generic's type variable, which it instantiates the call at, a fold, which
+it types by its initial value or not at all (as a scrutinee or a
+constructor's argument), and a branch whose every arm is a fold, a
+``throw`` or a handler (#1744 for the handlers).  :func:`bind_in_place` writes the program with each such value
+bound in place by a ``let`` of the type the checker gives it, and a find
+that vanishes there is counted under the issue; one that does not vanish
+is reported.
 """
 
 from __future__ import annotations
@@ -80,7 +94,7 @@ import json
 import random
 import re
 import sys
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Collection, Iterator
 from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
 
@@ -547,6 +561,16 @@ class SetSize(Expr):
 
 
 @dataclass(eq=False)
+class Bound(Expr):
+    """``{ let @T = value; @T.0 }``: *value* bound in place by a ``let`` of
+    *type*, the type the checker gives it, which code generation reads off
+    the declaration (:func:`bind_in_place`)."""
+
+    value: Expr
+    type: str
+
+
+@dataclass(eq=False)
 class Function:
     name: str
     public: bool
@@ -710,6 +734,8 @@ def static_type(e: Expr) -> str:
         return split_type(static_type(e.arr))[1][0]
     if isinstance(e, MapGet):
         return "Option<Int>"
+    if isinstance(e, Bound):
+        return e.type
     raise TypeError(e)
 
 
@@ -772,6 +798,11 @@ def iv(e: Expr, which: str) -> Iv:
     if isinstance(e, Guarded):
         return iv_hull(iv(e.then, which), iv(e.other, which))
     if isinstance(e, Match):
+        if which == "v" and _opaque_scrutinee(e.scrutinee):
+            # The verifier translates no `match` on a constructor applied in
+            # place, on `map_get`'s result or on what it has no term for: its
+            # value is unconstrained (#1696).
+            return _default(static_type(e))
         out = _hull_all([iv(arm.body, which) for arm in e.arms
                          if not isinstance(arm.body, Throw)])
         assert out is not None, e
@@ -780,6 +811,11 @@ def iv(e: Expr, which: str) -> Iv:
         if e.fn.forall:
             return (_default(static_type(e)) if which == "v"
                     else _generic_r(e))
+        if which == "v" and any(_no_term(a) for a in e.args):
+            # A call taking an argument the verifier has no term for does
+            # not translate either: its value is unconstrained, and the
+            # callee's `ensures` is dropped (#1696).
+            return _default(static_type(e))
         return visible(e.fn) if which == "v" else body_r(e.fn)
     if isinstance(e, Get):
         return ANY if which == "v" else CELL_R[e.cell]
@@ -813,6 +849,8 @@ def iv(e: Expr, which: str) -> Iv:
         return ANY if which == "v" else _fold_r(e)
     if isinstance(e, SetSize):
         return ANY if which == "v" else Iv(1, len(_set_of(e.set).items))
+    if isinstance(e, Bound):
+        return iv(e.value, which)
     raise TypeError(e)
 
 
@@ -823,6 +861,34 @@ def _translatable(e: Expr) -> bool:
         isinstance(node, (Fold, Get, Handle, Index, Guarded, MapGet, SetSize))
         or isinstance(node, Call) and node.fn.forall
         for node in _walk(e))
+
+
+def _no_term(e: Expr) -> bool:
+    """Whether the verifier translates *e* to no term at all: a generic's
+    call, a fold, a cell's read, a handler or a set's size anywhere in it,
+    or a slot of a type other than ``Int``, ``Nat`` and ``Bool`` bound to
+    one (a ``let`` of one of those three holds a fresh value of its type)."""
+    for node in _walk(e):
+        if (isinstance(node, (Fold, Get, Handle, SetSize))
+                or isinstance(node, Call) and node.fn.forall):
+            return True
+        if (isinstance(node, Ref) and node.binding.value is not None
+                and node.binding.type not in PRIMITIVES
+                and _no_term(node.binding.value)):
+            return True
+    return False
+
+
+def _opaque_scrutinee(e: Expr) -> bool:
+    """Whether the verifier translates no ``match`` on *e*: a constructor
+    applied in place, ``map_get``'s result, or an expression it has no term
+    for."""
+    return isinstance(e, (Construct, MapGet)) or _no_term(e)
+
+
+def _cell_of(fn: Function) -> str:
+    """The cell an effect helper's row names: ``Int`` of ``<State<Int>>``."""
+    return fn.effects.split("<", 2)[2][:-2]
 
 
 def _refined_leaf(e: Expr) -> bool:
@@ -1126,20 +1192,16 @@ class _Generator:
         self.row: tuple[str, ...] = ()
         #: Drawing a closure's body: its own parameters, and no call.
         self.closure = False
-        #: Drawing a constructor's argument or a scrutinee: no fold (the
-        #: shapes #1525 lists as dropped at compile).
-        self.plain = False
         #: Inside a handler's body: no second handler.
         self.handled = False
-        #: Drawing a branch's value (an `if`'s, a `match` arm's): no handler,
-        #: since code generation gives an `if` whose arms are handlers no
-        #: result type (the module does not load).
-        self.branch = False
         #: The function being written, which no drawn call may name.
         self.current: Function | None = None
         #: Writing the module's declarations.
         self.in_module = False
         self.lib: list[Function] = []
+        #: The effect helpers a call drawn so far names: a handler of a
+        #: helper's cell calls one no call names yet first.
+        self.called: set[int] = set()
 
     # -- choices -------------------------------------------------------
 
@@ -1185,11 +1247,14 @@ class _Generator:
         for i in range(count):
             self.functions.append(self.function(last=i == count - 1))
         # A generic no call instantiates has no clone to compile: code
-        # generation skips its template (E604), so none is written.
+        # generation skips its template (E604), so none is written; nor is
+        # an effect helper no handler calls, which would be proved and
+        # never run.
         called = {id(node.fn) for fn in self.functions for f in [fn, *fn.helpers]
                   for node in _walk(f.body) if isinstance(node, Call)}
         self.functions = [f for f in self.functions
-                          if not f.forall or id(f) in called]
+                          if not (f.forall or f.kind in ("state", "exn"))
+                          or id(f) in called]
         prints = [f for f in self.functions if f.public]
         prog = Program(self.seed, self.datas, self.functions, prints,
                        self.aliases, self.module)
@@ -1604,24 +1669,17 @@ class _Generator:
 
     # -- blocks and expressions -----------------------------------------
 
-    def block(self, ty: str, env: list[Binding], depth: int, lets: int, *,
-              branch: bool = False) -> Block:
+    def block(self, ty: str, env: list[Binding], depth: int, lets: int) -> Block:
         scope = list(env)
         out: list[Let | Do] = []
-        saved = self.branch
-        self.branch = False
-        try:
-            for _ in range(lets):
-                stmt = self.statement(scope, depth)
-                if stmt is None:
-                    continue
-                out.append(stmt)
-                if isinstance(stmt, Let):
-                    scope.append(stmt.binding)
-            self.branch = branch
-            return Block(out, self.value(ty, scope, depth, block=True))
-        finally:
-            self.branch = saved
+        for _ in range(lets):
+            stmt = self.statement(scope, depth)
+            if stmt is None:
+                continue
+            out.append(stmt)
+            if isinstance(stmt, Let):
+                scope.append(stmt.binding)
+        return Block(out, self.value(ty, scope, depth, block=True))
 
     def let_types(self, scope: list[Binding]) -> list[tuple[str, float]]:
         out = [(t, 2.0) for t in PRIMITIVES]
@@ -1649,22 +1707,14 @@ class _Generator:
             cell = self.rng.choice(cells)[6:-1]
             helpers = [f for f in self.functions
                        if f.effects == f"<State<{cell}>>" and f is not self.current]
-            if helpers and self.chance(0.5):
-                return Do(self.call(self.rng.choice(helpers), scope, depth))
+            if helpers and self.chance(0.7):
+                return Do(self.call(self._helper(helpers), scope, depth))
             return Do(Put(cell, self.cell_value(cell, scope, depth - 1)))
         kind = self.pick(self.let_types(scope))
         binding = self.let(kind, scope, depth)
         return Let(binding) if binding is not None else None
 
     def let(self, kind: str, scope: list[Binding], depth: int) -> Binding | None:
-        container = kind.startswith(("Array<", "Set<", "Map<", "Option<", "Box")) or kind == "Tuple"
-        saved, self.plain = self.plain, self.plain or container
-        try:
-            return self._let(kind, scope, depth)
-        finally:
-            self.plain = saved
-
-    def _let(self, kind: str, scope: list[Binding], depth: int) -> Binding | None:
         alias = self.alias(kind)
         if alias is not None:
             if alias.refined is not None:
@@ -1852,8 +1902,13 @@ class _Generator:
             out.append(("guard", 3.0))
         if any(isinstance(b.value, MapBuild) for b in env):
             out.append(("mapmatch", 3.0))
-        if not self.handled and not self.in_module and not self.branch:
-            out += [("state", 1.0), ("exn", 0.8)]
+        if not self.handled and not self.in_module:
+            # A helper no call names yet draws its handler: a helper is
+            # written to be called under one.
+            waiting = {f.kind for f in self.functions
+                       if f.kind in ("state", "exn") and id(f) not in self.called}
+            out += [("state", 1.0 + 3.0 * ("state" in waiting)),
+                    ("exn", 0.8 + 3.0 * ("exn" in waiting))]
         if any(r.startswith("Exn<") for r in self.row):
             out.append(("throwif", 1.0))
         return out
@@ -1888,7 +1943,7 @@ class _Generator:
                 sets = [b for b in env if isinstance(b.value, SetBuild)]
                 if arrays and not self.closure:
                     options.append(("length", 1.2))
-                if ints and not self.closure and not self.plain:
+                if ints and not self.closure:
                     options.append(("fold", 2.0))
                 if sets and not self.closure:
                     options.append(("setsize", 0.6))
@@ -2099,18 +2154,14 @@ class _Generator:
             ctors = [c for c in ctors if CHAIN not in c.fields]
         ctor = self.rng.choice(ctors)
         args: list[Expr] = []
-        saved, self.plain = self.plain, True
-        try:
-            for field_ty in ctor.fields:
-                field_ty = subst(field_ty, inst)
-                if field_ty in NUMERIC:
-                    args.append(self.field_value(field_ty, env, depth))
-                elif field_ty == CHAIN:
-                    args.append(self.construct(CHAIN, env, depth - 1, chain=chain + 1))
-                else:
-                    args.append(self.value(field_ty, env, max(depth - 1, 0)))
-        finally:
-            self.plain = saved
+        for field_ty in ctor.fields:
+            field_ty = subst(field_ty, inst)
+            if field_ty in NUMERIC:
+                args.append(self.field_value(field_ty, env, depth))
+            elif field_ty == CHAIN:
+                args.append(self.construct(CHAIN, env, depth - 1, chain=chain + 1))
+            else:
+                args.append(self.value(field_ty, env, max(depth - 1, 0)))
         return Construct(ctor, args, ty=ty if data.params else None)
 
     def call(self, fn: Function, env: list[Binding], depth: int) -> Call:
@@ -2162,14 +2213,6 @@ class _Generator:
                 boxes = self.refs(env, pty)
                 arg = (Ref(self.rng.choice(boxes)) if boxes and self.chance(0.7)
                        else Construct(self.find_data(BOX).ctors[1], [], ty=pty))
-            elif pty in NUMERIC:
-                # A reference, whose declared type every phase reads alike:
-                # code generation instantiates a call at its own reading of
-                # an arithmetic argument's type, which can be `Nat` where the
-                # checker's is `Int` (#1525's class).
-                refs = [b for b in env if b.type == pty and not _refined_leaf(Ref(b))
-                        and iv(Ref(b), "r").within(*FIELD_R[pty])]
-                arg = Ref(self.rng.choice(refs)) if refs else None
             else:
                 arg = self.exact(pty, env, depth - 1)
             if arg is None:
@@ -2181,8 +2224,8 @@ class _Generator:
         cond = self.expr("Bool", env, depth - 1)
         if cond is None:
             return None
-        then = self.block(ty, env, depth - 1, lets=self.rng.choice([0, 0, 1]), branch=True)
-        other = self.block(ty, env, depth - 1, lets=self.rng.choice([0, 0, 1]), branch=True)
+        then = self.block(ty, env, depth - 1, lets=self.rng.choice([0, 0, 1]))
+        other = self.block(ty, env, depth - 1, lets=self.rng.choice([0, 0, 1]))
         e = If(cond, then, other)
         return e if self._keeps(ty, e) else None
 
@@ -2255,12 +2298,8 @@ class _Generator:
         if how == "adt":
             data = self.rng.choice(adts)
             refs = self.refs(env, data.name)
-            saved, self.plain = self.plain, True
-            try:
-                scrutinee: Expr = (Ref(self.rng.choice(refs)) if refs and self.chance(0.7)
-                                   else self.construct(data.name, env, depth - 1))
-            finally:
-                self.plain = saved
+            scrutinee: Expr = (Ref(self.rng.choice(refs)) if refs and self.chance(0.7)
+                               else self.construct(data.name, env, depth - 1))
             e = self._data_match(scrutinee, data, ty, env, depth)
             return e if self._keeps(ty, e) else None
         if how == "box":
@@ -2303,11 +2342,7 @@ class _Generator:
                 Arm(Pattern(ctor=NONE), self.arm_body(ty, env, depth - 1))])
             return e if self._keeps(ty, e) else None
         if how == "int":
-            saved, self.plain = self.plain, True
-            try:
-                number = self.expr("Int", env, max(depth - 2, 0))
-            finally:
-                self.plain = saved
+            number = self.expr("Int", env, max(depth - 2, 0))
             if number is None:
                 return None
             # Distinct literals drawn from a pool by `randrange` alone, whose
@@ -2320,11 +2355,7 @@ class _Generator:
             arms.append(Arm(Pattern(), self.arm_body(ty, env, depth - 1)))
             e = Match(number, arms)
             return e if self._keeps(ty, e) else None
-        saved, self.plain = self.plain, True
-        try:
-            flag = self.expr("Bool", env, max(depth - 2, 0))
-        finally:
-            self.plain = saved
+        flag = self.expr("Bool", env, max(depth - 2, 0))
         if flag is None:
             return None
         arms = [Arm(Pattern(literal=True), self.arm_body(ty, env, depth - 1)),
@@ -2334,15 +2365,19 @@ class _Generator:
 
     def handle_state(self, ty: str, env: list[Binding], depth: int) -> Handle | None:
         """``handle[State<C>]`` with the canonical clauses, over a body that
-        writes the cell first and reads it after."""
-        cell = self.rng.choice(list(NUMERIC))
+        writes the cell first and reads it after: by a helper's call where
+        one of its cell is declared, and the cell of a helper no call names
+        yet, first."""
+        waiting = [f for f in self.functions if f.kind == "state" and id(f) not in self.called]
+        cell = (_cell_of(self.rng.choice(waiting)) if waiting and self.chance(0.8)
+                else self.rng.choice(list(NUMERIC)))
         init = self.cell_value(cell, env, depth - 2)
         saved = self.row, self.handled
         self.row, self.handled = self.row + (f"State<{cell}>",), True
         try:
             helpers = [f for f in self.functions if f.effects == f"<State<{cell}>>"]
-            first: Do = (Do(self.call(self.rng.choice(helpers), env, depth - 1))
-                         if helpers and self.chance(0.5)
+            first: Do = (Do(self.call(self._helper(helpers), env, depth - 1))
+                         if helpers and self.chance(0.9)
                          else Do(Put(cell, self.cell_value(cell, env, depth - 2))))
             rest = self.block(ty, env, depth - 1, lets=self.rng.choice([0, 1, 2]))
         finally:
@@ -2352,17 +2387,21 @@ class _Generator:
 
     def handle_exn(self, ty: str, env: list[Binding], depth: int) -> Handle | None:
         """``handle[Exn<C>]`` over a body that may throw, directly or through
-        a helper, and a clause over the payload."""
-        cell = self.rng.choice(list(NUMERIC))
+        a helper, and a clause over the payload: the cell of a helper no
+        call names yet, first, where its value fits the position."""
+        def fits(f: Function) -> bool:
+            return f.kind == "exn" and (f.ret == ty or ty == "Int" and f.ret == "Nat")
+
+        waiting = [f for f in self.functions if fits(f) and id(f) not in self.called]
+        cell = (_cell_of(self.rng.choice(waiting)) if waiting and self.chance(0.8)
+                else self.rng.choice(list(NUMERIC)))
         saved = self.row, self.handled
         self.row, self.handled = self.row + (f"Exn<{cell}>",), True
         try:
-            helpers = [f for f in self.functions if f.effects == f"<Exn<{cell}>>"
-                       and f.ret in (NUMERIC if ty in NUMERIC else (ty,))]
-            if helpers and ty in NUMERIC and self.chance(0.5):
-                call = self.call(self.rng.choice(helpers), env, depth - 1)
-                body = Block([], call if ty == "Int" or static_type(call) == "Nat"
-                             else self.value(ty, env, depth - 1, block=True))
+            helpers = [f for f in self.functions
+                       if fits(f) and f.effects == f"<Exn<{cell}>>"]
+            if helpers and self.chance(0.9):
+                body = Block([], self.call(self._helper(helpers), env, depth - 1))
             else:
                 body = self.block(ty, env, depth - 1, lets=self.rng.choice([0, 1]))
                 if not _throws(body) and self.chance(0.6):
@@ -2375,6 +2414,13 @@ class _Generator:
         clause = self.value(ty, env + [payload], max(depth - 2, 0))
         e = Handle("Exn", cell, None, body, payload, clause)
         return e if self._keeps(ty, e) else None
+
+    def _helper(self, helpers: list[Function]) -> Function:
+        """One of *helpers* for a call, one no call names yet first."""
+        fresh = [f for f in helpers if id(f) not in self.called]
+        helper = self.rng.choice(fresh or helpers)
+        self.called.add(id(helper))
+        return helper
 
     def throw_if(self, ty: str, env: list[Binding], depth: int) -> If | None:
         cells = [r[4:-1] for r in self.row if r.startswith("Exn<")]
@@ -2390,20 +2436,13 @@ class _Generator:
         return e if self._keeps(ty, e) else None
 
     def arm_body(self, ty: str, env: list[Binding], depth: int) -> Expr:
-        """An arm's body: an expression, or an ``if`` or ``match``, with no
-        ``let`` of its own and no handler."""
-        saved, self.branch = self.branch, True
-        try:
-            return self.value(ty, env, depth, block=self.chance(0.25))
-        finally:
-            self.branch = saved
+        """An arm's body: an expression, or an ``if``, a ``match`` or a
+        handler, with no ``let`` of its own."""
+        return self.value(ty, env, depth, block=self.chance(0.25))
 
     def _keeps(self, ty: str, e: Expr) -> bool:
         """Whether *e*, built for a *ty* position, still has a type that
-        position takes, an arm code generation can type it by, and an *R* no
-        run overflows."""
-        if not _typed_arms(e):
-            return False
+        position takes and an *R* no run overflows."""
         try:
             t = static_type(e)
         except TypeError:
@@ -2413,29 +2452,6 @@ class _Generator:
         if ty in NUMERIC:
             return iv(e, "r").safe()
         return t == ty
-
-
-def _typed(e: Expr) -> bool:
-    """Whether code generation can type *e* by its own reading of it: a
-    fold, a handler and a `throw` it cannot, and a branch it types by an
-    arm."""
-    if isinstance(e, (Fold, Handle, Throw)):
-        return False
-    return _typed_arms(e)
-
-
-def _typed_arms(e: Expr) -> bool:
-    """Whether a branch has an arm code generation can type it by: an `if`,
-    a `match` or a guarded index whose every arm is a fold, a handler or a
-    `throw` is given no result type, and its module does not load
-    (`finds/if_with_no_typed_arm_invalid_module.vera`)."""
-    if isinstance(e, If):
-        return _typed(e.then.result) or _typed(e.other.result)
-    if isinstance(e, Match):
-        return any(_typed(arm.body) for arm in e.arms)
-    if isinstance(e, Guarded):
-        return _typed(e.then) or _typed(e.other)
-    return True
 
 
 def iv_or_none(e: Expr, which: str) -> Iv | None:
@@ -2607,6 +2623,9 @@ def inline(e: Expr, env: list[Binding], *, contract: bool = False) -> str:
                 f"{inline(e.item, env, contract=contract)})")
     if isinstance(e, SetSize):
         return f"set_size({inline(e.set, env, contract=contract)})"
+    if isinstance(e, Bound):
+        return (f"{{ let @{e.type} = {inline(e.value, env, contract=contract)}; "
+                f"@{e.type}.0 }}")
     raise RenderError(f"{type(e).__name__} cannot be written on one line")
 
 
@@ -2668,6 +2687,10 @@ def _expr_lines(e: Expr, env: list[Binding], ind: str, head: str,
                      f"{inner}throw({cell}) -> {{ {clause} }}"]
         return (lines + [f"{ind}}} in {{"] + _block_lines(e.body, env, inner)
                 + [f"{ind}}}{tail}"])
+    if isinstance(e, Bound) and isinstance(e.value, (If, Guarded, Match, Handle)):
+        return ([f"{head}{{"]
+                + _expr_lines(e.value, env, inner, f"{inner}let @{e.type} = ", ";")
+                + [f"{inner}@{e.type}.0", f"{ind}}}{tail}"])
     return [f"{head}{inline(e, env)}{tail}"]
 
 
@@ -2893,6 +2916,103 @@ def name_constructed_types(prog: Program) -> Program | None:
 
 
 # =====================================================================
+# The counterfactual of code generation's own reading of a value's type
+# =====================================================================
+
+#: What :func:`bind_in_place` binds: each fold that is not a ``let``'s
+#: value, whose type code generation reads off its initial value or finds
+#: none for, and each argument at a generic's type variable (#1525's
+#: class), and each handler that is a branch's value (#1744's).
+BIND_FOLD = "fold"
+BIND_ARGUMENT = "argument"
+BIND_HANDLER_ARM = "handler_arm"
+BIND_KINDS = (BIND_FOLD, BIND_ARGUMENT, BIND_HANDLER_ARM)
+
+
+def _mentions(ty: str, variables: list[str]) -> bool:
+    return any(re.search(rf"\b{re.escape(v)}\b", ty) for v in variables)
+
+
+def bind_in_place(prog: Program, kinds: Collection[str]) -> Program | None:
+    """*prog* with each value of *kinds* (:data:`BIND_KINDS`) bound in place
+    by a ``let`` of the type the checker gives it, ``{ let @Int = ...;
+    @Int.0 }``, which code generation reads off the declaration, and every
+    contract as *prog* writes it; ``None`` when *prog* holds no such value.
+
+    The ``let`` holds the value where it stood, so the program computes what
+    *prog* computes and the verifier sees what it saw: a find *prog* makes
+    and this program does not is code generation's own reading of the
+    value's type (#1525's class, or #1744's for a handler)."""
+    cand = copy.deepcopy(prog)
+    functions = all_functions(cand)
+    for fn in functions:
+        fn.contract = _requires(fn) + _ensures(fn)
+    changed = False
+
+    def bind(e: Expr, ty: str) -> Expr:
+        nonlocal changed
+        changed = True
+        return Bound(e, ty)
+
+    def arm(e: Expr) -> Expr:
+        e = walk(e)
+        if BIND_HANDLER_ARM in kinds and isinstance(e, Handle):
+            return bind(e, static_type(e))
+        return e
+
+    def block(b: Block, *, branch: bool = False) -> None:
+        for stmt in b.lets:
+            if isinstance(stmt, Do):
+                stmt.expr = walk(stmt.expr)
+            elif stmt.binding.value is not None:
+                stmt.binding.value = walk(stmt.binding.value, let=True)
+        b.result = arm(b.result) if branch else walk(b.result)
+
+    def walk(e: Expr, *, let: bool = False) -> Expr:
+        if isinstance(e, If):
+            e.cond = walk(e.cond)
+            block(e.then, branch=True)
+            block(e.other, branch=True)
+            return e
+        if isinstance(e, Match):
+            e.scrutinee = walk(e.scrutinee)
+            for a in e.arms:
+                a.body = arm(a.body)
+            return e
+        if isinstance(e, Guarded):
+            e.then, e.other = arm(e.then), arm(e.other)
+            return e
+        if isinstance(e, Handle):
+            if e.init is not None:
+                e.init = walk(e.init)
+            block(e.body)
+            if e.clause is not None:
+                e.clause = walk(e.clause)
+            return e
+        if isinstance(e, Fold):
+            # The closure's body reads its own two parameters alone.
+            e.init = walk(e.init)
+            return bind(e, "Int") if BIND_FOLD in kinds and not let else e
+        for f in fields(e):
+            value = getattr(e, f.name)
+            if isinstance(value, Expr):
+                setattr(e, f.name, walk(value))
+            elif isinstance(value, list):
+                setattr(e, f.name, [
+                    walk(x) if isinstance(x, Expr)
+                    else (x[0], walk(x[1])) if isinstance(x, tuple) else x
+                    for x in value])
+        if isinstance(e, Call) and e.fn.forall and BIND_ARGUMENT in kinds:
+            e.args = [bind(a, subst(p.type, e.inst)) if _mentions(p.type, e.fn.forall)
+                      else a for p, a in zip(e.fn.params, e.args)]
+        return e
+
+    for fn in functions:
+        block(fn.body)
+    return cand if changed else None
+
+
+# =====================================================================
 # What the generator expects of a program
 # =====================================================================
 
@@ -2994,7 +3114,7 @@ CONSTRUCTS = (
     "array_option_nat", "array_data", "map_string_int", "set_nat", "tuple",
     "array_length", "index_guarded", "array_fold", "map_get_match",
     "handle_state_int", "handle_state_nat", "handle_exn", "throw",
-    "state_helper", "noncommutative",
+    "state_helper", "exn_helper", "noncommutative",
 )
 
 
@@ -3066,8 +3186,6 @@ def shape(prog: Program) -> dict[str, int]:
             count["fn_generic"] += 1
             count["forall_ord"] += "Ord<T>" in fn.constraints
             count["forall_eq"] += "Eq<T>" in fn.constraints
-        if fn.kind == "state":
-            count["state_helper"] += 1
         if fn.kind == "noncomm":
             count["noncommutative"] += 1
         style = ensure_style(fn)
@@ -3127,6 +3245,8 @@ def _count_node(node: object, count: dict[str, int], aliases: set[str],
             1 for arm in node.arms for b in arm.pattern.binders if b is not None)
     elif isinstance(node, Call):
         count["call"] += 1
+        if node.fn.kind in ("state", "exn"):
+            count[f"{node.fn.kind}_helper"] += 1
     elif isinstance(node, Construct):
         count["construct"] += 1
     elif isinstance(node, Bin):
@@ -3549,10 +3669,6 @@ def _closure_ok(fold: Fold) -> bool:
     return True
 
 
-def _no_fold(value: object) -> bool:
-    return not any(isinstance(node, Fold) for node in _walk(value))
-
-
 def _chain_depth(e: Expr) -> int:
     if isinstance(e, Construct) and e.ctor.data == CHAIN and e.args:
         return 1 + max(_chain_depth(a) for a in e.args)
@@ -3631,8 +3747,6 @@ def _node_ok(node: object, row: tuple[str, ...], fn: Function) -> bool:
     if isinstance(node, Construct):
         if node.ctor.data == CHAIN and _chain_depth(node) > CHAIN_DEPTH:
             return False
-        if not _no_fold(node.args):
-            return False
         inst = {}
         if node.ty is not None:
             data_params = ["T"] if node.ctor.data in (BOX, "Option") else []
@@ -3645,19 +3759,6 @@ def _node_ok(node: object, row: tuple[str, ...], fn: Function) -> bool:
                     return False
                 if not iv(arg, "r").within(lo, hi):
                     return False
-    if isinstance(node, Match):
-        if not _no_fold(node.scrutinee):
-            return False
-        if any(isinstance(arm.body, Handle) for arm in node.arms):
-            return False
-    if isinstance(node, If) and any(isinstance(b.result, Handle)
-                                    for b in (node.then, node.other)):
-        return False
-    if isinstance(node, (If, Match, Guarded)) and not _typed_arms(node):
-        return False
-    if isinstance(node, Guarded) and any(isinstance(b, Handle)
-                                         for b in (node.then, node.other)):
-        return False
     return True
 
 
@@ -3674,8 +3775,6 @@ def _instance_ok(call: Call) -> bool:
     for p, arg in zip(call.fn.params, call.args):
         if p.type == "T":
             if static_type(arg) != t:
-                return False
-            if t in NUMERIC and not isinstance(arg, Ref):
                 return False
         elif p.type == "Box<T>" and static_type(arg) != f"Box<{t}>":
             return False
@@ -3894,16 +3993,21 @@ def summarize(directory: Path) -> str:
         statuses = sorted(k for k in stats if k.startswith("obligation_"))
         lines.append("Obligations: " + ", ".join(
             f"{k.removeprefix('obligation_')} {stats[k]}" for k in statuses))
-    known: dict[str, list[int]] = {}
+    known: dict[tuple[str, str], list[int]] = {}
     for r in records:
         for f in r["finds"]:
             if f["known"]:
-                known.setdefault(f["known"], []).append(r["seed"])
+                known.setdefault((f["known"], f.get("cls", "")), []).append(r["seed"])
     if known:
         lines += ["", "Known classes (counted, not failures):", "",
-                  "| Issue | Mismatches | Programs |", "|---|---:|---:|"]
-        lines += [f"| {issue} | {len(known[issue])} | "
-                  f"{len(set(known[issue]))} |" for issue in sorted(known)]
+                  "| Issue | Class | Finds | Programs | Seeds |", "|---|---|---:|---:|---|"]
+        for issue, cls in sorted(known):
+            seeds = sorted(set(known[(issue, cls)]))
+            shown = ", ".join(str(s) for s in seeds[:5])
+            if len(seeds) > 5:
+                shown += f" and {len(seeds) - 5} more"
+            lines.append(f"| {issue} | {cls} | {len(known[(issue, cls)])} | "
+                         f"{len(seeds)} | {shown} |")
     if records:
         totals: dict[str, int] = {}
         for r in records:

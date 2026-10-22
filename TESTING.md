@@ -1433,8 +1433,8 @@ or a mismatch is the toolchain's or the generator's, never the program's own.
 Version two writes type aliases (`type Score = Int;`, and refinements such as
 `type Span = { @Int | @Int.0 >= -3 && @Int.0 <= 9 };`), up to three `data`
 declarations beside a generic one (`Box<T>`) and a recursive one (`Chain`),
-private generic helpers, `State` and `Exn` helpers, two to six functions, a
-module beside the entry (`gen_lib.vera`, which the entry imports by a selective
+private generic helpers, `State` and `Exn` helpers (each written only where a
+handler of its cell calls it), two to six functions, a module beside the entry (`gen_lib.vera`, which the entry imports by a selective
 list of what it uses), and a `main` that prints each public function's value.
 A function is one of five kinds:
 
@@ -1451,14 +1451,18 @@ an array of a data type, `Map<String, Int>`, `Set<Nat>` and a `Tuple`), read by
 `array_length`, an index under the bound that proves it, `array_fold` with a
 closure over its own two parameters, a `match` on `map_get`, `set_contains` and
 `set_size`; `handle[State<Int>]` and `handle[State<Nat>]` with the canonical
-clauses, where every `put` keeps the cell inside its bound; `handle[Exn<Int>]`
-and `handle[Exn<Nat>]` over a `throw`; calls of the generics, each at a type its
+clauses, where every `put` keeps the cell inside its bound, and a `State`
+helper's call under one; `handle[Exn<Int>]` and `handle[Exn<Nat>]` over a
+`throw` or an `Exn` helper's call; calls of the generics, each at a type its
 `where` clause admits, and of the module's functions; and slots named by
 aliases, a refined parameter and a refined `let` among them.  A public function
 takes `Int`, `Nat` and `Bool` parameters, and aliases of them, the types
 `vera test` generates.  A generic's call, a fold, a cell's read, an element and
-a handler's value are opaque to the verifier, so no contract the generator
-writes rests on one.
+a handler's value are opaque to the verifier, and so are a `match` on a
+constructor applied in place or on `map_get`'s result, and a call taking a
+generic's call, a fold, a cell's read, a handler or a set's size, whose
+`ensures` the verifier drops: a `let` of one holds an unconstrained value
+(#1696).  No contract the generator writes rests on one.
 
 Each program is held to the generator's contract and four differentials:
 
@@ -1471,10 +1475,10 @@ Each program is held to the generator's contract and four differentials:
 | (4) Warm | the program and the four edits `program_generator.edits` writes for it (a literal moved inside its interval, a `let` added, a non-commutative pair's operands swapped, a function added with a call to it, a `requires` tightened inside its callers' arguments, a contract broken and then restored) go in order to one `VerificationSession`, as the language server sends a document's text, and each text alone to a fresh session; the two report the same obligations, with the same statuses at the same places, and the same diagnostics | a warm session that replays a stale verdict |
 
 A counterexample is the model the solver returned, one of the many that refute
-a clause, and which one it returns depends on the queries the solver answered
+a clause, and which one it returns depends on the solver work the process did
 before, so the warm differential compares a diagnostic without its
-counterexample's values, and counts the edits where the two sessions' models
-differ.
+counterexample's values; an edit whose two sessions differ in a counterexample
+alone is #1785's class.
 
 **Known classes.**  `KNOWN_CLASSES` reads `scripts/check_reconciliation.py`'s
 `KNOWN` as classes, each by its mismatch's kind, obligation and emitter and by
@@ -1485,18 +1489,35 @@ code generation's declared-name rule does not read as one (a call's result, a
 refined slot, a `Nat` field's binder and a generic one's at `Nat`, a
 `State<Nat>` read and its handler, an element of a `Nat` array); #1695 for a
 narrowing into a refinement of `Nat`, recorded once as the refinement's and
-checked twice; and #1695 for #1629 for a refinement check on a value the
+checked twice; #1695 for #1629 for a refinement check on a value the
 declarations already give the refinement (a refined parameter at entry, a
-`let` of a refined slot).
+`let` of a refined slot); and #1695 for a join of a refined arm with an
+unrefined one, bound into the refinement, which the checker types as the
+refinement.
 A verify error is #1525's when it vanishes once each function binds
 an unused `let` of every data type it constructs and does not name in its
 signature (`program_generator.name_constructed_types`); the four
-differentials then run over that program.  A find inside a known class is
-counted under its issue, with the evidence in its record, and fails nothing.
-Each class is pinned by a repro cell that fails the day its issue is fixed, and
-the entry comes out.  Version one's first scheduled night (2026-10-22, 5,010
-programs, #1781) counted 8 mismatches under #1525, 182 under #1598, 3,889
-under #1695 for #1557 and 7,426 under #1695 for #1629.
+differentials then run over that program.
+A find of the load, reconcile or distrust differential is #1525's when it
+vanishes with each fold (which code generation types by its initial value,
+or not at all) and each argument at a generic's type variable bound in place
+by a `let` of the type the checker gives it (`{ let @Int = …; @Int.0 }`,
+`program_generator.bind_in_place`), which code generation reads off the
+declaration, and #1744's when it vanishes once each handler a branch takes is
+bound too, provided that program checks, verifies and makes no find of its
+own; the distrust run counted is then that program's.
+A find at those shapes that does not vanish under the `let` is reported.
+A warm find whose two sessions differ in a counterexample alone is #1785's: the
+model the solver returns depends on the solver work the process did before,
+which a fresh session inherits as a warm one does, so no seed shows one in a new
+process and the class has no pin.
+A find inside a known class is counted under its issue, with its class and the
+evidence in its record, and fails nothing; the night's report gives each class
+its count, its programs and its first seeds.  Each class but #1785's is pinned
+by a repro cell that fails the day its issue is fixed, and the entry comes out.
+Version one's first scheduled night (2026-10-22, 5,010 programs, #1781) counted
+8 mismatches under #1525, 182 under #1598, 3,889 under #1695 for #1557 and 7,426
+under #1695 for #1629.
 
 **Where it runs.**  Every pull request runs the contract and the four
 differentials over ten pinned seeds, which between them write every construct
@@ -1505,18 +1526,18 @@ module included, byte for byte, in the test's process and under two string hash
 seeds; a hundred seeds reach every construct and keep the generator's
 invariants; each differential reports a hand-written program that breaks it,
 or a session built to break it, and passes its nearest neighbour that does not;
-the known-class pins and their members; and the minimiser's cells.  Nothing
+the known-class pins and their members, and the counterfactual classes' pins,
+members and boundary; and the minimiser's cells.  Nothing
 else of the generator runs on a pull request.
 [`nightly-generator.yml`](.github/workflows/nightly-generator.yml)
-runs the night's 1,200 seeds, a short night of 1,000 seeds on a pull request
+runs the night's 1,900 seeds, a short night of 1,000 seeds on a pull request
 that changes the generator, its instrument or the workflow, and any seeds
 `workflow_dispatch` names.  The night is scheduled at 14:17 UTC and starts
 when GitHub runs it, hours later on this repository.  A night's seeds start at
 its day's offset from 2026-10-01 times 100,000, so no two nights share one.
-On a laptop's four workers 1,000 seeds of version two take 316 s, 6.9 times
-version one's 46 s, and the warm differential is 0.87 s of a program's 1.20 s;
-version one's 1,000 took 213 s on the runner's four workers, so a night of
-1,200 is about 29 minutes of the step's 45.
+On the runner's four workers the short night takes 0.92 s a program, 4.3 times
+version one's 0.213 s there, so a night of 1,900 is about 29 minutes of the
+step's 45; on a laptop the warm differential is 0.87 s of a program's 1.20 s.
 
 **A find.**  A find outside the known classes is minimised: a function, a
 module's function or the module dropped with a literal standing in for each
@@ -1542,12 +1563,13 @@ python -m tests.program_generator summarize out                         # the re
 Closures beyond `array_fold`'s argument, effect-row variables, parameterised
 aliases, user-declared effects and abilities, `String`, `Float64` and `Byte`
 values beyond `main`'s output and a map's keys, relational preconditions and
-the product of two variables are outside version two's grammar, and so are the
-shapes #1525 lists as dropped at compile: a `match` on a fold or a constructor
-applied to one, and an index into a call's result.  A generic's numeric
-argument at its type variable is a reference, since code generation
-instantiates a call at its own reading of an arithmetic argument's type, which
-can be `Nat` where the checker's is `Int` (#1525's class).
+the product of two variables are outside version two's grammar, and so is an
+index into anything but a `let`-bound array literal (#1525's line from #1680:
+code generation infers no element type for an array in place).  The shapes at
+which code generation reads a type of its own, a fold from a `@Nat` initial
+value, as a scrutinee or as a constructor's argument, an argument at a
+generic's type variable and a branch whose every arm is a fold, a `throw` or a
+handler, are inside it, each counted by its counterfactual class above.
 
 ## Adding Tests
 

@@ -70,10 +70,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
-      # The night's seeds, sized to the per-program cost of version two's
-      # programs and their warm differential (TESTING.md § Program
-      # Generator), with the step's margin.
-      NIGHT: "night:1200"
+      # The night's seeds, sized to the per-program cost a pull request's
+      # short night measures on this runner (0.92 s; TESTING.md § Program
+      # Generator): about 29 minutes of the step's 45.
+      NIGHT: "night:1900"
       PULL_REQUEST_SEEDS: "0-999"
 
     steps:

@@ -25,7 +25,13 @@ handed over by the entry's path, as `vera` resolves them:
   for it go, in order, to one warm `VerificationSession` as the language
   server sends them, and each text alone to a fresh session; the two report
   the same obligations, with the same statuses at the same places, and the
-  same diagnostics, edit by edit.
+  same diagnostics, edit by edit.  Two sessions that differ in a
+  counterexample alone make a find of #1785's class.
+
+A find of (1), (2) or (3) that vanishes once each value code generation
+types by its own reading is bound in place by a `let` of the type the
+checker gives it is counted under that class's issue (:data:`REDERIVED`);
+one that does not vanish is a find.
 
 Every pull request runs the contract and the four differentials over the
 ten pinned :data:`SEEDS`, and holds the instrument to its own contract: a seed
@@ -33,7 +39,8 @@ writes its program byte for byte in every process, a hundred seeds reach
 every construct of the grammar, each differential reports a hand-written
 program that breaks it and passes that program's nearest neighbour that does
 not, the minimiser keeps the failure it shrinks and drops a handler, a
-recursive call and an import, and each known class still has its shape.  The
+recursive call and an import, each known class still has its shape, and each
+counterfactual class still holds its repro and its members.  The
 nightly lane (`.github/workflows/nightly-generator.yml`) runs the same cell
 over the night's seeds, which ``VERA_GENERATOR_SEEDS`` names
 (:func:`night_seeds`).  A find outside the known classes is minimised and
@@ -67,6 +74,7 @@ from tests import pipeline
 from tests import program_generator as gen
 from tests.test_distrust_corpus import _FALSE_PROOF
 from vera import ast
+from vera.errors import Diagnostic, SourceLocation
 from vera.formatter import format_source
 from vera.obligations.session import VerificationSession
 from vera.reconcile import Mismatch, join
@@ -77,10 +85,15 @@ ROOT = Path(__file__).resolve().parent.parent
 #: under: the file name a report gives the program.
 LABEL = gen.ENTRY
 
-#: The pull request lane's seeds: the first seven, and three that with them
-#: write every construct of the grammar
-#: (:func:`test_the_pinned_seeds_reach_every_construct`).
-SEEDS = (0, 1, 2, 3, 4, 5, 6, 375, 567, 852)
+#: The pull request lane's seeds: the first eight, 27 and 106, which between
+#: them write every construct of the grammar
+#: (:func:`test_the_pinned_seeds_reach_every_construct`) and a find of each
+#: counterfactual class, #1744's at 7 and #1525's at 27
+#: (:data:`PINNED_CLASSES`).
+SEEDS = (0, 1, 2, 3, 4, 5, 6, 7, 27, 106)
+
+#: A pinned seed whose program makes a find of each counterfactual class.
+PINNED_CLASSES = (("#1744", 7), ("#1525", 27))
 
 #: Trials per public function in the distrust differential.
 TRIALS = int(os.environ.get("VERA_GENERATOR_TRIALS", "20"))
@@ -136,12 +149,16 @@ class Find:
     key: str = ""
     #: Why it is known, or why a known class's test did not hold of it.
     evidence: str = ""
+    #: The known class it falls in, by its shape: what the night's report
+    #: counts it under.
+    cls: str = ""
 
     def to_dict(self) -> dict[str, object]:
         return {"differential": self.differential,
                 "signature": list(self.signature), "detail": self.detail,
                 "known": self.known, "function": self.function,
-                "args": list(self.args), "evidence": self.evidence}
+                "args": list(self.args), "evidence": self.evidence,
+                "cls": self.cls}
 
 
 Source = str | dict[str, str] | gen.Program
@@ -240,7 +257,7 @@ def contract_finds(program: Source, stages: Stages | None = None) -> list[Find]:
         where = f"{label}: " if label else ""
         finds += [
             Find("contract", ("verify", d.error_code or "error"), where + d.format(),
-                 key=f"{label}{d.error_code}: {d.description}")
+                 key=_verify_key(label, d))
             for d in run.errors
         ]
         if run.ran:
@@ -253,6 +270,16 @@ def contract_finds(program: Source, stages: Stages | None = None) -> list[Find]:
     return finds
 
 
+def _verify_key(label: str, d: Diagnostic) -> str:
+    """What identifies a verify error when the counterfactual's `let`s move
+    lines: its file, code and description without the counterexample, whose
+    values name the solver's fresh terms in the order it made them, and its
+    source line's text and column, which a whole line inserted above leaves
+    alone."""
+    return (f"{label}{d.error_code}: {_without_model(d.description)} "
+            f"| {d.source_line.strip()} | {d.location.column}")
+
+
 #: The class of a verify error that vanishes when each function first names,
 #: in an unused `let`, every data type it constructs and does not name in its
 #: signature: the verifier walks a function's signature and `let`s for a data
@@ -260,6 +287,8 @@ def contract_finds(program: Source, stages: Stages | None = None) -> list[Find]:
 #: finds no sort for does not translate, and a call taking it loses the
 #: callee's postcondition (`program_generator.name_constructed_types`).
 CONSTRUCTED_SORT_ISSUE = "#1525"
+CONSTRUCTED_SORT_SHAPE = ("a construction of a data type its function names "
+                          "nowhere, for which the verifier finds no sort")
 
 
 def classify_contract(
@@ -298,7 +327,8 @@ def classify_contract(
                 "survived the counterfactual (an unused `let` of each data "
                 "type a function constructs and does not name)")))
         else:
-            out.append(replace(f, known=CONSTRUCTED_SORT_ISSUE, evidence=(
+            out.append(replace(f, known=CONSTRUCTED_SORT_ISSUE, cls=CONSTRUCTED_SORT_SHAPE,
+                               evidence=(
                 "vanished under the counterfactual (an unused `let` of each "
                 "data type a function constructs and does not name); "
                 "statuses that changed: " + ("; ".join(changed) or "none"))))
@@ -370,7 +400,8 @@ def load_finds(
     generic = {tld.decl.name for tld in compiled.parsed.program.declarations
                if isinstance(tld.decl, ast.FnDecl) and tld.decl.forall_vars}
     finds = [
-        Find("load", ("compile", d.error_code or "error"), d.format())
+        Find("load", ("compile", d.error_code or "error"), d.format(),
+             function=_function_named(d.description))
         for d in compiled.diagnostics
         if ((d.error_code or "").startswith("E6") or d.severity == "error")
         # A generic's template is not compiled, its clones are: a template
@@ -422,8 +453,13 @@ def load_finds(
 
 
 def _names_one_of(description: str, names: set[str]) -> bool:
+    return _function_named(description) in names
+
+
+def _function_named(description: str) -> str:
+    """The function a code generation diagnostic names, or empty."""
     match = re.match(r"Function '([^']+)'", description)
-    return match is not None and match.group(1) in names
+    return match.group(1) if match is not None else ""
 
 
 # =====================================================================
@@ -967,7 +1003,8 @@ def reconcile_finds(
             f"'{m.function}' ({m.emitter or m.status}): {m.detail}",
             known=cls.issue if cls is not None else "", function=m.function,
             evidence=(f"{cls.shape}, at {m.line}:{m.column}"
-                      if cls is not None else "")))
+                      if cls is not None else ""),
+            cls=cls.shape if cls is not None else ""))
     return finds
 
 
@@ -1034,12 +1071,19 @@ def _obligation_prints(result: object) -> list[tuple[str, str, str, int, int, st
             for o in result.obligations]  # type: ignore[attr-defined]
 
 
+#: The class of a warm differential's find in which the two sessions differ
+#: in a counterexample alone: the model the solver returns, one of many that
+#: refute a clause, depends on the solver work the process did before, which
+#: a fresh session inherits as a warm one does (#1785).  No seed shows it in
+#: a new process, so the class has no pin: it is counted, and fails nothing.
+WARM_MODEL_ISSUE = "#1785"
+WARM_MODEL_SHAPE = "a counterexample the warm session and a fresh one model apart"
+
+
 def _diagnostic_prints(result: object) -> list[tuple[str, str, str, str, int, int]]:
     """Each diagnostic, its description without a counterexample's values:
-    a counterexample is a model the solver chose, one of many that refute
-    the same clause, and which one a solver returns depends on the queries
-    it answered before (`stats["warm_counterexample_differs"]` counts the
-    edits where the two sessions' models differ)."""
+    a counterexample is a model the solver chose, and two sessions that
+    differ in it alone make a find of #1785's class, not a disagreement."""
     return [(d.severity, d.error_code or "", _without_model(d.description),
              d.location.file or "", d.location.line, d.location.column)
             for d in result.diagnostics]  # type: ignore[attr-defined]
@@ -1117,21 +1161,191 @@ def warm_finds(
     session = warm()
     finds: list[Find] = []
     replayed = 0
-    models = 0
     for n, edit in enumerate(edits):
         text = edit.program.render()
         answer = session.verify_source(text, file=path)
         replayed += session.last_run_stats.replayed_fns
         alone = fresh().verify_source(text, file=path)
-        finds += _disagreements(n, edit.name, answer, alone)
-        models += [d.description for d in answer.diagnostics] != [
-            d.description for d in alone.diagnostics]
+        found = _disagreements(n, edit.name, answer, alone)
+        if not any(f.signature == ("diagnostics",) for f in found) and [
+                d.description for d in answer.diagnostics] != [
+                d.description for d in alone.diagnostics]:
+            found.append(Find(
+                "warm", ("diagnostics", "counterexample"),
+                f"edit {n} ({edit.name}): the two sessions report the same "
+                f"diagnostics with different counterexamples",
+                known=WARM_MODEL_ISSUE, cls=WARM_MODEL_SHAPE,
+                evidence="the diagnostics agree without their counterexamples"))
+        finds += found
     if stats is not None:
         stats["warm_edits"] = stats.get("warm_edits", 0) + len(edits) - 1
         stats["warm_replayed_fns"] = stats.get("warm_replayed_fns", 0) + replayed
-        stats["warm_counterexample_differs"] = (
-            stats.get("warm_counterexample_differs", 0) + models)
     return finds
+
+
+# =====================================================================
+# Code generation's own reading of a value's type
+# =====================================================================
+
+@dataclass(frozen=True)
+class Rederived:
+    """A class of finds code generation makes by reading a value's type off
+    the expression rather than the checker's types, by the open issue whose
+    class it is: the program with each of its values bound in place by a
+    `let` of the type the checker gives it
+    (`program_generator.bind_in_place`), which code generation reads off
+    the declaration, makes none of them, and no find of its own."""
+
+    issue: str
+    #: The values the counterfactual binds, in words.
+    shape: str
+    #: What `program_generator.bind_in_place` binds for it, on top of the
+    #: classes before it.
+    kinds: tuple[str, ...]
+    #: A program whose every find of the load, reconcile and distrust
+    #: differentials is this class's.
+    repro: Callable[[], gen.Program]
+
+
+#: The differentials whose finds code generation's reading of a type makes.
+_CODEGEN = ("load", "reconcile", "distrust")
+
+
+def _codegen_finds(prog: gen.Program, stages: Stages, trials: int,
+                   stats: dict[str, int] | None = None) -> list[Find]:
+    return (load_finds(prog, prog.calls(), stages)
+            + reconcile_finds(prog, KNOWN_CLASSES, stages)
+            + distrust_finds(prog, trials, stages, stats))
+
+
+def _alike(a: Find, b: Find) -> bool:
+    """Whether two finds are the same find of two programs that differ in
+    columns only: their differential, signature and function."""
+    return (a.differential, a.signature, a.function) == (
+        b.differential, b.signature, b.function)
+
+
+def classify_rederived(
+    prog: gen.Program, finds: list[Find], directory: Path | None,
+    trials: int = TRIALS, stats: dict[str, int] | None = None,
+) -> list[Find]:
+    """*finds* with each load, reconcile and distrust find that vanishes once
+    code generation reads a class's values off a declaration
+    (:data:`REDERIVED`) marked with the class's issue.
+
+    Each class's counterfactual binds its values on top of the classes
+    before it, and a find is the first class's under which it vanishes.  A
+    counterfactual that does not check and verify clean, or that makes a
+    find the program does not, isolates nothing, and classifies nothing
+    more.  A find that vanishes under none stays a find.  Where every find
+    vanishes, *stats* takes the counterfactual's distrust run, which ran
+    the functions the program's module could not."""
+    open_ = [f for f in finds if not f.known and f.differential in _CODEGEN]
+    if not open_:
+        return finds
+    marked: dict[int, Rederived] = {}
+    kinds: tuple[str, ...] = ()
+    served: dict[str, int] = {}
+    for cls in REDERIVED:
+        kinds += cls.kinds
+        bound = gen.bind_in_place(prog, kinds)
+        if bound is None:
+            continue
+        stages = Stages.of(bound, directory if bound.module is not None else None)
+        if [f for f in contract_finds(bound, stages) if f.signature != ("fmt",)]:
+            break
+        served = {}
+        after = [f for f in _codegen_finds(bound, stages, trials, served) if not f.known]
+        if any(not any(_alike(f, g) for g in open_) for f in after):
+            break
+        for f in open_:
+            if id(f) not in marked and not any(_alike(f, g) for g in after):
+                marked[id(f)] = cls
+        if len(marked) == len(open_):
+            if stats is not None:
+                stats.update(served)
+            break
+    return [replace(f, known=marked[id(f)].issue, cls=marked[id(f)].shape, evidence=(
+                "vanished with each value of its class bound in place by a "
+                "`let` of the type the checker gives it"))
+            if id(f) in marked else f for f in finds]
+
+
+def _items() -> gen.Binding:
+    """`let @Array<Int> = [0, 1, 8];`"""
+    return gen.Binding("Array<Int>", value=gen.ArrayLit(
+        "Int", [gen.Lit(0), gen.Lit(1), gen.Lit(8)]))
+
+
+def _sum(items: gen.Binding, init: gen.Expr | None = None) -> gen.Fold:
+    """`array_fold` over *items* from *init* (0), adding each element."""
+    acc, elem = gen.Binding("Int", gen.ANY, gen.Iv(0, 0)), gen.Binding(
+        "Int", gen.ANY, gen.Iv(0, 0))
+    return gen.Fold(gen.Ref(items), init if init is not None else gen.Lit(0), acc, elem,
+                    gen.Bin("+", gen.Ref(acc), gen.Ref(elem)))
+
+
+def _cell(put: int, init: int = 0) -> gen.Handle:
+    """`handle[State<Int>](@Int = init)` over `put(put); get(())`."""
+    return gen.Handle("State", "Int", gen.Lit(init), gen.Block(
+        [gen.Do(gen.Put("Int", gen.Lit(put)))], gen.Get("Int")))
+
+
+def _pick() -> gen.Function:
+    """`f0(@Bool, @T, @T -> @T)`, the generator's `choose` generic."""
+    flag, a, b = gen.Binding("Bool"), gen.Binding("T"), gen.Binding("T")
+    return gen.Function("f0", False, [flag, a, b], "T", gen.Block([], gen.If(
+        gen.Ref(flag), gen.Block([], gen.Ref(a)), gen.Block([], gen.Ref(b)))),
+        kind="generic", forall=["T"], template="choose",
+        contract=["requires(true)", "ensures(true)"])
+
+
+def _one(body: gen.Expr, *, lets: Sequence[gen.Let] = (), ret: str = "Int",
+         params: Sequence[gen.Binding] = (), example: Sequence[int | bool] = (),
+         functions: Sequence[gen.Function] = (),
+         datas: Sequence[gen.Data] = ()) -> gen.Program:
+    """A program of one public function `f9` over *body*, after *functions*."""
+    fn = gen.Function("f9", True, list(params), ret, gen.Block(list(lets), body),
+                      ensure_style="none", example=list(example))
+    return gen.Program(0, list(datas), [*functions, fn], [fn])
+
+
+def _repro_generic_argument() -> gen.Program:
+    """`f0(false, @Nat.0 * 2, @Nat.0 - 3)`, which the checker instantiates at
+    `Int`: code generation instantiates it at `Nat` by its own reading of the
+    arguments, and the guard on the second argument traps for every
+    `@Nat.0` below 3 (#1525's #1515 line)."""
+    n = gen.Binding("Nat", gen.Iv(0, 5), gen.Iv(0, 5))
+    pick = _pick()
+    return _one(gen.Call(pick, [gen.Lit(False), gen.Bin("*", gen.Ref(n), gen.Lit(2)),
+                                gen.Bin("-", gen.Ref(n), gen.Lit(3))], {"T": "Int"}),
+                params=[n], example=[1], functions=[pick])
+
+
+def _repro_handler_arms() -> gen.Program:
+    """An `if` whose two arms are each a `handle[State<Int>]`: code
+    generation lowers it with no result type, and the module does not load
+    (#1744's handler block).  Its `ensures`, which the verifier leaves to
+    Tier 3, gives `vera test` a check to run once the module loads."""
+    flag = gen.Binding("Bool")
+    prog = _one(gen.If(gen.Ref(flag), gen.Block([], _cell(3)),
+                       gen.Block([], _cell(4, -2))), params=[flag], example=[True])
+    prog.functions[-1].contract = ["requires(true)",
+                                   "ensures(@Int.result >= 3 && @Int.result <= 4)"]
+    return prog
+
+
+#: The classes of code generation's own reading of a value's type, each
+#: binding its values on top of the classes before it.
+REDERIVED: tuple[Rederived, ...] = (
+    Rederived("#1525", "a fold or an argument at a generic's type variable, "
+              "which code generation types by its own reading",
+              (gen.BIND_FOLD, gen.BIND_ARGUMENT),
+              _repro_generic_argument),
+    Rederived("#1744", "a handler a branch takes, which code generation "
+              "lowers with no result type", (gen.BIND_HANDLER_ARM,),
+              _repro_handler_arms),
+)
 
 
 # =====================================================================
@@ -1165,6 +1379,7 @@ def differentials(
     finds += load_finds(prog, prog.calls(), stages)
     finds += reconcile_finds(prog, known, stages)
     finds += distrust_finds(prog, trials, stages, stats)
+    finds = classify_rederived(prog, finds, directory, trials, stats)
     if warm and directory is not None:
         finds += warm_finds(prog, directory, stats=stats)
     return finds
@@ -1194,14 +1409,12 @@ def _same(find: Find, prog: gen.Program, directory: Path, trials: int) -> Find |
         found = contract
     elif contract:
         return None
-    elif find.differential == "load":
-        found = load_finds(prog, prog.calls(), stages)
-    elif find.differential == "reconcile":
-        found = reconcile_finds(prog, stages=stages)
     elif find.differential == "warm":
         found = warm_finds(prog, directory)
     else:
-        found = distrust_finds(prog, trials, stages)
+        found = [f for f in classify_rederived(
+                     prog, _codegen_finds(prog, stages, trials), directory, trials)
+                 if f.differential == find.differential]
     return next((f for f in found if f.signature == find.signature
                  and f.known == find.known), None)
 
@@ -1410,45 +1623,258 @@ def _measured(step: gen.Expr | None) -> gen.Program:
     return gen.Program(0, [], [fn], [fn])
 
 
-def test_a_branch_code_generation_cannot_type_is_not_well_formed() -> None:
-    """An `if` whose arm's value is a handler, or whose arms are each a fold
-    or a `throw`, is a program the generator never writes: code generation
-    gives such an `if` no result type, and the module does not load
-    (`finds/if_of_two_handlers_invalid_module.vera`,
-    `finds/if_with_no_typed_arm_invalid_module.vera`).  A handler bound by a
-    `let` inside the arm, and a `throw` beside a literal, are programs it
-    writes."""
+def _member_fold_init() -> gen.Program:
+    """`array_fold` from a `@Nat` init over `fn(@Int, @Int -> @Int)`, less
+    the same `@Nat`: code generation types the fold at its init's `Nat`, and
+    the subtraction traps as a `@Nat` one (#1525's #1515 line, at
+    `array_fold`)."""
+    n = gen.Binding("Nat", gen.Iv(20, 35), gen.Iv(20, 35))
+    items = gen.Binding("Array<Int>", value=gen.ArrayLit("Int", [gen.Lit(20), gen.Lit(-1)]))
+    acc, elem = gen.Binding("Int", gen.ANY, gen.Iv(0, 0)), gen.Binding(
+        "Int", gen.ANY, gen.Iv(0, 0))
+    fold = gen.Fold(gen.Ref(items), gen.Ref(n), acc, elem, gen.Lit(0))
+    return _one(gen.Bin("-", fold, gen.Ref(n)), lets=[gen.Let(items)], params=[n],
+                example=[28])
+
+
+def _member_fold_argument() -> gen.Program:
+    """`Some(array_fold(...))`: code generation infers no type for a fold as
+    a constructor's argument, and drops the function (E602; #1525's line
+    from #1680)."""
+    items = _items()
+    x = gen.Binding("Int", gen.ANY, gen.Iv(9, 9))
+    opt = gen.Binding("Option<Int>", value=gen.Construct(
+        gen.SOME, [_sum(items)], ty="Option<Int>"))
+    match = gen.Match(gen.Ref(opt), [
+        gen.Arm(gen.Pattern(ctor=gen.SOME, binders=[x]), gen.Ref(x)),
+        gen.Arm(gen.Pattern(ctor=gen.NONE), gen.Lit(0))])
     flag = gen.Binding("Bool")
-    items = gen.Binding("Array<Int>", value=gen.ArrayLit("Int", [gen.Lit(1), gen.Lit(2)]))
+    return _one(match, lets=[gen.Let(items), gen.Let(opt)], params=[flag], example=[True])
 
-    def handler() -> gen.Handle:
-        return gen.Handle("State", "Int", gen.Lit(0), gen.Block(
-            [gen.Do(gen.Put("Int", gen.Lit(3)))], gen.Get("Int")))
 
-    def fold() -> gen.Fold:
-        acc, elem = gen.Binding("Int", gen.ANY, gen.Iv(0, 0)), gen.Binding(
-            "Int", gen.ANY, gen.Iv(0, 0))
-        return gen.Fold(gen.Ref(items), gen.Lit(0), acc, elem,
-                        gen.Bin("+", gen.Ref(acc), gen.Ref(elem)))
+def _member_fold_scrutinee() -> gen.Program:
+    """A `match` on `array_fold(...)`: code generation infers no type for
+    the scrutinee, and drops the function (E602; #1525's line from
+    #1679)."""
+    items = _items()
+    match = gen.Match(_sum(items), [gen.Arm(gen.Pattern(literal=9), gen.Lit(1)),
+                                    gen.Arm(gen.Pattern(), gen.Lit(2))])
+    flag = gen.Binding("Bool")
+    return _one(match, lets=[gen.Let(items)], params=[flag], example=[True])
 
-    def program(then: gen.Block, other: gen.Expr, *, exn: bool = False) -> gen.Program:
-        branch: gen.Expr = gen.If(gen.Ref(flag), then, gen.Block([], other))
-        if exn:
-            payload = gen.Binding("Int", gen.ANY, gen.Iv(1, 1))
-            branch = gen.Handle("Exn", "Int", None, gen.Block([], branch), payload,
-                                gen.Lit(2))
-        fn = gen.Function("f0", False, [flag], "Int", gen.Block(
-            [gen.Let(items)], branch), ensure_style="none")
-        return gen.Program(0, [], [fn], [])
 
-    throw = gen.Block([], gen.Throw("Int", gen.Lit(1)))
-    assert not gen.well_formed(program(gen.Block([], handler()), gen.Lit(1)))
-    assert not gen.well_formed(program(gen.Block([], fold()), fold()))
-    assert not gen.well_formed(program(throw, fold(), exn=True))
-    bound = gen.Binding("Int", value=handler())
-    assert gen.well_formed(program(gen.Block([gen.Let(bound)], gen.Ref(bound)), gen.Lit(1)))
-    assert gen.well_formed(program(throw, gen.Lit(7), exn=True))
-    assert gen.well_formed(program(gen.Block([], fold()), gen.Lit(3)))
+def _member_fold_arms() -> gen.Program:
+    """An `if` of two folds: code generation types neither arm, lowers the
+    `if` with no result type, and the module does not load."""
+    items = _items()
+    flag = gen.Binding("Bool")
+    return _one(gen.If(gen.Ref(flag), gen.Block([], _sum(items)),
+                       gen.Block([], _sum(items, gen.Lit(1)))),
+                lets=[gen.Let(items)], params=[flag], example=[True])
+
+
+def _member_throw_and_fold() -> gen.Program:
+    """Under `handle[Exn<Int>]`, an `if` of a `throw` and a fold: neither
+    arm typed, and the module does not load."""
+    items = _items()
+    flag = gen.Binding("Bool")
+    payload = gen.Binding("Int", gen.ANY, gen.Iv(1, 1))
+    branch = gen.If(gen.Ref(flag), gen.Block([], gen.Throw("Int", gen.Lit(1))),
+                    gen.Block([], _sum(items)))
+    return _one(gen.Handle("Exn", "Int", None, gen.Block([], branch), payload, gen.Lit(2)),
+                lets=[gen.Let(items)], params=[flag], example=[False])
+
+
+def _member_misnamed_clone() -> gen.Program:
+    """`f0(Echo(Alpha, f2(0, 14), Alpha), Delta(0))` at `Gauge`: code
+    generation names the call's clone from its own reading of the argument,
+    as if `Gauge` took its fields' types, registers it under `Gauge`'s
+    name, and drops the function (E602; #1525's #1515 line, at a data
+    type)."""
+    alpha = gen.Ctor("Alpha", "Shape", [])
+    shape = gen.Data("Shape", True, [alpha, gen.Ctor("Bravo", "Shape", [])])
+    delta = gen.Ctor("Delta", "Gauge", ["Nat"])
+    echo = gen.Ctor("Echo", "Gauge", ["Shape", "Nat", "Shape"])
+    gauge = gen.Data("Gauge", True, [delta, echo])
+    a, b = gen.Binding("T"), gen.Binding("T")
+    same = gen.Function("f0", False, [a, b], "Bool", gen.Block([], gen.Lit(True)),
+                        kind="generic", forall=["T"], constraints=["Eq<T>"],
+                        template="same", contract=["requires(true)", "ensures(true)"])
+    p = gen.Binding("Nat", gen.Iv(0, 4), gen.Iv(0, 4))
+    q = gen.Binding("Nat", gen.Iv(14, 16), gen.Iv(14, 16))
+    f2 = gen.Function("f2", False, [p, q], "Nat", gen.Block([], gen.Lit(14)),
+                      ensure_style="none")
+    arg = gen.Construct(echo, [gen.Construct(alpha, []), gen.Call(f2, [gen.Lit(0), gen.Lit(14)]),
+                               gen.Construct(alpha, [])])
+    return _one(gen.Call(same, [arg, gen.Construct(delta, [gen.Lit(0)])], {"T": "Gauge"}),
+                ret="Bool", functions=[same, f2], datas=[shape, gauge])
+
+
+def _member_handler_match() -> gen.Program:
+    """A `match` on a `Bool` whose two arms are each a handler: the module
+    does not load (#1744's handler block, at a `match`)."""
+    flag = gen.Binding("Bool")
+    return _one(gen.Match(gen.Ref(flag), [gen.Arm(gen.Pattern(literal=True), _cell(3)),
+                                          gen.Arm(gen.Pattern(literal=False), _cell(4, -2))]),
+                params=[flag], example=[True])
+
+
+#: Each shape code generation reads a type of its own at, by the issue its
+#: finds are counted under.
+_REDERIVED_MEMBERS: dict[str, tuple[str, Callable[[], gen.Program]]] = {
+    "generic_argument": ("#1525", _repro_generic_argument),
+    "fold_init": ("#1525", _member_fold_init),
+    "fold_argument": ("#1525", _member_fold_argument),
+    "fold_scrutinee": ("#1525", _member_fold_scrutinee),
+    "fold_arms": ("#1525", _member_fold_arms),
+    "throw_and_fold": ("#1525", _member_throw_and_fold),
+    "misnamed_clone": ("#1525", _member_misnamed_clone),
+    "handler_arms": ("#1744", _repro_handler_arms),
+    "handler_match": ("#1744", _member_handler_match),
+}
+
+
+@pytest.mark.parametrize("member", sorted(_REDERIVED_MEMBERS))
+def test_each_rederived_class_reads_its_members(member: str) -> None:
+    """Each shape the generator writes where code generation reads a type
+    of its own makes a find of the load, reconcile or distrust differential
+    that `vera check` and `vera verify` do not, and each such find vanishes
+    with the shape's values bound in place: it is its class's, and the
+    program fails nothing."""
+    issue, build = _REDERIVED_MEMBERS[member]
+    prog = build()
+    stages = Stages.of(prog)
+    assert contract_finds(prog, stages) == []
+    plain = [f for f in _codegen_finds(prog, stages, TRIALS) if not f.known]
+    assert plain, f"{member} makes no find: has {issue}'s fix landed?"
+    shape = next(c.shape for c in REDERIVED if c.issue == issue)
+    classified = classify_rederived(prog, plain, None)
+    assert {(f.known, f.cls) for f in classified} == {(issue, shape)}, classified
+
+
+@pytest.mark.parametrize("cls", REDERIVED, ids=[c.issue for c in REDERIVED])
+def test_each_rederived_class_keeps_its_repro(cls: Rederived) -> None:
+    """The class's pin: its repro makes a find of the load, reconcile or
+    distrust differential, every such find is the class's, the program
+    fails nothing, and the distrust run counted is the counterfactual's,
+    which ran the function.  The day the issue is fixed the repro makes no
+    find, this fails, and the class comes out."""
+    stats: dict[str, int] = {}
+    finds = differentials(cls.repro(), stats=stats, warm=False)
+    assert [f for f in finds if not f.known] == [], finds
+    assert [f for f in finds if f.known == cls.issue and f.cls == cls.shape], finds
+    assert stats["public_tested"] >= 1, stats
+    bound = gen.bind_in_place(cls.repro(), cls.kinds)
+    assert bound is not None
+    assert [n for f in gen.all_functions(bound) for n in gen._walk(f.body)
+            if isinstance(n, gen.Bound)], bound.render()
+    assert pipeline.check(bound.render(), file=LABEL).ok, bound.render()
+
+
+def test_a_find_the_counterfactual_does_not_remove_stays_a_find(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """The class's boundary: in a program of #1525's class, a find that the
+    counterfactual makes too is a find, beside the class's counted ones."""
+    real = load_finds
+
+    def with_another(program: Source, calls: Sequence[tuple[str, Sequence[int] | None]],
+                     stages: Stages | None = None) -> list[Find]:
+        return real(program, calls, stages) + [
+            Find("load", ("call", "elsewhere"), "a find no `let` explains", function="f9")]
+
+    monkeypatch.setattr(sys.modules[__name__], "load_finds", with_another)
+    finds = differentials(_repro_generic_argument(), warm=False)
+    assert [f.signature for f in finds if not f.known] == [("call", "elsewhere")], finds
+    assert [f for f in finds if f.known == "#1525"], finds
+
+
+def test_a_counterfactual_that_makes_a_find_of_its_own_classifies_nothing(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """A counterfactual that makes a find the program does not no longer
+    isolates the class: the program's finds stay finds."""
+    real = load_finds
+
+    def in_the_counterfactual(program: Source,
+                              calls: Sequence[tuple[str, Sequence[int] | None]],
+                              stages: Stages | None = None) -> list[Find]:
+        out = real(program, calls, stages)
+        if isinstance(program, gen.Program) and "{ let @" in program.render():
+            out.append(Find("load", ("call", "new"), "a find the counterfactual alone makes",
+                            function="f9"))
+        return out
+
+    monkeypatch.setattr(sys.modules[__name__], "load_finds", in_the_counterfactual)
+    finds = differentials(_repro_generic_argument(), warm=False)
+    codegen = [f for f in finds if f.differential in _CODEGEN]
+    assert codegen and not [f for f in codegen if f.known], finds
+
+
+def _opaque_narrowing(how: str) -> gen.Program:
+    """`let @Int = value; let @Nat = @Int.0;`, *value* a `match` taking 1 in
+    each arm whose scrutinee is a constructor applied in place or
+    `map_get`'s result, or a call whose `ensures` states 2 taking a
+    generic's call at a data type."""
+    amber, basalt = gen.Ctor("Amber", "Tally", ["Bool"]), gen.Ctor("Basalt", "Tally", [])
+    datas = [gen.Data("Tally", False, [amber, basalt])]
+    functions: list[gen.Function] = []
+    lets: list[gen.Let] = []
+    if how == "match":
+        value: gen.Expr = gen.Match(gen.Construct(basalt, []), [
+            gen.Arm(gen.Pattern(ctor=amber, binders=[gen.Binding("Bool")]), gen.Lit(1)),
+            gen.Arm(gen.Pattern(ctor=basalt), gen.Lit(1))])
+    elif how == "map_get":
+        table = gen.Binding("Map<String, Int>", value=gen.MapBuild([("a", gen.Lit(1))]))
+        lets = [gen.Let(table)]
+        value = gen.Match(gen.MapGet(gen.Ref(table), "a"), [
+            gen.Arm(gen.Pattern(ctor=gen.SOME, binders=[gen.Binding("Int", gen.ANY, gen.Iv(1, 1))]),
+                    gen.Lit(1)),
+            gen.Arm(gen.Pattern(ctor=gen.NONE), gen.Lit(1))])
+    else:
+        pick = _pick()
+        two = gen.Function("f1", False, [gen.Binding("Tally")], "Int",
+                           gen.Block([], gen.Lit(2)), ensure_style="exact")
+        functions = [pick, two]
+        value = gen.Call(two, [gen.Call(pick, [gen.Lit(True), gen.Construct(basalt, []),
+                                               gen.Construct(basalt, [])], {"T": "Tally"})])
+    i = gen.Binding("Int", value=value)
+    n = gen.Binding("Nat", value=gen.Ref(i))
+    return _one(gen.Ref(n), lets=[*lets, gen.Let(i), gen.Let(n)], ret="Nat",
+                functions=functions, datas=datas)
+
+
+@pytest.mark.parametrize("how", ["match", "map_get", "call"])
+def test_the_model_reads_no_value_the_verifier_does_not_translate(how: str) -> None:
+    """A `match` on a constructor applied in place or on `map_get`'s
+    result, and a call taking a generic's call at a data type, are values
+    the verifier does not translate (#1696): a `let` of one is
+    unconstrained, and narrowing it into a `@Nat` is refused (E503), though
+    it is 1 or 2 on every run.  The generator models each as unconstrained,
+    so it writes no such narrowing: the program is not one it could have
+    written."""
+    prog = _opaque_narrowing(how)
+    finds = contract_finds(prog)
+    assert [f.signature for f in finds] == [("verify", "E503")], finds
+    assert not gen.well_formed(prog)
+    let = prog.functions[-1].body.lets[-2].binding
+    assert let.value is not None
+    assert gen.iv(let.value, "v") == gen.ANY
+    assert gen.iv(let.value, "r").within(1, 2)
+
+
+def test_a_verify_error_is_keyed_without_its_counterexample() -> None:
+    """A counterfactual's `let`s renumber the solver's fresh values, so a
+    verify error that survives it can come back with another model: its key
+    drops the model, and keeps the error's source line and column, which
+    two errors of one line differ in."""
+    a = Diagnostic(description="E503 thing.\n  Counterexample:\n      _x_1 = 0",
+                   location=SourceLocation(file=LABEL, line=4, column=14),
+                   source_line="  let @Nat = @Int.0;", error_code="E503")
+    moved = replace(a, description="E503 thing.\n  Counterexample:\n      _x_3 = -1",
+                    location=SourceLocation(file=LABEL, line=6, column=14))
+    beside = replace(a, location=SourceLocation(file=LABEL, line=4, column=20))
+    assert _verify_key("", a) == _verify_key("", moved)
+    assert _verify_key("", a) != _verify_key("", beside)
+    assert "Counterexample" not in _verify_key("", a)
 
 
 def test_a_measure_that_does_not_decrease_is_not_well_formed() -> None:
@@ -1571,9 +1997,9 @@ public fn one_cell(@Bool -> @Int)
 
 def test_the_load_differential_reports_a_module_that_does_not_load() -> None:
     """An `if` whose arms are each a handler compiles, with no diagnostic,
-    to a module wasmtime refuses (`finds/if_of_two_handlers_invalid_module.vera`):
-    the load differential reports it, once, rather than crash on it.  With
-    the handler bound by a `let` in one arm, the module loads and runs."""
+    to a module wasmtime refuses (#1744's handler block): the load
+    differential reports it, once, rather than crash on it.  With the
+    handler bound by a `let` in one arm, the module loads and runs."""
     calls = (("one_cell", (1,)),)
     finds = load_finds(_TWO_HANDLERS, calls)
     assert [f.signature for f in finds] == [("module", "invalid")], finds
@@ -1859,8 +2285,8 @@ def test_the_distrust_differential_reports_a_refuted_proof() -> None:
 def _lost_postcondition(lowest: int) -> gen.Program:
     """`f2` binds `f0(Bravo(@Int.0))`, whose `ensures` says it is 4, and
     passes it to `f1`, which requires 1 to 9; `f2` names no `Gauge`, so the
-    verifier loses `f0`'s postcondition and refuses the call (#1525's class,
-    `finds/ctor_argument_loses_postcondition.vera`).  With *lowest* below 1,
+    verifier loses `f0`'s postcondition and refuses the call (#1525's
+    constructed-sort line).  With *lowest* below 1,
     `f2` also calls `f1` on its own parameter, which may be 0: a refusal no
     counterfactual removes."""
     bravo = gen.Ctor("Bravo", "Gauge", ["Int"])
@@ -2061,6 +2487,27 @@ def test_the_record_states_what_the_generator_expected() -> None:
     assert gen.evaluate(difference.functions[0], [7, 2]) == 5
 
 
+def test_the_report_counts_each_known_class_with_its_seeds(tmp_path: Path) -> None:
+    """The night's report gives each known class a row, by its issue and
+    its shape: how many finds it counted, in how many programs, and the
+    first seeds, so an absorption is read from the report alone; two
+    classes of one issue keep two rows."""
+    def known(issue: str, cls: str) -> dict[str, object]:
+        return Find("reconcile", ("x",), "d", known=issue, cls=cls).to_dict()
+
+    (tmp_path / "records").mkdir()
+    for seed, finds in ((7, [known("#1695", "a"), known("#1695", "a")]),
+                        (9, [known("#1695", "b")]),
+                        *((s, [known("#1525", "c")]) for s in range(20, 27))):
+        record = {"seed": seed, "shape": {}, "stats": {}, "finds": finds, "seconds": 1.0}
+        (tmp_path / "records" / f"seed-{seed}.json").write_text(
+            json.dumps(record), encoding="utf-8")
+    report = gen.summarize(tmp_path)
+    assert "| #1695 | a | 2 | 1 | 7 |" in report, report
+    assert "| #1695 | b | 1 | 1 | 9 |" in report, report
+    assert "| #1525 | c | 7 | 7 | 20, 21, 22, 23, 24 and 2 more |" in report, report
+
+
 # =====================================================================
 # Version two: the grammar's new constructs
 # =====================================================================
@@ -2074,7 +2521,7 @@ VERSION_TWO = (
     "array_option_nat", "array_data", "map_string_int", "set_nat", "tuple",
     "array_length", "index_guarded", "array_fold", "map_get_match",
     "handle_state_int", "handle_state_nat", "handle_exn", "throw",
-    "state_helper", "noncommutative",
+    "state_helper", "exn_helper", "noncommutative",
 )
 
 
@@ -2101,6 +2548,41 @@ def test_the_pinned_seeds_reach_every_construct() -> None:
             totals[name] = totals.get(name, 0) + count
     missing = [name for name in gen.CONSTRUCTS if not totals.get(name)]
     assert not missing, (missing, totals)
+
+
+@pytest.mark.parametrize(("issue", "seed"), PINNED_CLASSES)
+def test_the_pinned_seeds_meet_each_counterfactual_class(
+        issue: str, seed: int, tmp_path: Path) -> None:
+    """A pinned seed makes a find of each counterfactual class, so a pull
+    request runs the classification over a program the generator wrote, not
+    over the hand-written repros alone."""
+    finds = differentials(gen.generate(seed), tmp_path)
+    assert [f for f in finds if f.known == issue], finds
+    assert [f for f in finds if not f.known] == [], finds
+
+
+def test_every_effect_helper_is_called_under_a_handler() -> None:
+    """A `State` or `Exn` helper is written only where a handler of its cell
+    calls it, so a run puts or throws inside a callee under its caller's
+    handler; the census counts a helper by its call, so a program that
+    declares one and calls none reaches no helper construct."""
+    called = 0
+    for seed in range(100):
+        prog = gen.generate(seed)
+        targets = {id(node.fn) for f in gen.all_functions(prog)
+                   for node in gen._walk(f.body) if isinstance(node, gen.Call)}
+        helpers = [f for f in prog.functions if f.kind in ("state", "exn")]
+        assert all(id(f) in targets for f in helpers), (seed, [f.name for f in helpers])
+        called += len(helpers)
+    assert called, "no helper in a hundred programs"
+    cell = gen.Binding("Int", gen.Iv(0, 5), gen.Iv(0, 5))
+    writer = gen.Function("f0", False, [cell], "Unit", gen.Block(
+        [], gen.Put("Int", gen.Ref(cell))), kind="state", effects="<State<Int>>")
+    alone = _one(gen.Lit(1), functions=[writer])
+    assert alone.shape()["state_helper"] == 0
+    under = _one(gen.Handle("State", "Int", gen.Lit(0), gen.Block(
+        [gen.Do(gen.Call(writer, [gen.Lit(3)]))], gen.Get("Int"))), functions=[writer])
+    assert under.shape()["state_helper"] == 1
 
 
 def test_a_module_is_written_beside_its_entry_and_imported() -> None:
@@ -2206,12 +2688,14 @@ def test_the_warm_differential_reports_a_status_disagreement(
             Stale.calls += 1
             return _rewritten_status(out, 0) if Stale.calls == 2 else out
 
-    finds = warm_finds(prog, tmp_path / "stale", warm=Stale, edits=edits)  # type: ignore[arg-type]
+    finds = [f for f in warm_finds(prog, tmp_path / "stale", warm=Stale, edits=edits)  # type: ignore[arg-type]
+             if not f.known]
     assert [f.signature[:2] for f in finds] == [("obligations", "status")], finds
     assert f"edit 1 ({edits[1].name})" in finds[0].detail, finds[0].detail
     assert " in the warm session and " in finds[0].detail, finds[0].detail
     stats: dict[str, int] = {}
-    assert warm_finds(prog, tmp_path / "real", edits=edits, stats=stats) == []
+    real = warm_finds(prog, tmp_path / "real", edits=edits, stats=stats)
+    assert [f for f in real if not f.known] == [], real
     assert stats["warm_replayed_fns"] >= 1, stats
 
 
@@ -2235,9 +2719,43 @@ def test_the_warm_differential_reports_a_diagnostic_disagreement(
                 return replace(out, verify_diagnostics=[])  # type: ignore[type-var]
             return out
 
-    finds = warm_finds(prog, tmp_path / "forgetful", warm=Forgetful, edits=edits)  # type: ignore[arg-type]
+    finds = [f for f in warm_finds(prog, tmp_path / "forgetful", warm=Forgetful,  # type: ignore[arg-type]
+                                   edits=edits) if not f.known]
     assert [f.signature for f in finds] == [("diagnostics",)], finds
     assert f"edit {broken} ({edits[broken].name})" in finds[0].detail
+
+
+def test_a_counterexample_that_differs_alone_is_counted_under_1785(
+        tmp_path: Path) -> None:
+    """A warm session whose answer to the edit that breaks a contract
+    differs from a fresh session's in a counterexample's values alone makes
+    a find of #1785's class, counted and failing nothing; no disagreement.
+    The class has no pin: no seed shows it in a new process."""
+    prog = next(p for p in map(gen.generate, range(50))
+                if any(e.name.startswith("break") for e in gen.edits(p)))
+    edits = gen.edits(prog)
+    broken = next(n for n, e in enumerate(edits) if e.name.startswith("break"))
+    marker = "\n  Counterexample:"
+
+    class Remodelled(VerificationSession):
+        calls = 0
+
+        def verify_source(self, *args: object, **kwargs: object) -> object:
+            out = super().verify_source(*args, **kwargs)  # type: ignore[arg-type]
+            Remodelled.calls += 1
+            if Remodelled.calls == broken + 1:
+                assert out.verify_diagnostics
+                return replace(out, verify_diagnostics=[  # type: ignore[type-var]
+                    replace(d, description=d.description.split(marker)[0]
+                            + marker + "\n        @Remodelled.0 = 1")
+                    for d in out.verify_diagnostics])
+            return out
+
+    finds = warm_finds(prog, tmp_path / "remodelled", warm=Remodelled, edits=edits)  # type: ignore[arg-type]
+    model = [f for f in finds if f.signature == ("diagnostics", "counterexample")]
+    assert [(f.known, f.cls) for f in model] == [(WARM_MODEL_ISSUE, WARM_MODEL_SHAPE)], finds
+    assert f"edit {broken} ({edits[broken].name})" in model[0].detail
+    assert [f for f in finds if not f.known] == [], finds
 
 
 def test_the_edits_keep_the_program_well_formed() -> None:
