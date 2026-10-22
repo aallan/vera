@@ -15,10 +15,11 @@ from vera import ast
 from vera.errors import (
     Diagnostic,
     ParseError,
+    SourceEncodingError,
     SourceLocation,
     TransformError,
 )
-from vera.parser import parse_file
+from vera.parser import parse, read_source
 from vera.transform import transform
 
 
@@ -211,9 +212,9 @@ class ModuleResolver:
         self._in_progress.add(mod_path)
 
         try:
-            # Parse and transform
-            source = file_path.read_text(encoding="utf-8")
-            tree = parse_file(str(file_path))
+            # Read once, then parse and transform
+            source = read_source(file_path)
+            tree = parse(source, file=str(file_path))
             program = transform(tree)
 
             mod = ResolvedModule(
@@ -232,14 +233,17 @@ class ModuleResolver:
 
             self._cache[mod_path] = mod
             return mod
-        except (
-            ParseError, TransformError, OSError, UnicodeDecodeError,
-        ) as exc:
+        except SourceEncodingError as exc:
+            # The module's bytes are not UTF-8: its own E024, located in the
+            # module at the byte, not an E013 at the import (#1666).
+            self._errors.append(exc.diagnostic)
+            return None
+        except (ParseError, TransformError, OSError) as exc:
             # Only genuine resolution failures of the imported file become
-            # E013: ParseError/TransformError from parse_file/transform, and
-            # OSError/UnicodeDecodeError from read_text.  Any other exception
-            # is an internal compiler bug and must propagate, not be relabeled
-            # as the user's module failing to parse.
+            # E013: ParseError/TransformError from parse/transform, and
+            # OSError from the read.  Any other exception is an internal
+            # compiler bug and must propagate, not be relabeled as the
+            # user's module failing to parse.
             self._errors.append(
                 Diagnostic(
                     description=(

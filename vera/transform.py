@@ -229,6 +229,30 @@ def _interp_error(msg: str, meta: Any = None) -> TransformError:
         spec_ref=_E009_INTERP_SPEC)
 
 
+_E009_SURROGATE_RATIONALE = (
+    "A \\u{...} escape names a Unicode scalar value: a code point from "
+    "U+0000 to U+10FFFF other than a surrogate. U+D800 to U+DFFF are the "
+    "surrogates, which UTF-16 uses in pairs to encode a character outside "
+    "the Basic Multilingual Plane; alone they name no character, and a "
+    "String, which is UTF-8, cannot hold one."
+)
+_E009_SURROGATE_FIX = (
+    "Write a character outside the Basic Multilingual Plane as one escape "
+    "of its code point, such as \\u{1F600}, never as the UTF-16 pair "
+    "\\u{D83D}\\u{DE00}. A lone surrogate names no character: remove it, or "
+    "write the character it was meant to be half of."
+)
+
+
+def _surrogate_error(hex_str: str, meta: Any = None) -> TransformError:
+    """An E009 for a \\u{...} escape that names a surrogate (#1728)."""
+    return _transform_error(
+        "Unicode escape names a surrogate, not a Unicode scalar value: "
+        f"\\u{{{hex_str}}}",
+        meta, error_code="E009", rationale=_E009_SURROGATE_RATIONALE,
+        fix=_E009_SURROGATE_FIX, spec_ref=_E009_ESCAPE_SPEC)
+
+
 # ---------------------------------------------------------------------------
 # String escape sequence decoding (spec §1)
 # ---------------------------------------------------------------------------
@@ -247,7 +271,10 @@ def _decode_string_escapes(s: str, meta: Any = None) -> str:
     """Decode Vera escape sequences in a string literal body.
 
     Supports: ``\\\\``, ``\\"``, ``\\n``, ``\\t``, ``\\r``, ``\\0``,
-    ``\\u{XXXX}`` (1-6 hex digits).  Any other escape raises E009.
+    ``\\u{XXXX}`` (1-6 hex digits naming a Unicode scalar value).  Any other
+    escape raises E009, and so does a ``\\u{...}`` above U+10FFFF or naming
+    a surrogate, U+D800 to U+DFFF (#1728): every string literal is decoded
+    here, so no later stage sees a code point a String cannot hold.
     """
     if "\\" not in s:
         return s  # fast path — no escapes
@@ -288,6 +315,8 @@ def _decode_string_escapes(s: str, meta: Any = None) -> str:
             if code_point > 0x10FFFF:
                 raise _escape_error(
                     f"Unicode code point out of range: \\u{{{hex_str}}}", meta)
+            if 0xD800 <= code_point <= 0xDFFF:
+                raise _surrogate_error(hex_str, meta)
             result.append(chr(code_point))
             i = close + 1
         else:

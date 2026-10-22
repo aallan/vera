@@ -17,8 +17,10 @@ from lark.exceptions import LarkError
 from vera.errors import (
     Diagnostic,
     ParseError,
+    SourceEncodingError,
     diagnose_comment_problem,
     diagnose_lark_error,
+    source_not_utf8,
 )
 from vera.lexical import (
     ANNOTATIONS_ATTR,
@@ -49,6 +51,40 @@ def _get_parser() -> Lark:
             propagate_positions=True,
         )
     return _parser
+
+
+def decode_source(raw: bytes, file: Optional[str] = None) -> str:
+    """*raw*, the bytes of a source file, as its text: UTF-8 (spec 1.1).
+
+    The one place a source's bytes become text, for every command, the
+    module resolver and so the language server's imports (#1666): bytes
+    that are not UTF-8 raise :class:`SourceEncodingError`, E024, located at
+    the first byte that does not decode.  A UTF-8 byte-order mark is kept,
+    as the codec keeps it; what a mark means is decided here (#1790).
+    """
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise SourceEncodingError(
+            source_not_utf8(raw, exc.start, file)) from None
+
+
+def read_source(path: str | Path, file: Optional[str] = None) -> str:
+    """The text of the source file at *path*, as every command reads one.
+
+    Its bytes through :func:`decode_source`, reported under *file* (the
+    path, by default), with universal newlines: ``\\r\\n`` and ``\\r`` read
+    as ``\\n``, as ``Path.read_text`` reads a file.
+
+    Raises:
+        SourceEncodingError: If the file is not UTF-8 (E024).
+        OSError: If the file cannot be read (``FileNotFoundError`` among
+            them).
+    """
+    path = Path(path)
+    text = decode_source(path.read_bytes(),
+                         file if file is not None else str(path))
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def parse(source: str, file: Optional[str] = None) -> Tree[Any]:
@@ -114,9 +150,10 @@ def parse_file(path: str | Path) -> Tree[Any]:
     Raises:
         ParseError: If the file contains syntax errors.
         FileNotFoundError: If the file does not exist.
+        SourceEncodingError: If the file is not UTF-8 (E024).
     """
     path = Path(path)
-    source = path.read_text(encoding="utf-8")
+    source = read_source(path)
     return parse(source, file=str(path))
 
 
@@ -159,6 +196,7 @@ def verify_file(path: str | Path) -> "VerifyResult":
         ParseError: If the file contains syntax errors.
         TransformError: If the parse tree cannot be transformed.
         FileNotFoundError: If the file does not exist.
+        SourceEncodingError: If the file is not UTF-8 (E024).
     """
     from vera.checker import typecheck_with_artifacts
     from vera.resolver import ModuleResolver
@@ -166,7 +204,7 @@ def verify_file(path: str | Path) -> "VerifyResult":
     from vera.verifier import VerifyResult, VerifySummary, verify
 
     path = Path(path)
-    source = path.read_text(encoding="utf-8")
+    source = read_source(path)
     tree = parse(source, file=str(path))
     ast = transform(tree)
     # Resolve and check as `vera verify` does (#1513), and stop where it
@@ -202,13 +240,14 @@ def typecheck_file(path: str | Path) -> list[Diagnostic]:
         ParseError: If the file contains syntax errors.
         TransformError: If the parse tree cannot be transformed.
         FileNotFoundError: If the file does not exist.
+        SourceEncodingError: If the file is not UTF-8 (E024).
     """
     from vera.checker import typecheck
     from vera.resolver import ModuleResolver
     from vera.transform import transform
 
     path = Path(path)
-    source = path.read_text(encoding="utf-8")
+    source = read_source(path)
     tree = parse(source, file=str(path))
     ast = transform(tree)
     # Resolve imports as `vera check` does (#1513): an unresolved call is an

@@ -51,6 +51,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -65,7 +66,7 @@ from vera.errors import (
     partial_diagnostics,
 )
 from vera.introspect import builtins_payload, effects_payload, errors_payload
-from vera.parser import parse
+from vera.parser import decode_source, parse, read_source
 from vera.transform import transform
 
 if TYPE_CHECKING:
@@ -110,14 +111,33 @@ def _load_and_parse(path: str) -> tuple[Path, str, Tree[object]]:
     locations.
     """
     if path in _STDIN_PATHS:
-        source = sys.stdin.read()
+        source = _read_stdin(path)
         p = Path.cwd() / "stdin.vera"
     else:
         raw_p = Path(path)
-        source = raw_p.read_text(encoding="utf-8")
+        source = read_source(raw_p, file=path)
         p = raw_p
     tree = parse(source, file=path)
     return p, source, tree
+
+
+def _read_stdin(path: str) -> str:
+    """The source on stdin, as ``sys.stdin.read()`` reads it, its bytes
+    decoded by ``decode_source`` so a source that is not UTF-8 is E024
+    under *path* (#1666) rather than the codec's error.
+
+    CPython reads stdin with universal newlines on Windows and with none
+    elsewhere, so the text is the one ``sys.stdin.read()`` returned.  A
+    replaced stream with no ``buffer`` (a test's ``StringIO``) holds text
+    already.
+    """
+    buffer = getattr(sys.stdin, "buffer", None)
+    if buffer is None:
+        return sys.stdin.read()
+    text = decode_source(buffer.read(), path)
+    if os.name == "nt":
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+    return text
 
 
 # ---------------------------------------------------------------------------
@@ -1705,6 +1725,12 @@ def cmd_ast(path: str, as_json: bool = False) -> int:
         print(f"Error: file not found: {path}", file=sys.stderr)
         return 1
     except VeraError as exc:
+        # Under --json a refusal is the envelope `vera compile --json`
+        # prints for the same program (#1789), not text on stderr.
+        if as_json:
+            print(json.dumps(
+                diagnostics_envelope(path, [exc.diagnostic], []), indent=2))
+            return 1
         print(exc.diagnostic.format(), file=sys.stderr)
         return 1
 
@@ -2034,7 +2060,8 @@ def cmd_fmt(
         # was not already canonical.
         raw = p.read_bytes()
         had_cr = b"\r" in raw
-        source = raw.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+        source = decode_source(raw, str(p)).replace(
+            "\r\n", "\n").replace("\r", "\n")
         formatted = format_source(source, file=str(p))
 
         if check:

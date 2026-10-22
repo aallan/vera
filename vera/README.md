@@ -73,7 +73,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | Module | Stage | Purpose | Key API |
 |--------|-------|---------|---------|
 | `grammar.lark` | Parse | LALR(1) grammar definition | *(consumed by Lark)* |
-| `parser.py` | Parse | Lark frontend, error diagnosis | `parse()`, `parse_file()` |
+| `parser.py` | Parse | Lark frontend, error diagnosis; the one reader of a source's bytes (E024) | `parse()`, `parse_file()`, `read_source()`, `decode_source()` |
 | `lexical.py` | Parse | Shared lexical scanning (comment spans, blanking) | `scan_comments()`, `blank_block_comments()` |
 | `transform.py` | Transform | Lark tree → AST transformer; a pipe is built as the call it stands for, and a non-call right operand is refused (E040) | `transform()` |
 | `ast.py` | Transform | Frozen dataclass AST nodes, source formatting | `Program`, `Node`, `Expr`, `format_expr` |
@@ -183,6 +183,9 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 ## Parsing
 
 **Files:** `grammar.lark`, `parser.py`
+
+**Reading:** every command, and the module resolver for each import (the language server's among them), reads a source through `read_source()` or `decode_source()`, which decode its bytes as UTF-8 and raise `SourceEncodingError` (E024) at the first byte that does not decode, located at the file's line and column.
+
 The grammar is a Lark LALR(1) grammar derived from the formal EBNF in spec Chapter 10. It uses:
 
 - **String literals** for keywords (`"fn"`, `"let"`, `"match"`, etc.)
@@ -781,6 +784,7 @@ Every coded diagnostic has a unique code grouped by compiler phase (a few diagno
 | E010 | Transform: unhandled rule | `transform.py` |
 | E011–E013 | Resolve: module imports | `resolver.py` |
 | E020, E021, E023 | Parse: malformed comments (lexical) | `lexical.py` scan + `errors.py` factory |
+| E024 | Read: a source file that is not UTF-8 | `parser.py` `decode_source()` + `errors.py` factory |
 | E030, E031 | Parse: `old()`/`new()` applied to an expression | `errors.py` factory |
 | E032 | Parse: contract clause after the effects clause | `errors.py` factory |
 | E040 | Transform: a pipe whose right operand is not a call | `transform.py` |
