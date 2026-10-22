@@ -27,6 +27,7 @@ import pytest
 from tests import pipeline
 from vera import ast
 from vera.checker import typecheck_with_artifacts
+from vera.typed import build as build_typed
 from vera.parser import parse_to_ast
 from vera.verifier import ContractVerifier
 from vera.wasm import StringPool
@@ -119,12 +120,10 @@ def _assert_in_lockstep(source: str) -> None:
     arts = checked.artifacts
 
     verifier = ContractVerifier(
-        source=source,
-        expr_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
+        build_typed(program, [], arts), source=source,
     )
     ctx = WasmContext(StringPool())
-    ctx.set_expr_semantic_types(arts.expr_semantic_types)
+    ctx.set_expr_semantic_types(arts.node_semantic_types)
 
     sites = _binary_sites(program)
     assert sites, "corpus program has no +/-/* sites"
@@ -254,12 +253,10 @@ class TestVerifierCodegenOverflowDifferential798:
         diags, arts = typecheck_with_artifacts(program, source)
         assert not [d for d in diags if d.severity == "error"]
         verifier = ContractVerifier(
-            source=source,
-            expr_types=arts.expr_semantic_types,
-            expr_target_types=arts.expr_target_types,
+            build_typed(program, [], arts), source=source,
         )
         ctx = WasmContext(StringPool())
-        ctx.set_expr_semantic_types(arts.expr_semantic_types)
+        ctx.set_expr_semantic_types(arts.node_semantic_types)
         site = _binary_sites(program)[0]
         assert isinstance(site.left, ast.IntLit) and site.left.value == 5
         v = verifier._overflow_arith_type(site)
@@ -286,9 +283,7 @@ class TestVerifierCodegenOverflowDifferential798:
         diags, arts = typecheck_with_artifacts(program, source)
         assert not [d for d in diags if d.severity == "error"]
         verifier = ContractVerifier(
-            source=source,
-            expr_types=arts.expr_semantic_types,
-            expr_target_types=arts.expr_target_types,
+            build_typed(program, [], arts), source=source,
         )
         site = _binary_sites(program)[0]
         # The fix: classify on the operands' common type → @Int (i64), not the
@@ -315,9 +310,7 @@ public fn f(@Int -> @Nat)
         diags, arts = typecheck_with_artifacts(program, source)
         assert not [d for d in diags if d.severity == "error"]
         verifier = ContractVerifier(
-            source=source,
-            expr_types=arts.expr_semantic_types,
-            expr_target_types=arts.expr_target_types,
+            build_typed(program, [], arts), source=source,
         )
         site = _binary_sites(program)[0]
         # Post-#755 the mixed-join result is the formal LUB @Int (was @Nat), and
@@ -345,9 +338,7 @@ public fn f(@Int, @Nat -> @Int)
         diags, arts = typecheck_with_artifacts(program, source)
         assert not [d for d in diags if d.severity == "error"]
         verifier = ContractVerifier(
-            source=source,
-            expr_types=arts.expr_semantic_types,
-            expr_target_types=arts.expr_target_types,
+            build_typed(program, [], arts), source=source,
         )
         site = _binary_sites(program)[0]
         # The right operand's self-type is @Nat (u64) — the arithmetic width is
@@ -380,13 +371,11 @@ class TestCorpusOverflowDifferential798:
             pytest.skip(f"{path.name}: not standalone-typecheckable")
 
         verifier = ContractVerifier(
-            source=source,
+            build_typed(program, [], arts), source=source,
             file=str(path),
-            expr_types=arts.expr_semantic_types,
-            expr_target_types=arts.expr_target_types,
         )
         ctx = WasmContext(StringPool())
-        ctx.set_expr_semantic_types(arts.expr_semantic_types)
+        ctx.set_expr_semantic_types(arts.node_semantic_types)
 
         mismatches = []
         for site in _binary_sites(program):

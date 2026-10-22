@@ -271,8 +271,17 @@ class CallsMixin:
         call_target = call.name
         if call.name in self._generic_fn_info:
             resolved = self._resolve_generic_call(call)
-            if resolved is not None:
-                call_target = resolved
+            if resolved is None:
+                # #1679: a generic call no instance answers is one in a
+                # generic template's own body, which is compiled only
+                # through its clones: the template is skipped here, as the
+                # guard rail below skips a call to a name nothing registers.
+                raise CodegenSkip(
+                    call,
+                    f"generic call {call.name!r} has no instance in the "
+                    f"typed program",
+                )
+            call_target = resolved
 
         # Guard rail: reject calls to functions not defined in this module.
         # In practice the cross-module check upstream has already emitted
