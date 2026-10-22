@@ -1,6 +1,6 @@
 # History
 
-How the Vera compiler was built, from initial commit through the hosts and the fold of Stage 23, across 158 active development days.
+How the Vera compiler was built, from initial commit through the one resolver of Stage 25, across 163 active development days.
 
 Vera was developed in an interleaved spiral — each phase added a complete compiler layer with tests, documentation, and working examples before moving to the next. The compiler was built by a single developer working with Claude Code, with CodeRabbit providing AI code review on pull requests from v0.0.80 onwards. The entire project — language design, specification, compiler, test suite, documentation, website — was built from scratch starting 22 February 2026.
 
@@ -29,9 +29,10 @@ Version rows follow one rule: one sentence, at most one issue link.  [CHANGELOG.
 | 17 | 4 Jul | The v0.1.0 bug burndown | v0.1.0 |
 | 18 | 8 Jul | The visual documentation pass | v0.1.1 |
 | 19 + 20 | 9 Jul – 28 Sep | Verification completeness + single source (dual-threaded) | v0.1.2–v0.2.0 |
-| 21 | 9–13 Oct | Instruments and truth | v0.2.1–v0.2.2 |
-| 22 | 13–15 Oct | `Nat` and the lowering boundary | v0.2.3 |
-| 23 | 15–16 Oct | Hosts and the fold | v0.2.4 |
+| 21 + 22 | 9–13 Oct | Instruments and truth + fast lane and one driver | v0.2.1–v0.2.2 |
+| 23 | 13–15 Oct | `Nat` and the lowering boundary | v0.2.3 |
+| 24 | 15–16 Oct | Hosts and the fold | v0.2.4 |
+| 25 | 21–22 Oct | One resolver | v0.2.5 |
 
 ---
 
@@ -484,7 +485,7 @@ Stages 19 and 20 run dual-threaded: community PRs against the single-source spri
 | v0.1.13 | 21 Aug | **The inference response-shape fix** — `Inference.complete` selects text by block type, and every failure names its provider. |
 | v0.2.0 | 28 Sep | **The soundness release** — termination, obligations where the program evaluates, and runtime traps that name their cause ([#1480](https://github.com/aallan/vera/issues/1480)). |
 
-## Stage 21: Instruments and truth (9–13 October)
+## Stage 21 and Stage 22: Instruments and truth (9–13 October)
 
 *The pipeline checks its own claims.*
 
@@ -495,7 +496,7 @@ The first of the releases toward v0.3.0's sound base gave the pipeline instrumen
 | v0.2.1 | 10 Oct | **Instruments and truth** — the pipeline checks its own claims. |
 | v0.2.2 | 13 Oct | **Fast lane and one driver** — a 12-to-19-minute pull-request lane, one in-process test driver, CHANGELOG fragments, rendered lists, and the scorecard measured at release. |
 
-## Stage 22: `Nat` and the lowering boundary (13–15 October)
+## Stage 23: `Nat` and the lowering boundary (13–15 October)
 
 *`Nat` is the type the spec defines, and what checks compiles.*
 
@@ -505,7 +506,7 @@ v0.2.3 made `Nat` the non-negative i64 that spec §2.2 defines, where the compil
 |---------|------|-------------|
 | v0.2.3 | 15 Oct | **`Nat` and the lowering boundary** — `Nat` the non-negative i64 and every literal an `Int`, what code generation cannot lower refused at check, effect operations held to their row, short-circuit `&&`, `\|\|` and `==>`, nested patterns read to full depth, and the open bugs consolidated by mechanism. |
 
-## Stage 23: Hosts and the fold (15–16 October)
+## Stage 24: Hosts and the fold (15–16 October)
 
 *One source where there were many.*
 
@@ -514,6 +515,16 @@ v0.2.4 gave the host bindings and the tree walks one source each.  The built-in 
 | Version | Date | What shipped |
 |---------|------|-------------|
 | v0.2.4 | 16 Oct | **Hosts and the fold** — every built-in one registry record and every host import bound from its row, `Map` and `Set` as persistent hash tries in the module's own code, bytes in, out and through, one fold over the AST with the walker-coverage gate retired, mutation testing over a pull request's diff and over all of `vera/` by night, a call's facts assumed only where its arguments fit, a destructuring `let` checked as the pattern it names, and a collector that marks a heap of any width. |
+
+## Stage 25: One resolver (21–22 October)
+
+*Every name resolved once.*
+
+v0.2.5 gave names one owner.  A binding pass, `vera/binding.py`, gives every declaration of the entry file, each module and the prelude an identity and binds every call, data type, alias and constructor name to one declaration before any later stage asks; the checker, the verifier and code generation read that binding, every declaration compiles under its own link name in a namespace no function the compiler writes for itself can reach, and two modules' same-named data types are two types.  The prelude's names are reserved, so no file redeclares `Option`, `Json` or `json_get`, and the five compile-time collision errors left with the mechanism that needed them.  Around the resolver: `vera verify` reconciles its runtime-check claims with the compiled module by default; a `Map`'s or `Set`'s `String` keys hash under a key drawn for each instantiation; a contract predicate is held to purity whatever its function's row; an `if` joining an `@Int` branch with a `@Nat` one is an `@Int`; a type-directed program generator writes whole programs from a seed and feeds three nightly differentials, which found that join; forty-two run-level conformance programs reach what their headers name; the distrust tester attributes a trap through the reconciliation and runs 1,000 trials a night; and a pull request that changes only the editor extension runs four jobs and stands the rest down.
+
+| Version | Date | What shipped |
+|---------|------|-------------|
+| v0.2.5 | 22 Oct | **One resolver** — every name bound once to one declaration and read by the checker, the verifier and code generation, the prelude's names reserved, `vera verify` reconciled by default, `Map` and `Set` keyed per instantiation, contracts held to purity, a program generator with three nightly differentials, and the conformance corpus running what it names. |
 
 ---
 
@@ -534,4 +545,4 @@ Ten releases, chosen for the capability each one unlocked rather than even spaci
 | Spec chapters | 7 | 10 | 12 | 13 | 13 | 13 | 13 | 14 | 14 | 14 |
 | Python coverage | — | — | 90% | 96% | 95% | 95% | 95% | 95% | 95% | 95% |
 
-Total: **3,000+ commits, 216 tagged releases, 158 active development days.**
+Total: **3,200+ commits, 220 tagged releases, 163 active development days.**

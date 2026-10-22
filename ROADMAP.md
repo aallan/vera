@@ -14,7 +14,7 @@ Ordering derives from the design principles ([DESIGN.md](DESIGN.md)): verificati
 
 [TESTING.md](TESTING.md#overview) counts the tests, the conformance programs and the examples.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs, plus the *limitations* the stages below retire.
 
-v0.3.0 is the sound base (Stage 29), reached through v0.2.5 to v0.2.8 (Stages 25 to 28).  The feature release follows it in Stage 30: the `Decision` effect ([#1467](https://github.com/aallan/vera/issues/1467)) and its blockers, [#351](https://github.com/aallan/vera/issues/351) and [#370](https://github.com/aallan/vera/issues/370).
+v0.3.0 is the sound base (Stage 29), reached through v0.2.6 to v0.2.8 (Stages 26 to 28) after v0.2.5's resolver (Stage 25, in [HISTORY.md](HISTORY.md)).  The feature release follows it in Stage 30: the `Decision` effect ([#1467](https://github.com/aallan/vera/issues/1467)) and its blockers, [#351](https://github.com/aallan/vera/issues/351) and [#370](https://github.com/aallan/vera/issues/370).
 
 ## The bug queue
 
@@ -55,29 +55,19 @@ Exit criterion: each listed drift class has a generator or a gate, and a release
 | [#1611](https://github.com/aallan/vera/issues/1611) | Five test cells that can pass without exercising what they assert — each shown by a mutation or a direct run. |
 | [#1612](https://github.com/aallan/vera/issues/1612) | Stale comments and docstrings in tests and two compiler helpers, a test cache that never hits, and a mis-positioned constructor call. |
 
-## Stage 25 — One resolver (v0.2.5)
-
-*Every name resolved once.*
-
-Stages 25 to 27 build the shared representation [#1525](https://github.com/aallan/vera/issues/1525) asks for, one fact at a time: names, then types, then obligations, each derived once and read by every later phase.
-
-A resolver pass owns names.  Every declaration gets a `DeclId`, every occurrence maps to one exactly once, and code generation's symbols derive from them in a namespace no generated name can reach.  The prelude becomes a real module with reserved names ([#1469](https://github.com/aallan/vera/issues/1469)), so a program cannot redeclare `Option`, `Result` or `Json`, and the upgrade note says so.  E608–E623 move to check time, and the verifier and code generation stop registering declarations of their own.  The stage closes the ownership and prelude cluster ([milestone v0.2.5](https://github.com/aallan/vera/milestone/5)).
-
-One row carries over from v0.2.4, the program generator, and five from v0.2.2: the distrust tester's nightly trials (`VERA_DISTRUST_TRIALS`), its attribution through the reconciliation ([#1633](https://github.com/aallan/vera/issues/1633)), the desugar of a module's call by its own path, the CI changes (path filters, a 94% coverage floor, and a CHANGELOG gate that reads the pull request's base), and a `main` that reaches every feature a run-level conformance program's header names ([#1645](https://github.com/aallan/vera/issues/1645)); the two with issues are on the [debt track](https://github.com/aallan/vera/milestone/10).
-
-Exit criterion: `check` and `verify` verdicts are identical over the corpus except where the pull request names a change, WAT differs only in symbol names, and the generator runs nightly.
-
-| Change | What |
-|---|---|
-| A program generator | A type-directed generator feeds three nightly differentials: what checks compiles and loads with every public function exported; every obligation record has its guard and every guard its record; a Tier 1 proof meets no runtime violation on generated inputs. |
-
 ## Stage 26 — One typed program (v0.2.6)
 
 *Every type derived once.*
 
+Stages 26 and 27 finish the shared representation [#1525](https://github.com/aallan/vera/issues/1525) asks for, after v0.2.5's names: types, then obligations, each derived once and read by every later phase.
+
 Monomorphisation runs once, before verify and compile, and every node of every clone carries its type in a table keyed by node identity; literal typing is sound for the value and carries its sign.  The backend's own inference (the `_infer_*` functions), both clone namers, code generation's AST fallbacks for `Nat` and the verifier's `_resolve_type` go, and so does the roster of readers allowed into the checker's tables.  Clone names change, so WAT moves across the corpus.  The stage closes the re-derived-type cluster ([milestone v0.2.6](https://github.com/aallan/vera/milestone/6)).
 
-Exit criterion: the corpus differential names every mover, and the existing matrices and the generator's differentials are green.
+Exit criterion: the corpus differential names every mover, the existing matrices and the generator's differentials are green, and the typed program is a required input of `verify` and `compile`: no table parameter is optional and no fallback branch remains.
+
+| Change | What |
+|---|---|
+| The program generator, version two | Recursion with `decreases`, generics, aliases, imports, nested containers, `State` and `Exn` handlers, and the non-commutative operator forms; a fourth differential runs a generated edit sequence through a warm `VerificationSession` against a fresh session. |
 
 ## Stage 27 — One obligation table (v0.2.7)
 
@@ -99,14 +89,14 @@ Exit criterion: no function is over 500 lines, and the spec carries no implement
 |---|---|
 | Decomposition | `ContractVerifier`, `WasmContext` and `CodeGenerator` split along the seams Stages 25 to 27 create. |
 | The spec states the language | Implementation status moves out of the spec to KNOWN_ISSUES.md and the limitation data file. |
-| Fixes that clear | A gate applies each diagnostic's `Fix` template to its repro, and the diagnostic must no longer fire. |
+| Fixes that clear | A gate applies each diagnostic's `Fix` template to its repro, and the diagnostic must no longer fire; the six fix texts written as literal slot examples ([#1763](https://github.com/aallan/vera/issues/1763)) are computed from the site first. |
 | Debt, second batch | Whatever remains of the debt track. |
 
 ## Stage 29 — The sound base (v0.3.0)
 
 *Declared sound by measurement.*
 
-A release only.  Its pull request re-measures the scorecard below, and v0.3.0 ships when every target is met.  VeraBench re-runs on v0.3.0 with fresh generation, verify@1 beside pass@1 and adversarial inputs, and the landing page quotes that run.
+A release only.  Its pull request re-measures the scorecard below and carries one section stating the supported fragment, the trusted components, the runtime enforcement and the refusals, beside the scorecard, and v0.3.0 ships when every target is met.  VeraBench re-runs on v0.3.0 with fresh generation, verify@1 beside pass@1 and adversarial inputs, and the landing page quotes that run.
 
 Exit criterion: every target in the scorecard is met.
 
@@ -119,6 +109,7 @@ Exit criterion: every target in the scorecard is met.
 | Explicit `guarded=` claims by the verifier | 0 |
 | Obligation kinds with one record both sides read | All of them |
 | Modules that resolve a name or decide an owner | 1 |
+| Pipeline entry points with an optional semantic table | 0 (3 at v0.2.4) |
 | Hand-rolled `isinstance` dispatchers over `Expr` | None: the fold |
 | Functions over 500 lines | 0 |
 | Host built-ins hand-mirrored across hosts | 0: generated |
