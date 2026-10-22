@@ -403,6 +403,28 @@ _PRECONDITIONS: dict[str, tuple[str, str, list[tuple[str, str]]]] = {
 }
 
 
+#: A generic callee whose precondition the verifier cannot state: the call
+#: demotes (`E532`), and its record names the precondition as the generic
+#: writes it, the clause the clone's prologue check is emitted for, so the
+#: record and the check pair (`vera verify` reconciles them).
+_UNDECIDED_GENERIC_PRE = (
+    _fn("private forall<T> fn first_len(@Array<T> -> @Nat)",
+        "array_length(@Array<T>.0)").replace(
+        "requires(true)",
+        "requires(array_length(array_range(0, array_length(@Array<T>.0))) > 0)",
+        1)
+    + "\n" + _fn("public fn main(@Unit -> @Nat)", "first_len([1, 2])"))
+
+
+def test_a_generic_calls_demoted_precondition_pairs_with_its_check(
+        tmp_path: Path) -> None:
+    path = pipeline.write_tree(tmp_path, {"main.vera": _UNDECIDED_GENERIC_PRE})
+    verified = pipeline.verify(path, reconcile=True)
+    assert [(o.status, o.error_code) for o in verified.obligations
+            if o.kind == "call_pre"] == [("tier3", "E532")]
+    assert verified.ok, [d.format() for d in verified.diagnostics]
+
+
 def _callee_program(shape: str, pre: str, arg: str) -> dict[str, str]:
     callee = _fn(
         "private fn c(@Int -> @Int)" if shape in ("mono", "where")
@@ -768,9 +790,24 @@ def test_every_generic_call_records_its_instantiation(path: Path) -> None:
 @pytest.mark.parametrize("path", _CORPUS, ids=lambda p: p.name)
 def test_every_expression_of_every_clone_is_typed(path: Path) -> None:
     """Every expression of every clone the typed program builds has a type
-    of its own, under its own identity, and every generic call a clone
-    compiles names the instance it calls, which is built."""
+    of its own, under its own identity, its template's under the instance's
+    substitution (no type variable the instance binds is left in it), and
+    every generic call a clone compiles names the instance it calls, which
+    is built."""
     from vera.typed import build
+    from vera.types import AdtType, FunctionType, RefinedType, TypeVar
+
+    def variables(ty: object) -> set[str]:
+        if isinstance(ty, TypeVar):
+            return {ty.name}
+        if isinstance(ty, RefinedType):
+            return variables(ty.base)
+        if isinstance(ty, AdtType):
+            return set().union(*(variables(a) for a in ty.type_args))
+        if isinstance(ty, FunctionType):
+            return set().union(variables(ty.return_type),
+                               *(variables(p) for p in ty.params))
+        return set()
 
     checked = _checked_corpus_program(path)
     typed = build(checked.program, list(checked.resolved or ()),
@@ -783,8 +820,10 @@ def test_every_expression_of_every_clone_is_typed(path: Path) -> None:
         for node in inst.compiled_nodes():
             assert node.node_id not in template_ids, inst.name
             if isinstance(node, ast.Expr):
-                assert typed.semantic_type(node) is not None, (
-                    inst.name, ast.format_expr(node))
+                ty = typed.semantic_type(node)
+                assert ty is not None, (inst.name, ast.format_expr(node))
+                assert not variables(ty) & set(inst.sigma), (
+                    inst.name, ast.format_expr(node), ty)
             if (isinstance(node, (ast.FnCall, ast.ModuleCall))
                     and typed.origin.get(node.node_id) in recorded):
                 callee = typed.call_target(node)
