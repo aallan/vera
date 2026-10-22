@@ -958,3 +958,262 @@ def test_class_1694_a_message_quotes_the_program_as_written(
     assert any("lib::need(@Int.0)" in t for t in texts), texts
     assert not [t for t in texts if "$" in t], texts
     assert {o.fn_name for o in verified.obligations} >= {"g", "h"}
+
+
+# =====================================================================
+# The class matrix (#1694): a declaration of each kind, in each relation
+# between namespaces, at each position, beside a declaration of the same
+# name elsewhere.  Each use resolves to the declaration its own namespace
+# binds the name to, which the run's value tells apart (the entry's is
+# worth 1, a module's 2 or 3), or the program is refused at check with the
+# code that names the reserved name.
+# =====================================================================
+
+def _data(name: str, ctor: str, visibility: str = "private") -> str:
+    return f"{visibility} data {name} {{\n  {ctor}(Int)\n}}\n"
+
+
+def _open(fn: str, adt: str, ctor: str, add: int,
+          visibility: str = "private") -> str:
+    """A function reading the `Int` out of an *adt* built with *ctor*,
+    plus *add*: which declaration its type and constructor are."""
+    return _fn(f"{fn}(@{adt} -> @Int)",
+               f"match @{adt}.0 {{\n    {ctor}(@Int) -> @Int.0 + {add}\n  }}",
+               visibility=visibility)
+
+
+def _entry(imports: str, decls: str, body: str, position: str) -> str:
+    """The entry file: its declarations before `main`, or after it."""
+    main = _fn("main(@Unit -> @Int)", body, visibility="public")
+    parts = [decls, main] if position == "before" else [main, decls]
+    return imports + "\n".join(parts)
+
+
+def _helper(parent: str, helper: str, value: int,
+            visibility: str = "private") -> str:
+    """*parent* calling its `where` helper *helper*, worth *value*."""
+    return (f"{visibility} fn {parent}(@Unit -> @Int)\n{_CONTRACT}{{\n"
+            f"  {helper}(())\n}}\nwhere {{\n  fn {helper}(@Unit -> @Int)\n"
+            "    requires(true)\n    ensures(true)\n    effects(pure)\n"
+            f"  {{\n    {value}\n  }}\n}}\n")
+
+
+def _matrix_case(kind: str, relation: str, position: str):
+    """The files of one cell and what its run returns, or the code it is
+    refused with."""
+    def mod(path: str, decls: str) -> str:
+        return f"module {path};\n\n{decls}"
+
+    pick = lambda v, vis="private": _fn(  # noqa: E731
+        "pick(@Unit -> @Int)", str(v), visibility=vis)
+    if kind == "fn":
+        if relation == "entry_and_module":
+            return {"m.vera": mod("m", pick(2) + "\n" + _fn(
+                        "m_use(@Unit -> @Int)", "pick(())",
+                        visibility="public")),
+                    "main.vera": _entry("import m(m_use);\n\n", pick(1),
+                                        "pick(()) * 10 + m_use(())",
+                                        position)}, 12
+        if relation == "entry_shadows_its_import":
+            return {"m.vera": mod("m", pick(2, "public")),
+                    "main.vera": _entry("import m;\n\n", pick(1),
+                                        "pick(())", position)}, 1
+        if relation == "selective_import":
+            return {"a.vera": mod("a", pick(2, "public")),
+                    "b.vera": mod("b", pick(3, "public") + "\n" + _fn(
+                        "other(@Unit -> @Int)", "pick(())",
+                        visibility="public")),
+                    "main.vera": _entry("import a(pick);\nimport b(other);\n\n",
+                                        "", "pick(()) * 10 + other(())",
+                                        position)}, 23
+        if relation == "another_file":
+            return {"m.vera": mod("m", pick(2, "public")),
+                    "main.vera": _entry("import m(pick);\n\n", "",
+                                        "pick(())", position)}, 2
+        return {"main.vera": _entry("", _fn(
+            "option_map(@Unit -> @Int)", "1"), "option_map(())",
+            position)}, "E151"
+    if kind == "data":
+        if relation == "entry_and_module":
+            return {"m.vera": mod("m", _data("Box", "Mk") + "\n"
+                                  + _open("open", "Box", "Mk", 2) + "\n"
+                                  + _fn("m_use(@Unit -> @Int)",
+                                        "open(Mk(0))", visibility="public")),
+                    "main.vera": _entry(
+                        "import m(m_use);\n\n",
+                        _data("Box", "Mk") + "\n"
+                        + _open("open", "Box", "Mk", 1),
+                        "open(Mk(0)) * 10 + m_use(())", position)}, 12
+        if relation == "entry_shadows_its_import":
+            return {"m.vera": mod("m", _data("Box", "Mk", "public")),
+                    "main.vera": _entry(
+                        "import m;\n\n", _data("Box", "Mk") + "\n"
+                        + _open("open", "Box", "Mk", 1), "open(Mk(0))",
+                        position)}, 1
+        if relation == "selective_import":
+            return {"a.vera": mod("a", _data("Box", "Mk", "public") + "\n"
+                                  + _open("a_open", "Box", "Mk", 2,
+                                          "public")),
+                    "b.vera": mod("b", _data("Box", "Mk", "public") + "\n"
+                                  + _open("b_open", "Box", "Mk", 3) + "\n"
+                                  + _fn("b_val(@Unit -> @Int)",
+                                        "b_open(Mk(0))",
+                                        visibility="public")),
+                    "main.vera": _entry(
+                        "import a(Box, a_open);\nimport b(b_val);\n\n", "",
+                        "a_open(Mk(0)) * 10 + b_val(())", position)}, 23
+        if relation == "another_file":
+            return {"m.vera": mod("m", _data("Box", "Mk", "public") + "\n"
+                                  + _open("open", "Box", "Mk", 2, "public")),
+                    "main.vera": _entry("import m(Box, open);\n\n", "",
+                                        "open(Mk(0))", position)}, 2
+        return {"main.vera": _entry(
+            "", _data("Option", "Mk") + "\n" + _open("open", "Option", "Mk", 1),
+            "open(Mk(0))", position)}, "E158"
+    if kind == "alias":
+        if relation == "entry_and_module":
+            return {"m.vera": mod("m", "type W = Bool;\n\n"
+                                  + _fn("wv(@Unit -> @W)", "true") + "\n"
+                                  + _fn("m_use(@Unit -> @Int)",
+                                        "if wv(()) then { 2 } else { 0 }",
+                                        visibility="public")),
+                    "main.vera": _entry(
+                        "import m(m_use);\n\n", "type W = Int;\n\n"
+                        + _fn("useit(@W -> @Int)", "@W.0 + 1"),
+                        "useit(0) * 10 + m_use(())", position)}, 12
+        return {"main.vera": _entry(
+            "", "type Option = Int;\n\n" + _fn("useit(@Option -> @Int)",
+                                               "@Option.0 + 1"),
+            "useit(0)", position)}, "E158"
+    if kind == "type_param":
+        if relation == "entry_and_module":
+            same = ("private forall<Box> fn same(@Box -> @Box)\n"
+                    + _CONTRACT + "{\n  @Box.0\n}\n")
+            return {"main.vera": _entry(
+                "", _data("Box", "Mk") + "\n" + _open("open", "Box", "Mk", 1)
+                + "\n" + same, "same(10) + open(Mk(1))", position)}, 12
+        return {"main.vera": _entry(
+            "", "private forall<Option> fn same(@Option -> @Option)\n"
+            + _CONTRACT + "{\n  @Option.0\n}\n", "same(1)", position)}, "E158"
+    # kind == "helper"
+    if relation == "entry_and_module":
+        return {"m.vera": mod("m", _helper("m_use", "pick", 2, "public")),
+                "main.vera": _entry("import m(m_use);\n\n", pick(1),
+                                    "pick(()) * 10 + m_use(())",
+                                    position)}, 12
+    if relation == "entry_shadows_its_import":
+        return {"m.vera": mod("m", pick(3, "public")),
+                "main.vera": _entry("import m;\n\n",
+                                    _helper("outer", "pick", 1),
+                                    "outer(()) * 10 + pick(())",
+                                    position)}, 13
+    return {"main.vera": _entry("", _helper("outer", "option_map", 1),
+                                "outer(())", position)}, "E151"
+
+
+_MATRIX = [
+    (kind, relation)
+    for kind, relations in {
+        "fn": ("entry_and_module", "entry_shadows_its_import",
+               "selective_import", "another_file", "prelude"),
+        "data": ("entry_and_module", "entry_shadows_its_import",
+                 "selective_import", "another_file", "prelude"),
+        "alias": ("entry_and_module", "prelude"),
+        "type_param": ("entry_and_module", "prelude"),
+        "helper": ("entry_and_module", "entry_shadows_its_import",
+                   "prelude"),
+    }.items()
+    for relation in relations
+]
+
+
+@pytest.mark.parametrize("position", ["before", "after"])
+@pytest.mark.parametrize("kind, relation", _MATRIX)
+def test_class_1694_matrix(
+    tmp_path: Path, kind: str, relation: str, position: str,
+) -> None:
+    files, expected = _matrix_case(kind, relation, position)
+    entry = _tree(tmp_path, files)
+    if isinstance(expected, str):
+        _refused(entry, expected)
+        return
+    verified = pipeline.verify(entry)
+    assert verified.ok, _codes(verified.errors)
+    assert not [o for o in verified.obligations
+                if o.status in ("violated", "tier3_unguarded")]
+    assert pipeline.run(entry, "main").value == expected
+
+
+# =====================================================================
+# #1494, the whole class: every function symbol code generation emits,
+# read off the compiled module, beside a declaration of the same name.
+# =====================================================================
+
+_GEN_DECLS = (
+    "private data Point {\n  Pt(Int)\n}\n\n"
+    "private data Tree {\n  Leaf,\n  Node(Tree, Tree)\n}\n\n"
+    "private fn size(@Tree -> @Nat)\n  requires(true)\n  ensures(true)\n"
+    "  decreases(@Tree.0)\n  effects(pure)\n{\n  match @Tree.0 {\n"
+    "    Leaf -> 1,\n    Node(@Tree, @Tree) -> size(@Tree.1) + size(@Tree.0)\n"
+    "  }\n}\n\n")
+
+
+def _gen_main(extra: str) -> str:
+    """`main`, making code generation emit each family of its own
+    functions: the runtime's, a lifted closure, an ADT's and a string's
+    equality, a string comparison, a measure's size, a map's."""
+    return _fn(
+        "main(@Unit -> @Int)",
+        "let @Bool = Pt(1) == Pt(1);\n  let @Bool = \"a\" == \"b\";\n"
+        "  let @Bool = \"a\" < \"b\";\n"
+        "  let @Map<String, Int> = map_insert(map_new(), \"k\", 1);\n"
+        "  let @Array<Int> = array_map([1, 2], fn(@Int -> @Int) "
+        "effects(pure) { @Int.0 + 1 });\n"
+        f"  nat_to_int(size(Node(Leaf, Leaf))){extra}",
+        visibility="public")
+
+
+def test_repro_1494_every_generated_symbol_beside_a_same_named_function(
+) -> None:
+    """Each function code generation emits for a program that makes it emit
+    every family of its own (the runtime's `alloc` and `gc_*`, a lifted
+    closure's `anon_N`, the equalities `eq_<T>`, the string comparison, the
+    measure `dec_size_<T>`, the map's), read off the compiled module rather
+    than listed here.  Each one a declaration can take is taken, by a user
+    function of that name in the same program, which compiles to a module
+    holding both and runs to the value its functions give; a declaration's
+    symbol is in its own namespace (:data:`vera.binding.SYMBOL_PREFIX`).
+    One no declaration may take, a built-in's, is refused at check (E151),
+    and the rest no Vera identifier can spell."""
+    from vera.environment import TypeEnv
+    from vera.prelude import reserved_function_names
+
+    wat = pipeline.compile(_GEN_DECLS + _gen_main("")).wat
+    generated = sorted({
+        name for name in re.findall(r"\(func \$([^\s()]+)", wat)
+        if not name.startswith(SYMBOL_PREFIX) and not name.startswith("vera.")
+    })
+    spellable = [n for n in generated
+                 if re.fullmatch(r"[a-z][A-Za-z0-9_]*", n)]
+    assert {"alloc", "gc_collect", "anon_0", "eq_Point", "eq_String",
+            "cmp_String", "dec_size_Tree"} <= set(spellable), spellable
+    unspellable = [n for n in generated if n not in spellable]
+    assert all(re.search(r"[$.]", n) for n in unspellable), unspellable
+    taken_by_builtins = set(TypeEnv().functions) | reserved_function_names()
+    reserved = [n for n in spellable if n in taken_by_builtins]
+    takeable = [n for n in spellable if n not in taken_by_builtins]
+    for name in reserved:
+        _refused(_GEN_DECLS + _fn(f"{name}(@Unit -> @Int)", "1") + "\n"
+                 + _gen_main(""), "E151")
+    decls = "".join(
+        _fn(f"{name}(@Unit -> @Int)", str(i + 1)) + "\n"
+        for i, name in enumerate(takeable))
+    source = _GEN_DECLS + decls + _gen_main(
+        "".join(f" + {name}(())" for name in takeable))
+    both = pipeline.compile(source).wat
+    for name in takeable:
+        assert re.search(rf"\(func \${re.escape(SYMBOL_PREFIX + name)}[\s(]",
+                         both), name
+        assert re.search(rf"\(func \${re.escape(name)}[\s(]", both), name
+    expected = 2 + sum(range(1, len(takeable) + 1))
+    assert pipeline.run(source, "main").value == expected

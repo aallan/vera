@@ -11,10 +11,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from vera import ast
-from vera.binding import bare_name
 from vera.environment import AdtInfo, ConstructorInfo, FunctionInfo, TypeEnv
 from vera.errors import Diagnostic
-from vera.module_view import imported_data_types, modules_visible_to
+from vera.module_view import modules_visible_to
 from vera.monomorphize import namespace_adt_names, namespace_fn_names
 from vera.registration import where_helper_parents
 from vera.resolver import (
@@ -381,24 +380,31 @@ class ModulesMixin:
                     continue
                 if name_filter is None or fn_name in name_filter:
                     self.env.functions.setdefault(fn_name, fn_info)
-            # #1304, data side: same rule and same reason as the functions
-            # above.  A type name two imports supply denotes nothing here, and
-            # so does a constructor name — which is filtered by its PARENT
-            # type (spec §8.5.4), so the two sets are consulted separately.
-            for dt_name, dt_info in mod_data.items():
-                if dt_name in self._ambiguous_import_type_names:
-                    continue
-                if ((name_filter is None or dt_name in name_filter)
-                        and dt_name not in self._builtin_data_types):
-                    self.env.type_names.setdefault(dt_name, dt_info.name)
-            for ct_name, ct_info in mod_ctors.items():
-                if ct_name in self._ambiguous_import_ctor_names:
-                    continue
-                # An import names a constructor's TYPE by the name the
-                # module declares it under (§8.5.4).
-                parent = bare_name(ct_info.parent_type)
-                if name_filter is None or parent in name_filter:
-                    self.env.constructors.setdefault(ct_name, ct_info)
+        # 5b. #1694: the data type and constructor names an import supplies
+        #     are what the resolver pass binds them to (the type names were
+        #     taken before registration, `_take_type_names`): one supplier
+        #     binds, two leave the name denoting nothing (#1304), and an
+        #     import names a constructor by its TYPE (spec §8.5.4).
+        self._take_imported_constructors()
+
+    def _take_imported_constructors(self) -> None:
+        """Each constructor name an import supplies this namespace, to the
+        constructor the resolver pass binds it to (#1694).  The namespace's
+        own constructors are registered with their types, and one of a type
+        it imports none of is read where it is met
+        (:meth:`_stranger_constructor`)."""
+        names = self._names
+        if names is None:
+            return
+        owner = self._namespace_owner()
+        strangers = names.stranger_ctors.get(owner, frozenset())
+        for name, ident in names.ctors.get(owner, {}).items():
+            if ident.owner == owner or name in strangers:
+                continue
+            info = self._module_constructors.get(ident.owner, {}).get(
+                ident.name)
+            if info is not None:
+                self.env.constructors.setdefault(name, info)
 
     def _reject_ambiguous_imports(
         self, program: ast.Program,
@@ -698,29 +704,28 @@ class ModulesMixin:
             # A nested checker: the run's first checker registered them all.
             return cache
         by_path = {m.path: m for m in self._resolved_modules}
-        programs = {m.path: m.program for m in self._resolved_modules}
+        names = self._names
+        assert names is not None  # bound by `check_program`  # noqa: S101
         for path in _dependency_order(by_path):
             if path in cache:
                 continue
             mod = by_path[path]
             temp = TypeChecker(source=mod.source, file=str(mod.file_path))
-            # The module's own data types take their identities (#1694).
+            # The module's own data types take their identities (#1694), and
+            # each data type name it writes denotes what the resolver pass
+            # binds it to there: its own declaration, or the one import that
+            # supplies it (two supply none, #1304: the module's own check
+            # reports E156 at the import).
             temp._resolved_as = path
-            for name, suppliers in imported_data_types(
-                    mod.program, programs).items():
-                if len(suppliers) != 1:
-                    # Two imports supply it, so it denotes neither (#1304):
-                    # the module's own check reports E156 at the import.
-                    continue
-                dep = cache.get(suppliers[0])
-                info = None if dep is None else dep.data_types.get(name)
+            types = names.types.get(path, {})
+            temp._take_type_names(types)
+            for ident in types.values():
+                dep = cache.get(ident.owner)
+                info = (None if dep is None or ident.kind != "data"
+                        else dep.data_types.get(ident.name))
                 if info is not None:
-                    # `setdefault`, as the importer-side injection does: a
-                    # name the built-in registry holds is never won by an
-                    # import.  The type is held by its identity (#1694).
+                    # The type is held by its identity.
                     temp.env.data_types.setdefault(info.name, info)
-                    if name not in temp._builtin_data_types:
-                        temp.env.type_names.setdefault(name, info.name)
             temp._register_all(mod.program)
             cache[path] = _module_exports(
                 temp, mod.program, builtin_fns, builtin_ctors,

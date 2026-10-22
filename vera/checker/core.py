@@ -20,7 +20,7 @@ each handle a specific concern:
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from vera.resolver import ResolvedModule
 
 from vera import ast, naming
-from vera.binding import Binding, display_type_names
+from vera.binding import Binding, DeclId, display_type_names
 from vera.callgraph import CallGraph
 from vera.errors import (
     Diagnostic,
@@ -620,6 +620,13 @@ class TypeChecker(
         # made once registration has settled what it refuses: every call is
         # resolved by reading it (`_bound_function`).
         self._binding: Binding | None = None
+        # #1694: the same pass's binding of the data type, alias and
+        # constructor names this namespace writes, made before registration
+        # resolves a type expression, since no declaration a check refuses
+        # takes a type name (E158 is refused by name).  What each name
+        # denotes here is read from it (`_take_type_names`,
+        # `_take_imported_constructors`, `_stranger_constructor`).
+        self._names: Binding | None = None
         # #1489: each import whose module did not resolve, with its name list
         # (``None`` for a wildcard), so an E136 on a name it lists can say
         # which import to fix.  Set by `_register_modules`.
@@ -813,6 +820,8 @@ class TypeChecker(
 
     def check_program(self, program: ast.Program) -> None:
         """Entry point: register modules, then local declarations, then check."""
+        self._names = self._bind(program, frozenset())
+        self._take_type_names(self._names.types.get(self._namespace_owner(), {}))
         self._register_modules(program)  # C7b: cross-module imports
         self._register_all(program)  # local declarations shadow imports
         self._binding = self._bind_calls(program)
@@ -1434,18 +1443,41 @@ class TypeChecker(
         takes no name on a refused program either: each call binds where the
         checker's resolution put it before the binding replaced it (the gate
         that measured the two over the corpus and the suite found them
-        identical on every accepted program).  A module's own bodies are
-        checked as that module's namespace, beside the other modules.
+        identical on every accepted program).
         """
+        refused: set[int] = set(self._refused_decl_ids)
+        for reg in (self._module_registration_cache or {}).values():
+            refused |= reg.checker._refused_decl_ids
+        return self._bind(program, frozenset(refused))
+
+    def _namespace_owner(self) -> tuple[str, ...]:
+        """The owner of this namespace's declarations in a binding: the
+        module's path for a module checked as itself, else the entry's."""
+        from vera.binding import ENTRY
+        return self._resolved_as or ENTRY
+
+    def _take_type_names(self, types: Mapping[str, DeclId]) -> None:
+        """Each module data type this namespace names, by the name it
+        writes, to its identity (#1694): what the resolver pass binds the
+        name to, a type the namespace declares or the one an import
+        supplies.  A name whose identity is the name needs no entry."""
+        self.env.type_names = {
+            name: ident.link_name for name, ident in types.items()
+            if ident.kind == "data" and ident.link_name != name
+        }
+
+    def _bind(
+        self, program: ast.Program, refused: frozenset[int],
+    ) -> Binding:
+        """The resolver pass over *program* and the modules it reaches, with
+        the declarations in *refused* taking no name.  A module's own bodies
+        are bound as that module's namespace, beside the other modules."""
         from pathlib import Path
 
         from vera.binding import bind_program
         from vera.prelude import prelude_declarations
         from vera.resolver import ResolvedModule
 
-        refused: set[int] = set(self._refused_decl_ids)
-        for reg in (self._module_registration_cache or {}).values():
-            refused |= reg.checker._refused_decl_ids
         modules = list(self._resolved_modules)
         entry = program
         own = self._resolved_as
@@ -1459,8 +1491,7 @@ class TypeChecker(
                 module=None, imports=(), declarations=(), span=None)
         prelude, _source = prelude_declarations(
             entry, {m.path: m.program for m in modules})
-        return bind_program(
-            entry, modules, prelude, refused=frozenset(refused))
+        return bind_program(entry, modules, prelude, refused=refused)
 
     def _bound_function(self, node: ast.Node) -> FunctionInfo | None:
         """The function the call *node* binds to, read from the binding.

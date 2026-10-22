@@ -1915,12 +1915,14 @@ class CallsMixin:
         same question of the same modules).
 
         Returns every module whose public types declare *name*, sorted by
-        path, and the one constructor the name denotes, or
-        ``None`` when it denotes no single declaration.  It denotes one only
-        when exactly one module declares it and its type is one
-        `_stranger_data_type` resolves: a value of it is typed by the bare
-        type name, so a second meaning of that name would let one value pass
-        for another type's.
+        path, which a message names, and the constructor the resolver pass
+        binds the name to here by that rule (:attr:`vera.binding.Binding.
+        stranger_ctors`, #1694), or ``None`` when it binds none.  It binds one
+        only when exactly one module declares it and its type's name denotes
+        one declaration: no data type of that name is declared or imported
+        here, and exactly one module the file can see declares one, so a
+        second meaning of that name cannot let one value pass for another
+        type's.
 
         A construction and a pattern resolve through here alike, so a
         pattern is typed by the same declaration: its fields bind at their
@@ -1935,12 +1937,14 @@ class CallsMixin:
              if name in self._module_constructors.get(mod.path, {})),
             key=lambda pair: pair[0],
         )
-        if len(candidates) != 1:
+        names = self._names
+        owner = self._namespace_owner()
+        if (names is None
+                or name not in names.stranger_ctors.get(owner, frozenset())):
             return candidates, None
-        ci = candidates[0][1]
-        if self._stranger_data_type(ci.parent_type) is None:
-            return candidates, None
-        return candidates, ci
+        ident = names.ctors[owner][name]
+        return candidates, self._module_constructors.get(
+            ident.owner, {}).get(ident.name)
 
     def _stranger_data_type(self, type_name: str) -> AdtInfo | None:
         """The declaration a data type name this file does not import

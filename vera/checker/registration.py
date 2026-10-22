@@ -1618,12 +1618,9 @@ class RegistrationMixin:
             visibility=visibility,
             decl_index=decl_index,
         )
-        # The name now denotes this declaration here, whatever an import
-        # had it denote: a declaration shadows an import (§8.5.2).
-        if identity == decl.name:
-            self.env.type_names.pop(decl.name, None)
-        else:
-            self.env.type_names[decl.name] = identity
+        # The name denotes this declaration here, whatever an import would
+        # have it denote (§8.5.2), as the resolver pass binds it
+        # (`_take_type_names`).
 
         self.env.type_params = saved_params
 

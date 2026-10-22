@@ -157,6 +157,11 @@ class Binding:
     #: The same for each namespace's constructor names.
     ctors: dict[tuple[str, ...], dict[str, DeclId]] = field(
         default_factory=dict)
+    #: Of those, the names each namespace binds to a constructor of a type
+    #: it imports none of (#1513): the checker accepts such a constructor
+    #: with a warning naming the import it is owed.
+    stranger_ctors: dict[tuple[str, ...], frozenset[str]] = field(
+        default_factory=dict)
     #: The occurrences themselves, so an ``id`` is never reused while the
     #: binding is alive.
     _nodes: list[ast.Node] = field(default_factory=list, repr=False)
@@ -309,6 +314,7 @@ class _Binder:
                 for ctor in decl.constructors:
                     candidates.setdefault(ctor.name, []).append(DeclId(
                         path, ctor.name, (decl.name,), kind="ctor"))
+        strangers: set[str] = set()
         for name, options in candidates.items():
             if (name in ctors or name in self.builtin_ctors
                     or len(options) != 1):
@@ -317,8 +323,10 @@ class _Binder:
             if parent in types or len(declarers.get(parent, ())) != 1:
                 continue
             ctors[name] = options[0]
+            strangers.add(name)
         self.out.types[ns.owner] = types
         self.out.ctors[ns.owner] = ctors
+        self.out.stranger_ctors[ns.owner] = frozenset(strangers)
 
     def namespace(
         self, owner: tuple[str, ...], program: ast.Program,
