@@ -37,13 +37,20 @@ Usage::
 
     python scripts/check_wheel_availability.py
 
+The interpreter that runs the script runs every download, so it needs
+``pip``: a virtual environment ``uv sync`` creates holds none (#1743), and
+the script says so once, before the matrix, rather than reading each
+failed download as a platform with no wheel.
+
 Exit codes::
 
     0  — every (dep, platform, python_version) combination has a wheel
     1  — at least one combination falls back to sdist or fails to resolve
+    2  — this interpreter has no ``pip`` module, so nothing was checked
 """
 from __future__ import annotations
 
+import importlib.util
 import subprocess
 import sys
 import tempfile
@@ -79,6 +86,11 @@ SUPPORTED: list[tuple[str, str, str]] = [
     ("win_amd64", "3.12", "Windows x86_64 (Python 3.12)"),
     ("win_amd64", "3.13", "Windows x86_64 (Python 3.13)"),
 ]
+
+
+def pip_available() -> bool:
+    """Whether this interpreter, the one each download runs, has ``pip``."""
+    return importlib.util.find_spec("pip") is not None
 
 
 def runtime_deps() -> list[str]:
@@ -126,6 +138,15 @@ def check_one(dep: str, platform_tag: str, python_version: str) -> tuple[bool, s
 
 
 def main() -> int:
+    if not pip_available():
+        print(
+            f"{sys.executable} has no pip module, and each check is a "
+            "`python -m pip download`, so nothing was checked.  A virtual "
+            "environment `uv sync` creates holds no pip: add it with "
+            "`uv pip install pip` or `python -m ensurepip`, or run this "
+            "script under an interpreter that has it."
+        )
+        return 2
     deps = runtime_deps()
     print(f"Checking {len(deps)} runtime deps × {len(SUPPORTED)} platforms...")
     print(f"  deps: {', '.join(deps)}")
