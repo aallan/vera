@@ -1508,9 +1508,8 @@ an unused `let` of every data type it constructs and does not name in its
 signature (`program_generator.name_constructed_types`); the four
 differentials then run over that program.
 A find of the load, reconcile or distrust differential is #1525's when it
-vanishes with each fold and each argument at a generic's type variable bound
-in place by a `let` of the type the checker gives it (`{ let @Int = …;
-@Int.0 }`, a fold's being its initial value's;
+vanishes with each fold bound in place by a `let` of the type the checker
+gives it (`{ let @Int = …; @Int.0 }`, a fold's being its initial value's;
 `program_generator.bind_in_place`), which code generation reads off the
 declaration, and #1744's when it vanishes once each handler a branch takes is
 bound too, provided that program checks, verifies and makes no find outside
@@ -1579,9 +1578,10 @@ the product of two variables are outside version two's grammar, and so is an
 index into anything but a `let`-bound array literal (#1525's line from #1680:
 code generation infers no element type for an array in place).  The shapes at
 which code generation reads a type of its own, a fold as a scrutinee or as a
-constructor's argument, an argument at a generic's type variable and a branch
-whose every arm is a fold, a `throw` or a handler, are inside it, each counted
-by its counterfactual class above.
+constructor's argument and a branch whose every arm is a fold, a `throw` or a
+handler, are inside it, each counted by its counterfactual class above; so is
+an arithmetic argument at a generic's type variable, whose call runs against
+the instance the checker chose (#1791).
 
 ## Adding Tests
 

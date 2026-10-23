@@ -79,8 +79,7 @@ code generation infers no element type for an array in place).
 
 Some shapes it writes make code generation fail on a program the checker
 and the verifier accept, because code generation re-derives a value's type
-from its own reading of the expression (issue #1525): an argument at a
-generic's type variable, which it instantiates the call at, a fold as a
+from its own reading of the expression (issue #1525): a fold as a
 scrutinee or a constructor's argument, which it finds no type for, and a
 branch whose every arm is a fold, a ``throw`` or a handler (#1744 for the
 handlers).  :func:`bind_in_place` writes the program with each such value
@@ -2939,18 +2938,14 @@ def name_constructed_types(prog: Program) -> Program | None:
 
 #: What :func:`bind_in_place` binds: each fold that is not a ``let``'s
 #: value, which code generation finds no type for as a scrutinee, a
-#: constructor's argument or a branch's arm, and each argument at a
-#: generic's type variable (#1525's class), and each handler that is a
-#: branch's value (#1744's).  Each is bound at the type the checker gives
-#: it, a fold's being its initial value's.
+#: constructor's argument or a branch's arm (#1525's class), and each
+#: handler that is a branch's value (#1744's).  Each is bound at the type
+#: the checker gives it, a fold's being its initial value's.  An argument
+#: at a generic's type variable needs no binding: code generation runs a
+#: generic's call against the instance the checker chose (#1791).
 BIND_FOLD = "fold"
-BIND_ARGUMENT = "argument"
 BIND_HANDLER_ARM = "handler_arm"
-BIND_KINDS = (BIND_FOLD, BIND_ARGUMENT, BIND_HANDLER_ARM)
-
-
-def _mentions(ty: str, variables: list[str]) -> bool:
-    return any(re.search(rf"\b{re.escape(v)}\b", ty) for v in variables)
+BIND_KINDS = (BIND_FOLD, BIND_HANDLER_ARM)
 
 
 def bind_in_place(prog: Program, kinds: Collection[str]) -> Program | None:
@@ -3025,9 +3020,6 @@ def bind_in_place(prog: Program, kinds: Collection[str]) -> Program | None:
                     walk(x) if isinstance(x, Expr)
                     else (x[0], walk(x[1])) if isinstance(x, tuple) else x
                     for x in value])
-        if isinstance(e, Call) and e.fn.forall and BIND_ARGUMENT in kinds:
-            e.args = [bind(a, subst(p.type, e.inst)) if _mentions(p.type, e.fn.forall)
-                      else a for p, a in zip(e.fn.params, e.args)]
         return e
 
     for fn in functions:

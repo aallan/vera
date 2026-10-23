@@ -86,15 +86,15 @@ ROOT = Path(__file__).resolve().parent.parent
 #: under: the file name a report gives the program.
 LABEL = gen.ENTRY
 
-#: The pull request lane's seeds: the first eight, 27 and 173, which between
-#: them write every construct of the grammar
+#: The pull request lane's seeds: the first eight, 173 and 737, which
+#: between them write every construct of the grammar
 #: (:func:`test_the_pinned_seeds_reach_every_construct`) and a find of each
-#: counterfactual class, #1744's at 7 and #1525's at 27
+#: counterfactual class, #1744's at 7 and #1525's at 737
 #: (:data:`PINNED_CLASSES`).
-SEEDS = (0, 1, 2, 3, 4, 5, 6, 7, 27, 173)
+SEEDS = (0, 1, 2, 3, 4, 5, 6, 7, 173, 737)
 
 #: A pinned seed whose program makes a find of each counterfactual class.
-PINNED_CLASSES = (("#1744", 7), ("#1525", 27))
+PINNED_CLASSES = (("#1744", 7), ("#1525", 737))
 
 #: Trials per public function in the distrust differential.
 TRIALS = int(os.environ.get("VERA_GENERATOR_TRIALS", "20"))
@@ -1233,9 +1233,8 @@ def _key(f: Find) -> tuple[str, tuple[str, ...], str]:
 
 def _at_a_bound_value(f: Find, sites: Sites) -> bool:
     """Whether *f* is a mismatch at the value of a `let` the counterfactual
-    wrote, `{ let @T = value; @T.0 }`: a `let @Nat` of a fold from a `Nat`,
-    or of a `Nat` argument code generation does not read as one, makes the
-    `nat_bind` class's guard there by construction."""
+    wrote, `{ let @T = value; @T.0 }`: a `let @Nat` of a fold from a `Nat`
+    makes the `nat_bind` class's guard there by construction."""
     if f.site is None:
         return False
     for node in sites._at.get(f.site, []):
@@ -1361,16 +1360,21 @@ def _one(body: gen.Expr, *, lets: Sequence[gen.Let] = (), ret: str = "Int",
     return gen.Program(0, list(datas), [*functions, fn], [fn])
 
 
-def _repro_generic_argument() -> gen.Program:
-    """`f0(false, @Nat.0 * 2, @Nat.0 - 3)`, which the checker instantiates at
-    `Int`: code generation instantiates it at `Nat` by its own reading of the
-    arguments, and the guard on the second argument traps for every
-    `@Nat.0` below 3 (#1525's #1515 line)."""
+def _repro_fold_argument() -> gen.Program:
+    """`Some(array_fold(...))`: code generation infers no type for a fold as
+    a constructor's argument, and drops the function (E602; #1525's line
+    from #1680).  The arm's `@Nat.0 * 2` gives the function a postcondition
+    the verifier proves, so `vera test --distrust` runs the function the
+    counterfactual compiles."""
+    items = _items()
+    x = gen.Binding("Int", gen.ANY, gen.Iv(9, 9))
     n = gen.Binding("Nat", gen.Iv(0, 5), gen.Iv(0, 5))
-    pick = _pick()
-    return _one(gen.Call(pick, [gen.Lit(False), gen.Bin("*", gen.Ref(n), gen.Lit(2)),
-                                gen.Bin("-", gen.Ref(n), gen.Lit(3))], {"T": "Int"}),
-                params=[n], example=[1], functions=[pick])
+    opt = gen.Binding("Option<Int>", value=gen.Construct(
+        gen.SOME, [_sum(items)], ty="Option<Int>"))
+    match = gen.Match(gen.Ref(opt), [
+        gen.Arm(gen.Pattern(ctor=gen.SOME, binders=[x]), gen.Bin("*", gen.Ref(n), gen.Lit(2))),
+        gen.Arm(gen.Pattern(ctor=gen.NONE), gen.Lit(0))])
+    return _one(match, lets=[gen.Let(items), gen.Let(opt)], params=[n], example=[1])
 
 
 def _repro_handler_arms() -> gen.Program:
@@ -1389,10 +1393,9 @@ def _repro_handler_arms() -> gen.Program:
 #: The classes of code generation's own reading of a value's type, each
 #: binding its values on top of the classes before it.
 REDERIVED: tuple[Rederived, ...] = (
-    Rederived("#1525", "a fold or an argument at a generic's type variable, "
-              "which code generation types by its own reading",
-              (gen.BIND_FOLD, gen.BIND_ARGUMENT),
-              _repro_generic_argument),
+    Rederived("#1525", "a fold as a scrutinee, a constructor's argument or a "
+              "branch's every arm, which code generation finds no type for",
+              (gen.BIND_FOLD,), _repro_fold_argument),
     Rederived("#1744", "a handler a branch takes, which code generation "
               "lowers with no result type", (gen.BIND_HANDLER_ARM,),
               _repro_handler_arms),
@@ -1688,21 +1691,6 @@ def _fold_less_its_init() -> gen.Program:
                 example=[28])
 
 
-def _member_fold_argument() -> gen.Program:
-    """`Some(array_fold(...))`: code generation infers no type for a fold as
-    a constructor's argument, and drops the function (E602; #1525's line
-    from #1680)."""
-    items = _items()
-    x = gen.Binding("Int", gen.ANY, gen.Iv(9, 9))
-    opt = gen.Binding("Option<Int>", value=gen.Construct(
-        gen.SOME, [_sum(items)], ty="Option<Int>"))
-    match = gen.Match(gen.Ref(opt), [
-        gen.Arm(gen.Pattern(ctor=gen.SOME, binders=[x]), gen.Ref(x)),
-        gen.Arm(gen.Pattern(ctor=gen.NONE), gen.Lit(0))])
-    flag = gen.Binding("Bool")
-    return _one(match, lets=[gen.Let(items), gen.Let(opt)], params=[flag], example=[True])
-
-
 def _member_fold_scrutinee() -> gen.Program:
     """A `match` on `array_fold(...)`: code generation infers no type for
     the scrutinee, and drops the function (E602; #1525's line from
@@ -1736,31 +1724,6 @@ def _member_throw_and_fold() -> gen.Program:
                 lets=[gen.Let(items)], params=[flag], example=[False])
 
 
-def _member_misnamed_clone() -> gen.Program:
-    """`f0(Echo(Alpha, f2(0, 14), Alpha), Delta(0))` at `Gauge`: code
-    generation names the call's clone from its own reading of the argument,
-    as if `Gauge` took its fields' types, registers it under `Gauge`'s
-    name, and drops the function (E602; #1525's #1515 line, at a data
-    type)."""
-    alpha = gen.Ctor("Alpha", "Shape", [])
-    shape = gen.Data("Shape", True, [alpha, gen.Ctor("Bravo", "Shape", [])])
-    delta = gen.Ctor("Delta", "Gauge", ["Nat"])
-    echo = gen.Ctor("Echo", "Gauge", ["Shape", "Nat", "Shape"])
-    gauge = gen.Data("Gauge", True, [delta, echo])
-    a, b = gen.Binding("T"), gen.Binding("T")
-    same = gen.Function("f0", False, [a, b], "Bool", gen.Block([], gen.Lit(True)),
-                        kind="generic", forall=["T"], constraints=["Eq<T>"],
-                        template="same", contract=["requires(true)", "ensures(true)"])
-    p = gen.Binding("Nat", gen.Iv(0, 4), gen.Iv(0, 4))
-    q = gen.Binding("Nat", gen.Iv(14, 16), gen.Iv(14, 16))
-    f2 = gen.Function("f2", False, [p, q], "Nat", gen.Block([], gen.Lit(14)),
-                      ensure_style="none")
-    arg = gen.Construct(echo, [gen.Construct(alpha, []), gen.Call(f2, [gen.Lit(0), gen.Lit(14)]),
-                               gen.Construct(alpha, [])])
-    return _one(gen.Call(same, [arg, gen.Construct(delta, [gen.Lit(0)])], {"T": "Gauge"}),
-                ret="Bool", functions=[same, f2], datas=[shape, gauge])
-
-
 def _member_handler_match() -> gen.Program:
     """A `match` on a `Bool` whose two arms are each a handler: the module
     does not load (#1744's handler block, at a `match`)."""
@@ -1773,12 +1736,10 @@ def _member_handler_match() -> gen.Program:
 #: Each shape code generation reads a type of its own at, by the issue its
 #: finds are counted under.
 _REDERIVED_MEMBERS: dict[str, tuple[str, Callable[[], gen.Program]]] = {
-    "generic_argument": ("#1525", _repro_generic_argument),
-    "fold_argument": ("#1525", _member_fold_argument),
+    "fold_argument": ("#1525", _repro_fold_argument),
     "fold_scrutinee": ("#1525", _member_fold_scrutinee),
     "fold_arms": ("#1525", _member_fold_arms),
     "throw_and_fold": ("#1525", _member_throw_and_fold),
-    "misnamed_clone": ("#1525", _member_misnamed_clone),
     "handler_arms": ("#1744", _repro_handler_arms),
     "handler_match": ("#1744", _member_handler_match),
 }
@@ -1862,7 +1823,7 @@ def test_a_find_the_counterfactual_does_not_remove_stays_a_find(
                  function="f9")]
 
     monkeypatch.setattr(sys.modules[__name__], "load_finds", with_another)
-    finds = differentials(_repro_generic_argument(), warm=False)
+    finds = differentials(_repro_fold_argument(), warm=False)
     assert [f.signature for f in finds if not f.known] == [("call", "elsewhere")], finds
     assert [f for f in finds if f.known == "#1525"], finds
 
@@ -1883,7 +1844,7 @@ def test_a_counterfactual_that_makes_a_find_of_its_own_classifies_nothing(
         return out
 
     monkeypatch.setattr(sys.modules[__name__], "load_finds", in_the_counterfactual)
-    finds = differentials(_repro_generic_argument(), warm=False)
+    finds = differentials(_repro_fold_argument(), warm=False)
     codegen = [f for f in finds if f.differential in _CODEGEN]
     assert codegen and not [f for f in codegen if f.known], finds
 
@@ -1929,27 +1890,28 @@ def test_a_fold_from_a_nat_keeps_its_run_non_negative() -> None:
     assert not gen.well_formed(program(-5))
 
 
-def test_a_member_beside_a_known_find_of_its_signature_is_counted() -> None:
+def test_a_member_beside_a_known_find_of_its_signature_is_counted(
+        monkeypatch: pytest.MonkeyPatch) -> None:
     """A class's find in a function that also holds a known find of its
     signature: the counterfactual makes the known one again and not the
     member, so the member has vanished and is counted (seed 429's shape, a
-    `nat_bind` guard of #1525's beside one of #1695's)."""
-    n = gen.Binding("Nat", gen.Iv(0, 5), gen.Iv(0, 5))
-    x = gen.Binding("Nat", gen.Iv(0, 100), gen.Iv(0, 100))
-    same = gen.Function("f1", False, [x], "Nat", gen.Block([], gen.Ref(x)),
-                        ensure_style="exact")
-    held = gen.Binding("Nat", value=gen.Call(same, [gen.Ref(n)]))
-    pick = _pick()
-    call = gen.Call(pick, [gen.Lit(False), gen.Bin("*", gen.Ref(held), gen.Lit(2)),
-                           gen.Bin("-", gen.Ref(held), gen.Lit(3))], {"T": "Int"})
-    prog = _one(call, lets=[gen.Let(held)], params=[n], example=[1], functions=[pick, same])
-    guards = [f for f in _codegen_finds(prog, Stages.of(prog), TRIALS)
-              if f.signature[:2] == ("guarded_unrecorded", "nat_bind") and f.function == "f9"]
-    assert sorted(f.known for f in guards) == ["", "#1695"], guards
+    `nat_bind` guard of #1525's beside one of #1695's, until #1791 closed
+    that member's line: here the program's `E602` beside a known one)."""
+    real = load_finds
+    prog = _repro_fold_argument()
+    member = [f for f in real(prog, prog.calls()) if f.signature == ("compile", "E602")]
+    assert [f.function for f in member] == ["f9"], member
+
+    def beside(program: Source, calls: Sequence[tuple[str, Sequence[int] | None]],
+               stages: Stages | None = None) -> list[Find]:
+        return real(program, calls, stages) + [
+            replace(member[0], detail="held", known="#1695")]
+
+    monkeypatch.setattr(sys.modules[__name__], "load_finds", beside)
     finds = differentials(prog, warm=False)
     assert [f for f in finds if not f.known] == [], finds
-    assert sorted(f.known for f in finds if f.signature[:2] == (
-        "guarded_unrecorded", "nat_bind") and f.function == "f9") == ["#1525", "#1695"], finds
+    assert sorted(f.known for f in finds if _key(f) == _key(member[0])) == [
+        "#1525", "#1695"], finds
 
 
 def test_a_find_that_stays_beside_a_known_one_that_goes_stays_a_find(
@@ -1970,31 +1932,46 @@ def test_a_find_that_stays_beside_a_known_one_that_goes_stays_a_find(
         return out
 
     monkeypatch.setattr(sys.modules[__name__], "load_finds", pair)
-    finds = differentials(_repro_generic_argument(), warm=False)
+    finds = differentials(_repro_fold_argument(), warm=False)
     assert [f.known for f in finds if f.signature == ("call", "pair")
             and f.detail == "open"] == [""], finds
 
 
-def test_a_member_beside_a_guard_the_counterfactual_writes_is_counted() -> None:
+def test_a_member_beside_a_guard_the_counterfactual_writes_is_counted(
+        monkeypatch: pytest.MonkeyPatch) -> None:
     """A class's find in a function holding a fold from a `@Nat`: the
     counterfactual binds the fold at `Nat`, the checker's type, in a
     `let @Nat`, whose guard is the `nat_bind` class's by construction; that
     guard is not the member made again, so the member is counted (seed
-    2101717 of the replay of #1781's night)."""
+    2101717 of the replay of #1781's night, whose member #1791 closed: here
+    a find of the guard's signature the program alone makes)."""
     n = gen.Binding("Nat", gen.Iv(0, 5), gen.Iv(0, 5))
     items = gen.Binding("Array<Int>", value=gen.ArrayLit("Int", [gen.Lit(4), gen.Lit(-3)]))
     acc, elem = gen.Binding("Int", gen.ANY, gen.Iv(0, 0)), gen.Binding(
         "Int", gen.ANY, gen.Iv(0, 0))
     fold = gen.Fold(gen.Ref(items), gen.Ref(n), acc, elem, gen.Lit(0))
-    pick = _pick()
-    call = gen.Call(pick, [gen.Lit(False), gen.Bin("*", gen.Ref(n), gen.Lit(2)),
-                           gen.Bin("-", gen.Ref(n), gen.Lit(3))], {"T": "Int"})
-    prog = _one(gen.Bin("+", call, fold), lets=[gen.Let(items)], params=[n], example=[1],
-                functions=[pick])
+    prog = _one(gen.Bin("+", gen.Ref(n), fold), lets=[gen.Let(items)], params=[n],
+                example=[1])
     assert gen.static_type(fold) == "Nat"
+    bound = gen.bind_in_place(prog, gen.BIND_KINDS)
+    assert bound is not None
+    own = [f for f in reconcile_finds(bound) if f.function == "f9"]
+    assert [(f.signature[:2], f.known) for f in own] == [
+        (("guarded_unrecorded", "nat_bind"), "#1695")], own
+    real = reconcile_finds
+
+    def alone(program: Source, known: Sequence[KnownClass] = KNOWN_CLASSES,
+              stages: Stages | None = None) -> list[Find]:
+        out = real(program, known, stages)
+        if isinstance(program, gen.Program) and "{ let @" in program.render():
+            return out
+        return out + [replace(own[0], detail="the program's", known="", cls="",
+                              evidence="", site=None)]
+
+    monkeypatch.setattr(sys.modules[__name__], "reconcile_finds", alone)
     finds = differentials(prog, warm=False)
     assert [f for f in finds if not f.known] == [], finds
-    assert [f for f in finds if f.known == "#1525" and f.differential == "reconcile"], finds
+    assert [f.known for f in finds if _key(f) == _key(own[0])] == ["#1525"], finds
 
 
 def test_two_sites_of_one_signature_where_one_vanishes_stay_finds(
@@ -2013,7 +1990,7 @@ def test_two_sites_of_one_signature_where_one_vanishes_stay_finds(
             for n in range(1 if bound else 2)]
 
     monkeypatch.setattr(sys.modules[__name__], "load_finds", two_sites)
-    finds = differentials(_repro_generic_argument(), warm=False)
+    finds = differentials(_repro_fold_argument(), warm=False)
     twins = [f for f in finds if f.signature == ("call", "twin")]
     assert len(twins) == 2 and not [f for f in twins if f.known], finds
     assert [f for f in finds if f.known == "#1525"], finds
@@ -2034,7 +2011,7 @@ def test_a_find_the_counterfactual_makes_again_in_a_known_class_stays_a_find(
                  known="#1695" if bound else "")]
 
     monkeypatch.setattr(sys.modules[__name__], "load_finds", reclassified)
-    finds = differentials(_repro_generic_argument(), warm=False)
+    finds = differentials(_repro_fold_argument(), warm=False)
     again = [f for f in finds if f.signature == ("call", "again")]
     assert [f.known for f in again] == [""], finds
     assert [f for f in finds if f.known == "#1525"], finds
@@ -2051,7 +2028,7 @@ def test_a_counterfactual_that_does_not_check_classifies_nothing(
         return out
 
     monkeypatch.setattr(gen, "bind_in_place", refused)
-    finds = differentials(_repro_generic_argument(), warm=False)
+    finds = differentials(_repro_fold_argument(), warm=False)
     codegen = [f for f in finds if f.differential in _CODEGEN]
     assert codegen and not [f for f in codegen if f.known], finds
 
