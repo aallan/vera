@@ -51,10 +51,9 @@ from vera.trap_registry import (
     strip_check_markers,
 )
 from vera.wasm import StringPool
+from vera.types import BOOL, AdtType
 from vera.wasm.helpers import CellNames
-from vera.wasm.async_fusion import (
-    compute_future_ret_fns,
-)
+from vera.wasm.inference import _N
 from vera.codegen.modules import CrossModuleMixin
 from vera.codegen.registration import RegistrationMixin
 from vera.codegen.monomorphize import MonomorphizationMixin
@@ -182,6 +181,10 @@ class CodeGenerator(
         # nodes, a module's and a clone's, which identity tells apart.
         self._expr_semantic_types: dict[int, Type] = typed.semantic
         self._expr_target_types: dict[int, Type] = typed.target
+        # #1525: the type of each node code generation builds after the
+        # check, by the identity it is built with (`InferenceMixin._built`,
+        # `CodeGenerator._built`), shared with every context.
+        self._built_types: dict[int, Type] = {}
 
         # Registered function signatures: name -> (param_types, return_type)
         self._fn_sigs: dict[str, tuple[list[str | None], str | None]] = {}
@@ -252,10 +255,6 @@ class CodeGenerator(
         # walk having run for the attribute to exist.
         self._unregistrable_state_cells: list[tuple[ast.TypeExpr, str]] = []
         self._unregistrable_exn_tags: list[tuple[ast.TypeExpr, str]] = []
-        # #841: fns declared to return Future<Result<String, String>>,
-        # read by the WasmContext await lowering (computed in compile()
-        # from the program decls).
-        self._future_ret_fns: frozenset[str] = frozenset()
 
         # ADT layout metadata (populated during registration)
         self._adt_layouts: dict[str, dict[str, ConstructorLayout]] = {}
@@ -1878,22 +1877,6 @@ class CodeGenerator(
         # Pass 1: register local function signatures (shadows imports)
         self._register_all(program)
 
-        # #841: Future<Result<String, String>>-returning fn names — the
-        # one derivation the WasmContext await lowering reads to decide
-        # which awaits need the fused-handle check.  Derived from the
-        # return-type registry
-        # (local Pass-1 registrations + the Pass-0 cross-module #628
-        # harvest), not the local declarations, so imported and
-        # module-qualified calls classify too.  #1109: the registry is
-        # matched with aliases resolved (an alias-spelled `-> @F`
-        # participates like the literal Future spelling) — Pass 0.5/1
-        # have already populated _type_aliases/_type_alias_params.
-        self._future_ret_fns = compute_future_ret_fns(
-            self._fn_ret_type_exprs,
-            self._type_aliases,
-            self._type_alias_params,
-        )
-
         # Pass 1.2: inject prelude ADTs and combinator implementations
         # Prelude functions are registered as builtins in the type checker
         # (environment.py) but need compilable AST bodies for codegen.
@@ -3383,6 +3366,17 @@ class CodeGenerator(
                 new_fns.append(wfn)
         return tuple(new_fns) if changed else where_fns
 
+    def _built(self, node: _N, ty: Type) -> _N:
+        """*node*, built after the check, with the type it is built at
+        recorded under a fresh identity (#1525): the code generator's twin
+        of :meth:`vera.wasm.inference.InferenceMixin._built`, writing the
+        table every context reads."""
+        if node.node_id is None:
+            object.__setattr__(node, "node_id", ast.fresh_node_id())
+        assert node.node_id is not None  # noqa: S101
+        self._built_types[node.node_id] = ty
+        return node
+
     def _rewrite_ops_in_expr(
         self,
         expr: ast.Expr,
@@ -3401,9 +3395,11 @@ class CodeGenerator(
                         expr.args[0], ability_ops)
                     right = self._rewrite_ops_in_expr(
                         expr.args[1], ability_ops)
+                    # The comparison stands for the call: the checker's
+                    # `Bool` for it is the comparison's (#1525).
                     return ast.BinaryExpr(
                         left=left, op=ast.BinOp.EQ, right=right,
-                        span=expr.span,
+                        span=expr.span, node_id=expr.node_id,
                     )
                 # compare(a, b) →
                 #   if a < b then Less
@@ -3414,40 +3410,37 @@ class CodeGenerator(
                         expr.args[0], ability_ops)
                     right = self._rewrite_ops_in_expr(
                         expr.args[1], ability_ops)
+                    # The outer `if` stands for the call, whose `Ordering`
+                    # the checker typed; every node built inside it is
+                    # recorded with its type (#1525).
+                    ordering = AdtType("Ordering", ())
+
+                    def ctor(name: str) -> ast.Block:
+                        return self._built(ast.Block(
+                            statements=(), span=expr.span,
+                            expr=self._built(ast.NullaryConstructor(
+                                name=name, span=expr.span,
+                                owner="Ordering"), ordering),
+                        ), ordering)
+
+                    def test(op: ast.BinOp) -> ast.BinaryExpr:
+                        return self._built(ast.BinaryExpr(
+                            left=left, op=op, right=right, span=expr.span,
+                        ), BOOL)
+
                     return ast.IfExpr(
-                        condition=ast.BinaryExpr(
-                            left=left, op=ast.BinOp.LT, right=right,
-                            span=expr.span,
-                        ),
-                        then_branch=ast.Block(
+                        condition=test(ast.BinOp.LT),
+                        then_branch=ctor("Less"),
+                        else_branch=self._built(ast.Block(
                             statements=(), span=expr.span,
-                            expr=ast.NullaryConstructor(
-                                name="Less", span=expr.span,
-                                owner="Ordering"),
-                        ),
-                        else_branch=ast.Block(
-                            statements=(), span=expr.span,
-                            expr=ast.IfExpr(
-                                condition=ast.BinaryExpr(
-                                    left=left, op=ast.BinOp.EQ,
-                                    right=right, span=expr.span,
-                                ),
-                                then_branch=ast.Block(
-                                    statements=(), span=expr.span,
-                                    expr=ast.NullaryConstructor(
-                                        name="Equal", span=expr.span,
-                                        owner="Ordering"),
-                                ),
-                                else_branch=ast.Block(
-                                    statements=(), span=expr.span,
-                                    expr=ast.NullaryConstructor(
-                                        name="Greater", span=expr.span,
-                                        owner="Ordering"),
-                                ),
+                            expr=self._built(ast.IfExpr(
+                                condition=test(ast.BinOp.EQ),
+                                then_branch=ctor("Equal"),
+                                else_branch=ctor("Greater"),
                                 span=expr.span,
-                            ),
-                        ),
-                        span=expr.span,
+                            ), ordering),
+                        ), ordering),
+                        span=expr.span, node_id=expr.node_id,
                     )
             # Recurse into args of non-ability calls
             new_args = tuple(

@@ -531,6 +531,38 @@ def wasm_representation(t: Type) -> str | None:
     return "unsupported"
 
 
+def value_width(t: Type | None) -> str | None:
+    """The WebAssembly value a value of *t* is held in, or ``None`` for a
+    value that has none (#1525).
+
+    `Int` and `Nat` are an ``i64``, `Float64` an ``f64``, `Bool` and `Byte`
+    an ``i32``; `String` and `Array<T>` a ``(ptr, len)`` pair, ``i32_pair``;
+    every other data type, the host handles of `Map`, `Set` and `Decimal`
+    among them, an ``i32`` pointer, and so is a function value, a closure;
+    `Future<T>` is held as `T` is (#841), and a refinement as its base.
+    `Unit` and `Never` hold nothing.  A type variable has no width: only a
+    generic's template meets one, and code generation emits no template.
+
+    This is the width of a value whose type the checker gave, which code
+    generation reads off the typed program for every expression it lowers;
+    :func:`wasm_representation` answers the narrower question of which
+    widths a `State` cell or a host signature takes.
+    """
+    t = base_type(t) if t is not None else None
+    if isinstance(t, PrimitiveType):
+        return {"Int": "i64", "Nat": "i64", "Float64": "f64", "Bool": "i32",
+                "Byte": "i32", "String": "i32_pair"}.get(t.name)
+    if isinstance(t, AdtType):
+        if t.name == "Array":
+            return "i32_pair"
+        if t.name == "Future" and len(t.type_args) == 1:
+            return value_width(t.type_args[0])
+        return "i32"
+    if isinstance(t, FunctionType):
+        return "i32"
+    return None
+
+
 def is_pair_represented(ty: Type) -> bool:
     """True if a value of *ty* occupies TWO WASM locals — a `(ptr, len)`
     pair.

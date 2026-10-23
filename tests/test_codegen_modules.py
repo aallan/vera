@@ -23,7 +23,7 @@ from vera.transform import transform
 from vera.monomorphize import resolve_fn_type_alias
 
 from tests.module_fixture_helpers import resolved_module
-from tests.codegen_helpers import _compile, _compile_ok, _run
+from tests.codegen_helpers import _compile_ok, _run
 from tests import pipeline
 
 
@@ -1752,14 +1752,13 @@ public fn main(@Unit -> @Bool)
         """Control: the documented let-bind workaround is unaffected."""
         self._assert_awaited_correctly(self._WORKAROUND_SOURCE)
 
-    def test_unresolvable_closure_return_fails_loud(self) -> None:
-        """FLOOR: an ``apply_fn`` whose closure comes from a nested
-        ``FnCall`` — a shape whose declared return type is not statically
-        resolvable — must fail LOUDLY ([E616], function skipped) rather
-        than silently mis-lower the await to identity.  This is the
-        soundness backstop: the classification arm returns ``False`` for
-        this shape, but the ``apply_fn`` translation already rejects it,
-        so a fused wrapper can never reach an identity await."""
+    def test_await_of_apply_fn_on_a_closure_a_call_returns(self) -> None:
+        """An ``apply_fn`` whose closure a call returns: the awaited value
+        is the ``Future<Result<String, String>>`` the checker typed it, so
+        the await takes the fused-handle check like every other shape
+        (#1525).  Before the typed program's reads the shape was refused
+        loudly (E616, the closure's type not read off its syntax) as the
+        floor against an identity await of a fused wrapper."""
         source = (
             self._FETCHER_ALIAS
             + """
@@ -1783,14 +1782,7 @@ public fn main(@Unit -> @Bool)
 }
 """
         )
-        result = _compile(source)
-        codes = {d.error_code for d in result.diagnostics}
-        assert "E616" in codes, (
-            "the unresolvable-closure apply_fn must be rejected loudly by "
-            "[E616], not silently identity-lowered")
-        # main is dropped, so the fused wrapper is never read as an ADT —
-        # no silent zero-length-Err wrong value escapes.
-        assert "$main" not in result.wat
+        self._assert_awaited_correctly(source)
 
     def test_await_of_apply_fn_generic_alias(self) -> None:
         """`await(apply_fn(@Producer<Future<Result<String, String>>>.0,

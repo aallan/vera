@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 from vera import ast, naming, narrowing, patterns
 from vera.checker.registration import builtin_effect_names
+from vera.checker.resolution import _span_text
 from vera.environment import AdtInfo, Binding, ConstructorInfo, FunctionInfo
 from vera.formatter import format_type_canonical
 from vera.lowering import (
@@ -1608,8 +1609,12 @@ class ControlFlowMixin:
         saved_body_hints = self._handler_body_state_tnames
         self._handler_body_state_tnames = []
 
-        # Check handler clauses
+        # Check handler clauses.  An `Exn` clause's value is a value of the
+        # handler (the clause runs in place of the rest of the body), so its
+        # type joins the body's below (#1794); a `State` clause resumes, and
+        # its body's type is `resume`'s `Unit`.
         first_clauses: dict[str, ast.HandlerClause] = {}
+        clause_types: list[tuple[ast.HandlerClause, Type]] = []
         for clause in expr.clauses:
             # #1433: a handler is a namespace of clauses, one per operation.
             # Two clauses for one operation compiled to a handler that ran
@@ -1681,7 +1686,9 @@ class ControlFlowMixin:
                 effect=PureEffectRow(),
             )
 
-            self._synth_expr(clause.body)
+            clause_type = self._synth_expr(clause.body)
+            if effect_inst.name == "Exn" and clause_type is not None:
+                clause_types.append((clause, clause_type))
             if effect_inst.name == "State":
                 self._check_state_clause_lowerable(clause)
 
@@ -1828,7 +1835,103 @@ class ControlFlowMixin:
         self.env.current_effect_order = saved_effect_order
         self._effect_ops_used = saved_ops
 
-        return body_type
+        return self._join_exn_clauses(expr, body_type, clause_types)
+
+    def _join_exn_clauses(
+        self, expr: ast.HandleExpr, body_type: Type | None,
+        clause_types: list[tuple[ast.HandlerClause, Type]],
+    ) -> Type | None:
+        """The type of an `Exn` handler: the join of its handled body's type
+        and each `throw` clause body's, as an `if` joins its branches
+        (#1794).  A body that always throws is `Never`, so the handler has
+        its clause's type; a clause that re-throws is `Never`, so it has the
+        body's.  A clause whose value no position of the body's type
+        reconciles is refused at the clause (E341): read at the body's type,
+        a clause's `Some(5)` became a `Result`'s `Err(5)`."""
+        joined = body_type
+        for clause, clause_type in clause_types:
+            if joined is None or isinstance(joined, UnknownType):
+                joined = clause_type
+                continue
+            if isinstance(clause_type, UnknownType):
+                continue
+            if types_equal(joined, NEVER):
+                joined = clause_type
+                continue
+            if types_equal(clause_type, NEVER):
+                continue
+            branches = [(expr.body, joined), (clause.body, clause_type)]
+            if is_subtype(clause_type, joined):
+                joined = _signed_join(
+                    self._join(clause_type, joined) or joined, branches)
+                continue
+            if is_subtype(joined, clause_type):
+                joined = _signed_join(
+                    self._join(joined, clause_type) or clause_type, branches)
+                continue
+            merged = self._join(clause_type, joined)
+            if merged is not None:
+                joined = _signed_join(merged, branches)
+                continue
+            self._error(
+                clause.body,
+                f"The '{clause.op_name}' clause's value has type "
+                f"{pretty_inferred_type(clause_type)}, but the handler's "
+                f"value is {pretty_inferred_type(joined)}.",
+                rationale=("An Exn handler's value is its handled body's, "
+                           "or, when the body throws, the clause's: the two "
+                           "are one value, so they have one type, as the "
+                           "branches of an if do."),
+                fix=self._exn_clause_fix(clause, joined),
+                spec_ref='Chapter 7, Section 7.5.2 "Handler Semantics"',
+                error_code="E341",
+            )
+        return joined
+
+    def _exn_clause_fix(self, clause: ast.HandlerClause, ty: Type) -> str:
+        """E341's fix: the clause's value replaced by a value of the
+        handler's type *ty*, where one can be written without context."""
+        wanted = pretty_inferred_type(ty)
+        written = _span_text(self.source, clause.body.span)
+        example = self._example_value(ty)
+        if written is None or example is None:
+            return (f"Make the clause produce a {wanted}, the handled "
+                    f"body's type, or give the handled body the clause's "
+                    f"type.")
+        if written.lstrip().startswith("{"):
+            example = "{ " + example + " }"
+        return (f"Make the clause produce a {wanted}, the handled body's "
+                f"type: replace '{written}' with '{example}', or give the "
+                f"handled body the clause's type.")
+
+    def _example_value(self, ty: Type) -> str | None:
+        """A value of *ty* written with no context, or None: a primitive's
+        zero, `None`, `Ok` of an example, `[]`, a `Tuple` of examples, a
+        data type's nullary constructor."""
+        ty = base_type(ty)
+        if isinstance(ty, PrimitiveType):
+            return {"Int": "0", "Nat": "0", "Bool": "false", "String": '""',
+                    "Float64": "0.0", "Unit": "()"}.get(ty.name)
+        if not isinstance(ty, AdtType):
+            return None
+        if ty.name == "Option":
+            return "None"
+        if ty.name == "Array":
+            return "[]"
+        if ty.name == "Result" and ty.type_args:
+            inner = self._example_value(ty.type_args[0])
+            return None if inner is None else f"Ok({inner})"
+        if ty.name == "Tuple" and ty.type_args:
+            parts = [self._example_value(a) for a in ty.type_args]
+            if any(part is None for part in parts):
+                return None
+            return f"Tuple({', '.join(part for part in parts if part)})"
+        info = self.env.data_types.get(ty.name)
+        if info is not None:
+            for name, ctor in info.constructors.items():
+                if not ctor.field_types:
+                    return name
+        return None
 
     # -----------------------------------------------------------------
     # `vera.lowering` rules 1, 2 and 2b at a handler (E340)

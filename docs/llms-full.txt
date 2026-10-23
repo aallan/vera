@@ -3778,6 +3778,7 @@ Diagnostics carry stable codes, grouped by compiler phase; the list after the ta
 - **E338**: Unknown effect in an effect row
 - **E339**: Handler-clause State operation code generation cannot lower
 - **E340**: Code generation cannot lower this construct
+- **E341**: Exn handler clause value incompatible with the handler's
 - **E500**: Postcondition verified false
 - **E501**: Call-site precondition violation
 - **E502**: @Nat subtraction underflow obligation not discharged

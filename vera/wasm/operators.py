@@ -9,7 +9,7 @@ from typing import ClassVar
 from vera import ast, narrowing, naming
 from vera.lowering import quantifier_predicate_shape_lowerable
 from vera.monomorphize import resolve_type_alias
-from vera.types import TO_STRING_BUILTINS, PrimitiveType
+from vera.types import STRING, TO_STRING_BUILTINS, PrimitiveType
 from vera.skip import AdtEqNotDerivableError, CodegenInvariantError
 from vera.wasm.helpers import WasmSlotEnv, field_layout, state_type_arg
 
@@ -91,7 +91,7 @@ class OperatorsMixin:
             return None  # pragma: no cover
 
         op = expr.op
-        ltype = self._infer_expr_wasm_type(expr.left)
+        ltype = self._expr_width(expr.left)
 
         # #766: a binary op over a `@Byte` operand must lower entirely at i32.
         # `@Byte` is represented as i32 (spec §11 — Byte uses i32 unsigned
@@ -170,7 +170,7 @@ class OperatorsMixin:
 
         # Comparison — choose i32/i64/f64 based on operand types
         if op in self._CMP_OPS:
-            rtype = self._infer_expr_wasm_type(expr.right)
+            rtype = self._expr_width(expr.right)
             if ltype == "f64" or rtype == "f64":
                 return left + right + [self._CMP_OPS_F64[op]]
             # String equality — byte-by-byte comparison
@@ -1429,7 +1429,7 @@ class OperatorsMixin:
         if expr.op == ast.UnaryOp.NOT:
             return operand + ["i32.eqz"]
         if expr.op == ast.UnaryOp.NEG:
-            if self._infer_expr_wasm_type(expr.operand) == "f64":
+            if self._expr_width(expr.operand) == "f64":
                 return operand + ["f64.neg"]
             return ["i64.const 0"] + operand + ["i64.sub"]
         raise CodegenInvariantError(  # pragma: no cover
@@ -1449,11 +1449,11 @@ class OperatorsMixin:
         if cond is None or then is None or else_ is None:
             return None
 
-        # Determine result type from branches — try then first, fall back
-        # to else (handles cases where one branch ends with throw/unreachable)
-        result_type = self._infer_block_result_type(expr.then_branch)
-        if result_type is None and expr.else_branch is not None:
-            result_type = self._infer_block_result_type(expr.else_branch)
+        # The block's result is the width of the type the checker gave the
+        # `if`, the join of its branches: a branch that always throws has
+        # no width, and neither branch need be one code generation could
+        # type on its own (#1525).
+        result_type = self._expr_width(expr)
         if result_type is None:
             # Unit result — no (result) annotation
             return (
@@ -1555,7 +1555,8 @@ class OperatorsMixin:
         for p in expr.parts:
             if isinstance(p, str):
                 if p:  # skip empty string fragments
-                    parts.append(ast.StringLit(value=p, span=expr.span))
+                    parts.append(self._built(
+                        ast.StringLit(value=p, span=expr.span), STRING))
             else:
                 # Determine Vera type for auto-conversion, on its
                 # RESOLVED form (#1347).  `_infer_vera_type` answers with
@@ -1577,9 +1578,9 @@ class OperatorsMixin:
                     # for the part: the verifier records a `@Float64` part's
                     # rendering at the part, and so is its check (#1482).
                     fn_name = self._INTERP_TO_STRING[vera_type]
-                    wrapper = ast.FnCall(
+                    wrapper = self._built(ast.FnCall(
                         name=fn_name, args=(p,), span=expr.span,
-                    )
+                    ), STRING)
                     self._register_rendering_site(wrapper, p)
                     parts.append(wrapper)
                 else:
@@ -1631,17 +1632,17 @@ class OperatorsMixin:
             return self.translate_expr(parts[0], env)
 
         # Left-fold with string_concat: concat(concat(a, b), c) ...
-        result = ast.FnCall(
+        result = self._built(ast.FnCall(
             name="string_concat",
             args=(parts[0], parts[1]),
             span=expr.span,
-        )
+        ), STRING)
         for part in parts[2:]:
-            result = ast.FnCall(
+            result = self._built(ast.FnCall(
                 name="string_concat",
                 args=(result, part),
                 span=expr.span,
-            )
+            ), STRING)
         return self.translate_expr(result, env)
 
     # -----------------------------------------------------------------

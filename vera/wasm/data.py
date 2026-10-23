@@ -409,15 +409,6 @@ class DataMixin:
         arg_instrs_list: list[list[str]] = []
         arg_wasm_types: list[str] = []
         for i, arg in enumerate(expr.args):
-            # #1092/#1212: an int literal the checker coerced into a GENERIC
-            # field instantiated at @Byte is marked BEFORE translation, so
-            # both its lowering and the `arg_wt` inference below see the
-            # field's i32 width — including a literal inside an `if` /
-            # `match` argument, through the ONE branch descent.  See the
-            # #1092 note on `_ctor_field_targets_byte` for why the literal
-            # alone cannot decide this.
-            if self._ctor_field_targets_byte(expr, i):
-                self._mark_byte_write_value(arg, "Byte")
             # R-1412 F3: hand this argument's own component type down, so a
             # nested literal — which the checker records no target for — can
             # guard its components from the enclosing store's knowledge.
@@ -425,7 +416,7 @@ class DataMixin:
                 arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
                 return None
-            arg_wt = self._infer_expr_wasm_type(arg)
+            arg_wt = self._expr_width(arg)
             if arg_wt is None:
                 # Distinguish a genuine zero-size field (handled) from a true
                 # inability to infer the WASM type (still a skip).  `_is_void_expr`
@@ -435,7 +426,7 @@ class DataMixin:
                 # fn), laid out zero-size instead of skipping (#902 completeness:
                 # `_infer_vera_type` returns None for Qualified/Module calls).
                 # #1031: a *transparent* `Future<Unit>` field (`async(())`)
-                # produces no stack value either — `_infer_expr_wasm_type` already
+                # produces no stack value either — `_expr_width` already
                 # returned None by recursing through the Future to its zero-size
                 # Unit payload — but it is not structurally void, so also lay it
                 # out zero-size when its inferred Vera type erases to Unit.  This
@@ -789,7 +780,7 @@ class DataMixin:
         if scr_instrs is None:
             return None
 
-        scr_wasm_type = self._infer_expr_wasm_type(expr.scrutinee)
+        scr_wasm_type = self._expr_width(expr.scrutinee)
         if scr_wasm_type is None:
             raise CodegenSkip(
                 expr.scrutinee,
@@ -895,7 +886,7 @@ class DataMixin:
             instructions.append(f"local.set {scr_local}")
 
         # Infer result type of the match
-        result_type = self._infer_match_result_type(expr)
+        result_type = self._expr_width(expr)
 
         # Compile arms as chained if-else
         arm_instrs = self._compile_match_arms(
@@ -1021,15 +1012,6 @@ class DataMixin:
             parts.append(rendered)
         return f"{te.name}<{', '.join(parts)}>"
 
-    def _infer_match_result_type(
-        self, expr: ast.MatchExpr
-    ) -> str | None:
-        """Infer the WASM result type from the first arm body."""
-        for arm in expr.arms:
-            wt = self._infer_expr_wasm_type(arm.body)
-            if wt is not None:
-                return wt
-        return None
 
     def _compile_match_arms(
         self,
@@ -2034,7 +2016,7 @@ class DataMixin:
         # gives — and the checker then admits an index over it anyway, which
         # is the hole #1315/#1320 describe.  Until that hole closes, codegen
         # refuses here rather than shipping an artifact no runtime can load.
-        coll_wt = self._infer_expr_wasm_type(expr.collection)
+        coll_wt = self._expr_width(expr.collection)
         if coll_wt is not None and coll_wt != "i32_pair":
             raise CodegenSkip(
                 expr,

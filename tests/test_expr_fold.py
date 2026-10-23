@@ -630,7 +630,7 @@ def test_dispatch_refuses_a_table_that_misses_a_class() -> None:
 
 #: Every `fold.dispatch` table the compiler builds, by the name it gives.
 _TABLES = frozenset({
-    "_is_void_expr", "_infer_expr_wasm_type", "_walk_vera_type",
+    "_walk_vera_type",
     "_translate_expr_unscoped", "resolve_literal_string", "resolve_array_len",
     "_synth_expr_impl", "translate_expr",
 })
@@ -785,40 +785,6 @@ def _if(then: ast.Expr, other: ast.Expr) -> ast.IfExpr:
 def _exn_handle(body: ast.Expr) -> ast.HandleExpr:
     return ast.HandleExpr(effect=ast.EffectRef(name="Exn", type_args=(_ty("Int"),)),
                           state=None, clauses=(), body=_tail(body))
-
-
-def test_the_void_table_answers_each_shape() -> None:
-    """`_is_void_expr`: a compound is void when every value position is."""
-    ctx = _wasm()
-    pins = [
-        (ast.UnitLit(), True), (_ONE, False), (ast.AssertExpr(expr=_TRUE), True),
-        (ast.QualifiedCall(qualifier="IO", name="print", args=(ast.StringLit(value="x"),)), True),
-        (ast.QualifiedCall(qualifier="Http", name="get", args=()), False),
-        (_if(ast.UnitLit(), ast.UnitLit()), True), (_if(ast.UnitLit(), _ONE), False),
-        (_match(_arm(ast.UnitLit()), _arm(ast.UnitLit())), True),
-        (_match(_arm(ast.UnitLit()), _arm(_ONE)), False),
-        (_tail(ast.UnitLit()), True), (_exn_handle(ast.UnitLit()), True),
-        (_exn_handle(_ONE), False),
-    ]
-    assert [ctx._is_void_expr(node) for node, _ in pins] == [want for _, want in pins]
-
-
-def test_the_wat_type_table_answers_each_shape() -> None:
-    """`_infer_expr_wasm_type`: the first typed arm or branch of a join."""
-    ctx = _wasm()
-    pins = [
-        (_match(_arm(ast.AssertExpr(expr=_TRUE)), _arm(_HALF)), "f64"),
-        (_if(ast.AssertExpr(expr=_TRUE), _HALF), "f64"),
-        (ast.BinaryExpr(op=ast.BinOp.ADD, left=_HALF, right=_HALF), "f64"),
-        (ast.BinaryExpr(op=ast.BinOp.ADD, left=_ONE, right=_ONE), "i64"),
-        (ast.BinaryExpr(op=ast.BinOp.LT, left=_ONE, right=_ONE), "i32"),
-        (ast.UnaryExpr(op=ast.UnaryOp.NEG, operand=_HALF), "f64"),
-        (ast.UnaryExpr(op=ast.UnaryOp.NOT, operand=_TRUE), "i32"),
-        (ast.StringLit(value="x"), "i32_pair"), (ast.UnitLit(), None),
-        (_exn_handle(_HALF), "f64"), (_tail(_TRUE), "i32"),
-    ]
-    assert [ctx._infer_expr_wasm_type(node) for node, _ in pins] == [
-        want for _, want in pins]
 
 
 def test_the_vera_type_table_answers_each_shape() -> None:
@@ -1520,32 +1486,6 @@ class TestScanExprForHandlersPositions:
         )
         cg._scan_expr_for_handlers(node)
         assert (CellNames(family="Int", base="Int"), "i64") in cg._state_types
-
-
-class TestInferExprWasmTypeArms:
-    """AnonFn → "i32" (closure handle), ModuleCall → None (path
-    field can't be threaded through bare-name FnCall dispatch)."""
-
-    def test_anonfn_returns_i32(self) -> None:
-        ctx = _make_ctx()
-        body = ast.Block(statements=(), expr=ast.UnitLit())
-        node = ast.AnonFn(
-            params=(),
-            return_type=ast.NamedType(name="Unit", type_args=None),
-            effect=ast.PureEffect(),
-            body=body,
-        )
-        assert ctx._infer_expr_wasm_type(node) == "i32"
-
-    def test_modulecall_returns_none(self) -> None:
-        """ModuleCall carries `expr.path` that the bare-name FnCall
-        dispatcher can't consume.  Returning None surfaces the
-        unknown-type cleanly rather than masking with a wrong same-
-        name lookup."""
-        ctx = _make_ctx()
-        node = ast.ModuleCall(
-            path=("some_module",), name="some_fn", args=())
-        assert ctx._infer_expr_wasm_type(node) is None
 
 
 class TestInferVeraTypeArms:

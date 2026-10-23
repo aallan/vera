@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from vera import ast, fold, naming
+from vera.types import NAT, FunctionType, RefinedType, base_type
 from vera.wasm.helpers import (
     WasmSlotEnv,
     _align_up,
@@ -110,17 +111,15 @@ class ClosuresMixin:
         closure_arg = call.args[0]
         value_args = call.args[1:]
 
-        # #632 — early diagnostic for apply_fn closure-arg shapes the
-        # return-type inference dispatcher doesn't recognise.  Pre-fix
-        # the dispatcher's `return "i64"` fallthrough silently chose
-        # the wrong call_indirect sig type for any non-(SlotRef,
-        # AnonFn) closure_arg (e.g. `apply_fn(make_mapper(), 7)` where
-        # `make_mapper` is a FnCall returning a closure), producing a
-        # WASM validation trap with no source-located diagnostic.
-        # Now we record the failure on `_apply_fn_inference_failures`
-        # and bail; the codegen base's harvest emits [E616] before
-        # the function-skip [E602].
-        if not isinstance(closure_arg, (ast.SlotRef, ast.AnonFn)):
+        # The closure's type is the function type the checker gave the
+        # argument, whatever its shape: a closure literal, a slot, a call
+        # returning one, a cell read (#1516).  An argument it did not type
+        # as a function is recorded for the [E616] diagnostic (#632) and
+        # the function is skipped.
+        fn_ty = self._type_of(closure_arg)
+        if isinstance(fn_ty, RefinedType):
+            fn_ty = base_type(fn_ty)
+        if not isinstance(fn_ty, FunctionType):
             self._apply_fn_inference_failures.append(closure_arg)
             return None
 
@@ -137,30 +136,15 @@ class ClosuresMixin:
         # Push closure pointer as first arg (env for lifted function)
         instructions.append(f"local.get {tmp}")
 
-        # #820: recover the closure's declared formal types so an argument
-        # narrowing into a @Nat formal is runtime-guarded at the call boundary
-        # (the call_indirect has no per-formal coercion otherwise).  The formal
-        # types come from the closure's function-type (a `SlotRef` alias chain
-        # or an inline `AnonFn`); `None`/short lists leave an argument unguarded.
-        formal_types = self._closure_arg_param_types(closure_arg)
+        # #820: the closure's formal types, so an argument narrowing into a
+        # @Nat formal is runtime-guarded at the call boundary (the
+        # call_indirect has no per-formal coercion otherwise).
+        formal_types = fn_ty.params
 
         # Translate and push remaining arguments
         arg_wasm_types: list[str] = []
         for i, arg in enumerate(value_args):
-            formal_te = (
-                formal_types[i]
-                if formal_types is not None and i < len(formal_types)
-                else None
-            )
-            # #1212/#1256: the declared formal is a WRITE boundary like any
-            # other, so an int literal (or the literal leaves of an `if` /
-            # `match` argument) flowing into a `@Byte` formal is marked to
-            # lower at i32 BEFORE the argument is translated.  Without it
-            # the signature below would say i32 while the pushed value was
-            # an `i64.const` — the same disagreement one level down.
-            if formal_te is not None:
-                self._mark_byte_write_value(
-                    arg, self._boundary_base(formal_te))
+            formal = formal_types[i] if i < len(formal_types) else None
             arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
                 return None
@@ -169,28 +153,23 @@ class ClosuresMixin:
             # otherwise enter the formal reinterpreted (silently) — guard it at
             # the call_indirect boundary, exactly as the verifier's apply_fn
             # branch now obligates it.
-            if (formal_te is not None
-                    and self._type_expr_base_is_nat(formal_te)
+            if (formal is not None and base_type(formal) == NAT
                     and self._narrows_into_nat(arg)):
                 arg_instrs = self._emit_nat_bind_guard(arg_instrs, at=arg)
             instructions.extend(arg_instrs)
             # The parameter's width in the `call_indirect` signature is the
-            # DECLARED formal's, not the argument's (#1256).  Both sides of
-            # an indirect call must name one type, and the lifted closure's
-            # own signature is built from these same type expressions
-            # (`_compile_lifted_closure`) — deriving the call site's from
-            # the argument instead registered a second, incompatible
-            # `$closure_sig` for a `@Byte` formal fed an int literal, and
-            # `wasm trap: indirect call type mismatch` at every call.  The
-            # RESULT has come from the closure type since #630
-            # (`_infer_apply_fn_return_type` below); this is the parameter
-            # half of the same rule.  Falls back to the argument only when
-            # the formal is unrecoverable — a `SlotRef` whose alias chain
-            # reaches no `FnType`.
+            # formal's, not the argument's (#1256): both sides of an
+            # indirect call must name one type, and the lifted closure's own
+            # signature is built from the same function type
+            # (`_compile_lifted_closure`).  Deriving the call site's from the
+            # argument registered a second, incompatible `$closure_sig` for a
+            # `@Byte` formal fed an int literal, and `wasm trap: indirect
+            # call type mismatch` at every call.  The RESULT comes from the
+            # same type (`_closure_return_width` below).
             # Pair types (String, Array) push two i32 values onto the stack.
             wt = (
-                self._canonical_wasm_type(formal_te) if formal_te is not None
-                else self._infer_expr_wasm_type(arg)
+                self._width_of(formal) if formal is not None
+                else self._expr_width(arg)
             )
             if wt == "i32_pair":
                 arg_wasm_types.extend(["i32", "i32"])
@@ -207,7 +186,7 @@ class ClosuresMixin:
                 # `_named_type_to_wasm`, the one name mapped to `None` —
                 # every other resolution returns a width string, and a
                 # walker that reaches no `NamedType` defaults to `"i64"`.
-                # Through the `_infer_expr_wasm_type` fallback it is the
+                # Through the `_expr_width` fallback it is the
                 # type-checker invariant that the only well-typed
                 # expression it answers `None` for is a Unit-typed one.
                 # Either way an explicit branch documents the intent
@@ -224,7 +203,7 @@ class ClosuresMixin:
         # Build call_indirect type signature
         # Return type: infer from the enclosing function's expected return
         # or from the closure's type if available
-        ret_wt = self._infer_apply_fn_return_type(closure_arg)
+        ret_wt = self._closure_return_width(closure_arg)
         param_parts = " ".join(
             f"(param {wt})" for wt in ["i32"] + arg_wasm_types
         )

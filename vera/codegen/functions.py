@@ -337,7 +337,6 @@ class FunctionCompilationMixin:
         shares (#1256), so a refined `@Byte` alias is a Byte boundary here
         as it is at the `apply_fn` argument and the `throw` payload.
         """
-        ctx._mark_byte_write_value(body, ctx._boundary_base(return_type))
 
     def _lift_closures_or_drop(
         self, ctx: WasmContext, decl: ast.FnDecl,
@@ -485,7 +484,7 @@ class FunctionCompilationMixin:
 
         # Build effect_ops mapping for State<T> and Exn<E> operations.
         # `effect_op_result_wt` records each value-producing op's result WAT
-        # type (its State<T> parameter's WAT type) so `_infer_expr_wasm_type`
+        # type (its State<T> parameter's WAT type) so `_expr_width`
         # can type a bare `get(())` in constructor-arg / match-scrutinee
         # position (#914 A1/A2).  Composite type args (`Tuple<Int, Int>`,
         # `Option<Int>`) are routed through the injective `mangle_type_name`
@@ -680,16 +679,13 @@ class FunctionCompilationMixin:
         # resolve the element type of `f()[i]` when `f` returns
         # `Array<T>`.
         ctx.set_fn_ret_type_exprs(self._fn_ret_type_exprs)
-        # #841: Future<Result<String, String>>-returning fn names, for the
-        # await lowering's directly-awaited-call check (computed once in
-        # core.py).
-        ctx.set_future_ret_fns(self._future_ret_fns)
         # #798: the checker's types by node identity, for the integer-overflow
         # guard's Int/Nat operand classifier (kept in lockstep with the
         # verifier), and #820 its targets, for the narrowing guards'
         # per-component target recovery: one table for every body (#1679).
         ctx.set_expr_semantic_types(self._expr_semantic_types)
         ctx.set_expr_target_types(self._expr_target_types)
+        ctx.set_built_types(self._built_types)
         ctx.set_call_targets(self._typed.call_targets)
         # #747: per-parameter concrete-@Nat flags for the call-site
         # runtime narrowing guard.
@@ -1247,7 +1243,7 @@ class FunctionCompilationMixin:
         # Coerce body result if return type is i32 but body produces i64
         # (e.g. IntLit in a Byte-returning function)
         if ret_wt == "i32":
-            body_result_type = ctx._infer_block_result_type(decl.body)
+            body_result_type = ctx._expr_width(decl.body)
             if body_result_type == "i64":
                 body_instrs.append("i32.wrap_i64")
 

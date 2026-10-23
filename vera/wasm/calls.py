@@ -130,14 +130,6 @@ class CallsMixin:
         # enforced before inlining).  resume(()) is a UnitLit: no value,
         # matching put's void result.
         if call.name == "resume" and self._in_state_clause:
-            if self._state_clause_family_base is not None:
-                # #865/#1212: the resumed value is the op's result at the
-                # call site, so a Byte cell's `resume(1)` — and
-                # `resume(if c then { 1 } else { 2 })`, the very form the
-                # E602 clause skip message recommends — must lower at i32.
-                # Marked before translating; the ONE branch descent.
-                self._mark_state_byte_write(
-                    call.args[0], self._state_clause_family_base)
             return self.translate_expr(call.args[0], env)
 
         # Check if this is an effect operation (e.g. get/put/throw)
@@ -212,14 +204,6 @@ class CallsMixin:
                 if (is_state_put or is_exn_throw) and cell is not None
                 else None
             )
-            if is_state_put or is_exn_throw:
-                # #865/#1212: mark the Byte width BEFORE the argument is
-                # translated, so a literal — or the literal leaves of an
-                # `if` / `match` argument — lowers at the cell's i32 width.
-                # The general entry rather than `_mark_state_byte_write`,
-                # which names the State cell this branch no longer only
-                # serves.
-                self._mark_byte_write_value(call.args[0], base or "")
             for arg in call.args:
                 arg_instrs = self.translate_expr(arg, env)
                 if arg_instrs is None:
@@ -316,25 +300,7 @@ class CallsMixin:
         # at `Nat` calls `pick$Int`, whose flags above are all False.
         forall_vars, generic_formals = self._generic_fn_info.get(
             call.name, ((), ()))
-        # #865: concrete-@Byte formals.  `@Byte` is i32 (spec §11), but an int
-        # literal defaults to `i64.const`; a literal argument to a Byte formal
-        # must lower at i32 so the pushed value matches the callee's parameter
-        # width.  Mirrors the #766 binop-operand coercion at the call-arg
-        # position.  Disjoint from `nat_params`.
-        byte_params = self._fn_byte_params.get(call_target, ())
         for i, arg in enumerate(call.args):
-            if i < len(byte_params) and byte_params[i]:
-                # The bidirectional checker (`_synth_expr(expected=Byte)`)
-                # accepts a 0..255 int literal as a Byte argument (spec §11);
-                # lower it as i32 rather than the default i64 to match the
-                # callee's i32 Byte parameter.  Non-literal Byte arguments (a
-                # Byte slot ref, a Byte-returning call) already yield i32 via
-                # `translate_expr`, so only the literal needs the override.
-                # #1212: the same coercion for a literal inside an `if` /
-                # `match` argument, through the ONE branch descent — the
-                # bare-`IntLit` test this replaced left
-                # `byte_id(if c then { 1 } else { 2 })` invalid WASM.
-                self._mark_byte_write_value(arg, "Byte")
             arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
                 return None
@@ -454,7 +420,8 @@ class CallsMixin:
             # registry incomplete (and so failing this spelling loudly at
             # the declared-row site: `unknown func: $vera.get`).
             return self._translate_call(
-                ast.FnCall(name=call.name, args=call.args, span=call.span),
+                ast.FnCall(name=call.name, args=call.args, span=call.span,
+                           node_id=call.node_id),
                 env, denotes_op=True,
             )
         if (call.qualifier == "Exn" and call.name == "throw"
@@ -468,7 +435,8 @@ class CallsMixin:
             # below rather than synthesizing a bare call that would miss.
             # `denotes_op=True` for the same reason as the State twin.
             return self._translate_call(
-                ast.FnCall(name=call.name, args=call.args, span=call.span),
+                ast.FnCall(name=call.name, args=call.args, span=call.span,
+                           node_id=call.node_id),
                 env, denotes_op=True,
             )
         instructions: list[str] = []
