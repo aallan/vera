@@ -26,7 +26,12 @@ Source (.vera)
 3   Resolve      resolver.py + binding.py     -> transitive module closure,
   |              every name bound to its declaration (the checker reads it)
 4   Type Check   checker/ + naming.py + environment.py -> list[Diagnostic]
-  |              (two passes: register every signature, then check bodies)
+  |              (two passes: register every signature, then check bodies;
+  |              every node typed by its identity, every generic call's
+  |              instantiation recorded)
+4b  Instances    typed.py                     -> the typed program: linked
+  |              once, every instance derived once and judged at the call
+  |              that chooses it, every clone built once and typed
   |
   +--- vera verify ------------->  5  Verify   verifier.py + smt.py (Z3)
   |                                   each obligation proved (Tier 1) or
@@ -36,7 +41,7 @@ Source (.vera)
   |                                   incremental re-verification (LSP)
   v    vera compile / vera run
 6   Compile      codegen/ + wasm/             -> WAT + .wasm
-  |              monomorphize generics / insert contract guards
+  |              emit the typed program's clones / insert contract guards
   +------------------------------>  Browser bundle   (--target browser)
   +------------------------------>  WASI 0.2 component (--target wasi-p2)
   v
@@ -64,7 +69,7 @@ parse_file(path)                # → Lark Tree (from disk)
 parse_to_ast(source, file=None) # → Program AST
 typecheck_file(path)            # → list[Diagnostic]
 verify_file(path)               # → VerifyResult
-compile(program, verify_result) # → CompileResult (WAT + WASM bytes)
+compile(typed, source, file)    # → CompileResult (WAT + WASM bytes); typed = vera.typed.build(...)
 execute(compile_result, ...)    # → run WASM via wasmtime
 ```
 
@@ -97,7 +102,8 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `binding.py` | Resolve | The resolver pass (#1694): every declaration's `DeclId` (its owner — the entry file, the prelude, a module path or the built-in registry — its name, its kind, and for a `where` helper its parents), its link name (bare for the entry file and the prelude, whose names are reserved, `mod$<path>$<name>` for a module, `<parent>$where$<name>` for a helper, a constructor under its type's) and its WASM symbol in the declarations' own namespace (`$:` + link name, which no generated symbol or identifier can spell); the one binding of every call to the declaration it calls, and of every data type, alias and constructor name each namespace writes, which the checker reads; the link step, which names every declaration and occurrence by its link name, giving the program code generation compiles and the verifier verifies; and the spelling back of link names in what a run reports | `DeclId`, `Binding`, `bind_program()`, `link_program()`, `source_twins()` |
 | `module_view.py` | Resolve / Type check / Compile | The ONE derivation of what a namespace sees through its imports (#1489, #1493): the module paths a namespace's imports reach (the walk the #1513 constructor fallback's reach reads too), the resolved modules a namespace reaches with `direct` re-scoped to it, and the data types it imports with every supplier, each read through `merged_import_filters()` — read by the checker's module registration and body checks and by code generation's per-module registrar and ADT membership, so a module's signatures and bodies are measured in the same namespace whichever file is the entry | `reachable_paths()`, `modules_visible_to()`, `imported_data_types()` |
 | `disclosure.py` | Verify | Per-module disclosed-function manifests: each module's own verification emits the set `disclosed_fn_names` derives, keyed by owner path and carrying the `DisclosureSite` the importer's E534 cites, so the #1363 demotion crosses an import (#1399); computed BOTTOM-UP over the import DAG so each module is verified once and nothing nests, and content-addressed on the module's own source + its closure's + the budget, which is what makes an edit to an imported module invalidate it | `ModuleDisclosureIndex`, `DisclosureSite` |
-| `monomorphize.py` | Resolve | Shared generic instantiation discovery + AST substitution (verifier and codegen); each clone's De Bruijn recount renders its binder names under the **origin module's** `AliasEnv`, the one its consumers rebuild the clone's scope with (#1208) | `substitute_type_vars()`, `resolve_type_alias()`, `canonicalize_type_aliases()` |
+| `typed.py` | Check / Verify / Compile | The typed program (#1679): the check's one link of the program, its modules and its prelude; the instances it needs, derived once from the instantiations the checker recorded at each generic call, transitively through each instance's own calls (`derive_checked`), none when a cycle of generic calls grows a type at every turn, each of whose growing calls is refused (E139, `growing_calls`); the judgments that depend on an instantiation, an ability constraint (E613), a `State` cell (E607), an `Exn` payload (E612), a handler's declared state (E533) and a `Map` or `Set` component (E135), made at the call that chooses the type arguments with the chain of instances named (`judge`); and each instance's clone, built once, renumbered and typed by its substitution, with every generic call mapped to the instance it calls (`build`, `TypedProgram`).  `verify` and `compile` take it as their one input | `TypedProgram`, `build()`, `derive_checked()`, `growing_calls()`, `judge()` |
+| `monomorphize.py` | Resolve | The clone builder: AST substitution of a type argument through a generic declaration, the type-name parse and render it spells, the injective clone mangler; each clone's De Bruijn recount renders its binder names under the **origin module's** `AliasEnv`, the one its consumers rebuild the clone's scope with (#1208) | `Monomorphizer`, `substitute_type_vars()`, `resolve_type_alias()`, `canonicalize_type_aliases()` |
 | `regularity.py` | Type check / Verify | The ONE regular-recursion derivation (#1429), read PER TYPE ARGUMENT of a recursive occurrence: each must be a bare parameter of the enclosing declaration, passed along unchanged, or closed with respect to those parameters — an argument that wraps one inside another type constructor grows at every level and is refused; an occurrence of the declaration's own name must also keep its parameters in their original positions.  Asked by TWO consumers that must not disagree — the checker refuses the declaration (`E129`), and the SMT layer declines to MODEL it, because `verify()` is a public entry point whose check-clean precondition a library caller can violate and the datatype-group closure has no fixed point when it is.  A second copy would be free to drift into one consumer refusing what the other models.  Groups are the strongly connected components of one field-reference graph, so `RegularityIndex` answers for a whole module from a single pass; `recursive_group()` is the straightforward reachability walk it is differentially tested against | `RegularityIndex`, `is_regular()`, `irregular_occurrence()`, `recursive_group()` |
 | `smt.py` | Verify | Z3 translation layer; reads each callee's contract in the naming env of the module that declared it (`_callee_contract_scope`, #1208), the callee itself found by its link name | `SmtContext`, `SlotEnv`, `CalleeScope` |
 | `verifier.py` | Verify | Contract verification of the linked program (`ContractVerifier.link`, #1694): every callee is the declaration its call is bound to, looked up by its link name in one registry; an imported callee's contract and an imported generic's clone are rendered and quoted in the module that **declared** them (#1208, #1220); what a run reports quotes the program as written (`vera.binding.source_twins`) | `verify()` |
@@ -150,7 +156,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `  core.py` | | CodeGenerator class, orchestration, ability op rewriting (Pass 1.6), skip propagation to callers (#1100) | |
 | `  modules.py` | | Cross-module registration + call detection (C7e), per-module alias + source scopes (#1111/#1186) — `_module_alias_scope` swaps the alias maps *and* the `AliasEnv` every codegen rendering goes through as one pair (#1208) — over the linked program, where every module declaration is already named by its link name (#1694) | |
 | `  registration.py` | | Pass 1 forward declarations, ADT layout | |
-| `  monomorphize.py` | | Generic instantiation, type inference, ability constraint checking (Pass 1.5) | |
+| `  monomorphize.py` | | Emits the typed program's clones in a fixed order and hoists each clone's `where` helpers (Pass 1.5) | |
 | `  functions.py` | | Function body compilation, GC prologue/epilogue (Pass 2); the exception boundary an export declaring `Exn<T>` is called through, which names an escaping exception `uncaught_exception` (`_exn_boundary`, #1479) | |
 | `  closures.py` | | Closure lifting, GC instrumentation | |
 | `  contracts.py` | | Runtime pre/postconditions, old state snapshots, decreases termination guard (entry check-and-set, per-function chain state, ADT rank helpers, self-tail site checks); the refinement boundary guard derives its binder from `naming.refinement_binder_parts` and layers the erased-base skip and the nested-base E618 on top.  Also the ONE derivation of what that guard layer lowers — `_tuple_component_guard_sites` decomposes a boundary tuple for the emitter, the return-epilogue gate and the host-import pre-scan alike, and `_signature_refinement_predicates` enumerates every predicate a signature will be guarded by (#1210) | |
@@ -470,7 +476,7 @@ The spec defines three verification tiers. The compiler implements Tiers 1 and 3
 | **2** | Extended: quantifiers, function call reasoning, array access | Z3 with hints/timeouts | Not implemented |
 | **3** | Everything else | Runtime assertion fallback | Warning emitted |
 
-When a contract or function body contains constructs that can't be translated to Z3, the verifier **does not error** — it classifies the contract as Tier 3 and emits a warning. So an untranslatable construct never fails verification on its own; a program can still be refused for something verification must know first, such as a generic call's type argument (`E622`, see Design Pattern 4).
+When a contract or function body contains constructs that can't be translated to Z3, the verifier **does not error** — it classifies the contract as Tier 3 and emits a warning. So an untranslatable construct never fails verification on its own.
 
 ### Verification condition generation
 
@@ -575,13 +581,13 @@ Error at line 3, column 3:
 
 ### Compilation pipeline
 
-`compile()` in `codegen/api.py` takes a `Program` AST and optional `VerifyResult`, and produces a `CompileResult` containing WAT text, WASM bytes, export names, and diagnostics.
+`compile()` in `codegen/api.py` takes the typed program a clean check built (`vera.typed.build(...)`), the source text and the file name, and produces a `CompileResult` containing WAT text, WASM bytes, export names, and diagnostics.
 
 ```
-Program AST → CodeGenerator._register_functions()  (pass 1)
-            → CodeGenerator._compile_functions()   (pass 2)
-            → WAT module text
-            → wasmtime.wat2wasm() → WASM bytes
+TypedProgram → CodeGenerator._register_functions()  (pass 1)
+             → CodeGenerator._compile_functions()   (pass 2)
+             → WAT module text
+             → wasmtime.wat2wasm() → WASM bytes
 ```
 
 The two-pass architecture mirrors the type checker: pass 1 registers all function signatures so forward references and mutual recursion work, pass 2 compiles bodies.
@@ -669,7 +675,7 @@ Memory is managed automatically. The allocator and garbage collector are impleme
 **Allocator** (`$alloc` in `assembly.py`): Bump allocator with free-list overlay. Each allocation prepends a 4-byte header (`mark_bit | size << 1`). Allocation tries free-list first-fit, then bump, triggers GC on OOM, falls back to `memory.grow`.
 
 **Garbage collector** (`$gc_collect` in `assembly.py`): Conservative mark-sweep:
-1. **Clear** — walk the heap along the allocation chain from `$gc_heap_start` to `$heap_ptr`, clearing every mark bit and recording each object's base address in a transient bitmap, one bit per 8-byte granule, laid out just above `$heap_ptr` (#1382)
+1. **Clear** — walk the heap along the allocation chain from `$gc_heap_start` to `$heap_ptr`, clearing every mark bit and recording each object's base address in a transient bitmap, one bit per 8-byte granule, laid out just above `$heap_ptr` (#1382), then walk the free list and clear the bit of each block on it (`$gc_clear_base`), so the mark phase never marks a free block, which keeps its old payload behind the free-list link (#1718)
 2. **Mark** — seed the worklist from the shadow stack, then drain it: pop an object, skip it if it is marked, mark it, and scan every i32-aligned word of its payload, the scan bounded by `$heap_ptr` (#515). A word is pushed when it lies in the heap, is aligned as a payload address and is recorded in the bitmap as an object base, so the scan needs no type descriptors and the mark store writes only through a real object header (#1382). The worklist's 16384 entries bound the collector's memory, not the heap it marks (#1510): a push that finds the worklist full is dropped and the object being scanned recorded as dirty, the lowest dirty object with the word its push was dropped at and the highest held in the globals `$gc_rs_lo`, `$gc_rs_off` and `$gc_rs_hi`. Once the worklist empties, that range is walked along the allocation chain and each marked object in it scanned again, until a drain drops nothing. A walk that fills the worklist stops there, and the object and word it stopped at become the resume point, held in `$gc_rs_stop` and `$gc_rs_stop_off`: a walk resumes the object it stopped in at that word. A drop recorded below that object lowers the range's bottom but not the resume point, and `$gc_rs_below` holds the highest such drop. Below the resume object only those drops are dirty, so a walk scans from the range's bottom up to `$gc_rs_below` and jumps from there to the resume object; a walk that reaches its range's end clears all three. The seed cannot overflow the worklist: it pushes at most one entry per shadow-stack root onto an empty worklist no smaller than the shadow stack, and `_assemble_module` refuses a layout where the worklist is smaller
 3. **Wrapper table** — only with host-backed values: release the host handle of each unmarked wrapper and compact the table (#573)
 4. **Sweep** — walk the heap again, linking unmarked objects into the free list
@@ -736,7 +742,7 @@ The type checker and verifier never stop at the first error. All diagnostics are
 
 ### 4. Tiered verification with graceful degradation
 
-`SmtContext.translate_expr()` returns `None` for any construct it can't handle. The verifier interprets `None` as "Tier 3: warn and assume runtime check". This means an untranslatable CONTRACT never fails verification — a predicate Z3 cannot prove gets a warning and a runtime guard, not an error. It is a statement about the SMT translation, not a blanket guarantee that verification accepts every type-checking program: a program can still be refused for something verification must know before it can tier anything, and `E622` is that shape — a generic call whose type argument no walker could name has no determined specialisation to verify, so it is refused rather than tiered against a guess. As the SMT translation grows (Tier 2, quantifiers, etc.), constructs graduate from Tier 3 to Tier 1.
+`SmtContext.translate_expr()` returns `None` for any construct it can't handle. The verifier interprets `None` as "Tier 3: warn and assume runtime check". This means an untranslatable CONTRACT never fails verification — a predicate Z3 cannot prove gets a warning and a runtime guard, not an error. It is a statement about the SMT translation, not a blanket guarantee that verification accepts every type-checking program. As the SMT translation grows (Tier 2, quantifiers, etc.), constructs graduate from Tier 3 to Tier 1.
 
 The same pattern applies to code generation: `WasmContext.translate_expr()` returns `None` for unsupported expressions, and the code generator skips those functions with a warning. As codegen support grows, more functions become compilable.
 
@@ -750,7 +756,9 @@ The type system includes open effect rows (`row_var` field in `ConcreteEffectRow
 
 ### 7. De Bruijn indices and monomorphization
 
-De Bruijn slot references and generic monomorphization interact non-trivially. When type-variable substitution merges formerly separate slot namespaces — distinct vars collapsing to one concrete type (`A→Int, B→Int`), or a var's namespace merging with an already-concrete one (a body `let @Int` next to `@A.0` at `A=Int`) — De Bruijn indices must be recomputed. The `_compute_scoped_reindex` walker in `monomorphize.py` (#769) resolves every `SlotRef` against the full binding scope at its reference site (parameters, `let`/destructuring bindings, match-arm binders, closure parameters, handler clauses — with contracts as a params-only scope, and every binder name rendered by `naming.slot_name` against the clone's **origin module** `AliasEnv`, narrowed by the `forall` variables in scope on each side of the recount) and computes its index in the collapsed namespace, so `@Array<Option<A>>.0` correctly becomes `@Array<Option<Int>>.1` even when the shift depends on bindings the parameter list alone cannot see. Without this, the monomorphized clone silently reads the wrong slot — a correctness bug that compiles, verifies, and runs but produces wrong results (both consumers share the substitution, so verify and codegen agree on the wrong answer).
+Monomorphization runs once, after a clean check (`typed.py`, #1679).  The checker records every generic call's type arguments by the call's identity, each the type its arguments fix (a position an argument's type leaves open is a hole the arguments beside it fill, and the phantom `Bool` where nothing does); the instances a program needs are derived from those records once, transitively through each instance's own generic calls, and judged there (an ability constraint, a cell, a payload, a handler's declared state, a `Map` or `Set` component), at the call that chooses the type arguments; each clone is built once and typed by its substitution, and the verifier and code generation read the same clones.  A generic call keeps its generic's name in the AST: the typed program maps each call node to the instance it calls (`TypedProgram.call_targets`), because the verifier verifies a clone under its generic's name, whose recursion, `decreases` measure, aggregation and messages are the generic's.  The program is linked once, from the binding the check bound and the prelude declarations it typed, so the nodes the checker typed are the nodes both consumers read.  Every node of every clone has an identity of its own (`ast.Node.node_id`, renumbered per clone), so a table keyed by it tells a clone's node from its template's and from another clone's, where a span cannot.
+
+De Bruijn slot references and generic monomorphization interact non-trivially. When type-variable substitution merges formerly separate slot namespaces — distinct vars collapsing to one concrete type (`A→Int, B→Int`), or a var's namespace merging with an already-concrete one (a body `let @Int` next to `@A.0` at `A=Int`) — De Bruijn indices must be recomputed. The `_compute_scoped_reindex` walker in `monomorphize.py` (#769) resolves every `SlotRef` against the full binding scope at its reference site (parameters, `let`/destructuring bindings, match-arm binders, closure parameters, handler clauses — with contracts as a params-only scope, and every binder name rendered by `naming.slot_name` against the clone's **origin module** `AliasEnv`, narrowed by the `forall` variables in scope on each side of the recount) and computes its index in the collapsed namespace, so `@Array<Option<A>>.0` correctly becomes `@Array<Option<Int>>.1` even when the shift depends on bindings the parameter list alone cannot see. Without this, the monomorphized clone silently reads the wrong slot — a correctness bug that compiles, verifies, and runs but produces wrong results (the clone is built once and both consumers read it, so verify and codegen agree on the wrong answer).
 
 The WASM type inference system (`inference.py`) must also handle all expression types that can appear as arguments to builtins. Missing cases (e.g. `IndexExpr`, `IfExpr`, `apply_fn` calls) return `None`, which cascades to E602 (unsupported expressions) or incorrect type inference. When adding new builtins or inference paths, check `_infer_vera_type`, `_infer_fncall_vera_type`, and `_infer_expr_wasm_type` for completeness.
 

@@ -11,6 +11,7 @@ from vera.codegen import (
     execute,
 )
 
+from tests import pipeline
 from tests.codegen_helpers import (
     _compile_ok,
     _run,
@@ -293,18 +294,11 @@ public fn main(@Unit -> @Unit)
   IO.print("ok")
 }
 """
-        # Type-check + compile both succeed (no error diagnostics);
-        # but `main` is skipped from exports and an E602 "unsupported
-        # expressions" warning is emitted.
-        result = _compile_ok(src)
-        assert "main" not in result.exports, (
-            f"main should be skipped (Map<Nat, Array<Nat>> unsupported); "
-            f"exports were: {result.exports}"
-        )
-        warnings = [d for d in result.diagnostics if d.severity == "warning"]
-        assert any("unsupported" in d.description.lower() for d in warnings), (
-            f"Expected an 'unsupported' warning; warnings: {warnings}"
-        )
+        # The check refuses the map's Array value where the type is
+        # written (E135, #1680), so no binary is built, mis-tagged or not.
+        checked = pipeline.check(src)
+        assert [d.error_code for d in checked.errors] == ["E135"], [
+            d.format() for d in checked.diagnostics]
 
 
 class TestUrlParseJoinRoundTrip475:

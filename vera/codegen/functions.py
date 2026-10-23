@@ -7,7 +7,6 @@ parameter allocation, body translation, and function assembly.
 from __future__ import annotations
 
 import functools
-from typing import TYPE_CHECKING, cast
 
 from vera import ast
 from vera.binding import SYMBOL_PREFIX, source_name, symbol
@@ -24,8 +23,6 @@ from vera.wasm.helpers import (
     is_gc_pointer_base,
 )
 
-if TYPE_CHECKING:
-    from vera.types import SpanTypeTable
 
 
 #: The most bytes of a thrown `String` an escaped exception's message
@@ -448,9 +445,6 @@ class FunctionCompilationMixin:
     def _compile_fn(
         self, decl: ast.FnDecl, *, export: bool = True,
         imported: bool = False,
-        module_tables: (
-            tuple[SpanTypeTable | None, SpanTypeTable | None] | None
-        ) = None,
         where_scope: frozenset[str] = frozenset(),
     ) -> str | None:
         """Compile a single function to WAT.
@@ -464,44 +458,11 @@ class FunctionCompilationMixin:
         denoting a user declaration.  See ``_scoped_fn_names``.
 
         *imported* is True when *decl* is an imported module body compiled into
-        this flat WASM module (Pass 2.5).  The checker's resolved- /
-        target-type side-tables are keyed by span alone (``(line, col, end_line,
-        end_col)`` — no file identity), so the MAIN-file tables
-        (``self._expr_semantic_types`` / ``self._expr_target_types``) must NOT be
-        consulted for an imported body: an imported expression whose span
-        coincides with a main-file entry would pick up the WRONG type and, at a
-        tuple/array component site, emit a SPURIOUS guard (confirmed
-        cross-module collision, #986 review).
-
-        *module_tables* (#987) is the imported module's OWN
-        ``(expr_semantic_types, expr_target_types)`` pair, keyed by that module's
-        node spans — so looking *decl*'s spans up in it is correct, not a
-        cross-file collision.  When supplied (the normal path from Pass 2.5
-        via ``CheckArtifacts.module_artifacts``), the imported body gets the same
-        per-component target-type recovery a same-file body does, so its
-        array-element / tuple-construction narrowing guard fires through the
-        import door.  When absent (a caller that threaded no module
-        artifacts), we fall back to suppression (both tables ``None``) — the
-        pre-#987 behaviour: those component sites stay unguarded, never
-        false-guarded.  Fn-type-based recovery (closure formal / return types) is
-        NOT span-keyed and is unaffected either way.
+        this flat WASM module (Pass 2.5).  Its nodes are typed in the one
+        table keyed by node identity (#1679), which tells a module's node
+        from the entry's whatever their spans, so an imported body reads it
+        as a same-file body does.
         """
-        # #987: an imported body's span-keyed tables are ITS module's own (or
-        # None when none were threaded) — never the main-file tables, whose
-        # colliding span would mis-key an imported operand.  Bound here so the
-        # two ``ctx.set_expr_*`` calls below stay readable.  Cast to the
-        # ``object``-valued shape the ``WasmContext`` setters expect: a ``Type``
-        # dict is not a ``dict[..., object]`` under mypy's dict invariance, but
-        # the values genuinely are ``Type`` instances (which ARE objects), so
-        # the widening is sound.
-        imported_semantic = cast(
-            "dict[tuple[int, int, int, int], object] | None",
-            module_tables[0] if module_tables is not None else None,
-        )
-        imported_target = cast(
-            "dict[tuple[int, int, int, int], object] | None",
-            module_tables[1] if module_tables is not None else None,
-        )
         # #851 — diagnostics emitted while compiling a prelude-injected
         # function (or a mono clone of one — the mangler's `base$Types`
         # names strip back to a prelude base) must resolve their spans
@@ -723,21 +684,13 @@ class FunctionCompilationMixin:
         # await lowering's directly-awaited-call check (computed once in
         # core.py).
         ctx.set_future_ret_fns(self._future_ret_fns)
-        # #798: resolved-type side-table for the integer-overflow guard's
-        # Int/Nat operand classifier (kept in lockstep with the verifier).
-        # #987: for an imported body this is ITS module's table (correct spans)
-        # or None — never the main-file table, whose colliding span would
-        # mis-classify an imported operand (see the *imported* note above).
-        ctx.set_expr_semantic_types(
-            imported_semantic if imported else self._expr_semantic_types)
-        # #820: target-type side-table for the narrowing guards'
-        # per-component target-type recovery (tuple component / array
-        # element), the codegen dual of ``_target_type_of``.
-        # #987: an imported body uses its own module's table (so its guard
-        # fires through the import door) or None; the main-file table would
-        # false-guard a colliding span.
-        ctx.set_expr_target_types(
-            imported_target if imported else self._expr_target_types)
+        # #798: the checker's types by node identity, for the integer-overflow
+        # guard's Int/Nat operand classifier (kept in lockstep with the
+        # verifier), and #820 its targets, for the narrowing guards'
+        # per-component target recovery: one table for every body (#1679).
+        ctx.set_expr_semantic_types(self._expr_semantic_types)
+        ctx.set_expr_target_types(self._expr_target_types)
+        ctx.set_call_targets(self._typed.call_targets)
         # #747: per-parameter concrete-@Nat flags for the call-site
         # runtime narrowing guard.
         ctx.set_fn_nat_params(self._fn_nat_params)

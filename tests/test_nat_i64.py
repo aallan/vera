@@ -61,6 +61,7 @@ pytestmark = pytest.mark.matrix(
         "vera/codegen/memory.py",
         "vera/codegen/modules.py",
         "vera/codegen/registration.py",
+        "vera/monomorphize.py",
         "vera/narrowing.py",
         "vera/obligations/core.py",
         "vera/reconcile.py",
@@ -68,6 +69,7 @@ pytestmark = pytest.mark.matrix(
         "vera/smt.py",
         "vera/tester.py",
         "vera/trap_registry.py",
+        "vera/typed.py",
         "vera/types.py",
         "vera/verifier.py",
         "vera/wasm/calls.py",
@@ -689,9 +691,11 @@ _CONTEXTS: dict[str, _Context] = {
             "@Int -> @Int",
             "match NB(LIT) {\n    NB(@Nat) -> nat_to_int(@Nat.0)\n  }"),
         "nat", reads_value=True),
+    # The call's clone is at `Nat` (#1679): the literal enters a `Nat`
+    # formal and the result is one, so nothing is read back unchecked.
     "generic argument at an expected @Nat": _Context(
         _ID + _fn("@Int -> @Int", "let @Nat = id(LIT);\n  nat_to_int(@Nat.0)"),
-        "nat", reads_value=True),
+        "nat"),
     "generic argument with no expected type": _Context(
         _ID + _fn("@Int -> @Int", "if id(LIT) == 0 then { 0 } else { 1 }"),
         "none", run=lambda v: int(v != 0)),
@@ -704,10 +708,12 @@ _CONTEXTS: dict[str, _Context] = {
        for site, source in _GENERIC_AT_NAT.items()},
     "generic argument piped at a @Nat return": _Context(
         _PICK + _fn("@Int -> @Nat", "LIT |> pick(5)"), "nat"),
+    # The call's clone is at `Nat` (#1679), the type the result is bound or
+    # stored at: nothing is read back unchecked.
     "generic call bound by a let @Nat": _Context(
         _PICK + _fn("@Int -> @Int",
                     "let @Nat = pick(LIT, 5);\n  nat_to_int(@Nat.0)"),
-        "nat", reads_value=True),
+        "nat"),
     "generic call as a @Nat argument": _Context(
         _PICK + _G_NAT + _fn("@Int -> @Int", "nat_to_int(g(pick(LIT, 5)))"),
         "nat", reads_value=True),
@@ -721,7 +727,7 @@ _CONTEXTS: dict[str, _Context] = {
         _PICK + _fn("@Int -> @Int",
                     "let @Array<Nat> = [pick(LIT, 5)];\n"
                     "  array_length(@Array<Nat>.0)"),
-        "nat", reads_value=True, run=lambda v: 1),
+        "nat", run=lambda v: 1),
     "generic call as a @Nat tuple component": _Context(
         _PICK + _fn("@Int -> @Int",
                     "let Tuple<@Nat, @Bool> = Tuple(pick(LIT, 5), true);\n"
@@ -1019,6 +1025,33 @@ _INSTANTIATIONS: dict[str, _Instantiation] = {
     **{f"{name}'s argument {index}": inst
        for (name, index), inst in _BUILTIN_AT_NAT.items()},
 }
+
+
+#: A sub-pattern's bind of a type-parameter field, by how the scrutinee's
+#: type spells the parameter: exactly `Nat` takes no sign guard (the field's
+#: value was checked where it was stored, #1679), and any other spelling,
+#: an alias or a refinement of `Nat` included, keeps it: a dead guard costs
+#: a check, a dropped live one a wrong value.  (declarations, scrutinee
+#: type, guarded)
+_FIELD_SPELLINGS: dict[str, tuple[str, str, bool]] = {
+    "exactly Nat": ("", "Option<Nat>", False),
+    "an alias of Nat": ("type Age = Nat;\n\n", "Option<Age>", True),
+    "a refinement of Nat": (
+        "type Small = { @Nat | @Nat.0 < 10 };\n\n", "Option<Small>", True),
+}
+
+
+@pytest.mark.parametrize("spelling", list(_FIELD_SPELLINGS))
+def test_a_field_bind_is_guarded_unless_its_type_is_spelled_nat(
+        spelling: str) -> None:
+    decls, scrutinee, guarded = _FIELD_SPELLINGS[spelling]
+    source = decls + _fn(
+        f"@{scrutinee} -> @Int",
+        f"match @{scrutinee}.0 {{\n    Some(@Nat) -> nat_to_int(@Nat.0),\n"
+        "    None -> 0\n  }")
+    checks = [c for c in pipeline.compile(source).checks()
+              if c.kind == "nat_guard"]
+    assert bool(checks) == guarded, checks
 
 
 def test_every_builtin_type_variable_formal_is_instantiated_at_nat() -> None:

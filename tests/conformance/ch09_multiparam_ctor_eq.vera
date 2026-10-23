@@ -9,8 +9,9 @@
 -- WITHOUT annotation: `eq2(MkErr(5), MkOk("x"))` fixes `B` from the first
 -- argument and `A` from the second, so the fully-determined `Res<String, Int>`
 -- type-checks, monomorphizes, and runs by structural comparison.
--- The under-determined form (`id1(MkErr(5))`, leaving A free) is correctly
--- rejected with the clearer E619 (see tests/test_codegen_structural_eq.py).
+-- The under-determined form (`id1(MkErr(5))`, leaving A free) instantiates
+-- the free parameter at the phantom `Bool`, which derives Eq too (see
+-- tests/test_codegen_structural_eq.py).
 -- ================================================================
 private data Res<A, B> {
   MkOk(A),

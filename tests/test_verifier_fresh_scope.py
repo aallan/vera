@@ -965,18 +965,16 @@ public fn go(@Int -> @Int)
 """
 
     def test_divergent_generic_annotation_is_loud(self) -> None:
-        """`(@Nat = 3)` on `State<T>` at T=Int: check-green (deferred),
-        verify-loud with the failing instantiation named."""
-        errs = _verify_err(
-            self._GENERIC_LIE.format(ann="@Nat", init="3"),
-            "instantiated at")
-        assert any(e.error_code == "E533" for e in errs)
-        # The CRAFTED diagnostic must survive the per-instance
-        # aggregation — a split obligation/diagnostic anchor buried it
-        # under the synthesized fallback with generic assert/requires
-        # guidance (round-3 review); the cell-naming text is the proof
-        # the crafted message is the one surfacing.
-        assert any("cell type is State<" in e.description for e in errs)
+        """`(@Nat = 3)` on `State<T>` at T=Int: refused at the call that
+        instantiates it (E533 at check, #1679), the instantiation and the
+        cell it diverges from named; it was check-green and verify-loud."""
+        checked = vera_pipeline.check(
+            self._GENERIC_LIE.format(ann="@Nat", init="3"))
+        errs = [d for d in checked.errors if d.error_code == "E533"]
+        assert errs, [d.format() for d in checked.diagnostics]
+        assert any("at T = Int" in e.description
+                   and "its cell is State<Int>" in e.description
+                   for e in errs), [e.description for e in errs]
 
     def test_honest_generic_annotation_is_clean(self) -> None:
         """The honest `@T` spelling matches at every instantiation — no

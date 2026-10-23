@@ -648,6 +648,13 @@ class ModulesMixin:
         # #1558: the path the program reaches this module by, which its own
         # `module` declaration has to match for the path to name it.
         checker._resolved_as = mod.path
+        # #1679: the module's nodes are typed into this check's tables,
+        # which are keyed by node identity, so one table answers for every
+        # file's nodes without a collision.
+        checker.node_semantic_types = self.node_semantic_types
+        checker.node_target_types = self.node_target_types
+        checker.instantiations = self.instantiations
+        checker.handler_cells = self.handler_cells
         checker.check_program(mod.program)
         seen = {
             (e.error_code, str(e.location.file), e.location.line,

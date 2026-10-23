@@ -50,7 +50,7 @@ from __future__ import annotations
 
 
 from tests.checker_helpers import _error_codes as _errors
-from tests.codegen_helpers import _compile, _run
+from tests.codegen_helpers import _run
 from tests import pipeline
 from vera.verifier import VerifyResult
 
@@ -155,8 +155,8 @@ public fn main(@Unit -> @Int)
     def test_constrained_generic_instantiated_with_adt_rejected(self) -> None:
         # SOUNDNESS: deferring the TypeVar in the generic body must NOT open a
         # hole — instantiating a `forall<T where Ord<T>>` with a non-Ord ADT is
-        # caught by the monomorphizer's constraint gate (E613) at compile time,
-        # so it can never silently miscompile.
+        # refused at the call that chooses it (E613 at check, #1679), so it
+        # can never silently miscompile.
         src = """
 private data Box { MkBox(Int) }
 
@@ -176,9 +176,7 @@ public fn main(@Unit -> @Int)
   cmp_sign(MkBox(1), MkBox(2))
 }
 """
-        result = _compile(src)
-        codes = [d.error_code for d in result.diagnostics
-                 if d.severity == "error"]
+        codes = _errors(src)
         assert "E613" in codes, f"Expected E613, got: {codes}"
 
     def test_rejection_names_the_type(self) -> None:
@@ -434,29 +432,26 @@ public fn main(@Unit -> @Int)
 { cmp2(false, true) }
 """
 
-    def test_bool_through_generic_check_passes(self) -> None:
-        # The deferral is intentional: a bare `T` under `Ord<T>` is NOT rejected
-        # at check time — the constraint gate is trusted to catch a bad concrete
-        # instantiation.  So `vera check` must still pass (exit 0 / no errors).
-        assert _errors(self._CMP2) == []
+    def test_bool_through_generic_is_refused_at_the_call(self) -> None:
+        # The deferral in the body is intentional: a bare `T` under `Ord<T>` is
+        # not rejected where it is compared.  The instantiation at `Bool` is
+        # refused at the call that chooses it (E613, #1679), the one place the
+        # program says `Bool`.
+        assert _errors(self._CMP2) == ["E613"]
 
     def test_bool_through_generic_compile_rejects_e613(self) -> None:
         # RED on base: compiled clean and `execute` returned a silent `1`
         # (`i32.lt_s` decided `false < true`).  With `"Bool"` gone from
         # `_ORD_TYPES`, the `Ord<Bool>` instantiation now trips the constraint
         # gate → a clean E613, NO binary, NO silent numeric result.
-        result = _compile(self._CMP2)
-        codes = [d.error_code for d in result.diagnostics
-                 if d.severity == "error"]
+        codes = _errors(self._CMP2)
         assert "E613" in codes, f"Expected E613, got: {codes}"
 
     def test_bool_through_generic_reversed_also_rejected(self) -> None:
         # The mirror instantiation `cmp2(true, false)` returned a silent `-1` on
         # the pre-fix compiler; it must reject on the same E613, not run.
         src = self._CMP2.replace("cmp2(false, true)", "cmp2(true, false)")
-        result = _compile(src)
-        codes = [d.error_code for d in result.diagnostics
-                 if d.severity == "error"]
+        codes = _errors(src)
         assert "E613" in codes, f"Expected E613, got: {codes}"
 
     def test_bool_through_generic_verify_no_traceback(self) -> None:
@@ -479,9 +474,10 @@ public fn main(@Unit -> @Bool)
   effects(pure)
 { cmp2(false, false) }
 """
-        # Must not raise a Python traceback; a clean VerifyResult is enough.
-        result = _verify(src)
-        assert result is not None
+        # Refused at check, at each call that chooses `Bool`, the ensures'
+        # and the body's (E613, #1679), so verification, which reads only a
+        # checked program, never meets the Bool ordering.
+        assert _errors(src) == ["E613", "E613"]
 
     def test_int_through_generic_positive_control(self) -> None:
         # POSITIVE CONTROL: the SAME generic instantiated at `Int` — a genuinely

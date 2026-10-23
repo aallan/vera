@@ -6,6 +6,10 @@ branches that are not covered by the main test_verifier_*.py suite.
 
 from __future__ import annotations
 
+from vera.checker.core import typecheck_with_artifacts
+
+from vera.typed import build as build_typed
+
 from pathlib import Path
 
 
@@ -591,7 +595,7 @@ private fn f(@Int -> @Int)
         tc_diags = typecheck(prog, src, resolved_modules=[mod])
         tc_errors = [d for d in tc_diags if d.severity == "error"]
         assert tc_errors == [], [d.description for d in tc_errors]
-        result = verify(prog, src, resolved_modules=[mod])
+        result = verify(pipeline.typed(src, modules=[mod]), src)
         errors = [d for d in result.diagnostics if d.severity == "error"]
         assert errors == [], [e.description for e in errors]
 
@@ -1111,8 +1115,8 @@ private fn f(@Int -> @Int)
   effects(pure)
 { @Int.0 }
 """)
-        typecheck(prog, "")
-        result = verify(prog, "")  # empty source
+        _diags, arts = typecheck_with_artifacts(prog, "")
+        result = verify(build_typed(prog, [], arts), "")  # empty source
         errors = [d for d in result.diagnostics if d.severity == "error"]
         assert len(errors) > 0
         # source_line should be empty string
@@ -1500,7 +1504,7 @@ private fn f(@{ @Int | @Int.0 > 0 } -> @Int)
         indirectly via ContractVerifier when a fn-type param exists."""
         from vera.verifier import ContractVerifier
         from vera.ast import FnType, NamedType
-        cv = ContractVerifier()
+        cv = ContractVerifier(pipeline.typed())
         fn_te = FnType(
             params=(NamedType(name="Int", type_args=None, span=None),),
             return_type=NamedType(name="Int", type_args=None, span=None),

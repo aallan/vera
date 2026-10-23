@@ -57,11 +57,9 @@ from vera.checker.core import TypeChecker
 from vera.codegen.assembly import AssemblyMixin
 from vera.environment import TypeEnv
 from vera.errors import Diagnostic, VeraError
-from vera.monomorphize import MonoContext, Monomorphizer
+from vera.monomorphize import Monomorphizer
 from vera.parser import parse_to_ast
-from vera.resolver import ModuleResolver
 from vera.skip import CodegenInvariantError
-from vera.verifier import verify
 from tests import pipeline
 from tests.module_fixture_helpers import build_multi_module, module_value
 
@@ -237,6 +235,16 @@ NOT_NAMESPACES: dict[str, str] = {
     "TypeChecker.expr_types": "keyed by source span, the LSP's side table",
     "TypeChecker.expr_semantic_types": "keyed by source span, for the verifier",
     "TypeChecker.expr_target_types": "keyed by source span, for codegen",
+    "TypeChecker.node_semantic_types": (
+        "keyed by node identity, for the typed program (#1679)"),
+    "TypeChecker.node_target_types": (
+        "keyed by node identity, for the typed program (#1679)"),
+    "TypeChecker.instantiations": (
+        "keyed by a generic call's node identity, for the typed program "
+        "(#1679)"),
+    "TypeChecker.handler_cells": (
+        "keyed by a handler's node identity, the cell an instance's "
+        "judgments read (#1679)"),
     "TypeChecker._literal_soft_results": (
         "keyed by a call's source span, the parts of its result its literals "
         "decided (#1541)"),
@@ -1361,12 +1369,7 @@ def test_a_renamed_binder_takes_its_constraint_with_it() -> None:
     program = parse_to_ast(cell.files["main.vera"])
     parent = next(tld.decl for tld in program.declarations
                   if isinstance(tld.decl, ast.FnDecl) and tld.decl.name == "f")
-    ctx = MonoContext(
-        generic_decls={}, ctor_to_adt={}, ctor_tp_indices={},
-        adt_tp_counts={}, type_aliases={}, type_alias_params={},
-        fn_ret_types={},
-    )
-    clone = Monomorphizer(ctx).monomorphize_fn(parent, ("Int",))
+    clone = Monomorphizer().monomorphize_fn(parent, ("Int",))
     (helper,) = clone.where_fns or ()
     assert helper.forall_vars is not None
     assert helper.forall_vars != ("Int",), helper.forall_vars
@@ -1573,12 +1576,7 @@ def test_the_verifier_obligates_a_call_the_first_list_admits(
                      + _main("f(0) + g(1)"),
     }
     assert _check(tmp_path, files) == []
-    main_path = tmp_path / "main.vera"
-    program = parse_to_ast(files["main.vera"])
-    resolved = ModuleResolver(_root=tmp_path).resolve_imports(
-        program, main_path)
-    result = verify(program, files["main.vera"], file=str(main_path),
-                    resolved_modules=resolved)
+    result = pipeline.verify(pipeline.write_tree(tmp_path, files)).result
     codes = [d.error_code for d in result.diagnostics
              if d.severity == "error"]
     assert codes == ["E501"], codes

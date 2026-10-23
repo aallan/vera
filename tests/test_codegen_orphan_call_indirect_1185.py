@@ -41,14 +41,17 @@ from vera.errors import Diagnostic
 
 from tests.codegen_helpers import _assert_call_indirect_iff_table, _compile
 from tests.codegen_helpers import _assert_no_raw_wat_error
+from tests.codegen_helpers import skip_map_inserts  # noqa: F401  (the fixture)
+
+pytestmark = pytest.mark.usefixtures("skip_map_inserts")
 
 # The E602-skippable construct used throughout: an Array-valued Map is an
 # unsupported host-import shape.  Any E602-skippable construct reproduces
 # the class; this one matches the #1100 fixtures so the two files fail for
 # the same root cause.
 _BAD_BODY = """\
-    let @Map<String, Array<Int>> = map_insert(map_new(), "a", [1, 2]);
-    map_size(@Map<String, Array<Int>>.0) + @Int.0\
+    let @Map<String, Int> = map_insert(map_new(), "a", 1);
+    map_size(@Map<String, Int>.0) + @Int.0\
 """
 
 # Repro A — the `apply_fn` carrier.  `make_bad`'s closure is the module's

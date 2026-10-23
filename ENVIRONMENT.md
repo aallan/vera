@@ -145,11 +145,11 @@ A diagnostic knob for the collector's own soundness, not for a program's.
 VERA_GC_CHECK_MARKS=1 VERA_EAGER_GC=1 vera run program.vera
 ```
 
-Set to `1`, `true`, `yes` or `on` — the same spellings [`VERA_EAGER_GC`](#vera_eager_gc) accepts, because both read the one predicate in `vera/envflags.py` — to make the mark phase assert, before every mark store, that the address it is about to write is a real object body.
+Set to `1`, `true`, `yes` or `on` — the same spellings [`VERA_EAGER_GC`](#vera_eager_gc) accepts, because both read the one predicate in `vera/envflags.py` — to make the mark phase assert, before every mark store, that the address it is about to write is a real object body, and not a block on the free list.
 
 The mark phase is conservative: it classifies a word as a heap pointer from two cheap tests (heap range, and `(val - $gc_heap_start) & 7 == 4`). Those are sound for the *reads* a conservative collector makes — a false positive costs retention and nothing more — but marking also **writes**, ORing the mark bit into the word four bytes below the candidate. A false positive that lands inside a live object therefore corrupts it ([#1382](https://github.com/aallan/vera/issues/1382)).
 
-Candidates are validated against an object-base bitmap that Phase 1 fills as it walks, so the store cannot escape its object. This knob is the independent check on that: it re-derives the answer by walking the heap from `$gc_heap_start` along the allocator's own `align_up(size + 4, 8)` chain and traps when the target is not a body address it reached. Deliberately independent of the bitmap — dropped into a collector without the bitmap it fires, which is what makes it a check rather than a restatement of the fix.
+Candidates are validated against an object-base bitmap that Phase 1 fills as it walks, less the blocks on the free list, so the store cannot escape its object and never marks a free one ([#1718](https://github.com/aallan/vera/issues/1718)). This knob is the independent check on that: it re-derives the answer by walking the heap from `$gc_heap_start` along the allocator's own `align_up(size + 4, 8)` chain and the free list from `$gc_free_head`, and traps when the target is not a body address it reached or is a block on the free list. Deliberately independent of the bitmap — dropped into a collector without the bitmap it fires, which is what makes it a check rather than a restatement of the fix.
 
 O(heap) per mark store on top of whatever `VERA_EAGER_GC` already costs, so it is slower still than that knob. Pair the two when a wrong answer smells like heap corruption; use neither in production.
 

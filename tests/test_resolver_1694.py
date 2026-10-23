@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.codegen_helpers import skip_map_inserts  # noqa: F401  (the fixture)
 from tests import pipeline
 from vera import ast as vast
 from vera.binding import (
@@ -305,13 +306,14 @@ def test_repro_1548_hash_through_an_importer_alias(tmp_path: Path) -> None:
 # =====================================================================
 # #1549: a user function's E602 at a line inside a prelude generic's
 # span.  The diagnostic is the function's, whatever line it is on.  The
-# E602 itself is #1679's (a `Map` keyed by an `Array`).
+# E602 is injected (`skip_map_inserts`): the `Map` keyed by an `Array` it
+# was written with is refused at check now (E135, #1680).
 # =====================================================================
 
 _BAD = (
     "private fn bad(@Unit -> @Int)\n" + _CONTRACT + "{\n"
-    "  let @Map<Array<Int>, Int> = map_insert(map_new(), [1], 5);\n"
-    "  match map_get(@Map<Array<Int>, Int>.0, [1]) {\n"
+    '  let @Map<String, Int> = map_insert(map_new(), "a", 5);\n'
+    '  match map_get(@Map<String, Int>.0, "a") {\n'
     "    Some(@Int) -> @Int.0,\n"
     "    None -> 0\n"
     "  }\n}\n")
@@ -320,6 +322,7 @@ _UNWRAP_MAIN = _fn("main(@Unit -> @Int)",
                    visibility="public")
 
 
+@pytest.mark.usefixtures("skip_map_inserts")
 @pytest.mark.parametrize("gap", [
     pytest.param(1, id="inside-span"),
     pytest.param(16, id="outside-span"),

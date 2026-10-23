@@ -457,7 +457,11 @@ _READ_CHAR = _IO_MAIN + (
 #: `python -m vera.cli` by the smoke's driver and held to the in-process CLI
 #: the same way: the exit status, and every byte of both streams.  Each cell
 #: also asserts the exit it is named for, so a program that stopped reaching
-#: it would fail here rather than smoke a different exit.
+#: it would fail here rather than smoke a different exit.  A module whose
+#: every export code generation drops has no program the check accepts (the
+#: Array-valued map it was spelled with is E135 at check, #1680), so its
+#: exit is held in process, where the drop is injected
+#: (`tests/test_dropped_entry_1183_1186.py`, `tests/test_pipeline.py`).
 CLI_EXIT_SHAPES: dict[str, _ExitShape] = {
     "trap": _ExitShape(
         _IO_MAIN + '  IO.print("before → x");\n  IO.stderr("note é");\n'
@@ -479,15 +483,6 @@ CLI_EXIT_SHAPES: dict[str, _ExitShape] = {
         "  ensures(@Int.result > @Int.0)\n  effects(pure)\n{\n  @Int.0\n}\n",
         (("verify",), ("verify", "--json")), 1, "E500",
         "a postcondition the verifier refutes, with its counterexample"),
-    "zero-export": _ExitShape(
-        "private fn tally(-> @Int) requires(true) ensures(true) effects(pure) {\n"
-        '  let @Map<String, Array<Int>> = map_insert(map_new(), "a", [1, 2]);\n'
-        "  map_size(@Map<String, Array<Int>>.0)\n}\n\n"
-        "public fn main(-> @Int) requires(true) ensures(true) effects(pure) {\n"
-        "  tally()\n}\n",
-        (("run",), ("compile", "--json")), 1, "E602",
-        "a module whose every export code generation dropped: `vera run`'s "
-        "refusal of the dropped entry, and `vera compile`'s of the module"),
     "read-char-empty": _ExitShape(
         _READ_CHAR, (("run",),), 0, "ERR:EOF",
         "`IO.read_char` on an empty stdin, which asks stdin for its "

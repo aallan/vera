@@ -28,6 +28,13 @@ from tests.codegen_helpers import _compile, _compile_ok, _run
 
 
 def _errors(source: str) -> list[str]:
+    """The error codes the toolchain refuses *source* with: the check's,
+    where the check refuses it (an ability constraint an instance does not
+    satisfy is refused at the call that chooses it, #1679), else code
+    generation's."""
+    checked = pipeline.check(source)
+    if not checked.ok:
+        return [d.error_code for d in checked.errors]
     result = _compile(source)
     return [d.error_code for d in result.diagnostics if d.severity == "error"]
 
@@ -766,14 +773,12 @@ public fn main(@Unit -> @Bool) requires(true) ensures(true) effects(pure)
 #   data Res<A, B> { MkOk(A), MkErr(B) }
 #
 # `MkErr(5)` recovers only `B = Int`; the `MkOk(A)` constructor is ABSENT from
-# the argument, so `A` is genuinely undetermined at the call site.  Structural
-# Eq derivation checks ALL constructors' fields — `MkOk(A)` included — so
-# `Res<A, Int>` is Eq-derivable iff `A` is Eq, which cannot be decided from
-# `MkErr(5)` alone.  Rejecting is therefore CORRECT (never unsound), but the
-# old diagnostic (E613 "Res does not satisfy Eq") is misleading: the real
-# problem is an under-determined type argument.  The fix reports the clearer
-# E619 ("cannot infer type argument") for exactly this shape, while leaving the
-# fully-determined and non-Eq cases unchanged (accept / E613 respectively).
+# the argument, so `A` is not fixed at the call site.  A type argument no
+# argument fixes is instantiated at the phantom type (`Bool`, #1679): no value
+# of it exists, so the clone's code is the same whatever it is named, and
+# `Res<Bool, Int>` derives Eq.  The fully-determined and non-Eq cases are
+# unchanged (accept / E613 respectively).  E619, the "under-determined type
+# argument" refusal this shape had, retired with it.
 #
 # See tests/conformance/ch09_multiparam_ctor_eq.vera for the accept-side
 # end-to-end program (annotated `Res<Int, Int>` derives + compares by value).
@@ -786,26 +791,16 @@ _ID1 = (
 )
 
 
-def test_898_sparse_multiparam_ctor_underdetermined_is_e619_not_e613() -> None:
-    """#898: `id1(MkErr(5))` on `Res<A, B>` leaves `A` undetermined.
-
-    Rejection is correct (derivability depends on the free `A`), but the
-    diagnostic must be the clearer E619 (under-determined type argument),
-    NOT the misleading E613 ("Res does not satisfy Eq").
-    """
+def test_898_sparse_multiparam_ctor_underdetermined_takes_the_phantom() -> None:
+    """#898: `id1(MkErr(5))` on `Res<A, B>` leaves `A` unfixed, so the
+    instance is `Res<Bool, Int>`, which derives Eq, and the program runs."""
     source = (
         _RES_ADT + _ID1
         + "public fn main(@Unit -> @Bool)\n"
         "  requires(true) ensures(true) effects(pure) { id1(MkErr(5)) }\n"
     )
-    codes = _errors(source)
-    assert "E619" in codes, (
-        f"under-determined type arg must be E619, got {codes}"
-    )
-    assert "E613" not in codes, (
-        f"misleading E613 must be replaced by E619, got {codes}"
-    )
-    assert "E699" not in codes, f"invariant leak on rejection: {codes}"
+    assert _errors(source) == []
+    assert _run(source, fn="main") == 1
 
 
 def test_898_fully_determined_multiparam_ctor_accepts_and_runs() -> None:
@@ -877,11 +872,9 @@ def test_898_soundness_gate_nonEq_multiparam_stays_e613() -> None:
 # per-parameter conflict stays a clear E205; a fully-determined NON-Eq type
 # stays E613.
 #
-# Round 2, Task 2: E619 fires only when the under-determined type WOULD derive
-# once its free parameter is annotated (all KNOWN components are Eq).  A known
-# non-Eq component — recovered (`Res<A, Array<Int>>`) or structural
-# (`W<A,B>{ K(Array<A>, B) }`) — is the accurate E613 instead, since no
-# annotation of the free parameter can make it Eq.
+# Round 2, Task 2: a known non-Eq component — recovered
+# (`Res<A, Array<Int>>`) or structural (`W<A,B>{ K(Array<A>, B) }`) — is
+# E613, since no type of the free parameter can make it Eq.
 # ---------------------------------------------------------------------------
 
 _EQ2 = (
@@ -977,76 +970,6 @@ def test_898r2_e619_accuracy_structural_noneq_field_is_e613() -> None:
         f"a structural non-Eq field is E613, not E619, got {codes}"
     )
     assert "E699" not in codes, f"invariant leak: {codes}"
-
-
-def test_898r2_e619_accuracy_all_known_eq_free_param_stays_e619() -> None:
-    """Task 2: genuinely under-determined with all-Eq known components → E619.
-
-    `id1(MkErr(5))` recovers `B = Int` (Eq) and leaves `A` free.  Annotating
-    `A` to an Eq type makes `Res<A, Int>` derive, so the clearer E619 is
-    correct — this must NOT regress to E613 under the accuracy fix.
-    """
-    source = (
-        _RES_ADT + _ID1
-        + "public fn main(@Unit -> @Bool)\n"
-        "  requires(true) ensures(true) effects(pure)\n"
-        "{ id1(MkErr(5)) }\n"
-    )
-    codes = _errors(source)
-    assert "E619" in codes, f"all-known-Eq under-determined must be E619, got {codes}"
-    assert "E613" not in codes, f"must stay E619 not E613, got {codes}"
-    assert "E699" not in codes, f"invariant leak: {codes}"
-
-
-def test_898r2_e619_message_has_no_sentinel_and_valid_fix() -> None:
-    """The E619 message and fix must not leak the internal `?` sentinel, and the
-    fix must be a syntactically valid Vera annotation (#898 round-3 review).
-
-    For `id1(MkErr(5))` the free parameter `A` used to render as the reserved
-    `_FREE_TYPE_PARAM = "?"` sentinel — `Res<?, Int>` — and the fix suggested
-    `let @Res<?, Int><...> = ...;`, which is not valid Vera (double type-args,
-    `?`, `<...>` placeholder).  The free slot now renders as its declared
-    parameter name (`Res<A, Int>`) and the fix is a concrete, compilable
-    annotation binding the free parameter to an Eq type (`let @Res<Int, Int>
-    = ...;`).
-    """
-    source = (
-        _RES_ADT + _ID1
-        + "public fn main(@Unit -> @Bool)\n"
-        "  requires(true) ensures(true) effects(pure)\n"
-        "{ id1(MkErr(5)) }\n"
-    )
-    result = _compile(source)
-    e619 = [d for d in result.diagnostics if d.error_code == "E619"]
-    assert e619, "expected an E619 diagnostic"
-    d = e619[0]
-    # No sentinel leak anywhere in the user-facing text.
-    for field in (d.description, d.fix):
-        assert "?" not in field, f"sentinel leaked in E619 text: {field!r}"
-        assert "<...>" not in field, f"placeholder syntax in E619 text: {field!r}"
-    # The description names the ADT with its declared parameter names, not `?`.
-    assert "Res<A, Int>" in d.description, (
-        f"free slot must render as its parameter name, got: {d.description!r}"
-    )
-    # The fix's suggested annotation must actually compile: extract the
-    # `let @<Type> = ...;` type and check the whole program with that binding
-    # derives (a valid, actionable fix — not `Res<?, Int><...>`).
-    import re
-    m = re.search(r"let @(Res<[^=]*?>) =", d.fix)
-    assert m, f"fix must contain a concrete `let @Res<...> =` binding, got: {d.fix!r}"
-    fixed_type = m.group(1).strip()
-    probe = (
-        _RES_ADT + _ID1
-        + "public fn main(@Unit -> @Bool)\n"
-        "  requires(true) ensures(true) effects(pure) {\n"
-        f"  let @{fixed_type} = MkErr(5);\n"
-        f"  id1(@{fixed_type}.0)\n"
-        "}\n"
-    )
-    assert _errors(probe) == [], (
-        f"the E619 fix's annotation ({fixed_type}) must compile + derive, "
-        f"got {_errors(probe)}"
-    )
 
 
 # ---------------------------------------------------------------------------

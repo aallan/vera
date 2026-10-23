@@ -4,6 +4,8 @@ Split from tests/test_verifier.py (#839). Shared helpers live in tests/verifier_
 """
 from __future__ import annotations
 
+from tests import pipeline
+
 
 from tests.verifier_helpers import (
     _MK,
@@ -72,22 +74,16 @@ private fn caller(@Nat, @Nat -> @Nat)
         # the body's nat_sub obligation is discharged statically for dec<Bool>
         assert any(o.kind == "nat_sub" and o.status == "verified"
                    for o in result.obligations)
-        # ... and NOTHING in the body falls to a runtime check.  The one
-        # Tier-3 obligation left is the CALL SITE's precondition, which is a
-        # different question and is #732's remaining half: `dec` is generic, so
-        # its contract has no Z3 sort until the call is monomorphized, and the
-        # summary the caller would need cannot be built here.  It demotes
-        # loudly (E532) rather than vanishing (#1236) — the call is in fact
-        # safe (the swapped arguments compensate for the De Bruijn order), so
-        # this is the conservative direction, not a caught violation.
-        # The code is pinned, not just the kind and status: "demotes loudly
-        # (E532)" is the claim above, and a demotion that drifted to another
-        # code — or lost its code entirely, which is the #1236 shape — would
-        # otherwise leave this green (PR #1283 review).
+        # ... and NOTHING falls to a runtime check.  The call site's
+        # precondition is checked against `dec`'s clone at the call's
+        # instantiation, `dec<Bool>` (#1468), as a monomorphic callee's is,
+        # and proves: the swapped arguments compensate for the De Bruijn
+        # order.  It demoted (E532) while a generic callee's contract was
+        # read uninstantiated.
         assert [
             (o.kind, o.status, o.error_code) for o in result.obligations
             if o.status in ("tier3", "timeout")
-        ] == [("call_pre", "tier3", "E532")], [
+        ] == [], [
             (o.fn_name, o.kind, o.status, o.error_code)
             for o in result.obligations
         ]
@@ -337,7 +333,7 @@ private fn use2(@Int, @Bool -> @Int)
         from vera.obligations.core import ProofObligation
         from vera.verifier import ContractVerifier
 
-        v = ContractVerifier(source="", file="t.vera")
+        v = ContractVerifier(pipeline.typed(), source="", file="t.vera")
         decl = SimpleNamespace(name="g")
         ob_t3 = ProofObligation(
             fn_name="g", kind="ensures", expr_text="p", status="tier3",

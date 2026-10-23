@@ -523,9 +523,12 @@ def test_a_prologue_check_is_also_its_own_requires_record() -> None:
     assert any(r.kind == "requires" for r, c in result.pairs if c is check)
 
 
+#: `first_len`'s precondition is one the verifier cannot state, so the call
+#: in `g`'s `requires` demotes (E532): a generic callee's decidable one is
+#: checked at its clone (#1468), and here it would be refuted.
 _CALL_IN_A_PRECONDITION = """\
 private forall<T> fn first_len(@Array<T> -> @Nat)
-  requires(array_length(@Array<T>.0) > 0)
+  requires(array_length(array_range(0, array_length(@Array<T>.0))) > 0)
   ensures(true)
   effects(pure)
 {
