@@ -1678,7 +1678,7 @@ def reconcile_file(
     run = ReconcileRun(path=p)
     try:
         source = read_source(p)
-        program = transform(parse(source, file=str(p)))
+        program = transform(parse(source, file=str(p)))  # pragma: no mutate — the label reaches only a refusal's location, and reconcile_file records its description
     except VeraError as exc:
         # A source that is not UTF-8 (E024), or a parse or transform
         # refusal, is the program's own: a stop before the join, as `vera

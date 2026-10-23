@@ -387,14 +387,15 @@ def test_repro_1789_ast_json_prints_a_refusal_in_the_envelope(
 ) -> None:
     """Issue #1789's program, an invalid escape: `vera ast --json` exited 1
     with an empty stdout and the E009 as text on stderr at 506d2161; it
-    prints the envelope `vera compile --json` prints for it."""
+    prints the envelope `vera compile --json` prints for it, byte for
+    byte."""
     path = tmp_path / "escape.vera"
     path.write_bytes(_ISSUE_1728.replace("\\u{D800}", "a\\qb").encode("utf-8"))
     run = _vera("ast", "--json", str(path))
     envelope = _envelope(run)
     assert run.returncode == 1 and envelope["ok"] is False, run
     assert _codes(envelope) == ["E009"], envelope
-    assert envelope == _envelope(_vera("compile", "--json", str(path)))
+    assert run.stdout == _vera("compile", "--json", str(path)).stdout
 
 
 def test_repro_a_source_on_stdin_that_is_not_utf8_is_e024() -> None:

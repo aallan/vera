@@ -812,7 +812,7 @@ def source_not_utf8(
     them: lines with universal newlines, and characters, not bytes, along
     the line, since every byte before *offset* decodes.
     """
-    before = raw[:offset].decode("utf-8")
+    before = raw[:offset].decode()
     lines = before.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     line, column = len(lines), len(lines[-1]) + 1
     description = (
@@ -829,12 +829,12 @@ def source_not_utf8(
         )
         source_line, encoding = "", mark
     else:
-        start = max(raw.rfind(b"\n", 0, offset),
-                    raw.rfind(b"\r", 0, offset)) + 1
+        start = max(raw[:offset].rfind(b"\n"),
+                    raw[:offset].rfind(b"\r")) + 1
         ends = [i for i in (raw.find(b"\n", offset), raw.find(b"\r", offset))
                 if i != -1]
-        source_line = raw[start:min(ends, default=len(raw))].decode(
-            "utf-8", "replace")
+        source_line = raw[start:min([*ends, len(raw)])].decode(
+            errors="replace")
         encoding = "ISO-8859-1"
     convert = f"iconv -f {encoding} -t UTF-8"
     note = "" if mark is not None else (
