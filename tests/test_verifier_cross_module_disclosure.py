@@ -24,6 +24,8 @@ split one should say.
 
 from __future__ import annotations
 
+from vera.typed import build as build_typed
+
 import sys
 from pathlib import Path
 
@@ -703,9 +705,7 @@ def test_1399_warm_equals_cold_across_the_boundary(tmp_path: Path) -> None:
         program, source, file=str(entry), resolved_modules=resolved,
     )
     cold = verify(
-        program, source, file=str(entry), resolved_modules=resolved,
-        expr_types=artifacts.expr_semantic_types,
-        expr_target_types=artifacts.expr_target_types,
+        build_typed(program, resolved, artifacts), source, file=str(entry),
     )
     warm = VerificationSession().verify_source(source, file=str(entry))
 
@@ -799,9 +799,7 @@ def test_1399_imported_generic_clone_is_named_by_its_module(
     )
     assert not [d for d in resolver.errors + diags if d.severity == "error"]
     result = verify(
-        program, source, file=str(entry), resolved_modules=resolved,
-        expr_types=artifacts.expr_semantic_types,
-        expr_target_types=artifacts.expr_target_types,
+        build_typed(program, resolved, artifacts), source, file=str(entry),
     )
     clone_key = DeclId(("glib",), "gen").link_name
     names = {o.fn_name for o in result.obligations}
@@ -829,7 +827,8 @@ def test_1399_a_module_call_resolves_to_the_clone_key(tmp_path: Path) -> None:
     from vera.binding import DeclId
     from vera.verifier import ContractVerifier
 
-    verifier = ContractVerifier(source=_GENERIC_MAIN, file="gmain.vera")
+    verifier = ContractVerifier(
+        pipeline.typed(), source=_GENERIC_MAIN, file="gmain.vera")
     clone_key = DeclId(("glib",), "gen").link_name
     call = ast.FnCall(name=clone_key, args=())
 
@@ -965,9 +964,7 @@ def test_1399_the_shared_base_of_a_diamond_is_verified_once(
             program, source, file=str(entry), resolved_modules=resolved,
         )
         verify(
-            program, source, file=str(entry), resolved_modules=resolved,
-            expr_types=artifacts.expr_semantic_types,
-            expr_target_types=artifacts.expr_target_types,
+            build_typed(program, resolved, artifacts), source, file=str(entry),
         )
     finally:
         disclosure._verify_for_disclosure = original
@@ -1206,14 +1203,11 @@ def _checked(entry: Path):
 
 
 def _verify_checked(entry: Path, source, program, resolved, artifacts):
+    from vera.typed import build
     from vera.verifier import verify
 
     return verify(
-        program, source, file=str(entry), resolved_modules=resolved,
-        expr_types=artifacts.expr_semantic_types,
-        expr_target_types=artifacts.expr_target_types,
-        module_artifacts=artifacts.module_artifacts,
-    )
+        build(program, resolved, artifacts), source, file=str(entry))
 
 
 def _cold_verify_path(entry: Path):
@@ -1333,10 +1327,7 @@ def test_1399_a_deep_chain_verifies_each_module_once(tmp_path: Path) -> None:
         checker_core.TypeChecker.check_program = counting_check
         try:
             result = verify(
-                program, source, file=str(entry), resolved_modules=resolved,
-                expr_types=artifacts.expr_semantic_types,
-                expr_target_types=artifacts.expr_target_types,
-                module_artifacts=artifacts.module_artifacts,
+                build_typed(program, resolved, artifacts), source, file=str(entry),
             )
         finally:
             checker_core.TypeChecker.check_program = orig_check

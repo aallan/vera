@@ -235,12 +235,9 @@ class VerificationSession:
                 program, file)
 
         from vera.checker import typecheck_with_artifacts
-        # #1509: each module's own tables too, which instantiation
-        # discovery reads for that module's bodies — as a cold `verify()`
-        # and every compiling CLI path do.
+        from vera.typed import build
         check_diags_raw, artifacts = typecheck_with_artifacts(
             program, source, file=file, resolved_modules=resolved_modules,
-            collect_module_artifacts=True,
         )
         check_diags = resolver_errors + check_diags_raw
         if any(d.severity == "error" for d in check_diags):
@@ -250,15 +247,14 @@ class VerificationSession:
             )
 
         smt = self._acquire_smt()
+        # #1679: the typed program the check derives, the verifier's one
+        # input, as a cold `verify()` and every CLI path build it.
         verifier = ContractVerifier(
+            build(program, resolved_modules or [], artifacts),
             source=source,
             file=file,
             timeout_ms=self._timeout_ms,
-            resolved_modules=resolved_modules,
             shared_smt=smt,
-            expr_types=artifacts.expr_semantic_types,
-            expr_target_types=artifacts.expr_target_types,
-            module_artifacts=artifacts.module_artifacts,
         )
         # #1694: the program as the verifier verifies it, every declaration
         # under its link name; the slices below are its declarations.

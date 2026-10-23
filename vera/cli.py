@@ -68,6 +68,7 @@ from vera.errors import (
 from vera.introspect import builtins_payload, effects_payload, errors_payload
 from vera.parser import decode_source, parse, read_source
 from vera.transform import transform
+from vera.typed import build as build_typed
 
 if TYPE_CHECKING:
     from vera.ast import Program
@@ -625,7 +626,6 @@ def cmd_verify(path: str, as_json: bool = False, quiet: bool = False,
         # `vera compile` / `run` hand them to code generation.
         check_diags, artifacts = typecheck_with_artifacts(
             ast, source, file=str(p), resolved_modules=resolved,
-            collect_module_artifacts=True,
         )
         type_diags = resolver.errors + check_diags
         type_errors = [d for d in type_diags if d.severity == "error"]
@@ -642,12 +642,8 @@ def cmd_verify(path: str, as_json: bool = False, quiet: bool = False,
             return 1
 
         # Then verify contracts
-        result = verify(ast, source, file=str(p),
-                        timeout_ms=timeout_ms,
-                        resolved_modules=resolved,
-                        expr_types=artifacts.expr_semantic_types,
-                        expr_target_types=artifacts.expr_target_types,
-                        module_artifacts=artifacts.module_artifacts)
+        typed = build_typed(ast, resolved, artifacts)
+        result = verify(typed, source, file=str(p), timeout_ms=timeout_ms)
 
         errors = [d for d in result.diagnostics if d.severity == "error"]
         warnings = [d for d in result.diagnostics if d.severity == "warning"]
@@ -660,8 +656,7 @@ def cmd_verify(path: str, as_json: bool = False, quiet: bool = False,
             # The compile's own diagnostics are this run's too: a function
             # code generation drops (E602) is one whose records have no code
             # to be about, and a refused compile leaves nothing to join.
-            reconciled = reconcile_verified(
-                ast, source, str(p), resolved, artifacts, result)
+            reconciled = reconcile_verified(typed, source, str(p), result)
             errors += [d for d in reconciled.diagnostics
                        if d.severity == "error"]
             all_warnings += [d for d in reconciled.diagnostics
@@ -917,7 +912,6 @@ def cmd_compile(
         # lockstep with the verifier.
         check_diags, artifacts = typecheck_with_artifacts(
             ast, source, file=str(p), resolved_modules=resolved,
-            collect_module_artifacts=True,
         )
         type_diags = resolver.errors + check_diags
         type_errors = [d for d in type_diags if d.severity == "error"]
@@ -941,10 +935,7 @@ def cmd_compile(
 
         # Compile (C7e: pass resolved modules for cross-module codegen)
         result = codegen_compile(
-            ast, source=source, file=str(p), resolved_modules=resolved,
-            expr_semantic_types=artifacts.expr_semantic_types,
-            expr_target_types=artifacts.expr_target_types,
-            module_artifacts=artifacts.module_artifacts,
+            build_typed(ast, resolved, artifacts), source=source, file=str(p),
         )
 
         errors = [d for d in result.diagnostics if d.severity == "error"]
@@ -1120,7 +1111,6 @@ def cmd_serve(
 
         check_diags, artifacts = typecheck_with_artifacts(
             ast, source, file=str(p), resolved_modules=resolved,
-            collect_module_artifacts=True,
         )
         type_diags = resolver.errors + check_diags
         type_errors = [d for d in type_diags if d.severity == "error"]
@@ -1130,10 +1120,7 @@ def cmd_serve(
             return 1
 
         result = codegen_compile(
-            ast, source=source, file=str(p), resolved_modules=resolved,
-            expr_semantic_types=artifacts.expr_semantic_types,
-            expr_target_types=artifacts.expr_target_types,
-            module_artifacts=artifacts.module_artifacts,
+            build_typed(ast, resolved, artifacts), source=source, file=str(p),
         )
         errors = [d for d in result.diagnostics if d.severity == "error"]
         if errors:  # pragma: no cover — codegen errors after typecheck pass
@@ -1250,7 +1237,6 @@ def cmd_run(
         # the verifier.
         check_diags, artifacts = typecheck_with_artifacts(
             ast, source, file=str(p), resolved_modules=resolved,
-            collect_module_artifacts=True,
         )
         type_diags = resolver.errors + check_diags
         type_errors = [d for d in type_diags if d.severity == "error"]
@@ -1266,10 +1252,7 @@ def cmd_run(
 
         # Compile (C7e: pass resolved modules for cross-module codegen)
         result = codegen_compile(
-            ast, source=source, file=str(p), resolved_modules=resolved,
-            expr_semantic_types=artifacts.expr_semantic_types,
-            expr_target_types=artifacts.expr_target_types,
-            module_artifacts=artifacts.module_artifacts,
+            build_typed(ast, resolved, artifacts), source=source, file=str(p),
         )
 
         if not result.ok:  # pragma: no cover — codegen errors after typecheck pass
@@ -1818,7 +1801,6 @@ def cmd_test(
         # verifier had classified tier3-guarded (a `vera test` desync).
         check_diags, artifacts = typecheck_with_artifacts(
             ast, source, file=str(p), resolved_modules=resolved,
-            collect_module_artifacts=True,
         )
         type_diags = resolver.errors + check_diags
         type_errors = [d for d in type_diags if d.severity == "error"]
@@ -1838,15 +1820,11 @@ def cmd_test(
 
         # Run tests
         result = run_test(
-            ast,
+            build_typed(ast, resolved, artifacts),
             source=source,
             file=str(p),
             trials=trials,
             fn_name=fn_name,
-            resolved_modules=resolved,
-            expr_semantic_types=artifacts.expr_semantic_types,
-            expr_target_types=artifacts.expr_target_types,
-            module_artifacts=artifacts.module_artifacts,
             alias_env=artifacts.alias_env,
             distrust=distrust,
         )

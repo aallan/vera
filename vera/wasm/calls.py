@@ -7,7 +7,6 @@ from vera.binding import symbol
 from vera.builtins import INTRINSICS, Binding, Intrinsic
 from vera.monomorphize import (
     Monomorphizer,
-    canonical_type_arg,
     resolve_fn_type_alias,
 )
 from vera.skip import CodegenSkip
@@ -272,8 +271,17 @@ class CallsMixin:
         call_target = call.name
         if call.name in self._generic_fn_info:
             resolved = self._resolve_generic_call(call)
-            if resolved is not None:
-                call_target = resolved
+            if resolved is None:
+                # #1679: a generic call no instance answers is one in a
+                # generic template's own body, which is compiled only
+                # through its clones: the template is skipped here, as the
+                # guard rail below skips a call to a name nothing registers.
+                raise CodegenSkip(
+                    call,
+                    f"generic call {call.name!r} has no instance in the "
+                    f"typed program",
+                )
+            call_target = resolved
 
         # Guard rail: reject calls to functions not defined in this module.
         # In practice the cross-module check upstream has already emitted
@@ -532,96 +540,31 @@ class CallsMixin:
             instructions.append("unreachable")
         return instructions
 
-    def _canonical_type_args(self, parts: list[str]) -> tuple[str, ...]:
-        """*parts* as written in the body being compiled, in the one spelling
-        a clone is named by (:func:`vera.monomorphize.canonical_type_arg`,
-        #1511)."""
-        return tuple(
-            canonical_type_arg(
-                part, self._alias_env.aliases, self._alias_env.alias_params)
-            for part in parts
-        )
-
     def _resolve_generic_call(self, call: ast.FnCall) -> str | None:
-        """Resolve a call to a generic function to its mangled name.
+        """The name of the clone a call to a generic function calls (#1679).
 
-        Infers concrete type variable bindings from the call's argument
-        expressions, then produces the mangled name like 'identity$Int'.
-        Returns None if type inference fails.
+        The typed program derived the call's instantiation from the type
+        arguments the checker inferred there and built the clone, so the
+        call is lowered as a call of that clone, whose name is the one the
+        typed instantiation gives it.  ``None`` for a call the typed program
+        holds no instance for, which leaves the call on its bare name and
+        reaches the guard rail's source-located [E602].
         """
-        forall_vars, param_types = self._generic_fn_info[call.name]
-        constrained_vars = self._generic_constrained_vars.get(
-            call.name, frozenset())
-        mapping: dict[str, str] = {}
-        # #898: mirror the discovery-side sparse-multi-parameter merge
-        # (Monomorphizer._infer_type_args_from_args) so the call-site mangled
-        # name matches the clone Pass 1.5 emitted — else `main`'s call to
-        # `eq2(MkErr(5), MkOk("x"))` references a `$Res` clone the emitter named
-        # `$Res_LString_C_Int_R`, is dropped, and `main` vanishes (the #878 class).
-        partial_adt: dict[str, tuple[str, list[str | None]]] = {}
-        # #1327/#1366: the rewrite side's leg of the fail-closed default —
-        # see the result loop below.
-        unnamed_direct: set[str] = set()
+        target = self._call_targets.get(call.node_id) if call.node_id else None
+        return None if target is None else target.name
 
-        for param_te, arg in zip(param_types, call.args):
-            self._unify_param_arg_wasm(
-                param_te, arg, forall_vars, mapping, constrained_vars,
-                partial_adt, unnamed_direct)
-        # #1395: the checker fills holes in a SECOND pass, mirroring the
-        # discovery twin exactly — see `Monomorphizer._infer_type_args_from_args`.
-        if any(tv not in mapping for tv in forall_vars):
-            for param_te, arg in zip(param_types, call.args):
-                self._unify_param_arg_wasm(
-                    param_te, arg, forall_vars, mapping, constrained_vars,
-                    partial_adt, unnamed_direct, True)
-
-        for tv, (base_name, slots) in partial_adt.items():
-            if all(s is not None for s in slots):
-                resolved = [s for s in slots if s is not None]
-                mapping[tv] = f"{base_name}<{', '.join(resolved)}>"
-            elif tv in constrained_vars:
-                # Partial recovery — mirror the discovery-side sentinel
-                # materialisation (Monomorphizer._infer_type_args_from_args) so
-                # the two stay in lockstep.  Such an instance is always rejected
-                # by the ability gate and never emitted, but keeping the names
-                # identical means the call-rewrite↔emitted-clone differential
-                # never sees a phantom mismatch for the under-determined shape.
-                from vera.monomorphize import _FREE_TYPE_PARAM
-                rendered = [s if s is not None else _FREE_TYPE_PARAM
-                            for s in slots]
-                mapping[tv] = f"{base_name}<{', '.join(rendered)}>"
-
-        # Build mangled name; default phantom vars to Bool (i32 repr — Unit
-        # has no WASM representation), matching Monomorphizer's clone-side
-        # default so the symbol is identical.
-        # MUST produce the same symbol as clone emission, so delegate to
-        # the shared injective mangler (#775) instead of duplicating the
-        # encoding here — a drift means the call site references a symbol
-        # Pass 1.5 never emitted.
-        parts = []
-        for tv in forall_vars:
-            if tv not in mapping:
-                # #1327/#1366 — FAIL CLOSED before defaulting.  A var bound by
-                # a DIRECT `@T` parameter is determined by that argument's
-                # type; arriving here means no arm named the argument, so
-                # `Bool` would be a guess.  Answer "inference failed" (this
-                # method's documented `None`), which leaves the call on its
-                # bare name and reaches the guard rail's source-located
-                # [E602] — rather than mangling a symbol on a guess, which
-                # either dangles or, worse, names a clone whose WASM types do
-                # not match the value being passed.  The phantom-var default
-                # is retained for every other var: one no parameter position
-                # determines is not inferable by construction, and the emitted
-                # WASM is identical whatever it is named.
-                if tv in unnamed_direct:
-                    return None
-                mapping[tv] = "Bool"
-            parts.append(mapping[tv])
-        # #1511: the one spelling discovery names the clone by, resolved in
-        # the namespace this body was written in — the alias maps installed
-        # for it (`_module_alias_scope`).
-        return Monomorphizer._mangle_fn_name(
-            call.name, self._canonical_type_args(parts))
+    def _call_target_mapping(
+        self, call: ast.FnCall, forall_vars: tuple[str, ...],
+    ) -> dict[str, str] | None:
+        """Each of the generic callee's type variables, by the canonical name
+        of the type *call* instantiates it at (#1679): the instance the typed
+        program built for the call, whose clone the call calls, so a reading
+        of the call's type is the clone's.  ``None`` for a call the typed
+        program holds no instance for."""
+        target = self._call_targets.get(call.node_id) if call.node_id else None
+        if target is None:
+            return None
+        return dict(zip(forall_vars, target.args))
 
     def _unify_param_arg_wasm(
         self,

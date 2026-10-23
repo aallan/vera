@@ -89,13 +89,13 @@ class TestBudgetReachesTheVerifier:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv(Z3_TIMEOUT_ENV, "31000")
-        assert ContractVerifier().timeout_ms == 31_000
+        assert ContractVerifier(pipeline.typed()).timeout_ms == 31_000
 
     def test_explicit_argument_beats_environment_at_the_seam(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv(Z3_TIMEOUT_ENV, "31000")
-        assert ContractVerifier(timeout_ms=9_000).timeout_ms == 9_000
+        assert ContractVerifier(pipeline.typed(), timeout_ms=9_000).timeout_ms == 9_000
 
 
 class TestCliFlag:

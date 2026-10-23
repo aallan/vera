@@ -61,10 +61,8 @@ from vera.codegen import (
     compile as _vera_compile,
     execute,
 )
-from vera.parser import parse_file
 from vera.resolver import ModuleResolver
 from vera.skip import CodegenInvariantError
-from vera.transform import transform
 from vera.wasm.helpers import MAX_INLINE_I32_VALUE
 
 # =====================================================================
@@ -977,14 +975,11 @@ class TestTheThrowPayloadResolvesInItsOwnModule:
             encoding="utf-8")
         main_file = tmp_path / "main.vera"
         main_file.write_text(_XMOD_MAIN, encoding="utf-8")
-        tree = parse_file(str(main_file))
-        prog = transform(tree)
         resolver = ModuleResolver(_root=tmp_path)
-        resolved = resolver.resolve_imports(prog, main_file)
         assert not resolver.errors, [e.description for e in resolver.errors]
         result = _vera_compile(
-            prog, source=main_file.read_text(encoding="utf-8"),
-            file=str(main_file), resolved_modules=resolved)
+            pipeline.check(main_file).typed,
+            source=main_file.read_text(encoding="utf-8"), file=str(main_file))
         tags = re.findall(
             r"\(tag \$exn_\S+ \(param ([^)]*)\)\)", result.wat)
         assert tags == ["i64"], tags

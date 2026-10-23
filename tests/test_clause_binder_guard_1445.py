@@ -32,6 +32,8 @@ That is the case a runtime guard exists for.
 
 from __future__ import annotations
 
+from vera.typed import build as build_typed
+
 from pathlib import Path
 
 import pytest
@@ -270,18 +272,11 @@ def test_the_site_table_moves_both_halves_together(
         program = parse_to_ast(_EXN_REFINED)
         diags, arts = typecheck_with_artifacts(program, _EXN_REFINED)
         assert not [d for d in diags if d.severity == "error"], diags
-        result = verify(
-            program, _EXN_REFINED,
-            expr_types=arts.expr_semantic_types,
-            expr_target_types=arts.expr_target_types,
-        )
+        typed = build_typed(program, [], arts)
+        result = verify(typed, _EXN_REFINED)
         statuses = [o.status for o in result.obligations
                     if o.kind == "refine_bind"]
-        module = codegen_compile(
-            program, source=_EXN_REFINED,
-            expr_semantic_types=arts.expr_semantic_types,
-            expr_target_types=arts.expr_target_types,
-        )
+        module = codegen_compile(typed, source=_EXN_REFINED)
         return statuses, module
 
     on_statuses, on_module = statuses_and_module()

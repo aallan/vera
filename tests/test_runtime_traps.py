@@ -705,7 +705,6 @@ public fn main(@Unit -> @Unit)
         """
         from vera.codegen import compile as compile_program
         from vera.codegen import execute as _execute
-        from vera.parser import parse_to_ast
 
         source = """\
 public fn main(@Unit -> @Unit)
@@ -714,8 +713,7 @@ public fn main(@Unit -> @Unit)
   IO.print("should not appear in capsys")
 }
 """
-        program = parse_to_ast(source)
-        compile_result = compile_program(program, source=source)
+        compile_result = compile_program(pipeline.typed(source), source=source)
 
         # capsys.readouterr() resets the buffer; readouterr after
         # execute captures only what execute itself wrote.
@@ -1160,10 +1158,9 @@ public fn main(@Unit -> @Int)
         from vera.codegen import compile as compile_program
         from vera.codegen import execute as _execute
         from vera.runtime.traps import WasmTrapError
-        from vera.parser import parse_to_ast
 
-        program = parse_to_ast(_DIVIDE_BY_ZERO_USER_FN)
-        result = compile_program(program, source=_DIVIDE_BY_ZERO_USER_FN)
+        result = compile_program(
+            pipeline.typed(_DIVIDE_BY_ZERO_USER_FN), source=_DIVIDE_BY_ZERO_USER_FN)
         assert result.fn_source_map  # source map populated
         assert "divide" in result.fn_source_map
         assert "main" in result.fn_source_map
@@ -2442,7 +2439,6 @@ class TestHostSleepKeyboardInterrupt:
         from unittest.mock import patch
 
         from vera.codegen import compile as compile_program, execute
-        from vera.parser import parse_to_ast
 
         # Vera program that calls IO.sleep with a value the host will
         # see as positive (so the guard branch fires).  IO.print
@@ -2457,8 +2453,7 @@ public fn main(@Unit -> @Unit)
   IO.print("after sleep")
 }
 """
-        program = parse_to_ast(source)
-        result = compile_program(program, source=source)
+        result = compile_program(pipeline.typed(source), source=source)
         assert result.ok, (
             f"compile failed: "
             f"{[d.description for d in result.diagnostics]}"
@@ -2507,7 +2502,6 @@ public fn main(@Unit -> @Unit)
         from unittest.mock import patch
 
         from vera.codegen import compile as compile_program, execute
-        from vera.parser import parse_to_ast
 
         source = """\
 public fn main(@Unit -> @Unit)
@@ -2519,8 +2513,7 @@ public fn main(@Unit -> @Unit)
   IO.print("after await")
 }
 """
-        program = parse_to_ast(source)
-        result = compile_program(program, source=source)
+        result = compile_program(pipeline.typed(source), source=source)
         assert result.ok, (
             f"compile failed: "
             f"{[d.description for d in result.diagnostics]}"
@@ -2592,7 +2585,6 @@ public fn main(@Unit -> @Unit)
         import _thread
 
         from vera.codegen import compile as compile_program, execute
-        from vera.parser import parse_to_ast
 
         arrived = threading.Event()
         release = threading.Event()
@@ -2658,8 +2650,7 @@ public fn main(@Unit -> @Unit)
   IO.print("after await")
 }}
 """
-        program = parse_to_ast(source)
-        result = compile_program(program, source=source)
+        result = compile_program(pipeline.typed(source), source=source)
         assert result.ok, (
             f"compile failed: "
             f"{[d.description for d in result.diagnostics]}"
@@ -2708,7 +2699,6 @@ public fn main(@Unit -> @Unit)
         import sys as _sys
 
         from vera.codegen import compile as compile_program, execute
-        from vera.parser import parse_to_ast
 
         source = """\
 public fn main(@Unit -> @Unit)
@@ -2721,8 +2711,7 @@ public fn main(@Unit -> @Unit)
   }
 }
 """
-        program = parse_to_ast(source)
-        result = compile_program(program, source=source)
+        result = compile_program(pipeline.typed(source), source=source)
         assert result.ok, (
             f"compile failed: "
             f"{[d.description for d in result.diagnostics]}"
@@ -2968,13 +2957,11 @@ public fn main(@Unit -> @Unit)
     ) -> None:
         """``execute()`` converts it, rather than letting it escape."""
         from vera.codegen import compile as codegen_compile, execute
-        from vera.parser import parse_file
-        from vera.transform import transform
 
         path = self._write(tmp_path)
         source = path.read_text(encoding="utf-8")
         result = codegen_compile(
-            transform(parse_file(str(path))), source=source, file=str(path),
+            pipeline.check(path).typed, source=source, file=str(path),
         )
         assert result.ok
 

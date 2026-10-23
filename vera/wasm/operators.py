@@ -2372,9 +2372,7 @@ class OperatorsMixin:
         distinct answer from any type and must not be collapsed into one.
         """
         table = self._expr_semantic_types
-        if table is None:
-            return None
-        key = ast.span_key(expr)
+        key = expr.node_id
         if key is None:
             return None
         return table.get(key)
@@ -2388,9 +2386,7 @@ class OperatorsMixin:
         ``@Nat`` reached through a refinement/alias still classifies as Nat.
         """
         table = self._expr_semantic_types
-        if table is None:
-            return None
-        key = ast.span_key(expr)
+        key = expr.node_id
         if key is None:
             return None
         ty = table.get(key)
@@ -2507,9 +2503,7 @@ class OperatorsMixin:
         (an unverified ``transform -> compile``) or the span carries no target.
         """
         table = self._expr_target_types
-        if table is None:
-            return None
-        key = ast.span_key(expr)
+        key = expr.node_id
         if key is None:
             return None
         ty = table.get(key)
@@ -2529,9 +2523,7 @@ class OperatorsMixin:
         in it.
         """
         table = self._expr_target_types
-        if table is None:
-            return None
-        key = ast.span_key(expr)
+        key = expr.node_id
         if key is None:
             return None
         return table.get(key)

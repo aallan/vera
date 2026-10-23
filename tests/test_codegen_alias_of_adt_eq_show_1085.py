@@ -37,6 +37,7 @@ dispatches exactly as the literal payload would.
 """
 from __future__ import annotations
 
+from tests import pipeline
 from tests.codegen_helpers import (
     _compile,
     _run,
@@ -383,7 +384,8 @@ def test_forall_eq_non_eq_alias_still_rejected() -> None:
     """`type BadArr = Array<Int>;` grounds to a non-Eq type — the gate still
     raises E613 (never weakened) and codegen never hits its E699 invariant
     (the gate rejects first; the two sides stay in lockstep)."""
-    codes = _errors(_FORALL_EQ_NON_EQ_ALIAS)
+    # Refused at the call that instantiates it (E613 at check, #1679).
+    codes = [d.error_code for d in pipeline.check(_FORALL_EQ_NON_EQ_ALIAS).errors]
     assert "E613" in codes
     assert "E699" not in codes
 

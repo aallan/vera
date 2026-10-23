@@ -40,6 +40,7 @@ from vera.trap_registry import (
 
 if TYPE_CHECKING:
     from vera.codegen import ConstructorLayout
+    from vera.typed import Instance
 
 from vera.wasm.helpers import (  # noqa: F401 — re-exported for consumers
     _INLINE_I32_TYPES,
@@ -393,22 +394,19 @@ class WasmContext(
         # generation before the body is stored in ``_adt_eq_helpers``).
         self._adt_eq_pending: set[str] = set()
         # #773 / PR #870 review: derivability oracle for the DIRECT `==` path
-        # — the CodeGenerator's `_adt_satisfies_eq` bound method (the same
-        # E613 gate the generic constraint path consults), injected via
+        # — the CodeGenerator's `_adt_satisfies_eq` bound method (the
+        # structural-Eq oracle the `$eq` generator reads), injected via
         # `set_adt_eq_derivable` in functions.py / closures.py so there is
         # exactly ONE derivability implementation.  When None (a bare
         # WasmContext in unit tests), the gate is skipped and generation
         # proceeds as before.
         self._adt_eq_derivable: Callable[[str], bool] | None = None
         # #932: TRUNCATED one-level constrained-var name → FULLY-recovered nested
-        # name (`List<List>` → `List<List<Int>>`).  Populated by Pass 1.5
-        # monomorphization (`_collect_eq_full_type_names`) and consulted for the
-        # Eq-derivability DECISION only — by the constraint gate
-        # (`_check_constraints`) and by the direct-`==` path inside a clone body
-        # (`_translate_binary`).  Never keys a clone symbol, so the clone-mangling
-        # contract stays the truncated one-level name (the #772 hard constraint).
-        # Empty for a bare WasmContext (no mono pass) — a plain dict lookup then
-        # leaves every name unchanged.
+        # name (`List<List>` → `List<List<Int>>`), read by the direct-`==` path
+        # inside a clone body (`_translate_binary`).  The discovery pass that
+        # filled it is gone (#1679): a clone is named at its full type
+        # arguments, so the table stays empty, every lookup leaves its name
+        # unchanged, and it goes with the backend's remaining readers (#1525).
         self._eq_full_type_names: dict[str, str] = {}
         # #924: generated recursive show/hash helper functions, keyed by the
         # mangled `$show_<type>` / `$hash_<type>` function name → its full WAT
@@ -579,24 +577,25 @@ class WasmContext(
         # codegen base's `_harvest_inference_failures` emits a
         # specific [E616] before falling through to [E602].
         self._apply_fn_inference_failures: list[ast.Expr] = []
-        # #798: the checker's resolved-type side-table (keyed by
-        # ``ast.span_key``), threaded from the CodeGenerator.  The
-        # integer-overflow guard reads it to classify an arithmetic operand
-        # as @Int or @Nat using the SAME resolved type the verifier's
-        # ``int_overflow`` obligation uses, so codegen guards exactly the
-        # sites the verifier obligates.  ``None`` when typecheck was skipped
-        # (AST-only fallback).
-        self._expr_semantic_types: (
-            dict[tuple[int, int, int, int], object] | None
-        ) = None
-        # #820: the checker's TARGET-type side-table (``expected`` per expr
-        # span).  Consulted by ``_target_codegen_type`` — the codegen dual of
-        # the verifier's ``_target_type_of`` — so the narrowing guards fire
-        # at a tuple component / array element exactly where the verifier
-        # obligates them.  ``None`` when typecheck was skipped.
-        self._expr_target_types: (
-            dict[tuple[int, int, int, int], object] | None
-        ) = None
+        # #798: the checker's type of every expression, keyed by node
+        # identity (``ast.Node.node_id``, #1679), threaded from the
+        # CodeGenerator.  The integer-overflow guard reads it to classify an
+        # arithmetic operand as @Int or @Nat using the SAME resolved type the
+        # verifier's ``int_overflow`` obligation uses, so codegen guards
+        # exactly the sites the verifier obligates.  Empty for a bare
+        # WasmContext a test builds.
+        self._expr_semantic_types: Mapping[int, object] = {}
+        # #820: the checker's TARGET type (``expected``) of every expression,
+        # by node identity.  Consulted by ``_target_codegen_type`` — the
+        # codegen dual of the verifier's ``_target_type_of`` — so the
+        # narrowing guards fire at a tuple component / array element exactly
+        # where the verifier obligates them.  Empty for a bare WasmContext.
+        self._expr_target_types: Mapping[int, object] = {}
+        # #1679: the instance each generic call calls, by the call's node
+        # identity (`TypedProgram.call_targets`): a generic call is lowered
+        # as a call of that instance's clone, named once from the typed
+        # instantiation.
+        self._call_targets: Mapping[int, Instance] = {}
 
     def _owned_ctor_layout(
         self, owner: str | None, ctor_name: str,
@@ -645,19 +644,17 @@ class WasmContext(
             return own[ctor_name]
         return None
 
-    def set_expr_semantic_types(
-        self,
-        types: dict[tuple[int, int, int, int], object] | None,
-    ) -> None:
+    def set_expr_semantic_types(self, types: Mapping[int, object]) -> None:
         """Seed the checker's resolved-type side-table for the #798 overflow
         guard's Int/Nat operand classifier (mirrors the verifier's
         ``_resolved_type_of`` / ``_overflow_int_type``)."""
         self._expr_semantic_types = types
 
-    def set_expr_target_types(
-        self,
-        types: dict[tuple[int, int, int, int], object] | None,
-    ) -> None:
+    def set_call_targets(self, targets: Mapping[int, Instance]) -> None:
+        """Seed the instance each generic call calls (#1679)."""
+        self._call_targets = targets
+
+    def set_expr_target_types(self, types: Mapping[int, object]) -> None:
         """Seed the checker's TARGET-type side-table (#820) for the
         narrowing guards' per-component target-type recovery
         (``_target_codegen_type`` — the dual of the verifier's
@@ -675,22 +672,23 @@ class WasmContext(
     ) -> None:
         """Set the structural-Eq derivability oracle for direct `==` (#773).
 
-        ``oracle`` is the CodeGenerator's ``_adt_satisfies_eq`` bound method —
-        the SAME gate the generic constraint path consults — so the direct
-        comparison path rejects exactly the set the E613 gate rejects.
+        ``oracle`` is the CodeGenerator's ``_adt_satisfies_eq`` bound method,
+        whose structural rule the check's ability judgment
+        (``vera.typed._ability_refusals``, E613) holds every instance to, so
+        the direct comparison path lowers exactly the types the check
+        accepts.
         """
         self._adt_eq_derivable = oracle
 
     def set_eq_full_type_names(self, full_names: dict[str, str]) -> None:
         """Share the truncated→full constrained-var name map (#932).
 
-        ``full_names`` is the CodeGenerator's ``_eq_full_type_names``, populated
-        by Pass 1.5 monomorphization BEFORE any body is translated.  The direct
-        ``==`` path inside a generic clone body (`_translate_binary`) consults it
-        so a `@T` slot whose substituted type is the TRUNCATED one-level clone
-        name (`List<List>`) resolves its Eq derivability and its `$eq_<type>`
-        helper on the FULLY-nested name (`List<List<Int>>`) — matching the
-        constraint gate.  The clone SYMBOL stays the truncated name (#772).
+        ``full_names`` is the CodeGenerator's ``_eq_full_type_names``, read by
+        the direct ``==`` path inside a generic clone body
+        (`_translate_binary`).  The discovery pass that filled it is gone
+        (#1679): a clone is named at its full type arguments, so the map is
+        empty, every lookup leaves its name unchanged, and it goes with the
+        backend's remaining readers (#1525).
         """
         self._eq_full_type_names = full_names
 

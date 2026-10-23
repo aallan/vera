@@ -249,7 +249,8 @@ class TestSignaturesDoNotDependOnTheEntry:
             (tmp_path / name).write_text(text, encoding="utf-8")
 
         def blind(self, mod):  # type: ignore[no-untyped-def]
-            temp = CodeGenerator(source=mod.source, file=str(mod.file_path))
+            temp = CodeGenerator(
+                self._typed, source=mod.source, file=str(mod.file_path))
             temp._register_all(mod.program)
             return temp
 

@@ -87,7 +87,8 @@ def is_eq_derivable(
       on top of an already-reported type error).
     - A bare ``TypeVar`` is **not** decided here — callers defer it (inside a
       ``forall<T where Eq<T>>`` body the constraint promises derivability, and
-      the monomorphizer's E613 gate re-checks each concrete instantiation).
+      the check holds each instance's type argument to it, E613 at the call
+      that chooses it, #1679).
     """
     ty = base_type(ty)  # a refinement is Eq iff its base is (predicate aside)
 
@@ -99,7 +100,7 @@ def is_eq_derivable(
         return False
     if isinstance(ty, TypeVar):
         # Deferred: the caller decides (a constrained-generic body defers to
-        # the ability constraint + the codegen E613 instantiation gate).  A
+        # the ability constraint, judged at each instance, E613).  A
         # conservative ``False`` here would false-reject the legitimate
         # constrained form; a ``True`` would false-accept.  Neither is right,
         # so a TypeVar must never reach this predicate as a decision point —

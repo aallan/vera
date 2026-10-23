@@ -66,6 +66,8 @@ from pathlib import Path
 
 import pytest
 
+from tests import pipeline
+
 from vera import ast, naming
 from vera.checker.registration import RegistrationMixin
 from vera.codegen import CodeGenerator, execute
@@ -175,7 +177,7 @@ class TestRegistryCoverage:
         There are no exclusions: the first draft carried one for ``Tuple``
         and it did not survive measurement.
         """
-        gen = CodeGenerator()
+        gen = CodeGenerator(pipeline.typed())
         gen._register_builtin_adts()
         expected = (
             set(gen._adt_layouts)
@@ -440,7 +442,7 @@ def _builtin_type_names() -> list[str]:
     other shadow.  An exclusion whose reason does not survive measurement is
     a hole in a battery whose whole job is to have none.
     """
-    gen = CodeGenerator()
+    gen = CodeGenerator(pipeline.typed())
     gen._register_builtin_adts()
     return sorted(
         set(gen._adt_layouts)

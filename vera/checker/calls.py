@@ -60,6 +60,7 @@ from vera.types import (
     pretty_inferred_type,
     strip_builtin_typevar_marker,
     substitute,
+    substitute_effect,
     types_equal,
 )
 
@@ -683,6 +684,31 @@ class CallsMixin:
             self._synth_expr(arg)
         return UnknownType()
 
+    def _record_instantiation(self, node: ast.Node, fn_info: FunctionInfo,
+                              mapping: typing.Mapping[str, Type]) -> None:
+        """Record the instantiation the check inferred at the generic call
+        *node* (#1679), keyed by the call's identity.
+
+        Only a call the binding binds to a declaration is recorded: a
+        built-in generic has no declaration to instantiate, and code
+        generation lowers each of its calls itself.  A call checked twice
+        (an argument re-synthesised against its formal) records the later
+        inference, which is the one its node's type records too."""
+        from vera.binding import BUILTIN
+        from vera.typed import Instantiation
+
+        if self.instantiations is None or node.node_id is None:
+            return
+        ident = self._binding.of(node) if self._binding is not None else None
+        if ident is None or ident.owner == BUILTIN:
+            return
+        self.instantiations[node.node_id] = Instantiation(
+            callee=ident.link_name,
+            forall_vars=tuple(fn_info.forall_vars or ()),
+            mapping={tv: mapping[tv] for tv in fn_info.forall_vars or ()
+                     if tv in mapping},
+        )
+
     def _check_fn_call_with_info(self, fn_info: FunctionInfo,
                                  args: tuple[ast.Expr, ...],
                                  node: ast.Node, *,
@@ -723,6 +749,11 @@ class CallsMixin:
         param_types = fn_info.param_types
         return_type = fn_info.return_type
         type_arg_conflict = False
+        # #1769: the callee's row as this call instantiates it.  A generic's
+        # row can name its type parameters (`effects(<State<T>>)`), and the
+        # call is held to the row at the type arguments it fixes, as its
+        # parameters and its return are.
+        call_effect = fn_info.effect
         if fn_info.forall_vars:
             conflicts: set[str] = set()
             # #1541/#1565: an argument's literals take their type from the
@@ -732,8 +763,21 @@ class CallsMixin:
                 fn_info.forall_vars, fn_info.param_types, arg_types, args,
                 result_type=fn_info.return_type, expected=expected,
                 conflicts=conflicts)
+            self._record_instantiation(node, fn_info, mapping)
+            if mapping:
+                call_effect = substitute_effect(fn_info.effect, dict(mapping))
+            # A variable of the callee's own that no argument fixed leaves
+            # the call as a hole, never under the callee's name, which an
+            # enclosing generic can share and an enclosing call would then
+            # take for the caller's variable (PR #1791 review).  Substituted
+            # with the mapping at once, so a type the mapping gives that
+            # names the caller's own variable is never mistaken for it.
+            open_holes: dict[str, Type] = {
+                tv: self._fresh_typevar(tv) for tv in fn_info.forall_vars
+                if tv not in mapping and BUILTIN_TYPEVAR_MARKER not in tv}
             self._record_literal_soft_result(
-                node, substitute(fn_info.return_type, soft_mapping))
+                node, substitute(fn_info.return_type,
+                                 {**soft_mapping, **open_holes}))
             if conflicts:
                 # #898: two arguments pinned the same type parameter to
                 # different, irreconcilable types (`eq2(MkOk("x"), MkOk(5))`
@@ -835,10 +879,13 @@ class CallsMixin:
                 # `Unit` rather than a leaked `@T`, avoiding a misleading
                 # cascade error on top of the actionable E206.
                 return substitute(return_type, mapping)
+            if not mapping and open_holes:
+                return_type = substitute(return_type, open_holes)
             if mapping:
                 param_types = tuple(
                     substitute(p, mapping) for p in param_types)
-                return_type = substitute(return_type, mapping)
+                return_type = substitute(return_type,
+                                         {**mapping, **open_holes})
                 # #747: the initial synth used expected=None for generic
                 # calls, and an @Int argument flowing into a formal fixed
                 # to @Nat by inference (`pick(@Nat.0, @Int.0)` with
@@ -852,6 +899,11 @@ class CallsMixin:
                         if key is None or contains_typevar(c_pt):
                             continue
                         self.expr_target_types[key] = c_pt
+                if self.node_target_types is not None:
+                    for c_arg, c_pt in zip(args, param_types):
+                        if (c_arg.node_id is not None
+                                and not contains_typevar(c_pt)):
+                            self.node_target_types[c_arg.node_id] = c_pt
 
         # Check each argument.  When a type-argument conflict was already
         # reported (#898), skip the per-argument subtype check: the merged
@@ -937,17 +989,17 @@ class CallsMixin:
         # #1708: in a contract predicate, a callee whose row names an effect
         # no handler written inside the predicate handles is refused, and
         # the call is neither counted nor held to the row in force.
-        impure = (self._impure_in_predicate(fn_info.effect.effects)
-                  if isinstance(fn_info.effect, ConcreteEffectRow) else None)
+        impure = (self._impure_in_predicate(call_effect.effects)
+                  if isinstance(call_effect, ConcreteEffectRow) else None)
         if impure is not None:
             self._refuse_impure_predicate(
                 node, f"Call to '{fn_info.name}'",
                 f"the call to '{fn_info.name}'", impure)
 
         # Track effects
-        if not isinstance(fn_info.effect, PureEffectRow) and impure is None:
-            if isinstance(fn_info.effect, ConcreteEffectRow):
-                for ei in fn_info.effect.effects:
+        if not isinstance(call_effect, PureEffectRow) and impure is None:
+            if isinstance(call_effect, ConcreteEffectRow):
+                for ei in call_effect.effects:
                     self._effect_ops_used.add(ei.name)
 
         # #841: concurrency-eligibility warning for async().  The runtime
@@ -961,12 +1013,12 @@ class CallsMixin:
         # Call-site effect check: callee's effects must be permitted
         # by the caller's context (Spec §7.8 subeffecting).
         if self.env.current_effect_row is not None and impure is None:
-            if not is_effect_subtype(fn_info.effect,
+            if not is_effect_subtype(call_effect,
                                      self.env.current_effect_row):
                 self._error(
                     node,
                     f"Function '{fn_info.name}' requires "
-                    f"{pretty_effect(fn_info.effect)} but call site only "
+                    f"{pretty_effect(call_effect)} but call site only "
                     f"allows {pretty_effect(self.env.current_effect_row)}.",
                     rationale="A function can only be called from a context "
                               "that permits all of its declared effects "
@@ -1805,15 +1857,16 @@ class CallsMixin:
                 arg_base = base_type(arg_ty)
                 # A bare type variable is deferred: inside a
                 # `forall<T where Ord<T>>` body the `Ord<T>` constraint
-                # promises orderability, and the monomorphizer's E613 constraint
-                # gate re-checks each concrete instantiation against the
-                # orderable set (`_ORD_TYPES` in codegen/monomorphize.py).  Any
-                # non-Ord instantiation — a user ADT OR `Bool` (§4.5 orders
-                # neither) — trips E613 there, so deferring here can never
-                # silently miscompile.  (PR #929 review closed a hole: `Bool`
-                # was wrongly IN `_ORD_TYPES`, so `Ord<Bool>` satisfied the gate
-                # and the clone lowered `compare` on two Bool i32s to a signed
-                # `i32.lt_s` — a silent order.  Bool is now out of that set.)
+                # promises orderability, and the check holds each instance's
+                # type argument to the orderable set
+                # (`vera.lowering.ABILITY_TYPES`) at the call that chooses it
+                # (E613, `vera.typed.judge`, #1679).  Any non-Ord
+                # instantiation — a user ADT OR `Bool` (§4.5 orders neither) —
+                # is refused there, so deferring here can never silently
+                # miscompile.  (PR #929 review closed a hole: `Bool` was
+                # wrongly in the orderable set, so `Ord<Bool>` satisfied the
+                # gate and the clone lowered `compare` on two Bool i32s to a
+                # signed `i32.lt_s` — a silent order.)
                 # Rejecting the TypeVar here would break the legitimate
                 # constrained-generic form (ch09_abilities `cmp_sign`).
                 if isinstance(arg_base, TypeVar):
@@ -1854,7 +1907,7 @@ class CallsMixin:
                 if arg_ty is None or isinstance(arg_ty, UnknownType):
                     continue
                 # A bare/nested type variable is deferred to the caller's
-                # `Eq<T>` constraint + the codegen E613 instantiation gate,
+                # `Eq<T>` constraint, judged at each instance (E613, #1679),
                 # exactly as the Ord arm above and the `==` binop gate do —
                 # `_check_eq_ability` short-circuits on `contains_typevar`.
                 self._check_eq_ability(args[i], arg_ty, arg_ty)
@@ -2271,6 +2324,18 @@ class CallsMixin:
                 if (isinstance(c_arg, ast.ConstructorCall)
                         and c_arg.name != "Tuple"):
                     self._record_nested_ctor_targets(c_arg, recorded)
+        # #1679: the same gap fill in the table by node identity, which the
+        # typed program reads.
+        if self.node_target_types is not None:
+            for c_arg, c_ft in zip(expr.args, field_types):
+                if c_arg.node_id is None or contains_typevar(c_ft):
+                    continue
+                recorded = self.node_target_types.setdefault(
+                    c_arg.node_id, c_ft)
+                if (isinstance(c_arg, ast.ConstructorCall)
+                        and c_arg.name != "Tuple"):
+                    self._record_nested_ctor_targets(
+                        c_arg, recorded, by_identity=True)
 
         for i, (arg_ty, field_ty) in enumerate(zip(arg_types, field_types)):
             if arg_ty is None or isinstance(arg_ty, UnknownType):
@@ -2423,7 +2488,8 @@ class CallsMixin:
             self._reported_reserved_type_refs = reserved
 
     def _record_nested_ctor_targets(
-        self, ctor: ast.ConstructorCall, target: Type,
+        self, ctor: ast.ConstructorCall, target: Type, *,
+        by_identity: bool = False,
     ) -> None:
         """Carry a target recorded for a constructor application DOWN to
         its own arguments (#1503).
@@ -2442,7 +2508,9 @@ class CallsMixin:
         `Tuple` carrier is left alone: its readers take a component's target
         from the tuple's own node, which the parent has just recorded.
         """
-        if self.expr_target_types is None:
+        table: dict[typing.Any, Type] | None = (
+            self.node_target_types if by_identity else self.expr_target_types)
+        if table is None:
             return
         info = self.env.lookup_constructor(ctor.name)
         base = base_type(target)
@@ -2455,12 +2523,13 @@ class CallsMixin:
         mapping = dict(zip(info.parent_type_params, base.type_args))
         for arg, field_ty in zip(ctor.args, info.field_types):
             instantiated = substitute(field_ty, mapping)
-            key = ast.span_key(arg)
+            key: object = arg.node_id if by_identity else ast.span_key(arg)
             if key is None or contains_typevar(instantiated):
                 continue
-            recorded = self.expr_target_types.setdefault(key, instantiated)
+            recorded = table.setdefault(key, instantiated)
             if isinstance(arg, ast.ConstructorCall) and arg.name != "Tuple":
-                self._record_nested_ctor_targets(arg, recorded)
+                self._record_nested_ctor_targets(
+                    arg, recorded, by_identity=by_identity)
 
     def _check_tuple_constructor(
         self, expr: ast.ConstructorCall, *,
@@ -2650,8 +2719,7 @@ class CallsMixin:
             ci.parent_type_params, ci.field_types, arg_types, args,
             result_type=result_pattern,
             expected=(expected if isinstance(expected, AdtType)
-                      and expected.name == ci.parent_type else None),
-            callee_vars_opaque=False)
+                      and expected.name == ci.parent_type else None))
         if soft_out is not None:
             soft_out.update(soft)
         return mapping

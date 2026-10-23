@@ -129,7 +129,7 @@ from vera.obligations.core import ObligationKind, ProofObligation
 from vera.trap_registry import TRAP_EMITTERS, EmittedCheck
 
 if TYPE_CHECKING:
-    from vera.checker.core import CheckArtifacts
+    from vera.typed import TypedProgram
     from vera.codegen.api import CompileResult
     from vera.resolver import ResolvedModule
     from vera.verifier import VerifyResult
@@ -1550,22 +1550,12 @@ class Reconciled:
 
 
 def compile_for_reconcile(
-    program: ast.Program,
-    source: str,
-    file: str | None,
-    resolved_modules: list[ResolvedModule],
-    artifacts: CheckArtifacts,
+    typed: TypedProgram, source: str, file: str | None,
 ) -> CompileResult:
-    """Compile *program* exactly as ``vera compile`` does, with the
-    checker's *artifacts*."""
+    """Compile the typed program exactly as ``vera compile`` does."""
     from vera.codegen import compile as codegen_compile
 
-    return codegen_compile(
-        program, source=source, file=file, resolved_modules=resolved_modules,
-        expr_semantic_types=artifacts.expr_semantic_types,
-        expr_target_types=artifacts.expr_target_types,
-        module_artifacts=artifacts.module_artifacts,
-    )
+    return codegen_compile(typed, source=source, file=file)
 
 
 def _holes_skip(holes: list[Diagnostic], source: str) -> Diagnostic:
@@ -1607,21 +1597,20 @@ def _holes_skip(holes: list[Diagnostic], source: str) -> Diagnostic:
 
 
 def reconcile_verified(
-    program: ast.Program,
+    typed: TypedProgram,
     source: str,
     file: str | None,
-    resolved_modules: list[ResolvedModule],
-    artifacts: CheckArtifacts,
     verify_result: VerifyResult,
 ) -> Reconciled:
-    """Compile *program* and join *verify_result*'s records with the checks
-    the module holds, as ``vera verify`` does unless ``--no-reconcile``.
+    """Compile the typed program and join *verify_result*'s records with the
+    checks the module holds, as ``vera verify`` does unless
+    ``--no-reconcile``.
 
     A program code generation refuses leaves nothing to join: its refusal
     is the answer, with one exception, a program holding typed holes, for
     which the join is skipped with a W005 warning (:data:`SKIPPED_FOR`)."""
-    compiled = compile_for_reconcile(
-        program, source, file, resolved_modules, artifacts)
+    program, resolved_modules = typed.program, typed.modules
+    compiled = compile_for_reconcile(typed, source, file)
     holes = [d for d in compiled.diagnostics
              if d.severity == "error" and d.error_code == SKIPPED_FOR]
     if holes:
@@ -1672,6 +1661,7 @@ def reconcile_file(
     from vera.parser import parse, read_source
     from vera.resolver import ModuleResolver
     from vera.transform import transform
+    from vera.typed import build
     from vera.verifier import verify
 
     p = Path(path)
@@ -1690,7 +1680,6 @@ def reconcile_file(
     run.program, run.resolved_modules = program, resolved
     check_diags, artifacts = typecheck_with_artifacts(
         program, source, file=str(p), resolved_modules=resolved,
-        collect_module_artifacts=True,
     )
     run.check_errors = [
         d.description for d in resolver.errors + check_diags
@@ -1698,15 +1687,10 @@ def reconcile_file(
     ]
     if run.check_errors:
         return run
-    run.verify_result = verify(
-        program, source, file=str(p), timeout_ms=timeout_ms,
-        resolved_modules=resolved,
-        expr_types=artifacts.expr_semantic_types,
-        expr_target_types=artifacts.expr_target_types,
-        module_artifacts=artifacts.module_artifacts,
-    )
-    reconciled = reconcile_verified(
-        program, source, str(p), resolved, artifacts, run.verify_result)
+    typed = build(program, resolved, artifacts)
+    run.verify_result = verify(typed, source, file=str(p),
+                               timeout_ms=timeout_ms)
+    reconciled = reconcile_verified(typed, source, str(p), run.verify_result)
     run.compile_result = reconciled.compile_result
     run.compile_errors = [
         d.description for d in run.compile_result.diagnostics

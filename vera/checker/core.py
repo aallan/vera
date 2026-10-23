@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, NamedTuple
 
 if TYPE_CHECKING:
@@ -45,6 +45,7 @@ from vera.environment import (
     TypeEnv,
 )
 from vera.regularity import occurrence_grows, suggested_occurrence
+from vera.typed import Derivation, HandlerCell, Instantiation
 from vera.types import (
     EffectInstance,
     EffectRowType,
@@ -95,7 +96,7 @@ def typecheck(
         source=source, file=file, resolved_modules=resolved_modules,
     )
     try:
-        checker.check_program(program)
+        _check(checker, program)
     except BaseException as exc:
         # #1429: hand the diagnostics recorded SO FAR to the command
         # boundary, which prints them ahead of its E699.  A pass that dies
@@ -105,6 +106,85 @@ def typecheck(
         attach_partial_diagnostics(exc, checker.errors)
         raise
     return checker.errors
+
+
+@dataclass
+class CheckTables:
+    """The tables a check types nodes into by their identity (#1679): each
+    expression's type and target, and each generic call's instantiation.
+
+    A batch of checks that shares a body-check memo
+    (``typecheck_with_artifacts(body_check_memo=...)``) shares these too: a
+    module whose bodies one check of the batch typed is not checked again
+    by the next, so its nodes' entries have to be where that one wrote
+    them.  Identities are unique, so the batch's checks never collide."""
+
+    semantic: dict[int, Type] = field(default_factory=dict)
+    target: dict[int, Type] = field(default_factory=dict)
+    instantiations: dict[int, Instantiation] = field(default_factory=dict)
+    #: Each `State` or `Exn` handler's cell, as the check resolved it.
+    cells: dict[int, HandlerCell] = field(default_factory=dict)
+
+
+def _check(checker: TypeChecker, program: ast.Program,
+           tables: CheckTables | None = None) -> None:
+    """Check *program* with *checker*, the one sequence both entry points
+    run, so their diagnostics are the same (#1679): the program and the
+    modules it reaches, then the bodies of the prelude declarations its
+    binding bound, every node typed into one table by its identity; then,
+    on a program that checks clean, the instances it needs, derived once
+    (:func:`vera.typed.derive_checked`), and the judgments that depend on
+    what a generic is instantiated at, made at each call that chooses it
+    (:func:`vera.typed.judge`)."""
+    from vera.typed import derive_checked, judge
+
+    tables = tables if tables is not None else CheckTables()
+    checker.node_semantic_types = tables.semantic
+    checker.node_target_types = tables.target
+    checker.instantiations = tables.instantiations
+    checker.handler_cells = tables.cells
+    checker.check_program(program)
+    # The prelude is checked clean, so an error here is a defect of the
+    # compiler's own source, reported on every program it reaches; a
+    # warning about the prelude is not the program's to read.
+    checker.errors.extend(
+        d for d in check_prelude_bodies(checker) if d.severity == "error")
+    if any(d.severity == "error" for d in checker.errors):
+        return
+    prelude, prelude_source = checker._bound_prelude
+    checker.derivation = derive_checked(
+        program, checker._resolved_modules, checker._binding, prelude,
+        prelude_source, tables.instantiations)
+    checker.errors.extend(judge(
+        checker.derivation, tables.semantic, tables.cells, checker.env,
+        checker.file, checker.source))
+
+
+def check_prelude_bodies(checker: TypeChecker) -> list[Diagnostic]:
+    """Type the bodies of the prelude declarations *checker*'s binding bound
+    (#1679), into *checker*'s tables, and return what that check reports.
+
+    These are the declarations code generation compiles and the verifier
+    verifies, so their nodes are typed by the one derivation like every
+    other node.  The prelude is checked in its own namespace, as a program
+    of its own whose names are its own: the reservations that keep a user
+    declaration off a prelude name (E151, E154, E158) are the prelude's
+    names, not refused in it.
+    """
+    from vera.prelude import PRELUDE_FILE
+
+    prelude, source = checker._bound_prelude
+    if not prelude:
+        return []
+    sub = TypeChecker(source=source, file=PRELUDE_FILE)
+    sub._prelude_namespace = True
+    sub.node_semantic_types = checker.node_semantic_types
+    sub.node_target_types = checker.node_target_types
+    sub.instantiations = checker.instantiations
+    sub.handler_cells = checker.handler_cells
+    sub.check_program(ast.Program(
+        module=None, imports=(), declarations=tuple(prelude), span=None))
+    return list(sub.errors)
 
 
 class _Predicate(NamedTuple):
@@ -178,6 +258,22 @@ class CheckArtifacts:
     # consumer downstream of the check renders against exactly the table the
     # checker keyed its bindings by rather than rebuilding an approximation.
     alias_env: AliasEnv
+    # #1679: every node's type and target by its identity
+    # (`ast.Node.node_id`), over the entry file, every module it reaches and
+    # the prelude; each generic call's instantiation by the call's identity;
+    # and the binding and the prelude declarations the check bound, which
+    # the typed program links once (`vera.typed`).
+    node_semantic_types: dict[int, Type] = field(default_factory=dict)
+    node_target_types: dict[int, Type] = field(default_factory=dict)
+    instantiations: dict[int, Instantiation] = field(default_factory=dict)
+    binding: Binding | None = None
+    prelude: tuple[ast.TopLevelDecl, ...] = ()
+    prelude_source: str = ""
+    #: Each `State` or `Exn` handler's cell by the handler's identity, and
+    #: the instances the program needs, derived once by a check that
+    #: passes (`vera.typed.Derivation`; `None` for a refused program).
+    handler_cells: dict[int, HandlerCell] = field(default_factory=dict)
+    derivation: Derivation | None = None
 
 
 def typecheck_with_artifacts(
@@ -187,6 +283,7 @@ def typecheck_with_artifacts(
     resolved_modules: list[ResolvedModule] | None = None,
     collect_module_artifacts: bool = False,
     body_check_memo: set[tuple[str, ...]] | None = None,
+    tables: CheckTables | None = None,
 ) -> tuple[list[Diagnostic], CheckArtifacts]:
     """Type-check and additionally collect LSP artifacts (#222 Phase D).
 
@@ -226,6 +323,13 @@ def typecheck_with_artifacts(
     per-module registration (``ContractVerifier._module_alias_envs``) — and a
     third, unread copy here would only be one more table to drift.
     """
+    if body_check_memo is not None and tables is None:
+        # #1679: a module whose bodies an earlier check of the batch typed
+        # is skipped, and its nodes' entries are in that check's tables, so
+        # a shared memo needs the shared tables (PR #1791 review).
+        raise ValueError(
+            "a shared body-check memo needs the identity tables of the "
+            "batch it was filled by: pass tables= with body_check_memo=")
     checker = TypeChecker(
         source=source, file=file, resolved_modules=resolved_modules,
     )
@@ -244,7 +348,7 @@ def typecheck_with_artifacts(
     checker.expr_target_types = {}
     checker.hole_sites = []
     try:
-        checker.check_program(program)
+        _check(checker, program, tables)
     except BaseException as exc:
         # #1429, as in `typecheck` above — and this is the entry every `vera`
         # command actually calls, so wiring only the other one would have left
@@ -272,6 +376,14 @@ def typecheck_with_artifacts(
         expr_target_types=checker.expr_target_types,
         module_artifacts=module_arts,
         alias_env=naming.alias_env_from_environment(checker.env),
+        node_semantic_types=checker.node_semantic_types or {},
+        node_target_types=checker.node_target_types or {},
+        instantiations=checker.instantiations or {},
+        binding=checker._binding,
+        handler_cells=checker.handler_cells or {},
+        derivation=checker.derivation,
+        prelude=checker._bound_prelude[0],
+        prelude_source=checker._bound_prelude[1],
     )
 
 
@@ -557,6 +669,26 @@ class TypeChecker(
         self.expr_target_types: (
             dict[tuple[int, int, int, int], Type] | None
         ) = None
+        # #1679: the same two types keyed by node identity
+        # (`ast.Node.node_id`), which tells a clone's node from its
+        # template's where a span cannot, and each generic call's
+        # instantiation.  A module's body check and the prelude's share the
+        # entry check's tables, so one table answers for every node a
+        # program compiles.
+        self.node_semantic_types: dict[int, Type] | None = None
+        self.node_target_types: dict[int, Type] | None = None
+        self.instantiations: dict[int, Instantiation] | None = None
+        #: Each `State` / `Exn` handler's cell, by the handler's identity,
+        #: and the derivation a clean check makes (`_check`).
+        self.handler_cells: dict[int, HandlerCell] | None = None
+        self.derivation: Derivation | None = None
+        # #1679: the prelude declarations the binding of this check's calls
+        # bound, and the buffer their spans index into (`_bind`): the
+        # declarations whose bodies the prelude's check types.
+        self._bound_prelude: tuple[tuple[ast.TopLevelDecl, ...], str] = ((), "")
+        # #1679: set for the check of the prelude's own declarations, whose
+        # names are the prelude's and so are not refused as reserved.
+        self._prelude_namespace = False
         # #1503: the COMPOSITE type a pattern binds a constructor argument of
         # its source at — that construction's context
         # (`CheckerMixin._register_pattern_reads`).
@@ -1519,8 +1651,9 @@ class TypeChecker(
             ]
             entry = ast.Program(
                 module=None, imports=(), declarations=(), span=None)
-        prelude, _source = prelude_declarations(
+        prelude, source = prelude_declarations(
             entry, {m.path: m.program for m in modules})
+        self._bound_prelude = (prelude, source)
         return bind_program(entry, modules, prelude, refused=refused)
 
     def _bound_function(self, node: ast.Node) -> FunctionInfo | None:

@@ -25,10 +25,7 @@ from typing import Any
 
 import pytest
 
-from vera.codegen import compile as codegen_compile
 from vera.codegen.api import WasmTrapError
-from vera.parser import parse_file
-from vera.transform import transform
 from vera.markdown import parse_markdown
 from vera.markdown_grammar import js_grammar_block
 from tests.md_parse_corpus import CLASS_REPROS, encode_json, md_corpus
@@ -1766,9 +1763,7 @@ public fn main(@Unit -> @Int)
 """
         vera_file = tmp_path / "state_composite.vera"
         vera_file.write_text(source, encoding="utf-8")
-        tree = parse_file(str(vera_file))
-        ast = transform(tree)
-        result = codegen_compile(ast, source=source, file=str(vera_file))
+        result = pipeline.compile(vera_file).result
         assert result.ok, f"Compile errors: {result.diagnostics}"
         wasm_path = tmp_path / "state_composite.wasm"
         wasm_path.write_bytes(result.wasm_bytes)

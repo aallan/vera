@@ -201,6 +201,7 @@ def verify_file(path: str | Path) -> "VerifyResult":
     from vera.checker import typecheck_with_artifacts
     from vera.resolver import ModuleResolver
     from vera.transform import transform
+    from vera.typed import build
     from vera.verifier import VerifyResult, VerifySummary, verify
 
     path = Path(path)
@@ -218,11 +219,7 @@ def verify_file(path: str | Path) -> "VerifyResult":
     type_diags = resolver.errors + check_diags
     if any(d.severity == "error" for d in type_diags):
         return VerifyResult(diagnostics=type_diags, summary=VerifySummary())
-    result = verify(
-        ast, source, file=str(path), resolved_modules=resolved,
-        expr_types=artifacts.expr_semantic_types,
-        expr_target_types=artifacts.expr_target_types,
-    )
+    result = verify(build(ast, resolved, artifacts), source, file=str(path))
     result.diagnostics = type_diags + result.diagnostics
     return result
 

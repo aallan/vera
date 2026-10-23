@@ -91,6 +91,7 @@ from vera.ast import (
     _TypeParams,
     _WhereFns,
     _WithClause,
+    number_nodes,
 )
 from vera.errors import (
     Diagnostic,
@@ -1684,4 +1685,8 @@ def transform(tree: Tree[Any]) -> Program:
     labels = getattr(tree, ANNOTATIONS_ATTR, None)
     if labels is not None:
         program = _attach_annotations(program, labels)
+    # #1679: every node of the tree gets its identity here, where the tree
+    # is made, so the entry file, each module and the prelude are numbered
+    # once and the checker's tables can be keyed by node.
+    number_nodes(program)
     return program

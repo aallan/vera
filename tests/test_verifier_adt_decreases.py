@@ -4,6 +4,8 @@ Split from tests/test_verifier.py (#839). Shared helpers live in tests/verifier_
 """
 from __future__ import annotations
 
+from vera.typed import build as build_typed
+
 import pytest
 
 from vera.parser import parse_to_ast
@@ -189,7 +191,7 @@ private fn is_nil(@List<Int> -> @Bool)
         text = source.read_text(encoding="utf-8")
         ast = parse_to_ast(text)
         typecheck(ast, text)
-        result = verify(ast, text, file=str(source))
+        result = verify(pipeline.check(source).typed, text, file=str(source))
         e522 = [d for d in result.diagnostics if d.error_code == "E522"]
         assert e522 == [], (
             f"list_ops.vera should not have E522 warnings: "
@@ -247,7 +249,7 @@ private fn sum_to(@Nat -> @Nat)
         text = source.read_text(encoding="utf-8")
         ast = parse_to_ast(text)
         typecheck(ast, text)
-        result = verify(ast, text, file=str(source))
+        result = verify(pipeline.check(source).typed, text, file=str(source))
         e525 = [d for d in result.diagnostics if d.error_code == "E525"]
         assert e525 == [], "Mutual recursion decreases should be verified"
         # A `@Nat` measure is an i64 (spec §2.2), so the unbounded-integer
@@ -265,7 +267,7 @@ private fn sum_to(@Nat -> @Nat)
         text = source.read_text(encoding="utf-8")
         ast = parse_to_ast(text)
         typecheck(ast, text)
-        result = verify(ast, text, file=str(source))
+        result = verify(pipeline.check(source).typed, text, file=str(source))
         # #798: the `@Nat.0 * factorial(@Nat.0 - 1)` multiply emits an
         # int_overflow obligation; operands are unbounded so it falls to
         # Tier 3 (runtime overflow trap).  The `decreases(@Nat.0)` measure is
@@ -346,7 +348,7 @@ private fn sum(@List<Int> -> @Int)
         text = source.read_text(encoding="utf-8")
         ast = parse_to_ast(text)
         typecheck(ast, text)
-        result = verify(ast, text, file=str(source))
+        result = verify(pipeline.check(source).typed, text, file=str(source))
         # #798: the `1 + length(...)` and `@Int.0 + sum(...)` adds each emit an
         # int_overflow obligation; operands are unbounded so both fall to Tier 3
         # (runtime overflow trap).  The Tier-1 count is unchanged.
@@ -530,10 +532,8 @@ private fn sum(@List<Int> -> @Int)
             # sits far from any plausible budget and the pin measures the
             # programs rather than the machine.  Verified flip-free across
             # [500 ms, 20 s], warm and cold (#1350).
-            result = verify(prog, text, file=str(f),
-                            resolved_modules=resolved,
-                            expr_types=artifacts.expr_semantic_types,
-                            expr_target_types=artifacts.expr_target_types)
+            result = verify(build_typed(prog, resolved, artifacts), text,
+                            file=str(f))
             t1 += result.summary.tier1_verified
             t3 += result.summary.tier3_runtime
             total += result.summary.total
@@ -899,7 +899,7 @@ public fn outer(@Nat -> @Nat)
         text = source.read_text(encoding="utf-8")
         prog = parse_to_ast(text)
         typecheck(prog, text)
-        result = verify(prog, text, file=str(source))
+        result = verify(pipeline.check(source).typed, text, file=str(source))
         # A `@Nat` measure is an i64 (spec §2.2), so the unbounded-integer
         # proof and the i64 runtime comparison agree on it with nothing to
         # obligate (#1222's `decreases_bound` went with the u64 `Nat`).

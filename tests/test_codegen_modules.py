@@ -313,7 +313,7 @@ public fn main(@Unit -> @Int)
             check_diags = typecheck(prog, main_src, resolved_modules=[mod])
             check_errors = [d for d in check_diags if d.severity == "error"]
             assert check_errors == [], [e.description for e in check_errors]
-            vres = verify(prog, main_src, resolved_modules=[mod])
+            vres = verify(pipeline.typed(main_src, modules=[mod]), main_src)
             errors = [d for d in vres.diagnostics if d.severity == "error"]
             assert errors == [], [e.description for e in errors]
         finally:
@@ -793,8 +793,7 @@ public fn main(@Unit -> @Int)
             f.flush()
             path = f.name
         try:
-            prog = transform(parse_file(path))
-            vres = verify(prog, main_src, resolved_modules=[mod])
+            vres = verify(pipeline.typed(main_src, modules=[mod]), main_src)
             errors = [d for d in vres.diagnostics if d.severity == "error"]
             assert errors == [], [e.description for e in errors]
         finally:
@@ -853,8 +852,7 @@ public fn bare_probe(@Unit -> @Int)
             f.flush()
             path = f.name
         try:
-            prog = transform(parse_file(path))
-            vres = verify(prog, main_src, resolved_modules=[mod])
+            vres = verify(pipeline.typed(main_src, modules=[mod]), main_src)
             errors = [d for d in vres.diagnostics if d.severity == "error"]
             assert errors == [], [e.description for e in errors]
         finally:
@@ -1084,8 +1082,7 @@ public fn probe(@Unit -> @Int)
             f.flush()
             path = f.name
         try:
-            prog = transform(parse_file(path))
-            vres = verify(prog, main_src, resolved_modules=[mod])
+            vres = verify(pipeline.typed(main_src, modules=[mod]), main_src)
             errors = [d for d in vres.diagnostics if d.severity == "error"]
             assert any(e.error_code == "E500" for e in errors), (
                 f"the lying module generic's clone must be caught at verify "
@@ -1134,8 +1131,7 @@ public fn probe(@Unit -> @Int)
             f.flush()
             path = f.name
         try:
-            prog = transform(parse_file(path))
-            vres = verify(prog, main_src, resolved_modules=[mod])
+            vres = verify(pipeline.typed(main_src, modules=[mod]), main_src)
             errors = [d for d in vres.diagnostics if d.severity == "error"]
             assert errors == [], [e.description for e in errors]
         finally:
@@ -1185,8 +1181,7 @@ public fn probe(@Unit -> @Int)
             f.flush()
             path = f.name
         try:
-            prog = transform(parse_file(path))
-            vres = verify(prog, main_src, resolved_modules=[mod])
+            vres = verify(pipeline.typed(main_src, modules=[mod]), main_src)
             errors = [d for d in vres.diagnostics if d.severity == "error"]
             assert errors == [], [e.description for e in errors]
         finally:
@@ -1290,11 +1285,9 @@ public fn main(@Unit -> @Int)
             f.flush()
             path = f.name
         try:
-            tree = parse_file(path)
-            ast_program = transform(tree)
             result = compile(
-                ast_program, source=main_source, file=path,
-                resolved_modules=[mod],
+                pipeline.typed(main_source, file=path, modules=[mod]),
+                source=main_source, file=path,
             )
             errors = [d for d in result.diagnostics if d.severity == "error"]
             assert not errors, (
@@ -1350,11 +1343,9 @@ public fn main(@Unit -> @Int)
             f.flush()
             path = f.name
         try:
-            tree = parse_file(path)
-            ast_program = transform(tree)
             result = compile(
-                ast_program, source=main_source, file=path,
-                resolved_modules=[mod],
+                pipeline.typed(main_source, file=path, modules=[mod]),
+                source=main_source, file=path,
             )
             # Guard against silent pass-on-failure: if compile errored,
             # the warning filter below would be empty and the assertion
@@ -2547,7 +2538,7 @@ public fn main(@Unit -> @Int)
             check_diags = typecheck(prog, main_src, resolved_modules=[mod])
             check_errors = [d for d in check_diags if d.severity == "error"]
             assert check_errors == [], [e.description for e in check_errors]
-            vres = verify(prog, main_src, resolved_modules=[mod])
+            vres = verify(pipeline.typed(main_src, modules=[mod]), main_src)
             verrors = [d for d in vres.diagnostics if d.severity == "error"]
             assert verrors == [], [e.description for e in verrors]
         finally:
@@ -3179,9 +3170,10 @@ public fn main(@Unit -> @Int)
 
         prog, path = _parse_from_temp_file(source)
         gen = CodeGenerator(
-            source=source, file=path, resolved_modules=mods,
+            pipeline.typed(source, file=path, modules=mods),
+            source=source, file=path,
         )
-        result = gen.compile_program(prog)
+        result = gen.compile_program()
         errors = [d for d in result.diagnostics if d.severity == "error"]
         assert not errors, [e.description for e in errors]
         clone_keys = [k for k in gen._fn_ret_type_exprs
@@ -3233,9 +3225,10 @@ public fn main(@Unit -> @Int)
 
         prog, path = _parse_from_temp_file(source)
         gen = CodeGenerator(
-            source=source, file=path, resolved_modules=mods,
+            pipeline.typed(source, file=path, modules=mods),
+            source=source, file=path,
         )
-        result = gen.compile_program(prog)
+        result = gen.compile_program()
         errors = [d for d in result.diagnostics if d.severity == "error"]
         assert not errors, [e.description for e in errors]
         mangled = [k for k in gen._fn_ret_type_exprs if k.startswith("mod$")]
@@ -3630,8 +3623,10 @@ public fn main(@Unit -> @Int)
 { ident(42) }
 """
         prog, path = _parse_from_temp_file(source)
-        gen = CodeGenerator(source=source, file=path, resolved_modules=mods)
-        result = gen.compile_program(prog)
+        gen = CodeGenerator(
+            pipeline.typed(source, file=path, modules=mods),
+            source=source, file=path)
+        result = gen.compile_program()
         errors = [d for d in result.diagnostics if d.severity == "error"]
         assert not errors, [e.description for e in errors]
 
@@ -3690,8 +3685,10 @@ public fn main(@Unit -> @Int)
 { option_unwrap_or(palias::wrap(41), 0) + 1 }
 """
         prog, path = _parse_from_temp_file(source)
-        gen = CodeGenerator(source=source, file=path, resolved_modules=mods)
-        result = gen.compile_program(prog)
+        gen = CodeGenerator(
+            pipeline.typed(source, file=path, modules=mods),
+            source=source, file=path)
+        result = gen.compile_program()
         errors = [d for d in result.diagnostics if d.severity == "error"]
         assert not errors, [e.description for e in errors]
         assert "main" in result.exports

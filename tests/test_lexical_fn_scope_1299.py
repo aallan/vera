@@ -44,9 +44,6 @@ table must not undo it.
 
 from __future__ import annotations
 
-import os
-import traceback
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -56,7 +53,6 @@ from tests.codegen_helpers import wat_calls, wat_fn_body, wat_fn_names
 from tests.module_fixture_helpers import build_multi_module, module_value
 from vera import ast
 from vera.codegen.core import CodeGenerator
-from vera.monomorphize import MonoContext, Monomorphizer, NamespaceFnNames
 from vera.wasm import StringPool
 from vera.wasm.context import WasmContext
 from tests import pipeline
@@ -1306,73 +1302,6 @@ public fn main(@Unit -> @Int)
         ) == 1
 
 
-class TestDiscoveryWalkContract:
-    """Two properties of the discovery walk asserted on the walk itself.
-
-    Neither is reachable from a compilation today — every declaration that
-    reaches ``collect_calls_in_node`` has had its bare helper names hoisted
-    or stripped, and a ``$``-bearing call name is never an operation's — so a
-    behaviour test would be green either way and prove nothing.  They are the
-    walk's contract all the same, and they mirror ``_scoped_fn_names``'s two
-    on the codegen side, so they are asserted where they live.
-    """
-
-    @staticmethod
-    def _mono(scope: frozenset[str]) -> Monomorphizer:
-        ctx = MonoContext(
-            generic_decls={}, ctor_to_adt={}, ctor_tp_indices={},
-            adt_tp_counts={}, type_aliases={}, type_alias_params={},
-            fn_ret_types={},
-            fn_names=frozenset({"get", "holder", "holder$Bool$where$get"}),
-            namespace_fn_names=NamespaceFnNames({None: scope}),
-        )
-        return Monomorphizer(ctx)
-
-    def test_a_mangled_name_stays_user_owned_in_any_scope(self) -> None:
-        mono = self._mono(frozenset({"holder"}))
-        with mono.namespace_scope(None):
-            assert mono._bare_call_is_user_fn("holder$Bool$where$get")
-            # …while the bare spelling of the same helper does not.
-            assert not mono._bare_call_is_user_fn("get")
-
-    def test_a_walked_declarations_own_helpers_join_its_scope(self) -> None:
-        """A bare helper name is in its parent's scope while that parent's
-        body is being walked, and out of it again afterwards."""
-        source = """\
-private fn holder(@Unit -> @Int)
-  requires(true)
-  ensures(true)
-  effects(pure)
-{ get(()) }
-where {
-  fn get(@Unit -> @Int)
-    requires(true)
-    ensures(true)
-    effects(pure)
-  { 1 }
-}
-"""
-        holder = _top_decl(source, "holder")
-        mono = self._mono(frozenset({"holder"}))
-        seen: list[bool] = []
-        original = Monomorphizer._collect_calls_in_node_scoped
-
-        def recording(inner: Monomorphizer, fn: ast.FnDecl, *a: Any) -> None:
-            seen.append(inner._bare_call_is_user_fn("get"))
-            return original(inner, fn, *a)
-
-        Monomorphizer._collect_calls_in_node_scoped = recording  # type: ignore[method-assign,assignment]
-        try:
-            with mono.namespace_scope(None):
-                assert not mono._bare_call_is_user_fn("get")
-                mono.collect_calls_in_node(holder, {}, {}, {})
-                assert not mono._bare_call_is_user_fn("get")
-        finally:
-            Monomorphizer._collect_calls_in_node_scoped = original  # type: ignore[method-assign]
-
-        assert seen and seen[0], (
-            "the helper was not in its own parent's walk scope"
-        )
 
 
 # ---------------------------------------------------------------------
@@ -1499,59 +1428,3 @@ class TestNestedHelperFamilyLeaf:
             "lib.vera": _HELPER_FAMILY_LIB.replace("get", "gettt"),
             "main.vera": _HELPER_FAMILY_MAIN,
         }) == 7
-
-    def test_no_discovery_walk_runs_without_a_namespace_scope(
-        self, tmp_path: Path,
-    ) -> None:
-        """The door invariant, over every walk this compilation enters.
-
-        The equality differential compares the two sides against each other,
-        so a walk both sides leave unscoped is invisible to it.  This asks a
-        question neither side can answer wrongly in agreement: while the
-        context carries visibility tables, no entry into the scoped region
-        may run with no scope entered.  A future walk added without one
-        fails here, naming its call site.
-        """
-        unscoped: dict[str, int] = {}
-        originals = {
-            name: getattr(Monomorphizer, name)
-            for name in (
-                "collect_calls_in_node",
-                "collect_calls_in_expr",
-                "collect_generic_helper_instances",
-            )
-        }
-
-        # `Callable[..., Any]`, not a precise signature: `probe` stands in
-        # for three DIFFERENT methods whose parameters it never inspects, so
-        # the honest type is "forwards whatever it was given".  A ParamSpec
-        # would say the same thing at more cost, and nothing in this repo
-        # uses one.
-        def wrap(original: Callable[..., Any]) -> Callable[..., Any]:
-            def probe(inner: Monomorphizer, *a: Any, **kw: Any) -> Any:
-                if (inner.ctx.namespace_fn_names is not None
-                        and inner._scope_fn_names is None):
-                    site = "?"
-                    for frame in reversed(traceback.extract_stack()[:-2]):
-                        if frame.filename.endswith(
-                            f"vera{os.sep}monomorphize.py",
-                        ):
-                            continue
-                        site = f"{Path(frame.filename).name}:{frame.lineno}"
-                        break
-                    unscoped[site] = unscoped.get(site, 0) + 1
-                return original(inner, *a, **kw)
-            return probe
-
-        for name, original in originals.items():
-            setattr(Monomorphizer, name, wrap(original))
-        try:
-            build_multi_module(tmp_path, dict(self._FILES))
-        finally:
-            for name, original in originals.items():
-                setattr(Monomorphizer, name, original)
-
-        assert not unscoped, (
-            f"discovery walks ran with no namespace scope entered: "
-            f"{sorted(unscoped)}"
-        )

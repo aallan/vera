@@ -11,6 +11,8 @@ from vera.checker import typecheck
 from vera.resolver import ModuleResolver
 from vera.verifier import verify
 
+from tests import pipeline
+
 from tests.verifier_helpers import (
     ALL_EXAMPLES,
     EXAMPLES_DIR,
@@ -44,7 +46,8 @@ class TestExampleVerification:
         type_errors = [d for d in type_diags if d.severity == "error"]
         assert type_errors == [], f"Type errors: {[e.description for e in type_errors]}"
 
-        result = verify(ast, source, file=filename, resolved_modules=resolved)
+        result = verify(
+            pipeline.check(path, file=filename).typed, source, file=filename)
         errors = [d for d in result.diagnostics if d.severity == "error"]
         assert errors == [], f"Verify errors: {[e.description for e in errors]}"
 

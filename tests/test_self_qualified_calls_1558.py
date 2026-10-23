@@ -576,12 +576,8 @@ def _emitted_and_discovered(
     assert not [d for d in diags if d.severity == "error"], diags
     _ = compiled.result
     emitted = set(getattr(compiled.generator, "_emitted_instances", set()))
-    arts = checked.artifacts
     verifier = ContractVerifier(
-        source=checked.source, file=checked.file,
-        resolved_modules=checked.resolved,
-        expr_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
+        checked.typed, source=checked.source, file=checked.file,
     )
     verifier.register_program(compiled.parsed.program)
     discovered = {(name, ct) for name, cts in verifier._instances.items()

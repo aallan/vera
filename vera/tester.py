@@ -34,7 +34,7 @@ from vera.naming import EMPTY_ALIAS_ENV, AliasEnv
 from vera.slots import fn_slot_scope
 from vera.smt import SlotEnv, SmtContext
 from vera.trap_registry import TRAP_EMITTERS
-from vera.types import BOOL, BYTE, FLOAT64, INT, NAT, STRING, UNIT, ModuleArtifacts, PrimitiveType, Type, base_type, pretty_type
+from vera.types import BOOL, BYTE, FLOAT64, INT, NAT, STRING, UNIT, PrimitiveType, Type, base_type, pretty_type
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -43,6 +43,7 @@ if TYPE_CHECKING:
     from vera.reconcile import EntryCall
     from vera.resolver import ResolvedModule
     from vera.trap_registry import EmittedCheck
+    from vera.typed import TypedProgram
     from vera.verifier import VerifyResult
 
 
@@ -228,15 +229,11 @@ _INCONCLUSIVE = (
 # =====================================================================
 
 def test(
-    program: ast.Program,
+    typed: TypedProgram,
     source: str = "",
     file: str | None = None,
     trials: int = 100,
     fn_name: str | None = None,
-    resolved_modules: list[ResolvedModule] | None = None,
-    expr_semantic_types: dict[tuple[int, int, int, int], Type] | None = None,
-    expr_target_types: dict[tuple[int, int, int, int], Type] | None = None,
-    module_artifacts: ModuleArtifacts | None = None,
     alias_env: AliasEnv = EMPTY_ALIAS_ENV,
     distrust: bool = False,
 ) -> TestResult:
@@ -252,32 +249,21 @@ def test(
     ``"refuted"`` with an E703 error.  Without it the result is exactly the
     default one: no proved function is executed.
 
-    ``expr_semantic_types`` / ``expr_target_types`` are the checker's
-    resolved- and target-type side-tables (``CheckerArtifacts``).  #986: they
-    are threaded into BOTH the verifier (classification) and codegen (the WASM
-    the tester executes) so the tester compiles the SAME component guards the
-    verifier obligates — without them a tuple/array-component guard
-    (recovered only from the target table) silently vanished from the
-    tester-compiled WASM while the verifier still classified it tier3-guarded.
-
-    ``module_artifacts`` (#987) carries each resolved module's OWN side-tables so
-    the tester-compiled WASM also emits the component guards for IMPORTED bodies —
-    the same threading ``vera run`` / ``vera compile`` use.
+    *typed* is the program a clean check typed (:func:`vera.typed.build`),
+    handed to BOTH the verifier (classification) and codegen (the WASM the
+    tester executes), so the tester compiles the SAME guards the verifier
+    obligates, an imported body's included (#986, #987).
 
     ``alias_env`` (#1208) is the checked program's naming environment
     (``CheckArtifacts.alias_env``), carried down to the Z3 input generator so
     the slot names it declares variables under are the checker's.
     """
     engine = _TestEngine(
-        program=program,
+        typed=typed,
         source=source,
         file=file,
         trials=trials,
         fn_name=fn_name,
-        resolved_modules=resolved_modules,
-        expr_semantic_types=expr_semantic_types,
-        expr_target_types=expr_target_types,
-        module_artifacts=module_artifacts,
         alias_env=alias_env,
         distrust=distrust,
     )
@@ -293,34 +279,24 @@ class _TestEngine:
 
     def __init__(
         self,
-        program: ast.Program,
+        typed: TypedProgram,
         source: str,
         file: str | None,
         trials: int,
         fn_name: str | None,
-        resolved_modules: list[ResolvedModule] | None,
-        expr_semantic_types: (
-            dict[tuple[int, int, int, int], Type] | None) = None,
-        expr_target_types: (
-            dict[tuple[int, int, int, int], Type] | None) = None,
-        module_artifacts: ModuleArtifacts | None = None,
         alias_env: AliasEnv = EMPTY_ALIAS_ENV,
         distrust: bool = False,
     ) -> None:
-        self.program = program
+        # #986/#1679: the typed program, handed to both `verify` and
+        # `codegen_compile` below so the tester's WASM carries the same
+        # guards the verifier obligates.
+        self.typed = typed
+        self.program = typed.program
         self.source = source
         self.file = file
         self.trials = trials
         self.fn_name = fn_name
-        self.resolved_modules = resolved_modules or []
-        # #986: the checker's resolved- / target-type side-tables, threaded into
-        # both `verify` and `codegen_compile` below so the tester's WASM carries
-        # the same component guards the verifier obligates.
-        self.expr_semantic_types = expr_semantic_types
-        self.expr_target_types = expr_target_types
-        # #987: per-module tables so the tester's WASM emits the component guards for
-        # imported bodies too (threaded into `codegen_compile` below).
-        self.module_artifacts = module_artifacts
+        self.resolved_modules = list(typed.modules)
         # #1208: the checked program's naming environment, threaded into the
         # Z3 input generator so its slot names are the checker's.
         self.alias_env = alias_env
@@ -336,13 +312,9 @@ class _TestEngine:
 
         # 1. Classify functions via the verifier
         verify_result = verify(
-            self.program,
+            self.typed,
             source=self.source,
             file=self.file,
-            resolved_modules=self.resolved_modules,
-            expr_types=self.expr_semantic_types,
-            expr_target_types=self.expr_target_types,
-            module_artifacts=self.module_artifacts,
         )
         classification = _classify_functions(
             self.program, verify_result.diagnostics,
@@ -357,13 +329,9 @@ class _TestEngine:
 
         # 3. Compile (needed for execution)
         compile_result = codegen_compile(
-            self.program,
+            self.typed,
             source=self.source,
             file=self.file,
-            resolved_modules=self.resolved_modules,
-            expr_semantic_types=self.expr_semantic_types,
-            expr_target_types=self.expr_target_types,
-            module_artifacts=self.module_artifacts,
         )
         compile_errors = [
             d for d in compile_result.diagnostics

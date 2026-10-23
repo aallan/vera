@@ -37,6 +37,8 @@ does — the ``ensures`` + ``vera run`` differential, never ``assert`` (an
 
 from __future__ import annotations
 
+from vera.typed import build as build_typed
+
 from pathlib import Path
 
 import pytest
@@ -1257,7 +1259,8 @@ public fn f(@Option<PosInt> -> @Int)
     program = parse_to_ast(src)
     diags, arts = typecheck_with_artifacts(program, src)
     assert not [d for d in diags if d.severity == "error"], diags
-    v = ContractVerifier(src)
+    typed = build_typed(program, [], arts)
+    v = ContractVerifier(typed, src)
     v.register_program(program)
     opt_int = AdtType(name="Option", type_args=(PrimitiveType(name="Int"),))
 

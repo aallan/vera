@@ -1147,9 +1147,9 @@ public fn main(@Unit -> @Nat)
     def _predicate(
         self,
     ) -> tuple[ContractVerifier, ast.RefinementType]:
-        prog = pipeline.parse(self._CLOSURE_PREDICATE).program
-        verifier = ContractVerifier(source=self._CLOSURE_PREDICATE)
-        verifier.register_program(prog)
+        typed = pipeline.check(self._CLOSURE_PREDICATE).typed
+        verifier = ContractVerifier(typed, source=self._CLOSURE_PREDICATE)
+        verifier.register_program(typed.program)
         body = verifier.env.type_aliases["Grown"].body
         assert isinstance(body, ast.RefinementType), body
         return verifier, body

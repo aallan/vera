@@ -1,36 +1,24 @@
 """Mixin for generic function monomorphization (Pass 1.5).
 
-Drives the shared :class:`~vera.monomorphize.Monomorphizer` (instantiation
-discovery + AST substitution) to produce monomorphized ``FnDecl`` copies for
-WASM emission, and additionally checks ability-constraint satisfaction (E613) —
-the one part of monomorphization that is layout-specific and so stays in
-codegen.
-
-The discovery + substitution logic itself lives in :mod:`vera.monomorphize` so
-the verifier (#732) can reuse the *exact* same code: the verifier must check
-precisely the instantiation set this pass emits, or a missed instantiation
-becomes a false Tier-1.  Codegen owns the *orchestration* here — the seed walk
-plus the transitive worklist, with constraint-failing instances filtered out
-(and their subtrees pruned) so the emitted set matches today's behaviour.
+Emits the clones the typed program built (#1679, :mod:`vera.typed`): the
+instance set is derived once, from the instantiations the checker inferred,
+and each clone is built there once, so code generation and the verifier read
+one set.  What stays here is lowering: the order clones are emitted in, and
+the hoisting of each clone's ``where`` helpers into standalone functions
+(#904), with a generic helper's own instances taken from the typed program
+under its parent clone (#1002).  An instance's ability constraints are
+judged at check, at the call that chooses its type arguments
+(:func:`vera.typed.judge`, E613), so every instance here satisfies them.
 """
 
 from __future__ import annotations
 
-import contextlib
-from collections.abc import Iterator
-
 from vera import ast
-from vera.lowering import ability_lowerable
 from vera.monomorphize import (
-    MonoContext,
-    Monomorphizer,
-    TypeArgAliasScope,
     collect_nested_generic_decls,
     declared_return_clone_key,
-    uninferred_type_arg_fix,
     where_helper_name,
 )
-from vera.naming import EMPTY_ALIAS_ENV, AliasEnv
 from vera.skip import DERIVED_HELPER_DEPTH_CAP
 from vera.slots import type_expr_slot_name
 
@@ -40,48 +28,11 @@ from vera.slots import type_expr_slot_name
 _EQ_TYPES: frozenset[str] = frozenset({
     "Int", "Nat", "Bool", "Float64", "String", "Byte", "Unit",
 })
-# #921 (PR #929 review): `Bool` is deliberately ABSENT here.  §4.5 orders only
-# Int/Nat/Float64/Byte/String — never Bool — so `Ord<Bool>` must FAIL this
-# constraint gate.  With Bool present, a `forall<T where Ord<T>>` instantiated
-# at Bool slipped past E613 and lowered `compare`/`<` on two Bool i32 values to
-# a signed `i32.lt_s` — a silent order for an unorderable type.
-_ORD_TYPES: frozenset[str] = frozenset({
-    "Int", "Nat", "Float64", "String", "Byte",
-})
-_HASH_TYPES: frozenset[str] = frozenset({
-    "Int", "Nat", "Bool", "Float64", "String", "Byte", "Unit",
-})
-_SHOW_TYPES: frozenset[str] = frozenset({
-    "Int", "Nat", "Bool", "Float64", "String", "Byte", "Unit",
-})
-
-# Maps ability name → (type set, error description fragment).
-_ABILITY_TYPE_SETS: dict[str, tuple[frozenset[str], str]] = {
-    "Eq": (_EQ_TYPES, "primitive types (Int, Bool, Float64, String, Byte, Nat, Unit) and ADTs whose fields are themselves Eq (structural derivation)"),
-    "Ord": (_ORD_TYPES, "the orderable primitive types (Int, Nat, Float64, String, Byte)"),
-    "Hash": (_HASH_TYPES, "primitive types (Int, Nat, Bool, Float64, String, Byte, Unit)"),
-    "Show": (_SHOW_TYPES, "primitive types (Int, Nat, Bool, Float64, String, Byte, Unit)"),
-}
-
-# Maps a WAT scalar return type to the Vera type name the old
-# `_infer_fncall_vera_type_simple` returned for it.  Used to populate
-# `MonoContext.fn_ret_types` from `_fn_sigs`, reproducing that behaviour
-# exactly (other WAT types — i32_pair, None — yield no entry → `None`).
-_WT_TO_VERA: dict[str | None, str] = {
-    "i64": "Int",
-    "i32": "Bool",
-    "f64": "Float64",
-}
-
-
 def _simple_return_type_name(te: ast.TypeExpr | None) -> str | None:
     """The refinement-unwrapped base type name of a return TypeExpr.
 
-    Thin wrapper over the shared :func:`vera.monomorphize.declared_return_clone_key`
-    — THE single source of truth for the user-fn-return clone key, so codegen
-    discovery, the #732 verifier, and the WASM call-rewrite cannot desync
-    (#878 / #899).  ``None`` for shapes with no simple named base (e.g. a bare
-    ``FnType``), which the caller then falls back to the WAT-signature collapse.
+    Thin wrapper over the shared :func:`vera.monomorphize.declared_return_clone_key`.
+    ``None`` for shapes with no simple named base (e.g. a bare ``FnType``).
     """
     return declared_return_clone_key(te)
 
@@ -89,100 +40,21 @@ def _simple_return_type_name(te: ast.TypeExpr | None) -> str | None:
 class MonomorphizationMixin:
     """Methods for monomorphizing generic functions."""
 
-    def _build_mono_context(
-        self,
-        generic_decls: dict[str, ast.FnDecl],
-        ctor_to_adt: dict[str, str],
-    ) -> MonoContext:
-        """Pack codegen registration state into a shared MonoContext.
-
-        ``fn_ret_types`` is seeded from each function's **declared** return
-        TypeExpr (``_fn_ret_type_exprs``, populated by ``_register_fn`` for
-        every top-level, prelude, and where-helper fn) — the *precise* Vera
-        base type name (``Decimal``, ``Color``, ``Int``), exactly as the #732
-        verifier does (``_simple_type_name``).
-
-        This is load-bearing, not cosmetic: a generic whose type argument is
-        recovered from a user-fn return in argument position (#878,
-        ``pick_first(mkdec(()), …)`` where ``mkdec`` returns ``@Decimal``)
-        would otherwise route through the lossy WAT collapse (``i32 → "Bool"``
-        — a ``Decimal`` handle is ``i32``), hit the ``"Bool"`` phantom-var
-        default, and desync from the verifier (which infers the precise
-        ``Decimal``): a #732 differential divergence.  The WAT-signature
-        collapse (``i64→Int, i32→Bool, f64→Float64``) is kept only as a
-        fallback for any name without a registered return TypeExpr.
-        """
-        fn_ret_types: dict[str, str] = {}
-        for name, sig in self._fn_sigs.items():
-            ret_te = self._fn_ret_type_exprs.get(name)
-            ret_vera = _simple_return_type_name(ret_te) if ret_te else None
-            if ret_vera is None:
-                ret_vera = _WT_TO_VERA.get(sig[1])
-            if ret_vera is not None:
-                fn_ret_types[name] = ret_vera
-        return MonoContext(
-            generic_decls=generic_decls,
-            ctor_to_adt=ctor_to_adt,
-            ctor_tp_indices=getattr(self, "_ctor_adt_tp_indices", {}),
-            adt_tp_counts=getattr(self, "_adt_tp_counts", {}),
-            type_aliases=getattr(self, "_type_aliases", {}),
-            type_alias_params=getattr(self, "_type_alias_params", {}),
-            # #1208: the same namespace as the two maps above, as one value.
-            alias_env=getattr(self, "_alias_env", EMPTY_ALIAS_ENV),
-            fn_ret_types=fn_ret_types,
-            # #899 issue 1: the declared return TypeExprs (type args retained)
-            # let discovery recover a user fn's parameterized return in
-            # `Option<T>` argument position, mirroring the WASM call-rewrite.
-            fn_ret_type_exprs=dict(self._fn_ret_type_exprs),
-            # #1207: the very table the `_effect_ops` shadow guard in
-            # `_compile_function` consults, so discovery decides "is this
-            # `get` an effect op or a user function?" the same way the
-            # rewrite does.  `_fn_sigs` — not `fn_ret_types` above, which
-            # drops any name whose return WAT type has no Vera collapse.
-            fn_names=frozenset(self._fn_sigs),
-            # #1299: and the visibility tables that narrow it per walked
-            # declaration.  `fn_names` above is the flat registry — the guard
-            # rail needs every emitted symbol in it, including a module's
-            # private helpers — so on its own it claimed a bare `get` the
-            # entry program's body meant as the operation, and discovery
-            # named a clone from the invisible declaration's return type
-            # while the rewrite named one from the cell's.
-            namespace_fn_names=getattr(self, "_namespace_tables", None),
-            # #1436: the owner-keyed type-parameter indices, so a
-            # constructor two namespaces declare does not take its field
-            # positions from whichever declaration registered last.
-            adt_ctor_tp_indices=getattr(self, "_adt_ctor_tp_indices", {}),
-            # #1327/#1366/#1369: the checker's own answer, for the shapes this
-            # walker has no arm for — the ENTRY program's table for the entry
-            # file's bodies, and (#1509) each module's own for that module's
-            # bodies, the tables the call-site rewrite reads for the same
-            # bodies (#987).  The CLI hands the verifier the same tables, so
-            # the two consultors back off to identical answers and the #732
-            # differential holds (see `checker_clone_type_name`).
-            expr_types=self._expr_semantic_types,
-            module_expr_types={
-                path: tables[0]
-                for path, tables in self._module_artifacts.items()
-                if tables[0] is not None
-            },
-            # #1511: the alias maps each namespace's bodies compile under,
-            # which a type argument written there is resolved through
-            # before it names a clone (`_type_arg_alias_scopes`).
-            type_arg_aliases=getattr(self, "_type_arg_scopes", {}),
-        )
-
     def _monomorphize(
         self, program: ast.Program,
     ) -> list[ast.FnDecl]:
-        """Monomorphize generic functions for all concrete call sites.
+        """The clones the typed program built for *program*'s generics, in
+        emission order, each clone's ``where`` helpers hoisted.
 
-        Returns a list of new FnDecl nodes with type variables replaced
-        by concrete types and names mangled.
-        """
+        The order is a worklist's over the instances: the instances a body
+        that is not generic calls, per generic in declaration order and by
+        argument, then transitively what each clone calls, then what each
+        hoisted helper calls (#1223), the order the clones were emitted in
+        when code generation derived them itself."""
         # Identify generic function declarations.  #990: a ``forall<T>``
         # where-helper under an all-NON-generic ancestor chain is a mono base
-        # too — without collecting it here, no clone is emitted and the
-        # parent's concrete call lowers to a dangling unmangled name.
+        # too.  #774: an imported PUBLIC generic joins under its link name,
+        # with #998 the module it was declared in.
         generic_decls: dict[str, ast.FnDecl] = {}
         for tld in program.declarations:
             decl = tld.decl
@@ -191,18 +63,6 @@ class MonomorphizationMixin:
                     generic_decls[decl.name] = decl
                 else:
                     collect_nested_generic_decls(decl, generic_decls)
-
-        # #774: cross-module generic monomorphization.  An imported PUBLIC
-        # generic whose bare name is NOT locally shadowed joins `generic_decls`
-        # so the importer discovers its instantiations and emits the clones;
-        # both a bare call and a qualified `m::g` (which desugars to the bare
-        # target) then route through `_generic_fn_info` to the emitted clone.
-        # A LOCAL generic of the same name wins (already inserted above).
-        # #998: bases that DID enter from the import registry are recorded with
-        # their origin module path, so every clone emitted from them (main
-        # worklist, shadowed-body transitive chase, and their hoisted
-        # where-helpers) can be compiled against that module's own span-keyed
-        # tables rather than the importer's.
         imported_generic_decls = getattr(
             self, "_imported_generic_decls", {},
         )
@@ -219,113 +79,36 @@ class MonomorphizationMixin:
         if not generic_decls:
             return []
 
-        # Build constructor → ADT name mapping
-        ctor_to_adt: dict[str, str] = {}
-        for adt_name in self._adt_layouts:
-            for ctor_name in self._adt_layouts[adt_name]:
-                ctor_to_adt[ctor_name] = adt_name
-
-        # #1511: computed once, here, where no module's alias scope is
-        # installed, so the entry's flat maps are the entry's own.
-        self._type_arg_scopes = self._type_arg_alias_scopes()
-        mono = Monomorphizer(
-            self._build_mono_context(generic_decls, ctor_to_adt),
-        )
-        # #1509: the qualified-only discovery below builds a throwaway walker
-        # per call, and it names a nested generic call in an argument the way
-        # this walker does only if it knows the same generics.
-        self._mono_generic_decls = generic_decls
-
-        # Record of every (generic name, concrete types) actually emitted —
-        # i.e. that passed constraint checks.  Consumed by the #732 differential
-        # soundness test, which asserts the verifier discovers a superset of
-        # this set; harmless to WAT output (a plain bookkeeping set).
+        # Record of every (generic name, type arguments) emitted, read by the
+        # instruments that hold the emitted set to the typed program's.
         self._emitted_instances: set[tuple[str, tuple[str, ...]]] = set()
+        self._hoisted_helper_scopes: dict[str, dict[str, str]] = {}
+        typed = self._typed
 
-        # Collect concrete instantiations from non-generic function bodies
         instances: dict[str, set[tuple[str, ...]]] = {
             name: set() for name in generic_decls
         }
-        # #932: side-map from a TRUNCATED one-level constrained-var type name
-        # (`List<List>`, the clone-mangling residue) to its FULLY-recovered
-        # nested name (`List<List<Int>>`).  Consulted ONLY for the Eq-derivability
-        # DECISION — by `_check_constraints` and the direct-`==` path inside a
-        # clone body (`_translate_binary`, via each per-body WasmContext) — never
-        # to key a clone symbol, so the mangled clone name codegen emits and
-        # looks up is unchanged (the #772 hard constraint).  Populated here from
-        # every constrained-generic call site's constructor arguments, across
-        # both the seed decls and the transitively emitted mono bodies below.
-        self._eq_full_type_names: dict[str, str] = {}
-        # #999: seed from resolved-module bodies too.  An imported ``compute``'s
-        # body call to its own nested generic ``compute$where$gid`` (or a
-        # top-level imported generic) is only reachable through the module's
-        # decls, not the main program's — so without walking them the importer
-        # emits no clone and the module body's call dangles.  The verifier's
-        # `_collect_instantiations` walks the identical set, keeping the #732
-        # differential in lockstep.
-        #
-        # #1274 (F1): the module bodies walked here are the REROUTED copies
-        # (`_imported_fn_decls`), not the raw `mod.program`.  A bare call that
-        # Pass 0 turned into a `ModuleCall` is no longer a call to the bare name,
-        # and seeding from the pre-reroute AST recorded it anyway — codegen
-        # emitted a clone of the IMPORTER's same-named generic that nothing
-        # calls and the verifier (which walks its rerouted copies) never
-        # discovers: a differential desync, and an unverified clone if that
-        # generic's contract lied.  These decls carry their where-helpers both
-        # nested and as separate entries; `instances` is a set, so the overlap
-        # costs nothing.
-        # #1299: each declaration is walked in ITS OWN namespace, so a bare
-        # call is discovered against the names that body can actually see.
-        # The entry program's declarations answer to `None`; an imported body
-        # arrives already paired with its module path, which was previously
-        # discarded here.
-        seed_decls: list[tuple[tuple[str, ...] | None, ast.FnDecl]] = [
-            (None, tld.decl) for tld in program.declarations
-            if isinstance(tld.decl, ast.FnDecl)
-        ]
-        seed_decls.extend(getattr(self, "_imported_fn_decls", []))
-        for mod_path, decl in seed_decls:
-            if not decl.forall_vars:
-                with mono.namespace_scope(mod_path):
-                    mono.collect_calls_in_node(
-                        decl, generic_decls, ctor_to_adt, instances,
-                    )
-                    self._collect_eq_full_type_names(
-                        decl, mono, generic_decls, ctor_to_adt,
-                    )
+        for inst in typed.seeds:
+            if inst.parent is None and inst.key in instances:
+                instances[inst.key].add(inst.args)
 
-        # Generate monomorphized FnDecls with transitive closure.
-        # After generating the first round, scan the monomorphized bodies
-        # for further generic calls and generate those too.  This handles
-        # cases like array_map calling array_map_go (both generic).
-        # Constraint-failing instances are skipped here (and their subtrees
-        # pruned), so the emitted set excludes anything that wouldn't compile.
         seen: set[tuple[str, tuple[str, ...]]] = set()
-        # Sort each per-name instantiation set so the worklist seed — and hence
-        # the order clones are appended to `mono_decls` and emitted to WAT — is
-        # deterministic across runs.  Without this, `set` iteration order varies
-        # with PYTHONHASHSEED and `vera compile --wat` is not byte-stable (clone
-        # bodies are identical; only their order differs), breaking reproducible
-        # builds (PR #767 review).
+        # Sorted per name, so the emission order is deterministic (PR #767).
         worklist: list[tuple[str, tuple[str, ...]]] = [
             (fn_name, ct)
             for fn_name, type_arg_set in instances.items()
             for ct in sorted(type_arg_set)
         ]
         mono_decls = self._drain_generic_worklist(
-            worklist, seen, generic_decls, ctor_to_adt, mono,
+            worklist, seen, generic_decls,
         )
 
-        # Store generic fn info for call rewriting in wasm.py
+        # Store generic fn info for the call sites in wasm.py, which name a
+        # generic call's clone from the typed program (`_resolve_generic_call`)
+        # and read a generic's formals for the argument guards.
         self._generic_fn_info: dict[
             str, tuple[tuple[str, ...], tuple[ast.TypeExpr, ...]]
         ] = {}
-        # Per-generic set of type vars carrying an ability bound.  The WASM
-        # call-site rewriter (`_unify_param_arg_wasm`) recovers the type
-        # argument of a `ConstructorCall` bound to one of these, matching the
-        # parameterized clone name Pass 1.5 emits — see `_unify_param_arg`
-        # (#772).  Without this the call site mangles to `eq2$Box` while the
-        # clone is `eq2$Box<String>`, a dangling reference (E602).
         self._generic_constrained_vars: dict[str, frozenset[str]] = {}
         for name, decl in generic_decls.items():
             assert decl.forall_vars is not None  # noqa: S101
@@ -334,152 +117,45 @@ class MonomorphizationMixin:
                 c.type_var for c in (decl.forall_constraints or ())
             )
 
-        # #904: hoist every clone's ``where``-helpers into standalone mono
-        # decls.  A generic's ``where { fn helper(...) }`` block is carried into
-        # each clone by ``monomorphize_fn`` (a total AST substitution), but the
-        # generic PARENT is skipped in Pass 2 (its ``@T`` param is `unsupported`
-        # WASM), so the parent's where-helpers — emitted only alongside a
-        # COMPILABLE parent — were never emitted, and the clone's bare call to
-        # ``$helper`` dangled (``unknown func``).  Give each clone its own copy
-        # of every helper under a clone-aligned name and rewrite the intra-clone
-        # calls to match, so the ordinary mono-decl emission path (register in
-        # Pass 1.5, compile in Pass 2) emits them.
-        #
-        # #1223: hoisting and the top-level worklist are a FIXPOINT, not two
-        # phases.  A generic `where`-helper under a generic ancestor is only
-        # monomorphized during hoisting, and the concrete clone's body can
-        # call a TOP-LEVEL generic at a type nothing else instantiates — its
-        # still-generic spelling binds the enclosing type VARIABLE's name
-        # (`pick$U`), so the worklist above never sees `pick$Bool` and the
-        # rewrite's call dangles (E602, then the whole chain drops with
-        # E620).  Each round therefore re-seeds the worklist from the bodies
-        # hoisting just produced, and any clones that yields go back through
-        # hoisting for their own where-trees.
+        # #904/#1223: hoist every clone's ``where``-helpers into standalone
+        # mono decls, a FIXPOINT with the top-level worklist: a hoisted
+        # helper's clone can call a top-level generic at a type nothing else
+        # instantiates, and that clone's own helpers are hoisted in turn.
         emitted: list[ast.FnDecl] = []
         round_decls = mono_decls
         while round_decls:
-            hoisted = self._hoist_clone_where_fns(
-                round_decls, mono, ctor_to_adt,
-            )
+            hoisted = self._hoist_clone_where_fns(round_decls)
             emitted.extend(hoisted)
             reseed: list[tuple[str, tuple[str, ...]]] = []
             found: dict[str, set[tuple[str, ...]]] = {
                 name: set() for name in generic_decls
             }
             for body in hoisted:
-                # #1299: a clone belongs to the module its base was declared
-                # in, which `_mono_clone_origins` records (`None` for a local
-                # one — the entry namespace).
-                with mono.namespace_scope(
-                    self._mono_clone_origins.get(body.name),
-                ):
-                    mono.collect_calls_in_node(
-                        body, generic_decls, ctor_to_adt, found,
-                    )
+                inst = typed.instance_named(body.name)
+                for callee in (inst.calls.values() if inst else ()):
+                    if callee.parent is None and callee.key in found:
+                        found[callee.key].add(callee.args)
             for t_name, t_types in found.items():
                 for t_ct in sorted(t_types):  # deterministic (see the seed)
                     if (t_name, t_ct) not in seen:
                         reseed.append((t_name, t_ct))
             round_decls = self._drain_generic_worklist(
-                reseed, seen, generic_decls, ctor_to_adt, mono,
+                reseed, seen, generic_decls,
             ) if reseed else []
-        # #1327/#1366: discovery is complete, so every type argument it could
-        # not infer is now known.  Report each as [E622] — an error, not a
-        # note: the instantiation set is what codegen emits clones from, and
-        # one built on the phantom-var guess emits a clone the call-site
-        # rewrite does not call (E602 with no explanation of why, or an
-        # invalid module).  Failing here names the argument the walker could
-        # not type, which is the fact the user can act on.
-        self._report_uninferred_type_args(mono)
         return emitted
-
-    def _type_arg_alias_scopes(self) -> dict[
-        tuple[str, ...] | None, TypeArgAliasScope,
-    ]:
-        """Per namespace, the alias maps a type argument written there is
-        resolved through (#1511, :func:`vera.monomorphize.canonical_type_arg`).
-
-        Exactly the maps that namespace's bodies compile under — the entry
-        file's flat maps, and each module's ``{prelude, **module_own}``
-        overlay as ``_module_alias_scope`` installs it — so discovery and the
-        call site, which reads the installed maps, resolve one argument
-        alike.  Asked outside every module scope (Pass 1.5)."""
-        scopes: dict[tuple[str, ...] | None, TypeArgAliasScope] = {
-            None: (dict(self._type_aliases), dict(self._type_alias_params)),
-        }
-        for path in self._module_type_aliases:
-            with self._module_alias_scope(path):
-                scopes[path] = (
-                    dict(self._type_aliases), dict(self._type_alias_params),
-                )
-        return scopes
-
-    def _report_uninferred_type_args(self, mono: Monomorphizer) -> None:
-        """Turn discovery's un-inferable type arguments into [E622] errors.
-
-        The fail-closed half of the #1327/#1366 family: the phantom-var
-        default is retained for a variable no parameter determines, and every
-        variable a DIRECT ``@T`` parameter DOES determine but whose argument
-        no arm could name is reported here instead of being guessed.
-        """
-        from vera.errors import Diagnostic
-        # One argument is one diagnostic: the walker's own `_uninferred_seen`
-        # supplies that, and every record comes from the one walker.
-        records = list(mono.uninferred_type_args)
-        for rec in records:
-            # #1368 review: `_diag_location` resolves every non-prelude node
-            # against the ENTRY file and source, so a call written inside an
-            # imported module got that module's line number paired with the
-            # importer's file name and a source line quoted from whatever sits
-            # at that line there.  `_module_source_scope` is the existing scope
-            # for exactly this (#1186); the verifier's leg already enters its
-            # own equivalent.  A `None` origin is a no-op, which is the entry
-            # program's own answer.
-            with self._module_source_scope(rec.origin):
-                loc, source_line = self._diag_location(rec.arg)
-            self.diagnostics.append(Diagnostic(
-                description=(
-                    f"Cannot infer the type argument '{rec.type_var}' of "
-                    f"generic call '{rec.fn_name}' from its "
-                    f"{rec.arg_kind} argument."
-                ),
-                location=loc,
-                source_line=source_line,
-                rationale=(
-                    "A generic is compiled by specialising it at each "
-                    "concrete type it is called with, so the compiler must "
-                    "know the type of every argument that fixes a type "
-                    "variable. This argument's type could not be determined, "
-                    "and specialising at a guessed type would emit a "
-                    "specialisation nothing calls."
-                ),
-                # #1509: the table of the file the argument is written in —
-                # the one discovery consulted before recording it.
-                fix=uninferred_type_arg_fix(
-                    rec, mono.checker_table(rec.origin)),
-                spec_ref='Chapter 5, Section 5.9 "Generic Functions"',
-                severity="error",
-                error_code="E622",
-            ))
 
     def _drain_generic_worklist(
         self,
         worklist: list[tuple[str, tuple[str, ...]]],
         seen: set[tuple[str, tuple[str, ...]]],
         generic_decls: dict[str, ast.FnDecl],
-        ctor_to_adt: dict[str, str],
-        mono: Monomorphizer,
     ) -> list[ast.FnDecl]:
-        """Monomorphize *worklist* to a fixpoint, returning the new clones.
+        """The clones of *worklist*'s instances, then of what each calls,
+        transitively, each taken from the typed program.
 
-        The transitive closure over top-level generics: emit each clone, then
-        rescan its body for further generic calls.  ``seen`` is the caller's,
-        so a second drain (#1223's re-seed from hoisted helper bodies) neither
-        re-emits nor loses anything — a key already drained is skipped, and a
-        key reached for the first time from a hoisted body is emitted here.
-        Constraint-failing instances are skipped (and their subtrees pruned),
-        so the emitted set excludes anything that wouldn't compile.
-        """
+        ``seen`` is the caller's, so a second drain (#1223's re-seed from
+        hoisted helper bodies) neither re-emits nor loses anything."""
+        typed = self._typed
         produced: list[ast.FnDecl] = []
         while worklist:
             fn_name, concrete_types = worklist.pop()
@@ -489,40 +165,23 @@ class MonomorphizationMixin:
             seen.add(key)
             if fn_name not in generic_decls:
                 continue
-            decl = generic_decls[fn_name]
-            if not self._check_constraints(decl, concrete_types):
-                continue  # constraint violation — error emitted
-            # #1208: the clone's binders are named against the DEFINING
-            # module's aliases, which is the namespace the consumers rebuild
-            # its scope in — see `_clone_alias_env`.
-            with self._clone_alias_env(
-                    self._imported_generic_base_origins.get(fn_name)) as cenv:
-                mono_fn = mono.monomorphize_fn(decl, concrete_types, cenv)
+            inst = typed.instance(fn_name, concrete_types)
+            if inst is None or inst.clone is None:
+                continue
+            mono_fn = inst.clone
             produced.append(mono_fn)
             self._record_clone_origin(fn_name, mono_fn.name)
             self._clone_type_args[mono_fn.name] = concrete_types
-            # #1002: remember this clone's concrete-FREE chain base so the
-            # per-clone where-tree hoister can key a generic-under-generic
-            # helper's `_emitted_instances` entry identically to the verifier.
+            # #1002: this clone's concrete-FREE chain base, which keys a
+            # generic-under-generic helper's `_emitted_instances` entry.
             self._clone_base_chain[mono_fn.name] = fn_name
-            # #932: a transitively-reached nested-generic constrained call in
-            # this clone body carries the same truncated constrained-var name —
-            # record its full recovery so the next round's `_check_constraints`
-            # can decide derivability on the un-truncated name.
-            self._collect_eq_full_type_names(
-                mono_fn, mono, generic_decls, ctor_to_adt,
-            )
             self._emitted_instances.add((fn_name, concrete_types))
-            # Scan the monomorphized body for further generic calls
             transitive: dict[str, set[tuple[str, ...]]] = {
                 name: set() for name in generic_decls
             }
-            with mono.namespace_scope(
-                self._mono_clone_origins.get(mono_fn.name),
-            ):
-                mono.collect_calls_in_node(
-                    mono_fn, generic_decls, ctor_to_adt, transitive,
-                )
+            for callee in inst.calls.values():
+                if callee.parent is None and callee.key in transitive:
+                    transitive[callee.key].add(callee.args)
             for t_name, t_types in transitive.items():
                 for t_ct in sorted(t_types):  # deterministic order (see seed)
                     if (t_name, t_ct) not in seen:
@@ -532,8 +191,6 @@ class MonomorphizationMixin:
     def _hoist_clone_where_fns(
         self,
         mono_decls: list[ast.FnDecl],
-        mono: Monomorphizer,
-        ctor_to_adt: dict[str, str],
     ) -> list[ast.FnDecl]:
         """Hoist every clone's ``where``-helpers into standalone mono decls (#904).
 
@@ -598,102 +255,71 @@ class MonomorphizationMixin:
                 # per their calls in the just-hoisted parent + siblings; the
                 # concrete clones re-enter `pending`.
                 self._instantiate_hoisted_generics(
-                    generic_helpers, decl.name, [rewritten, *hoisted], pending,
-                    mono, ctor_to_adt,
-                )
+                    generic_helpers, decl.name, pending)
         return result
 
     def _instantiate_hoisted_generics(
         self,
         gens: list[ast.FnDecl],
         parent_clone_name: str,
-        bodies: list[ast.FnDecl],
         pending: list[ast.FnDecl],
-        mono: Monomorphizer,
-        ctor_to_adt: dict[str, str],
     ) -> None:
-        """Instantiate one clone's still-generic hoisted ``where``-helpers (#1002).
+        """Emit one clone's still-generic hoisted ``where``-helpers at the
+        instances the typed program built under that clone (#1002).
 
-        Each of *gens* is a ``forall`` helper hoisted under a generic ancestor's
-        clone, renamed to its concrete-including per-clone name
-        (``parent$where$outer$Int$where$ginner``).  Register them as generic
-        bases so Pass 2's call-site rewriter mangles the (already-redirected)
-        bare calls, discover instantiations from *bodies* (the hoisted parent
-        clone + its sibling helpers), monomorphize each to a concrete per-clone
-        clone (``…$ginner$Int``), record the emission under the concrete-FREE
-        chain key so the #732 differential matches the verifier, and re-queue
-        each clone so its own where-tree is hoisted.
+        Each of *gens* is a ``forall`` helper hoisted under a generic
+        ancestor's clone and renamed to its per-clone name
+        (``parent$where$outer$Int$where$ginner``).  Each is registered as a
+        generic base so a call to it names its clone (``…$ginner$Int``), and
+        each instance's clone takes the calls redirect the hoist gave the
+        helper, is recorded under the concrete-FREE chain key, and is queued
+        so its own where-tree is hoisted."""
+        from dataclasses import replace as _replace
 
-        The whole FAMILY at once, over a growing body set (#1223).  Taking one
-        helper at a time against the still-generic siblings missed every
-        instantiation a sibling's own CONCRETE clone introduces: inside the
-        generic ``outer<U>``, ``inner(@U.1, @U.0)`` binds ``inner``'s variable
-        to the type variable's NAME, so only ``inner$U`` was discovered while
-        ``outer$Bool``'s body called ``inner$Bool`` — a dangling target on a
-        check-clean program.  Feeding each clone back in as a body closes it,
-        and the discovery leaf is the one the verifier drives too
-        (``collect_generic_helper_instances``), so neither side can find a
-        different set.
-        """
-        by_name: dict[str, ast.FnDecl] = {}
-        chain_keys: dict[str, str] = {}
+        from vera.monomorphize import _qualify_generic_subtree_calls
+
+        typed = self._typed
+        parent = typed.instance_named(parent_clone_name)
+        origin = self._mono_clone_origins.get(parent_clone_name)
+        base_chain = self._clone_base_chain.get(
+            parent_clone_name, parent_clone_name,
+        )
         for gen in gens:
             assert gen.forall_vars is not None  # noqa: S101
-            by_name[gen.name] = gen
             # Register for Pass 2 generic-call resolution under the emission name.
             self._generic_fn_info[gen.name] = (gen.forall_vars, gen.params)
             self._generic_constrained_vars[gen.name] = frozenset(
                 c.type_var for c in (gen.forall_constraints or ())
             )
-            # The concrete-FREE chain key: the parent clone's chain base plus
-            # this helper's bare name (``gen.name`` is
-            # ``<parent_clone_name>$where$<h>``).
-            base_chain = self._clone_base_chain.get(
-                parent_clone_name, parent_clone_name,
-            )
             helper_bare = gen.name[len(parent_clone_name) + len("$where$"):]
-            chain_keys[gen.name] = f"{base_chain}$where${helper_bare}"
-        # Origin: a nested clone of an imported base is the module's own code.
-        origin = self._mono_clone_origins.get(parent_clone_name)
-        emitted: set[tuple[str, tuple[str, ...]]] = set()
-        scan: list[ast.FnDecl] = list(bodies)
-        while scan:
-            # #1299: the helper family's bodies are the PARENT clone's code,
-            # so their bare names resolve in the parent's namespace — the
-            # same `origin` the alias env below is built from.  This leaf is
-            # the discovery walk BOTH sides drive directly; left unscoped it
-            # fell back to the flat table on both at once, so the two agreed
-            # while both typed a bare `get(())` from an invisible module
-            # declaration.  Agreeing wrongly is invisible to a differential,
-            # which is why this one is pinned against the CHECKER's answer.
-            with mono.namespace_scope(origin):
-                found = mono.collect_generic_helper_instances(
-                    by_name, scan, ctor_to_adt,
+            chain_key = f"{base_chain}$where${helper_bare}"
+            if parent is None:
+                continue
+            scope = self._hoisted_helper_scopes.get(gen.name, {})
+            # The helper's instances under this clone: its link name is the
+            # parent generic's key and the same helper chain (#1002).
+            helper_key = f"{parent.key}$where${helper_bare}"
+            found = sorted(
+                (inst for inst in typed.instances
+                 if inst.parent is parent and inst.key == helper_key
+                 and inst.clone is not None),
+                key=lambda inst: inst.args)
+            for inst in found:
+                assert inst.clone is not None  # noqa: S101
+                clone = _replace(
+                    _qualify_generic_subtree_calls(inst.clone, scope),
+                    name=inst.name)
+                if origin is not None:
+                    self._mono_clone_origins[clone.name] = origin
+                self._clone_type_args[clone.name] = (
+                    *self._clone_type_args.get(parent_clone_name, ()),
+                    *inst.args,
                 )
-            scan = []
-            for gen_name, concretes in found.items():
-                gen = by_name[gen_name]
-                for concrete in sorted(concretes):
-                    if (gen_name, concrete) in emitted:
-                        continue
-                    emitted.add((gen_name, concrete))
-                    if not self._check_constraints(gen, concrete):
-                        continue
-                    with self._clone_alias_env(origin) as cenv:  # #1208
-                        clone = mono.monomorphize_fn(gen, concrete, cenv)
-                    if origin is not None:
-                        self._mono_clone_origins[clone.name] = origin
-                    self._clone_type_args[clone.name] = (
-                        *self._clone_type_args.get(parent_clone_name, ()),
-                        *concrete,
-                    )
-                    # Chain the deeper base so a generic sub-helper of `gen`
-                    # keys concrete-free too.
-                    self._clone_base_chain[clone.name] = chain_keys[gen_name]
-                    self._emitted_instances.add(
-                        (chain_keys[gen_name], concrete))
-                    pending.append(clone)
-                    scan.append(clone)
+                # Chain the deeper base so a generic sub-helper of `gen`
+                # keys concrete-free too.
+                self._clone_base_chain[clone.name] = chain_key
+                self._emitted_instances.add((chain_key, inst.args))
+                pending.append(clone)
 
     def _hoist_where_fns_under(
         self,
@@ -748,6 +374,10 @@ class MonomorphizationMixin:
                 hoisted.append(
                     _replace(redirected, name=rename[wfn.name]),
                 )
+                # #1679: each of its instances is a clone the typed program
+                # built from the helper as it stood in the parent's clone,
+                # whose calls take the same redirect when it is hoisted.
+                self._hoisted_helper_scopes[rename[wfn.name]] = combined
                 continue
             # The child body sees `combined` (ancestors + this level, so
             # sibling and aunt calls redirect); its own nested helpers extend
@@ -763,38 +393,6 @@ class MonomorphizationMixin:
         rewritten = self._rewrite_call_names(stripped, combined)
         assert isinstance(rewritten, ast.FnDecl)  # noqa: S101
         return rewritten
-
-    @contextlib.contextmanager
-    def _clone_alias_env(
-        self, origin: tuple[str, ...] | None,
-    ) -> Iterator[AliasEnv]:
-        """Yield the naming env a clone of a generic from *origin* is named
-        against (#1208), with the flat alias maps swapped to match.
-
-        Aliases are module-scoped (spec §8.4.1), so the De Bruijn recount in
-        ``monomorphize_fn`` has to render binder names in the namespace of the
-        module that DECLARED the generic — which is also the namespace the
-        clone is later registered and emitted under (``_module_alias_scope``
-        at the Pass 1.5 registration and the Pass 2.5 / 2.6 emission doors).
-        Named against the importer's instead, an imported generic's
-        alias-typed parameter looks like a different class than it is, the
-        recount misses the merge, and the emitted clone resolves a reference
-        onto the wrong parameter — silently, with the right arity.
-
-        ``origin=None`` (a main-file generic, or a nested helper of one) makes
-        this the identity: the flat maps already hold that namespace.
-
-        The source scope is paired with the alias scope here as at the other
-        four doors (#1186/#1189, PR #1224 review): entering a module's
-        namespace leaves ``file``/``source`` on the IMPORTER, so a diagnostic
-        raised while the clone is built would carry the importer's path with
-        module-local line/column — coordinates naming unrelated source, and a
-        location-keyed dedup (E618) merging two modules' reports into one.
-        Nothing under this door reports today; the pairing is what keeps that
-        true of whatever moves into it.
-        """
-        with self._module_alias_scope(origin), self._module_source_scope(origin):
-            yield self._alias_env
 
     def _record_clone_origin(self, base_name: str, clone_name: str) -> None:
         """Record *clone_name*'s origin module when its base is an imported
@@ -817,366 +415,6 @@ class MonomorphizationMixin:
         from vera.monomorphize import rewrite_fn_call_names
 
         return rewrite_fn_call_names(node, rename)
-
-    def _collect_eq_full_type_names(
-        self,
-        node: object,
-        mono: Monomorphizer,
-        generic_decls: dict[str, ast.FnDecl],
-        ctor_to_adt: dict[str, str],
-    ) -> None:
-        """Record TRUNCATED → FULLY-recovered constrained-var names (#932).
-
-        Walks ``node`` for calls to an Eq-constrained generic (``FnCall`` /
-        ``ModuleCall`` whose target has a ``where Eq<T>`` bound).  For each
-        constrained-var parameter matched positionally to a ``ConstructorCall``
-        argument, computes:
-
-        * the TRUNCATED one-level name (`List<List>`) exactly as
-          ``Monomorphizer._unify_param_arg`` does via ``_get_arg_type_info`` —
-          this is the value `_check_constraints` receives as ``concrete`` and the
-          name that keys the emitted clone; and
-        * the FULLY-recovered nested name (`List<List<Int>>`) via
-          ``Monomorphizer.full_arg_type_name``.
-
-        When the two differ (the nesting was truncated) the pair is stored in
-        ``self._eq_full_type_names``, letting ``_check_constraints`` retry the Eq
-        derivability decision on the un-truncated name WITHOUT ever changing the
-        clone-mangling tuple (the #772 hard constraint).
-        """
-        from dataclasses import fields as _fields
-
-        call: ast.FnCall | ast.ModuleCall | None = None
-        if isinstance(node, (ast.FnCall, ast.ModuleCall)) and (
-            node.name in generic_decls
-        ):
-            call = node
-        if call is not None:
-            decl = generic_decls[call.name]
-            constrained = frozenset(
-                c.type_var for c in (decl.forall_constraints or ())
-            )
-            for param_te, arg in zip(decl.params, call.args):
-                base_te = (
-                    param_te.base_type
-                    if isinstance(param_te, ast.RefinementType)
-                    else param_te
-                )
-                if (
-                    isinstance(base_te, ast.NamedType)
-                    and base_te.name in constrained
-                    and isinstance(arg, ast.ConstructorCall)
-                ):
-                    info = mono._get_arg_type_info(arg, ctor_to_adt)
-                    if info is None:
-                        continue
-                    base_name, arg_names = info
-                    if not (arg_names and all(a is not None for a in arg_names)):
-                        continue
-                    resolved = [a for a in arg_names if a is not None]
-                    truncated = f"{base_name}<{', '.join(resolved)}>"
-                    full = mono.full_arg_type_name(arg, ctor_to_adt)
-                    if full is not None and full != truncated:
-                        self._eq_full_type_names[truncated] = full
-        if isinstance(node, ast.Node):
-            for f in _fields(node):
-                if f.name == "span":
-                    continue
-                self._collect_eq_full_type_names(
-                    getattr(node, f.name), mono, generic_decls, ctor_to_adt,
-                )
-        elif isinstance(node, (tuple, list)):
-            for item in node:
-                self._collect_eq_full_type_names(
-                    item, mono, generic_decls, ctor_to_adt,
-                )
-
-    def _check_constraints(
-        self,
-        decl: ast.FnDecl,
-        concrete_types: tuple[str, ...],
-    ) -> bool:
-        """Verify all ability constraints are satisfied for an instantiation.
-
-        Returns True if all constraints are satisfied, False otherwise
-        (after emitting diagnostics).
-        """
-        if not decl.forall_constraints or not decl.forall_vars:
-            return True
-
-        from vera.errors import Diagnostic, SourceLocation
-
-        mapping = dict(zip(decl.forall_vars, concrete_types))
-        ok = True
-        for constraint in decl.forall_constraints:
-            concrete = mapping.get(constraint.type_var)
-            if concrete is None:
-                continue
-            # Rule 4 (`vera.lowering.ability_lowerable`, #1499) decides which
-            # arm: a lowered ability is checked against its type set, any
-            # other is the backstop below.
-            entry = (_ABILITY_TYPE_SETS.get(constraint.ability_name)
-                     if ability_lowerable(constraint.ability_name) else None)
-            if entry is not None:
-                type_set, desc = entry
-                # For Eq, also check ADT auto-derivation.  A constrained var
-                # bound to a constructor-inferred instance now carries its type
-                # argument (`Box<String>`, not bare `Box`) — see
-                # `_unify_param_arg` — so `_adt_satisfies_eq` resolves the
-                # concrete field type (#772).
-                if concrete in type_set:
-                    continue
-                # #932: the constructor-inferred name may be TRUNCATED one level
-                # (`List<List>` for a `List<List<Int>>` operand — the
-                # clone-mangling residue).  For the Eq-derivability DECISION only,
-                # substitute the fully-recovered nested name recorded at the call
-                # site (`_collect_eq_full_type_names`); the clone name codegen
-                # emits stays the truncated `concrete` (the #772 hard constraint).
-                eq_name = getattr(self, "_eq_full_type_names", {}).get(
-                    concrete, concrete,
-                )
-                if (constraint.ability_name == "Eq"
-                        and self._adt_satisfies_eq(eq_name)):
-                    continue
-                # #1086: an Eq-constrained var bound to an ALIAS or transparent-
-                # `Future` spelling (`MyInt` via `type MyInt = Int;`, `FI` /
-                # `Future<Int>`, an alias of a WHOLE ADT `MyBox`) is neither a
-                # primitive in `type_set` NOR a registered ADT with a layout, so
-                # both checks above missed it and the gate raised a wrong-loud
-                # E613 on a check-green program (the checker, alias-resolving,
-                # accepted the Eq).  `_type_eq_derivable` grounds the spelling
-                # (hop-by-hop alias walk + transparent-Future peel) and re-judges
-                # — the SAME oracle the `$eq` generator's field resolution
-                # mirrors, so the #732 checker↔codegen differential holds at this
-                # entry point too.  A genuinely non-Eq alias (`type BadArr =
-                # Array<Int>;`) grounds to a non-Eq type and still falls through
-                # to the E613 below.  The emitted clone name / message keep the
-                # un-ground `concrete` (the #772/#932 hard constraint).
-                if (constraint.ability_name == "Eq"
-                        and self._type_eq_derivable(eq_name, frozenset())):
-                    continue
-                # #898: a SPARSE multi-type-parameter ADT reached via the
-                # constructor-inferred path (`id1(MkErr(5))` on
-                # `Res<A, B> { MkOk(A), MkErr(B) }`) recovers only the type
-                # parameter present in the argument (`B = Int`) and leaves the
-                # other (`A`) undetermined — the monomorphizer falls back to the
-                # bare ADT name `Res`.  Structural Eq derivation checks EVERY
-                # constructor's fields (`MkOk(A)` included), so derivability
-                # genuinely depends on the free `A` and cannot be decided here.
-                # Rejecting is correct (never unsound — the annotated
-                # `Res<Array, Int>` form is a real E613), but "Res does not
-                # satisfy Eq" misdescribes an under-determined type argument.
-                # Report the clearer E619 for this shape only: a bare/partial
-                # ADT name whose declared type-parameter count exceeds the type
-                # arguments recovered.  A FULLY-determined non-Eq instance
-                # (`Res<Array<Int>, Int>`, both params supplied) has no missing
-                # argument and stays on the E613 path below.
-                if (constraint.ability_name == "Eq"
-                        and self._eq_type_arg_under_determined(concrete)):
-                    # Render user-facing names WITHOUT the internal `?` sentinel:
-                    # the display names each free slot by its declared parameter
-                    # (`Res<A, Int>`), and the fix is a concrete, compilable
-                    # annotation binding the free parameter to an Eq type
-                    # (`let @Res<Int, Int> = ...;`) — #898 round-3 review.
-                    display_name, annotation = (
-                        self._under_determined_display_and_fix(concrete)
-                    )
-                    self.diagnostics.append(Diagnostic(
-                        description=(
-                            f"Cannot infer the type argument(s) for "
-                            f"'{display_name}' from the constructor argument, so "
-                            f"its 'Eq' derivability is under-determined."
-                        ),
-                        location=SourceLocation(file=self.file),
-                        rationale=(
-                            "Structural Eq derivation checks every "
-                            "constructor's fields, so a multi-type-parameter "
-                            "ADT built from a single constructor (which fixes "
-                            "only some parameters) leaves the remaining "
-                            "parameters — and thus whether the type derives "
-                            "Eq — undetermined."
-                        ),
-                        fix=(
-                            f"Annotate the value so every type parameter is "
-                            f"fixed, binding each free parameter to a type that "
-                            f"supports Eq — e.g. 'let @{annotation} = ...;' — "
-                            f"and pass that slot reference; the constructor path "
-                            f"then derives Eq exactly as the annotated form does."
-                        ),
-                        spec_ref='Chapter 9, Section 9.8 "Abilities"',
-                        severity="error",
-                        error_code="E619",
-                    ))
-                    ok = False
-                    continue
-                # Vera has no `derive` construct — for Eq the actionable fix
-                # is structural: make every constructor field itself Eq.
-                if constraint.ability_name == "Eq":
-                    fix_text = (
-                        f"Instantiate the generic with a type that supports "
-                        f"'Eq'. An ADT derives Eq structurally when every "
-                        f"constructor field is itself Eq — restructure "
-                        f"'{concrete}' so its fields are Eq primitives or Eq "
-                        f"ADTs (Array/Map/handle fields are not Eq)."
-                    )
-                else:
-                    fix_text = (
-                        f"Instantiate the generic with a type that supports "
-                        f"'{constraint.ability_name}'."
-                    )
-                self.diagnostics.append(Diagnostic(
-                    description=(
-                        f"Type '{concrete}' does not satisfy ability "
-                        f"'{constraint.ability_name}'. Only {desc} "
-                        f"support {constraint.ability_name}."
-                    ),
-                    location=SourceLocation(file=self.file),
-                    rationale=(
-                        "A monomorphized generic instantiates each type "
-                        "parameter with a concrete type that must satisfy the "
-                        "parameter's ability bounds; this type does not."
-                    ),
-                    fix=fix_text,
-                    spec_ref='Chapter 9, Section 9.8 "Abilities"',
-                    severity="error",
-                    error_code="E613",
-                ))
-                ok = False
-            else:
-                # The backstop: the checker refuses a constraint naming an
-                # ability code generation does not implement where the
-                # constraint is written (E340), so a program reaching here
-                # passed a check that should have refused it.
-                self.diagnostics.append(Diagnostic(
-                    description=(
-                        f"Internal compiler error: a constraint on the "
-                        f"ability '{constraint.ability_name}' reached code "
-                        f"generation, and vera.lowering.ability_lowerable "
-                        f"refuses it; the checker refuses it at the "
-                        f"constraint (E340)."
-                    ),
-                    location=SourceLocation(file=self.file),
-                    rationale=(
-                        "This is a codegen invariant violation — the type "
-                        "checker should have rejected the input before it "
-                        "reached this point.  Please file a bug report with "
-                        "the offending program."
-                    ),
-                    fix=(
-                        "Constrain the type parameter with a built-in ability "
-                        "(Eq, Ord, Hash, or Show) instead."
-                    ),
-                    spec_ref='Chapter 9, Section 9.8 "Abilities"',
-                    severity="error",
-                    error_code="E699",
-                ))
-                ok = False
-        return ok
-
-    def _eq_type_arg_under_determined(self, type_name: str) -> bool:
-        """Is ``type_name`` an under-determined ADT that WOULD derive Eq? (#898)
-
-        Fires only for a sparse multi-parameter ADT reached via the constructor
-        path with a genuinely-FREE type parameter AND whose *known* components
-        are all Eq — so annotating the free parameter to an Eq type makes it
-        derive.  The caller then reports the clearer E619 ("under-determined
-        type argument — annotate it") instead of the misleading E613.
-
-        Distinguishes the two shapes the count-only predecessor conflated
-        (both were wrongly E619):
-
-        - `id1(MkErr(5))` on `Res<A, B>`: `B = Int` (Eq), `A` free →  True (E619,
-          annotating `A` to an Eq type derives).
-        - `id1(MkErr([1]))` on `Res<A, B>` (`B = Array<Int>`, non-Eq recovered),
-          and `id1(K([1], 7))` on `W<A, B> { K(Array<A>, B) }` (a structurally
-          non-Eq `Array<A>` field) →  False (E613: a known/structural component
-          is not Eq, so no annotation of the free parameter can help).
-
-        The monomorphizer materialises a free slot as the ``?`` sentinel
-        (`Res<?, Array>`); a bare name (`Res`, no recovery at all) is treated as
-        all-free.  The predicate is: some slot is free AND, with every free slot
-        provisionally bound to an Eq type, the ADT derives Eq structurally
-        (`_adt_satisfies_eq`), which also rejects a structurally non-Eq field.
-
-        False for a fully-applied instance (`Res<Array<Int>, Int>` — no free
-        slot; a determined-and-non-Eq E613), a parameterless ADT, or a non-ADT.
-        """
-        from vera.monomorphize import _FREE_TYPE_PARAM, Monomorphizer
-
-        parsed = Monomorphizer._parse_type_name(type_name)
-        base = parsed.name
-        if base not in self._adt_layouts:
-            return False
-        declared = self._adt_tp_counts.get(base, 0)
-        if declared == 0:
-            return False
-        # Reconstruct the per-parameter slots: an explicit arg list may carry
-        # the `?` sentinel for free slots; a bare name (`Res`) is all-free.
-        arg_names = [
-            Monomorphizer._format_type_name(a)
-            for a in (parsed.type_args or ())
-            if isinstance(a, ast.NamedType)
-        ]
-        if not arg_names:
-            arg_names = [_FREE_TYPE_PARAM] * declared
-        has_free = any(a == _FREE_TYPE_PARAM for a in arg_names)
-        if not has_free:
-            return False
-        # Provisionally bind each free slot to a known-Eq type (`Int`) and ask
-        # whether the ADT then derives Eq structurally.  If yes, only the free
-        # parameters stand between this type and Eq (→ E619, annotate them); if
-        # no, a known component or a structural field is non-Eq (→ E613).
-        probe_args = [a if a != _FREE_TYPE_PARAM else "Int" for a in arg_names]
-        probe_name = f"{base}<{', '.join(probe_args)}>"
-        return self._adt_satisfies_eq(probe_name)
-
-    def _under_determined_display_and_fix(
-        self, type_name: str,
-    ) -> tuple[str, str]:
-        """Render user-facing names for an under-determined ADT (#898 round 3).
-
-        Returns ``(display_name, annotation)`` for the E619 diagnostic, with the
-        internal ``?`` sentinel (`_FREE_TYPE_PARAM`) never exposed:
-
-        - ``display_name`` shows each free slot as the ADT's *declared* type
-          parameter name (`Res<A, Int>`), so the message names the parameter the
-          writer must pin — not the reserved `?` placeholder.
-        - ``annotation`` is a concrete, compilable Vera type binding each free
-          slot to a known-Eq type (`Res<Int, Int>`), so the suggested
-          `let @Res<Int, Int> = ...;` fix actually type-checks and derives.
-
-        Falls back to a bare parameterised form from the declared parameter names
-        when the recovery carried no explicit slots (a fully-bare `Res`).
-        """
-        from vera.monomorphize import _FREE_TYPE_PARAM, Monomorphizer
-
-        parsed = Monomorphizer._parse_type_name(type_name)
-        base = parsed.name
-        declared = self._adt_tp_counts.get(base, 0)
-        param_names = self._adt_tp_param_names.get(base, ())
-        arg_names = [
-            Monomorphizer._format_type_name(a)
-            for a in (parsed.type_args or ())
-            if isinstance(a, ast.NamedType)
-        ]
-        if not arg_names:
-            arg_names = [_FREE_TYPE_PARAM] * declared
-        display_slots: list[str] = []
-        fix_slots: list[str] = []
-        for i, a in enumerate(arg_names):
-            if a == _FREE_TYPE_PARAM:
-                # Free slot: show its declared parameter name in the message,
-                # and pin it to `Int` (an Eq type) in the actionable fix.
-                display_slots.append(
-                    param_names[i] if i < len(param_names) else f"T{i}"
-                )
-                fix_slots.append("Int")
-            else:
-                display_slots.append(a)
-                fix_slots.append(a)
-        display_name = f"{base}<{', '.join(display_slots)}>"
-        annotation = f"{base}<{', '.join(fix_slots)}>"
-        return display_name, annotation
 
     def _adt_satisfies_eq(
         self, type_name: str, _seen: frozenset[str] = frozenset(),

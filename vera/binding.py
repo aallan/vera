@@ -493,7 +493,8 @@ def _relinked_call(
     if target is not None and target.owner not in (BUILTIN, PRELUDE):
         return ast.FnCall(
             name=target.link_name, args=args, piped=node.piped,
-            stage_span=node.stage_span, span=node.span)
+            stage_span=node.stage_span, span=node.span,
+            node_id=node.node_id)
     if args is node.args:
         return node
     return replace(node, args=args)
@@ -502,8 +503,8 @@ def _relinked_call(
 def _relink(node: object, calls: Mapping[int, DeclId]) -> object:
     """*node* with every call the binding binds naming its target's link
     name.  Nodes are rebuilt only where something under them changed, and
-    every rebuilt node keeps its span, so the checker's span-keyed tables
-    still answer for it."""
+    every rebuilt node keeps its span and its identity (``node_id``), so
+    the checker's tables still answer for it."""
     if isinstance(node, (ast.FnCall, ast.ModuleCall)):
         args = cast(tuple[ast.Expr, ...], _relink(node.args, calls))
         return _relinked_call(node, calls.get(id(node)), args)
@@ -705,7 +706,9 @@ def display_clone_types(*texts: str) -> tuple[str, ...]:
     type a clone's name carries spelled as :func:`display_type_names`
     spells a type (#1694): ``epick$Shape`` for the clone of ``epick`` at
     ``mod$cm$Shape``, and the module's name before the type's
-    (``cm.Shape``) where two modules' types of one name meet."""
+    (``cm.Shape``) where another type of that name meets it: a second
+    module's, or the entry file's own, written bare in the message or in a
+    clone's suffix (#1774)."""
     if not any("_U24_" in text for text in texts):
         return texts
     found: dict[str, tuple[str, str]] = {}
@@ -718,10 +721,22 @@ def display_clone_types(*texts: str) -> tuple[str, ...]:
     owners: dict[str, set[str]] = {}
     for path, name in found.values():
         owners.setdefault(name, set()).add(path)
+    rest = _TYPE_LINK_NAME.sub(" ", " ".join(
+        _MANGLED_TYPE_LINK_NAME.sub(" ", text) for text in texts))
+
+    def bare_use(name: str) -> bool:
+        """Whether the entry's own type of *name* is in the texts: written
+        as a word, or as a unit of a clone's suffix (``pair$Shape_J``)."""
+        unit = re.escape(name.replace("_", "__"))
+        return (re.search(rf"(?<![A-Za-z0-9_$.]){re.escape(name)}"
+                          rf"(?![A-Za-z0-9_])", rest) is not None
+                or re.search(rf"(?:\$|_[JL]){unit}(?=_[JRC]|[^A-Za-z0-9_]|$)",
+                             rest) is not None)
 
     def spelled(match: re.Match[str]) -> str:
         path, name = found[match.group(0)]
-        return f"{path}.{name}" if len(owners[name]) > 1 else name
+        return (f"{path}.{name}" if len(owners[name]) > 1 or bare_use(name)
+                else name)
 
     return tuple(_MANGLED_TYPE_LINK_NAME.sub(spelled, text) for text in texts)
 
