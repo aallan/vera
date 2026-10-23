@@ -199,7 +199,7 @@ class CompilabilityMixin:
                         "them, so the function is skipped rather than "
                         "miscompiled."
                     ),
-                    error_code="E604",
+                    error_code="E600",
                 )
                 return False
 
@@ -215,7 +215,7 @@ class CompilabilityMixin:
                     "types; this function's return type is not among them, "
                     "so the function is skipped rather than miscompiled."
                 ),
-                error_code="E605",
+                error_code="E601",
             )
             return False
 

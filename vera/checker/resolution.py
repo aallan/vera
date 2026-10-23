@@ -416,6 +416,8 @@ class ResolutionMixin:
         if canonical is not None:
             if name not in self._reported_alias_errors:
                 self._reported_alias_errors.add(name)
+                # E136: a removed alias names no type, as any other unknown
+                # name does; the message names the type it became.
                 self._error(
                     te,
                     f"'{name}' is not a type. Did you mean '{canonical}'?",
@@ -423,6 +425,7 @@ class ResolutionMixin:
                                f"use '{canonical}' instead."),
                     fix=f"Replace '{name}' with '{canonical}'.",
                     spec_ref='Chapter 2, Section 2.2 "Primitive Types"',
+                    error_code="E136",
                 )
             return UnknownType()
 

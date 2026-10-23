@@ -95,7 +95,7 @@ class TestErrorsPayload:
     def test_error_phase_fallback(self) -> None:
         # No E4xx/E8xx codes exist today, so the registry never hits the fallback;
         # pin it directly so a refactor that drops the default is caught.
-        assert _error_phase("E999") == "unknown"
+        assert _error_phase("E499") == "unknown"  # no E4xx range
         assert _error_phase("E702") == "test"
 
 

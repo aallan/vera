@@ -444,8 +444,8 @@ class ClosureLiftingMixin:
                 # #913: a bare type variable (`@T` inside a `forall<T>` body)
                 # is `"unsupported"` here — but it is NOT a codegen bug.  The
                 # generic TEMPLATE is body-compiled to draw its skip-warning
-                # surface (E602/E604/E605), exactly as a template's own bare
-                # `@T` *parameter* draws E604 via `_is_compilable`; only the
+                # surface (E600/E601/E602), exactly as a template's own bare
+                # `@T` *parameter* draws E600 via `_is_compilable`; only the
                 # monomorphized clone (whose closure param is the concrete
                 # type) is ever run.  So drop THIS closure cleanly — a
                 # user-facing skip that returns None, routing through

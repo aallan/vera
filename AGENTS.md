@@ -118,7 +118,7 @@ For machine-parseable errors, use the `--json` flag:
 
 ### Error codes
 
-Diagnostics carry stable codes, which `vera errors` lists; a few diagnostics carry none. Common codes:
+Every diagnostic carries a stable code, which `vera errors` lists. Common codes:
 
 | Code | Meaning |
 |------|---------|
@@ -134,7 +134,7 @@ Diagnostics carry stable codes, which `vera errors` lists; a few diagnostics car
 | E311 | Non-exhaustive match |
 | E614 | Program contains typed holes — compile rejected until holes are filled |
 
-Full code ranges: W0xx (warnings), E0xx (parse), E1xx (type/expressions), E2xx (calls), E3xx (control flow), E5xx (verification), E6xx (codegen), E7xx (testing). See `vera/errors.py` `ERROR_CODES` for the complete registry.
+Full code ranges: W0xx (warnings), E0xx (parse), E1xx (type/expressions), E2xx (calls), E3xx (control flow), E5xx (verification), E6xx (codegen), E7xx (testing), E8xx (run: a program's own failure while it runs), E9xx (command: the command line's own refusals). See `vera/errors.py` `ERROR_CODES` for the complete registry.
 
 The `verify --json` output includes a verification summary:
 

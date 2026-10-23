@@ -1354,7 +1354,7 @@ def test_a_helper_binder_renamed_apart_leaves_no_trace(
     assert "shadowed" not in result.wat, (cell.id, re.findall(
         r"\(func \$:?(\S*shadowed\S*)", result.wat))
     skips = [(d.error_code, d.description) for d in result.diagnostics
-             if d.error_code in {"E602", "E604", "E605"}]
+             if d.error_code in {"E600", "E601", "E602"}]
     assert skips == [], (cell.id, skips)
 
 
