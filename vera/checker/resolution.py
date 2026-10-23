@@ -1433,6 +1433,11 @@ class ResolutionMixin:
                 mapping[pattern.name] = merged
             return
 
+        if isinstance(pattern, AdtType) and isinstance(concrete, RefinedType):
+            # A refinement's values are its base's: `map_values` of a
+            # `{ @Map<String, String> | ... }` binds its variables from the
+            # `Map` (#1688).
+            concrete = base_type(concrete)
         if isinstance(pattern, AdtType) and isinstance(concrete, AdtType):
             if pattern.name == concrete.name:
                 for p_arg, c_arg in zip(pattern.type_args, concrete.type_args):

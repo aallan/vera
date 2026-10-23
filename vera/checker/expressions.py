@@ -1460,7 +1460,8 @@ class ExpressionsMixin:
         for i, ty in enumerate(elem_types):
             if i <= first_at or ty is None or isinstance(ty, UnknownType):
                 continue
-            step, conflict, _ = self._join_parts(ty, joined)
+            outcome = self._join_parts(ty, joined)
+            step, conflict = outcome.joined, outcome.conflict
             if conflict:
                 conflicting.add(i)
             elif step is not None and step is not joined:
@@ -2132,7 +2133,15 @@ def _synth_fn_call(ctx: ExpressionsMixin, expr: ast.FnCall,
     # Bidirectional coercion: when a generic call returns a type
     # with unresolved TypeVars (e.g. map_new() → Map<K, V>) and
     # we have an expected concrete type (e.g. Map<String, Int>),
-    # use the expected type if structurally compatible.
+    # use the expected type where one instantiation of the call's
+    # variables gives it: the join an argument is fitted by (`_fits`,
+    # #1684), which binds each open variable once and keeps one in a
+    # position code generation compiles behaviour for, and the enclosing
+    # function's own.  So `Two<T, T>`, from a call no argument of which
+    # fixes `T`, is not taken as a `Two<Int, String>`, nor `Two<A, A>` in
+    # a `forall<A>` body as a `Two<Int, Int>`: the call keeps its type,
+    # and the site's own judgement refuses it.  A built-in's variable a
+    # failed substitution lost keeps the adoption it had (#1688).
     if (result is not None
             and expected is not None
             and contains_typevar(result)
@@ -2141,7 +2150,9 @@ def _synth_fn_call(ctx: ExpressionsMixin, expr: ast.FnCall,
             and isinstance(expected, AdtType)
             and result.name == expected.name
             and len(result.type_args) == len(expected.type_args)):
-        return expected
+        outcome = ctx._join_parts(result, expected)
+        if outcome.joined is not None or outcome.builtin:
+            return expected
     return result
 
 

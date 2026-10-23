@@ -255,6 +255,10 @@ NOT_NAMESPACES: dict[str, str] = {
         "the join's bindings, `calls._Join.bound`, which the source scan "
         "reads as the checker's: keyed by an open type variable, the type "
         "it takes in one join (#1668)"),
+    "TypeChecker.bound_at": (
+        "where the join bound each variable of `calls._Join.bound`, which "
+        "the source scan reads as the checker's: keyed by the same open type "
+        "variable, the position a refusal names (#1684)"),
     "TypeChecker._builtin_data_types": (
         "the built-in data types the environment starts with, kept by "
         "identity to tell them from a same-named declaration or import "
