@@ -1370,11 +1370,11 @@ public fn main(@Unit -> @Int)
             # compiled, so the suppression correctly filtered it.
             shared_warnings = [
                 d for d in warnings
-                if d.error_code in {"E602", "E604", "E605"}
+                if d.error_code in {"E600", "E601", "E602"}
                 and d.description.startswith("Function 'shared_name' ")
             ]
             assert not shared_warnings, (
-                f"Expected no [E602]/[E604]/[E605] warnings about "
+                f"Expected no [E600]/[E601]/[E602] warnings about "
                 f"`shared_name` (mono clone compiled, suppression "
                 f"should fire); got: "
                 f"{[d.description for d in shared_warnings]}"

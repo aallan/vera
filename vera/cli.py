@@ -54,10 +54,11 @@ import json
 import sys
 from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, NoReturn, cast
 
 from lark import Tree
-from vera.codegen.api import WasmTrapError
+from vera import command_errors
+from vera.codegen.api import ArgumentRefusal, WasmTrapError
 from vera.errors import (
     Diagnostic,
     SourceLocation,
@@ -246,29 +247,28 @@ def compile_envelope(
 
 def compile_failure_envelope(
     path: str | None,
-    msg: str,
+    refusal: Diagnostic,
     warnings: Sequence[Diagnostic],
     extra: dict[str, object] | None = None,
 ) -> dict[str, object]:
     """``vera compile --json``'s envelope for a module it built and refuses
-    to hand over: one error, *msg*, then *warnings*.  *extra* goes between
+    to hand over: the *refusal*, then *warnings*.  *extra* goes between
     ``file`` and ``diagnostics`` (the zero-export refusal adds
     ``"exports": []``)."""
     payload: dict[str, object] = {"ok": False, "file": path}
     if extra:
         payload.update(extra)
-    payload["diagnostics"] = [{
-        "severity": "error",
-        "description": msg,
-        "location": {"line": 0, "column": 0},
-    }]
+    payload["diagnostics"] = [refusal.to_dict()]
     payload["warnings"] = [w.to_dict() for w in warnings]
     return payload
 
 
-def no_exports_message(program: Program, exports: list[str]) -> str | None:
-    """The refusal of a module that declares a public entry point and exports
-    nothing, or ``None`` when *program* and *exports* are not that (#1183).
+def no_exports_refusal(
+    path: str | None, program: Program, exports: list[str],
+) -> Diagnostic | None:
+    """E905, the refusal of a module that declares a public entry point and
+    exports nothing, or ``None`` when *program* and *exports* are not that
+    (#1183).
 
     Such a module is a failed compile: the artifact cannot be called at all,
     and reporting "Compiled: out.wasm (0 functions exported)" over it is a
@@ -290,7 +290,7 @@ def no_exports_message(program: Program, exports: list[str]) -> str | None:
     if not (entry_candidates and not exports):
         return None
     declared = "".join(f"  - {n}\n" for n in entry_candidates)
-    return (
+    return command_errors.no_exports(path, (
         "No exported functions — the compiled module has no entry "
         "points.\n"
         f"\nDeclared public functions:\n{declared}"
@@ -298,7 +298,7 @@ def no_exports_message(program: Program, exports: list[str]) -> str | None:
         "not be compiled is dropped from the module with a "
         "diagnostic above; fix the reported construct to restore "
         "the export."
-    )
+    ))
 
 
 def run_refusal_envelope(
@@ -348,35 +348,41 @@ def run_envelope(
     return result_dict
 
 
+def trap_diagnostic(
+    path: str | None, exc: WasmTrapError, *, width: int | None = None,
+) -> Diagnostic:
+    """E800 for a call that trapped: the trap's message and its kind's fix,
+    located at the first function of the program's own its backtrace
+    names.  *width* wraps the fix, one paragraph, for a terminal (#547):
+    the text form indents it four columns, so 72 keeps it within 76."""
+    fix = exc.fix
+    if width is not None and fix:
+        import textwrap
+
+        fix = textwrap.fill(fix, width=width)
+    return command_errors.runtime_trap(
+        path, str(exc), fix=fix, frames=exc.frames)
+
+
 def trap_envelope(path: str | None, exc: WasmTrapError) -> dict[str, object]:
     """``vera run --json``'s envelope for a call that trapped, with the
     output the program wrote before the trap."""
-    diag: dict[str, object] = {
-        "severity": "error",
-        "description": str(exc),
-        "trap_kind": exc.kind,
-        "location": {"line": 0, "column": 0},
-        # #516 Stage 2 — structured backtrace.  Always present
-        # (possibly an empty list) so JSON consumers can
-        # iterate `diag["frames"]` without `.get(..., [])`
-        # ceremony.  Same shape stability principle as the
-        # always-present `trap_kind` above; `frames` is
-        # structural, not optional content like `stdout`.
-        # Each frame is a `TrapFrame` dataclass (#516 Stage
-        # 2) — convert to dict at the JSON serialisation
-        # boundary so the wire format stays the same as
-        # before the dataclass refactor (CodeRabbit round 5).
-        "frames": [f.to_dict() for f in exc.frames],
-        # #516 Stage 3 (#547) — per-kind Fix paragraph.
-        # Always present for shape stability (same reasoning
-        # as `trap_kind` and `frames`); empty string for the
-        # kinds that don't admit a generic suggestion
-        # (`contract_violation` and `host_error`, whose
-        # descriptions already carry the remediation;
-        # `unknown`).  Mirrors the
-        # `fix` field on compile-time `Diagnostic` objects.
-        "fix": exc.fix,
-    }
+    diag = trap_diagnostic(path, exc).to_dict()
+    # #516 Stage 1: the trap's kind, always present.
+    diag["trap_kind"] = exc.kind
+    # #516 Stage 2 — structured backtrace.  Always present (possibly an
+    # empty list) so JSON consumers can iterate `diag["frames"]` without
+    # `.get(..., [])` ceremony; `frames` is structural, not optional
+    # content like `stdout`.  Each frame is a `TrapFrame` dataclass,
+    # converted to a dict at the JSON serialisation boundary so the wire
+    # format stays the same as before the dataclass refactor.
+    diag["frames"] = [f.to_dict() for f in exc.frames]
+    # #516 Stage 3 (#547) — the per-kind Fix paragraph.  Always present for
+    # shape stability, unlike a compile-time diagnostic's, which `to_dict`
+    # omits when empty: empty for the kinds that admit no generic suggestion
+    # (`contract_violation` and `host_error`, whose descriptions carry the
+    # remediation; `unknown`).
+    diag["fix"] = exc.fix
     envelope: dict[str, object] = {
         "ok": False,
         "file": path,
@@ -396,7 +402,7 @@ def cmd_parse(path: str) -> int:
         print(tree.pretty())
         return 0
     except FileNotFoundError:
-        print(f"Error: file not found: {path}", file=sys.stderr)
+        print(command_errors.file_not_found(path).format(), file=sys.stderr)
         return 1
     except VeraError as exc:
         print(exc.diagnostic.format(), file=sys.stderr)
@@ -527,19 +533,14 @@ def cmd_check(
         # unenveloped handler failing mid-report is the same empty stdout as no
         # handler at all.
         try:
+            missing = command_errors.file_not_found(path)
             if as_json:
-                err_result: dict[str, object] = {
-                    "ok": False, "file": path,
-                    "diagnostics": [{"severity": "error",
-                                     "description": f"file not found: {path}",
-                                     "location": {"line": 0, "column": 0}}],
-                    "warnings": [],
-                }
+                err_result = diagnostics_envelope(path, [missing], [])
                 if explain_slots:
                     err_result["slot_environments"] = []
                 print(json.dumps(err_result, indent=2))
                 return 1
-            print(f"Error: file not found: {path}", file=sys.stderr)
+            print(missing.format(), file=sys.stderr)
             return 1
         except Exception as inner:  # noqa: BLE001 — envelope backstop
             return _internal_error_envelope(
@@ -692,14 +693,12 @@ def cmd_verify(path: str, as_json: bool = False, quiet: bool = False,
         # a diagnostic that will not serialise — and an unenveloped handler
         # failing is the same empty stdout as no handler at all.
         try:
+            missing = command_errors.file_not_found(path)
             if as_json:
-                print(json.dumps({"ok": False, "file": path,
-                                  "diagnostics": [{"severity": "error",
-                                                   "description": f"file not found: {path}",
-                                                   "location": {"line": 0, "column": 0}}],
-                                  "warnings": []}, indent=2))
+                print(json.dumps(
+                    diagnostics_envelope(path, [missing], []), indent=2))
                 return 1
-            print(f"Error: file not found: {path}", file=sys.stderr)
+            print(missing.format(), file=sys.stderr)
             return 1
         except Exception as inner:  # noqa: BLE001 — envelope backstop
             return _internal_error_envelope(
@@ -821,17 +820,18 @@ def _internal_error_envelope(
 
 def _report_compile_failure(
     path: str,
-    msg: str,
+    refusal: Diagnostic,
     all_warnings: list[Diagnostic],
     *,
     as_json: bool,
     extra: dict[str, object] | None = None,
 ) -> int:
-    """Print one synthetic-diagnostic compile failure and return exit 1.
+    """Print a compile's *refusal* of the module it built and return exit 1.
 
     Shared by the refusal paths that reject AFTER a successful core
-    compile (zero exports, browser without ``main``, the wasi-p2 family
-    gate), so the JSON/text envelope exists in exactly one place.
+    compile (zero exports, E905; browser without ``main`` and the wasi-p2
+    family gate, E908), so the JSON/text envelope exists in exactly one
+    place.
     Accumulated warnings are printed on both modes — these paths reject
     after compilation succeeded, so the warnings must not be dropped
     (#1004 review).  ``extra`` merges additional top-level keys into the
@@ -840,12 +840,12 @@ def _report_compile_failure(
     """
     if as_json:
         print(json.dumps(
-            compile_failure_envelope(path, msg, all_warnings, extra),
+            compile_failure_envelope(path, refusal, all_warnings, extra),
             indent=2))
         return 1
     for w in all_warnings:
         print(f"warning: {w.format()}", file=sys.stderr)
-    print(f"Error: {msg}", file=sys.stderr)
+    print(refusal.format(), file=sys.stderr)
     return 1
 
 
@@ -859,31 +859,29 @@ def cmd_compile(
     world: str = "cli",
 ) -> int:
     """Parse, type-check, and compile a .vera file to WebAssembly."""
-    from vera.checker import typecheck_with_artifacts
-    from vera.codegen import (
-        compile as codegen_compile,
-        dropped_entry_message,
-    )
-    from vera.resolver import ModuleResolver
-
     # Pure flag validation — needs nothing from the program, so it
     # fires before any parse/compile work (CR review, PR #850).
     if world != "cli" and target != "wasi-p2":
-        msg = (
+        contradiction = command_errors.contradictory_options(
             f"--world {world} requires --target wasi-p2 "
-            f"(the core and browser targets have no world concept)"
-        )
+            f"(the core and browser targets have no world concept)", path)
         if as_json:
-            print(json.dumps({"ok": False, "file": path,
-                              "diagnostics": [{"severity": "error",
-                                               "description": msg,
-                                               "location": {"line": 0, "column": 0}}],
-                              "warnings": []}, indent=2))
+            print(json.dumps(
+                diagnostics_envelope(path, [contradiction], []), indent=2))
             return 1
-        print(f"Error: {msg}", file=sys.stderr)
+        print(contradiction.format(), file=sys.stderr)
         return 1
 
     try:
+        # INSIDE the try, as in `cmd_check` (#1361 review, #1793): a
+        # function-scope import that fails becomes an envelope too.
+        from vera.checker import typecheck_with_artifacts
+        from vera.codegen import (
+            compile as codegen_compile,
+            dropped_entry_message,
+        )
+        from vera.resolver import ModuleResolver
+
         p, source, tree = _load_and_parse(path)
         ast = transform(tree)
 
@@ -954,7 +952,7 @@ def cmd_compile(
         # which modules export nothing by design).  The accumulated
         # warnings — the [E602]/[E620] drops, when that is why the exports
         # went away — travel with the failure.
-        no_exports = no_exports_message(ast, result.exports)
+        no_exports = no_exports_refusal(path, ast, result.exports)
         if no_exports is not None:
             return _report_compile_failure(
                 path, no_exports, all_warnings, as_json=as_json,
@@ -975,13 +973,13 @@ def cmd_compile(
                     "no 'main' function is exported, so there is nothing "
                     f"for the page to call.  Exports: {exports}."
                 )
-            msg = (
+            refusal = command_errors.target_requirement(path, (
                 "--target browser: " + core
                 + "\n\nThe generated index.html calls main() on load, so "
                 "the bundle would fail in the browser."
-            )
+            ))
             return _report_compile_failure(
-                path, msg, all_warnings, as_json=as_json,
+                path, refusal, all_warnings, as_json=as_json,
             )
 
         # --target wasi-p2 (#237): emit the component BEFORE any success
@@ -995,9 +993,10 @@ def cmd_compile(
             try:
                 component_wat = emit_wasi_component(result, world=world)
             except ValueError as exc:
-                msg = f"--target wasi-p2: {exc}"
                 return _report_compile_failure(
-                    path, msg, all_warnings, as_json=as_json,
+                    path, command_errors.target_requirement(
+                        path, f"--target wasi-p2: {exc}"),
+                    all_warnings, as_json=as_json,
                 )
 
         if as_json:
@@ -1054,14 +1053,12 @@ def cmd_compile(
         return 0
 
     except FileNotFoundError:
+        missing = command_errors.file_not_found(path)
         if as_json:
-            print(json.dumps({"ok": False, "file": path,
-                              "diagnostics": [{"severity": "error",
-                                               "description": f"file not found: {path}",
-                                               "location": {"line": 0, "column": 0}}],
-                              "warnings": []}, indent=2))
+            print(json.dumps(
+                diagnostics_envelope(path, [missing], []), indent=2))
             return 1
-        print(f"Error: file not found: {path}", file=sys.stderr)
+        print(missing.format(), file=sys.stderr)
         return 1
     except VeraError as exc:
         if as_json:
@@ -1070,6 +1067,9 @@ def cmd_compile(
             return 1
         print(exc.diagnostic.format(), file=sys.stderr)
         return 1
+    except Exception as exc:  # noqa: BLE001 — envelope backstop (#1360, #1793)
+        return _internal_error_envelope(
+            path, exc, doing="compiling", as_json=as_json)
 
 
 def cmd_serve(
@@ -1124,13 +1124,13 @@ def cmd_serve(
         try:
             httpd = make_server(result, host=host, port=port)
         except ValueError as err:
-            print(f"Error: {err}", file=sys.stderr)
+            print(command_errors.target_requirement(path, str(err)).format(),
+                  file=sys.stderr)
             return 1
         except OSError as err:
-            print(
-                f"Error: could not bind {host}:{port} — {err}",
-                file=sys.stderr,
-            )
+            print(command_errors.cannot_bind(
+                f"could not bind {host}:{port} — {err}", path).format(),
+                file=sys.stderr)
             return 1
 
         bound_port = httpd.server_address[1]
@@ -1145,7 +1145,7 @@ def cmd_serve(
             httpd.server_close()
         return 0  # pragma: no cover — serve_forever exits only via signal
     except FileNotFoundError:
-        print(f"Error: file not found: {path}", file=sys.stderr)
+        print(command_errors.file_not_found(path).format(), file=sys.stderr)
         return 1
     except VeraError as e:
         print(e.diagnostic.format(), file=sys.stderr)
@@ -1163,60 +1163,46 @@ def cmd_run(
     world: str = "cli",
 ) -> int:
     """Parse, type-check, compile, and execute a .vera file."""
-    from vera.ast import FnDecl
-
     # Pure flag validation — same early exit cmd_compile gives
     # (CR review, PR #850).
+    contradiction: Diagnostic | None = None
     if world != "cli" and target != "wasi-p2":
-        msg = (
+        contradiction = command_errors.contradictory_options(
             f"--world {world} requires --target wasi-p2 "
-            f"(the core and browser targets have no world concept)"
-        )
-        if as_json:
-            print(json.dumps({"ok": False, "file": path,
-                              "diagnostics": [{"severity": "error",
-                                               "description": msg,
-                                               "location": {"line": 0, "column": 0}}]},
-                             indent=2))
-            return 1
-        print(f"Error: {msg}", file=sys.stderr)
-        return 1
-    # A server-world component cannot be executed by vera run at all
-    # — refuse before any parse/compile work (CR review, PR #850).
-    if world == "server":
+            f"(the core and browser targets have no world concept)", path)
+    elif world == "server":
+        # A server-world component cannot be executed by vera run at all
+        # — refuse before any parse/compile work (CR review, PR #850).
         # Stage D: wasmtime-py's add_wasip2 host has no wasi:http
         # and no resource-definition API, so a server-world
         # component cannot be executed here at all.
-        msg = (
+        contradiction = command_errors.contradictory_options(
             "a server-world component exports "
             "wasi:http/incoming-handler, which `vera run` cannot "
             "host.  Compile it and serve with the wasmtime CLI:\n"
             f"  vera compile --target wasi-p2 --world server {path}\n"
             "  wasmtime serve <output>.wasm\n"
-            "(or use `vera serve` for the native Python driver)"
-        )
+            "(or use `vera serve` for the native Python driver)", path)
+    if contradiction is not None:
         if as_json:
-            print(json.dumps({
-                "ok": False,
-                "file": path,
-                "diagnostics": [{
-                    "severity": "error",
-                    "description": msg,
-                    "location": {"line": 0, "column": 0},
-                }],
-            }, indent=2))
+            print(json.dumps(
+                run_refusal_envelope(path, [contradiction]), indent=2))
             return 1
-        print(f"Error: {msg}", file=sys.stderr)
+        print(contradiction.format(), file=sys.stderr)
         return 1
-    from vera.checker import typecheck_with_artifacts
-    from vera.codegen import (
-        compile as codegen_compile,
-        dropped_entry_message,
-        execute,
-    )
-    from vera.resolver import ModuleResolver
 
     try:
+        # INSIDE the try, as in `cmd_check` (#1361 review, #1793): a
+        # function-scope import that fails becomes an envelope too.
+        from vera.ast import FnDecl
+        from vera.checker import typecheck_with_artifacts
+        from vera.codegen import (
+            compile as codegen_compile,
+            dropped_entry_message,
+            execute,
+        )
+        from vera.resolver import ModuleResolver
+
         p, source, tree = _load_and_parse(path)
         ast = transform(tree)
 
@@ -1296,24 +1282,17 @@ def cmd_run(
             and requested_entry not in result.exports
             and requested_entry in result.dropped_fns
         ):
-            msg = dropped_entry_message(requested_entry, result)
+            dropped = command_errors.entry_dropped(
+                path, dropped_entry_message(requested_entry, result))
             if as_json:
-                dropped_envelope: dict[str, object] = {
-                    "ok": False,
-                    "file": path,
-                    "diagnostics": [{
-                        "severity": "error",
-                        "description": msg,
-                        "location": {"line": 0, "column": 0},
-                    }],
-                }
+                dropped_envelope = run_refusal_envelope(path, [dropped])
                 if codegen_warnings:
                     dropped_envelope["warnings"] = [
                         w.to_dict() for w in codegen_warnings
                     ]
                 print(json.dumps(dropped_envelope, indent=2))
                 return 1
-            print(f"Error: {msg}", file=sys.stderr)
+            print(dropped.format(), file=sys.stderr)
             return 1
 
         # Check for no-exports or private-fn-targeted cases
@@ -1340,23 +1319,16 @@ def cmd_run(
                 "\n\nAlternatively, use 'vera check' or 'vera verify' "
                 "to validate without running."
             )
+            nothing = command_errors.no_exports(path, msg)
             if as_json:
-                no_exports_envelope: dict[str, object] = {
-                    "ok": False,
-                    "file": path,
-                    "diagnostics": [{
-                        "severity": "error",
-                        "description": msg,
-                        "location": {"line": 0, "column": 0},
-                    }],
-                }
+                no_exports_envelope = run_refusal_envelope(path, [nothing])
                 if codegen_warnings:
                     no_exports_envelope["warnings"] = [
                         w.to_dict() for w in codegen_warnings
                     ]
                 print(json.dumps(no_exports_envelope, indent=2))
                 return 1
-            print(f"Error: {msg}", file=sys.stderr)
+            print(nothing.format(), file=sys.stderr)
             return 1
 
         if result.ok and fn_name and fn_name not in result.exports:
@@ -1383,18 +1355,12 @@ def cmd_run(
                     f"Function '{fn_name}' not found in exports. "
                     f"Available: {exports_str}"
                 )
+            unexported = command_errors.fn_not_exported(path, msg)
             if as_json:
-                print(json.dumps({
-                    "ok": False,
-                    "file": path,
-                    "diagnostics": [{
-                        "severity": "error",
-                        "description": msg,
-                        "location": {"line": 0, "column": 0},
-                    }],
-                }, indent=2))
+                print(json.dumps(
+                    run_refusal_envelope(path, [unexported]), indent=2))
                 return 1
-            print(f"Error: {msg}", file=sys.stderr)
+            print(unexported.format(), file=sys.stderr)
             return 1
 
         # #1183: auto-selection survives only for the never-declared case
@@ -1414,23 +1380,15 @@ def cmd_run(
         # emitter's family gate likewise surfaces as a diagnostic.
         if target == "wasi-p2":
             if fn_name is not None and fn_name != "main":
-                msg = (
+                single = command_errors.contradictory_options(
                     f"--target wasi-p2 runs 'main' only (the component "
                     f"lifts a single entry); --fn {fn_name} is not "
-                    f"available.  Use the default target for --fn."
-                )
+                    f"available.  Use the default target for --fn.", path)
                 if as_json:
-                    print(json.dumps({
-                        "ok": False,
-                        "file": path,
-                        "diagnostics": [{
-                            "severity": "error",
-                            "description": msg,
-                            "location": {"line": 0, "column": 0},
-                        }],
-                    }, indent=2))
+                    print(json.dumps(
+                        run_refusal_envelope(path, [single]), indent=2))
                     return 1
-                print(f"Error: {msg}", file=sys.stderr)
+                print(single.format(), file=sys.stderr)
                 return 1
             from vera.runtime.wasi_host import execute_wasi_p2
 
@@ -1442,19 +1400,13 @@ def cmd_run(
                     tee_stdout=not as_json,
                 )
             except ValueError as exc:
-                msg = f"--target wasi-p2: {exc}"
+                unhosted = command_errors.target_requirement(
+                    path, f"--target wasi-p2: {exc}")
                 if as_json:
-                    print(json.dumps({
-                        "ok": False,
-                        "file": path,
-                        "diagnostics": [{
-                            "severity": "error",
-                            "description": msg,
-                            "location": {"line": 0, "column": 0},
-                        }],
-                    }, indent=2))
+                    print(json.dumps(
+                        run_refusal_envelope(path, [unhosted]), indent=2))
                     return 1
-                print(f"Error: {msg}", file=sys.stderr)
+                print(unhosted.format(), file=sys.stderr)
                 return 1
             # Falls through to the shared reporting tail below — the
             # ExecuteResult contract (value/stdout/stderr/exit_code)
@@ -1526,14 +1478,11 @@ def cmd_run(
         return 0
 
     except FileNotFoundError:
+        missing = command_errors.file_not_found(path)
         if as_json:
-            print(json.dumps({"ok": False, "file": path,
-                              "diagnostics": [{"severity": "error",
-                                               "description": f"file not found: {path}",
-                                               "location": {"line": 0, "column": 0}}]}
-                              , indent=2))
+            print(json.dumps(run_refusal_envelope(path, [missing]), indent=2))
             return 1
-        print(f"Error: file not found: {path}", file=sys.stderr)
+        print(missing.format(), file=sys.stderr)
         return 1
     except VeraError as exc:
         if as_json:
@@ -1577,9 +1526,12 @@ def cmd_run(
             sys.stderr.write(exc.stderr)
             if not exc.stderr.endswith("\n"):
                 sys.stderr.write("\n")
-        print(f"Error: {exc}", file=sys.stderr)
-        # #516 Stage 2 — print the source backtrace after the error
-        # line.  Outermost (most recent) frame first.  Built-in /
+        # E800, as every diagnostic prints: the trap's message, why, its
+        # kind's Fix paragraph (#516 Stage 3, #547; none for the kinds
+        # whose message already says what to change) and the spec section.
+        print(trap_diagnostic(path, exc, width=72).format(), file=sys.stderr)
+        # #516 Stage 2 — print the source backtrace after the diagnostic.
+        # Outermost (most recent) frame first.  Built-in /
         # runtime helpers ($alloc, $gc_collect, $contract_fail) show
         # as "<builtin>" rather than a misleading file:line.  Filter
         # the leading run of built-in frames so the user sees their
@@ -1634,61 +1586,39 @@ def cmd_run(
                         f"-{frame.line_end})",
                         file=sys.stderr,
                     )
-        # #516 Stage 3 (#547) — append the per-kind Fix paragraph
-        # after the backtrace.  Empty string for kinds that don't
-        # admit a generic suggestion (`contract_violation` and
-        # `host_error`, where the description already explains what
-        # failed; `unknown`, where by definition we don't know what
-        # to suggest — the three empty entries in
-        # `_TRAP_FIX_PARAGRAPHS`), so
-        # we suppress the block entirely in those cases — printing
-        # an empty "Fix:" header would just be noise.
-        #
-        # Wrap to ~76 columns to match the compile-time `Diagnostic`
-        # rendering style, with a leading "  " indent so the block
-        # visually nests under "Fix:".  textwrap.fill handles the
-        # paragraph as a single string (we don't preserve internal
-        # newlines because the canonical Fix paragraphs in
-        # `_TRAP_FIX_PARAGRAPHS` are already single paragraphs).
-        if exc.fix:
-            import textwrap
-            print("Fix:", file=sys.stderr)
-            wrapped = textwrap.fill(
-                exc.fix,
-                width=76,
-                initial_indent="  ",
-                subsequent_indent="  ",
-            )
-            print(wrapped, file=sys.stderr)
         return 1
-    except RuntimeError as exc:
+    except ArgumentRefusal as exc:
+        # `execute()` would not make the call: the arguments after `--` do
+        # not fit the function's parameters (E909).
+        unfit = command_errors.arguments_do_not_fit(path, str(exc))
         if as_json:
-            print(json.dumps({"ok": False, "file": path,
-                              "diagnostics": [{"severity": "error",
-                                               "description": str(exc),
-                                               "location": {"line": 0, "column": 0}}]}
-                              , indent=2))
+            print(json.dumps(run_refusal_envelope(path, [unfit]), indent=2))
             return 1
-        print(f"Error: {exc}", file=sys.stderr)
+        print(unfit.format(), file=sys.stderr)
         return 1
-    except Exception as exc:  # pragma: no cover — defensive backstop
-        # WasmTrapError above handles the expected wasmtime path. This
-        # remains as a defensive backstop for the case where some other
-        # Trap-named exception slips past the api.py classifier — for
-        # example a future wasmtime version with a new Trap subclass.
-        exc_name = type(exc).__name__
-        if exc_name in ("Trap", "WasmtimeError"):
-            msg = f"Unhandled WASM trap: {exc}"
+    except Exception as exc:  # the envelope backstop (#1360, #1793)
+        # WasmTrapError above handles the expected wasmtime path, and a
+        # Trap-named exception that slipped past the api.py classifier (a
+        # future wasmtime version with a new Trap subclass, say) is still a
+        # trap, E800.  Anything else is a compiler bug rather than a
+        # property of the program, reported as `vera check` reports one.
+        from vera.envflags import flag_enabled
+
+        if flag_enabled("VERA_DEBUG_HOST_ERRORS"):
+            # The debugging knob (ENVIRONMENT.md): a host binding's own
+            # exception reaches the caller untouched, its traceback with it.
+            raise
+        if type(exc).__name__ in ("Trap", "WasmtimeError"):
+            unclassified = command_errors.runtime_trap(
+                path, f"Unhandled WASM trap: {exc}")
             if as_json:
-                print(json.dumps({"ok": False, "file": path,
-                                  "diagnostics": [{"severity": "error",
-                                                   "description": msg,
-                                                   "location": {"line": 0, "column": 0}}]}
-                                  , indent=2))
+                print(json.dumps(
+                    run_refusal_envelope(path, [unclassified]), indent=2))
                 return 1
-            print(f"Error: {msg}", file=sys.stderr)
+            print(unclassified.format(), file=sys.stderr)
             return 1
-        raise  # re-raise unexpected exceptions
+        return _internal_error_envelope(
+            path, exc, doing="running", as_json=as_json)
 
 
 def cmd_ast(path: str, as_json: bool = False) -> int:
@@ -1702,7 +1632,12 @@ def cmd_ast(path: str, as_json: bool = False) -> int:
             print(ast.pretty())
         return 0
     except FileNotFoundError:
-        print(f"Error: file not found: {path}", file=sys.stderr)
+        missing = command_errors.file_not_found(path)
+        if as_json:
+            print(json.dumps(
+                diagnostics_envelope(path, [missing], []), indent=2))
+            return 1
+        print(missing.format(), file=sys.stderr)
         return 1
     except VeraError as exc:
         print(exc.diagnostic.format(), file=sys.stderr)
@@ -1981,14 +1916,13 @@ def cmd_test(
         # unenveloped handler failing mid-report is the same empty stdout as no
         # handler at all.
         try:
+            missing = command_errors.file_not_found(path)
             if as_json:
                 print(json.dumps({"ok": False, "file": path,
-                                  "diagnostics": [{"severity": "error",
-                                                   "description": f"file not found: {path}",
-                                                   "location": {"line": 0, "column": 0}}]},
-                                  indent=2))
+                                  "diagnostics": [missing.to_dict()]},
+                                 indent=2))
                 return 1
-            print(f"Error: file not found: {path}", file=sys.stderr)
+            print(missing.format(), file=sys.stderr)
             return 1
         except Exception as inner:  # noqa: BLE001 — envelope backstop
             return _internal_error_envelope(
@@ -2058,7 +1992,7 @@ def cmd_fmt(
         sys.stdout.write(formatted)
         return 0
     except FileNotFoundError:
-        print(f"Error: file not found: {path}", file=sys.stderr)
+        print(command_errors.file_not_found(path).format(), file=sys.stderr)
         return 1
     except VeraError as exc:
         print(exc.diagnostic.format(), file=sys.stderr)
@@ -2147,11 +2081,9 @@ def cmd_lsp() -> int:
         missing = (exc.name or "").split(".")[0]
         if missing not in {"pygls", "lsprotocol"}:
             raise
-        print(
-            "Error: the LSP server needs the optional [lsp] extra.\n"
-            '  Install it with: pip install -e ".[lsp]"',
-            file=sys.stderr,
-        )
+        print(command_errors.optional_dependency(
+            "The LSP server needs the optional [lsp] extra, and "
+            f"`{missing}` is not installed.").format(), file=sys.stderr)
         return 1
     lsp_main()
     return 0
@@ -2206,6 +2138,29 @@ def cmd_errors(as_json: bool = False) -> int:
     return _emit_introspection(errors_payload(), as_json, ("code", "phase", "title"))
 
 
+#: The commands that read a source file, which a command line must name.
+_FILE_COMMANDS = frozenset({
+    "parse", "check", "typecheck", "verify", "test", "compile", "serve",
+    "run", "ast", "fmt",
+})
+
+
+def _refuse_command_line(
+    refusal: Diagnostic, *, as_json: bool, usage: bool = False,
+) -> NoReturn:
+    """Report a refusal of the command line itself (E901 to E904) and exit 1:
+    under ``--json`` the envelope, which names no file, and otherwise the
+    diagnostic, then the usage text when *usage*."""
+    if as_json:
+        print(json.dumps({"ok": False, "file": "",
+                          "diagnostics": [refusal.to_dict()]}, indent=2))
+    else:
+        print(refusal.format(), file=sys.stderr)
+        if usage:
+            print(USAGE, file=sys.stderr)
+    sys.exit(1)
+
+
 def main() -> None:
     # Read stdin and emit program output / diagnostics as UTF-8 regardless of
     # the host locale: a Vera program printing OR reading `→` / `—` (or any
@@ -2228,19 +2183,11 @@ def main() -> None:
     # it either.  The flag reaching a command that cannot honour it should
     # always be an error, whatever the command needs on its command line.
     if "--timeout-ms" in args and args[0] != "verify":
-        _tm_msg = (
+        _refuse_command_line(command_errors.option_not_accepted(
             f"--timeout-ms is only accepted by `vera verify`, not "
             f"`vera {args[0]}`. Set VERA_Z3_TIMEOUT_MS in the environment "
-            f"to reach `vera test` and the language server."
-        )
-        if "--json" in args:
-            print(json.dumps({"ok": False, "file": "",
-                              "diagnostics": [{"severity": "error",
-                                               "description": _tm_msg}]},
-                             indent=2))
-        else:
-            print(f"Error: {_tm_msg}", file=sys.stderr)
-        sys.exit(1)
+            f"to reach `vera test` and the language server."),
+            as_json="--json" in args)
 
     # `--distrust` is test-only, and refused elsewhere for the same reason:
     # a command that cannot honour a flag must not ignore it.  Only the
@@ -2248,45 +2195,27 @@ def main() -> None:
     # the program `vera run` calls.
     _own_args = args[:args.index("--")] if "--" in args else args
     if "--distrust" in _own_args and args[0] != "test":
-        _ds_msg = (
+        _refuse_command_line(command_errors.option_not_accepted(
             f"--distrust is only accepted by `vera test`, not "
-            f"`vera {args[0]}`."
-        )
-        if "--json" in _own_args:
-            print(json.dumps({"ok": False, "file": "",
-                              "diagnostics": [{"severity": "error",
-                                               "description": _ds_msg}]},
-                             indent=2))
-        else:
-            print(f"Error: {_ds_msg}", file=sys.stderr)
-        sys.exit(1)
+            f"`vera {args[0]}`."), as_json="--json" in _own_args)
     # `--reconcile` and `--no-reconcile` are verify-only for the same reason:
     # a command that cannot honour one must refuse it rather than ignore it.
     # `vera verify` reconciles by default, which `--reconcile` states and
     # `--no-reconcile` turns off, so the two together contradict each other.
     # As for `--distrust`, only the arguments before `--` are read.
-    _rc_msg = ""
+    _rc_refusal: Diagnostic | None = None
     for _rc_flag in ("--reconcile", "--no-reconcile"):
         if _rc_flag in _own_args and args[0] != "verify":
-            _rc_msg = (
+            _rc_refusal = command_errors.option_not_accepted(
                 f"{_rc_flag} is only accepted by `vera verify`, not "
-                f"`vera {args[0]}`."
-            )
+                f"`vera {args[0]}`.")
             break
     else:
         if "--reconcile" in _own_args and "--no-reconcile" in _own_args:
-            _rc_msg = (
-                "`vera verify` takes --reconcile or --no-reconcile, not both."
-            )
-    if _rc_msg:
-        if "--json" in _own_args:
-            print(json.dumps({"ok": False, "file": "",
-                              "diagnostics": [{"severity": "error",
-                                               "description": _rc_msg}]},
-                             indent=2))
-        else:
-            print(f"Error: {_rc_msg}", file=sys.stderr)
-        sys.exit(1)
+            _rc_refusal = command_errors.contradictory_options(
+                "`vera verify` takes --reconcile or --no-reconcile, not both.")
+    if _rc_refusal is not None:
+        _refuse_command_line(_rc_refusal, as_json="--json" in _own_args)
 
     # Handle version before the length check — these need no file argument.
     if not args or args[0] in ("version", "--version", "-V"):
@@ -2311,8 +2240,10 @@ def main() -> None:
         sys.exit(cmd_errors(as_json=as_json))
 
     if len(args) < 2:
-        print(USAGE, file=sys.stderr)
-        sys.exit(1)
+        _refuse_command_line(command_errors.command_not_understood(
+            f"`vera {args[0]}` names no file: it reads a .vera source file."
+            if args[0] in _FILE_COMMANDS
+            else f"Unknown command: {args[0]}"), as_json=False, usage=True)
 
     command = args[0]
     use_json = "--json" in args
@@ -2341,8 +2272,9 @@ def main() -> None:
             try:
                 serve_port = int(args[port_idx + 1])
             except ValueError:
-                print("Error: --port requires an integer", file=sys.stderr)
-                sys.exit(1)
+                _refuse_command_line(command_errors.invalid_option_value(
+                    f"--port requires an integer, not "
+                    f"{args[port_idx + 1]!r}."), as_json=use_json)
     if "--host" in args:
         host_idx = args.index("--host")
         if host_idx + 1 < len(args):
@@ -2358,14 +2290,8 @@ def main() -> None:
         try:
             resolve_timeout_ms()
         except Z3BudgetError as exc:
-            if use_json:
-                print(json.dumps({"ok": False, "file": "",
-                                  "diagnostics": [{"severity": "error",
-                                                   "description": str(exc)}]},
-                                 indent=2))
-            else:
-                print(f"Error: {exc}", file=sys.stderr)
-            sys.exit(1)
+            _refuse_command_line(
+                command_errors.invalid_option_value(str(exc)), as_json=use_json)
 
     if "--timeout-ms" in args:
         tm_idx = args.index("--timeout-ms")
@@ -2375,15 +2301,9 @@ def main() -> None:
                 raise Z3BudgetError("--timeout-ms: missing value")
             timeout_ms = resolve_timeout_ms(raw_tm)
         except Z3BudgetError as exc:
-            msg = str(exc).replace("timeout_ms:", "--timeout-ms:", 1)
-            if use_json:
-                print(json.dumps({"ok": False, "file": "",
-                                  "diagnostics": [{"severity": "error",
-                                                   "description": msg}]},
-                                 indent=2))
-            else:
-                print(f"Error: {msg}", file=sys.stderr)
-            sys.exit(1)
+            _refuse_command_line(command_errors.invalid_option_value(
+                str(exc).replace("timeout_ms:", "--timeout-ms:")),
+                as_json=use_json)
 
     if "--trials" in args:
         trials_idx = args.index("--trials")
@@ -2391,15 +2311,9 @@ def main() -> None:
             try:
                 trials = int(args[trials_idx + 1])
             except ValueError:
-                msg = f"Invalid --trials value: {args[trials_idx + 1]}"
-                if use_json:
-                    print(json.dumps({"ok": False, "file": "",
-                                      "diagnostics": [{"severity": "error",
-                                                       "description": msg}]},
-                                     indent=2))
-                else:
-                    print(f"Error: {msg}", file=sys.stderr)
-                sys.exit(1)
+                _refuse_command_line(command_errors.invalid_option_value(
+                    f"Invalid --trials value: {args[trials_idx + 1]}"),
+                    as_json=use_json)
 
     # Parse --target <target> option
     target: str = "wasm"
@@ -2408,19 +2322,10 @@ def main() -> None:
         if target_idx + 1 < len(args):
             target = args[target_idx + 1]
             if target not in ("wasm", "browser", "wasi-p2"):
-                msg = (
+                _refuse_command_line(command_errors.invalid_option_value(
                     f"Invalid --target value: {target} "
-                    f"(expected 'wasm', 'browser', or 'wasi-p2')"
-                )
-                if use_json:
-                    print(json.dumps({"ok": False, "file": "",
-                                      "diagnostics": [{"severity": "error",
-                                                       "description": msg,
-                                                       "location": {"line": 0, "column": 0}}]},
-                                     indent=2))
-                else:
-                    print(f"Error: {msg}", file=sys.stderr)
-                sys.exit(1)
+                    f"(expected 'wasm', 'browser', or 'wasi-p2')"),
+                    as_json=use_json)
 
     # Parse --world <world> option (wasi-p2 target only; validated in
     # cmd_compile/cmd_run so JSON mode gets a proper envelope)
@@ -2430,19 +2335,9 @@ def main() -> None:
         if world_idx + 1 < len(args):
             world = args[world_idx + 1]
             if world not in ("cli", "server"):
-                msg = (
+                _refuse_command_line(command_errors.invalid_option_value(
                     f"Invalid --world value: {world} "
-                    f"(expected 'cli' or 'server')"
-                )
-                if use_json:
-                    print(json.dumps({"ok": False, "file": "",
-                                      "diagnostics": [{"severity": "error",
-                                                       "description": msg,
-                                                       "location": {"line": 0, "column": 0}}]},
-                                     indent=2))
-                else:
-                    print(f"Error: {msg}", file=sys.stderr)
-                sys.exit(1)
+                    f"(expected 'cli' or 'server')"), as_json=use_json)
 
     # Parse -o <path> option
     output_path: str | None = None
@@ -2479,8 +2374,11 @@ def main() -> None:
         i += 1
 
     if not remaining:
-        print(USAGE, file=sys.stderr)
-        sys.exit(1)
+        _refuse_command_line(command_errors.command_not_understood(
+            f"`vera {command}` names no file: it reads a .vera source file."
+            if command in _FILE_COMMANDS
+            else f"Unknown command: {command}"),
+            as_json=use_json, usage=True)
 
     filepath = remaining[0]
 
@@ -2516,9 +2414,8 @@ def main() -> None:
     elif command == "fmt":
         sys.exit(cmd_fmt(filepath, write=use_write, check=use_check_fmt))
     else:
-        print(f"Unknown command: {command}", file=sys.stderr)
-        print(USAGE, file=sys.stderr)
-        sys.exit(1)
+        _refuse_command_line(command_errors.command_not_understood(
+            f"Unknown command: {command}"), as_json=use_json, usage=True)
 
 
 if __name__ == "__main__":  # pragma: no cover

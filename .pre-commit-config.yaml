@@ -14,7 +14,7 @@
 # and Windows shards (`shard`) on every pull request, on the whole OS x Python
 # matrix (`test`) on a version-raising pull request, a release and nightly,
 # and once, measuring coverage (`coverage`), on the push event a merged pull
-# request produces on main; the E602/E604 compile sweep (`lint`); and the
+# request produces on main; the E600/E602 compile sweep (`lint`); and the
 # conformance and example runs under VERA_EAGER_GC=1 (`eager-gc`).  CI also
 # runs every gate below, or the suite's tests that do its work, so a commit
 # that reaches it without these hooks is still gated.

@@ -197,7 +197,7 @@ So `total == tier1_verified + tier3_runtime`, and the array — which is the com
 
 ### Error codes
 
-Diagnostics carry stable codes, which `vera errors` lists; a few diagnostics carry none. The prefix is the **namespace**, not the severity: the `W` codes are all warnings, but a number of `E` codes are warning-severity too (`E504`, `E506`, `E539`, `E540` are the ones the partition table above names). Codes are grouped by compiler phase:
+Every diagnostic carries a stable code, which `vera errors` lists. The prefix is the **namespace**, not the severity: the `W` codes are all warnings, but a number of `E` codes are warning-severity too (`E504`, `E506`, `E539`, `E540` are the ones the partition table above names). Codes are grouped by compiler phase:
 
 | Range | Phase |
 |-------|-------|
@@ -210,6 +210,8 @@ Diagnostics carry stable codes, which `vera errors` lists; a few diagnostics car
 | E5xx | Verification |
 | E6xx | Codegen |
 | E7xx | Testing |
+| E8xx | Run: a program's own failure while it runs (E800, a runtime trap) |
+| E9xx | Command: the command line's own refusals (a file not found, an option a command does not take, a function `--fn` cannot call) |
 
 See `vera/errors.py` `ERROR_CODES` dict for the full registry.
 

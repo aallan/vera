@@ -331,6 +331,8 @@ def build_llms_full_txt() -> str:
         "| E5xx | Verification |",
         "| E6xx | Code generation |",
         "| E7xx | Testing |",
+        "| E8xx | Run: a program's own failure while it runs |",
+        "| E9xx | Command: the command line's own refusals |",
         "| W0xx | Warnings |",
         "",
     ]

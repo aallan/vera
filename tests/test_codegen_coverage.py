@@ -77,10 +77,11 @@ class TestCodegenCoverageGaps:
             where_fns=None,
         )
 
-    # -- E605: _is_compilable rejects unsupported return type ----------
+    # -- E601: _is_compilable rejects unsupported return type ----------
 
-    def test_e605_unsupported_return_type(self) -> None:
-        """A function returning an unknown type triggers E605."""
+    def test_e601_unsupported_return_type(self) -> None:
+        """A function returning an unknown type triggers E601 (E605
+        until #1490 gave the check the code of its concept)."""
         from vera.ast import NamedType
 
         fn = self._make_fn(
@@ -90,7 +91,7 @@ class TestCodegenCoverageGaps:
         prog = self._make_program(fn)
         result = compile(prog)
         codes = [d.error_code for d in result.diagnostics]
-        assert "E605" in codes, f"Expected E605, got {codes}"
+        assert "E601" in codes, f"Expected E601, got {codes}"
 
     # -- E606: State effect without type argument ----------------------
 

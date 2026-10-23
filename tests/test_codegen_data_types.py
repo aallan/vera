@@ -1489,7 +1489,7 @@ class TestGenericMonoSuffixFromSlotRef604:
 
     1. ``option_map(opt, fn_alias_slot)`` produces ``option_map$Int_JInt``
        and runs correctly (not a runtime trap).
-    2. The template-only ``[E602]``/``[E604]`` warnings on the prelude
+    2. The template-only ``[E602]``/``[E600]`` warnings on the prelude
        generics are suppressed in programs that successfully call them
        — audit recommendation 2 from #604.
     """
@@ -1634,7 +1634,7 @@ public fn main(@Unit -> @Int)
         self,
     ) -> None:
         """Audit recommendation 2 from #604: template-only `[E602]` /
-        `[E604]` warnings on a generic decl are suppressed when at
+        `[E600]` warnings on a generic decl are suppressed when at
         least one mono clone of that decl successfully compiles.
 
         Pre-fix every program that imported the prelude saw 5 spurious
@@ -1658,7 +1658,7 @@ public fn main(@Unit -> @Int)
         for fn_name in ("option_map", "option_unwrap_or"):
             offending = [
                 d for d in warnings
-                if d.error_code in {"E602", "E604", "E605"}
+                if d.error_code in {"E600", "E601", "E602"}
                 and d.description.startswith(f"Function '{fn_name}' ")
             ]
             assert not offending, (
@@ -1702,7 +1702,7 @@ public fn main(@Unit -> @Int)
         warnings = [d for d in result.diagnostics if d.severity == "warning"]
         offending = [
             d for d in warnings
-            if d.error_code in {"E602", "E604", "E605"}
+            if d.error_code in {"E600", "E601", "E602"}
             and d.description.startswith("Function 'unused_generic' ")
         ]
         assert offending, (

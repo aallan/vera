@@ -122,7 +122,7 @@ private fn checked_nat(@Int -> @Result<Nat, String>)
 
 ### 9.3.3 UrlParts
 
-<!-- vera:skip-check category="ILLUSTRATIVE" code="E158 none" reason="the prelude's own UrlParts declaration, a reserved name, shown without visibility (#1469)" -->
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E158 E188" reason="the prelude's own UrlParts declaration, a reserved name, shown without visibility (#1469)" -->
 ```
 data UrlParts {
   UrlParts(String, String, String, String, String)
@@ -138,7 +138,7 @@ See §9.6.18 for the `url_parse` and `url_join` function specifications.
 
 ### 9.3.4 Future\<T\>
 
-<!-- vera:skip-check category="ILLUSTRATIVE" code="E158 E158 none" reason="prelude-injected Future<T> declaration shown without visibility" -->
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E158 E158 E188" reason="prelude-injected Future<T> declaration shown without visibility" -->
 ```
 data Future<T> { Future(T) }
 ```
@@ -623,7 +623,7 @@ public fn handle(@Request -> @Response)
 
 **Built-in types** (prelude ADTs, injected when referenced; their names are reserved):
 
-<!-- vera:skip-check category="ILLUSTRATIVE" code="E158 E158 none none" reason="the prelude's own Request/Response declarations, reserved names, shown without visibility (#305, #1469)" -->
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E158 E158 E188 E188" reason="the prelude's own Request/Response declarations, reserved names, shown without visibility (#305, #1469)" -->
 ```
 data Request { Request(String, String, Map<String, String>, String) }
 data Response { Response(Int, Map<String, String>, String) }

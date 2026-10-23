@@ -693,7 +693,7 @@ Imported functions are **not** exported from the WASM module. Only the importing
 
 A call that resolves to no function is an error at type-check time — **E200** for a bare call, **E230** for a module-qualified call to a path that is neither a module this file imports nor the file's own (§8.5.3), **E233** for a function the named module does not declare. A bare call to a name two imports supply is refused at the import instead (**E155**, §8.5.2.2). A bare call to an operation of a user-declared ability has no function behind it either, and is refused at type-check time too (**E340**, §9.8).
 
-The code generator keeps a guard rail for the same condition, which a program compiled without being checked first reaches. After module registration populates the known-function set, the guard rail only flags truly unknown calls — imported functions are recognised as known.
+The code generator keeps a guard rail for the same condition (**E624**), which a program compiled without being checked first reaches. After module registration populates the known-function set, the guard rail only flags truly unknown calls — imported functions are recognised as known.
 
 If a function call cannot be resolved against either local definitions or imported modules, the guard rail reports:
 

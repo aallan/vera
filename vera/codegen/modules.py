@@ -744,6 +744,7 @@ class CrossModuleMixin:
         # different reasons and cite different spec sections.  Emit each with a
         # *literal* spec_ref (rather than a branched variable) so the
         # diagnostic-fields gate can validate both citations against the spec.
+        # One code for both: the condition is one, a call with no target.
         if qualified is not None:
             self.diagnostics.append(Diagnostic(
                 description=description,
@@ -757,6 +758,7 @@ class CrossModuleMixin:
                 ),
                 spec_ref='Chapter 8, Section 8.5.3 "Module-Qualified Calls"',
                 severity="error",
+                error_code="E624",
             ))
         else:
             self.diagnostics.append(Diagnostic(
@@ -772,6 +774,7 @@ class CrossModuleMixin:
                 ),
                 spec_ref='Chapter 8, Section 8.5.1 "Bare Calls"',
                 severity="error",
+                error_code="E624",
             ))
 
     # -----------------------------------------------------------------

@@ -697,6 +697,7 @@ MARKED_FILES = (
     "test_resolver_1694.py",
     "test_type_renderer_1505.py",
     "test_gc_free_blocks_1718.py",
+    "test_diagnostic_codes_1490.py",
 )
 UNMARKED_FILES = (
     "test_obligations.py",

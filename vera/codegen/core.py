@@ -88,6 +88,11 @@ _WAT_FN_DEF_RE = re.compile(r"^\s*\(func \$([^\s()]+)(.*)$", re.MULTILINE)
 # slot must survive, and nothing can construct it.  Named so the trap roster
 # (`vera.trap_registry.INTERNAL_TRAPS`) can list the stub's `unreachable`.
 _DROPPED_CLOSURE_BODY = "unreachable"
+#: The codes of a skipped template's warnings, which `_compile_program`
+#: suppresses where a clone of the template compiled, or the template is
+#: a prelude function the program never references: an unsupported
+#: parameter type (E600), return type (E601) or body (E602).
+_SKIP_WARNING_CODES = frozenset({"E600", "E601", "E602"})
 _WAT_CALL_RE = re.compile(r"\b(?:return_call|call)\s+\$([^\s()]+)")
 # #1185: an INDIRECT call names no function symbol at all — it dispatches
 # on the module's function table — so `_WAT_CALL_RE` is blind to it and
@@ -2377,12 +2382,12 @@ class CodeGenerator(
         # directly (their type vars have no monomorphic WASM
         # representation).  Each call site produces a monomorphized
         # clone that compiles fine in the normal flow.  Emitting
-        # `[E604]` / `[E602]` / `[E605]` on the *template* is pure noise
+        # `[E600]` / `[E602]` / `[E601]` on the *template* is pure noise
         # in that case — the function works end-to-end via mono, but
         # the user sees a confusing warning about a function that's
         # actually fine.
         #
-        # Targeted suppression: drop every E602/E604/E605 diagnostic
+        # Targeted suppression: drop every E600/E601/E602 diagnostic
         # whose source is a forall-decl IF at least one mono clone of
         # that decl successfully *compiled* (`_compile_fn` returned
         # non-None, recorded in `compiled_mono_bases` above).  CR-3
@@ -2452,7 +2457,7 @@ class CodeGenerator(
                 # (so a genuinely-broken generic with NO compilable clone
                 # keeps its warning):
                 #   1. Description prefix `Function 'NAME' ` — the
-                #      function-level [E604]/[E605] (`_is_compilable`,
+                #      function-level [E600]/[E601] (`_is_compilable`,
                 #      `vera/codegen/compilability.py`) and the [E602]
                 #      dropped-parent warning (`vera/codegen/functions.py`,
                 #      reached via `_compile_fn`).
@@ -2465,7 +2470,7 @@ class CodeGenerator(
                 #      (#1549), a compiled-clone template.  A line compare
                 #      read a PRELUDE template's span against the user file's
                 #      lines and dropped a user function's E602.
-                suppressible_codes = {"E602", "E604", "E605"}
+                suppressible_codes = _SKIP_WARNING_CODES
                 kept: list[Diagnostic] = []
                 for d in self.diagnostics:
                     if d.error_code in suppressible_codes:
@@ -2515,7 +2520,7 @@ class CodeGenerator(
             referenced = self._referenced_prelude_fns(program)
             unreferenced = self._prelude_fn_names - referenced
             if unreferenced:
-                suppressible_codes = {"E602", "E604", "E605"}
+                suppressible_codes = _SKIP_WARNING_CODES
                 self.diagnostics = [
                     d for d in self.diagnostics
                     if not (
@@ -2592,10 +2597,21 @@ class CodeGenerator(
                     error_code="E699",
                 ))
             else:
-                self.diagnostics.append(Diagnostic(  # diag-fields-exempt: internal wat2wasm backend failure; a code-generation bug, not a user error, so no source-level fix or spec section applies.
+                self.diagnostics.append(Diagnostic(
                     description=f"WAT compilation failed: {exc}",
                     location=SourceLocation(file=self.file),
+                    rationale=(
+                        "Code generation produced WebAssembly text the "
+                        "assembler refuses. That is a bug in the compiler, "
+                        "not something to change in the program."
+                    ),
+                    fix=(
+                        "Please file a bug report with the offending "
+                        "program at https://github.com/aallan/vera/issues"
+                    ),
+                    spec_ref='Chapter 0, Section 0.5.1 "Diagnostic Structure"',
                     severity="error",
+                    error_code="E699",
                 ))
             return CompileResult(
                 wat=wat,
@@ -2870,7 +2886,7 @@ class CodeGenerator(
                 # there and not here would raise ``KeyError`` from inside
                 # codegen, an internal crash where the compiler owes a
                 # diagnostic.  Falling through to ``"unsupported"`` routes it
-                # to the existing E605 refusal instead, which is the LOUD
+                # to the existing E601 refusal instead, which is the LOUD
                 # answer, not a silent default: an unsupported type is refused
                 # with a located diagnostic, never compiled at a guessed
                 # width.  ``tests/test_name_resolution_spine_1316.py`` pins

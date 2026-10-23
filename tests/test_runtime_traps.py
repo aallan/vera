@@ -1438,10 +1438,11 @@ class TestTrapFixParagraphs547:
     def test_text_mode_shows_fix_block_after_backtrace(
         self, tmp_path: Path, capsys: CaptureFixture[str],
     ) -> None:
-        """Text mode emits a ``Fix:`` block after the source backtrace.
+        """Text mode emits the trap's ``Fix:`` block in its diagnostic.
 
-        Order: error message → ``Source backtrace:`` → frames →
-        ``Fix:`` → wrapped paragraph.  Pre-Stage-3 the runtime-trap
+        Order (#1490): the E800 diagnostic (header, description,
+        rationale, ``Fix:`` and its wrapped paragraph, ``See:``), then
+        ``Source backtrace:`` and its frames.  Pre-Stage-3 the runtime-trap
         surface stopped at the backtrace; the user got "what" and
         "where" but no "what to do about it".  Stage 3 closes the
         gap — runtime traps now match compile-time `Diagnostic`
@@ -1458,30 +1459,24 @@ class TestTrapFixParagraphs547:
         assert "Fix:" in captured.err
         # Canonical content from `_TRAP_FIX_PARAGRAPHS["divide_by_zero"]`
         assert "requires(divisor != 0)" in captured.err
-        # Position invariant: Fix: comes after the LAST FRAME, not
-        # merely after the "Source backtrace:" header.  Asserting
-        # only against the header would miss a regression where
-        # the Fix block landed between the header and the frames
-        # (e.g. if a future refactor reordered the cli.py print
-        # statements).  Frame format is `  in <funcname>  (file:N)`;
-        # rfind to locate the last frame line in the stderr capture.
+        # Position invariant (#1490): the Fix block is the E800
+        # diagnostic's, so it comes after the header and before the
+        # backtrace, and every frame follows the "Source backtrace:"
+        # header.  Frame format is `  in <funcname>  (file:N)`; rfind
+        # to locate the last frame line in the stderr capture.
+        header_pos = captured.err.find("[E800] Error at")
         backtrace_pos = captured.err.find("Source backtrace:")
         last_frame_pos = captured.err.rfind("\n  in ")
-        fix_pos = captured.err.find("Fix:")
-        assert 0 <= backtrace_pos, (
-            f"Source backtrace: header missing from stderr: "
-            f"{captured.err!r}"
+        fix_pos = captured.err.find("  Fix:")
+        assert 0 <= header_pos < fix_pos < backtrace_pos, (
+            f"Expected the E800 header, its Fix: block, then the "
+            f"backtrace.  header={header_pos}, fix={fix_pos}, "
+            f"backtrace={backtrace_pos}.  stderr={captured.err!r}"
         )
         assert backtrace_pos < last_frame_pos, (
             f"Expected at least one user frame after Source backtrace: "
             f"header.  backtrace={backtrace_pos}, "
             f"last_frame={last_frame_pos}.  stderr={captured.err!r}"
-        )
-        assert last_frame_pos < fix_pos, (
-            f"Expected Fix: block AFTER the last frame, not between "
-            f"the header and the frames.  backtrace={backtrace_pos}, "
-            f"last_frame={last_frame_pos}, fix={fix_pos}.  "
-            f"stderr={captured.err!r}"
         )
 
     def test_text_mode_omits_fix_block_for_contract_violation(
@@ -1636,12 +1631,12 @@ public fn main(@Unit -> @Int)
     ) -> None:
         """Text-mode Fix block wraps long paragraphs to ~76 columns.
 
-        Matches the compile-time `Diagnostic` rendering style.  The
-        canonical Fix paragraphs in ``_TRAP_FIX_PARAGRAPHS`` are
+        The canonical Fix paragraphs in ``_TRAP_FIX_PARAGRAPHS`` are
         single long sentences for editorial flexibility; the CLI
         wraps them at output time so terminals don't show
-        runaway-line content.  Each wrapped line carries a leading
-        ``"  "`` indent so the block visually nests under ``Fix:``.
+        runaway-line content.  The block is the E800 diagnostic's
+        (#1490), so it reads as every diagnostic's ``Fix:`` does: the
+        heading indented two columns, each wrapped line four.
         """
         path = tmp_path / "div.vera"
         path.write_text(_DIVZERO_FOR_FIX, encoding="utf-8")
@@ -1653,16 +1648,19 @@ public fn main(@Unit -> @Int)
         # Find the Fix: block and inspect the lines below it.
         lines = captured.err.splitlines()
         fix_idx = next(
-            i for i, ln in enumerate(lines) if ln == "Fix:"
+            i for i, ln in enumerate(lines) if ln == "  Fix:"
         )
-        fix_body_lines = lines[fix_idx + 1:]
-        # Skip any blank trailing lines.
+        see_idx = next(
+            i for i, ln in enumerate(lines) if ln.startswith("  See: ")
+        )
+        fix_body_lines = lines[fix_idx + 1:see_idx]
+        # Skip the blank lines around the paragraph.
         fix_body_lines = [ln for ln in fix_body_lines if ln.strip()]
-        # At least one wrapped line of body content.
-        assert fix_body_lines, "Fix: block has no body content"
-        # Each body line indents with two spaces.
+        # At least two wrapped lines of body content.
+        assert len(fix_body_lines) > 1, fix_body_lines
+        # Each body line indents with four spaces.
         for ln in fix_body_lines:
-            assert ln.startswith("  "), (
+            assert ln.startswith("    "), (
                 f"Fix-block line missing indent: {ln!r}"
             )
         # No line exceeds 76 chars.  textwrap.fill counts the
@@ -3008,12 +3006,14 @@ public fn main(@Unit -> @Unit)
         assert rc == 1
         captured = capsys.readouterr()
         assert "before" in captured.out
-        assert "Error: json_stringify: NaN is not representable" in captured.err
+        assert "[E800] Error at" in captured.err
+        assert "  json_stringify: NaN is not representable" in captured.err
         assert "Traceback (most recent call last)" not in captured.err
         assert 'File "' not in captured.err
         assert "wasmtime" not in captured.err
-        # The whole diagnostic, in the shape a contract violation uses.
-        assert len(captured.err.splitlines()) < 10, captured.err
+        # The whole diagnostic, in the shape a contract violation uses:
+        # the E800 block and its backtrace, not a traceback's frames.
+        assert len(captured.err.splitlines()) < 20, captured.err
 
     def test_json_mode_emits_a_parseable_envelope(
         self, tmp_path: Path, capsys: CaptureFixture[str],

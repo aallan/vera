@@ -1,4 +1,4 @@
-"""Tests for #851 — prelude combinator skip-warnings (E602/E604).
+"""Tests for #851 — prelude combinator skip-warnings (E602/E600).
 
 Two defects pinned here:
 
@@ -64,11 +64,11 @@ _SKIPPED_PRELUDE_FNS = (
 
 
 def _warnings_for(result, fn_name: str):
-    """Skip-warnings (E602/E604/E605) naming ``fn_name``."""
+    """Skip-warnings (E600/E601/E602) naming ``fn_name``."""
     return [
         d for d in result.diagnostics
         if d.severity == "warning"
-        and d.error_code in {"E602", "E604", "E605"}
+        and d.error_code in {"E600", "E601", "E602"}
         and d.description.startswith(f"Function '{fn_name}' ")
     ]
 
@@ -125,7 +125,7 @@ class TestUnreferencedPreludeWarningsSuppressed:
 # called: the mono collector only scans non-generic bodies, so
 # option_map is referenced but never instantiated, and its template
 # E602 skip-warning legitimately survives.  ``helper`` itself has a
-# bare @T param, so it draws its own (user-origin) E604 warning.
+# bare @T param, so it draws its own (user-origin) E600 warning.
 _REFERENCED_NOT_INSTANTIATED_SRC = """\
 private forall<T> fn helper(@T, @Option<Int> -> @Option<Int>)
   requires(true)
@@ -262,7 +262,7 @@ public fn main(@Unit -> @Int)
         assert diag.location.file != PRELUDE_FILE
         assert diag.location.file and diag.location.file.endswith(".vera")
         assert diag.location.line == 1, (
-            f"Expected the helper E604 to cite line 1 of the user "
+            f"Expected the helper E600 to cite line 1 of the user "
             f"file; got line {diag.location.line}"
         )
         assert "fn helper" in diag.source_line, (
