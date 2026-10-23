@@ -12,6 +12,7 @@ from vera.lexical import blank_comments
 from vera.lowering import (
     ROW_TYPE_ARGUMENT,
     ROW_VARIABLE,
+    collection_component_refusal,
     effect_row_entry_refusal,
 )
 from vera.checker.registration import (
@@ -44,6 +45,26 @@ from vera.types import (
     substitute,
 )
 
+def _span_bounds(source: str, span: ast.Span | None) -> tuple[int, int] | None:
+    """Where the text *span* covers starts and ends in *source* (1-based,
+    end exclusive)."""
+    if span is None or not source:
+        return None
+    starts = [0]
+    for line in source.splitlines(keepends=True):
+        starts.append(starts[-1] + len(line))
+    if not (1 <= span.line < len(starts) and 1 <= span.end_line < len(starts)):
+        return None
+    return (starts[span.line - 1] + span.column - 1,
+            starts[span.end_line - 1] + span.end_column - 1)
+
+
+def _span_text(source: str, span: ast.Span | None) -> str | None:
+    """The text of *source* that *span* covers (1-based, end exclusive)."""
+    bounds = _span_bounds(source, span)
+    return None if bounds is None else source[bounds[0]:bounds[1]]
+
+
 #: The arithmetic operators a literal-only expression may combine literals
 #: with.
 _LITERAL_ARITH = (ast.BinOp.ADD, ast.BinOp.SUB, ast.BinOp.MUL,
@@ -73,6 +94,49 @@ class ResolutionMixin:
     # -----------------------------------------------------------------
     # Type resolution: AST TypeExpr -> semantic Type
     # -----------------------------------------------------------------
+
+    def _refuse_array_component(self, te: ast.NamedType,
+                                arg_te: ast.TypeExpr, name: str, role: str,
+                                arg: Type) -> None:
+        """E135 for a Map or Set type *te* whose *role* component, written
+        *arg_te*, is an Array (#1680).  The fix replaces the component as
+        written: String for a key or an element, which a map compares by
+        content, and for a value a one-constructor data type holding the
+        array."""
+        written = _span_text(self.source, te.span)
+        component = _span_text(self.source, arg_te.span)
+        outer = _span_bounds(self.source, te.span)
+        inner = _span_bounds(self.source, arg_te.span)
+        if role == "value":
+            advice = ("Store the array by reference, in an Option, which a "
+                      "map holds as a value")
+            stand_in = None if component is None else f"Option<{component}>"
+        else:
+            advice = (f"{'Key the map' if name == 'Map' else 'Hold the set'} "
+                      f"by a type it compares by content, such as String, "
+                      f"the array's show text")
+            stand_in = "String"
+        if (written is not None and component is not None
+                and stand_in is not None and outer is not None
+                and inner is not None):
+            # By the component's position, not its text, which the type's
+            # other component can share (`Map<Array<Int>, Array<Int>>`).
+            lo, hi = inner[0] - outer[0], inner[1] - outer[0]
+            if written[lo:hi] == component:
+                fixed = written[:lo] + stand_in + written[hi:]
+                advice += f": replace '{written}' with '{fixed}'"
+        self._error(
+            te,
+            f"'{name}' with an Array {role} type '{pretty_type(arg)}' is not "
+            f"supported.",
+            rationale=(f"A {name} {role} is stored through an operation "
+                       f"generated for its representation, and none is "
+                       f"generated for an Array, a (ptr, len) pair, so the "
+                       f"{name.lower()} operations would not compile."),
+            fix=advice + ".",
+            spec_ref='Chapter 9, Section 9.4 "Built-in Collections"',
+            error_code="E135",
+        )
 
     def _resolve_type(self, te: ast.TypeExpr) -> Type:
         """Convert an AST TypeExpr into a resolved semantic Type."""
@@ -333,6 +397,17 @@ class ResolutionMixin:
                         spec_ref='Chapter 2, Section 2.2 "Primitive Types"',
                         error_code="E135",
                     )
+                # #1680: an Array key, value or element, the pair-represented
+                # sibling of the zero-size case: no Map or Set operation is
+                # generated over a (ptr, len) pair, so code generation
+                # dropped every function that used one.
+                roles = (("key", "value") if name == "Map"
+                         else ("element",) if name == "Set" else ())
+                if len(args) == len(roles):
+                    for role, arg, arg_te in zip(roles, args, te.type_args):
+                        if collection_component_refusal(arg) == "an Array":
+                            self._refuse_array_component(te, arg_te, name,
+                                                         role, arg)
                 return AdtType(name, args)
             return AdtType(name, ())
 
@@ -974,7 +1049,6 @@ class ResolutionMixin:
         result_type: Type | None = None,
         expected: Type | None = None,
         conflicts: set[str] | None = None,
-        callee_vars_opaque: bool = True,
     ) -> tuple[dict[str, Type], dict[str, Type]]:
         """Infer a call's type arguments, a literal taking its type from
         its context (spec §4.2; #1541, #1565).
@@ -996,12 +1070,14 @@ class ResolutionMixin:
         parts of its result a literal decided and an enclosing call can
         treat them as literal in turn.
 
-        *callee_vars_opaque* is the function door's rule that an argument
-        type still carrying the callee's own variables binds nothing
-        (``_unify_for_inference``); the constructor door never applied it.
+        What an argument's type does not fix is a hole, never a binding
+        (:meth:`_as_holes`), so the instantiation the check records holds
+        what the arguments fix and nothing else, and a type variable in an
+        argument's type is the enclosing function's, whatever its name: a
+        variable a nested call left unresolved reaches here as a hole
+        already, made one where the nested call's type is formed
+        (``_check_fn_call_with_info``; #1679, PR #1791 review).
         """
-        forall_set: set[str] | None = (
-            set(forall_vars) if callee_vars_opaque else None)
         mapping: dict[str, Type] = {}
         for param_ty, arg, arg_ty in zip(param_types, args, arg_types):
             if arg_ty is None or isinstance(arg_ty, UnknownType):
@@ -1009,16 +1085,15 @@ class ResolutionMixin:
             soft_ty = self._literal_soft_type(arg, arg_ty)
             if soft_ty is None:
                 continue
-            self._unify_for_inference(param_ty, soft_ty, mapping,
-                                      forall_set, conflicts)
+            self._unify_for_inference(param_ty, self._as_holes(soft_ty),
+                                      mapping, None, conflicts)
         holed = [tv for tv, b in mapping.items() if contains_literal_hole(b)]
         if not holed:
             return mapping, dict(mapping)
         if (expected is not None and result_type is not None
                 and not isinstance(expected, UnknownType)):
             from_expected: dict[str, Type] = {}
-            self._unify_for_inference(result_type, expected, from_expected,
-                                      forall_set)
+            self._unify_for_inference(result_type, expected, from_expected)
             for tv in holed:
                 mapping[tv] = fill_literal_holes(
                     mapping[tv], from_expected.get(tv))
@@ -1026,6 +1101,24 @@ class ResolutionMixin:
         for tv in holed:
             mapping[tv] = default_literal_holes(mapping[tv])
         return mapping, soft
+
+    def _as_holes(self, ty: Type) -> Type:
+        """*ty*, an argument's type, with each unknown in it (an empty array
+        literal's element type) a hole: a fresh variable (``$``), which a
+        later argument fills, and which, filled by nothing, is a variable no
+        argument fixes, which no value of the call's arguments holds."""
+        if isinstance(ty, UnknownType):
+            return self._fresh_typevar("?")
+        if isinstance(ty, AdtType):
+            return AdtType(ty.name, tuple(self._as_holes(a)
+                                          for a in ty.type_args))
+        if isinstance(ty, FunctionType):
+            return FunctionType(
+                tuple(self._as_holes(p) for p in ty.params),
+                self._as_holes(ty.return_type), ty.effect)
+        if isinstance(ty, RefinedType):
+            return RefinedType(self._as_holes(ty.base), ty.predicate)
+        return ty
 
     def _infer_type_args(self, forall_vars: tuple[str, ...],
                          param_types: tuple[Type, ...],

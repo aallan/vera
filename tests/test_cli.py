@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests import pipeline
+
 import json
 import subprocess
 import sys
@@ -3714,17 +3716,14 @@ class TestTypedArgParsingDirect:
         """Compile a Vera source string and return the CompileResult."""
         import tempfile
         from vera.codegen import compile as codegen_compile
-        from vera.parser import parse_file
-        from vera.transform import transform
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".vera", delete=False, encoding="utf-8"
         ) as f:
             f.write(source)
             f.flush()
             path = f.name
-        tree = parse_file(path)
-        ast = transform(tree)
-        return codegen_compile(ast, source=source, file=path)
+        return codegen_compile(
+            pipeline.typed(source, file=path), source=source, file=path)
 
     def test_string_arg_direct(self) -> None:
         """execute(raw_args=["hello"]) correctly allocates a String into WASM memory."""

@@ -4,10 +4,11 @@ Split from tests/test_verifier.py (#839). Shared helpers live in tests/verifier_
 """
 from __future__ import annotations
 
+from tests import pipeline
+
 
 from vera.parser import parse_to_ast
 
-from tests import pipeline
 from tests.verifier_helpers import (
     _verify,
     _verify_err,
@@ -1203,7 +1204,7 @@ private fn f(@Int -> @String)
         from vera.smt import SmtContext
         from vera.verifier import ContractVerifier
 
-        verifier = ContractVerifier()
+        verifier = ContractVerifier(pipeline.typed())
         verifier._register_all(parse_to_ast(
             "type Count = Nat;\n"
             "private fn f(@Int -> @Int)\n"
@@ -1240,7 +1241,7 @@ private fn f(@Int -> @String)
         from vera.verifier import ContractVerifier
         from vera.wasm.context import StringPool, WasmContext
 
-        verifier = ContractVerifier()
+        verifier = ContractVerifier(pipeline.typed())
         codegen = WasmContext(StringPool())
         corpus = [
             "@Int.0", "@Nat.0", "0 - 1", "5 - 1", "@Int.0 + 1",

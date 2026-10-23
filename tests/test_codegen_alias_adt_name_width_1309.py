@@ -55,7 +55,7 @@ def _builtin_adt_names() -> list[str]:
     built-in ADT added later joins the battery without anyone remembering
     to widen a list.
     """
-    gen = CodeGenerator()
+    gen = CodeGenerator(pipeline.typed())
     gen._register_builtin_adts()
     return sorted(gen._adt_layouts)
 
@@ -228,7 +228,7 @@ public fn main(@Unit -> @Int)
         (``@Bool.0 + @Bool.0`` is E140, ``type Int = Int;`` is E132) — with
         the run-level program above carrying the behavioural half.
         """
-        gen = CodeGenerator()
+        gen = CodeGenerator(pipeline.typed())
         gen._register_builtin_adts()
         gen._type_aliases[name] = ast.NamedType(name="Int", type_args=None)
         gen._sync_alias_env()
@@ -367,7 +367,7 @@ class TestAliasOverAdtNameWidthBattery:
         Int;`` the derivation must answer ``i64``.  ``i32`` is the ADT
         pointer width — the bug.
         """
-        gen = CodeGenerator()
+        gen = CodeGenerator(pipeline.typed())
         gen._register_builtin_adts()
         gen._type_aliases[adt] = ast.NamedType(name="Int", type_args=None)
         gen._sync_alias_env()
@@ -381,7 +381,7 @@ class TestAliasOverAdtNameWidthBattery:
         Without this, "make the alias branch win" could be satisfied by a
         change that broke every ordinary ADT parameter.
         """
-        gen = CodeGenerator()
+        gen = CodeGenerator(pipeline.typed())
         gen._register_builtin_adts()
         gen._sync_alias_env()
         assert gen._type_expr_to_wasm_type(

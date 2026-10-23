@@ -35,15 +35,17 @@ import pytest
 from vera import ast, naming
 from vera.binding import display_type_names
 from vera.codegen.core import CodeGenerator
-from vera.parser import parse_file
-from vera.resolver import ModuleResolver, ResolvedModule
-from vera.transform import transform
+from vera.resolver import ResolvedModule
 from tests import pipeline
 
 # `Float` is not a Vera primitive (the primitive is `Float64`), so an
 # unregistered `Float` renders `?` — which is exactly what makes this pair
 # distinguishing: the checker's answer for a name it does not know differs
 # visibly from codegen's answer for a name it wrongly knows.
+#: The check's refusal of a module that names a sibling's ADT it does not
+#: import (#1253).
+_NOT_A_TYPE = "'Float' is not a type. Did you mean 'Float64'?"
+
 _ALIB_PUBLIC = """
 public data Float {
   MkFloat(Int)
@@ -105,8 +107,10 @@ def _params(program: ast.Program, name: str) -> tuple[ast.TypeExpr, ...]:
 
 def _slot_tables(
     tmp_path: Path, files: dict[str, str], module: str, fn: str,
-) -> tuple[list[str], list[str]]:
-    """(checker's slot names for *fn*, codegen's) inside *module*'s namespace."""
+) -> tuple[list[str], list[str] | None]:
+    """(checker's slot names for *fn*, codegen's) inside *module*'s namespace;
+    codegen's is ``None`` for a program the check refuses, which has no typed
+    program to compile (#1679)."""
     main_path = pipeline.write_tree(tmp_path, files)
     checked = pipeline.check(main_path, root=tmp_path)
     program = checked.program
@@ -133,9 +137,12 @@ def _slot_tables(
     )
     checker = [naming.slot_name(p, scoped.artifacts.alias_env) for p in params]
 
+    if not checked.ok:
+        return checker, None
     # Codegen's view: the flat generator, inside the module's alias scope —
     # the scope every one of that module's bodies compiles under.
     gen = CodeGenerator(
+        pipeline.check(main_path).typed,
         source=main_path.read_text(encoding="utf-8"), file=str(main_path),
     )
     linked = _link(gen, program, mods)
@@ -155,10 +162,9 @@ def _link(
     gen: CodeGenerator, program: ast.Program, mods: list[ResolvedModule],
 ) -> ast.Program:
     """Hand *gen* the linked program and modules, as `compile_program` does
-    before it registers anything (`vera.binding.link_program`)."""
-    from vera.binding import link_program
-    linked = link_program(program, mods)
-    gen._resolved_modules = linked.modules
+    before it registers anything: the typed program's one link (#1679)."""
+    linked = gen._typed.linked
+    gen._resolved_modules = list(linked.modules)
     gen._binding = linked.binding
     return linked.program
 
@@ -197,6 +203,13 @@ def test_module_slot_tables_agree(
         "blib", "bcount",
     )
     assert checker == expected, "the checker's own answer moved"
+    if codegen is None:
+        # The sibling's ADT is not a name in `blib`, so the check refuses the
+        # program there, and code generation, which reads only the typed
+        # program of a clean check (#1679), never meets it.
+        refused = pipeline.check(tmp_path / "main.vera", root=tmp_path)
+        assert [d.description for d in refused.errors] == [_NOT_A_TYPE]
+        return
     assert codegen == checker, (
         f"checker {checker} vs codegen {codegen}: the two sides disagree "
         f"about what the name MEANS in this module"
@@ -269,13 +282,11 @@ public fn main(@Unit -> @Int)
     for name, text in files.items():
         (tmp_path / name).write_text(text, encoding="utf-8")
     main_path = tmp_path / "main.vera"
-    program = transform(parse_file(str(main_path)))
-    mods = ModuleResolver(tmp_path).resolve_imports(program, main_path)
     gen = CodeGenerator(
+        pipeline.check(main_path).typed,
         source=main_path.read_text(encoding="utf-8"), file=str(main_path),
     )
-    gen._resolved_modules = mods
-    gen.compile_program(program)
+    gen.compile_program()
 
     # `inject_prelude` is demand-driven, so only the prelude ADTs this
     # program mentions are registered at all — `Json` here.  Asserting the
@@ -335,14 +346,11 @@ public fn main(@Unit -> @Int)
     for name, text in files.items():
         (tmp_path / name).write_text(text, encoding="utf-8")
     main_path = tmp_path / "main.vera"
-    program = transform(parse_file(str(main_path)))
-    mods = ModuleResolver(tmp_path).resolve_imports(program, main_path)
-    gen = CodeGenerator(
-        source=main_path.read_text(encoding="utf-8"), file=str(main_path),
-    )
-    linked = _link(gen, program, mods)
-    gen._register_modules(linked)
-    gen._register_all(linked)
-    names = [display_type_names(naming.slot_name(p, gen._alias_env))[0]
-             for p in _params(linked, "takes")]
-    assert names == ["Array<Float>"], names
+    # `blib` names the sibling's `Float` without importing it, so the check
+    # refuses the program there and code generation, which reads only the
+    # typed program of a clean check (#1679), never meets it.  The entry's
+    # own `Array<Float>` draws nothing: its import puts `Float` in scope.
+    checked = pipeline.check(main_path)
+    assert [d.description for d in checked.errors] == [_NOT_A_TYPE]
+    assert all(d.location.file != str(main_path) for d in checked.errors), [
+        d.location.file for d in checked.errors]

@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from vera import ast as _ast
     from vera.wasm.context import WasmContext
 
+from tests import pipeline
 from tests.codegen_helpers import (
     _compile_ok,
     _run,
@@ -1065,13 +1066,14 @@ public fn main(-> @Int) requires(true) ensures(true) effects(<Async>) {
         assert _run(direct) == letbound_result, "direct concat must match the let-bound reference"
 
     def test_map_future_array_value_loud_skip(self) -> None:
-        """Negative pin: a `Map<String, Future<Array<Int>>>` value must LOUD
-        skip (E602), NOT emit an invalid module.
+        """Negative pin: a `Map<String, Future<Array<Int>>>` value must be
+        refused, NOT emit an invalid module.
 
-        `Future<Array<Int>>` strips to `Array<Int>`, which takes the
-        existing Array-reject `None` path — the loud [E602] skip, not the
-        `"b"` tag that (pre-fix) produced an "values remaining on stack"
-        invalid module from the two-word array payload.
+        `Future<Array<Int>>` is an Array's representation, which no map
+        operation is generated for: the check refuses the written type
+        (E135, #1680), where code generation's Array-reject `None` path was
+        the loud [E602] skip, and the `"b"` tag (pre-fix) produced a "values
+        remaining on stack" invalid module from the two-word array payload.
         """
         source = """
 public fn main(-> @Int) requires(true) ensures(true) effects(<Async>) {
@@ -1080,10 +1082,9 @@ public fn main(-> @Int) requires(true) ensures(true) effects(<Async>) {
   map_size(@Map<String, Future<Array<Int>>>.0)
 }
 """
-        result = _compile_ok(source)
-        assert "main" not in result.exports, \
-            "Future<Array<Int>> map value must drop loudly, not emit invalid WASM"
-        assert any(d.error_code == "E602" for d in result.diagnostics)
+        checked = pipeline.check(source)
+        assert {d.error_code for d in checked.errors} == {"E135"}, [
+            d.format() for d in checked.diagnostics]
 
 
 class TestMapTagFutureStripTermination1097:

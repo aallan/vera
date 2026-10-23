@@ -509,7 +509,8 @@ class CrossModuleMixin:
         """
         from vera.codegen.core import CodeGenerator
 
-        temp = CodeGenerator(source=mod.source, file=str(mod.file_path))
+        temp = CodeGenerator(
+            self._typed, source=mod.source, file=str(mod.file_path))
         temp._imported_adt_names = (
             self._imported_type_link_names(mod.path) | prelude_adt_names())
         temp._register_all(mod.program)

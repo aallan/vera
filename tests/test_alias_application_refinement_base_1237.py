@@ -85,9 +85,9 @@ def _resolve_in_verifier(source: str, type_name: str) -> object:
     resolves the named alias through the verifier's own resolver — the layer
     under test, one step below any refinement or SMT machinery.
     """
-    program = pipeline.parse(source).program
-    verifier = ContractVerifier(source=source)
-    verifier.register_program(program)
+    typed = pipeline.check(source).typed
+    verifier = ContractVerifier(typed, source=source)
+    verifier.register_program(typed.program)
     return verifier.env.type_aliases[type_name].resolved_type
 
 

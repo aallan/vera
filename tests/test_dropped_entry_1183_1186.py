@@ -16,8 +16,9 @@ cross-file branch in ``_drop_dangling_callers`` permanently dark: the [E620]
 caller message compared ``root_diag.location.file`` against the main file and
 always matched, so the module context never reached the user.
 
-Fixtures use a ``Map<String, Array<Int>>`` value (an unsupported host-import
-shape) as the root [E602] trigger.  Every surviving sibling returns 4243 — a
+Each fixture's root [E602] skip is injected (``skip_map_inserts``): its
+`map_insert` raises the skip an Array-valued Map raised, which the check now
+refuses (E135, #1680).  Every surviving sibling returns 4243 — a
 value no fallback, default, or error path produces — so "the sibling did not
 run" is decidable from the output alone.
 """
@@ -32,6 +33,9 @@ import pytest
 from vera.cli import cmd_compile, cmd_run, cmd_test
 from vera.codegen import execute
 from tests.module_fixture_helpers import compile_multi_module as _compile_files
+from tests.codegen_helpers import skip_map_inserts  # noqa: F401  (the fixture)
+
+pytestmark = pytest.mark.usefixtures("skip_map_inserts")
 
 # ---------------------------------------------------------------------
 # Fixtures
@@ -41,8 +45,8 @@ from tests.module_fixture_helpers import compile_multi_module as _compile_files
 # `survivor` is outside the doomed subgraph and keeps its export.
 _MAIN_DROPPED_SIBLING_SURVIVES = """\
 private fn tally(-> @Int) requires(true) ensures(true) effects(pure) {
-  let @Map<String, Array<Int>> = map_insert(map_new(), "a", [1, 2]);
-  map_size(@Map<String, Array<Int>>.0)
+  let @Map<String, Int> = map_insert(map_new(), "a", 1);
+  map_size(@Map<String, Int>.0)
 }
 
 public fn main(-> @Int) requires(true) ensures(true) effects(pure) {
@@ -64,8 +68,8 @@ public fn only_one(-> @Int) requires(true) ensures(true) effects(pure) {
 # Every public function is dropped -> the module exports nothing.
 _ALL_EXPORTS_DROPPED = """\
 private fn tally(-> @Int) requires(true) ensures(true) effects(pure) {
-  let @Map<String, Array<Int>> = map_insert(map_new(), "a", [1, 2]);
-  map_size(@Map<String, Array<Int>>.0)
+  let @Map<String, Int> = map_insert(map_new(), "a", 1);
+  map_size(@Map<String, Int>.0)
 }
 
 public fn main(-> @Int) requires(true) ensures(true) effects(pure) {
@@ -78,23 +82,23 @@ public fn main(-> @Int) requires(true) ensures(true) effects(pure) {
 # short-circuit it).
 _TIER3_PUBLIC_DROPPED = """\
 public fn tally(@Int -> @Int) requires(@Int.0 > 0) ensures(@Int.0 >= 0) effects(pure) {
-  let @Map<String, Array<Int>> = map_insert(map_new(), "a", [1, 2]);
-  map_size(@Map<String, Array<Int>>.0) + @Int.0
+  let @Map<String, Int> = map_insert(map_new(), "a", 1);
+  map_size(@Map<String, Int>.0) + @Int.0
 }
 """
 
 # #1186: the unsupported construct lives in the imported module, the entry
-# in the importer.  The `Map<String, Array<Int>>` host-import shape (the
-# same trigger the sibling fixtures use) is not compilable, so `helper` is
-# [E602]-skipped in om.vera and `main` is [E620]-dropped in appmain.vera.
+# in the importer.  The injected `map_insert` skip (the same trigger the
+# sibling fixtures use) drops `helper`, [E602] in om.vera, and `main` is
+# [E620]-dropped in appmain.vera.
 # (The original trigger — `option_map` under a colliding `OptionMapFn`
 # alias — stopped BEING a trigger when #1184 fixed that collision, which
 # is the improvement it exists to deliver; the location tests only need
 # any imported [E602], so they use the stable trigger.)
 _MODULE_WITH_DROPPED_BODY = """\
 public fn helper(@Int -> @Int) requires(true) ensures(true) effects(pure) {
-  let @Map<String, Array<Int>> = map_insert(map_new(), "a", [1, 2]);
-  map_size(@Map<String, Array<Int>>.0) + @Int.0
+  let @Map<String, Int> = map_insert(map_new(), "a", 1);
+  map_size(@Map<String, Int>.0) + @Int.0
 }
 """
 
@@ -431,9 +435,10 @@ class TestImportedDiagnosticLocation:
             f"imported [E602] must locate in its own module, got "
             f"{root.location.file!r}"
         )
-        # Module-local coordinates are retained, not remapped.
+        # Module-local coordinates are retained, not remapped: the skipped
+        # `map_insert` call's.
         assert root.location.line == 2
-        assert root.location.column == 34
+        assert root.location.column == 27
 
     def test_root_e602_quotes_the_module_source_line(
         self, tmp_path: Path,
@@ -474,7 +479,7 @@ class TestImportedDiagnosticLocation:
         # resolves /var -> /private/var, and the point being pinned is
         # that the E620 quotes the ROOT's file, whatever spelling it has.
         assert Path(root.location.file).name == "om.vera"
-        assert f"at {root.location.file}, line 2, column 34" in msg, (
+        assert f"at {root.location.file}, line 2, column 27" in msg, (
             f"E620 must name the module the root came from, got {msg!r}"
         )
 
@@ -489,7 +494,7 @@ class TestImportedDiagnosticLocation:
         )
         e620s = [d for d in result.diagnostics if d.error_code == "E620"]
         assert e620s
-        assert "at line 2, column 3" in e620s[0].description
+        assert "at line 2, column 27" in e620s[0].description
 
 
 # =====================================================================

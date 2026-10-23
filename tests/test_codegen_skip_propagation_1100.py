@@ -14,13 +14,16 @@ warning naming the ROOT skipped function and its skip location, the doomed
 WAT is pruned (closure bodies are stubbed to keep function-table indices
 stable), and every export OUTSIDE the subgraph is untouched.
 
-Every fixture uses a ``Map<String, Array<Int>>`` value to trigger the root
-[E602] skip (an Array-valued Map is an unsupported host-import shape); any
-E602-skippable construct reproduces the class.  The sibling ``ok()``
+Every fixture's root [E602] skip is injected (``skip_map_inserts``): its
+`map_insert` raises the skip an Array-valued Map raised, which the check now
+refuses (E135, #1680), so no construct the check accepts reaches the drop
+machinery any more; any E602-skippable construct reproduces the class.  The sibling ``ok()``
 returns 41 — a value no fallback path produces — so a green run proves the
 sibling's own body executed.
 """
 from __future__ import annotations
+
+import pytest
 
 
 from vera.codegen import CompileResult, execute
@@ -28,14 +31,17 @@ from tests.codegen_helpers import _assert_no_raw_wat_error
 from vera.errors import Diagnostic
 
 from tests.codegen_helpers import _compile
+from tests.codegen_helpers import skip_map_inserts  # noqa: F401  (the fixture)
+
+pytestmark = pytest.mark.usefixtures("skip_map_inserts")
 
 # The root-cause fixture: an E602-skippable construct inside a PRIVATE
 # helper, called by main.  `vera check` and `vera verify` are clean; the
 # failure class is codegen-only.
 _SKIPPED_HELPER = """\
 private fn tally(-> @Int) requires(true) ensures(true) effects(pure) {
-  let @Map<String, Array<Int>> = map_insert(map_new(), "a", [1, 2]);
-  map_size(@Map<String, Array<Int>>.0)
+  let @Map<String, Int> = map_insert(map_new(), "a", 1);
+  map_size(@Map<String, Int>.0)
 }
 """
 
@@ -89,8 +95,8 @@ public fn main(-> @Int) requires(true) ensures(true) effects(pure) {
         decls = {
             "sunk": """\
 private fn sunk(-> @Int) requires(true) ensures(true) effects(pure) {
-  let @Map<String, Array<Int>> = map_insert(map_new(), "a", [1, 2]);
-  map_size(@Map<String, Array<Int>>.0)
+  let @Map<String, Int> = map_insert(map_new(), "a", 1);
+  map_size(@Map<String, Int>.0)
 }
 """,
             "mid": """\
@@ -181,8 +187,8 @@ public fn ok(-> @Int) requires(true) ensures(true) effects(pure) {
         sibling still runs."""
         source = """\
 private fn sunk(-> @Int) requires(true) ensures(true) effects(pure) {
-  let @Map<String, Array<Int>> = map_insert(map_new(), "a", [1, 2]);
-  map_size(@Map<String, Array<Int>>.0)
+  let @Map<String, Int> = map_insert(map_new(), "a", 1);
+  map_size(@Map<String, Int>.0)
 }
 
 private fn ping(@Nat -> @Int) requires(true) ensures(true) decreases(@Nat.0) effects(pure) {

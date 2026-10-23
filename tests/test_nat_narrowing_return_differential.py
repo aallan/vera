@@ -28,6 +28,8 @@ the actual runtime guard, site for site.
 
 from __future__ import annotations
 
+from vera.typed import build as build_typed
+
 import re
 
 import pytest
@@ -1293,9 +1295,8 @@ class TestRefinedNonPlainBaseParity1036:
         )
         with _resolved_pipeline(_NONPLAIN_NAMED_RET) as (prog, arts, res, path):
             module = codegen_compile(
-                prog, source=_NONPLAIN_NAMED_RET, file=path,
-                resolved_modules=res,
-                expr_semantic_types=arts.expr_semantic_types,
+                build_typed(prog, res, arts), source=_NONPLAIN_NAMED_RET,
+                file=path,
             )
         assert checks(module, kind="contract_violation"), (
             "the classification claims a guard the emitted module lacks"
@@ -2734,9 +2735,8 @@ public fn go(@Nat -> @Int)
         with _resolved_pipeline(self._DEEP_CHAIN) as (
                 program, arts, resolved, path):
             result = codegen_compile(
-                program, source=self._DEEP_CHAIN, file=path,
-                resolved_modules=resolved,
-                expr_semantic_types=arts.expr_semantic_types,
+                build_typed(program, resolved, arts), source=self._DEEP_CHAIN,
+                file=path,
             )
             hard = [(d.error_code, d.description) for d in result.diagnostics
                     if d.severity == "error"]
@@ -2789,9 +2789,8 @@ public fn go(@Int -> @Int)
         with _resolved_pipeline(self._QUAL_USER_SHADOW) as (
                 program, arts, resolved, path):
             result = codegen_compile(
-                program, source=self._QUAL_USER_SHADOW, file=path,
-                resolved_modules=resolved,
-                expr_semantic_types=arts.expr_semantic_types,
+                build_typed(program, resolved, arts), source=self._QUAL_USER_SHADOW,
+                file=path,
             )
             assert result.ok, [d.description for d in result.diagnostics]
             assert wat_calls(result.wat, "vera.state_put_Int")
@@ -2914,8 +2913,8 @@ public fn bump(@Nat -> @Int)
 """
         with _resolved_pipeline(src) as (program, arts, resolved, path):
             result = codegen_compile(
-                program, source=src, file=path, resolved_modules=resolved,
-                expr_semantic_types=arts.expr_semantic_types,
+                build_typed(program, resolved, arts), source=src,
+                file=path,
             )
         hard = [(d.error_code, d.description) for d in result.diagnostics
                 if d.severity == "error"]

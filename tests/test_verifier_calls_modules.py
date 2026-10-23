@@ -1313,22 +1313,24 @@ def _e532_demotions(result: VerifyResult) -> list[ProofObligation]:
     ]
 
 
+def _call_pre(result: VerifyResult) -> list[tuple[str, str, int]]:
+    return sorted((o.status, o.error_code, o.line) for o in result.obligations
+                  if o.kind == "call_pre")
+
+
 class TestGenericCalleeCallPreDemotes:
-    """A generic callee's precondition demotes loudly, never vanishes (#1236).
+    """A generic callee's precondition is checked at the call, never
+    vanishes (#1236), and is checked as its clone states it (#1468).
 
-    ``SmtContext._translate_call_with_info`` bails on any callee with
-    ``forall_vars`` — a contract written over type parameters has no Z3 sort
-    to build a summary from.  It bailed *silently*, so unlike every other arm
-    of this taxonomy the call-site obligation did not exist: `verify` reported
-    all-Tier-1 clean while the run trapped on the callee's own entry guard, a
-    false Tier 1.  It now records the same E532 Tier-3 demotion the
-    untranslatable-argument arm records.
-
-    The demotion is unconditional on whether the precondition would HOLD —
-    "cannot check", not "does not hold" — because discharging it means
-    translating the contract at each monomorphized INSTANCE, which is #732's
-    machinery rather than this call-summary path.  So the satisfied call
-    demotes beside the violating one, which is the conservative direction.
+    ``SmtContext._translate_call_with_info`` once bailed *silently* on any
+    callee with ``forall_vars``, so the call-site obligation did not exist:
+    `verify` reported all-Tier-1 clean while the run trapped on the callee's
+    own entry guard, a false Tier 1 (#1236).  It then recorded an E532
+    Tier-3 demotion, whether or not the precondition held, since its
+    contract was read uninstantiated.  The call's clone is now the typed
+    program's instance of it, so the precondition is checked against the
+    clone's contract as a monomorphic callee's is: refuted where it fails
+    (E501), proved where it holds, demoted only where it cannot be decided.
     """
 
     _GENERIC = """
@@ -1345,25 +1347,20 @@ public fn main(@Unit -> @Int)
 { pick([1, 2], %d) }
 """
 
-    def test_violating_generic_precondition_demotes_instead_of_vanishing(
+    def test_violating_generic_precondition_is_refuted(
         self,
     ) -> None:
+        """`3 > 10` at `pick`'s clone is refuted at the call (E501), where it
+        demoted (E532) before #1468."""
         src = self._GENERIC % 3
         result = _verify(src)
-        demoted = _e532_demotions(result)
-        assert len(demoted) == 1, (
+        assert _call_pre(result) == [("violated", "E501", 12)], (
             "the generic callee's call-site precondition obligation vanished: "
             f"{[(o.kind, o.error_code, o.status) for o in result.obligations]}"
         )
-        assert demoted[0].status == "tier3"
-        warns = [
-            d for d in result.diagnostics
-            if d.severity == "warning" and d.error_code == "E532"
-        ]
-        assert len(warns) == 1, warns
-        assert "'pick'" in warns[0].description, warns[0].description
-        # Loud, not an error: the callee's entry guard enforces it at run time.
-        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert [d.error_code for d in errors] == ["E501"], errors
+        assert _e532_demotions(result) == []
 
     def test_the_runtime_traps_where_the_demotion_says_it_will(self) -> None:
         """The oracle for the false Tier 1.
@@ -1377,23 +1374,21 @@ public fn main(@Unit -> @Int)
             execute(result, fn_name="main")
         assert exc.value.kind == "contract_violation", exc.value.kind
 
-    def test_the_satisfied_generic_call_demotes_too(self) -> None:
-        """The mirror: `42 > 10` holds, and it still demotes (conservative).
-
-        Statically discharging this needs the contract translated at the
-        monomorphized instance (#732); until then, claiming Tier 1 here would
-        be claiming a check that was never made.
-        """
+    def test_the_satisfied_generic_call_proves(self) -> None:
+        """The mirror: `42 > 10` holds at the clone, and the call proves: no
+        record, as a monomorphic callee's proved precondition makes none,
+        where it demoted (E532) before #1468."""
         src = self._GENERIC % 42
         result = _verify(src)
-        assert len(_e532_demotions(result)) == 1, _e532_demotions(result)
+        assert _call_pre(result) == [], _call_pre(result)
         assert [d for d in result.diagnostics if d.severity == "error"] == []
         assert _run(src) == 42
 
-    def test_a_generic_call_inside_ensures_demotes_too(self) -> None:
+    def test_a_generic_call_inside_ensures_is_checked_too(self) -> None:
         """The ensures-clause position, drained after postcondition
         translation — the same GAP-1 re-drain the untranslatable arms rely on,
-        which a fix recording only during the body pass would miss."""
+        which a fix recording only during the body pass would miss.  `3 > 10`
+        is refuted there (E501), where it demoted (E532) before #1468."""
         result = _verify("""
 private forall<T> fn pick(@Array<T>, @Int -> @Int)
   requires(@Int.0 > 10)
@@ -1407,14 +1402,14 @@ public fn caller(@Unit -> @Int)
   effects(pure)
 { 3 }
 """)
-        assert len(_e532_demotions(result)) == 1, [
+        assert _call_pre(result) == [("violated", "E501", 10)], [
             (o.kind, o.error_code, o.line) for o in result.obligations
         ]
 
     def test_a_call_in_BOTH_positions_is_disclosed_at_each(self) -> None:
         """A generic call written in the body AND in the `ensures` is two
-        calls the compiled program evaluates, so it records two demotions,
-        one at each site.
+        calls the compiled program evaluates, so it records two refutations
+        (E501, two demotions before #1468), one at each site.
 
         The clause demotes as E522 — a body that did not translate leaves
         no term to check it against — so it is compiled as a runtime check,
@@ -1439,7 +1434,9 @@ public fn caller(@Unit -> @Int)
   effects(pure)
 { pick([1, 2], 3) }
 """)
-        demoted = sorted(_e532_demotions(result), key=lambda o: o.line)
+        demoted = sorted((o for o in result.obligations
+                          if o.kind == "call_pre" and o.error_code == "E501"),
+                         key=lambda o: o.line)
         assert len(demoted) == 2, [
             (o.kind, o.error_code, o.line) for o in result.obligations
         ]

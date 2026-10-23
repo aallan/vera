@@ -4,6 +4,8 @@ Split from tests/test_codegen.py (#419). Shared helpers live in tests/codegen_he
 """
 from __future__ import annotations
 
+from tests import pipeline
+
 import re
 import struct
 from pathlib import Path
@@ -151,7 +153,6 @@ class TestOpaqueHandleParamRooting347:
         get freed mid-call and the host store entry would be
         decref'd before the surrounding code finishes using it.
         """
-        from vera.parser import parse_to_ast
         src = """
 public fn lookup_or_zero(@Map<Nat, Nat>, @Nat -> @Nat)
   requires(true) ensures(true) effects(pure)
@@ -159,7 +160,7 @@ public fn lookup_or_zero(@Map<Nat, Nat>, @Nat -> @Nat)
   option_unwrap_or(map_get(@Map<Nat, Nat>.0, @Nat.0), 0)
 }
 """
-        result = compile(parse_to_ast(src), source=src)
+        result = compile(pipeline.typed(src), source=src)
         wat = result.wat
         # Find $lookup_or_zero's body.
         fn_match = re.search(
@@ -211,7 +212,6 @@ public fn lookup_or_zero(@Map<Nat, Nat>, @Nat -> @Nat)
         host-store entry decref'd before subsequent code finishes
         using it.
         """
-        from vera.parser import parse_to_ast
         src = """
 public fn contains_or_false(@Set<Nat>, @Nat -> @Bool)
   requires(true) ensures(true) effects(pure)
@@ -223,7 +223,7 @@ public fn contains_or_false(@Set<Nat>, @Nat -> @Bool)
   }
 }
 """
-        result = compile(parse_to_ast(src), source=src)
+        result = compile(pipeline.typed(src), source=src)
         wat = result.wat
         fn_match = re.search(
             r"\(func \$:contains_or_false\b.*?(?=\n  \(func |\n\s*\)\s*$)",
@@ -258,7 +258,6 @@ public fn contains_or_false(@Set<Nat>, @Nat -> @Bool)
         Same flip as Map and Set: Decimal values are now wrapper-
         ADT pointers and need rooting.
         """
-        from vera.parser import parse_to_ast
         src = """
 public fn is_positive_or_false(@Decimal -> @Bool)
   requires(true) ensures(true) effects(pure)
@@ -270,7 +269,7 @@ public fn is_positive_or_false(@Decimal -> @Bool)
   }
 }
 """
-        result = compile(parse_to_ast(src), source=src)
+        result = compile(pipeline.typed(src), source=src)
         wat = result.wat
         fn_match = re.search(
             r"\(func \$:is_positive_or_false\b.*?(?=\n  \(func |\n\s*\)\s*$)",

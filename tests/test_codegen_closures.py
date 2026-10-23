@@ -6,6 +6,8 @@ and call_indirect compilation.
 
 from __future__ import annotations
 
+from tests import pipeline
+
 import os
 import re
 from unittest import mock
@@ -15,8 +17,6 @@ import pytest
 from vera.codegen import (
     execute,
 )
-from vera.parser import parse_file
-from vera.transform import transform
 
 from tests.codegen_helpers import _compile, _compile_ok, _run, _run_io
 
@@ -1735,8 +1735,7 @@ public fn main(@Unit -> @Bool)
             f.flush()
             path = f.name
         try:
-            prog = transform(parse_file(path))
-            vres = verify(prog, src, file=path)
+            vres = verify(pipeline.typed(src, file=path), src, file=path)
             errors = [d for d in vres.diagnostics if d.severity == "error"]
             assert errors == [], [e.description for e in errors]
         finally:

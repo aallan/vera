@@ -22,7 +22,6 @@ from typing import TYPE_CHECKING, Any
 
 import wasmtime
 
-from vera import ast
 from vera.builtins import HOST_FAMILIES, host_import
 from vera.runtime import runtime_export
 from vera.runtime.async_http import register_async
@@ -72,9 +71,8 @@ if TYPE_CHECKING:
     from decimal import Decimal as PyDecimal
 
     from vera.errors import Diagnostic
-    from vera.resolver import ResolvedModule
     from vera.trap_registry import EmittedCheck
-    from vera.types import ModuleArtifacts, Type
+    from vera.typed import TypedProgram
 
 
 # =====================================================================
@@ -263,62 +261,26 @@ class _VeraExit(Exception):
 
 
 def compile(
-    program: ast.Program,
+    typed: TypedProgram,
     source: str = "",
     file: str | None = None,
-    resolved_modules: list[ResolvedModule] | None = None,
-    expr_semantic_types: dict[tuple[int, int, int, int], Type] | None = None,
-    expr_target_types: dict[tuple[int, int, int, int], Type] | None = None,
-    module_artifacts: ModuleArtifacts | None = None,
 ) -> CompileResult:
-    """Compile a type-checked Vera Program AST to WebAssembly.
+    """Compile a typed program (:mod:`vera.typed`) to WebAssembly.
 
-    Returns a CompileResult with WAT text, WASM binary, exports,
-    and any diagnostics.  The program should already have passed
-    type checking and (optionally) verification.
-
-    ``expr_semantic_types`` is the checker's resolved-type side-table
-    (``CheckerArtifacts.expr_semantic_types``), keyed by ``ast.span_key``.
-    The #798 integer-overflow guard consults it to classify an arithmetic
-    operand as ``@Int`` or ``@Nat`` using the *same* resolved type the
-    verifier's ``int_overflow`` obligation uses, so the runtime guard fires
-    at exactly the sites the verifier obligates (keeping codegen in lockstep
-    with ``vera/verifier.py``).  When omitted (a ``transform -> compile``
-    caller that skipped typecheck), the guard falls back to the AST-only
-    classifier, which reads each operand's declaration the way the checker
-    does.
-
-    ``expr_target_types`` is the checker's *target*-type side-table
-    (``CheckerArtifacts.expr_target_types``): the ``expected`` type each
-    expression was checked against, keyed by ``ast.span_key``.  It is the
-    codegen dual of the verifier's ``_target_type_of`` (#747), and the #820
-    enabler: it lets code generation recover the per-component *target* type
-    at a construction / array / if-join site — which the erased WASM layout
-    cannot — so the narrowing guard fires at a tuple component and an array
-    element exactly where the verifier obligates it.  Omitted callers keep
-    the pre-#820 behaviour.
-
-    ``module_artifacts`` (#987) maps each resolved module's path to ITS own
-    ``(expr_semantic_types, expr_target_types)`` pair (from
-    ``CheckArtifacts.module_artifacts``).  The two tables above are keyed by
-    bare span with no file identity, so an imported body compiled into this flat
-    WASM module (Pass 2.5 / 2.6) cannot recover its component targets from them.
-    Codegen threads the matching entry when compiling each module's body, so the
-    narrowing guards fire at the array-element / tuple-construction sites
-    through the import door.  A module absent from this map (or an omitted
-    argument) falls back to the pre-#987 behaviour: that imported body's
-    span-keyed lookups are suppressed (never wrong-file-keyed), so those
-    component sites stay unguarded rather than risk a spurious guard.
+    Returns a CompileResult with WAT text, WASM binary, exports, and any
+    diagnostics.  *typed* is the program a clean check typed
+    (:func:`vera.typed.build`): linked once, every instance it needs built
+    once, and the checker's type and target of every node by its identity,
+    a clone's and a module's included.  Code generation reads every type, a
+    generic call's instantiation and a clone from it, so the #798 overflow
+    guard and the #820 narrowing guards classify each operand, tuple
+    component and array element with the type the verifier's obligation
+    uses, an imported module's body included (#987).
     """
     from vera.codegen.core import CodeGenerator
 
-    gen = CodeGenerator(
-        source=source, file=file, resolved_modules=resolved_modules,
-        expr_semantic_types=expr_semantic_types,
-        expr_target_types=expr_target_types,
-        module_artifacts=module_artifacts,
-    )
-    return gen.compile_program(program)
+    gen = CodeGenerator(typed, source=source, file=file)
+    return gen.compile_program()
 
 
 @dataclass

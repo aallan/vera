@@ -134,7 +134,7 @@ Terminal Vera programs (animation via `IO.sleep` + cursor control via ANSI) need
 
 ### WASI Preview 2 compilation
 
-`vera compile --target wasi-p2` emits a binary WebAssembly *component* that runs under any stock wasip2 host with no Vera bindings — `wasmtime run file.wasm` just works.  The target covers the **IO and Random host families only**; a program using any other host family (Http, Decimal, Json, Html, Md, Regex, Math, Inference, State, Async, DB) is rejected with a diagnostic naming the family.  `Map` and `Set` are not host families: the module carries their operations, so both worlds run every instance code generation builds; a function that builds a `Map` or `Set` with an `Array` key, value or element is dropped by code generation on every target (`E602`, [#1679](https://github.com/aallan/vera/issues/1679)).  `vera run --target wasi-p2 file.vera` executes the component under the built-in wasip2 host with the usual output/trap reporting.  Divergences inherent to WASI 0.2 (exit codes collapse to 0/1; no structured trap frames) are documented in [spec chapter 13](https://github.com/aallan/vera/blob/main/spec/13-wasi.md).  `--world server` packages a `handle(Request -> Response)` program (the `<HttpServer>` effect) as a `wasi:http/incoming-handler` component that stock `wasmtime serve` runs — headers work via in-guest String maps; of the IO operations that world implements `IO.print`, `IO.stderr`, `IO.time` and `IO.sleep`, and rejects stdin (`IO.read_line`, `IO.read_char`), the filesystem (`IO.read_file`, `IO.write_file`, `IO.read_bytes`, `IO.write_bytes`), `IO.args`, `IO.get_env` and `IO.exit` (spec §13.7).
+`vera compile --target wasi-p2` emits a binary WebAssembly *component* that runs under any stock wasip2 host with no Vera bindings — `wasmtime run file.wasm` just works.  The target covers the **IO and Random host families only**; a program using any other host family (Http, Decimal, Json, Html, Md, Regex, Math, Inference, State, Async, DB) is rejected with a diagnostic naming the family.  `Map` and `Set` are not host families: the module carries their operations, so both worlds run every instance code generation builds; a `Map` or `Set` with an `Array` key, value or element is refused at check (`E135`).  `vera run --target wasi-p2 file.vera` executes the component under the built-in wasip2 host with the usual output/trap reporting.  Divergences inherent to WASI 0.2 (exit codes collapse to 0/1; no structured trap frames) are documented in [spec chapter 13](https://github.com/aallan/vera/blob/main/spec/13-wasi.md).  `--world server` packages a `handle(Request -> Response)` program (the `<HttpServer>` effect) as a `wasi:http/incoming-handler` component that stock `wasmtime serve` runs — headers work via in-guest String maps; of the IO operations that world implements `IO.print`, `IO.stderr`, `IO.time` and `IO.sleep`, and rejects stdin (`IO.read_line`, `IO.read_char`), the filesystem (`IO.read_file`, `IO.write_file`, `IO.read_bytes`, `IO.write_bytes`), `IO.args`, `IO.get_env` and `IO.exit` (spec §13.7).
 
 To run the WASM directly in Node.js:
 
@@ -884,7 +884,7 @@ array_sort_by(@Array<Int>.0, fn(@Int, @Int -> @Ordering) effects(pure) { ... }) 
 
 ### Map operations
 
-`Map<K, V>` is a key-value collection. Keys must satisfy `Eq` and `Hash` abilities (primitive types: `Int`, `Nat`, `Bool`, `Float64`, `String`, `Byte`). Values may be any type with a runtime representation — a zero-size key or value type (`Unit`, or a `Future` wrapping one) is rejected at check time with E135. All operations are pure — insert and remove return new maps, sharing what they do not change, so an insert costs the depth of the map's trie, not its size. `map_keys` and `map_values` return the keys and values in insertion order: a key inserted again keeps its first position, and a removed key loses it. `-0.0` and `0.0` are one key, and so are any two NaNs.
+`Map<K, V>` is a key-value collection. Keys must satisfy `Eq` and `Hash` abilities (primitive types: `Int`, `Nat`, `Bool`, `Float64`, `String`, `Byte`). Values may be any type with a runtime representation but an `Array` — a zero-size key or value type (`Unit`, or a `Future` wrapping one) and an `Array` key or value are rejected at check time with E135. All operations are pure — insert and remove return new maps, sharing what they do not change, so an insert costs the depth of the map's trie, not its size. `map_keys` and `map_values` return the keys and values in insertion order: a key inserted again keeps its first position, and a removed key loses it. `-0.0` and `0.0` are one key, and so are any two NaNs.
 
 ```vera
 map_insert(map_new(), "hello", 42)                  -- returns Map<String, Nat>
@@ -901,7 +901,7 @@ map_values(@Map<String, Nat>.0)                     -- returns Array<Nat>
 
 ### Set operations
 
-`Set<T>` is a collection of unique elements, which `set_to_array` returns in insertion order. Elements must satisfy `Eq` and `Hash` abilities (primitive types: `Int`, `Nat`, `Bool`, `Float64`, `String`, `Byte`); a zero-size element type (`Unit`, or a `Future` wrapping one) is rejected at check time with E135. All operations are pure — add and remove return new sets.
+`Set<T>` is a collection of unique elements, which `set_to_array` returns in insertion order. Elements must satisfy `Eq` and `Hash` abilities (primitive types: `Int`, `Nat`, `Bool`, `Float64`, `String`, `Byte`); a zero-size element type (`Unit`, or a `Future` wrapping one) and an `Array` element are rejected at check time with E135. All operations are pure — add and remove return new sets.
 
 ```vera
 set_add(set_add(set_new(), "hello"), "world")       -- returns Set<String>
@@ -1987,7 +1987,7 @@ Key rules:
 - Ability declarations mirror effect declarations (both use `op`)
 - User-defined abilities are declared with the same syntax, but nothing implements one for a type, so a call to one of their operations and a `where` constraint naming one are refused at check (`E340`); use the four built-in abilities, or pass an explicit function value. An ability's operation is called bare: `Eq.eq(1, 1)` is refused (`E340`), `eq(1, 1)` is the call
 - ADT auto-derivation: `Eq` is derived **structurally** — a simple enum, or an ADT every field of which is itself `Eq` (an `Eq` primitive including `String` (compared by content), or a nested `Eq` ADT, recursively). A field with no `Eq` semantics (`Array`, `Map`, a host handle) makes the ADT non-derivable.
-- Unsatisfied constraints produce error E613
+- An unsatisfied constraint is error E613, at the call that instantiates the generic at the type that does not satisfy it
 
 ## Modules
 
@@ -3685,10 +3685,11 @@ Diagnostics carry stable codes, grouped by compiler phase; the list after the ta
 - **E132**: Cyclic type alias
 - **E133**: Type alias arity mismatch
 - **E134**: Type does not take type arguments
-- **E135**: Array/Map/Set with a zero-size element, key, or value type
+- **E135**: Array/Map/Set with a zero-size element, key, or value type, or a Map/Set with an Array one
 - **E136**: Unknown type name
 - **E137**: Recursive function declares neither decreases nor Diverge
 - **E138**: Contract calls back into its own function
+- **E139**: Generic instances that grow without bound
 - **E140**: Arithmetic requires numeric operands
 - **E141**: Arithmetic requires matching numeric types
 - **E142**: Cannot compare incompatible types
@@ -3819,9 +3820,7 @@ Diagnostics carry stable codes, grouped by compiler phase; the list after the ta
 - **E616**: Cannot infer closure return type for call_indirect
 - **E617**: Refinement predicate not compilable to runtime guard
 - **E618**: Nested refinement base unsupported
-- **E619**: Cannot infer type argument for ability-constrained parameter
 - **E620**: Function dropped: skipped callee or no function table
-- **E622**: Cannot infer a generic call's type argument
 - **E624**: Call with no target reached code generation
 - **E699**: Internal compiler error
 - **E700**: Contract violation during testing

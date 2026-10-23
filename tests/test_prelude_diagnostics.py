@@ -26,6 +26,8 @@ with correct user-file locations (negative control below).
 
 from __future__ import annotations
 
+from tests import pipeline
+
 import json
 from pathlib import Path
 
@@ -235,7 +237,8 @@ public fn main(@Unit -> @Int)
         user_fn_names = {"get_name", "main"}
         program = transform(parse(src))
         inject_prelude(program)
-        gen = CodeGenerator(source=src, file="test.vera")
+        gen = CodeGenerator(
+            pipeline.typed(src, file="test.vera"), source=src, file="test.vera")
         gen._prelude_fn_names = {
             tld.decl.name
             for tld in program.declarations

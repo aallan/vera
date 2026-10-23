@@ -40,6 +40,8 @@ overflow trap, at the top of the `@Nat` range.
 
 from __future__ import annotations
 
+from vera.typed import build as build_typed
+
 import pytest
 
 from vera.checker import typecheck_with_artifacts
@@ -1498,10 +1500,7 @@ class TestATierOneEnsuresOverAMixedOperation:
         ast = parse_to_ast(source)
         _diags, arts = typecheck_with_artifacts(
             ast, source, collect_module_artifacts=True)
-        result = verify(ast, source,
-                        expr_types=arts.expr_semantic_types,
-                        expr_target_types=arts.expr_target_types,
-                        module_artifacts=arts.module_artifacts)
+        result = verify(build_typed(ast, [], arts), source)
         assert not [d for d in result.diagnostics
                     if d.severity == "error"], name
         assert ("ensures", "verified") in {
@@ -1548,10 +1547,7 @@ public fn f(@Nat, @Nat -> @{ret})
         ast = parse_to_ast(source)
         _diags, arts = typecheck_with_artifacts(
             ast, source, collect_module_artifacts=True)
-        verified = verify(ast, source,
-                          expr_types=arts.expr_semantic_types,
-                          expr_target_types=arts.expr_target_types,
-                          module_artifacts=arts.module_artifacts)
+        verified = verify(build_typed(ast, [], arts), source)
         claimed = {(o.line, o.column) for o in verified.obligations
                    if o.kind == "nat_sub"}
         guarded = {(c.line, c.column) for c in _compile(source).emitted_checks

@@ -10,6 +10,7 @@ from vera.codegen import (
     execute,
 )
 
+from tests import pipeline
 from tests.codegen_helpers import (
     _compile,
     _compile_ok,
@@ -1459,11 +1460,9 @@ public fn main(@Unit -> @Bool)
         the old scalar-only derivation basis that false-rejected it (and
         false-accepted nested ADTs) was fixed by #773's structural derivation;
         what this test pins is the sound rejection that remains."""
-        result = _compile(self._REJECT_SRC)
-        e613 = [
-            d for d in result.diagnostics
-            if d.severity == "error" and d.error_code == "E613"
-        ]
+        # Refused at the call that instantiates it (E613 at check, #1679).
+        e613 = [d for d in pipeline.check(self._REJECT_SRC).errors
+                if d.error_code == "E613"]
         assert e613, "Box<Array<Int>> must fail Eq (Array is not Eq)"
 
 
