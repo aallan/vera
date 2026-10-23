@@ -2014,10 +2014,6 @@ class CallsHandlersMixin:
         decl_env = entry.decl_env
         get_import = entry.get_import
         put_import = entry.put_import
-        # The site calls its handler's cell, so it records it (#1744); the
-        # handler recorded it first, in the same function.
-        self._use_cell(CellNames(family=entry.family, base=entry.family_base,
-                                 type_expr=entry.family_type_expr))
         # The rule is `vera.lowering.state_clause_refusal`, which the checker
         # applies at each clause an operation reaches (E340), so no
         # check-green program reaches either raise.  A resume inside the

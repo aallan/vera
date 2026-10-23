@@ -907,10 +907,17 @@ _READERS: dict[tuple[str, str, str], str] = {
                            "establishes",
     ("vera/wasm/calls.py", "CallsMixin._unify_param_arg_wasm",
      "_expr_semantic_types"): "clone naming (#1327), not a guard",
+    ("vera/wasm/calls_handlers.py", "CallsHandlersMixin._translate_handle_exn",
+     "_expr_semantic_types"): "whether an `Exn` handler's handled body is "
+                              "`Never`, so its block's width is the clause's "
+                              "(#1744), not a guard",
     ("vera/wasm/context.py", "WasmContext.__init__",
      "_expr_semantic_types"): "stores the table",
     ("vera/wasm/context.py", "WasmContext.set_expr_semantic_types",
      "_expr_semantic_types"): "stores the table",
+    ("vera/wasm/inference.py", "InferenceMixin._checked_value_wasm_type",
+     "_expr_semantic_types"): "the width of a handler block's result "
+                              "(#1744), not a guard",
     ("vera/wasm/inference.py", "InferenceMixin._infer_vera_type",
      "_expr_semantic_types"): "clone naming (#1327): the walker first",
     ("vera/wasm/operators.py", "OperatorsMixin._declared_result_is_nat",

@@ -279,6 +279,23 @@ def test_repro_a_dropped_state_row_declares_no_cell(tmp_path: Path) -> None:
     assert (ran.returncode, ran.stdout) == (0, "ok\n"), ran.stderr
 
 
+_DEAD_EXN = _DROPPER_TYPE + _fn("dead", "@Int", "Int", "pure", f"""\
+{_DROPPER}
+{_exn("@Int.0 + 1", "throw(@Int.0)")}""") + "\n" + _MAIN
+
+
+def test_repro_a_dropped_exn_handler_declares_no_tag(tmp_path: Path) -> None:
+    """The first member's `Exn` twin: a function code generation drops
+    (E602) with a `handle[Exn<Int>]` in it declares no tag."""
+    compiled = pipeline.compile(_DEAD_EXN)
+    assert compiled.ok, [d.format() for d in compiled.diagnostics]
+    assert "E602" in {d.error_code for d in compiled.warnings}
+    assert compiled.exports == ["main"]
+    assert _tags(compiled.wat) == (set(), set())
+    ran = pipeline.cli("run", _write(tmp_path, _DEAD_EXN))
+    assert (ran.returncode, ran.stdout) == (0, "ok\n"), ran.stderr
+
+
 _BOTH_ARMS = _fn("main", "@Unit", "Int", "pure", _exn(
     _state("1", "get(())"), _state("3", "get(())")))
 
@@ -376,6 +393,73 @@ def test_a_throw_alone_declares_its_tag(tmp_path: Path) -> None:
     assert (ran.returncode, ran.stdout) == (0, "ok\n"), ran.stderr
 
 
+_ROW_BARE = _fn("keep", "@Int", "Int", "<State<Int>>", "put(@Int.0);\nget(())")
+
+_ROW_QUALIFIED = _fn("keep", "@Int", "Int", "<State<Int>>",
+                     "State.put(@Int.0);\nState.get(())")
+
+_CATCH_ONLY = _fn("keep", "@Int", "Int", "pure", _exn("0", "@Int.0 + 1"))
+
+_CLOSURE_HANDLER = _fn("keep", "@Int", "Int", "pure", _positioned(
+    "closure", _state("@Int.0", "put(get(()) + 1);\nget(())")))
+
+_STATE_HANDLER_ONLY = _fn("keep", "@Int", "Int", "pure",
+                          _state("@Int.0", "@Int.0 + 1"))
+
+
+def test_a_row_s_bare_operations_declare_its_cell(tmp_path: Path) -> None:
+    """A row's cell whose one use is a bare `put` and `get` is declared by
+    the two calls; 4 is stored and read."""
+    compiled = pipeline.compile(_ROW_BARE)
+    assert compiled.ok, [d.format() for d in compiled.diagnostics]
+    assert _cells(compiled.wat) == ({"Int"}, {"Int"})
+    ran = pipeline.cli("run", _write(tmp_path, _ROW_BARE), "--fn", "keep", "--", "4")
+    assert (ran.returncode, ran.stdout.strip()) == (0, "4"), ran.stderr
+
+
+def test_a_row_s_qualified_operations_declare_its_cell(tmp_path: Path) -> None:
+    """The same, through `State.put` and `State.get`, which the qualified
+    route hands to the bare one."""
+    compiled = pipeline.compile(_ROW_QUALIFIED)
+    assert compiled.ok, [d.format() for d in compiled.diagnostics]
+    assert _cells(compiled.wat) == ({"Int"}, {"Int"})
+    ran = pipeline.cli("run", _write(tmp_path, _ROW_QUALIFIED), "--fn", "keep", "--", "4")
+    assert (ran.returncode, ran.stdout.strip()) == (0, "4"), ran.stderr
+
+
+def test_a_handler_s_catch_alone_declares_its_tag(tmp_path: Path) -> None:
+    """An `Exn` handler whose body throws nothing: its catch is the tag's
+    one use.  4 comes back as 5."""
+    compiled = pipeline.compile(_CATCH_ONLY)
+    assert compiled.ok, [d.format() for d in compiled.diagnostics]
+    assert _tags(compiled.wat) == ({"Int"}, {"Int"})
+    ran = pipeline.cli("run", _write(tmp_path, _CATCH_ONLY), "--fn", "keep", "--", "4")
+    assert (ran.returncode, ran.stdout.strip()) == (0, "5"), ran.stderr
+
+
+def test_a_closure_s_handler_declares_its_cell(tmp_path: Path) -> None:
+    """A `State` handler in a closure's body, the cell's one use: the lifted
+    closure's record is declared at the closure merge.  4 is stored, 5 put
+    and read."""
+    compiled = pipeline.compile(_CLOSURE_HANDLER)
+    assert compiled.ok, [d.format() for d in compiled.diagnostics]
+    assert _cells(compiled.wat) == ({"Int"}, {"Int"})
+    ran = pipeline.cli("run", _write(tmp_path, _CLOSURE_HANDLER),
+                       "--fn", "keep", "--", "4")
+    assert (ran.returncode, ran.stdout.strip()) == (0, "5"), ran.stderr
+
+
+def test_a_state_handler_alone_declares_its_cell(tmp_path: Path) -> None:
+    """A `State` handler whose body calls no operation: its push, put and
+    pop are the cell's one use."""
+    compiled = pipeline.compile(_STATE_HANDLER_ONLY)
+    assert compiled.ok, [d.format() for d in compiled.diagnostics]
+    assert _cells(compiled.wat) == ({"Int"}, {"Int"})
+    ran = pipeline.cli("run", _write(tmp_path, _STATE_HANDLER_ONLY),
+                       "--fn", "keep", "--", "4")
+    assert (ran.returncode, ran.stdout.strip()) == (0, "5"), ran.stderr
+
+
 # ---------------------------------------------------------------------
 # A handler's block declares the result its arms leave
 # ---------------------------------------------------------------------
@@ -390,6 +474,40 @@ let @Array<Int> = [0, 1, 8];
     "array_fold(@Array<Int>.0, @Int.0, fn(@Int, @Int -> @Int) effects(pure) { @Int.1 + @Int.0 })",
     "if @Bool.0 then { throw(1) } else { 0 };\n"
     "array_fold(@Array<Int>.0, 0, fn(@Int, @Int -> @Int) effects(pure) { @Int.1 + @Int.0 })"))
+
+
+_WIDTHS = _fn("widths", "@Int", "Int", "pure", """\
+let @Option<Int> = handle[Exn<Int>] {
+  throw(@Int) -> { Some(@Int.0 + 1) }
+} in {
+  if @Int.0 > 5 then { throw(@Int.0) } else { Some(0) }
+};
+let @String = handle[Exn<Int>] {
+  throw(@Int) -> { "thrown" }
+} in {
+  if @Int.0 > 5 then { throw(@Int.0) } else { "quiet" }
+};
+match @Option<Int>.0 {
+  Some(@Int) -> @Int.0 + string_length(@String.0),
+  None -> 0
+}""")
+
+
+def test_a_handler_valued_at_a_pointer_or_a_pair_declares_its_width(
+        tmp_path: Path) -> None:
+    """A handler valued at a data type declares an `i32` result and one
+    valued at a `String` an `(i32, i32)` result, the widths the checker's
+    types give.  At 7 both throw: `Some(8)` and `"thrown"`, so 8 + 6; at 2
+    neither does: `Some(0)` and `"quiet"`, so 0 + 5."""
+    compiled = pipeline.compile(_WIDTHS)
+    assert compiled.ok, [d.format() for d in compiled.diagnostics]
+    results = re.findall(r"block \$hd_\d+ \(result ([^)]*)\)", compiled.wat)
+    assert results == ["i32", "i32 i32"], results
+    path = _write(tmp_path, _WIDTHS)
+    thrown = pipeline.cli("run", path, "--fn", "widths", "--", "7")
+    assert (thrown.returncode, thrown.stdout.strip()) == (0, "14"), thrown.stderr
+    quiet = pipeline.cli("run", path, "--fn", "widths", "--", "2")
+    assert (quiet.returncode, quiet.stdout.strip()) == (0, "5"), quiet.stderr
 
 
 def test_a_handler_whose_body_always_throws_takes_its_clause_s_value() -> None:

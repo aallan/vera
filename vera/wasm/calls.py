@@ -502,13 +502,9 @@ class CallsMixin:
         _host_import_qualifiers = {"Http", "Inference", "IO", "Random", "DB"}
         if call.qualifier not in _host_import_qualifiers and call.name in self._effect_ops:
             target_name, _is_void = self._effect_ops[call.name]
-            # The op names its cell, which it records for its declaration
-            # (#1744), as the bare route does.
             if call.name == "throw":
-                self._use_tag(self._effect_op_cells.get(call.name))
                 instructions.append(f"throw {target_name}")
             else:
-                self._use_cell(self._effect_op_cells.get(call.name))
                 instructions.append(f"call {target_name}")
             return instructions
         # Http operations use prefixed names to avoid collision
