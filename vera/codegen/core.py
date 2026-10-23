@@ -244,7 +244,7 @@ class CodeGenerator(
         self._state_types: list[tuple[CellNames, str]] = []
         self._exn_types: list[tuple[str, str]] = []  # (type_name, wasm_type)
         # #1210: State cell types and Exn payload types the handler walk
-        # found and could NOT register.  Reset by
+        # found and refuses (E607 / E612).  Reset by
         # `_scan_body_for_state_handlers` — the walk's entry point — at the
         # start of each per-function walk, and read by it immediately after,
         # so neither list outlives one function.  Declared here as well so
@@ -687,8 +687,8 @@ class CodeGenerator(
         the module whose declaration is compiling, kept current by
         ``_sync_alias_env`` / ``_module_alias_scope``.
 
-        Registration (``_check_state_type`` / ``_check_exn_type`` / the body
-        scan) and per-function lowering resolve through the SAME
+        The row's dispatch targets, the ``old()`` snapshot, the export
+        boundary and per-function lowering resolve through the SAME
         :func:`vera.naming.family_name`, so the declared import families and
         the call sites that target them cannot diverge (the #914 bug class)
         — and both now name the CELL the checker typed, so a composite or

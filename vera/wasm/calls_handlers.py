@@ -25,6 +25,7 @@ from vera.naming import display_adt_name
 from vera.monomorphize import mangle_type_name
 from vera.slots import effect_op_result_names, type_expr_slot_name
 from vera.skip import CodegenInvariantError, CodegenSkip
+from vera.types import PrimitiveType
 from vera.wasm.helpers import (
     CellNames,
     StateClauseEntry,
@@ -41,6 +42,13 @@ from vera.wasm.helpers import (
 # whether the op has a recorded cell was correct only while `State` was the
 # sole cell-carrying effect (#1269).
 _STATE_OP_NAMES = frozenset({"get", "put"})
+
+
+def _is_never(ty: object) -> bool:
+    """Whether *ty*, a type the checker recorded, is `Never`: the type of
+    an expression no path completes, such as a handled body that always
+    throws."""
+    return isinstance(ty, PrimitiveType) and ty.name == "Never"
 
 
 class _ShowHashUnsupported(Exception):
@@ -1582,7 +1590,7 @@ class CallsHandlersMixin:
                 expr, "State<T> type argument has no slot name"
             )
         # The import FAMILY (names + WASM types) is the CELL the checker
-        # typed (#1209), matching `_check_state_type` registration.
+        # typed (#1209), the family its declaration names.
         # `State<Count>` with `type Count = Nat` joins the `state_*_Nat`
         # family every host already binds, instead of minting a
         # `state_*_Count` family whose derived WT (i32, the unknown-name
@@ -1614,6 +1622,14 @@ class CallsHandlersMixin:
         get_import = f"$vera.state_get_{mangled}"
         push_import = f"$vera.state_push_{mangled}"
         pop_import = f"$vera.state_pop_{mangled}"
+        # The cell this handler pushes, stores, reads and pops, recorded
+        # where the handler is met and before its state is evaluated, so a
+        # cell nested in the state comes after it (#1744): the module
+        # declares the cells its code calls, in the order they are first
+        # used, and a handler in a function code generation drops never
+        # reaches here.
+        cell = CellNames(family=family, base=family_base, type_expr=type_arg)
+        self._use_cell(cell)
 
         # The clause-scope STATE slot name — the `with` ANNOTATION's own
         # slot name under the CHECKER's rule (top name syntactic,
@@ -1714,7 +1730,6 @@ class CallsHandlersMixin:
         # `get`/`put` under this handler dispatches to, named
         # canonically instead of being recoverable only by unpicking
         # the mangled import name above.
-        cell = CellNames(family=family, base=family_base)
         self._effect_op_cells = {
             **saved_cells, "get": cell, "put": cell,
         }
@@ -1999,6 +2014,10 @@ class CallsHandlersMixin:
         decl_env = entry.decl_env
         get_import = entry.get_import
         put_import = entry.put_import
+        # The site calls its handler's cell, so it records it (#1744); the
+        # handler recorded it first, in the same function.
+        self._use_cell(CellNames(family=entry.family, base=entry.family_base,
+                                 type_expr=entry.family_type_expr))
         # The rule is `vera.lowering.state_clause_refusal`, which the checker
         # applies at each clause an operation reaches (E340), so no
         # check-green program reaches either raise.  A resume inside the
@@ -2274,7 +2293,7 @@ class CallsHandlersMixin:
         how many locals it occupies.
 
         A cell whose representation is a `(ptr, len)` pair never reaches
-        this site — `_register_state_cell` refuses one with E607 before any
+        this site — `_state_cell_refusal` refuses one with E607 before any
         body compiles — so the binding below is a single `local.tee` in
         every reachable case.  It goes through the shared helper anyway,
         because "one local" is a property of the type rather than of this
@@ -2527,16 +2546,20 @@ class CallsHandlersMixin:
                 expr, "Exn<E> type argument has no slot name"
             )
         # Tag family, pair-ness, and payload WT derive from the RESOLVED
-        # family (matching `_check_exn_type` registration) — `Exn<Code>`
-        # with `type Code = Int` otherwise binds an i32 payload local
-        # against the i64-tagged throw (#1205), and `Exn<Msg>` with
-        # `type Msg = String` otherwise declares a second one-i32 tag
-        # beside the `String` pair tag its throw sites use (#1209).  The
-        # caught-value SLOT binding below stays source-level (the checker
-        # binds the clause pattern's own name).
+        # family (matching the tag's declaration) — `Exn<Code>` with
+        # `type Code = Int` otherwise binds an i32 payload local against
+        # the i64-tagged throw (#1205), and `Exn<Msg>` with `type Msg =
+        # String` otherwise declares a second one-i32 tag beside the
+        # `String` pair tag its throw sites use (#1209).  The caught-value
+        # SLOT binding below stays source-level (the checker binds the
+        # clause pattern's own name).
         family = self._family_name(type_arg)
         family_base = self._boundary_base(type_arg)
         tag_name = f"$exn_{mangle_type_name(family)}"
+        # The handler catches the tag, so it records it, where the handler
+        # is met (#1744).
+        self._use_tag(CellNames(family=family, base=family_base,
+                                type_expr=type_arg))
         # Pair-ness is the BASE's question (#1218): `Exn<Short>` under
         # `type Short = {@String | ...}` is its own tag and still carries a
         # (ptr, len) pair, so asking the identity name — which carries the
@@ -2550,23 +2573,18 @@ class CallsHandlersMixin:
         done_label = f"$hd_{hid}"
         catch_label = f"$hc_{hid}"
 
-        # Infer result type: try handler clause first (body may always
-        # throw, making its inferred type None), then fall back to body.
-        # Use `_infer_expr_wasm_type` rather than `_infer_block_result_type`
-        # so expression-bodied handler clauses (e.g. `throw(@String) -> None`,
-        # `throw(@Int) -> @Int.0 + 1`, etc.) are inferred correctly — pre-fix
-        # only `ast.Block` clause bodies got their result type inferred,
-        # leaving `result_wt = None` for any expression-bodied handler and
-        # omitting the `(result ...)` annotation in emitted WAT.  #475 (1).
-        # `expr.body` is statically typed `Block` (ast.py:481), so passing
-        # it to `_infer_expr_wasm_type` produces the same answer as the
-        # Block-specific helper would — using one helper for both call
-        # sites is uniformity for free.
-        result_wt = None
-        if expr.clauses:
-            result_wt = self._infer_expr_wasm_type(expr.clauses[0].body)
-        if result_wt is None:
-            result_wt = self._infer_expr_wasm_type(expr.body)
+        # The block's result is the value its arms leave, at the type the
+        # checker gave it (#1744).  The checker types a handler at its
+        # handled body's type, which is `Never` for a body that always
+        # throws, and the value is then the `throw` clause's.  Code
+        # generation's own reading of the two arms, the clause's and then
+        # the body's, had no answer for an arm block that ends in a handler
+        # (or for an `array_fold` over a closure), so a block both of whose
+        # arms leave a value declared none, and the module did not load.
+        result_wt = self._checked_value_wasm_type(expr)
+        if expr.clauses and _is_never(
+                self._expr_semantic_types.get(expr.node_id)):
+            result_wt = self._checked_value_wasm_type(expr.clauses[0].body)
 
         # #1276: `result_wt is None` means one of TWO things, and the two want
         # opposite lowerings.  **Unit** — the handler completes carrying no

@@ -128,11 +128,11 @@ def handler_lowerable(effect_name: str) -> bool:
 
 
 def state_cell_lowerable(*, representable: bool, pair: bool) -> bool:
-    """Whether code generation registers a ``State<T>`` cell whose value is
+    """Whether code generation lowers a ``State<T>`` cell whose value is
     *representable* at all and is or is not a *pair* (#1439, #1512).
 
     THE rule, once, for three components that answer its inputs with
-    different oracles: ``_register_state_cell``
+    different oracles: ``_state_cell_refusal``
     (``vera/codegen/compilability.py``, the E607 site) from the cell's TYPE
     EXPRESSION through ``_type_expr_to_wasm_type``, and the checker and the
     verifier from the semantic type through
@@ -162,7 +162,7 @@ def exn_payload_lowerable(*, representable: bool) -> bool:
     """Whether code generation declares an ``Exn<E>`` tag for a payload that
     is or is not *representable* (#1512's twin).
 
-    Replaces the refusal in ``_register_exn_tag``
+    Replaces the refusal in ``_exn_tag_refusal``
     (``vera/codegen/compilability.py``, the E612 site).  Unlike a cell, a
     pair payload IS lowerable: the tag takes two ``i32`` params.  A payload
     with no representation (``Unit``, ``Never``) has nothing to throw.

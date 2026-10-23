@@ -260,10 +260,13 @@ class CallsMixin:
             # bare-routable set is exactly those three is asserted, not
             # remembered — see `test_guard_completeness`; a fourth op gaining
             # a bare route turns it red rather than passing unguarded.
-            # throw uses WASM throw instruction, not call
+            # throw uses WASM throw instruction, not call.  Either names its
+            # cell, which the op records for its declaration (#1744).
             if call.name == "throw":
+                self._use_tag(cell)
                 instructions.append(f"throw {target_name}")
             else:
+                self._use_cell(cell)
                 instructions.append(f"call {target_name}")
             return instructions
 
@@ -499,9 +502,13 @@ class CallsMixin:
         _host_import_qualifiers = {"Http", "Inference", "IO", "Random", "DB"}
         if call.qualifier not in _host_import_qualifiers and call.name in self._effect_ops:
             target_name, _is_void = self._effect_ops[call.name]
+            # The op names its cell, which it records for its declaration
+            # (#1744), as the bare route does.
             if call.name == "throw":
+                self._use_tag(self._effect_op_cells.get(call.name))
                 instructions.append(f"throw {target_name}")
             else:
+                self._use_cell(self._effect_op_cells.get(call.name))
                 instructions.append(f"call {target_name}")
             return instructions
         # Http operations use prefixed names to avoid collision

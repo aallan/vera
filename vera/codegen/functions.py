@@ -11,7 +11,6 @@ import functools
 from vera import ast
 from vera.binding import SYMBOL_PREFIX, source_name, symbol
 from vera.skip import AdtEqNotDerivableError, CodegenInvariantError, CodegenSkip
-from vera.codegen.compilability import contract_exprs
 from vera.tail_position import compute_tail_call_sites
 from vera.monomorphize import mangle_type_name
 from vera.slots import effect_op_result_names, type_expr_slot_name
@@ -114,6 +113,10 @@ class FunctionCompilationMixin:
             # `handle[Exn<T>]` the Fix asks for is one the reader can write.
             tags.append((tag, params, ast.format_type(te),
                          self._family_base_te(te) or family))
+            # #1744: the boundary catches the tag, so it declares it, for an
+            # entry point that throws nothing itself too.  The boundary is
+            # built after the function's merge, once the function compiled.
+            self._declare_exn_tag(family, te)
         if not tags:
             return None
         self._needs_trap = True
@@ -530,7 +533,7 @@ class FunctionCompilationMixin:
                     type_name = type_expr_slot_name(eff.type_args[0])
                     if type_name:
                         # The import NAME keys on the resolved cell FAMILY
-                        # (matching `_check_state_type` registration, #1205
+                        # (the family the handler lowering names, #1205
                         # / #1209); the Vera-name mirror below stays the
                         # SOURCE name (note it also feeds the #1006/#914-A2
                         # clone-naming contract for a `get(())` array
@@ -544,6 +547,7 @@ class FunctionCompilationMixin:
                         cell = CellNames(
                             family=self._family_name_te(eff.type_args[0]),
                             base=self._family_base_te(eff.type_args[0]),
+                            type_expr=eff.type_args[0],
                         )
                         mangled = mangle_type_name(cell.family)
                         # #1285: the family-keyed getter, recorded for EVERY
@@ -836,34 +840,18 @@ class FunctionCompilationMixin:
         else:
             result_part = ""
 
-        # Scan the function for handle[State<T>] / handle[Exn<E>] expressions
-        # to register imports and tags.  #1210: a handler naming a cell or
-        # payload type the backend cannot compile drops the function here with
-        # its own [E607] / [E612], the same verdict the declared-effect gate
-        # reaches — the walk used to skip such a type in silence and leave the
-        # lowering to emit calls to imports that were never declared.  The
-        # walk covers the contract predicates too (round 2): they are lowered
-        # code, so a handler in one is emitted like any other.
+        # Judge every handle[State<T>] / handle[Exn<E>] the function lowers.
+        # #1210: a handler naming a cell or payload type the backend cannot
+        # compile drops the function here with its own [E607] / [E612], the
+        # same verdict the declared-effect gate reaches.  The walk covers the
+        # contract predicates and the signature's refinement predicates too:
+        # they are lowered code, so a handler in one is emitted like any
+        # other, and it reaches each closure's signature, whose guard
+        # predicates' derivation reports E618.  It declares nothing: each
+        # emitter records the cells, tags and host imports it uses on `ctx`,
+        # merged below with the module's (#735, #1744).
         if not self._scan_body_for_state_handlers(decl.body, decl):
             return None
-
-        # The pre-scan walks the body, the contract predicates and the
-        # signature's refinement predicates.  It registers no host import:
-        # each emitter registers the imports it calls, on `ctx`, merged
-        # below with the module's (#735).  What it reaches is each closure's
-        # signature, whose guard predicates' derivation reports E617/E618.
-        self._scan_io_ops(decl.body)
-        # #823: and the contract predicates.  `contract_exprs` is the shared
-        # enumeration (#1210 round 2): the `getattr(c, "expr")` shortcut this
-        # replaced skipped `decreases`, whose measure lives in `exprs`.
-        for _pred in contract_exprs(decl.contracts):
-            self._scan_io_ops(_pred)
-        # #1210 round 5: and the SIGNATURE's refinement predicates, which are
-        # lowered as boundary guards in this function's prologue/epilogue.
-        # They are reached through the alias table, not structurally from the
-        # body, so nothing the recursion does can find them.
-        for _pred in self._signature_refinement_predicates(decl):
-            self._scan_io_ops(_pred)
 
         # #517 — configure tail-call optimization for this function.
         # The analyzer marks `id(FnCall)` for every call in syntactic
@@ -1353,6 +1341,9 @@ class FunctionCompilationMixin:
             self._needs_alloc = True
             self._needs_memory = True
         self._host_imports_used.update(ctx._host_imports_used)
+        # #1744: and the State cells and Exn tags its code uses, so a
+        # function dropped before this line declares none.
+        self._declare_used(ctx)
         # #1479: the trap signal and the contract channel, merged HERE —
         # after the precondition, body, lifted-closure and postcondition
         # phases — because a check lowered in any of them raises its flag on
