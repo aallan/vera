@@ -33,7 +33,6 @@ from vera.naming import AliasEnv
 
 __all__ = [
     "bare_call_denotes_user_fn",
-    "effect_op_result_names",
     "family_fallback_name",
     "fn_scopes",
     "fn_slot_scope",
@@ -173,56 +172,6 @@ def type_expr_slot_name(te: ast.TypeExpr) -> str | None:
     if isinstance(te, ast.FnType):
         return "Fn"
     return None
-
-
-def effect_op_result_names(
-    effects: Iterable[ast.EffectRefNode],
-) -> dict[str, str]:
-    """Effect-op name → the Vera type name a call to it RESULTS in (#1207).
-
-    THE one table behind the ``_effect_op_result_vera`` mirror (#1006).
-    Three consumers read an operation's result type to name a clone, and
-    they must land on one name or the clone discovery emits dangles at the
-    call the rewrite emits (a loud E602 skip, and the caller drops with
-    E620):
-
-    * ``codegen/functions.py`` builds the per-function registry from the
-      declared ``effects(<State<T>>)`` row;
-    * ``CallsHandlersMixin._translate_handle_state`` replaces it for the
-      duration of a ``handle[State<T>]`` body; and
-    * :class:`~vera.monomorphize.Monomorphizer`'s discovery walk consults
-      it for a ``get(())`` in a value position — which, before this
-      existed, fell through to the literal-driven ``Int`` default while
-      the rewrite read the cell's ``Nat``.
-
-    ``State<T>`` yields ``{"get": <T>}``; ``put`` produces ``Unit`` and
-    ``Exn<E>``'s ``throw`` diverges, so neither records a result type
-    (absent, matching codegen's ``None``).  The name is the alias-OPAQUE
-    source spelling from :func:`type_expr_slot_name` — ``State<Count>``
-    with ``type Count = Nat`` names the clone ``pick$Count``, not
-    ``pick$Nat`` — because that is what the WASM rewrite records and a
-    resolution applied on one side only would dangle exactly as before.
-
-    SOURCE ORDER, first wins, and an effect whose type argument has no
-    slot name at all contributes nothing: both mirror the guards in
-    ``codegen/functions.py``'s row loop, which a divergence here would
-    desync from.  Shadowing is NOT filtered here and no caller filters it
-    on the way in (#1284): this table says what the operation results in,
-    and whether a given call site is the operation at all is
-    :func:`bare_call_denotes_user_fn`'s question, asked at the call site.
-    """
-    out: dict[str, str] = {}
-    for eff in effects:
-        if not isinstance(eff, ast.EffectRef):
-            continue
-        if eff.name != "State" or not eff.type_args:
-            continue
-        if len(eff.type_args) != 1:
-            continue
-        name = type_expr_slot_name(eff.type_args[0])
-        if name is not None:
-            out.setdefault("get", name)
-    return out
 
 
 # ------------------------------------------------------------------

@@ -13,7 +13,7 @@ from vera.binding import SYMBOL_PREFIX, source_name, symbol
 from vera.skip import AdtEqNotDerivableError, CodegenInvariantError, CodegenSkip
 from vera.tail_position import compute_tail_call_sites
 from vera.monomorphize import mangle_type_name
-from vera.slots import effect_op_result_names, type_expr_slot_name
+from vera.slots import type_expr_slot_name
 from vera.trap_registry import signal_instructions
 from vera.wasm import WasmContext, WasmSlotEnv
 from vera.wasm.helpers import (
@@ -486,33 +486,21 @@ class FunctionCompilationMixin:
             return None
 
         # Build effect_ops mapping for State<T> and Exn<E> operations.
-        # `effect_op_result_wt` records each value-producing op's result WAT
-        # type (its State<T> parameter's WAT type) so `_expr_width`
-        # can type a bare `get(())` in constructor-arg / match-scrutinee
-        # position (#914 A1/A2).  Composite type args (`Tuple<Int, Int>`,
-        # `Option<Int>`) are routed through the injective `mangle_type_name`
-        # escaper (#775/#914 B) so the `state_*`/`exn_*` WAT identifiers stay
-        # legal — raw `<`, `>`, `,`, ` ` are illegal in a WAT identifier.
+        # Composite type args (`Tuple<Int, Int>`, `Option<Int>`) are routed
+        # through the injective `mangle_type_name` escaper (#775/#914 B) so
+        # the `state_*`/`exn_*` WAT identifiers stay legal — raw `<`, `>`,
+        # `,`, ` ` are illegal in a WAT identifier.  Shadowing is NOT
+        # filtered into these registries (#1284): they record which cell
+        # each op name reaches, and whether a given call site IS the op is
+        # asked at that site, through `_bare_call_denotes_op`.  Withholding
+        # the entry here answered both questions with one table and made the
+        # second answer unavailable — `State.get(())` in a function that
+        # also declares `fn get` compiled to `call $vera.get` and failed to
+        # link.
         effect_ops: dict[str, tuple[str, bool]] = {}
-        effect_op_result_wt: dict[str, str | None] = {}
-        effect_op_result_vera: dict[str, str | None] = {}
         effect_op_cells: dict[str, CellNames] = {}
         # #1285: cell family -> getter import, for `new(State<T>)`.
         state_getters: dict[str, str] = {}
-        # #1207: the op → Vera result-type table, from the ONE derivation
-        # mono discovery also reads.  Source-order-first-wins and the
-        # unnameable-argument skip live in the shared builder, so the two
-        # consultors cannot drift.  Shadowing is NOT filtered into these
-        # registries (#1284): they record which cell each op name reaches,
-        # and whether a given call site IS the op is asked at that site,
-        # through `_bare_call_denotes_op`.  Withholding the entry here
-        # answered both questions with one table and made the second answer
-        # unavailable — `State.get(())` in a function that also declares
-        # `fn get` compiled to `call $vera.get` and failed to link.
-        row_op_results = (
-            effect_op_result_names(decl.effect.effects)
-            if isinstance(decl.effect, ast.EffectSet) else {}
-        )
         if isinstance(decl.effect, ast.EffectSet):
             # SOURCE ORDER, first wins — the checker's rule for a bare op
             # (spec §7.4) and for its type arguments, so the two agree on
@@ -528,16 +516,12 @@ class FunctionCompilationMixin:
                 if (isinstance(eff, ast.EffectRef) and eff.name == "State"
                         and eff.type_args and len(eff.type_args) == 1):
                     # The alias-OPAQUE source spelling, kept for exactly one
-                    # role: the #1006 Vera-name mirror below.
+                    # role: the nameability gate.
                     type_name = type_expr_slot_name(eff.type_args[0])
                     if type_name:
                         # The import NAME keys on the resolved cell FAMILY
                         # (the family the handler lowering names, #1205
-                        # / #1209); the Vera-name mirror below stays the
-                        # SOURCE name (note it also feeds the #1006/#914-A2
-                        # clone-naming contract for a `get(())` array
-                        # element driving a generic instantiation — see the
-                        # tracked mono discovery desync).
+                        # / #1209).
                         # IDENTITY names the import; REPRESENTATION is
                         # recorded beside it so a `put` call site can
                         # pick its #1203 write guard without slicing
@@ -563,21 +547,6 @@ class FunctionCompilationMixin:
                             effect_ops["get"] = (
                                 f"$vera.state_get_{mangled}", False
                             )
-                            # State<T>'s T is validated non-pair /
-                            # non-unsupported by `_check_state_type` (E607),
-                            # so this yields a scalar (i64/f64/i32) or an
-                            # ADT-pointer (i32) — exactly the op's result WT.
-                            effect_op_result_wt["get"] = (
-                                self._type_expr_to_wasm_type(eff.type_args[0])
-                            )
-                            # #1006: the VERA-name mirror — `_infer_vera_type`
-                            # needs it to type a `get(())` array-literal
-                            # element (the WAT type above is layout-ambiguous).
-                            # #1207: read from the shared table rather than
-                            # re-derived here, so mono discovery's copy of
-                            # this answer is the SAME answer.
-                            effect_op_result_vera["get"] = row_op_results.get(
-                                "get")
                             effect_op_cells["get"] = cell
                         if "put" not in effect_ops:
                             effect_ops["put"] = (
@@ -630,8 +599,6 @@ class FunctionCompilationMixin:
             # #1479: one record for the whole module, read back from its text.
             checks=self._emitted_checks,
             effect_ops=effect_ops,
-            effect_op_result_wt=effect_op_result_wt,
-            effect_op_result_vera=effect_op_result_vera,
             effect_op_cells=effect_op_cells,
             state_getters=state_getters,
             ctor_layouts=ctor_layouts,

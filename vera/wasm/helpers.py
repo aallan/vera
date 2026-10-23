@@ -220,9 +220,8 @@ class StateClauseEntry:
         get_import / put_import: this handler's own host-cell imports — the
             intrinsic read/store the clause refines, not a declaration-time
             value.
-        decl_effect_ops / decl_effect_op_result_wt / decl_effect_op_result_vera
-        / decl_effect_op_cells:
-            the four op registries as they stood at the declaration.
+        decl_effect_ops / decl_effect_op_cells:
+            the two op registries as they stood at the declaration.
         decl_state_clause_ops: the clause registry as it stood at the
             declaration — the ENCLOSING handlers' clauses, never this
             handler's own, so re-entering an op from inside a clause body
@@ -243,8 +242,6 @@ class StateClauseEntry:
     get_import: str
     put_import: str
     decl_effect_ops: dict[str, tuple[str, bool]]
-    decl_effect_op_result_wt: dict[str, str | None]
-    decl_effect_op_result_vera: dict[str, str | None]
     decl_effect_op_cells: dict[str, CellNames]
     decl_state_clause_ops: dict[str, "StateClauseEntry"]
     decl_addressable_from: int

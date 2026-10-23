@@ -23,7 +23,7 @@ from vera.lowering import (
 )
 from vera.naming import display_adt_name
 from vera.monomorphize import mangle_type_name
-from vera.slots import effect_op_result_names, type_expr_slot_name
+from vera.slots import type_expr_slot_name
 from vera.skip import CodegenInvariantError, CodegenSkip
 from vera.types import STRING
 from vera.wasm.helpers import (
@@ -66,8 +66,6 @@ class CallsHandlersMixin:
     # outside a clause), and inferring it as `str` from an assignment here
     # contradicted the context's own declaration (#1211).
     _effect_ops: dict[str, tuple[str, bool]]
-    _effect_op_result_wt: dict[str, str | None]
-    _effect_op_result_vera: dict[str, str | None]
     _effect_op_cells: dict[str, CellNames]
     _state_getters: dict[str, str]
     _state_clause_ops: dict[str, StateClauseEntry]
@@ -1332,11 +1330,7 @@ class CallsHandlersMixin:
         # `state_push_Option<Int>`).  Then route through the injective
         # `mangle_type_name` (#775) so the WAT identifier is legal.
         # `type_name` is the alias-OPAQUE source spelling, and it survives
-        # for exactly one role: the NAMEABILITY gate below.  The #1006
-        # Vera-name mirror ("what did the source call this?", for
-        # `_infer_vera_type`) reads the same spelling out of the shared
-        # `effect_op_result_names` table instead, so mono discovery's copy
-        # of that answer is derived once rather than twice (#1207).
+        # for exactly one role: the NAMEABILITY gate below.
         type_name = type_expr_slot_name(type_arg)
         if type_name is None:  # pragma: no cover — NamedType always resolves
             raise CodegenSkip(
@@ -1457,8 +1451,6 @@ class CallsHandlersMixin:
         # non-local exit past the restore would leak this handler's op
         # registry into whatever catches it.
         saved_ops = self._effect_ops
-        saved_result_wt = self._effect_op_result_wt
-        saved_result_vera = self._effect_op_result_vera
         saved_cells = self._effect_op_cells
         saved_clause_ops = self._state_clause_ops
         # The DECLARATION-time snapshot the clause entries carry (#1211) —
@@ -1468,8 +1460,6 @@ class CallsHandlersMixin:
         # pushed here, i.e. how far back a clause body's outward-routed op has
         # to reach past cells the intrinsics cannot skip.
         decl_ops = dict(saved_ops)
-        decl_result_wt = dict(saved_result_wt)
-        decl_result_vera = dict(saved_result_vera)
         decl_cells = dict(saved_cells)
         decl_clause_ops = dict(saved_clause_ops)
         decl_addressable_from = self._addressable_from
@@ -1478,25 +1468,14 @@ class CallsHandlersMixin:
             "get": (get_import, False),
             "put": (put_import, True),
         }
-        # The fourth registry, in lock-step (#1218): which CELL a bare
-        # `get`/`put` under this handler dispatches to, named
+        # The registry in lock-step with `_effect_ops` (#1218): which CELL
+        # a bare `get`/`put` under this handler dispatches to, named
         # canonically instead of being recoverable only by unpicking
         # the mangled import name above.
         self._effect_op_cells = {
             **saved_cells, "get": cell, "put": cell,
         }
-        self._effect_op_result_wt = {
-            **saved_result_wt,
-            "get": self._type_name_to_wasm(family_base),
-        }
-        # #1006: the VERA-name mirror of the WT record above —
-        # `_infer_vera_type` needs the Vera name (not the layout-ambiguous
-        # WAT type) to type a `get(())` array-literal element.  #1207: from
-        # the shared derivation, which mono discovery pushes for the same
-        # `handle` expression — one table, so the clone discovery emits is
-        # the clone the rewrite below calls.
-        #
-        # No shadow guard at ANY of these four replacements, matching the
+        # No shadow guard at either of these replacements, matching the
         # declared-row site (#1284): they record which cell this handler's
         # op names reach, which is true whatever the program's declarations
         # are called, and every consumer that has to know whether a given
@@ -1505,10 +1484,6 @@ class CallsHandlersMixin:
         # say, and it is not the language's rule — the checker resolves a
         # bare `get` to a user declaration of that name anywhere it is in
         # scope, handler body included.
-        self._effect_op_result_vera = {
-            **saved_result_vera,
-            **effect_op_result_names([expr.effect]),
-        }
         # No `_state_getters` (#1285) replacement rides along here, and that
         # is deliberate: the family-keyed getter table exists for
         # `new(State<T>)`, which is legal only in an `ensures` clause, and a
@@ -1567,8 +1542,6 @@ class CallsHandlersMixin:
                 get_import=get_import,
                 put_import=put_import,
                 decl_effect_ops=decl_ops,
-                decl_effect_op_result_wt=decl_result_wt,
-                decl_effect_op_result_vera=decl_result_vera,
                 decl_effect_op_cells=decl_cells,
                 decl_state_clause_ops=decl_clause_ops,
                 decl_addressable_from=decl_addressable_from,
@@ -1600,8 +1573,6 @@ class CallsHandlersMixin:
             #    handlers).  In a `finally` because the body translation
             #    raises `CodegenSkip` for any unsupported shape.
             self._effect_ops = saved_ops
-            self._effect_op_result_wt = saved_result_wt
-            self._effect_op_result_vera = saved_result_vera
             self._effect_op_cells = saved_cells
             self._state_clause_ops = saved_clause_ops
             self._pushed_cell_families = saved_pushed
@@ -1918,8 +1889,6 @@ class CallsHandlersMixin:
 
         saved_in_clause = self._in_state_clause
         saved_ops = self._effect_ops
-        saved_result_wt = self._effect_op_result_wt
-        saved_result_vera = self._effect_op_result_vera
         saved_cells = self._effect_op_cells
         saved_clause_ops = self._state_clause_ops
         saved_clause_family = self._state_clause_family_base
@@ -1934,7 +1903,7 @@ class CallsHandlersMixin:
         # DECLARATION context — the §7.5.2 lexical rule the checker applies
         # (clauses are checked before the handled effect joins the row) and
         # the same rule `decl_env` already gives outer slot references.
-        # Restoring the four declaration-time registries routes such a call
+        # Restoring the declaration-time registries routes such a call
         # to the ENCLOSING handler: its clause if it declares one, otherwise
         # its bare intrinsic import.  Previously only `_state_clause_ops` was
         # cleared, leaving `_effect_ops` at THIS handler's imports, so a
@@ -1949,8 +1918,6 @@ class CallsHandlersMixin:
         # nested handle-expr inside a clause body still works — it installs
         # and restores its own registries around its own body.
         self._effect_ops = dict(entry.decl_effect_ops)
-        self._effect_op_result_wt = dict(entry.decl_effect_op_result_wt)
-        self._effect_op_result_vera = dict(entry.decl_effect_op_result_vera)
         self._effect_op_cells = dict(entry.decl_effect_op_cells)
         self._state_clause_ops = dict(entry.decl_state_clause_ops)
         # #1233: the clause body resolves into the DECLARATION scope, so every
@@ -1968,8 +1935,6 @@ class CallsHandlersMixin:
         finally:
             self._in_state_clause = saved_in_clause
             self._effect_ops = saved_ops
-            self._effect_op_result_wt = saved_result_wt
-            self._effect_op_result_vera = saved_result_vera
             self._effect_op_cells = saved_cells
             self._state_clause_ops = saved_clause_ops
             self._state_clause_family_base = saved_clause_family

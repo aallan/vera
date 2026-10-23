@@ -116,8 +116,6 @@ class WasmContext(
         self,
         string_pool: StringPool,
         effect_ops: dict[str, tuple[str, bool]] | None = None,
-        effect_op_result_wt: dict[str, str | None] | None = None,
-        effect_op_result_vera: dict[str, str | None] | None = None,
         effect_op_cells: dict[str, CellNames] | None = None,
         state_getters: dict[str, str] | None = None,
         ctor_layouts: dict[str, ConstructorLayout] | None = None,
@@ -153,32 +151,9 @@ class WasmContext(
         # e.g. {"get": ("$vera.state_get_Int", False),
         #        "put": ("$vera.state_put_Int", True)}
         self._effect_ops = effect_ops or {}
-        # #914: op_name -> the op's RESULT WAT type (e.g. "get" -> "i64" for
-        # State<Int>, "i32" for State<Box>).  `_effect_ops` carries only the
-        # dispatch target + void-ness, not the value-producing op's result
-        # type, which `_expr_width` needs when a bare `get(())`
-        # sits in a constructor-argument or match-scrutinee position (A1/A2).
-        # Populated in lock-step with `_effect_ops` at every injection site
-        # (the declared-effect path in codegen/functions.py and the handler-
-        # body path in wasm/calls_handlers.py) so the two never drift.
-        self._effect_op_result_wt: dict[str, str | None] = (
-            effect_op_result_wt or {}
-        )
-        # #1006: op_name -> the op's RESULT VERA type name (e.g. "get" ->
-        # "Int" for State<Int>).  The WAT-type mirror above cannot serve
-        # `_infer_vera_type` (i32 is Bool/pointer/…-ambiguous), which needs
-        # the Vera name when a bare `get(())` sits in an array-literal
-        # ELEMENT position — the element layout is chosen from the Vera
-        # type.  Populated in lock-step with `_effect_op_result_wt` at both
-        # injection sites (codegen/functions.py declared-effect path and
-        # wasm/calls_handlers.py handler-body path) and saved/restored the
-        # same way, so the three op registries never drift.
-        self._effect_op_result_vera: dict[str, str | None] = (
-            effect_op_result_vera or {}
-        )
         # #1218: op_name -> the CELL that op dispatches to, as the canonical
-        # pair :class:`CellNames` (identity + representation).  The fourth
-        # registry in the lock-step set, populated at the same two injection
+        # pair :class:`CellNames` (identity + representation).  The registry
+        # in lock-step with `_effect_ops`, populated at the same two injection
         # sites and saved/restored the same way.  It exists so a call site
         # can ask "which cell is this?" from the canonical side: the answers
         # used to be recovered by slicing the mangled family back out of the
@@ -189,7 +164,7 @@ class WasmContext(
         # no host cell and are absent.
         self._effect_op_cells: dict[str, CellNames] = effect_op_cells or {}
         # #1285: cell FAMILY -> that cell's `$vera.state_get_<T>` import.
-        # The four registries above are keyed by op NAME, which is the right
+        # The registries above are keyed by op NAME, which is the right
         # key for a call site (`get(())` names no family, so it means
         # whichever cell the row or the enclosing handler binds) and the
         # wrong key for a contract: `new(State<Bool>)` names its family
