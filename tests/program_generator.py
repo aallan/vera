@@ -607,8 +607,6 @@ class Function:
     group: list[Function] | None = None
     #: A generic's or a recursion's template.
     template: str = ""
-    #: A linear recursion's step constant.
-    step: int = 0
     #: A generic's contracts, as written.
     contract: list[str] | None = None
     #: A recursion's fixpoint: what its ``ensures`` states and what a run
@@ -1006,7 +1004,7 @@ def ensure_style(fn: Function) -> str:
     it, else the strongest one it does."""
     if fn.broken or fn.contract is not None or fn.kind in ("state", "exn"):
         return "none"
-    if fn.template == "linear":
+    if linear_step(fn) is not None:
         return "exact"
     if fn.ret not in NUMERIC:
         if (fn.ret == "Bool" and fn.ensure_style == "exact"
@@ -1094,6 +1092,22 @@ def _templated(fn: Function) -> bool:
             and not body.then.lets and not body.other.lets)
 
 
+def linear_step(fn: Function) -> int | None:
+    """The step a linear recursion's body adds, the ``k`` of the ``rec + k``
+    its step branch holds, or ``None`` once the body holds no such step.
+    The closed form and the summaries read the step here, so a change to
+    the body's step (an edit's moved literal, the minimiser's operand) is
+    a change to what the ``ensures`` states, never a stale claim."""
+    if fn.template != "linear" or not _templated(fn):
+        return None
+    step = _step(fn)
+    if (isinstance(step, Bin) and step.op == "+" and isinstance(step.left, Call)
+            and step.left.fn is fn and isinstance(step.right, Lit)
+            and not isinstance(step.right.value, bool)):
+        return int(step.right.value)
+    return None
+
+
 def settle(group: list[Function]) -> None:
     """A recursion group's summaries: the fixpoint of each member's *V*
     with every call inside the group read at what its ``ensures`` states,
@@ -1104,8 +1118,8 @@ def settle(group: list[Function]) -> None:
     first = group[0]
     if first.ret not in NUMERIC or not all(_templated(f) for f in group):
         return
-    if first.template == "linear":
-        c = first.step
+    c = linear_step(first)
+    if c is not None:
         assert first.measure is not None and first.measure.v is not None
         assert first.measure.r is not None
         first.summary_v = iv_add(iv(_base(first), "v"), iv_scale(first.measure.v, c))
@@ -1514,7 +1528,7 @@ class _Generator:
         self.current = None
         settle(fn.group)
         if not _fn_ok(fn):
-            fn.template, fn.step = "pass", 0
+            fn.template = "pass"
             fn.body = Block([], self._recursion(fn, m, params, base, fn, ret,
                                                 template="pass"))
             settle(fn.group)
@@ -1558,9 +1572,9 @@ class _Generator:
         template = template or self.rng.choice(choices)
         fn.template = template
         if template == "linear":
-            fn.step = (self.rng.randint(1, 4) if ret == "Nat"
-                       else self.rng.choice([-3, -2, -1, 1, 2, 3, 4]))
-            return Bin("+", rec, Lit(fn.step))
+            step = (self.rng.randint(1, 4) if ret == "Nat"
+                    else self.rng.choice([-3, -2, -1, 1, 2, 3, 4]))
+            return Bin("+", rec, Lit(step))
         if template == "contract":
             return Bin(self.rng.choice(["/", "%"]), rec, Lit(self.rng.randint(2, 7)))
         if template == "branch":
@@ -2762,10 +2776,11 @@ def _requires(fn: Function) -> list[str]:
 
 
 def closed_form(fn: Function) -> Expr:
-    """A linear recursion's value: its base case plus the measure times its
-    step."""
-    assert fn.measure is not None
-    return Bin("+", _base(fn), Bin("*", Ref(fn.measure), Lit(fn.step)))
+    """A linear recursion's value: its base case plus the measure times the
+    step its body adds (:func:`linear_step`)."""
+    step = linear_step(fn)
+    assert fn.measure is not None and step is not None
+    return Bin("+", _base(fn), Bin("*", Ref(fn.measure), Lit(step)))
 
 
 def _ensures(fn: Function) -> list[str]:
@@ -2780,7 +2795,7 @@ def _ensures(fn: Function) -> list[str]:
     if style == "exact":
         # A contract sees the parameters alone: each `let` is written as its
         # value, so every reference left is a parameter's.
-        stated_expr = closed_form(fn) if fn.template == "linear" else fn.body.result
+        stated_expr = closed_form(fn) if linear_step(fn) is not None else fn.body.result
         stated = inline(stated_expr, list(fn.params), contract=True)
         return [f"ensures({result} == {_wrap_compare(stated_expr, stated)})"]
     body = body_v(fn)
@@ -3080,7 +3095,7 @@ def evaluate(fn: Function, args: list[int | bool]) -> int | bool | None:
             return trunc_div(x, y)
         return x - trunc_div(x, y) * y
 
-    return run(closed_form(fn) if fn.template == "linear" else fn.body.result)
+    return run(closed_form(fn) if linear_step(fn) is not None else fn.body.result)
 
 
 def expectations(prog: Program, focus: str = "",

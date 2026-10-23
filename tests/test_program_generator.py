@@ -3045,6 +3045,35 @@ def test_the_edits_keep_the_program_well_formed() -> None:
     assert {"move", "add", "tighten", "break", "restore"} <= kinds, kinds
 
 
+@pytest.mark.parametrize("change", ["the step moved", "the call alone", "the literal alone",
+                                    "the call made a literal"])
+def test_a_change_to_a_linear_recursions_step_keeps_its_ensures(change: str) -> None:
+    """A linear recursion's exact `ensures` is its closed form, `base + m *
+    k`, with `k` read off the `rec + k` its step adds, so a change to the
+    step leaves no stale claim: the literal edit moving `k` by one, or the
+    minimiser taking one of the step's operands for it or a literal for its
+    recursive call (`_smaller`), makes a program that is well formed and
+    verifies clean."""
+    prog, fn = next((p, f) for p in map(gen.generate, range(100)) if p.module is None
+                    for f in p.functions if f.template == "linear")
+    prog = copy.deepcopy(prog)
+    fn = next(f for f in prog.functions if f.name == fn.name)
+    assert isinstance(fn.body.result, gen.If)
+    branch = fn.body.result.other
+    step = branch.result
+    assert isinstance(step, gen.Bin) and isinstance(step.right, gen.Lit), prog.render()
+    if change == "the step moved":
+        step.right.value = int(step.right.value) + 1
+    elif change == "the call alone":
+        branch.result = step.left
+    elif change == "the literal alone":
+        branch.result = step.right
+    else:
+        step.left = gen.Lit(0)
+    assert gen.well_formed(prog), prog.render()
+    assert contract_finds(prog, Stages.of(prog)) == [], prog.render()
+
+
 # =====================================================================
 # The nightly lane
 # =====================================================================
