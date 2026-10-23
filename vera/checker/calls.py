@@ -21,6 +21,7 @@ from vera.lowering import (
     effect_operation_lowerable,
     handler_lowerable,
 )
+from vera.checker.resolution import _span_text
 from vera.checker.sql import (
     count_placeholders,
     resolve_array_len,
@@ -77,14 +78,14 @@ def _op_signature_text(op: OpInfo) -> str:
 def _compatible_modulo_typevars(
         a: Type, b: Type, rigid: frozenset[str]) -> bool:
     """Structural compatibility treating UNRESOLVED TypeVars as wildcards
-    (#993).
+    (#993), one position at a time.
 
-    Used only by `CallsMixin._fits`, when a subtype check between two
-    types has failed AND at least one side still carries unresolved type
-    variables — a call's instantiation that could not be pinned down
-    (every argument is itself polymorphic, e.g.
-    `option_unwrap_or(nothing(()), None)`), or an array literal's element
-    type that its first element left open (`[None, Some(1)]`, #1584).
+    Used only by `CallsMixin._fits`, and there only where the join failed
+    at a built-in's type variable a failed substitution lost and nothing
+    else (`JoinOutcome.builtin`, #1688): the join neither fills nor refuses
+    such a variable, so the fit keeps the verdict this rule gave before.
+    Everywhere else the join decides (#1684), which binds each open
+    variable once, where this matches each occurrence on its own.
     An unresolved var on either side matches anything: there EXISTS an
     instantiation making the two sides agree, so rejecting would be a
     false E202 (or E162).  Unresolved means a fresh `T$n`, a `#b`-marked
@@ -174,22 +175,148 @@ def _behaviour_params(
     return frozenset(held)
 
 
+#: A position inside a type, from its root: each step a function type's
+#: parameter (`("param", i, n)`, the i-th of n), its result (`("result",)`)
+#: or a data type's type argument (`("arg", name, i, n)`).
+TypePath = tuple[tuple[typing.Any, ...], ...]
+
+
+class JoinFailure(typing.NamedTuple):
+    """Where a join failed, for a diagnostic to name (#1684).
+
+    *variable* is the type variable at fault, on *side* (0 the first type
+    joined, 1 the second).  For a *conflict* it was bound at *first* (the
+    position, and the type the other side has there) and meets the other
+    side's type at *second*.  Otherwise no argument fixed it and it is kept
+    for behaviour (it stands in a function type, whose code was compiled at
+    a type of its own), it meets another type at *second*, and *first* is
+    None."""
+
+    variable: str
+    side: int
+    first: tuple[TypePath, Type] | None
+    second: tuple[TypePath, Type]
+    conflict: bool
+
+
+def describe_position(path: TypePath) -> str:
+    """*path* in words, innermost first: `the parameter`, `component 2`,
+    `the type argument of Option in component 1`, `the argument` for the
+    root."""
+    words: list[str] = []
+    for step in reversed(path):
+        if step[0] == "param":
+            _, index, count = step
+            words.append(f"parameter {index + 1}" if count > 1
+                         else "the parameter")
+        elif step[0] == "result":
+            words.append("the result")
+        else:
+            _, name, index, count = step
+            if name == "Tuple":
+                words.append(f"component {index + 1}")
+            elif count > 1:
+                words.append(f"type argument {index + 1} of {name}")
+            else:
+                words.append(f"the type argument of {name}")
+    return " in ".join(words) if words else "the argument"
+
+
+def _variable_name(name: str) -> str:
+    """A type variable as a message names it: a variable a call left open
+    (`T$3`) by the variable it stands for (`T`), a built-in's without its
+    marker."""
+    return strip_builtin_typevar_marker(name).split("$", 1)[0]
+
+
+def _map_holes(ty: Type, to: typing.Callable[[str], Type]) -> Type:
+    """*ty* with each type variable a call left open (`T$3`) replaced by
+    *to* of its name, at any depth, its function types' effect rows
+    included."""
+    if isinstance(ty, TypeVar):
+        return to(ty.name) if "$" in ty.name else ty
+    if isinstance(ty, AdtType):
+        return AdtType(ty.name,
+                       tuple(_map_holes(arg, to) for arg in ty.type_args))
+    if isinstance(ty, FunctionType):
+        effect = ty.effect
+        if isinstance(effect, ConcreteEffectRow):
+            effect = ConcreteEffectRow(
+                frozenset(EffectInstance(
+                    inst.name,
+                    tuple(_map_holes(arg, to) for arg in inst.type_args))
+                    for inst in effect.effects),
+                effect.row_var)
+        return FunctionType(tuple(_map_holes(param, to)
+                                  for param in ty.params),
+                            _map_holes(ty.return_type, to), effect)
+    if isinstance(ty, RefinedType):
+        return RefinedType(_map_holes(ty.base, to), ty.predicate)
+    return ty
+
+
+def _named_open(ty: Type) -> Type:
+    """*ty* with each type variable a call left open (`T$3`) renamed to the
+    variable it stands for, so a message shows `fn(T -> T)` where the
+    inferred-type rendering shows `fn(? -> ?)`."""
+    return _map_holes(ty, lambda name: TypeVar(_variable_name(name)))
+
+
+def _holes_unknown(ty: Type) -> Type:
+    """*ty* with each type variable a call left open (`T$3`) as the
+    unknown, which renders `?`: the type a parameter asks where no argument
+    fixed its variable."""
+    return _map_holes(ty, lambda name: UnknownType())
+
+
+def closure_signature(fn_ty: FunctionType,
+                      rigid: frozenset[str]) -> str | None:
+    """The signature a closure of *fn_ty* is written with, its body left
+    out (`fn(@Int -> @Int) effects(pure)`), or None where the rendering is
+    not one a program can write: a refinement, which `pretty_type` elides;
+    a function type, which a slot names through an alias; a type variable
+    other than the enclosing function's own; an open effect row."""
+
+    def writable(t: Type) -> bool:
+        if isinstance(t, (RefinedType, FunctionType, UnknownType)):
+            return False
+        if isinstance(t, TypeVar):
+            return "$" not in t.name and t.name in rigid
+        if isinstance(t, AdtType):
+            return all(writable(arg) for arg in t.type_args)
+        return True
+
+    effect = fn_ty.effect
+    if not (all(writable(p) for p in fn_ty.params)
+            and writable(fn_ty.return_type)
+            and (isinstance(effect, PureEffectRow)
+                 or (isinstance(effect, ConcreteEffectRow)
+                     and effect.row_var is None
+                     and all(writable(arg) for inst in effect.effects
+                             for arg in inst.type_args)))):
+        return None
+    params = ", ".join(f"@{pretty_type(p)}" for p in fn_ty.params)
+    return (f"fn({params} -> @{pretty_type(fn_ty.return_type)}) "
+            f"{pretty_effect(effect)}")
+
+
 class JoinOutcome(typing.NamedTuple):
     """What `CallsMixin._join_parts` found (#1668).
 
     *joined* is the join, or None.  *conflict* is whether it failed
-    because an open type variable took two types that do not agree, which
-    the argument judgement (`_fits`, one position at a time) does not see.
+    because an open type variable took two types that do not agree.
     *builtin* is whether it failed only where a built-in's type variable
     met another type, with no variable kept for behaviour on either side:
     the join neither fills nor refuses such a variable (one a parameter of
     its call mentions that the arguments left unbound, standing for a type
     a failed substitution lost, #1688), and a site keeps the verdict it
-    gave it before."""
+    gave it before.  *failure* is where it failed, when a type variable is
+    at fault (#1684)."""
 
     joined: Type | None
     conflict: bool
     builtin: bool
+    failure: JoinFailure | None = None
 
 
 def _lost_builtin_var(name: str) -> bool:
@@ -237,14 +364,19 @@ class _Join:
         self.behaviour: tuple[frozenset[str], frozenset[str]] = (
             frozenset(), frozenset())
         self.bound: tuple[dict[str, Type], dict[str, Type]] = ({}, {})
+        #: Where each variable of *bound* was bound (#1684).
+        self.bound_at: tuple[dict[str, TypePath], dict[str, TypePath]] = (
+            {}, {})
         self.conflict = False
         self.builtin = False
+        #: The first type variable at fault, where it is (#1684).
+        self.failure: JoinFailure | None = None
 
     def join(self, a: Type, b: Type) -> Type | None:
         (kept_a, held_a), (kept_b, held_b) = self._kept(a), self._kept(b)
         self.kept = (kept_a, kept_b)
         self.behaviour = (held_a, held_b)
-        joined = self._walk(a, b, False)
+        joined = self._walk(a, b, False, ())
         if joined is None:
             return None
         # A variable bound at one position takes its binding at every
@@ -293,26 +425,40 @@ class _Join:
         walk(ty, False)
         return frozenset(out), frozenset(held)
 
+    def _fixed(self, name: str) -> bool:
+        """Whether the type variable *name* stands for a type of its own
+        whatever its position: the enclosing function's, or a built-in's a
+        failed substitution lost."""
+        return _lost_builtin_var(name) or (
+            "$" not in name and name in self.rigid)
+
     def _open(self, ty: Type, side: int) -> str | None:
         if isinstance(ty, TypeVar) and ty.name not in self.kept[side]:
             return ty.name
         return None
 
-    def _bind(self, side: int, name: str, other: Type) -> Type | None:
-        """Bind *side*'s variable *name* where the other side has *other*;
-        the type the position takes."""
+    def _bind(self, side: int, name: str, other: Type,
+              path: TypePath) -> Type | None:
+        """Bind *side*'s variable *name* where the other side has *other*,
+        at *path*; the type the position takes."""
         prior = self.bound[side].get(name)
         if prior is None:
             self.bound[side][name] = other
+            self.bound_at[side][name] = path
             return other
         again = _Join(self.rigid, self.data_types).join(prior, other)
         if again is None:
             self.conflict = True
+            if self.failure is None:
+                self.failure = JoinFailure(
+                    name, side, (self.bound_at[side][name], prior),
+                    (path, other), True)
             return None
         self.bound[side][name] = again
         return again
 
-    def _walk(self, a: Type, b: Type, behaviour: bool) -> Type | None:
+    def _walk(self, a: Type, b: Type, behaviour: bool,
+              path: TypePath) -> Type | None:
         a_base = base_type(a)
         b_base = base_type(b)
         if isinstance(a_base, UnknownType):
@@ -321,10 +467,10 @@ class _Join:
             return b if behaviour else a
         a_var = self._open(a_base, 0)
         if a_var is not None:
-            return self._bind(0, a_var, b)
+            return self._bind(0, a_var, b, path)
         b_var = self._open(b_base, 1)
         if b_var is not None:
-            return self._bind(1, b_var, a)
+            return self._bind(1, b_var, a, path)
         if isinstance(a_base, TypeVar) or isinstance(b_base, TypeVar):
             # Neither is open: only the same variable matches.
             if (isinstance(a_base, TypeVar) and isinstance(b_base, TypeVar)
@@ -333,6 +479,12 @@ class _Join:
             self.builtin = any(
                 isinstance(t, TypeVar) and _lost_builtin_var(t.name)
                 for t in (a_base, b_base))
+            for side, (var, other) in enumerate(((a_base, b), (b_base, a))):
+                if (self.failure is None and isinstance(var, TypeVar)
+                        and var.name in self.behaviour[side]
+                        and not self._fixed(var.name)):
+                    self.failure = JoinFailure(
+                        var.name, side, None, (path, other), False)
             return None
         if isinstance(a_base, AdtType) and isinstance(b_base, AdtType):
             if (a_base.name != b_base.name
@@ -340,9 +492,11 @@ class _Join:
                 return None
             holds = _behaviour_params(b_base.name, self.data_types)
             args: list[Type] = []
+            count = len(b_base.type_args)
             for i, (x, y) in enumerate(zip(a_base.type_args,
                                            b_base.type_args)):
-                arg = self._walk(x, y, behaviour or i in holds)
+                arg = self._walk(x, y, behaviour or i in holds,
+                                 (*path, ("arg", b_base.name, i, count)))
                 if arg is None:
                     return None
                 args.append(arg)
@@ -354,12 +508,14 @@ class _Join:
                     or not is_effect_subtype(a_base.effect, b_base.effect)):
                 return None
             params: list[Type] = []
-            for x, y in zip(a_base.params, b_base.params):
-                param = self._walk(x, y, True)
+            count = len(b_base.params)
+            for i, (x, y) in enumerate(zip(a_base.params, b_base.params)):
+                param = self._walk(x, y, True, (*path, ("param", i, count)))
                 if param is None:
                     return None
                 params.append(param)
-            ret = self._walk(a_base.return_type, b_base.return_type, True)
+            ret = self._walk(a_base.return_type, b_base.return_type, True,
+                             (*path, ("result",)))
             if ret is None:
                 return None
             if (ret is b_base.return_type
@@ -432,20 +588,37 @@ class CallsMixin:
         (#1584).
 
         A subtype fits.  So does a type that a type variable left unresolved
-        on either side makes compatible (#993): when the instantiation is
-        not pinned down — `option_unwrap_or(nothing(()), None)`, whose every
+        on either side makes compatible (#993), when the instantiation is not
+        pinned down — `option_unwrap_or(nothing(()), None)`, whose every
         argument is itself polymorphic, or `[None, Some(1)]`, whose first
-        element leaves `Option`'s `T` open — a structural match treating
-        each such variable as a wildcard means some instantiation makes the
-        two agree, and refusing it would be a false error.  The enclosing
-        function's own type parameters are rigid, not wildcards
-        (`_compatible_modulo_typevars`), and fully concrete mismatches are
-        unaffected."""
+        element leaves `Option`'s `T` open — by the one judgement the joins
+        of an array literal's elements and an `if`'s and a `match`'s arms
+        are given (`_join_parts`, #1668): each open variable is bound by
+        name, so one that occurs twice takes one type (#1684), and a
+        variable in a position code generation compiles behaviour for, a
+        function type or a data field held over one, is not open, since that
+        behaviour was compiled at a type of its own.  So `fn(T -> T)`, from a
+        call no argument of which fixes `T`, fits neither
+        `fn(Option<Nat> -> Option<String>)` nor `fn(Int -> Int)`.  The
+        enclosing function's own type parameters are rigid, and fully
+        concrete mismatches are unaffected.  A generic call's result takes
+        the data type its context expects by the same join
+        (`_synth_fn_call`), so an argument reaches this judgement with the
+        type its call gave it, never one no instantiation gives.  Where the
+        join fails only at a
+        built-in's variable a failed substitution lost (#1688), the join
+        neither fills nor refuses it, and the fit keeps the verdict it gave
+        before, each variable a wildcard one position at a time
+        (`_compatible_modulo_typevars`)."""
         if is_subtype(ty, target):
             return True
-        return ((contains_typevar(ty) or contains_typevar(target))
-                and _compatible_modulo_typevars(
-                    ty, target, frozenset(self.env.type_params)))
+        if not (contains_typevar(ty) or contains_typevar(target)):
+            return False
+        outcome = self._join_parts(ty, target)
+        if outcome.joined is not None:
+            return True
+        return outcome.builtin and _compatible_modulo_typevars(
+            ty, target, frozenset(self.env.type_params))
 
     def _join(self, ty: Type, onto: Type) -> Type | None:
         """The type a value of *ty* and a value of *onto* have together:
@@ -471,7 +644,8 @@ class CallsMixin:
             return JoinOutcome(onto, False, False)
         builtin = (joined is None and walk.builtin and not walk.conflict
                    and not (walk.behaviour[0] or walk.behaviour[1]))
-        return JoinOutcome(joined, walk.conflict, builtin)
+        return JoinOutcome(joined, walk.conflict, builtin,
+                           walk.failure if joined is None else None)
 
     # -----------------------------------------------------------------
     # Function calls
@@ -970,6 +1144,22 @@ class CallsMixin:
             # wildcard here (`_fits`), so a call satisfiable at SOME
             # instantiation is not a false E202.
             if not self._fits(arg_ty, param_ty):
+                # #1684: a type variable the argument's type leaves open,
+                # taking two types or standing in a closure compiled before
+                # it had one, is named with its positions.
+                why = self._open_variable_refusal(arg_ty, param_ty, args[i])
+                if why is not None:
+                    self._error(
+                        args[i],
+                        f"Argument {i} of '{fn_info.name}' has type "
+                        f"{pretty_type(_named_open(arg_ty))}, expected "
+                        f"{pretty_type(_holes_unknown(param_ty))}: {why[0]}",
+                        rationale=why[1],
+                        fix=why[2],
+                        spec_ref='Chapter 5, Section 5.9 "Generic Functions"',
+                        error_code="E202",
+                    )
+                    continue
                 self._error(
                     args[i],
                     f"Argument {i} of '{fn_info.name}' has type "
@@ -1949,6 +2139,106 @@ class CallsMixin:
     # -----------------------------------------------------------------
     # Constructors
     # -----------------------------------------------------------------
+
+    def _open_variable_refusal(
+        self, arg_ty: Type, param_ty: Type, arg: ast.Expr,
+    ) -> tuple[str, str, str] | None:
+        """Why *arg*, of type *arg_ty*, does not fit *param_ty* where a type
+        variable its type leaves open is at fault (#1684): the description's
+        tail, the rationale and the fix.  ``None`` for any other mismatch.
+
+        Two shapes, from the join `_fits` asks (`JoinFailure`).  A variable
+        that stands at two positions the parameter gives two types: a type
+        variable takes one type.  A variable in a function type, which the
+        call that made the value left without a type, so the function was
+        compiled at a type of its own: a closure that is the argument is
+        written at the parameter's type instead, and a value holding one is
+        built at it.  The hole an empty literal's element type leaves
+        (`?`, `_as_holes`) has no name, and is named as what it is.  A
+        variable the enclosing function owns has its own type, and the
+        generic refusal says so."""
+        if not (contains_typevar(arg_ty) or contains_typevar(param_ty)):
+            return None
+        failure = self._join_parts(arg_ty, param_ty).failure
+        if failure is None or failure.side != 0:
+            return None
+        name = _variable_name(failure.variable)
+        literal = name == "?"
+        path, given = failure.second
+        if failure.conflict:
+            assert failure.first is not None  # noqa: S101 — a conflict has a first binding
+            first_path, first_given = failure.first
+            subject = ("the element type of an empty literal in it" if literal
+                       else f"its type variable {name}")
+            unfixed = "the literal's element type" if literal else name
+            return (
+                f"{subject} stands at {describe_position(first_path)} and at "
+                f"{describe_position(path)}, where the parameter's type "
+                f"gives it {pretty_type(_named_open(first_given))} and "
+                f"{pretty_type(_named_open(given))}, and a type variable "
+                f"takes one type.",
+                "A type variable an argument's type leaves open stands for "
+                "one type, so the parameter must give it the same type at "
+                "every position it holds.",
+                f"Pass a value of type {pretty_type(param_ty)} for this "
+                f"argument: no type for {unfixed} gives "
+                f"{pretty_type(_named_open(arg_ty))} that type.",
+            )
+        written = _span_text(self.source, arg.span)
+        if written is None:
+            return None
+        given_base = base_type(given)
+        where = describe_position(path)
+        if isinstance(given_base, TypeVar) and "$" in given_base.name:
+            at = (f"the parameter's type has a type variable no argument "
+                  f"fixes at {where}.")
+        else:
+            at = (f"the parameter's type gives "
+                  f"{'that element type' if literal else name} "
+                  f"{pretty_type(_named_open(given))} at {where}.")
+        # The argument is the closure itself where the parameter asks a
+        # function: a variable kept for behaviour stands inside one, never
+        # at the argument's root.
+        param_fn = base_type(param_ty)
+        closure = isinstance(param_fn, FunctionType)
+        made = "the closure" if closure else "the value"
+        compiled = ("its code was compiled" if closure
+                    else "the function it holds was compiled")
+        if literal:
+            why = (f"the call that made {made} was given an empty literal, "
+                   f"whose element type no argument fixes, so {compiled} at "
+                   f"a type of its own, and {at}")
+        else:
+            why = (f"no argument of the call that made {made} gives {name} "
+                   f"a type, so {compiled} at a type of its own, and {at}")
+        if closure:
+            assert isinstance(param_fn, FunctionType)  # noqa: S101 — narrowed by `closure`
+            signature = closure_signature(
+                param_fn, frozenset(self.env.type_params))
+            return (
+                why,
+                "A closure a generic call returns is compiled at the types "
+                "its call's arguments give its type variables; one they give "
+                "no type is compiled at a type of its own, so the closure "
+                "cannot stand where the parameter asks another type for that "
+                "variable.",
+                (f"Write the closure at the parameter's type, "
+                 f"`{signature} {{ ... }}`, and pass it in place of "
+                 f"`{written}`." if signature is not None else
+                 f"Write the closure at the parameter's type, with each of "
+                 f"its type variables fixed, and pass it in place of "
+                 f"`{written}`."),
+            )
+        return (
+            why,
+            "A function a generic call builds is compiled at the types its "
+            "call's arguments give its type variables; one they give no type "
+            "is compiled at a type of its own, so a value holding that "
+            "function cannot stand where the parameter asks another type "
+            "for that variable.",
+            f"Build the value at the parameter's type, from a function "
+            f"written at it, in place of `{written}`.",
+        )
 
     def _cross_owner_fix(
         self, fn_name: str, arg_ty: Type, param_ty: Type,

@@ -21,11 +21,12 @@ name, so one that occurs twice takes one type.  It does not fill a type
 variable where code generation compiles behaviour for it (inside a function
 type, or under a data type's parameter a constructor field holds a function
 over), nor a built-in's that a parameter of its call mentions and the
-arguments left unbound, and those shapes keep the verdict each site gave
-them, bar a `match` arm a variable withheld for behaviour would have to take
-the type of.  A built-in's variable no parameter mentions (`map_new()`'s) is
-marked free at the call and filled.  A position no part fills stays open,
-and the context fills it as before.
+arguments left unbound.  A part that would give a variable withheld for
+behaviour a type is refused at every site, since the fit each part is held
+to binds the same way (#1684); a built-in's keeps the verdict each site gave
+it.  A built-in's variable no parameter mentions (`map_new()`'s) is marked
+free at the call and filled.  A position no part fills stays open, and the
+context fills it as before.
 
 The class instrument crosses the site the parts are joined at (an array
 literal's elements, an `if`'s branches, a `match`'s arms), the type
@@ -914,10 +915,11 @@ SHAPES: dict[str, _Shape] = {
     "tuple-disagree": _Shape(
         ("twice(None)", 'Tuple(Some(1), Some("a"))'),
         # The `if` synthesizes `twice(None)` again against the other
-        # branch's type, which the call takes position by position
-        # (f3b4415d's verdict, before any join is reached).
+        # branch's type, which the call takes only where one `T` gives it
+        # (#1690, #1684): the call keeps its own, and the branches
+        # disagree.
         {"literal": (1, "Tuple<Option<T$>, Option<T$>>"),
-         "if": (None, "Tuple<Option<Int>, Option<String>>"),
+         "if": (1, None),
          "match": (1, None)},
         description=(
             "Array literal element 1 has type Tuple<Option<Int>, "
@@ -935,52 +937,56 @@ SHAPES: dict[str, _Shape] = {
             "literal's element type is Pair<Option<Int>>, the type of "
             "element 0, completed by element 1.")),
     # One part's variable at two positions, one of them where the joined
-    # type is still unknown: the binding holds at both.  An `if` and a
-    # `match` synthesize `dup(None)` again against the other part's type,
-    # which the call takes position by position (#1684), base's verdict.
+    # type is still unknown: the binding holds at both.  An `if`
+    # synthesizes `dup(None)` again against the other part's type, which
+    # the call takes only where one `T` gives it (#1684), and refuses it.
+    # A `match` holds `dup(None)` to the first arm's type, whose second
+    # array is still open, which one `T` gives, and the third arm then fills
+    # the open array with `String`.
     "dup-agree": _Shape(
         ("Tuple([1], [])", "dup(None)", "Tuple([2], [3])"),
         _everywhere(None, "Tuple<Array<Int>, Array<Int>>")),
     "dup-disagree": _Shape(
         ("Tuple([1], [])", "dup(None)", 'Tuple([2], ["s"])'),
         {"literal": (2, "Tuple<Array<Int>, Array<Int>>"),
-         "if": (None, "Tuple<Array<Int>, Array<String>>"),
+         "if": (2, None),
          "match": (None, "Tuple<Array<Int>, Array<String>>")},
         description=(
             "Array literal element 2 has type Tuple<Array<Int>, "
             "Array<String>>, but the literal's element type is "
             "Tuple<Array<Int>, Array<Int>>, the type of element 0, completed "
             "by element 1.")),
-    # Withheld for behaviour: not filled; refused at an `if` or a `match`.
-    # The call's open variable is a hole (`T$`), which leaves it as no
+    # Withheld for behaviour: not filled, and the part that would give it a
+    # type is refused at every site, the element as the branch and the arm
+    # (#1684): the closure the call returns is compiled at a type of its
+    # own.  The call's open variable is a hole (`T$`), which leaves it as no
     # variable of its callee's (PR #1791 review).
     "fn-agree": _Shape(
         ("mkf(())", _NAT_ID),
-        {"literal": (None, "fn(T$ -> T$) effects(pure)"),
+        {"literal": (1, "fn(T$ -> T$) effects(pure)"),
          "if": (1, None), "match": (1, None)}),
     "fn-disagree": _Shape(
         ("mkf(())", _NAT_STR),
-        {"literal": (None, "fn(T$ -> T$) effects(pure)"),
+        {"literal": (1, "fn(T$ -> T$) effects(pure)"),
          "if": (1, None), "match": (1, None)}),
     "endo-agree": _Shape(
         ("mk(())", _NAT_ID),
-        {"literal": (None, "fn(T$ -> T$) effects(pure)"),
+        {"literal": (1, "fn(T$ -> T$) effects(pure)"),
          "if": (1, None), "match": (1, None)}),
     "endo-disagree": _Shape(
         ("mk(())", _NAT_STR),
-        {"literal": (None, "fn(T$ -> T$) effects(pure)"),
+        {"literal": (1, "fn(T$ -> T$) effects(pure)"),
          "if": (1, None), "match": (1, None)}),
-    # The `if` synthesizes `mkbox(())` again against the other branch's
-    # type, which fixes the call's instantiation where it is checked.
+    # A data type whose field holds a function over `T`: the same, the `if`
+    # included, which synthesizes `mkbox(())` again against the other
+    # branch's type and keeps the call's own (#1684).
     "box-agree": _Shape(
         ("mkbox(())", f"MkBox({_NAT_ID})"),
-        {"literal": (None, "Box<T$>"), "if": (None, "Box<Nat>"),
-         "match": (1, None)}),
+        {"literal": (1, "Box<T$>"), "if": (1, None), "match": (1, None)}),
     "box-disagree": _Shape(
         ("mkbox(())",
          "MkBox(fn(@String -> @String) effects(pure) { @String.0 })"),
-        {"literal": (None, "Box<T$>"), "if": (None, "Box<String>"),
-         "match": (1, None)}),
+        {"literal": (1, "Box<T$>"), "if": (1, None), "match": (1, None)}),
     # A built-in's variable: each site's verdict as before.
     "leak-agree": _Shape(
         ("map_values(@M.0)[0]", "0 - 5"),
@@ -1260,9 +1266,9 @@ def test_mutant_each_call_marks_its_own_free_variables() -> None:
 
 # A data parameter a constructor field holds only in a function's effect
 # row is held for behaviour too: the closure `mkcell(())` stores is
-# compiled at `mkcell`'s default, its `State` cell with it.  Each site keeps
-# f3b4415d's verdict, bar the `match`, which refuses the arm (E302) where
-# f3b4415d took its type unchecked.
+# compiled at `mkcell`'s default, its `State` cell with it.  Each site
+# refuses the part that would give the variable a type (#1684), as the
+# `match` refused the arm (E302) where f3b4415d took its type unchecked.
 
 _CELL_PRE = """private data Cell<T> { MkCell(fn(Unit -> Unit) effects(<State<T>>)) }
 
@@ -1275,39 +1281,34 @@ private forall<T> fn mkcell(@Unit -> @Cell<T>)
 }
 """
 
-_CELL_EXPECT: dict[str, tuple[int | None, str]] = {
-    # The `if` synthesizes `mkcell(())` again against the other branch's
-    # type, which fixes the call where it is checked (f3b4415d's verdict).
-    "literal": (None, "Array<Cell<T$>>"),
-    "if": (None, "Array<Cell<Nat>>"),
-    "match": (1, ""),
-}
+#: Each site refuses the second part: the element (E162), the `if`, at the
+#: `if` (E301), and the arm (E302).
+_CELL_REFUSAL = {"literal": "E162", "if": "E301", "match": "E302"}
 
 
 @pytest.mark.parametrize("site", SITES)
 def test_effect_row_holds_its_variable(site: str) -> None:
-    refused, literal_type = _CELL_EXPECT[site]
     site_text, offsets, _inner = _site(site, ["mkcell(())", "@Cell<Nat>.0"])
     literal = site_text if site == "literal" else f"[{site_text}]"
     source = _fn(f"array_length({literal})", params="@Cell<Nat>, @Bool, @Nat",
                  pre=_CELL_PRE)
     checked = _checked(source)
-    if refused is None:
-        assert checked.diagnostics == ()
-        assert _literal_types(checked)[_place(source, literal)] == literal_type
-    else:
-        assert _where(checked) == [
-            ("E302", *_place(source, literal, 1 + offsets[refused]))]
+    shift = 0 if site == "literal" else 1
+    at = 0 if site == "if" else offsets[1]
+    assert _where(checked) == [
+        (_CELL_REFUSAL[site], *_place(source, literal, shift + at))]
 
 
 def test_mutant_an_effect_row_holds_behaviour() -> None:
     # Read without its effect row, `Cell<T>` holds no behaviour, and the
-    # join would give `mkcell(())`'s cell the type `Cell<Nat>`.
+    # join would give `mkcell(())`'s cell the type `Cell<Nat>`, so the
+    # second element would fit.
     literal = "[mkcell(()), @Cell<Nat>.0]"
     source = _fn(f"array_length({literal})", params="@Cell<Nat>, @Nat",
                  pre=_CELL_PRE)
     checked = _checked(source)
-    assert checked.diagnostics == ()
+    assert _where(checked) == [
+        ("E162", *_place(source, literal, len("[mkcell(()), ")))]
     assert _literal_types(checked)[_place(source, literal)] == (
         "Array<Cell<T$>>")
 
