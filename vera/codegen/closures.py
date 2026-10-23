@@ -368,7 +368,6 @@ class ClosureLiftingMixin:
         # #932: share the truncated→full constrained-var name map (see
         # functions.py) so a generic clone's direct `==` inside a closure body
         # resolves a truncated slot type on its fully-nested name.
-        ctx.set_eq_full_type_names(getattr(self, "_eq_full_type_names", {}))
         # #514: share the module-level sig dict and closure-ID counter
         # with the inner ctx so that any new sigs / IDs it registers
         # get module-unique names (avoids ``$closure_sig_0`` /

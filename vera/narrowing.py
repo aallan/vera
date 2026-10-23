@@ -653,6 +653,30 @@ def all_sources_opaque(sources: tuple[ComponentSource, ...]) -> bool:
     return bool(sources) and all(not s.is_argument for s in sources)
 
 
+def nat_narrowing(value: ast.Expr, is_nat: Callable[[ast.Expr], bool]) -> bool:
+    """Whether binding *value* into a `@Nat` slot is a narrowing: THE rule
+    the verifier records a `nat_bind` obligation by and code generation
+    guards by (#552, #1525), each side reading the checker's type of a node
+    through *is_nat* (the verifier's ``_narrows_into_nat`` composes these
+    same three functions over its reader of the same table).
+
+    A value the checker types `@Nat` narrows only where it holds a
+    subtraction no `@Nat`-subtraction check covers (:func:`has_underflow_leaf`).
+    Any other value narrows unless it is statically non-negative
+    (:func:`narrows_into_nat`), each node read at the checker's type of it:
+    a non-negative literal, `@Nat.0 + 1`, `if c then { @Nat.0 } else { 0 }`
+    are no narrowing, while `@Int.0`, `-1`, `0 - 1` and `@Nat.0 - 1` are.
+    A value of an alias of `Nat` is a `@Nat`: the type is the checker's, not
+    the spelling's."""
+    def guarded(expr: ast.Expr) -> bool:
+        return is_guarded_nat_subtraction(expr, is_nat)
+
+    if is_nat(value):
+        return has_underflow_leaf(value, guarded)
+    return narrows_into_nat(
+        value, lambda call: "Nat" if is_nat(call) else None, guarded, is_nat)
+
+
 def narrows_into_nat(
     expr: ast.Expr, fncall_ret: FnCallTypeOracle,
     guarded: GuardedSubtractionOracle,

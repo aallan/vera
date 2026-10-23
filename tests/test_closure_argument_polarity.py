@@ -263,23 +263,9 @@ def _cell_test(cell: Cell) -> Callable[[Path], None]:
     return test
 
 
-def _declared_name_guard(cell: Cell) -> bool:
-    """A fold at `Nat` bound into a `@Nat` `let` or argument: code
-    generation's declared-name rule reads the fold as `Int` and guards the
-    binding, which the verifier, reading the checked `Nat`, does not record
-    (#1695's (a) member; A2a's step 4 removes the rule)."""
-    return (cell.carrier == "fold" and cell.instance == "Nat"
-            and cell.use in ("let", "argument"))
-
-
 for _cell in _CELLS:
-    _test = _cell_test(_cell)
-    if _declared_name_guard(_cell):
-        _test = pytest.mark.xfail(strict=True, reason=(
-            "#1695 (a): code generation guards a Nat-typed fold by its "
-            "declared-name rule, with no record"))(_test)
-    globals()[f"test_{_cell.name}"] = _test
-del _cell, _test
+    globals()[f"test_{_cell.name}"] = _cell_test(_cell)
+del _cell
 
 
 def test_the_matrix_spans_every_combination() -> None:

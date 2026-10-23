@@ -1792,77 +1792,15 @@ class OperatorsMixin:
         with the overflow guard every `@Int` subtraction has; bound into a
         `@Nat` slot, their value meets the narrowing guard there.
         """
-        return narrowing.is_guarded_nat_subtraction(
-            expr, lambda e: self._overflow_codegen_type(e) == "Nat")
+        return narrowing.is_guarded_nat_subtraction(expr, self._is_nat_value)
 
-    def _is_static_nat_typed(self, expr: ast.Expr) -> bool:
-        """Return True iff *expr* has static type @Nat.
+    def _is_nat_value(self, expr: ast.Expr) -> bool:
+        """Whether the checker typed *expr* `@Nat`, a refinement or an alias
+        of it included: the one reading of a `@Nat` code generation's guards
+        and the verifier's records share (:func:`vera.narrowing.nat_narrowing`,
+        #1525)."""
+        return self._is_nat_type(self._type_of(expr))
 
-        Delegates to :func:`vera.narrowing.is_static_nat_typed` — the rule now
-        lives in one place and both this and the verifier's classification read
-        it, so they cannot drift (#1205 parity, re-keyed in #1362).  What stays
-        here is the ORACLE: codegen infers a call's return type from its own
-        tables.
-        """
-        return narrowing.is_static_nat_typed(
-            expr, self._infer_fncall_vera_type_for_narrowing)
-
-    def _infer_fncall_vera_type_for_narrowing(self, call: ast.Expr) -> str | None:
-        """Codegen's return-type oracle for the shared narrowing rule.
-
-        A qualified call reaches code generation as the plain call of its
-        target's link name (`vera.binding.link`), so the `FnCall` lookup
-        answers it.
-        """
-        if isinstance(call, ast.FnCall):
-            return self._infer_fncall_vera_type(call)
-        return None
-
-    def _declared_result_is_nat(self, expr: ast.Expr) -> bool:
-        """The declaration leaf of :func:`vera.narrowing.is_declared_nat`,
-        codegen's reading: whether the value of a slot or a call is a @Nat by
-        its declaration (#1503).
-
-        Consults the checker's resolved-type side-table first — the answer
-        the verifier's leaf reads, so a verified build matches it
-        site-for-site.  A generic call the checker instantiated at `Nat` is
-        a @Nat there because each of its arguments at a `Nat` formal is
-        checked where it enters (:meth:`_guard_nat_instantiated_arg`).  A
-        call's @Nat return cannot come from
-        `_infer_fncall_vera_type` alone: it maps the i64 WASM return back to
-        "Int" (both @Nat and @Int lower to i64) and so NEVER yields "Nat",
-        which left a @Nat-returning call result read as a narrowing (#813
-        review).
-
-        Caveat (no-side-table fallback): an unverified `transform -> compile`
-        has no table, so a user callee's DECLARED @Nat return is recovered
-        from `_fn_ret_type_exprs`, mirroring the verifier's
-        `env.lookup_function().return_type` path — `_infer_fncall_vera_type`
-        would make a genuine @Nat -> @Nat tail call (`count_down(@Nat.0 - 1)`)
-        look like a narrowing and break its return_call TCO (#758).
-        Over-classifying a call result as @Nat here only ever suppresses a
-        (dead) guard on a provably-@Nat value — never a wrong runtime verdict.
-        """
-        resolved = self._resolved_codegen_type(expr)
-        if resolved is not None:
-            return resolved == "Nat"
-        if not isinstance(expr, ast.FnCall):
-            return False
-        decl_ret = self._fn_ret_type_exprs.get(expr.name)
-        if isinstance(decl_ret, ast.RefinementType):
-            decl_ret = decl_ret.base_type
-        if (isinstance(decl_ret, ast.NamedType)
-                and not decl_ret.type_args
-                and self._resolve_base_type_name(decl_ret.name) == "Nat"):
-            return True
-        return self._infer_fncall_vera_type(expr) == "Nat"
-
-    def _is_guarded_nat_subtraction(self, expr: ast.Expr) -> bool:
-        """Whether *expr* is a `@Nat` subtraction this guard checks — so its
-        value, when it has one, is never negative."""
-        return (isinstance(expr, ast.BinaryExpr)
-                and expr.op == ast.BinOp.SUB
-                and self._is_nat_subtraction(expr))
 
     def _emit_nat_sub_guard(
         self, left: list[str], right: list[str], *, at: ast.Node | None,
@@ -2031,9 +1969,7 @@ class OperatorsMixin:
         value is provably >= 0 and never trips the trap; recovering @Nat
         user-fn returns is a precision follow-up.)
         """
-        if not self._is_static_nat_typed(value):
-            return True
-        return self._has_underflow_leaf(value)
+        return narrowing.nat_narrowing(value, self._is_nat_value)
 
     def _instantiated_at_nat(self, arg: ast.Expr) -> bool:
         """Whether the checker instantiated the generic formal *arg* is
@@ -2069,10 +2005,7 @@ class OperatorsMixin:
         checker instantiated at `Nat` (its own arguments are checked at
         its own call).
         """
-        if (self._instantiated_at_nat(arg)
-                and self._narrows_into_nat(arg)
-                and not narrowing.is_declared_nat(
-                    arg, self._declared_result_is_nat)):
+        if self._instantiated_at_nat(arg) and self._narrows_into_nat(arg):
             return self._emit_nat_bind_guard(instrs, at=arg)
         return instrs
 
@@ -2125,8 +2058,7 @@ class OperatorsMixin:
             for arm in expr.arms:
                 self._collect_narrowing_return_leaves_into(arm.body, leaves)
             return
-        if self._narrows_into_nat(expr) and not narrowing.is_declared_nat(
-                expr, self._declared_result_is_nat):
+        if self._narrows_into_nat(expr):
             leaves.add(id(expr))
         else:
             self._return_leaves_left.append(expr)
@@ -2147,15 +2079,6 @@ class OperatorsMixin:
             return self._emit_nat_bind_guard(instrs, at=expr)
         return instrs
 
-    def _has_underflow_leaf(self, value: ast.Expr) -> bool:
-        """Codegen mirror of the shared underflow-leaf rule (#552).
-
-        Delegates to :func:`vera.narrowing.has_underflow_leaf`; the
-        `@Nat`-subtraction oracle stays here because it reads codegen's own
-        tables.
-        """
-        return narrowing.has_underflow_leaf(
-            value, self._is_guarded_nat_subtraction)
 
     # -----------------------------------------------------------------
     # @Int / @Nat integer-overflow runtime guard (#798)
@@ -2184,14 +2107,7 @@ class OperatorsMixin:
         and every literal is an ``Int`` (spec §4.2), so ``@Nat.0 - 1`` is an
         ``@Int`` subtraction with or without the table.
         """
-        resolved = self._resolved_codegen_type(expr)
-        if resolved is not None:
-            return resolved
-        if narrowing.is_declared_nat(expr, self._declared_result_is_nat):
-            return "Nat"
-        if self._is_static_int_typed(expr):
-            return "Int"
-        return None
+        return self._resolved_codegen_type(expr)
 
     def _overflow_arith_codegen_type(self, expr: ast.BinaryExpr) -> str | None:
         """The codegen mirror of
@@ -2206,21 +2122,6 @@ class OperatorsMixin:
             return None
         return "Int" if "Int" in (lt, rt) else "Nat"
 
-    def _checker_resolved_type(self, expr: ast.Expr) -> object | None:
-        """*expr*'s checker-resolved type from the threaded side-table, raw.
-
-        The same lookup :py:meth:`_resolved_codegen_type` performs, without
-        the Int/Nat narrowing of the answer — for a consumer whose rule lives
-        in :mod:`vera.narrowing` and is shared with the verifier, which reads
-        the identical table through ``_resolved_type_of``.  ``None`` when the
-        table was not threaded or carries no entry for this span, which is a
-        distinct answer from any type and must not be collapsed into one.
-        """
-        table = self._expr_semantic_types
-        key = expr.node_id
-        if key is None:
-            return None
-        return table.get(key)
 
     def _resolved_codegen_type(self, expr: ast.Expr) -> str | None:
         """Look up *expr*'s checker-resolved type as ``"Int"`` / ``"Nat"``,
@@ -2452,55 +2353,6 @@ class OperatorsMixin:
         base = getattr(arg, "base", arg)
         return getattr(base, "name", None) == "Nat"
 
-    def _is_static_int_typed(self, expr: ast.Expr) -> bool:
-        """Return True iff *expr* has static type @Int by AST shape alone.
-
-        AST-only fallback, used only when the resolved-type table is
-        unavailable.  Called *after* the declared-@Nat check in
-        :py:meth:`_overflow_codegen_type`: an ``IntLit``, an @Int slot, an
-        @Int function return, or an arithmetic tree of integral operands.
-        Conservative False elsewhere (a @Byte / @Float / @Bool / String
-        operand is not @Int and must not be guarded).
-        """
-        if isinstance(expr, ast.SlotRef):
-            return expr.type_name == "Int"
-        if isinstance(expr, ast.IntLit):
-            return True
-        if isinstance(expr, ast.BinaryExpr):
-            if expr.op in (
-                ast.BinOp.ADD, ast.BinOp.SUB, ast.BinOp.MUL,
-                ast.BinOp.DIV, ast.BinOp.MOD,
-            ):
-                return (self._operand_is_int_or_nat(expr.left)
-                        and self._operand_is_int_or_nat(expr.right))
-            return False
-        if isinstance(expr, ast.IfExpr):
-            if expr.else_branch is None:
-                return False
-            return (self._is_static_int_typed(expr.then_branch)
-                    and self._is_static_int_typed(expr.else_branch))
-        if isinstance(expr, ast.Block):
-            return self._is_static_int_typed(expr.expr)
-        if isinstance(expr, ast.MatchExpr):
-            if not expr.arms:
-                return False
-            return all(
-                self._is_static_int_typed(arm.body) for arm in expr.arms
-            )
-        if isinstance(expr, ast.FnCall):
-            return self._infer_fncall_vera_type(expr) == "Int"
-        return False
-
-    def _operand_is_int_or_nat(self, expr: ast.Expr) -> bool:
-        """True iff *expr* is statically @Int or @Nat (AST-only).
-
-        An arithmetic node is @Int when both operands are integral (Int or
-        Nat) but at least one is @Int — the Nat<:Int subtyping rule.  Used by
-        :py:meth:`_is_static_int_typed` so ``@Int.0 + 3`` (an @Int slot plus a
-        non-negative @Nat-by-shape literal) still classifies @Int.
-        """
-        return (self._is_static_nat_typed(expr)
-                or self._is_static_int_typed(expr))
 
     def _emit_overflow_guard(
         self,

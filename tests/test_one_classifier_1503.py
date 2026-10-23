@@ -932,10 +932,6 @@ _READERS: dict[tuple[str, str, str], str] = {
     ("vera/wasm/inference.py", "InferenceMixin._type_of",
      "_expr_semantic_types"): "the accessor (#1525): every width and name "
                               "code generation lowers by",
-    ("vera/wasm/operators.py", "OperatorsMixin._declared_result_is_nat",
-     "_resolved_codegen_type"): _LEAF,
-    ("vera/wasm/operators.py", "OperatorsMixin._checker_resolved_type",
-     "_expr_semantic_types"): "the accessor",
     ("vera/wasm/operators.py", "OperatorsMixin._overflow_codegen_type",
      "_resolved_codegen_type"): _WIDTH,
     ("vera/wasm/operators.py", "OperatorsMixin._resolved_codegen_type",

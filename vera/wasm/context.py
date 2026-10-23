@@ -394,13 +394,6 @@ class WasmContext(
         # WasmContext in unit tests), the gate is skipped and generation
         # proceeds as before.
         self._adt_eq_derivable: Callable[[str], bool] | None = None
-        # #932: TRUNCATED one-level constrained-var name → FULLY-recovered nested
-        # name (`List<List>` → `List<List<Int>>`), read by the direct-`==` path
-        # inside a clone body (`_translate_binary`).  The discovery pass that
-        # filled it is gone (#1679): a clone is named at its full type
-        # arguments, so the table stays empty, every lookup leaves its name
-        # unchanged, and it goes with the backend's remaining readers (#1525).
-        self._eq_full_type_names: dict[str, str] = {}
         # #924: generated recursive show/hash helper functions, keyed by the
         # mangled `$show_<type>` / `$hash_<type>` function name → its full WAT
         # text.  A directly- (or mutually-) recursive ADT's `show`/`hash`
@@ -676,18 +669,6 @@ class WasmContext(
         accepts.
         """
         self._adt_eq_derivable = oracle
-
-    def set_eq_full_type_names(self, full_names: dict[str, str]) -> None:
-        """Share the truncated→full constrained-var name map (#932).
-
-        ``full_names`` is the CodeGenerator's ``_eq_full_type_names``, read by
-        the direct ``==`` path inside a generic clone body
-        (`_translate_binary`).  The discovery pass that filled it is gone
-        (#1679): a clone is named at its full type arguments, so the map is
-        empty, every lookup leaves its name unchanged, and it goes with the
-        backend's remaining readers (#1525).
-        """
-        self._eq_full_type_names = full_names
 
 
     def set_fn_ret_type_exprs(

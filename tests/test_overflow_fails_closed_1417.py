@@ -9,12 +9,10 @@ claiming a runtime check covered it.  That is a false guarantee, and an
 unclassified pair is exactly the case nobody can enumerate, so the honest
 posture is to guard it: an unknown width now reads as `Int`.
 
-There is no whole-program reproducer, and the measurements below say why
-twice over.  Instrumenting the classifier across the corpus at #1412 found
-the `None` path taken zero times in 293 programs, and hand-construction did
-not reach it.  Emptying the threaded type table does not reach it either —
-the AST-only fallback (`_is_static_nat_typed` / `_is_static_int_typed`)
-still answers for a slot-typed operand, which the control below pins.
+There is no whole-program reproducer.  Instrumenting the classifier across
+the corpus at #1412 found the `None` path taken zero times in 293 programs,
+and hand-construction did not reach it: the classifier reads the checker's
+type of each operand, which every operand of a checked program has.
 
 So the lever is the classifier's ANSWER, patched at the seam, and what is
 measured is the emitter's decision on it — which is the only thing that
@@ -154,47 +152,6 @@ class _Probe(OperatorsMixin):
     behaviour under test is what it does with two `None` answers.
     """
 
-
-
-def test_the_table_less_fallback_still_names_a_width(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The control that explains why no program reaches the `None` path.
-
-    Emptying the threaded semantic-type table is the obvious way to try to
-    starve the classifier, and it does not work: the AST-only fallback reads
-    a slot-typed operand's declared type and answers `Int`.  Pinned because
-    it is the reason the cell above must patch the seam — without this, a
-    reader would reasonably assume the table lever suffices, write a cell on
-    it, and get a green that measures the ordinary path.
-
-    The CLASSIFIER's answer is what this cell is about, so it is read
-    directly rather than inferred from the WAT.  The overflow signal appears
-    either way — the fail-closed emitter emits the same guard when the
-    answer is `None` — so a cell asserting only the guard cannot tell a
-    width that was named from one that was defaulted, and would stay green
-    on the very path it exists to rule out (CR PR-review).
-    """
-    seen: list[str | None] = []
-    original = OperatorsMixin._overflow_arith_codegen_type
-
-    def _recording(self: object, expr: object) -> str | None:
-        answer = original(self, expr)
-        seen.append(answer)
-        return answer
-
-    monkeypatch.setattr(
-        OperatorsMixin, "_overflow_arith_codegen_type", _recording)
-    result = _compiled(semantic_types={})
-    assert seen, "the classifier was never consulted, so this measures nothing"
-    assert None not in seen, (
-        f"the table-less compile reached the fail-closed `None` path, so "
-        f"this cell is no longer the control it claims to be: {seen}"
-    )
-    assert set(seen) == {"Int"}, (
-        f"the AST-only fallback named a width other than `Int`: {seen}"
-    )
-    assert checks(result, kind="overflow")
 
 
 def test_the_module_still_loads_and_exports_its_entry(

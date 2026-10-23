@@ -667,9 +667,11 @@ _CONTEXTS: dict[str, _Context] = {
         _fn("@Int -> @Int", "let @Nat = LIT;\n  nat_to_int(@Nat.0)"), "nat"),
     "let @Int": _Context(
         _fn("@Int -> @Int", "let @Int = LIT;\n  @Int.0"), "int"),
+    # The value read back is `g`'s result, a `@Nat` by the checker's types,
+    # so nothing narrows where it is read (#1695).
     "@Nat argument": _Context(
         _fn("@Nat -> @Nat", "@Nat.0", name="g", vis="private") + "\n"
-        + _fn("@Int -> @Int", "nat_to_int(g(LIT))"), "nat", reads_value=True),
+        + _fn("@Int -> @Int", "nat_to_int(g(LIT))"), "nat"),
     "@Int argument": _Context(
         _fn("@Int -> @Int", "@Int.0", name="g", vis="private") + "\n"
         + _fn("@Int -> @Int", "g(LIT)"), "int"),
@@ -716,7 +718,7 @@ _CONTEXTS: dict[str, _Context] = {
         "nat"),
     "generic call as a @Nat argument": _Context(
         _PICK + _G_NAT + _fn("@Int -> @Int", "nat_to_int(g(pick(LIT, 5)))"),
-        "nat", reads_value=True),
+        "nat"),
     "generic call as a @Nat constructor field": _Context(
         _NB + _PICK + _fn(
             "@Int -> @Int",

@@ -218,22 +218,18 @@ def _cell_test(cell: Cell) -> Callable[[Path, pytest.MonkeyPatch], None]:
     return test
 
 
-#: The `Nat` cells whose join reports a guard with no record: code
-#: generation's declared-name rule guards a value the checker types `Nat`
-#: (a slot of an alias of `Nat`, a field read out of a `Nat` instance), a
-#: narrowing the verifier, reading the checked type, does not record
-#: (#1695's (a) member).
+#: The `Nat` cells whose join reports a guard with no record: a binder
+#: (top-level, nested, a tuple component's) or a destructure binding at
+#: `@Nat` over a component the construction built from a non-negative
+#: literal.  Code generation guards by the component's type (`Int`, a
+#: literal being an `Int`, spec §4.2), and the verifier, tracing the
+#: component to its source (`vera.narrowing.component_narrows`), records
+#: nothing (#1695's (a) member).
 _DEAD_NAT_GUARD = frozenset({
     "binder_nat_alias",
     "binder_nat_direct",
     "binder_nat_id",
     "binder_nat_phantom",
-    "capture_nat_alias",
-    "capture_nat_id",
-    "capture_nat_phantom",
-    "closure_param_nat_alias",
-    "closure_param_nat_id",
-    "closure_param_nat_phantom",
     "component_nat_alias",
     "component_nat_direct",
     "component_nat_id",
@@ -242,30 +238,6 @@ _DEAD_NAT_GUARD = frozenset({
     "destructure_nat_direct",
     "destructure_nat_id",
     "destructure_nat_phantom",
-    "element_nat_alias",
-    "element_nat_direct",
-    "element_nat_id",
-    "element_nat_phantom",
-    "exn_nat_alias",
-    "exn_nat_id",
-    "exn_nat_phantom",
-    "let_nat_alias",
-    "let_nat_id",
-    "let_nat_phantom",
-    "param_nat_alias",
-    "param_nat_id",
-    "param_nat_phantom",
-    "ret_nat_alias",
-    "ret_nat_direct",
-    "ret_nat_id",
-    "ret_nat_phantom",
-    "rooted_nat_alias",
-    "rooted_nat_id",
-    "rooted_nat_phantom",
-    "state_nat_alias",
-    "state_nat_direct",
-    "state_nat_id",
-    "state_nat_phantom",
     "top_binder_nat_alias",
     "top_binder_nat_direct",
     "top_binder_nat_id",
@@ -277,8 +249,8 @@ for _cell in _CELLS:
     _test = _cell_test(_cell)
     if _cell.name in _DEAD_NAT_GUARD:
         _test = pytest.mark.xfail(strict=True, reason=(
-            "#1695 (a): code generation guards a value the checker types "
-            "Nat by its declared-name rule, with no record"))(_test)
+            "#1695 (a): code generation guards a binder by its component's "
+            "type where the verifier reads the component's source"))(_test)
     globals()[f"test_{_cell.name}"] = _test
 del _cell, _test
 
