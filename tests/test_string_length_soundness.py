@@ -241,24 +241,21 @@ public fn f(@Unit -> @Bool)
     def test_surrogate_literal_does_not_crash(self) -> None:
         # A lone surrogate (U+D800) is not UTF-8-encodable, so string_length's
         # `value.encode("utf-8")` raised UnicodeEncodeError and crashed
-        # `vera verify` before the guard.  (The predicate's `z3.StringVal` does
-        # not raise — it stores phantom escape text like the astral case — but is
-        # guarded the same way.)  Both must now defer to Tier 3 without crashing.
-        length = _verify("""
+        # `vera verify` before the guard.  The escape is refused where it is
+        # decoded (E009, #1728), so neither string_length nor a predicate
+        # receives one: the program stops at the front end, with no crash.
+        for source in ("""
 public fn f(@Unit -> @Int)
   requires(true) ensures(@Int.result == 1) effects(pure)
 { string_length("\\u{D800}") }
-""")
-        # Graceful Tier-3 fallback, not a crash and not an E500/checker error.
-        assert _ok(length), [d.description for d in length.diagnostics]
-        assert length.summary.tier3_runtime >= 1
-        predicate = _verify("""
+""", """
 public fn f(@Unit -> @Bool)
   requires(true) ensures(@Bool.result == true) effects(pure)
 { string_contains("\\u{D800}", "x") }
-""")
-        assert _ok(predicate), [d.description for d in predicate.diagnostics]
-        assert predicate.summary.tier3_runtime >= 1
+"""):
+            checked = pipeline.check(source)
+            assert [d.error_code for d in checked.diagnostics] == ["E009"], (
+                [d.description for d in checked.diagnostics])
 
     def test_astral_string_length_still_byte_modeled(self) -> None:
         # string_length bypasses z3.StringVal (it byte-counts the decoded value),

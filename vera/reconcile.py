@@ -1658,7 +1658,7 @@ def reconcile_file(
     with the same calls ``vera verify`` makes.  A compile refusal, a typed
     hole's included, stops the run before the join."""
     from vera.checker import typecheck_with_artifacts
-    from vera.parser import parse
+    from vera.parser import parse, read_source
     from vera.resolver import ModuleResolver
     from vera.transform import transform
     from vera.typed import build
@@ -1666,12 +1666,13 @@ def reconcile_file(
 
     p = Path(path)
     run = ReconcileRun(path=p)
-    source = p.read_text(encoding="utf-8")
     try:
-        program = transform(parse(source, file=str(p)))
+        source = read_source(p)
+        program = transform(parse(source, file=str(p)))  # pragma: no mutate — the label reaches only a refusal's location, and reconcile_file records its description
     except VeraError as exc:
-        # A parse or transform refusal is the program's own: a stop before
-        # the join, as `vera verify` reports it, never an exception.
+        # A source that is not UTF-8 (E024), or a parse or transform
+        # refusal, is the program's own: a stop before the join, as `vera
+        # verify` reports it, never an exception.
         run.check_errors = [exc.diagnostic.description]
         return run
     resolver = ModuleResolver(_root=p.parent)

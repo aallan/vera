@@ -2,7 +2,7 @@
 
 ## 1.1 Source Encoding
 
-Vera source files MUST be encoded in UTF-8. The file extension is `.vera`.
+Vera source files MUST be encoded in UTF-8. The file extension is `.vera`. A file whose bytes are not UTF-8 is refused before it is parsed, at the first byte that does not decode: the program's own file and every module it imports alike.
 
 Source text is a sequence of Unicode code points. The lexer processes these into a sequence of tokens.
 
@@ -195,10 +195,12 @@ Escape sequences:
 | `\t`     | Tab |
 | `\r`     | Carriage return |
 | `\0`     | Null |
-| `\u{XXXX}` | Unicode code point (1-6 hex digits) |
+| `\u{XXXX}` | Unicode scalar value (1-6 hex digits): a code point from U+0000 to U+10FFFF other than a surrogate, U+D800 to U+DFFF |
 | `\(`...`)` | String interpolation (see §4.13.1) |
 
 No other escape sequences are valid (except `\(` which begins interpolation).
+
+A character outside the Basic Multilingual Plane is one escape of its code point, `\u{1F600}`, never a UTF-16 surrogate pair such as `\u{D83D}\u{DE00}`: an escape that names a surrogate is refused, because alone a surrogate names no character and a `String`, which is UTF-8, cannot hold one.
 
 #### String Interpolation
 
@@ -289,7 +291,7 @@ Rules:
 9. **No trailing whitespace** on any line
 10. **File ends with a single newline**, and every line ends with a bare `\n` — a canonical Vera source file contains no carriage returns
 11. **Comments are preserved.** A formatter MUST NOT discard a comment. One occupying a line of its own stays on its own line, above the construct it precedes — a statement, a declaration, a contract or `effects` clause, a `where` block, a function inside it, a `match` arm, a handler clause, a constructor or operation inside a `data`, `effect` or `ability` declaration, or a multi-line `if`, `match` or `handle` used as a binding's value or an arm's body.  Attachment is to the construct that *follows* the comment, not merely to the innermost one whose span contains it; a comment between a signature and its first `requires` belongs to that clause, not to the function body.  One with code before it on the same line is claimed by the first construct emitted whose source-line range covers it, cut off at the next construct's start, and emitted after that construct separated by two spaces — so a comment trailing a statement stays with that statement. Where reformatting leaves no such position, the comment moves to the end of the enclosing declaration rather than being dropped. At most one line comment may share a physical line, and it must come last, since `--` runs to end of line and would otherwise absorb whatever followed. Annotation-comment labels on a parameter or return slot are emitted from their binding instead (Section 1.3).
-12. **String escapes are normalised.** A character that cannot be read reliably in source is emitted as a `\u{...}` escape: the Unicode general categories `Cc`, `Cf`, `Cs`, `Co`, `Cn`, `Zl` and `Zp`, and any `Zs` other than the plain ASCII space; the named escapes `\\`, `\"`, `\n`, `\t`, `\r` and `\0` take precedence over `\u{...}` for their own code points.  Every other character — including printable non-ASCII such as `café` or an emoji — is emitted literally, so `\u{1F600}` and the glyph it denotes have one canonical form.  This keeps a zero-width space, a bidirectional override or a lone surrogate from sitting invisibly in a program: source that reads the same must be the same.
+12. **String escapes are normalised.** A character that cannot be read reliably in source is emitted as a `\u{...}` escape: the Unicode general categories `Cc`, `Cf`, `Cs`, `Co`, `Cn`, `Zl` and `Zp`, and any `Zs` other than the plain ASCII space; the named escapes `\\`, `\"`, `\n`, `\t`, `\r` and `\0` take precedence over `\u{...}` for their own code points.  Every other character — including printable non-ASCII such as `café` or an emoji — is emitted literally, so `\u{1F600}` and the glyph it denotes have one canonical form.  This keeps a zero-width space or a bidirectional override from sitting invisibly in a program: source that reads the same must be the same.
 13. **Blank lines are preserved, at most one.** A blank line separating two statements, separating a block's trailing result expression from the statement above it, separating two contract clauses or the `effects` row from the clause above it, separating two handler clauses, separating two `match` arms, or separating an own-line comment from what it documents, is reproduced as exactly one blank line, however many the source had.  A gap the source did not have is never introduced, and a gap held against an opening or closing brace separates nothing and is dropped — rule 2 already gives the brace its own line.  Consecutive top-level declarations are separated by exactly one blank line unconditionally, as a separator rather than a preserved gap.  The AST records no separation, so the paragraph breaks an author writes inside a block are recoverable only from the source text: discarding them and inventing them are equally wrong, and only the source distinguishes the two.
 
 ## 1.9 Token Precedence

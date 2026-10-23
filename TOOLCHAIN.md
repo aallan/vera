@@ -335,7 +335,7 @@ Each request runs on a **fresh module instance**, so `State<T>` cannot leak betw
 ```bash
 vera parse file.vera           # the parse tree (syntax)
 vera ast file.vera             # the typed AST (post type-checking)
-vera ast --json file.vera      # the AST as JSON
+vera ast --json file.vera      # the AST as JSON (a refusal: the diagnostics envelope)
 ```
 
 `parse` answers "did the grammar accept this?"; `ast` answers "what did the
