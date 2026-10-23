@@ -35,6 +35,7 @@ and is read from the emitter.
 
 from __future__ import annotations
 
+import http.server
 import importlib.util
 import json
 import os
@@ -738,13 +739,17 @@ def test_e910_a_port_another_process_holds(tmp_path: Path) -> None:
     held.listen(1)
     try:
         port = held.getsockname()[1]
-        second = socket.socket()
+        # The refusal the server's own bind meets.  `http.server.HTTPServer`
+        # sets SO_REUSEADDR, under which Windows refuses a held port with
+        # WSAEACCES (10013), where a plain socket meets WSAEADDRINUSE (10048).
         try:
-            second.bind(("127.0.0.1", port))
+            probe = http.server.HTTPServer(
+                ("127.0.0.1", port), http.server.BaseHTTPRequestHandler)
         except OSError as exc:
             refusal = str(exc)
-        finally:
-            second.close()
+        else:
+            probe.server_close()
+            raise AssertionError(f"port {port} was not held")
         run = pipeline.cli("serve", "--port", str(port), server)
     finally:
         held.close()
