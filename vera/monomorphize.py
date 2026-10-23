@@ -1159,7 +1159,7 @@ def _type_clone_name(ty: object) -> str | None:
             # `idg(if c then { throw(x) } else { 42 })` walks to `None` today
             # and the `else` supplies `Int`, and a checker answer of `Never`
             # at the recursive level would name `idg$Never` — a clone whose
-            # parameter has no WASM representation, dropped at [E604], taking
+            # parameter has no WASM representation, dropped at [E600], taking
             # `main` with it.  Measured: the whole #1286 battery and
             # `ch02_generic_arg_branch_join` fail exactly that way without
             # this line.
