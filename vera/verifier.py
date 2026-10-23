@@ -13730,7 +13730,7 @@ class ContractVerifier:
         boundary — so the obligation discloses instead.
 
         The rule is :func:`vera.lowering.state_cell_lowerable`, which
-        `_register_state_cell` reads with its own oracle, so the record
+        `_state_cell_refusal` reads with its own oracle, so the record
         cannot claim a cell the backend declines.  Every other site answers
         True: the question is about a `State` cell, not about the value.
         """

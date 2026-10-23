@@ -466,7 +466,7 @@ public fn main(@Unit -> @Unit)
 class TestSignatureGuards:
     """`_compile_fn` refuses a parameter or a return type with no WebAssembly
     representation (E600, E601).  `_is_compilable` drops such a function
-    first (E605), so the guards are reached only past it: with the filter
+    first (E600, E601), so the guards are reached only past it: with the filter
     patched open, as `skip_map_inserts` injects its drop, on a program the
     check accepts.  `Never` is the type with no representation."""
 

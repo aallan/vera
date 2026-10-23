@@ -1235,8 +1235,9 @@ class TestTheRepositoryConfig:
 
     def test_the_tests_that_read_a_mutated_modules_text_are_deselected(self) -> None:
         """Inside mutmut's copy, ``inspect.getsourcefile(vera.verifier)`` is
-        the generated file, every function's mutants inlined: these two read
-        it and fail there with no mutant active."""
+        the generated file, every function's mutants inlined, and so is each
+        mutated module's text: these read it and fail there with no mutant
+        active."""
         deselected = {arg.removeprefix("--deselect=") for arg in self._cfg()["pytest_add_cli_args"]
                       if arg.startswith("--deselect=")}
         reads = "tests/test_verifier_refinements.py::TestANonVerdictIsAttributedToTheRightOutcome::"
@@ -1246,6 +1247,12 @@ class TestTheRepositoryConfig:
             # runs scripts/check_diagnostic_fields.py over the copy's vera/,
             # where each mutant repeats its function's error codes
             "tests/test_checker_errors.py::TestErrorCodes::test_error_code_collision_gate_is_clean",
+            # the presence gate over the copy's vera/, and over the copy's
+            # vera/checker/registration.py with its one E188 taken off
+            "tests/test_diagnostic_codes_1490.py::"
+            "test_the_live_tree_carries_a_code_everywhere_and_builds_none_by_hand",
+            "tests/test_diagnostic_codes_1490.py::"
+            "test_mutant_a_code_removed_from_one_site_fails_the_gate",
         }
 
     def test_every_deselected_test_exists(self) -> None:
@@ -1256,7 +1263,10 @@ class TestTheRepositoryConfig:
             assert (ROOT / path).is_file(), arg
             cls, _, name = rest.partition("::")
             text = (ROOT / path).read_text(encoding="utf-8")
-            assert f"class {cls}" in text and f"def {name}(" in text, arg
+            if name:
+                assert f"class {cls}" in text and f"def {name}(" in text, arg
+            else:  # a module-level test function
+                assert f"\ndef {cls}(" in text, arg
 
 
 # ---------------------------------------------------------------------------

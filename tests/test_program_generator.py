@@ -409,7 +409,7 @@ def load_finds(
         if ((d.error_code or "").startswith("E6") or d.severity == "error")
         # A generic's template is not compiled, its clones are: a template
         # no call instantiates is skipped by design.
-        and not (d.error_code == "E604" and _names_one_of(d.description, generic))
+        and not (d.error_code == "E600" and _names_one_of(d.description, generic))
     ]
     if compiled._result is None or compiled.errors:
         return finds

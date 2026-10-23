@@ -342,6 +342,14 @@ _ARGUMENT_RANGES: dict[str, tuple[str, int, int]] = {
 }
 
 
+class ArgumentRefusal(RuntimeError):
+    """`execute()` refuses to call the function with the arguments it was
+    given: their count, a value's spelling, or its range for the
+    parameter's type.  A ``RuntimeError``, as these refusals always were, so
+    a caller that catches that still catches them; ``vera run`` tells them
+    from an internal error by this class (#1490)."""
+
+
 def _check_int_argument(raw: str, value: int, type_name: str) -> None:
     """Refuse a raw integer argument outside its parameter type's range.
 
@@ -352,7 +360,7 @@ def _check_int_argument(raw: str, value: int, type_name: str) -> None:
     article, lo, hi = _ARGUMENT_RANGES[type_name]
     if lo <= value <= hi:
         return
-    raise RuntimeError(
+    raise ArgumentRefusal(
         f"Argument {raw!r} is out of range for parameter type {type_name}: "
         f"{article} holds {lo} .. {hi}."
     )
@@ -1244,7 +1252,7 @@ def execute(
                 f"argument{'s' if n != 1 else ''} "
                 f"but {m} {'were' if m != 1 else 'was'} provided."
             )
-            raise RuntimeError(msg)
+            raise ArgumentRefusal(msg)
 
         memory_export = instance.exports(store).get(runtime_export("memory"))
         alloc_export = instance.exports(store).get(runtime_export("alloc"))
@@ -1301,7 +1309,7 @@ def execute(
                 else:
                     parsed.append(int(raw))  # fallback
             except (ValueError, TypeError) as exc:
-                raise RuntimeError(
+                raise ArgumentRefusal(
                     f"Argument {raw!r} is not valid for parameter type "
                     f"'{wasm_type}': {exc}"
                 ) from exc
@@ -1370,7 +1378,7 @@ def execute(
             f"\n\nTo call a specific function with arguments:"
             f"\n\n  vera run <file> --fn {fn_name} -- <args>"
         )
-        raise RuntimeError(msg)
+        raise ArgumentRefusal(msg)
 
     try:
         try:

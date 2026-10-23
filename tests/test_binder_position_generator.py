@@ -637,7 +637,7 @@ def _read(tmp_path: Path, source: str, name: str) -> dict:
         "errors": [d.get("error_code") for d in envelope["diagnostics"]
                    if d.get("severity") == "error"],
         "refused": ran.returncode != 0,
-        "run_output": (ran.stdout + ran.stderr)[-400:],
+        "run_output": ran.stdout + ran.stderr,
     }
 
 

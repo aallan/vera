@@ -819,10 +819,12 @@ def test_fmt_reports_e024_and_a_parse_error_at_the_file(tmp_path: Path) -> None:
 def test_ast_on_a_missing_file_exits_1(tmp_path: Path) -> None:
     """`vera ast` on a path that names no file exits 1 with the message the
     other commands print."""
+    from vera.command_errors import file_not_found
+
     missing = tmp_path / "missing.vera"
     run = _vera("ast", str(missing))
     assert (run.returncode, run.stderr) == (
-        1, f"Error: file not found: {missing}\n"), run
+        1, file_not_found(str(missing)).format() + "\n"), run
 
 
 def test_reconcile_file_records_e024_and_runs_a_utf8_program_to_the_join(

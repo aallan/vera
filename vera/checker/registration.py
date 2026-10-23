@@ -321,6 +321,9 @@ class RegistrationMixin:
                     and isinstance(tld.decl, (ast.FnDecl, ast.DataDecl))):
                 name = tld.decl.name
                 kind = "fn" if isinstance(tld.decl, ast.FnDecl) else "data"
+                # A function's parameters follow its name; a data type's
+                # constructors follow its name in braces.
+                shape = "(...)" if kind == "fn" else " { ... }"
                 self._error(
                     tld.decl,
                     f"Missing visibility on '{name}'. "
@@ -329,8 +332,10 @@ class RegistrationMixin:
                         "Every top-level function and data type must have "
                         "an explicit visibility annotation."
                     ),
-                    fix=f"private {kind} {name}(...) or public {kind} {name}(...)",
+                    fix=(f"private {kind} {name}{shape} or "
+                         f"public {kind} {name}{shape}"),
                     spec_ref='Chapter 8, Section 8.4 "Visibility"',
+                    error_code="E188",
                 )
             # #1181/#1187: a fn named after a contract state form (`old` /
             # `new`) or a grammar keyword (`match`, `let`, …) could never be

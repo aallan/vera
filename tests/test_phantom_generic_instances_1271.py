@@ -130,12 +130,12 @@ def _compile_result(source: str) -> CompileResult:
 
 
 def _compile_probe(source: str) -> tuple[set[str], list[tuple[str, str]]]:
-    """``(emitted mono-clone names, [(code, description)] for E602/E604/E605)``."""
+    """``(emitted mono-clone names, [(code, description)] for E600/E601/E602)``."""
     result, registered = _compile_spied(source)
     skips = [
         (d.error_code or "?", d.description or "")
         for d in result.diagnostics
-        if d.error_code in ("E602", "E604", "E605")
+        if d.error_code in ("E600", "E601", "E602")
     ]
     return registered, skips
 
@@ -212,7 +212,7 @@ class TestPrimitiveSpelledBinder:
     registered` from a program that ran fine before the filter existed.
 
     The direction of the fix errs toward "it is a real type": a `forall<Int>`
-    binder that shadows the primitive keeps its own pre-existing `[E604]` noise
+    binder that shadows the primitive keeps its own pre-existing `[E600]` noise
     (the phantom `idg$Int` clone), which is the failure mode that was already
     there, instead of silently costing every OTHER instantiation at that type.
     Whether the checker should reject a primitive-spelled binder outright is a
@@ -325,7 +325,7 @@ public fn main(@Unit -> @Int)
     [pytest.param(lbl, s, id=lbl) for lbl, s in _ALL_CASES],
 )
 def test_no_phantom_clone_is_emitted(label: str, source: str) -> None:
-    """No clone is keyed by a type VARIABLE, and no E602/E604/E605 skip is
+    """No clone is keyed by a type VARIABLE, and no E600/E601/E602 skip is
     emitted — while the genuinely concrete clone still is."""
     names, skips = _compile_probe(source)
     assert not _phantoms(names), (

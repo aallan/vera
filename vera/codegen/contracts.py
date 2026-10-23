@@ -15,6 +15,7 @@ from vera.monomorphize import mangle_type_name
 from vera.skip import CodegenSkip
 from vera.wasm import WasmContext, WasmSlotEnv
 from vera.wasm.helpers import (
+    CellNames,
     bind_slot_value_from_field,
     bind_slot_value_from_stack,
     element_sequence_loop,
@@ -1185,7 +1186,10 @@ class ContractsMixin:
         so translate_expr can resolve OldExpr later.
 
         Returns WASM instructions (call + local.set) to insert after
-        preconditions and before the function body.
+        preconditions and before the function body.  The snapshot calls the
+        cell's `state_get`, so it records the cell on *ctx*, whose record
+        declares it (#1744); its local's width is the cell's own, derived
+        from the type the `old()` names.
         """
         old_types = self._find_old_state_types(decl)
         if not old_types:
@@ -1195,9 +1199,11 @@ class ContractsMixin:
         old_locals: dict[str, int] = {}
 
         for type_name in sorted(old_types):
-            # Determine the WASM type for this State<T>
-            wasm_t = self._state_type_to_wasm(type_name)
-            if wasm_t is None:
+            type_arg = old_types[type_name]
+            # The WASM type for this State<T>: the cell's width, the one
+            # `_declare_state_cell` declares its imports at.
+            wasm_t = self._type_expr_to_wasm_type(type_arg)
+            if wasm_t is None or wasm_t == "unsupported":
                 continue
             # Allocate a temp local for the snapshot
             local_idx = ctx.alloc_local(wasm_t)
@@ -1206,6 +1212,9 @@ class ContractsMixin:
             # mangled import identifier emitted by `assembly.py`.
             instrs.append(f"call $vera.state_get_{mangle_type_name(type_name)}")
             instrs.append(f"local.set {local_idx}")
+            ctx._use_cell(CellNames(
+                family=type_name, base=self._family_base_te(type_arg),
+                type_expr=type_arg))
             old_locals[type_name] = local_idx
 
         if old_locals:
@@ -1213,13 +1222,16 @@ class ContractsMixin:
 
         return instrs
 
-    def _find_old_state_types(self, decl: ast.FnDecl) -> set[str]:
-        """Find all State<T> type names referenced by old() in ensures clauses.
+    def _find_old_state_types(
+        self, decl: ast.FnDecl,
+    ) -> dict[str, ast.TypeExpr]:
+        """Find every State<T> cell old() reads in the ensures clauses.
 
         Walks each non-trivial ensures expression looking for OldExpr nodes.
-        Returns a set of type names, e.g. {"Int"}.
+        Returns each cell's family, e.g. ``"Int"``, with the type the first
+        `old()` of it names.
         """
-        types: set[str] = set()
+        types: dict[str, ast.TypeExpr] = {}
         for contract in decl.contracts:
             if not isinstance(contract, ast.Ensures):
                 continue
@@ -1229,18 +1241,19 @@ class ContractsMixin:
         return types
 
     def _collect_old_types(
-        self, expr: ast.Expr, types: set[str],
+        self, expr: ast.Expr, types: dict[str, ast.TypeExpr],
     ) -> None:
-        """Recursively collect State<T> type names from OldExpr nodes."""
+        """Recursively collect State<T> cells from OldExpr nodes."""
         if isinstance(expr, ast.OldExpr):
             # Key the snapshot set by the resolved cell FAMILY — matches
-            # `_state_types` registration and the `_translate_old_expr`
-            # read, so `old(State<Count>)` snapshots (and finds) the `Nat`
-            # family (#1205) and `old(State<MaybeInt>)` the `Option<Int>`
-            # one (#1209).  The fallback for a resolution that names no
-            # family is derived inside `_family_name_te`, so the two sides
-            # cannot pass different ones.
-            types.add(self._family_name_te(state_type_arg(expr.effect_ref)))
+            # the `_translate_old_expr` read and the cell's declaration, so
+            # `old(State<Count>)` snapshots (and finds) the `Nat` family
+            # (#1205) and `old(State<MaybeInt>)` the `Option<Int>` one
+            # (#1209).  The fallback for a resolution that names no family is
+            # derived inside `_family_name_te`, so the two sides cannot pass
+            # different ones.
+            type_arg = state_type_arg(expr.effect_ref)
+            types.setdefault(self._family_name_te(type_arg), type_arg)
             return
         # Walk child expressions
         for child in self._expr_children(expr):
@@ -1263,13 +1276,6 @@ class ContractsMixin:
         elif isinstance(expr, ast.OldExpr):
             pass  # Already handled by caller
         return children
-
-    def _state_type_to_wasm(self, type_name: str) -> str | None:
-        """Map a State type name (e.g. 'Int') to its WASM type."""
-        for cell, wasm_t in self._state_types:
-            if cell.family == type_name:
-                return wasm_t
-        return None
 
     # -----------------------------------------------------------------
     # Runtime decreases guard (#1172)

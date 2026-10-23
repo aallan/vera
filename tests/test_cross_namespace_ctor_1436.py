@@ -1171,7 +1171,7 @@ class TestOwnerCollisionMatrix:
         assert not verify_errors and not cg_errors, (verify_errors, cg_errors)
         dropped = [
             (d.error_code, d.description) for d in result.diagnostics
-            if d.error_code in {"E602", "E604", "E620"}
+            if d.error_code in {"E600", "E602", "E620"}
         ]
         assert not dropped, dropped
 

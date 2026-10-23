@@ -701,6 +701,8 @@ MARKED_FILES = (
     "test_clone_suffix_1774.py",
     "test_gc_free_blocks_1718.py",
     "test_source_encoding_1728_1666.py",
+    "test_diagnostic_codes_1490.py",
+    "test_declared_by_the_emitter_1744.py",
     "test_fits_one_variable_one_type_1684.py",
 )
 UNMARKED_FILES = (
