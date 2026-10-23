@@ -198,11 +198,11 @@ VERA_JS_COVERAGE=1 pytest tests/test_browser.py -v  # JS coverage
 
 PRs touching `vera/browser/runtime.mjs` have JavaScript coverage tracked by Codecov (via V8's built-in coverage). See [TESTING.md](TESTING.md) for the full testing reference -- coverage data, test helpers, and guidelines for adding tests.  See [ENVIRONMENT.md](ENVIRONMENT.md) for all `VERA_*` environment variables (provider keys, runtime knobs, and debug flags like `VERA_EAGER_GC` for hunting GC-rooting bugs and `VERA_DEBUG_HOST_ERRORS` for host-binding ones).
 
-**The program generator** writes a Vera program from a seed and holds it to the generator's contract and three differentials ([TESTING.md](TESTING.md) § Program Generator).  To run it against a change, over a thousand seeds or one:
+**The program generator** writes a Vera program from a seed, with a module beside it when it imports one, and holds it to the generator's contract and four differentials ([TESTING.md](TESTING.md) § Program Generator).  To run it against a change, over a thousand seeds or one:
 
 ```bash
 VERA_GENERATOR_SEEDS=0-999 pytest tests/test_program_generator.py -n 4
-python -m tests.program_generator 1234     # the program seed 1234 writes
+python -m tests.program_generator 1234     # the program seed 1234 writes, its module after it
 ```
 
 A night's finds arrive on the open issue labelled `generator-find`.  Each names its seed, the differential it failed and the minimal program, and states what the generator expected of each function: the contract it wrote, the interval the verifier can see, the interval a run can reach, and the value an exact `ensures` states on the failing arguments.  Where the minimal program breaks what the generator expected of it, the generator is wrong, and the fix is the generator's.  Any other find is the toolchain's: it is filed by its class ([Filing](#filing-file-the-class-not-the-manifestation)), never fixed in the generator's pull request, and once its issue is named the generator counts it as a known class.
