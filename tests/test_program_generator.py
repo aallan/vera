@@ -153,6 +153,8 @@ class Find:
     #: The known class it falls in, by its shape: what the night's report
     #: counts it under.
     cls: str = ""
+    #: A join mismatch's file, line and column.
+    site: tuple[str | None, int, int] | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {"differential": self.differential,
@@ -1009,7 +1011,8 @@ def reconcile_finds(
             known=cls.issue if cls is not None else "", function=m.function,
             evidence=(f"{cls.shape}, at {m.line}:{m.column}"
                       if cls is not None else ""),
-            cls=cls.shape if cls is not None else ""))
+            cls=cls.shape if cls is not None else "",
+            site=(m.file, m.line, m.column)))
     return finds
 
 
@@ -1228,6 +1231,24 @@ def _key(f: Find) -> tuple[str, tuple[str, ...], str]:
     return (f.differential, f.signature, f.function)
 
 
+def _at_a_bound_value(f: Find, sites: Sites) -> bool:
+    """Whether *f* is a mismatch at the value of a `let` the counterfactual
+    wrote, `{ let @T = value; @T.0 }`: a `let @Nat` of a fold from a `Nat`,
+    or of a `Nat` argument code generation does not read as one, makes the
+    `nat_bind` class's guard there by construction."""
+    if f.site is None:
+        return False
+    for node in sites._at.get(f.site, []):
+        let = sites.parent.get(id(node))
+        block = sites.parent.get(id(let)) if let is not None else None
+        if (isinstance(let, ast.LetStmt) and let.value is node
+                and isinstance(block, ast.Block) and len(block.statements) == 1
+                and block.statements[0] is let
+                and isinstance(block.expr, ast.SlotRef) and block.expr.index == 0):
+            return True
+    return False
+
+
 def _alike(a: Find, b: Find) -> bool:
     """Whether two finds are the same find of two programs that differ in
     columns only: their differential, signature and function.  Two sites
@@ -1279,12 +1300,15 @@ def classify_rederived(
         if any(not any(_alike(f, g) for g in open_) for f in after if not f.known):
             break
         anew = Counter(_key(f) for f in after if not f.known)
-        again = Counter(_key(f) for f in after)
+        written = Sites(stages.verified.checked)
+        again = Counter(_key(f) for f in after
+                        if not f.known or not _at_a_bound_value(f, written))
         for f in open_:
             # The program's open finds of a signature vanish when the
             # counterfactual makes none of them outside the classes and no
-            # more of them in all than the program made inside one: a find
-            # it makes again in a known class has not vanished.
+            # more of them in all than the program made inside one, beside
+            # the known ones its own `let`s make: a find it makes again in a
+            # known class has not vanished.
             k = _key(f)
             if id(f) not in marked and not anew[k] and again[k] <= held[k]:
                 marked[id(f)] = cls
@@ -1949,6 +1973,28 @@ def test_a_find_that_stays_beside_a_known_one_that_goes_stays_a_find(
     finds = differentials(_repro_generic_argument(), warm=False)
     assert [f.known for f in finds if f.signature == ("call", "pair")
             and f.detail == "open"] == [""], finds
+
+
+def test_a_member_beside_a_guard_the_counterfactual_writes_is_counted() -> None:
+    """A class's find in a function holding a fold from a `@Nat`: the
+    counterfactual binds the fold at `Nat`, the checker's type, in a
+    `let @Nat`, whose guard is the `nat_bind` class's by construction; that
+    guard is not the member made again, so the member is counted (seed
+    2101717 of the replay of #1781's night)."""
+    n = gen.Binding("Nat", gen.Iv(0, 5), gen.Iv(0, 5))
+    items = gen.Binding("Array<Int>", value=gen.ArrayLit("Int", [gen.Lit(4), gen.Lit(-3)]))
+    acc, elem = gen.Binding("Int", gen.ANY, gen.Iv(0, 0)), gen.Binding(
+        "Int", gen.ANY, gen.Iv(0, 0))
+    fold = gen.Fold(gen.Ref(items), gen.Ref(n), acc, elem, gen.Lit(0))
+    pick = _pick()
+    call = gen.Call(pick, [gen.Lit(False), gen.Bin("*", gen.Ref(n), gen.Lit(2)),
+                           gen.Bin("-", gen.Ref(n), gen.Lit(3))], {"T": "Int"})
+    prog = _one(gen.Bin("+", call, fold), lets=[gen.Let(items)], params=[n], example=[1],
+                functions=[pick])
+    assert gen.static_type(fold) == "Nat"
+    finds = differentials(prog, warm=False)
+    assert [f for f in finds if not f.known] == [], finds
+    assert [f for f in finds if f.known == "#1525" and f.differential == "reconcile"], finds
 
 
 def test_two_sites_of_one_signature_where_one_vanishes_stay_finds(

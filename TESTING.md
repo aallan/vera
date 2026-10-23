@@ -1511,8 +1511,8 @@ in place by a `let` of the type the checker gives it (`{ let @Int = …;
 declaration, and #1744's when it vanishes once each handler a branch takes is
 bound too, provided that program checks, verifies and makes no find outside
 the known classes that the program does not; a find it makes again, in a known
-class or not, has not vanished, and the distrust run counted is then that
-program's.
+class or not, has not vanished (a known guard at a value it binds is its own),
+and the distrust run counted is then that program's.
 A find at those shapes that does not vanish under the `let` is reported.
 A warm find whose two sessions differ in a counterexample alone is #1785's: the
 differences seen came in a four-worker run, after other programs, and not when
