@@ -46,6 +46,7 @@ from typing import Any
 import pytest
 
 from tests import pipeline
+from tests.codegen_helpers import skip_map_inserts  # noqa: F401  (the fixture)
 from vera import command_errors as ce
 
 pytestmark = pytest.mark.matrix(decides=[
@@ -86,20 +87,22 @@ PROGRAMS = {
              "  effects(<IO, Http>)\n{\n"
              '  let @Result<String, String> = Http.get("http://127.0.0.1:1/");\n'
              '  IO.print("x")\n}\n'),
-    # `tally` holds a construct code generation drops (#1183's fixture), so
-    # `main` is dropped behind it; `survivor` keeps its export.
+    # `tally` holds a construct code generation drops (#1183's fixture: its
+    # `map_insert` skips under `skip_map_inserts`, since the check refuses the
+    # Array-valued map that skipped, E135), so `main` is dropped behind it;
+    # `survivor` keeps its export.
     "dropped": (
         "private fn tally(-> @Int) requires(true) ensures(true) effects(pure) {\n"
-        '  let @Map<String, Array<Int>> = map_insert(map_new(), "a", [1, 2]);\n'
-        "  map_size(@Map<String, Array<Int>>.0)\n}\n\n"
+        '  let @Map<String, Int> = map_insert(map_new(), "a", 1);\n'
+        "  map_size(@Map<String, Int>.0)\n}\n\n"
         "public fn main(-> @Int) requires(true) ensures(true) effects(pure) {\n"
         "  tally()\n}\n\n"
         "public fn survivor(-> @Int) requires(true) ensures(true) effects(pure) {\n"
         "  4243\n}\n"),
     "all_dropped": (
         "private fn tally(-> @Int) requires(true) ensures(true) effects(pure) {\n"
-        '  let @Map<String, Array<Int>> = map_insert(map_new(), "a", [1, 2]);\n'
-        "  map_size(@Map<String, Array<Int>>.0)\n}\n\n"
+        '  let @Map<String, Int> = map_insert(map_new(), "a", 1);\n'
+        "  map_size(@Map<String, Int>.0)\n}\n\n"
         "public fn main(-> @Int) requires(true) ensures(true) effects(pure) {\n"
         "  tally()\n}\n"),
     # A generic nothing instantiates: its `@T` parameter, and its `@T`
@@ -179,7 +182,7 @@ def test_repro_the_guard_rail_is_e624_in_both_shapes() -> None:
 
     source = PROGRAMS["ok"]
     call = pipeline.parse(source).program.declarations[0].decl
-    gen = CodeGenerator(source=source, file="main.vera")
+    gen = CodeGenerator(pipeline.typed(), source=source, file="main.vera")
     gen._emit_cross_module_error(call, "f", "m::f")
     gen._emit_cross_module_error(call, "f")
     rails = [d for d in gen.diagnostics
@@ -525,7 +528,7 @@ REFUSALS: dict[str, Refusal] = {
         "Function 'main' was declared but dropped from the compiled output, so "
         "it cannot be run.\n\nReason: [E620] Function 'main' calls function "
         "'tally', which was skipped by codegen (see the [E602] diagnostic at "
-        "line 2, column 34) — function dropped from the compiled output.\n\n"
+        "line 2, column 27) — function dropped from the compiled output.\n\n"
         "Fix the construct at the reported location, or run a surviving "
         "function with --fn <name>.\nAvailable exports: survivor", _CHECK),
     # E908: what the target needs.
@@ -658,6 +661,7 @@ def _cells() -> list[object]:
 
 
 @pytest.mark.parametrize(("name", "as_json"), _cells())
+@pytest.mark.usefixtures("skip_map_inserts")
 def test_every_refusal_of_a_command_carries_its_code(
     name: str, as_json: bool, tmp_path: Path,
 ) -> None:
@@ -701,10 +705,12 @@ def test_named_e904_at_every_command_line(tmp_path: Path) -> None:
     _every("E904", tmp_path)
 
 
+@pytest.mark.usefixtures("skip_map_inserts")
 def test_named_e905_at_compile_and_run(tmp_path: Path) -> None:
     _every("E905", tmp_path)
 
 
+@pytest.mark.usefixtures("skip_map_inserts")
 def test_named_e906_e907_at_run(tmp_path: Path) -> None:
     _every("E906", tmp_path)
     _every("E907", tmp_path)
@@ -752,7 +758,9 @@ def test_e911_the_language_server_without_its_extra(
 ) -> None:
     """`vera lsp` with the `[lsp]` extra's transport not importable: E911,
     which names the module and the install command."""
-    monkeypatch.delitem(sys.modules, "vera.lsp.server", raising=False)
+    for name in [n for n in sys.modules
+                 if n == "vera.lsp.server" or n == "pygls" or n.startswith("pygls.")]:
+        monkeypatch.delitem(sys.modules, name)
     monkeypatch.setitem(sys.modules, "pygls", None)
     run = pipeline.cli("lsp")
     assert run.returncode == 1, run
