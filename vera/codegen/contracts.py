@@ -13,7 +13,7 @@ from typing import ClassVar
 from vera import ast, carriers, naming
 from vera.monomorphize import mangle_type_name
 from vera.skip import CodegenSkip
-from vera.types import BOOL, INT, NAT
+from vera.types import BOOL, BYTE, INT, NAT
 from vera.wasm import WasmContext, WasmSlotEnv
 from vera.wasm.helpers import (
     bind_slot_value_from_field,
@@ -212,7 +212,34 @@ class ContractsMixin:
             # which erases identically and raised a raw `ValueError` at
             # the `wt is None` invariant in `_compile_fn` below.
             return None
-        return (parts.predicate, parts.binder_name)
+        return (self._built_range(parts.predicate, parts.base),
+                parts.binder_name)
+
+    def _built_range(
+        self, predicate: ast.Expr, base: ast.TypeExpr,
+    ) -> ast.Expr:
+        """*predicate*, with the types of the nodes
+        :func:`vera.naming.refinement_binder_parts` built around the written
+        one recorded (#1525): a `Nat` or `Byte` base's implicit range
+        (`@Base.0 >= 0`, and `@Base.0 <= 255` for a `Byte`) conjoined to
+        it, whose binder references and literals are of the base type and
+        whose comparisons and conjunctions are `Bool`.  A built node is one
+        with no identity; the written predicate's nodes are the checker's,
+        typed where they were checked."""
+        name = base.name if isinstance(base, ast.NamedType) else None
+        base_ty = {"Nat": NAT, "Byte": BYTE}.get(name or "")
+        stack: list[ast.Expr] = [predicate]
+        while stack:
+            node = stack.pop()
+            if node.node_id is not None:
+                continue
+            if isinstance(node, ast.BinaryExpr):
+                self._built(node, BOOL)
+                stack.extend((node.left, node.right))
+            elif (isinstance(node, (ast.SlotRef, ast.IntLit))
+                  and base_ty is not None):
+                self._built(node, base_ty)
+        return predicate
 
     def _emit_refinement_check(
         self,

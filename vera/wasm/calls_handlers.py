@@ -1805,10 +1805,19 @@ class CallsHandlersMixin:
                 call,
             )
 
-        # WASM type and pointer-ness derive from the threaded FAMILY name
-        # (computed once at the handle site — matching the import decls),
-        # never the source alias spelling (#1205/#1209).
-        state_wt = self._type_name_to_wasm(family_base)
+        # The cell's WASM type and pointer-ness are its checked type's, the
+        # `State<T>` argument as the checker resolved it (#1525): a
+        # `Future<Int>` cell is the i64 its host imports take, where the
+        # family name's spelling read as a pointer (#1685), never the
+        # source alias spelling (#1205/#1209).
+        cell_type = self._type_of(entry.family_type_expr) if (
+            entry.family_type_expr is not None) else None
+        state_wt = self._width_of(cell_type)
+        if state_wt is None or state_wt == "i32_pair":
+            raise CodegenInvariantError(
+                "a State cell with no single-value checked type reached a "
+                "clause; the checker refuses a pair or zero-size cell "
+                "(E340)", call)
         # Composite state is a heap pointer (i32, excluding the non-pointer
         # i32 scalars) — root the capture/argument locals on the GC shadow
         # stack so an allocating clause body (or `with` expr) cannot free or
@@ -1818,8 +1827,7 @@ class CallsHandlersMixin:
         # host handles are i32 indices, not heap pointers).  The pushes are
         # reclaimed by the function's epilogue $gc_sp restore.
         state_is_ptr = (
-            state_wt == "i32"
-            and family_base not in ("Bool", "Byte")
+            self._holds_pointer(cell_type)
             and not _is_host_handle_type(family_base)
         )
         instructions: list[str] = []
@@ -2192,7 +2200,10 @@ class CallsHandlersMixin:
             f"throw({ast.format_type_expr(payload_te)})\n"
             "  payload"
         )
-        if self._is_pair_type_name(cell.base):
+        # The payload's width is its declared type's as the checker resolved
+        # it (#1525).
+        payload_wt = self._declared_width(payload_te)
+        if payload_wt == "i32_pair":
             # A `String`-based payload is a pair, spilled through the shared
             # binding (#1466) — the same call the named and closure return
             # guards make, rather than the six instructions it returns
@@ -2204,7 +2215,11 @@ class CallsHandlersMixin:
             if guard is None:
                 return value
             return [*value, *binding.load, *guard, *binding.push]
-        value_local = self.alloc_local(self._type_name_to_wasm(cell.base))
+        if payload_wt is None or payload_wt == "unit":
+            raise CodegenInvariantError(
+                "a refined Exn<E> payload with no single-value checked type "
+                "reached its throw guard", call)
+        value_local = self.alloc_local(payload_wt)
         guard = emitter(payload_te, value_local, head, env, call.args[0])
         if guard is None:
             return value
@@ -2268,10 +2283,17 @@ class CallsHandlersMixin:
         tag_name = f"$exn_{mangle_type_name(family)}"
         # Pair-ness is the BASE's question (#1218): `Exn<Short>` under
         # `type Short = {@String | ...}` is its own tag and still carries a
-        # (ptr, len) pair, so asking the identity name — which carries the
-        # predicate and matches no representation the name table knows —
-        # would bind a single i32 against a two-i32 tag.
-        is_pair = self._is_pair_type_name(family_base)
+        # (ptr, len) pair.  The payload's width is its checked type's, the
+        # `Exn<E>` argument as the checker resolved it (#1525): a
+        # `Future<Int>` payload is the i64 its tag carries, where the family
+        # name's spelling read as a pointer.
+        payload_type = self._type_of(type_arg)
+        if payload_type is None:
+            raise CodegenInvariantError(
+                "an Exn<E> handler whose payload type the check did not "
+                "resolve reached code generation", expr)
+        payload_wt = self._width_of(payload_type) or "i32"
+        is_pair = payload_wt == "i32_pair"
 
         # Unique label ids for nested handlers
         hid = self._next_handle_id
@@ -2359,9 +2381,7 @@ class CallsHandlersMixin:
         # below is handed), one local of its own width otherwise.  Written
         # out here, the adjacency was a property of two `alloc_local` calls
         # eighteen lines above the guard rather than of the type.
-        thrown_wt = ("i32_pair" if is_pair
-                     else self._type_name_to_wasm(family_base))
-        thrown = bind_slot_value_from_stack(self.alloc_local, thrown_wt)
+        thrown = bind_slot_value_from_stack(self.alloc_local, payload_wt)
         thrown_local = thrown.slot_local
 
         # Push caught value into slot env for handler body, under the
@@ -2379,7 +2399,8 @@ class CallsHandlersMixin:
             binder_guard = self._emit_clause_binder_guard(
                 clause.params[0], thrown_local, family_base, type_arg,
                 f"{clause.op_name}(…) clause binder", clause, env)
-            handler_env = env.push(caught_slot, thrown_local)
+            handler_env = env.push(
+                caught_slot, thrown_local, self._type_of(clause.params[0]))
         else:
             # A patternless `throw()` clause binds nothing in the checker
             # (its zip has no param to bind) — pushing the payload anyway
@@ -2414,7 +2435,7 @@ class CallsHandlersMixin:
         if is_pair:
             thrown_spec = " (result i32 i32)"
         else:
-            thrown_spec = f" (result {thrown_wt})" if thrown_wt else ""
+            thrown_spec = f" (result {payload_wt})" if payload_wt else ""
 
         instructions: list[str] = []
         instructions.append(f"block {done_label}{result_spec}")

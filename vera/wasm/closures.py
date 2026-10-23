@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from vera import ast, fold, naming
+from vera.skip import CodegenInvariantError
 from vera.types import NAT, FunctionType, RefinedType, base_type
 from vera.wasm.helpers import (
     WasmSlotEnv,
@@ -285,39 +286,23 @@ class ClosuresMixin:
             if key in seen:
                 continue
             seen.add(key)
-            # Infer the capture's serialisation width from its slot
-            # type name.  String / Array<T> values live as two
-            # consecutive i32 slots (ptr, len) and a closure capture
-            # must serialise both (#535): pre-#535 the capture path
-            # used a bare ``"i32"`` and stored only the ptr, so the
-            # body read len from adjacent struct memory (typically
-            # zero) and the captured value silently appeared empty.
-            #
-            # Route the decision through the SAME Future-transparent
-            # deciders the let-binding and slot-read paths use
-            # (`_is_pair_type_name` / `_slot_name_to_wasm_type`), NOT
-            # the literal String/Array check + `_type_name_to_wasm`
-            # (which maps every unknown name — including a resolved
-            # alias or a `Future<T>` wrapper — to ``"i32"``).  Since
-            # `Future<T>` is representation-transparent (#841), a
-            # captured `Future<String>` is a pair (i32_pair) and a
-            # captured `Future<Int>` is an i64; pre-#1044 both fell to
-            # the "i32" default — the pair silently stored ptr-only
-            # (empty value), the i64 pushed an i64 into an `i32.store`
-            # and trapped at WASM validation.  Both `_translate_anon_fn`
-            # (layout + store) and `_compile_lifted_closure` (layout +
-            # load) read this `wt` back from the capture tuple, so the
-            # two sides stay in agreement by construction.  The
-            # ``or "i32"`` guards the None `_slot_name_to_wasm_type`
-            # returns for a pair (unreachable — `_is_pair_type_name`
-            # took that branch) or a genuinely unrepresentable name
-            # (which could not have been bound in the outer scope,
-            # since binding uses the same mapper), matching the prior
-            # `_type_name_to_wasm` default.
-            if self._is_pair_type_name(type_name):
-                wt = "i32_pair"
-            else:
-                wt = self._slot_name_to_wasm_type(type_name) or "i32"
+            # The capture's serialisation width is the captured value's,
+            # the width of the type the checker gave the reference (#1525):
+            # String / Array<T> values live as two consecutive i32 slots
+            # (ptr, len) and a capture must serialise both (#535), a
+            # `Future<T>` is held as `T` is (#841, #1044), and a
+            # parameterised alias is its target under its arguments, which
+            # the slot name's spelling had no width for.  Both
+            # `_translate_anon_fn` (layout + store) and
+            # `_compile_lifted_closure` (layout + load) read this `wt` back
+            # from the capture tuple, so the two sides agree by
+            # construction.  A zero-size value is captured as the i32 its
+            # absent local reads as, as the capture path always did.
+            captured = self._type_of(node)
+            if captured is None:
+                raise CodegenInvariantError(
+                    "a captured slot reference the check did not type", node)
+            wt = self._width_of(captured) or "i32"
             free.append((type_name, outer_idx, wt))
 
         # Group by type so we can fill prefix and sort within each type

@@ -196,7 +196,22 @@ class ResolutionMixin:
         )
 
     def _resolve_type(self, te: ast.TypeExpr) -> Type:
-        """Convert an AST TypeExpr into a resolved semantic Type."""
+        """Convert an AST TypeExpr into a resolved semantic Type.
+
+        The resolution is recorded by the type expression's identity
+        (#1525), beside each expression's type: code generation lays out a
+        value declared at a type the program writes (a parameter, a `let`,
+        a binder, a cell) by the type it resolves to, an alias's target
+        under the alias's arguments, and never by its spelling.  An
+        unresolved type records nothing, so a resolution made where the
+        type does not resolve never stands for one made where it does."""
+        ty = self._resolve_type_expr(te)
+        if (self.node_semantic_types is not None and te.node_id is not None
+                and not isinstance(ty, UnknownType)):
+            self.node_semantic_types[te.node_id] = ty
+        return ty
+
+    def _resolve_type_expr(self, te: ast.TypeExpr) -> Type:
         if isinstance(te, ast.NamedType):
             return self._resolve_named_type(te)
         if isinstance(te, ast.FnType):

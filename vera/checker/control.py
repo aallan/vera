@@ -664,7 +664,17 @@ class ControlFlowMixin:
 
     def _check_pattern(self, pat: ast.Pattern,
                        expected: Type | None) -> list[Binding]:
-        """Check a pattern against an expected type, return bindings."""
+        """Check a pattern against an expected type, return bindings.
+
+        The type the pattern matches, its scrutinee's or its field's, is
+        recorded by the pattern's identity (#1525): code generation reads
+        each sub-pattern's field at that type's width, a wildcard's and a
+        literal's included, where it once read the field's width off the
+        binder's spelling and had none for the others."""
+        if (expected is not None and not isinstance(expected, UnknownType)
+                and self.node_semantic_types is not None
+                and pat.node_id is not None):
+            self.node_semantic_types[pat.node_id] = expected
         # #1315/#1320: every form is first asked whether it can match the
         # scrutinee at all.  A binding pattern is the exception only in
         # WHERE the same rule runs: its type has to be resolved before it

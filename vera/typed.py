@@ -1258,7 +1258,9 @@ class TypedProgram:
 
     *semantic* and *target* hold the checker's type and target of every
     expression by node identity: a template's from the check, a clone's
-    node the template's under the instance's substitution.  *call_targets*
+    node the template's under the instance's substitution.  *semantic* also
+    holds the type each pattern matches and the type each type expression
+    resolves to (#1525).  *call_targets*
     maps every generic call of a body the program compiles, a clone's
     included, to the instance it calls; *origin* each clone node to the
     template node it was built from.  The verifier and code generation read
@@ -1296,8 +1298,9 @@ class TypedProgram:
         return self._by_name.get(name)
 
     def semantic_type(self, node: ast.Node) -> Type | None:
-        """The checker's type of *node*, or ``None`` for a node it did not
-        type (a pattern, a type expression, a node built after the check)."""
+        """The checker's type of *node*: an expression's, the type a pattern
+        matches, the type a type expression resolves to.  ``None`` for a
+        node it did not type (a node built after the check)."""
         return None if node.node_id is None else self.semantic.get(node.node_id)
 
     def target_type(self, node: ast.Node) -> Type | None:
@@ -1340,6 +1343,31 @@ def _renumber(node: ast.FnDecl, origin: dict[int, int]) -> ast.FnDecl:
     out = copy(node)
     assert isinstance(out, ast.FnDecl)  # noqa: S101
     return out
+
+
+def _type_parsed_parts(te: ast.Node, ty: Type,
+                       semantic: dict[int, Type]) -> None:
+    """Type the parts of a clone's type expression, or of a slot or result
+    reference's type, that its substitution parsed from a type argument's
+    name (`T` at `Map<String, Int>`), or that stand for a template node
+    the check typed no type of (a slot reference's type arguments, which
+    name a slot): each is the matching part of the type its parent was
+    typed at.  A part whose template node was typed is typed by that, when
+    the walk reaches it."""
+    ty = base_type(ty)
+    parts: Sequence[tuple[ast.TypeExpr, Type]] = ()
+    if (isinstance(te, (ast.NamedType, ast.SlotRef, ast.ResultRef))
+            and te.type_args and isinstance(ty, AdtType)
+            and len(ty.type_args) == len(te.type_args)):
+        parts = tuple(zip(te.type_args, ty.type_args))
+    elif (isinstance(te, ast.FnType) and isinstance(ty, FunctionType)
+          and len(ty.params) == len(te.params)):
+        parts = (*zip(te.params, ty.params), (te.return_type, ty.return_type))
+    for part, part_ty in parts:
+        if part.node_id is None or part.node_id in semantic:
+            continue
+        semantic[part.node_id] = part_ty
+        _type_parsed_parts(part, part_ty, semantic)
 
 
 def _helper_in(fn: ast.FnDecl, name: str) -> ast.FnDecl | None:
@@ -1423,6 +1451,10 @@ def build(program: ast.Program, modules: Sequence[ResolvedModule],
             ty = checked_semantic.get(source)
             if ty is not None:
                 semantic[node.node_id] = substitute(ty, inst.sigma)
+                if isinstance(node, (ast.TypeExpr, ast.SlotRef,
+                                     ast.ResultRef)):
+                    _type_parsed_parts(node, semantic[node.node_id],
+                                       semantic)
             at = checked_target.get(source)
             if at is not None:
                 target[node.node_id] = substitute(at, inst.sigma)

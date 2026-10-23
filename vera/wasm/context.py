@@ -1127,15 +1127,18 @@ class WasmContext(
         inline scalars — the `_INLINE_I32_TYPES` question, deliberately, and
         not `is_gc_pointer_base`: rooting a host handle is what the `let`
         rooting has always done, and narrowing that here would be a
-        reachability change riding a lifetime change.
+        reachability change riding a lifetime change.  Both are read off
+        the binding's checked type, which the environment carries
+        (:meth:`InferenceMixin._holds_pointer`, #1525).
         """
         roots: list[int] = []
         for type_name, local_idx in after_env.bindings_added_since(before_env):
-            if self._is_pair_type_name(type_name):
-                roots.append(local_idx)
-                continue
-            if (self._slot_name_to_wasm_type(type_name) == "i32"
-                    and type_name not in _INLINE_I32_TYPES):
+            ty = after_env.type_at(local_idx)
+            if ty is None:
+                raise CodegenInvariantError(
+                    f"a statement bound @{type_name} with no checked type, "
+                    "so whether it is a GC root is unknown", None)
+            if self._holds_pointer(ty):
                 roots.append(local_idx)
         return roots
 
@@ -1335,15 +1338,17 @@ class WasmContext(
             stmt_env = current_env
             stmt_instrs: list[str] = []
             if isinstance(stmt, ast.LetStmt):
-                # Determine WAT type for this let binding.  Resolved BEFORE
-                # the value is translated because a `@Byte` target changes how
-                # the value's int literals lower (#865 / #1212) — see the
-                # `_mark_byte_write_value` call below.
+                # The binding's slot name keys the slot environment as the
+                # checker binds it; its width, pair-ness and GC-rootness are
+                # the declared type's as the checker resolved it, a
+                # parameterised alias's target under its arguments (#1525).
                 type_name = self._type_expr_to_slot_name(stmt.type_expr)
                 if type_name is None:
                     raise CodegenSkip(
                         stmt, "let binding type has no slot name"
                     )
+                declared = self._type_of(stmt.type_expr)
+                wat_t = self._declared_width(stmt.type_expr)
                 # #865: `@Byte` is i32 (spec §11), but an int literal defaults
                 # to `i64.const`.  The bidirectional checker accepts a 0..255
                 # literal bound to a `@Byte` (incl. a `{ @Byte | P }`
@@ -1358,7 +1363,7 @@ class WasmContext(
                 if val_instrs is None:
                     return None
                 # Pair bindings (String, Array<T>) need two locals: (ptr, len)
-                if self._is_pair_type_name(type_name):
+                if wat_t == "i32_pair":
                     # The whole representation, through the shared binding
                     # (#1466): a pair is two consecutive locals and the slot
                     # env reads the length from the one after the pointer, so
@@ -1385,12 +1390,12 @@ class WasmContext(
                         stmt.type_expr, ptr_idx, "let binding", stmt,
                         current_env,
                     ))
-                    current_env = current_env.push(type_name, ptr_idx)
+                    current_env = current_env.push(
+                        type_name, ptr_idx, declared)
                     instructions.extend(self._scope_statement_roots(
                         stmt_instrs, stmt_env, current_env, save_local))
                     continue
-                wat_t = self._slot_name_to_wasm_type(type_name)
-                if wat_t is None:
+                if wat_t is None or wat_t == "unit":
                     raise CodegenSkip(
                         stmt,
                         f"let binding type {type_name!r} has no WASM representation",
@@ -1404,7 +1409,7 @@ class WasmContext(
                 # belt-and-suspenders role.  Alias-aware (`type Age = Nat`)
                 # via `_resolve_base_type_name` so an alias/refined @Nat let
                 # target is guarded too (CR #756).
-                if (self._resolve_base_type_name(type_name) == "Nat"
+                if (self._is_nat_type(declared)
                         and self._narrows_into_nat(stmt.value)):
                     stmt_instrs.extend(self._emit_nat_bind_guard(
                         val_instrs, at=stmt.value))
@@ -1429,7 +1434,7 @@ class WasmContext(
                 # The root is planted by the statement scope below, from the
                 # environment delta (#1371); rooting here as well would hold
                 # a duplicate of the same address for the rest of the frame.
-                current_env = current_env.push(type_name, local_idx)
+                current_env = current_env.push(type_name, local_idx, declared)
             elif isinstance(stmt, ast.ExprStmt):
                 value_instrs = self.translate_expr(stmt.expr, current_env)
                 if value_instrs is None:

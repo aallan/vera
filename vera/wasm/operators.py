@@ -52,8 +52,14 @@ class OperatorsMixin:
             # any future checker/backend scope desync (never delete the guard).
             raise CodegenInvariantError(  # pragma: no cover
                 "slot reference resolved to no local (dangling @T.n)", ref)
-        # Pair types (String, Array<T>) push (ptr, len) — two locals
-        if self._is_pair_type_name(type_name):
+        # Pair types (String, Array<T>) push (ptr, len) — two locals.  The
+        # reference's checked type decides it, never its slot name: `W<Int>`
+        # under `type W<T> = String` names a pair its spelling does not
+        # (#1525).
+        if self._type_of(ref) is None:
+            raise CodegenInvariantError(
+                "a slot reference the check did not type", ref)
+        if self._expr_width(ref) == "i32_pair":
             return [f"local.get {local_idx}", f"local.get {local_idx + 1}"]
         return [f"local.get {local_idx}"]
 

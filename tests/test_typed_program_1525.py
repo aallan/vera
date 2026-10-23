@@ -626,8 +626,16 @@ FIXED_BY_THE_TYPED_PROGRAM = frozenset({
 #: `apply_fn`'s closure is the function type the checker gave it, and the
 #: name a value's layout, conversion and equality are keyed by is its
 #: checked type's (an element's, a key's, a value's, a scrutinee's, an
-#: operand's of `==`, a `show` argument's, an interpolated part's).
+#: operand's of `==`, a `show` argument's, an interpolated part's).  A
+#: value declared at a type the program writes (a `let`, a parameter, a
+#: binder, a cell) is laid out by the type that resolves to, a
+#: parameterised alias's target under its arguments, and a sub-pattern's
+#: field by the type it was matched at, a wildcard's and a literal's
+#: included.
 FIXED_BY_THE_BACKEND_READS = frozenset({
+    "1514_let_through_parameterised_alias",
+    "1514_match_binder",
+    "1514_silent_drop",
     "1516_apply_fn_on_cell_read",
     "1516_apply_fn_on_returned_closure",
     "1555_eq_of_generic_data_calls",
@@ -636,19 +644,25 @@ FIXED_BY_THE_BACKEND_READS = frozenset({
     "1564_index_generic_call_result",
     "1578_match_on_array_fold",
     "1609_integer_match_over_byte_call",
+    "1685_future_cell_loads",
     "1686_map_get_on_cell_read",
     "array_literal_of_closures",
     "constructor_of_array_map_result",
     "eq_of_generic_call_results",
+    "generic_alias_as_let_type",
     "if_of_a_throw_and_a_fold",
     "if_of_two_cell_handlers",
     "index_into_array_literal_as_argument",
     "index_into_generic_array_result",
     "interpolation_converter_from_checker_type",
+    "literal_subpattern_in_constructor_pattern",
     "map_keys_of_an_if",
     "match_on_generic_fold_scrutinee",
     "neg_nat_interpolation",
+    "parameterised_alias_width_let",
+    "parameterised_alias_width_parameter",
     "show_of_generic_builtin_result",
+    "wildcard_subpattern_in_tuple_pattern",
 })
 
 

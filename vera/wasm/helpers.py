@@ -46,6 +46,10 @@ class WasmSlotEnv:
     """
 
     _stacks: dict[str, list[int]] = field(default_factory=dict)
+    #: The checked type of each bound local, by the local (#1525): what a
+    #: binding's width and GC-root-ness are read off, its slot name being
+    #: the type's spelling, which a parameterised alias's has no width for.
+    _types: dict[int, Type] = field(default_factory=dict)
 
     def resolve(self, type_name: str, index: int) -> int | None:
         """Look up @Type.index → WASM local index."""
@@ -55,11 +59,21 @@ class WasmSlotEnv:
             return stack[pos]
         return None
 
-    def push(self, type_name: str, local_idx: int) -> WasmSlotEnv:
-        """Return a new environment with *local_idx* pushed for *type_name*."""
+    def push(self, type_name: str, local_idx: int,
+             ty: Type | None = None) -> WasmSlotEnv:
+        """Return a new environment with *local_idx* pushed for *type_name*,
+        holding a value of the checked type *ty*."""
         new_stacks = {k: list(v) for k, v in self._stacks.items()}
         new_stacks.setdefault(type_name, []).append(local_idx)
-        return WasmSlotEnv(new_stacks)
+        types = self._types
+        if ty is not None:
+            types = {**types, local_idx: ty}
+        return WasmSlotEnv(new_stacks, types)
+
+    def type_at(self, local_idx: int) -> Type | None:
+        """The checked type of the value bound at *local_idx*, or ``None``
+        for a binding pushed with none."""
+        return self._types.get(local_idx)
 
     def bindings_added_since(
         self, older: WasmSlotEnv

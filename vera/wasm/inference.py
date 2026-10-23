@@ -15,16 +15,18 @@ from vera.slots import (
     type_expr_slot_name,
 )
 from vera.types import (
+    NAT,
     AdtType,
     FunctionType,
     RefinedType,
     Type,
     base_type,
+    erases_to_unit,
     value_type_name,
     value_width,
 )
 from vera.types import TypeVar as TypeVariable
-from vera.wasm.helpers import _strip_future, state_type_arg
+from vera.wasm.helpers import _INLINE_I32_TYPES, _strip_future, state_type_arg
 
 #: A node code generation builds after the check (:meth:`InferenceMixin._built`).
 _N = TypeVar("_N", bound=ast.Node)
@@ -164,6 +166,48 @@ class InferenceMixin:
         could not type left a value on the stack of a result-less block
         (#1276, and #1525's line from the program generator)."""
         return self._width_of(self._type_of(expr))
+
+    def _declared_width(self, node: ast.Node) -> str | None:
+        """The WAT value a value declared at *node*, a type expression or a
+        pattern, is held in: the width of the type the checker resolved the
+        type expression to, or the type the pattern matches (#1525).
+        ``"unit"`` for a type that holds nothing (`Unit`, a `Future` of
+        one), which is stored nowhere; ``None`` for a node the check did not
+        type, and for a bare type variable, which only a generic's template
+        declares a value at: nothing calls the template (every call reaches
+        an instance's clone, #1679), and a value with no width drops it, as
+        the variable's spelling did.
+
+        A parameterised alias is its target under its arguments (`Id<Nat>`
+        is a `Nat`, `W<Int>` under `type W<T> = String` a `String`), which a
+        width read off the type's spelling had none for, and so dropped the
+        function, or read as one word where the value is a pair."""
+        ty = self._type_of(node)
+        if ty is None or isinstance(base_type(ty), TypeVariable):
+            return None
+        if erases_to_unit(ty):
+            return "unit"
+        return self._width_of(ty)
+
+    @staticmethod
+    def _is_nat_type(ty: Type | None) -> bool:
+        """Whether *ty*, a refinement read as its base, is `Nat`."""
+        return ty is not None and base_type(ty) == NAT
+
+    def _holds_pointer(self, ty: Type | None) -> bool:
+        """Whether a value of *ty* is held in an ``i32`` that addresses the
+        heap (or names a host handle), so a binding of it is a GC root: a
+        pair's pointer half is one, and so is any other ``i32`` but an
+        inline scalar's (`Bool`, `Byte`), a `Future` of one included."""
+        width = self._width_of(ty)
+        if width == "i32_pair":
+            return True
+        while isinstance(ty, (RefinedType, AdtType)) and (
+                isinstance(ty, RefinedType)
+                or (ty.name == "Future" and len(ty.type_args) == 1
+                    and not self._declares_adt("Future", 1))):
+            ty = ty.base if isinstance(ty, RefinedType) else ty.type_args[0]
+        return width == "i32" and value_type_name(ty) not in _INLINE_I32_TYPES
 
     def _type_name_of(self, expr: ast.Expr) -> str | None:
         """The name of the type the checker gave *expr*
