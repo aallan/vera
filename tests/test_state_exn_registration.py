@@ -1116,12 +1116,14 @@ def _corpus_programs() -> list[Path]:
 def test_every_referenced_state_exn_symbol_is_declared() -> None:
     """The cross-component invariant: registration ⊇ lowering, and TYPED.
 
-    Codegen decides which host-cell imports and exception tags a module
-    declares in one pass (`_scan_body_for_state_handlers` /
-    `_check_state_type`) and which ones it CALLS in another (the handler
-    lowering).  A unit test on either pass cannot see them drift apart; only
-    running both over real programs and comparing can, which is exactly what
-    #1210 was — a family emitted but never declared.
+    Codegen decided which host-cell imports and exception tags a module
+    declares in one pass (the handler walk and the declared-effect gate)
+    and which ones it CALLS in another (the handler lowering).  A unit test
+    on either pass cannot see them drift apart; only running both over real
+    programs and comparing can, which is exactly what #1210 was — a family
+    emitted but never declared.  Since #1744 each emitter records what it
+    calls and the module declares those records, which this sweep holds to
+    the emitted WAT, where the declared set and its types are read.
 
     Two legs, because the name comparison alone is not the invariant.  The
     symbol-set leg catches an UNDECLARED symbol, over every program in the

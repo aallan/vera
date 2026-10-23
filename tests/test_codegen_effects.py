@@ -208,7 +208,9 @@ public fn f(-> @Int)
         assert 'import "vera" "state_put_Int"' in result.wat
 
     def test_multiple_state_types(self) -> None:
-        """Multiple State types emit all imports."""
+        """Multiple State types declare the imports their code calls: a
+        row's cell nothing calls declares none (#1744), and one a
+        postcondition reads is declared beside the one the body writes."""
         source = """\
 public fn f(@Int -> @Unit)
   requires(true) ensures(true) effects(<State<Int>, State<Bool>>)
@@ -220,6 +222,12 @@ public fn f(@Int -> @Unit)
         result = _compile_ok(source)
         assert 'import "vera" "state_get_Int"' in result.wat
         assert 'import "vera" "state_put_Int"' in result.wat
+        assert 'import "vera" "state_get_Bool"' not in result.wat
+        assert len(result.state_types) == 1
+        reads_bool = source.replace(
+            "ensures(true)", "ensures(new(State<Bool>) == old(State<Bool>))")
+        result = _compile_ok(reads_bool)
+        assert 'import "vera" "state_get_Int"' in result.wat
         assert 'import "vera" "state_get_Bool"' in result.wat
         assert 'import "vera" "state_put_Bool"' in result.wat
         assert len(result.state_types) == 2

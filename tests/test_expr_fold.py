@@ -1140,18 +1140,20 @@ def test_a_with_update_is_obligated_against_its_handler_s_cell() -> None:
 
 
 # =====================================================================
-# The pre-scans meet a handler's body before its clauses
+# A handler's body is met before its clauses
 # =====================================================================
 #
-# Code generation's two pre-scans, `_scan_io_ops` and
-# `_scan_expr_for_handlers`, are `fold.walk`, which meets a handler's state,
-# then its body, then its clauses (`fold.ORDER`).  The hand walks met the
-# clauses before the body.  What follows the order: the State and Exn
-# families a module declares, in the order they are first registered; the
-# cell or payload E607 and E612 name, the first unregistrable one the walk
-# meets; and the order E618 is reported in, by the derivation the pre-scans
-# walk each closure's signature with.  E617 is reported where a closure is
-# lowered, which already met the body first.
+# Code generation's handler walk, `_scan_expr_for_handlers`, is `fold.walk`,
+# which meets a handler's state, then its body, then its clauses
+# (`fold.ORDER`).  The hand walks met the clauses before the body.  What
+# follows the order: the cell or payload E607 and E612 name, the first
+# unregistrable one the walk meets, and the order E618 is reported in, by the
+# derivation the walk reads each closure's signature with.  E617 is reported
+# where a closure is lowered, which already met the body first.  The State
+# and Exn families a module declares follow the emitted code (#1744): an
+# `Exn` handler lowers its body before its clause, and a `State` handler's
+# clause is lowered where an operation in its body calls it, so a body's
+# families are declared first there too.
 
 _EXN_STATE_IN_CLAUSE_AND_BODY = """\
 public fn main(@Unit -> @Int)
@@ -1211,10 +1213,10 @@ public fn main(@Unit -> @Int)
 
 def test_a_handler_declares_its_body_families_before_its_clauses() -> None:
     """A handler whose clause and body each hold a handler of a family
-    nothing registered before: the body's family is declared first.  The
+    nothing declared before: the body's family is declared first.  The
     same imports are declared either way; the hand walk declared the
-    clause's first.  The first program is check-green and does not load
-    (issue #1724), which this cell does not ask; the second runs."""
+    clause's first.  The first program is #1744's second member, whose
+    block declares the result its arms leave; both run."""
     for source, families in (
             (_EXN_STATE_IN_CLAUSE_AND_BODY, ["Nat", "Bool"]),
             (_STATE_IN_CLAUSE_AND_BODY, ["Int", "Nat", "Bool"])):
@@ -1222,6 +1224,7 @@ def test_a_handler_declares_its_body_families_before_its_clauses() -> None:
         assert compiled.ok, [d.description for d in compiled.diagnostics]
         declared = re.findall(r'\(import "vera" "state_get_(\w+)"', compiled.wat)
         assert declared == families, declared
+    assert pipeline.run(_EXN_STATE_IN_CLAUSE_AND_BODY, "main").execution.value == 3
     assert pipeline.run(_STATE_IN_CLAUSE_AND_BODY, "main").execution.value == 13
 
 
@@ -1465,61 +1468,61 @@ class TestScanIoOpsPositions:
             "effects(<IO>)", decls)
 
 
-def _handle_expr() -> ast.HandleExpr:
-    """Build a minimal HandleExpr for State<Int>."""
+def _handle_expr(cell: str = "Int") -> ast.HandleExpr:
+    """Build a minimal HandleExpr for State<cell>."""
     return ast.HandleExpr(
         effect=ast.EffectRef(
             name="State",
-            type_args=(ast.NamedType(name="Int", type_args=None),)),
+            type_args=(ast.NamedType(name=cell, type_args=None),)),
         state=None,
         clauses=(),
         body=ast.Block(statements=(), expr=ast.UnitLit()),
     )
 
 
+def _walked(node_of: Callable[[ast.HandleExpr], ast.Node]) -> tuple[
+        list[tuple[CellNames, str]], list[str]]:
+    """What the handler walk does with a handler at one position: the
+    cells it declares with a `State<Int>` handler there (none, #1744), and
+    the cells it refuses with a `State<String>` there (#1210)."""
+    cg = _make_cg()
+    cg._scan_expr_for_handlers(node_of(_handle_expr("Int")))
+    declared = list(cg._state_types)
+    cg._scan_expr_for_handlers(node_of(_handle_expr("String")))
+    refused = [te.name for te, _reason in cg._unregistrable_state_cells
+               if isinstance(te, ast.NamedType)]
+    return declared, refused
+
+
 class TestScanExprForHandlersPositions:
-    """Each sub-expression position is walked, so
-    HandleExprs buried inside are still discovered for type
-    registration."""
+    """Each sub-expression position is walked, so a HandleExpr buried
+    inside is judged: a cell no lowering exists for is refused from every
+    position.  The walk declares nothing: the code that calls a cell
+    declares it (#1744)."""
 
     def test_qualifiedcall_args_recursion(self) -> None:
-        cg = _make_cg()
-        node = ast.QualifiedCall(
-            qualifier="IO", name="print", args=(_handle_expr(),))
-        cg._scan_expr_for_handlers(node)
-        # State<Int> registered
-        assert (CellNames(family="Int", base="Int"), "i64") in cg._state_types
+        assert _walked(lambda h: ast.QualifiedCall(
+            qualifier="IO", name="print", args=(h,))) == ([], ["String"])
 
     def test_indexexpr_recursion(self) -> None:
-        cg = _make_cg()
-        node = ast.IndexExpr(
-            collection=_handle_expr(), index=ast.IntLit(value=0))
-        cg._scan_expr_for_handlers(node)
-        assert (CellNames(family="Int", base="Int"), "i64") in cg._state_types
+        assert _walked(lambda h: ast.IndexExpr(
+            collection=h, index=ast.IntLit(value=0))) == ([], ["String"])
 
     def test_arraylit_recursion(self) -> None:
-        cg = _make_cg()
-        node = ast.ArrayLit(elements=(_handle_expr(),))
-        cg._scan_expr_for_handlers(node)
-        assert (CellNames(family="Int", base="Int"), "i64") in cg._state_types
+        assert _walked(lambda h: ast.ArrayLit(elements=(h,))) == (
+            [], ["String"])
 
     def test_interpolated_string_recursion(self) -> None:
-        cg = _make_cg()
-        node = ast.InterpolatedString(parts=("x: ", _handle_expr()))
-        cg._scan_expr_for_handlers(node)
-        assert (CellNames(family="Int", base="Int"), "i64") in cg._state_types
+        assert _walked(lambda h: ast.InterpolatedString(
+            parts=("x: ", h))) == ([], ["String"])
 
     def test_anonfn_body_recursion(self) -> None:
-        cg = _make_cg()
-        body = ast.Block(statements=(), expr=_handle_expr())
-        node = ast.AnonFn(
+        assert _walked(lambda h: ast.AnonFn(
             params=(),
             return_type=ast.NamedType(name="Unit", type_args=None),
             effect=ast.PureEffect(),
-            body=body,
-        )
-        cg._scan_expr_for_handlers(node)
-        assert (CellNames(family="Int", base="Int"), "i64") in cg._state_types
+            body=ast.Block(statements=(), expr=h),
+        )) == ([], ["String"])
 
 
 class TestInferExprWasmTypeArms:
@@ -1633,8 +1636,10 @@ class TestInferVeraTypeArms:
         assert ctx._infer_vera_type(node) is None
 
 
-# The two pre-scans.  Both are in `vera/codegen/compilability.py`.
-_PRE_SCANS = ("_scan_io_ops", "_scan_expr_for_handlers")
+# The handler walk, in `vera/codegen/compilability.py`: the one pre-scan
+# since `_scan_io_ops`, whose walk reached only what this one reaches, was
+# deleted (#1744).
+_PRE_SCANS = ("_scan_expr_for_handlers",)
 
 
 def _self_calls(path: Path, fn: str) -> set[str]:
@@ -1716,7 +1721,7 @@ class TestBoundaryGuardDerivationIsShared:
             )
 
     def test_the_pre_scan_walks_closure_signatures(self) -> None:
-        """Both walkers reach the closure leg, and it reads the derivation."""
+        """The walk reaches the closure leg, and it reads the derivation."""
         assert "_signature_refinement_predicates" in _self_calls(
             _COMPILABILITY, "_scan_anon_fn_signature")
         for walker in _PRE_SCANS:
@@ -1724,7 +1729,7 @@ class TestBoundaryGuardDerivationIsShared:
                 _COMPILABILITY, walker), (
                 f"`{walker}` no longer walks an AnonFn's SIGNATURE — a "
                 "refined closure formal / return is guarded in the lifted "
-                "body, and nothing else registers what its predicate needs"
+                "body, and nothing else judges a handler its predicate holds"
             )
 
     def test_the_named_entry_point_reads_the_same_derivation(self) -> None:

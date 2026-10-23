@@ -1,8 +1,10 @@
 """Mixin for function compilability checks.
 
 Determines whether a function can be compiled to WASM based on its
-effects, parameter types, and return type.  Also scans function bodies
-for State handler expressions.
+effects, parameter types, and return type, and refuses one whose handler
+names a `State` cell or an `Exn` payload no lowering exists for.  A cell or
+tag is declared by the code that uses it (`_declare_state_cell`,
+`_declare_exn_tag`), never by these checks (#1744).
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ from vera.lowering import (
 )
 from vera.narrowing import MEMORY_EFFECTS
 from vera.monomorphize import mangle_type_name
+from vera.wasm import WasmContext
 from vera.wasm.helpers import CellNames
 
 MAX_CELL_FAMILY_SYMBOL = 4096
@@ -89,24 +92,24 @@ class CompilabilityMixin:
         self, node: ast.AnonFn, scan: Callable[[ast.Node], None],
     ) -> None:
         """Walk the boundary-guard predicates of a closure's SIGNATURE (#1210
-        round 7), shared by both pre-scan walkers.
+        round 7), for the handler walk.
 
-        The walkers descend an `AnonFn`'s BODY because the closure compile
-        pipeline runs no scan of its own on lifted bodies.  Its SIGNATURE is
+        The walk descends an `AnonFn`'s BODY because the closure compile
+        pipeline runs no walk of its own on lifted bodies.  Its SIGNATURE is
         lowered there too: `closures.py` emits a runtime guard for every
-        refined formal and for a refined return, so `fn(@Big -> @Int)` behind
-        an `apply_fn` — with `Big` a refinement whose predicate contains a
-        `handle[State<Nat>]` — emitted `state_push_Nat` against an import
-        nothing declared.  `_signature_refinement_predicates` is the ONE
-        derivation of what those guards check; this walks what it yields.
+        refined formal and for a refined return, so a handler in the
+        predicate of `Big` in `fn(@Big -> @Int)` is lowered in the lifted
+        body, and its cell is judged here.  `_signature_refinement_predicates`
+        is the ONE derivation of what those guards check; this walks what it
+        yields, and the derivation reports E618 once per site.
 
         Cycle-guarded, because a refinement predicate may contain a closure
         whose own formal is refined by the same alias: `type R = { @Int | …
         fn(@R -> @Int) … }` type-checks, and expanding R's predicate reaches
         that closure, whose signature expands R's predicate again.  The stack
         is popped on the way out, so this suppresses only genuine re-entry —
-        a later function meeting the same closure still gets its own
-        registration verdict (and, for the handler walk, its own E607/E612).
+        a later function meeting the same closure still gets its own verdict,
+        its own E607/E612.
         """
         if id(node) in self._anon_sig_scan_stack:
             return
@@ -221,39 +224,40 @@ class CompilabilityMixin:
     def _check_state_type(
         self, decl: ast.FnDecl, eff: ast.EffectRef
     ) -> bool:
-        """Validate a State<T> effect and register its type.
+        """Refuse a State<T> effect whose cell has no lowering (E607).
 
-        Returns True if compilable, False otherwise.
+        Returns True if compilable, False otherwise.  The row declares
+        nothing: the cell is declared by the code that calls it
+        (`_declare_state_cell`), so a function code generation drops
+        declares none (#1744).
         """
         # One type argument: rule 6 (`effect_row_entry_refusal`) is asked
         # first, in `_is_compilable`.
         assert eff.type_args is not None and len(eff.type_args) == 1  # noqa: S101
         type_arg = eff.type_args[0]
-        reason = self._register_state_cell(type_arg)
+        reason = self._state_cell_refusal(type_arg)
         if reason is not None:
             self._warn_unsupported_state_cell(decl, decl.name, reason)
             return False
         return True
 
-    def _register_state_cell(
+    def _state_cell_refusal(
         self, type_arg: ast.TypeExpr,
     ) -> str | None:
-        """Register the `State<type_arg>` host-cell family; False if it has none.
+        """Why `State<type_arg>` has no cell code generation can lower, or
+        ``None`` when it has one.
 
-        The ONE place a State cell's compilability is decided and its family
-        recorded, shared by the declared-effect gate (`_check_state_type`)
-        and the handler walk (`_scan_expr_for_handlers`) — the two paths must
-        accept exactly the same cell types, or a handler discharging the
-        effect inside a `pure` function registers nothing while its lowering
-        emits the calls anyway (#1210: `handle[State<String>]` was
-        check-green invalid WASM).
+        The ONE place a State cell's compilability is decided, shared by the
+        declared-effect gate (`_check_state_type`) and the handler walk
+        (`_scan_expr_for_handlers`) — the two paths must accept exactly the
+        same cell types, or a handler discharging the effect inside a `pure`
+        function lowers calls to a cell no gate refused (#1210:
+        `handle[State<String>]` was check-green invalid WASM).
 
         The import FAMILY is the cell the CHECKER typed (#1209), so every
         alias spelling that resolves to it — scalar (#1205), composite,
-        parameterised — registers ONE family.  `wt` is derived from the
-        RESOLVED type, so registering an unresolved name split the family
-        (`state_put_Count` typed i64) from the name the per-function lowering
-        derives; resolving both keeps them one.
+        parameterised — is ONE family, and the length the symbol cap is held
+        to is the mangled family's.
         """
         wt = self._type_expr_to_wasm_type(type_arg)
         if not state_cell_lowerable(
@@ -269,16 +273,26 @@ class CompilabilityMixin:
             # recording a runtime check for a write inside a function this
             # refusal drops (#1439).
             return UNSUPPORTED_CELL_TYPE
-        cell = CellNames(
-            family=self._family_name_te(type_arg),
-            base=self._family_base_te(type_arg),
-        )
-        oversized = _oversized_family_reason(cell.family)
-        if oversized is not None:
-            return oversized
+        return _oversized_family_reason(self._family_name_te(type_arg))
+
+    def _declare_state_cell(
+        self, family: str, type_arg: ast.TypeExpr,
+    ) -> None:
+        """Declare the cell *family*, which emitted code calls (#1744).
+
+        Each emitter of a cell's call records the cell on its function's
+        context, under the family its calls are named by and the type
+        expression it was written at; the record joins the module's here,
+        at the per-function and the closure merge, as the host imports'
+        does (#735).  The cell's four imports are declared in the order the
+        cells are first used, at the width `wt`, derived from the RESOLVED
+        type, so every alias spelling of one cell is one declaration
+        (#1205), and its representation name `base` beside it (#1218).
+        """
+        cell = CellNames(family=family, base=self._family_base_te(type_arg))
+        wt = self._type_expr_to_wasm_type(type_arg)
         if cell.family and (cell, wt) not in self._state_types:
             self._state_types.append((cell, wt))
-        return None
 
     def _warn_unsupported_state_cell(
         self, node: ast.Node, fn_name: str,
@@ -286,7 +300,7 @@ class CompilabilityMixin:
     ) -> None:
         """The E607 both State-cell paths emit — one wording, one code.
 
-        *reason* selects between the two refusals `_register_state_cell`
+        *reason* selects between the two refusals `_state_cell_refusal`
         can make: the empty :data:`UNSUPPORTED_CELL_TYPE` is the cell type
         with no WASM representation, and a non-empty one is the oversized
         family symbol (#1238 review), which needs to name the length and
@@ -331,15 +345,18 @@ class CompilabilityMixin:
     def _check_exn_type(
         self, decl: ast.FnDecl, eff: ast.EffectRef
     ) -> bool:
-        """Validate an Exn<E> effect and register its type.
+        """Refuse an Exn<E> effect whose payload has no lowering (E612).
 
-        Returns True if compilable, False otherwise.
+        Returns True if compilable, False otherwise.  The row declares
+        nothing: the tag is declared by the code that throws or catches it
+        (`_declare_exn_tag`), so a function code generation drops declares
+        none (#1744).
         """
         # One type argument: rule 6 (`effect_row_entry_refusal`) is asked
         # first, in `_is_compilable`.
         assert eff.type_args is not None and len(eff.type_args) == 1  # noqa: S101
         type_arg = eff.type_args[0]
-        reason = self._register_exn_tag(type_arg)
+        reason = self._exn_tag_refusal(type_arg)
         if reason is not None:
             self._warn_unsupported_exn_tag(decl, decl.name, reason)
             return False
@@ -351,19 +368,19 @@ class CompilabilityMixin:
     ) -> None:
         """The E612 both Exn-tag paths emit — one wording, one code.
 
-        The `_warn_unsupported_state_cell` twin.  Both registration paths
-        (the declared-effect gate and the handler walk) must reach the same
+        The `_warn_unsupported_state_cell` twin.  Both refusing paths (the
+        declared-effect gate and the handler walk) must reach the same
         verdict on the same payload type, or a handler discharging `Exn<E>`
-        inside a `pure` function registers no tag while its lowering emits
-        `throw $exn_E` / `catch $exn_E` regardless — `unknown tag $exn_Unit`
-        at whole-module WAT compilation, from a check-green program (#1210).
+        inside a `pure` function lowers `throw $exn_E` / `catch $exn_E` for a
+        payload no gate refused — `unknown tag $exn_Unit` at whole-module WAT
+        compilation, from a check-green program (#1210).
 
         *reason* selects between the two refusals exactly as the State twin
         does.  The oversized-family one applies here for symmetry rather
         than for the same hazard: a tag name is a WAT-text identifier that
         the encoder resolves to an index, so it never becomes a name string
         and cannot cross the 100,000-byte cap.  Refusing both keeps ONE
-        answer to "is this family emittable?" — the two registration paths
+        answer to "is this family emittable?" — the two refusing paths
         already have to agree (#1210), and a rule that held for State and
         not for Exn is the shape of that bug.
         """
@@ -400,21 +417,15 @@ class CompilabilityMixin:
             error_code="E612",
         )
 
-    def _register_exn_tag(self, type_arg: ast.TypeExpr) -> str | None:
-        """Register the `Exn<type_arg>` WASM tag; False if it has none.
+    def _exn_tag_refusal(self, type_arg: ast.TypeExpr) -> str | None:
+        """Why `Exn<type_arg>` has no tag code generation can lower, or
+        ``None`` when it has one.
 
-        The State twin (`_register_state_cell`): one derivation shared by the
-        declared-effect gate and the handler walk, so a tag reached only from
-        a handler nested in a clause body is declared rather than emitted
-        undeclared (#1210).
-
-        The tag FAMILY resolves exactly like the State import family —
-        `Exn<Code>` with `type Code = Int` otherwise declares an i64 tag the
-        i32-typed catch sites of the unresolved-name derivation cannot match,
-        and `Exn<Payload>` with `type Payload = Option<Int>` declares a
-        second tag beside the `Option<Int>` one its throw sites target
-        (#1209).  Unlike a State cell, an `i32_pair` payload IS compilable:
-        the tag takes two i32 params.
+        The State twin (`_state_cell_refusal`): one rule shared by the
+        declared-effect gate and the handler walk, so a payload one of them
+        refuses is never lowered by the other's route (#1210).  Unlike a
+        State cell, an `i32_pair` payload IS compilable: the tag takes two
+        i32 params.
         """
         wt = self._type_expr_to_wasm_type(type_arg)
         if not exn_payload_lowerable(
@@ -423,48 +434,46 @@ class CompilabilityMixin:
             # refuses a payload written in the source (E340); what reaches
             # here is an `Exn<E>` clone instantiated at such a type (#1679).
             return UNSUPPORTED_CELL_TYPE
-        wasm_tag_t = "i32 i32" if wt == "i32_pair" else wt
-        type_name = self._family_name_te(type_arg)
-        oversized = _oversized_family_reason(type_name)
-        if oversized is not None:
-            return oversized
-        if type_name and (type_name, wasm_tag_t) not in self._exn_types:
-            self._exn_types.append((type_name, wasm_tag_t))
-        return None
+        return _oversized_family_reason(self._family_name_te(type_arg))
 
-    def _scan_io_ops(self, node: ast.Node) -> None:
-        """Walk a function body, and each predicate `emit_function` hands it.
+    def _declare_exn_tag(self, family: str, type_arg: ast.TypeExpr) -> None:
+        """Declare the tag *family*, which emitted code throws or catches
+        (#1744).
 
-        The walk registers no host import: each emitter registers the
-        imports it calls, so a module declares what its emitted code calls,
-        and a call the walk reaches that code generation never emits (in an
-        `assume`, or in a function it drops) declares nothing (#735).  What
-        the walk still does is reach every closure, whose signature's
-        boundary-guard predicates `_scan_anon_fn_signature` derives, the
-        derivation that reports E618 (E617 is reported where a guard is
-        emitted).
-
-        `vera.fold.walk` reaches every position a closure can be written
-        in, a destructuring `let`'s value, a module call's arguments and a
-        handler's state, body, clauses and `with` updates among them
-        (#1210), a closure's signature before its body.  The handler walk,
-        `_scan_expr_for_handlers`, which `emit_function` runs first over
-        the same body, contract predicates and signature predicates, walks
-        the same closures through the same derivation, and E618 is reported
-        once for a declaration, so the E618s are that walk's, in its order:
-        nothing this walk reaches is reached by it alone.
+        The State twin (`_declare_state_cell`): each `throw`, each handler's
+        `catch` and each export's boundary records the tag it names, and the
+        record joins the module's at the merges.  The tag FAMILY is the
+        payload the checker typed, so `Exn<Code>` with `type Code = Int` and
+        `Exn<Payload>` with `type Payload = Option<Int>` are one tag with
+        their resolved spelling's (#1209), at the width derived from the
+        RESOLVED type.
         """
-        for found in fold.walk(node):
-            if isinstance(found, ast.AnonFn):
-                self._scan_anon_fn_signature(found, self._scan_io_ops)
+        wt = self._type_expr_to_wasm_type(type_arg)
+        wasm_tag_t = "i32 i32" if wt == "i32_pair" else wt
+        if family and (family, wasm_tag_t) not in self._exn_types:
+            self._exn_types.append((family, wasm_tag_t))
+
+    def _declare_used(self, ctx: WasmContext) -> None:
+        """Declare the cells and tags *ctx*'s emitted code uses, in the
+        order it first used them (#1744): the per-function merge and the
+        closure merge each call this once, beside the host imports' own
+        merge (#735)."""
+        for family, type_arg in ctx._cells_used.items():
+            self._declare_state_cell(family, type_arg)
+        for family, type_arg in ctx._tags_used.items():
+            self._declare_exn_tag(family, type_arg)
 
     def _scan_body_for_state_handlers(
         self, node: ast.Node, decl: ast.FnDecl | None = None,
     ) -> bool:
-        """Walk a function registering every handler's State/Exn family.
+        """Walk a function judging every handler's State/Exn cell.
 
         The ENTRY POINT for the handler walk — ``_scan_expr_for_handlers``
-        does the recursion, this owns the per-function verdict.
+        does the recursion, this owns the per-function verdict.  The walk
+        declares nothing (#1744): a cell or tag is declared by the code that
+        uses it, so a handler in a function code generation drops declares
+        none.  What it decides is what nothing emitted can: whether the
+        function is refused before any of it is emitted.
 
         Covers the body, every contract predicate (``requires`` / ``ensures``
         / ``decreases``) which ``contract_exprs`` enumerates, AND every
@@ -477,9 +486,7 @@ class CompilabilityMixin:
         ``requires`` predicate (#1210 round 2), in a parameter type's
         ``{ @Int | … }`` refinement (round 5), in a tuple COMPONENT's
         refinement, or in a closure formal's (round 7) emits ``call
-        $vera.state_push_Nat`` — the body-only walk registered nothing for it
-        and the module failed to compile with ``unknown func``, from a
-        check-green, verify-clean program.
+        $vera.state_push_Nat``, so its cell is judged with the body's.
 
         Returns ``False`` when a ``handle[State<T>]`` / ``handle[Exn<E>]``
         reached from *node* names a cell or payload type the backend cannot
@@ -517,67 +524,60 @@ class CompilabilityMixin:
             return False
         return True
 
-    def _register_scanned_handler(self, node: ast.HandleExpr) -> None:
-        """Register the State/Exn family of one ``handle`` expression.
+    def _judge_scanned_handler(self, node: ast.HandleExpr) -> None:
+        """Judge the State/Exn cell of one ``handle`` expression.
 
-        Shares `_register_state_cell` / `_register_exn_tag` with the
-        declared-effect gate, so both registration paths key ONE family
-        (#1209) and accept exactly one set of cell types (#1210) — a handler
-        declared in a body must not register an import its own lowering never
-        calls, nor emit calls to one it never registered.
-
-        The two arms are symmetric on purpose: each records the type it could
-        NOT register so the entry point can emit the declared-effect gate's
-        own diagnostic and drop the function.  The Exn arm used to discard the
-        verdict, so `handle[Exn<Unit>]` in a `pure` function registered no tag
-        and still compiled — `unknown tag $exn_Unit` at WAT, where the
+        Shares `_state_cell_refusal` / `_exn_tag_refusal` with the
+        declared-effect gate, so both paths accept exactly one set of cell
+        types (#1210).  The two arms are symmetric on purpose: each records
+        the type it refuses so the entry point can emit the declared-effect
+        gate's own diagnostic and drop the function.  The Exn arm used to
+        discard the verdict, so `handle[Exn<Unit>]` in a `pure` function
+        still compiled — `unknown tag $exn_Unit` at WAT, where the
         declared-row twin was a clean E612 function drop.
         """
         if not isinstance(node.effect, ast.EffectRef):
             return
         if not node.effect.type_args or len(node.effect.type_args) != 1:
-            # Arity is the checker's E337; nothing to register either way.
+            # Arity is the checker's E337; nothing to judge either way.
             return
         type_arg = node.effect.type_args[0]
         if node.effect.name == "State":
-            reason = self._register_state_cell(type_arg)
+            reason = self._state_cell_refusal(type_arg)
             if reason is not None:
                 self._unregistrable_state_cells.append((type_arg, reason))
         elif node.effect.name == "Exn":
-            reason = self._register_exn_tag(type_arg)
+            reason = self._exn_tag_refusal(type_arg)
             if reason is not None:
                 self._unregistrable_exn_tags.append((type_arg, reason))
 
     def _scan_expr_for_handlers(self, node: ast.Node) -> None:
-        """Register the State/Exn family of every handler under *node*, and
-        walk every closure's signature.
+        """Judge the State/Exn cell of every handler under *node*, and walk
+        every closure's signature.
 
         `vera.fold.walk` reaches every position a handler can be written
         in: a handler's own state, body, clauses and `with` updates, which
-        the walk once descended the body of alone, so a family reached only
-        from the other three was never registered while the lowering
-        emitted its calls (`unknown func $vera.state_push_Nat` from a
-        check-green program, #1210); a destructuring `let`'s value; a
-        module call's arguments, which are this module's expressions
-        however the callee is registered; an assertion, an assumption and a
-        quantifier, since a handler is an ordinary expression and is lowered
-        there; and a closure's body, since the closure compile pipeline runs
-        no scan of its own on a lifted body.  A closure's SIGNATURE is
-        lowered in that body too (#1210 round 7: its refined formals and
-        return are guarded there), so `_scan_anon_fn_signature` walks the
-        predicates `_signature_refinement_predicates` derives for it, before
-        its body.
+        the walk once descended the body of alone, so a cell reached only
+        from the other three was never judged while the lowering emitted
+        its calls (#1210); a destructuring `let`'s value; a module call's
+        arguments, which are this module's expressions however the callee is
+        registered; an assertion, an assumption and a quantifier, since a
+        handler is an ordinary expression and is lowered there; and a
+        closure's body, since the closure compile pipeline runs no walk of
+        its own on a lifted body.  A closure's SIGNATURE is lowered in that
+        body too (#1210 round 7: its refined formals and return are guarded
+        there), so `_scan_anon_fn_signature` walks the predicates
+        `_signature_refinement_predicates` derives for it, before its body.
 
-        A handler registers its family where the walk meets it, in the
-        fold's order, a handler's body before its clauses: the families are
-        declared in that order, of the cells or payloads the backend cannot
-        compile the one E607 or E612 names is the first the walk meets, and
-        a closure's E618 is reported where the walk meets the closure, the
-        order the lowering reports E617 in.
+        A handler is judged where the walk meets it, in the fold's order, a
+        handler's body before its clauses: of the cells or payloads the
+        backend cannot compile, the one E607 or E612 names is the first the
+        walk meets, and a closure's E618 is reported where the walk meets
+        the closure, the order the lowering reports E617 in.
         """
         for found in fold.walk(node):
             if isinstance(found, ast.HandleExpr):
-                self._register_scanned_handler(found)
+                self._judge_scanned_handler(found)
             elif isinstance(found, ast.AnonFn):
                 self._scan_anon_fn_signature(
                     found, self._scan_expr_for_handlers)

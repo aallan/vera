@@ -482,6 +482,25 @@ public fn main(@Unit -> @Int)
 }
 """
 
+#: The same cell under a handler whose body never reads the closure, which
+#: compiles: its push, put and pop call the cell, which is declared.
+_BARE_FN_CELL_KEPT = """\
+type F = fn(Int -> Int) effects(pure);
+
+public fn probe(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[State<F>](@F = fn(@Int -> @Int) effects(pure) { @Int.0 + 1 }) {
+    get(@Unit) -> { resume(@F.0) },
+    put(@F) -> { resume(()) }
+  } in {
+    41
+  }
+}
+"""
+
 
 def test_bare_fn_type_cell_still_takes_the_fallback_and_is_refused(
     tmp_path: Path,
@@ -499,22 +518,26 @@ def test_bare_fn_type_cell_still_takes_the_fallback_and_is_refused(
 
     Inert either way, and this pins that too: the shape is refused
     downstream, the enclosing function dropped loudly (E616 for the closure
-    read, then E602/E620), so the fallback name reaches an import
-    declaration and nothing that calls it.  Splitting it is therefore free,
-    and merging it would be the only thing with a cost.
+    read, then E602/E620), so the module declares no cell for it: a cell
+    is declared by the code that calls it, which is dropped (#1744).  A
+    handler of the same cell whose body never reads the closure compiles,
+    and declares the cell under the fallback's spelling.  Splitting it is
+    therefore free, and merging it would be the only thing with a cost.
 
     Promoted from ``tests/probes/state_handlers/alias_families/
     p7_fn_alias_state_arg.vera``, which asked this question and was deleted
     with the #1219 disposition.
     """
     result = _compile_source(_BARE_FN_CELL, tmp_path)
-    assert _families(result.wat) == {
-        "state_get_F", "state_put_F", "state_push_F", "state_pop_F",
-    }, result.wat[:400]
+    assert _families(result.wat) == set(), result.wat[:400]
     codes = {d.error_code for d in result.diagnostics}
     assert {"E602", "E620"} <= codes, codes
     assert "(func $:probe" not in result.wat
     assert "(func $:main" not in result.wat
+    kept = _compile_source(_BARE_FN_CELL_KEPT, tmp_path, name="kept")
+    assert _families(kept.wat) == {
+        "state_get_F", "state_put_F", "state_push_F", "state_pop_F",
+    }, kept.wat[:400]
 
 
 def test_two_refinements_of_one_base_in_argument_position_stay_apart(

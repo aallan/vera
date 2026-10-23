@@ -15,11 +15,14 @@ from vera.monomorphize import (
     resolve_fn_type_alias,
     substitute_type_vars,
 )
+from vera.skip import CodegenInvariantError
 from vera.slots import (
     bare_call_denotes_user_fn,
     family_fallback_name,
     type_expr_slot_name,
 )
+from vera.typed import type_arg_name
+from vera.types import AdtType, FunctionType, PrimitiveType, base_type
 from vera.wasm.helpers import _strip_future, state_type_arg
 
 #: A built-in data type whose instances take any number of arguments: its
@@ -702,6 +705,37 @@ class InferenceMixin:
         if canonical.name in ("String", "Array"):
             return "i32_pair"
         return self._named_type_to_wasm(canonical.name)
+
+    def _checked_value_wasm_type(self, node: ast.Node) -> str | None:
+        """The WASM type of the value *node* leaves, from the type the
+        checker gave it (#1744): ``None`` for `Unit` and for `Never`, which
+        leave nothing.
+
+        Asked where code generation's own reading of an expression has no
+        answer, a block ending in a handler or an `array_fold` over a
+        closure among them.  The width is the one :meth:`_canonical_wasm_type`
+        reads from the type as a clone's substitution spells it
+        (:func:`vera.typed.type_arg_name`).  A compiled node the check left
+        untyped, or typed with a variable no instantiation bound, is a node
+        no width can be read for.
+        """
+        ty = (self._expr_semantic_types.get(node.node_id)
+              if node.node_id is not None else None)
+        base = base_type(ty) if ty is not None else None
+        if isinstance(base, PrimitiveType):
+            if base.name in ("Unit", "Never"):
+                return None
+            return self._canonical_wasm_type(
+                ast.NamedType(name=base.name, type_args=None))
+        if isinstance(base, FunctionType):
+            return "i32"  # a closure pointer
+        if isinstance(base, AdtType):
+            return self._canonical_wasm_type(
+                Monomorphizer._parse_type_name(type_arg_name(base)))
+        raise CodegenInvariantError(
+            f"code generation reads the type the checker gave this "
+            f"{type(node).__name__}, and it has none it can lower "
+            f"({ty!r})", node)
 
     def _reaches_fn_type(
         self,
