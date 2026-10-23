@@ -6,8 +6,10 @@ See spec/00-introduction.md, Section 0.5 "Diagnostics as Instructions".
 
 from __future__ import annotations
 
+import shlex
 from dataclasses import dataclass
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Optional
 
 from vera.lexical import CommentProblemKind
@@ -161,6 +163,12 @@ class TypeError(VeraError):
 
 class VerifyError(VeraError):
     """A contract verification error."""
+
+    pass
+
+
+class SourceEncodingError(VeraError):
+    """A source file whose bytes do not decode as UTF-8 (E024, #1666)."""
 
     pass
 
@@ -781,6 +789,90 @@ def diagnose_comment_problem(
     )
 
 
+#: The byte-order marks of the encodings a source that is not UTF-8 most
+#: often is, longest first: a UTF-32 mark begins with a UTF-16 one.
+_BYTE_ORDER_MARKS: tuple[tuple[bytes, str], ...] = (
+    (b"\xff\xfe\x00\x00", "UTF-32"),
+    (b"\x00\x00\xfe\xff", "UTF-32"),
+    (b"\xff\xfe", "UTF-16"),
+    (b"\xfe\xff", "UTF-16"),
+)
+
+#: The paths the command line reads stdin through (`vera.cli`'s).
+_STDIN_LABELS = frozenset({"-", "/dev/stdin"})
+
+
+def source_not_utf8(
+    raw: bytes, offset: int, file: Optional[str] = None,
+) -> Diagnostic:
+    """E024: the bytes *raw* of a source file are not UTF-8, and the first
+    byte that does not decode is at *offset* (#1666).
+
+    Located at that byte's line and column, counted as the reader counts
+    them: lines with universal newlines, and characters, not bytes, along
+    the line, since every byte before *offset* decodes.
+    """
+    before = raw[:offset].decode()
+    lines = before.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    line, column = len(lines), len(lines[-1]) + 1
+    description = (
+        f"Source file is not valid UTF-8: the byte 0x{raw[offset]:02X} at "
+        f"offset {offset} (line {line}, column {column}) does not begin a "
+        f"valid UTF-8 sequence."
+    )
+    mark = next((name for bom, name in _BYTE_ORDER_MARKS
+                 if raw.startswith(bom)), None)
+    if mark is not None:
+        description += (
+            f" The file begins with a {mark} byte-order mark: it is {mark}, "
+            f"not UTF-8."
+        )
+        source_line, encoding = "", mark
+    else:
+        start = max(raw[:offset].rfind(b"\n"),
+                    raw[:offset].rfind(b"\r")) + 1
+        ends = [i for i in (raw.find(b"\n", offset), raw.find(b"\r", offset))
+                if i != -1]
+        source_line = raw[start:min([*ends, len(raw)])].decode(
+            errors="replace")
+        encoding = "ISO-8859-1"
+    convert = f"iconv -f {encoding} -t UTF-8"
+    note = "" if mark is not None else (
+        " That command reads the source as Latin-1 (ISO-8859-1); a source in "
+        "another encoding names its own after `-f`. In a string literal, a "
+        "character can also be written as an escape of its code point, such "
+        "as `\\u{E9}` for é."
+    )
+    if file is None or file in _STDIN_LABELS:
+        fix = (
+            f"Convert the source to UTF-8 before `vera` reads it: pipe it "
+            f"through `{convert}`.{note}"
+        )
+    else:
+        name = Path(file).name
+        copy = f"{Path(file).stem}.utf8{Path(file).suffix}"
+        fix = (
+            f"Save the file as UTF-8: in its directory, `{convert} "
+            f"{shlex.quote(name)} > {shlex.quote(copy)}` writes a UTF-8 copy, "
+            f"which then replaces {name}.{note}"
+        )
+    return Diagnostic(
+        description=description,
+        location=SourceLocation(file=file, line=line, column=column),
+        source_line=source_line,
+        rationale=(
+            "Vera source is UTF-8: every command reads the program, and "
+            "each module it imports, as UTF-8. A byte sequence that is not "
+            "UTF-8 names no character, so what the file says is undefined; "
+            "a file saved in another encoding, such as Latin-1 or UTF-16, "
+            "converts to UTF-8 with its text unchanged."
+        ),
+        fix=fix,
+        spec_ref='Chapter 1, Section 1.1 "Source Encoding"',
+        error_code="E024",
+    )
+
+
 # =====================================================================
 # Pattern matching for Lark exceptions
 # =====================================================================
@@ -904,10 +996,11 @@ ERROR_CODES: dict[str, str] = {
     "E011": "Circular import detected",
     "E012": "Cannot resolve import (no file found)",
     "E013": "Error parsing imported module",
-    # E02x — Comments (lexical)
+    # E02x — Lexical: comments, source encoding
     "E020": "Unterminated block comment",
     "E021": "Unterminated annotation comment",
     "E023": "Annotation comments do not nest",
+    "E024": "Source file is not valid UTF-8",
     # E03x — Contract constructs (parse)
     "E030": "old() argument is not an effect reference",
     "E031": "new() argument is not an effect reference",

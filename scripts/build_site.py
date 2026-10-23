@@ -323,6 +323,7 @@ def build_llms_full_txt() -> str:
         "| E010 | Transform errors |",
         "| E011-E013 | Import resolution |",
         "| E020-E023 | Parse: malformed comments (lexical) |",
+        "| E024 | Parse: source file not UTF-8 (lexical) |",
         "| E030-E032 | Parse: contract clauses |",
         "| E040 | Transform: pipe operand |",
         "| E1xx | Type check: core + expressions |",
