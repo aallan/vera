@@ -65,7 +65,7 @@ Monomorphisation runs once, before verify and compile, and every node of every c
 
 Exit criterion: the corpus differential names every mover, the existing matrices and the generator's differentials are green, and the typed program is a required input of `verify` and `compile`: no table parameter is optional and no fallback branch remains.
 
-The debt scheduled beside the stage: [#1744](https://github.com/aallan/vera/issues/1744) falls out of the typed program; [#1490](https://github.com/aallan/vera/issues/1490) is a small fix in its own pull request.
+The debt scheduled beside the stage: [#1744](https://github.com/aallan/vera/issues/1744) falls out of the typed program.
 
 | Change | What |
 |---|---|

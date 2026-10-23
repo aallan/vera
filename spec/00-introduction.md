@@ -72,6 +72,8 @@ Every diagnostic MUST include:
 4. **Fix.** A concrete code example showing the corrected form. This is not a hint; it is a template the model can apply directly.
 5. **Spec reference.** The specification chapter and section that defines the violated rule.
 
+A code's range names the phase that reports it (Section 0.5.3), and two ranges name none. An `E8xx` code reports a program's own failure while it runs, such as a runtime trap. An `E9xx` code reports a refusal of the command line itself rather than of the program, such as a source file that does not exist.
+
 When a diagnostic prints an inferred type it could not fully determine, the unknown component renders as `?` (for example, `Array<?>` or `Map<String, ?>`). This is a rendering marker inside diagnostic text, not the typed-hole expression `?` (§4.17): a typed hole is source syntax the author writes, while the unknown marker appears only where inference lacked the information to name a concrete type.
 
 ### 0.5.2 Example

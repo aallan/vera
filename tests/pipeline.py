@@ -96,7 +96,7 @@ from vera.cli import (
     compile_envelope,
     compile_failure_envelope,
     diagnostics_envelope,
-    no_exports_message,
+    no_exports_refusal,
     run_envelope,
     run_refusal_envelope,
     trap_envelope,
@@ -785,7 +785,8 @@ class Compiled:
         if self.errors:
             return diagnostics_envelope(
                 label, _errors(result.diagnostics), self.warnings)
-        no_exports = no_exports_message(self.parsed.program, result.exports)
+        no_exports = no_exports_refusal(
+            label, self.parsed.program, result.exports)
         if no_exports is not None:
             return compile_failure_envelope(
                 label, no_exports, self.warnings, extra={"exports": []})

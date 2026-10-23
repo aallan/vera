@@ -1270,7 +1270,7 @@ class _Generator:
         for i in range(count):
             self.functions.append(self.function(last=i == count - 1))
         # A generic no call instantiates has no clone to compile: code
-        # generation skips its template (E604), so none is written; nor is
+        # generation skips its template (E600), so none is written; nor is
         # an effect helper no handler calls, which would be proved and
         # never run.  A helper another helper calls goes with its caller,
         # so the pass repeats until nothing more goes.

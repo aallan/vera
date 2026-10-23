@@ -1548,7 +1548,10 @@ def test_no_reconcile_is_refused_where_it_cannot_be_honoured(
     argv: tuple[str, ...], refusal: str,
 ) -> None:
     ran = pipeline.cli(*argv, EXAMPLES_DIR / "absolute_value.vera")
-    assert (ran.returncode, ran.stderr) == (1, f"Error: {refusal}\n")
+    code = "E902" if "not both" in refusal else "E901"
+    assert ran.returncode == 1, ran
+    assert ran.stderr.startswith(f"[{code}] Error at line 0, column 0:\n\n"
+                                 f"  {refusal}\n"), ran.stderr
 
 
 _ECHO = """\

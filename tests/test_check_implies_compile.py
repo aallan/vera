@@ -1545,19 +1545,19 @@ KNOWN_CHECK_GREEN_REFUSALS: dict[str, tuple[tuple[str, ...], str]] = {
         "spec §4.17 makes that the contract of `?`",
     ),
     "tests/conformance/ch08_ambiguous_import_lib_bool.vera": (
-        ("E604",), _UNINSTANTIATED_GENERIC),
+        ("E600",), _UNINSTANTIATED_GENERIC),
     "tests/conformance/ch08_ambiguous_import_lib_int.vera": (
-        ("E604",), _UNINSTANTIATED_GENERIC),
+        ("E600",), _UNINSTANTIATED_GENERIC),
     "tests/conformance/ch08_cross_module_generic_lib.vera": (
-        ("E604",), _UNINSTANTIATED_GENERIC),
+        ("E600",), _UNINSTANTIATED_GENERIC),
     "tests/conformance/ch08_module_generic_diamond_base.vera": (
-        ("E604",), _UNINSTANTIATED_GENERIC),
+        ("E600",), _UNINSTANTIATED_GENERIC),
     "tests/probes/state_handlers/checker_gates/e533_uninstantiated.vera": (
-        ("E604",), _UNINSTANTIATED_GENERIC),
+        ("E600",), _UNINSTANTIATED_GENERIC),
     "tests/probes/state_handlers/checker_gates/e533lib.vera": (
-        ("E604",), _UNINSTANTIATED_GENERIC),
+        ("E600",), _UNINSTANTIATED_GENERIC),
     "tests/probes/state_handlers/checker_gates/loclib.vera": (
-        ("E604",), _UNINSTANTIATED_GENERIC),
+        ("E600",), _UNINSTANTIATED_GENERIC),
     "tests/probes/state_handlers/old_state/p15_old_state_nested_alias.vera": (
         ("E602", "E602", "missing-export", "missing-export"),
         "a `let` of a parameterised alias (`let @Id<Nat>`) has no WASM "
@@ -2052,7 +2052,7 @@ _PRELUDE_OUTERS: dict[str, tuple[str, int]] = {
 
 #: The user generics a cell declares beside its expression, each only where
 #: the expression calls it (an entry file's generic that nothing instantiates
-#: is its own E604): a producer per head, an identity (its variable bound
+#: is its own E600): a producer per head, an identity (its variable bound
 #: DIRECTLY by the nested call), and an unwrap per head (``E`` bound only
 #: through ``Result<T, E>``).
 _USER_GENERICS: dict[str, str] = {
@@ -2448,7 +2448,7 @@ class AtTypeCell:
     def files(self) -> dict[str, str]:
         imports = "import gl;\n\n" if "gl::" in self.generic else ""
         library = {"gl.vera": _GL} if imports else {}
-        # An entry file's generic nothing instantiates is its own E604, so
+        # An entry file's generic nothing instantiates is its own E600, so
         # `idg` is declared only where the nesting calls it.
         idg = _USER_GENERICS["idg"] if self.nested else ""
         body = (_SHAPE_DECLS + idg + "public fn probe(@Unit -> @Int)\n" + _NC

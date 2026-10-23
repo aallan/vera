@@ -812,7 +812,7 @@ def test_qualified_call_argument_names_its_result_type() -> None:
     rewrite — which has its own gap here, `QualifiedCall` being one of the two
     shapes its walker deliberately declines — still fails to reference it.
     Measured: removing only the rewrite's fallback leaves the clone in the WAT
-    and drops `main` with [E604]/[E620], which a clone-only assertion reads as
+    and drops `main` with [E600]/[E620], which a clone-only assertion reads as
     success.
     """
     from tests.codegen_helpers import wat_calls
