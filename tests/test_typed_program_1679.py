@@ -1011,11 +1011,13 @@ _COUNT_IF = _fn("private forall<T> fn count_if(@Array<T>, "
 _SAME_AT = _fn("private forall<T where Eq<T>> fn same(@T, @T -> @Bool)",
                "@T.1 == @T.0") + "\n"
 _EMPTY = _fn("private forall<T> fn empty(@Unit -> @Option<T>)", "None") + "\n"
-_WRAPPED_SAME = _fn(
-    "private forall<T where Eq<T>> fn wrapped_same(@T, @T -> @Bool)",
-    "same(Some(@T.1), Some(@T.0))") + "\n"
 _M_PICK_FIRST = "module m;\n\n" + _PICK_FIRST.replace("private", "public")
 _TWIN_DATA = "private data Twin<T> {\n  MkTwin(Array<T>, Array<T>)\n}\n\n"
+_NOTHING = _fn("private forall<T> fn nothing(@Unit -> @Option<T>)",
+               "None") + "\n"
+_IS_NONE = _fn("private forall<T where Eq<T>> fn is_none(@Option<T> -> @Bool)",
+               "match @Option<T>.0 {\n    None -> true,\n"
+               "    Some(@T) -> @T.0 == @T.0\n  }") + "\n"
 _SECOND_HEAD = _fn(
     "private forall<T> fn second_head(@Twin<T> -> @Option<T>)",
     "match @Twin<T>.0 {\n    MkTwin(@Array<T>, @Array<T>) -> "
@@ -1096,11 +1098,7 @@ BUILT: dict[str, Built] = {
             '    Some(@Int) -> IO.print("\\(@Int.0)\\n"),\n'
             '    None -> IO.print("none\\n")\n  }', "<IO>")},
         "second_head$Int", "5000000000\n"),
-    # A type variable spelled as one of the callee's: the caller's own, and
-    # one a nested call leaves open.
-    "a_callers_variable_spelled_as_the_callees": Built(
-        {"main.vera": _SAME_AT + _WRAPPED_SAME + _prints("wrapped_same(7, 7)")},
-        "same$Option_LInt_R", "true\n"),
+    # A variable a nested call leaves open, in a body that is not generic.
     "a_variable_a_nested_call_leaves_open": Built(
         {"main.vera": _SAME_AT + _EMPTY
          + _prints("same(empty(()), empty(()))")},
@@ -1108,14 +1106,76 @@ BUILT: dict[str, Built] = {
     "a_variable_a_nested_call_leaves_open_fixed_beside_it": Built(
         {"main.vera": _SAME_AT + _EMPTY + _prints("same(empty(()), Some(3))")},
         "same$Option_LInt_R", "false\n"),
-    # Kept as itself, the open variable met the caller's own beside it as
-    # two different variables: a false E205 conflict.
-    "a_variable_a_nested_call_leaves_open_beside_the_callers_own": Built(
-        {"main.vera": _SAME_AT + _EMPTY + _fn(
-            "private forall<U where Eq<U>> fn h(@U -> @Bool)",
-            "same(empty(()), Some(@U.0))") + "\n" + _prints("h(3)")},
-        "same$Option_LInt_R", "false\n"),
 }
+
+
+# A type variable in an argument's type is the enclosing function's,
+# whatever its name, and a variable a nested call leaves open is nobody's: a
+# hole made where the nested call's type forms.  Each case is written with
+# the caller's variable spelled `T`, as the callees spell theirs, and `U`,
+# and the verdict, the clone and the output are the same under both (PR
+# #1791 review).
+_FN1_DATA = "private data Fn1 {\n  MkFn1(fn(Int -> Int) effects(pure))\n}\n\n"
+_ORD_NONE = _fn("private forall<T where Ord<T>> fn ord_none("
+                "@Option<T>, @Option<T> -> @Bool)", "true") + "\n"
+
+
+def _caller(head: str, body: str) -> str:
+    return _fn(f"private forall<{head}> fn caller(@{{V}} -> @Bool)", body) + "\n"
+
+
+#: name -> (source, its caller's variable written `{V}`; the clone the call
+#: runs against, or None; what main prints, or the code the check refuses
+#: it with).
+NAME_RULE: dict[str, tuple[str, str | None, str]] = {
+    "the_callers_variable_passed_on": (
+        _SAME_AT + _caller("{V} where Eq<{V}>",
+                           "same(Some(@{V}.0), Some(@{V}.0))")
+        + _prints("caller(7)"), "same$Option_LInt_R", "true\n"),
+    "an_open_variable_into_an_eq_callee": (
+        _FN1_DATA + _EMPTY + _SAME_AT + _caller(
+            "{V}", "same(empty(()), empty(()))")
+        + _prints("caller(MkFn1(fn(@Int -> @Int) effects(pure) { @Int.0 }))"),
+        "same$Option_LBool_R", "true\n"),
+    "an_open_variable_fixed_beside_it": (
+        _EMPTY + _SAME_AT + _caller("{V}", "same(empty(()), Some(3))")
+        + _prints("caller(5)"), "same$Option_LInt_R", "false\n"),
+    "an_open_variable_beside_the_callers_own": (
+        _EMPTY + _SAME_AT + _caller("{V} where Eq<{V}>",
+                                    "same(empty(()), Some(@{V}.0))")
+        + _prints("caller(3)"), "same$Option_LInt_R", "false\n"),
+    "an_open_variable_into_a_constrained_callee": (
+        _NOTHING + _IS_NONE + _caller("{V}", "is_none(nothing(()))")
+        + _prints("caller([1])"), "is_none$Bool", "true\n"),
+    # Refused under both spellings, as 506d2161 refused both: `ord_none` is
+    # at the phantom `Bool`, which does not support `Ord`.
+    "an_open_variable_into_an_ord_callee": (
+        _EMPTY + _ORD_NONE + _caller("{V} where Ord<{V}>",
+                                     "ord_none(empty(()), empty(()))")
+        + _prints("caller(5)"), None, "E613"),
+}
+
+
+@pytest.mark.parametrize("spelling", ["T", "U"])
+@pytest.mark.parametrize("name", sorted(NAME_RULE))
+def test_a_callers_variable_is_its_own_whatever_its_name(
+        name: str, spelling: str, tmp_path: Path) -> None:
+    template, clone, outcome = NAME_RULE[name]
+    source = template.replace("{V}", spelling)
+    path = pipeline.write_tree(tmp_path, {"main.vera": source})
+    checked = pipeline.check(path)
+    if clone is None:
+        assert [d.error_code for d in checked.errors] == [outcome], [
+            d.format() for d in checked.diagnostics]
+        return
+    assert checked.ok, [d.format() for d in checked.diagnostics]
+    assert _unknown_records(checked) == []
+    wat = pipeline.compile(path).result.wat
+    names = set(re.findall(r"(?m)^\s*\(func \$:?([^\s()]+)", wat))
+    assert clone in names, sorted(n for n in names if "$" in n)
+    ran = pipeline.run(path, "main")
+    assert ran.ok, (ran.stderr, ran.trap)
+    assert ran.stdout == outcome
 
 
 @pytest.mark.parametrize("name", sorted(BUILT))
@@ -1227,6 +1287,32 @@ def test_each_growing_calls_fix_applied_checks_clean(
     assert after.ok, [d.format() for d in after.diagnostics]
 
 
+def test_a_growing_call_in_a_where_helper_names_the_helper(
+        tmp_path: Path) -> None:
+    """The message names the function whose body holds the growing call,
+    a `where` helper of the generic, not the generic (PR #1791 review),
+    and its fix applied checks clean."""
+    source = (
+        "private forall<T> fn gw(@T, @Nat -> @Int)\n" + _REC_C
+        + "{\n  if @Nat.0 == 0 then {\n    0\n  } else {\n"
+        "    helper(@T.0, @Nat.0 - 1)\n  }\n}\nwhere {\n"
+        "  fn helper(@T, @Nat -> @Int)\n    requires(true)\n"
+        "    ensures(true)\n    decreases(@Nat.0)\n    effects(pure)\n"
+        "  {\n    gw(Some(@T.0), @Nat.0)\n  }\n}\n\n"
+        + _fn("public fn main(@Unit -> @Int)", "gw(1, 2)"))
+    checked = pipeline.check(pipeline.write_tree(tmp_path / "before",
+                                                 {"main.vera": source}))
+    (found,) = [d for d in checked.errors if d.error_code == "E139"]
+    assert (found.location.line, found.location.column) == _position(
+        source, "gw(Some(@T.0), @Nat.0)")
+    assert "The call 'gw(Some(@T.0), @Nat.0)' in 'helper'" in found.description
+    match = _REPLACE.search(found.fix)
+    assert match is not None, found.fix
+    after = pipeline.check(pipeline.write_tree(
+        tmp_path / "after", {"main.vera": source.replace(*match.groups())}))
+    assert after.ok, [d.format() for d in after.diagnostics]
+
+
 #: Cycles whose instances stay finite: a variable passed on unchanged, and
 #: a call at a type that holds none of the cycle's variables.
 FINITE_CYCLES: dict[str, tuple[str, str]] = {
@@ -1249,6 +1335,24 @@ def test_a_cycle_whose_instances_stay_finite_runs(
     source, value = FINITE_CYCLES[name]
     path = pipeline.write_tree(tmp_path, {"main.vera": source})
     _runs("main", value=int(value))(path)
+
+
+def test_a_refinement_of_a_refinement_of_the_variable_is_not_growth(
+        tmp_path: Path) -> None:
+    """A self-call passing the variable on through two refinement aliases
+    passes it unchanged, as an instance is built at it (every refinement
+    layer stripped), so the check accepts it (PR #1791 review).  Code
+    generation then drops `spin`'s clone for its `let` at a generic
+    refinement alias, at 506d2161 too, a #1525 line."""
+    source = ("type Loose<T> = { @T | true };\n"
+              "type Looser<T> = { @Loose<T> | true };\n\n"
+              + _rec("private forall<T> fn spin(@T, @Nat -> @Int)", "0",
+                     "let @Looser<T> = @T.0;\n"
+                     "    spin(@Looser<T>.0, @Nat.0 - 1)")
+              + _fn("public fn main(@Unit -> @Int)", "spin(5, 3)"))
+    checked = pipeline.check(pipeline.write_tree(tmp_path,
+                                                 {"main.vera": source}))
+    assert checked.ok, [d.format() for d in checked.diagnostics]
 
 
 # A variable only the result mentions is fixed by no argument, so the

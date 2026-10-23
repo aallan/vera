@@ -581,13 +581,13 @@ Error at line 3, column 3:
 
 ### Compilation pipeline
 
-`compile()` in `codegen/api.py` takes a `Program` AST and optional `VerifyResult`, and produces a `CompileResult` containing WAT text, WASM bytes, export names, and diagnostics.
+`compile()` in `codegen/api.py` takes the typed program a clean check built (`vera.typed.build(...)`), the source text and the file name, and produces a `CompileResult` containing WAT text, WASM bytes, export names, and diagnostics.
 
 ```
-Program AST → CodeGenerator._register_functions()  (pass 1)
-            → CodeGenerator._compile_functions()   (pass 2)
-            → WAT module text
-            → wasmtime.wat2wasm() → WASM bytes
+TypedProgram → CodeGenerator._register_functions()  (pass 1)
+             → CodeGenerator._compile_functions()   (pass 2)
+             → WAT module text
+             → wasmtime.wat2wasm() → WASM bytes
 ```
 
 The two-pass architecture mirrors the type checker: pass 1 registers all function signatures so forward references and mutual recursion work, pass 2 compiles bodies.

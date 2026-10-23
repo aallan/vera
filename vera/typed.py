@@ -28,6 +28,7 @@ from vera.types import (
     Type,
     TypeVar,
     UnknownType,
+    base_type,
     strip_builtin_typevar_marker,
     substitute,
 )
@@ -365,7 +366,7 @@ def _flows(templates: Mapping[str, Template],
                 ty = record.mapping.get(names.get(var, ""))
                 if ty is None:
                     continue
-                bare = ty.base if isinstance(ty, RefinedType) else ty
+                bare = base_type(ty)  # every refinement layer
                 for used in dict.fromkeys(_variables_in(ty)):
                     owner = declarers.get(used)
                     if owner is None:
@@ -1149,6 +1150,17 @@ def _part_typed(expr: ast.Expr, ty: TypeVar,
     return None
 
 
+def _holder(decl: ast.FnDecl, call: ast.Node) -> ast.FnDecl:
+    """The function whose own body holds *call*: *decl*, or the ``where``
+    helper of it, at any depth, that the call is written in."""
+    for helper in decl.where_fns or ():
+        found = _holder(helper, call)
+        if found is not helper or any(
+                node is call for node in _walk(replace_where(helper))):
+            return found
+    return decl
+
+
 def _growth_diagnostic(growth: Growth, templates: Mapping[str, Template],
                        types: Mapping[int, Type], file: str | None,
                        source: str) -> Diagnostic:
@@ -1159,9 +1171,10 @@ def _growth_diagnostic(growth: Growth, templates: Mapping[str, Template],
     text = (_source_text(source, flow.call.span)
             or _bare(flow.record.callee))
     at = "?" if ty is None else _type_text(ty)
+    holder = _holder(templates[flow.caller].decl, flow.call)
     return _diagnostic(
         "E139", file, source, flow.call,
-        f"The call '{text}' in '{_bare(flow.caller)}' instantiates "
+        f"The call '{text}' in '{_bare(holder.name)}' instantiates "
         f"'{_bare(callee.name)}' at {flow.target[1]} = {at}, and the cycle "
         f"of calls it closes grows that type at every turn: "
         f"{_growth_chain(growth, templates)} -> ..., so no finite set of "

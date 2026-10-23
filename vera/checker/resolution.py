@@ -1046,7 +1046,6 @@ class ResolutionMixin:
         result_type: Type | None = None,
         expected: Type | None = None,
         conflicts: set[str] | None = None,
-        callee_vars_opaque: bool = True,
     ) -> tuple[dict[str, Type], dict[str, Type]]:
         """Infer a call's type arguments, a literal taking its type from
         its context (spec §4.2; #1541, #1565).
@@ -1068,21 +1067,14 @@ class ResolutionMixin:
         parts of its result a literal decided and an enclosing call can
         treat them as literal in turn.
 
-        *callee_vars_opaque* is the function door's rule that a type
-        variable of the callee's own, left unresolved in an argument's type
-        by a nested call, fixes nothing; the constructor door never applied
-        it.  What an argument's type does not fix is a hole
-        (:meth:`_as_holes`), never a binding, so the instantiation the check
-        records holds what the arguments fix and nothing else (#1679, PR
-        #1791 review).
+        What an argument's type does not fix is a hole, never a binding
+        (:meth:`_as_holes`), so the instantiation the check records holds
+        what the arguments fix and nothing else, and a type variable in an
+        argument's type is the enclosing function's, whatever its name: a
+        variable a nested call left unresolved reaches here as a hole
+        already, made one where the nested call's type is formed
+        (``_check_fn_call_with_info``; #1679, PR #1791 review).
         """
-        # A variable of the function the call is written in is that
-        # function's, however it is spelled: only one no enclosing `forall`
-        # binds is the callee's own, leaked from a nested call.
-        own: frozenset[str] = (
-            frozenset(forall_vars) - frozenset(self.env.type_params)
-            if callee_vars_opaque else frozenset())
-        forall_set: set[str] | None = set(own) if own else None
         mapping: dict[str, Type] = {}
         for param_ty, arg, arg_ty in zip(param_types, args, arg_types):
             if arg_ty is None or isinstance(arg_ty, UnknownType):
@@ -1090,7 +1082,7 @@ class ResolutionMixin:
             soft_ty = self._literal_soft_type(arg, arg_ty)
             if soft_ty is None:
                 continue
-            self._unify_for_inference(param_ty, self._as_holes(soft_ty, own),
+            self._unify_for_inference(param_ty, self._as_holes(soft_ty),
                                       mapping, None, conflicts)
         holed = [tv for tv, b in mapping.items() if contains_literal_hole(b)]
         if not holed:
@@ -1098,8 +1090,7 @@ class ResolutionMixin:
         if (expected is not None and result_type is not None
                 and not isinstance(expected, UnknownType)):
             from_expected: dict[str, Type] = {}
-            self._unify_for_inference(result_type, expected, from_expected,
-                                      forall_set)
+            self._unify_for_inference(result_type, expected, from_expected)
             for tv in holed:
                 mapping[tv] = fill_literal_holes(
                     mapping[tv], from_expected.get(tv))
@@ -1108,26 +1099,22 @@ class ResolutionMixin:
             mapping[tv] = default_literal_holes(mapping[tv])
         return mapping, soft
 
-    def _as_holes(self, ty: Type, own: frozenset[str]) -> Type:
-        """*ty*, an argument's type, with each position it does not fix a
-        hole: an unknown (an empty array literal's element type) and a type
-        variable spelled as one of *own*, the callee's own, which a nested
-        call left unresolved.  A hole is a fresh variable (``$``): a later
-        argument fills it, and one nothing fills is a variable no argument
-        fixes, which no value of the call's arguments holds."""
+    def _as_holes(self, ty: Type) -> Type:
+        """*ty*, an argument's type, with each unknown in it (an empty array
+        literal's element type) a hole: a fresh variable (``$``), which a
+        later argument fills, and which, filled by nothing, is a variable no
+        argument fixes, which no value of the call's arguments holds."""
         if isinstance(ty, UnknownType):
             return self._fresh_typevar("?")
-        if isinstance(ty, TypeVar):
-            return self._fresh_typevar(ty.name) if ty.name in own else ty
         if isinstance(ty, AdtType):
-            return AdtType(ty.name, tuple(self._as_holes(a, own)
+            return AdtType(ty.name, tuple(self._as_holes(a)
                                           for a in ty.type_args))
         if isinstance(ty, FunctionType):
             return FunctionType(
-                tuple(self._as_holes(p, own) for p in ty.params),
-                self._as_holes(ty.return_type, own), ty.effect)
+                tuple(self._as_holes(p) for p in ty.params),
+                self._as_holes(ty.return_type), ty.effect)
         if isinstance(ty, RefinedType):
-            return RefinedType(self._as_holes(ty.base, own), ty.predicate)
+            return RefinedType(self._as_holes(ty.base), ty.predicate)
         return ty
 
     def _infer_type_args(self, forall_vars: tuple[str, ...],

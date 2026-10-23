@@ -766,8 +766,18 @@ class CallsMixin:
             self._record_instantiation(node, fn_info, mapping)
             if mapping:
                 call_effect = substitute_effect(fn_info.effect, dict(mapping))
+            # A variable of the callee's own that no argument fixed leaves
+            # the call as a hole, never under the callee's name, which an
+            # enclosing generic can share and an enclosing call would then
+            # take for the caller's variable (PR #1791 review).  Substituted
+            # with the mapping at once, so a type the mapping gives that
+            # names the caller's own variable is never mistaken for it.
+            open_holes: dict[str, Type] = {
+                tv: self._fresh_typevar(tv) for tv in fn_info.forall_vars
+                if tv not in mapping and BUILTIN_TYPEVAR_MARKER not in tv}
             self._record_literal_soft_result(
-                node, substitute(fn_info.return_type, soft_mapping))
+                node, substitute(fn_info.return_type,
+                                 {**soft_mapping, **open_holes}))
             if conflicts:
                 # #898: two arguments pinned the same type parameter to
                 # different, irreconcilable types (`eq2(MkOk("x"), MkOk(5))`
@@ -869,10 +879,13 @@ class CallsMixin:
                 # `Unit` rather than a leaked `@T`, avoiding a misleading
                 # cascade error on top of the actionable E206.
                 return substitute(return_type, mapping)
+            if not mapping and open_holes:
+                return_type = substitute(return_type, open_holes)
             if mapping:
                 param_types = tuple(
                     substitute(p, mapping) for p in param_types)
-                return_type = substitute(return_type, mapping)
+                return_type = substitute(return_type,
+                                         {**mapping, **open_holes})
                 # #747: the initial synth used expected=None for generic
                 # calls, and an @Int argument flowing into a formal fixed
                 # to @Nat by inference (`pick(@Nat.0, @Int.0)` with
@@ -2706,8 +2719,7 @@ class CallsMixin:
             ci.parent_type_params, ci.field_types, arg_types, args,
             result_type=result_pattern,
             expected=(expected if isinstance(expected, AdtType)
-                      and expected.name == ci.parent_type else None),
-            callee_vars_opaque=False)
+                      and expected.name == ci.parent_type else None))
         if soft_out is not None:
             soft_out.update(soft)
         return mapping
