@@ -488,7 +488,7 @@ jobs:
       - name: Check no doc example redefines a built-in (E151)
         run: python scripts/check_doc_builtin_shadowing.py
 
-      - name: Check no unexpected [E602]/[E604] silent skips (Layer 1 of #626)
+      - name: Check no unexpected [E600]/[E601]/[E602] silent skips (Layer 1 of #626)
         run: python scripts/check_e602_clean.py
 
       - name: Check every diagnostic carries rationale/fix/spec_ref (#682)

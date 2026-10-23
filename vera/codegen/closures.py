@@ -442,8 +442,8 @@ class ClosureLiftingMixin:
                 # #913: a bare type variable (`@T` inside a `forall<T>` body)
                 # is `"unsupported"` here — but it is NOT a codegen bug.  The
                 # generic TEMPLATE is body-compiled to draw its skip-warning
-                # surface (E602/E604/E605), exactly as a template's own bare
-                # `@T` *parameter* draws E604 via `_is_compilable`; only the
+                # surface (E600/E601/E602), exactly as a template's own bare
+                # `@T` *parameter* draws E600 via `_is_compilable`; only the
                 # monomorphized clone (whose closure param is the concrete
                 # type) is ever run.  So drop THIS closure cleanly — a
                 # user-facing skip that returns None, routing through
@@ -926,8 +926,10 @@ class ClosureLiftingMixin:
         # Propagate the host imports the closure's body uses to module level:
         # every family's, as the per-function merge does (#735).  This is
         # their one route: each emitter registers the imports it calls, on
-        # the closure's own `ctx`.
+        # the closure's own `ctx`.  The State cells and Exn tags its body
+        # uses take the same route (#1744).
         self._host_imports_used.update(ctx._host_imports_used)
+        self._declare_used(ctx)
         # #1479: a check inside a lifted closure body raises its signal's
         # flag on the closure ctx; OR it into the module ``self`` so
         # ``_assemble_module`` declares the import (the same propagation the

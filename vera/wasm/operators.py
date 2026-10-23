@@ -12,6 +12,7 @@ from vera.monomorphize import resolve_type_alias
 from vera.types import STRING, TO_STRING_BUILTINS, PrimitiveType
 from vera.skip import AdtEqNotDerivableError, CodegenInvariantError
 from vera.wasm.helpers import (
+    CellNames,
     WasmSlotEnv,
     field_layout,
     state_type_arg,
@@ -1775,6 +1776,10 @@ class OperatorsMixin:
             # cell — the defect, in its purest form.
             raise CodegenInvariantError(
                 f"new(State<{family}>) has no registered state getter", expr)
+        # The read calls the cell, so it records it (#1744).
+        self._use_cell(CellNames(
+            family=family, base=self._state_effect_family_base(expr.effect_ref),
+            type_expr=state_type_arg(expr.effect_ref)))
         return [f"call {call_target}"]
 
     # -----------------------------------------------------------------

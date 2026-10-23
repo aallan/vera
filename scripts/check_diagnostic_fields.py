@@ -18,15 +18,19 @@ if a required field is missing.  It also validates that every present
 (#828) that every literal `error_code` emitted from more than one
 distinct (file, enclosing-function) site has that exact site set
 declared in `KNOWN_MULTI_SITE_ERROR_CODES` — the deterministic half of
-making each code unique per concept; enforcing `error_code` *presence*
-is a tracked follow-up.
+making each code unique per concept.  Every site must also carry an
+`error_code` (#1490): no opt-out waives it, and no site is exempt.  A
+diagnostic built by hand rather than through `Diagnostic` — a dict literal
+with a `severity` key, as the CLI's envelopes were, or a string holding one —
+fails too, bar the sites `HAND_BUILT_EXCEPTIONS` names with their reasons, so
+every diagnostic `vera` reports is one these passes see.
 
 Design — explicit over implicit (DESIGN.md §"Explicitness over
 convenience"; no silently-inferred exemptions):
 
 - **Required by default:** ``rationale``, ``fix``, ``spec_ref`` on every
   site (the three content fields of spec §0.5.1, per #682's acceptance
-  criteria; ``error_code`` enforcement is a tracked follow-up).  A field
+  criteria), and ``error_code`` (item 1, #1490), which nothing waives.  A field
   counts as present if its kwarg is a non-empty string literal, or any
   non-constant expression (a variable / f-string / concatenation
   threading the value through).
@@ -93,9 +97,8 @@ ROOT = Path(__file__).resolve().parent.parent
 # Fields this gate enforces — items 3/4/5 of spec §0.5.1 (rationale, fix,
 # spec_ref), matching issue #682's acceptance criteria.  Description (item 2)
 # is a mandatory dataclass field, always structurally present.  error_code
-# (item 1) is near-universal already; enforcing it — plus the handful of
-# codeless sites and the error_code/registry-name mismatches — is a tracked
-# follow-up, deliberately out of this gate's scope.
+# (item 1) has a pass of its own, `error_code_presence_violations`, because the
+# opt-out and the structural exemptions below waive these three and never it.
 REQUIRED_FIELDS = ("rationale", "fix", "spec_ref")
 
 # Per-call opt-out marker.  Deliberately a dedicated token rather than a
@@ -747,8 +750,8 @@ def spec_ref_violations(paths: Iterable[Path],
 # literal error_code on a diagnostic must exist in vera/errors.py ERROR_CODES.
 # Catches typos and unregistered codes.  It does NOT detect collisions (one
 # registered code reused for two unrelated concepts) — that needs the semantic /
-# structural work tracked in #828.  error_code *presence* stays deferred (#828);
-# this only validates a code that IS present as a literal.
+# structural work tracked in #828.  It validates a code that IS present as a
+# literal; `error_code_presence_violations` below requires one at every site.
 # ---------------------------------------------------------------------------
 
 
@@ -773,11 +776,20 @@ def _load_error_codes(errors_py: Path) -> set[str]:
     return set()
 
 
+#: The diagnostic helpers whose call sites the code passes read: the
+#: ``_error`` / ``_warning`` helpers, and code generation's ``_error_once``,
+#: which forwards its ``error_code`` to ``_error`` (so the code is its
+#: caller's).  ``_error_once`` takes no fix or spec_ref, so the field passes
+#: above, which ask for those, do not read it.
+DIAGNOSTIC_HELPERS = ("_error", "_warning", "_error_once")
+
+
 def _diagnostic_call_sites(
     source: str, filename: str, tree: ast.AST | None = None,
 ) -> Iterator[ast.Call]:
-    """Yield each Diagnostic() / ._error() / ._warning() Call node, skipping the
-    plumbing Diagnostic() construction inside an _error/_warning helper def.
+    """Yield each Diagnostic() Call node and each call of a helper
+    ``DIAGNOSTIC_HELPERS`` names, skipping the plumbing Diagnostic()
+    construction inside an _error/_warning helper def.
 
     Accepts an already-parsed `tree` so a caller that also needs its OWN
     walk over the same source (e.g. mapping each Call's enclosing
@@ -794,12 +806,140 @@ def _diagnostic_call_sites(
         f = n.func
         is_ctor = isinstance(f, ast.Name) and f.id == "Diagnostic"
         is_helper = (isinstance(f, ast.Attribute)
-                     and f.attr in ("_error", "_warning"))
+                     and f.attr in DIAGNOSTIC_HELPERS)
         if not (is_ctor or is_helper):
             continue
         if is_ctor and n in plumbing:
             continue
         yield n
+
+
+# ---------------------------------------------------------------------------
+# error_code presence (#1490).  Spec §0.5.1's first item is a stable code, and
+# `vera errors` lists what each one means, so every diagnostic carries one: a
+# literal code (which the registration pass below holds to ERROR_CODES) or one
+# threaded from the caller.  Unlike rationale, fix and spec_ref, which a
+# fix-less internal site may lack, there is no diagnostic a code does not fit,
+# so neither the per-call opt-out nor the structural exemptions waive it, and
+# no site is exempt.
+# ---------------------------------------------------------------------------
+
+
+def error_code_presence_violations_in_source(
+    source: str, filename: str,
+) -> list[Violation]:
+    """Flag every diagnostic site that carries no ``error_code``."""
+    src_lines = source.splitlines()
+    out: list[Violation] = []
+    for call in _diagnostic_call_sites(source, filename):
+        if _field_present(call, "error_code"):
+            continue
+        target = ("Diagnostic" if isinstance(call.func, ast.Name)
+                  else call.func.attr if isinstance(call.func, ast.Attribute)
+                  else "?")
+        snip = (src_lines[call.lineno - 1]
+                if call.lineno - 1 < len(src_lines) else None)
+        out.append(Violation(filename, call.lineno, target, ["error_code"], snip))
+    return out
+
+
+def error_code_presence_violations(paths: Iterable[Path]) -> list[Violation]:
+    out: list[Violation] = []
+    for p in paths:
+        rel = p.relative_to(ROOT).as_posix() if p.is_absolute() else p.as_posix()
+        out.extend(error_code_presence_violations_in_source(
+            p.read_text(encoding="utf-8"), rel))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Hand-built diagnostics (#1490).  The command line built its JSON
+# diagnostics as dict literals — a file not found, the zero-export refusal,
+# the runtime trap — and no pass above saw one, because each reads only
+# `Diagnostic(...)` constructions and the helpers' calls; none carried a code.
+# So a diagnostic is a `Diagnostic`, and its JSON is what `to_dict()` writes:
+# under vera/, a dict literal with a "severity" key, a `dict(severity=...)`
+# call or a string holding a "severity" JSON key is a violation, except at the
+# sites named here, each with the reason it must stay hand-built.  An entry
+# that names no such site is a violation too, so the list only shrinks.
+# ---------------------------------------------------------------------------
+
+HAND_BUILT_EXCEPTIONS: dict[tuple[str, str], str] = {
+    ("vera/errors.py", "Diagnostic.to_dict"): (
+        "the machinery itself: this dict is every diagnostic's JSON"),
+    ("vera/cli.py", "_internal_error_envelope"): (
+        "the last-resort envelope, for the case where reporting through "
+        "`Diagnostic` is what failed: built from strings that cannot fail "
+        "to serialise, and it carries E699"),
+}
+
+#: A "severity" key as JSON writes it, inside a string literal.
+_JSON_SEVERITY_KEY = re.compile(r'"severity"\s*:')
+
+
+def _hand_built_sites(tree: ast.AST) -> Iterator[ast.AST]:
+    """Each node that builds a diagnostic's JSON by hand: a dict literal with
+    a ``severity`` key, a ``dict(severity=...)`` call, or a string constant
+    (an f-string's literal parts included) holding a ``"severity":`` key."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Dict):
+            if any(isinstance(k, ast.Constant) and k.value == "severity"
+                   for k in node.keys):
+                yield node
+        elif isinstance(node, ast.Call):
+            if (isinstance(node.func, ast.Name) and node.func.id == "dict"
+                    and any(kw.arg == "severity" for kw in node.keywords)):
+                yield node
+        elif (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                and _JSON_SEVERITY_KEY.search(node.value)):
+            yield node
+
+
+def _hand_built_site_names(source: str, filename: str) -> list[tuple[int, str]]:
+    """(line, enclosing qualified name) of each hand-built site in *source*."""
+    tree = ast.parse(source, filename=filename)
+    qualnames = _enclosing_qualified_names(tree)
+    return [(getattr(node, "lineno", 0), qualnames.get(id(node), "<module>"))
+            for node in _hand_built_sites(tree)]
+
+
+def hand_built_diagnostic_violations_in_source(
+    source: str, filename: str,
+) -> list[Violation]:
+    """Flag every hand-built diagnostic outside ``HAND_BUILT_EXCEPTIONS``."""
+    src_lines = source.splitlines()
+    out: list[Violation] = []
+    for line, qualname in _hand_built_site_names(source, filename):
+        if (filename, qualname) in HAND_BUILT_EXCEPTIONS:
+            continue
+        snip = src_lines[line - 1] if 0 < line <= len(src_lines) else None
+        out.append(Violation(
+            filename, line, "hand_built",
+            [f"{qualname} builds a diagnostic by hand, which no pass of "
+             f"this gate reads: build a Diagnostic(...) and write its JSON "
+             f"with to_dict()"], snip))
+    return out
+
+
+def hand_built_diagnostic_violations(paths: Iterable[Path]) -> list[Violation]:
+    """Every hand-built diagnostic in *paths*, and, when *paths* holds the
+    file an exception names, each exception that names no such site."""
+    out: list[Violation] = []
+    live: set[tuple[str, str]] = set()
+    seen: set[str] = set()
+    for p in paths:
+        rel = p.relative_to(ROOT).as_posix() if p.is_absolute() else p.as_posix()
+        source = p.read_text(encoding="utf-8")
+        seen.add(rel)
+        live.update((rel, q) for _, q in _hand_built_site_names(source, rel))
+        out.extend(hand_built_diagnostic_violations_in_source(source, rel))
+    for site in sorted(HAND_BUILT_EXCEPTIONS):
+        if site[0] in seen and site not in live:
+            out.append(Violation(
+                site[0], 0, "hand_built",
+                [f"HAND_BUILT_EXCEPTIONS names {site[0]}::{site[1]}, which "
+                 f"builds no diagnostic by hand: delete the entry"], None))
+    return out
 
 
 def error_code_registration_violations_in_source(
@@ -971,6 +1111,12 @@ KNOWN_MULTI_SITE_ERROR_CODES: dict[str, frozenset[tuple[str, str]]] = {
         ("vera/checker/resolution.py",
          "ResolutionMixin._refuse_polarity_conflict"),
     }),
+    # A type name that names no type: the general report, and a removed
+    # alias (`Float`), whose message names the type it became (#1490).
+    "E136": frozenset({
+        ("vera/checker/resolution.py", "ResolutionMixin._report_unknown_type"),
+        ("vera/checker/resolution.py", "ResolutionMixin._resolve_named_type"),
+    }),
     # Zero-size element type has no WASM representation: the array-literal
     # inferred form and the written Array/Map/Set type-expression form.
     "E135": frozenset({
@@ -1009,6 +1155,28 @@ KNOWN_MULTI_SITE_ERROR_CODES: dict[str, frozenset[tuple[str, str]]] = {
     "E506": frozenset({
         ("vera/verifier.py", "ContractVerifier._report_refined_runtime"),
         ("vera/verifier.py", "ContractVerifier._report_refined_unguarded"),
+    }),
+    # A parameter (E600) or return (E601) type with no WASM representation:
+    # the compilability check that skips the function, and the signature
+    # compile that meets the same type (#1490: the check emitted E604 and
+    # E605 for these two concepts).
+    "E600": frozenset({
+        ("vera/codegen/compilability.py", "CompilabilityMixin._is_compilable"),
+        ("vera/codegen/functions.py", "FunctionCompilationMixin._compile_fn"),
+    }),
+    "E601": frozenset({
+        ("vera/codegen/compilability.py", "CompilabilityMixin._is_compilable"),
+        ("vera/codegen/functions.py", "FunctionCompilationMixin._compile_fn"),
+    }),
+    # A runtime guard the verifier recorded that code generation cannot
+    # emit, refused rather than dropped: a predicate the backend cannot
+    # lower, and a tuple nested past the guard's depth limit, whose refined
+    # components cannot all be reached (an `_error_once` site, which this
+    # gate reads since #1490).
+    "E617": frozenset({
+        ("vera/codegen/contracts.py", "ContractsMixin._emit_refinement_check"),
+        ("vera/codegen/contracts.py",
+         "ContractsMixin._tuple_component_guard_sites"),
     }),
     # Codegen cannot lower this function/closure — skipped, enclosing
     # function dropped.  Every site is this one family (unsupported WASM
@@ -1158,37 +1326,45 @@ def main() -> int:
     presence = check_paths(files)
     validity = spec_ref_violations(files)
     registry = _load_error_codes(ROOT / "vera" / "errors.py")
+    coded = error_code_presence_violations(files)
     codes = error_code_registration_violations(files, registry)
     collisions = error_code_collision_violations(files)
-    violations = presence + validity + codes + collisions
+    hand_built = hand_built_diagnostic_violations(files)
+    violations = presence + validity + coded + codes + collisions + hand_built
     if not violations:
-        print("check_diagnostic_fields: OK — every diagnostic is fully tagged, "
-              "every spec_ref resolves, every error_code is registered, and "
-              "every multi-site error_code is a declared, verified reuse.")
+        print("check_diagnostic_fields: OK — every diagnostic is fully tagged "
+              "and carries an error_code, every spec_ref resolves, every "
+              "error_code is registered, every multi-site error_code is a "
+              "declared, verified reuse, and no diagnostic is built by hand.")
         return 0
     by_file: dict[str, list[Violation]] = {}
     for v in violations:
         by_file.setdefault(v.file, []).append(v)
     print(f"check_diagnostic_fields: {len(violations)} problem(s) in "
           f"{len(by_file)} file(s).\n")
-    print("Every diagnostic MUST carry rationale + spec_ref, and an error-"
-          "severity one a fix too (warnings are fix-exempt) — spec §0.5.1; the "
-          "spec_ref must also resolve to a real section/chapter, any "
-          "error_code must be registered in vera/errors.py ERROR_CODES, and a "
-          "code emitted from more than one (file, function) site must have "
-          "that exact site set declared in KNOWN_MULTI_SITE_ERROR_CODES.")
+    print("Every diagnostic MUST carry an error_code, rationale + spec_ref, "
+          "and an error-severity one a fix too (warnings are fix-exempt) — "
+          "spec §0.5.1; the spec_ref must also resolve to a real "
+          "section/chapter, the error_code must be registered in "
+          "vera/errors.py ERROR_CODES, a code emitted from more than one "
+          "(file, function) site must have that exact site set declared in "
+          "KNOWN_MULTI_SITE_ERROR_CODES, and a diagnostic is built through "
+          "Diagnostic(...), never by hand (HAND_BUILT_EXCEPTIONS names the "
+          "two that are).")
     print("Populate the missing field(s) / fix the spec_ref / register the "
           "error_code / declare or fix the multi-site set.  "
           "`# diag-fields-exempt: <reason>` waives a missing field or an "
           "unresolvable (non-literal) severity/spec_ref for a genuinely "
-          "fix-less internal/defensive site — it does NOT waive a spec_ref "
-          "citing the wrong/nonexistent section, an unregistered error_code, "
-          "or an undeclared error_code collision: those are content errors, "
-          "not tagging gaps.\n")
+          "fix-less internal/defensive site — it does NOT waive a missing "
+          "error_code, a spec_ref citing the wrong/nonexistent section, an "
+          "unregistered error_code, an undeclared error_code collision or a "
+          "hand-built diagnostic: those are content errors, not tagging "
+          "gaps.\n")
     for fname in sorted(by_file):
         print(f"  {fname}")
         for v in sorted(by_file[fname], key=lambda x: x.line):
-            if v.target in ("spec_ref", "error_code", "error_code_collision"):
+            if v.target in ("spec_ref", "error_code", "error_code_collision",
+                            "hand_built"):
                 print(f"    line {v.line:<5} {v.target:<11} {v.missing[0]}")
             else:
                 print(f"    line {v.line:<5} {v.target:<11} missing: "

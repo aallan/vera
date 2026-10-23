@@ -1960,7 +1960,7 @@ public fn broken(@Int -> @Int)
 """
 
 #: A generic instantiated at a function type over `Shape`, whose clone code
-#: generation refuses (E604) and whose caller it drops (E620), each naming
+#: generation refuses (E600) and whose caller it drops (E620), each naming
 #: the clone by `Shape` (#1783): a check-green program the stream reports
 #: on, beside the rename.
 _AT_SHAPE_FN = ("let @fn(Shape -> Int) effects(pure) = "
@@ -2017,7 +2017,7 @@ class TestADiagnosticStreamThatIsNotEmpty:
         programs whose diagnostics never mention an ADT, so nothing read
         the one thing the strip exists to change.  This drives a diagnostic
         that DOES name the type — a generic instantiated at a function type
-        over ``Shape``, whose clone code generation refuses (E604) and whose
+        over ``Shape``, whose clone code generation refuses (E600) and whose
         caller it drops (E620), each naming the clone by the type (#1783) —
         on a program the check accepts, where ``Shape`` carries its link
         name.
@@ -2030,7 +2030,7 @@ class TestADiagnosticStreamThatIsNotEmpty:
             {"liba.vera": liba, "libb.vera": _LIBB, "main.vera": entry},
         )
         e602 = [d for d in result.diagnostics
-                if d.error_code in ("E604", "E620")]
+                if d.error_code in ("E600", "E620")]
         assert e602, [d.error_code for d in result.diagnostics]
         described = " ".join(
             (getattr(d, a, None) or "")

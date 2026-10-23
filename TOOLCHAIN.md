@@ -33,9 +33,9 @@ source ──▶ parse ──▶ check ──▶ verify ──▶ compile ──
 Two commitments from [DESIGN.md](DESIGN.md) shape every command:
 
 1. **Fail loud, with a fix.** A diagnostic *names* the problem, explains *why*,
-   and gives a concrete instruction — never a bare status. Diagnostics carry
-   stable codes, which `vera errors` lists, that you can pin tooling to; a few
-   diagnostics carry none.
+   and gives a concrete instruction — never a bare status. Every diagnostic
+   carries a stable code, which `vera errors` lists, that you can pin tooling
+   to: a command's own refusals too (E9xx), and a runtime trap (E800).
 2. **Two audiences.** Every diagnostic-producing command has a `--json` mode.
    People read the default text; agents consume `--json` in a feedback loop. The
    JSON is the machine contract; the prose is for humans. This is the single
@@ -335,7 +335,7 @@ Each request runs on a **fresh module instance**, so `State<T>` cannot leak betw
 ```bash
 vera parse file.vera           # the parse tree (syntax)
 vera ast file.vera             # the typed AST (post type-checking)
-vera ast --json file.vera      # the AST as JSON
+vera ast --json file.vera      # the AST as JSON (a refusal: the diagnostics envelope)
 ```
 
 `parse` answers "did the grammar accept this?"; `ast` answers "what did the

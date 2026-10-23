@@ -1343,7 +1343,7 @@ class CallsHandlersMixin:
                 expr, "State<T> type argument has no slot name"
             )
         # The import FAMILY (names + WASM types) is the CELL the checker
-        # typed (#1209), matching `_check_state_type` registration.
+        # typed (#1209), the family its declaration names.
         # `State<Count>` with `type Count = Nat` joins the `state_*_Nat`
         # family every host already binds, instead of minting a
         # `state_*_Count` family whose derived WT (i32, the unknown-name
@@ -1375,6 +1375,14 @@ class CallsHandlersMixin:
         get_import = f"$vera.state_get_{mangled}"
         push_import = f"$vera.state_push_{mangled}"
         pop_import = f"$vera.state_pop_{mangled}"
+        # The cell this handler pushes, stores, reads and pops, recorded
+        # where the handler is met and before its state is evaluated, so a
+        # cell nested in the state comes after it (#1744): the module
+        # declares the cells its code calls, in the order they are first
+        # used, and a handler in a function code generation drops never
+        # reaches here.
+        cell = CellNames(family=family, base=family_base, type_expr=type_arg)
+        self._use_cell(cell)
 
         # The clause-scope STATE slot name — the `with` ANNOTATION's own
         # slot name under the CHECKER's rule (top name syntactic,
@@ -1474,7 +1482,6 @@ class CallsHandlersMixin:
         # `get`/`put` under this handler dispatches to, named
         # canonically instead of being recoverable only by unpicking
         # the mangled import name above.
-        cell = CellNames(family=family, base=family_base)
         self._effect_op_cells = {
             **saved_cells, "get": cell, "put": cell,
         }
@@ -2036,7 +2043,7 @@ class CallsHandlersMixin:
         how many locals it occupies.
 
         A cell whose representation is a `(ptr, len)` pair never reaches
-        this site — `_register_state_cell` refuses one with E607 before any
+        this site — `_state_cell_refusal` refuses one with E607 before any
         body compiles — so the binding below is a single `local.tee` in
         every reachable case.  It goes through the shared helper anyway,
         because "one local" is a property of the type rather than of this
@@ -2271,16 +2278,20 @@ class CallsHandlersMixin:
                 expr, "Exn<E> type argument has no slot name"
             )
         # Tag family, pair-ness, and payload WT derive from the RESOLVED
-        # family (matching `_check_exn_type` registration) — `Exn<Code>`
-        # with `type Code = Int` otherwise binds an i32 payload local
-        # against the i64-tagged throw (#1205), and `Exn<Msg>` with
-        # `type Msg = String` otherwise declares a second one-i32 tag
-        # beside the `String` pair tag its throw sites use (#1209).  The
-        # caught-value SLOT binding below stays source-level (the checker
-        # binds the clause pattern's own name).
+        # family (matching the tag's declaration) — `Exn<Code>` with
+        # `type Code = Int` otherwise binds an i32 payload local against
+        # the i64-tagged throw (#1205), and `Exn<Msg>` with `type Msg =
+        # String` otherwise declares a second one-i32 tag beside the
+        # `String` pair tag its throw sites use (#1209).  The caught-value
+        # SLOT binding below stays source-level (the checker binds the
+        # clause pattern's own name).
         family = self._family_name(type_arg)
         family_base = self._boundary_base(type_arg)
         tag_name = f"$exn_{mangle_type_name(family)}"
+        # The handler catches the tag, so it records it, where the handler
+        # is met (#1744).
+        self._use_tag(CellNames(family=family, base=family_base,
+                                type_expr=type_arg))
         # Pair-ness is the BASE's question (#1218): `Exn<Short>` under
         # `type Short = {@String | ...}` is its own tag and still carries a
         # (ptr, len) pair.  The payload's width is its checked type's, the

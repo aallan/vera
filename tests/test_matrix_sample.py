@@ -700,6 +700,9 @@ MARKED_FILES = (
     "test_typed_program_1679.py",
     "test_clone_suffix_1774.py",
     "test_gc_free_blocks_1718.py",
+    "test_source_encoding_1728_1666.py",
+    "test_diagnostic_codes_1490.py",
+    "test_declared_by_the_emitter_1744.py",
     "test_closure_argument_polarity.py",
     "test_declared_widths_1525.py",
 )

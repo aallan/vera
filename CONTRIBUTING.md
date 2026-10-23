@@ -158,7 +158,7 @@ The **commit-stage** hooks — each gated to relevant `files:`/`types:` filters,
 - License compliance (all dependencies MIT-compatible)
 - Browser parity (JS runtime matches Python runtime), when the host-binding surface changes
 
-CI runs, in addition: the full suite, in the Linux and Windows shards and on every OS × Python cell where the whole matrix runs, which holds the conformance programs at their declared level (positives pass; the negatives fail at the stage their `expected_error_stage` names, `check` by default or `compile` for a diagnostic the checker accepts and codegen refuses, with their `expected_error` E-code); the examples' `check` + `verify` through the CLI, and their runs; the `[E602]`/`[E604]` compile sweep; and the conformance programs' and examples' runs again under `VERA_EAGER_GC=1`, which forces a collection at every allocation so that a GC-rooting bug fails deterministically instead of by timing.
+CI runs, in addition: the full suite, in the Linux and Windows shards and on every OS × Python cell where the whole matrix runs, which holds the conformance programs at their declared level (positives pass; the negatives fail at the stage their `expected_error_stage` names, `check` by default or `compile` for a diagnostic the checker accepts and codegen refuses, with their `expected_error` E-code); the examples' `check` + `verify` through the CLI, and their runs; the `[E600]`/`[E601]`/`[E602]` compile sweep; and the conformance programs' and examples' runs again under `VERA_EAGER_GC=1`, which forces a collection at every allocation so that a GC-rooting bug fails deterministically instead of by timing.
 
 If you modify documentation sources (SKILL.md, AGENTS.md, FAQ.md, LSP_SERVER.md, `vera/errors.py`, `vera/grammar.lark`, or `docs/index.html`), the `site-assets` hook will regenerate `docs/` files via `scripts/build_site.py`. The CI also runs `scripts/check_site_assets.py` to verify freshness.
 
@@ -198,11 +198,11 @@ VERA_JS_COVERAGE=1 pytest tests/test_browser.py -v  # JS coverage
 
 PRs touching `vera/browser/runtime.mjs` have JavaScript coverage tracked by Codecov (via V8's built-in coverage). See [TESTING.md](TESTING.md) for the full testing reference -- coverage data, test helpers, and guidelines for adding tests.  See [ENVIRONMENT.md](ENVIRONMENT.md) for all `VERA_*` environment variables (provider keys, runtime knobs, and debug flags like `VERA_EAGER_GC` for hunting GC-rooting bugs and `VERA_DEBUG_HOST_ERRORS` for host-binding ones).
 
-**The program generator** writes a Vera program from a seed and holds it to the generator's contract and three differentials ([TESTING.md](TESTING.md) § Program Generator).  To run it against a change, over a thousand seeds or one:
+**The program generator** writes a Vera program from a seed, with a module beside it when it imports one, and holds it to the generator's contract and four differentials ([TESTING.md](TESTING.md) § Program Generator).  To run it against a change, over a thousand seeds or one:
 
 ```bash
 VERA_GENERATOR_SEEDS=0-999 pytest tests/test_program_generator.py -n 4
-python -m tests.program_generator 1234     # the program seed 1234 writes
+python -m tests.program_generator 1234     # the program seed 1234 writes, its module after it
 ```
 
 A night's finds arrive on the open issue labelled `generator-find`.  Each names its seed, the differential it failed and the minimal program, and states what the generator expected of each function: the contract it wrote, the interval the verifier can see, the interval a run can reach, and the value an exact `ensures` states on the failing arguments.  Where the minimal program breaks what the generator expected of it, the generator is wrong, and the fix is the generator's.  Any other find is the toolchain's: it is filed by its class ([Filing](#filing-file-the-class-not-the-manifestation)), never fixed in the generator's pull request, and once its issue is named the generator counts it as a known class.

@@ -25,6 +25,8 @@ from vera.errors import ERROR_CODES
 # Map a diagnostic code's two-character prefix to the compiler phase that emits
 # it, mirroring the ``ERROR_CODES`` section banners and the pipeline in
 # DESIGN.md (parse -> typecheck -> verify -> codegen; testing is its own phase).
+# Two ranges name no compiler phase (spec §0.5.1): ``E8xx`` is a program's own
+# failure while it runs, and ``E9xx`` a refusal of the command line itself.
 _ERROR_PHASE_BY_PREFIX: dict[str, str] = {
     "W0": "warning",
     "E0": "parse",  # parse & transform
@@ -34,6 +36,8 @@ _ERROR_PHASE_BY_PREFIX: dict[str, str] = {
     "E5": "verify",
     "E6": "codegen",
     "E7": "test",
+    "E8": "run",
+    "E9": "command",
 }
 
 

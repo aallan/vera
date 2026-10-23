@@ -164,6 +164,7 @@ Every diagnostic has a stable code grouped by compiler phase — the `W` series 
 - **E001–E009** — Parse errors (missing contracts, unexpected tokens, malformed slot references, bad string escapes)
 - **E011–E013** — Import errors (circular import, unresolvable import, a module that fails to parse)
 - **E020, E021, E023** — Malformed comments: unterminated `{-` (E020) or `/*` (E021), or a `/*` nested inside another (E023 — only `{- -}` nests). Each names the delimiter at fault and how to close it.
+- **E024** — A source file that is not UTF-8: the byte that does not decode, its offset, line and column, and the `iconv` command that converts the file to UTF-8 (an imported module's E024 is located in the module)
 - **E030–E032** — Contract syntax: an `old()`/`new()` argument that is not an effect reference (E030, E031), or a contract clause written after `effects` (E032)
 - **E040** — A pipe whose right operand is not a call: `a |> b` needs `b` to be a call with an argument list, such as `a |> f()`
 - **E010** — Transform errors (internal)
@@ -173,6 +174,8 @@ Every diagnostic has a stable code grouped by compiler phase — the `W` series 
 - **E5xx** — Verification (contract violations, undecidable fallbacks, primitive-operation safety incl. arithmetic overflow, premise satisfiability, and E541: a runtime-check claim `vera verify` found no check for in the compiled module)
 - **E6xx** — Codegen (unsupported features, name collisions, typed holes block compilation); **E699** is an internal compiler error
 - **E7xx** — Testing (contract violations, input generation, execution errors, a proof a test run refutes)
+- **E8xx** — Run: a program's own failure while it runs (**E800**, a runtime trap: its `trap_kind`, the source backtrace and the kind's fix)
+- **E9xx** — Command: the command line's own refusals, not a property of the program (a file not found, an option a command does not take or a value it does not accept, a function `--fn` cannot call, arguments that do not fit the function, a port in use, a missing optional dependency, an output path that cannot be written)
 
 In diagnostic messages, a `?` inside a printed type (`Array<?>`, `Map<String, ?>`) marks a component the checker could not infer. That is a rendering marker for an unknown type, not the typed-hole expression `?` (W001) you write in source.
 
@@ -2711,7 +2714,7 @@ For machine-parseable errors, use the `--json` flag:
 
 ### Error codes
 
-Diagnostics carry stable codes, which `vera errors` lists; a few diagnostics carry none. Common codes:
+Every diagnostic carries a stable code, which `vera errors` lists. Common codes:
 
 | Code | Meaning |
 |------|---------|
@@ -2727,7 +2730,7 @@ Diagnostics carry stable codes, which `vera errors` lists; a few diagnostics car
 | E311 | Non-exhaustive match |
 | E614 | Program contains typed holes — compile rejected until holes are filled |
 
-Full code ranges: W0xx (warnings), E0xx (parse), E1xx (type/expressions), E2xx (calls), E3xx (control flow), E5xx (verification), E6xx (codegen), E7xx (testing). See `vera/errors.py` `ERROR_CODES` for the complete registry.
+Full code ranges: W0xx (warnings), E0xx (parse), E1xx (type/expressions), E2xx (calls), E3xx (control flow), E5xx (verification), E6xx (codegen), E7xx (testing), E8xx (run: a program's own failure while it runs), E9xx (command: the command line's own refusals). See `vera/errors.py` `ERROR_CODES` for the complete registry.
 
 The `verify --json` output includes a verification summary:
 
@@ -3631,6 +3634,7 @@ Diagnostics carry stable codes, grouped by compiler phase; the list after the ta
 | E010 | Transform errors |
 | E011-E013 | Import resolution |
 | E020-E023 | Parse: malformed comments (lexical) |
+| E024 | Parse: source file not UTF-8 (lexical) |
 | E030-E032 | Parse: contract clauses |
 | E040 | Transform: pipe operand |
 | E1xx | Type check: core + expressions |
@@ -3639,6 +3643,8 @@ Diagnostics carry stable codes, grouped by compiler phase; the list after the ta
 | E5xx | Verification |
 | E6xx | Code generation |
 | E7xx | Testing |
+| E8xx | Run: a program's own failure while it runs |
+| E9xx | Command: the command line's own refusals |
 | W0xx | Warnings |
 
 - **W001**: Typed hole
@@ -3662,6 +3668,7 @@ Diagnostics carry stable codes, grouped by compiler phase; the list after the ta
 - **E020**: Unterminated block comment
 - **E021**: Unterminated annotation comment
 - **E023**: Annotation comments do not nest
+- **E024**: Source file is not valid UTF-8
 - **E030**: old() argument is not an effect reference
 - **E031**: new() argument is not an effect reference
 - **E032**: Contract clause after the effects clause
@@ -3728,6 +3735,7 @@ Diagnostics carry stable codes, grouped by compiler phase; the list after the ta
 - **E185**: Declaration takes a built-in ability's name or operation
 - **E186**: Quantifier index type is not Int or Nat
 - **E187**: Contract predicate performs an effect
+- **E188**: Missing visibility on a top-level declaration
 - **E200**: Unresolved function
 - **E201**: Wrong argument count
 - **E202**: Argument type mismatch
@@ -3808,9 +3816,7 @@ Diagnostics carry stable codes, grouped by compiler phase; the list after the ta
 - **E600**: Unsupported parameter type
 - **E601**: Unsupported return type
 - **E602**: Unsupported body expression type
-- **E604**: Unsupported state effect type
-- **E605**: Unsupported state type parameter
-- **E607**: State with unsupported operations
+- **E607**: State cell type code generation cannot lower
 - **E612**: Exn with unsupported type
 - **E613**: Type does not satisfy ability constraint
 - **E614**: Program contains typed holes
@@ -3819,11 +3825,26 @@ Diagnostics carry stable codes, grouped by compiler phase; the list after the ta
 - **E617**: Refinement predicate not compilable to runtime guard
 - **E618**: Nested refinement base unsupported
 - **E620**: Function dropped: skipped callee or no function table
+- **E624**: Call with no target reached code generation
 - **E699**: Internal compiler error
 - **E700**: Contract violation during testing
 - **E701**: Cannot generate test inputs
 - **E702**: Test execution error
 - **E703**: Tier 1 proof refuted by a test run
+- **E800**: Runtime trap
+- **E900**: Source file not found
+- **E901**: Option not accepted by this command
+- **E902**: Options that contradict each other
+- **E903**: Invalid option value
+- **E904**: Command not understood
+- **E905**: Module exports no function
+- **E906**: --fn names no exported function
+- **E907**: Entry function dropped by code generation
+- **E908**: Program does not meet the target's requirements
+- **E909**: Arguments do not fit the function's parameters
+- **E910**: Server cannot bind its address
+- **E911**: Optional dependency not installed
+- **E912**: Output path cannot be written
 
 
 ========================================================================

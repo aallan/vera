@@ -732,7 +732,7 @@ _REFUSED_RETURNS: dict[str, tuple[str, str, str, str, list[str]]] = {
     "zero_size_argument": ("@Int", "@Array<Unit>", "[]",
                            "array_length(@Array<Int>.result) == 0", ["E135"]),
     "removed_alias_argument": ("@Float", "@Option<Float>", "None",
-                               "@Option<Float64>.result == None", [""]),
+                               "@Option<Float64>.result == None", ["E136"]),
 }
 
 

@@ -28,7 +28,7 @@ unresolved slot E130, an undefined call E200, a result reference naming
 another type E163, a result reference outside a postcondition E131, an
 undefined constructor E210, an index into a value that is no collection
 E161, the slot inside a block, both branches of an `if` in error, a block
-whose `let` declares the removed alias `Float`, whose error carries no code,
+whose `let` declares the removed alias `Float`, whose error is E136 (#1490),
 and the constructor of a declaration refused as E158, its error placed at
 the declaration) with the arm shape (constructor arms complete and incomplete,
 a literal nested in a constructor, literal arms with and without a
@@ -304,7 +304,8 @@ public fn f(@Int -> @Int)
 
 def test_a_refinement_of_a_type_in_error_is_not_judged() -> None:
     """`@{ @Float | true }` resolves to a refinement over `Unknown`, its
-    error, which carries no code, reported at the signature."""
+    error, E136 (the removed alias names no type, #1490), reported at the
+    signature."""
     source = """public fn f(@{ @Float | true } -> @Int)
   requires(true)
   ensures(true)
@@ -317,7 +318,7 @@ def test_a_refinement_of_a_type_in_error_is_not_judged() -> None:
 }
 """
     checked = pipeline.check(source)
-    assert _at(checked) == [("", *_place(source, "Float |"))], (
+    assert _at(checked) == [("E136", *_place(source, "Float |"))], (
         checked.diagnostics)
 
 
@@ -418,9 +419,9 @@ KINDS: dict[str, Kind] = {
         _by_type("if @Int.0 > 0 then {{ @{t}.1 }} else {{ missing(@Int.0) }}"),
         {ty: f"if @Int.0 > 0 then {{ @{name}.0 }} else {{ {_RIGHT_CALL[ty]} }}"
          for ty, name in _TYPES.items()}),
-    # The removed alias's error carries no code.
+    # The removed alias's error is E136, the unknown type name it is.
     "let_removed_alias": Kind(
-        ("",), {None: "{ let @Float = 0.0; @Float.0 }"}, {}),
+        ("E136",), {None: "{ let @Float = 0.0; @Float.0 }"}, {}),
     # The error is placed at the declaration, not at the scrutinee.
     "refused_declaration": Kind(
         ("E158",), {None: "Wrap(@Int.0)"}, {},

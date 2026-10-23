@@ -1,6 +1,7 @@
 #!/usr/bin/env python
-"""CI gate: no `[E602]` (body unsupported) or `[E604]`
-(parameter unsupported) skips outside the known allowlist.
+"""CI gate: no `[E602]` (body unsupported), `[E600]` (parameter
+unsupported) or `[E601]` (return unsupported) skips outside the known
+allowlist.
 
 Layer 1 of #626 ("convert 'translate returns None → silent skip'
 failures into loud diagnostics").  The `[E602]` warning channel was
@@ -10,7 +11,7 @@ compile — making it impossible to spot a new genuine skip without
 manually sifting through expected-noise warnings.
 
 This script fails the build when any compile of an example or
-conformance program emits an `[E602]` / `[E604]` for a function
+conformance program emits an `[E602]` / `[E600]` / `[E601]` for a function
 name not in `ALLOWED_SKIPS`.  When a new genuine skip surfaces,
 either:
 
@@ -48,7 +49,7 @@ import sys
 from pathlib import Path
 
 
-# Allowlist: function names whose `[E602]` / `[E604]` skips are
+# Allowlist: function names whose `[E602]` / `[E600]` skips are
 # expected pending an open tracking issue.  Each entry: function
 # name → (error_code, issue_number, brief reason).
 #
@@ -59,7 +60,7 @@ ALLOWED_SKIPS: dict[str, tuple[str, int, str]] = {
     # NOTE: the 5 prelude-combinator entries tracked by #604
     # (option_unwrap_or, result_unwrap_or, option_map, option_and_then,
     # result_map) were removed with the #851 fix: unreferenced prelude
-    # combinators no longer emit E602/E604 skip-warnings at all (a
+    # combinators no longer emit E602/E600 skip-warnings at all (a
     # reachability scan suppresses them), and a referenced-but-
     # uncompilable combinator now warns with a `<prelude>` origin — so
     # no scanned example or conformance program produces these skips.
@@ -93,7 +94,7 @@ def _extract_skips(
     file: str,
 ) -> list[tuple[str, str, str]]:
     """Compile a single file with --json and extract (code, fn_name,
-    description) tuples for each E602 / E604 warning.
+    description) tuples for each E600 / E601 / E602 warning.
 
     Returns empty list on a clean compile, non-empty list of skip
     tuples otherwise.  Compile errors (vs warnings) are surfaced via
@@ -101,7 +102,7 @@ def _extract_skips(
     """
     # Use `compile --wat` rather than `--target browser` to avoid
     # producing an output directory; the WAT-only path still runs
-    # the full compilability pipeline so all `[E602]` / `[E604]`
+    # the full compilability pipeline so all `[E600]` / `[E601]` / `[E602]`
     # warnings surface.
     #
     # 60-second per-file timeout — compile is faster
@@ -137,7 +138,7 @@ def _extract_skips(
     # symbol) — the envelope is well-formed JSON but `ok` is False
     # and the error sits in `diagnostics`, not `warnings`.  Without
     # this check the script would treat the file as clean (because
-    # `warnings` has no `[E602]` / `[E604]`), letting a real compile
+    # `warnings` has no `[E600]` / `[E601]` / `[E602]`), letting a real compile
     # failure slip through the gate.  Surface as a hard failure with
     # the first error's description (the gate's caller treats
     # COMPILE_ERROR identically to PARSE_ERROR / TIMEOUT — all three
@@ -156,12 +157,14 @@ def _extract_skips(
     skips: list[tuple[str, str, str]] = []
     for w in envelope.get("warnings", []):
         code = w.get("error_code", "")
-        # E605 is part of the same template-warning surface as E602/E604
-        # — see the suppression pass in vera/codegen/core.py and the
-        # CHANGELOG entry for v0.0.145.  A future E605 silent skip (e.g.
-        # generic decl with unsupported return type) should hit the gate
-        # too, not slip past with the existing allowlist machinery.
-        if code not in ("E602", "E604", "E605"):
+        # E600 (parameter) and E601 (return type) are the same
+        # template-warning surface as E602 — see the suppression pass in
+        # vera/codegen/core.py and the CHANGELOG entry for v0.0.145, when
+        # the compilability check emitted them as E604 and E605 (#1490
+        # moved them to the codes of their concepts).  A future silent
+        # skip of either kind (e.g. a generic decl with an unsupported
+        # return type) hits the gate too.
+        if code not in ("E600", "E601", "E602"):
             continue
         desc = w.get("description", "")
         # Function name is parsed from the description; format is
@@ -186,7 +189,7 @@ def _scan_paths(
 
     Two failure categories with distinct semantics:
 
-    - **skip_failures** — unexpected `[E602]` / `[E604]` warnings on
+    - **skip_failures** — unexpected `[E602]` / `[E600]` / `[E601]` warnings on
       function names that aren't in the allowlist (or are
       allowlisted under a different error code).  These are the
       core "silent skip" detections the gate exists for.
@@ -258,7 +261,7 @@ def main() -> int:
     # to demonstrate `[E614] Program contains a typed hole; fill all
     # holes before compiling` and is expected to fail at compile
     # time.  Only `verify` and `run` level programs are required to
-    # compile cleanly; those are the ones a `[E602]` / `[E604]`
+    # compile cleanly; those are the ones a `[E602]` / `[E600]`
     # silent skip would actually regress.
     #
     # Fail fast on missing manifest or missing-but-listed file: the
@@ -407,7 +410,7 @@ def main() -> int:
     if skip_failures:
         print(
             f"\nUNEXPECTED SKIPS ({len(skip_failures)} new "
-            f"[E602]/[E604] warning(s) outside the allowlist):",
+            f"[E600]/[E601]/[E602] warning(s) outside the allowlist):",
             file=sys.stderr,
         )
         for f in skip_failures:
@@ -459,7 +462,7 @@ def main() -> int:
     if hard_failures or skip_failures or stale_allowlist:
         return 1
 
-    print("\nNo unexpected [E602]/[E604] skips. (Layer 1 of #626.)")
+    print("\nNo unexpected [E600]/[E601]/[E602] skips. (Layer 1 of #626.)")
     return 0
 
 

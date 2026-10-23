@@ -158,6 +158,7 @@ Every diagnostic has a stable code grouped by compiler phase — the `W` series 
 - **E001–E009** — Parse errors (missing contracts, unexpected tokens, malformed slot references, bad string escapes)
 - **E011–E013** — Import errors (circular import, unresolvable import, a module that fails to parse)
 - **E020, E021, E023** — Malformed comments: unterminated `{-` (E020) or `/*` (E021), or a `/*` nested inside another (E023 — only `{- -}` nests). Each names the delimiter at fault and how to close it.
+- **E024** — A source file that is not UTF-8: the byte that does not decode, its offset, line and column, and the `iconv` command that converts the file to UTF-8 (an imported module's E024 is located in the module)
 - **E030–E032** — Contract syntax: an `old()`/`new()` argument that is not an effect reference (E030, E031), or a contract clause written after `effects` (E032)
 - **E040** — A pipe whose right operand is not a call: `a |> b` needs `b` to be a call with an argument list, such as `a |> f()`
 - **E010** — Transform errors (internal)
@@ -167,6 +168,8 @@ Every diagnostic has a stable code grouped by compiler phase — the `W` series 
 - **E5xx** — Verification (contract violations, undecidable fallbacks, primitive-operation safety incl. arithmetic overflow, premise satisfiability, and E541: a runtime-check claim `vera verify` found no check for in the compiled module)
 - **E6xx** — Codegen (unsupported features, name collisions, typed holes block compilation); **E699** is an internal compiler error
 - **E7xx** — Testing (contract violations, input generation, execution errors, a proof a test run refutes)
+- **E8xx** — Run: a program's own failure while it runs (**E800**, a runtime trap: its `trap_kind`, the source backtrace and the kind's fix)
+- **E9xx** — Command: the command line's own refusals, not a property of the program (a file not found, an option a command does not take or a value it does not accept, a function `--fn` cannot call, arguments that do not fit the function, a port in use, a missing optional dependency, an output path that cannot be written)
 
 In diagnostic messages, a `?` inside a printed type (`Array<?>`, `Map<String, ?>`) marks a component the checker could not infer. That is a rendering marker for an unknown type, not the typed-hole expression `?` (W001) you write in source.
 

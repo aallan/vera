@@ -211,13 +211,16 @@ use_setproctitle = false  # required on macOS (mutmut PR #450)
 # ./mutants/ copy is mutmut's generated file with every mutant inlined, and
 # the collision gate runs scripts/check_diagnostic_fields.py over the copy's
 # vera/, where each mutant repeats its function's error codes (a mutated
-# vera/checker/core.py emits E121 from 198 sites); so they fail there with no
-# mutant active.  They read the modules' source, not their behaviour, so no
-# mutant can reach them.  scripts/mutate_diff.py drops any other such test
-# from a run and reports it.  tests/mutation_oracle.py skips, in the copy, a
-# test that starts a Python or vera process: the process compiles every
-# mutated module afresh (a mutated _register_builtins makes environment.py
-# 33.6 MB) and records nothing for the stats pass, so the test is no oracle.
+# vera/checker/core.py emits E121 from 198 sites), as two cells of
+# tests/test_diagnostic_codes_1490.py do (the live tree, and
+# vera/checker/registration.py's text with its one E188 taken off); so they
+# fail there with no mutant active.  They read the modules' source, not
+# their behaviour, so no mutant can reach them.  scripts/mutate_diff.py
+# drops any other such test from a run and reports it.  tests/mutation_oracle.py
+# skips, in the copy, a test that starts a Python or vera process: the
+# process compiles every mutated module afresh (a mutated _register_builtins
+# makes environment.py 33.6 MB) and records nothing for the stats pass, so
+# the test is no oracle.
 # No faulthandler plugin (#1747): it records the process's signal handlers
 # when a pytest session starts and restores them when it ends, and wasmtime
 # installs its trap handlers once per process, at the first Engine.  mutmut's
@@ -235,6 +238,8 @@ pytest_add_cli_args = [
     "--deselect=tests/test_verifier_refinements.py::TestANonVerdictIsAttributedToTheRightOutcome::test_no_demotion_site_hardcodes_a_solver_reason",
     "--deselect=tests/test_verifier_refinements.py::TestANonVerdictIsAttributedToTheRightOutcome::test_every_possibly_unguarded_demotion_supplies_a_reason",
     "--deselect=tests/test_checker_errors.py::TestErrorCodes::test_error_code_collision_gate_is_clean",
+    "--deselect=tests/test_diagnostic_codes_1490.py::test_the_live_tree_carries_a_code_everywhere_and_builds_none_by_hand",
+    "--deselect=tests/test_diagnostic_codes_1490.py::test_mutant_a_code_removed_from_one_site_fails_the_gate",
 ]
 # In-process oracle (positive selection).  Only these suites build Vera
 # programs inline (or from examples/, copied above) and exercise the

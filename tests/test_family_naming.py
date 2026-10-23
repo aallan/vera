@@ -482,6 +482,25 @@ public fn main(@Unit -> @Int)
 }
 """
 
+#: The same cell under a handler whose body never reads the closure, which
+#: compiles: its push, put and pop call the cell, which is declared.
+_BARE_FN_CELL_KEPT = """\
+type F = fn(Int -> Int) effects(pure);
+
+public fn probe(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[State<F>](@F = fn(@Int -> @Int) effects(pure) { @Int.0 + 1 }) {
+    get(@Unit) -> { resume(@F.0) },
+    put(@F) -> { resume(()) }
+  } in {
+    41
+  }
+}
+"""
+
 
 def test_bare_fn_type_cell_still_takes_the_fallback_and_runs(
     tmp_path: Path,
@@ -500,7 +519,9 @@ def test_bare_fn_type_cell_still_takes_the_fallback_and_runs(
     The cell's one family carries the program: `apply_fn` of the closure
     the cell's `get` reads takes its signature from the read's checked
     function type (#1516, #1525), where it was refused (E616) and the
-    enclosing function dropped.
+    enclosing function dropped.  A handler of the same cell whose body
+    never reads the closure declares the cell under the same spelling: its
+    push, put and pop call it (#1744).
 
     Promoted from ``tests/probes/state_handlers/alias_families/
     p7_fn_alias_state_arg.vera``, which asked this question and was deleted
@@ -511,6 +532,10 @@ def test_bare_fn_type_cell_still_takes_the_fallback_and_runs(
         "state_get_F", "state_put_F", "state_push_F", "state_pop_F",
     }, result.wat[:400]
     assert execute(result).value == 42
+    kept = _compile_source(_BARE_FN_CELL_KEPT, tmp_path, name="kept")
+    assert _families(kept.wat) == {
+        "state_get_F", "state_put_F", "state_push_F", "state_pop_F",
+    }, kept.wat[:400]
 
 
 def test_two_refinements_of_one_base_in_argument_position_stay_apart(

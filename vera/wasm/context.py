@@ -327,6 +327,16 @@ class WasmContext(
         # the ones it calls, propagated to codegen core, which declares them
         # from the registry's rows.
         self._host_imports_used: set[str] = set()
+        # #1744: the State cells and Exn tags the emitted code uses, by the
+        # family their calls are named by, with the type expression each was
+        # written at, in the order of first use.  Each emitter of a cell's
+        # call (a handler's push, put and pop, a `get` or `put`, an inlined
+        # clause, an `old` snapshot, a `new` read) and of a tag's use (a
+        # `throw`, a handler's `catch`) adds its own; codegen core declares
+        # them at the same merges as the host imports, so a function
+        # dropped before its merge declares none.
+        self._cells_used: dict[str, ast.TypeExpr] = {}
+        self._tags_used: dict[str, ast.TypeExpr] = {}
         # #573: wrap-table flag — set when any host-handle type
         # migrates to the heap-wrap-as-ADT scheme so the GC
         # sweep can reclaim host-side store entries.  Currently
@@ -781,6 +791,35 @@ class WasmContext(
     def get_old_state_local(self, type_name: str) -> int | None:
         """Get the local index holding the old() snapshot for a State type."""
         return self._old_state_locals.get(type_name)
+
+    def _use_cell(self, cell: CellNames | None) -> None:
+        """Record the State cell *cell*, which the code being emitted calls,
+        for its declaration (#1744): the first use keeps its place."""
+        cell, type_expr = self._cell_type(cell)
+        self._cells_used.setdefault(cell.family, type_expr)
+
+    def _use_tag(self, cell: CellNames | None) -> None:
+        """Record the Exn tag *cell*, which the code being emitted throws or
+        catches, for its declaration (#1744)."""
+        cell, type_expr = self._cell_type(cell)
+        self._tags_used.setdefault(cell.family, type_expr)
+
+    @staticmethod
+    def _cell_type(
+        cell: CellNames | None,
+    ) -> tuple[CellNames, ast.TypeExpr]:
+        """*cell*, with the type expression it was written at, which its
+        declaration derives the cell's width from.  Every producer of an
+        op's cell (the declared row and each handler) records the cell
+        beside the op's dispatch target, with its type expression, so an
+        op with no cell, or a cell without one, has no declaration to be
+        derived."""
+        if cell is None or cell.type_expr is None:  # pragma: no cover — every producer threads both
+            raise CodegenInvariantError(
+                "an emitted State or Exn operation has no cell with a type "
+                "expression, so its declaration has no width to be derived "
+                "from", None)
+        return cell, cell.type_expr
 
     def _bare_call_denotes_op(self, name: str) -> bool:
         """Is a BARE call to *name* here the effect operation? (#1284)

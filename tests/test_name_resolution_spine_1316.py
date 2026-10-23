@@ -150,7 +150,7 @@ class TestRegistryCoverage:
         equal, or a primitive reaches codegen with no width stated.
 
         The lookup is guarded (an unknown primitive is ``"unsupported"``,
-        which the existing E605 refusal reports), so the gap is loud rather
+        which the existing E601 refusal reports), so the gap is loud rather
         than a `KeyError`; this is what stops it being introduced at all.
         """
         from vera.codegen.core import _PRIMITIVE_WASM_TYPES

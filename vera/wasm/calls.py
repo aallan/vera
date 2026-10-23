@@ -238,10 +238,13 @@ class CallsMixin:
             # bare-routable set is exactly those three is asserted, not
             # remembered — see `test_guard_completeness`; a fourth op gaining
             # a bare route turns it red rather than passing unguarded.
-            # throw uses WASM throw instruction, not call
+            # throw uses WASM throw instruction, not call.  Either names its
+            # cell, which the op records for its declaration (#1744).
             if call.name == "throw":
+                self._use_tag(cell)
                 instructions.append(f"throw {target_name}")
             else:
+                self._use_cell(cell)
                 instructions.append(f"call {target_name}")
             return instructions
 
