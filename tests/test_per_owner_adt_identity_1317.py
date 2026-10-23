@@ -1941,7 +1941,13 @@ public fn helper(@Int -> @Int)
 #: accepts: a `let` of a parameterised alias has no WASM representation
 #: (E602).  The `let` is the argument.
 _SKIPPED = """
-type Id<T> = T;
+private forall<T> fn idg(@T -> @T)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @T.0
+}
 
 public fn broken(@Int -> @Int)
   requires(true)
@@ -1952,6 +1958,13 @@ public fn broken(@Int -> @Int)
   @Int.0
 }
 """
+
+#: A generic instantiated at a function type over `Shape`, whose clone code
+#: generation refuses (E604) and whose caller it drops (E620), each naming
+#: the clone by `Shape` (#1783): a check-green program the stream reports
+#: on, beside the rename.
+_AT_SHAPE_FN = ("let @fn(Shape -> Int) effects(pure) = "
+                "idg(fn(@Shape -> @Int) effects(pure) { 1 });")
 
 
 class TestADiagnosticStreamThatIsNotEmpty:
@@ -1975,12 +1988,10 @@ class TestADiagnosticStreamThatIsNotEmpty:
         self, tmp_path: Path,
     ) -> None:
         # Two contending `Shape`s (renamed), beside a function code
-        # generation skips, which makes the stream non-empty: a `let` of a
-        # parameterised alias has no WASM representation (E602, a refusal of
-        # a check-green program, rostered in
-        # `tests/test_check_implies_compile.py`), on a program the check
+        # generation skips, which makes the stream non-empty: a generic
+        # instantiated at a function type (#1783), on a program the check
         # accepts.
-        liba = _LIBA + _SKIPPED % "let @Id<Nat> = 5;"
+        liba = _LIBA + _SKIPPED % _AT_SHAPE_FN
         entry = _ENTRY.replace(
             "import liba(aone);", "import liba(aone, broken);")
         result = compile_multi_module(
@@ -2005,21 +2016,21 @@ class TestADiagnosticStreamThatIsNotEmpty:
         against every other cell here: the sweeps run over
         programs whose diagnostics never mention an ADT, so nothing read
         the one thing the strip exists to change.  This drives a diagnostic
-        that DOES name the type — a `let` of ``Id<Shape>``, a parameterised
-        alias code generation has no representation for, so it skips the
-        function (E602) and names the binding's type — on a program the
-        check accepts, where ``Shape`` carries its link name.
-        Measured with the call deleted: ``let binding type
-        'mod$liba$Id<mod$liba$Shape>'``.
+        that DOES name the type — a generic instantiated at a function type
+        over ``Shape``, whose clone code generation refuses (E604) and whose
+        caller it drops (E620), each naming the clone by the type (#1783) —
+        on a program the check accepts, where ``Shape`` carries its link
+        name.
         """
-        liba = _LIBA + _SKIPPED % "let @Id<Shape> = Sq(@Int.0);"
+        liba = _LIBA + _SKIPPED % _AT_SHAPE_FN
         entry = _ENTRY.replace(
             "import liba(aone);", "import liba(aone, broken);")
         result = compile_multi_module(
             tmp_path / "e602",
             {"liba.vera": liba, "libb.vera": _LIBB, "main.vera": entry},
         )
-        e602 = [d for d in result.diagnostics if d.error_code == "E602"]
+        e602 = [d for d in result.diagnostics
+                if d.error_code in ("E604", "E620")]
         assert e602, [d.error_code for d in result.diagnostics]
         described = " ".join(
             (getattr(d, a, None) or "")

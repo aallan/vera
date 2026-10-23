@@ -32,6 +32,36 @@ from vera.types import (
 _INLINE_I32_TYPES = frozenset({"Bool", "Byte", "Unit"})
 
 
+def type_implicit_range(
+    predicate: ast.Expr, base: ast.TypeExpr,
+    built: Callable[[ast.Expr, Type], ast.Expr],
+) -> ast.Expr:
+    """*predicate*, a refinement guard's predicate as
+    :func:`vera.naming.refinement_binder_parts` returns it, with the types of
+    the nodes it built around the written one recorded through *built*
+    (#1525): a `Nat` or `Byte` base's implicit range (`@Base.0 >= 0`, and
+    `@Base.0 <= 255` for a `Byte`) conjoined to it, whose binder references
+    and literals are of the base type and whose comparisons and
+    conjunctions are `Bool`.  A built node is one with no identity; the
+    written predicate's nodes are the checker's, typed where they were
+    checked.  *base* is the alias-chased base the parts name."""
+    from vera.types import BOOL, BYTE, NAT
+
+    name = base.name if isinstance(base, ast.NamedType) else ""
+    base_ty = {"Nat": NAT, "Byte": BYTE}.get(name)
+    stack: list[ast.Expr] = [predicate]
+    while stack:
+        node = stack.pop()
+        if node.node_id is not None:
+            continue
+        if isinstance(node, ast.BinaryExpr):
+            built(node, BOOL)
+            stack.extend((node.left, node.right))
+        elif isinstance(node, (ast.SlotRef, ast.IntLit)) and base_ty is not None:
+            built(node, base_ty)
+    return predicate
+
+
 # =====================================================================
 # Slot environment — De Bruijn → WASM local mapping
 # =====================================================================

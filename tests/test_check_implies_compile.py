@@ -1558,12 +1558,6 @@ KNOWN_CHECK_GREEN_REFUSALS: dict[str, tuple[tuple[str, ...], str]] = {
         ("E604",), _UNINSTANTIATED_GENERIC),
     "tests/probes/state_handlers/checker_gates/loclib.vera": (
         ("E604",), _UNINSTANTIATED_GENERIC),
-    "tests/probes/state_handlers/old_state/p15_old_state_nested_alias.vera": (
-        ("E602", "E602", "missing-export", "missing-export"),
-        "a `let` of a parameterised alias (`let @Id<Nat>`) has no WASM "
-        "representation in code generation, single-file as well — a "
-        "different mechanism from this class's two",
-    ),
 }
 
 

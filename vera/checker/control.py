@@ -1514,6 +1514,9 @@ class ControlFlowMixin:
         if eff_info.type_params and effect_inst.type_args:
             mapping = dict(zip(eff_info.type_params, effect_inst.type_args))
 
+        # The refinements the handled effect's type arguments carry (#861).
+        self._check_effect_refinements(expr.effect)
+
         # Check handler state
         state_type: Type | None = None
         if expr.state:

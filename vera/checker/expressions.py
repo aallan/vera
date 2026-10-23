@@ -1221,6 +1221,7 @@ class ExpressionsMixin:
         for param_te in expr.params:
             self._check_refinement_predicates(param_te)
         self._check_refinement_predicates(expr.return_type)
+        self._check_effect_refinements(expr.effect)
         param_types = tuple(self._resolve_type(p) for p in expr.params)
         ret_type = self._resolve_type(expr.return_type)
         eff, eff_order = self._resolve_effect_row_ordered(expr.effect)

@@ -11,7 +11,12 @@ from vera.lowering import quantifier_predicate_shape_lowerable
 from vera.monomorphize import resolve_type_alias
 from vera.types import STRING, TO_STRING_BUILTINS, PrimitiveType
 from vera.skip import AdtEqNotDerivableError, CodegenInvariantError
-from vera.wasm.helpers import WasmSlotEnv, field_layout, state_type_arg
+from vera.wasm.helpers import (
+    WasmSlotEnv,
+    field_layout,
+    state_type_arg,
+    type_implicit_range,
+)
 
 
 class OperatorsMixin:
@@ -1567,6 +1572,7 @@ class OperatorsMixin:
             parts = naming.refinement_binder_parts(node, self._alias_env)
             if parts is None:
                 break
+            type_implicit_range(parts.predicate, parts.base, self._built)
             layers.append(parts)
             node = parts.base if parts.base_is_refinement else None
         return layers
