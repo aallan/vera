@@ -184,7 +184,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | ` ├ runtime.mjs` | | Self-contained JS runtime: IO, State, Http, Inference, contracts, Markdown, Json, Html; every import held to the registry's rows, a roster `scripts/render_lists.py` renders | |
 | ` └ harness.mjs` | | Node.js test harness for parity testing | |
 | `cli.py` | All | CLI commands | `main()` |
-| `command_errors.py` | All | The diagnostics a command reports about its own run, one function per code: E800, a runtime trap, and E900 to E911, the command line's own refusals (#1490) | `file_not_found()`, `runtime_trap()`, … |
+| `command_errors.py` | All | The diagnostics a command reports about its own run, one function per code: E800, a runtime trap, and E900 to E912, the command line's own refusals (#1490) | `file_not_found()`, `runtime_trap()`, … |
 | `registration.py` | Type check | Shared function registration, and the alias rule the checker's and the verifier's registrations resolve an alias through, whatever its declaration order (#1552) | `register_fn()`, `NamespaceAliases` |
 
 ## Parsing
@@ -725,7 +725,7 @@ Every diagnostic includes eight fields designed for LLM consumption:
 
 **Parse error patterns:** `diagnose_lark_error()` in `parser.py` maps common Lark exception patterns to specific diagnostics. It checks expected token sets to distinguish "missing contract block" from "missing effects clause" from "malformed slot reference", producing targeted fix suggestions for each.
 
-**A command's own refusals:** a refusal of the command line (a file not found, an option a command does not take, a function `--fn` cannot call, E900 to E911) and a program's trap while it runs (E800) are `Diagnostic`s too, each built by its function in `command_errors.py`: a command prints its `format()`, and under `--json` the envelope carries its `to_dict()`.  `scripts/check_diagnostic_fields.py` fails a diagnostic with no code, and one built by hand as a dict.
+**A command's own refusals:** a refusal of the command line (a file not found, an option a command does not take, a function `--fn` cannot call, an output path that cannot be written, E900 to E912) and a program's trap while it runs (E800) are `Diagnostic`s too, each built by its function in `command_errors.py`: a command prints its `format()`, and under `--json` the envelope carries its `to_dict()`.  `scripts/check_diagnostic_fields.py` fails a diagnostic with no code, and one built by hand as a dict.
 
 ## Design Patterns
 

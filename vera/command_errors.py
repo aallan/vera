@@ -319,6 +319,32 @@ def cannot_bind(description: str, path: str | None = None) -> Diagnostic:
     )
 
 
+def output_not_writable(
+    path: str | None, output: str, error: OSError,
+) -> Diagnostic:
+    """E912: the command cannot write the output it was asked to, *output*:
+    its directory does not exist, or the command may not write there."""
+    return Diagnostic(
+        description=(
+            f"cannot write the output {output}: {error.strerror or error}"),
+        location=_at(path),
+        rationale=(
+            "The command writes its output to the path its command line "
+            "names, or beside the source, and the operating system refused "
+            "the write: the path's directory does not exist, the path is a "
+            "directory, or the command may not write there."
+        ),
+        fix=(
+            "Name an output path in a directory that exists and the command "
+            "may write, or create the directory first:\n\n"
+            "  vera compile -o build/program.wasm program.vera"
+        ),
+        spec_ref='Chapter 0, Section 0.5.1 "Diagnostic Structure"',
+        severity="error",
+        error_code="E912",
+    )
+
+
 def optional_dependency(description: str) -> Diagnostic:
     """E911: a command needs an optional extra that is not installed."""
     return Diagnostic(

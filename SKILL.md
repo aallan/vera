@@ -168,7 +168,7 @@ Every diagnostic has a stable code grouped by compiler phase — the `W` series 
 - **E6xx** — Codegen (unsupported features, name collisions, typed holes block compilation); **E699** is an internal compiler error
 - **E7xx** — Testing (contract violations, input generation, execution errors, a proof a test run refutes)
 - **E8xx** — Run: a program's own failure while it runs (**E800**, a runtime trap: its `trap_kind`, the source backtrace and the kind's fix)
-- **E9xx** — Command: the command line's own refusals, not a property of the program (a file not found, an option a command does not take or a value it does not accept, a function `--fn` cannot call, arguments that do not fit the function, a port in use, a missing optional dependency)
+- **E9xx** — Command: the command line's own refusals, not a property of the program (a file not found, an option a command does not take or a value it does not accept, a function `--fn` cannot call, arguments that do not fit the function, a port in use, a missing optional dependency, an output path that cannot be written)
 
 In diagnostic messages, a `?` inside a printed type (`Array<?>`, `Map<String, ?>`) marks a component the checker could not infer. That is a rendering marker for an unknown type, not the typed-hole expression `?` (W001) you write in source.
 

@@ -813,6 +813,15 @@ def _internal_error_envelope(
         return 1
 
 
+def _output_refused(path: str, output: Path, error: OSError) -> int:
+    """Report the output a command could not write (E912) and return exit
+    1: an output path names no file the command may write, which is not
+    the source being missing (E900)."""
+    print(command_errors.output_not_writable(path, str(output), error).format(),
+          file=sys.stderr)
+    return 1
+
+
 def _report_compile_failure(
     path: str,
     refusal: Diagnostic,
@@ -1013,7 +1022,11 @@ def cmd_compile(
             import wasmtime
 
             out_path = Path(output) if output else p.with_suffix(".wasm")
-            out_path.write_bytes(wasmtime.wat2wasm(component_wat))
+            component = wasmtime.wat2wasm(component_wat)
+            try:
+                out_path.write_bytes(component)
+            except OSError as err:
+                return _output_refused(path, out_path, err)
             kind = (
                 "WASI Preview 2 server component (run with: "
                 "wasmtime serve <file>)"
@@ -1029,7 +1042,11 @@ def cmd_compile(
 
             out_dir = Path(output) if output else p.parent / (p.stem + "_browser")
             title = p.stem.replace("_", " ").title()
-            files = emit_browser_bundle(result.wasm_bytes, out_dir, title=title)
+            try:
+                files = emit_browser_bundle(
+                    result.wasm_bytes, out_dir, title=title)
+            except OSError as err:
+                return _output_refused(path, out_dir, err)
             print(f"Browser bundle: {out_dir}/")
             for f in files:
                 print(f"  {f.name}")
@@ -1037,7 +1054,10 @@ def cmd_compile(
 
         # Write .wasm binary
         out_path = Path(output) if output else p.with_suffix(".wasm")
-        out_path.write_bytes(result.wasm_bytes)
+        try:
+            out_path.write_bytes(result.wasm_bytes)
+        except OSError as err:
+            return _output_refused(path, out_path, err)
         n = len(result.exports)
         plural = "s" if n != 1 else ""
         print(f"Compiled: {out_path} ({n} function{plural} exported)")
@@ -1962,7 +1982,10 @@ def cmd_fmt(
             # *canonical* formatter would emit non-canonical CRLF output
             # (spec 1.8 rule 10 is LF-only), and --check would then flag
             # what --write just produced. Bytes bypass the translation.
-            p.write_bytes(formatted.encode("utf-8"))
+            try:
+                p.write_bytes(formatted.encode("utf-8"))
+            except OSError as err:
+                return _output_refused(path, p, err)
             print(f"Formatted: {path}")
             return 0
 

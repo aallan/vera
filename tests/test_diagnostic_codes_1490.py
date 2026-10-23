@@ -11,7 +11,7 @@ rationale, no fix and no spec section, and printed their text as a bare
 `Error:` line.  Each is now a `Diagnostic` built in `vera.command_errors`,
 in two new ranges: E8xx for a program's own failure while it runs (E800, the
 runtime trap) and E9xx for a refusal of the command line itself (E900 to
-E911).  The JSON envelope keeps every field it had, and the text form is the
+E912).  The JSON envelope keeps every field it had, and the text form is the
 diagnostic block every diagnostic prints.  `scripts/check_diagnostic_fields.py`
 now fails a diagnostic site with no code, which no opt-out waives, and a
 diagnostic built by hand, bar the two its `HAND_BUILT_EXCEPTIONS` names.
@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import socket
 import sys
 from dataclasses import dataclass
@@ -364,11 +365,11 @@ def test_the_debug_knob_still_lets_a_host_error_out(
 
 def test_the_registry_lists_each_new_code_in_its_range() -> None:
     """`vera errors --json` lists E188 at check, E624 at code generation,
-    E800 as run and E900 to E911 as command, each since 0.2.6; E604 and
+    E800 as run and E900 to E912 as command, each since 0.2.6; E604 and
     E605 are gone, and E607 is titled for what its sites report."""
     items = {i["code"]: i for i in pipeline.cli("errors", "--json").json()["items"]}
     expected = {"E188": "typecheck", "E624": "codegen", "E800": "run",
-                **{f"E9{n:02d}": "command" for n in range(12)}}
+                **{f"E9{n:02d}": "command" for n in range(13)}}
     for code, phase in expected.items():
         assert (items[code]["phase"], items[code]["since"]) == (phase, "0.2.6"), code
     assert "E604" not in items and "E605" not in items
@@ -942,6 +943,21 @@ _PINS: list[tuple[Any, dict[str, Any]]] = [
                 '  vera serve --port 8080 program.vera',
          'spec_ref': 'Chapter 0, Section 0.5.1 "Diagnostic Structure"',
          'error_code': 'E910'}),
+    (lambda: ce.output_not_writable(
+        "main.vera", "out/x.wasm", FileNotFoundError(2, "No such file or directory")),
+        {'severity': 'error',
+         'description': 'cannot write the output out/x.wasm: No such file or directory',
+         'location': {'line': 0, 'column': 0, 'file': 'main.vera'},
+         'rationale': 'The command writes its output to the path its command line '
+                      'names, or beside the source, and the operating system refused '
+                      "the write: the path's directory does not exist, the path is a "
+                      'directory, or the command may not write there.',
+         'fix': 'Name an output path in a directory that exists and the command may '
+                'write, or create the directory first:\n'
+                '\n'
+                '  vera compile -o build/program.wasm program.vera',
+         'spec_ref': 'Chapter 0, Section 0.5.1 "Diagnostic Structure"',
+         'error_code': 'E912'}),
     (lambda: ce.optional_dependency("D911"),
         {'severity': 'error',
          'description': 'D911',
@@ -1077,6 +1093,97 @@ def test_e904_names_each_command_that_reads_a_file(tmp_path: Path) -> None:
     run = pipeline.cli("nonsense")
     assert run.stderr.startswith(ce.command_not_understood(
         "Unknown command: nonsense").format()), run.stderr
+
+
+def _refused_write(output: Path) -> OSError:
+    """The error writing *output* raises on this platform, as the command
+    meets it."""
+    try:
+        output.write_bytes(b"")
+    except OSError as exc:
+        return exc
+    raise AssertionError(f"{output} was written")
+
+
+def test_e912_an_output_directory_that_does_not_exist(tmp_path: Path) -> None:
+    """A member met during the build: `vera compile -o` into a directory
+    that does not exist reported the SOURCE file not found (E900) at
+    fa9bcbe6.  It is E912, naming the output and the reason, and the source,
+    which exists, is not blamed.  Under `--json` the command writes no
+    output, as it did before, so nothing refuses; with the directory made,
+    as the fix says, the compile writes it."""
+    source = _write(tmp_path, "ok")
+    output = tmp_path / "no" / "such" / "out.wasm"
+    run = pipeline.cli("compile", "-o", output, source)
+    assert run.returncode == 1, run
+    expected = ce.output_not_writable(str(source), str(output), _refused_write(output))
+    assert run.stderr == expected.format() + "\n", run.stderr
+    assert "E900" not in run.stderr and not output.exists()
+    run = pipeline.cli("compile", "--json", "-o", output, source)
+    assert run.returncode == 0 and _envelope(run)["ok"] is True, run
+    output.parent.mkdir(parents=True)
+    run = pipeline.cli("compile", "-o", output, source)
+    assert run.returncode == 0 and output.is_file(), run
+
+
+def test_e912_an_output_path_that_is_a_directory(tmp_path: Path) -> None:
+    """`vera compile -o` naming a directory: the write is refused (a
+    directory on POSIX, permission on Windows), and that is E912 too."""
+    source = _write(tmp_path, "ok")
+    output = tmp_path / "already_a_directory"
+    output.mkdir()
+    run = pipeline.cli("compile", "-o", output, source)
+    assert run.returncode == 1, run
+    expected = ce.output_not_writable(str(source), str(output), _refused_write(output))
+    assert run.stderr == expected.format() + "\n", run.stderr
+
+
+@pytest.mark.skipif(sys.platform == "win32" or getattr(os, "geteuid", lambda: 1)() == 0,
+                    reason="a directory's mode does not refuse a write on Windows "
+                           "or to root")
+def test_e912_an_output_directory_the_command_may_not_write(tmp_path: Path) -> None:
+    """`vera compile` and `vera compile --target browser` into a directory
+    the command may not write: E912, where the core write was a traceback
+    at fa9bcbe6, and is not the internal error E699 #1793's backstop would
+    report."""
+    source = _write(tmp_path, "ok")
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    locked.chmod(0o555)
+    try:
+        for argv, output in (
+            (("compile", "-o", locked / "out.wasm", source), locked / "out.wasm"),
+            (("compile", "--target", "browser", "-o", locked / "bundle", source),
+             locked / "bundle"),
+            (("compile", "--target", "wasi-p2", "-o", locked / "c.wasm", source),
+             locked / "c.wasm")):
+            run = pipeline.cli(*argv)
+            assert run.returncode == 1, (argv, run)
+            assert run.stderr.startswith(f"[E912] Error at {source}, line 0, column 0:"
+                                         f"\n\n  cannot write the output {output}: "), run.stderr
+            assert "E699" not in run.stderr, run.stderr
+    finally:
+        locked.chmod(0o755)
+
+
+def test_e912_fmt_write_to_a_file_it_may_not_write(tmp_path: Path) -> None:
+    """`vera fmt --write` on a file the command may not write: E912, where
+    it was a traceback at fa9bcbe6."""
+    import stat
+
+    source = _write(tmp_path, "ok")
+    source.write_text(PROGRAMS["ok"].replace("  42\n", "    42\n"), encoding="utf-8")
+    source.chmod(stat.S_IREAD)
+    try:
+        if getattr(os, "geteuid", lambda: 1)() == 0:
+            pytest.skip("root writes a read-only file")
+        run = pipeline.cli("fmt", "--write", source)
+        assert run.returncode == 1, run
+        error = _refused_write(source)
+        expected = ce.output_not_writable(str(source), str(source), error)
+        assert run.stderr == expected.format() + "\n", run.stderr
+    finally:
+        source.chmod(stat.S_IREAD | stat.S_IWRITE)
 
 
 # =====================================================================

@@ -1092,4 +1092,5 @@ ERROR_CODES: dict[str, str] = {
     "E909": "Arguments do not fit the function's parameters",
     "E910": "Server cannot bind its address",
     "E911": "Optional dependency not installed",
+    "E912": "Output path cannot be written",
 }
