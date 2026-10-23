@@ -381,6 +381,8 @@ Type variables are introduced by `forall<...>` and are scoped to the entire func
 
 A call's type arguments are inferred from its arguments. An argument that is an integer literal, or is built from literals, takes its type from the call's context — the other arguments first, then the type the result is expected at unless a negative literal sits beside a non-negative one at the type argument — and only when neither fixes it from its own value (§4.2).
 
+A type variable that no argument of its call fixes stays open in the call's type, and stands for one type. A value of that type fits a parameter, an array literal's other elements or the other branch of an `if` or a `match` only where one type for each open variable gives it their type: `twice(None)`, of type `Tuple<Option<T>, Option<T>>`, fits a `Tuple<Option<Int>, Option<Int>>` parameter and not a `Tuple<Option<Int>, Option<String>>` one. A function the call builds, or one a data value it builds holds, is compiled at a type of its own for such a variable, so where the variable stands in a function type, or in a type argument a constructor field holds a function over, the value fits no type that gives the variable one: the identity `fn(T -> T)` from a call no argument of which fixes `T` fits neither `fn(Int -> Int)` nor `fn(Option<Nat> -> Option<String>)` (**E202**). Write the closure at the type the parameter asks, or give the call an argument that fixes the variable. A variable of the enclosing function's own `forall` is one type throughout its body and fits only itself.
+
 ### 5.9.1 Effect-Polymorphic Functions
 
 Functions can be polymorphic over effects:
