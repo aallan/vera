@@ -7,6 +7,8 @@ _unify_for_inference methods extracted from TypeChecker.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+
 from vera import ast, naming
 from vera.lexical import blank_comments
 from vera.lowering import (
@@ -20,7 +22,9 @@ from vera.checker.registration import (
     builtin_effect_names,
 )
 from vera.types import (
+    INT,
     LITERAL_HOLE,
+    NAT,
     PRIMITIVES,
     REMOVED_ALIASES,
     AdtType,
@@ -34,6 +38,7 @@ from vera.types import (
     Type,
     TypeVar,
     UnknownType,
+    base_type,
     contains_literal_hole,
     default_literal_holes,
     erases_to_unit,
@@ -42,6 +47,7 @@ from vera.types import (
     merge_inferred_types,
     pretty_effect,
     pretty_type,
+    strip_builtin_typevar_marker,
     substitute,
 )
 
@@ -63,6 +69,57 @@ def _span_text(source: str, span: ast.Span | None) -> str | None:
     """The text of *source* that *span* covers (1-based, end exclusive)."""
     bounds = _span_bounds(source, span)
     return None if bounds is None else source[bounds[0]:bounds[1]]
+
+
+@dataclass(frozen=True)
+class _Pin:
+    """A type variable a function-typed argument fixes by the polarity of
+    the position it holds there (spec §4.2): *up* where the argument
+    declares `Int` (or a type over it) at a positive position, a return or
+    a parameter's parameter, whose values the generic receives; down where
+    it declares `Nat` at a negative one, a parameter, which the generic
+    fills."""
+
+    var: str
+    up: bool
+    path: tuple[tuple[str, int], ...]
+    """The position, outermost first: ``("ret", 0)`` or ``("param", i)``
+    for each function type the walk entered."""
+
+
+@dataclass
+class _Pins:
+    """What one argument's unification pins, and where the walk is."""
+
+    found: list[_Pin] = field(default_factory=list)
+    path: list[tuple[str, int]] = field(default_factory=list)
+
+
+def _record_pin(var: str, concrete: Type, polarity: int, pins: _Pins) -> None:
+    """Record *var*'s pin where a function-typed argument declares `Int` (or
+    a type over it) at a positive position or `Nat` (or a type over it) at a
+    negative one; any other meeting pins nothing."""
+    base = base_type(concrete)
+    if polarity > 0 and base == INT:
+        pins.found.append(_Pin(var, True, tuple(pins.path)))
+    elif polarity < 0 and base == NAT:
+        pins.found.append(_Pin(var, False, tuple(pins.path)))
+
+
+def _position_text(path: tuple[tuple[str, int], ...], index: int,
+                   same: bool) -> str:
+    """*path* in words, outermost first: ``its return``, ``its parameter
+    0``, ``the return of its parameter 0``; ``argument {index}'s`` in place
+    of ``its`` when a refusal's two positions are in different arguments."""
+    owner = "its" if same else f"argument {index}'s"
+    if not path:
+        return owner
+    kind, i = path[0]
+    text = f"{owner} return" if kind == "ret" else f"{owner} parameter {i}"
+    for kind, i in path[1:]:
+        text = (f"the return of {text}" if kind == "ret"
+                else f"parameter {i} of {text}")
+    return text
 
 
 #: The arithmetic operators a literal-only expression may combine literals
@@ -1076,28 +1133,153 @@ class ResolutionMixin:
         (``_check_fn_call_with_info``; #1679, PR #1791 review).
         """
         mapping: dict[str, Type] = {}
-        for param_ty, arg, arg_ty in zip(param_types, args, arg_types):
+        pinned: list[tuple[int, _Pin]] = []
+        for index, (param_ty, arg, arg_ty) in enumerate(
+                zip(param_types, args, arg_types)):
             if arg_ty is None or isinstance(arg_ty, UnknownType):
                 continue
             soft_ty = self._literal_soft_type(arg, arg_ty)
             if soft_ty is None:
                 continue
+            pins = _Pins()
             self._unify_for_inference(param_ty, self._as_holes(soft_ty),
-                                      mapping, None, conflicts)
+                                      mapping, None, conflicts, pins=pins)
+            pinned.extend((index, pin) for pin in pins.found)
         holed = [tv for tv, b in mapping.items() if contains_literal_hole(b)]
-        if not holed:
-            return mapping, dict(mapping)
-        if (expected is not None and result_type is not None
-                and not isinstance(expected, UnknownType)):
-            from_expected: dict[str, Type] = {}
-            self._unify_for_inference(result_type, expected, from_expected)
+        if holed:
+            if (expected is not None and result_type is not None
+                    and not isinstance(expected, UnknownType)):
+                from_expected: dict[str, Type] = {}
+                self._unify_for_inference(result_type, expected, from_expected)
+                for tv in holed:
+                    mapping[tv] = fill_literal_holes(
+                        mapping[tv], from_expected.get(tv))
+            soft = dict(mapping)
             for tv in holed:
-                mapping[tv] = fill_literal_holes(
-                    mapping[tv], from_expected.get(tv))
-        soft = dict(mapping)
-        for tv in holed:
-            mapping[tv] = default_literal_holes(mapping[tv])
+                mapping[tv] = default_literal_holes(mapping[tv])
+        else:
+            soft = dict(mapping)
+        if pinned:
+            self._apply_polarity_pins(pinned, mapping, soft, args)
         return mapping, soft
+
+    def _apply_polarity_pins(
+        self,
+        pinned: list[tuple[int, _Pin]],
+        mapping: dict[str, Type],
+        soft: dict[str, Type],
+        args: tuple[ast.Expr, ...],
+    ) -> None:
+        """Fix each variable a function-typed argument pinned (spec §4.2),
+        after the arguments and the expected type: a positive `Int` makes
+        it `Int`, a negative `Nat` makes it `Nat`, and both are no instance,
+        refused at the argument (E202).  A variable the other arguments fix
+        at a type that is neither `Int` nor `Nat` is the argument check's to
+        report, and a refinement of `Nat` a negative pin finds already
+        holds no `Int`."""
+        by_var: dict[str, list[tuple[int, _Pin]]] = {}
+        for index, pin in pinned:
+            by_var.setdefault(pin.var, []).append((index, pin))
+        for var, var_pins in by_var.items():
+            current = mapping.get(var)
+            current_base = base_type(current) if current is not None else None
+            if current_base is not None and current_base not in (INT, NAT):
+                continue
+            ups = [entry for entry in var_pins if entry[1].up]
+            downs = [entry for entry in var_pins if not entry[1].up]
+            if ups and downs:
+                self._refuse_polarity_conflict(var, ups[0], downs[0], args)
+                continue
+            if ups:
+                mapping[var] = soft[var] = INT
+            elif current_base != NAT:
+                mapping[var] = soft[var] = NAT
+
+    def _refuse_polarity_conflict(
+        self,
+        var: str,
+        up: tuple[int, _Pin],
+        down: tuple[int, _Pin],
+        args: tuple[ast.Expr, ...],
+    ) -> None:
+        """E202 at the argument that completes a variable's two pins."""
+        (up_index, up_pin), (down_index, down_pin) = up, down
+        same = up_index == down_index
+        name = strip_builtin_typevar_marker(var)
+        up_at = _position_text(up_pin.path, up_index, same)
+        down_at = _position_text(down_pin.path, down_index, same)
+        subject = ("This argument fixes" if same else
+                   f"Arguments {min(up_index, down_index)} and "
+                   f"{max(up_index, down_index)} fix")
+        self._error(
+            args[max(up_index, down_index)],
+            f"{subject} the type parameter {name} at two types: `Int` at "
+            f"{up_at} and `Nat` at {down_at}, and no instance of {name} "
+            f"takes both.",
+            rationale=(
+                "A type variable inside a function-typed argument is fixed "
+                "by that argument's declared type, by where it sits: an "
+                "`Int` at a position whose values the generic receives (a "
+                "return) makes the variable `Int`, so no `Int` result is "
+                "read as a `@Nat`; a `Nat` at a position the generic fills "
+                "(a parameter) makes it `Nat`, so the argument is never "
+                "handed an `Int`.  One variable cannot be both."),
+            fix=self._polarity_fix(args[up_index], up_pin.path, name),
+            spec_ref='Chapter 4, Section 4.2 "Literals"',
+            error_code="E202",
+        )
+
+    def _polarity_fix(self, arg: ast.Expr,
+                      path: tuple[tuple[str, int], ...], name: str) -> str:
+        """The refusal's fix: the closure's `Int` at the positive position
+        declared `Nat`, so its value there is a narrowing, checked where the
+        closure returns it, when the closure is written in place."""
+        general = (f"Declare the argument's two positions at one type for "
+                   f"{name}: its `Int` result as `Nat`, or its `Nat` "
+                   f"parameter as `Int`.")
+        te = self._fn_position_type_expr(arg, path)
+        while isinstance(te, ast.RefinementType):
+            te = te.base_type
+        if not isinstance(arg, ast.AnonFn) or not isinstance(te, ast.NamedType):
+            return general
+        whole = _span_bounds(self.source, arg.span)
+        at = _span_bounds(self.source, te.span)
+        ret = _span_bounds(self.source, arg.return_type.span)
+        if whole is None or at is None or ret is None:
+            return general
+        close = self.source.find(")", ret[1])
+        if close < 0 or not (whole[0] <= at[0] < at[1] <= close):
+            return general
+        header = self.source[whole[0]:close + 1]
+        fixed = (header[:at[0] - whole[0]] + "Nat"
+                 + header[at[1] - whole[0]:])
+        return (f"Declare the argument's two positions at one type for "
+                f"{name}: replace '{header}' with '{fixed}', so its result is "
+                f"a narrowing checked where it is returned, or declare its "
+                f"`Nat` parameter as `Int`.")
+
+    @staticmethod
+    def _fn_position_type_expr(
+        arg: ast.Expr, path: tuple[tuple[str, int], ...],
+    ) -> ast.TypeExpr | None:
+        """The type expression a closure written in place declares at
+        *path*, or None where the path leaves what it spells."""
+        if not isinstance(arg, ast.AnonFn) or not path:
+            return None
+        node: ast.AnonFn | ast.FnType = arg
+        te: ast.TypeExpr | None = None
+        for step, (kind, index) in enumerate(path):
+            if kind == "ret":
+                te = node.return_type
+            elif index < len(node.params):
+                te = node.params[index]
+            else:
+                return None
+            if isinstance(te, ast.FnType):
+                node = te
+            elif step < len(path) - 1:
+                return None
+        return te
 
     def _as_holes(self, ty: Type) -> Type:
         """*ty*, an argument's type, with each unknown in it (an empty array
@@ -1147,8 +1329,17 @@ class ResolutionMixin:
                              mapping: dict[str, Type],
                              forall_vars: set[str] | None = None,
                              conflicts: set[str] | None = None,
+                             *,
+                             polarity: int = 0,
+                             pins: _Pins | None = None,
                              ) -> None:
-        """Simple unification for type argument inference."""
+        """Simple unification for type argument inference.
+
+        Inside a function type (*polarity* not 0: 1 at a position whose
+        values the generic receives, -1 at one it fills), a variable met at
+        `Int` positively or at `Nat` negatively is recorded in *pins*, for
+        :meth:`_infer_type_args_in_context` to fix by spec §4.2's polarity
+        rule; the binding is made as anywhere else."""
         # Skip when the concrete type has TypeVars matching the callee's
         # own forall vars (e.g. map_new() returns Map<K, V> where K, V
         # are the callee's forall vars — not yet resolved from args).
@@ -1161,6 +1352,8 @@ class ResolutionMixin:
                         for a in concrete.type_args)):
             return
         if isinstance(pattern, TypeVar):
+            if pins is not None and polarity:
+                _record_pin(pattern.name, concrete, polarity, pins)
             # Prefer concrete resolutions over fresh TypeVars (those named
             # with '$', e.g. T$1 from _fresh_typevar).
             #
@@ -1226,15 +1419,27 @@ class ResolutionMixin:
             if pattern.name == concrete.name:
                 for p_arg, c_arg in zip(pattern.type_args, concrete.type_args):
                     self._unify_for_inference(
-                        p_arg, c_arg, mapping, forall_vars, conflicts)
+                        p_arg, c_arg, mapping, forall_vars, conflicts,
+                        polarity=polarity, pins=pins)
 
         if isinstance(pattern, FunctionType) and isinstance(concrete, FunctionType):
-            for p_param, c_param in zip(pattern.params, concrete.params):
+            inner = polarity or 1
+            for i, (p_param, c_param) in enumerate(
+                    zip(pattern.params, concrete.params)):
+                if pins is not None:
+                    pins.path.append(("param", i))
                 self._unify_for_inference(
-                    p_param, c_param, mapping, forall_vars, conflicts)
+                    p_param, c_param, mapping, forall_vars, conflicts,
+                    polarity=-inner, pins=pins)
+                if pins is not None:
+                    pins.path.pop()
+            if pins is not None:
+                pins.path.append(("ret", 0))
             self._unify_for_inference(
                 pattern.return_type, concrete.return_type,
-                mapping, forall_vars, conflicts)
+                mapping, forall_vars, conflicts, polarity=inner, pins=pins)
+            if pins is not None:
+                pins.path.pop()
 
 
 def _meet_literal_holes(parts: tuple[Type | None, ...], ty: Type) -> Type:

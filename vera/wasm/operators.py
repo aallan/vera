@@ -201,50 +201,20 @@ class OperatorsMixin:
                 ]
             if ltype == "i32" and rtype == "i32":
                 # Byte operands use unsigned i32 comparison
-                lv = self._infer_vera_type(expr.left)
-                rv = self._infer_vera_type(expr.right)
+                lv = self._type_name_of(expr.left)
+                rv = self._type_name_of(expr.right)
                 if lv == "Byte" or rv == "Byte":
                     i32_op = self._CMP_OPS[op].replace("i64.", "i32.")
                     i32_op = i32_op.replace("_s", "_u")
                     return left + right + [i32_op]
-                # ADT structural equality (§9.8 auto-derivation).  `lv` may be
-                # parameterized (`Box<String>`); dispatch on the base name but
-                # pass the full name so the generated helper resolves the
-                # concrete field types of *this* instantiation (#773).  Recover
-                # the left operand's fully-qualified name via the shared chain:
-                # `_parameterize_ctor_operand` (a `Some(1)` operand → `Option<Int>`,
-                # #772), `_recover_lost_type_arg` (a bare generic-ADT slot →
-                # `Box<Int>` from its sibling, #912) and the `_eq_full_type_names`
-                # map (a truncated `List<List>` clone → `List<List<Int>>`, #932).
-                lv = self._eq_operand_full_name(expr.left, expr.right, lv)
-                # #994 F2: a payload-less nested constructor (`Some(None)` →
-                # `Option<Option>`, inner argument erased) or a dead base generic
-                # clone's slot (`Option<Option<T>>`, nested free `T`) leaves `lv`
-                # only PARTIALLY resolved — the structural-Eq derivation cannot
-                # lower it and raised a spurious E613.  Both operands share a type
-                # (checker E142 otherwise), and a monomorphized *reachable* clone
-                # substitutes the sibling slot to a fully concrete name, so
-                # recover the concrete name from the OTHER operand when this one
-                # is under-resolved.  When NEITHER resolves (the dead base clone),
-                # `lv` stays partial and the concreteness gate below routes it to
-                # the harmless scalar (dead-code) lowering, exactly as the #912
-                # lost-type-arg clone does.
-                if lv is not None and not self._eq_type_name_fully_concrete(lv):
-                    rv_full = self._eq_operand_full_name(expr.right, expr.left, rv)
-                    if (rv_full is not None
-                            and self._eq_type_name_fully_concrete(rv_full)):
-                        lv = rv_full
-                # #1085: ground the operand's OWN spelling.  An alias of a WHOLE
-                # ADT (`type MyBox = Box<Int>;`) reaches the dispatch as the bare
-                # alias name `MyBox`, absent from `_adt_type_names`, so the
-                # structural branch below was skipped and `==` fell to the scalar
-                # POINTER compare — two structurally equal, distinct-pointer
-                # values compared unequal (0) on a check-green program.  #1076
-                # grounded type ARGUMENTS (`Box<MyInt>`); this grounds the whole
-                # operand.  `_canonical_field_type` resolves alias chains and
-                # peels a transparent `Future<...>` wrapper; a registered ADT or a
-                # genuine free `T` is returned unchanged, so the lost-arg and
-                # free-var controls still route to the scalar fallback.
+                # ADT structural equality (§9.8 auto-derivation).  `lv` is
+                # the left operand's checked type in full (`Box<String>`,
+                # `Option<Int>`), so the generated helper resolves the field
+                # types of *this* instantiation (#773): a constructed operand,
+                # a call's result and an element are named by the type the
+                # checker gave them, not by a head their syntax spelled
+                # (#1525: `wrap(1) == wrap(1)` compared two addresses).
+                # `_canonical_field_type` peels a transparent `Future<...>`.
                 if lv is not None:
                     lv = self._canonical_field_type(lv)
                 lv_base = lv.split("<", 1)[0] if lv is not None else None
@@ -335,7 +305,7 @@ class OperatorsMixin:
                 return canonical is not None and canonical.name == "Byte"
             return False
         return self._resolve_base_type_name(
-            self._infer_vera_type(expr) or "") == "Byte"
+            self._type_name_of(expr) or "") == "Byte"
 
     def _translate_byte_operand(
         self, expr: ast.Expr, env: WasmSlotEnv,
@@ -397,107 +367,6 @@ class OperatorsMixin:
     # the helper generator's E699 field-dispatch invariant (PR #870 review;
     # closes the #872 hole).
 
-    def _parameterize_ctor_operand(
-        self, operand: ast.Expr, bare: str | None,
-    ) -> str | None:
-        """Recover an `==` operand's parameterized ADT type name (#772, #923).
-
-        `_infer_vera_type` resolves a `ConstructorCall` to the BARE ADT name
-        (`Option`, dropping `<Int>`).  For the direct structural-`==` derivation
-        the type argument is load-bearing — the generated `$eq_<type>` helper
-        must resolve the concrete field type — so recover it from the
-        constructor's arguments, RECURSIVELY (#923): a nested-generic operand
-        (`Cons(Cons(1, Nil), Nil)`) reconstructs the FULLY-qualified
-        `List<List<Int>>` rather than the one-level `List<List>` the pre-#923
-        flat recovery produced (which then spuriously E613'd on the derivable
-        nested type).  When that recursion bottoms out at a bare head because no
-        field IS a bare type parameter — a GENERIC mutually-recursive ADT whose
-        argument is buried in a NESTED generic field (`Grove(Rose<T>,
-        Forest<T>)`) — fall back to `_recover_ctor_ptype`, which descends into
-        the nested field's own argument to dig the parameter out (#934; without
-        the recovered `<Int>` the composite `==` silently lowered to a
-        bare-pointer `i32.eq` → a wrong `0`).  Falls back to ``bare`` when the
-        operand is not a `ConstructorCall` or a needed type argument cannot be
-        inferred — the established lost-type-arg shape the derivability path
-        already routes to the scalar lowering.
-        """
-        if bare is None:
-            return bare
-        # #923: recover the FULLY-qualified nested-generic name (List<List<Int>>)
-        # for the direct-`==` path.  #934: when that recursion bottoms out at a
-        # bare head — a GENERIC mutually-recursive ADT (`Grove(Rose<T>,
-        # Forest<T>)`) with no bare-`T` field — fall back to the nested-descent
-        # recovery that digs the parameter out of a nested generic field.  Trying
-        # `_full_ctor_type_name` first (any `<…>` result wins) means the two
-        # recoveries never disagree on a shape the direct path already handles.
-        full = self._full_ctor_type_name(operand)
-        if full is not None and "<" in full:
-            return full
-        # #934 fallback applies only to a `ConstructorCall` — `_recover_ctor_ptype`
-        # reads `.name`/args (a `SlotRef` has neither) and returns None for a
-        # non-generic ADT, so a non-descendable or non-generic operand keeps the
-        # bare name `_full_ctor_type_name` already produced (the release path).
-        if isinstance(operand, ast.ConstructorCall):
-            recovered = self._recover_ctor_ptype(operand, bare)
-            if recovered is not None and recovered != bare:
-                return recovered
-        return full or bare
-
-    def _full_ctor_type_name(self, operand: ast.Expr) -> str | None:
-        """Fully-qualified Vera type name of a constructor operand (#923).
-
-        Recurses through nested `ConstructorCall` fields so every level's type
-        argument is recovered: for each field that maps to an ADT type parameter
-        (`_ctor_adt_tp_indices`), the field's own full name is reconstructed by
-        recursing on the field expression.  A non-`ConstructorCall` expression
-        yields its bare `_infer_vera_type` name (a nested `List<Int>` bottoms out
-        at the `Int` leaf, a nullary `Nil` at the bare `List`).  Returns ``None``
-        only when the base ADT name itself cannot be resolved; a field whose type
-        argument cannot be inferred leaves that position bare (the base ADT name
-        with no `<…>`), matching the lost-type-arg shape codegen already handles.
-        """
-        if not isinstance(operand, ast.ConstructorCall):
-            return self._infer_vera_type(operand)
-        base = self._ctor_to_adt_name(operand.name)
-        if base is None:
-            return None
-        # ctor-owner-exempt: resolved in the compiling namespace's scoped
-        # projection (#1436)
-        tp_indices = self._ctor_adt_tp_indices.get(operand.name)
-        tp_count = self._adt_tp_counts.get(base, 0)
-        if not tp_indices or tp_count == 0:
-            return base
-        slots: list[str | None] = [None] * tp_count
-        for field_i, tp_idx in enumerate(tp_indices):
-            if tp_idx is not None and field_i < len(operand.args):
-                slots[tp_idx] = self._full_ctor_type_name(operand.args[field_i])
-        if all(s is not None for s in slots):
-            return f"{base}<{', '.join(s for s in slots if s is not None)}>"
-        return base
-
-    def _recover_lost_type_arg(
-        self, lv: str | None, other: ast.Expr,
-    ) -> str | None:
-        """Recover a bare generic-ADT operand's type argument from its sibling.
-
-        A `ResultRef`/`SlotRef` operand of a composite `==` carries no arguments
-        of its own to recover a dropped type parameter from (unlike a
-        `ConstructorCall`, handled by `_parameterize_ctor_operand`).  When `lv`
-        is a bare generic-ADT name (its base declares type parameters but `lv`
-        has no `<…>`) — the #772 monomorphization residue where `@T.result`
-        became `@Box.result`, dropping `<Int>` — try the OTHER `==` operand: a
-        `ConstructorCall` sibling (`@Box.result == MkBox(7)`) still carries the
-        concrete argument, so `_parameterize_ctor_operand` recovers `Box<Int>`.
-        Returns the parameterized name on success, else `lv` unchanged (the
-        caller then treats the still-bare name as a lost-arg clone).
-        """
-        if lv is None or "<" in lv:
-            return lv
-        base = lv
-        if not self._adt_tp_param_names.get(base):
-            return lv  # not a generic ADT — nothing to recover
-        recovered = self._parameterize_ctor_operand(other, base)
-        return recovered if recovered is not None else lv
 
     # Non-ADT type-name bases that are nonetheless CONCRETE (primitives +
     # built-in containers).  A single-segment type-argument base that is none
@@ -697,43 +566,6 @@ class OperatorsMixin:
         # concrete base is an unresolved type VARIABLE (``T``).
         return False
 
-    def _eq_operand_full_name(
-        self, operand: ast.Expr, other: ast.Expr, bare: str | None,
-    ) -> str | None:
-        """Fully-recover an ``==`` operand's ADT type name (#994 F2).
-
-        Factors the established recovery chain (used for the left operand since
-        #772/#912/#932) so it can be applied to EITHER operand symmetrically:
-
-        * ``_parameterize_ctor_operand`` — recover a ``ConstructorCall``'s dropped
-          type argument from its own arguments (``Some(1)`` → ``Option<Int>``);
-        * ``_recover_lost_type_arg`` — recover a bare generic-ADT slot operand's
-          argument from the *other* operand (``@Box.result == MkBox(7)`` →
-          ``Box<Int>``);
-        * the ``_eq_full_type_names`` map — expand a truncated one-level clone
-          name to its fully-nested form (#932).
-
-        ``bare`` is *operand*'s already-computed ``_infer_vera_type`` name.
-
-        #1078: an ``IndexExpr`` operand (an array ELEMENT) arrives as the
-        element type's bare head — ``_infer_index_element_type`` computes the
-        full element ``NamedType`` and then returns only ``.name`` (``Box<Int>``
-        → ``"Box"``) — so a parameterized element was classified as a
-        lost-type-argument clone and ``==`` silently fell back to the scalar
-        POINTER compare.  The indexed collection carries its complete type
-        arguments, so re-derive the full element spelling from it.
-        """
-        name = self._parameterize_ctor_operand(operand, bare)
-        if (isinstance(operand, ast.IndexExpr)
-                and name is not None
-                and "<" not in name):
-            te = self._infer_index_element_type_expr(operand)
-            if te is not None and te.type_args and te.name == name:
-                name = self._format_named_type(te)
-        name = self._recover_lost_type_arg(name, other)
-        if name is not None:
-            name = self._eq_full_type_names.get(name, name)
-        return name
 
     def _translate_adt_eq(
         self,
@@ -1569,7 +1401,7 @@ class OperatorsMixin:
                 # and follows alias chains to the terminal shape, which
                 # is what actually decides how the value renders.
                 vera_type = self._interp_resolved_type_name(
-                    self._infer_vera_type(p),
+                    self._type_name_of(p),
                 )
                 if vera_type == "String":
                     parts.append(p)

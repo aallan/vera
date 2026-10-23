@@ -257,6 +257,23 @@ def _program(position: str, value: str, target: str) -> str:
 
 _MATRIX = [(p, v) for p in _POSITIONS for v in _LITERAL_ARITHMETIC]
 _MATRIX_IDS = [f"{p} / {v}" for p, v in _MATRIX]
+
+#: The cells whose -3 no rule refuses: the literal's `Array<Wrap<Int>>` is
+#: admitted at the `let`'s `Array<Wrap<Nat>>` with no record and no guard,
+#: #1695's composite coercion (its #1542 line).  At f1bc772d only this index
+#: scrutinee trapped, by an accidental guard: code generation's walker named
+#: the element `Wrap`, with no argument, and the sub-pattern bind was guarded
+#: for want of the field's type; slot, call and `let` scrutinees of the same
+#: value were already silent.  Read off the typed program the element is
+#: `Wrap<Nat>`, whose field is a `Nat`, and the bind takes no guard.
+_COMPOSITE_COERCION = frozenset({"nested, ADT in array"})
+_REFUSED_MATRIX = [
+    pytest.param(p, v, id=f"{p} / {v}", marks=pytest.mark.xfail(
+        strict=True, reason="#1695 (#1542): the composite coercion is "
+        "obligated and guarded nowhere"))
+    if p in _COMPOSITE_COERCION else pytest.param(p, v, id=f"{p} / {v}")
+    for p, v in _MATRIX
+]
 _DIRECT_MATRIX = [(p, v) for p, v in _MATRIX if p not in _NESTED]
 _DIRECT_IDS = [f"{p} / {v}" for p, v in _DIRECT_MATRIX]
 
@@ -340,7 +357,7 @@ class TestNegativeLiteralArithmeticIsRefusedByANatBinding:
     verify` reports it VIOLATED.
     """
 
-    @pytest.mark.parametrize(("position", "value"), _MATRIX, ids=_MATRIX_IDS)
+    @pytest.mark.parametrize(("position", "value"), _REFUSED_MATRIX)
     def test_the_run_is_refused(self, position: str, value: str) -> None:
         observed = _observe(_program(position, value, "Nat"), "f",
                             _ARGS_MINUS_3)
@@ -863,6 +880,9 @@ _READERS: dict[tuple[str, str, str], str] = {
      "_expr_semantic_types"): "threads the table into a function's context",
     ("vera/verifier.py", "ContractVerifier._check_div_zero_obligation",
      "_resolved_type_of"): "whether the divisor is a Float64",
+    ("vera/verifier.py", "ContractVerifier._closure_arg_param_types",
+     "_resolved_type_of"): "the closure operand's formals, which the "
+                           "argument is then obligated against",
     ("vera/verifier.py", "ContractVerifier._check_float_rendering",
      "_resolved_type_of"): "whether a rendered value holds a Float64",
     ("vera/verifier.py", "ContractVerifier._guarded_binder_values",
@@ -905,14 +925,13 @@ _READERS: dict[tuple[str, str, str], str] = {
     ("vera/verifier.py", "ContractVerifier._subpattern_source_facts",
      "_resolved_type_of"): "facts an opaque scrutinee's declaration "
                            "establishes",
-    ("vera/wasm/calls.py", "CallsMixin._unify_param_arg_wasm",
-     "_expr_semantic_types"): "clone naming (#1327), not a guard",
     ("vera/wasm/context.py", "WasmContext.__init__",
      "_expr_semantic_types"): "stores the table",
     ("vera/wasm/context.py", "WasmContext.set_expr_semantic_types",
      "_expr_semantic_types"): "stores the table",
-    ("vera/wasm/inference.py", "InferenceMixin._infer_vera_type",
-     "_expr_semantic_types"): "clone naming (#1327): the walker first",
+    ("vera/wasm/inference.py", "InferenceMixin._type_of",
+     "_expr_semantic_types"): "the accessor (#1525): every width and name "
+                              "code generation lowers by",
     ("vera/wasm/operators.py", "OperatorsMixin._declared_result_is_nat",
      "_resolved_codegen_type"): _LEAF,
     ("vera/wasm/operators.py", "OperatorsMixin._checker_resolved_type",

@@ -111,7 +111,7 @@ class CallsHandlersMixin:
         the rendering emits is spanned at (#1482), since the verifier
         records a rendering's obligation there.
         """
-        vera_type = self._infer_vera_type(arg)
+        vera_type = self._type_name_of(arg)
         if vera_type is None:
             raise CodegenSkip(
                 arg, "could not infer show() argument type"
@@ -161,20 +161,10 @@ class CallsHandlersMixin:
             return self._translate_call(desugared, env)
 
         # Composite (#911): ADT / Tuple / Option / Result / Array.  Render
-        # structurally, recursing into each field's own `show`.  Recover the
-        # PARAMETERIZED type (`Option<Int>`, `Array<String>`) so inner field
-        # types resolve — `_infer_vera_type` only reports the bare head.
-        # #1091 / PR #1090 review: the recovery prefers the DECLARED spelling,
-        # UNDOING the grounding above — `show(@FOI.0)` (`type FOI =
-        # Future<Option<Int>>;`) grounded to `Option<Int>` at the top only for
-        # the recovery to hand `_show_value` the raw `FOI` (no constructor
-        # plans; E602 function drop), and an alias of a WHOLE ADT (`type MyBox
-        # = Box;`) recovered as `MyBox` the same way.  Ground the recovered
-        # spelling too: a grounded compound (`Option<Int>`, `Box<Int>`,
-        # `Array<FI>`) passes through unchanged.
-        param_type = self._canonical_field_type(
-            self._parameterized_arg_type(arg, vera_type)
-        )
+        # structurally, recursing into each field's own `show`; the checked
+        # type carries its arguments (`Option<Int>`, `Array<String>`), so
+        # inner field types resolve from it (#1525).
+        param_type = vera_type
         value_instrs = self.translate_expr(arg, env)
         if value_instrs is None:
             return None
@@ -201,7 +191,7 @@ class CallsHandlersMixin:
         - Unit → i64.const 0
         - String → FNV-1a hash
         """
-        vera_type = self._infer_vera_type(arg)
+        vera_type = self._type_name_of(arg)
         if vera_type is None:
             raise CodegenSkip(
                 arg, "could not infer hash() argument type"
@@ -236,13 +226,8 @@ class CallsHandlersMixin:
             return self._translate_hash_string(arg_instrs)
 
         # Composite (#911): fold the constructor tag with each field's own
-        # hash.  Parameterized type recovers inner field types (see show).
-        # #1091 / PR #1090 review: ground the recovered spelling — the
-        # recovery prefers the DECLARED form, undoing the grounding above
-        # (mirrors the show dispatch).
-        param_type = self._canonical_field_type(
-            self._parameterized_arg_type(arg, vera_type)
-        )
+        # hash, the field types read off the checked type (see show).
+        param_type = vera_type
         composite = self._hash_value(param_type, arg_instrs, arg)
         if composite is not None:
             return composite
@@ -338,231 +323,6 @@ class CallsHandlersMixin:
     # concrete offsets recomputed from their concrete WASM types via the same
     # `_concrete_field_layout`, and per-field dispatch by resolved Vera type.
 
-    def _parameterized_arg_type(
-        self, arg: ast.Expr, bare: str,
-    ) -> str:
-        """Recover a show/hash argument's PARAMETERIZED type name.
-
-        `_infer_vera_type` reports the bare head (`"Option"`, `"Array"`);
-        the structural traversal needs the type arguments to resolve inner
-        field types.  Reuses `_get_arg_type_info_wasm` (the same routine the
-        generic-call rewriter and structural-`==` use).  Falls back to the
-        bare name when the type arguments cannot be inferred.
-        """
-        # Array literal: recover the element type directly from its elements
-        # (`_get_arg_type_info_wasm` does not special-case a bare `ArrayLit`).
-        # Resolve the first element's FULL parameterized type recursively so an
-        # array of composites (`[Tuple(1, 2), …]`, `[Some(1), …]`) carries the
-        # nested type args rather than a bare `Array<Tuple>` head.
-        if isinstance(arg, ast.ArrayLit):
-            if arg.elements:
-                first = arg.elements[0]
-                elem_bare = self._infer_vera_type(first)
-                if elem_bare is not None:
-                    elem = self._parameterized_arg_type(first, elem_bare)
-                    return f"Array<{elem}>"
-            elem = self._infer_array_element_type(arg)
-            if elem is not None:
-                return f"Array<{elem}>"
-            return bare
-
-        # SlotRef and FnCall carry a DECLARED type expression that formats
-        # nested generics in full (`Option<Tuple<Int, Int>>`), which the flat
-        # `_get_arg_type_info_wasm` list cannot (it Nones-out any type arg that
-        # is itself parameterized).  Prefer it when present.
-        declared = self._declared_type_expr_for_show(arg)
-        if declared is not None:
-            formatted = self._format_named_type(declared)
-            # Only trust it if it is fully ground (no bare type-parameter head).
-            if "<" in formatted or formatted == bare:
-                return formatted
-
-        # A direct constructor literal's flat `_get_arg_type_info_wasm` result
-        # Nones-out (or bare-heads) any type arg that is itself a composite —
-        # so inline `Some(Tuple(1, 2))` / `Ok(Some(1))` lose the nested type
-        # args.  Recover the FULL parameterized type by resolving each argument
-        # recursively.  `Tuple` is variadic (its type args ARE its element
-        # types, one per arg); every other constructor maps args to the ADT's
-        # type-parameter slots via `_ctor_adt_tp_indices`.
-        if isinstance(arg, ast.ConstructorCall):
-            recovered = self._recover_ctor_ptype(arg, bare)
-            if recovered is not None:
-                return recovered
-            # A non-generic data type takes no arguments.  The positional
-            # fallback below lists the constructor's FIELD types in their
-            # place (`MkArr(3)` as `Array<Int>`), which reads as another
-            # type now that the argument count says whose a spelling is
-            # (#1539): a `data Array`'s value rendered as the container.
-            adt = self._ctor_to_adt_name(arg.name)
-            if (adt is not None and arg.name != "Tuple"
-                    and not self._adt_tp_counts.get(adt, 0)):
-                return adt
-
-        info = self._get_arg_type_info_wasm(arg)
-        if info is None:
-            return bare
-        base_name, arg_names = info
-        if arg_names and all(a is not None for a in arg_names):
-            resolved = [a for a in arg_names if a is not None]
-            return f"{base_name}<{', '.join(resolved)}>"
-        return base_name
-
-    def _recover_ctor_ptype(
-        self, arg: ast.ConstructorCall, bare: str,
-        _seen: frozenset[str] = frozenset(),
-    ) -> str | None:
-        """Recover a constructor call's FULL parameterized type, recursively.
-
-        `Tuple(a, b, …)` → ``Tuple<Ta, Tb, …>`` (element types are the args'
-        own parameterized types).  Any other constructor maps each argument to
-        its ADT type-parameter slot (via ``_ctor_adt_tp_indices``) and resolves
-        that slot's argument recursively, so `Some(Tuple(1, 2))` yields
-        ``Option<Tuple<Int, Int>>``.
-
-        A slot that no argument pins DIRECTLY (its field is not a bare ``T``)
-        is recovered by DESCENDING into a NESTED generic field whose declared
-        type carries the parameter (#934): `Grove(Rose<T>, Forest<T>)` has no
-        bare-``T`` field, but the field-0 argument `Bloom(1, …)` is a `Rose<T>`
-        whose own `Bloom(T, …)` pins `T = Int` from the literal `1` — so
-        `Grove(Bloom(1, Empty), Empty)` recovers `Forest<Int>`.  ``_seen``
-        bounds the descent (the ADTs are mutually recursive).
-
-        Returns None when the recovery is not fully ground (a slot arg whose
-        type can't be inferred), leaving the caller on its existing fallbacks.
-        """
-        if arg.name == "Tuple":
-            elem_types = [
-                self._parameterized_arg_type(a, self._infer_vera_type(a) or "")
-                for a in arg.args
-            ]
-            if all(elem_types):
-                return f"Tuple<{', '.join(elem_types)}>"
-            return None
-
-        adt_name = self._ctor_to_adt_name(arg.name)
-        if adt_name is None:
-            return None
-        tp_count = self._adt_tp_counts.get(adt_name, 0)
-        if tp_count == 0:
-            return None  # non-generic ADT — bare name already correct
-        # ctor-owner-exempt: resolved in the compiling namespace's scoped
-        # projection (#1436)
-        field_tp_idx = self._ctor_adt_tp_indices.get(arg.name)
-        if field_tp_idx is None:
-            return None
-        slots: list[str | None] = [None] * tp_count
-        # Direct pass: a field that IS a bare type parameter pins its slot.
-        for field_i, tp_idx in enumerate(field_tp_idx):
-            if tp_idx is not None and field_i < len(arg.args):
-                a = arg.args[field_i]
-                a_bare = self._infer_vera_type(a)
-                if a_bare is not None:
-                    slots[tp_idx] = self._parameterized_arg_type(a, a_bare)
-        # Nested-descent pass (#934): fill any slot the direct pass left None
-        # by digging the parameter out of a nested generic field's argument.
-        if not all(s is not None for s in slots):
-            self._recover_ptype_via_nested_fields(
-                arg, adt_name, tp_count, slots, _seen,
-            )
-        if all(s is not None for s in slots):
-            return f"{adt_name}<{', '.join(s for s in slots if s)}>"
-        return None
-
-    def _recover_ptype_via_nested_fields(
-        self,
-        arg: ast.ConstructorCall,
-        adt_name: str,
-        tp_count: int,
-        slots: list[str | None],
-        _seen: frozenset[str],
-    ) -> None:
-        """Fill still-``None`` type-param slots via nested generic fields (#934).
-
-        For each field whose DECLARED type is a generic ADT that places a
-        parent type PARAMETER at some position (e.g. `Rose<T>` under
-        `Forest<T>`, or the recursive `Forest<T>` itself), recover that field
-        ARGUMENT's own parameterized type (`Rose<Int>` / `Forest<Int>`) and
-        read the concrete argument sitting where the parent parameter appears —
-        pinning that parent slot.  Mutates ``slots`` in place.  Bounded by
-        ``_seen`` (the mutually-recursive ADTs) to guarantee termination.
-        """
-        if adt_name in _seen:
-            return
-        seen = _seen | {adt_name}
-        tp_names = self._adt_tp_param_names.get(adt_name, ())
-        # Parent parameter NAME → its slot index (`T` → 0).
-        name_to_slot = {name: i for i, name in enumerate(tp_names)}
-        # #1414: prefer the OWNER-qualified layout.  `adt_name` is the ADT
-        # whose parameters this pass is recovering, so its own table answers
-        # for `arg.name`; the flat by-name map would hand back another ADT's
-        # layout after a same-named constructor collision and the recovered
-        # generic type would be built from the wrong `field_types`.  LATENT
-        # today rather than a live miscompile, and for a reason worth
-        # stating exactly: the CHECKER resolves a constructor call through
-        # the same last-declaration-wins by-name rule, so whenever the flat
-        # map here holds the wrong ADT's layout the checker has already
-        # refused the call against that same wrong resolution — measured,
-        # `data Rose<T> { Leaf(T), Node(T, Rose<T>) }` followed by
-        # `data ZzBox { Node(Bool) }` makes `Node(1, Leaf(2))` an `[E212]`
-        # ("expects 1 field(s), got 2"), while the reverse declaration
-        # order leaves Rose in the slot and compiles.  Two layers being
-        # wrong the same way is a coincidence, not a rail, which is exactly
-        # why this read is owner-qualified: the next change to either
-        # resolution would inherit the wrong layout silently.  The flat map
-        # stays as the fallback for a namespace whose per-owner table was
-        # not threaded (PR #1419 review).
-        layout = self._owned_ctor_layout(adt_name, arg.name)
-        field_types = layout.field_types if layout else ()
-        for field_i, decl in enumerate(field_types):
-            if field_i >= len(arg.args):
-                break
-            fbase, fargs = self._split_param_type(decl)
-            # Only nested GENERIC ADT fields carry a recoverable parameter.
-            if not fargs or self._value_adt_key(decl) is None:
-                continue
-            # Which nested type-arg positions ARE a parent parameter still
-            # needing a value?  (`Rose<T>` → position 0 holds `T`.)
-            wanted = {
-                pos: name_to_slot[fa]
-                for pos, fa in enumerate(fargs)
-                if fa in name_to_slot and slots[name_to_slot[fa]] is None
-            }
-            if not wanted:
-                continue
-            field_arg = arg.args[field_i]
-            if not isinstance(field_arg, ast.ConstructorCall):
-                continue
-            nested_bare = self._infer_vera_type(field_arg)
-            recovered = self._recover_ctor_ptype(
-                field_arg, nested_bare or fbase, seen,
-            )
-            if recovered is None:
-                continue
-            _, rargs = self._split_param_type(recovered)
-            for pos, slot in wanted.items():
-                if pos < len(rargs):
-                    slots[slot] = rargs[pos]
-
-    def _declared_type_expr_for_show(
-        self, arg: ast.Expr,
-    ) -> ast.NamedType | None:
-        """The declared/annotated NamedType of a show/hash argument, if any.
-
-        A ``SlotRef`` carries its bound type (with type args); a non-generic
-        user ``FnCall`` carries its declared return TypeExpr (registered by
-        ``_register_fn``).  Both format nested generics in full via
-        ``_format_named_type``.  Generic calls are excluded — their return
-        type is over the callee's own type vars, not concrete types.
-        """
-        if isinstance(arg, ast.SlotRef):
-            return ast.NamedType(name=arg.type_name, type_args=arg.type_args)
-        if isinstance(arg, ast.FnCall) and arg.name not in self._generic_fn_info:
-            ret_te = self._fn_ret_type_exprs.get(arg.name)
-            if isinstance(ret_te, ast.RefinementType):
-                ret_te = ret_te.base_type
-            if isinstance(ret_te, ast.NamedType):
-                return ret_te
-        return None
 
     @staticmethod
     def _ptype_nesting_depth(ptype: str) -> int:

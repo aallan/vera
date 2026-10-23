@@ -587,7 +587,7 @@ REPROS: dict[str, Repro] = {
     # Routed from #1680: PR #1700's review, PR #1705's body, the reviews of
     # PRs #1721, #1722 and #1737.
     "index_into_array_literal_as_argument": Repro(
-        {"main.vera": _INDEX_LITERAL_ARGUMENT}, _runs("f", [1], 5)),
+        {"main.vera": _INDEX_LITERAL_ARGUMENT}, _runs("f", [1], 2)),
     "literal_subpattern_in_constructor_pattern": Repro(
         {"main.vera": _LITERAL_SUBPATTERN}, _runs("f", [3], 1)),
     "wildcard_subpattern_in_tuple_pattern": Repro(
@@ -622,16 +622,33 @@ FIXED_BY_THE_TYPED_PROGRAM = frozenset({
 
 #: The lines code generation's reads of the typed program flip (#1525):
 #: each value's width is its checked type's (an `if`, a `match` or a
-#: handler block's result the join's, a call's result the call's), and an
-#: `apply_fn`'s closure is the function type the checker gave it.
+#: handler block's result the join's, a call's result the call's), an
+#: `apply_fn`'s closure is the function type the checker gave it, and the
+#: name a value's layout, conversion and equality are keyed by is its
+#: checked type's (an element's, a key's, a value's, a scrutinee's, an
+#: operand's of `==`, a `show` argument's, an interpolated part's).
 FIXED_BY_THE_BACKEND_READS = frozenset({
     "1516_apply_fn_on_cell_read",
     "1516_apply_fn_on_returned_closure",
+    "1555_eq_of_generic_data_calls",
+    "1555_eq_of_option_calls",
+    "1564_index_array_literal",
+    "1564_index_generic_call_result",
     "1578_match_on_array_fold",
+    "1609_integer_match_over_byte_call",
+    "1686_map_get_on_cell_read",
+    "array_literal_of_closures",
     "constructor_of_array_map_result",
+    "eq_of_generic_call_results",
     "if_of_a_throw_and_a_fold",
     "if_of_two_cell_handlers",
+    "index_into_array_literal_as_argument",
+    "index_into_generic_array_result",
+    "interpolation_converter_from_checker_type",
+    "map_keys_of_an_if",
     "match_on_generic_fold_scrutinee",
+    "neg_nat_interpolation",
+    "show_of_generic_builtin_result",
 })
 
 

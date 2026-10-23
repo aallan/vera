@@ -1256,7 +1256,7 @@ class WasmContext(
         while failing to re-root a pointer hands the value to the next
         collection.  An unknown type takes the inert error.
         """
-        vera_type = self._infer_vera_type(expr)
+        vera_type = self._type_name_of(expr)
         if vera_type is None:
             return True
         head = vera_type.split("<", 1)[0]

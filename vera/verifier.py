@@ -94,6 +94,7 @@ from vera.types import (
     Type,
     TypeVar,
     UnknownType,
+    base_type,
     contains_typevar,
     pretty_type,
     state_cell_decl_equal,
@@ -7518,8 +7519,7 @@ class ContractVerifier:
             # (`_translate_apply_fn`), so guarded.
             formals = self._closure_arg_param_types(expr.args[0])
             if formals is not None:
-                for arg, formal in zip(expr.args[1:], formals):
-                    resolved_formal = self._resolve_type(formal)
+                for arg, resolved_formal in zip(expr.args[1:], formals):
                     # #1024: refined-FIRST, mirroring the generic call-argument
                     # path (Site 2 below).  A refinement-over-@Nat closure formal
                     # (e.g. `{ @Nat | @Nat.0 > 0 }`) IS a @Nat type
@@ -9604,29 +9604,20 @@ class ContractVerifier:
 
     def _closure_arg_param_types(
         self, closure_arg: ast.Expr,
-    ) -> tuple[ast.TypeExpr, ...] | None:
-        """Declared *parameter* TypeExprs of the closure an ``apply_fn`` applies
-        (#820) — the verifier mirror of codegen's ``_closure_arg_param_types``.
-
-        An inline ``AnonFn`` yields its declared params directly; a ``SlotRef``
-        is resolved through the shared :func:`resolve_fn_type_alias` (the same
-        terminal-``FnType`` resolution codegen uses) over the retained raw alias
-        TypeExprs, so the obligation and the codegen guard recover an identical
-        formal type at the closure boundary.  Any other shape yields ``None``.
-        """
-        if isinstance(closure_arg, ast.AnonFn):
-            return tuple(closure_arg.params)
-        if isinstance(closure_arg, ast.SlotRef):
-            from vera.monomorphize import resolve_fn_type_alias
-            fn_type = resolve_fn_type_alias(
-                ast.NamedType(
-                    name=closure_arg.type_name,
-                    type_args=closure_arg.type_args,
-                ),
-                self._closure_type_aliases,
-                self._closure_type_alias_params,
-            )
-            return tuple(fn_type.params) if fn_type is not None else None
+    ) -> tuple[Type, ...] | None:
+        """The parameter types of the closure an ``apply_fn`` applies
+        (#820): those of the function type the checker gave *closure_arg*,
+        whatever its shape — a closure literal, a slot, a call that returns
+        one, a cell read.  Code generation lowers the application from the
+        same type (#1516, #1525), so the argument is obligated wherever the
+        module applies the closure: read from the operand's syntax, a call
+        that returns the closure raised nothing, and its argument reached
+        the closure's formal unchecked.  ``None`` for an operand the checker
+        did not type as a function."""
+        ty = self._resolved_type_of(closure_arg)
+        ty = base_type(ty) if ty is not None else None
+        if isinstance(ty, FunctionType):
+            return tuple(ty.params)
         return None
 
     def _check_refined_binding_obligation(

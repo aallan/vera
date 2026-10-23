@@ -60,8 +60,7 @@ from vera.codegen import compilability
 from vera.codegen.core import CodeGenerator
 from vera.environment import TypeEnv
 from vera.smt import SlotEnv, SmtContext
-from vera.wasm.context import WasmContext
-from vera.wasm.helpers import CellNames, StringPool
+from vera.wasm.helpers import CellNames
 
 pytestmark = pytest.mark.matrix(decides=["vera/fold.py", "vera/binders.py"])
 
@@ -630,7 +629,6 @@ def test_dispatch_refuses_a_table_that_misses_a_class() -> None:
 
 #: Every `fold.dispatch` table the compiler builds, by the name it gives.
 _TABLES = frozenset({
-    "_walk_vera_type",
     "_translate_expr_unscoped", "resolve_literal_string", "resolve_array_len",
     "_synth_expr_impl", "translate_expr",
 })
@@ -671,7 +669,7 @@ def test_a_new_expr_subclass_fails_every_dispatching_module_at_import() -> None:
         "print(' '.join(sorted(refused)))\n"
     )
     modules = ["vera.checker.sql", "vera.checker.expressions",
-               "vera.wasm.context", "vera.wasm.inference", "vera.smt"]
+               "vera.wasm.context", "vera.smt"]
     out = subprocess.run(
         [sys.executable, "-c", script, *modules], cwd=ROOT, capture_output=True,
         text=True, encoding="utf-8", timeout=120, check=False)
@@ -762,9 +760,6 @@ def test_contexts_asks_for_a_childs_context_after_the_previous_subtree() -> None
 # Per-node pins for the tables the ports built
 # =====================================================================
 
-def _wasm() -> WasmContext:
-    return WasmContext(string_pool=StringPool())
-
 
 def _arm(body: ast.Expr) -> ast.MatchArm:
     return ast.MatchArm(pattern=ast.WildcardPattern(), body=body)
@@ -785,23 +780,6 @@ def _if(then: ast.Expr, other: ast.Expr) -> ast.IfExpr:
 def _exn_handle(body: ast.Expr) -> ast.HandleExpr:
     return ast.HandleExpr(effect=ast.EffectRef(name="Exn", type_args=(_ty("Int"),)),
                           state=None, clauses=(), body=_tail(body))
-
-
-def test_the_vera_type_table_answers_each_shape() -> None:
-    """`_walk_vera_type`: a closure names nothing, so the join reads on."""
-    ctx = _wasm()
-    pins = [
-        (_match(_arm(_CLOSURE), _arm(_ONE)), "Int"),
-        (_if(_CLOSURE, _TRUE), "Bool"),
-        (ast.BinaryExpr(op=ast.BinOp.EQ, left=_ONE, right=_ONE), "Bool"),
-        (ast.BinaryExpr(op=ast.BinOp.ADD, left=_HALF, right=_HALF), "Float64"),
-        (ast.UnaryExpr(op=ast.UnaryOp.NEG, operand=_ONE), "Int"),
-        (ast.UnaryExpr(op=ast.UnaryOp.NOT, operand=_TRUE), "Bool"),
-        (ast.StringLit(value="x"), "String"), (ast.ArrayLit(elements=()), "Array"),
-        (_tail(ast.UnitLit()), "Unit"), (_exn_handle(_TRUE), "Bool"),
-        (ast.AssertExpr(expr=_TRUE), "Unit"), (_CLOSURE, None),
-    ]
-    assert [ctx._walk_vera_type(node) for node, _ in pins] == [want for _, want in pins]
 
 
 def test_the_sql_tables_answer_each_shape() -> None:
@@ -1372,11 +1350,6 @@ def _make_cg() -> CodeGenerator:
     return CodeGenerator(pipeline.typed())
 
 
-def _make_ctx() -> WasmContext:
-    """Build a fresh WasmContext for inference helpers."""
-    return WasmContext(string_pool=StringPool())
-
-
 def _declared_imports(body: str, formals: str, ret: str, effect: str,
                       decls: str = "") -> set[str]:
     """The host imports a module declares whose `main` has *body*."""
@@ -1486,91 +1459,6 @@ class TestScanExprForHandlersPositions:
         )
         cg._scan_expr_for_handlers(node)
         assert (CellNames(family="Int", base="Int"), "i64") in cg._state_types
-
-
-class TestInferVeraTypeArms:
-    """Block / MatchExpr / HandleExpr → trailing-expr type;
-    AssertExpr / AssumeExpr → "Unit"; AnonFn / QualifiedCall /
-    ModuleCall → None (path/qualifier fields can't be threaded
-    through the bare-name FnCall dispatcher).
-
-    Since #1286 the `MatchExpr` arm joins over the arms rather than
-    reading `arms[0]` — it answers from the first arm that YIELDS a
-    name, an arm that only throws naming none.  The single-arm cases
-    below are unaffected by that distinction; the join itself is pinned
-    in `test_infer_vera_type_join_1286.py`.
-    """
-
-    def test_block_returns_trailing_expr_type(self) -> None:
-        ctx = _make_ctx()
-        node = ast.Block(statements=(), expr=ast.IntLit(value=42))
-        assert ctx._infer_vera_type(node) == "Int"
-
-    def test_matchexpr_returns_first_arm_body_type(self) -> None:
-        ctx = _make_ctx()
-        arm = ast.MatchArm(
-            pattern=ast.WildcardPattern(),
-            body=ast.BoolLit(value=True),
-        )
-        node = ast.MatchExpr(
-            scrutinee=ast.IntLit(value=0), arms=(arm,))
-        assert ctx._infer_vera_type(node) == "Bool"
-
-    def test_matchexpr_no_arms_returns_none(self) -> None:
-        ctx = _make_ctx()
-        node = ast.MatchExpr(
-            scrutinee=ast.IntLit(value=0), arms=())
-        assert ctx._infer_vera_type(node) is None
-
-    def test_handleexpr_returns_body_expr_type(self) -> None:
-        ctx = _make_ctx()
-        node = ast.HandleExpr(
-            effect=ast.EffectRef(name="State", type_args=()),
-            state=None,
-            clauses=(),
-            body=ast.Block(statements=(), expr=ast.FloatLit(value=1.5)),
-        )
-        assert ctx._infer_vera_type(node) == "Float64"
-
-    def test_assertexpr_returns_unit(self) -> None:
-        ctx = _make_ctx()
-        node = ast.AssertExpr(expr=ast.BoolLit(value=True))
-        assert ctx._infer_vera_type(node) == "Unit"
-
-    def test_assumeexpr_returns_unit(self) -> None:
-        ctx = _make_ctx()
-        node = ast.AssumeExpr(expr=ast.BoolLit(value=True))
-        assert ctx._infer_vera_type(node) == "Unit"
-
-    def test_anonfn_returns_none(self) -> None:
-        """Closure handle has no simple Vera-type name suitable
-        for call rewriting; None lets callers handle the unknown
-        case explicitly (post-#597-pr-review fix)."""
-        ctx = _make_ctx()
-        body = ast.Block(statements=(), expr=ast.UnitLit())
-        node = ast.AnonFn(
-            params=(),
-            return_type=ast.NamedType(name="Unit", type_args=None),
-            effect=ast.PureEffect(),
-            body=body,
-        )
-        assert ctx._infer_vera_type(node) is None
-
-    def test_qualifiedcall_returns_none(self) -> None:
-        """`qualifier` can't be threaded through bare-name FnCall
-        dispatch (post-#597-pr-review fix)."""
-        ctx = _make_ctx()
-        node = ast.QualifiedCall(
-            qualifier="IO", name="read_line", args=(ast.UnitLit(),))
-        assert ctx._infer_vera_type(node) is None
-
-    def test_modulecall_returns_none(self) -> None:
-        """`path` can't be threaded through bare-name FnCall
-        dispatch (post-#597-pr-review fix)."""
-        ctx = _make_ctx()
-        node = ast.ModuleCall(
-            path=("some_module",), name="some_fn", args=())
-        assert ctx._infer_vera_type(node) is None
 
 
 # The two pre-scans.  Both are in `vera/codegen/compilability.py`.

@@ -76,10 +76,13 @@ public fn f({params} -> @Int)
 }}
 """
 
-#: #1555's address comparison, which the verifier proves and every run
-#: refutes (E703); `{premise}` is a statement at the head of the body.  The
-#: instance is a checklist line of issue #1525: when that lands, the
-#: refutation cells and the premise repro need another refuted proof.
+#: #1695's composite coercion, which the verifier proves and every run
+#: refutes (E703): an `Option<Int>` holding -7 bound into an `@Option<Nat>`
+#: is obligated nowhere, so `mo`'s `@Nat` result is -7 and `mo(7) >= 0`,
+#: proved from its type, runs false; `{premise}` is a statement at the head
+#: of the body.  It replaced #1555's address comparison, which the typed
+#: program fixed (#1525); when #1695 lands, the refutation cells and the
+#: premise repro need another refuted proof.
 _REFUTED = """\
 type Cnt = Nat;
 
@@ -88,17 +91,19 @@ public fn f({params} -> @Int)
   ensures(@Int.result < 0)
   effects(pure)
 {{
-{premise}  if mo(7) == mo(7) then {{ 0 - 1 }} else {{ 1 }}
+{premise}  if mo(7) >= 0 then {{ 0 - 1 }} else {{ 1 }}
 }}
 
-private fn mo(@Int -> @Option<Int>)
+private fn mo(@Int -> @Nat)
   requires(true)
-  ensures(@Option<Int>.result == Some(@Int.0))
+  ensures(true)
   effects(pure)
 {{
-  match parse_int(show(@Int.0)) {{
-    Ok(@Int) -> Some(@Int.0),
-    Err(@String) -> Some(@Int.0)
+  let @Option<Int> = Some(-7);
+  let @Option<Nat> = @Option<Int>.0;
+  match @Option<Nat>.0 {{
+    Some(@Nat) -> @Nat.0,
+    None -> 0
   }}
 }}
 """

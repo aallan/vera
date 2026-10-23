@@ -432,7 +432,7 @@ class DataMixin:
                 # out zero-size when its inferred Vera type erases to Unit.  This
                 # gates reachability: without it the constructor skips and the
                 # destructure/match declaration guards below are never reached.
-                arg_vera = self._infer_vera_type(arg)
+                arg_vera = self._type_name_of(arg)
                 if self._is_void_expr(arg) or (
                     arg_vera is not None
                     and self._slot_name_erases_to_unit(arg_vera)
@@ -655,7 +655,7 @@ class DataMixin:
         scr_local = self.alloc_local("i32")
         instrs: list[str] = list(val_instrs)
         instrs.append(f"local.set {scr_local}")
-        value_type = self._match_scrutinee_vera_type(stmt.value)
+        value_type = self._type_name_of(stmt.value)
 
         # Extract each field through the same layout rule construction lays
         # the object out by (`helpers.field_layout`), rather than a second
@@ -807,7 +807,7 @@ class DataMixin:
         # reads it one step earlier than #1060 did, because the pair guard
         # below now needs to tell a String from an `Array<T>` of the same
         # representation.
-        scrutinee_type = self._match_scrutinee_vera_type(expr.scrutinee)
+        scrutinee_type = self._type_name_of(expr.scrutinee)
 
         # Save scrutinee to a local
         instructions: list[str] = list(scr_instrs)
@@ -899,81 +899,6 @@ class DataMixin:
         instructions.extend(arm_instrs)
         return instructions
 
-    def _match_scrutinee_vera_type(self, scrutinee: ast.Expr) -> str | None:
-        """Concrete Vera type of a match scrutinee for the #1060 wildcard walks.
-
-        A ``SlotRef`` scrutinee (``@Box<Unit>.0``) already carries its concrete
-        type args, which ``_infer_vera_type`` renders in full.  A DIRECT-CALL
-        scrutinee (``mk()``) does NOT: ``_infer_fncall_vera_type`` returns the
-        bare base head (``"Box"``) for a parameterized i32-pointer return (#911),
-        dropping the ``<Unit>`` a type-parameter WILDCARD needs to recompute its
-        erased width — so the #1060 walk LOUD-skipped (E602) a check-green
-        program on a shape the slot form compiled correctly (#1065).
-
-        For a NON-generic direct-call scrutinee the callee's DECLARED return type
-        IS the concrete instantiation — a non-generic signature mentions no type
-        variables, so ``mk() -> @Box<Unit>`` declares exactly ``Box<Unit>``.
-        Recover it from ``_fn_ret_type_exprs`` (the same #614/#878 declared-return
-        registry other consultors read, populated by ``_register_fn`` in both the
-        CLI and the ``transform -> compile`` test-harness path) and render it in
-        full, matching the SlotRef form so the wildcard walks receive an
-        identical concrete type.  A non-parameterized return (``ret_te.type_args``
-        empty) needs no recovery and falls through unchanged.
-
-        A GENERIC callee's declared return carries type variables
-        (``forall<T> fn wrap(@T -> @P2<T, Unit>)``) — #1072 resolves them from
-        the call site via the same ``_unify_param_arg_wasm`` unification the
-        generic call-rewrite performs, then renders the substituted return in
-        full (``P2<Int, Unit>``).  On main this family read shifted offsets
-        SILENTLY (the pre-#1060 walk); the #1049 stack made it a sound
-        LOUD-skip; now it compiles like the slot form.  An unresolved variable
-        falls through to ``_infer_vera_type`` — whose bare base head keeps the
-        wildcard walk's LOUD-skip (sound) — though no check-green shape reaches
-        it (var-at-Unit is E206-rejected, a phantom-var callee is E121-rejected).
-
-        A MODULE-qualified callee (``boxlib::mk()``, #1073) reaches here as the
-        plain call of its link name (``mod$boxlib$mk``, `vera.binding.link`),
-        whose declared return is in ``_fn_ret_type_exprs`` like any other.
-        """
-        if isinstance(scrutinee, ast.FnCall):
-            if scrutinee.name in self._generic_fn_info:
-                rendered = self._generic_call_ret_vera_type(scrutinee)
-                if rendered is not None:
-                    return rendered
-            elif scrutinee.name in self._fn_ret_type_exprs:
-                ret_te = self._fn_ret_type_exprs[scrutinee.name]
-                if isinstance(ret_te, ast.RefinementType):
-                    ret_te = ret_te.base_type
-                if isinstance(ret_te, ast.NamedType) and ret_te.type_args:
-                    return self._format_named_type(ret_te)
-        return self._infer_vera_type(scrutinee)
-
-    def _generic_call_ret_vera_type(self, call: ast.FnCall) -> str | None:
-        """Render a GENERIC call's declared return with its type variables
-        resolved from the call site (#1072) — ``wrap(5)`` against
-        ``forall<T> fn wrap(@T -> @P2<T, Unit>)`` yields ``"P2<Int, Unit>"``.
-
-        Unifies each parameter TypeExpr against its argument exactly as the
-        generic call-rewrite does (``_unify_param_arg_wasm``), substitutes the
-        bound variables into the declared return, and renders the full name.
-        Returns ``None`` — caller falls back to ``_infer_vera_type`` — when the
-        return is not a parameterized ``NamedType`` (nothing to recover) or any
-        variable in it stays unbound (the render must never guess: a wrong
-        concrete type would put the wildcard walk back on a shifted offset,
-        whereas the bare-head fallback keeps the sound LOUD-skip).
-        """
-        ret_te: ast.TypeExpr | None = self._fn_ret_type_exprs.get(call.name)
-        if isinstance(ret_te, ast.RefinementType):
-            ret_te = ret_te.base_type
-        if not (isinstance(ret_te, ast.NamedType) and ret_te.type_args):
-            return None
-        forall_vars, _params = self._generic_fn_info[call.name]
-        # #1679: the instantiation the checker inferred at the call, which
-        # names the clone the call calls.
-        mapping = self._call_target_mapping(call, forall_vars)
-        if mapping is None:
-            return None
-        return self._render_type_substituted(ret_te, forall_vars, mapping)
 
     def _render_type_substituted(
         self,
@@ -1878,29 +1803,16 @@ class DataMixin:
         if n == 0:
             return ["i32.const 0", "i32.const 0"]
 
-        elem_type = self._infer_array_element_type(expr)
+        # The element type is the literal's checked `Array<T>`'s `T`, an
+        # alias already its target (#583, #1058) and a closure a pointer
+        # (#1525: a literal of closures was dropped when the element was
+        # read off the first element's syntax).
+        elem_type = self._type_arg_name_of(expr, 0)
         if elem_type is None:
             raise CodegenSkip(
                 expr,
                 "could not infer array literal element type",
             )
-        # Resolve type aliases — `type Row = Array<Bool>` makes the
-        # inferred element name "Row", but the element-layout helpers
-        # below match on bare "Array" / "Array<...>".  Without this,
-        # an alias-typed element falls through to the 4-byte i32 path
-        # and the literal emits a malformed WAT (#583).
-        #
-        # Canonicalize to the target's FULL compound spelling first
-        # (#1058): the name-only `_resolve_base_type_name` hop drops type
-        # arguments, so `type FI = Future<Int>` resolved to bare "Future".
-        # A `Future<T>` element is representation-transparent (#841) —
-        # its width is its payload T's — but the bare head collapses to
-        # the i32 default, storing an i64 payload with `i32.store` (a
-        # "expected i32, found i64" validation trap) on a check-green
-        # program.  Mirrors the `_is_pair_type_name` canonicalize-then-
-        # resolve order (#1046).
-        elem_type, _ = self._canonicalize_alias_slot_name(elem_type)
-        elem_type = self._resolve_base_type_name(elem_type)
         elem_size = self._element_mem_size(elem_type)
         if elem_size is None:
             raise CodegenSkip(
@@ -2027,7 +1939,8 @@ class DataMixin:
                 "§8.4.1), so a type spelled like a container here may be "
                 "that declaration",
             )
-        elem_type = self._infer_index_element_type(expr)
+        # The element type is the index expression's own checked type.
+        elem_type = self._type_name_of(expr)
         if elem_type is None:
             raise CodegenSkip(
                 expr,

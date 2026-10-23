@@ -962,10 +962,14 @@ KNOWN_MULTI_SITE_ERROR_CODES: dict[str, frozenset[tuple[str, str]]] = {
         ("vera/checker/calls.py", "CallsMixin._check_apply_fn"),
         ("vera/checker/calls.py", "CallsMixin._check_fn_call_with_info"),
     }),
-    # Argument type mismatch: named call vs. apply_fn, same rule.
+    # Argument type mismatch: named call vs. apply_fn, same rule; and a
+    # function-typed argument that fixes one type variable at `Int` and at
+    # `Nat` (spec §4.2's polarity rule), an argument no instance admits.
     "E202": frozenset({
         ("vera/checker/calls.py", "CallsMixin._check_apply_fn"),
         ("vera/checker/calls.py", "CallsMixin._check_fn_call_with_info"),
+        ("vera/checker/resolution.py",
+         "ResolutionMixin._refuse_polarity_conflict"),
     }),
     # Zero-size element type has no WASM representation: the array-literal
     # inferred form and the written Array/Map/Set type-expression form.

@@ -1798,63 +1798,43 @@ public fn f(@Int -> @Int)
 """
 
 
-class TestCallResultClosureOperandIsPinnedNotClaimed:
-    """A closure OPERAND that is a call result does not reach the
-    closure-argument arm — pinned with the reason it is harmless (A2).
+class TestCallResultClosureOperandIsObligated:
+    """A closure OPERAND that is a call result reaches the closure-argument
+    arm (#1525).
 
     `apply_fn(taker(()), mkint(x))` names its closure through a CALL rather
-    than a slot, and the arm that raises the closure-argument obligation
-    reads the operand's declared function type from the slot.  So no
-    `refine_bind` is recorded, and `verify` reports `ok: true` for a program
-    whose payload the formal's `Option<PosInt>` forbids.
-
-    That is a real gap in the obligation, and it is unreachable at run time
-    today for a reason that has nothing to do with the guard: code
-    generation cannot compile this shape and drops the enclosing function
-    with `E602`, so the module contains no `f` to run.  The pin is the
-    CONJUNCTION — the obligation is absent AND the function is dropped.  If
-    codegen later learns this shape, the second half fails and the gap stops
-    being harmless, which is exactly when someone needs to be told.  A cell
-    asserting only the absence would go on passing.
+    than a slot.  The arm read the operand's declared function type from
+    the slot, so no `refine_bind` was recorded and `verify` reported `ok:
+    true` for a program whose payload the formal's `Option<PosInt>`
+    forbids; code generation dropped `f` with `E602`, so nothing ran.  Code
+    generation now lowers the application from the operand's checked
+    function type (#1516), and the arm reads the same type, so the argument
+    is obligated, and refuted, as the slot form's is.
     """
 
-    def test_the_arm_is_not_reached_for_a_call_result_operand(
+    def test_the_arm_reaches_a_call_result_operand(
         self, tmp_path: Path,
     ) -> None:
         obs, envelope = _obligations(
             tmp_path, _A2_CALL_RESULT_OPERAND, name="a2a.vera")
         binds = [(o["status"], o.get("error_code"))
                  for o in obs if o["kind"] == "refine_bind"]
-        assert binds == [], (
-            f"the closure-argument arm now reaches a call-result operand — "
-            f"good, but this cell pinned its ABSENCE, so re-derive the pin "
-            f"from what it does now: {binds}"
-        )
-        assert envelope["ok"] is True, envelope
+        assert binds == [("violated", "E505")], binds
+        assert envelope["ok"] is False, envelope
         _assert_partition(envelope)
 
-    def test_and_the_enclosing_function_is_dropped_so_nothing_runs(
+    def test_and_the_slot_form_is_obligated_alike(
         self, tmp_path: Path,
     ) -> None:
-        """The half that makes the gap above harmless, asserted separately.
-
-        Read from the ARTIFACT: `f` must be absent from the emitted module.
-        A message-text check would pass on a build that printed the E602
-        note and emitted the function anyway.
-        """
-        proc = pipeline.cli("compile", "--wat",
-                            str(_write(tmp_path, _A2_CALL_RESULT_OPERAND,
-                                       "a2b.vera")), budget_s=_BUDGET_S)
-        assert proc.returncode == 0, proc.stderr
-        assert '(export "f"' not in proc.stdout, (
-            "codegen now emits `f` for a call-result closure operand, so the "
-            "missing closure-argument obligation is no longer unreachable: "
-            "the arm has to reach this operand shape"
-        )
-        assert '(export "taker"' in proc.stdout, (
-            "the module lost more than `f`, so its absence is not evidence "
-            "about this shape"
-        )
+        """The nearest neighbour: the closure bound to a slot first."""
+        slot = _A2_CALL_RESULT_OPERAND.replace(
+            "  apply_fn(taker(()), mkint(@Int.0))",
+            "  let @Taker = taker(());\n  apply_fn(@Taker.0, mkint(@Int.0))")
+        obs, envelope = _obligations(tmp_path, slot, name="a2b.vera")
+        binds = [(o["status"], o.get("error_code"))
+                 for o in obs if o["kind"] == "refine_bind"]
+        assert binds == [("violated", "E505")], binds
+        assert envelope["ok"] is False, envelope
 
 
 _CR_REFINED_INT_ELEMENT = """\

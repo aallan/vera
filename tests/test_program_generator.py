@@ -936,16 +936,15 @@ def test_each_known_class_keeps_its_shape(cls: KnownClass) -> None:
 
 
 def test_the_distrust_differential_reports_a_refuted_proof() -> None:
-    """#1555's address comparison: proved, and refuted by its one run.  The
-    neighbour binds each call before comparing, the documented workaround,
-    and its proof holds."""
+    """#1695's composite coercion: proved, and refuted by its one run.  The
+    neighbour binds the call and compares the binding with itself, true of
+    whatever value it holds, and its proof holds."""
     finds = distrust_finds(_FALSE_PROOF)
     assert [f.signature[0] for f in finds] == ["E703"], finds
     neighbour = _FALSE_PROOF.replace(
-        "  if mo(7) == mo(7) then { 0 - 1 } else { 1 }\n",
-        "  let @Option<Int> = mo(7);\n"
-        "  let @Option<Int> = mo(7);\n"
-        "  if @Option<Int>.0 == @Option<Int>.1 then { 0 - 1 } else { 1 }\n")
+        "  if mo(7) >= 0 then { 0 - 1 } else { 1 }\n",
+        "  let @Int = mo(7);\n"
+        "  if @Int.0 >= @Int.0 then { 0 - 1 } else { 1 }\n")
     assert neighbour != _FALSE_PROOF
     assert pipeline.verify(neighbour, file=LABEL).ok
     stats: dict[str, int] = {}
@@ -1014,7 +1013,7 @@ def test_a_refusal_the_counterfactual_does_not_remove_stays_a_find() -> None:
 
 
 def test_a_refutation_names_its_function_and_arguments() -> None:
-    """#1555's refuted proof over a parameter the precondition pins: the
+    """The false proof refuted over a parameter the precondition pins: the
     find names the function and the arguments it was refuted on, which the
     record hands `program_generator.expectations`.  The diagnostic alone
     names neither."""

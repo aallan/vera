@@ -12,9 +12,11 @@ the contract admits is a program finding, reported as a failing trial exactly
 as for a Tier-3 function.
 
 The red-first case is an open soundness bug whose repro refutes today:
-#1555 (`==` between two calls returning a generic data type compares
-addresses, so `mo(7) == mo(7)` is proved true and runs false), which the
-fixtures hold as their false proof.  Default mode is pinned
+#1695's composite coercion (an `Option<Int>` bound into an `@Option<Nat>`
+is obligated nowhere, so a `@Nat` read back out of it holds a negative, and
+`mo(7) >= 0` is proved true and runs false), which the fixtures hold as
+their false proof.  It replaced #1555's address comparison when the typed
+program fixed that (#1525).  Default mode is pinned
 byte-for-byte on a fixed program (`TestDefaultModeUnchanged`); the corpus-wide
 default-versus-distrust differential lives in `tests/test_distrust_corpus.py`.
 """
@@ -137,23 +139,24 @@ def _main(
 # Fixtures
 # =====================================================================
 
-# #1555's address comparison as a false proof a fixture can hold: the
-# verifier models `==` structurally and proves `mo(7) == mo(7)` from `mo`'s
-# `ensures`, and the compiled `==` compares two heap addresses, so it runs
-# false.  `mo`'s own `ensures` is Tier 3 (the verifier cannot see through
-# `parse_int(show(...))`), so the check it compiles to stands for no proof
-# and a run that reaches it exercises nothing: the false proof brings no
-# proved check of its own.  A fixture appends `_MO` after its own functions,
-# so their lines stay where they are.
+# #1695's composite coercion as a false proof a fixture can hold: an
+# `Option<Int>` holding -7 is bound into an `@Option<Nat>` with no
+# obligation and no guard (the #1542 line), so `mo`'s `@Nat` result is -7.
+# The verifier reads that result at its type and proves `mo(7) >= 0`, and the
+# compiled comparison runs false.  `mo` raises no obligation of its own, so
+# the false proof brings no proved check with it.  A fixture appends `_MO`
+# after its own functions, so their lines stay where they are.
 _MO = """
-private fn mo(@Int -> @Option<Int>)
+private fn mo(@Int -> @Nat)
   requires(true)
-  ensures(@Option<Int>.result == Some(@Int.0))
+  ensures(true)
   effects(pure)
 {
-  match parse_int(show(@Int.0)) {
-    Ok(@Int) -> Some(@Int.0),
-    Err(@String) -> Some(@Int.0)
+  let @Option<Int> = Some(-7);
+  let @Option<Nat> = @Option<Int>.0;
+  match @Option<Nat>.0 {
+    Some(@Nat) -> @Nat.0,
+    None -> 0
   }
 }
 """
@@ -167,7 +170,7 @@ public fn main(-> @Int)
   ensures(@Int.result < 0)
   effects(pure)
 {
-  if mo(7) == mo(7) then { 0 - 1 } else { 1 }
+  if mo(7) >= 0 then { 0 - 1 } else { 1 }
 }
 """ + _MO
 
@@ -179,12 +182,13 @@ public fn below_min(@Int -> @Int)
   ensures(@Int.result < 0)
   effects(pure)
 {
-  if mo(7) == mo(7) then { 0 - 1 } else { 1 }
+  if mo(7) >= 0 then { 0 - 1 } else { 1 }
 }
 """ + _MO
 
 # #1555's repro with the function under test made public: `duo(x) == duo(x)`
-# compiles to an address comparison, so the proved `ensures(@Bool.result)` fails.
+# compiled to an address comparison, so the proved `ensures(@Bool.result)`
+# failed; the comparison is structural since the typed program (#1525).
 SRC_1555 = """\
 private data Duo<A, B> {
   MkDuo(A, B)
@@ -228,7 +232,7 @@ public fn answer(@Unit -> @Int)
 """
 
 # Every default-mode category at once: two proved functions (one of them
-# #1555's false proof), a Tier-3 function, a verifier-refuted one, and the two
+# the false proof), a Tier-3 function, a verifier-refuted one, and the two
 # skip reasons.  Pinned byte-for-byte below in default mode.
 SRC_MIXED = """\
 public fn add1(@Int -> @Int)
@@ -244,7 +248,7 @@ public fn below_min(@Int -> @Int)
   ensures(@Int.result < 0)
   effects(pure)
 {
-  if mo(7) == mo(7) then { 0 - 1 } else { 1 }
+  if mo(7) >= 0 then { 0 - 1 } else { 1 }
 }
 
 public fn identity(@Nat -> @Nat)
@@ -293,7 +297,7 @@ class TestRefutedFalseProof:
     def test_default_mode_reports_the_false_proof_verified_and_never_runs_it(
         self,
     ) -> None:
-        """The blindness `--distrust` exists for (#1555): default mode calls
+        """The blindness `--distrust` exists for: default mode calls
         the false proof Tier 1 and runs no trial against it."""
         f = _fn(_run(SRC_FALSE_PROOF, distrust=False), "main")
         assert (f.category, f.trials_run) == ("verified", 0)
@@ -302,7 +306,7 @@ class TestRefutedFalseProof:
         result = _run(SRC_FALSE_PROOF, distrust=True)
         f = _fn(result, "main")
         assert f.category == "refuted", (
-            "vera test --distrust must refute #1555's proof: the run returns 1 "
+            "vera test --distrust must refute the false proof: the run returns 1 "
             f"where the proved ensures says < 0; got {f.category!r} ({f.reason})"
         )
         # One trial: a function with no parameter has exactly one input.
@@ -338,13 +342,14 @@ class TestRefutedFalseProof:
         assert len(e703) == 3
         assert re.search(r"@Int\.0 = -?\d+", e703[0].description), e703[0].description
 
-    def test_1555_generic_equality_by_address_is_refuted(self) -> None:
+    def test_1555_generic_equality_holds(self) -> None:
+        """#1555's proof holds under its trials: `==` between two calls
+        returning a generic data type compares the values (#1525)."""
         result = _run(SRC_1555, distrust=True)
         f = _fn(result, "same")
-        assert f.category == "refuted", f.reason
-        assert f.trials_failed == f.trials_run > 0
-        assert {o.expr_text for t in f.failures for o in t.refutes} == {"@Bool.result"}
-        assert result.summary.refuted == 1
+        assert f.category == "tested", f.reason
+        assert f.trials_failed == 0 and f.trials_run > 0
+        assert result.summary.refuted == 0
 
     def test_cli_exits_1_with_e703_and_a_refuted_function(
         self,
@@ -357,7 +362,7 @@ class TestRefutedFalseProof:
         rc = _main(monkeypatch, "test", "--distrust", "--json", path)
         payload = json.loads(capsys.readouterr().out)
         assert "summary" in payload, (
-            "vera test --distrust must run the tester and refute #1555's "
+            "vera test --distrust must run the tester and refute the "
             f"false proof; got {payload}"
         )
         assert rc == 1
@@ -1031,7 +1036,7 @@ class TestTrapsAtSitesTheRecordOmitted:
 # round-2 class below).  Its other reasons not to run, E701's and E702's, are
 # `TestUnexercisedProofs`'.
 
-# The reviewer's repro: proved (#1555's comparison is proved true), yet `vera
+# The reviewer's repro: proved (the false proof's comparison is proved true), yet `vera
 # run --fn s -- 3` returns "pos", and nothing checks the `ensures`.
 SRC_STRING_RETURN = """\
 public fn s(@Int -> @String)
@@ -1039,7 +1044,7 @@ public fn s(@Int -> @String)
   ensures(@String.result == "neg")
   effects(pure)
 {
-  if mo(7) == mo(7) then { "neg" } else { "pos" }
+  if mo(7) >= 0 then { "neg" } else { "pos" }
 }
 """ + _MO
 
@@ -1051,7 +1056,7 @@ public fn pair_or_one(@Int -> @Array<Int>)
   ensures(array_length(@Array<Int>.result) == 2)
   effects(pure)
 {
-  if mo(7) == mo(7) then { [1, 2] } else { [1] }
+  if mo(7) >= 0 then { [1, 2] } else { [1] }
 }
 
 public fn wrap(@Int -> @Int)
@@ -1173,7 +1178,7 @@ class TestProofsNoCheckStandsFor:
 # one.  Skipping it skips a run that can refute.
 
 # The reviewer's repro: the `ensures` over a `String` result has no check, but
-# the index at 7:14 is proved (#1555's comparison makes it 1) and checked, and
+# the index at 7:14 is proved (the false proof's comparison makes it 1) and checked, and
 # every run indexes 7.
 SRC_UNCHECKED_ENSURES_BESIDE_A_PROOF = """\
 public fn label(@Int -> @String)
@@ -1182,7 +1187,7 @@ public fn label(@Int -> @String)
   effects(pure)
 {
   let @Array<Int> = [10, 20, 30];
-  let @Int = @Array<Int>.0[if mo(7) == mo(7) then { 1 } else { 7 }];
+  let @Int = @Array<Int>.0[if mo(7) >= 0 then { 1 } else { 7 }];
   "ok"
 }
 """ + _MO
@@ -1198,12 +1203,12 @@ public fn positives(@Int -> @Array<Pos>)
   ensures(array_length(@Array<Pos>.result) == 2)
   effects(pure)
 {
-  [1, if mo(7) == mo(7) then { 1 } else { 0 }]
+  [1, if mo(7) >= 0 then { 1 } else { 0 }]
 }
 """ + _MO
 
 # A tuple component's refinement is recorded, and guarded, at the component
-# the function builds, not at the body; with #1555's comparison the component is
+# the function builds, not at the body; with the false proof's comparison the component is
 # 0 at run time.
 SRC_REFINED_COMPONENT = """\
 type Pos = { @Int | @Int.0 > 0 };
@@ -1213,12 +1218,12 @@ public fn pos_pair(@Int -> @Tuple<Pos, Int>)
   ensures(true)
   effects(pure)
 {
-  Tuple(if mo(7) == mo(7) then { @Int.0 } else { 0 }, 3)
+  Tuple(if mo(7) >= 0 then { @Int.0 } else { 0 }, 3)
 }
 """ + _MO
 
 # A proof reached only through a callee: nothing of `s2`'s own has a check,
-# and its private `helper`'s false `ensures` (#1555's comparison) is checked
+# and its private `helper`'s false `ensures` (the false proof's comparison) is checked
 # inside `helper`, which every run of `s2` calls.
 SRC_CALLEE_PROOF = """\
 private fn helper(@Int -> @Int)
@@ -1226,7 +1231,7 @@ private fn helper(@Int -> @Int)
   ensures(@Int.result < 0)
   effects(pure)
 {
-  if mo(7) == mo(7) then { 0 - 1 } else { 1 }
+  if mo(7) >= 0 then { 0 - 1 } else { 1 }
 }
 
 public fn s2(@Int -> @String)
@@ -1474,7 +1479,7 @@ public fn f(@Int -> @Int)
 #
 # A trap is read against the records the reconciliation join relates its
 # check to (`vera/reconcile.py`), never against the records that merely
-# share its span.  Each fixture below holds a false proof (#1555's
+# share its span.  Each fixture below holds a false proof (the composite coercion's
 # comparison) whose check stands at one node and whose record at another,
 # one per location class the join reads: read by span, every one of these
 # traps was unattributed.
@@ -1497,7 +1502,7 @@ public fn f(@Int -> @Int)
   ensures(@Int.result > 0)
   effects(pure)
 {
-  g(if mo(7) == mo(7) then { 1 } else { 0 })
+  g(if mo(7) >= 0 then { 1 } else { 0 })
 }
 """ + _MO
 
@@ -1509,19 +1514,22 @@ public fn f(@Int -> @Int)
   ensures(@Int.result == 1)
   effects(pure)
 {
-  let Tuple<@Nat, @Int> = Tuple(if mo(7) == mo(7) then { 1 } else { 0 - 1 }, 3);
+  let Tuple<@Nat, @Int> = Tuple(if mo(7) >= 0 then { 1 } else { 0 - 1 }, 3);
   nat_to_int(@Nat.0)
 }
 """ + _MO
 
 # A match binder: guarded at the pattern, recorded at the scrutinee.
+# `f`'s contract asks nothing of the match, so the binder's `nat_bind` is the
+# one proved record a trial can refute (the verifier models the scrutinee's
+# payload only through a callee's postcondition, which `mo` does not have).
 SRC_JOIN_PATTERN = """\
 public fn f(@Int -> @Int)
-  requires(true)
-  ensures(@Int.result == 1)
+  requires(@Int.0 >= 0)
+  ensures(true)
   effects(pure)
 {
-  match Some(if mo(7) == mo(7) then { 1 } else { 0 - 1 }) {
+  match Some(if mo(7) >= 0 then { 1 } else { 0 - 1 }) {
     Some(@Nat) -> nat_to_int(@Nat.0),
     None -> 1
   }
@@ -1537,7 +1545,7 @@ public fn f(@Int -> @Pos)
   ensures(@Pos.result > 0)
   effects(pure)
 {
-  if mo(7) == mo(7) then { 1 } else { 0 }
+  if mo(7) >= 0 then { 1 } else { 0 }
 }
 """ + _MO
 
@@ -1549,7 +1557,7 @@ public fn f(@Int -> @Nat)
   ensures(@Nat.result == 1)
   effects(pure)
 {
-  if mo(7) == mo(7) then { 1 } else { 0 - 1 }
+  if mo(7) >= 0 then { 1 } else { 0 - 1 }
 }
 """ + _MO
 
@@ -1615,7 +1623,7 @@ public fn f(@Int -> @Int)
   ensures(@Int.result > 0)
   effects(pure)
 {
-  g(if mo(7) == mo(7) then { 1 } else { 0 })
+  g(if mo(7) >= 0 then { 1 } else { 0 })
 }
 """ + _MO
 
@@ -1649,7 +1657,7 @@ public fn f(@Int -> @Int)
   ensures(true)
   effects(pure)
 {
-  let @Int = g(if mo(7) == mo(7) then { 1 } else { 0 });
+  let @Int = g(if mo(7) >= 0 then { 1 } else { 0 });
   @Int.1
 }
 """ + _TWO_CALLERS_H + _MO
@@ -1668,7 +1676,7 @@ public fn f(@Int -> @Int)
   ensures(@Int.result == @Int.0)
   effects(pure)
 {
-  let @Int = g(if mo(7) == mo(7) then { 1 } else { 0 });
+  let @Int = g(if mo(7) >= 0 then { 1 } else { 0 });
   @Int.1
 }
 """ + _TWO_CALLERS_H + _MO
@@ -1691,7 +1699,7 @@ public fn f(@Int -> @Int)
   ensures(@Int.result == @Int.0)
   effects(pure)
 {
-  let @Int = g(if mo(7) == mo(7) then { 1 } else { 0 });
+  let @Int = g(if mo(7) >= 0 then { 1 } else { 0 });
   @Int.1
 }
 
@@ -2028,7 +2036,7 @@ public fn f(@Int -> @Int)
   ensures(@Int.result == @Int.0)
   effects(pure)
 {
-  let @Int = g(pick(mo(7) == mo(7)));
+  let @Int = g(pick(mo(7) >= 0));
   @Int.1
 }
 """ + _MO
@@ -2430,7 +2438,7 @@ _SOUNDNESS = (
     "runs")
 
 # Two `where` helpers of one name: `f1`'s rests on an `assume`, `f2`'s
-# carries #1555's false proof and no `assume`.
+# carries the composite coercion's false proof and no `assume`.
 SRC_SAME_NAMED_HELPERS = """\
 public fn f1(@Int -> @Int)
   requires(true)
@@ -2463,14 +2471,14 @@ where {
     ensures(@Int.result < 0)
     effects(pure)
   {
-    if mo(7) == mo(7) then { 0 - 1 } else { 1 }
+    if mo(7) >= 0 then { 0 - 1 } else { 1 }
   }
 }
 """ + _MO
 
 #: Where an `assume` sits relative to the refuted proof, and whether these
 #: arguments violate it: the comparison `f`'s `ensures(@Int.result _ 0)`
-#: makes (`<` where #1555's comparison supplies the false proof), its body, and
+#: makes (`<` where the false proof's comparison supplies it), its body, and
 #: what E703's description ends with.
 _ASSUME_CELLS: dict[str, tuple[str, str, str]] = {
     # At the head of the body, evaluated on the arguments: they violate it.
@@ -2478,10 +2486,10 @@ _ASSUME_CELLS: dict[str, tuple[str, str, str]] = {
         ">", "assume(@Int.0 > 0);\n  @Int.0",
         "; the proof rests on `assume(@Int.0 > 0)` at line 6, which these "
         "arguments violate"),
-    # At the head, and it holds: the false proof is the verifier's (#1555).
+    # At the head, and it holds: the false proof is the verifier's (#1695).
     "head_satisfied": (
         "<", "assume(@Int.0 == @Int.0);\n  "
-        "if mo(7) == mo(7) then { 0 - 1 } else { 1 }",
+        "if mo(7) >= 0 then { 0 - 1 } else { 1 }",
         "; the proof also rests on `assume(@Int.0 == @Int.0)` at line 6, "
         "which these arguments satisfy"),
     # After a binding the slots it reads may not be the parameters, so it
