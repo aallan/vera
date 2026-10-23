@@ -158,6 +158,7 @@ Every diagnostic has a stable code grouped by compiler phase — the `W` series 
 - **E001–E009** — Parse errors (missing contracts, unexpected tokens, malformed slot references, bad string escapes)
 - **E011–E013** — Import errors (circular import, unresolvable import, a module that fails to parse)
 - **E020, E021, E023** — Malformed comments: unterminated `{-` (E020) or `/*` (E021), or a `/*` nested inside another (E023 — only `{- -}` nests). Each names the delimiter at fault and how to close it.
+- **E024** — A source file that is not UTF-8: the byte that does not decode, its offset, line and column, and the `iconv` command that converts the file to UTF-8 (an imported module's E024 is located in the module)
 - **E030–E032** — Contract syntax: an `old()`/`new()` argument that is not an effect reference (E030, E031), or a contract clause written after `effects` (E032)
 - **E040** — A pipe whose right operand is not a call: `a |> b` needs `b` to be a call with an argument list, such as `a |> f()`
 - **E010** — Transform errors (internal)

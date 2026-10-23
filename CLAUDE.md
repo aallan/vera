@@ -204,6 +204,7 @@ Diagnostics carry stable codes, which `vera errors` lists; a few diagnostics car
 | E001–E009 | Parse & transform errors |
 | E010 | Transform errors |
 | E020, E021, E023 | Parse: malformed comments (lexical) |
+| E024 | Parse: a source file that is not UTF-8 (lexical) |
 | E1xx | Type check: core + expressions |
 | E2xx | Type check: calls |
 | E3xx | Type check: control flow |
