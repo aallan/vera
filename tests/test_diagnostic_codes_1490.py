@@ -783,9 +783,10 @@ _PINS: list[tuple[Any, dict[str, Any]]] = [
         {'severity': 'error',
          'description': 'D800',
          'location': {'line': 0, 'column': 0, 'file': 'main.vera'},
-         'rationale': 'The program stopped while it ran: a check the compiler emitted '
-                      'failed, or WebAssembly refused an operation, and nothing after '
-                      "that point ran. The trap's kind is `trap_kind` in the `--json` "
+         'rationale': 'The program stopped while it ran, and nothing after that point '
+                      'ran: a check the compiler emitted failed, WebAssembly refused an '
+                      'operation, an exception escaped every handler, or a host '
+                      "function failed. The trap's kind is `trap_kind` in the `--json` "
                       'envelope, and the source backtrace names the functions it '
                       'unwound through.',
          'fix': 'F800',

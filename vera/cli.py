@@ -948,7 +948,7 @@ def cmd_compile(
             return 1
 
         # #1183: a module that declares a public entry point and then
-        # exports nothing is a failed compile (`no_exports_message` says
+        # exports nothing is a failed compile (`no_exports_refusal` says
         # which modules export nothing by design).  The accumulated
         # warnings — the [E602]/[E620] drops, when that is why the exports
         # went away — travel with the failure.

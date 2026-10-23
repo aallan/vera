@@ -58,9 +58,10 @@ def runtime_trap(
         description=description,
         location=location,
         rationale=(
-            "The program stopped while it ran: a check the compiler emitted "
-            "failed, or WebAssembly refused an operation, and nothing after "
-            "that point ran. The trap's kind is `trap_kind` in the `--json` "
+            "The program stopped while it ran, and nothing after that point "
+            "ran: a check the compiler emitted failed, WebAssembly refused an "
+            "operation, an exception escaped every handler, or a host "
+            "function failed. The trap's kind is `trap_kind` in the `--json` "
             "envelope, and the source backtrace names the functions it "
             "unwound through."
         ),
