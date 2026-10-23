@@ -212,6 +212,8 @@ _SIGNATURE = {
 def _assert_refusal(error, shape: str, param: str, binder: str,
                     kind: str) -> None:
     text = error.description
+    # A variable a call left open is never shown by its internal name.
+    assert "$" not in text and "$" not in error.fix, (text, error.fix)
     if kind == "mismatch":
         # `T` fixed at `Int`: an ordinary mismatch, which names no variable.
         assert "type variable" not in text and "no argument" not in text, text
@@ -623,19 +625,29 @@ public fn f(@Int -> @Int)
 """
 
 
-@pytest.mark.parametrize("source", [_CONFLICT, _CONFLICT_HELD_VARIABLE],
-                         ids=["the_coercion", "the_fit"])
+@pytest.mark.parametrize(("source", "fix"), [
+    (_CONFLICT,
+     "Pass a value of type Tuple<Option<Int>, Option<String>> for this "
+     "argument: no type for T gives Tuple<Option<T>, Option<T>> that type."),
+    (_CONFLICT_HELD_VARIABLE,
+     "Pass a value of type Tuple<Option<Int>, Option<String>, Option<?>> for "
+     "this argument: no type for T gives Tuple<Option<T>, Option<T>, "
+     "Option<T>> that type."),
+], ids=["the_coercion", "the_fit"])
 def test_repro_a_conflict_names_both_positions_and_both_types(
-        source: str) -> None:
+        source: str, fix: str) -> None:
     """`T` at two components the parameter gives `Int` and `String`.  On
     `main` at 6f25a652 both check.  The first reached the fit as the
     parameter's own type (`_synth_fn_call`); the second, whose parameter
-    holds `take3`'s `U`, was the fit's per-position wildcard."""
+    holds `take3`'s `U`, was the fit's per-position wildcard.  The second's
+    `U` is the call's open hole, which the fix shows as `?`, as the
+    description does, never by its internal name."""
     error = _only_error(source)
     assert ("its type variable T stands at the type argument of Option in "
             "component 1 and at the type argument of Option in component 2, "
             "where the parameter's type gives it Int and String, and a type "
             "variable takes one type.") in error.description
+    assert error.fix == fix
 
 
 _TWO_PARAMETERS = """\

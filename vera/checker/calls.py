@@ -2180,8 +2180,8 @@ class CallsMixin:
                 "A type variable an argument's type leaves open stands for "
                 "one type, so the parameter must give it the same type at "
                 "every position it holds.",
-                f"Pass a value of type {pretty_type(param_ty)} for this "
-                f"argument: no type for {unfixed} gives "
+                f"Pass a value of type {pretty_type(_holes_unknown(param_ty))} "
+                f"for this argument: no type for {unfixed} gives "
                 f"{pretty_type(_named_open(arg_ty))} that type.",
             )
         written = _span_text(self.source, arg.span)
