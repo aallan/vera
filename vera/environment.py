@@ -870,8 +870,9 @@ class TypeEnv:
         ``map_*`` / ``set_*`` families), so the three never drift.  Skipping the
         constraints would leave, e.g., ``map_insert`` with
         ``forall_vars=('K#b','V#b')`` but ``[('Eq','K'),('Hash','K')]`` — inert
-        today (built-in constraints don't route through
-        ``monomorphize._check_constraints``) but a latent unsound-skip trap.
+        today (the check's ability judgment, ``vera.typed._ability_refusals``,
+        reads a declaration's constraints, and a built-in has no declaration)
+        but a latent unsound-skip trap.
         """
         from vera.ast import AbilityConstraint
 

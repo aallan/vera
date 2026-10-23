@@ -57,6 +57,8 @@ without the taint check turns both green-to-red).
 
 from __future__ import annotations
 
+from vera.typed import build as build_typed
+
 from pathlib import Path
 
 import pytest
@@ -1192,9 +1194,7 @@ def test_1403_a_timed_out_premise_is_withheld_too(tmp_path: Path) -> None:
             program, text, file=str(path), resolved_modules=resolved,
         )
         result = vmod.verify(
-            program, text, file=str(path), resolved_modules=resolved,
-            expr_types=artifacts.expr_semantic_types,
-            expr_target_types=artifacts.expr_target_types,
+            build_typed(program, resolved, artifacts), text, file=str(path),
         )
     finally:
         vmod.ContractVerifier._record_obligation = original

@@ -1183,7 +1183,10 @@ class TestTheGuardRail:
         assert pipeline.compile(path).generator is None
         main = pipeline.parse(_ABILITY_CALL).program.declarations[1].decl
         call = main.body.expr  # type: ignore[attr-defined]
-        gen = CodeGenerator(source=_ABILITY_CALL, file=str(path))
+        # The rail's emitter, on a generator a clean program builds: the
+        # refused one has no typed program (#1679).
+        gen = CodeGenerator(pipeline.typed(), source=_ABILITY_CALL,
+                            file=str(path))
         gen._emit_cross_module_error(call, "size")
         (rail,) = [d for d in gen.diagnostics
                    if "is not defined in this module" in d.description]

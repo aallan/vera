@@ -67,7 +67,8 @@ from vera.codegen.compilability import CompilabilityMixin
 if TYPE_CHECKING:
     from vera.binding import Binding
     from vera.resolver import ResolvedModule
-    from vera.types import ModuleArtifacts, SpanTypeTable, Type
+    from vera.types import Type
+    from vera.typed import TypedProgram
     from vera.wasm.context import CheckRecord, WasmContext
 
 
@@ -160,53 +161,27 @@ class CodeGenerator(
 
     def __init__(
         self,
+        typed: TypedProgram,
         source: str = "",
         file: str | None = None,
-        resolved_modules: list[ResolvedModule] | None = None,
-        expr_semantic_types: (
-            dict[tuple[int, int, int, int], Type] | None
-        ) = None,
-        expr_target_types: (
-            dict[tuple[int, int, int, int], Type] | None
-        ) = None,
-        module_artifacts: ModuleArtifacts | None = None,
     ) -> None:
         self.source = source
         self.file = file
         self.diagnostics: list[Diagnostic] = []
         self.string_pool = StringPool()
-        # #798: the checker's resolved-type side-table (keyed by
-        # ``ast.span_key``).  Threaded into every ``WasmContext`` so the
-        # integer-overflow guard classifies an arithmetic operand's Int/Nat
-        # type the same way the verifier's ``int_overflow`` obligation does.
-        # ``None`` when a caller skipped typecheck (the guard then falls back
-        # to the AST-only classifier).
-        self._expr_semantic_types: (
-            dict[tuple[int, int, int, int], Type] | None
-        ) = expr_semantic_types
-        # #820: the checker's TARGET-type side-table (``expected`` per expr
-        # span).  Threaded into every ``WasmContext`` so the narrowing guards
-        # can recover the per-component target type at a tuple component /
-        # array element — the codegen dual of the verifier's
-        # ``_target_type_of``.  ``None`` when a caller skipped typecheck.
-        self._expr_target_types: (
-            dict[tuple[int, int, int, int], Type] | None
-        ) = expr_target_types
-        # #987: per-resolved-module span-keyed side-tables, keyed by module path
-        # (``CheckArtifacts.module_artifacts``).  The two tables above hold
-        # MAIN-file entries only, so an imported body compiled in Pass 2.5 / 2.6
-        # cannot recover its component targets from them.  ``_compile_fn``
-        # selects the entry for the module being compiled — via the ``path`` its
-        # ``_imported_fn_decls`` entry carries — so the
-        # imported body's array-element / tuple-construction narrowing guard
-        # fires exactly as the module's standalone compile emits it.  Empty
-        # when a caller skipped ``typecheck_with_artifacts`` (or has no
-        # imports); the imported body then falls back to suppressed lookups
-        # (#986), never a wrong-file-keyed guard.
-        self._module_artifacts: dict[
-            tuple[str, ...],
-            tuple[SpanTypeTable | None, SpanTypeTable | None],
-        ] = dict(module_artifacts or {})
+        # #1679: the typed program, the one input code generation reads a
+        # type, an instantiation or a clone from: the program linked once,
+        # every instance built once, and every node's type and target by
+        # its identity, a clone's and a module's included.
+        self._typed = typed
+        # #798/#820: the checker's type and target of every expression by
+        # node identity (`TypedProgram.semantic` / `.target`), threaded into
+        # every ``WasmContext`` so the overflow and narrowing guards classify
+        # an operand, a tuple component or an array element as the
+        # verifier's obligations do.  One table answers for the entry's
+        # nodes, a module's and a clone's, which identity tells apart.
+        self._expr_semantic_types: dict[int, Type] = typed.semantic
+        self._expr_target_types: dict[int, Type] = typed.target
 
         # Registered function signatures: name -> (param_types, return_type)
         self._fn_sigs: dict[str, tuple[list[str | None], str | None]] = {}
@@ -639,10 +614,10 @@ class CodeGenerator(
         self._compiling_fn_key: str | None = None
         self._diag_fn_keys: dict[int, str | None] = {}
 
-        # Cross-module state (C7e)
-        self._resolved_modules: list[ResolvedModule] = (
-            resolved_modules or []
-        )
+        # Cross-module state (C7e): the modules as linked (#1694), the
+        # typed program's.
+        self._resolved_modules: list[ResolvedModule] = list(
+            typed.linked.modules)
         # Imported (module path, FnDecl) to compile in Pass 2.5, each under
         # its link name (`vera.binding.link`), which no other declaration
         # has.  The path selects the module's alias namespace and span tables
@@ -1042,9 +1017,6 @@ class CodeGenerator(
     def _compile_fn_tracked(
         self, decl: ast.FnDecl, *, export: bool = True,
         imported: bool = False,
-        module_tables: (
-            tuple[SpanTypeTable | None, SpanTypeTable | None] | None
-        ) = None,
         where_scope: frozenset[str] = frozenset(),
     ) -> str | None:
         """`_compile_fn` plus the #1100 skip/closure bookkeeping.
@@ -1074,7 +1046,7 @@ class CodeGenerator(
         with self._fn_alias_scope(decl):
             fn_wat = self._compile_fn(
                 decl, export=export,
-                imported=imported, module_tables=module_tables,
+                imported=imported,
                 where_scope=where_scope,
             )
         if fn_wat is None:
@@ -1763,8 +1735,8 @@ class CodeGenerator(
         self._decl_order[name] = self._decl_order_next
         self._decl_order_next += 1
 
-    def compile_program(self, program: ast.Program) -> CompileResult:
-        """Compile a complete Vera program to WebAssembly.
+    def compile_program(self) -> CompileResult:
+        """Compile the typed program to WebAssembly.
 
         A thin wrapper over :meth:`_compile_program`, and it exists for one
         reason: the link step names a module's declarations, its data
@@ -1775,7 +1747,7 @@ class CodeGenerator(
         strip is done ONCE here, over the whole stream, rather than at each
         of the dozens of appends.
         """
-        result = self._compile_program(program)
+        result = self._compile_program(self._typed.program)
         self._unmangle_fn_names(result.diagnostics)
         result.fn_display_names = dict(self._fn_display_names)
         return result
@@ -1845,10 +1817,12 @@ class CodeGenerator(
         # and no pass below asks which namespace or which `where` block a
         # name belongs to.  Spans are kept, so the checker's span-keyed
         # tables still answer.
-        from vera.binding import link_program
-        linked = link_program(program, self._resolved_modules)
+        # #1679: linked once, by the typed program, from the binding and the
+        # prelude the check bound, so every node compiled here is a node the
+        # checker typed.
+        linked = self._typed.linked
         program = linked.program
-        self._resolved_modules = linked.modules
+        self._resolved_modules = list(linked.modules)
         self._binding = linked.binding
         self._linked_prelude = linked.prelude
         self._linked_prelude_source = linked.prelude_source
@@ -2310,10 +2284,6 @@ class CodeGenerator(
                 fn_wat = self._compile_fn_tracked(
                     mdecl, export=is_public,
                     imported=origin is not None,
-                    module_tables=(
-                        self._module_artifacts.get(origin)
-                        if origin is not None else None
-                    ),
                     # #1299: no `where_scope` — a clone reaching here has
                     # none to give.  `_hoist_clone_where_fns` strips
                     # `where_fns` off every clone and re-queues the helpers as
@@ -2348,10 +2318,7 @@ class CodeGenerator(
             with self._module_alias_scope(path), self._module_source_scope(path):
                 fn_wat = self._compile_fn_tracked(
                     idecl, export=False,
-                    imported=True,  # #986: don't consult main-file span tables
-                    # #987: thread THIS module's own span-keyed tables so the
-                    # imported body's component guards fire.
-                    module_tables=self._module_artifacts.get(path),
+                    imported=True,
                     # #1299: no `where_scope`.  This body resolves bare names
                     # in ITS module's namespace, which the alias scope above
                     # already selects, and it brings no bare helper name of

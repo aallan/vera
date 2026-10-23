@@ -54,6 +54,7 @@ from typing import Any
 
 import pytest
 
+from tests.codegen_helpers import skip_map_inserts  # noqa: F401  (the fixture)
 from tests import pipeline
 from tests.module_fixture_helpers import build_multi_module, module_value
 from vera import builtins as registry
@@ -1070,6 +1071,8 @@ def test_wasi_follows_the_rows_worlds(row: Any, world: str) -> None:
 #: (E602).  At 477f184a the cli world refused each, and with one set of the
 #: imports in use the first three reached its import parser's out-of-sync
 #: error, on the wrap table's helpers their bare `Map` or `Set` name raised.
+#: The drop is injected (`skip_map_inserts`): the Array-keyed map or set the
+#: dropped shapes were written with is refused at check now (E135, #1680).
 _NEVER_EMITTED = {
     "assumed_map_contains": """\
 public fn f(@Map<String, Int> -> @Int)
@@ -1082,21 +1085,22 @@ public fn f(@Map<String, Int> -> @Int)
 }
 """,
     "dropped_map_insert": """\
-public fn g(@Map<Int, Array<Int>>, @Int -> @Map<Int, Array<Int>>)
+public fn g(@Map<Int, Int>, @Int -> @Map<Int, Int>)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  map_insert(@Map<Int, Array<Int>>.0, @Int.0, [1, 2])
+  map_insert(@Map<Int, Int>.0, @Int.0, 2)
 }
 """,
     "dropped_set_add": """\
-public fn g(@Set<Array<Int>> -> @Set<Array<Int>>)
+public fn g(@Set<Int> -> @Set<Int>)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  set_add(@Set<Array<Int>>.0, [1, 2])
+  let @Map<Int, Int> = map_insert(map_new(), 1, 2);
+  set_add(@Set<Int>.0, 3)
 }
 """,
     "assumed_sin": """\
@@ -1110,12 +1114,12 @@ public fn f(@Float64 -> @Int)
 }
 """,
     "dropped_decimal_add": """\
-public fn g(@Set<Array<Int>> -> @Decimal)
+public fn g(@Int -> @Decimal)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  let @Set<Array<Int>> = set_add(@Set<Array<Int>>.0, [1, 2]);
+  let @Map<Int, Int> = map_insert(map_new(), 1, @Int.0);
   decimal_add(decimal_from_int(1), decimal_from_int(2))
 }
 """,
@@ -1132,6 +1136,7 @@ public fn handle(@Request -> @Response)
 """
 
 
+@pytest.mark.usefixtures("skip_map_inserts")
 def test_repro_a_call_never_emitted_reaches_no_parser_error() -> None:
     """Each module, beside a `main` and beside a `handle`, compiles to a
     component for its world, and the cli world's runs: the call declares
@@ -1210,8 +1215,10 @@ def test_compile_result_carries_no_family_set() -> None:
 
 def test_the_return_tables_are_the_records() -> None:
     """`vera/monomorphize.py`'s two return tables are read from the records:
-    no literal table is written, and `string_length`'s historical `Int` is
-    the one name that is not its record's."""
+    no literal table is written, and every name is its record's,
+    `string_length`'s `Nat` included (the historical `Int` it was named by
+    kept two clone namers agreeing, and clone names now come from the
+    checker's instantiation, #1679)."""
     from vera import monomorphize
 
     source = (ROOT / "vera" / "monomorphize.py").read_text(encoding="utf-8")
@@ -1221,7 +1228,8 @@ def test_the_return_tables_are_the_records() -> None:
             names = {pyast.unparse(target) for target in targets}
             if names & {"_BUILTIN_VERA_RETURN_TYPES", "_BUILTIN_PARAMETERIZED_RETURNS"}:
                 assert not isinstance(node.value, pyast.Dict), names
-    assert monomorphize._HISTORICAL_RETURN_NAMES == {"string_length": "Int"}
+    assert not hasattr(monomorphize, "_HISTORICAL_RETURN_NAMES")
+    assert monomorphize._BUILTIN_VERA_RETURN_TYPES["string_length"] == "Nat"
     assert BUILTINS["string_length"].signature.ret.name == "Nat"
 
 

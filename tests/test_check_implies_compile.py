@@ -81,7 +81,6 @@ from vera import ast
 from vera.codegen.api import CompileResult
 from vera.errors import Diagnostic
 from vera.parser import parse_to_ast
-from vera.resolver import ModuleResolver
 from vera.lowering import STATE_CLAUSE_INLINE_DEPTH_CAP
 from vera.verifier import VerifyResult
 
@@ -1478,19 +1477,12 @@ class TestModuleEnvironmentMatrix:
     ) -> None:
         """Not vacuous: the sibling's `Green` renames `mb`'s types, so the
         module's `pick` returns `mod$mb$Colour`."""
-        from vera.codegen.core import CodeGenerator
-
         cell = next(c for c in FLOW_CELLS if c.label == "call argument")
         files = topology.files(cell.consumer(topology))
-        for name, text in files.items():
-            (tmp_path / name).write_text(text, encoding="utf-8")
-        program = parse_to_ast(files["main.vera"])
-        resolved = ModuleResolver(_root=tmp_path).resolve_imports(
-            program, tmp_path / "main.vera")
-        gen = CodeGenerator(source=files["main.vera"],
-                            file=str(tmp_path / "main.vera"),
-                            resolved_modules=resolved)
-        gen.compile_program(parse_to_ast(files["main.vera"]))
+        compiled = vera_pipeline.compile(
+            vera_pipeline.write_tree(tmp_path, files), root=tmp_path)
+        gen = compiled.generator
+        assert gen is not None
         assert "mod$mb$Colour" in gen._adt_layouts, sorted(gen._adt_layouts)
 
     def test_the_reported_program(self, tmp_path: Path) -> None:
@@ -2266,14 +2258,8 @@ def _emitted_and_discovered(
     gen = compiled.generator
     checked = compiled.checked
     assert gen is not None and checked is not None
-    arts = checked.artifacts
     verifier = ContractVerifier(
-        source=checked.source, file=checked.file,
-        resolved_modules=checked.resolved,
-        expr_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-        module_artifacts=arts.module_artifacts,
-    )
+        checked.typed, source=checked.source, file=checked.file)
     verifier.register_program(vera_pipeline.parse(checked.source).program)
     discovered = {
         (name, types)
@@ -2378,27 +2364,6 @@ class TestNestedGenericCalls:
         emitted, discovered = _emitted_and_discovered(
             tmp_path / "differential", cell.files())
         assert not uncovered_instances(emitted, discovered), (
-            f"emitted {sorted(emitted)}, discovered {sorted(discovered)}")
-
-    def test_the_differential_can_fail(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Not vacuous: a verifier reading the entry file's table for a
-        module's body discovers a specialisation code generation does not
-        emit, and misses the one it does."""
-        from vera.verifier import ContractVerifier
-
-        cell = next(c for c in NESTED_CALL_CELLS
-                    if c.label == "module|function|result_unwrap_or(result_map)")
-        real = ContractVerifier.__init__
-
-        def entry_table_only(self, *args, **kwargs):  # type: ignore[no-untyped-def]
-            kwargs.pop("module_artifacts", None)
-            real(self, *args, **kwargs)
-
-        monkeypatch.setattr(ContractVerifier, "__init__", entry_table_only)
-        emitted, discovered = _emitted_and_discovered(tmp_path, cell.files())
-        assert uncovered_instances(emitted, discovered), (
             f"emitted {sorted(emitted)}, discovered {sorted(discovered)}")
 
 

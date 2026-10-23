@@ -1343,6 +1343,7 @@ _BY_NAME_INVENTORY: dict[tuple[str, str, str], int] = {
     ("vera/wasm/data.py", "DataMixin._ctor_field_targets_byte", "_ctor_adt_tp_indices"): 1,
     ("vera/wasm/data.py", "DataMixin._ctor_field_tp_index", "_ctor_adt_tp_indices"): 1,
     ("vera/wasm/data.py", "DataMixin._extract_constructor_fields", "_ctor_layouts"): 1,
+    ("vera/wasm/data.py", "DataMixin._field_instantiated_at_nat", "_ctor_adt_tp_indices"): 1,
     ("vera/wasm/data.py", "DataMixin._resolve_nested_scrutinee_type", "_ctor_adt_tp_indices"): 1,
     ("vera/wasm/data.py", "DataMixin._resolve_nested_scrutinee_type", "_ctor_layouts"): 1,
     ("vera/wasm/data.py", "DataMixin._setup_match_arm_env", "_ctor_layouts"): 1,
@@ -1387,12 +1388,8 @@ def _emitted_and_discovered(
     gen = compiled.generator
     assert gen is not None
     emitted = set(getattr(gen, "_emitted_instances", set()))
-    arts = checked.artifacts
     verifier = ContractVerifier(
-        source=checked.source, file=checked.file,
-        resolved_modules=checked.resolved,
-        expr_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
+        checked.typed, source=checked.source, file=checked.file,
     )
     verifier.register_program(program)
     discovered = {
@@ -2028,9 +2025,12 @@ class TestTheScopedProjectionIsTheOnlyLookupPath:
     def test_the_mono_context_flat_tables_are_read_only_by_the_readers(
         self,
     ) -> None:
-        """The third layer's flat tables are LOOKED UP in exactly two places.
+        """The third layer's flat tables are looked up nowhere.
 
-        Discovery names a clone after the type it infers from a constructor
+        Instantiation discovery is gone (#1679): the typed program reads
+        each instantiation off the checker's types, and no table of
+        vera/monomorphize.py decides a constructor's owner.  Before it,
+        discovery named a clone after the type it infers from a constructor
         ARGUMENT, so `MonoContext.ctor_to_adt` / `ctor_tp_indices` decide a
         constructor's owner just as codegen's projection does.  A lookup BY
         NAME is narrowed per namespace by `Monomorphizer._ctor_owner` and
@@ -2094,15 +2094,11 @@ class TestTheScopedProjectionIsTheOnlyLookupPath:
                     and node.func.attr == "get"
                     and is_table(node.func.value)):
                 lookups.append((node.lineno, where(node.lineno)))
-        readers = {"_ctor_owner", "_ctor_tp_indices"}
-        outside = [site for site in lookups if site[1] not in readers]
-        assert not outside, (
-            "MonoContext's flat constructor tables are looked up outside "
-            f"{sorted(readers)}, which bypasses the per-namespace "
-            f"narrowing: {outside}"
+        assert lookups == [], (
+            "a flat constructor table is looked up in vera/monomorphize.py, "
+            f"a derivation of a constructor's owner beside the checker's: "
+            f"{lookups}"
         )
-        # Not vacuous: both readers must still be doing the lookup.
-        assert {site[1] for site in lookups} == readers, lookups
 
     def test_every_wasm_context_takes_all_three_tables_from_the_projection(
         self,

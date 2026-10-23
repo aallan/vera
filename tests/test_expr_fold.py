@@ -227,7 +227,12 @@ def _documented_order(cls: type[ast.Node]) -> list[str]:
     """Declaration order, unless the order table names the class."""
     if cls in fold.ORDER:
         return list(fold.ORDER[cls].fields)
-    return [f.name for f in dataclasses.fields(cls) if f.name != "span"]
+    return [f.name for f in dataclasses.fields(cls) if _visited(f)]
+
+
+def _visited(f: dataclasses.Field[object]) -> bool:
+    """A field the fold names: all but a node's span and its identity."""
+    return f.name != "span" and not f.metadata.get("identity")
 
 
 def _reached(root: ast.Node) -> list[int]:
@@ -252,7 +257,7 @@ def test_the_order_table_is_the_documented_one() -> None:
         "effect", "state", "body", "clauses")
     for cls, order in fold.ORDER.items():
         assert order.why, cls
-        declared = [f.name for f in dataclasses.fields(cls) if f.name != "span"]
+        declared = [f.name for f in dataclasses.fields(cls) if _visited(f)]
         assert sorted(order.fields) == sorted(declared), cls
 
 
@@ -1122,21 +1127,16 @@ public fn main(@Unit -> @Int)
 
 def test_a_with_update_is_obligated_against_its_handler_s_cell() -> None:
     """A clause's `with` update writes its handler's cell, the effect's
-    `State<T>` argument, whatever the `with` annotation says (#1203).  A
-    generic handler may declare its state at another type than its cell,
-    which the checker leaves to the instantiation (#1206): at `Nat` the
-    declaration is E533, and the update `0 - 5` is refused into the `Nat`
-    cell (E503).  The clause's step cannot see its handler, so the
-    handler's step hands it the cell; a clause handed none reads the `Int`
-    annotation and obligates nothing."""
-    envelope = pipeline.verify(_DIVERGENT_CELL).envelope()
-    records = [(o["kind"], o["status"], o.get("error_code"), o["location"]["line"])
-               for o in envelope["obligations"]
-               if o["kind"] in ("state_decl", "nat_bind")]
-    assert ("state_decl", "violated", "E533",
-            _line_of(_DIVERGENT_CELL, "(@Int = 1)")) in records, records
-    assert ("nat_bind", "violated", "E503",
-            _line_of(_DIVERGENT_CELL, "with @Int = 0 - 5")) in records, records
+    `State<T>` argument, whatever the `with` annotation says (#1203).  The
+    one way an annotation can name another type than the cell is a generic
+    handler that declares its state at a concrete type, which the check now
+    refuses at the call that instantiates it (E533, #1679), so the update
+    `0 - 5` into the `Nat` cell is never verified: the program does not
+    check."""
+    checked = pipeline.check(_DIVERGENT_CELL)
+    assert [(d.error_code, d.location.line) for d in checked.errors] == [
+        ("E533", _line_of(_DIVERGENT_CELL, "h(@Nat.0, 7)"))], [
+        d.format() for d in checked.diagnostics]
 
 
 # =====================================================================
@@ -1294,16 +1294,23 @@ public fn main(@Unit -> @Int)
 
 def test_the_unsupported_cell_named_is_the_body_s() -> None:
     """A handler whose clause and body each hold a `State` cell (E607) or
-    an `Exn` payload (E612) the backend cannot compile: the diagnostic names
-    the body's, the first the walk meets.  The checker refuses both types
-    where they are written (E340), so each is a generic clone's, the
-    instantiation that reaches here from a program the check accepts."""
-    for source, code, body in (
-            (_UNSUPPORTED_CELLS, "E607", "handle[State<B>]"),
-            (_UNSUPPORTED_PAYLOADS, "E612", "handle[Exn<A>] {\n      throw(@A) -> { 1 }")):
-        result = pipeline.compile(source).result
-        named = [d.location.line for d in result.diagnostics if d.error_code == code]
-        assert named == [_line_of(source, body)], (code, named)
+    an `Exn` payload (E612) no instantiation lowers at the types the call
+    chooses: the check refuses each at the call (#1679), the body's first,
+    as the walk meets it.  The checker refuses both types where they are
+    written (E340), so each is a generic's cell at its instantiation, which
+    code generation no longer meets: the program does not check."""
+    for source, code, cells in (
+            (_UNSUPPORTED_CELLS, "E607",
+             ["State<Array<Int>>", "State<String>"]),
+            (_UNSUPPORTED_PAYLOADS, "E612", ["Exn<Unit>", "Exn<Unit>"])):
+        checked = pipeline.check(source)
+        found = [d for d in checked.errors if d.error_code == code]
+        named = [next(c for c in ("State<Array<Int>>", "State<String>",
+                                  "Exn<Unit>") if f"is an {c}" in d.description
+                      or f"is a {c}" in d.description) for d in found]
+        assert named == cells, (code, [d.description for d in found])
+        assert {d.location.line for d in found} == {
+            _line_of(source, "  probe(")}, (code, found)
 
 
 _NESTED_BASES = """\
@@ -1396,7 +1403,7 @@ def test_a_handler_s_body_closures_report_before_its_clauses() -> None:
 
 def _make_cg() -> CodeGenerator:
     """Build a fresh CodeGenerator for compilability scans."""
-    return CodeGenerator()
+    return CodeGenerator(pipeline.typed())
 
 
 def _make_ctx() -> WasmContext:

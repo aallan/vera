@@ -10,8 +10,6 @@ import pytest
 from vera.codegen import (
     execute,
 )
-from vera.parser import parse_file
-from vera.transform import transform
 from tests import pipeline
 from tests.codegen_helpers import (
     _compile, _compile_ok, _run, _run_io, wat_calls, wat_fn_names,
@@ -683,8 +681,8 @@ public fn main(-> @Int)
   }
 }
 """
-        result = _compile(source)
-        errors = [d for d in result.diagnostics if d.severity == "error"]
+        # Refused at the call that instantiates it (E613 at check, #1679).
+        errors = pipeline.check(source).errors
         assert any(d.error_code == "E613" for d in errors), (
             f"Expected E613, got: {[d.error_code for d in errors]}"
         )
@@ -2852,16 +2850,16 @@ public fn main(@Unit -> @String)
             f.write(self._BARE_TYPEVAR_USER_FN)
             f.flush()
             path = f.name
-        prog = transform(parse_file(path))
 
-        gen = CodeGenerator(source=self._BARE_TYPEVAR_USER_FN, file=path)
-        gen.compile_program(prog)
+        typed = pipeline.typed(self._BARE_TYPEVAR_USER_FN, file=path)
+        gen = CodeGenerator(typed, source=self._BARE_TYPEVAR_USER_FN, file=path)
+        gen.compile_program()
         codegen_set = getattr(gen, "_emitted_instances", set())
 
         verifier = ContractVerifier(
-            source=self._BARE_TYPEVAR_USER_FN, file=path,
+            typed, source=self._BARE_TYPEVAR_USER_FN, file=path,
         )
-        verifier.register_program(prog)
+        verifier.register_program(typed.program)
         verifier_set = {
             (n, ct)
             for n, cts in verifier._instances.items()
@@ -3087,13 +3085,16 @@ public fn main(@Unit -> @Int)
         assert _run(self._ISSUE3_BOX_RETURN_BARE_T, fn="main") == 0
 
     def test_issue3_discovery_matches_call_rewrite(self) -> None:
-        """The emitted clone (`pick_last$Option`) and the call target must
-        agree — the call site must not reference the phantom `pick_last$Bool`."""
+        """The emitted clone and the call target must agree — the call site
+        must not reference the phantom `pick_last$Bool`.  The clone is
+        named by the call's whole type argument, `Option<Option<Decimal>>`
+        (#1679), where discovery named it by its head (`pick_last$Option`)."""
         result = _compile_ok(self._ISSUE3_PARAM_RETURN_BARE_T)
         wat = result.wat or ""
-        assert "pick_last$Option" in wat_fn_names(wat), (
-            "discovery's base-name clone pick_last$Option is absent from the "
-            "WAT (#899 issue 3)"
+        clone = "pick_last$Option_LOption_LDecimal_R_R"
+        assert clone in wat_fn_names(wat), (
+            f"the clone {clone} at the call's type argument is absent from "
+            "the WAT (#899 issue 3)"
         )
         assert "$:pick_last$Bool" not in wat, (
             "call-rewrite fell through to the i32→Bool collapse for a "
@@ -3772,24 +3773,18 @@ def _mono_fn(source: str, fn_name: str, concrete: tuple[str, ...]):
     """Transform ``source``, find FnDecl ``fn_name``, monomorphize it.
 
     Drives the public ``Monomorphizer.monomorphize_fn`` contract exactly the
-    way both consumers do (#732): on the transform-level AST, with a
-    context-free ``MonoContext`` (the reindex logic needs no registration
-    state).
+    way the typed program does (#1679): on the transform-level AST, with
+    no naming environment (the reindex logic needs none).
     """
     from vera import ast as vera_ast
-    from vera.monomorphize import MonoContext, Monomorphizer
+    from vera.monomorphize import Monomorphizer
 
     program = _transform_program(source)
     decl = next(
         tld.decl for tld in program.declarations
         if isinstance(tld.decl, vera_ast.FnDecl) and tld.decl.name == fn_name
     )
-    ctx = MonoContext(
-        generic_decls={}, ctor_to_adt={}, ctor_tp_indices={},
-        adt_tp_counts={}, type_aliases={}, type_alias_params={},
-        fn_ret_types={},
-    )
-    return Monomorphizer(ctx).monomorphize_fn(decl, concrete)
+    return Monomorphizer().monomorphize_fn(decl, concrete)
 
 
 def _slot_sigs(node) -> list[tuple[str, int]]:
@@ -3948,16 +3943,15 @@ class TestBuiltinReturnTables769:
         )
 
     def test_simple_table_values_chain_parity(self) -> None:
-        """VALUE pins: the simple names must equal what the WASM call-rewrite
-        chain historically produced (clone-name agreement, warts included —
-        ``string_length`` is "Int" not "Nat" there, ``string_char_code`` is
-        "Nat").  Changing these is a clone-granularity decision out of #769's
-        scope; agreement is the invariant."""
+        """VALUE pins: the simple names are the records' (``string_length``
+        is "Nat", ``string_char_code`` is "Nat"): clone names come from the
+        checker's instantiation (#1679), so no name is kept for agreement
+        with a second clone namer."""
         from vera.monomorphize import _BUILTIN_VERA_RETURN_TYPES as S
 
         assert S.get("string_chars") == "Array"
         assert S.get("string_split") == "Array"
-        assert S.get("string_length") == "Int"
+        assert S.get("string_length") == "Nat"
         assert S.get("string_char_code") == "Nat"
         assert S.get("parse_int") == "Result"
         assert S.get("int_to_string") == "String"
@@ -4155,54 +4149,6 @@ private forall<A, B> fn confuse2(@Array<Option<A>>, @Array<Option<B>> -> @Option
         assert _slot_sigs(mono.body) == [("String", 0), ("Int", 0)], (
             f"got {_slot_sigs(mono.body)} — no-collapse monomorphization "
             f"must not move any index"
-        )
-
-
-class TestNestedArgTypeInfo769:
-    """#769 gap 2 (unit level, argument side): ``_get_arg_type_info`` must
-    surface FULL-DEPTH element names for nested literals so the recursive
-    unifier has something to bind against."""
-
-    def test_nested_array_literal_element_name(self) -> None:
-        from vera import ast as vera_ast
-        from vera.monomorphize import MonoContext, Monomorphizer
-
-        program = _transform_program("""\
-public fn main(@Unit -> @Int)
-  requires(true) ensures(true) effects(pure)
-{
-  let @Array<Array<Int>> = [[100, 3]];
-  0
-}
-""")
-        arrays: list = []
-
-        def find(v: object) -> None:
-            from dataclasses import fields as dc_fields
-            if isinstance(v, vera_ast.ArrayLit):
-                arrays.append(v)
-            if isinstance(v, vera_ast.Node):
-                for fld in dc_fields(v):
-                    if fld.name != "span":
-                        find(getattr(v, fld.name))
-            elif isinstance(v, tuple):
-                for item in v:
-                    find(item)
-
-        find(program)
-        outer = next(
-            a for a in arrays
-            if a.elements and isinstance(a.elements[0], vera_ast.ArrayLit)
-        )
-        ctx = MonoContext(
-            generic_decls={}, ctor_to_adt={}, ctor_tp_indices={},
-            adt_tp_counts={}, type_aliases={}, type_alias_params={},
-            fn_ret_types={},
-        )
-        info = Monomorphizer(ctx)._get_arg_type_info(outer, {})
-        assert info == ("Array", ("Array<Int>",)), (
-            f"got {info} — a nested array literal must expose its element "
-            f"type full-depth so Array<Array<E>> can bind E (#769 gap 2)"
         )
 
 

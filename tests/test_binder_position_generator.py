@@ -556,8 +556,8 @@ _UNSUPPORTED_SHAPES: dict[tuple[str, str], str] = {
     ("State-op resume", "refined_array"):
         "Code generation cannot lower a State<",
     ("map value", "refined_array"):
-        "Map/Set with an Array-typed or zero-size key, value, or element is "
-        "not supported — function skipped",
+        # Refused at check where the value's type is written (E135, #1680).
+        "' with an Array value type '",
 }
 
 #: (site, kind) -> a defect the generator finds that its own PR does not fix,

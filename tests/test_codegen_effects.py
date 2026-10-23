@@ -4,6 +4,8 @@ Split from tests/test_codegen.py (#419). Shared helpers live in tests/codegen_he
 """
 from __future__ import annotations
 
+from tests import pipeline
+
 import re
 
 
@@ -11,14 +13,11 @@ from vera.codegen import (
     compile,
     execute,
 )
-from vera.parser import parse_file
-from vera.transform import transform
 
 import pytest
 
 from vera.codegen.api import WasmTrapError
 
-from tests import pipeline
 from tests.codegen_helpers import (
     _compile,
     _compile_ok,
@@ -119,9 +118,8 @@ public fn increment(@Unit -> @Unit)
         from pathlib import Path
         path = Path(__file__).parent.parent / "examples" / "increment.vera"
         source = path.read_text(encoding="utf-8")
-        tree = parse_file(str(path))
-        program = transform(tree)
-        result = compile(program, source=source, file=str(path))
+        result = compile(
+            pipeline.check(path).typed, source=source, file=str(path))
         assert result.ok
         assert "increment" in result.exports
         exec_result = execute(result, fn_name="increment")

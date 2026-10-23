@@ -406,6 +406,9 @@ class RegistrationMixin:
         function's name is refused the same way (#1469): the prelude is a
         module whose names are reserved.
         """
+        if self._prelude_namespace:
+            # #1679: the prelude's own names are not reserved in it.
+            return False
         from vera.prelude import reserved_function_names
 
         rejected = decl.name in _builtin_reject_names()
@@ -546,6 +549,9 @@ class RegistrationMixin:
         catch — ``check_diagnostic_fields`` checks that a rationale is
         PRESENT, not that it is true.
         """
+        if self._prelude_namespace:
+            # #1679: the prelude's own names are not reserved in it.
+            return
         if not _RESERVED_TYPE_PREFIX_RE.match(name):
             return
         suggestion = name.removeprefix("Vera")
@@ -617,6 +623,9 @@ class RegistrationMixin:
         constructor alike — go through :meth:`_check_reserved_decl_name`
         (#1260), on the same regex.
         """
+        if self._prelude_namespace:
+            # #1679: the prelude's own names are not reserved in it.
+            return
         if isinstance(decl, ast.FnDecl):
             binders = decl.forall_vars or ()
         else:
@@ -1401,6 +1410,9 @@ class RegistrationMixin:
         register the declaration: registered, it drew secondary errors that
         named the same type on both sides ("has type Int, expected Int").
         """
+        if self._prelude_namespace:
+            # #1679: the prelude's own names are not reserved in it.
+            return False
         from vera.prelude import prelude_adt_names, reserved_type_names
 
         reserved = False

@@ -27,13 +27,13 @@ shape), post-fix they trap promptly.
 
 from __future__ import annotations
 
+from tests import pipeline
+
 import re
 import subprocess
 import sys
 from pathlib import Path
 
-from vera.parser import parse_file
-from vera.transform import transform
 from tests.codegen_helpers import _compile, _compile_ok, _run
 
 
@@ -493,12 +493,8 @@ class TestTier3GuardCorrespondence:
             f.write(source)
             f.flush()
             path = f.name
-        try:
-            tree = parse_file(path)
-            prog = transform(tree)
-        finally:
-            Path(path).unlink(missing_ok=True)
-        vr = verify(prog, source=source, file=path)
+        Path(path).unlink(missing_ok=True)
+        vr = verify(pipeline.typed(source, file=path), source=source, file=path)
         tier3_decreases = [
             ob for ob in vr.obligations
             if ob.kind == "decreases" and ob.status == "tier3"

@@ -396,6 +396,8 @@ class ClosureLiftingMixin:
         # #820: target-type side-table for the narrowing guards'
         # per-component target-type recovery, inside closure bodies too.
         ctx.set_expr_target_types(self._expr_target_types)
+        # #1679: the instance each generic call in the closure calls.
+        ctx.set_call_targets(self._typed.call_targets)
         # #747: per-parameter concrete-@Nat flags for the call-site
         # runtime narrowing guard inside closure bodies too.
         ctx.set_fn_nat_params(self._fn_nat_params)

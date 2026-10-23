@@ -34,8 +34,6 @@ from pathlib import Path
 import pytest
 
 from vera.codegen import compile, execute
-from vera.parser import parse_file
-from vera.transform import transform
 from tests import pipeline
 
 
@@ -521,9 +519,8 @@ public fn main(@Unit -> @Unit)
         f.flush()
         path = f.name
     try:
-        tree = parse_file(path)
-        program = transform(tree)
-        result = compile(program, source=src, file=path)
+        typed = pipeline.typed(src, file=path)
+        result = compile(typed, source=src, file=path)
         errors = [d for d in result.diagnostics if d.severity == "error"]
         assert not errors, (
             "Compilation failed:\n"

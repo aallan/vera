@@ -289,7 +289,7 @@ private fn set_demo(-> @Int)
 
 ### 9.4.3 Map\<K, V\>
 
-`Map<K, V>` is a key-value mapping. It requires the `Eq` and `Hash` abilities on `K` (see Section 9.8). Keys must be hashable primitive types: `Int`, `Nat`, `Bool`, `Float64`, `String`, or `Byte`. Values must be primitives (`Int`, `Nat`, `Bool`, `Byte`, `Float64`, `String`), ADT heap-pointer types (`Option<T>`, `Result<T, E>`), or other `Map` values. `Array<T>` values are not supported as Map values.
+`Map<K, V>` is a key-value mapping. It requires the `Eq` and `Hash` abilities on `K` (see Section 9.8). Keys must be hashable primitive types: `Int`, `Nat`, `Bool`, `Float64`, `String`, or `Byte`. Values must be primitives (`Int`, `Nat`, `Bool`, `Byte`, `Float64`, `String`), ADT heap-pointer types (`Option<T>`, `Result<T, E>`), or other `Map` values. `Array<T>` values are not supported as Map values: a `Map` with an `Array` key or value is a checker error (**E135**, Section 2.2).
 
 Map is an opaque built-in type: a persistent hash trie in the module's own heap, a 32-way branch for each five bits of a key's hash with the entries below them, and its operations are functions the module carries, generated for each key and value representation the program uses. No host implements one. WASM code holds a map as one `i32` pointer. All operations are pure — `map_insert` and `map_remove` return new maps and leave the one they were given unchanged, sharing every block the update does not change: an update copies the branches on its key's path, at most thirteen, so its time and space grow with the trie's depth, not with the map's size.
 
@@ -2771,7 +2771,7 @@ Key design points:
 
 4. **`ability` declarations** look like `effect` declarations (using `op` for operations), keeping the language syntactically consistent.
 
-5. **Constraint syntax** uses `forall<T where Ability<T>>`, consistent with the placeholder noted in Chapter 2, Section 2.7.1.
+5. **Constraint syntax** uses `forall<T where Ability<T>>`, consistent with the placeholder noted in Chapter 2, Section 2.7.1. A constraint holds for every type the generic is instantiated at: the checker holds it against the type arguments it infers at each call, and at each call those instances make in turn, and refuses a type that does not satisfy it at the call that chooses it (**E613**), naming the chain of instances from that call.
 
 This design draws on Roc's abilities (deliberately no HKTs, auto-derivable) and Gleam's validation that useful languages need not have typeclasses.
 
@@ -2854,7 +2854,7 @@ For `Eq`, ADTs are automatically derivable when all constructor fields are Eq-sa
 
 Simple enums (ADTs with only nullary constructors) always satisfy `Eq` — equality reduces to tag comparison.
 
-ADTs with `String` fields derive `Eq` by content, and nested-ADT fields recurse into the nested ADT's own equality — including recursive and mutually-recursive types ([#773](https://github.com/aallan/vera/issues/773)). `Array`, `Map`, `Set`, host-handle, function, and tuple fields are non-derivable. `==` / `!=` (and the `eq` ability operation) is the surface spelling of `Eq`, so a non-Eq-derivable operand — a function value, an `Array` / `Map` / `Set` / `Tuple`, or a composite carrying such a field — is rejected at check time with E243 ([#928](https://github.com/aallan/vera/issues/928)), mirroring the E242 rejection of `compare` / ordering on a non-orderable operand. An `Eq` constraint over a non-derivable type on the generic path is likewise rejected, with E613 at monomorphization.
+ADTs with `String` fields derive `Eq` by content, and nested-ADT fields recurse into the nested ADT's own equality — including recursive and mutually-recursive types ([#773](https://github.com/aallan/vera/issues/773)). `Array`, `Map`, `Set`, host-handle, function, and tuple fields are non-derivable. `==` / `!=` (and the `eq` ability operation) is the surface spelling of `Eq`, so a non-Eq-derivable operand — a function value, an `Array` / `Map` / `Set` / `Tuple`, or a composite carrying such a field — is rejected at check time with E243 ([#928](https://github.com/aallan/vera/issues/928)), mirroring the E242 rejection of `compare` / ordering on a non-orderable operand. An `Eq` constraint over a non-derivable type on the generic path is likewise rejected, with E613 at the call that instantiates it.
 
 `Show` and `Hash` also derive **structurally** for composite types ([#911](https://github.com/aallan/vera/issues/911)) — user ADTs, `Tuple`, `Option`, `Result`, and `Array` — recursing into each field/element by its own `show`/`hash`.
 

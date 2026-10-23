@@ -952,32 +952,34 @@ SHAPES: dict[str, _Shape] = {
             "Tuple<Array<Int>, Array<Int>>, the type of element 0, completed "
             "by element 1.")),
     # Withheld for behaviour: not filled; refused at an `if` or a `match`.
+    # The call's open variable is a hole (`T$`), which leaves it as no
+    # variable of its callee's (PR #1791 review).
     "fn-agree": _Shape(
         ("mkf(())", _NAT_ID),
-        {"literal": (None, "fn(T -> T) effects(pure)"),
+        {"literal": (None, "fn(T$ -> T$) effects(pure)"),
          "if": (1, None), "match": (1, None)}),
     "fn-disagree": _Shape(
         ("mkf(())", _NAT_STR),
-        {"literal": (None, "fn(T -> T) effects(pure)"),
+        {"literal": (None, "fn(T$ -> T$) effects(pure)"),
          "if": (1, None), "match": (1, None)}),
     "endo-agree": _Shape(
         ("mk(())", _NAT_ID),
-        {"literal": (None, "fn(T -> T) effects(pure)"),
+        {"literal": (None, "fn(T$ -> T$) effects(pure)"),
          "if": (1, None), "match": (1, None)}),
     "endo-disagree": _Shape(
         ("mk(())", _NAT_STR),
-        {"literal": (None, "fn(T -> T) effects(pure)"),
+        {"literal": (None, "fn(T$ -> T$) effects(pure)"),
          "if": (1, None), "match": (1, None)}),
     # The `if` synthesizes `mkbox(())` again against the other branch's
     # type, which fixes the call's instantiation where it is checked.
     "box-agree": _Shape(
         ("mkbox(())", f"MkBox({_NAT_ID})"),
-        {"literal": (None, "Box<T>"), "if": (None, "Box<Nat>"),
+        {"literal": (None, "Box<T$>"), "if": (None, "Box<Nat>"),
          "match": (1, None)}),
     "box-disagree": _Shape(
         ("mkbox(())",
          "MkBox(fn(@String -> @String) effects(pure) { @String.0 })"),
-        {"literal": (None, "Box<T>"), "if": (None, "Box<String>"),
+        {"literal": (None, "Box<T$>"), "if": (None, "Box<String>"),
          "match": (1, None)}),
     # A built-in's variable: each site's verdict as before.
     "leak-agree": _Shape(
@@ -1276,7 +1278,7 @@ private forall<T> fn mkcell(@Unit -> @Cell<T>)
 _CELL_EXPECT: dict[str, tuple[int | None, str]] = {
     # The `if` synthesizes `mkcell(())` again against the other branch's
     # type, which fixes the call where it is checked (f3b4415d's verdict).
-    "literal": (None, "Array<Cell<T>>"),
+    "literal": (None, "Array<Cell<T$>>"),
     "if": (None, "Array<Cell<Nat>>"),
     "match": (1, ""),
 }
@@ -1307,7 +1309,7 @@ def test_mutant_an_effect_row_holds_behaviour() -> None:
     checked = _checked(source)
     assert checked.diagnostics == ()
     assert _literal_types(checked)[_place(source, literal)] == (
-        "Array<Cell<T>>")
+        "Array<Cell<T$>>")
 
 
 def test_mutant_a_variable_bound_on_the_part_side_takes_one_type() -> None:

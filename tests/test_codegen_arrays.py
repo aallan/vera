@@ -4,6 +4,7 @@ Split from tests/test_codegen.py (#419). Shared helpers live in tests/codegen_he
 """
 from __future__ import annotations
 
+from tests import pipeline
 from tests.codegen_helpers import (
     _compile_ok,
     _run,
@@ -1915,44 +1916,45 @@ public fn g(-> @Int) requires(true) ensures(true) effects(pure) {
         assert _run(src, fn="g") == 8589934597
 
 
+def _refused_e135(src: str) -> None:
+    """*src* is refused at check with E135 alone: a Map or Set operation
+    over a component no operation is generated for (#1075, #1680)."""
+    checked = pipeline.check(src)
+    assert {d.error_code for d in checked.errors} == {"E135"}, [
+        d.format() for d in checked.diagnostics]
+
+
 class TestContainerZeroSizeBackstop1075:
-    """#1075 codegen backstop: the ANNOTATION-FREE zero-size container
-    spelling (`map_values(map_insert(map_new(), "k", ()))`) never passes
-    through type resolution — its `Map<String, Unit>` type exists only in
-    inference — so the E135 check gate (TestContainerZeroSizeRejected1075
-    in test_checker_types.py) cannot fire.  Pre-fix it compiled exit-0 to
+    """#1075: the ANNOTATION-FREE zero-size container spelling
+    (`map_values(map_insert(map_new(), "k", ()))`) never passes through
+    type resolution — its `Map<String, Unit>` type exists only in inference
+    — so the written-type E135 gate (TestContainerZeroSizeRejected1075 in
+    test_checker_types.py) cannot fire.  Pre-fix it compiled exit-0 to
     INVALID WASM ("expected i32 but nothing on stack": the Unit value
-    pushes no operand where the host import expects an i32).
-    `_map_wasm_tag` now returns None for a zero-size type name, so the
-    emission takes the loud-skip path — correct-or-loud, never an invalid
-    module.
+    pushes no operand where the host import expects an i32), and then code
+    generation's `_map_wasm_tag` dropped the function loudly (E602).  The
+    check now judges each Map or Set operation's components on the types
+    it inferred, so it refuses the call (E135, #1680), and code generation's
+    refusal is the backstop no checked program reaches.
     """
 
     def test_inline_unit_map_value_loud_skip(self) -> None:
-        """The inference-only Map spelling drops loudly via [E602]."""
+        """The inference-only Map spelling is refused at its calls."""
         src = """
 public fn g(-> @Int) requires(true) ensures(true) effects(pure) {
   array_length(map_values(map_insert(map_new(), "k", ())))
 }
 """
-        result = _compile_ok(src)
-        assert "g" not in result.exports, \
-            "inline zero-size Map value must drop, not emit invalid WASM"
-        assert any(d.error_code == "E602" for d in result.diagnostics), \
-            "the zero-size backstop must keep the loud E602 skip"
+        _refused_e135(src)
 
     def test_inline_unit_set_elem_loud_skip(self) -> None:
-        """The inference-only Set spelling drops loudly via [E602]."""
+        """The inference-only Set spelling is refused at its calls."""
         src = """
 public fn g(-> @Int) requires(true) ensures(true) effects(pure) {
   array_length(set_to_array(set_add(set_new(), ())))
 }
 """
-        result = _compile_ok(src)
-        assert "g" not in result.exports, \
-            "inline zero-size Set element must drop, not emit invalid WASM"
-        assert any(d.error_code == "E602" for d in result.diagnostics), \
-            "the zero-size backstop must keep the loud E602 skip"
+        _refused_e135(src)
 
     def test_empty_map_keys_still_compiles_control(self) -> None:
         """The genuinely element-type-free empty-collection shape keeps its
@@ -1982,10 +1984,7 @@ public fn g(-> @Int) requires(true) ensures(true) effects(<Async>) {
   map_size(map_insert(map_new(), "k", async(async(()))))
 }
 """
-        result = _compile_ok(src)
-        assert "g" not in result.exports, \
-            "nested-Future zero-size map value must drop, not emit invalid WASM"
-        assert any(d.error_code == "E602" for d in result.diagnostics)
+        _refused_e135(src)
 
     def test_nested_future_set_elem_loud_skip(self) -> None:
         """async(async(())) as a set element (p5)."""
@@ -1994,10 +1993,7 @@ public fn g(-> @Int) requires(true) ensures(true) effects(<Async>) {
   set_size(set_add(set_new(), async(async(()))))
 }
 """
-        result = _compile_ok(src)
-        assert "g" not in result.exports, \
-            "nested-Future zero-size set element must drop, not emit invalid WASM"
-        assert any(d.error_code == "E602" for d in result.diagnostics)
+        _refused_e135(src)
 
     def test_alias_future_unit_return_map_value_loud_skip(self) -> None:
         """A user fn returning `@FU` (`type FU = Future<Unit>`) as a map
@@ -2013,10 +2009,7 @@ public fn g(-> @Int) requires(true) ensures(true) effects(<Async>) {
   map_size(map_insert(map_new(), "k", mkfu(())))
 }
 """
-        result = _compile_ok(src)
-        assert "g" not in result.exports, \
-            "alias-hidden Future<Unit> map value must drop, not emit invalid WASM"
-        assert any(d.error_code == "E602" for d in result.diagnostics)
+        _refused_e135(src)
 
     def test_future_unit_return_map_value_loud_skip(self) -> None:
         """A user fn returning `@Future<Unit>` directly as a map value (p11)
@@ -2031,10 +2024,7 @@ public fn g(-> @Int) requires(true) ensures(true) effects(<Async>) {
   map_size(map_insert(map_new(), "k", mk(())))
 }
 """
-        result = _compile_ok(src)
-        assert "g" not in result.exports, \
-            "Future<Unit>-returning map value must drop, not emit invalid WASM"
-        assert any(d.error_code == "E602" for d in result.diagnostics)
+        _refused_e135(src)
 
     def test_async_task_alias_map_value_loud_skip(self) -> None:
         """The natural shape (p12): a map of `async(IO.print(...))` tasks
@@ -2050,10 +2040,7 @@ public fn g(-> @Int) requires(true) ensures(true) effects(<Async, IO>) {
   map_size(map_insert(map_new(), "k", spawn("hi")))
 }
 """
-        result = _compile_ok(src)
-        assert "g" not in result.exports, \
-            "Task-alias async map value must drop, not emit invalid WASM"
-        assert any(d.error_code == "E602" for d in result.diagnostics)
+        _refused_e135(src)
 
     def test_unit_return_map_value_loud_skip_pin(self) -> None:
         """p13 pin: a pure fn returning bare `@Unit` as a map value keeps
@@ -2067,9 +2054,7 @@ public fn g(-> @Int) requires(true) ensures(true) effects(pure) {
   map_size(map_insert(map_new(), "k", nop(1)))
 }
 """
-        result = _compile_ok(src)
-        assert "g" not in result.exports
-        assert any(d.error_code == "E602" for d in result.diagnostics)
+        _refused_e135(src)
 
     def test_alias_array_return_map_value_loud_skip(self) -> None:
         """The Array dual through the same entry resolver: a user fn
@@ -2088,10 +2073,7 @@ public fn g(-> @Int) requires(true) ensures(true) effects(pure) {
   map_size(map_insert(map_new(), "k", mkn(())))
 }
 """
-        result = _compile_ok(src)
-        assert "g" not in result.exports, \
-            "alias-of-Array map value must drop, not mis-tag as a scalar"
-        assert any(d.error_code == "E602" for d in result.diagnostics)
+        _refused_e135(src)
 
 
 # =====================================================================

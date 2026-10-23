@@ -124,8 +124,16 @@ MEASURES: tuple[Measure, ...] = (
     Measure("soundness_bugs", "Open `soundness` bugs", "14 (≥17 by definition)", GITHUB,
             "the open issues labelled both `bug` and `soundness`"),
     Measure("open_bugs", "Open bugs", "82", GITHUB, "the open issues labelled `bug`"),
-    Measure("infer_functions", "Backend `_infer_*` functions", "32", TREE,
-            "the functions named `_infer_*` anywhere in `vera/`"),
+    Measure("infer_functions", "Backend `_infer_*` functions", "29", TREE,
+            "the functions named `_infer_*` in `vera/` outside `vera/checker/`,"
+            " whose own three are the one derivation of a type (the audit's 32"
+            " counted them)"),
+    Measure("optional_tables",
+            "Pipeline entry points with an optional semantic table", "3", TREE,
+            "`compile` (`vera/codegen/api.py`), `verify` (`vera/verifier.py`)"
+            " and `test` (`vera/tester.py`) where a parameter that takes the"
+            " checker's tables (`expr_types`, `expr_semantic_types`,"
+            " `expr_target_types`, `module_artifacts`) has a default"),
     Measure("nat_int_twins",
             "Same-named `Nat`/`Int` helpers in `vera/verifier.py` and `vera/wasm/`",
             "12", TREE,
@@ -232,13 +240,56 @@ def _callee(call: ast.Call) -> str | None:
 
 
 def infer_functions(root: Path) -> int:
-    """The functions named `_infer_*` anywhere in `vera/`: the backend's own
-    type inference, which the audit counted at 23 in `vera/wasm/`, 6 in
-    `vera/monomorphize.py` and 3 in `vera/checker/`."""
+    """The functions named `_infer_*` in `vera/` outside `vera/checker/`:
+    the backend's own type inference, which the audit counted at 23 in
+    `vera/wasm/` and 6 in `vera/monomorphize.py` beside the checker's 3,
+    which are the derivation every other reader is to read (#1679)."""
+    checker = root / "vera" / "checker"
     return sum(
-        1 for path in _sources(root, "vera") for fn in _functions(_parse(path))
+        1 for path in _sources(root, "vera")
+        if checker not in path.parents
+        for fn in _functions(_parse(path))
         if fn.name.startswith("_infer_")
     )
+
+
+#: The pipeline's entry points, by module, and the parameters that hand one
+#: the checker's tables (#1679).
+_ENTRY_POINTS: tuple[tuple[str, str], ...] = (
+    ("vera/codegen/api.py", "compile"),
+    ("vera/verifier.py", "verify"),
+    ("vera/tester.py", "test"),
+)
+_TABLE_PARAMETERS = frozenset({
+    "expr_types", "expr_semantic_types", "expr_target_types",
+    "module_artifacts",
+})
+
+
+def optional_tables(root: Path) -> int:
+    """The pipeline entry points that take the checker's tables as an
+    optional parameter: each such entry point re-derived a type the caller
+    did not hand it.  A module-level function of the name is the entry
+    point; one with no such module or function counts nothing."""
+    count = 0
+    for relative, name in _ENTRY_POINTS:
+        path = root / relative
+        if not path.is_file():
+            continue
+        for node in _parse(path).body:
+            if not (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and node.name == name):
+                continue
+            arguments = node.args
+            positional = [*arguments.posonlyargs, *arguments.args]
+            defaulted = {a.arg for a in positional[len(positional)
+                                                   - len(arguments.defaults):]}
+            defaulted |= {a.arg for a, d in zip(arguments.kwonlyargs,
+                                                arguments.kw_defaults)
+                          if d is not None}
+            if defaulted & _TABLE_PARAMETERS:
+                count += 1
+    return count
 
 
 _NAT_INT_WORDS = frozenset({"nat", "int", "overflow", "underflow"})
@@ -739,6 +790,7 @@ def tree_values(
         existing, gates = sync_gates(root)
         now = {
             "infer_functions": f"{infer_functions(root):,}",
+            "optional_tables": f"{optional_tables(root):,}",
             "nat_int_twins": f"{len(nat_int_twins(root)):,}",
             "guarded_claims": f"{guarded_claims(root):,}",
             "expr_dispatchers": f"{expr_dispatchers(root):,}",

@@ -453,7 +453,7 @@ class TestImportedGenericCloneEnv:
 
         try:
             Monomorphizer.monomorphize_fn = record("verifier")  # type: ignore[method-assign]
-            verify(prog, _GENERIC_MAIN, resolved_modules=[module])
+            verify(pipeline.typed(_GENERIC_MAIN, modules=[module]), _GENERIC_MAIN)
             Monomorphizer.monomorphize_fn = record("codegen")  # type: ignore[method-assign]
             _compile_mod(_GENERIC_MAIN, [module])
         finally:
@@ -501,33 +501,6 @@ class TestImportedGenericCloneEnv:
                 "the emitted clone satisfied a postcondition the verifier "
                 "reports as violated: verify and run disagree"
             )
-
-    def test_clone_construction_enters_the_modules_source_scope(self) -> None:
-        """The clone-construction door pairs both scopes, like its siblings.
-
-        Codegen enters an imported module's namespace at five doors; the
-        alias scope alone leaves ``file``/``source`` on the IMPORTER, so a
-        diagnostic raised there would pair the importer's path with
-        module-local coordinates — the #1186/#1189 attribution failure, and
-        the reason the E618 dedup (keyed on the resolved location) once
-        merged two modules' reports.  Nothing inside this door reports
-        today; the pairing is what keeps that true of whatever moves into
-        it, so it is asserted structurally rather than through a
-        diagnostic that does not exist.
-        """
-        from vera.codegen.core import CodeGenerator
-
-        module = _resolved(("blib",), _GENERIC_LIB)
-        gen = CodeGenerator(
-            source=_GENERIC_MAIN, file="main.vera", resolved_modules=[module],
-        )
-        gen.compile_program(parse_to_ast(_GENERIC_MAIN))
-        assert gen.file == "main.vera"
-        with gen._clone_alias_env(("blib",)):
-            assert gen.file == str(module.file_path), gen.file
-            assert gen.source == _GENERIC_LIB
-        assert gen.file == "main.vera", "the source scope was not restored"
-        assert gen.source == _GENERIC_MAIN
 
 
 class TestImportedNestedGenericOriginEnv:
@@ -762,7 +735,7 @@ public fn main(@Unit -> @Nat)
         assert not [
             d for d in typecheck(prog, self._V01) if d.severity == "error"
         ]
-        result = verify(prog, self._V01)
+        result = verify(pipeline.typed(self._V01), self._V01)
         codes = {d.error_code for d in result.diagnostics if d.severity == "error"}
         assert "E500" in codes, (
             "a postcondition that is false for every input proved at Tier 1: "
@@ -772,8 +745,7 @@ public fn main(@Unit -> @Nat)
     def test_verifier_control_without_shadowing(self) -> None:
         """probe v01_control: the same program, alias renamed — E500 both ways."""
         src = self._V01.replace("type T = Int;", "type TT = Int;")
-        prog = parse_to_ast(src)
-        result = verify(prog, src)
+        result = verify(pipeline.typed(src), src)
         assert "E500" in {
             d.error_code for d in result.diagnostics if d.severity == "error"
         }
@@ -1045,7 +1017,7 @@ where {
         self,
     ) -> None:
         from vera import naming
-        from vera.monomorphize import MonoContext, Monomorphizer
+        from vera.monomorphize import Monomorphizer
         from vera.slots import fn_slot_scope
 
         from tests.naming_helpers import alias_env_from_declarations
@@ -1071,11 +1043,7 @@ where {
 
         Monomorphizer._substituted_slot_name = patched  # type: ignore[method-assign]
         try:
-            mono = Monomorphizer(MonoContext(
-                generic_decls={}, ctor_to_adt={}, ctor_tp_indices={},
-                adt_tp_counts={}, type_aliases={}, type_alias_params={},
-                fn_ret_types={},
-            ))
+            mono = Monomorphizer()
             clone = mono.monomorphize_fn(parent, ("Int",), env)
         finally:
             Monomorphizer._substituted_slot_name = original  # type: ignore[method-assign]
@@ -1148,7 +1116,7 @@ where {
         (`#1223 <https://github.com/aallan/vera/issues/1223>`_).
         """
         from vera import naming
-        from vera.monomorphize import MonoContext, Monomorphizer
+        from vera.monomorphize import Monomorphizer
         from vera.slots import fn_slot_scope
 
         from tests.naming_helpers import alias_env_from_declarations
@@ -1174,11 +1142,7 @@ where {
 
         Monomorphizer._substituted_slot_name = patched  # type: ignore[method-assign]
         try:
-            mono = Monomorphizer(MonoContext(
-                generic_decls={}, ctor_to_adt={}, ctor_tp_indices={},
-                adt_tp_counts={}, type_aliases={}, type_alias_params={},
-                fn_ret_types={},
-            ))
+            mono = Monomorphizer()
             # The IDENTITY instantiation: `T` names the module alias here.
             clone = mono.monomorphize_fn(parent, ("T",), env)
         finally:
@@ -1309,7 +1273,7 @@ class TestVerifierModuleAliasEnvs:
 
     def test_module_env_is_the_modules_own_namespace(self) -> None:
         module = _resolved(("clib",), _CONFLICT_LIB)
-        prog = parse_to_ast("""\
+        typed = pipeline.typed("""\
 import clib(need3);
 
 type Cnt = Int;
@@ -1321,9 +1285,9 @@ public fn main(@Unit -> @Int)
 {
   need3(Some(9), Some(3))
 }
-""")
-        v = ContractVerifier(resolved_modules=[module])
-        v.register_program(prog)
+""", modules=[module])
+        v = ContractVerifier(typed)
+        v.register_program(typed.program)
         assert ("clib",) in v._module_alias_envs
         mod_env = v._module_alias_envs[("clib",)]
         # The module's alias under its link name, as the linked program the
@@ -1346,9 +1310,9 @@ public fn main(@Unit -> @Int)
 
     def test_generic_origin_records_the_defining_module(self) -> None:
         module = _resolved(("blib",), _GENERIC_LIB)
-        prog = parse_to_ast(_GENERIC_MAIN)
-        v = ContractVerifier(resolved_modules=[module])
-        v.register_program(prog)
+        typed = pipeline.typed(_GENERIC_MAIN, modules=[module])
+        v = ContractVerifier(typed)
+        v.register_program(typed.program)
         # Keyed by the generic's link name (#1694).
         assert v._generic_origins.get("mod$blib$twolen") == ("blib",)
         assert v._alias_env_for_generic("mod$blib$twolen") is (
@@ -1681,12 +1645,11 @@ class TestDeclOrderIsPerNamespace:
         # the declarations, whose spaces are the subject, are the repro's own.
         source = _DECL_ORDER_MAIN.replace(
             "pick(Some(7), Some(MkX(99)))", "pick(Some(7), Some(9))")
-        assert pipeline.check(source, file="main.vera", modules=[module]).ok
         gen = CodeGenerator(
+            pipeline.typed(source, file="main.vera", modules=[module]),
             source=source, file="main.vera",
-            resolved_modules=[module],
         )
-        gen.compile_program(parse_to_ast(source))
+        gen.compile_program()
         assert ("dolib",) in gen._module_decl_order
         # The module's declarations by their link names (#1694).
         assert "mod$dolib$X" in gen._module_decl_order[("dolib",)]
@@ -2141,9 +2104,10 @@ public fn count(@Array<N> -> @Int)
 """
         module = _resolved(("dolib",), lib)
         gen = CodeGenerator(
-            source=_XMOD_ADT_MAIN, file="main.vera", resolved_modules=[module],
+            pipeline.typed(_XMOD_ADT_MAIN, file="main.vera", modules=[module]),
+            source=_XMOD_ADT_MAIN, file="main.vera",
         )
-        gen.compile_program(parse_to_ast(_XMOD_ADT_MAIN))
+        gen.compile_program()
         with gen._module_alias_scope(("dolib",)):
             # The module's own names, as the linked program spells them
             # (#1694).

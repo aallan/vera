@@ -187,7 +187,7 @@ def test_the_prelude_stamp_is_idempotent_by_name() -> None:
     second call; the guard is a property of the method, and this is
     where it is stated.
     """
-    gen = CodeGenerator(source="", file="<test>")
+    gen = CodeGenerator(pipeline.typed(), source="", file="<test>")
     gen._stamp_decl_order("Zephyr", prelude=True)
     first = gen._prelude_decl_order["Zephyr"]
     after_one = gen._prelude_decl_order_next

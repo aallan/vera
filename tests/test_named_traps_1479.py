@@ -1272,7 +1272,9 @@ def test_vera_test_classifies_a_trial_by_its_trap_kind() -> None:
     program = parse_to_ast(source)
     diags, _ = typecheck_with_artifacts(program, source)
     assert not [d for d in diags if d.severity == "error"]
-    result = run_trials(program, source=source, file="t.vera", trials=40)
+    result = run_trials(
+        pipeline.typed(source, file="t.vera"), source=source, file="t.vera",
+        trials=40)
     [function] = [f for f in result.functions if f.fn_name == "code"]
     statuses = {failure.status for failure in function.failures}
     assert statuses == {"error"}, [
@@ -1443,7 +1445,9 @@ def test_vera_test_names_an_exception_a_trial_leaves_by() -> None:
     program = parse_to_ast(source)
     diags, _ = typecheck_with_artifacts(program, source)
     assert not [d for d in diags if d.severity == "error"]
-    result = run_trials(program, source=source, file="t.vera", trials=40)
+    result = run_trials(
+        pipeline.typed(source, file="t.vera"), source=source, file="t.vera",
+        trials=40)
     [function] = [f for f in result.functions if f.fn_name == "picky"]
     assert function.failures, function
     for failure in function.failures:
@@ -1625,10 +1629,8 @@ from vera.runtime.traps import WasmTrapError
 source = sys.stdin.read()
 program = parse_to_ast(source)
 _d, arts = typecheck_with_artifacts(program, source)
-result = codegen_compile(
-    program, source=source,
-    expr_semantic_types=arts.expr_semantic_types,
-    expr_target_types=arts.expr_target_types)
+from vera.typed import build
+result = codegen_compile(build(program, [], arts), source=source)
 host = sys.argv[1]
 if host == "wasm-bytes":
     sys.stdout.buffer.write(result.wasm_bytes)
@@ -1801,10 +1803,7 @@ def test_the_record_matches_every_signal_the_corpus_emits() -> None:
         if any(d.severity == "error" for d in diags) or resolver.errors:
             continue
         result = codegen_compile(
-            program, source=source, file=str(path), resolved_modules=resolved,
-            expr_semantic_types=arts.expr_semantic_types,
-            expr_target_types=arts.expr_target_types,
-            module_artifacts=arts.module_artifacts)
+            pipeline.check(path).typed, source=source, file=str(path))
         if not result.ok:
             continue
         compiled += 1

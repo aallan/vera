@@ -20,6 +20,8 @@ test is that the two agree.
 
 from __future__ import annotations
 
+from vera.typed import build as build_typed
+
 from dataclasses import dataclass, replace
 
 import pytest
@@ -1340,11 +1342,7 @@ def test_the_call_pre_table_keeps_no_record_alive() -> None:
 
     program = parse_to_ast(CHAR_CODE)
     _diags, arts = typecheck_with_artifacts(program, CHAR_CODE)
-    verifier = ContractVerifier(
-        source=CHAR_CODE,
-        expr_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-    )
+    verifier = ContractVerifier(build_typed(program, [], arts), source=CHAR_CODE)
     verifier.verify_program(program)
     refs = [weakref.ref(o) for o in verifier.obligations
             if o.kind == "call_pre"]

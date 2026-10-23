@@ -23,12 +23,15 @@ The cells here hold those two properties:
 """
 from __future__ import annotations
 
+from vera.typed import build as build_typed
+
 import json
 from collections import Counter
 from pathlib import Path
 
 import pytest
 
+from tests.codegen_helpers import skip_map_inserts  # noqa: F401  (the fixture)
 from tests.codegen_helpers import wat_fn_body
 from tests.module_fixture_helpers import build_multi_module
 from vera.checker import typecheck_with_artifacts
@@ -244,13 +247,17 @@ def test_a_self_tail_check_is_recorded_once_per_splice() -> None:
 # What is NOT listed
 # ---------------------------------------------------------------------------
 
+#: A helper code generation drops: its `map_insert` raises the injected skip
+#: (`skip_map_inserts`), as an Array-valued map's did before the check
+#: refused one (E135, #1680).
 _SKIPPED_HELPER = (
     "private fn tally(-> @Int) requires(true) ensures(true) effects(pure) {\n"
-    '  let @Map<String, Array<Int>> = map_insert(map_new(), "a", [1, 2]);\n'
-    "  map_size(@Map<String, Array<Int>>.0)\n}\n"
+    '  let @Map<String, Int> = map_insert(map_new(), "a", 1);\n'
+    "  map_size(@Map<String, Int>.0)\n}\n"
 )
 
 
+@pytest.mark.usefixtures("skip_map_inserts")
 def test_a_dropped_function_takes_its_checks_with_it() -> None:
     """`g` compiles — emitting its division check — and is then dropped as
     a caller of a skipped function ([E620]); its check is not the module's.
@@ -262,10 +269,7 @@ def test_a_dropped_function_takes_its_checks_with_it() -> None:
     program = parse_to_ast(source)
     _diags, arts = typecheck_with_artifacts(program, source, file="d.vera")
     result = codegen_compile(
-        program, source=source, file="d.vera",
-        expr_semantic_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-    )
+        build_typed(program, [], arts), source=source, file="d.vera")
     assert "g" not in result.exports and "h" in result.exports
     div = _by_emitter(result, "wasm/operators.py:_translate_binary")
     assert [c.function for c in div] == ["h"], div
@@ -523,14 +527,14 @@ def _marked(body: str) -> str:
 
 
 def test_a_marker_naming_no_entry_is_an_invariant_error() -> None:
-    generator = CodeGenerator(source="", file="x.vera")
+    generator = CodeGenerator(pipeline.typed(), source="", file="x.vera")
     with pytest.raises(CodegenInvariantError, match="names no entry"):
         generator._assemble_emitted_checks(
             _marked("    i64.div_s (;vera-check:424242;)"))
 
 
 def test_a_marker_outside_every_function_is_an_invariant_error() -> None:
-    generator = CodeGenerator(source="", file="x.vera")
+    generator = CodeGenerator(pipeline.typed(), source="", file="x.vera")
     generator._emitted_checks[424243] = (
         "wasm/operators.py:_translate_binary", None, ())
     with pytest.raises(CodegenInvariantError, match="outside every function"):
@@ -569,6 +573,7 @@ def test_a_division_lists_its_overflow_condition_where_it_can_occur(
                   if c.function == "f" and c.emitter in division) == kinds
 
 
+@pytest.mark.usefixtures("skip_map_inserts")
 def test_a_stubbed_closure_takes_its_checks_with_it() -> None:
     """A closure calling a skipped function is kept as a one-instruction
     `unreachable` stub (its table slot must survive), so the division its
@@ -581,10 +586,7 @@ def test_a_stubbed_closure_takes_its_checks_with_it() -> None:
     program = parse_to_ast(source)
     _diags, arts = typecheck_with_artifacts(program, source, file="d.vera")
     result = codegen_compile(
-        program, source=source, file="d.vera",
-        expr_semantic_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-    )
+        build_typed(program, [], arts), source=source, file="d.vera")
     assert "(func $anon_0 unreachable)" in result.wat, (
         "the fixture no longer produces a stubbed closure")
     div = _by_emitter(result, "wasm/operators.py:_translate_binary")

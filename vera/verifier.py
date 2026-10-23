@@ -33,14 +33,8 @@ from vera.callgraph import CallGraph, computation_calls
 from vera.environment import ConstructorInfo, FunctionInfo, TypeEnv
 from vera.registration import NamespaceAliases
 from vera.monomorphize import (
-    MonoContext,
     Monomorphizer,
-    UninferredTypeArg,
     collect_nested_generic_decls,
-    declared_return_clone_key,
-    namespace_fn_names,
-    uninferred_type_arg_fix,
-    where_helper_name,
 )
 from vera.binding import DeclId, Linked
 
@@ -51,6 +45,7 @@ if TYPE_CHECKING:
         ModuleManifest,
     )
     from vera.resolver import ResolvedModule
+    from vera.typed import Instance, TypedProgram
 from vera.errors import Diagnostic, SourceLocation
 from vera.lexical import blank_comments
 from vera.obligations.core import (
@@ -61,7 +56,6 @@ from vera.obligations.core import (
 )
 from vera.naming import (
     EMPTY_ALIAS_ENV, AliasEnv, alias_env_from_environment,
-    alias_env_from_program,
 )
 from vera.builtin_domains import BUILTIN_DOMAINS, domain_contract
 from vera.slots import (
@@ -94,7 +88,6 @@ from vera.types import (
     EffectInstance,
     EffectRowType,
     FunctionType,
-    ModuleArtifacts,
     PrimitiveType,
     PureEffectRow,
     RefinedType,
@@ -1012,72 +1005,26 @@ class VerifyResult:
 
 
 def verify(
-    program: ast.Program,
+    typed: TypedProgram,
     source: str = "",
     file: str | None = None,
     timeout_ms: int | None = None,
-    resolved_modules: list[ResolvedModule] | None = None,
-    expr_types: dict[tuple[int, int, int, int], Type] | None = None,
-    expr_target_types: dict[tuple[int, int, int, int], Type] | None = None,
-    module_artifacts: ModuleArtifacts | None = None,
 ) -> VerifyResult:
-    """Verify contracts in a type-checked Vera Program AST.
+    """Verify the contracts of a typed program (:mod:`vera.typed`).
 
     Returns a VerifyResult with diagnostics and a verification summary.
-    The program must already have passed type checking (C3).
-
-    *resolved_modules* provides imported module ASTs for cross-module
-    contract verification (C7d).  Imported function preconditions are
-    checked at call sites; postconditions are assumed.
-
-    *module_artifacts* is each resolved module's own pair of checker tables
-    (``CheckArtifacts.module_artifacts``, collected with
-    ``collect_module_artifacts=True``), which instantiation discovery reads
-    for that module's bodies (#1509) exactly as code generation does.  When
-    a program with imports is verified without them, they are collected
-    here, so the instantiations this run verifies are the ones code
-    generation emits.
+    *typed* is the program a clean check typed (:func:`vera.typed.build`):
+    linked once, every instance it needs built once, and the checker's type
+    and target of every node by its identity.  Its modules' preconditions
+    are checked at call sites; their postconditions are assumed (C7d).  Each
+    generic is verified at the instances the typed program holds, the ones
+    code generation emits.
     """
-    if resolved_modules and module_artifacts is None:
-        # #1509: discovery reads each module's own table for that module's
-        # bodies, and code generation is handed those tables by every CLI
-        # path that compiles.  Collected with the entry's tables below when
-        # those are missing too, so the program is checked once.
-        from vera.checker import typecheck_with_artifacts
-        _diags, _arts = typecheck_with_artifacts(
-            program, source, file=file, resolved_modules=resolved_modules,
-            collect_module_artifacts=True,
-        )
-        module_artifacts = _arts.module_artifacts
-        if expr_types is None:
-            expr_types = _arts.expr_semantic_types
-        if expr_target_types is None:
-            expr_target_types = _arts.expr_target_types
-    if expr_types is None or expr_target_types is None:
-        # #747: when the caller didn't supply the checker's semantic-type
-        # side-tables, collect them here so a bare verify() matches the CLI
-        # (cmd_verify) and LSP (VerificationSession) paths — both of which
-        # thread them — keeping the warm/cold differential oracle and any
-        # external caller consistent.  A caller that supplies only *one*
-        # table still gets the other filled — an empty target table would
-        # silently under-fire the #747 generic-instantiation checks (CR
-        # #756).  Lazy import avoids a module cycle.
-        from vera.checker import typecheck_with_artifacts
-        _diags, _arts = typecheck_with_artifacts(
-            program, source, file=file, resolved_modules=resolved_modules,
-        )
-        if expr_types is None:
-            expr_types = _arts.expr_semantic_types
-        if expr_target_types is None:
-            expr_target_types = _arts.expr_target_types
     verifier = ContractVerifier(
-        source=source, file=file,
+        typed, source=source, file=file,
         timeout_ms=resolve_timeout_ms(timeout_ms),
-        resolved_modules=resolved_modules,
-        expr_types=expr_types, expr_target_types=expr_target_types,
-        module_artifacts=module_artifacts,
     )
-    verifier.verify_program(program)
+    verifier.verify_program(typed.program)
     return verifier.result()
 
 
@@ -1115,15 +1062,15 @@ class ContractVerifier:
 
     def __init__(
         self,
+        typed: TypedProgram,
         source: str = "",
         file: str | None = None,
         timeout_ms: int | None = None,
-        resolved_modules: list[ResolvedModule] | None = None,
         shared_smt: SmtContext | None = None,
-        expr_types: dict[tuple[int, int, int, int], Type] | None = None,
-        expr_target_types: dict[tuple[int, int, int, int], Type] | None = None,
-        module_artifacts: ModuleArtifacts | None = None,
     ) -> None:
+        # #1679: the typed program, the one input this verifier reads a
+        # type, an instantiation or a clone from.
+        self._typed = typed
         self.env = TypeEnv()
         # #1552: the aliases this namespace declares, read by THE ALIAS RULE
         # as the checker reads them; `_register_all` sets the namespace's.
@@ -1291,18 +1238,10 @@ class ContractVerifier:
         # discovery key `_instances` / `generic_decls` use.  A key absent from
         # here is a main-file generic.
         self._generic_origins: dict[str, tuple[str, ...]] = {}
-        # #1694: the resolved modules as `vera.binding.link_program` links
-        # them, every declaration under its link name: the programs the
-        # discovery walks (`_collect_instantiations`), as code generation
-        # compiles them.
-        self._disc_modules: list[ResolvedModule] = []
-        self._disc_alias_envs: dict[tuple[str, ...] | None, AliasEnv] = {}
-        # #1299: the names the bound prelude adds to the discovery copy.  Fed
-        # to the shared `namespace_fn_names` derivation so the tables carry
-        # the prelude for EVERY namespace, and so this side's answer does not
-        # depend on the discovery copy already holding those declarations
-        # while codegen's program does not.
-        self._disc_prelude_fn_names: frozenset[str] = frozenset()
+        # #1679: the typed instance whose clone is under verification,
+        # innermost last: a `where` helper of a generic is verified at the
+        # instances the typed program built under its parent's.
+        self._verifying: list[Instance] = []
         # See the class-level defaults: the DEFINING module's env (#1208) and
         # source + file (#1220) while an imported generic's clone is verified,
         # `None` otherwise.
@@ -1321,8 +1260,7 @@ class ContractVerifier:
         # name, so a call's name is its declaration's and a lookup by name
         # is exact.  The checked modules stay for what verifies a module on
         # its own (the disclosure index).
-        self._source_modules: list[ResolvedModule] = list(
-            resolved_modules or [])
+        self._source_modules: list[ResolvedModule] = list(typed.modules)
         self._resolved_modules: list[ResolvedModule] = list(
             self._source_modules)
         self._linked: Linked | None = None
@@ -1349,32 +1287,12 @@ class ContractVerifier:
         # — this is a flat fallback registry consulted only after the local
         # constructor lookups.
         self._module_constructors: dict[str, ConstructorInfo] = {}
-        # #747: checker-provided span-keyed semantic-type side-tables
-        # (from typecheck_with_artifacts).  Empty when a caller verifies
-        # without collecting them (the imported-module sub-verifier, or a
-        # bare verify() with no tables) — the projection /
-        # generic-instantiation narrowing sites then stay deferred
-        # exactly as pre-#747.
-        self._expr_types: dict[tuple[int, int, int, int], Type] = (
-            expr_types or {}
-        )
-        self._expr_target_types: dict[tuple[int, int, int, int], Type] = (
-            expr_target_types or {}
-        )
-        # #1509: each resolved module's OWN semantic table, which instantiation
-        # discovery reads for that module's bodies, as code generation's does
-        # (`MonoContext.module_expr_types`).  Empty when a caller verifies
-        # without them — a module's body is then looked up in no table, never
-        # in this program's.
-        self._module_artifacts: ModuleArtifacts = dict(module_artifacts or {})
-        self._module_expr_types: dict[
-            tuple[str, ...], dict[tuple[int, int, int, int], Type]
-        ] = {
-            path: tables[0]
-            for path, tables in self._module_artifacts.items()
-            if tables[0] is not None
-        }
-        # #732: per-monomorphization discovery results, populated by
+        # #747/#1679: the checker's type and target of every expression by
+        # node identity (`TypedProgram.semantic` / `.target`): the entry's
+        # nodes, a module's and a clone's, which identity tells apart.
+        self._expr_types: dict[int, Type] = typed.semantic
+        self._expr_target_types: dict[int, Type] = typed.target
+        # #732: the instances of each generic, from the typed program, read by
         # register_program (so both the cold verify_program path and the warm
         # incremental session see the same instantiation set).  Maps a generic
         # function name to the set of concrete type-name tuples it is
@@ -1400,8 +1318,7 @@ class ContractVerifier:
         self._scoped_fn_info_cache: dict[
             tuple[int, str | None], FunctionInfo
         ] = {}
-        self._mono: Monomorphizer | None = None
-        # #820: raw type-alias TypeExprs (populated in `_build_mono_context`),
+        # #820: raw type-alias TypeExprs (populated in `register_program`),
         # so the closure-argument obligations can recover a
         # `SlotRef` closure's formal types via `resolve_fn_type_alias` — the
         # same terminal-FnType resolution codegen's `_closure_arg_param_types`
@@ -1440,24 +1357,18 @@ class ContractVerifier:
         self._walk_handled_effects: list[str] = []
 
     # -----------------------------------------------------------------
-    # #747: checker-provided expression types (span-keyed)
+    # #747: checker-provided expression types (by node identity, #1679)
     # -----------------------------------------------------------------
 
-    @staticmethod
-    def _span_key(expr: ast.Expr) -> tuple[int, int, int, int] | None:
-        # Single source of truth: the checker writes the side-table with the
-        # same `ast.span_key`, so the read and write key formats can't drift
-        # apart (#759).
-        return ast.span_key(expr)
-
     def _resolved_type_of(self, expr: ast.Expr) -> Type | None:
-        """The checker's synthesised *result* type for *expr* (#747).
+        """The checker's synthesised *result* type for *expr* (#747), by
+        the node's identity (#1679).
 
-        ``None`` when the side-table wasn't collected or the node has no
-        span — callers treat that as "unknown" and fall back to the
+        ``None`` for a node the checker did not type (one built after the
+        check) — callers treat that as "unknown" and fall back to the
         pre-#747 static checks, never as a positive @Nat answer.
         """
-        key = self._span_key(expr)
+        key = expr.node_id
         ty = self._expr_types.get(key) if key is not None else None
         return self._substitute_instance(self._linked_type(ty))
 
@@ -1466,7 +1377,7 @@ class ContractVerifier:
         (#747) — the @Nat target at a generic call / construction site;
         ``None`` semantics as :py:meth:`_resolved_type_of`.
         """
-        key = self._span_key(expr)
+        key = expr.node_id
         ty = self._expr_target_types.get(key) if key is not None else None
         return self._substitute_instance(self._linked_type(ty))
 
@@ -2092,7 +2003,7 @@ class ContractVerifier:
             return
         builtin_fn_names = set(TypeEnv().functions)
         for mod in self._resolved_modules:
-            temp = ContractVerifier(source=mod.source)
+            temp = ContractVerifier(self._typed, source=mod.source)
             temp._register_all(mod.program)
             # #1208: this module's naming environment, from the same
             # registration its contracts are harvested from: the env every
@@ -2306,6 +2217,10 @@ class ContractVerifier:
         # refinements come with it, through the disclosure gate.
         smt._call_binding_hook = self._call_binding_facts
         smt._call_result_facts_hook = self._call_result_facts
+        # #1468: and let a generic call's precondition be read off the clone
+        # it calls, at its instantiation.  Stateless (reads the typed
+        # program), so safe on the warm (shared) smt too.
+        smt._generic_callee_hook = self._generic_callee_info
         # #994 F1: let the SMT nullary-ctor translation resolve a bare tag's
         # exact instantiation from the checker's recorded (instance-substituted)
         # semantic type, instead of the ambiguous base-name scan that crashed Z3
@@ -2353,6 +2268,23 @@ class ContractVerifier:
         # scopes.
         self._fn_lookup_in_scope = scope.fn_lookup
         smt._callee_scope_lookup = self._callee_scope
+
+    def _generic_callee_info(
+        self, generic: FunctionInfo, call: ast.Node,
+    ) -> FunctionInfo | None:
+        """The info of the clone the generic call *call* calls (#1468): the
+        typed program's instance of the call, so its contract is *generic*'s
+        at the type arguments the check inferred there, read in the scope
+        *generic*'s own contract is read in.  ``None`` for a call no instance
+        answers, a generic template's own."""
+        inst = self._typed.call_target(call)
+        if inst is None or inst.clone is None:
+            return None
+        info = self._fn_info_for_decl(inst.clone)
+        pinned = self._pinned_scope(generic)
+        if pinned is not None and self._pinned_scope(info) is None:
+            self._fn_origins[id(info)] = (info, pinned)
+        return info
 
     def _pinned_scope(self, callee_info: object) -> CalleeScope | None:
         """The scope pinned to *callee_info* at module registration, or None.
@@ -2531,14 +2463,6 @@ class ContractVerifier:
         """
         return self._alias_env_for_module(self._origin_module_for_generic(key))
 
-    def _disc_alias_env_for_generic(self, key: str | None) -> AliasEnv:
-        """:meth:`_alias_env_for_generic` for the discovery copy, which is
-        the linked program: the declaring namespace's env read off its
-        linked declarations (#1694)."""
-        origin = self._origin_module_for_generic(key)
-        return self._disc_alias_envs.get(
-            origin, self._disc_alias_envs.get(None, self._alias_env))
-
     def _origin_module_for_generic(
         self, key: str | None,
     ) -> tuple[str, ...] | None:
@@ -2671,9 +2595,11 @@ class ContractVerifier:
         if self._linked is not None and program is self._linked_source:
             assert self._linked_program is not None  # noqa: S101
             return self._linked_program
-        from vera.binding import link_program, linked_twins, source_twins
+        from vera.binding import linked_twins, source_twins
 
-        linked = link_program(program, self._source_modules)
+        # #1679: linked once, by the typed program, from the binding and the
+        # prelude the check bound.
+        linked = self._typed.linked
         self._linked = linked
         self._linked_source = program
         self._linked_program = linked.program
@@ -2807,11 +2733,10 @@ class ContractVerifier:
         # module.  Rebuilt here rather than lazily so it is a plain value: the
         # warm session re-registers per program and picks up the new one.
         self._alias_env = alias_env_from_environment(self.env)
-        # #732: discover every concrete instantiation of each generic NOW, off
-        # the registered env, so both verify_program (cold) and the warm
-        # incremental session — which both go through register_program — verify
-        # the same per-monomorphization set (keeps warm == cold).
-        self._instances = self._collect_instantiations(program)
+        # #732: every instance of each generic, NOW, so both verify_program
+        # (cold) and the warm incremental session — which both go through
+        # register_program — verify the same set (keeps warm == cold).
+        self._instances = self._typed_instances(program)
         # #1480: a built-in's declared domain is quoted, in an E501, out of
         # the declaration it was parsed from — its span numbers lines there.
         for domain in BUILTIN_DOMAINS:
@@ -2827,390 +2752,33 @@ class ContractVerifier:
             for call in _calls_in(site.node.predicate)
         )
 
-    # -- #732: per-monomorphization instantiation discovery ----------------
+    # -- #732: the instances each generic is verified at ------------------
 
-    @staticmethod
-    def _simple_type_name(te: ast.TypeExpr) -> str | None:
-        """Return the base type name of a TypeExpr (refinement-unwrapped).
-
-        Delegates to the shared :func:`vera.monomorphize.declared_return_clone_key`
-        so the verifier's mono-discovery keys clones identically to codegen and
-        the WASM call-rewrite — the single-source-of-truth that ends the
-        #878 / #899 consultor desync.
-        """
-        return declared_return_clone_key(te)
-
-    def _build_mono_context(
-        self,
-        disc_program: ast.Program,
-        generic_decls: dict[str, ast.FnDecl],
-    ) -> MonoContext:
-        """Build a MonoContext for per-monomorphization discovery (#732).
-
-        Constructor/ADT metadata comes from the registered ``TypeEnv`` (which
-        already holds builtins + user types); type aliases and per-function
-        return-type names come from the prelude-injected program AST.  Aliases
-        must come from the AST because the env stores them as resolved semantic
-        ``Type``s, while the shared monomorphizer matches alias *TypeExpr*
-        shapes (e.g. ``isinstance(alias, ast.FnType)``).
-
-        ``fn_ret_types`` is built from declared AST return types — the *precise*
-        Vera type name (``Nat``, not the WAT-collapsed ``Int`` codegen uses).
-        That is sound: the verifier checks each generic body under the type the
-        checker proved actually flows, never a stricter one (a callee's own
-        verification guarantees its declared return type).
-        """
-        ctor_to_adt: dict[str, str] = {}
-        ctor_tp_indices: dict[str, tuple[int | None, ...]] = {}
-        # #1436: the same indices keyed by OWNING ADT, so a constructor name
-        # two namespaces declare does not take its field positions from
-        # whichever declaration was recorded last.
-        adt_ctor_tp_indices: dict[str, dict[str, tuple[int | None, ...]]] = {}
-        adt_tp_counts: dict[str, int] = {}
-
-        def _record_adt(
-            adt_name: str,
-            type_params: tuple[str, ...] | None,
-            ctors: list[tuple[str, tuple[str | None, ...] | None]],
-        ) -> None:
-            # ctors: (ctor_name, per-field bare-type-name|None) — a field's
-            # bare name resolves to its type-param index, mirroring codegen's
-            # _register_data exactly (`field_te.name in tp_index ? idx : None`).
-            tps = type_params or ()
-            adt_tp_counts[adt_name] = len(tps)
-            tp_index = {tp: i for i, tp in enumerate(tps)}
-            for cname, field_names in ctors:
-                ctor_to_adt[cname] = adt_name
-                indices = (
-                    () if field_names is None
-                    else tuple(
-                        tp_index.get(fn) if fn is not None else None
-                        for fn in field_names
-                    )
-                )
-                ctor_tp_indices[cname] = indices
-                adt_ctor_tp_indices.setdefault(adt_name, {})[cname] = indices
-
-        # 1. Env data types: builtins (Option/Result/Json/Future/...) plus the
-        #    user ADTs the verifier registered (whose constructors live under
-        #    data_types[name].constructors, NOT the flat env.constructors).
-        for adt_name, adt in self.env.data_types.items():
-            _record_adt(adt_name, adt.type_params, [
-                (
-                    cname,
-                    None if cinfo.field_types is None else tuple(
-                        ft.name if isinstance(ft, TypeVar) else None
-                        for ft in cinfo.field_types
-                    ),
-                )
-                for cname, cinfo in adt.constructors.items()
-            ])
-
-        # 2. Prelude-injected DataDecls (e.g. Ordering) the env never registers,
-        #    read straight from the injected AST so codegen-only prelude ADTs are
-        #    covered too.  User ADTs reappear here and agree with step 1.
-        for tld in disc_program.declarations:
-            decl = tld.decl
-            if isinstance(decl, ast.DataDecl):
-                _record_adt(decl.name, decl.type_params, [
-                    (
-                        ctor.name,
-                        None if ctor.fields is None else tuple(
-                            f.name if isinstance(f, ast.NamedType) else None
-                            for f in ctor.fields
-                        ),
-                    )
-                    for ctor in decl.constructors
-                ])
-
-        # 2b. Every linked module's DataDecls (#1694): the discovery copy names
-        #    a module's types and constructors by their link names, as code
-        #    generation registers them, so they are recorded under those.
-        for lmod in self._disc_modules:
-            for tld in lmod.program.declarations:
-                decl = tld.decl
-                if isinstance(decl, ast.DataDecl):
-                    _record_adt(decl.name, decl.type_params, [
-                        (
-                            ctor.name,
-                            None if ctor.fields is None else tuple(
-                                f.name if isinstance(f, ast.NamedType)
-                                else None
-                                for f in ctor.fields
-                            ),
-                        )
-                        for ctor in decl.constructors
-                    ])
-
-        # 3. Imported public constructors live in the verifier's module-fallback
-        #    registry (`_module_constructors`), NOT `env.data_types` — include
-        #    them so a local generic call whose type arg is inferred from an
-        #    imported ADT value (`id2(MkBox(7))`, MkBox from another module)
-        #    discovers the same instantiation codegen emits.  Codegen's
-        #    `ctor_to_adt` carries imported ADTs, so omitting them here lets the
-        #    type var fall to the `"Bool"` phantom default — the verifier
-        #    discovers `id2<Bool>` while codegen emits `id2<Box>`, a false
-        #    Tier-1 (PR #767 review).  `setdefault` keeps any local/env entry,
-        #    which correctly shadows an imported ctor of the same name.
-        for cinfo in self._module_constructors.values():
-            tps = cinfo.parent_type_params or ()
-            adt_tp_counts.setdefault(cinfo.parent_type, len(tps))
-            tp_index = {tp: i for i, tp in enumerate(tps)}
-            ctor_to_adt.setdefault(cinfo.name, cinfo.parent_type)
-            imported_indices = (
-                () if cinfo.field_types is None
-                else tuple(
-                    tp_index.get(ft.name) if isinstance(ft, TypeVar) else None
-                    for ft in cinfo.field_types
-                )
-            )
-            ctor_tp_indices.setdefault(cinfo.name, imported_indices)
-            # #1436: and under its owner, where an entry declaration sharing
-            # the bare name cannot displace it.
-            adt_ctor_tp_indices.setdefault(
-                cinfo.parent_type, {}).setdefault(cinfo.name, imported_indices)
-
-        type_aliases: dict[str, ast.TypeExpr] = {}
-        type_alias_params: dict[str, tuple[str, ...]] = {}
-        fn_ret_types: dict[str, str] = {}
-        # #899 issue 1: raw declared return TypeExprs (type args retained), so
-        # discovery can recover a user fn's parameterized return in `Option<T>`
-        # argument position identically to codegen and the WASM call-rewrite.
-        fn_ret_type_exprs: dict[str, ast.TypeExpr] = {}
-
-        # #1207: every function name this program owns — codegen's `_fn_sigs`
-        # membership, rebuilt from the AST.  ONE decision rides on it: whether
-        # a declared effect row's `get`/`put` is an effect operation at all, or
-        # a user function of that name shadowing it (codegen's `_fn_sigs` guard
-        # in `_compile_function`).  Membership must mirror codegen's or the two
-        # discoveries desync in the shadowed direction, so it is populated from
-        # the same recursion — locals, `where` helpers, and imports — rather
-        # than from `fn_ret_types`, which drops any name with no simple return.
-        #
-        # LOCAL `where` helpers are collected by bare name and IMPORTED ones
-        # are not, which mirrors codegen exactly rather than diverging from it
-        # (PR review round 1): codegen keys a local helper's signature by its
-        # bare name, but #1015 hoists every IMPORTED module's helpers to
-        # parent-qualified names BEFORE registration, so `_fn_sigs` carries
-        # `outer$where$get`, never a bare `get`.  Measured on a module whose
-        # helper is named `get`: `_fn_sigs` = {`outer`, `outer$where$get`},
-        # bare `get` absent from both tables.  Adding the bare name here would
-        # CREATE the desync — suppressing the State op for a row codegen still
-        # injects it for.
-        fn_names: set[str] = set()
-
-        def record_fn_ret_type(fn: ast.FnDecl) -> None:
-            # Include `where` helpers, keyed by bare name exactly as codegen
-            # does.  Codegen registers each where-helper's WAT signature in
-            # `_fn_sigs` under its bare name, so codegen's `fn_ret_types` carries
-            # them — and this is load-bearing for soundness, NOT optional parity:
-            # a generic whose type arg is fixed only by a where-helper's return
-            # (`g(helper(x))`) is monomorphized by codegen at that concrete
-            # return type, so the verifier must infer the SAME type.  Drop the
-            # helper here and the unresolved var instead hits the `"Bool"`
-            # phantom-var default in `_infer_type_args_from_call`, so the
-            # verifier discovers `g<Bool>` while codegen emits `g<Float64>` — it
-            # misses codegen's clone, a false Tier-1 (pinned by
-            # test_generic_typearg_from_where_helper_return_is_discovered).
-            # The flat name keying CAN collide same-named helpers in different
-            # parents, but codegen collides identically (its `_fn_sigs` is
-            # bare-name-keyed too, populated in the same declaration order), so
-            # the verifier resolves these helpers identically to codegen — the collision
-            # is a pre-existing codegen monomorphization imprecision, mirrored
-            # symmetrically, not a verification gap.  Scoping the key on only
-            # this side would not miss anything (it would be a sound superset)
-            # but would diverge the verifier from codegen for no soundness gain
-            # while leaving the codegen side unfixed (PR #767 review).
-            fn_names.add(fn.name)
-            ret_name = self._simple_type_name(fn.return_type)
-            if ret_name is not None:
-                fn_ret_types[fn.name] = ret_name
-            if fn.return_type is not None:
-                fn_ret_type_exprs[fn.name] = fn.return_type
-            for wfn in fn.where_fns or ():
-                record_fn_ret_type(wfn)
-
-        for tld in disc_program.declarations:
-            decl = tld.decl
-            if isinstance(decl, ast.TypeAliasDecl):
-                type_aliases[decl.name] = decl.type_expr
-                if decl.type_params:
-                    type_alias_params[decl.name] = decl.type_params
-            elif isinstance(decl, ast.FnDecl):
-                record_fn_ret_type(decl)
-
-        # Seed return types from IMPORTED functions too, mirroring codegen
-        # (`vera/codegen/modules.py` harvests each imported module's
-        # `_fn_ret_type_exprs` into its own).  Without this, a local generic
-        # whose type arg is inferred SOLELY from an imported function's result
-        # (`id_g(make_int(...))`) phantom-defaults to `"Bool"` in verifier
-        # discovery while codegen emits the concrete clone — an ASYMMETRIC
-        # miss, a false Tier-1 (pinned by
-        # test_generic_typearg_from_imported_function_return_is_discovered).
-        # The linked modules (#1694): every declaration, its `where` helpers
-        # included, under its link name, which no other declaration has, as
-        # code generation registers them.
-        for lmod in self._disc_modules:
-            for tld in lmod.program.declarations:
-                if isinstance(tld.decl, ast.FnDecl):
-                    record_fn_ret_type(tld.decl)
-
-        # #820: retain the raw alias TypeExprs so the closure-argument
-        # obligations resolve a `SlotRef` closure's formal types the same way
-        # codegen does (`resolve_fn_type_alias`).  First non-empty build wins —
-        # per-monomorphization rebuilds carry the same program-global aliases.
-        if type_aliases and not self._closure_type_aliases:
-            self._closure_type_aliases = type_aliases
-            self._closure_type_alias_params = type_alias_params
-
-        return MonoContext(
-            generic_decls=generic_decls,
-            ctor_to_adt=ctor_to_adt,
-            ctor_tp_indices=ctor_tp_indices,
-            adt_tp_counts=adt_tp_counts,
-            type_aliases=type_aliases,
-            type_alias_params=type_alias_params,
-            # #1208: the verifier's own naming environment, built from the
-            # same `TypeEnv` the two maps above are harvested from.
-            alias_env=self._alias_env,
-            fn_ret_types=fn_ret_types,
-            fn_ret_type_exprs=fn_ret_type_exprs,
-            # #1207: see the `fn_names` comment above.
-            fn_names=frozenset(fn_names),
-            # #1299: the per-namespace visibility tables that narrow it while
-            # a declaration is walked, from the SAME shared derivation codegen
-            # drives.  The two must narrow IDENTICALLY, and
-            # `test_discovery_scopes_agree_between_the_two_sides` compares
-            # them per declaration rather than leaving it to this comment —
-            # they were measurably different in two ways before it existed.
-            # Read from the PRE-transform module ASTs, which changes no
-            # answer: the Pass-0 transforms only add `$`-qualified
-            # declarations, and `$` cannot occur in a Vera identifier.  The
-            # prelude is passed separately for the same reason: this program
-            # is post-injection and codegen's is not, so reading it off the
-            # declarations would make the answer depend on the caller.
-            namespace_fn_names=namespace_fn_names(
-                disc_program,
-                [(lmod.path, lmod.program) for lmod in self._disc_modules],
-                prelude=self._disc_prelude_fn_names,
-            ),
-            adt_ctor_tp_indices=adt_ctor_tp_indices,
-            # #1327/#1366/#1369: the same checker tables codegen's own
-            # `_build_mono_context` threads — the ENTRY program's for the entry
-            # file's bodies and (#1509) each module's own for that module's —
-            # which the CLI hands to both.  The two consultors must back off to
-            # the SAME answers, or this discovery finds a strict subset of what
-            # codegen emits and a clone whose contract lies runs unverified.
-            expr_types=self._expr_types,
-            module_expr_types=self._module_expr_types,
-            # #1511: each namespace's alias maps — the entry's environment and
-            # every module's own — so a type argument is resolved where it
-            # was written before it names a clone, as code generation does.
-            # Read off the linked programs (#1694), whose alias declarations
-            # and bodies carry the link names the discovery copy is written
-            # in, as code generation's maps do.
-            type_arg_aliases={
-                None: (type_aliases, type_alias_params),
-                **{
-                    lmod.path: _linked_alias_maps(lmod.program)
-                    for lmod in self._disc_modules
-                },
-            },
-        )
-
-    def _collect_instantiations(
+    def _typed_instances(
         self, program: ast.Program,
     ) -> dict[str, set[tuple[str, ...]]]:
-        """Discover every concrete instantiation of each generic function (#732).
+        """Every instance of each generic the typed program holds (#1679),
+        keyed by the generic's link name: the set code generation emits,
+        derived once from the checker's instantiations, so the verifier
+        verifies exactly the clones that run.
 
-        Runs the SAME discovery the codegen monomorphizer runs — via the shared
-        :class:`~vera.monomorphize.Monomorphizer` — over a *prelude-injected*
-        copy of the program, so the set covers prelude generics and user
-        generics reached transitively through prelude bodies.  Constraint-failing
-        instances are NOT filtered out (codegen prunes them, so this is a
-        superset — sound for verification, which only ever verifies user-authored
-        clones).  Sharing the discovery is what keeps this set in agreement with
-        what codegen emits; the #732 differential test pins that agreement.
-        """
-        from dataclasses import replace as _replace
-
-
-        # Reset the imported-generic verify registries — register_program may
-        # run repeatedly in a warm incremental session, and a stale entry would
-        # re-verify a clone that no longer exists.
-        self._imported_generic_verify_decls = {}
-        self._generic_origins = {}
-
-        # #1694: discovery runs over the LINKED program, the one code
-        # generation compiles: every function and `where` helper under its
-        # link name (`vera.binding.link_program`), so an instance is keyed by
-        # the declaration it instantiates and the two sides name it alike by
-        # construction.  The prelude the resolver pass bound is injected as
-        # code generation injects it.  The ORIGINAL program AST (used for
-        # contract verification and scoped lookup below) stays untouched;
-        # `_verify_fn` reconstructs a nested generic's key, which is its link
-        # name, from its lexical `enclosing` chain.
+        Also registers what verifying them needs and the typed program does
+        not hold itself: each module generic's declaration and the module it
+        was declared in (#774, #1208), so its clones are verified at the
+        importer's instances in their own module's scope, and the raw alias
+        bodies the closure-argument obligations resolve a closure's formals
+        through (#820)."""
         linked = self._linked
         assert linked is not None  # set by `link`  # noqa: S101
-        disc = _replace(
-            linked.program,
-            declarations=tuple(linked.prelude) + linked.program.declarations,
-        )
-        self._disc_modules = linked.modules
-        # #1694: the naming env each namespace of the discovery copy is
-        # recounted in, read off the linked programs: their declarations
-        # carry link names, which the envs registered from the programs as
-        # the checker saw them do not hold.
-        self._disc_alias_envs = {
-            None: alias_env_from_program(linked.program),
-            **{
-                lmod.path: alias_env_from_program(lmod.program)
-                for lmod in linked.modules
-            },
-        }
-        # #1299: the names the prelude adds, as a set.  They belong to every
-        # namespace, so `namespace_fn_names` takes them separately rather
-        # than reading them off this program.
-        self._disc_prelude_fn_names = frozenset(
-            tld.decl.name for tld in linked.prelude
-            if isinstance(tld.decl, ast.FnDecl)
-        )
-
-        generic_decls: dict[str, ast.FnDecl] = {}
-        for tld in disc.declarations:
-            decl = tld.decl
-            if isinstance(decl, ast.FnDecl):
-                if decl.forall_vars:
-                    generic_decls[decl.name] = decl
-                else:
-                    # #990: nested generic where-helpers are mono bases too —
-                    # the SHARED collector keeps this build in lockstep with
-                    # codegen Pass 1.5 (identical set by construction).  Their
-                    # instances then flow through the same `_verify_fn`
-                    # per-instantiation dispatch when the parent's where-tree
-                    # is verified.
-                    collect_nested_generic_decls(decl, generic_decls)
-        # #774/#999/#1000: every module generic, top-level or nested under a
-        # non-generic function, is a discovery base under its link name, and
-        # its clones are verified here at the importer's instantiations: its
-        # body is defined in another module, so the `program.declarations`
-        # verify loop never reaches it, and the module itself only Tier-3s an
-        # uninstantiated generic.  Without this, a module generic with a
-        # LYING contract runs its clone unverified: a false Tier-1.
-        #
-        # What is verified is the module's declaration as the checker saw it,
-        # its calls resolved in its module's scope (`_declaring_module_scope`)
-        # as the binding resolves them, under its link name: a top-level
-        # generic with its calls to itself naming that link name, so its
-        # recursion is its own; a nested one as the shared qualification
-        # names it, which is its link name.
+        # Reset: register_program may run repeatedly in a warm session.
+        self._imported_generic_verify_decls = {}
+        self._generic_origins = {}
         for lmod in linked.modules:
             for tld in lmod.program.declarations:
                 ldecl = tld.decl
                 if not isinstance(ldecl, ast.FnDecl):
                     continue
                 if ldecl.forall_vars:
-                    generic_decls.setdefault(ldecl.name, ldecl)
                     self._imported_generic_verify_decls.setdefault(
                         ldecl.name, ldecl)
                     self._generic_origins.setdefault(ldecl.name, lmod.path)
@@ -3218,249 +2786,37 @@ class ContractVerifier:
                 nested: dict[str, ast.FnDecl] = {}
                 collect_nested_generic_decls(ldecl, nested)
                 for gname, gdecl in nested.items():
-                    generic_decls.setdefault(gname, gdecl)
                     self._imported_generic_verify_decls.setdefault(
                         gname, gdecl)
                     self._generic_origins.setdefault(gname, lmod.path)  # #1208
-        if not generic_decls:
-            return {}
-
-        ctx = self._build_mono_context(disc, generic_decls)
-        mono = Monomorphizer(ctx)
-        # Stash for verification-time monomorphization (monomorphize_fn needs
-        # no context, so reusing the discovery instance is fine).
-        self._mono = mono
-        ctor_to_adt = ctx.ctor_to_adt
-
-        def collect_calls_in_fn(
-            fn: ast.FnDecl, into: dict[str, set[tuple[str, ...]]],
-            namespace: tuple[str, ...] | None = None,
-        ) -> None:
-            # Delegate to the SHARED node-level walk (body + contract clauses +
-            # `where` helpers).  Both this discovery and codegen's Pass 1.5 drive
-            # `Monomorphizer.collect_calls_in_node`, so the verifier discovers
-            # exactly the set codegen seeds from — a generic reachable only from
-            # a contract predicate (`ensures(is_valid(@T.result))`) or a
-            # where-helper body is found by both, or by neither, never just one
-            # (PR #767 review).
-            # #1299: in *namespace*'s scope, so a bare call is discovered
-            # against the names that body can see — codegen's Pass 1.5 enters
-            # the identical scope for the identical declaration.
-            with mono.namespace_scope(namespace):
-                mono.collect_calls_in_node(
-                    fn, generic_decls, ctor_to_adt, into,
-                )
-
-        # Seed from non-generic bodies — the main program AND every resolved
-        # module (its qualified copy), so an imported ``compute``'s body call to
-        # its own nested generic ``compute$where$gid`` seeds that instantiation
-        # (#999).  Codegen's Pass 1.5 seeds from the identical set (main +
-        # resolved-module bodies), keeping the #732 differential in lockstep.
-        seed: dict[str, set[tuple[str, ...]]] = {
-            name: set() for name in generic_decls
-        }
-        # #1299: paired with the namespace each program's bodies resolve in —
-        # `None` for the entry program, the module's own path for a module's
-        # qualified copy.  `qualified_module_programs` is built parallel to
-        # `_resolved_modules` just above, so the pairing is positional and the
-        # `strict=True` zip keeps it that way.
-        seed_namespaces: list[tuple[tuple[str, ...] | None, ast.Program]] = [
-            (None, disc),
-            *((lmod.path, lmod.program) for lmod in linked.modules),
-        ]
-        for namespace, seed_program in seed_namespaces:
-            for tld in seed_program.declarations:
+        if not self._closure_type_aliases:
+            for tld in (*linked.prelude, *linked.program.declarations):
                 decl = tld.decl
-                if isinstance(decl, ast.FnDecl) and not decl.forall_vars:
-                    collect_calls_in_fn(decl, seed, namespace)
-
-        # #1002: nested generic-under-generic helpers keyed by their
-        # concrete-FREE lexical chain (``parent$where$outer$where$ginner``) — the
-        # SAME key `_verify_fn` reconstructs from its enclosing chain and codegen
-        # records in `_emitted_instances`.  Discovered by recursing into each
-        # ACTUAL clone's substituted subtree (not a single shared base decl), so
-        # a nested generic whose instantiation differs across ancestor
-        # instantiations contributes every flavour — the verified set is a sound
-        # superset of what codegen emits.
-        nested_result: dict[str, set[tuple[str, ...]]] = {}
-        nested_seen: set[tuple[str, tuple[str, ...]]] = set()
-        # #1223: top-level instantiations reached only from a nested helper's
-        # CONCRETE clone body.  Drained into the worklist below, so such a
-        # clone is verified exactly as codegen emits it.
-        pending_top: list[tuple[str, tuple[str, ...]]] = []
-
-        def record_nested(clone: ast.FnDecl, base_chain: str) -> None:
-            helpers = {
-                wfn.name: wfn
-                for wfn in (clone.where_fns or ())
-                if wfn.forall_vars
-            }
-            if not helpers:
-                return
-            # #1208: a nested helper is declared in the same module as the
-            # ancestor whose chain names it, so it recounts in that env.  The
-            # WHOLE chain is handed over — `_alias_env_for_generic` walks to
-            # the nearest recorded ancestor itself, and an imported generic
-            # nested under a non-generic function is recorded under the chain,
-            # not under its outermost segment (#1208 round 2, probe ``m4``).
-            env = self._disc_alias_env_for_generic(base_chain)
-            # #1223: the FAMILY at once, over a GROWING body set, mirroring
-            # codegen's `_instantiate_hoisted_generics` and driving the same
-            # discovery leaf.  A helper's concrete clone can call a SIBLING
-            # helper at a type only that clone knows (inside the generic
-            # `outer<U>`, `inner(@U.1, @U.0)` binds `inner`'s variable to the
-            # type variable's NAME), so scanning the ancestor alone missed
-            # every such instantiation while codegen emitted it — a false
-            # Tier-1 the moment codegen's own rescan landed.
-            scan: list[ast.FnDecl] = [clone]
-            # #1299: the helper family resolves bare names in the module the
-            # CHAIN is declared in — the same key `env` above was resolved
-            # from.  Codegen's `_instantiate_hoisted_generics` enters the
-            # identical scope around the identical leaf.
-            helper_ns = self._origin_module_for_generic(base_chain)
-            while scan:
-                with mono.namespace_scope(helper_ns):
-                    found = mono.collect_generic_helper_instances(
-                        helpers, scan, ctor_to_adt,
-                    )
-                scan = []
-                for h_name, h_cts in found.items():
-                    chain_key = (
-                        f"{base_chain}$where${where_helper_name(h_name)}")
-                    for h_ct in h_cts:
-                        if (chain_key, h_ct) in nested_seen:
-                            continue
-                        nested_seen.add((chain_key, h_ct))
-                        nested_result.setdefault(chain_key, set()).add(h_ct)
-                        h_clone = mono.monomorphize_fn(
-                            helpers[h_name], h_ct, env,
-                        )
-                        scan.append(h_clone)
-                        record_nested(h_clone, chain_key)
-                        # #1223: the helper clone's own TOP-LEVEL generic
-                        # callees.  Only the concrete clone names them — the
-                        # generic spelling binds the enclosing type variable.
-                        top: dict[str, set[tuple[str, ...]]] = {
-                            name: set() for name in generic_decls
-                        }
-                        # #1299: a nested helper's clone belongs to the
-                        # module its CHAIN is recorded under, the same key
-                        # `env` above was resolved from.
-                        collect_calls_in_fn(
-                            h_clone, top,
-                            self._origin_module_for_generic(chain_key),
-                        )
-                        for t_name, t_cts in top.items():
-                            pending_top.extend(
-                                (t_name, t_ct) for t_ct in t_cts
-                            )
-
-        # Transitive closure: monomorphize each, rescan its body.  Mirrors the
-        # codegen worklist exactly, minus the constraint filter.
-        discovered: set[tuple[str, tuple[str, ...]]] = set()
-        worklist: list[tuple[str, tuple[str, ...]]] = [
-            (name, ct) for name, cts in seed.items() for ct in cts
-        ]
-        while worklist:
-            key = worklist.pop()
-            if key in discovered:
-                continue
-            discovered.add(key)
-            fn_name, concrete_types = key
-            if fn_name not in generic_decls:
-                continue
-            mono_fn = mono.monomorphize_fn(
-                generic_decls[fn_name], concrete_types,
-                self._disc_alias_env_for_generic(fn_name),  # #1208
-            )
-            # #1002: seed nested generic-under-generic instances from this clone.
-            record_nested(mono_fn, fn_name)
-            transitive: dict[str, set[tuple[str, ...]]] = {
-                name: set() for name in generic_decls
-            }
-            # #1299: this clone's body is its BASE's module's code, so its
-            # bare names resolve there — the mirror of codegen's
-            # `_drain_generic_worklist` scope.  `fn_name` is already the base
-            # key, so it goes to `_origin_module_for_generic` whole.
-            collect_calls_in_fn(
-                mono_fn, transitive, self._origin_module_for_generic(fn_name),
-            )
-            for t_name, t_types in transitive.items():
-                for t_ct in t_types:
-                    if (t_name, t_ct) not in discovered:
-                        worklist.append((t_name, t_ct))
-            # #1223: whatever the nested helpers' concrete clones reached.
-            while pending_top:
-                top_key = pending_top.pop()
-                if top_key not in discovered:
-                    worklist.append(top_key)
-
-        result: dict[str, set[tuple[str, ...]]] = {
-            name: set() for name in generic_decls
-        }
-        for name, concrete_types in discovered:
-            if name in generic_decls:
-                result[name].add(concrete_types)
-        for name, cts in nested_result.items():
-            result.setdefault(name, set()).update(cts)
-
-        # #1327/#1366: discovery is complete, so every type argument it could
-        # not infer is now known.  The verifier's discovered set is what the
-        # #732 differential holds codegen's emitted set against, and a set
-        # built on the phantom-var guess verifies a clone codegen does not
-        # emit while leaving codegen's real clone unverified — a false Tier 1.
-        # Report each as [E622] rather than tiering a proof about the wrong
-        # instantiation.
-        self._report_uninferred_type_args(mono)
+                if isinstance(decl, ast.TypeAliasDecl):
+                    self._closure_type_aliases[decl.name] = decl.type_expr
+                    if decl.type_params:
+                        self._closure_type_alias_params[decl.name] = (
+                            decl.type_params)
+        result: dict[str, set[tuple[str, ...]]] = {}
+        for inst in self._typed.instances:
+            result.setdefault(inst.key, set()).add(inst.args)
         return result
 
-    def _report_uninferred_type_args(self, mono: Monomorphizer) -> None:
-        """Turn discovery's un-inferable type arguments into [E622] errors.
-
-        The verifier's leg of the #1327/#1366 fail-closed: codegen refuses to
-        EMIT a specialisation resting on the phantom-var guess, and this
-        refuses to report a TIER for one.  Both consultors run the same shared
-        inference, so both record the same argument.
-        """
-        for rec in mono.uninferred_type_args:
-            # One argument is one diagnostic — supplied by the walker's
-            # own `_uninferred_seen`, the single place that rule lives
-            # (see the codegen drain's note for the measurement).
-            # #1368 review: a call site inside an IMPORTED module has that
-            # module's line numbers, so reporting it under the entry
-            # program's file and source buffer points the reader at another
-            # file's line and quotes another file's text.  The record carries
-            # the namespace the walk was in; this is the scope that makes
-            # every half of "which file is this?" agree (#1208/#1220).
-            with self._declaring_module_scope(rec.origin):
-                # #1509: the table of the file the argument is written in —
-                # the one discovery consulted before recording it.
-                self._report_one_uninferred(
-                    rec, mono.checker_table(rec.origin))
-
-    def _report_one_uninferred(
-        self, rec: UninferredTypeArg,
-        table: dict[tuple[int, int, int, int], Type] | None,
-    ) -> None:
-        """The [E622] diagnostic for one record, in the caller's scope;
-        *table* is the checker table of the file the argument is in."""
-        self._error(
-            rec.arg,
-            f"Cannot infer the type argument '{rec.type_var}' of "
-            f"generic call '{rec.fn_name}' from its "
-            f"{rec.arg_kind} argument.",
-            rationale=(
-                "A generic is verified once per concrete type it is "
-                "called with, so the verifier must know the type of "
-                "every argument that fixes a type variable. This "
-                "argument's type could not be determined, and verifying "
-                "at a guessed type would report a tier for a "
-                "specialisation the compiler does not emit."
-            ),
-            fix=uninferred_type_arg_fix(rec, table),
-            spec_ref='Chapter 5, Section 5.9 "Generic Functions"',
-            error_code="E622",
-        )
+    def _typed_instance(
+        self, key: str, args: tuple[str, ...],
+    ) -> Instance | None:
+        """The typed instance of the generic *key* at *args*: for a `where`
+        helper of a generic, the one under the instance of that generic
+        whose clone is under verification."""
+        template = self._typed.templates.get(key)
+        if template is None:
+            return None
+        if template.ancestor is None:
+            return self._typed.instance(key, args)
+        for parent in reversed(self._verifying):
+            if parent.key == template.ancestor:
+                return self._typed.instance(key, args, parent)
+        return None
 
     @property
     def summary(self) -> VerifySummary:
@@ -3738,7 +3094,6 @@ class ContractVerifier:
         namespaces is the exact desync the origin registry exists to close,
         and it was invisible only while BOTH were wrong.
         """
-        assert self._mono is not None  # set by register_program  # noqa: S101
         per_instance: list[
             tuple[tuple[str, ...], list[ProofObligation], list[Diagnostic]]
         ] = []
@@ -3749,10 +3104,14 @@ class ContractVerifier:
         # otherwise.
         origin_module = self._origin_module_for_generic(
             origin_key or clone_name or decl.name)
-        origin_env = self._alias_env_for_module(origin_module)
         for concrete in instances:
-            clone = self._mono.monomorphize_fn(decl, concrete, origin_env)
-            clone = replace(clone, name=clone_name or decl.name)
+            # #1679: the clone the typed program built for this instance,
+            # the one code generation emits, under the generic's own name so
+            # its recursion, `decreases` and messages resolve as written.
+            inst = self._typed_instance(clone_name or decl.name, concrete)
+            if inst is None or inst.clone is None:
+                continue
+            clone = replace(inst.clone, name=clone_name or decl.name)
             # Verify each instance into scratch error/obligation buffers so its
             # per-instance obligations don't pollute the aggregate stream; the
             # meet-collapsed obligations are re-appended below.  The summary is
@@ -3785,9 +3144,12 @@ class ContractVerifier:
                 # another resolves references onto the wrong parameters.
                 recorded = self._record_clone_sources(
                     clone, self._graph_source(decl, origin_module))
+                self._verifying.append(inst)
                 with self._declaring_module_scope(origin_module):
                     self._verify_fn(clone, enclosing=enclosing)
             finally:
+                if self._verifying and self._verifying[-1] is inst:
+                    self._verifying.pop()
                 for key in recorded:
                     self._clone_source.pop(key, None)
                 self._instance_subst = saved_subst
@@ -4126,7 +3488,9 @@ class ContractVerifier:
             # program this walk carries is its own name (#1694), as it is in
             # the discovery copy: the same program.
             inst_key = decl.name
-            instances = tuple(sorted(self._instances.get(inst_key, set())))
+            instances = tuple(sorted(
+                args for args in self._instances.get(inst_key, set())
+                if self._typed_instance(inst_key, args) is not None))
             if instances:
                 # #732: this generic IS instantiated — verify each concrete
                 # clone through the normal path and aggregate per source
@@ -7748,7 +7112,11 @@ class ContractVerifier:
         this recheck cannot drift.  Non-generic code never reaches this
         (the checker's E336 gates first; verify runs only check-clean
         programs), and an UNinstantiated generic still carries the
-        TypeVar and defers."""
+        TypeVar and defers.  The check judges every instance first, at the
+        call that chooses it (E533, :func:`vera.typed.judge`, #1679), so on
+        a checked program this records nothing: it is the backstop, and the
+        `state_decl` obligation kind it records goes with the one obligation
+        table (#1695)."""
         eff = expr.effect
         if (not isinstance(eff, ast.EffectRef)
                 or eff.name != "State"
@@ -11608,6 +10976,7 @@ class ContractVerifier:
         # fast path's body translation models.
         smt._call_binding_hook = self._call_binding_facts
         smt._call_result_facts_hook = self._call_result_facts
+        smt._generic_callee_hook = self._generic_callee_info
         # #994 F1: same recorded-type hint as the main path — a bare nullary
         # ctor in this generic body's refined return must resolve its sort from
         # the recorded type, not the ambiguous base-name scan.
@@ -12443,7 +11812,6 @@ class ContractVerifier:
             from vera.disclosure import ModuleDisclosureIndex
             self._disclosure_index = ModuleDisclosureIndex(
                 self._source_modules, self.timeout_ms,
-                self._module_artifacts,
             )
         return self._disclosure_index.disclosed_in(path)
 

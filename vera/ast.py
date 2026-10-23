@@ -7,6 +7,7 @@ The hierarchy is shallow: Node → category base → concrete node.
 
 from __future__ import annotations
 
+import itertools
 from dataclasses import dataclass, field, fields, is_dataclass
 from enum import Enum
 from typing import Any
@@ -49,12 +50,26 @@ def span_key(node: "Node") -> tuple[int, int, int, int] | None:
 class Node:
     """Abstract base for all AST nodes."""
     span: Span | None = field(default=None, kw_only=True, repr=False, compare=False)
+    #: The node's identity (#1679): a number :func:`number_nodes` gives every
+    #: node of a parsed tree, which the checker's type tables are keyed by.
+    #: A position, like ``span``: no part in equality, hashing, ``repr``,
+    #: ``pretty`` or ``to_dict``.  ``dataclasses.replace`` carries it, so a
+    #: node rebuilt to stand for another keeps the identity the checker
+    #: typed; a clone the typed program builds is numbered afresh, since a
+    #: span, or an identity shared with its template, cannot tell a clone's
+    #: node from the template's.
+    node_id: int | None = field(
+        default=None, kw_only=True, repr=False, compare=False,
+        metadata={"position": True, "identity": True})
 
     def to_dict(self) -> dict[str, Any]:
         """Serialise to a JSON-compatible dict.  A spelling field
-        (:func:`_spelling`) appears only where it is set."""
+        (:func:`_spelling`) appears only where it is set; the node's
+        identity never does."""
         result: dict[str, Any] = {"_type": type(self).__name__}
         for f in fields(self):
+            if f.metadata.get("identity"):
+                continue
             val = getattr(self, f.name)
             if f.metadata.get("spelling") and not val:
                 continue
@@ -73,6 +88,36 @@ class Node:
                 continue
             lines.extend(_pretty_field(f.name, val, indent + 1))
         return "\n".join(lines)
+
+
+#: Where node identities come from: one count for the whole process, so no
+#: two nodes of any trees a run parses share one.
+_NODE_IDS = itertools.count(1)
+
+
+def fresh_node_id() -> int:
+    """A node identity no node has yet (:attr:`Node.node_id`)."""
+    return next(_NODE_IDS)
+
+
+def number_nodes(root: object) -> None:
+    """Give every node under *root* that has no identity one (#1679).
+
+    :func:`vera.transform.transform` numbers each tree it builds, so the
+    entry program, every module the resolver parses and the prelude are
+    numbered once, when they are made.  A node already numbered keeps its
+    number: a node rebuilt to stand for another carries the other's."""
+    stack: list[object] = [root]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, Node):
+            if node.node_id is None:
+                object.__setattr__(node, "node_id", next(_NODE_IDS))
+            for f in fields(node):
+                if not f.metadata.get("position") and f.name != "span":
+                    stack.append(getattr(node, f.name))
+        elif isinstance(node, tuple):
+            stack.extend(node)
 
 
 def _spelling() -> Any:

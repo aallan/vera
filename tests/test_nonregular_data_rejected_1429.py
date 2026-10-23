@@ -569,7 +569,11 @@ def test_the_index_is_built_once_per_module(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(regularity_mod.RegularityIndex, "__init__", _counted)
     source = _chain_source(50, linked=True)
     checker_core.typecheck(parse_to_ast(source), source)
-    assert len(built) == 1, f"{len(built)} indexes built for one module"
+    # The prelude's bodies are checked in a namespace of their own (#1679),
+    # which builds its own index once; the module's is the one holding its
+    # declarations.
+    own = [registry for registry in built if "D0" in registry]
+    assert len(own) == 1, f"{len(own)} indexes built for one module"
 
 
 def test_regularity_does_not_dominate_the_check(tmp_path: Path) -> None:
