@@ -2152,8 +2152,8 @@ class CallsMixin:
         variable takes one type.  A variable in a function type, which the
         call that made the value left without a type, so the function was
         compiled at a type of its own: a closure that is the argument is
-        written at the parameter's type instead, and a value holding one is
-        built at it.  The hole an empty literal's element type leaves
+        written at the parameter's type instead, and a value whose type
+        holds one, whatever the value holds, is built at it.  The hole an empty literal's element type leaves
         (`?`, `_as_holes`) has no name, and is named as what it is.  A
         variable the enclosing function owns has its own type, and the
         generic refusal says so."""
@@ -2202,8 +2202,11 @@ class CallsMixin:
         param_fn = base_type(param_ty)
         closure = isinstance(param_fn, FunctionType)
         made = "the closure" if closure else "the value"
+        # A value of a data type is judged by its type: whatever this one
+        # holds, a function a value of the type holds over the variable is
+        # compiled at a type of its own.
         compiled = ("its code was compiled" if closure
-                    else "the function it holds was compiled")
+                    else "a function a value of this type holds is compiled")
         if literal:
             why = (f"the call that made {made} was given an empty literal, "
                    f"whose element type no argument fixes, so {compiled} at "
@@ -2233,11 +2236,12 @@ class CallsMixin:
             why,
             "A function a generic call builds is compiled at the types its "
             "call's arguments give its type variables; one they give no type "
-            "is compiled at a type of its own, so a value holding that "
-            "function cannot stand where the parameter asks another type "
-            "for that variable.",
-            f"Build the value at the parameter's type, from a function "
-            f"written at it, in place of `{written}`.",
+            "is compiled at a type of its own.  A value whose type holds a "
+            "function over such a variable may hold one compiled so, "
+            "whatever this value holds, so it cannot stand where the "
+            "parameter asks another type for that variable.",
+            f"Build the value at the parameter's type, writing any function "
+            f"it holds at that type, in place of `{written}`.",
         )
 
     def _cross_owner_fix(

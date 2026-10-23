@@ -235,8 +235,10 @@ def _assert_refusal(error, shape: str, param: str, binder: str,
             in text), text
     written = f"`make({_BINDERS[binder]})`"
     if shape == "held_closure":
-        assert error.fix == ("Build the value at the parameter's type, from "
-                             f"a function written at it, in place of {written}.")
+        assert "so a function a value of this type holds is compiled" in text
+        assert error.fix == ("Build the value at the parameter's type, writing "
+                             "any function it holds at that type, in place of "
+                             f"{written}.")
     elif (shape, param) in _SIGNATURE:
         assert error.fix == (
             "Write the closure at the parameter's type, "
@@ -445,11 +447,12 @@ def test_repro_a_value_holding_the_closure_does_not_fit() -> None:
     assert error.description == (
         "Argument 0 of 'use' has type Conv2<T, T>, expected "
         "Conv2<Option<Nat>, Option<String>>: no argument of the call that "
-        "made the value gives T a type, so the function it holds was "
-        "compiled at a type of its own, and the parameter's type gives T "
-        "Option<Nat> at type argument 1 of Conv2.")
-    assert error.fix == ("Build the value at the parameter's type, from a "
-                         "function written at it, in place of `mk(())`.")
+        "made the value gives T a type, so a function a value of this type "
+        "holds is compiled at a type of its own, and the parameter's type "
+        "gives T Option<Nat> at type argument 1 of Conv2.")
+    assert error.fix == ("Build the value at the parameter's type, writing "
+                         "any function it holds at that type, in place of "
+                         "`mk(())`.")
 
 
 _HELD_SAME = """\
@@ -648,6 +651,102 @@ def test_repro_a_conflict_names_both_positions_and_both_types(
             "where the parameter's type gives it Int and String, and a type "
             "variable takes one type.") in error.description
     assert error.fix == fix
+
+
+_CONFLICT_OPEN_PARAMETER = """\
+private forall<T> fn trip(@Option<T> -> @Tuple<Option<T>, Option<T>, Option<T>>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Tuple(@Option<T>.0, @Option<T>.0, @Option<T>.0)
+}
+
+private forall<U> fn take3(@Tuple<Option<Int>, Option<String>, Option<U>>, @Option<U> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  7
+}
+
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  take3(trip(None), None)
+}
+"""
+
+
+def test_repro_a_conflict_s_fix_shows_an_open_parameter_variable_as_unknown(
+        ) -> None:
+    """R102's repro: `take3`'s `U`, which no argument fixes, is an open
+    variable of the parameter's type.  The fix showed it by its internal
+    name (`Option<T$3>`), which no program can write; it shows it as `?`,
+    as the description's expected type does.  On `main` at e255fd95 the
+    program checks."""
+    error = _only_error(_CONFLICT_OPEN_PARAMETER)
+    assert "expected Tuple<Option<Int>, Option<String>, Option<?>>: " in (
+        error.description)
+    assert error.fix == (
+        "Pass a value of type Tuple<Option<Int>, Option<String>, Option<?>> "
+        "for this argument: no type for T gives Tuple<Option<T>, Option<T>, "
+        "Option<T>> that type.")
+
+
+_NONE_AT_A_FUNCTION_TYPE = """\
+type IntEndo = fn(Int -> Int) effects(pure);
+type Endo<T> = fn(T -> T) effects(pure);
+
+private forall<T> fn none_endo(@Unit -> @Option<Endo<T>>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  None
+}
+
+private fn useopt(@Option<IntEndo> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Option<IntEndo>.0 {
+    Some(@IntEndo) -> apply_fn(@IntEndo.0, 40),
+    None -> 60
+  }
+}
+
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  useopt(none_endo(()))
+}
+"""
+
+
+def test_a_value_is_judged_by_its_type_whatever_it_holds() -> None:
+    """R102's probe: `none_endo(())` returns `None`, which holds no
+    function, at an `Option<IntEndo>` parameter.  On `main` at e255fd95
+    it checks, verifies and prints 60, with `none_endo` compiled at
+    `Bool`.  The judgement reads the value's type, which holds a function
+    over `T`, and the refusal says so: a function a value of this type
+    holds, not the one it holds."""
+    error = _only_error(_NONE_AT_A_FUNCTION_TYPE)
+    assert error.description == (
+        "Argument 0 of 'useopt' has type Option<fn(T -> T) effects(pure)>, "
+        "expected Option<fn(Int -> Int) effects(pure)>: no argument of the "
+        "call that made the value gives T a type, so a function a value of "
+        "this type holds is compiled at a type of its own, and the "
+        "parameter's type gives T Int at the parameter in the type argument "
+        "of Option.")
+    assert error.fix == ("Build the value at the parameter's type, writing "
+                         "any function it holds at that type, in place of "
+                         "`none_endo(())`.")
 
 
 _TWO_PARAMETERS = """\
