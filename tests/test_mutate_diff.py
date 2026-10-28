@@ -13,6 +13,9 @@ everything around mutmut itself:
   ``[tool.mutmut]``;
 - the parse of ``mutmut results --all true``, over every status mutmut 3
   prints, and the refusal of a line or a status it does not model;
+- what stopped mutmut's stats pass or clean run, read off its log: a test
+  that fails in the copy, which the lane drops, or an exception of the
+  engine's own code, which the lane names, over the engine's own logs;
 - the exit code (1 on a survivor, 2 when the engine or the lane itself
   fails, and 0 otherwise: a run its budget stops with no survivor passes,
   its headline and a warning annotation saying it is incomplete), the
@@ -22,8 +25,8 @@ everything around mutmut itself:
 
 The tests that need mutmut itself (its status table, and its generator
 reading the narrowing pragma) skip where the ``[mutation]`` extra is not
-installed; the lane's workflow installs it and runs this file before the
-script.
+installed; both mutation lanes install it from ``uv.lock`` and run this file
+before their scripts.
 """
 
 from __future__ import annotations
@@ -979,6 +982,607 @@ class TestCopyFailure:
         assert md.copy_failure("FAILED tests/test_x.py::t - y\nsomething else went wrong\n") is None
 
 
+# What mutmut's log holds when its stats pass stops, read off the engine
+# itself.  mutmut runs pytest with ``--tb=native``, so each report carries
+# Python's own traceback.  The path prefixes are shortened and the spinner's
+# frames left out; where a constant says so, the frames of pytest and pluggy
+# between a report's first frame and the test's own are left out too, which
+# changes nothing the lane reads: it reads a traceback from its innermost
+# frame outward.
+
+#: The night of 28 October 2026 (run 40607843242): mutmut 3.8.0's stats
+#: collector reads ``item._nodeid`` at every test's teardown, which pytest
+#: 9.2.0 dropped, so every test of the stats pass errors there with no mutant
+#: active.  The first attempt's log of
+#: ``test_mutate_sweep.py::TestEndToEnd::test_mutmut_itself_decides_a_night``,
+#: reproduced under that resolution.
+NIGHT_LOG = """\
+    done in 40ms (1 files mutated, 1 ignored, 0 unmodified)
+
+.E
+==================================== ERRORS ====================================
+_________________________ ERROR at teardown of test_f __________________________
+Traceback (most recent call last):
+  File "/venv/lib/python3.14/site-packages/_pytest/runner.py", line 361, in from_call
+    result: TResult | None = func()
+                             ~~~~^^
+  File "/venv/lib/python3.14/site-packages/_pytest/runner.py", line 250, in <lambda>
+    lambda: runtest_hook(item=item, **kwds),
+            ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^
+  File "/venv/lib/python3.14/site-packages/pluggy/_caller.py", line 197, in __call__
+    return self._hookexec(
+           ~~~~~~~~~~~~~~^
+        self.name, self._hookimpls.copy(), call_kwargs, firstresult
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/venv/lib/python3.14/site-packages/pluggy/_manager.py", line 183, in _hookexec
+    return self._inner_hookexec(hook_name, methods, kwargs, firstresult)
+           ~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/venv/lib/python3.14/site-packages/pluggy/_execution.py", line 195, in _multicall
+    raise exception
+  File "/venv/lib/python3.14/site-packages/pluggy/_execution.py", line 167, in _multicall
+    teardown.throw(exception)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^
+  File "/venv/lib/python3.14/site-packages/_pytest/logging.py", line 886, in pytest_runtest_teardown
+    yield
+  File "/venv/lib/python3.14/site-packages/pluggy/_execution.py", line 167, in _multicall
+    teardown.throw(exception)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^
+  File "/venv/lib/python3.14/site-packages/_pytest/capture.py", line 911, in pytest_runtest_teardown
+    return (yield)
+            ^^^^^
+  File "/venv/lib/python3.14/site-packages/pluggy/_execution.py", line 147, in _multicall
+    res = hook_impl.function(*args)
+  File "/venv/lib/python3.14/site-packages/mutmut/runners/harness.py", line 157, in pytest_runtest_teardown
+    state().tests_by_mangled_function_name[function].add(strip_prefix(item._nodeid, prefix="mutants/"))
+                                                                      ^^^^^^^^^^^^
+AttributeError: 'Function' object has no attribute '_nodeid'. Did you mean: 'nodeid'?
+=========================== short test summary info ============================
+ERROR tests/test_m.py::test_f - AttributeError: 'Function' object has no attr...
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+1 passed, 1 error in 0.01s
+failed to collect stats. runner returned 1
+
+"""
+
+#: What the night's engine named after both of its tests were deselected.
+NIGHT_LAST_LOG = """\
+    done in 13ms (0 files mutated, 1 ignored, 1 unmodified)
+2 deselected in 0.01s
+failed to collect stats. runner returned 5
+"""
+
+NIGHT_ERROR = ("AttributeError: 'Function' object has no attribute '_nodeid'. Did you mean: 'nodeid'? "
+               "(mutmut/runners/harness.py:157)")
+
+#: mutmut's own code calling the standard library, which raises: with
+#: ``max_stack_depth`` set, ``record_trampoline_hit`` resolves each frame's
+#: file strictly, and code ``exec`` compiled has the file ``<string>``
+#: (mutmut 3.8.1, pytest 9.2.0; pytest's and pluggy's frames left out).
+ENGINE_IN_THE_STDLIB_LOG = r"""
+    done in 30ms (2 files mutated, 0 ignored, 0 unmodified)
+
+F
+=================================== FAILURES ===================================
+____________________________________ test_f ____________________________________
+Traceback (most recent call last):
+  File "/venv/lib/python3.12/site-packages/_pytest/runner.py", line 361, in from_call
+    result: TResult | None = func()
+  File "/work/tree/mutants/tests/test_m.py", line 5, in test_f
+    exec('from vera.m import f\nassert f(1) == 2')
+  File "<string>", line 2, in <module>
+  File "/venv/lib/python3.12/site-packages/mutmut/mutation/trampoline.py", line 172, in _trampoline_wrapper
+    return trampoline(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/venv/lib/python3.12/site-packages/mutmut/mutation/trampoline.py", line 97, in trampoline
+    record_trampoline_hit(orig_qual_name, caller=caller_name)
+  File "/venv/lib/python3.12/site-packages/mutmut/stats.py", line 163, in record_trampoline_hit
+    file_path = Path(filename).resolve(strict=True)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/python/lib/python3.12/pathlib.py", line 1240, in resolve
+    s = self._flavour.realpath(self, strict=strict)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen posixpath>", line 427, in realpath
+  File "<frozen posixpath>", line 471, in _joinrealpath
+FileNotFoundError: [Errno 2] No such file or directory: '<string>'
+=========================== short test summary info ============================
+FAILED tests/test_m.py::test_f - FileNotFoundError: [Errno 2] No such file or...
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+1 failed in 0.01s
+failed to collect stats. runner returned 1
+"""
+
+#: A test that reads a file the copy does not hold: it fails in its own
+#: body, inside the standard library (mutmut 3.8.1, pytest 9.2.0; pytest's
+#: and pluggy's frames left out).
+BODY_FAILURE_LOG = """\
+    done in 27ms (2 files mutated, 0 ignored, 0 unmodified)
+
+.F
+=================================== FAILURES ===================================
+____________________________________ test_g ____________________________________
+Traceback (most recent call last):
+  File "/venv/lib/python3.12/site-packages/_pytest/runner.py", line 361, in from_call
+    result: TResult | None = func()
+  File "/work/tree/mutants/tests/test_m.py", line 11, in test_g
+    Path('not_in_the_copy.txt').read_text()
+  File "/python/lib/python3.12/pathlib.py", line 1027, in read_text
+    with self.open(mode='r', encoding=encoding, errors=errors) as f:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/python/lib/python3.12/pathlib.py", line 1013, in open
+    return io.open(self, mode, buffering, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'not_in_the_copy.txt'
+=========================== short test summary info ============================
+FAILED tests/test_m.py::test_g - FileNotFoundError: [Errno 2] No such file or...
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+1 failed, 1 passed in 0.01s
+failed to collect stats. runner returned 1
+"""
+
+#: The code under test raising when a test calls it through mutmut's
+#: trampoline: the engine's frames lie between the test's and the raise
+#: (mutmut 3.8.1, pytest 9.2.0; pytest's and pluggy's frames left out).
+TRAMPOLINED_CODE_LOG = """\
+    done in 31ms (2 files mutated, 0 ignored, 0 unmodified)
+
+.F
+=================================== FAILURES ===================================
+____________________________________ test_g ____________________________________
+Traceback (most recent call last):
+  File "/venv/lib/python3.12/site-packages/_pytest/runner.py", line 361, in from_call
+    result: TResult | None = func()
+  File "/work/tree/mutants/tests/test_m.py", line 9, in test_g
+    assert f(None) == 6
+           ^^^^^^^
+  File "/venv/lib/python3.12/site-packages/mutmut/mutation/trampoline.py", line 172, in _trampoline_wrapper
+    return trampoline(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/venv/lib/python3.12/site-packages/mutmut/mutation/trampoline.py", line 100, in trampoline
+    return orig_func(*call_args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/tree/mutants/vera/m.py", line 9, in x_f__mutmut_orig
+    return x + 1
+           ~~^~~
+TypeError: unsupported operand type(s) for +: 'NoneType' and 'int'
+=========================== short test summary info ============================
+FAILED tests/test_m.py::test_g - TypeError: unsupported operand type(s) for +...
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+1 failed, 1 passed in 0.01s
+failed to collect stats. runner returned 1
+"""
+
+#: A test whose recursion through a trampolined function runs out of stack.
+#: Every call through the trampoline adds the engine's two frames, so a
+#: recursion the suite passes can run out in mutmut's copy, and where it runs
+#: out falls wherever the stack ends: here in the engine's own frame, in one
+#: of every three depths the probe tried.  The nightly sweep drops such tests
+#: (``tests/test_family_naming.py``'s cap tests, whose 200-deep predicate
+#: recurses through ``ExpressionsMixin._synth_expr``).  mutmut 3.8.1, pytest
+#: 9.2.0; pytest's and pluggy's frames left out, and of the recursion's
+#: frames the last twelve kept.
+RECURSION_LOG = """\
+    done in 30ms (2 files mutated, 0 ignored, 0 unmodified)
+
+.F
+=================================== FAILURES ===================================
+____________________________________ test_g ____________________________________
+Traceback (most recent call last):
+  File "/venv/lib/python3.12/site-packages/_pytest/runner.py", line 361, in from_call
+    result: TResult | None = func()
+  File "/work/tree/mutants/tests/test_m.py", line 21, in test_g
+    assert h0(100000) == 100000
+           ^^^^^^^^^^
+  File "/venv/lib/python3.12/site-packages/mutmut/mutation/trampoline.py", line 172, in _trampoline_wrapper
+    return trampoline(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/venv/lib/python3.12/site-packages/mutmut/mutation/trampoline.py", line 100, in trampoline
+    return orig_func(*call_args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/tree/mutants/vera/m.py", line 9, in x_deep__mutmut_orig
+    return 0 if n == 0 else deep(n - 1) + 1
+                            ^^^^^^^^^^^
+  File "/venv/lib/python3.12/site-packages/mutmut/mutation/trampoline.py", line 172, in _trampoline_wrapper
+    return trampoline(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/venv/lib/python3.12/site-packages/mutmut/mutation/trampoline.py", line 100, in trampoline
+    return orig_func(*call_args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/tree/mutants/vera/m.py", line 9, in x_deep__mutmut_orig
+    return 0 if n == 0 else deep(n - 1) + 1
+                            ^^^^^^^^^^^
+  File "/venv/lib/python3.12/site-packages/mutmut/mutation/trampoline.py", line 172, in _trampoline_wrapper
+    return trampoline(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/venv/lib/python3.12/site-packages/mutmut/mutation/trampoline.py", line 85, in trampoline
+    mutant_under_test = get_mutant_under_test()
+                        ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/venv/lib/python3.12/site-packages/mutmut/mutation/trampoline.py", line 54, in get_mutant_under_test
+    if "MUTANT_UNDER_TEST" in os.environ:
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+RecursionError: maximum recursion depth exceeded
+=========================== short test summary info ============================
+FAILED tests/test_m.py::test_g - RecursionError: maximum recursion depth exce...
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+1 failed, 1 passed in 0.02s
+failed to collect stats. runner returned 1
+"""
+
+# The next three are logs of the engine with a stats hook of its own placed
+# in its installed package (``mutmut/probe_makereport.py``,
+# ``mutmut/probe_recurse.py``, loaded with ``-p``), where mutmut 3.8.0's
+# ``mutmut/runners/harness.py`` hooks live, and of a test that prints a
+# traceback (mutmut 3.8.1, pytest 9.2.0).
+
+#: A stats hook of the engine raising in ``pytest_runtest_makereport``,
+#: outside a test's phases: pytest prints the traceback as INTERNALERROR
+#: lines and exits 3 (pytest's and pluggy's frames left out).
+INTERNALERROR_LOG = """\
+    done in 24ms (2 files mutated, 0 ignored, 0 unmodified)
+
+INTERNALERROR> Traceback (most recent call last):
+INTERNALERROR>   File "/venv/lib/python3.12/site-packages/_pytest/main.py", line 333, in wrap_session
+INTERNALERROR>     session.exitstatus = doit(config, session) or 0
+INTERNALERROR>   File "/venv/lib/python3.12/site-packages/mutmut/probe_makereport.py", line 3, in pytest_runtest_makereport
+INTERNALERROR>     return {item._nodeid: call}
+INTERNALERROR>             ^^^^^^^^^^^^
+INTERNALERROR> AttributeError: 'Function' object has no attribute '_nodeid'. Did you mean: 'nodeid'?
+
+no tests ran in 0.01s
+failed to collect stats. runner returned 3
+"""
+
+#: A stats hook of the engine recursing in its own frames at a test's
+#: teardown, the repeated frame compressed as Python prints it (pytest's and
+#: pluggy's frames left out).
+ENGINE_RECURSION_LOG = """\
+    done in 22ms (2 files mutated, 0 ignored, 0 unmodified)
+
+.E
+==================================== ERRORS ====================================
+_________________________ ERROR at teardown of test_f __________________________
+Traceback (most recent call last):
+  File "/venv/lib/python3.12/site-packages/_pytest/runner.py", line 361, in from_call
+    result: TResult | None = func()
+  File "/venv/lib/python3.12/site-packages/mutmut/probe_recurse.py", line 6, in pytest_runtest_teardown
+    _walk(0)
+  File "/venv/lib/python3.12/site-packages/mutmut/probe_recurse.py", line 2, in _walk
+    return _walk(depth + 1)
+           ^^^^^^^^^^^^^^^^
+  File "/venv/lib/python3.12/site-packages/mutmut/probe_recurse.py", line 2, in _walk
+    return _walk(depth + 1)
+           ^^^^^^^^^^^^^^^^
+  File "/venv/lib/python3.12/site-packages/mutmut/probe_recurse.py", line 2, in _walk
+    return _walk(depth + 1)
+           ^^^^^^^^^^^^^^^^
+  [Previous line repeated 960 more times]
+RecursionError: maximum recursion depth exceeded
+=========================== short test summary info ============================
+ERROR tests/test_m.py::test_f - RecursionError: maximum recursion depth exceeded
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+1 passed, 1 error in 0.01s
+failed to collect stats. runner returned 1
+"""
+
+#: A test that fails in its own body after printing, to its captured stderr,
+#: a traceback raised in the engine's trampoline (a call with one argument
+#: too many); the report's own frames are pytest's, left out, then the
+#: test's.
+CAPTURED_LOG = """\
+    done in 21ms (2 files mutated, 0 ignored, 0 unmodified)
+
+.F
+=================================== FAILURES ===================================
+____________________________________ test_g ____________________________________
+Traceback (most recent call last):
+  File "/venv/lib/python3.12/site-packages/_pytest/runner.py", line 361, in from_call
+    result: TResult | None = func()
+  File "/work/tree/mutants/tests/test_m.py", line 15, in test_g
+    assert g(3) == 7
+AssertionError: assert 6 == 7
+ +  where 6 = g(3)
+----------------------------- Captured stderr call -----------------------------
+Traceback (most recent call last):
+  File "/work/tree/mutants/tests/test_m.py", line 12, in test_g
+    f(1, 2)
+  File "/venv/lib/python3.12/site-packages/mutmut/mutation/trampoline.py", line 172, in _trampoline_wrapper
+    return trampoline(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/venv/lib/python3.12/site-packages/mutmut/mutation/trampoline.py", line 100, in trampoline
+    return orig_func(*call_args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: x_f__mutmut_orig() takes 1 positional argument but 2 were given
+=========================== short test summary info ============================
+FAILED tests/test_m.py::test_g - assert 6 == 7
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+1 failed, 1 passed in 0.01s
+failed to collect stats. runner returned 1
+"""
+
+#: A function of the engine recursing on itself inside a test's call: the
+#: test calls the code under test, which calls the engine's ``walk``.
+#: Python's traceback printer prints a frame repeated in a row three times
+#: and then a count of the rest, so the ten innermost printed frames reach
+#: the copy's (pytest 9.2.0, a module placed at ``mutmut/rec.py``, the stop
+#: line mutmut prints after it; pytest's and pluggy's frames left out).
+SELF_RECURSION_LOG = """\
+F
+=================================== FAILURES ===================================
+____________________________________ test_g ____________________________________
+Traceback (most recent call last):
+  File "/venv/lib/python3.12/site-packages/_pytest/runner.py", line 361, in from_call
+    result: TResult | None = func()
+  File "/work/tree/mutants/tests/test_m.py", line 5, in test_g
+    f()
+  File "/work/tree/mutants/vera/m.py", line 5, in f
+    return walk(0)
+           ^^^^^^^
+  File "/venv/lib/python3.12/site-packages/mutmut/rec.py", line 2, in walk
+    return walk(n + 1)
+           ^^^^^^^^^^^
+  File "/venv/lib/python3.12/site-packages/mutmut/rec.py", line 2, in walk
+    return walk(n + 1)
+           ^^^^^^^^^^^
+  File "/venv/lib/python3.12/site-packages/mutmut/rec.py", line 2, in walk
+    return walk(n + 1)
+           ^^^^^^^^^^^
+  [Previous line repeated 963 more times]
+RecursionError: maximum recursion depth exceeded
+=========================== short test summary info ============================
+FAILED tests/test_m.py::test_g - RecursionError: maximum recursion depth exce...
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+1 failed in 0.01s
+failed to collect stats. runner returned 1
+"""
+
+#: A test that prints two banners of its own and then a traceback raised in
+#: the engine's trampoline to its stdout, and fails in its own body: lines
+#: shaped like pytest's rules, but not drawn its width, inside its captured
+#: output (mutmut 3.8.1, pytest 9.2.0; pytest's and pluggy's frames left
+#: out).
+BANNER_LOG = """\
+    done in 23ms (2 files mutated, 0 ignored, 0 unmodified)
+
+.F
+=================================== FAILURES ===================================
+____________________________________ test_g ____________________________________
+Traceback (most recent call last):
+  File "/venv/lib/python3.12/site-packages/_pytest/runner.py", line 361, in from_call
+    result: TResult | None = func()
+  File "/work/tree/mutants/tests/test_m.py", line 18, in test_g
+    assert g(3) == 7
+AssertionError: assert 6 == 7
+ +  where 6 = g(3)
+----------------------------- Captured stdout call -----------------------------
+=============== the program's own banner ===============
+--- a heading the program printed ---
+Traceback (most recent call last):
+  File "/work/tree/mutants/tests/test_m.py", line 15, in test_g
+    f(1, 2)
+  File "/venv/lib/python3.12/site-packages/mutmut/mutation/trampoline.py", line 172, in _trampoline_wrapper
+    return trampoline(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/venv/lib/python3.12/site-packages/mutmut/mutation/trampoline.py", line 100, in trampoline
+    return orig_func(*call_args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: x_f__mutmut_orig() takes 1 positional argument but 2 were given
+=========================== short test summary info ============================
+FAILED tests/test_m.py::test_g - assert 6 == 7
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+1 failed, 1 passed in 0.01s
+failed to collect stats. runner returned 1
+"""
+
+#: The night's engine (mutmut 3.8.0, pytest 9.2.0) under a test with a
+#: 73-character name, whose fixture reaches a mutated function, logs a
+#: warning and raises: the test's own setup error, carrying ``Captured log
+#: setup``, then the engine's teardown hook raising.  pytest draws both
+#: reports' rules with one fill character either side of the long title
+#: (pytest's and pluggy's frames left out).
+LONG_NAME_LOG = """\
+    done in 21ms (2 files mutated, 0 ignored, 0 unmodified)
+
+EE
+==================================== ERRORS ====================================
+_ ERROR at setup of test_a_name_vera_writes_as_a_sentence_a_name_vera_writes_as_a_sentence_a_ _
+Traceback (most recent call last):
+  File "/venv/lib/python3.12/site-packages/_pytest/runner.py", line 361, in from_call
+    result: TResult | None = func()
+  File "/work/tree/mutants/tests/test_m.py", line 12, in broken
+    raise RuntimeError('the fixture cannot start')
+RuntimeError: the fixture cannot start
+------------------------------ Captured log setup ------------------------------
+WARNING  fixture:test_m.py:11 the fixture logs before it fails
+_ ERROR at teardown of test_a_name_vera_writes_as_a_sentence_a_name_vera_writes_as_a_sentence_a_ _
+Traceback (most recent call last):
+  File "/venv/lib/python3.12/site-packages/_pytest/runner.py", line 361, in from_call
+    result: TResult | None = func()
+  File "/venv/lib/python3.12/site-packages/mutmut/runners/harness.py", line 157, in pytest_runtest_teardown
+    state().tests_by_mangled_function_name[function].add(strip_prefix(item._nodeid, prefix="mutants/"))
+                                                                      ^^^^^^^^^^^^
+AttributeError: 'Function' object has no attribute '_nodeid'. Did you mean: 'nodeid'?
+------------------------------ Captured log setup ------------------------------
+WARNING  fixture:test_m.py:11 the fixture logs before it fails
+=========================== short test summary info ============================
+ERROR tests/test_m.py::test_a_name_vera_writes_as_a_sentence_a_name_vera_writes_as_a_sentence_a_
+ERROR tests/test_m.py::test_a_name_vera_writes_as_a_sentence_a_name_vera_writes_as_a_sentence_a_
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 2 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+2 errors in 0.01s
+failed to collect stats. runner returned 1
+"""
+
+
+class TestEngineFailure:
+    """An exception the engine's own code raised stops its stats pass or its
+    clean run as a failing test does, and no test is at fault: the lane
+    names the exception and the engine's frame instead of a test to drop."""
+
+    def test_the_nights_teardown_hook_is_the_engines_own_failure(self) -> None:
+        assert md.engine_failure(NIGHT_LOG) == NIGHT_ERROR
+
+    def test_a_long_exception_is_cut_to_the_records_bound_and_keeps_its_frame(self) -> None:
+        """The sweep refuses a record whose ``engine_error`` is longer
+        (``mutate_sweep.check_record``)."""
+        log = NIGHT_LOG.replace("Did you mean: 'nodeid'?", "Did you mean: 'nodeid'? " + "x" * 1000)
+        error = md.engine_failure(log)
+        assert error is not None and len(error) == md.ENGINE_ERROR_CHARS == 500
+        assert error.startswith("AttributeError: ") and error.endswith("x… (mutmut/runners/harness.py:157)")
+
+    def test_the_standard_library_raising_under_the_engines_frame_is_the_engines(self) -> None:
+        assert md.engine_failure(ENGINE_IN_THE_STDLIB_LOG) == (
+            "FileNotFoundError: [Errno 2] No such file or directory: '<string>' (mutmut/stats.py:163)")
+
+    def test_a_test_failing_in_its_own_body_is_no_engine_failure(self) -> None:
+        assert md.engine_failure(BODY_FAILURE_LOG) is None
+        assert md.copy_failure(BODY_FAILURE_LOG) == "tests/test_m.py::test_g"
+
+    def test_the_code_under_test_raising_through_the_trampoline_is_no_engine_failure(self) -> None:
+        assert md.engine_failure(TRAMPOLINED_CODE_LOG) is None
+        assert md.copy_failure(TRAMPOLINED_CODE_LOG) == "tests/test_m.py::test_g"
+
+    def test_the_engine_is_the_installed_package_not_a_directory_of_its_name(self) -> None:
+        """A scratch tree under a directory named ``mutmut`` (a checkout of
+        the engine, say) is still the copy: its frames are the test's."""
+        log = TRAMPOLINED_CODE_LOG.replace("/work/tree/mutants/", "/home/u/mutmut/work/tree/mutants/")
+        assert "/mutmut/work/tree/mutants/vera/m.py" in log
+        assert md.engine_failure(log) is None
+
+    def test_a_recursion_that_runs_out_in_the_engines_frame_is_no_engine_failure(self) -> None:
+        """Where a recursion runs out of stack is where the stack ends, not
+        where a fault lies: a frame of the copy among its innermost frames
+        makes it the test's."""
+        assert md.engine_failure(RECURSION_LOG) is None
+        assert md.copy_failure(RECURSION_LOG) == "tests/test_m.py::test_g"
+
+    def test_a_recursion_in_the_engines_own_frames_is_the_engines(self) -> None:
+        """No frame of the copy among its innermost frames: the engine
+        recursed in its own code."""
+        assert md.engine_failure(ENGINE_RECURSION_LOG) == (
+            "RecursionError: maximum recursion depth exceeded (mutmut/probe_recurse.py:2)")
+
+    def test_an_internal_error_of_the_engines_own_hook_is_the_engines(self) -> None:
+        """A hook raising outside a test's phases is pytest's INTERNALERROR:
+        no report names a test, and every line of the traceback carries the
+        prefix."""
+        assert md.copy_failure(INTERNALERROR_LOG) is None
+        assert md.engine_failure(INTERNALERROR_LOG) == (
+            "AttributeError: 'Function' object has no attribute '_nodeid'. Did you mean: 'nodeid'? "
+            "(mutmut/probe_makereport.py:3)")
+
+    def test_a_traceback_in_a_tests_captured_output_decides_nothing(self) -> None:
+        """The test failed in its own body; the trampoline traceback it
+        printed is its captured stderr, not a report."""
+        assert md.engine_failure(CAPTURED_LOG) is None
+        assert md.copy_failure(CAPTURED_LOG) == "tests/test_m.py::test_g"
+
+    def test_an_engine_traceback_outside_a_stopped_pass_is_no_engine_failure(self) -> None:
+        """The lane reads a pass that stopped, the stats pass or the clean
+        run: the same traceback in a log that names no stop decides
+        nothing."""
+        assert md.engine_failure(NIGHT_LOG.replace("failed to collect stats. runner returned 1\n", "")) is None
+        assert md.engine_failure(NIGHT_LOG.replace("failed to collect stats", "Failed to run clean test")) == (
+            NIGHT_ERROR)
+
+
+class TestRunDropping:
+    """``run_dropping`` against a stand-in for ``run_engine`` that writes,
+    for each attempt, the log the engine would print given the tests the
+    attempt's configuration deselects."""
+
+    def _run(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+             log_for: Any) -> tuple[Any, list[str], list[str]]:
+        attempts: list[str] = []
+
+        def fake_run_engine(cmd: Any, *, cwd: Path, budget_s: float, log_path: Path,
+                            env: Any = None, grace_s: Any = None) -> Any:
+            config = (cwd / "pyproject.toml").read_text(encoding="utf-8")
+            attempts.append(config)
+            log, code = log_for({line.removeprefix("--deselect=") for line in config.split()})
+            log_path.write_text(log, encoding="utf-8")
+            return md.EngineRun(code, None, 0.1)
+
+        monkeypatch.setattr(md, "run_engine", fake_run_engine)
+        run, _, dropped = md.run_dropping(
+            ["mutmut", "run"], tree=tmp_path, pyproject=tmp_path / "pyproject.toml",
+            config_for=lambda dropped: "".join(f"--deselect={t}\n" for t in dropped),
+            budget_s=100.0, workdir=tmp_path, env={})
+        return run, dropped, attempts
+
+    @staticmethod
+    def _night(deselected: set[str]) -> tuple[str, int]:
+        """The night's engine: each of its two tests errors at teardown in
+        mutmut's own hook, the first one not deselected naming the stop."""
+        for test in ("test_f", "test_g"):
+            if f"tests/test_m.py::{test}" not in deselected:
+                return NIGHT_LOG.replace("test_f", test), 1
+        return NIGHT_LAST_LOG, 1
+
+    def test_the_engines_own_failure_stops_the_run_at_its_first_attempt_and_drops_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The night dropped both tests as failing in the copy, and its third
+        attempt deselected every test (pytest's exit 5)."""
+        run, dropped, attempts = self._run(tmp_path, monkeypatch, self._night)
+        assert (len(attempts), dropped) == (1, [])
+        assert run.returncode == 1 and run.error == NIGHT_ERROR
+
+    def test_a_test_failing_in_its_own_body_is_dropped_and_the_run_goes_again(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        run, dropped, attempts = self._run(tmp_path, monkeypatch, lambda deselected: (
+            ("", 0) if "tests/test_m.py::test_g" in deselected else (BODY_FAILURE_LOG, 1)))
+        assert (len(attempts), dropped) == (2, ["tests/test_m.py::test_g"])
+        assert run.returncode == 0
+
+    def test_a_recursion_through_the_engines_frames_is_dropped_as_the_tests(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        run, dropped, attempts = self._run(tmp_path, monkeypatch, lambda deselected: (
+            ("", 0) if "tests/test_m.py::test_g" in deselected else (RECURSION_LOG, 1)))
+        assert (len(attempts), dropped) == (2, ["tests/test_m.py::test_g"])
+        assert run.returncode == 0
+
+    def test_a_test_whose_captured_output_holds_an_engine_traceback_is_dropped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        run, dropped, attempts = self._run(tmp_path, monkeypatch, lambda deselected: (
+            ("", 0) if "tests/test_m.py::test_g" in deselected else (CAPTURED_LOG, 1)))
+        assert (len(attempts), dropped) == (2, ["tests/test_m.py::test_g"])
+        assert run.returncode == 0  # an engine stop would end the first attempt, dropping nothing
+
+    def test_an_engine_function_recursing_on_itself_in_a_tests_call_is_named_at_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The printed ``[Previous line repeated 963 more times]`` counts:
+        the engine's frames fill the ten innermost, though the copy's are
+        printed within them."""
+        run, dropped, attempts = self._run(tmp_path, monkeypatch, lambda deselected: (SELF_RECURSION_LOG, 1))
+        assert (len(attempts), dropped) == (1, [])
+        assert run.error == "RecursionError: maximum recursion depth exceeded (mutmut/rec.py:2)"
+
+    def test_a_banner_in_a_tests_captured_output_leaves_the_test_dropped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Lines the program printed in the shape of pytest's rules, inside
+        its captured stdout, end nothing: a rule is drawn the terminal's
+        width."""
+        run, dropped, attempts = self._run(tmp_path, monkeypatch, lambda deselected: (
+            ("", 0) if "tests/test_m.py::test_g" in deselected else (BANNER_LOG, 1)))
+        assert (len(attempts), dropped) == (2, ["tests/test_m.py::test_g"])
+        assert run.returncode == 0  # an engine stop would end the first attempt, dropping nothing
+
+    def test_an_engine_failure_behind_a_long_named_tests_setup_error_is_named_at_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The teardown report's rule, after the setup report's captured
+        log, has one fill character either side of its long title, and ends
+        that section."""
+        run, dropped, attempts = self._run(tmp_path, monkeypatch, lambda deselected: (LONG_NAME_LOG, 1))
+        assert (len(attempts), dropped) == (1, [])
+        assert run.error == NIGHT_ERROR
+
+
 class TestOracle:
 
     @pytest.mark.parametrize(("source", "reaches"), [
@@ -1689,7 +2293,8 @@ window_file = os.environ.get("MUTATE_DIFF_WINDOW")
 window = json.loads(Path(window_file).read_text(encoding="utf-8")) if window_file else None
 with log.open("a", encoding="utf-8") as fh:
     fh.write(json.dumps({"cwd": os.getcwd(), "args": args, "window": window,
-                         "git_dir": os.environ.get("GIT_DIR")}) + "\\n")
+                         "git_dir": os.environ.get("GIT_DIR"),
+                         "columns": os.environ.get("COLUMNS")}) + "\\n")
 if args[0] == "run" and window is not None and not os.environ.get("FAKE_NO_WINDOW"):
     # As the engine launcher does: each unit's mutants on every line and in
     # the window, here the mutants results.txt lists for it unless the test
@@ -1708,6 +2313,16 @@ if args[0] == "run" and window is not None and not os.environ.get("FAKE_NO_WINDO
                     unit["held"] += 1
                     unit["window"] += 1
     Path(window["record"]).write_text(json.dumps({"files": counts}), encoding="utf-8")
+if args[0] == "run" and os.environ.get("FAKE_RUN_LOG"):
+    # A log the engine printed, as it printed it (its stats pass stopping),
+    # and, once FAKE_RUN_LOG_AFTER's test (before its `|`) is deselected,
+    # the log after it.
+    printed = os.environ["FAKE_RUN_LOG"]
+    test, _, after = os.environ.get("FAKE_RUN_LOG_AFTER", "").partition("|")
+    if test and f"--deselect={test}" in Path("pyproject.toml").read_text(encoding="utf-8"):
+        printed = after
+    print(Path(printed).read_text(encoding="utf-8"), end="")
+    sys.exit(1)
 if args[0] == "run":
     failing = os.environ.get("FAKE_COPY_FAILURE", "")
     config = Path("pyproject.toml").read_text(encoding="utf-8")
@@ -1898,6 +2513,17 @@ class TestEndToEnd:
         assert run["window"]["lines"] == {"vera/m.py": [1, 2]} and run["window"]["context"] == 2
         assert all(c["window"] is None for c in calls if c["args"][0] != "run")
         assert record["window"]["lines"] == {"vera/m.py": [1, 2]}
+
+    def test_the_engine_is_handed_eighty_columns_whatever_the_lanes_terminal(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """pytest draws its rules the terminal's width, and engine_failure
+        knows a rule by that width: a narrow terminal's COLUMNS stops here."""
+        monkeypatch.setenv("COLUMNS", "60")
+        code, record, calls = _main(repo, tmp_path, "    vera.m.x_kept__mutmut_1: killed\n")
+        assert code == 0
+        (run,) = [c for c in calls if c["args"][0] == "run"]
+        assert run["columns"] == "80"
 
     def test_a_one_line_edit_in_a_long_function_hands_the_engine_its_lines(
         self, tmp_path: Path,
@@ -2098,6 +2724,43 @@ class TestEndToEnd:
         assert record["dropped_tests"] == [failing]
         assert len([c for c in calls if c["args"][0] == "run"]) == 2
 
+    def test_the_engines_own_failure_is_named_and_drops_no_test(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The night's log: every test errors at teardown in mutmut's own
+        hook.  The run stops at its first attempt, red, and the record and
+        the summary name the exception and the engine's frame."""
+        log = tmp_path / "night.log"
+        log.write_text(NIGHT_LOG, encoding="utf-8")
+        monkeypatch.setenv("FAKE_RUN_LOG", str(log))
+        code, record, calls = _main(repo, tmp_path, "    vera.m.x_kept__mutmut_1: not checked\n")
+        assert (record["dropped_tests"], len([c for c in calls if c["args"][0] == "run"])) == ([], 1)
+        assert code == 2 and record["stopped"] == "engine" and record["engine_error"] == NIGHT_ERROR
+        summary = (tmp_path / "summary.md").read_text(encoding="utf-8")
+        assert f"Stopped by the engine: `{NIGHT_ERROR}`." in summary
+        assert "Dropped from the oracle" not in summary
+
+    def test_an_engine_failure_after_a_drop_keeps_the_drop_and_claims_no_other(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A test fails in its own body on the first attempt and is dropped;
+        the second attempt meets the night's engine failure.  The record keeps
+        the drop beside the error, and the summary claims nothing the drop
+        contradicts."""
+        body, night = tmp_path / "body.log", tmp_path / "night.log"
+        body.write_text(BODY_FAILURE_LOG, encoding="utf-8")
+        night.write_text(NIGHT_LOG, encoding="utf-8")
+        monkeypatch.setenv("FAKE_RUN_LOG", str(body))
+        monkeypatch.setenv("FAKE_RUN_LOG_AFTER", f"tests/test_m.py::test_g|{night}")
+        code, record, calls = _main(repo, tmp_path, "    vera.m.x_kept__mutmut_1: not checked\n")
+        assert (record["dropped_tests"], len([c for c in calls if c["args"][0] == "run"])) == (
+            ["tests/test_m.py::test_g"], 2)
+        assert code == 2 and record["stopped"] == "engine" and record["engine_error"] == NIGHT_ERROR
+        summary = (tmp_path / "summary.md").read_text(encoding="utf-8")
+        assert f"Stopped by the engine: `{NIGHT_ERROR}`." in summary
+        assert "Dropped from the oracle" in summary and "- `tests/test_m.py::test_g`" in summary
+        assert "no test was dropped" not in summary
+
     def test_a_hung_results_call_stops_the_run_short(
         self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -2280,12 +2943,34 @@ class TestWorkflow:
         (job,) = self._wf()["jobs"].values()
         return job
 
-    def test_it_runs_on_a_pull_request_that_changes_the_compiler_or_the_lane(self) -> None:
+    def test_it_runs_on_a_pull_request_that_changes_the_compiler_the_engine_or_either_lane(self) -> None:
+        """The compiler, the lock that names the engine, and each lane's
+        workflow, script and self-tests: a lock bump that breaks the engine
+        is red on its own pull request, before any night runs on it."""
         on = self._wf()[True]  # YAML 1.1 reads the bare key `on` as True
         assert set(on) == {"pull_request"}
         assert on["pull_request"]["paths"] == [
-            "vera/**/*.py", "scripts/mutate_diff.py", "tests/test_mutate_diff.py",
-            ".github/workflows/mutation-diff.yml"]
+            "vera/**/*.py", "uv.lock",
+            "scripts/mutate_diff.py", "scripts/mutate_sweep.py", "scripts/mutation_report.py",
+            "tests/mutation_oracle.py", "tests/test_mutate_diff.py", "tests/test_mutate_sweep.py",
+            ".github/workflows/mutation-diff.yml", ".github/workflows/mutation-nightly.yml"]
+
+    def test_every_script_a_lane_loads_is_in_the_filter(self) -> None:
+        """A lane's scripts and every sibling script they import, as
+        ``scripts/mutate_sweep.py`` imports ``scripts/mutation_report.py`` at
+        load (the stitch writes the badge with it)."""
+        paths = set(self._wf()[True]["pull_request"]["paths"])
+        loaded: set[str] = set()
+        todo = ["scripts/mutate_diff.py", "scripts/mutate_sweep.py"]
+        while todo:
+            script = todo.pop()
+            if script not in loaded:
+                loaded.add(script)
+                text = (ROOT / script).read_text(encoding="utf-8")
+                todo += [f"scripts/{name}.py" for name in re.findall(r"^(?:from|import) (\w+)", text, re.M)
+                         if (ROOT / "scripts" / f"{name}.py").exists()]
+        assert "scripts/mutation_report.py" in loaded
+        assert loaded <= paths, sorted(loaded - paths)
 
     def test_it_reads_the_repository_and_nothing_more(self) -> None:
         assert self._wf()["permissions"] == {"contents": "read"}
@@ -2313,13 +2998,19 @@ class TestWorkflow:
                 name, _, pin = step["uses"].partition("@")
                 assert pin in pins.get(name, set()), step["uses"]
 
-    def test_it_runs_python_312_and_the_mutation_extra(self) -> None:
+    def test_it_runs_python_312_and_both_lanes_self_tests_before_the_script(self) -> None:
+        """The install is uv.lock's (``test_mutate_sweep.py``'s
+        ``test_the_engine_installed_is_uv_locks`` holds both lanes to it);
+        here the self-tests of both lanes run against it, as the nightly's
+        do, before the script."""
         steps = self._job()["steps"]
         (setup,) = [s for s in steps if str(s.get("uses", "")).startswith("actions/setup-python@")]
         assert setup["with"]["python-version"] == "3.12"
-        runs = [s.get("run", "") for s in steps]
-        assert any('pip install -e ".[mutation]"' in r for r in runs)
-        assert any("pytest tests/test_mutate_diff.py" in r for r in runs)
+        names = [s.get("name") for s in steps]
+        (test,) = [s for s in steps if s.get("name") == "Test the lane against the engine it installs"]
+        assert test["run"] == "pytest tests/test_mutate_sweep.py tests/test_mutate_diff.py -q"
+        assert names.index("Install dependencies") < names.index(test["name"]) < names.index(
+            "Mutate the functions this pull request changes")
 
     def test_the_script_runs_against_the_merge_base_inside_its_budget(self) -> None:
         job = self._job()

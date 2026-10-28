@@ -11,6 +11,12 @@ name: Mutation (diff)
 # script's exit status.  It is not a required check: branch protection's
 # required list is the maintainer's, synced by hand.
 #
+# It also runs on a pull request that moves uv.lock, which names the engine
+# both mutation lanes install, or either lane's own workflow, script or
+# self-tests: the job runs both lanes' self-tests against the engine it
+# installs, so a lock bump that breaks the engine is red on its own pull
+# request, before any night runs on it.
+#
 # `pull_request`, not `pull_request_target`: a fork's pull request runs
 # with a read-only token and no secrets.  The job reads the repository and
 # writes nothing back; every context value reaches the shell through `env`.
@@ -20,9 +26,15 @@ on:
     branches: [main]
     paths:
       - "vera/**/*.py"
+      - "uv.lock"
       - "scripts/mutate_diff.py"
+      - "scripts/mutate_sweep.py"
+      - "scripts/mutation_report.py"
+      - "tests/mutation_oracle.py"
       - "tests/test_mutate_diff.py"
+      - "tests/test_mutate_sweep.py"
       - ".github/workflows/mutation-diff.yml"
+      - ".github/workflows/mutation-nightly.yml"
 
 permissions:
   contents: read
@@ -38,8 +50,8 @@ jobs:
     permissions:
       contents: read
     runs-on: ubuntu-latest
-    # The script's budget (--budget, 40 min) plus installing the extra,
-    # the lane's own tests and the scratch tree.
+    # The script's budget (--budget, 40 min) plus installing the lock, both
+    # lanes' self-tests and the scratch tree.
     timeout-minutes: 55
     steps:
       # The pull request's head, with the history that holds its merge base.
@@ -54,14 +66,22 @@ jobs:
         with:
           python-version: "3.12"
 
+      # The engine is uv.lock's, as the nightly sweep's is: `--locked`
+      # refuses a lock that pyproject.toml has moved past rather than
+      # resolving afresh.  Every later step runs the synced environment's
+      # python, pytest and mutmut.
       - name: Install dependencies
-        run: pip install -e ".[mutation]"
+        run: |
+          pip install "uv>=0.5,<2"
+          uv sync --locked --extra mutation --python 3.12
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
 
       # The tests that need mutmut itself (its status table, its generator
-      # honouring the narrowing pragma) skip in the shards, which install
-      # [dev] alone; here the engine is installed, so they run.
+      # honouring the narrowing pragma, a night end to end) skip in the
+      # shards, which install [dev] alone; here the engine is installed, so
+      # they run, both lanes' as the nightly sweep runs them.
       - name: Test the lane against the engine it installs
-        run: pytest tests/test_mutate_diff.py -q
+        run: pytest tests/test_mutate_sweep.py tests/test_mutate_diff.py -q
 
       - name: Mutate the functions this pull request changes
         env:
