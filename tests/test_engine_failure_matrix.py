@@ -40,6 +40,11 @@ exception and the engine's frame named) or the test's (the test dropped,
 and the run goes again; an internal error names no test, so the run stops
 there, as at base).
 
+In every cell a third party's deciding frame lies under the copy's frame or
+under another third party's; one directly under the engine's own, as when a
+hook of mutmut's calls pytest and pytest raises in its own frame, is the
+test's by the rule as stated, and the matrix does not span that coordinate.
+
 Two products are not cells, since pytest prints neither log (pytest 9.2.0,
 measured): an internal error with captured output in any placement, because
 pytest ends the session at the internal error and prints no report and no

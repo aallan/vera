@@ -24,7 +24,7 @@ That hazard is real whenever you mutate by hand instead: when validating a test 
 
 ```bash
 pip install -e ".[mutation]"   # pulls [dev] + mutmut + pytest-timeout
-uv sync --extra mutation       # the same, at uv.lock's versions, as both CI lanes install it
+uv sync --locked --extra mutation --python 3.12   # the same, at uv.lock's versions, as both CI lanes install it
 ```
 
 Config lives in `[tool.mutmut]` in `pyproject.toml`. (Avoid `setup.cfg` — its list values split on **newlines**, not spaces, so `a.py b.py` becomes one bogus path. TOML arrays are unambiguous.)
