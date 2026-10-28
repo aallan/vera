@@ -2293,7 +2293,8 @@ window_file = os.environ.get("MUTATE_DIFF_WINDOW")
 window = json.loads(Path(window_file).read_text(encoding="utf-8")) if window_file else None
 with log.open("a", encoding="utf-8") as fh:
     fh.write(json.dumps({"cwd": os.getcwd(), "args": args, "window": window,
-                         "git_dir": os.environ.get("GIT_DIR")}) + "\\n")
+                         "git_dir": os.environ.get("GIT_DIR"),
+                         "columns": os.environ.get("COLUMNS")}) + "\\n")
 if args[0] == "run" and window is not None and not os.environ.get("FAKE_NO_WINDOW"):
     # As the engine launcher does: each unit's mutants on every line and in
     # the window, here the mutants results.txt lists for it unless the test
@@ -2512,6 +2513,17 @@ class TestEndToEnd:
         assert run["window"]["lines"] == {"vera/m.py": [1, 2]} and run["window"]["context"] == 2
         assert all(c["window"] is None for c in calls if c["args"][0] != "run")
         assert record["window"]["lines"] == {"vera/m.py": [1, 2]}
+
+    def test_the_engine_is_handed_eighty_columns_whatever_the_lanes_terminal(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """pytest draws its rules the terminal's width, and engine_failure
+        knows a rule by that width: a narrow terminal's COLUMNS stops here."""
+        monkeypatch.setenv("COLUMNS", "60")
+        code, record, calls = _main(repo, tmp_path, "    vera.m.x_kept__mutmut_1: killed\n")
+        assert code == 0
+        (run,) = [c for c in calls if c["args"][0] == "run"]
+        assert run["columns"] == "80"
 
     def test_a_one_line_edit_in_a_long_function_hands_the_engine_its_lines(
         self, tmp_path: Path,

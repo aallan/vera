@@ -704,6 +704,7 @@ MARKED_FILES = (
     "test_diagnostic_codes_1490.py",
     "test_declared_by_the_emitter_1744.py",
     "test_fits_one_variable_one_type_1684.py",
+    "test_engine_failure_matrix.py",
 )
 UNMARKED_FILES = (
     "test_obligations.py",

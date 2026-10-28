@@ -710,6 +710,7 @@ def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: li
     head = md._git(repo, "rev-parse", "--verify", "HEAD^{commit}").strip()
     env = md._git_env()
     env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env["COLUMNS"] = "80"  # the width md.engine_failure reads pytest's rules at
     skips = workdir / "oracle-skips.txt"
     env["MUTATION_ORACLE_SKIPS"] = str(skips)
     version = md._engine_version(engine, env)

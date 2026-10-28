@@ -1027,7 +1027,7 @@ from pathlib import Path
 state = Path(os.environ["FAKE_STATE"])
 args = sys.argv[1:]
 with (state / "calls.jsonl").open("a", encoding="utf-8") as fh:
-    fh.write(json.dumps({"cwd": os.getcwd(), "args": args}) + "\\n")
+    fh.write(json.dumps({"cwd": os.getcwd(), "args": args, "columns": os.environ.get("COLUMNS")}) + "\\n")
 if args[0] == "--version":
     print("mutmut, version 3.8.0")
     sys.exit(0)
@@ -1175,6 +1175,18 @@ class TestEndToEnd:
             "    vera.m.x_f__mutmut_1: killed\n    vera.m.x_g__mutmut_1: killed\n"))
         assert code == 0 and record["dropped_tests"] == ["tests/test_m.py::test_f"]
         assert len([c for c in calls if c["args"][0] == "run"]) == 2
+
+    def test_the_engine_is_handed_eighty_columns_whatever_the_nights_terminal(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """pytest draws its rules the terminal's width, and the slice's
+        engine_failure knows a rule by that width."""
+        monkeypatch.setenv("COLUMNS", "60")
+        code, record, calls = _night(repo, tmp_path, 1, (
+            "    vera.m.x_f__mutmut_1: killed\n    vera.m.x_g__mutmut_1: killed\n"))
+        assert code == 0
+        (run,) = [c for c in calls if c["args"][0] == "run"]
+        assert run["columns"] == "80"
 
     def test_the_engines_own_failure_stops_the_slice_names_it_and_drops_no_test(
         self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,

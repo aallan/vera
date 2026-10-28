@@ -1379,8 +1379,9 @@ pytestmark = pytest.mark.matrix(decides=["vera/narrowing.py"])
 
 The nightly lane, the push of a release merge and the coverage job run every
 marked cell (`--matrix=full`), and so does any pull request that changes the
-file or a module it names: CI's `plan` job lists the files under `vera/` and
-the `tests/test_*.py` files the pull request changes since its merge base,
+file or a module it names: CI's `plan` job lists the files under `vera/`,
+the `tests/test_*.py` files and `scripts/mutate_diff.py`, the one script a
+matrix decides on, that the pull request changes since its merge base,
 and the shards and the test matrix hand that list to the suite as `VERA_MATRIX_CHANGED`
 (one path per line).  Every other pull request runs a stratified sample of
 the file (`tests/matrix_sample.py`), pinned for a week: a cell is chosen by a

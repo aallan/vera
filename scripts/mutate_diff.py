@@ -228,11 +228,11 @@ _INTERNAL_ERROR = "INTERNALERROR> "
 
 #: pytest's rule, heading a section or a report of its output: a title
 #: between runs of one fill character, drawn the terminal's width (80 in
-#: mutmut's copy, which runs with no terminal; one less on Windows), the fill
-#: as short as one character either side of a long title.  A line the
-#: program printed in that shape, but shorter, is no rule.  The rule that
-#: heads what a test printed or logged (``Captured stderr call``) starts a
-#: section that runs to the next rule.
+#: mutmut's copy, where both lanes hand the engine ``COLUMNS=80``; one less
+#: on Windows), the fill as short as one character either side of a long
+#: title.  A line the program printed in that shape, but shorter, is no
+#: rule.  The rule that heads what a test printed or logged (``Captured
+#: stderr call``) starts a section that runs to the next rule.
 _RULE = re.compile(r"^([-_=])\1* .+ \1+$")
 _RULE_WIDTH = 79
 _CAPTURED = re.compile(r"^-+ Captured .+ -+$")
@@ -1522,6 +1522,8 @@ def _lane(args: argparse.Namespace, repo: Path, workdir: Path, engine: list[str]
     # not inherit a hook's GIT_DIR.
     env = _git_env()
     env["PYTHONDONTWRITEBYTECODE"] = "1"
+    # pytest draws its rules the terminal's width, which engine_failure reads.
+    env["COLUMNS"] = "80"
     # tests/mutation_oracle.py, which [tool.mutmut] loads, appends here each
     # test it keeps out of the oracle for starting a Python or vera process.
     skips = workdir / "oracle-skips.txt"
