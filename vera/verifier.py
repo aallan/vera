@@ -30,12 +30,8 @@ from typing import TypeVar as _TypeVar
 
 from vera import ast, binders, carriers, fold, narrowing, naming
 from vera.callgraph import CallGraph, computation_calls
-from vera.environment import ConstructorInfo, FunctionInfo, TypeEnv
-from vera.registration import NamespaceAliases
-from vera.monomorphize import (
-    Monomorphizer,
-    collect_nested_generic_decls,
-)
+from vera.environment import AdtInfo, ConstructorInfo, FunctionInfo, TypeEnv
+from vera.monomorphize import collect_nested_generic_decls
 from vera.binding import DeclId, Linked
 
 if TYPE_CHECKING:
@@ -59,6 +55,7 @@ from vera.naming import (
 )
 from vera.builtin_domains import BUILTIN_DOMAINS, domain_contract
 from vera.slots import (
+    fn_scopes,
     fn_slot_scope,
     substitute_parameters,
 )
@@ -568,6 +565,40 @@ def _with_linked_predicates(ty: Type, twins: Mapping[int, ast.Node]) -> Type:
     return ty
 
 
+def construction_type(typed: TypedProgram, expr: ast.Expr) -> Type | None:
+    """The type the construction *expr*, a node of *typed*'s program as
+    written, is modelled at in an SMT context no verifier drives (the
+    tester's input generator, #1525): the checker's type of it, a type
+    variable left in it at the type its position fixes, else at `Int`, as
+    :meth:`ContractVerifier._constructed_type_of` models a construction of
+    the program it verifies.  ``None`` for a node the check did not type."""
+    own = typed.semantic_type(expr)
+    if own is None:
+        return None
+    return _modelled_type(base_type(own), typed.target_type(expr))
+
+
+def _modelled_type(own: Type, target: Type | None) -> Type:
+    """*own*, the checker's type of a construction, with each type variable
+    left in it at the type *target*, the type of the construction's
+    position, gives that place, or at `Int` where it gives none
+    (:meth:`ContractVerifier._constructed_type_of`)."""
+    if isinstance(own, TypeVar):
+        fixed = base_type(target) if target is not None else None
+        if fixed is not None and not contains_typevar(fixed):
+            return fixed
+        return INT
+    if isinstance(own, AdtType) and own.type_args:
+        fixed = base_type(target) if target is not None else None
+        if not (isinstance(fixed, AdtType) and fixed.name == own.name
+                and len(fixed.type_args) == len(own.type_args)):
+            fixed = None
+        return AdtType(own.name, tuple(
+            _modelled_type(arg, fixed.type_args[i] if fixed else None)
+            for i, arg in enumerate(own.type_args)))
+    return own
+
+
 def _calls_in(node: object) -> Iterator[ast.Node]:
     """Every call node under *node* — the ones whose precondition the SMT
     layer checks as it translates them."""
@@ -1073,9 +1104,6 @@ class ContractVerifier:
         # type, an instantiation or a clone from.
         self._typed = typed
         self.env = TypeEnv()
-        # #1552: the aliases this namespace declares, read by THE ALIAS RULE
-        # as the checker reads them; `_register_all` sets the namespace's.
-        self._ns_aliases = NamespaceAliases(self)
         self.errors: list[Diagnostic] = []
         # #222 Phase A: reified obligations in discharge order.
         self.obligations: list[ProofObligation] = []
@@ -1288,6 +1316,10 @@ class ContractVerifier:
         # — this is a flat fallback registry consulted only after the local
         # constructor lookups.
         self._module_constructors: dict[str, ConstructorInfo] = {}
+        # #1525: every data type each module declares, under its link name,
+        # for the SMT registry: a construction of an imported type is a term
+        # of the sort its checked type has, as a local one is.
+        self._module_data_types: dict[str, AdtInfo] = {}
         # #747/#1679: the checker's type and target of every expression by
         # node identity (`TypedProgram.semantic` / `.target`): the entry's
         # nodes, a module's and a clone's, which identity tells apart.
@@ -1346,6 +1378,9 @@ class ContractVerifier:
         # (`Option<Nat>`) — without it, `is_some_g<Nat>` matching `Some(@T)`
         # E503'd with the impossible counterexample `Some(-1)`.
         self._instance_subst: dict[str, Type] | None = None
+        # #1767: every function the program writes, by identity, with the
+        # type parameters in scope over it (`_parameter_slots`).
+        self._source_fns: dict[int, tuple[ast.FnDecl, tuple[str, ...]]] | None = None
         # The nat-binding walker's handled-effect context: effect NAMES
         # of the `handle[...]` expressions enclosing the current walk
         # position, innermost last.  The bare-`put` side-table fallback
@@ -1381,6 +1416,19 @@ class ContractVerifier:
         key = expr.node_id
         ty = self._expr_target_types.get(key) if key is not None else None
         return self._substitute_instance(self._linked_type(ty))
+
+    def _constructed_type_of(self, expr: ast.Expr) -> Type | None:
+        """The type the construction *expr* is modelled at (#1525): the type
+        the checker gave it, a type variable left in it at the type its
+        position fixes there (its target, a `let`'s or a formal's), else at
+        `Int`, as a value of a type variable is declared: `None`'s `T` where
+        nothing fixes it, a generic template's own in
+        :meth:`_check_generic_refined_return`.  The SMT layer's sort for it
+        is this type's (`SmtContext._constructed_sort`)."""
+        own = self._resolved_type_of(expr)
+        if own is None:
+            return None
+        return _modelled_type(base_type(own), self._target_type_of(expr))
 
     def _linked_type(self, ty: Type | None) -> Type | None:
         """*ty*, a type the checker recorded over the program as written,
@@ -1799,10 +1847,12 @@ class ContractVerifier:
     # -----------------------------------------------------------------
 
     def _register_all(self, program: ast.Program) -> None:
-        """Register all declarations (lightweight pass for forward refs)."""
-        # #1552: an alias declared further down is resolved where a type
-        # expression of this pass names it, by the checker's rule.
-        self._ns_aliases = NamespaceAliases.of_program(self, program)
+        """Register all declarations (lightweight pass for forward refs).
+
+        Every type a declaration writes is read off the typed program
+        (:meth:`_written_type`), so the order the declarations come in
+        decides nothing: an alias declared further down is the type the
+        checker resolved it to (#1552)."""
         for tld in program.declarations:
             decl = tld.decl
             if isinstance(decl, ast.FnDecl):
@@ -1823,7 +1873,7 @@ class ContractVerifier:
         from vera.registration import register_fn
         register_fn(
             self.env, decl,
-            self._resolve_type, self._resolve_effect_row,
+            self._written_type, self._resolve_effect_row,
             visibility=visibility,
         )
 
@@ -1847,7 +1897,7 @@ class ContractVerifier:
             from vera.registration import build_fn_info
             info = build_fn_info(
                 self.env, decl,
-                self._resolve_type, self._resolve_effect_row,
+                self._written_type, self._resolve_effect_row,
                 visibility=visibility,
             )
             self._scoped_fn_info_cache[key] = info
@@ -1879,21 +1929,15 @@ class ContractVerifier:
 
     def _register_data(self, decl: ast.DataDecl) -> None:
         """Register an ADT with constructor info for SMT translation."""
-        from vera.environment import AdtInfo, ConstructorInfo
         # #1208: same shared declaration-index stamp as the checker's
         # registration pass, allocated before anything resolves.
         decl_index = self.env.next_decl_index()
-        # Set up type params for resolving constructor field types
-        saved_params = dict(self.env.type_params)
-        if decl.type_params:
-            for tv in decl.type_params:
-                self.env.type_params[tv] = TypeVar(tv)
         ctors: dict[str, ConstructorInfo] = {}
         for ctor in decl.constructors:
             field_types = None
             if ctor.fields is not None:
                 field_types = tuple(
-                    self._resolve_type(f) for f in ctor.fields)
+                    self._written_type(f) for f in ctor.fields)
             ctors[ctor.name] = ConstructorInfo(
                 name=ctor.name,
                 parent_type=decl.name,
@@ -1906,7 +1950,6 @@ class ContractVerifier:
             constructors=ctors,
             decl_index=decl_index,
         )
-        self.env.type_params = saved_params
 
     def _register_effect(self, decl: ast.EffectDecl) -> None:
         """Register an effect declaration.
@@ -1918,15 +1961,11 @@ class ContractVerifier:
         ``IO.sleep`` (#552 / PR #748 review).
         """
         from vera.environment import EffectInfo, OpInfo
-        saved_params = dict(self.env.type_params)
-        if decl.type_params:
-            for tv in decl.type_params:
-                self.env.type_params[tv] = TypeVar(tv)
         ops: dict[str, OpInfo] = {}
         for op in decl.operations:
             param_types = tuple(
-                self._resolve_type(p) for p in op.param_types)
-            ret_type = self._resolve_type(op.return_type)
+                self._written_type(p) for p in op.param_types)
+            ret_type = self._written_type(op.return_type)
             ops[op.name] = OpInfo(op.name, param_types, ret_type,
                                   decl.name)
         self.env.effects[decl.name] = EffectInfo(
@@ -1934,31 +1973,18 @@ class ContractVerifier:
             type_params=decl.type_params,
             operations=ops,
         )
-        self.env.type_params = saved_params
 
     def _register_alias(self, decl: ast.TypeAliasDecl) -> None:
-        """Register a type alias.
-
-        A parameterised alias's own type parameters are bound as TYPE VARIABLES
-        for the resolution of its body, exactly as :meth:`_register_data` binds
-        an ADT's and as the checker's ``_register_alias`` does (#1237).  Without
-        it ``type Box<T> = T;`` fell through ``_resolve_type``'s unknown-name
-        fallback and registered ``AdtType('T')`` — the binder wearing an ADT's
-        name — which no substitution can eliminate, since
-        :func:`~vera.types.substitute` maps type variables.  Every application
-        of the alias then resolved to that phantom ADT, and a refinement over
-        it failed the modelled-primitive gate: the refined-return fact was
-        dropped and a valid program rejected with a spurious E501.
-        """
+        """Register a type alias, at the type the checker resolved its body
+        to: a parameterised alias's own parameters are type variables in it
+        (#1237), and an alias its body names is resolved whatever order the
+        two are declared in (#1552)."""
         from vera.environment import TypeAliasInfo
         decl_index = self.env.next_decl_index()
-        # #1552: resolved by THE ALIAS RULE, as the checker resolves it, or
-        # already, when a declaration above this one named it.
-        resolved = self._ns_aliases.resolve_decl(decl).resolved_type
         self.env.type_aliases[decl.name] = TypeAliasInfo(
             name=decl.name,
             type_params=decl.type_params,
-            resolved_type=resolved,
+            resolved_type=self._written_type(decl.type_expr),
             body=decl.type_expr,
             decl_index=decl_index,
         )
@@ -1966,15 +1992,11 @@ class ContractVerifier:
     def _register_ability(self, decl: ast.AbilityDecl) -> None:
         """Register an ability declaration."""
         from vera.environment import AbilityInfo, OpInfo
-        saved_params = dict(self.env.type_params)
-        if decl.type_params:
-            for tv in decl.type_params:
-                self.env.type_params[tv] = TypeVar(tv)
         ops: dict[str, OpInfo] = {}
         for op in decl.operations:
             param_types = tuple(
-                self._resolve_type(p) for p in op.param_types)
-            ret_type = self._resolve_type(op.return_type)
+                self._written_type(p) for p in op.param_types)
+            ret_type = self._written_type(op.return_type)
             ops[op.name] = OpInfo(op.name, param_types, ret_type,
                                   decl.name)
         self.env.abilities[decl.name] = AbilityInfo(
@@ -1982,7 +2004,6 @@ class ContractVerifier:
             type_params=decl.type_params,
             operations=ops,
         )
-        self.env.type_params = saved_params
 
     # -----------------------------------------------------------------
     # Cross-module registration (C7d)
@@ -2005,6 +2026,11 @@ class ContractVerifier:
         builtin_fn_names = set(TypeEnv().functions)
         for mod in self._resolved_modules:
             temp = ContractVerifier(self._typed, source=mod.source)
+            # #1694: a type the module declares reads its refinement
+            # predicates as the linked program's nodes, as this verifier's
+            # do, so a call in one names the declaration its module binds
+            # it to, not a same-named function of the importer.
+            temp._linked_twins = self._linked_twins
             temp._register_all(mod.program)
             # #1208: this module's naming environment, from the same
             # registration its contracts are harvested from: the env every
@@ -2036,6 +2062,7 @@ class ContractVerifier:
             }
             for adt_name, adt in temp.env.data_types.items():
                 if adt_name in own_types:
+                    self._module_data_types.setdefault(adt_name, adt)
                     for ctor_name, ctor_info in adt.constructors.items():
                         self._module_constructors.setdefault(
                             ctor_name, ctor_info)
@@ -2222,12 +2249,12 @@ class ContractVerifier:
         # it calls, at its instantiation.  Stateless (reads the typed
         # program), so safe on the warm (shared) smt too.
         smt._generic_callee_hook = self._generic_callee_info
-        # #994 F1: let the SMT nullary-ctor translation resolve a bare tag's
-        # exact instantiation from the checker's recorded (instance-substituted)
-        # semantic type, instead of the ambiguous base-name scan that crashed Z3
-        # on `Some(None) == None` / `!= None`.  Stateless (reads the live
-        # `_instance_subst` per clone), so safe on the warm (shared) smt too.
+        # #1525: a construction is a term of the sort of the type the checker
+        # gave it, and an opaque stand-in of its recorded type's.  Stateless
+        # (reads the live `_instance_subst` per clone), so safe on the warm
+        # (shared) smt too.
         smt._recorded_type_hook = self._resolved_type_of
+        smt._constructed_type_hook = self._constructed_type_of
         # J1: and let the SORT derivation ask whether a refinement's whole
         # predicate can be stated, so a refinement it cannot state is not
         # modelled rather than modelled without its meaning.  The chain walk
@@ -2242,12 +2269,19 @@ class ContractVerifier:
         # #1480 review: and let the SMT `match` translation bind an arm's
         # guarded refined binders the way the walks do (`_enter_match_arm`).
         smt._guarded_binder_hook = self._guarded_binder_values
-        # Register all known ADTs with the SMT context.  Idempotent on
-        # the warm path (same AdtInfo re-registered into the persistent
-        # registry); kept per-function so cold and warm stay identical.
-        for adt_info in self.env.data_types.values():
+        # Register all known ADTs with the SMT context, each module's too
+        # (#1525).  Idempotent on the warm path (same AdtInfo re-registered
+        # into the persistent registry); kept per-function so cold and warm
+        # stay identical.
+        for adt_info in self._program_data_types():
             smt.register_adt(adt_info)
         return smt
+
+    def _program_data_types(self) -> Iterator[AdtInfo]:
+        """Every data type the program declares: this namespace's, and each
+        module's under its link name."""
+        yield from self.env.data_types.values()
+        yield from self._module_data_types.values()
 
     def _bind_smt_scope(self, smt: SmtContext, scope: CalleeScope) -> None:
         """Hand *smt* the scope the declaration under verification is read in.
@@ -2498,68 +2532,26 @@ class ContractVerifier:
         return None
 
     # -----------------------------------------------------------------
-    # Type resolution (simplified — reuses TypeEnv patterns)
+    # The types the program writes, read off the typed program (#1525)
     # -----------------------------------------------------------------
 
-    def _resolve_type(self, te: ast.TypeExpr) -> Type:
-        """Resolve a type expression to a semantic Type."""
-        if isinstance(te, ast.NamedType):
-            # Check type params first
-            if te.name in self.env.type_params:
-                return self.env.type_params[te.name]
-            # Check type aliases: any of this namespace's, wherever it is
-            # declared, by THE ALIAS RULE (#1552).
-            alias = self._ns_aliases.lookup(te.name)
-            if alias is not None:
-                # An APPLICATION substitutes its arguments into the alias's
-                # body (#1237) — the same rule the checker applies in
-                # `vera/checker/resolution.py::_resolve_named_type` (#660), and
-                # the same substitute-before-you-ask-what-a-type-is discipline
-                # `vera.naming` applies on the naming side.  Ignoring
-                # `te.type_args` handed back the alias's registered body with
-                # its own parameters still in it, so `Box<Cnt>` under
-                # `type Box<T> = T;` resolved to `T` rather than to `Nat`.  The
-                # arguments resolve HERE (in the use site's scope) before they
-                # are substituted, so an argument that is itself an application
-                # is already fully resolved when it lands in the body.  Arity is
-                # the CHECKER's error (E133) and a mismatch cannot reach a
-                # verified program; `zip` truncating on one would substitute a
-                # prefix, which is the pre-#1237 behaviour for the un-mapped
-                # tail and no worse.
-                if te.type_args and alias.type_params:
-                    alias_args = tuple(
-                        self._resolve_type(a) for a in te.type_args
-                    )
-                    return substitute(
-                        alias.resolved_type,
-                        dict(zip(alias.type_params, alias_args)),
-                    )
-                return alias.resolved_type
-            # Check ADTs
-            if te.name in self.env.data_types:
-                args: tuple[Type, ...] = ()
-                if te.type_args:
-                    args = tuple(self._resolve_type(a) for a in te.type_args)
-                return AdtType(te.name, args)
-            # Check primitives
-            from vera.types import PRIMITIVES
-            if te.name in PRIMITIVES:
-                return PRIMITIVES[te.name]
-            # Unknown — treat as opaque but preserve type args
-            return AdtType(te.name, tuple(
-                self._resolve_type(a) for a in te.type_args
-            ) if te.type_args else ())
+    def _written_type(self, te: ast.TypeExpr) -> Type:
+        """The type the type expression *te* resolves to, as the checker
+        resolved it (#1525): the typed program's entry for *te*'s identity,
+        a clone's under its instance's substitution (:func:`vera.typed.build`),
+        each refinement predicate in it read as the linked program's node.
 
-        if isinstance(te, ast.RefinementType):
-            base = self._resolve_type(te.base_type)
-            return RefinedType(base, te.predicate)
-
-        if isinstance(te, ast.FnType):
-            params = tuple(self._resolve_type(p) for p in te.params)
-            ret = self._resolve_type(te.return_type)
-            return FunctionType(params, ret, PureEffectRow())
-
-        return UNIT  # pragma: no cover
+        The verifier resolves no type of its own, so an alias, a type
+        parameter and a data type of another module are each the type the
+        program was checked against.  A type expression the check did not
+        type is a defect of the table, never a type to guess."""
+        ty = self._linked_type(self._typed.semantic_type(te))
+        if ty is None:
+            raise ValueError(
+                f"the type expression {ast.format_type_expr(te)!r} at "
+                f"{te.span} has no type in the typed program: the checker "
+                f"types every type expression the verifier reads (#1525)")
+        return ty
 
     def _resolve_effect_row(self, eff: ast.EffectRow) -> EffectRowType:
         """Resolve an effect row."""
@@ -2573,7 +2565,7 @@ class ContractVerifier:
                     continue
                 eff_args: tuple[Type, ...] = ()
                 if e.type_args:
-                    eff_args = tuple(self._resolve_type(a) for a in e.type_args)
+                    eff_args = tuple(self._written_type(a) for a in e.type_args)
                 effects.append(EffectInstance(e.name, eff_args))
             return ConcreteEffectRow(frozenset(effects))
         return PureEffectRow()  # pragma: no cover
@@ -2977,7 +2969,7 @@ class ContractVerifier:
         # `refinement_binder_parts`).
         base_key = naming.slot_name_or_none(node.base_type, env)
         binder_key = naming.predicate_binder_key(node.predicate, env)
-        base_ty = self._resolve_type(node.base_type)
+        base_ty = self._written_type(node.base_type)
         binder = self._declare_value(
             smt, f"@{binder_key or base_key or 'binder'}.0", base_ty)
         facts = self._declared_type_facts(smt, base_ty, binder)
@@ -3132,10 +3124,7 @@ class ContractVerifier:
             # under a @Nat binder, and E503s an impossible narrowing.
             saved_subst = self._instance_subst
             recorded: list[int] = []
-            self._instance_subst = {
-                tv: self._resolve_type(Monomorphizer._parse_type_name(cn))
-                for tv, cn in zip(decl.forall_vars, concrete)
-            }
+            self._instance_subst = dict(inst.sigma)
             try:
                 # forall_vars=None → normal path; the ancestor chain rides
                 # along so a nested generic's clone resolves helper calls
@@ -3548,7 +3537,7 @@ class ContractVerifier:
             # generic body otherwise skips SMT — catching e.g.
             # `forall<T> fn bad(@T -> @PosInt) { 0 }`.  The runtime guard covers
             # it on the monomorphised instance regardless.
-            generic_ret = self._resolve_type(decl.return_type)
+            generic_ret = self._written_type(decl.return_type)
             if (decl.body is not None
                     and self._is_refined_type(generic_ret)
                     and not contains_typevar(generic_ret)):
@@ -3584,17 +3573,20 @@ class ContractVerifier:
         # implicit `>= 0`.  Collected here (where each param's Z3 var is in
         # hand) and folded into `assumptions` below.
         refined_param_assumptions: list[object] = []
-        param_types = [self._resolve_type(p) for p in decl.params]
-        for i, (param_te, param_ty) in enumerate(zip(decl.params, param_types)):
+        param_types = [self._written_type(p) for p in decl.params]
+        # #1767: each constant is named by the slot reference the source
+        # binds the parameter to, which a counterexample shows.
+        slot_refs = self._parameter_slots(decl, fn_env)
+        for param_te, param_ty, z3_name in zip(
+                decl.params, param_types, slot_refs, strict=True):
             type_name = self._type_expr_to_slot_name(param_te, fn_env)
-            z3_name = f"@{type_name}.{self._count_slots(slot_env, type_name)}"
             var = self._declare_value(smt, z3_name, param_ty)
             slot_env = slot_env.push(type_name, var)
             refined_param_assumptions.extend(
                 self._declared_type_facts(smt, param_ty, var))
 
         # 2. Declare result variable
-        ret_type = self._resolve_type(decl.return_type)
+        ret_type = self._written_type(decl.return_type)
         if self._is_nat_type(ret_type):
             result_var = smt.declare_nat("@result")
         elif self._is_bool_type(ret_type):
@@ -5242,7 +5234,7 @@ class ContractVerifier:
                     # component is (`_shadow_destructured_slots`).
                     val = self._fresh_slot_var(smt, stmt.type_expr)
                     if val is None:
-                        resolved = self._resolve_type(stmt.type_expr)
+                        resolved = self._written_type(stmt.type_expr)
                         if self._is_array_type(resolved):
                             val = self._declare_array_var(
                                 smt, smt._fresh_name("shadow"), resolved)
@@ -5451,7 +5443,7 @@ class ContractVerifier:
             else:
                 slot_val = self._fresh_slot_var(smt, te)
                 if slot_val is None:
-                    resolved = self._resolve_type(te)
+                    resolved = self._written_type(te)
                     if self._is_array_type(resolved):
                         slot_val = self._declare_array_var(
                             smt, smt._fresh_name("shadow"), resolved,
@@ -5809,7 +5801,7 @@ class ContractVerifier:
         """
         value = self._fresh_slot_var(smt, te)
         if value is None:
-            resolved = self._resolve_type(te)
+            resolved = self._written_type(te)
             if self._is_array_type(resolved):
                 value = self._declare_array_var(
                     smt, smt._fresh_name(prefix), resolved)
@@ -6825,7 +6817,7 @@ class ContractVerifier:
                         else:
                             slot_val = self._fresh_slot_var(smt, te)
                             if slot_val is None:
-                                resolved = self._resolve_type(te)
+                                resolved = self._written_type(te)
                                 if self._is_array_type(resolved):
                                     slot_val = self._declare_array_var(
                                         smt, smt._fresh_name("shadow"),
@@ -7125,10 +7117,9 @@ class ContractVerifier:
                 or len(eff.type_args) != 1
                 or expr.state is None):
             return
-        cell = self._resolve_type(eff.type_args[0])
-        declared = self._resolve_type(expr.state.type_expr)
-        if (cell is None or declared is None
-                or isinstance(cell, UnknownType)
+        cell = self._written_type(eff.type_args[0])
+        declared = self._written_type(expr.state.type_expr)
+        if (isinstance(cell, UnknownType)
                 or isinstance(declared, UnknownType)
                 or contains_typevar(cell)
                 or contains_typevar(declared)
@@ -7172,9 +7163,9 @@ class ContractVerifier:
         eff = expr.effect
         if (isinstance(eff, ast.EffectRef) and eff.name == "State"
                 and eff.type_args):
-            return self._resolve_type(eff.type_args[0])
+            return self._written_type(eff.type_args[0])
         if expr.state is not None:
-            return self._resolve_type(expr.state.type_expr)
+            return self._written_type(expr.state.type_expr)
         return None
 
     def _handler_op_payload_type(
@@ -7193,7 +7184,7 @@ class ContractVerifier:
         if not isinstance(eff, ast.EffectRef) or not eff.type_args:
             return None
         if (eff.name, clause.op_name) in (("Exn", "throw"), ("State", "put")):
-            return self._resolve_type(eff.type_args[0])
+            return self._written_type(eff.type_args[0])
         return None
 
     def _element_narrows(
@@ -7269,9 +7260,7 @@ class ContractVerifier:
             payload = self._handler_op_payload_type(expr, clause)
             if payload is None:
                 continue
-            binder = self._resolve_type(clause.params[0])
-            if binder is None:
-                continue
+            binder = self._written_type(clause.params[0])
             # The reason is spelled out at each call site rather than shared
             # through a local: `test_no_demotion_site_hardcodes_a_solver_reason`
             # reads these arguments structurally, and a bare Name is
@@ -7732,7 +7721,7 @@ class ContractVerifier:
         # SHALLOW-syntactic (opacity-forced, never Tier-1), while the body
         # ITSELF is walked separately below under the #779 fresh-scope
         # empty env.
-        resolved_ret = self._resolve_type(expr.return_type)
+        resolved_ret = self._written_type(expr.return_type)
         # #1032: a REFINED closure return — the return-side dual of the
         # #1024 formal narrowing at the apply_fn branch above.  Pre-fix
         # `fn(@Int -> @Pos) { @Int.0 }` returned -5 (or 0, which clears the
@@ -8038,7 +8027,7 @@ class ContractVerifier:
             yield stmt, _Path(block_assumptions, cur_env)
             if isinstance(stmt, ast.LetStmt):
                 # Site 1: `let @Nat = <Int>` / `let @Refined = <value>`.
-                let_ty = self._resolve_type(stmt.type_expr)
+                let_ty = self._written_type(stmt.type_expr)
                 # Refined-first: a refinement-over-@Nat let discharges its
                 # full predicate (`>= 0 && P`) rather than only `>= 0` via
                 # the nat path; a bare @Nat let stays on the nat path (R9).
@@ -8123,7 +8112,7 @@ class ContractVerifier:
                         and stmt.value.name == stmt.constructor):
                     lit_args = stmt.value.args
                     for te, sub in zip(stmt.type_bindings, lit_args):
-                        comp_ty = self._resolve_type(te)
+                        comp_ty = self._written_type(te)
                         # #746: a refined tuple component obligates its
                         # sub-expression against the predicate (refined-
                         # first, mirroring the let site).
@@ -8316,7 +8305,7 @@ class ContractVerifier:
                 # Site 4: top-level `match <value> { @Nat / @Refined -> }`.
                 arm_assumptions = list(path.facts)
                 if isinstance(match_arm.pattern, ast.BindingPattern):
-                    pat_ty = self._resolve_type(match_arm.pattern.type_expr)
+                    pat_ty = self._written_type(match_arm.pattern.type_expr)
                     # Refined-first (R9): a refinement-over-@Nat bind
                     # discharges its full predicate, not only `>= 0`.
                     if (self._is_refined_type(pat_ty)
@@ -8485,7 +8474,7 @@ class ContractVerifier:
             # env (slot-dependent updates record Tier-3; a
             # literal-negative is loud).
             upd_ty = (cell_ty if cell_ty is not None
-                      else self._resolve_type(
+                      else self._written_type(
                           clause.state_update[0]))
             written = _Path.fresh()
             self._obligate_binding_triple(
@@ -9148,7 +9137,7 @@ class ContractVerifier:
         """
         if value is None:
             return None
-        ty = self._resolve_type(te)
+        ty = self._written_type(te)
         if not self._refined_boundary_codegen_guardable(ty):
             return value
         pred = self._translate_refined_predicate(smt, ty, value)
@@ -9229,7 +9218,7 @@ class ContractVerifier:
             out[term.get_id()] = fresh
 
         if isinstance(pattern, ast.BindingPattern):
-            target = self._resolve_type(pattern.type_expr)
+            target = self._written_type(pattern.type_expr)
             if (self._is_refined_type(target)
                     and self._narrows_into_refined(scrutinee, target)):
                 bind_fresh(scrutinee_z3, target)
@@ -9268,7 +9257,7 @@ class ContractVerifier:
                 self._guarded_subpattern_values(
                     field_ty, term, sub, smt, bind_fresh)
             elif isinstance(sub, ast.BindingPattern):
-                target = self._resolve_type(sub.type_expr)
+                target = self._written_type(sub.type_expr)
                 if (self._is_refined_type(target)
                         and self._refined_field_narrows(target, field_ty)):
                     bind_fresh(term, target)
@@ -9288,7 +9277,7 @@ class ContractVerifier:
         SMT sort (the stale binding is then irrelevant to a `value >= 0`
         obligation anyway).
         """
-        resolved = self._resolve_type(te)
+        resolved = self._written_type(te)
         fresh = smt._fresh_name("destructure")
         result: object | None = None
         if self._is_nat_type(resolved):
@@ -10949,7 +10938,7 @@ class ContractVerifier:
         # resolution left reading the flat table where a lexical scope applies.
         self._bind_smt_scope(
             smt, CalleeScope(fn_env, self._scoped_fn_lookup(decl, enclosing)))
-        for adt_info in self.env.data_types.values():
+        for adt_info in self._program_data_types():
             smt.register_adt(adt_info)
         # CR PR-review: the generic refined-return fast path translates the body
         # too, so it needs the same sub-pattern source-fact hook as the main
@@ -10968,10 +10957,10 @@ class ContractVerifier:
         smt._call_binding_hook = self._call_binding_facts
         smt._call_result_facts_hook = self._call_result_facts
         smt._generic_callee_hook = self._generic_callee_info
-        # #994 F1: same recorded-type hint as the main path — a bare nullary
-        # ctor in this generic body's refined return must resolve its sort from
-        # the recorded type, not the ambiguous base-name scan.
+        # #1525: the same types as the main path, a construction's and an
+        # opaque stand-in's.
         smt._recorded_type_hook = self._resolved_type_of
+        smt._constructed_type_hook = self._constructed_type_of
         # J1: and let the SORT derivation ask whether a refinement's whole
         # predicate can be stated, so a refinement it cannot state is not
         # modelled rather than modelled without its meaning.  The chain walk
@@ -10988,10 +10977,10 @@ class ContractVerifier:
         smt._guarded_binder_hook = self._guarded_binder_values
         slot_env = SlotEnv()
         assumptions: list[object] = []
-        for param_te in decl.params:
-            param_ty = self._resolve_type(param_te)
+        slot_refs = self._parameter_slots(decl, fn_env)
+        for param_te, z3_name in zip(decl.params, slot_refs, strict=True):
+            param_ty = self._written_type(param_te)
             type_name = self._type_expr_to_slot_name(param_te, fn_env)
-            z3_name = f"@{type_name}.{self._count_slots(slot_env, type_name)}"
             if self._is_nat_type(param_ty):
                 var = smt.declare_nat(z3_name)
             elif self._is_bool_type(param_ty):
@@ -11930,7 +11919,7 @@ class ContractVerifier:
                 continue
             if not isinstance(sub_pat, ast.BindingPattern):
                 continue
-            target = self._resolve_type(sub_pat.type_expr)
+            target = self._written_type(sub_pat.type_expr)
             if (self._is_refined_type(target)
                     and self._refined_field_narrows(target, field_ty)):
                 self._check_refined_binding_obligation_term(
@@ -12063,7 +12052,7 @@ class ContractVerifier:
                 continue
             if not isinstance(sub_pat, ast.BindingPattern):
                 continue
-            target = self._resolve_type(sub_pat.type_expr)
+            target = self._written_type(sub_pat.type_expr)
             # Refined-first (#746, R9): a refined sub-pattern (incl. a
             # refinement over @Nat) discharges its full predicate against the
             # projected field, rather than only `>= 0` via the nat path.
@@ -12173,7 +12162,7 @@ class ContractVerifier:
                 continue
             if not isinstance(sub_pat, ast.BindingPattern):
                 continue
-            target = self._resolve_type(sub_pat.type_expr)
+            target = self._written_type(sub_pat.type_expr)
             if (self._is_refined_type(target)
                     and self._refined_field_narrows(target, field_ty)):
                 self._record_refined_bind_tier3(
@@ -12262,7 +12251,7 @@ class ContractVerifier:
         # refinement guard then refuses.
         declared_source: set[int] = set()
         for i, te in enumerate(stmt.type_bindings):
-            target = self._resolve_type(te)
+            target = self._written_type(te)
             sources = narrowing.component_sources(stmt.value, i, ctor_matches)
             if narrowing.all_sources_opaque(sources):
                 declared_source.add(i)
@@ -12341,54 +12330,24 @@ class ContractVerifier:
         ctor_name: str | None,
     ) -> bool | None:
         """The leaf oracle of the component readers (#1503): component
-        *index* of an opaque composite — a slot, a call — is a @Nat iff its
-        DECLARED type says so: *ctor_name*'s field *index*, instantiated
-        against the checker's resolved type of the leaf followed down its
-        ``path`` (:py:meth:`_declared_path_type`).  The reading codegen's
-        destructure and sub-pattern guards take of the same leaf.  ``None``
-        where the declaration does not say — no constructor, no such
-        field."""
+        *index* of an opaque composite (a slot, a call) is a `@Nat` iff its
+        DECLARED type says so, *ctor_name*'s field *index* at the checker's
+        type of the leaf followed down its ``path``
+        (:func:`vera.narrowing.declared_component_is_nat`, the rule code
+        generation's binder guards read too, #1525).  ``None`` where the
+        declaration does not say: no constructor, no such field."""
         if ctor_name is None:
             return None
-        fields = self._instantiated_field_types(
-            ctor_name, self._declared_path_type(leaf))
-        if fields is None or index >= len(fields):
-            return None
-        return self._is_nat_type(fields[index])
-
-    def _declared_path_type(
-        self, leaf: narrowing.ComponentSource,
-    ) -> Type | None:
-        """The declared type of the composite an opaque component source
-        names: its expression's resolved type, then each ``(constructor,
-        field)`` step of its ``path`` into that field's declared type,
-        instantiated against the type reached so far
-        (:py:meth:`_instantiated_field_types`).  A concrete field is a step
-        like any other — `O(I(@Int, @Int))` over a `data Outer { O(Inner) }`
-        reaches `Inner` — which is the walk code generation takes from the
-        same resolved type (``DataMixin._declared_path_type``).  ``None``
-        where a step cannot be followed."""
-        ty = self._resolved_type_of(leaf.expr)
-        for ctor_name, index in leaf.path:
-            fields = self._instantiated_field_types(ctor_name, ty)
-            if fields is None or index >= len(fields):
-                return None
-            ty = fields[index]
-        return ty
+        return narrowing.declared_component_is_nat(
+            leaf, index, ctor_name, self._resolved_type_of,
+            self._instantiated_field_types, self._is_nat_type)
 
     def _field_is_generic(self, ctor_name: str, index: int) -> bool:
         """Whether *ctor_name*'s field *index* takes its type from the
-        argument — a field declared as a bare type parameter, or any
-        component of the built-in `Tuple` carrier — rather than from a
-        declaration the construction enforces
-        (:func:`vera.narrowing.component_sources`)."""
-        if ctor_name == "Tuple":
-            return True
-        info = self._lookup_constructor_info(ctor_name)
-        if (info is None or info.field_types is None
-                or index >= len(info.field_types)):
-            return False
-        return isinstance(info.field_types[index], TypeVar)
+        argument (:func:`vera.narrowing.component_sources`): the typed
+        program's answer (``TypedProgram.field_is_generic``), the one code
+        generation's binder guards read (#1525)."""
+        return self._typed.field_is_generic(ctor_name, index)
 
     def _destructure_ctor_name(
         self, stmt: ast.LetDestruct, source_ty: Type | None,
@@ -13142,8 +13101,8 @@ class ContractVerifier:
         if isinstance(expr, ast.FnCall):
             fn = self._fn_in_scope(expr.name)
             if fn is not None:
-                # FunctionInfo.return_type is already a resolved Type
-                # (vera/environment.py:43), no need for _resolve_type.
+                # FunctionInfo.return_type is the type the checker
+                # resolved the declared return to (#1525).
                 return self._is_nat_type(fn.return_type)
             return False
         # UnaryExpr: negation always produces @Int.
@@ -13316,11 +13275,12 @@ class ContractVerifier:
             if "@result" in counterexample:
                 # #1208: named in the function's OWN scope, so a `forall<T>`
                 # return type reads `@T.result` as written rather than picking
-                # up a same-named module alias's resolution.
+                # up a same-named module alias's resolution; a clone's by its
+                # template's, as its parameters are (#1767).
+                source, source_env = self._written_source(
+                    fn, self._fn_naming_scope(self._current_alias_env, fn))
                 result_name = "@{}.result".format(self._type_expr_to_slot_name(
-                    fn.return_type,
-                    self._fn_naming_scope(self._current_alias_env, fn),
-                ))
+                    source.return_type, source_env))
                 ce_lines.append(f"    {result_name} = {counterexample['@result']}")
 
         ce_text = "\n  ".join(ce_lines) if ce_lines else ""
@@ -14236,11 +14196,68 @@ class ContractVerifier:
             or z3.is_fp_value(term)
         )
 
-    @staticmethod
-    def _count_slots(env: SlotEnv, type_name: str) -> int:
-        """Count how many slots exist for a type name."""
-        stack = env._stacks.get(type_name, [])
-        return len(stack)
+    def _parameter_slots(
+        self, decl: ast.FnDecl, env: AliasEnv,
+    ) -> list[str]:
+        """The slot reference the source binds each of *decl*'s parameters
+        to (#1767), the name its solver constant takes and its
+        counterexample shows: ``@T.k``, *k* the number of parameters of the
+        same slot name after it (DE_BRUIJN.md), over the parameter list the
+        program writes.  A clone's parameters are its template's, in the
+        template's scope, so an instance's counterexample names ``@T.0``
+        where the source does; a declaration the program does not write (a
+        refinement's predicate check) names its own in *env*
+        (:meth:`_written_source`)."""
+        source, env = self._written_source(decl, env)
+        names = [self._type_expr_to_slot_name(te, env) for te in source.params]
+        return [f"@{name}.{names[i + 1:].count(name)}"
+                for i, name in enumerate(names)]
+
+    def _written_source(
+        self, decl: ast.FnDecl, env: AliasEnv,
+    ) -> tuple[ast.FnDecl, AliasEnv]:
+        """The declaration the program writes for *decl*, with the scope its
+        slot names render in: a clone's template, in the template's scope,
+        so a clone's parameters and its result are named as the source names
+        them (#1767); *decl* itself, in *env*, where the program writes no
+        declaration (a refinement's predicate check).  A clone with no
+        template in the typed program is a defect of the table, never a
+        clone to name by its own parameters (``@Int.2``)."""
+        source_id = decl.node_id
+        if source_id is not None:
+            template = self._typed.origin.get(source_id)
+            if template is None and self._instance_subst is not None:
+                raise ValueError(
+                    f"the clone {decl.name!r} at {decl.span} has no template "
+                    f"in the typed program: `vera.typed.build` records every "
+                    f"clone's (#1525)")
+            if template is not None:
+                source_id = template
+        found = (self._source_functions().get(source_id)
+                 if source_id is not None else None)
+        if found is None:
+            return decl, env
+        source, in_scope = found
+        return source, fn_slot_scope(self._current_alias_env, in_scope)
+
+    def _source_functions(
+        self,
+    ) -> dict[int, tuple[ast.FnDecl, tuple[str, ...]]]:
+        """Every function the program writes, its modules' and its
+        prelude's, a ``where`` helper included, by its identity, with the
+        type parameters in scope over it (:func:`vera.slots.fn_scopes`)."""
+        if self._source_fns is None:
+            linked = self._typed.linked
+            found: dict[int, tuple[ast.FnDecl, tuple[str, ...]]] = {}
+            tlds = (*linked.prelude, *linked.program.declarations,
+                    *(t for m in linked.modules for t in m.program.declarations))
+            for tld in tlds:
+                if isinstance(tld.decl, ast.FnDecl):
+                    for fn, in_scope, _path in fn_scopes(tld.decl):
+                        if fn.node_id is not None:
+                            found[fn.node_id] = (fn, in_scope)
+            self._source_fns = found
+        return self._source_fns
 
     def _type_expr_to_slot_name(
         self, te: ast.TypeExpr, env: AliasEnv | None = None,

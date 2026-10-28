@@ -22,6 +22,7 @@ import math
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from functools import partial
 from typing import TYPE_CHECKING
 
 import z3
@@ -318,7 +319,7 @@ class _TestEngine:
         )
         classification = _classify_functions(
             self.program, verify_result.diagnostics,
-            verify_result.obligations, self.alias_env,
+            verify_result.obligations, self.alias_env, typed=self.typed,
         )
 
         # 2. Filter to target functions
@@ -393,7 +394,7 @@ class _TestEngine:
                 # entry check that then traps would read as a refuted proof.
                 blockers = _untranslatable_input_constraints(
                     decl, _get_param_types(decl, self.alias_env),
-                    self.alias_env,
+                    self.alias_env, typed=self.typed,
                 )
                 if blockers:
                     category = _UNTRANSLATABLE_CATEGORY
@@ -592,7 +593,8 @@ class _TestEngine:
                 inputs = [[]]
             else:
                 inputs, search = _generate_inputs_and_search(
-                    decl, param_types, self.trials, self.alias_env)
+                    decl, param_types, self.trials, self.alias_env,
+                    typed=self.typed)
 
             if inputs is None:  # pragma: no cover — _classify_functions filters unsupported types
                 unsupported_names = _unsupported_type_names(param_types)
@@ -703,7 +705,8 @@ class _TestEngine:
                 # that owns a refuted record, and whether these arguments
                 # violate it, where the tester can tell.
                 premise = _assumed_premise(
-                    trial, decl, self._declarations(), self.alias_env)
+                    trial, decl, self._declarations(), self.alias_env,
+                    typed=self.typed)
                 rationale, fix = _refutation_explanation(premise)
                 diagnostics.append(Diagnostic(
                     description=_refutation_description(
@@ -1377,6 +1380,8 @@ def _assumed_premise(
     decl: ast.FnDecl,
     declarations: dict[tuple[str | None, str, str], ast.FnDecl],
     alias_env: AliasEnv,
+    *,
+    typed: TypedProgram | None = None,
 ) -> _AssumedPremise | None:
     """The `assume` statements in the declarations that own *trial*'s
     refuted records, or None when they hold none.
@@ -1405,7 +1410,7 @@ def _assumed_premise(
         return f"`assume({ast.format_expr(node.expr)})`{line}{where}"
 
     held = [
-        _assume_on_arguments(decl, node, trial, alias_env)
+        _assume_on_arguments(decl, node, trial, alias_env, typed=typed)
         if owner is decl else None
         for owner, node in found
     ]
@@ -1423,6 +1428,8 @@ def _assume_on_arguments(
     assume: ast.AssumeExpr,
     trial: TrialResult,
     alias_env: AliasEnv,
+    *,
+    typed: TypedProgram | None = None,
 ) -> bool | None:
     """Whether *assume* holds on *trial*'s arguments: True, False, or None
     where it cannot be told.
@@ -1439,7 +1446,7 @@ def _assume_on_arguments(
     else:
         return None
     env = _declare_param_vars(
-        decl, _get_param_types(decl, alias_env), alias_env)
+        decl, _get_param_types(decl, alias_env), alias_env, typed=typed)
     if env is None:
         return None
     predicate = env.smt.translate_expr(assume.expr, env.slot_env)
@@ -1648,6 +1655,8 @@ def _classify_functions(
     verify_diagnostics: list[Diagnostic],
     obligations: list[ProofObligation],
     alias_env: AliasEnv = EMPTY_ALIAS_ENV,
+    *,
+    typed: TypedProgram | None = None,
 ) -> dict[str, tuple[str, str, ast.FnDecl, bool]]:
     """Classify each function as verified/tier3/skipped.
 
@@ -1786,7 +1795,7 @@ def _classify_functions(
         # reporting it "verified" and not exercised, rather than skipped.
         if decl.name in tier3_fns:
             blockers = _untranslatable_input_constraints(
-                decl, param_types, alias_env,
+                decl, param_types, alias_env, typed=typed,
             )
             if blockers:
                 result[decl.name] = (
@@ -1911,6 +1920,8 @@ def _declare_param_vars(
     decl: ast.FnDecl,
     param_types: list[Type],
     alias_env: AliasEnv,
+    *,
+    typed: TypedProgram | None = None,
 ) -> _GenEnv | None:
     """Declare one Z3 variable per parameter, range-bounded.
 
@@ -1924,6 +1935,10 @@ def _declare_param_vars(
     so handing it the un-narrowed env would look up under a key the bind side
     never pushed — exactly once a ``forall`` variable shadows a same-named
     module alias.
+
+    A construction in a clause is a term of the sort of the type the checker
+    gave it, read off *typed* (:func:`vera.verifier.construction_type`), as
+    in the verifier's context (#1525); with no typed program none translates.
     """
     for pt in param_types:
         if base_type(pt) not in _Z3_SUPPORTED:
@@ -1931,6 +1946,9 @@ def _declare_param_vars(
 
     scope = fn_slot_scope(alias_env, decl.forall_vars)
     smt = SmtContext(timeout_ms=5000, alias_env=scope)
+    if typed is not None:
+        from vera.verifier import construction_type
+        smt._constructed_type_hook = partial(construction_type, typed)
     slot_env = SlotEnv()
     z3_vars: list[z3.ExprRef] = []
     var_types: list[Type] = []  # base types for each var
@@ -1992,6 +2010,8 @@ def _untranslatable_input_constraints(
     decl: ast.FnDecl,
     param_types: list[Type],
     alias_env: AliasEnv,
+    *,
+    typed: TypedProgram | None = None,
 ) -> list[str]:
     """The input-shaping constraints the SMT layer cannot translate (#1229).
 
@@ -2020,7 +2040,7 @@ def _untranslatable_input_constraints(
     An empty list means every constraint translated — the generator can honour
     the whole precondition, and the trials it runs mean what they say.
     """
-    env = _declare_param_vars(decl, param_types, alias_env)
+    env = _declare_param_vars(decl, param_types, alias_env, typed=typed)
     if env is None:
         # Unsupported parameter types; the `cannot generate <T> inputs` skip
         # already covers this function and names the types.
@@ -2063,6 +2083,8 @@ def _generate_inputs(
     param_types: list[Type],
     count: int,
     alias_env: AliasEnv = EMPTY_ALIAS_ENV,
+    *,
+    typed: TypedProgram | None = None,
 ) -> list[list[int | float | str]] | None:
     """Generate test inputs from requires() clauses via Z3.
 
@@ -2074,7 +2096,7 @@ def _generate_inputs(
     ``is not None`` guards are the belt to that braces (#1229).
     """
     return _generate_inputs_and_search(
-        decl, param_types, count, alias_env)[0]
+        decl, param_types, count, alias_env, typed=typed)[0]
 
 
 def _generate_inputs_and_search(
@@ -2082,6 +2104,8 @@ def _generate_inputs_and_search(
     param_types: list[Type],
     count: int,
     alias_env: AliasEnv = EMPTY_ALIAS_ENV,
+    *,
+    typed: TypedProgram | None = None,
 ) -> tuple[list[list[int | float | str]] | None, z3.CheckSatResult | None]:
     """:func:`_generate_inputs`, with how the search ended beside the inputs.
 
@@ -2091,7 +2115,7 @@ def _generate_inputs_and_search(
     satisfies the precondition, while ``unknown`` means the solver gave up,
     and nothing is established either way.
     """
-    env = _declare_param_vars(decl, param_types, alias_env)
+    env = _declare_param_vars(decl, param_types, alias_env, typed=typed)
     if env is None:
         return None, None
     smt, scope, slot_env = env.smt, env.scope, env.slot_env

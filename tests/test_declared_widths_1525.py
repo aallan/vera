@@ -221,41 +221,9 @@ def _cell_test(cell: Cell) -> Callable[[Path, pytest.MonkeyPatch], None]:
     return test
 
 
-#: The `Nat` cells whose join reports a guard with no record: a binder
-#: (top-level, nested, a tuple component's) or a destructure binding at
-#: `@Nat` over a component the construction built from a non-negative
-#: literal.  Code generation guards by the component's type (`Int`, a
-#: literal being an `Int`, spec §4.2), and the verifier, tracing the
-#: component to its source (`vera.narrowing.component_narrows`), records
-#: nothing (#1695's (a) member).
-_DEAD_NAT_GUARD = frozenset({
-    "binder_nat_alias",
-    "binder_nat_direct",
-    "binder_nat_id",
-    "binder_nat_phantom",
-    "component_nat_alias",
-    "component_nat_direct",
-    "component_nat_id",
-    "component_nat_phantom",
-    "destructure_nat_alias",
-    "destructure_nat_direct",
-    "destructure_nat_id",
-    "destructure_nat_phantom",
-    "top_binder_nat_alias",
-    "top_binder_nat_direct",
-    "top_binder_nat_id",
-    "top_binder_nat_phantom",
-})
-
-
 for _cell in _CELLS:
-    _test = _cell_test(_cell)
-    if _cell.name in _DEAD_NAT_GUARD:
-        _test = pytest.mark.xfail(strict=True, reason=(
-            "#1695 (a): code generation guards a binder by its component's "
-            "type where the verifier reads the component's source"))(_test)
-    globals()[f"test_{_cell.name}"] = _test
-del _cell, _test
+    globals()[f"test_{_cell.name}"] = _cell_test(_cell)
+del _cell
 
 
 def test_the_matrix_spans_every_combination() -> None:

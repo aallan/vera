@@ -612,8 +612,6 @@ def test_class_1674_every_slot_name_parser_reads_a_predicate_as_one_atom(
 ) -> None:
     from vera.monomorphize import Monomorphizer
     from vera.naming import mask_refinements
-    from vera.smt import SmtContext
-    from vera.types import AdtType
     from vera.wasm.calls_containers import CallsContainersMixin
     from vera.wasm.calls_handlers import CallsHandlersMixin
     from vera.wasm.inference import InferenceMixin
@@ -630,8 +628,6 @@ def test_class_1674_every_slot_name_parser_reads_a_predicate_as_one_atom(
     assert parsed.name == "Map"
     assert [a.name for a in parsed.type_args] == [_PRED_KEY, "Option"]
     assert parsed.type_args[1].type_args[0].name == _PRED_STR
-    assert SmtContext._parse_adt_sort_key(_PRED_NAME) == AdtType("Map", (
-        AdtType(_PRED_KEY, ()), AdtType("Option", (AdtType(_PRED_STR, ()),))))
 
     class _Asked:
         """The one call `_has_free_type_var_arg` makes per argument."""

@@ -2222,23 +2222,16 @@ def test_1439_a_state_write_over_a_handle_base_carries_its_guard(
     assert m["bad_refused_at_run"], m["bad_output"]
 
 
-def test_1594_a_nat_built_tuple_sub_pattern_crashes_verify(
-    tmp_path: Path,
-) -> None:
-    """#1594, pinned.  This asserts the DEFECT; see the issue for the class.
-
-    The Tuple instance of #1424's sort mismatch, which #1424's own fix did
-    not reach.
+def test_1594_a_nat_built_tuple_sub_pattern_verifies(tmp_path: Path) -> None:
+    """#1594: the Tuple instance of #1424's sort mismatch.
 
     An ADT sub-pattern binder of `Tuple` type, returned from its own arm and
-    joined with an arm that builds a fresh `Tuple`, reaches the verifier's
-    sort resolution by two routes that disagree.  `vera check` is clean.
-
-    The payload is built from `@Nat` values.  The matrix's own cell for this
-    position builds it from literals, `Some(Tuple(1, 1))`, which take the
-    declared `Tuple<Int, Int>` as their type (#1541), so that cell verifies
-    and runs in the matrix above; a declared `@Nat` operand is what still
-    reaches the two disagreeing routes.
+    joined with an arm that builds a fresh `Tuple`, crashed the verifier
+    (E699, a Z3 sort mismatch) when the payload was built from `@Nat` values:
+    `Tuple<Nat, Nat>` and `Tuple<Int, Int>` were two sorts.  A construction
+    is a term of the sort of its checked type now, and `Nat` and `Int` are
+    one sort (#1525), so the join verifies.  The matrix's own cell for this
+    position builds the payload from literals, `Some(Tuple(1, 1))`.
     """
     source = """public fn f(@Nat -> @Tuple<Int, Int>)
   requires(true)
@@ -2253,11 +2246,5 @@ def test_1594_a_nat_built_tuple_sub_pattern_crashes_verify(
 }
 """
     path = _write(tmp_path, source, "sub.vera")
-    assert pipeline.cli("check", "--quiet", path, budget_s=_BUDGET_S).returncode == 0
     verified = pipeline.cli("verify", path, budget_s=_BUDGET_S)
-    assert verified.returncode != 0, (
-        "#1594 appears to be FIXED — verification no longer crashes.  Remove "
-        "this cell"
-    )
-    output = verified.stdout + verified.stderr
-    assert "E699" in output and "sort mismatch" in output, output[-400:]
+    assert verified.returncode == 0, verified.stdout + verified.stderr

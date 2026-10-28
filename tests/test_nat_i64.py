@@ -213,9 +213,11 @@ public fn widen(@Nat -> @Int)
 def test_repro_1542_a_nat_component_read_at_int_keeps_its_value() -> None:
     """#1542's widening half: a `@Nat` component read back from an `@Int`
     slot came back as -1 at u64.MAX.  The widening is a no-op: the top of
-    the range comes back unchanged, and u64.MAX cannot be passed."""
+    the range comes back unchanged, and u64.MAX cannot be passed.  The index
+    into the literal proves, `W(@Nat.0)` being a term of `Wrap<Int>`'s sort
+    (#1525)."""
     assert _kinds(pipeline.verify(_COMPOSITE_WIDEN)) == [
-        ("index_bounds", "tier3")]
+        ("index_bounds", "verified")]
     assert _value(_COMPOSITE_WIDEN, "widen", I64_MAX) == I64_MAX
     _refuses_argument(_COMPOSITE_WIDEN, "widen", U64_MAX)
 
@@ -301,9 +303,11 @@ def test_repro_1586_an_int_binder_guards_no_nat_an_earlier_arm_takes() -> None:
     at `@Int` checks nothing now: the module holds the `@Int` subtraction
     `0 - 3`'s overflow check (proved) and the first arm's `@Nat` binder's
     narrowing check (`0 - 3` is one of its sources), and no widening
-    check."""
+    check.  The narrowing proves: the `KB` tuple, the one the arm matches,
+    holds the `@Nat`, each tuple a term of its checked type's sort
+    (#1525)."""
     assert _kinds(pipeline.verify(_EARLIER_ARM)) == [
-        ("int_overflow", "verified"), ("nat_bind", "tier3")]
+        ("int_overflow", "verified"), ("nat_bind", "verified")]
     assert [c.kind for c in pipeline.compile(_EARLIER_ARM).checks()] == [
         "overflow", "nat_guard"]
     assert _value(_EARLIER_ARM, "f", I64_MAX, "false") == 5
@@ -650,9 +654,6 @@ class _Context:
     #: `byte`, `pattern`, `byte pattern`, `predicate`, `contract` or
     #: `measure`.
     target: str
-    #: Whether code generation reads the narrowed value back at run time
-    #: (an argument, a component, a generic call) rather than the literal.
-    reads_value: bool = False
     #: How many times the literal is written.
     occurrences: int = 1
     #: What `f(0)` returns for the literal's value (a trap kind as `!kind`).
@@ -687,12 +688,12 @@ _CONTEXTS: dict[str, _Context] = {
         "int", run=lambda v: 1),
     "@Nat tuple component": _Context(
         _fn("@Int -> @Int", "let Tuple<@Nat, @Bool> = Tuple(LIT, true);\n"
-            "  nat_to_int(@Nat.0)"), "nat", reads_value=True),
+            "  nat_to_int(@Nat.0)"), "nat"),
     "@Nat constructor field": _Context(
         "private data NB { NB(Nat) }\n\n" + _fn(
             "@Int -> @Int",
             "match NB(LIT) {\n    NB(@Nat) -> nat_to_int(@Nat.0)\n  }"),
-        "nat", reads_value=True),
+        "nat"),
     # The call's clone is at `Nat` (#1679): the literal enters a `Nat`
     # formal and the result is one, so nothing is read back unchecked.
     "generic argument at an expected @Nat": _Context(
@@ -724,7 +725,7 @@ _CONTEXTS: dict[str, _Context] = {
             "@Int -> @Int",
             "match NB(pick(LIT, 5)) {\n    NB(@Nat) -> nat_to_int(@Nat.0)\n"
             "  }"),
-        "nat", reads_value=True),
+        "nat"),
     "generic call as a @Nat array element": _Context(
         _PICK + _fn("@Int -> @Int",
                     "let @Array<Nat> = [pick(LIT, 5)];\n"
@@ -734,7 +735,7 @@ _CONTEXTS: dict[str, _Context] = {
         _PICK + _fn("@Int -> @Int",
                     "let Tuple<@Nat, @Bool> = Tuple(pick(LIT, 5), true);\n"
                     "  nat_to_int(@Nat.0)"),
-        "nat", reads_value=True),
+        "nat"),
     "literal pattern over @Int": _Context(
         _fn("@Int -> @Int", "match @Int.0 {\n    LIT -> 1,\n    _ -> 0\n  }"),
         "pattern", run=lambda v: int(v == 0)),
@@ -809,8 +810,9 @@ def _literal_rule(context: _Context, v: int) -> _Verdict:
                             obligations=(("nat_bind", "violated"),),
                             checks=frozenset({"nat_guard"}),
                             run="!nat_guard")
-        return _Verdict(checks=frozenset({"nat_guard"} if context.reads_value
-                                         else ()), run=run)
+        # A non-negative literal narrows nothing, read where it is built as
+        # a component as everywhere else (#1525): no guard.
+        return _Verdict(run=run)
     if context.target == "refined":
         checks = frozenset({"contract_violation"})
         if v < 0:

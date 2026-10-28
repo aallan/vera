@@ -17,24 +17,24 @@ Python traceback** on a ``vera check``-green program:
 * ``vera test`` on such a function routed through the verifier and crashed the
   same way.
 
-The fix translates a constructor call's arguments first, recovers each
-argument's Vera type from its Z3 sort, and unifies those against the
-constructor's declared (``TypeVar``-bearing) field types to pin the owning
-ADT's FULL instantiation — so ``Some`` in an ``Option<Option<Int>>`` context
-selects the ``Option<Option<Int>>`` sort (whose argument slot expects
-``Option<Int>``, matching the inner ``Some(x)``).
+The fix pinned the owning ADT's FULL instantiation, so ``Some`` in an
+``Option<Option<Int>>`` context selects the ``Option<Option<Int>>`` sort
+(whose argument slot expects ``Option<Int>``, matching the inner ``Some(x)``).
+#918 recovered it from the arguments' Z3 sorts; a construction's sort is now
+the sort of the type the checker gave it (#1525), which names the
+instantiation outright.
 
 Two soundness/regression invariants are pinned alongside the crash fix:
 
 * **No false PROVE.** A genuinely-false postcondition over a nested-ADT value
   must still be disproved (E500).  The fix enables *real* Tier-1 reasoning over
   the nested structure — it must reject a false claim, not blanket-demote.
-* **No false E500 on unrelated calls.** Pinning is gated to ADTs that already
-  have a cached instantiation, so a top-level ``Some(42)`` argument in a caller
-  whose context never materialised ``Option`` stays opaque/demoted exactly as
-  before (#882).  Materialising it on demand would flip such a call from
-  opaque-demote to a fresh unconstrained return value and regress an unrelated
-  ``ensures``-over-a-helper-result to a false counterexample (the #887 trap).
+* **A construction is modelled as any argument is.** A top-level ``Some(42)``
+  argument to a helper whose ``ensures`` says nothing of its result leaves the
+  caller knowing nothing of that result, as an ``@Int`` argument does, so a
+  postcondition resting on it is refused (E500).  It fell to a runtime check
+  while a constructor's sort was found only among those already built
+  (#882, #887), the line #1525 closed: a satisfiable negation is an error.
 """
 from __future__ import annotations
 
@@ -171,8 +171,8 @@ def test_nested_option_body_verifies_without_crash() -> None:
     """`Some(Some(x))` body verifies — no Z3 `Sort mismatch` traceback.
 
     RED on base: `z3.z3types.Z3Exception: Sort mismatch` (uncaught).
-    Mutation oracle: dropping the type-args argument to `_find_sort_for_ctor`
-    (reverting to the base-name-only scan) re-crashes this.
+    Mutation oracle: modelling the outer `Some` at any sort but its checked
+    type's re-crashes this.
     """
     _verify_ok(_NESTED_BODY)
 
@@ -203,16 +203,19 @@ def test_false_nested_postcondition_disproved() -> None:
     _verify_err(_NESTED_FALSE, "does not hold")
 
 
-def test_single_level_call_arg_stays_clean() -> None:
-    """Regression guard (#887 trap): a single-level `Some(42)` argument to a
-    trivial-`ensures` helper stays opaque/demoted — no false E500.
-
-    Mutation oracle: dropping the `_has_cached_instantiation` gate makes the fix
-    materialise `Option<Int>` on demand for this call arg, flipping the call to
-    a fresh unconstrained return value and rejecting `main` with a false
-    counterexample.  This test flips RED.
-    """
-    _verify_ok(_SINGLE_LEVEL_CALL_ARG)
+def test_a_single_level_call_arg_is_modelled_as_any_argument() -> None:
+    """A single-level `Some(42)` argument to a trivial-`ensures` helper is a
+    term of `Option<Int>`'s sort, so the call is modelled as any call is and
+    `main`'s claim about its result, which the helper's contract does not
+    make, is refused (E500), as over an `@Int` argument (#1525).  Its twin
+    whose helper states the value proves."""
+    _verify_err(_SINGLE_LEVEL_CALL_ARG, "does not hold")
+    _verify_ok(_SINGLE_LEVEL_CALL_ARG.replace(
+        "private fn unwrap_or(@Option<Int>, @Int -> @Int)\n  requires(true)\n"
+        "  ensures(true)",
+        "private fn unwrap_or(@Option<Int>, @Int -> @Int)\n  requires(true)\n"
+        "  ensures(match @Option<Int>.0 { Some(@Int) -> @Int.result == @Int.0, "
+        "None -> @Int.result == @Int.0 })"))
 
 
 def test_different_adt_nesting_stays_clean() -> None:
@@ -345,11 +348,10 @@ def test_nat_single_level_postcondition_no_crash() -> None:
     `z3.z3types.Z3Exception: sort mismatch`.
 
     RED on the first-cut #918 HEAD: the `Nat`->`Int` collapse in
-    `_z3_sort_to_vera_type` pins `Option<Int>`, `_find_sort_for_ctor`
-    materialises a fresh `Option<Int>` sort, and `_datatype_value_eq` crashes
+    `_z3_sort_to_vera_type` pinned `Option<Int>`, `_find_sort_for_ctor`
+    materialised a fresh `Option<Int>` sort, and `_datatype_value_eq` crashed
     comparing it against the context's `Option<Nat>`.  CLEAN on base (pre-#918).
-    Mutation oracle: reverting the `_find_sort_for_ctor` select-cached change
-    re-crashes this.
+    `Nat` and `Int` are one sort now (#1594, #1525).
     """
     _verify_ok(_NAT_SINGLE)
 

@@ -1281,6 +1281,10 @@ class TypedProgram:
     _by_ident: dict[tuple[object, ...], Instance] | None = field(
         default=None, repr=False)
     _by_name: dict[str, Instance] | None = field(default=None, repr=False)
+    _constructors: dict[str, tuple[tuple[str, ...], tuple[Type, ...]]] | None = (
+        field(default=None, repr=False))
+    _data_constructors: dict[str, tuple[str, ...]] | None = field(
+        default=None, repr=False)
 
     def instance(self, key: str, args: tuple[str, ...],
                  parent: Instance | None = None) -> Instance | None:
@@ -1311,6 +1315,77 @@ class TypedProgram:
         """The instance the generic call *call* calls, or ``None`` for a call
         that is not generic."""
         return None if call.node_id is None else self.call_targets.get(call.node_id)
+
+    def field_types_at(self, ctor: str, ty: Type | None,
+                       ) -> tuple[Type, ...] | None:
+        """The types of the fields of a *ctor* value of type *ty* (#1525):
+        each field's declared type as the checker resolved it, with *ty*'s
+        arguments for its data type's parameters; a `Tuple`'s are *ty*'s
+        arguments.  ``None`` where *ctor* is no constructor the program
+        declares, or *ty* gives a generic one no arguments."""
+        base = base_type(ty) if ty is not None else None
+        if ctor == "Tuple":
+            if (isinstance(base, AdtType) and base.name == "Tuple"
+                    and base.type_args):
+                return base.type_args
+            return None
+        found = self._constructor_fields().get(ctor)
+        if found is None:
+            return None
+        params, fields = found
+        if not params:
+            return fields
+        if not (isinstance(base, AdtType) and base.type_args):
+            return None
+        mapping = dict(zip(params, base.type_args))
+        return tuple(substitute(f, mapping) for f in fields)
+
+    def field_is_generic(self, ctor: str, index: int) -> bool:
+        """Whether field *index* of *ctor* takes its type from the value
+        stored there: a field declared as a bare type parameter, whose
+        instantiation the checker inferred from the argument, or any
+        component of the built-in `Tuple`."""
+        if ctor == "Tuple":
+            return True
+        found = self._constructor_fields().get(ctor)
+        return (found is not None and index < len(found[1])
+                and isinstance(found[1][index], TypeVar))
+
+    def constructors_of(self, data_type: str) -> tuple[str, ...]:
+        """The constructors of the data type *data_type* (a link name), in
+        declaration order; empty for a type the program does not declare."""
+        if self._data_constructors is None:
+            self._constructor_fields()
+        assert self._data_constructors is not None  # noqa: S101
+        return self._data_constructors.get(data_type, ())
+
+    def _constructor_fields(
+        self,
+    ) -> dict[str, tuple[tuple[str, ...], tuple[Type, ...]]]:
+        """Every constructor the program, its modules and its prelude
+        declare, by its link name, with its data type's parameters and its
+        fields' types as the checker resolved them."""
+        if self._constructors is None:
+            linked = self.linked
+            found: dict[str, tuple[tuple[str, ...], tuple[Type, ...]]] = {}
+            by_type: dict[str, tuple[str, ...]] = {}
+            tlds = (*linked.prelude, *linked.program.declarations,
+                    *(t for m in linked.modules for t in m.program.declarations))
+            for tld in tlds:
+                decl = tld.decl
+                if not isinstance(decl, ast.DataDecl):
+                    continue
+                by_type.setdefault(
+                    decl.name, tuple(c.name for c in decl.constructors))
+                for ctor in decl.constructors:
+                    types = tuple(self.semantic_type(f) for f in ctor.fields or ())
+                    if all(t is not None for t in types):
+                        found[ctor.name] = (
+                            tuple(decl.type_params or ()),
+                            tuple(t for t in types if t is not None))
+            self._constructors = found
+            self._data_constructors = by_type
+        return self._constructors
 
 
 def _renumber(node: ast.FnDecl, origin: dict[int, int]) -> ast.FnDecl:

@@ -2580,14 +2580,12 @@ def test_1403_the_statability_gate_decides_chains_only(tmp_path: Path) -> None:
       that never needed the predicate — a trade this change is not designed
       for and the corpus cannot measure, since it declares no such
       refinement.
-    * the ORDER sensitivity of predicate translation is also outside it.  A
-      chain whose predicate names a constructor translates only once that
-      constructor's sort exists, so an unrelated earlier `let` changes the
-      verdict — `tier3_unguarded`/E506 without it, `violated`/E505 with it.
-      That is true on `release/v0.2.0` too, unchanged here: the gate asks
-      the same question the predicate translation already answered, and a
-      NO is never memoised, so the gate adds no order sensitivity of its own
-      and removes none.  Asserting both variants pins that.
+    * the ORDER of the program does not decide the verdict.  A chain whose
+      predicate names a constructor translated only once that constructor's
+      sort existed, so an unrelated earlier `let` changed it, `tier3_unguarded`
+      /E506 without the `let` and `violated`/E505 with it.  A construction is
+      a term of the sort its checked type has now (#1525), so both variants
+      are refused alike, and asserting both pins that.
     """
     plain = _verify(_tree(tmp_path / "plain", {
         "p": _ORDER.format(pre="")})["p"])
@@ -2598,11 +2596,8 @@ def test_1403_the_statability_gate_decides_chains_only(tmp_path: Path) -> None:
          if o["kind"] == "refine_bind" and o["status"] != "verified"]
         for r in (plain, letfirst)
     ]
-    assert binds == [[("tier3_unguarded", "E506")], [("violated", "E505")]], (
-        f"the pre-existing order sensitivity of predicate translation moved. "
-        f"If the accepted variant is now refused like its twin, #1470 has "
-        f"been fixed and this half of the cell should be rewritten to assert "
-        f"order independence rather than pin its absence: {binds}"
+    assert binds == [[("violated", "E505")], [("violated", "E505")]], (
+        f"an unrelated earlier `let` changed the verdict: {binds}"
     )
 
     single = _verify(_tree(tmp_path / "single", {"p": _SINGLE_UNSTATABLE})["p"])

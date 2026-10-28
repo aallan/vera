@@ -394,6 +394,7 @@ class ClosureLiftingMixin:
         ctx.set_expr_target_types(self._expr_target_types)
         # #1679: the instance each generic call in the closure calls.
         ctx.set_call_targets(self._typed.call_targets)
+        ctx.set_typed_program(self._typed)
         # #1525: the types of the nodes code generation built.
         ctx.set_built_types(self._built_types)
         # #747: per-parameter concrete-@Nat flags for the call-site

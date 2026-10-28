@@ -2,7 +2,7 @@
 -- Tests: Option<T> matching; Result<T,E> matching (types from prelude)
 private fn unwrap_or(@Option<Int>, @Int -> @Int)
   requires(true)
-  ensures(true)
+  ensures(match @Option<Int>.0 { Some(@Int) -> @Int.result == @Int.0, None -> @Int.result == @Int.0 })
   effects(pure)
 {
   match @Option<Int>.0 {
@@ -13,7 +13,7 @@ private fn unwrap_or(@Option<Int>, @Int -> @Int)
 
 private fn result_or(@Result<Int, String>, @Int -> @Int)
   requires(true)
-  ensures(true)
+  ensures(match @Result<Int, String>.0 { Ok(@Int) -> @Int.result == @Int.0, Err(@String) -> @Int.result == @Int.0 })
   effects(pure)
 {
   match @Result<Int, String>.0 {

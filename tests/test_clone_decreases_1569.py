@@ -217,17 +217,11 @@ def _expected(flavour: str, placement: str, helper: str,
 
 
 def _cell(cell: tuple[str, ...]) -> object:
-    """One matrix cell.  An imported generic's ADT measure translates to an
-    `Int` in the importer's run, so it is not compared there (#1577, on
-    `main` as on this branch); strict, so the cell reports when that lands.
-    """
-    _vis, flavour, placement, helper, measure, direction = cell
-    marks = []
-    if (measure == "adt" and flavour == "generic" and placement != "direct"
-            and "verified" in _expected(flavour, placement, helper,
-                                        direction)):
-        marks.append(pytest.mark.xfail(strict=True, reason="#1577"))
-    return pytest.param(*cell, id="-".join(cell), marks=marks)
+    """One matrix cell.  An imported generic's ADT measure is a term of its
+    module's data type's sort in the importer's run too (#1577's line of
+    #1561, closed by #1525's: every module's data types are in the SMT
+    registry), so its decrease is compared there as in the module's."""
+    return pytest.param(*cell, id="-".join(cell))
 
 
 CELLS = [_cell(c) for c in itertools.product(

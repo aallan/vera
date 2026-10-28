@@ -707,6 +707,7 @@ MARKED_FILES = (
     "test_closure_argument_polarity.py",
     "test_declared_widths_1525.py",
     "test_engine_failure_matrix.py",
+    "test_verifier_reads_the_typed_program_1525.py",
 )
 UNMARKED_FILES = (
     "test_obligations.py",

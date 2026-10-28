@@ -365,6 +365,25 @@ _SORTS = _source(
 )
 
 
+#: The constructed-sort line's imported member (#1525, 23 October): a call
+#: taking a constructor of a data type the entry imports, applied in place.
+_IMPORTED_SORT_LIB = _source(
+    "module gen_lib;",
+    "public data Tally {\n  Amber(Nat),\n  Basalt\n}",
+)
+_IMPORTED_SORT_MAIN = _source(
+    "import gen_lib(Tally);",
+    "private fn zero(@Tally -> @Nat)\n  requires(true)\n"
+    "  ensures(@Nat.result <= 0)\n  effects(pure)\n{\n  0\n}",
+    "private fn need(@Int -> @Int)\n  requires(@Int.0 >= 0 && @Int.0 <= 5)\n"
+    "  ensures(true)\n  effects(pure)\n{\n  @Int.0\n}",
+    "public fn by_payload(@Unit -> @Int)\n" + _C
+    + "{\n  let @Int = zero(Amber(0));\n  need(@Int.0)\n}",
+    "public fn by_nullary(@Unit -> @Int)\n" + _C
+    + "{\n  let @Int = zero(Basalt);\n  need(@Int.0)\n}",
+)
+
+
 def _every_obligation_tier1(verified: pipeline.Verified) -> None:
     statuses = {(o.fn_name, o.kind.value if hasattr(o.kind, "value") else o.kind,
                  o.status.value if hasattr(o.status, "value") else o.status)
@@ -560,6 +579,9 @@ REPROS: dict[str, Repro] = {
         _runs("show_neg", [5], "-5")),
     "sorts_from_expression_types": Repro(
         {"main.vera": _SORTS}, _verifies(_every_obligation_tier1)),
+    "sorts_of_an_imported_constructor": Repro(
+        {"gen_lib.vera": _IMPORTED_SORT_LIB, "main.vera": _IMPORTED_SORT_MAIN},
+        _verifies(_every_obligation_tier1)),
     "interpolation_converter_from_checker_type": Repro(
         {"main.vera": _INTERPOLATION_CONVERTER},
         _runs("main", None, stdout="call A\nbound A\n")),
@@ -677,13 +699,372 @@ FIXED_BY_THE_BACKEND_READS = frozenset({
 })
 
 
+#: The lines the verifier's reads of the typed program flip (#1525): a
+#: construction is a term of the sort of the type the checker gave it,
+#: whatever file declares the type, `Nat` and `Int` one sort as a
+#: refinement and its base are; and each parameter's solver constant is
+#: named by the slot reference the source binds it to.
+FIXED_BY_THE_VERIFIER_READS = frozenset({
+    "1594_nat_built_tuple_sort",
+    "1767_counterexample_names_in_source_order",
+    "sorts_from_expression_types",
+    "sorts_of_an_imported_constructor",
+})
+
+
 @pytest.mark.parametrize("name", [
     name if name in (FIXED_AT_BASE | FIXED_BY_THE_TYPED_PROGRAM
-                     | FIXED_BY_THE_BACKEND_READS)
-    else pytest.param(name, marks=pytest.mark.xfail(strict=True, reason="red at f1bc772d: a backend reader of the typed program flips it"))
+                     | FIXED_BY_THE_BACKEND_READS
+                     | FIXED_BY_THE_VERIFIER_READS)
+    else pytest.param(name, marks=pytest.mark.xfail(strict=True, reason=(
+        "#1730: `array_find` lays its found element out by a rule of its "
+        "own, not a type it reads")))
     for name in sorted(REPROS)
 ])
 def test_repro_type_level_line(name: str, tmp_path: Path) -> None:
     repro = REPROS[name]
     path = pipeline.write_tree(tmp_path, repro.files)
     repro.expect(path)
+
+
+# ---------------------------------------------------------------------
+# The class cell: no type is derived outside the checker
+# ---------------------------------------------------------------------
+#
+# A type is derived once, by the checker, and every later phase reads it
+# off the typed program.  A function outside `vera/checker/` and
+# `vera/typed.py` that dispatches on an expression's or a type
+# expression's class and returns a type (a `vera.types` type or a type
+# expression, by its annotation, or a string naming one: a primitive's or
+# a WASM value's name, a type expression's `.name`, a slot's `.type_name`)
+# is a second derivation, whatever it is for.  A reader of the typed
+# program dispatches on nothing: it reads a node's type by the node's
+# identity.
+
+_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _class_names(module: object, base: type) -> frozenset[str]:
+    return frozenset(name for name, value in vars(module).items()
+                     if isinstance(value, type) and issubclass(value, base))
+
+
+def _type_derivations(root: Path = _ROOT) -> dict[tuple[str, str], int]:
+    """Every function outside the checker and the typed program that
+    derives a type, as ``(file, qualified name)``, with its line: the
+    files of *root*'s `vera/` package, each read with its own imports of
+    `vera.ast` (a module alias, a dotted `vera.ast`, a class imported by
+    name, absolute or relative)."""
+    import ast as pyast
+
+    from vera import ast as vera_ast
+    from vera import types as vera_types
+
+    expressions = _class_names(vera_ast, vera_ast.Expr)
+    type_expressions = _class_names(vera_ast, vera_ast.TypeExpr)
+    types = _class_names(vera_types, vera_types.Type)
+    type_words = {"Int", "Nat", "Bool", "String", "Float64", "Byte", "Unit",
+                  "Never", "i32", "i64", "f64", "i32_pair"}
+    collections = ("Iterator", "Iterable", "list", "tuple", "dict", "set",
+                   "Sequence", "Mapping")
+
+    def ast_bindings(tree: pyast.AST, rel: str) -> tuple[set[str], dict[str, str]]:
+        """The names a file binds `vera.ast` to, and the `vera.ast` classes
+        it imports by name, wherever in the file the import stands."""
+        package = rel.split("/")[:-1]
+        modules: set[str] = set()
+        names: dict[str, str] = {}
+        for node in pyast.walk(tree):
+            if isinstance(node, pyast.Import):
+                for alias in node.names:
+                    if alias.name == "vera.ast" and alias.asname:
+                        modules.add(alias.asname)
+            elif isinstance(node, pyast.ImportFrom):
+                base = (package[:len(package) - node.level + 1]
+                        if node.level else [])
+                full = ".".join([*base, *(node.module or "").split(".")]
+                                ).strip(".")
+                for alias in node.names:
+                    bound = alias.asname or alias.name
+                    if full == "vera" and alias.name == "ast":
+                        modules.add(bound)
+                    elif full == "vera.ast":
+                        names[bound] = alias.name
+        return modules, names
+
+    def dispatch(fn: pyast.AST, modules: set[str],
+                 names: dict[str, str]) -> tuple[bool, bool]:
+        """Whether *fn* tests a value against an expression class and a
+        type-expression class: an `isinstance` whose classes, or a `match`
+        whose class patterns, name one through the file's bindings of
+        `vera.ast` or by the class's own name; a table looked up by a
+        value's `type(...)` counts as a test of an expression's class."""
+        def named(part: pyast.AST) -> str | None:
+            if isinstance(part, pyast.Attribute) and (
+                    isinstance(part.value, pyast.Name)
+                    and part.value.id in modules
+                    or pyast.unparse(part.value) == "vera.ast"):
+                return part.attr
+            if isinstance(part, pyast.Name):
+                return names.get(part.id, part.id)
+            return None
+
+        def type_of_value(part: pyast.AST) -> bool:
+            return (isinstance(part, pyast.Call)
+                    and isinstance(part.func, pyast.Name)
+                    and part.func.id == "type")
+
+        tested: list[str | None] = []
+        keyed = False
+        for node in pyast.walk(fn):
+            if (isinstance(node, pyast.Call)
+                    and isinstance(node.func, pyast.Name)
+                    and node.func.id == "isinstance" and len(node.args) == 2):
+                tested.extend(named(part) for part in pyast.walk(node.args[1]))
+            elif isinstance(node, pyast.MatchClass):
+                tested.append(named(node.cls))
+            elif isinstance(node, pyast.Subscript) and type_of_value(node.slice):
+                keyed = True
+            elif (isinstance(node, pyast.Call)
+                    and isinstance(node.func, pyast.Attribute)
+                    and node.func.attr == "get" and node.args
+                    and type_of_value(node.args[0])):
+                keyed = True
+        return (keyed or any(cls in expressions for cls in tested),
+                any(cls in type_expressions for cls in tested))
+
+    def returns_a_type(fn: pyast.FunctionDef | pyast.AsyncFunctionDef,
+                       on_type: bool) -> bool:
+        if fn.returns is None:
+            return False
+        text = pyast.unparse(fn.returns).strip("'\"")
+        words = set(re.findall(r"[A-Za-z_]\w*", text))
+        if words & types:
+            return True
+        if (words & type_expressions
+                and not text.split("[")[0].endswith(collections)):
+            return True
+        if text not in ("str", "str | None", "None | str"):
+            return False
+        for node in pyast.walk(fn):
+            if isinstance(node, pyast.Return) and node.value is not None:
+                for part in pyast.walk(node.value):
+                    if (isinstance(part, pyast.Constant)
+                            and part.value in type_words):
+                        return True
+                    if isinstance(part, pyast.Attribute) and (
+                            part.attr == "type_name"
+                            or (on_type and part.attr == "name")):
+                        return True
+        return False
+
+    found: dict[tuple[str, str], int] = {}
+    for path in sorted((root / "vera").rglob("*.py")):
+        rel = path.relative_to(root).as_posix()
+        if rel.startswith("vera/checker/") or rel == "vera/typed.py":
+            continue
+        tree = pyast.parse(path.read_text(encoding="utf-8"))
+        modules, names = ast_bindings(tree, rel)
+
+        def visit(node: pyast.AST, prefix: tuple[str, ...]) -> None:
+            for child in pyast.iter_child_nodes(node):
+                if isinstance(child, pyast.ClassDef):
+                    visit(child, (*prefix, child.name))
+                elif isinstance(child, (pyast.FunctionDef,
+                                        pyast.AsyncFunctionDef)):
+                    on_expr, on_type = dispatch(child, modules, names)
+                    if ((on_expr or on_type)
+                            and returns_a_type(child, on_type)):
+                        found[(rel, ".".join((*prefix, child.name)))] = (
+                            child.lineno)
+                    visit(child, (*prefix, child.name))
+
+        visit(tree, ())
+    return found
+
+
+#: The functions that derive a type outside the checker by design, each
+#: with the reason it must.
+DELIBERATE: dict[tuple[str, str], str] = {
+    ("vera/formatter.py", "Formatter._fmt_type_bare"): (
+        "`vera fmt`'s rendering of a type expression as the source text it "
+        "is, which names what the program writes, never what a type is"),
+    ("vera/naming.py", "_resolve"): (
+        "a slot's name, which the check binds every slot reference by "
+        "while it runs, so it is rendered before any table exists"),
+    ("vera/naming.py", "slot_name"): (
+        "a slot's name, rendered by `_resolve` for the same reason"),
+    ("vera/monomorphize.py", "substitute_type_vars"): (
+        "the clone substitution: `vera.typed.build` writes each clone's "
+        "type expressions under its instance's substitution, and types "
+        "them from the template's"),
+    ("vera/monomorphize.py", "Monomorphizer._substitute_type_expr"): (
+        "the clone substitution, as `substitute_type_vars`"),
+}
+
+
+#: Code generation's readers of a written type, #1525's remaining lines: each
+#: derives a type the typed program holds, and each goes when code
+#: generation reads that type off the table instead (#1525 closes in v0.2.7
+#: with #1695's obligation table).  The cell fails on a reader outside this
+#: list, and on an entry whose reader is gone.
+KNOWN: dict[tuple[str, str], str] = {
+    ("vera/codegen/contracts.py", "ContractsMixin._dec_measure_adt_name"): (
+        "a `decreases` measure's data type, from its slot's spelling"),
+    ("vera/codegen/contracts.py", "ContractsMixin._resolve_carrier_type"): (
+        "a refinement guard's carrier, through the alias table"),
+    ("vera/codegen/contracts.py", "ContractsMixin._resolve_tuple_type"): (
+        "a refinement guard's `Tuple`, through the alias table"),
+    ("vera/codegen/contracts.py", "ContractsMixin._resolve_type_alias"): (
+        "an alias's body, for the refinement guards"),
+    ("vera/codegen/core.py", "CodeGenerator._declared_adt_name"): (
+        "the data type a handler's signature names, for `vera serve`"),
+    ("vera/codegen/core.py", "CodeGenerator._type_expr_to_wasm_type"): (
+        "a written type's WASM width: signatures, closures, contracts, "
+        "registration, compilability"),
+    ("vera/codegen/registration.py", "RegistrationMixin._field_vera_type_name"): (
+        "a constructor field's type name, for structural `Eq`"),
+    ("vera/codegen/registration.py", "RegistrationMixin._resolve_field_wasm_type"): (
+        "a constructor field's width in its layout"),
+    ("vera/monomorphize.py", "Monomorphizer._format_type_name"): (
+        "a type expression's name, for clone keys and equality helpers"),
+    ("vera/monomorphize.py", "canonicalize_type_aliases"): (
+        "a type expression with its aliases expanded, for clone keys"),
+    ("vera/monomorphize.py", "declared_return_clone_key"): (
+        "a declared return's clone key"),
+    ("vera/monomorphize.py", "resolve_fn_type_alias"): (
+        "a function type behind an alias, for closures"),
+    ("vera/monomorphize.py", "resolve_type_alias"): (
+        "an alias's body under its arguments"),
+    ("vera/slots.py", "type_expr_slot_name"): (
+        "the spelling code generation's representation walks read"),
+    ("vera/wasm/inference.py", "InferenceMixin._canonical_named_type"): (
+        "a type expression's alias chain followed to its named type"),
+    ("vera/wasm/inference.py", "InferenceMixin._resolve_base_type_name"): (
+        "a type name's alias chain followed to its base"),
+    ("vera/wasm/operators.py", "OperatorsMixin._interp_resolved_type_name"): (
+        "an interpolated part's type name, through the alias table"),
+}
+
+
+def test_no_function_outside_the_checker_derives_a_type() -> None:
+    found = {key: line for key, line in _type_derivations().items()
+             if key not in DELIBERATE and key not in KNOWN}
+    assert not found, (
+        "a type derived outside the checker; read it off the typed program "
+        "(`TypedProgram.semantic_type`) instead: "
+        + ", ".join(f"{f}:{line} {name}"
+                    for (f, name), line in sorted(found.items())))
+
+
+#: Every spelling of a dispatch on an AST class the scan must read: the
+#: `ast.<Class>` test, a class imported by name, a `match` class pattern,
+#: a module alias, a renamed import, a dotted `vera.ast`, a relative import
+#: and a table keyed by the value's class, each in a function that returns
+#: a type or a type's name, beside one that returns none.
+_SPELLINGS = """\
+import vera.ast
+from vera import ast
+from vera import ast as vast
+from vera.ast import IntLit
+from vera.ast import NamedType as Named
+from vera.types import INT, Type
+from .ast import SlotRef
+
+
+def by_plain(e: object) -> Type:
+    if isinstance(e, ast.IntLit):
+        return INT
+    return INT
+
+
+def by_imported(e: object) -> Type:
+    if isinstance(e, IntLit):
+        return INT
+    return INT
+
+
+def by_match(e: object) -> Type:
+    match e:
+        case ast.IntLit():
+            return INT
+    return INT
+
+
+def by_alias(te: vast.TypeExpr) -> str:
+    if isinstance(te, vast.NamedType):
+        return te.name
+    return "Int"
+
+
+def by_renamed(te: object) -> str:
+    if isinstance(te, Named):
+        return te.name
+    return "Int"
+
+
+def by_dotted(te: object) -> str:
+    if isinstance(te, vera.ast.NamedType):
+        return te.name
+    return "Int"
+
+
+def by_relative(e: object) -> str:
+    if isinstance(e, SlotRef):
+        return e.type_name
+    return "Int"
+
+
+def by_keyed(e: object) -> Type:
+    return {ast.IntLit: INT}[type(e)]
+
+
+def by_keyed_get(e: object) -> Type | None:
+    return {ast.IntLit: INT}.get(type(e))
+
+
+def not_one(e: object) -> str:
+    if isinstance(e, Named):
+        return "a name"
+    return "nothing"
+"""
+
+
+#: A class no import names, as a star import leaves it: read by its own
+#: name.
+_STAR = """\
+from vera.ast import *
+from vera.types import INT, Type
+
+
+def by_star(e: object) -> Type:
+    if isinstance(e, IntLit):
+        return INT
+    return INT
+"""
+
+
+def test_the_class_cell_reads_every_spelling_of_a_dispatch(
+        tmp_path: Path) -> None:
+    """The scan reads each file's own imports of `vera.ast` and every form
+    of a class test, so a type derived through a module alias, a class
+    imported by name, a dotted `vera.ast`, a relative import, a `match`
+    class pattern or a table keyed by `type(...)` is found as
+    `isinstance(x, ast.<Class>)` is, and a function that returns no type's
+    name is not."""
+    (tmp_path / "vera").mkdir()
+    (tmp_path / "vera" / "fake.py").write_text(_SPELLINGS, encoding="utf-8")
+    (tmp_path / "vera" / "fake_star.py").write_text(_STAR, encoding="utf-8")
+    assert sorted(name for _, name in _type_derivations(tmp_path)) == [
+        "by_alias", "by_dotted", "by_imported", "by_keyed", "by_keyed_get",
+        "by_match", "by_plain", "by_relative", "by_renamed", "by_star"]
+
+
+def test_each_deliberate_exception_still_derives_one() -> None:
+    stale = set(DELIBERATE) - set(_type_derivations())
+    assert not stale, f"exceptions for functions that derive no type: {stale}"
+
+
+def test_each_known_reader_still_derives_one() -> None:
+    stale = set(KNOWN) - set(_type_derivations())
+    assert not stale, f"KNOWN entries for readers that are gone: {stale}"

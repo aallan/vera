@@ -14,7 +14,7 @@ private data Forest {
 
 private fn tree_size(@Tree -> @Nat)
   requires(true)
-  ensures(@Nat.result >= 0)
+  ensures(match @Tree.0 { Leaf -> @Nat.result == 1, Node(@Forest) -> @Nat.result >= 0 })
   decreases(@Tree.0)
   effects(pure)
 {
@@ -36,10 +36,15 @@ private fn forest_size(@Forest -> @Nat)
   }
 }
 
+-- A recursion's value is no contract's to state (E138: a contract may not
+-- call a function that leads back to its own), so the size is checked at
+-- run time.
 public fn main(@Unit -> @Int)
   requires(true)
-  ensures(@Int.result == 2)
+  ensures(@Int.result >= 0)
   effects(pure)
 {
-  tree_size(Node(More(Leaf, More(Leaf, Empty))))
+  let @Nat = tree_size(Node(More(Leaf, More(Leaf, Empty))));
+  assert(@Nat.0 == 2);
+  @Nat.0
 }

@@ -637,6 +637,7 @@ class FunctionCompilationMixin:
         ctx.set_expr_target_types(self._expr_target_types)
         ctx.set_built_types(self._built_types)
         ctx.set_call_targets(self._typed.call_targets)
+        ctx.set_typed_program(self._typed)
         # #747: per-parameter concrete-@Nat flags for the call-site
         # runtime narrowing guard.
         ctx.set_fn_nat_params(self._fn_nat_params)

@@ -82,9 +82,8 @@ class Known:
 #: * #1598 — a signed division's `INT_MIN / -1` check
 #:   (`_note_quotient_overflow`) has no `int_overflow` obligation.
 #: * #1695 (#1629) — a site the verifier records no obligation for is still checked:
-#:   a division by a non-zero literal, a `@Nat` destructure or pattern
-#:   binder over a value that is already `@Nat`, a refinement guard on a
-#:   value already of the refined type.
+#:   a division by a non-zero literal, a refinement guard on a value already
+#:   of the refined type.
 KNOWN: tuple[Known, ...] = (
     # #1695 (#1530)
     Known(1695, "tests/conformance/ch02_adt_tuple_recursive.vera", "recorded_unguarded", "decreases", "ch02_adt_tuple_recursive.vera:15:3"),
@@ -108,7 +107,6 @@ KNOWN: tuple[Known, ...] = (
     # #1695 (#1629)
     Known(1695, "tests/conformance/ch04_arithmetic.vera", "guarded_unrecorded", "div_zero", "ch04_arithmetic.vera:32:3"),
     Known(1695, "tests/conformance/ch04_arithmetic.vera", "guarded_unrecorded", "div_zero", "ch04_arithmetic.vera:40:3"),
-    Known(1695, "tests/conformance/ch04_nat_binding.vera", "guarded_unrecorded", "nat_bind", "ch04_nat_binding.vera:62:20"),
     Known(1695, "tests/conformance/ch04_primitive_obligations.vera", "guarded_unrecorded", "refine_bind", "ch04_primitive_obligations.vera:35:29"),
     Known(1695, "tests/conformance/ch07_diverge.vera", "guarded_unrecorded", "div_zero", "ch07_diverge.vera:16:8"),
     Known(1695, "tests/conformance/ch07_diverge.vera", "guarded_unrecorded", "div_zero", "ch07_diverge.vera:17:21"),

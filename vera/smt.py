@@ -15,7 +15,6 @@ import hashlib
 
 import contextlib
 import os
-import re
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, cast
@@ -31,12 +30,11 @@ from vera.slots import substitute_parameters
 from vera.naming import EMPTY_ALIAS_ENV, AliasEnv
 from vera.types import (
     AdtType,
-    PRIMITIVES,
     PrimitiveType,
     RefinedType,
     Type,
     TypeVar,
-    contains_typevar,
+    base_type,
     erases_to_unit,
     BOOL,
     FLOAT64,
@@ -383,6 +381,26 @@ def strip_refinements(ty: Type) -> Type:
     return ty
 
 
+def _holds_a_chosen_value(term: z3.ExprRef) -> bool:
+    """Whether *term* holds a data value the solver chooses: a free
+    constant of a datatype sort, a parameter's or an opaque result's, whose
+    components the model states nothing of (#1814)."""
+    stack: list[z3.ExprRef] = [term]
+    seen: set[int] = set()
+    while stack:
+        item = stack.pop()
+        if item.get_id() in seen:
+            continue
+        seen.add(item.get_id())
+        if (z3.is_const(item)
+                and item.decl().kind() == z3.Z3_OP_UNINTERPRETED
+                and isinstance(item.sort(), z3.DatatypeSortRef)):
+            return True
+        if z3.is_app(item):
+            stack.extend(item.children())
+    return False
+
+
 def _adt_sort_key(
     adt_name: str,
     type_args: tuple[Type, ...],
@@ -419,13 +437,15 @@ def _adt_sort_key(
             continue
         a = strip_refinements(a)
         if isinstance(a, PrimitiveType):
-            arg_strs.append(a.name)
+            # A `Nat` contributes `Int`: the two share one carrier, `Nat`
+            # being `Int` with `>= 0`, a fact every binding of one states,
+            # so they are one sort as a refinement and its base are (#1594).
+            arg_strs.append("Int" if a.name == "Nat" else a.name)
         elif isinstance(a, AdtType):
             arg_strs.append(_adt_sort_key(a.name, a.type_args, statable))
         else:
             # A type variable or a shape the sort layer does not model: the
-            # key stays un-nameable on purpose, and `_parse_adt_sort_key`
-            # refuses it rather than inventing an instantiation.
+            # key stays un-nameable on purpose.
             arg_strs.append("?")
     return f"{adt_name}<{', '.join(arg_strs)}>"
 
@@ -487,25 +507,6 @@ def _ctor_accepts(ctor: z3.FuncDeclRef, args: list[z3.ExprRef]) -> bool:
         return all(ctor.domain(i).eq(a.sort()) for i, a in enumerate(args))
     except (AttributeError, z3.Z3Exception):
         return False
-
-
-def _normalize_int_nat_sort_key(key: str) -> str:
-    """Canonicalise an ``_adt_sort_key`` for ``Nat``<->``Int`` carrier equality
-    (#918).
-
-    ``Int`` and ``Nat`` share a Z3 carrier (both translate to ``IntSort``); the
-    distinction is a refinement (``Nat = {n : Int | n >= 0}``), not a different
-    materialised datatype-argument sort's *carrier*.  But post-#884 the ADT
-    datatype-sort mangling is injective, so ``Option<Int>`` and ``Option<Nat>``
-    are DISTINCT Z3 sorts.  When a constructor argument's type is recovered from
-    its Z3 sort the ``Nat`` reads back as ``Int`` (the shared carrier is all the
-    sort carries), so a pin can name ``Option<Int>`` where the context built
-    ``Option<Nat>``.  Mapping every whole-word ``Nat`` to ``Int`` lets such keys
-    compare equal, so the pin selects the already-cached ``Nat`` instantiation
-    instead of a fresh mismatched ``Int`` one.  The word boundary is regex-based
-    so a user ADT literally named ``Nat...`` (e.g. ``NatBox``) is untouched.
-    """
-    return re.sub(r"(?<![A-Za-z0-9_])Nat(?![A-Za-z0-9_])", "Int", key)
 
 
 def _z3_sort_name(key: str) -> str:
@@ -780,11 +781,16 @@ class SmtContext:
         self._guarded_binder_hook: Any = None
         # Optional hook (injected by the verifier) returning the checker's
         # recorded (instance-substituted) semantic ``Type`` for an expression
-        # — the #747 side-table, via ``ContractVerifier._resolved_type_of``.
-        # Used to resolve a bare nullary constructor's exact instantiation when
-        # its base-name scan would be ambiguous (#994 F1).  Signature:
-        # (expr_ast) -> Type | None.  None when no verifier is driving.
+        # — the #747 side-table, via ``ContractVerifier._resolved_type_of``:
+        # the sort of an opaque stand-in.  Signature: (expr_ast) -> Type |
+        # None.  None when no verifier is driving.
         self._recorded_type_hook: Any = None
+        # Optional hook (injected by the verifier) returning the type a
+        # construction is modelled at, the type the checker gave it
+        # (``ContractVerifier._constructed_type_of``, #1525), whose sort is
+        # the construction's.  Signature: (expr_ast) -> Type | None.  None
+        # when no verifier is driving: then no construction has a term.
+        self._constructed_type_hook: Any = None
         # Optional hook (injected by the verifier) answering whether a
         # refinement's WHOLE predicate translates — the chain walk and the
         # predicate translation both live on the verifier.  Signature:
@@ -1967,12 +1973,16 @@ class SmtContext:
             if isinstance(left, z3.FPRef):
                 return z3.fpEQ(left, right)
             if isinstance(left.sort(), z3.DatatypeSortRef):
+                if self._equates_two_types(expr, left, right):
+                    return None
                 return self._datatype_value_eq(left, right)
             return left == right
         if op == ast.BinOp.NEQ:
             if isinstance(left, z3.FPRef):
                 return z3.fpNEQ(left, right)
             if isinstance(left.sort(), z3.DatatypeSortRef):
+                if self._equates_two_types(expr, left, right):
+                    return None
                 eq = self._datatype_value_eq(left, right)
                 if eq is None:
                     return None
@@ -2059,6 +2069,32 @@ class SmtContext:
                     return True
         return False
 
+    def _equates_two_types(
+        self, expr: ast.BinaryExpr, left: z3.ExprRef, right: z3.ExprRef,
+    ) -> bool:
+        """Whether the `==` or `!=` *expr* compares two checked types, an
+        `Option<Nat>` against an `Option<Int>`, over a data value the solver
+        chooses (*left* and *right* are the operands' terms).
+
+        The two types are one sort, as `Nat` and `Int` are (`_adt_sort_key`),
+        but a data value the solver chooses, a parameter's or an opaque
+        result's, states no `>= 0` of its `Nat` components (#1814), so the
+        solver may meet the other side with an `Option<Nat>` holding
+        `Some(-1)`, which no run holds.  Such a comparison has no term, and
+        the obligation over it is a runtime check, as it was while the two
+        were two sorts.  A comparison of terms built from their components
+        (`Some(@Nat.0)` against `Some(@Nat.0 + 1)`) states each component as
+        it is, and keeps its term.  The types are the checker's
+        (``_recorded_type_hook``); with none, no type is told apart."""
+        hook = self._recorded_type_hook
+        if hook is None:
+            return False
+        left_type, right_type = hook(expr.left), hook(expr.right)
+        if (left_type is None or right_type is None
+                or base_type(left_type) == base_type(right_type)):
+            return False
+        return _holds_a_chosen_value(left) or _holds_a_chosen_value(right)
+
     def _datatype_value_eq(
         self,
         left: z3.ExprRef,
@@ -2083,14 +2119,14 @@ class SmtContext:
         """
         sort = left.sort()
         if sort != right.sort():
-            # Defence-in-depth (#994 F1): a residual sort mismatch — e.g. a
-            # bare nullary ctor whose base-name scan picked the wrong same-ADT
-            # instantiation when the recorded-type hint was unavailable — has no
-            # sound structural equality (two differently-sorted terms can never
-            # be equal, and the checker's E142 already rejects a genuine
-            # cross-type comparison).  Degrade to an honest Tier-3 (None) rather
-            # than let ``left == right`` raise an uncaught ``z3 sort mismatch``
-            # traceback out of ``vera verify`` on a check-green program.
+            # Defence-in-depth (#994 F1): a residual sort mismatch has no sound
+            # structural equality (two differently-sorted terms can never be
+            # equal, and the checker's E142 already rejects a genuine
+            # cross-type comparison); every construction is a term of its
+            # checked type's sort (#1525), so none is expected here.  Degrade
+            # to an honest Tier-3 (None) rather than let ``left == right``
+            # raise an uncaught ``z3 sort mismatch`` traceback out of
+            # ``vera verify`` on a check-green program.
             return None
         if isinstance(left, z3.FPRef):
             return z3.fpEQ(left, right)
@@ -2443,17 +2479,8 @@ class SmtContext:
         if (call.name == "compare" and len(call.args) == 2
                 and not self._is_user_fn(call.name)):
             # The desugar produces `Ordering` nullary ctors (`Less` / `Equal`
-            # / `Greater`).  When `compare` appears ONLY in a contract of a
-            # function whose signature never mentions `Ordering`, that sort is
-            # registered (`_adt_registry`) but never materialised in
-            # `_z3_sorts` — nothing referenced the type — so the ctors would
-            # translate to None and demote the predicate to Tier 3.  Force the
-            # sort here, scoped to the desugar so general ADT-call modular
-            # reasoning is untouched (a broad on-demand materialisation in
-            # `_find_sort_for_ctor` regressed unrelated `ensures(true)`-return
-            # ADT calls to false E500 — PR #887 review).
-            if "Ordering" in self._adt_registry:
-                self._get_or_create_adt_sort("Ordering", ())
+            # / `Greater`), stamped with their owner, so each is a term of
+            # `Ordering`'s sort whatever the function names (#1414).
             return self.translate_expr(
                 self._desugar_compare(call), env)
 
@@ -2747,10 +2774,10 @@ class SmtContext:
         the walk reaches whether or not translation does.
 
         The same gates, in the same order, with the same records: a callee
-        with only `requires(true)` obligates nothing; a generic callee, and
-        an argument that does not translate even with the callee's ADT sorts
-        forced (#882), demote (E532); otherwise each precondition is checked
-        against the translated arguments.
+        with only `requires(true)` obligates nothing; a generic callee with
+        no clone to read, and an argument that does not translate (#882),
+        demote (E532); otherwise each precondition is checked against the
+        translated arguments.
         """
         has_nontrivial_pre = any(
             isinstance(c, ast.Requires)
@@ -2781,9 +2808,6 @@ class SmtContext:
             return
         zero_size = self._zero_size_params(callee_info)
         z3_args = self._translate_call_args(args, env, zero_size)
-        if z3_args is None:
-            self._ensure_call_arg_sorts(callee_info.param_type_exprs)
-            z3_args = self._translate_call_args(args, env, zero_size)
         if z3_args is None:
             self._record_call_demotion(written, callee_name, call_node)
             return
@@ -2900,9 +2924,10 @@ class SmtContext:
 
         Returns the Z3 argument list, or None if an argument in a non-zero-size
         position uses a construct outside the decidable fragment (#882).
-        Factored out so the call translator can attempt argument translation
-        twice: once as-is (pre-#882 behaviour) and once after forcing the
-        callee's ADT sorts.
+        Shared by the precondition check and the call translator, each of
+        which translates the arguments once: a construction is a term of the
+        sort of its checked type (#1525), so no second attempt at another
+        sort could change the answer.
 
         A zero-size position is dropped rather than failing the whole list
         (#1214) — see :meth:`_zero_size_params`.  Its argument is still
@@ -3230,35 +3255,16 @@ class SmtContext:
         # callee's parameter stack have to drop the same positions.
         zero_size = self._zero_size_params(callee_info)
 
-        # Translate actual arguments in the caller's env.  First WITHOUT
-        # forcing any ADT sort — this is the exact pre-#882 attempt.  When it
-        # succeeds the call is modelled as before (return value assumed from
-        # the callee's ensures below), so no existing behaviour changes.
+        # Translate actual arguments in the caller's env.  A construction is a
+        # term of the sort its checked type has (#1525), so a constructor
+        # argument is modelled as any other argument is: the callee's
+        # `ensures` is assumed of the result, whatever the caller names.
         z3_args = self._translate_call_args(args, env, zero_size)
 
-        # #882: a constructor-call argument (`MkP(1)`) only translates once the
-        # callee's concrete ADT sort exists.  In a caller context that never
-        # declared that ADT the sort is absent, so the pre-#882 attempt bails
-        # and the call-site precondition obligation silently vanishes.  Force
-        # the sorts from the callee's declared parameter types and retry — but
-        # ONLY to CHECK the precondition, not to newly model the return value.
+        # An argument with no term (a host-handle field like `Map`): a real
+        # precondition demotes LOUDLY to Tier-3 (#882); a trivial
+        # `requires(true)` has no obligation and stays silent.
         if z3_args is None:
-            self._ensure_call_arg_sorts(callee_info.param_type_exprs)
-            forced_args = self._translate_call_args(args, env, zero_size)
-            if forced_args is not None:
-                # Arguments now translate.  Check the call-site precondition
-                # against them (records E501 / discharges), then return None so
-                # the return value stays opaque exactly as pre-#882 — the
-                # caller reasoned about this helper's result only through its
-                # ensures before, and still does; the *only* new behaviour is
-                # the precondition obligation.
-                self._check_call_preconditions(
-                    callee_info, callee_name, forced_args, call_node, zero_size,
-                )
-                return None
-            # Still untranslatable (a host-handle field like `Map`).  A real
-            # precondition must demote LOUDLY to Tier-3 (#882); a trivial
-            # `requires(true)` has no obligation and stays silent.
             if has_nontrivial_pre:
                 self._record_call_demotion(callee_info, callee_name, call_node)
             return None
@@ -4114,546 +4120,67 @@ class SmtContext:
 
         return None  # pragma: no cover
 
-    def _find_sort_for_ctor(
-        self, ctor_name: str, type_args: tuple[Type, ...] | None = None,
-    ) -> z3.SortRef | None:
-        """Find the Z3 sort for the ADT owning constructor *ctor_name*.
-
-        When *type_args* pins the full instantiation (e.g. the caller has
-        determined the outer ``Some`` in ``Some(Some(x))`` is
-        ``Option<Option<Int>>`` — #918), materialise/select **that** sort by
-        its exact ``_adt_sort_key``, not merely the first cached sort whose
-        base name matches.  Two instantiations of the same generic
-        (``Option<Int>`` and ``Option<Option<Int>>``) share a base name, so
-        the old base-name-only scan returned whichever was cached first — a
-        wrongly-sorted ``DatatypeRef`` that crashed Z3 (``Sort mismatch`` /
-        ``'DatatypeSortRef' object has no attribute 'is_int'``) on same-ADT
-        self-nesting.
-
-        *type_args* ``None`` (nullary tags, or when the instantiation can't be
-        determined) keeps the base-name scan — sound for the non-nested case
-        where only one instantiation of the base ADT is ever cached.
-
-        Pinning is applied ONLY when the owning ADT already has at least one
-        cached instantiation — i.e. the base-name scan would already have found
-        *a* sort and translation was going to succeed regardless.  This keeps
-        the change strictly a *disambiguation among existing instantiations*
-        and never *newly enables* a ctor that the old scan left untranslatable:
-        a top-level ``Some(42)`` argument in a caller whose context never
-        materialised ``Option`` must still return None (opaque, demoted at the
-        call site — #882), exactly as before.  On-demand materialising it here
-        would flip such a call from opaque-demote to a fresh unconstrained
-        return value, regressing an unrelated ``ensures(true)``-returning ADT
-        call to a false E500 (the trap the #887 review flagged for a broad
-        materialisation in this method).
-
-        The pinned instantiation is resolved by :func:`_resolve_pinned_sort`,
-        which handles the ``Int``/``Nat`` carrier ambiguity: ``@Nat.0``
-        translates to a Z3 ``IntSort`` value, so a ``Some(@Nat.0)`` argument
-        recovers as ``Int`` and the pinned key is ``Option<Int>`` even when the
-        surrounding context only materialised ``Option<Nat>`` (post-#884 these
-        are DISTINCT injective Z3 datatype sorts).  Building the ``Option<Int>``
-        key would then hand back a sort that never appears in the context, and
-        comparing it against the context's ``Option<Nat>`` value crashes
-        ``_datatype_value_eq`` with ``sort mismatch``.  So a cached
-        instantiation equal to the pin **modulo ``Nat``<->``Int``** is preferred
-        over freshly building the pinned key.  A pin with NO Int/Nat-equal
-        cached match (a genuinely new instantiation, e.g. the
-        ``Option<Option<Int>>`` a nested ctor literal needs when only
-        ``Option<Int>`` is cached) is still materialised — that path is the
-        #918 fix and must keep working.
-        """
-        # ctor-owner-exempt: the SMT ADT registry is namespace-flat, and a
-        # `ConstructorCall` carries no owner to qualify by — only the NULLARY
-        # path is owner-first (#1436)
-        adt_name = self._ctor_to_adt.get(ctor_name)
-        if adt_name is None:
+    def _constructed_sort(self, expr: ast.Expr) -> z3.SortRef | None:
+        """The sort a construction is modelled at: the sort of the type the
+        checker gave it (#1525), through the verifier's
+        ``_constructed_type_hook``, whatever file declares the type.  ``None``
+        where no verifier is driving, or the type has no sort."""
+        hook = self._constructed_type_hook
+        ty = hook(expr) if hook is not None else None
+        if ty is None:
             return None
-        if type_args is not None and self._has_cached_instantiation(adt_name):
-            # Disambiguate among instantiations: prefer an already-cached one
-            # equal modulo Int/Nat, else materialise the pinned key exactly.
-            sort = self._resolve_pinned_sort(adt_name, type_args)
-            if sort is not None and (
-                self._find_ctor_index(sort, ctor_name) is not None
-            ):
-                return sort
-            return None
-        for key, sort in self._z3_sorts.items():
-            base = key.split("<")[0] if "<" in key else key
-            if base == adt_name:
-                if self._find_ctor_index(sort, ctor_name) is not None:
-                    return sort
-        return None
-
-    def _resolve_pinned_sort(
-        self, adt_name: str, type_args: tuple[Type, ...],
-    ) -> z3.SortRef | None:
-        """Resolve the Z3 sort for a pinned ADT instantiation (#918).
-
-        Precedence:
-
-        1. the exact ``_adt_sort_key`` if already cached;
-        2. any cached instantiation equal to the pin **modulo ``Nat``<->``Int``**
-           — the carrier ambiguity (``@Nat.0`` reads back as ``Int``) means the
-           pin can name ``Option<Int>`` where the context built ``Option<Nat>``;
-           post-#884 those are distinct injective sorts, so selecting the cached
-           one avoids handing back a sort the surrounding equality can't compare
-           against (a ``sort mismatch`` crash);
-        3. otherwise materialise the pinned key via ``_get_or_create_adt_sort``
-           — a genuinely new instantiation the context has not built yet (e.g.
-           the ``Option<Option<Int>>`` a nested ctor literal needs when only
-           ``Option<Int>`` is cached), which is exactly the #918 nesting fix.
-
-        Note the asymmetry: step 3 is only reached when NO Int/Nat-equal
-        instantiation is cached, so it never rebuilds an ``Int`` twin of an
-        existing ``Nat`` sort.
-        """
-        key = _adt_sort_key(
-            adt_name, type_args, self._refinement_statable)
-        exact = self._z3_sorts.get(key)
-        if exact is not None:
-            return exact
-        norm = _normalize_int_nat_sort_key(key)
-        for cached_key, sort in self._z3_sorts.items():
-            if _normalize_int_nat_sort_key(cached_key) == norm:
-                return sort
-        return self._get_or_create_adt_sort(adt_name, type_args)
-
-    def _has_cached_instantiation(self, adt_name: str) -> bool:
-        """Whether any instantiation of *adt_name* is already in ``_z3_sorts``
-        (#918) — gates same-ADT ctor-sort disambiguation to the case where the
-        base-name scan would already have succeeded, so pinning never newly
-        enables an otherwise-untranslatable ctor (see ``_find_sort_for_ctor``).
-        """
-        for key in self._z3_sorts:
-            base = key.split("<")[0] if "<" in key else key
-            if base == adt_name:
-                return True
-        return False
-
-    def _z3_sort_to_vera_type(self, sort: z3.SortRef) -> Type | None:
-        """Recover a Vera :class:`Type` from a translated Z3 sort (#918).
-
-        Used to reconstruct the *outer* instantiation of a nested same-ADT
-        constructor bottom-up: once a constructor's arguments are translated,
-        each argument's Z3 sort names the concrete Vera type of that field, so
-        unifying those against the constructor's declared (``TypeVar``-bearing)
-        field types pins the enclosing generic's type parameters.
-
-        Primitives map by sort identity.  ``Int`` and ``Nat`` are BOTH
-        recovered as ``Int`` here because they share a Z3 carrier sort
-        (``IntSort``) — a bare ``IntSort`` value carries no witness of the
-        ``>= 0`` refinement, so ``Nat`` is indistinguishable from ``Int`` at
-        this point.  Crucially this recovery is NOT lossless for the *enclosing*
-        instantiation: post-#884 the datatype-sort mangling is injective, so
-        ``Option<Nat>`` (``Option_LNat_R``) and ``Option<Int>``
-        (``Option_LInt_R``) are DISTINCT Z3 datatype sorts.  A ``Some(@Nat.0)``
-        argument therefore pins the ``Int``-keyed instantiation even in an
-        ``Option<Nat>`` context — the recovered type DOES affect which sort is
-        selected downstream.  ``_find_sort_for_ctor`` compensates by selecting
-        only among *already-cached* instantiations modulo ``Nat``<->``Int``
-        (via :func:`_normalize_int_nat_sort_key`), never materialising a fresh
-        ``Int``-keyed sort that would sort-mismatch the context's ``Nat`` one.
-
-        A datatype sort is reverse-looked-up in ``_z3_sorts`` by sort identity
-        and its canonical key parsed back into an :class:`AdtType`.  ``None``
-        when the sort is one we can't name (an uninterpreted ``Array_<T>``, a
-        sort absent from the cache) — the caller then falls back to the
-        base-name scan.
-        """
-        if sort.eq(z3.IntSort()):
-            return INT
-        if sort.eq(z3.BoolSort()):
-            return BOOL
-        if sort.eq(z3.StringSort()):
-            return STRING
-        if sort.eq(_FLOAT64_SORT):
-            return FLOAT64
-        if isinstance(sort, z3.DatatypeSortRef):
-            for key, cached in self._z3_sorts.items():
-                if cached.eq(sort):
-                    return self._parse_adt_sort_key(key)
-        return None
-
-    @staticmethod
-    def _parse_adt_sort_key(key: str) -> Type | None:
-        """Parse a canonical ``_adt_sort_key`` string back to a :class:`Type`
-        (#918) — the inverse of :func:`_adt_sort_key`.
-
-        Grammar mirrors the generator exactly: ``Name`` (primitive or nullary
-        ADT) or ``Name<arg, arg, ...>`` where each *arg* is itself a key.
-        A bare name that is a primitive resolves to that ``PrimitiveType``;
-        otherwise it is a nullary ``AdtType``.  Returns ``None`` on a malformed
-        key or one containing the ``?`` placeholder that ``_adt_sort_key``
-        emits for an un-nameable type argument.
-        """
-        key = key.strip()
-        if not key or "?" in key:
-            return None
-        # A refinement's predicate is one atom (#1674).
-        masked = naming.mask_refinements(key)
-        lt = masked.find("<")
-        if lt == -1:
-            prim = PRIMITIVES.get(key)
-            if prim is not None:
-                return prim
-            return AdtType(key, ())
-        if not key.endswith(">"):
-            return None
-        name = key[:lt].strip()
-        inner = key[lt + 1:-1]
-        args: list[Type] = []
-        depth = 0
-        start = 0
-        for i, ch in enumerate(masked[lt + 1:-1]):
-            if ch == "<":
-                depth += 1
-            elif ch == ">":
-                depth -= 1
-            elif ch == "," and depth == 0:
-                arg = SmtContext._parse_adt_sort_key(inner[start:i])
-                if arg is None:
-                    return None
-                args.append(arg)
-                start = i + 1
-        last = SmtContext._parse_adt_sort_key(inner[start:])
-        if last is None:
-            return None
-        args.append(last)
-        return AdtType(name, tuple(args))
-
-    def _ctor_instantiation_from_args(
-        self, ctor_name: str, arg_types: list[Type | None],
-    ) -> tuple[Type, ...] | None:
-        """Derive an ADT's full type-argument tuple by unifying a
-        constructor's declared field types against its concrete argument
-        types (#918).
-
-        For ``Some(Some(Int))`` the outer ``Some`` argument recovers as
-        ``Option<Int>``; unifying ``Option``'s ``Some`` field ``T`` against
-        ``Option<Int>`` binds ``T = Option<Int>``, so the enclosing sort is
-        ``Option<Option<Int>>``.  Returns the ordered type-argument tuple for
-        the owning ADT, or ``None`` when the ADT is non-generic (no
-        instantiation to pin), an argument type is unknown, or unification
-        can't bind every parameter — in which case the caller keeps the
-        base-name scan.
-        """
-        # ctor-owner-exempt: the SMT ADT registry is namespace-flat, and a
-        # `ConstructorCall` carries no owner to qualify by — only the NULLARY
-        # path is owner-first (#1436)
-        adt_name = self._ctor_to_adt.get(ctor_name)
-        if adt_name is None:
-            return None
-        info = self._adt_registry.get(adt_name)
-        if info is None or not info.type_params:
-            return None
-        ctor_info = info.constructors.get(ctor_name)
-        if ctor_info is None or ctor_info.field_types is None:
-            return None
-        if len(ctor_info.field_types) != len(arg_types):
-            return None
-        subst: dict[str, Type] = {}
-        for field_ty, arg_ty in zip(ctor_info.field_types, arg_types):
-            if arg_ty is None:
-                return None
-            if not self._unify_type_var(field_ty, arg_ty, subst):
-                return None
-        try:
-            return tuple(subst[p] for p in info.type_params)
-        except KeyError:
-            # A type parameter this constructor's fields don't mention — can't
-            # be pinned from these arguments alone (e.g. `Left(T)` of an
-            # `Either<T, U>`).  Fall back to the base-name scan.
-            return None
-
-    @staticmethod
-    def _unify_type_var(
-        field_ty: Type, arg_ty: Type, subst: dict[str, Type],
-    ) -> bool:
-        """One-directional structural match of a declared field type (which may
-        contain ``TypeVar``s) against a concrete argument type, accumulating
-        the ``TypeVar`` bindings in *subst* (#918).
-
-        Returns ``False`` on a shape/name mismatch or a conflicting rebinding
-        of a variable, so the caller demotes rather than build a wrong sort.
-        """
-        if isinstance(field_ty, RefinedType):
-            return SmtContext._unify_type_var(field_ty.base, arg_ty, subst)
-        if isinstance(arg_ty, RefinedType):
-            return SmtContext._unify_type_var(field_ty, arg_ty.base, subst)
-        if isinstance(field_ty, TypeVar):
-            bound = subst.get(field_ty.name)
-            if bound is not None:
-                return bound == arg_ty
-            subst[field_ty.name] = arg_ty
-            return True
-        if isinstance(field_ty, PrimitiveType):
-            # Int/Nat share a Z3 sort, so a recovered `Int` legitimately
-            # matches a declared `Nat` field (and vice versa) — the distinction
-            # is a refinement, not a carrier-set difference.
-            if isinstance(arg_ty, PrimitiveType):
-                ints = {"Int", "Nat"}
-                if field_ty.name in ints and arg_ty.name in ints:
-                    return True
-                return field_ty.name == arg_ty.name
-            return False
-        if isinstance(field_ty, AdtType) and isinstance(arg_ty, AdtType):
-            if field_ty.name != arg_ty.name:
-                return False
-            if len(field_ty.type_args) != len(arg_ty.type_args):
-                return False
-            return all(
-                SmtContext._unify_type_var(f, a, subst)
-                for f, a in zip(field_ty.type_args, arg_ty.type_args)
-            )
-        return False
+        return self._vera_type_to_z3_sort(ty)
 
     def _translate_nullary_ctor(
         self, expr: ast.NullaryConstructor
     ) -> z3.ExprRef | None:
-        """Translate a nullary constructor (e.g. ``Nil``) to Z3.
+        """Translate a nullary constructor (e.g. ``Nil``) to Z3, at the sort of
+        the type the checker gave it (:meth:`_constructed_sort`): ``None`` in
+        ``Some(None)`` is the inner ``Option``'s, whatever else is cached
+        (#994).
 
-        A bare nullary tag carries no payload, so ``_find_sort_for_ctor``'s
-        base-name scan cannot disambiguate two live instantiations of the
-        owning ADT (``Option<Int>`` vs ``Option<Option<Int>>``) — it returns
-        whichever cached first, a wrongly-sorted term that later crashes Z3 with
-        ``sort mismatch`` in ``_datatype_value_eq`` (#994 F1).  When the verifier
-        has threaded the recorded-type hook, resolve the sort from this
-        expression's checker-recorded (instance-substituted) type first, which
-        names the exact instantiation; fall back to the base-name scan only when
-        no hint is available (nullary tags in a non-verifier / pure-SMT context,
-        or a hint that does not resolve to a datatype sort owning this ctor).
-        """
-        # #1414: an OWNER-stamped reference is the compiler's own, and says
-        # which ADT it means.  It is consulted before the recorded-type hint
-        # and the base-name scan, because a desugared node has no recorded
-        # type of its own (its span is the `compare(...)` call's) and the
-        # scan resolves by bare constructor name — so a user
-        # `data ZzBox { Pad(Bool), Less }` captured the `Less` that
-        # `_desugar_compare` emits, the term came back wrongly sorted or
-        # untranslatable, and a statically REFUTED postcondition over
-        # `compare` demoted to Tier 3 with exit 0 instead of reporting E500.
-        sort = None
+        An OWNER-stamped reference is the compiler's own, built after the
+        check and typed by no table, and says which data type it means: the
+        ``Less`` that ``_desugar_compare`` emits is ``Ordering``'s, so a user
+        ``data ZzBox { Pad(Bool), Less }`` cannot capture it (#1414)."""
         if expr.owner is not None:
             sort = self._get_or_create_adt_sort(expr.owner, ())
-        if sort is None:
-            sort = self._nullary_ctor_sort_from_hint(expr)
-        if sort is None:
-            sort = self._find_sort_for_ctor(expr.name)
+        else:
+            sort = self._constructed_sort(expr)
         if sort is None:
             return None
         idx = self._find_ctor_index(sort, expr.name)
-        if idx is None:  # pragma: no cover
+        if idx is None:
             return None
         return sort.constructor(idx)()
-
-    def _nullary_ctor_sort_from_hint(
-        self, expr: ast.NullaryConstructor
-    ) -> z3.SortRef | None:
-        """The Z3 sort for a bare nullary ctor from the recorded-type hint (#994).
-
-        Consults the verifier-injected ``_recorded_type_hook`` for *expr*'s
-        checker-recorded semantic type — already instance-substituted (T := the
-        concrete type of the monomorphized clone under verification), so a
-        generic ``Option<T>`` reads back as ``Option<Int>`` — and resolves that
-        exact instantiation's sort.  Returns None (falling back to the base-name
-        scan) when: no hook is driving; the recorded type still carries a type
-        variable (the generic pre-clone path, where no SMT runs anyway); the
-        type is not an ADT; or the pinned resolution finds no owning sort (a
-        stale/mismatched hint must never silence the scan).
-        """
-        hook = self._recorded_type_hook
-        if hook is None:
-            return None
-        recorded = hook(expr)
-        # Through the shared helper, for the same reason as the
-        # destructure path: a chain left a `RefinedType` here, the `AdtType`
-        # test below discarded the hint, and `_find_sort_for_ctor` fell back
-        # to the base-name scan that #918's pinning exists to replace
-        # (CodeRabbit, outside-diff at 7e161677).
-        if recorded is not None:
-            recorded = strip_refinements(recorded)
-        if not isinstance(recorded, AdtType) or contains_typevar(recorded):
-            return None
-        # Route through the #918 pinning machinery rather than materialising the
-        # sort directly: pinning PREFERS an already-cached instantiation and is
-        # gated (``_has_cached_instantiation``) so it never newly-enables an
-        # otherwise-untranslatable ctor.  So the hint DISAMBIGUATES among the
-        # live same-ADT sorts (the crash) — resolving ``None``'s exact
-        # ``Option<Option<Int>>`` where the base-name scan picked the wrong
-        # ``Option<...>`` — without perturbing the warm/cold sort-creation order
-        # the test_obligations differential pins (a direct
-        # ``_vera_type_to_z3_sort`` could materialise a sort the base-name scan
-        # would otherwise have found already cached, shifting the counterexample
-        # model between the warm and cold contexts).
-        return self._find_sort_for_ctor(expr.name, recorded.type_args)
 
     def _translate_ctor_call(
         self, expr: ast.ConstructorCall, env: SlotEnv
     ) -> z3.ExprRef | None:
-        """Translate a constructor call (e.g. ``Cons(1, Nil)``) to Z3.
-
-        Arguments are translated **first**, then their Z3 sorts are recovered
-        to Vera types and unified against the constructor's declared field
-        types to pin the owning ADT's full instantiation (#918).  This picks
-        the correct sort for a same-ADT self-nesting like ``Some(Some(x))`` —
-        the outer ``Some`` must resolve to ``Option<Option<Int>>``, not
-        whichever ``Option<...>`` happens to be cached first — so the
-        ``constructor(idx)`` application receives a correctly-sorted argument
-        instead of crashing Z3 with a sort mismatch.  When the instantiation
-        can't be pinned (non-generic ADT, un-nameable argument sort) the sort
-        is found by the base-name scan, unchanged from before.
-        """
-        # Translate arguments first so their sorts pin the instantiation.
+        """Translate a constructor call (e.g. ``Cons(1, Nil)``) to Z3, at the
+        sort of the type the checker gave the construction
+        (:meth:`_constructed_sort`, #1525): ``Some(Some(x))``'s outer ``Some``
+        is an ``Option<Option<Int>>`` (#918), a construction of a type the
+        function names nowhere has the sort its type has (the 21 October line
+        of #1525), and one of a type a module declares has its module's.  An
+        argument whose sort the constructor does not take is no term of it,
+        a Tier-3 demotion the callers handle (#1360)."""
+        sort = self._constructed_sort(expr)
+        if sort is None:
+            return None
+        idx = self._find_ctor_index(sort, expr.name)
+        if idx is None:
+            return None
         z3_args: list[z3.ExprRef] = []
         for arg in expr.args:
             z3_arg = self.translate_expr(arg, env)
             if z3_arg is None:
                 return None
             z3_args.append(z3_arg)
-        arg_types: list[Type | None] = [
-            self._z3_sort_to_vera_type(a.sort()) for a in z3_args
-        ]
-        # #764: the variadic tuple pseudo-constructor is structural and not
-        # in the ADT registry, so the registry-backed instantiation path
-        # below cannot resolve it — a literal `Tuple(5, 3)` was
-        # untranslatable while `f()` returning the same tuple translated
-        # fine.  Its sort is total in the argument sorts, so route through
-        # the #747 on-demand synthesis door and apply directly.  For the
-        # builtin carrier there is no registry entry and no cached
-        # instantiation to desync from: the synthesised sort is keyed by
-        # the same argument-derived types every ctor call recovers.
-        #
-        # The registry test is what makes that "for the builtin carrier"
-        # a condition rather than an assumption.  It was load-bearing while
-        # a user `data Tuple<A, B>` was legal: such a constructor must take
-        # the registry path below, which only reuses cached instantiations,
-        # because this branch's reverse-mapped argument types (Nat recovers
-        # as Int from Z3's IntSort) would materialise a fresh `Tuple<Int,
-        # Int>` instantiation of the user ADT instead of reusing the
-        # declared-side sort, breaking the #882/#918 never-newly-enables
-        # posture (CR PR #1200).  #1397 reserves the name in the data
-        # namespace (E158) — the codegen twin of that collision, the FIX-3
-        # discrimination in wasm/data.py, is retracted with it — so nothing
-        # registers under the name any more and the test now states the
-        # door's precondition rather than resolving a live collision.
-        if expr.name == "Tuple" and "Tuple" not in self._adt_registry:
-            if not z3_args or any(t is None for t in arg_types):
-                return None
-            tuple_sort = self._get_or_create_adt_sort(
-                "Tuple", tuple(t for t in arg_types if t is not None),
-            )
-            if tuple_sort is None:
-                return None
-            t_idx = self._find_ctor_index(tuple_sort, "Tuple")
-            if t_idx is None:  # pragma: no cover
-                return None
-            return tuple_sort.constructor(t_idx)(*z3_args)
-        type_args = self._ctor_instantiation_from_args(expr.name, arg_types)
-        sort = self._find_sort_for_ctor(expr.name, type_args)
-        if sort is None:
-            return None
-        idx = self._find_ctor_index(sort, expr.name)
-        if idx is None:  # pragma: no cover
-            return None
         ctor = sort.constructor(idx)
         if not _ctor_accepts(ctor, z3_args):
-            # #1360: the resolved instantiation cannot take the arguments that
-            # were actually built.  `_resolve_pinned_sort` may answer with a
-            # cached instantiation equal to the pin only MODULO ``Nat``<->``Int``
-            # — sound at a scalar position, where both spell one Z3 ``IntSort``,
-            # but not at a position that is itself a datatype: post-#884
-            # ``Tuple<Int, Nat>`` and ``Tuple<Int, Int>`` are distinct injective
-            # sorts.  A nested ctor argument is built from its OWN argument
-            # sorts (``Nat`` reads back as ``Int``, so always the ``Int``
-            # spelling) while the outer domain came from the declared side,
-            # where a non-negative literal types as ``Nat`` — so the two
-            # disagree and applying the constructor raised a raw Z3
-            # ``Sort mismatch`` out of `vera verify`.
-            #
-            # Prefer the instantiation the arguments themselves pin, then give
-            # up rather than crash: an untranslatable ctor is a Tier-3
-            # demotion the callers already handle, which is what every other
-            # `return None` on this path means.
-            # ctor-owner-exempt: the SMT ADT registry is namespace-flat, and a
-            # `ConstructorCall` carries no owner to qualify by — only the
-            # NULLARY path is owner-first (#1436)
-            adt_name = self._ctor_to_adt.get(expr.name)
-            exact = (
-                self._get_or_create_adt_sort(adt_name, type_args)
-                if adt_name is not None and type_args is not None
-                else None
-            )
-            if exact is None:
-                return None
-            exact_idx = self._find_ctor_index(exact, expr.name)
-            if exact_idx is None:  # pragma: no cover — same ctor, same ADT
-                return None
-            ctor = exact.constructor(exact_idx)
-            if not _ctor_accepts(ctor, z3_args):
-                return None
+            return None
         return ctor(*z3_args)
-
-    def _type_expr_to_adt_type(self, te: ast.TypeExpr) -> Type | None:
-        """Resolve a parameter type expression naming a registered ADT to its
-        concrete :class:`AdtType` (#882).
-
-        Returns None for type expressions that don't name an ADT in the
-        registry (primitives, type vars, function types, unknown names).
-        Type arguments are resolved recursively so a nested generic
-        instantiation (``Box<Inner>``) materialises with the right element
-        sort.  A refinement unwraps to its base, mirroring
-        ``_vera_type_to_z3_sort``.
-        """
-        if isinstance(te, ast.RefinementType):
-            return self._type_expr_to_adt_type(te.base_type)
-        if not isinstance(te, ast.NamedType):
-            return None
-        if te.name not in self._adt_registry:
-            return None
-        type_args: list[Type] = []
-        if te.type_args:
-            for a in te.type_args:
-                arg_ty = self._type_expr_to_adt_type(a)
-                if arg_ty is None:
-                    arg_ty = self._named_type_expr_to_primitive(a)
-                if arg_ty is None:
-                    # An argument we can't resolve (function-typed, unknown)
-                    # — leave the whole instantiation unmaterialised so the
-                    # caller demotes loudly rather than building a wrong sort.
-                    return None
-                type_args.append(arg_ty)
-        return AdtType(te.name, tuple(type_args))
-
-    @staticmethod
-    def _named_type_expr_to_primitive(te: ast.TypeExpr) -> Type | None:
-        """Resolve a type expression naming a primitive to its ``Type``
-        (#882 helper for ADT type-argument resolution)."""
-        if isinstance(te, ast.RefinementType):
-            return SmtContext._named_type_expr_to_primitive(te.base_type)
-        if isinstance(te, ast.NamedType) and not te.type_args:
-            return PRIMITIVES.get(te.name)
-        return None
-
-    def _ensure_call_arg_sorts(
-        self, param_type_exprs: Any,
-    ) -> None:
-        """Materialise the Z3 ADT sort for each ADT-typed parameter (#882).
-
-        A constructor-call argument (``MkP(1)``) only translates once the
-        callee's concrete ADT sort exists in ``_z3_sorts`` — otherwise
-        ``_find_sort_for_ctor`` returns None and the call-site precondition
-        obligation silently vanishes.  In the caller's context the sort may
-        never have been created (the caller has no parameter of that ADT), so
-        force it here from the callee's declared parameter types before
-        translating the arguments.  A type whose sort can't be built (a
-        host-handle field like ``Map``) is left absent — the argument then
-        fails to translate and the caller demotes loudly to Tier-3.
-        """
-        for pte in param_type_exprs:
-            adt_ty = self._type_expr_to_adt_type(pte)
-            if adt_ty is not None:
-                self._vera_type_to_z3_sort(adt_ty)
 
     def _type_expr_to_slot_name(self, te: ast.TypeExpr) -> str | None:
         """The slot-binding name of *te*, as the checker binds it (#1208).

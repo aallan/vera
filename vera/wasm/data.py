@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from collections.abc import Callable
+
 from vera import ast, naming, narrowing
 from vera.skip import CodegenSkip
-from vera.types import contains_typevar, value_type_name
+from vera.types import AdtType, base_type, contains_typevar, value_type_name
 from vera.wasm.helpers import (
     WasmSlotEnv,
     bind_slot_value_from_field,
@@ -18,6 +20,10 @@ from vera.wasm.helpers import (
 if TYPE_CHECKING:
 
     from vera.codegen import ConstructorLayout
+
+#: The sources of each field of a constructor pattern, by the field's index
+#: (:func:`vera.narrowing.component_sources`).
+ComponentSources = Callable[[int], tuple[narrowing.ComponentSource, ...]]
 
 
 # Which base Vera types each literal pattern form can compare against —
@@ -618,7 +624,6 @@ class DataMixin:
         scr_local = self.alloc_local("i32")
         instrs: list[str] = list(val_instrs)
         instrs.append(f"local.set {scr_local}")
-        value_type = self._type_name_of(stmt.value)
 
         # Extract each field through the same layout rule construction lays
         # the object out by (`helpers.field_layout`), rather than a second
@@ -683,16 +688,13 @@ class DataMixin:
             ]
             # #747: runtime-guard an @Int -> @Nat destructure component the
             # verifier could not discharge `>= 0` statically (Tier 3), or
-            # when codegen runs without `vera verify`.  Conservative — every
-            # @Nat target slot is guarded, since the *source* component type
-            # is not threaded into codegen — but it only ever traps on a
-            # genuinely negative i64, never on a valid @Nat in [0, 2^63).
-            # `_resolve_base_type_name` so a `type Age = Nat` alias / refined
-            # @Nat target is guarded too (CR #756), matching the alias-aware
-            # call-arg / ctor-field metadata.
+            # when codegen runs without `vera verify`: exactly the components
+            # the verifier records a narrowing for, read through its source
+            # walk (#1525), so one built from a non-negative value is not
+            # guarded.  The binding's declared type as the checker resolved
+            # it, an alias of `Nat` included (CR #756).
             if (self._is_nat_type(declared)
-                    and not self._field_instantiated_at_nat(
-                        stmt.constructor, idx, value_type)):
+                    and self._destructure_narrows(stmt, idx)):
                 load = self._emit_nat_bind_guard(load, at=te)
             instrs.extend(load)
             instrs.append(f"local.set {local_idx}")
@@ -854,7 +856,7 @@ class DataMixin:
         # Compile arms as chained if-else
         arm_instrs = self._compile_match_arms(
             expr.arms, scr_local, scr_wasm_type, result_type, env,
-            scrutinee_type=scrutinee_type,
+            scrutinee_type=scrutinee_type, scrutinee=expr.scrutinee,
         )
         if arm_instrs is None:
             return None
@@ -872,13 +874,15 @@ class DataMixin:
         env: WasmSlotEnv,
         *,
         scrutinee_type: str | None = None,
+        scrutinee: ast.Expr | None = None,
     ) -> list[str] | None:
         """Compile match arms as a chained if-else cascade.
 
         *scrutinee_type* (#1060) is the scrutinee's concrete Vera type name
         (e.g. "Box<Unit>"), threaded so a WILDCARD over a bare type-parameter
         field advances by the concrete (instantiation-aware) width, not the
-        generic i32 placeholder.
+        generic i32 placeholder.  *scrutinee* is the matched expression,
+        whose sources a binder's `@Nat` guard reads (#1525).
         """
         if not arms:
             return None
@@ -895,6 +899,7 @@ class DataMixin:
             # Unconditional arm (catch-all) or last arm — emit directly
             setup = self._setup_match_arm_env(
                 arm.pattern, scr_local, scr_wasm_type, env, scrutinee_type,
+                scrutinee=scrutinee,
             )
             if setup is None:
                 return None
@@ -911,6 +916,7 @@ class DataMixin:
         # Conditional arm with more arms following
         setup = self._setup_match_arm_env(
             arm.pattern, scr_local, scr_wasm_type, env, scrutinee_type,
+            scrutinee=scrutinee,
         )
         if setup is None:
             return None
@@ -925,7 +931,7 @@ class DataMixin:
         # Compile remaining arms (else branch)
         else_instrs = self._compile_match_arms(
             remaining, scr_local, scr_wasm_type, result_type, env,
-            scrutinee_type=scrutinee_type,
+            scrutinee_type=scrutinee_type, scrutinee=scrutinee,
         )
         if else_instrs is None:
             return None
@@ -1128,6 +1134,8 @@ class DataMixin:
         scr_wasm_type: str,
         env: WasmSlotEnv,
         scrutinee_type: str | None = None,
+        *,
+        scrutinee: ast.Expr | None = None,
     ) -> tuple[list[str], WasmSlotEnv] | None:
         """Extract fields and set up environment bindings for a match arm.
 
@@ -1136,7 +1144,9 @@ class DataMixin:
         *scrutinee_type* (#1060) is the scrutinee's concrete Vera type name,
         forwarded to the field-extraction walk so a WILDCARD over a bare
         type-parameter field advances the offset by the instantiation-aware
-        width instead of the generic i32 placeholder.
+        width instead of the generic i32 placeholder.  *scrutinee* is the
+        matched expression, whose value a `@Nat` binder's guard reads
+        (#1525); without it every `@Nat` binder is guarded.
         """
         # #1380: a StringPattern joins the binding-free forms.  Its
         # condition is a content comparison against an interned literal, so
@@ -1181,11 +1191,15 @@ class DataMixin:
             bind_val = [f"local.get {scr_local}"]
             # #747: runtime-guard a top-level `match <Int> { @Nat -> ... }`
             # narrowing — the scrutinee binds as @Nat, so trap if it is a
-            # negative i64 (Tier-3 backstop; never trips on a valid @Nat).
-            # The binder's declared type as the checker resolved it, an
-            # alias of `Nat` included (CR #756, #1525).
+            # negative i64 (Tier-3 backstop; never trips on a valid @Nat):
+            # where binding the scrutinee narrows, the verifier's rule
+            # (#1525), so `match 5 { @Nat -> ... }` is not guarded.  The
+            # binder's declared type as the checker resolved it, an alias of
+            # `Nat` included (CR #756).
             if (self._is_nat_type(declared)
-                    and scr_wasm_type == "i64"):
+                    and scr_wasm_type == "i64"
+                    and (scrutinee is None
+                         or self._narrows_into_nat(scrutinee))):
                 bind_val = self._emit_nat_bind_guard(bind_val, at=pattern)
             instrs = [
                 *bind_val,
@@ -1222,6 +1236,7 @@ class DataMixin:
                 )
             return self._extract_constructor_fields(
                 pattern, scr_local, layout, env, scrutinee_type,
+                sources=self._pattern_sources(scrutinee, pattern.name),
             )
 
         raise CodegenSkip(
@@ -1236,6 +1251,8 @@ class DataMixin:
         layout: ConstructorLayout,
         env: WasmSlotEnv,
         scrutinee_type: str | None = None,
+        *,
+        sources: ComponentSources | None = None,
     ) -> tuple[list[str], WasmSlotEnv] | None:
         """Extract fields from a constructor match into locals.
 
@@ -1247,6 +1264,11 @@ class DataMixin:
         field consults it to recover the field's instantiation-aware width; a
         nested constructor sub-pattern recurses with the field's own resolved
         concrete type so deeper type-parameter wildcards stay correct too.
+
+        *sources* gives the expressions that supply each field
+        (:func:`vera.narrowing.component_sources`), whose sign a `@Nat`
+        binder's guard reads as the verifier does (#1525); ``None``, where
+        the matched expression is not in hand, guards every `@Nat` binder.
         """
         # Every advance below goes through `helpers.field_layout`, the ONE
         # layout rule construction lays an object out by.  `"unit"` (a
@@ -1325,12 +1347,12 @@ class DataMixin:
                 # #747: runtime-guard an @Int -> @Nat ADT sub-pattern bind
                 # (`match opt { Some(@Nat.0) -> }` on `Option<Int>`).  The
                 # field loads as @Nat; trap if it is a negative i64 (Tier-3
-                # backstop; never trips on a valid @Nat in [0, 2^63)).
-                # The binder's declared type as the checker resolved it, an
-                # alias of `Nat` included (CR #756, #1525).
+                # backstop; never trips on a valid @Nat in [0, 2^63)):
+                # where the field's sources narrow, the verifier's rule
+                # (#1525).  The binder's declared type as the checker
+                # resolved it, an alias of `Nat` included (CR #756).
                 if (self._is_nat_type(declared)
-                        and not self._field_instantiated_at_nat(
-                            pattern.name, i, scrutinee_type)):
+                        and self._component_narrows(sources, i, pattern.name)):
                     load = self._emit_nat_bind_guard(load, at=sub_pat)
                 instrs.extend(load)
                 instrs.append(f"local.set {local_idx}")
@@ -1414,6 +1436,8 @@ class DataMixin:
                     self._resolve_nested_scrutinee_type(
                         pattern.name, i, scrutinee_type,
                     ),
+                    sources=self._nested_sources(
+                        sources, pattern.name, i, sub_pat.name),
                 )
                 if nested is None:
                     return None
@@ -1570,26 +1594,98 @@ class DataMixin:
             )
         return generic_wt
 
-    def _field_instantiated_at_nat(
-        self, ctor_name: str, field_index: int, scrutinee_type: str | None,
+    # -----------------------------------------------------------------
+    # A component's sign, as the verifier reads it (#1525)
+    # -----------------------------------------------------------------
+
+    def _pattern_sources(
+        self, scrutinee: ast.Expr | None, ctor_name: str,
+    ) -> ComponentSources | None:
+        """The sources of each field a *ctor_name* pattern over *scrutinee*
+        binds (:func:`vera.narrowing.component_sources`), or ``None`` without
+        the scrutinee or the typed program."""
+        typed = self._typed_program
+        if scrutinee is None or typed is None:
+            return None
+
+        def sources(index: int) -> tuple[narrowing.ComponentSource, ...]:
+            return narrowing.component_sources(
+                scrutinee, index, lambda name: name == ctor_name,
+                typed.field_is_generic)
+        return sources
+
+    def _nested_sources(
+        self, outer: ComponentSources | None, ctor_name: str, index: int,
+        nested: str,
+    ) -> ComponentSources | None:
+        """The sources of each field of the *nested* pattern over field
+        *index* of a *ctor_name* value (:func:`vera.narrowing.
+        subcomponent_sources`)."""
+        typed = self._typed_program
+        if outer is None or typed is None:
+            return None
+        step = (ctor_name, index)
+
+        def sources(j: int) -> tuple[narrowing.ComponentSource, ...]:
+            return narrowing.subcomponent_sources(
+                outer(index), step, j, lambda name: name == nested,
+                typed.field_is_generic)
+        return sources
+
+    def _component_narrows(
+        self, sources: ComponentSources | None, index: int, ctor_name: str,
     ) -> bool:
-        """Whether *ctor_name*'s field *field_index* is a type parameter its
-        scrutinee's type spells as exactly ``Nat`` (a clone's ``Some(@Nat)``
-        on ``Option<T>`` at ``T = Nat``, #1679): the field's value was
-        checked where it was stored, so its bind needs no sign guard.  Any
-        other spelling, an alias or a refinement of ``Nat`` included, keeps
-        the guard: a dead guard costs a check, a dropped live one a wrong
-        value."""
-        # ctor-owner-exempt: a parsed sub-pattern, resolved in the compiling
-        # namespace's scoped projection (#1436)
-        tp_idx = self._ctor_adt_tp_indices.get(ctor_name)
-        if (tp_idx is None or field_index >= len(tp_idx)
-                or tp_idx[field_index] is None or not scrutinee_type):
-            return False
-        position = tp_idx[field_index]
-        _, type_args = self._split_param_type(scrutinee_type)
-        return (position is not None and position < len(type_args)
-                and type_args[position] == "Nat")
+        """Whether binding field *index* into a `@Nat` slot is a narrowing:
+        the verifier's rule over the field's sources
+        (:func:`vera.narrowing.component_narrows`), a source built here read
+        by its value, an opaque one by its declared field type.  A field
+        whose sources or declaration code generation cannot read is a
+        narrowing: a dead guard costs a check, a dropped one a wrong value."""
+        typed = self._typed_program
+        if sources is None or typed is None:
+            return True
+
+        def leaf_is_nat(leaf: narrowing.ComponentSource, i: int) -> bool:
+            declared = narrowing.declared_component_is_nat(
+                leaf, i, ctor_name, self._type_of, typed.field_types_at,
+                self._is_nat_type)
+            return bool(declared)
+
+        return narrowing.component_narrows(
+            sources(index), index, self._narrows_into_nat, leaf_is_nat)
+
+    def _destructure_narrows(self, stmt: ast.LetDestruct, index: int) -> bool:
+        """Whether binding component *index* of the destructure *stmt* into
+        a `@Nat` slot is a narrowing: the verifier's rule over its sources,
+        an opaque one read by the declared field type of the constructor the
+        destructure binds (the source type's one, or `Tuple`)."""
+        typed = self._typed_program
+        if typed is None:
+            return True
+        tuple_shape = stmt.constructor == "Tuple"
+        ctor_name: str | None = "Tuple" if tuple_shape else None
+        if ctor_name is None:
+            source = self._type_of(stmt.value)
+            base = base_type(source) if source is not None else None
+            names: tuple[str, ...] = (
+                typed.constructors_of(base.name)
+                if isinstance(base, AdtType) else ())
+            if len(names) == 1:
+                ctor_name = names[0]
+        sources = narrowing.component_sources(
+            stmt.value, index, lambda name: (name == "Tuple") == tuple_shape)
+        if ctor_name is None:
+            return True
+
+        def leaf_is_nat(leaf: narrowing.ComponentSource, i: int) -> bool:
+            assert ctor_name is not None  # noqa: S101
+            declared = narrowing.declared_component_is_nat(
+                leaf, i, ctor_name, self._type_of, typed.field_types_at,
+                self._is_nat_type)
+            return bool(declared)
+
+        return narrowing.component_narrows(
+            sources, index, self._narrows_into_nat, leaf_is_nat)
 
     def _resolve_nested_scrutinee_type(
         self,

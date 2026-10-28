@@ -7,7 +7,7 @@ private data List<T> {
 
 private fn length(@List<Int> -> @Nat)
   requires(true)
-  ensures(@Nat.result >= 0)
+  ensures(match @List<Int>.0 { Nil -> @Nat.result == 0, Cons(@Int, @List<Int>) -> @Nat.result >= 1 })
   decreases(@List<Int>.0)
   effects(pure)
 {
@@ -19,7 +19,7 @@ private fn length(@List<Int> -> @Nat)
 
 private fn sum(@List<Int> -> @Int)
   requires(true)
-  ensures(true)
+  ensures(match @List<Int>.0 { Nil -> @Int.result == 0, Cons(@Int, @List<Int>) -> true })
   decreases(@List<Int>.0)
   effects(pure)
 {
@@ -29,18 +29,24 @@ private fn sum(@List<Int> -> @Int)
   }
 }
 
+-- A recursion's value is no contract's to state (E138: a contract may not
+-- call its own function), so the length is checked at run time.
 public fn main(@Unit -> @Int)
   requires(true)
-  ensures(@Int.result == 3)
+  ensures(@Int.result >= 1)
   effects(pure)
 {
-  length(Cons(1, Cons(2, Cons(3, Nil))))
+  let @Nat = length(Cons(1, Cons(2, Cons(3, Nil))));
+  assert(@Nat.0 == 3);
+  @Nat.0
 }
 
 public fn test_sum(@Unit -> @Int)
   requires(true)
-  ensures(@Int.result == 60)
+  ensures(true)
   effects(pure)
 {
-  sum(Cons(10, Cons(20, Cons(30, Nil))))
+  let @Int = sum(Cons(10, Cons(20, Cons(30, Nil))));
+  assert(@Int.0 == 60);
+  @Int.0
 }

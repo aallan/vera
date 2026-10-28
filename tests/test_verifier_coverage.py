@@ -1013,11 +1013,12 @@ private fn f(@Nat -> @Nat)
 
 
 # =====================================================================
-# _resolve_type edge cases
+# Written types the verifier reads off the typed program
 # =====================================================================
 
 class TestResolveTypeEdgeCases:
-    """Exercise verifier _resolve_type edge cases."""
+    """Exercise the verifier's reading of a written type
+    (``_written_type``): a function type behind an alias."""
 
     def test_fn_type_param_resolves(self) -> None:
         """Function type parameter exercises FnType -> FunctionType path."""
@@ -1638,12 +1639,6 @@ class TestSmtTranslateEdgeCases:
         )
         result = ctx._type_expr_to_slot_name(te)
         assert result == "Fn"
-
-    def test_find_sort_for_ctor_none(self) -> None:
-        """_find_sort_for_ctor returns None for unknown constructor."""
-        from vera.smt import SmtContext
-        ctx = SmtContext()
-        assert ctx._find_sort_for_ctor("UnknownCtor") is None
 
     def test_find_ctor_index_not_found(self) -> None:
         """_find_ctor_index returns None when ctor not in sort."""

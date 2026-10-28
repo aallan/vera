@@ -10,7 +10,7 @@ type Cnt = Int;
 
 private fn unwrap(@Option<Cnt>, @Cnt -> @Int)
   requires(true)
-  ensures(true)
+  ensures(match @Option<Int>.0 { Some(@Int) -> @Int.result == @Int.0, None -> @Int.result == @Cnt.0 })
   effects(pure)
 {
   match @Option<Int>.0 {
