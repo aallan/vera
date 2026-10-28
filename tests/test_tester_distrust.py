@@ -612,6 +612,16 @@ public fn f(@Int -> @Int)
 
 # h is proved, but its precondition calls a user function, which the
 # generator's bare SMT context cannot translate (#1229).
+SRC_TUPLE_REQUIRES = """\
+public fn gap(@Int, @Int -> @Int)
+  requires(match Tuple(@Int.1, @Int.0) { Tuple(@Int, @Int) -> @Int.1 > @Int.0 })
+  ensures(@Int.result > 0)
+  effects(pure)
+{
+  @Int.1 - @Int.0
+}
+"""
+
 SRC_USER_PREDICATE_REQUIRES = """\
 private fn is_small(@Int -> @Bool)
   requires(true)
@@ -686,6 +696,18 @@ class TestTrapsThatRefuteNothing:
         assert result.summary.verified == 1
         (diag,) = result.diagnostics
         assert (diag.error_code, diag.severity) == ("E701", "warning")
+
+    def test_repro_a_construction_in_a_requires_is_served(self) -> None:
+        """A construction in a `requires` is a term of the sort of its
+        checked type in the generator's context, as in the verifier's
+        (#1525): the generator reads the typed program's type of it, so the
+        clause translates and the proof is exercised, where a context with no
+        type for the construction reported it `cannot generate inputs`."""
+        result = _run(SRC_TUPLE_REQUIRES, distrust=True, trials=9)
+        f = _fn(result, "gap")
+        assert (f.category, f.proved) == ("tested", True), f.reason
+        assert f.trials_run > 0 and f.trials_failed == 0, f.reason
+        assert result.summary.refuted == 0
 
 
 # A proof the run cannot exercise is disclosed where a diagnostics-only

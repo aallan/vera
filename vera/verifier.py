@@ -565,6 +565,19 @@ def _with_linked_predicates(ty: Type, twins: Mapping[int, ast.Node]) -> Type:
     return ty
 
 
+def construction_type(typed: TypedProgram, expr: ast.Expr) -> Type | None:
+    """The type the construction *expr*, a node of *typed*'s program as
+    written, is modelled at in an SMT context no verifier drives (the
+    tester's input generator, #1525): the checker's type of it, a type
+    variable left in it at the type its position fixes, else at `Int`, as
+    :meth:`ContractVerifier._constructed_type_of` models a construction of
+    the program it verifies.  ``None`` for a node the check did not type."""
+    own = typed.semantic_type(expr)
+    if own is None:
+        return None
+    return _modelled_type(base_type(own), typed.target_type(expr))
+
+
 def _modelled_type(own: Type, target: Type | None) -> Type:
     """*own*, the checker's type of a construction, with each type variable
     left in it at the type *target*, the type of the construction's
@@ -7101,8 +7114,7 @@ class ContractVerifier:
             return
         cell = self._written_type(eff.type_args[0])
         declared = self._written_type(expr.state.type_expr)
-        if (cell is None or declared is None
-                or isinstance(cell, UnknownType)
+        if (isinstance(cell, UnknownType)
                 or isinstance(declared, UnknownType)
                 or contains_typevar(cell)
                 or contains_typevar(declared)
@@ -7244,8 +7256,6 @@ class ContractVerifier:
             if payload is None:
                 continue
             binder = self._written_type(clause.params[0])
-            if binder is None:
-                continue
             # The reason is spelled out at each call site rather than shared
             # through a local: `test_no_demotion_site_hardcodes_a_solver_reason`
             # reads these arguments structurally, and a bare Name is
@@ -13260,11 +13270,12 @@ class ContractVerifier:
             if "@result" in counterexample:
                 # #1208: named in the function's OWN scope, so a `forall<T>`
                 # return type reads `@T.result` as written rather than picking
-                # up a same-named module alias's resolution.
+                # up a same-named module alias's resolution; a clone's by its
+                # template's, as its parameters are (#1767).
+                source, source_env = self._written_source(
+                    fn, self._fn_naming_scope(self._current_alias_env, fn))
                 result_name = "@{}.result".format(self._type_expr_to_slot_name(
-                    fn.return_type,
-                    self._fn_naming_scope(self._current_alias_env, fn),
-                ))
+                    source.return_type, source_env))
                 ce_lines.append(f"    {result_name} = {counterexample['@result']}")
 
         ce_text = "\n  ".join(ce_lines) if ce_lines else ""
@@ -14190,20 +14201,39 @@ class ContractVerifier:
         program writes.  A clone's parameters are its template's, in the
         template's scope, so an instance's counterexample names ``@T.0``
         where the source does; a declaration the program does not write (a
-        refinement's predicate check) names its own in *env*."""
-        source_id = decl.node_id
-        if source_id is not None:
-            source_id = self._typed.origin.get(source_id, source_id)
-        found = (self._source_functions().get(source_id)
-                 if source_id is not None else None)
-        if found is not None:
-            source, in_scope = found
-            env = fn_slot_scope(self._current_alias_env, in_scope)
-        else:
-            source = decl
+        refinement's predicate check) names its own in *env*
+        (:meth:`_written_source`)."""
+        source, env = self._written_source(decl, env)
         names = [self._type_expr_to_slot_name(te, env) for te in source.params]
         return [f"@{name}.{names[i + 1:].count(name)}"
                 for i, name in enumerate(names)]
+
+    def _written_source(
+        self, decl: ast.FnDecl, env: AliasEnv,
+    ) -> tuple[ast.FnDecl, AliasEnv]:
+        """The declaration the program writes for *decl*, with the scope its
+        slot names render in: a clone's template, in the template's scope,
+        so a clone's parameters and its result are named as the source names
+        them (#1767); *decl* itself, in *env*, where the program writes no
+        declaration (a refinement's predicate check).  A clone with no
+        template in the typed program is a defect of the table, never a
+        clone to name by its own parameters (``@Int.2``)."""
+        source_id = decl.node_id
+        if source_id is not None:
+            template = self._typed.origin.get(source_id)
+            if template is None and self._instance_subst is not None:
+                raise ValueError(
+                    f"the clone {decl.name!r} at {decl.span} has no template "
+                    f"in the typed program: `vera.typed.build` records every "
+                    f"clone's (#1525)")
+            if template is not None:
+                source_id = template
+        found = (self._source_functions().get(source_id)
+                 if source_id is not None else None)
+        if found is None:
+            return decl, env
+        source, in_scope = found
+        return source, fn_slot_scope(self._current_alias_env, in_scope)
 
     def _source_functions(
         self,

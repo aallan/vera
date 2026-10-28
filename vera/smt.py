@@ -34,6 +34,7 @@ from vera.types import (
     RefinedType,
     Type,
     TypeVar,
+    base_type,
     erases_to_unit,
     BOOL,
     FLOAT64,
@@ -378,6 +379,26 @@ def strip_refinements(ty: Type) -> Type:
     while isinstance(ty, RefinedType):
         ty = ty.base
     return ty
+
+
+def _holds_a_chosen_value(term: z3.ExprRef) -> bool:
+    """Whether *term* holds a data value the solver chooses: a free
+    constant of a datatype sort, a parameter's or an opaque result's, whose
+    components the model states nothing of (#1814)."""
+    stack: list[z3.ExprRef] = [term]
+    seen: set[int] = set()
+    while stack:
+        item = stack.pop()
+        if item.get_id() in seen:
+            continue
+        seen.add(item.get_id())
+        if (z3.is_const(item)
+                and item.decl().kind() == z3.Z3_OP_UNINTERPRETED
+                and isinstance(item.sort(), z3.DatatypeSortRef)):
+            return True
+        if z3.is_app(item):
+            stack.extend(item.children())
+    return False
 
 
 def _adt_sort_key(
@@ -1952,12 +1973,16 @@ class SmtContext:
             if isinstance(left, z3.FPRef):
                 return z3.fpEQ(left, right)
             if isinstance(left.sort(), z3.DatatypeSortRef):
+                if self._equates_two_types(expr, left, right):
+                    return None
                 return self._datatype_value_eq(left, right)
             return left == right
         if op == ast.BinOp.NEQ:
             if isinstance(left, z3.FPRef):
                 return z3.fpNEQ(left, right)
             if isinstance(left.sort(), z3.DatatypeSortRef):
+                if self._equates_two_types(expr, left, right):
+                    return None
                 eq = self._datatype_value_eq(left, right)
                 if eq is None:
                     return None
@@ -2044,6 +2069,32 @@ class SmtContext:
                     return True
         return False
 
+    def _equates_two_types(
+        self, expr: ast.BinaryExpr, left: z3.ExprRef, right: z3.ExprRef,
+    ) -> bool:
+        """Whether the `==` or `!=` *expr* compares two checked types, an
+        `Option<Nat>` against an `Option<Int>`, over a data value the solver
+        chooses (*left* and *right* are the operands' terms).
+
+        The two types are one sort, as `Nat` and `Int` are (`_adt_sort_key`),
+        but a data value the solver chooses, a parameter's or an opaque
+        result's, states no `>= 0` of its `Nat` components (#1814), so the
+        solver may meet the other side with an `Option<Nat>` holding
+        `Some(-1)`, which no run holds.  Such a comparison has no term, and
+        the obligation over it is a runtime check, as it was while the two
+        were two sorts.  A comparison of terms built from their components
+        (`Some(@Nat.0)` against `Some(@Nat.0 + 1)`) states each component as
+        it is, and keeps its term.  The types are the checker's
+        (``_recorded_type_hook``); with none, no type is told apart."""
+        hook = self._recorded_type_hook
+        if hook is None:
+            return False
+        left_type, right_type = hook(expr.left), hook(expr.right)
+        if (left_type is None or right_type is None
+                or base_type(left_type) == base_type(right_type)):
+            return False
+        return _holds_a_chosen_value(left) or _holds_a_chosen_value(right)
+
     def _datatype_value_eq(
         self,
         left: z3.ExprRef,
@@ -2072,9 +2123,10 @@ class SmtContext:
             # structural equality (two differently-sorted terms can never be
             # equal, and the checker's E142 already rejects a genuine
             # cross-type comparison); every construction is a term of its
-            # checked type's sort (#1525), so none is expected here.  Degrade to an honest Tier-3 (None) rather
-            # than let ``left == right`` raise an uncaught ``z3 sort mismatch``
-            # traceback out of ``vera verify`` on a check-green program.
+            # checked type's sort (#1525), so none is expected here.  Degrade
+            # to an honest Tier-3 (None) rather than let ``left == right``
+            # raise an uncaught ``z3 sort mismatch`` traceback out of
+            # ``vera verify`` on a check-green program.
             return None
         if isinstance(left, z3.FPRef):
             return z3.fpEQ(left, right)
@@ -2722,10 +2774,10 @@ class SmtContext:
         the walk reaches whether or not translation does.
 
         The same gates, in the same order, with the same records: a callee
-        with only `requires(true)` obligates nothing; a generic callee, and
-        an argument that does not translate even with the callee's ADT sorts
-        forced (#882), demote (E532); otherwise each precondition is checked
-        against the translated arguments.
+        with only `requires(true)` obligates nothing; a generic callee with
+        no clone to read, and an argument that does not translate (#882),
+        demote (E532); otherwise each precondition is checked against the
+        translated arguments.
         """
         has_nontrivial_pre = any(
             isinstance(c, ast.Requires)
@@ -2872,9 +2924,10 @@ class SmtContext:
 
         Returns the Z3 argument list, or None if an argument in a non-zero-size
         position uses a construct outside the decidable fragment (#882).
-        Factored out so the call translator can attempt argument translation
-        twice: once as-is (pre-#882 behaviour) and once after forcing the
-        callee's ADT sorts.
+        Shared by the precondition check and the call translator, each of
+        which translates the arguments once: a construction is a term of the
+        sort of its checked type (#1525), so no second attempt at another
+        sort could change the answer.
 
         A zero-size position is dropped rather than failing the whole list
         (#1214) — see :meth:`_zero_size_params`.  Its argument is still

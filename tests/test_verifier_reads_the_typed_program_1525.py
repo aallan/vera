@@ -37,8 +37,11 @@ callee's contract does not establish is refused, as the same call over an
 `@Int` is.  The SLOT matrix is every parameter list a name can be counted
 wrong over.  The NESTED-PATH cells hold the source walk's reading of an
 opaque source's declarations down a nested pattern's path, which the
-verifier's records and code generation's guards share.  Each cell is its own
-test, unparametrised.
+verifier's records and code generation's guards share.  The last cells pin
+an `==` of a data type at `Nat` with the same at `Int` at Tier 3 (#1814), a
+clone with no template as the table's defect, and a clone's result named by
+its template's, as its parameters are.  Each cell is its own test,
+unparametrised.
 """
 
 from __future__ import annotations
@@ -448,3 +451,152 @@ def _nested_path_test(name: str) -> Callable[[Path], None]:
 for _name in _NESTED_PATHS:
     globals()[f"test_nested_path_{_name}"] = _nested_path_test(_name)
 del _name
+
+
+# =====================================================================
+# An equality of a data type at `Nat` with the same at `Int`
+# =====================================================================
+
+_CROSS_EQUALITY = """\
+private data Box<T> {
+  MkBox(T)
+}
+
+private fn cross(@Option<Nat>, @Option<Int> -> @Bool)
+  requires(match @Option<Int>.0 { Some(@Int) -> @Int.0 < 0, None -> false })
+  ensures(!@Bool.result)
+  effects(pure)
+{
+  @Option<Nat>.0 == @Option<Int>.0
+}
+
+private fn box_cross(@Box<Nat>, @Int -> @Bool)
+  requires(@Int.0 < 0)
+  ensures(!@Bool.result)
+  effects(pure)
+{
+  @Box<Nat>.0 == MkBox(@Int.0)
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Bool = cross(Some(3), Some(0 - 1));
+  let @Bool = cross(None, Some(0 - 7));
+  let @Bool = box_cross(MkBox(2), 0 - 1);
+  if @Bool.0 || @Bool.1 || @Bool.2 then { 1 } else { 0 }
+}
+"""
+
+
+def test_repro_an_equality_of_two_instantiations_stays_a_runtime_check(
+        tmp_path: Path) -> None:
+    """`Option<Nat>` and `Option<Int>` are one sort, and a term of the
+    `Nat` one states no `>= 0` of its components (#1814), so the solver
+    met `Some(-1)` with an `Option<Nat>` holding it and refused `cross`'s
+    true `ensures` (`E500`), as 37318876 refused `box_cross`'s with
+    `MkBox(-1)`.  An `==` of two checked types has no term: each `ensures`
+    is a runtime check (`E522`), and the calls run with no trap."""
+    path = pipeline.write_tree(tmp_path, {"main.vera": _CROSS_EQUALITY})
+    verified = pipeline.verify(path)
+    assert verified.ok, [d.format() for d in verified.diagnostics]
+    ensures = sorted((o.fn_name, o.status, o.error_code)
+                     for o in verified.obligations
+                     if o.fn_name in ("cross", "box_cross")
+                     and o.kind == "ensures")
+    assert ensures == [("box_cross", "tier3", "E522"),
+                       ("cross", "tier3", "E522")], ensures
+    ran = pipeline.run(path, "main", [])
+    assert ran.ok, ran.stderr or ran.trap
+    assert ran.value == 0, ran.value
+
+
+# =====================================================================
+# A clone with no template in the table
+# =====================================================================
+
+_PICK = """\
+private forall<T> fn pick(@T, @T, @Int -> @T)
+  requires(true)
+  ensures(@T.result == @T.1)
+  effects(pure)
+{
+  if @Int.0 > 0 then { @T.1 } else { @T.0 }
+}
+
+public fn main(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  pick(1, 2, @Int.0)
+}
+"""
+
+
+def test_a_clone_with_no_template_is_a_defect_of_the_table() -> None:
+    """A clone's parameters are named by its template's, read through the
+    typed program's `origin`; a clone with no entry there is the table's
+    defect, raised as `_written_type` raises one, where the clone was
+    named by its own parameters (`@Int.2`) with no error."""
+    from vera.verifier import verify
+
+    typed = pipeline.typed(_PICK, file="main.vera")
+    clones = [inst.clone for inst in typed.instances
+              if inst.clone is not None and inst.clone.name.startswith("pick")]
+    assert clones, [inst.name for inst in typed.instances]
+    for clone in clones:
+        assert clone.node_id is not None
+        del typed.origin[clone.node_id]
+    with pytest.raises(ValueError, match="has no template in the typed program"):
+        verify(typed, source=_PICK, file="main.vera")
+
+
+# =====================================================================
+# A clone's result is named by its template's, as its parameters are
+# =====================================================================
+
+_WRAP_BAD = """\
+private forall<T> fn wrap_bad(@T -> @Option<T>)
+  requires(true)
+  ensures(match @Option<T>.result { Some(@T) -> false, None -> true })
+  effects(pure)
+{
+  Some(@T.0)
+}
+
+public fn use_wrap(@Bool -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match wrap_bad(@Bool.0) {
+    Some(@Bool) -> 1,
+    None -> 0
+  }
+}
+"""
+
+
+def _counterexample_names(source: str, fn: str) -> list[str]:
+    verified = pipeline.verify(source, file="main.vera")
+    (found,) = [d for d in verified.diagnostics
+                if d.error_code == "E500" and f"'{fn}'" in d.description]
+    return re.findall(r"^\s+(@\S+) = ", found.description, re.M)
+
+
+def test_a_clones_result_is_named_by_its_template() -> None:
+    """`pick$Int`'s counterexample names its parameters `@T.1`, `@T.0` and
+    `@Int.0`, its template's, and its result `@T.result`, where it read
+    the clone's `@Int.result`."""
+    assert sorted(_counterexample_names(_PICK, "pick")) == [
+        "@Int.0", "@T.0", "@T.1", "@T.result"]
+
+
+def test_a_clones_composite_result_is_named_by_its_template() -> None:
+    """`wrap_bad`'s instance at `Bool` names its result `@Option<T>.result`,
+    as the template writes it, beside its parameter `@T.0`."""
+    assert sorted(_counterexample_names(_WRAP_BAD, "wrap_bad")) == [
+        "@Option<T>.result", "@T.0"]

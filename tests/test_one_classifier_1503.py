@@ -19,9 +19,11 @@ constructor, `if`-produced, `match`-produced, block-produced,
 what each must do: an `@Int` binding returns the value, an `@Nat` binding is
 refused on the record and at run time, and the literal is classified exactly
 as an `@Int` parameter holding its value.  Where the checker's types are
-read is no longer a roster's to pin: every phase reads them off the typed
-program, and the class cell of `tests/test_typed_program_1525.py` fails on
-any function outside the checker that derives one (#1525).
+read is no longer a roster's to pin: the class cell of
+`tests/test_typed_program_1525.py` fails on a function outside the checker
+that derives one and is on neither of its lists, the deliberate exceptions
+(`DELIBERATE`) and code generation's readers #1525 still lists (`KNOWN`,
+which go with v0.2.7's obligation table).
 """
 
 from __future__ import annotations

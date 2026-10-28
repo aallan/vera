@@ -31,7 +31,7 @@ Verification-completeness gaps — an obligation not emitted, a guard not plante
 | Issue | What |
 |---|---|
 | [#909](https://github.com/aallan/vera/issues/909) | A value's postcondition / refinement is forgotten through an ADT field (box then unbox loses the fact), degrading provable programs to Tier 3. |
-| [#1561](https://github.com/aallan/vera/issues/1561) | A generic function's `decreases` stays Tier 3 when it calls a non-recursive helper, where the monomorphic form is proved; a generic `where` helper on a recursion cycle with its generic parent leaves its own `decreases` at Tier 3, though the parent's is proved; an imported generic whose `decreases` measure is one of its module's data types is proved in the module's own run and falls to Tier 3 through an importer; and a parameterized ADT `decreases` measure (`List<Int>`) is ranked at run time through per-instantiation size helpers, so it gets a runtime guard. |
+| [#1561](https://github.com/aallan/vera/issues/1561) | A generic function's `decreases` stays Tier 3 when it calls a non-recursive helper, where the monomorphic form is proved; a generic `where` helper on a recursion cycle with its generic parent leaves its own `decreases` at Tier 3, though the parent's is proved; and a parameterized ADT `decreases` measure (`List<Int>`) gets no runtime guard until per-instantiation size helpers rank it at run time. |
 | [#1450](https://github.com/aallan/vera/issues/1450) | The boundary guard composes a refinement over a refined base, so such a type compiles instead of being refused with **E618**. |
 
 ## Stage 20 — The single-source sprint
