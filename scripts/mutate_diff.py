@@ -972,17 +972,18 @@ def engine_failure(log: str) -> str | None:
     engine's frame, ``AttributeError: … (mutmut/runners/harness.py:157)``;
     None when the log names no such stop, or a test's code raised.
 
-    The lane reads the tracebacks of the pass that stopped, which mutmut
-    prints in Python's own form.  Going outward from a traceback's innermost
-    frame, past the frames no party's code is in (:data:`_NEUTRAL_FILE`), the
-    first frame decides: a file of the installed ``mutmut`` package is the
-    engine's code (a hook of its stats pass, its trampoline), and any other
-    (the test, the code under test, a library either calls, pytest) is the
-    test's.  An exception of :data:`_RAISED_ANYWHERE` is never the engine's."""
-    stops = [i for i in (log.find(stop) for stop in _COPY_STOPS) if i >= 0]
-    if not stops:
+    The log of a run its stats pass or its clean run stopped holds that
+    pass's output alone: mutmut prints it only when the pass fails, and
+    exits there.  Its reports carry tracebacks in Python's own form.  Going
+    outward from a traceback's innermost frame, past the frames no party's
+    code is in (:data:`_NEUTRAL_FILE`), the first frame decides: a file of
+    the installed ``mutmut`` package is the engine's code (a hook of its
+    stats pass, its trampoline), and any other (the test, the code under
+    test, a library either calls, pytest) is the test's.  An exception of
+    :data:`_RAISED_ANYWHERE` is never the engine's."""
+    if not any(stop in log for stop in _COPY_STOPS):
         return None
-    lines = log[:min(stops)].splitlines()
+    lines = log.splitlines()
     for start, line in enumerate(lines):
         if line.rstrip() != "Traceback (most recent call last):":
             continue

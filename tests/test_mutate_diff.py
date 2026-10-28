@@ -1218,6 +1218,14 @@ class TestEngineFailure:
     def test_the_nights_teardown_hook_is_the_engines_own_failure(self) -> None:
         assert md.engine_failure(NIGHT_LOG) == NIGHT_ERROR
 
+    def test_a_long_exception_is_cut_to_the_records_bound_and_keeps_its_frame(self) -> None:
+        """The sweep refuses a record whose ``engine_error`` is longer
+        (``mutate_sweep.check_record``)."""
+        log = NIGHT_LOG.replace("Did you mean: 'nodeid'?", "Did you mean: 'nodeid'? " + "x" * 1000)
+        error = md.engine_failure(log)
+        assert error is not None and len(error) == md.ENGINE_ERROR_CHARS == 500
+        assert error.startswith("AttributeError: ") and error.endswith("x… (mutmut/runners/harness.py:157)")
+
     def test_the_standard_library_raising_under_the_engines_frame_is_the_engines(self) -> None:
         assert md.engine_failure(ENGINE_IN_THE_STDLIB_LOG) == (
             "FileNotFoundError: [Errno 2] No such file or directory: '<string>' (mutmut/stats.py:163)")
@@ -1230,6 +1238,13 @@ class TestEngineFailure:
         assert md.engine_failure(TRAMPOLINED_CODE_LOG) is None
         assert md.copy_failure(TRAMPOLINED_CODE_LOG) == "tests/test_m.py::test_g"
 
+    def test_the_engine_is_the_installed_package_not_a_directory_of_its_name(self) -> None:
+        """A scratch tree under a directory named ``mutmut`` (a checkout of
+        the engine, say) is still the copy: its frames are the test's."""
+        log = TRAMPOLINED_CODE_LOG.replace("/work/tree/mutants/", "/home/u/mutmut/work/tree/mutants/")
+        assert "/mutmut/work/tree/mutants/vera/m.py" in log
+        assert md.engine_failure(log) is None
+
     def test_a_recursion_that_runs_out_in_the_engines_frame_is_no_engine_failure(self) -> None:
         """Where a recursion runs out of stack is where the stack ends, not
         where a fault lies."""
@@ -1237,8 +1252,9 @@ class TestEngineFailure:
         assert md.copy_failure(RECURSION_LOG) == "tests/test_m.py::test_g"
 
     def test_an_engine_traceback_outside_a_stopped_pass_is_no_engine_failure(self) -> None:
-        """The lane reads the pass that stopped: the same traceback in a log
-        that names no stop decides nothing."""
+        """The lane reads a pass that stopped, the stats pass or the clean
+        run: the same traceback in a log that names no stop decides
+        nothing."""
         assert md.engine_failure(NIGHT_LOG.replace("failed to collect stats. runner returned 1\n", "")) is None
         assert md.engine_failure(NIGHT_LOG.replace("failed to collect stats", "Failed to run clean test")) == (
             NIGHT_ERROR)
