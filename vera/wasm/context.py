@@ -116,8 +116,6 @@ class WasmContext(
         self,
         string_pool: StringPool,
         effect_ops: dict[str, tuple[str, bool]] | None = None,
-        effect_op_result_wt: dict[str, str | None] | None = None,
-        effect_op_result_vera: dict[str, str | None] | None = None,
         effect_op_cells: dict[str, CellNames] | None = None,
         state_getters: dict[str, str] | None = None,
         ctor_layouts: dict[str, ConstructorLayout] | None = None,
@@ -128,7 +126,6 @@ class WasmContext(
         generic_fn_info: (
             dict[str, tuple[tuple[str, ...], tuple[ast.TypeExpr, ...]]] | None
         ) = None,
-        generic_constrained_vars: dict[str, frozenset[str]] | None = None,
         ctor_to_adt: dict[str, str] | None = None,
         known_fns: set[str] | None = None,
         scoped_fns: set[str] | None = None,
@@ -153,32 +150,9 @@ class WasmContext(
         # e.g. {"get": ("$vera.state_get_Int", False),
         #        "put": ("$vera.state_put_Int", True)}
         self._effect_ops = effect_ops or {}
-        # #914: op_name -> the op's RESULT WAT type (e.g. "get" -> "i64" for
-        # State<Int>, "i32" for State<Box>).  `_effect_ops` carries only the
-        # dispatch target + void-ness, not the value-producing op's result
-        # type, which `_infer_expr_wasm_type` needs when a bare `get(())`
-        # sits in a constructor-argument or match-scrutinee position (A1/A2).
-        # Populated in lock-step with `_effect_ops` at every injection site
-        # (the declared-effect path in codegen/functions.py and the handler-
-        # body path in wasm/calls_handlers.py) so the two never drift.
-        self._effect_op_result_wt: dict[str, str | None] = (
-            effect_op_result_wt or {}
-        )
-        # #1006: op_name -> the op's RESULT VERA type name (e.g. "get" ->
-        # "Int" for State<Int>).  The WAT-type mirror above cannot serve
-        # `_infer_vera_type` (i32 is Bool/pointer/…-ambiguous), which needs
-        # the Vera name when a bare `get(())` sits in an array-literal
-        # ELEMENT position — the element layout is chosen from the Vera
-        # type.  Populated in lock-step with `_effect_op_result_wt` at both
-        # injection sites (codegen/functions.py declared-effect path and
-        # wasm/calls_handlers.py handler-body path) and saved/restored the
-        # same way, so the three op registries never drift.
-        self._effect_op_result_vera: dict[str, str | None] = (
-            effect_op_result_vera or {}
-        )
         # #1218: op_name -> the CELL that op dispatches to, as the canonical
-        # pair :class:`CellNames` (identity + representation).  The fourth
-        # registry in the lock-step set, populated at the same two injection
+        # pair :class:`CellNames` (identity + representation).  The registry
+        # in lock-step with `_effect_ops`, populated at the same two injection
         # sites and saved/restored the same way.  It exists so a call site
         # can ask "which cell is this?" from the canonical side: the answers
         # used to be recovered by slicing the mangled family back out of the
@@ -189,7 +163,7 @@ class WasmContext(
         # no host cell and are absent.
         self._effect_op_cells: dict[str, CellNames] = effect_op_cells or {}
         # #1285: cell FAMILY -> that cell's `$vera.state_get_<T>` import.
-        # The four registries above are keyed by op NAME, which is the right
+        # The registries above are keyed by op NAME, which is the right
         # key for a call site (`get(())` names no family, so it means
         # whichever cell the row or the enclosing handler binds) and the
         # wrong key for a contract: `new(State<Bool>)` names its family
@@ -280,13 +254,6 @@ class WasmContext(
         self._generic_fn_info: dict[
             str, tuple[tuple[str, ...], tuple[ast.TypeExpr, ...]]
         ] = generic_fn_info or {}
-        # Per-generic set of type vars carrying an ability bound (`where Eq<T>`).
-        # Used by `_unify_param_arg_wasm` to keep a `ConstructorCall`'s type
-        # argument when rewriting the call site, so the mangled call name matches
-        # the parameterized clone Pass 1.5 emitted (#772).
-        self._generic_constrained_vars: dict[str, frozenset[str]] = (
-            generic_constrained_vars or {}
-        )
         # Constructor name → ADT name reverse mapping
         self._ctor_to_adt: dict[str, str] = ctor_to_adt or {}
         # Every WASM symbol this compilation registered — the REGISTRATION
@@ -348,13 +315,6 @@ class WasmContext(
         # to `$gc_collect` that fires `host_decref_handle` for
         # unmarked wrappers.
         self._needs_wrap_table: bool = False
-        # #841: names of functions whose declared return type is
-        # exactly Future<Result<String, String>> — the await lowering
-        # consults this to decide whether a directly-awaited call
-        # result needs the fused-handle runtime check.  Computed once
-        # in vera/codegen/core.py (compute_future_ret_fns) and shared
-        # with the compilability pre-scan; set via set_future_ret_fns.
-        self._future_ret_fns: frozenset[str] = frozenset()
         # #1479: set by `_emit_trap` beside every `vera.trap` call it emits
         # — the one signal every named check raises, its kind a code rather
         # than an import of its own — so assembly declares the import.
@@ -411,13 +371,6 @@ class WasmContext(
         # WasmContext in unit tests), the gate is skipped and generation
         # proceeds as before.
         self._adt_eq_derivable: Callable[[str], bool] | None = None
-        # #932: TRUNCATED one-level constrained-var name → FULLY-recovered nested
-        # name (`List<List>` → `List<List<Int>>`), read by the direct-`==` path
-        # inside a clone body (`_translate_binary`).  The discovery pass that
-        # filled it is gone (#1679): a clone is named at its full type
-        # arguments, so the table stays empty, every lookup leaves its name
-        # unchanged, and it goes with the backend's remaining readers (#1525).
-        self._eq_full_type_names: dict[str, str] = {}
         # #924: generated recursive show/hash helper functions, keyed by the
         # mangled `$show_<type>` / `$hash_<type>` function name → its full WAT
         # text.  A directly- (or mutually-) recursive ADT's `show`/`hash`
@@ -461,15 +414,8 @@ class WasmContext(
         # fn_name → return_wasm_type (str | None)
         self._fn_ret_types: dict[str, str | None] = {}
         # Function return *Vera* type expressions, retained alongside
-        # `_fn_ret_types` because some inference paths need the full
-        # NamedType (with type_args) — e.g. resolving the element type
-        # of an Array returned from a function call so `f()[i]` can
-        # type-infer (#614).  Pre-fix this dict didn't exist and
-        # `_infer_index_element_type_expr` only handled SlotRef and
-        # nested-IndexExpr collections, silently returning None for
-        # FnCall collections — `_translate_index_expr` then returned
-        # None too, causing the enclosing function (or closure) to
-        # be dropped from the output.
+        # `_fn_ret_types` (#614): `_is_byte_expr` reads a call's declared
+        # `@Byte` return from them.
         self._fn_ret_type_exprs: dict[str, ast.TypeExpr] = {}
         # #747: per-parameter concrete-@Nat flags per function, for the
         # runtime @Int -> @Nat narrowing guard at call sites.
@@ -483,12 +429,6 @@ class WasmContext(
         # #865: per-parameter concrete-@Byte flags, for the call-site
         # int-literal → i32.const coercion (spec §11 — @Byte is i32).
         self._fn_byte_params: dict[str, tuple[bool, ...]] = {}
-        # #1212: `IntLit` nodes this context lowers at the i32 Byte width.
-        # Populated by `_mark_byte_literal_leaves`, the ONE branch descent
-        # every #865 arm drives through `_mark_byte_write_value`; read by
-        # the `IntLit` lowering and by the two join result-type deciders, so
-        # a marked leaf and the `(result …)` annotation over it agree.
-        self._byte_literal_ids: set[int] = set()
         # Closure compilation state — accumulated during translation
         # Each entry: (anon_fn, captures, closure_id)
         # captures: list of (type_name, outer_de_bruijn, wasm_type)
@@ -575,17 +515,15 @@ class WasmContext(
         # bug class against any future inference gap (ADT types in
         # interpolation, novel composite kinds, etc.).
         self._interp_inference_failures: list[ast.Expr] = []
-        # #632 — apply_fn closure-arg shapes that the inference
-        # dispatcher in `_infer_apply_fn_return_type` doesn't
-        # recognise (today: anything other than SlotRef-into-FnType
-        # alias or AnonFn — e.g. `apply_fn(make_mapper(), 7)` where
-        # `make_mapper` is a FnCall returning a closure).  Pre-#632
-        # the apply_fn translation site silently used the `"i64"`
-        # default for the call_indirect sig, producing a WASM
-        # validation trap with no source-located diagnostic.
-        # Post-#632 the failing closure_arg is appended here and the
-        # codegen base's `_harvest_inference_failures` emits a
-        # specific [E616] before falling through to [E602].
+        # #632 — apply_fn closure arguments the checker did not type as a
+        # function (#1516: any shape it did type compiles, a call
+        # returning a closure and a cell read included).  Pre-#632 the
+        # apply_fn translation site silently used the `"i64"` default
+        # for the call_indirect sig, producing a WASM validation trap
+        # with no source-located diagnostic.  Post-#632 the failing
+        # closure_arg is appended here and the codegen base's
+        # `_harvest_inference_failures` emits a specific [E616] before
+        # falling through to [E602].
         self._apply_fn_inference_failures: list[ast.Expr] = []
         # #798: the checker's type of every expression, keyed by node
         # identity (``ast.Node.node_id``, #1679), threaded from the
@@ -595,6 +533,12 @@ class WasmContext(
         # exactly the sites the verifier obligates.  Empty for a bare
         # WasmContext a test builds.
         self._expr_semantic_types: Mapping[int, object] = {}
+        # #1525: the type of each node code generation builds after the
+        # check (an interpolation's conversions, a desugared `compare`), by
+        # the identity `InferenceMixin._built` gives it.  One table per
+        # compilation, shared by every function's context, so a node built
+        # where the program is rewritten is typed wherever it is lowered.
+        self._built_types: dict[int, object] = {}
         # #820: the checker's TARGET type (``expected``) of every expression,
         # by node identity.  Consulted by ``_target_codegen_type`` — the
         # codegen dual of the verifier's ``_target_type_of`` — so the
@@ -640,8 +584,8 @@ class WasmContext(
         # Nor does it fall back to the flat by-name map: re-resolving an
         # owner-stamped reference by bare name is the defect this method
         # exists to prevent, and doing it here would reintroduce it at the
-        # one site that knows better.  Returning None keeps that policy the
-        # same as `_recover_ptype_via_nested_fields`'s (finding D).
+        # one site that knows better.  Returning None keeps that policy
+        # (finding D).
         # NOTE: resolving an owner-stamped reference against the BUILT-IN
         # snapshot first was tried and reverted.  It repairs the
         # constructor's layout but not the RENDER side, which enumerates
@@ -659,6 +603,10 @@ class WasmContext(
         guard's Int/Nat operand classifier (mirrors the verifier's
         ``_resolved_type_of`` / ``_overflow_int_type``)."""
         self._expr_semantic_types = types
+
+    def set_built_types(self, types: dict[int, object]) -> None:
+        """Share the compilation's table of built nodes' types (#1525)."""
+        self._built_types = types
 
     def set_call_targets(self, targets: Mapping[int, Instance]) -> None:
         """Seed the instance each generic call calls (#1679)."""
@@ -690,22 +638,6 @@ class WasmContext(
         """
         self._adt_eq_derivable = oracle
 
-    def set_eq_full_type_names(self, full_names: dict[str, str]) -> None:
-        """Share the truncated→full constrained-var name map (#932).
-
-        ``full_names`` is the CodeGenerator's ``_eq_full_type_names``, read by
-        the direct ``==`` path inside a generic clone body
-        (`_translate_binary`).  The discovery pass that filled it is gone
-        (#1679): a clone is named at its full type arguments, so the map is
-        empty, every lookup leaves its name unchanged, and it goes with the
-        backend's remaining readers (#1525).
-        """
-        self._eq_full_type_names = full_names
-
-    def set_future_ret_fns(self, names: frozenset[str]) -> None:
-        """Set the Future<Result<String, String>>-returning fn set (#841):
-        link names, so a qualified call is classified by its target."""
-        self._future_ret_fns = names
 
     def set_fn_ret_type_exprs(
         self, ret_type_exprs: dict[str, ast.TypeExpr],
@@ -996,72 +928,6 @@ class WasmContext(
     # #1212 — the @Byte write boundary's literal width
     # -----------------------------------------------------------------
 
-    def _mark_byte_literal_leaves(self, value: ast.Expr) -> bool:
-        """Mark every value-position ``IntLit`` LEAF of *value* as i32.
-
-        THE branch descent for the ``@Byte`` write boundaries (#1212).
-        ``@Byte`` is i32 (spec §11) but an int literal defaults to
-        ``i64.const``, and #865 coerced a literal only when it was the whole
-        written value.  The checker's bidirectional coercion types a branch
-        literal as ``@Byte`` just as happily, so ``let @Byte = if c then { 1 }
-        else { 2 }`` — and its init / put / ``with`` / resume / argument /
-        constructor-field twins — were check-green programs that failed WASM
-        validation with ``type mismatch: expected i32, found i64``.
-
-        Descends exactly the JOIN positions whose arms carry the boundary's
-        own type: a ``Block``'s trailing expression, both branches of an
-        ``IfExpr``, and every arm body of a ``MatchExpr`` (single- and
-        multi-arm alike).  Everything else is a leaf that is not a literal
-        and already lowers at i32 in a Byte context, so it is left alone.
-
-        Returns True iff at least one literal was marked, which is what tells
-        the caller the join lowers at i32 — a join with no literal arm
-        (``if c then { @Byte.0 } else { @Byte.1 }``) already did, and is
-        deliberately not claimed here.
-
-        One descent shared by every #865 arm, rather than an ``isinstance``
-        test repeated per site: a site that tested for a bare ``IntLit`` was
-        precisely a site that emitted invalid WASM for the branch spelling.
-        """
-        if isinstance(value, ast.IntLit):
-            self._byte_literal_ids.add(id(value))
-            return True
-        if isinstance(value, ast.Block):
-            return self._mark_byte_literal_leaves(value.expr)
-        if isinstance(value, ast.IfExpr):
-            marked = self._mark_byte_literal_leaves(value.then_branch)
-            if value.else_branch is not None:
-                marked = self._mark_byte_literal_leaves(
-                    value.else_branch) or marked
-            return marked
-        if isinstance(value, ast.MatchExpr):
-            marked = False
-            for arm in value.arms:
-                marked = self._mark_byte_literal_leaves(arm.body) or marked
-            return marked
-        return False
-
-    def _mark_byte_write_value(
-        self, value: ast.Expr, target_base: str | None,
-    ) -> bool:
-        """Prepare *value* to be translated into a ``@Byte`` boundary.
-
-        THE entry every #865 arm calls — the `let` binding, the five
-        State-cell writes, the constructor field and the call argument —
-        BEFORE it translates *value*, so the marks are in place when the
-        ``IntLit`` lowering and the join result-type deciders read them.
-        Marking rather than returning instructions is what keeps the value
-        translated exactly ONCE: the arms that used to overwrite an
-        already-translated ``i64`` lowering with a coerced one discarded a
-        whole join's translation (and the locals and pending closures it
-        registered) to do it.
-
-        *target_base* is the boundary's resolved REPRESENTATION name; a
-        non-``Byte`` boundary marks nothing and returns False.
-        """
-        if target_base != "Byte":
-            return False
-        return self._mark_byte_literal_leaves(value)
 
     # -----------------------------------------------------------------
     # Expression translation
@@ -1239,15 +1105,18 @@ class WasmContext(
         inline scalars — the `_INLINE_I32_TYPES` question, deliberately, and
         not `is_gc_pointer_base`: rooting a host handle is what the `let`
         rooting has always done, and narrowing that here would be a
-        reachability change riding a lifetime change.
+        reachability change riding a lifetime change.  Both are read off
+        the binding's checked type, which the environment carries
+        (:meth:`InferenceMixin._holds_pointer`, #1525).
         """
         roots: list[int] = []
         for type_name, local_idx in after_env.bindings_added_since(before_env):
-            if self._is_pair_type_name(type_name):
-                roots.append(local_idx)
-                continue
-            if (self._slot_name_to_wasm_type(type_name) == "i32"
-                    and type_name not in _INLINE_I32_TYPES):
+            ty = after_env.type_at(local_idx)
+            if ty is None:
+                raise CodegenInvariantError(
+                    f"a statement bound @{type_name} with no checked type, "
+                    "so whether it is a GC root is unknown", None)
+            if self._holds_pointer(ty):
                 roots.append(local_idx)
         return roots
 
@@ -1348,7 +1217,7 @@ class WasmContext(
             return "void"
         if self._is_pair_result_expr(expr):
             return "i32_pair"
-        width = self._infer_expr_wasm_type(expr)
+        width = self._expr_width(expr)
         if width in ("i32", "i64", "f64"):
             return width
         if width == "i32_pair":
@@ -1368,7 +1237,7 @@ class WasmContext(
         while failing to re-root a pointer hands the value to the next
         collection.  An unknown type takes the inert error.
         """
-        vera_type = self._infer_vera_type(expr)
+        vera_type = self._type_name_of(expr)
         if vera_type is None:
             return True
         head = vera_type.split("<", 1)[0]
@@ -1447,15 +1316,17 @@ class WasmContext(
             stmt_env = current_env
             stmt_instrs: list[str] = []
             if isinstance(stmt, ast.LetStmt):
-                # Determine WAT type for this let binding.  Resolved BEFORE
-                # the value is translated because a `@Byte` target changes how
-                # the value's int literals lower (#865 / #1212) — see the
-                # `_mark_byte_write_value` call below.
+                # The binding's slot name keys the slot environment as the
+                # checker binds it; its width, pair-ness and GC-rootness are
+                # the declared type's as the checker resolved it, a
+                # parameterised alias's target under its arguments (#1525).
                 type_name = self._type_expr_to_slot_name(stmt.type_expr)
                 if type_name is None:
                     raise CodegenSkip(
                         stmt, "let binding type has no slot name"
                     )
+                declared = self._type_of(stmt.type_expr)
+                wat_t = self._declared_width(stmt.type_expr)
                 # #865: `@Byte` is i32 (spec §11), but an int literal defaults
                 # to `i64.const`.  The bidirectional checker accepts a 0..255
                 # literal bound to a `@Byte` (incl. a `{ @Byte | P }`
@@ -1466,13 +1337,11 @@ class WasmContext(
                 # their literal LEAVES, so `let @Byte = if c then { 1 } else
                 # { 2 }` — check-green, and invalid WASM while only a top-level
                 # literal was coerced — lowers at i32 in every arm.
-                self._mark_byte_write_value(
-                    stmt.value, self._resolve_base_type_name(type_name))
                 val_instrs = self.translate_expr(stmt.value, current_env)
                 if val_instrs is None:
                     return None
                 # Pair bindings (String, Array<T>) need two locals: (ptr, len)
-                if self._is_pair_type_name(type_name):
+                if wat_t == "i32_pair":
                     # The whole representation, through the shared binding
                     # (#1466): a pair is two consecutive locals and the slot
                     # env reads the length from the one after the pointer, so
@@ -1499,12 +1368,12 @@ class WasmContext(
                         stmt.type_expr, ptr_idx, "let binding", stmt,
                         current_env,
                     ))
-                    current_env = current_env.push(type_name, ptr_idx)
+                    current_env = current_env.push(
+                        type_name, ptr_idx, declared)
                     instructions.extend(self._scope_statement_roots(
                         stmt_instrs, stmt_env, current_env, save_local))
                     continue
-                wat_t = self._slot_name_to_wasm_type(type_name)
-                if wat_t is None:
+                if wat_t is None or wat_t == "unit":
                     raise CodegenSkip(
                         stmt,
                         f"let binding type {type_name!r} has no WASM representation",
@@ -1518,7 +1387,7 @@ class WasmContext(
                 # belt-and-suspenders role.  Alias-aware (`type Age = Nat`)
                 # via `_resolve_base_type_name` so an alias/refined @Nat let
                 # target is guarded too (CR #756).
-                if (self._resolve_base_type_name(type_name) == "Nat"
+                if (self._is_nat_type(declared)
                         and self._narrows_into_nat(stmt.value)):
                     stmt_instrs.extend(self._emit_nat_bind_guard(
                         val_instrs, at=stmt.value))
@@ -1543,7 +1412,7 @@ class WasmContext(
                 # The root is planted by the statement scope below, from the
                 # environment delta (#1371); rooting here as well would hold
                 # a duplicate of the same address for the rest of the frame.
-                current_env = current_env.push(type_name, local_idx)
+                current_env = current_env.push(type_name, local_idx, declared)
             elif isinstance(stmt, ast.ExprStmt):
                 value_instrs = self.translate_expr(stmt.expr, current_env)
                 if value_instrs is None:
@@ -1590,151 +1459,27 @@ class WasmContext(
     # -----------------------------------------------------------------
 
     def _is_void_expr(self, expr: ast.Expr) -> bool:
-        """Check if an expression produces no value on the WASM stack.
+        """Whether *expr* leaves no value on the WASM stack: the checker
+        typed it `Unit`, a type that erases to it, or `Never` (#1525).
 
-        QualifiedCalls (effect operations like IO.print) return Unit
-        and produce no stack value.  UnitLit also produces nothing.
-        Effect op calls like put() are also void.
-        Compound expressions (match, if, block) are void when all
-        branches/the final expression are void.
-
-        Each class's answer is its arm in ``_VOID_ARMS``, a
-        ``vera.fold.dispatch`` table, so every `Expr` class has one.
-        """
-        arm = _VOID_ARMS.get(type(expr))
-        return arm(self, expr) if arm is not None else False
+        An expression statement's `drop`s and the stack shape the scoping
+        wrapper keeps read this and :meth:`_is_pair_result_expr`, so the
+        words the value occupies are the width of its checked type.  An
+        expression with no type is refused, never read as one that leaves
+        nothing: a value it leaves would then have no `drop`, and no root
+        across the scope that restores the shadow stack."""
+        if self._type_of(expr) is None:
+            raise CodegenInvariantError(
+                "an expression the check did not type reached code "
+                "generation, which reads the words it leaves on the stack "
+                "off its checked type", expr)
+        return self._expr_width(expr) is None
 
     def _is_pair_result_expr(self, expr: ast.Expr) -> bool:
-        """Check if an expression produces two values (ptr, len) on the stack.
-
-        String literals, array literals, pair-type slot refs, and function
-        calls returning i32_pair all produce two values.
-        """
-        if isinstance(expr, ast.StringLit):
-            return True
-        if isinstance(expr, ast.InterpolatedString):
-            return True
-        if isinstance(expr, ast.ArrayLit):
-            return True
-        if isinstance(expr, ast.SlotRef):
-            name = self._resolve_base_type_name(expr.type_name)
-            return self._is_pair_type_name(name)
-        if isinstance(expr, ast.FnCall):
-            ret = self._infer_fncall_wasm_type(expr)
-            return ret == "i32_pair"
-        if isinstance(expr, ast.QualifiedCall):
-            ret = self._infer_qualified_call_wasm_type(expr)
-            return ret == "i32_pair"
-        return False
-
-
-
-# =====================================================================
-# `_is_void_expr`: one arm per expression class
-# =====================================================================
-
-def _void_qualified_call(ctx: WasmContext, expr: ast.QualifiedCall) -> bool:
-    # IO.print/sleep/stderr return Unit (void);
-    # IO.exit never returns (unreachable);
-    # Other IO ops (read_line, read_file, time, args, get_env)
-    # produce values.
-    if expr.qualifier == "IO":
-        return expr.name in ("print", "exit", "sleep", "stderr")
-    # Http ops return Result<String, String> — not void
-    if expr.qualifier == "Http":
-        return False
-    # Inference.complete returns Result<String, String> — not void
-    if expr.qualifier == "Inference":
-        return False
-    # DB.query / DB.execute both return a Result — not void (#229)
-    if expr.qualifier == "DB":
-        return False
-    # All Random ops produce values (Int, Float64, or Bool); never void. (#465)
-    if expr.qualifier == "Random":
-        return False
-    # State ops are desugared to FnCall, not QualifiedCall.
-    # Future qualified effects should be added explicitly above.
-    # Default to void for unknown qualified calls as a safe
-    # fallback — WASM validation will catch mismatches.
-    return True
-
-
-def _void_fn_call(ctx: WasmContext, expr: ast.FnCall) -> bool:
-    # #1284: bare form, so the ownership predicate decides whether the
-    # op registry answers at all — a user `fn put` returning a value is
-    # not void just because the handler's `put` is.
-    if ctx._bare_call_denotes_op(expr.name) and expr.name in ctx._effect_ops:
-        _name, is_void = ctx._effect_ops[expr.name]
-        return is_void
-    # User-defined fns declared with @Unit return type — registry stores
-    # them with value None alongside non-void returns.  Without this
-    # clause a `helper(); next_expr` block where `helper` is a user
-    # @Unit fn fell through to "produces a value", got a stray `drop`
-    # appended, and failed WASM validation with "expected a type but
-    # nothing on stack" (#584).
-    if expr.name in ctx._fn_ret_types:
-        return ctx._fn_ret_types[expr.name] is None
-    return False
-
-
-def _void_module_call(ctx: WasmContext, expr: ast.ModuleCall) -> bool:
-    # #1694: no qualified call survives the link step; one that reaches here
-    # is refused when it is translated (`_translate_module_call`).
-    return False
-
-
-def _void_match(ctx: WasmContext, expr: ast.MatchExpr) -> bool:
-    return all(ctx._is_void_expr(arm.body) for arm in expr.arms)
-
-
-def _void_if(ctx: WasmContext, expr: ast.IfExpr) -> bool:
-    return (ctx._is_void_expr(expr.then_branch)
-            and ctx._is_void_expr(expr.else_branch))
-
-
-def _void_block(ctx: WasmContext, expr: ast.Block) -> bool:
-    return ctx._is_void_expr(expr.expr)
-
-
-def _void_handle(ctx: WasmContext, expr: ast.HandleExpr) -> bool:
-    return ctx._is_void_expr(expr.body)
-
-
-def _void_always(ctx: WasmContext, expr: ast.Expr) -> bool:
-    return True
-
-
-def _void_never(ctx: WasmContext, expr: ast.Expr) -> bool:
-    return False
-
-
-_VoidArm = Callable[[WasmContext, Any], bool]
-
-#: Whether an expression leaves nothing on the WASM stack, by class.
-_VOID_ARMS: Mapping[type[ast.Expr], _VoidArm] = fold.dispatch("_is_void_expr", {
-    ast.QualifiedCall: _void_qualified_call,
-    ast.FnCall: _void_fn_call,
-    ast.ModuleCall: _void_module_call,
-    # Compound expressions: void if all branches are void.
-    ast.MatchExpr: _void_match,
-    ast.IfExpr: _void_if,
-    ast.Block: _void_block,
-    ast.HandleExpr: _void_handle,
-    # Unit, and assert/assume, which return Unit.
-    **fold.each((ast.UnitLit, ast.AssertExpr, ast.AssumeExpr), _void_always),
-    # A value on the stack: a literal (Int i64, Float64 f64, Bool i32, a
-    # String pair), a slot or result reference, an operator, an index, an
-    # array, a constructor, a closure handle, a quantifier's Bool; and the
-    # classes rejected before code generation (a hole at check time, `old`
-    # and `new` outside a postcondition).
-    **fold.each((
-        ast.IntLit, ast.FloatLit, ast.BoolLit, ast.StringLit,
-        ast.InterpolatedString, ast.SlotRef, ast.ResultRef, ast.BinaryExpr,
-        ast.UnaryExpr, ast.IndexExpr, ast.ArrayLit, ast.ConstructorCall,
-        ast.NullaryConstructor, ast.AnonFn, ast.ForallExpr, ast.ExistsExpr,
-        ast.HoleExpr, ast.OldExpr, ast.NewExpr,
-    ), _void_never),
-})
+        """Whether *expr* leaves a ``(ptr, len)`` pair on the WASM stack: the
+        checker typed it `String` or `Array<T>` (or a refinement or a
+        `Future` of one), not this namespace's own `data Array`."""
+        return self._expr_width(expr) == "i32_pair"
 
 
 # =====================================================================
@@ -1744,10 +1489,10 @@ _VOID_ARMS: Mapping[type[ast.Expr], _VoidArm] = fold.dispatch("_is_void_expr", {
 def _translate_int_lit(
     ctx: WasmContext, expr: ast.IntLit, env: WasmSlotEnv,
 ) -> list[str] | None:
-    # #1212: a literal a @Byte write boundary marked (directly, or as
-    # a leaf of an `if` / `match` join flowing into one) lowers at the
-    # i32 Byte width — see `_mark_byte_literal_leaves`.
-    if id(expr) in ctx._byte_literal_ids:
+    # A literal the checker typed `Byte` (spec §4.2: a literal in a `@Byte`
+    # context, a branch of a join flowing into one included, #1212) is the
+    # i32 it is held in; every other integer literal is an i64.
+    if ctx._expr_width(expr) == "i32":
         return [f"i32.const {expr.value}"]
     return [f"i64.const {expr.value}"]
 

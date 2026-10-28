@@ -438,9 +438,10 @@ def test_control_show_no_erased_field() -> None:
 
 # =====================================================================
 # Builtin variadic Tuple — its registered layout is EMPTY (recomputed per
-# call), so a WILDCARD over an erased Tuple component has no metadata and
-# LOUD-skips (E602).  That is acceptable and unchanged; pin the loud skip
-# (a diagnostic, not silence).
+# call), so a WILDCARD over an erased Tuple component once had no width
+# and LOUD-skipped (E602).  The wildcard is read at the type the checker
+# matched it at (#1525), the erased `Unit` component's zero width, so the
+# next component is read where construction wrote it, under either arm.
 # =====================================================================
 
 _TUPLE_WILD_ERASED = """\
@@ -462,6 +463,10 @@ public fn f(-> @Int)
 """
 
 
-def test_tuple_wildcard_over_erased_loud_skip() -> None:
-    """Builtin Tuple wildcard-over-erased LOUD-skips with E602 (not silent)."""
-    assert "E602" in _warnings(_TUPLE_WILD_ERASED)
+def test_tuple_wildcard_over_erased_component_reads_the_next() -> None:
+    """A wildcard over an erased Tuple component advances by nothing."""
+    assert _run(_TUPLE_WILD_ERASED, fn="f") == 4242
+    other = _TUPLE_WILD_ERASED.replace(
+        "Tuple((), MkBox(@Int.0))", "Tuple((), MkNot(@Int.0))")
+    assert other != _TUPLE_WILD_ERASED
+    assert _run(other, fn="f") == -4242

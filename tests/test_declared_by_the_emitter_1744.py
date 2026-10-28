@@ -33,8 +33,9 @@ each nested in the other's body, and an `Exn` handler with a `State`
 handler in its body and in its `throw` clause) with its position (the
 function's body, an `if` arm, a `match` arm, a closure's body, a `let`'s
 value and a statement whose value is dropped) and the function kept or
-dropped (an array literal of closures ahead of it, which code generation
-does not lower: E602).  Each cell asserts that the module declares exactly
+dropped (a `map_insert` ahead of it, which the `skip_map_inserts` injection
+makes code generation refuse: E602).  Each cell asserts that the module
+declares exactly
 the cells and tags its code uses, the kept function's being its handlers'
 (the premise), that `vera run` runs `main` and the kept function to its
 value, and that `--target wasi-p2` builds the module exactly when it
@@ -55,6 +56,7 @@ from pathlib import Path
 import pytest
 
 from tests import pipeline
+from tests.codegen_helpers import skip_map_inserts  # noqa: F401  (the fixture)
 
 pytestmark = pytest.mark.matrix(decides=[
     "vera/codegen/compilability.py",
@@ -101,11 +103,12 @@ def _fn(name: str, formals: str, ret: str, effect: str, body: str,
 
 _MAIN = _fn("main", "", "Unit", "<IO>", 'IO.print("ok\\n")')
 
-#: A statement code generation does not lower, an array literal of closures
-#: (E602), so the function holding it is dropped before the code after it
-#: is emitted.  It uses no cell and no tag.
-_DROPPER_TYPE = "type Dropper = fn(Int -> Int) effects(pure);\n\n"
-_DROPPER = "let @Array<Dropper> = [fn(@Int -> @Int) effects(pure) { @Int.0 }];"
+#: A statement code generation refuses (E602) under the `skip_map_inserts`
+#: injection, so the function holding it is dropped before the code after it
+#: is emitted: no shape the check accepts is dropped at E602 (the one
+#: check-green drop left, #1783's, is a caller's E620).  It uses no cell and
+#: no tag.
+_DROPPER = 'let @Map<String, Int> = map_insert(map_new(), "a", 1);'
 
 
 def _state(init: str, body: str) -> str:
@@ -189,8 +192,7 @@ def _program(shape: str, position: str, dropped: bool) -> str:
     body = _positioned(position, _SHAPES[shape][0])
     if dropped:
         body = f"{_DROPPER}\n{body}"
-    return ((_DROPPER_TYPE if dropped else "")
-            + _fn("f", "@Int", "Int", "pure", body) + "\n" + _MAIN)
+    return _fn("f", "@Int", "Int", "pure", body) + "\n" + _MAIN
 
 
 def _wasi(tmp_path: Path, path: Path) -> pipeline.CliResult:
@@ -202,10 +204,13 @@ def _wasi(tmp_path: Path, path: Path) -> pipeline.CliResult:
 @pytest.mark.parametrize("position", list(_POSITIONS))
 @pytest.mark.parametrize("shape", list(_SHAPES))
 def test_the_module_declares_what_its_code_uses(
-        shape: str, position: str, dropped: bool, tmp_path: Path) -> None:
+        shape: str, position: str, dropped: bool, tmp_path: Path,
+        request: pytest.FixtureRequest) -> None:
     """The module declares the cells and tags its code calls, `vera run`
     runs it, and the WASI target builds it exactly when it declares no
     cell."""
+    if dropped:
+        request.getfixturevalue("skip_map_inserts")
     source = _program(shape, position, dropped)
     compiled = pipeline.compile(source)
     assert compiled.ok, [d.format() for d in compiled.diagnostics]
@@ -239,15 +244,16 @@ def test_the_module_declares_what_its_code_uses(
 # ---------------------------------------------------------------------
 
 
-_DEAD_HANDLER = _DROPPER_TYPE + _fn("dead", "@Int", "Int", "pure", f"""\
+_DEAD_HANDLER = _fn("dead", "@Int", "Int", "pure", f"""\
 {_DROPPER}
 {_state("3", "get(())")}""") + "\n" + _MAIN
 
-_DEAD_ROW = _DROPPER_TYPE + _fn("dead", "@Int", "Int", "<State<Int>>", f"""\
+_DEAD_ROW = _fn("dead", "@Int", "Int", "<State<Int>>", f"""\
 {_DROPPER}
 get(())""") + "\n" + _MAIN
 
 
+@pytest.mark.usefixtures("skip_map_inserts")
 def test_repro_a_dropped_handler_declares_no_cell(tmp_path: Path) -> None:
     """The issue's first member, in a handler: a function code generation
     drops (E602) with a `handle[State<Int>]` in it declares no cell, and
@@ -264,6 +270,7 @@ def test_repro_a_dropped_handler_declares_no_cell(tmp_path: Path) -> None:
     assert (ran.returncode, ran.stdout) == (0, "ok\n"), ran.stderr
 
 
+@pytest.mark.usefixtures("skip_map_inserts")
 def test_repro_a_dropped_state_row_declares_no_cell(tmp_path: Path) -> None:
     """The issue's first member, in a row: the same function declaring
     `effects(<State<Int>>)` and calling `get(())`."""
@@ -279,11 +286,12 @@ def test_repro_a_dropped_state_row_declares_no_cell(tmp_path: Path) -> None:
     assert (ran.returncode, ran.stdout) == (0, "ok\n"), ran.stderr
 
 
-_DEAD_EXN = _DROPPER_TYPE + _fn("dead", "@Int", "Int", "pure", f"""\
+_DEAD_EXN = _fn("dead", "@Int", "Int", "pure", f"""\
 {_DROPPER}
 {_exn("@Int.0 + 1", "throw(@Int.0)")}""") + "\n" + _MAIN
 
 
+@pytest.mark.usefixtures("skip_map_inserts")
 def test_repro_a_dropped_exn_handler_declares_no_tag(tmp_path: Path) -> None:
     """The first member's `Exn` twin: a function code generation drops
     (E602) with a `handle[Exn<Int>]` in it declares no tag."""
@@ -537,7 +545,7 @@ def test_an_exn_handler_whose_arms_are_folds_over_closures_loads(
 # ---------------------------------------------------------------------
 
 
-_DROPPED_CALLEE = _DROPPER_TYPE + _fn("g", "@Int", "Int", "pure", f"""\
+_DROPPED_CALLEE = _fn("g", "@Int", "Int", "pure", f"""\
 {_DROPPER}
 @Int.0""", visibility="private")
 
@@ -552,6 +560,7 @@ let @Float64 = sin(1.0);
     "merges, while it compiles, and `_drop_dangling_callers` drops a caller "
     "of a dropped function (E620) after every function has compiled, "
     "taking nothing back out"))
+@pytest.mark.usefixtures("skip_map_inserts")
 def test_a_caller_of_a_dropped_function_declares_nothing(tmp_path: Path) -> None:
     """A function dropped as a caller of a dropped function (E620) declares
     neither the host import nor the cell its code used, and the WASI target

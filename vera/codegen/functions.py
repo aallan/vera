@@ -13,7 +13,7 @@ from vera.binding import SYMBOL_PREFIX, source_name, symbol
 from vera.skip import AdtEqNotDerivableError, CodegenInvariantError, CodegenSkip
 from vera.tail_position import compute_tail_call_sites
 from vera.monomorphize import mangle_type_name
-from vera.slots import effect_op_result_names, type_expr_slot_name
+from vera.slots import type_expr_slot_name
 from vera.trap_registry import signal_instructions
 from vera.wasm import WasmContext, WasmSlotEnv
 from vera.wasm.helpers import (
@@ -326,22 +326,6 @@ class FunctionCompilationMixin:
         else:
             self._emit_contract_predicate_skip(ctx, exc, decl)
 
-    def _mark_byte_return_leaves(
-        self, ctx: WasmContext, return_type: ast.TypeExpr, body: ast.Block,
-    ) -> None:
-        """Mark *body*'s literal leaves when the return resolves to `@Byte`.
-
-        The return-boundary arm of #1212's ONE marking, shared by the named
-        path (`_compile_fn`) and the closure path
-        (`_compile_lifted_closure`) so the two cannot decide a return width
-        differently — which is exactly what the ninth and tenth shapes were.
-        The declared return resolves through `WasmContext._boundary_base`,
-        the ONE representation-base derivation every #1212 boundary now
-        shares (#1256), so a refined `@Byte` alias is a Byte boundary here
-        as it is at the `apply_fn` argument and the `throw` payload.
-        """
-        ctx._mark_byte_write_value(body, ctx._boundary_base(return_type))
-
     def _lift_closures_or_drop(
         self, ctx: WasmContext, decl: ast.FnDecl,
     ) -> bool:
@@ -487,33 +471,21 @@ class FunctionCompilationMixin:
             return None
 
         # Build effect_ops mapping for State<T> and Exn<E> operations.
-        # `effect_op_result_wt` records each value-producing op's result WAT
-        # type (its State<T> parameter's WAT type) so `_infer_expr_wasm_type`
-        # can type a bare `get(())` in constructor-arg / match-scrutinee
-        # position (#914 A1/A2).  Composite type args (`Tuple<Int, Int>`,
-        # `Option<Int>`) are routed through the injective `mangle_type_name`
-        # escaper (#775/#914 B) so the `state_*`/`exn_*` WAT identifiers stay
-        # legal — raw `<`, `>`, `,`, ` ` are illegal in a WAT identifier.
+        # Composite type args (`Tuple<Int, Int>`, `Option<Int>`) are routed
+        # through the injective `mangle_type_name` escaper (#775/#914 B) so
+        # the `state_*`/`exn_*` WAT identifiers stay legal — raw `<`, `>`,
+        # `,`, ` ` are illegal in a WAT identifier.  Shadowing is NOT
+        # filtered into these registries (#1284): they record which cell
+        # each op name reaches, and whether a given call site IS the op is
+        # asked at that site, through `_bare_call_denotes_op`.  Withholding
+        # the entry here answered both questions with one table and made the
+        # second answer unavailable — `State.get(())` in a function that
+        # also declares `fn get` compiled to `call $vera.get` and failed to
+        # link.
         effect_ops: dict[str, tuple[str, bool]] = {}
-        effect_op_result_wt: dict[str, str | None] = {}
-        effect_op_result_vera: dict[str, str | None] = {}
         effect_op_cells: dict[str, CellNames] = {}
         # #1285: cell family -> getter import, for `new(State<T>)`.
         state_getters: dict[str, str] = {}
-        # #1207: the op → Vera result-type table, from the ONE derivation
-        # mono discovery also reads.  Source-order-first-wins and the
-        # unnameable-argument skip live in the shared builder, so the two
-        # consultors cannot drift.  Shadowing is NOT filtered into these
-        # registries (#1284): they record which cell each op name reaches,
-        # and whether a given call site IS the op is asked at that site,
-        # through `_bare_call_denotes_op`.  Withholding the entry here
-        # answered both questions with one table and made the second answer
-        # unavailable — `State.get(())` in a function that also declares
-        # `fn get` compiled to `call $vera.get` and failed to link.
-        row_op_results = (
-            effect_op_result_names(decl.effect.effects)
-            if isinstance(decl.effect, ast.EffectSet) else {}
-        )
         if isinstance(decl.effect, ast.EffectSet):
             # SOURCE ORDER, first wins — the checker's rule for a bare op
             # (spec §7.4) and for its type arguments, so the two agree on
@@ -529,16 +501,12 @@ class FunctionCompilationMixin:
                 if (isinstance(eff, ast.EffectRef) and eff.name == "State"
                         and eff.type_args and len(eff.type_args) == 1):
                     # The alias-OPAQUE source spelling, kept for exactly one
-                    # role: the #1006 Vera-name mirror below.
+                    # role: the nameability gate.
                     type_name = type_expr_slot_name(eff.type_args[0])
                     if type_name:
                         # The import NAME keys on the resolved cell FAMILY
                         # (the family the handler lowering names, #1205
-                        # / #1209); the Vera-name mirror below stays the
-                        # SOURCE name (note it also feeds the #1006/#914-A2
-                        # clone-naming contract for a `get(())` array
-                        # element driving a generic instantiation — see the
-                        # tracked mono discovery desync).
+                        # / #1209).
                         # IDENTITY names the import; REPRESENTATION is
                         # recorded beside it so a `put` call site can
                         # pick its #1203 write guard without slicing
@@ -564,21 +532,6 @@ class FunctionCompilationMixin:
                             effect_ops["get"] = (
                                 f"$vera.state_get_{mangled}", False
                             )
-                            # State<T>'s T is validated non-pair /
-                            # non-unsupported by `_check_state_type` (E607),
-                            # so this yields a scalar (i64/f64/i32) or an
-                            # ADT-pointer (i32) — exactly the op's result WT.
-                            effect_op_result_wt["get"] = (
-                                self._type_expr_to_wasm_type(eff.type_args[0])
-                            )
-                            # #1006: the VERA-name mirror — `_infer_vera_type`
-                            # needs it to type a `get(())` array-literal
-                            # element (the WAT type above is layout-ambiguous).
-                            # #1207: read from the shared table rather than
-                            # re-derived here, so mono discovery's copy of
-                            # this answer is the SAME answer.
-                            effect_op_result_vera["get"] = row_op_results.get(
-                                "get")
                             effect_op_cells["get"] = cell
                         if "put" not in effect_ops:
                             effect_ops["put"] = (
@@ -631,8 +584,6 @@ class FunctionCompilationMixin:
             # #1479: one record for the whole module, read back from its text.
             checks=self._emitted_checks,
             effect_ops=effect_ops,
-            effect_op_result_wt=effect_op_result_wt,
-            effect_op_result_vera=effect_op_result_vera,
             effect_op_cells=effect_op_cells,
             state_getters=state_getters,
             ctor_layouts=ctor_layouts,
@@ -644,8 +595,6 @@ class FunctionCompilationMixin:
             value_data_types=self._value_data_type_names(),
             adt_ctor_tp_indices=self._adt_ctor_tp_indices,
             generic_fn_info=getattr(self, "_generic_fn_info", None),
-            generic_constrained_vars=getattr(
-                self, "_generic_constrained_vars", None),
             ctor_to_adt=ctor_to_adt,
             known_fns=set(self._fn_sigs.keys()),
             # #1299: the ownership predicate's table is the LEXICAL one —
@@ -666,34 +615,27 @@ class FunctionCompilationMixin:
         # #932: share the truncated→full constrained-var name map so the direct
         # `==` path inside a generic clone body resolves a truncated slot type
         # (`List<List>`) on its fully-nested name for the derivability decision.
-        ctx.set_eq_full_type_names(getattr(self, "_eq_full_type_names", {}))
-        # Build function return type map for FnCall type inference.
-        # Include Unit-returning fns explicitly with None so `_is_void_expr`
-        # in vera/wasm/context.py can distinguish "Unit return" (key present,
-        # value is None) from "unknown function" (key absent).  Without this,
-        # a user @Unit fn called in non-tail block-statement position fell
-        # through to "produces a value", emitting a stray drop and breaking
-        # WASM validation (#584).
+        # The functions' return widths, a `@Unit` return held as None: a
+        # call in tail position is lowered to `return_call` only where its
+        # callee's return width is the caller's (`CallsMixin._translate_call`).
+        # Whether a call leaves a value is its checked type's question
+        # (`_is_void_expr`), not this map's.
         fn_ret_types: dict[str, str | None] = {}
         for fn_name, (_, ret_wt) in self._fn_sigs.items():
             if ret_wt != "unsupported":
                 fn_ret_types[fn_name] = ret_wt
         ctx.set_fn_ret_types(fn_ret_types)
         # #614: full Vera return-type expressions, paired with the WAT-
-        # types above.  Used by `_infer_index_element_type_expr` to
-        # resolve the element type of `f()[i]` when `f` returns
-        # `Array<T>`.
+        # types above; `_is_byte_expr` reads a call's declared `@Byte`
+        # return from them.
         ctx.set_fn_ret_type_exprs(self._fn_ret_type_exprs)
-        # #841: Future<Result<String, String>>-returning fn names, for the
-        # await lowering's directly-awaited-call check (computed once in
-        # core.py).
-        ctx.set_future_ret_fns(self._future_ret_fns)
         # #798: the checker's types by node identity, for the integer-overflow
         # guard's Int/Nat operand classifier (kept in lockstep with the
         # verifier), and #820 its targets, for the narrowing guards'
         # per-component target recovery: one table for every body (#1679).
         ctx.set_expr_semantic_types(self._expr_semantic_types)
         ctx.set_expr_target_types(self._expr_target_types)
+        ctx.set_built_types(self._built_types)
         ctx.set_call_targets(self._typed.call_targets)
         # #747: per-parameter concrete-@Nat flags for the call-site
         # runtime narrowing guard.
@@ -1098,19 +1040,9 @@ class FunctionCompilationMixin:
         #    The audit-and-convert pass (Phase 3, tracked in #657) is
         #    migrating these sites to ``raise CodegenSkip``; until
         #    that's complete this branch stays as the catch-all.
-        # #1212: the RETURN is a `@Byte` write boundary like any other, so
-        # mark the body's literal leaves before translating it.  The
-        # whole-body `i32.wrap_i64` below cannot cover a HETEROGENEOUS join
-        # — `_infer_block_result_type` reads the then-branch / first arm
-        # only, so a join whose read arm is an i32 `@Byte` slot and whose
-        # sibling is a bare literal was annotated from one arm while the
-        # other lowered at its own width, and ARM ORDER decided which way
-        # the module failed to validate.  Marking makes every arm i32, after
-        # which whichever arm the decider reads gives the same answer; a
-        # decider taught to read every arm would not have helped, since the
-        # literal arm would still emit `i64.const`.  Alias-aware, so a
-        # refined `@Byte` alias return marks too.
-        self._mark_byte_return_leaves(ctx, decl.return_type, decl.body)
+        # #1212: a `@Byte` return's literal arms need no marking: a literal
+        # lowers at its checked type's width, and a join's at the join's
+        # (#1525).
         try:
             body_instrs = ctx.translate_block(decl.body, env)
         except CodegenSkip as skip:
@@ -1235,7 +1167,7 @@ class FunctionCompilationMixin:
         # Coerce body result if return type is i32 but body produces i64
         # (e.g. IntLit in a Byte-returning function)
         if ret_wt == "i32":
-            body_result_type = ctx._infer_block_result_type(decl.body)
+            body_result_type = ctx._expr_width(decl.body)
             if body_result_type == "i64":
                 body_instrs.append("i32.wrap_i64")
 

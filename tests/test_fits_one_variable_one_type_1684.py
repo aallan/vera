@@ -984,7 +984,7 @@ def test_a_closure_whose_variable_is_unfixed_fits_no_unfixed_variable() -> None:
 
 
 # ---------------------------------------------------------------------
-# A built-in's variable a failed substitution lost (#1688)
+# A built-in's variable bound through a refinement alias (#1688)
 # ---------------------------------------------------------------------
 
 _LOST_AT_ARGUMENT = """\
@@ -1038,10 +1038,10 @@ public fn main(@Unit -> @Nat)
 
 
 def test_a_lost_built_in_variable_keeps_the_fit_it_had() -> None:
-    """`map_values` over a refinement alias leaves its value variable
-    unbound (#1688); the join neither fills nor refuses it, and the fit
-    keeps the verdict it gave: the `String` element fits a `String`
-    parameter, and `vera run` reads its length."""
+    """`map_values` over a refinement alias binds its value variable from
+    the refinement's base (#1688): the `String` element fits a `String`
+    parameter, and `vera run` reads its length at the width code
+    generation reads off the typed program, a `String`'s."""
     source = _LOST_AT_ARGUMENT.format(param="String",
                                       body="string_length(@String.0)")
     checked = pipeline.check(source)
@@ -1050,18 +1050,16 @@ def test_a_lost_built_in_variable_keeps_the_fit_it_had() -> None:
 
 
 def test_a_lost_built_in_variable_keeps_the_coercion_it_had() -> None:
-    """The same variable where a `let` expects `Array<String>`: the call
-    takes the expected type, as it did before (`_synth_fn_call`).  No
-    corpus or documentation program reaches this arm."""
+    """The same call where a `let` expects `Array<String>`: the variable
+    bound from the refinement's base, the call's type is the `let`'s."""
     checked = pipeline.check(_LOST_AT_LET)
     assert checked.ok, [e.format() for e in checked.errors]
     assert pipeline.run(_LOST_AT_LET).value == 1
 
 
-@pytest.mark.xfail(strict=True, reason="#1688: a built-in's variable a "
-                   "failed substitution lost fits any argument type")
 def test_a_lost_built_in_variable_fits_no_other_type() -> None:
-    """The `String` element at a `Nat` parameter, which #1688 refuses at
-    its source; until then the fit keeps the verdict it gave."""
+    """The `String` element at a `Nat` parameter is refused at check: the
+    variable is bound from the refinement's base (#1688), so the element
+    is a `String`."""
     source = _LOST_AT_ARGUMENT.format(param="Nat", body="@Nat.0")
     assert not pipeline.check(source).ok

@@ -487,7 +487,7 @@ def test_a12_result_bare_tier_split_matches_control() -> None:
 # #1069 — the STRIPPED marker still leaks a bare type var into a mismatch
 # message.  #982 stopped the raw ``#b`` marker from surfacing; but a built-in
 # generic var that inference never substituted (``map_values``'s element var
-# ``V#b``, escaping through a refinement alias) is stripped to a bare ``V``
+# ``V#b`` over a ``map_new()`` nothing fixes) is stripped to a bare ``V``
 # and printed as if it were a real, user-meaningful type ("body has type V").
 # The fix renders such a leaked internal placeholder as ``?`` at the
 # *actual*-type slot of every mismatch message, while leaving a genuine user
@@ -495,10 +495,16 @@ def test_a12_result_bare_tier_split_matches_control() -> None:
 # signature (``Array<T>`` — TestMarkerNeverLeaks982) untouched.
 # =====================================================================
 
-# A refinement alias over a generic container whose value type is a concrete
-# ``Int``.  ``map_values(@M.0)`` is ``Array<V#b>`` (the element derivation does
-# not thread the alias base, an out-of-scope inference gap), so indexing it
-# yields the bare, unsubstituted ``V#b`` — the leak vehicle.
+# The leak vehicle: ``map_values(map_new())`` is ``Array<V#b>``, a type
+# nothing determines (no argument and no context fixes ``map_new()``'s
+# ``V``), so indexing it yields the bare, unsubstituted ``V#b``.  It was
+# ``map_values(@M.0)`` over the refinement alias below until #1688's fix,
+# which binds ``V`` from the refinement's base, ``Int``: read through the
+# alias the variable was never undetermined, and that leak was #1688 itself
+# (``get_val(@M -> @Int) { map_values(@M.0)[0] }``, a correct program, was
+# refused with E121; tests/test_fits_one_variable_one_type_1684.py's #1688
+# cells pin the fix).  The alias stays because the cells' signatures take an
+# ``@M``.
 _M_ALIAS = (
     "type M = { @Map<String, Int> | map_size(@Map<String, Int>.0) >= 0 };\n"
 )
@@ -527,13 +533,13 @@ class TestLeakedTypevarMessage1069:
     """
 
     def test_e121_function_body(self) -> None:
-        """E121 — the reported repro.  Body ``map_values(@M.0)[0]`` is a bare
+        """E121 — the reported repro.  Body ``map_values(map_new())[0]`` is a bare
         leaked ``V``; the declared return is ``Int``."""
         desc = _diag(
             _M_ALIAS
             + "public fn get_val(@M -> @Int)\n"
             "  requires(true) ensures(true) effects(pure)\n"
-            "{ map_values(@M.0)[0] }\n",
+            "{ map_values(map_new())[0] }\n",
             "E121",
         )
         assert "body has type ?, expected Int" in desc, desc
@@ -546,7 +552,7 @@ class TestLeakedTypevarMessage1069:
             _M_ALIAS
             + "public fn f(@M -> @Bool)\n"
             "  requires(true) ensures(true) effects(pure)\n"
-            "{ let @Bool = map_values(@M.0); @Bool.0 }\n",
+            "{ let @Bool = map_values(map_new()); @Bool.0 }\n",
             "E170",
         )
         assert "value has type Array<?>" in desc, desc
@@ -559,7 +565,7 @@ class TestLeakedTypevarMessage1069:
             + "public fn f(@M -> @Bool)\n"
             "  requires(true) ensures(true) effects(pure)\n"
             "{ apply_fn(fn(@M -> @Bool) effects(pure) "
-            "{ map_values(@M.0)[0] }, @M.0) }\n",
+            "{ map_values(map_new())[0] }, @M.0) }\n",
             "E171",
         )
         assert "body has type ?, expected Bool" in desc, desc
@@ -572,7 +578,7 @@ class TestLeakedTypevarMessage1069:
             + _M_ALIAS
             + "public fn f(@M -> @Box)\n"
             "  requires(true) ensures(true) effects(pure)\n"
-            "{ MkBox(map_values(@M.0)[0]) }\n",
+            "{ MkBox(map_values(map_new())[0]) }\n",
             "E213",
         )
         assert "field 0 has type ?, expected Bool" in desc, desc
@@ -585,7 +591,7 @@ class TestLeakedTypevarMessage1069:
             + _M_ALIAS
             + "private fn f(@M -> @Unit)\n"
             "  requires(true) ensures(true) effects(<Sig>)\n"
-            "{ emit(map_values(@M.0)[0]) }\n",
+            "{ emit(map_values(map_new())[0]) }\n",
             "E204",
         )
         assert "has type ?, expected Bool" in desc, desc
@@ -599,7 +605,7 @@ class TestLeakedTypevarMessage1069:
             + _M_ALIAS
             + "private forall<T where Emitter<T>> fn f(@T, @M -> @Unit)\n"
             "  requires(true) ensures(true) effects(pure)\n"
-            "{ emit(map_values(@M.0)[0]) }\n",
+            "{ emit(map_values(map_new())[0]) }\n",
             "E241",
         )
         assert "has type ?, expected Bool" in desc, desc
@@ -614,7 +620,7 @@ class TestLeakedTypevarMessage1069:
             + _M_ALIAS
             + "public fn f(@BoolToInt, @M -> @Int)\n"
             "  requires(true) ensures(true) effects(pure)\n"
-            "{ apply_fn(@BoolToInt.0, map_values(@M.0)[0]) }\n",
+            "{ apply_fn(@BoolToInt.0, map_values(map_new())[0]) }\n",
             "E202",
         )
         assert "has type ?, expected Bool" in desc, desc
@@ -627,7 +633,7 @@ class TestLeakedTypevarMessage1069:
             + "public fn probe(@M -> @Bool)\n"
             "  requires(true) ensures(true) effects(pure)\n"
             "{\n"
-            "  handle[State<Bool>](@Bool = map_values(@M.0)[0]) {\n"
+            "  handle[State<Bool>](@Bool = map_values(map_new())[0]) {\n"
             "    get(@Unit) -> { resume(@Bool.0) },\n"
             "    put(@Bool) -> { resume(()) }\n"
             "  } in { get(()) }\n"
@@ -646,7 +652,7 @@ class TestLeakedTypevarMessage1069:
             "{\n"
             "  handle[State<Int>](@Int = 0) {\n"
             "    get(@Unit) -> { resume(@Int.0) },\n"
-            "    put(@Int) -> { resume(()) } with @Int = map_values(@M.0)[0]\n"
+            "    put(@Int) -> { resume(()) } with @Int = map_values(map_new())[0]\n"
             "  } in { get(()) }\n"
             "}\n",
             "E335",
@@ -671,7 +677,7 @@ class TestLeakedTypevarMessage1069:
         assert "?" not in desc, desc
 
 
-_V = "map_values(@M.0)[0]"
+_V = "map_values(map_new())[0]"
 
 _PURE_FN = (
     "public fn f(@M -> @{ret})\n"
@@ -682,6 +688,21 @@ _PURE_FN = (
 
 def _fn(ret: str, body: str) -> str:
     return _M_ALIAS + _PURE_FN.format(ret=ret, body=body)
+
+
+# An `if` fills a built-in's variable that no parameter mentions from its
+# other branch (#1668's join), so ``map_values(map_new())`` makes no E301.
+# The E301 rows take a variable a parameter mentions and the arguments
+# leave unbound: ``array_map``'s ``B`` beside a refinement of a function
+# type, which its function-typed parameter does not unify through (an E202
+# of its own sits beside each, an instance of #1684's class).
+_FOO_ALIAS = "type Foo = { @fn(Int -> Int) effects(pure) | true };\n"
+_LOST = "array_map([1], @Foo.0)[0]"
+
+
+def _fn_lost(ret: str, body: str) -> str:
+    return _FOO_ALIAS + _PURE_FN.replace("@M", "@Foo").format(
+        ret=ret, body=body)
 
 
 # One row per converted render slot: (error code, source, corrected
@@ -743,11 +764,11 @@ _SIBLING_SITES = [
         "E300", _fn("Int", f"if {_V} then {{ 1 }} else {{ 2 }}"),
         "If condition must be Bool, found ?", "found V.", id="E300-if-cond"),
     pytest.param(
-        "E301", _fn("Int", f"if true then {{ {_V} }} else {{ 2 }}"),
+        "E301", _fn_lost("Int", f"if true then {{ {_LOST} }} else {{ 2 }}"),
         "then-branch is ?, else-branch is Int",
         "then-branch is V", id="E301-then-branch"),
     pytest.param(
-        "E301", _fn("Int", f"if true then {{ 2 }} else {{ {_V} }}"),
+        "E301", _fn_lost("Int", f"if true then {{ 2 }} else {{ {_LOST} }}"),
         "then-branch is Int, else-branch is ?",
         "else-branch is V", id="E301-else-branch"),
     pytest.param(
@@ -804,7 +825,8 @@ class TestLeakedTypevarSiblingSites1069:
     def test_e301_fix_text_renders_unknown(self) -> None:
         """E301's fix field interpolates the else-branch's inferred type; a
         leaked var there masquerades the same way the description did."""
-        errs = _errors(_fn("Int", f"if true then {{ 2 }} else {{ {_V} }}"))
+        errs = _errors(_fn_lost(
+            "Int", f"if true then {{ 2 }} else {{ {_LOST} }}"))
         fixes = [e.fix for e in errs if e.error_code == "E301"]
         assert fixes and fixes[0] is not None, errs
         assert "convert one branch to ?" in fixes[0], fixes[0]

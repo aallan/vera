@@ -368,7 +368,6 @@ class ClosureLiftingMixin:
         # #932: share the truncated→full constrained-var name map (see
         # functions.py) so a generic clone's direct `==` inside a closure body
         # resolves a truncated slot type on its fully-nested name.
-        ctx.set_eq_full_type_names(getattr(self, "_eq_full_type_names", {}))
         # #514: share the module-level sig dict and closure-ID counter
         # with the inner ctx so that any new sigs / IDs it registers
         # get module-unique names (avoids ``$closure_sig_0`` /
@@ -387,9 +386,6 @@ class ClosureLiftingMixin:
         # not just the WAT type — same propagation as the per-function
         # ctx in `functions.py`.
         ctx.set_fn_ret_type_exprs(self._fn_ret_type_exprs)
-        # #841: Future<Result<String, String>>-returning fn names, so an
-        # await inside a closure body gets the fused-handle check too.
-        ctx.set_future_ret_fns(self._future_ret_fns)
         # #798: resolved-type side-table for the integer-overflow guard's
         # Int/Nat operand classifier, inside closure bodies too.
         ctx.set_expr_semantic_types(self._expr_semantic_types)
@@ -398,6 +394,8 @@ class ClosureLiftingMixin:
         ctx.set_expr_target_types(self._expr_target_types)
         # #1679: the instance each generic call in the closure calls.
         ctx.set_call_targets(self._typed.call_targets)
+        # #1525: the types of the nodes code generation built.
+        ctx.set_built_types(self._built_types)
         # #747: per-parameter concrete-@Nat flags for the call-site
         # runtime narrowing guard inside closure bodies too.
         ctx.set_fn_nat_params(self._fn_nat_params)
@@ -694,14 +692,6 @@ class ClosureLiftingMixin:
         # See the parallel block in vera/codegen/functions.py::_compile_fn
         # for the matching catch in the non-closure path.
         try:
-            # #1212: the closure's RETURN is a `@Byte` write boundary, so
-            # its body's literal leaves are marked before translation —
-            # the same call `_compile_fn` makes, which is what keeps a
-            # heterogeneous join lowering identically on both paths.  MUST
-            # precede `translate_block`; the `i32.wrap_i64` mirror below
-            # only rescues a body the decider calls i64 WHOLE.
-            self._mark_byte_return_leaves(
-                ctx, anon_fn.return_type, anon_fn.body)
             body_instrs = ctx.translate_block(anon_fn.body, env)
         except CodegenSkip as skip:
             # Closure-body skips emit their own structured [E602]
@@ -785,7 +775,7 @@ class ClosureLiftingMixin:
         # it into an `ret_wt` local, which an i64 result would make
         # ill-typed too).  MUST NOT move above `translate_block`.
         if ret_wt == "i32":
-            body_result_type = ctx._infer_block_result_type(anon_fn.body)
+            body_result_type = ctx._expr_width(anon_fn.body)
             if body_result_type == "i64":
                 body_instrs.append("i32.wrap_i64")
 

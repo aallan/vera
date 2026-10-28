@@ -322,7 +322,6 @@ _REPRO_KNOWN: tuple[tuple[int, str, str, str, int, int], ...] = (
     (1695, "1607", "recorded_unguarded", "ensures", 3, 3),
     (1695, "1607", "recorded_unguarded", "index_bounds", 3, 92),
     (1695, "1530", "recorded_unguarded", "decreases", 4, 3),
-    (1695, "1530", "guarded_unrecorded", "nat_bind", 15, 3),
     (1695, "1582", "recorded_unguarded", "int_overflow", 6, 23),
     (1695, "1608", "guarded_unrecorded", "nat_bind", 14, 32),
 )

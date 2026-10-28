@@ -502,7 +502,7 @@ public fn probe(@Unit -> @Int)
 """
 
 
-def test_bare_fn_type_cell_still_takes_the_fallback_and_is_refused(
+def test_bare_fn_type_cell_still_takes_the_fallback_and_runs(
     tmp_path: Path,
 ) -> None:
     """What is LEFT for ``family_fallback_name`` after #1219, pinned.
@@ -516,24 +516,22 @@ def test_bare_fn_type_cell_still_takes_the_fallback_and_is_refused(
     ``?``; keeping the spelling there stops two unrelated broken cells from
     merging onto one ``?`` family.
 
-    Inert either way, and this pins that too: the shape is refused
-    downstream, the enclosing function dropped loudly (E616 for the closure
-    read, then E602/E620), so the module declares no cell for it: a cell
-    is declared by the code that calls it, which is dropped (#1744).  A
-    handler of the same cell whose body never reads the closure compiles,
-    and declares the cell under the fallback's spelling.  Splitting it is
-    therefore free, and merging it would be the only thing with a cost.
+    The cell's one family carries the program: `apply_fn` of the closure
+    the cell's `get` reads takes its signature from the read's checked
+    function type (#1516, #1525), where it was refused (E616) and the
+    enclosing function dropped.  A handler of the same cell whose body
+    never reads the closure declares the cell under the same spelling: its
+    push, put and pop call it (#1744).
 
     Promoted from ``tests/probes/state_handlers/alias_families/
     p7_fn_alias_state_arg.vera``, which asked this question and was deleted
     with the #1219 disposition.
     """
-    result = _compile_source(_BARE_FN_CELL, tmp_path)
-    assert _families(result.wat) == set(), result.wat[:400]
-    codes = {d.error_code for d in result.diagnostics}
-    assert {"E602", "E620"} <= codes, codes
-    assert "(func $:probe" not in result.wat
-    assert "(func $:main" not in result.wat
+    result = _compile_ok(_BARE_FN_CELL, tmp_path)
+    assert _families(result.wat) == {
+        "state_get_F", "state_put_F", "state_push_F", "state_pop_F",
+    }, result.wat[:400]
+    assert execute(result).value == 42
     kept = _compile_source(_BARE_FN_CELL_KEPT, tmp_path, name="kept")
     assert _families(kept.wat) == {
         "state_get_F", "state_put_F", "state_push_F", "state_pop_F",

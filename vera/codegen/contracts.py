@@ -13,6 +13,7 @@ from typing import ClassVar
 from vera import ast, carriers, naming
 from vera.monomorphize import mangle_type_name
 from vera.skip import CodegenSkip
+from vera.types import BOOL, INT, NAT
 from vera.wasm import WasmContext, WasmSlotEnv
 from vera.wasm.helpers import (
     CellNames,
@@ -22,6 +23,7 @@ from vera.wasm.helpers import (
     field_layout,
     gc_shadow_push,
     state_type_arg,
+    type_implicit_range,
 )
 from vera.wasm.inference import substitute_type_vars
 
@@ -212,7 +214,8 @@ class ContractsMixin:
             # which erases identically and raised a raw `ValueError` at
             # the `wt is None` invariant in `_compile_fn` below.
             return None
-        return (parts.predicate, parts.binder_name)
+        return (type_implicit_range(parts.predicate, parts.base, self._built),
+                parts.binder_name)
 
     def _emit_refinement_check(
         self,
@@ -668,11 +671,11 @@ class ContractsMixin:
             guard: tuple[ast.Expr, str] | None = parts
             if guard is None and is_nat:
                 guard = (
-                    ast.BinaryExpr(
+                    self._built(ast.BinaryExpr(
                         op=ast.BinOp.GE,
-                        left=ast.SlotRef(
-                            type_name="Nat", type_args=None, index=0),
-                        right=ast.IntLit(value=0)),
+                        left=self._built(ast.SlotRef(
+                            type_name="Nat", type_args=None, index=0), NAT),
+                        right=self._built(ast.IntLit(value=0), INT)), BOOL),
                     "Nat",
                 )
             yield _ComponentGuardSite(
@@ -1304,7 +1307,7 @@ class ContractsMixin:
             if instrs is None:
                 self._dec_rank_helpers = helpers_snapshot
                 return None
-            wt = ctx._infer_expr_wasm_type(expr)
+            wt = ctx._expr_width(expr)
             if wt == "i64":
                 comp_values.append(instrs)
                 continue

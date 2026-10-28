@@ -231,11 +231,11 @@ private fn probe(@Unit -> @Int)
 }
 """
 
-# --- the op's RESULT TYPE mirrors follow the enclosing cell too -------
-# `_effect_op_result_wt` types a bare get(()) in match-scrutinee position
-# (#914 A2).  Outer cell is Option<Int> (an i32 pointer), inner is Nat (i64),
-# so leaving that mirror at the inner handler emits an i64 scrutinee for an
-# i32 value — invalid WASM, on a check-green program.
+# --- the op's RESULT TYPE follows the enclosing cell too ---------------
+# A bare get(()) in match-scrutinee position (#914 A2) is typed by the cell
+# the clause body's op reaches.  Outer cell is Option<Int> (an i32 pointer),
+# inner is Nat (i64), so typing it by the inner handler emits an i64
+# scrutinee for an i32 value — invalid WASM, on a check-green program.
 #   put(3)  -> Nat cell 3; clause body matches the OUTER Some(9) and writes
 #              Some(10) back to it
 # => 3 * 100 + 10 = 310.  (Pre-fix the whole clause body targeted the Nat
@@ -272,7 +272,7 @@ private fn probe(@Unit -> @Int)
 }
 """
 
-# The Vera-name twin: `_effect_op_result_vera` picks an array literal's
+# The Vera-name twin: the op's result type picks an array literal's
 # ELEMENT layout (#1006), which the layout-ambiguous WAT type cannot.  Same
 # nesting; the clause body wraps the outer cell's value in an array and puts
 # it straight back, so the outer stays Some(9).  => 3 * 100 + 9 = 309.

@@ -108,11 +108,8 @@ class RegistrationMixin:
         self._fn_byte_params[decl.name] = tuple(
             self._type_resolves_to_base(p, "Byte") for p in decl.params
         )
-        # #614: also register the full Vera return type expression so
-        # `_infer_index_element_type_expr` can extract the element type
-        # of an `Array<T>`-returning call inside `f()[i]`.  Without
-        # this, the inference walker falls through to `return None`
-        # for FnCall collections.
+        # #614: also register the full Vera return type expression, which
+        # `_is_byte_expr` reads a call's declared `@Byte` return from.
         self._fn_ret_type_exprs[decl.name] = decl.return_type
 
         # #516 Stage 2 — record source location so wasmtime trap frames

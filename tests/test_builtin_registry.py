@@ -45,7 +45,6 @@ intrinsics to their behaviour, which no record decides.
 from __future__ import annotations
 
 import ast as pyast
-import functools
 import inspect
 import re
 from collections.abc import Iterator
@@ -540,124 +539,6 @@ def test_call_declares_its_registry_imports(spec: BuiltinSpec) -> None:
 
 
 # ---------------------------------------------------------------------
-# A call code generation never emits declares nothing
-# ---------------------------------------------------------------------
-
-
-#: A statement code generation cannot lower, an array of closures (E602), so
-#: the function holding it is dropped after the pre-scan has walked its body.
-#: It calls no host import.
-_DROPPER = "let @Array<Dropper> = [fn(@Int -> @Int) effects(pure) { @Int.0 }];"
-
-#: A `main` that calls no host import, so no import a call declares is one
-#: `main` declares too.
-_ZERO = _fn_source("main", "@Unit", "Int", "effects(pure)", "0")
-
-_PRINTS = """\
-public fn main(-> @Unit)
-  requires(true)
-  ensures(true)
-  effects(<IO>)
-{
-  IO.print("hi\\n")
-}
-"""
-
-
-def _dropped_source(formals: str, ret: str, effect: str, body: str,
-                    decls: str = "") -> str:
-    """A program whose public `dead` holds *body* after the dropper, beside
-    a `main` that calls no host import."""
-    return (f"{decls}type Dropper = fn(Int -> Int) effects(pure);\n\n"
-            + _fn_source("dead", formals, ret, effect, f"{_DROPPER}\n  {body}")
-            + "\n" + _ZERO)
-
-
-def _module_declarations(source: str, *, dropped: bool) -> dict[str, str]:
-    """The declarations of *source*'s module, its `dead` dropped by code
-    generation (E602) or compiled."""
-    compiled = pipeline.compile(source)
-    assert compiled.ok, [d.description for d in compiled.diagnostics]
-    assert ("dead" in compiled.exports) is not dropped
-    assert ("E602" in {d.error_code for d in compiled.warnings}) is dropped
-    return _declared(compiled.wat)
-
-
-@functools.cache
-def _no_call_declarations() -> dict[str, str]:
-    """What the module declares with no call in `dead`: nothing."""
-    return _module_declarations(
-        _dropped_source("@Int", "Int", "effects(pure)", "@Int.0"), dropped=True)
-
-
-@pytest.mark.parametrize("spec", _HOSTED, ids=_ids(_HOSTED))
-def test_a_dropped_call_declares_nothing(spec: BuiltinSpec) -> None:
-    """A call in a function code generation drops declares what no call
-    declares, and the same function compiled declares the call's import: a
-    module declares the imports its emitted code calls, and the pre-scan's
-    walk of a body is no source of them (it declared the call's row, or for
-    a `Map` or `Set` row raised the wrap table's flag, #735)."""
-    aliases, formals, ret, call = probe_parts(spec)
-    decls = "".join(f"type {n} = {d};\n\n" for n, d in aliases.items())
-    effect = _effect_clause(spec)
-    # `dead` also takes a value of its return type, which the module with
-    # no call returns: the two mention the same types, so a prelude body a
-    # type brings in (a `Json`'s, an `HtmlNode`'s) is compiled in both.
-    both = f"{formals}, @{ret}"
-    dropped = _dropped_source(both, ret, effect, call, decls)
-    without = _dropped_source(both, ret, effect, f"@{ret}.0", decls)
-    assert (_module_declarations(dropped, dropped=True)
-            == _module_declarations(without, dropped=True))
-    kept = decls + _fn_source("dead", formals, ret, effect, call) + "\n" + _ZERO
-    assert any((row := host_import(name)) is not None and row.serves == spec.name
-               for name in _module_declarations(kept, dropped=False))
-
-
-#: The rows a host effect operation's call declares, the fused `async` forms
-#: and `await` among them; a `State` cell's are declared by its handler or
-#: its effect row, before the function is emitted.
-_OPERATION_ROWS = [
-    row for row in HOST_IMPORTS
-    if row.serves == "await"
-    or row.serves.split(".")[0] in ("IO", "Http", "Inference", "DB", "Random")]
-
-_FUTURE = "@Future<Result<String, String>>"
-
-
-def _operation_body(row: Any) -> tuple[str, str]:
-    """The effect clause, and a body calling *row*'s operation with literal
-    arguments."""
-    from vera.environment import TypeEnv
-
-    if row.serves == "await":
-        return "effects(<Http, Async>)", (
-            f'let {_FUTURE} = async(Http.get("x"));\n'
-            f"  let @Result<String, String> = await({_FUTURE}.0);\n  ()")
-    effect, op = row.serves.split(".")
-    info = TypeEnv().effects[effect].operations[op]
-    literal = {"String": '"x"', "Unit": "()", "Nat": "1", "Int": "1"}
-    written = [_surface(t, {}, "") for t in info.param_types]
-    args = ", ".join("[]" if w.startswith("Array<") else literal[w] for w in written)
-    call = f"{effect}.{op}({args})"
-    if row.family == "async":
-        return "effects(<Http, Async>)", f"let {_FUTURE} = async({call});\n  ()"
-    ret = _surface(info.return_type, {}, "")
-    if ret in ("Unit", "Never"):
-        return f"effects(<{effect}>)", call
-    return f"effects(<{effect}>)", f"let @{ret} = {call};\n  ()"
-
-
-@pytest.mark.parametrize("row", _OPERATION_ROWS, ids=[row.name for row in _OPERATION_ROWS])
-def test_a_dropped_operation_declares_nothing(row: Any) -> None:
-    """The same for each host effect operation's row."""
-    effect, body = _operation_body(row)
-    dropped = _dropped_source("@Int", "Unit", effect, body)
-    assert _module_declarations(dropped, dropped=True) == _no_call_declarations()
-    kept = _fn_source("dead", "@Int", "Unit", effect, body) + "\n" + _ZERO
-    assert row.name in _module_declarations(kept, dropped=False)
-
-
-# ---------------------------------------------------------------------
 # A declaration of the built-in's name
 # ---------------------------------------------------------------------
 
@@ -1124,6 +1005,16 @@ public fn g(@Int -> @Decimal)
 }
 """,
 }
+
+_PRINTS = """\
+public fn main(-> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  IO.print("hi\\n")
+}
+"""
 
 _HANDLES = """\
 public fn handle(@Request -> @Response)

@@ -8,21 +8,16 @@ rule are two things that can drift, and a drift here is invisible from inside
 either component: the verifier reports a status about codegen's behaviour, so if
 they disagree the status is simply wrong and nothing local notices.
 
-The RULE lives here once.  What legitimately differs between the callers is the
-TYPE ORACLE, not the rule:
-
-* codegen reads a `SlotRef`'s declared ``type_name`` and infers a call's return
-  type from its own tables;
-* the verifier reads the checker's SEMANTIC types, which are more precise — a
-  handler-clause binder declared ``@Nat`` carries the thrown ``@Int`` as its
-  semantic source, which is exactly why the verifier obligates a narrowing there
-  that codegen does not see.
-
-Both readings are correct for their own question.  The verifier asks "is there a
-narrowing to obligate?" and needs the semantic one; the CLASSIFICATION asks
-"will codegen plant a guard?" and must be answered with codegen's, or the status
-describes a component other than the one it is about.  So the oracle is a
-parameter and the rule is not.
+The RULE lives here once (:func:`nat_narrowing`), and both callers read it over
+the checker's types: code generation the typed program's type of each node, the
+verifier its semantic table (#1525).  What still differs is a pattern-bound or
+destructured component: the verifier traces it to its source
+(:func:`component_narrows`), where code generation reads the type its field is
+instantiated at, so a component the verifier sees built from a non-negative
+value can still be guarded (#1695).  The CLASSIFICATION asks "will codegen plant
+a guard?" and must be answered with codegen's reading, or the status describes a
+component other than the one it is about.  So the oracle is a parameter and the
+rule is not.
 """
 
 from __future__ import annotations
@@ -314,55 +309,6 @@ def is_guarded_nat_subtraction(
             and is_nat(expr.left) and is_nat(expr.right))
 
 
-#: Answers "is this expression's value a `@Nat` by its DECLARATION?" — the
-#: checker's resolved type of a slot or a call — for :func:`is_declared_nat`.
-DeclaredIsNatOracle = Callable[[ast.Expr], bool]
-
-
-def is_declared_nat(expr: ast.Expr, declared_is_nat: DeclaredIsNatOracle) -> bool:
-    """True iff *expr*'s value is a `@Nat` by its declarations: a `@Nat`
-    slot, a call *declared_is_nat* types `@Nat` (``nat_to_int(x)`` is ``x``),
-    arithmetic over two such values — a subtraction of two being the guarded
-    `@Nat` one — and the `Block` / `if` / `match` joins whose every arm is
-    one.
-
-    Code generation's #758 exemption at a `@Nat` return reads it: the
-    return's `>= 0` check is stood down for a leaf the syntactic rule
-    (:func:`narrows_into_nat`) cannot place but the checker's types do — a
-    generic call instantiated at `Nat`, whose callee codegen's oracle does
-    not resolve.  Such a call's value is a `@Nat` because a generic body
-    computes no `T` of its own and each argument at a `Nat` formal is
-    checked where it enters (`_guard_nat_instantiated_arg`), so
-    `pick(-3, 5)` traps at its `-3`.  It trusts nothing else: an index, an
-    effect operation or a `handle` keeps the check, so
-    `@Array<Nat>.0[0] - @Nat.0`, whose underflow no `@Nat`-subtraction
-    guard sees, cannot come back negative from a `@Nat` function.
-    """
-    if isinstance(expr, ast.SlotRef):
-        return expr.type_name == "Nat"
-    if isinstance(expr, ast.BinaryExpr):
-        return (expr.op in (ast.BinOp.ADD, ast.BinOp.SUB, ast.BinOp.MUL,
-                            ast.BinOp.DIV, ast.BinOp.MOD)
-                and is_declared_nat(expr.left, declared_is_nat)
-                and is_declared_nat(expr.right, declared_is_nat))
-    if isinstance(expr, ast.Block):
-        return (expr.expr is not None
-                and is_declared_nat(expr.expr, declared_is_nat))
-    if isinstance(expr, ast.IfExpr):
-        return (expr.else_branch is not None
-                and is_declared_nat(expr.then_branch, declared_is_nat)
-                and is_declared_nat(expr.else_branch, declared_is_nat))
-    if isinstance(expr, ast.MatchExpr):
-        return bool(expr.arms) and all(
-            is_declared_nat(arm.body, declared_is_nat) for arm in expr.arms)
-    if isinstance(expr, (ast.FnCall, ast.ModuleCall)):
-        if (isinstance(expr, ast.FnCall) and expr.name == "nat_to_int"
-                and len(expr.args) == 1):
-            return is_declared_nat(expr.args[0], declared_is_nat)
-        return declared_is_nat(expr)
-    return False
-
-
 # =====================================================================
 # The value a join produces
 # =====================================================================
@@ -651,6 +597,30 @@ def all_sources_opaque(sources: tuple[ComponentSource, ...]) -> bool:
     here has the type its construction's context gives it and the value of
     its argument, which the binding's own narrowing reads."""
     return bool(sources) and all(not s.is_argument for s in sources)
+
+
+def nat_narrowing(value: ast.Expr, is_nat: Callable[[ast.Expr], bool]) -> bool:
+    """Whether binding *value* into a `@Nat` slot is a narrowing: THE rule
+    the verifier records a `nat_bind` obligation by and code generation
+    guards by (#552, #1525), each side reading the checker's type of a node
+    through *is_nat* (the verifier's ``_narrows_into_nat`` composes these
+    same three functions over its reader of the same table).
+
+    A value the checker types `@Nat` narrows only where it holds a
+    subtraction no `@Nat`-subtraction check covers (:func:`has_underflow_leaf`).
+    Any other value narrows unless it is statically non-negative
+    (:func:`narrows_into_nat`), each node read at the checker's type of it:
+    a non-negative literal, `@Nat.0 + 1`, `if c then { @Nat.0 } else { 0 }`
+    are no narrowing, while `@Int.0`, `-1`, `0 - 1` and `@Nat.0 - 1` are.
+    A value of an alias of `Nat` is a `@Nat`: the type is the checker's, not
+    the spelling's."""
+    def guarded(expr: ast.Expr) -> bool:
+        return is_guarded_nat_subtraction(expr, is_nat)
+
+    if is_nat(value):
+        return has_underflow_leaf(value, guarded)
+    return narrows_into_nat(
+        value, lambda call: "Nat" if is_nat(call) else None, guarded, is_nat)
 
 
 def narrows_into_nat(
