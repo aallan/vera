@@ -978,8 +978,6 @@ _TARGET_READERS: dict[tuple[str, str, str], str] = {
      "_expr_target_types"): "stores the table",
     ("vera/wasm/data.py", "DataMixin._ctor_field_mono_base",
      "_target_codegen_type_full"): _TARGET,
-    ("vera/wasm/data.py", "DataMixin._ctor_field_targets_byte",
-     "_target_codegen_type_full"): _TARGET,
     ("vera/wasm/data.py", "DataMixin._emit_construction_refine_guard",
      "_target_codegen_type_refined"): _TARGET,
     ("vera/wasm/data.py", "DataMixin._translate_constructor_call",

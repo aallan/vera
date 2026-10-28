@@ -1339,7 +1339,6 @@ _BY_NAME_INVENTORY: dict[tuple[str, str, str], int] = {
     ("vera/wasm/context.py", "WasmContext.__init__", "_ctor_to_adt"): 1,
     ("vera/wasm/context.py", "WasmContext._owned_ctor_layout", "_ctor_layouts"): 1,
     ("vera/wasm/data.py", "DataMixin._collect_nested_tag_checks", "_ctor_layouts"): 1,
-    ("vera/wasm/data.py", "DataMixin._ctor_field_targets_byte", "_ctor_adt_tp_indices"): 1,
     ("vera/wasm/data.py", "DataMixin._ctor_field_tp_index", "_ctor_adt_tp_indices"): 1,
     ("vera/wasm/data.py", "DataMixin._extract_constructor_fields", "_ctor_layouts"): 1,
     ("vera/wasm/data.py", "DataMixin._field_instantiated_at_nat", "_ctor_adt_tp_indices"): 1,
@@ -1348,7 +1347,6 @@ _BY_NAME_INVENTORY: dict[tuple[str, str, str], int] = {
     ("vera/wasm/data.py", "DataMixin._setup_match_arm_env", "_ctor_layouts"): 1,
     ("vera/wasm/data.py", "DataMixin._translate_constructor_call", "_ctor_layouts"): 1,
     ("vera/wasm/data.py", "DataMixin._translate_match_condition", "_ctor_layouts"): 1,
-    ("vera/wasm/inference.py", "InferenceMixin._ctor_to_adt_name", "_ctor_to_adt"): 1,
     ("vera/wasm/operators.py", "OperatorsMixin._generate_adt_eq_fn_body", "_ctor_adt_tp_indices"): 1,
 }
 

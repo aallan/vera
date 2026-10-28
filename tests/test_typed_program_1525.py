@@ -487,6 +487,12 @@ _CTOR_OF_MAP_RESULT = _source(
     "{ int_to_string(@Int.0) })) {\n"
     "    Big(@Array<String>) -> nat_to_int(array_length(@Array<String>.0))\n  }\n}",
 )
+_PAIR_HANDLER_STATEMENT = _source(
+    "public fn f(@Int -> @Int)\n" + _C + "{\n"
+    "  handle[Exn<Int>] {\n    throw(@Int) -> { \"caught\" }\n  } in {\n"
+    "    if @Int.0 > 5 then { throw(@Int.0) } else { \"quiet\" }\n  };\n"
+    "  @Int.0\n}",
+)
 _MAP_KEYS_OF_AN_IF = _source(
     "public fn main(@Unit -> @Unit)\n  requires(true)\n  ensures(true)\n"
     "  effects(<IO>)\n{\n"
@@ -598,6 +604,10 @@ REPROS: dict[str, Repro] = {
         {"main.vera": _CTOR_OF_MAP_RESULT}, _runs("main", None, 3)),
     "map_keys_of_an_if": Repro(
         {"main.vera": _MAP_KEYS_OF_AN_IF}, _runs("main", None, stdout="a\n")),
+    # Found building PR #1796: a handler valued at a pair, written as a
+    # statement, dropped one word short of its block's result.
+    "pair_handler_as_a_statement": Repro(
+        {"main.vera": _PAIR_HANDLER_STATEMENT}, _runs("f", [9], 9)),
 }
 
 
@@ -659,6 +669,7 @@ FIXED_BY_THE_BACKEND_READS = frozenset({
     "map_keys_of_an_if",
     "match_on_generic_fold_scrutinee",
     "neg_nat_interpolation",
+    "pair_handler_as_a_statement",
     "parameterised_alias_width_let",
     "parameterised_alias_width_parameter",
     "show_of_generic_builtin_result",

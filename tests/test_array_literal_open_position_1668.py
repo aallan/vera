@@ -823,8 +823,9 @@ def test_mutant_a_match_arm_refused_in_an_argument_is_reported_once() -> None:
 # the join called `fn(Nat -> Nat)` would be called with an `@Nat` it was
 # not compiled for.  Nor does it fill a built-in's type variable that a
 # parameter of the call mentions and the arguments left unbound: that one
-# stands for a type a failed substitution lost (`map_values` read through
-# a refinement alias, whose values here are `Int`, #1688).  A built-in's
+# stands for a type a failed substitution lost (`array_map`'s `B` beside a
+# refinement of a function type, which its function-typed parameter does
+# not unify through, with an E202 of its own).  A built-in's
 # variable no parameter mentions is one no argument could fix
 # (`map_new()`'s `K` and `V`): the call marks it free, an open position as
 # a constructor's type parameter no field holds is, and the join fills it.  For the
@@ -987,13 +988,13 @@ SHAPES: dict[str, _Shape] = {
         ("mkbox(())",
          "MkBox(fn(@String -> @String) effects(pure) { @String.0 })"),
         {"literal": (1, "Box<T$>"), "if": (1, None), "match": (1, None)}),
-    # A built-in's variable: each site's verdict as before.
-    "leak-agree": _Shape(
-        ("map_values(@M.0)[0]", "0 - 5"),
-        {"literal": (None, "V"), "if": (1, None), "match": (None, "Int")}),
-    "leak-disagree": _Shape(
+    # A built-in's variable bound through a refinement alias (#1688): an
+    # `Int`, joined as any other.
+    "refined-agree": _Shape(
+        ("map_values(@M.0)[0]", "0 - 5"), _everywhere(None, "Int")),
+    "refined-disagree": _Shape(
         ("map_values(@M.0)[0]", '"s"'),
-        {"literal": (None, "V"), "if": (1, None), "match": (None, "String")}),
+        {"literal": (1, "Int"), "if": (0, None), "match": (1, None)}),
     # A built-in's variable no parameter mentions is fresh: filled.
     "map-agree": _Shape(
         ("map_new()", 'map_insert(map_new(), "k", 1)'),
@@ -1143,15 +1144,27 @@ def test_mutant_a_data_field_holding_a_function_keeps_its_variable() -> None:
         ("E302", *_place(source, literal, literal.index("MkBox(")))]
 
 
+#: A refinement of a function type: at `array_map`'s function-typed
+#: parameter it leaves `B` unbound, a variable a parameter mentions and the
+#: arguments left unbound, and draws an E202 of its own (#1684's class).
+#: `map_values` read through a refinement alias was the lost variable's
+#: vehicle until #1688's fix bound it.
+_FOO_ALIAS = "type Foo = { @fn(Int -> Int) effects(pure) | true };\n"
+
+
+def _lost_source(body: str) -> str:
+    return _fn(body, params="@Foo, @M, @Bool, @Nat",
+               pre=_FOO_ALIAS + _SHAPES_PRE)
+
+
 def test_mutant_a_lost_builtin_variable_is_not_filled() -> None:
-    # `map_values`'s `V` is a parameter's, left unbound through the
-    # refinement alias (#1688): the literal keeps it, as it did before the
-    # join.
-    literal = "[map_values(@M.0)[0], 0 - 5]"
-    source = _shape_source(f"array_length({literal})")
+    # `array_map`'s `B` is a parameter's, left unbound beside the refined
+    # function: the literal keeps it, as it did before the join.
+    literal = "[array_map([1], @Foo.0)[0], 0 - 5]"
+    source = _lost_source(f"array_length({literal})")
     checked = _checked(source)
-    assert checked.diagnostics == ()
-    assert _literal_types(checked)[_place(source, literal)] == "Array<V>"
+    assert [d.error_code for d in checked.diagnostics] == ["E202"]
+    assert _literal_types(checked)[_place(source, literal)] == "Array<B>"
 
 
 def test_mutant_a_fresh_builtin_variable_is_filled() -> None:
@@ -1170,10 +1183,11 @@ def test_mutant_a_fresh_builtin_variable_is_filled() -> None:
 def test_mutant_a_lost_builtin_variable_keeps_the_match_verdict() -> None:
     # A `match` cannot synthesize its earlier arms again: an arm after a
     # lost variable gives the match its type, as it did before the join.
-    literal = "[match @Nat.0 { 0 -> map_values(@M.0)[0], _ -> 0 - 5 }]"
-    source = _shape_source(f"array_length({literal})")
+    literal = ("[match @Nat.0 { 0 -> array_map([1], @Foo.0)[0], "
+               "_ -> 0 - 5 }]")
+    source = _lost_source(f"array_length({literal})")
     checked = _checked(source)
-    assert checked.diagnostics == ()
+    assert [d.error_code for d in checked.diagnostics] == ["E202"]
     assert _literal_types(checked)[_place(source, literal)] == "Array<Int>"
 
 

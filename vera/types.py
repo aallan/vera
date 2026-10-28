@@ -252,8 +252,8 @@ def _is_leaked_placeholder_var(ty: Type) -> bool:
     ``_is_fresh_typevar``) that inference never filled, and a namespaced
     built-in generic var (``V#b`` — the #970/#982 ``BUILTIN_TYPEVAR_MARKER``)
     that escaped unresolved because a built-in's result type could not be
-    substituted (e.g. the element type of ``map_values(@M.0)[0]`` read through
-    a refinement alias, #1069).  A genuine *user* ``forall`` var (plain ``T``,
+    substituted (e.g. the element type of ``map_values(map_new())[0]``, whose
+    ``V`` nothing fixes, #1069).  A genuine *user* ``forall`` var (plain ``T``,
     no marker) is NOT a leak — it is the spelling the programmer wrote — so it
     is left untouched.
     """
