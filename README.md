@@ -184,9 +184,9 @@ Not tested in CI; every dependency publishes wheels for them:
 - Linux aarch64 with glibc 2.38+ on Python 3.11 / 3.13 (the 3.12 cell is CI-tested above; e.g. Ubuntu 23.10+)
 - macOS 15+ on Intel (x86_64)
 
-Out of scope — `pip install -e .` will fail at dependency resolution (clear "no matching distribution" error rather than a cryptic source-build failure):
+Out of scope — not supported and not tested in CI. Where no z3-solver wheel matches, `pip install -e .` builds z3-solver from source, and `pip install --only-binary :all: -e .` stops at a "no matching distribution" error instead:
 
-- **macOS 14 (Sonoma) and earlier** — see [#691](https://github.com/aallan/vera/issues/691) for the documented decision and workarounds
+- **macOS 14 (Sonoma) and earlier** — z3-solver's 5.x wheels are tagged `macosx_13_0`, so on macOS 13 and 14 every dependency resolves to a wheel; CI tests neither, and both stay unsupported. macOS 12 and earlier match no z3-solver wheel. See [#691](https://github.com/aallan/vera/issues/691) for the documented decision and workarounds
 - **Linux aarch64 with glibc < 2.38** (e.g. Ubuntu 22.04 LTS aarch64) — see [#701](https://github.com/aallan/vera/issues/701)
 
 The macOS 15+ baseline reflects [TelemetryDeck's macOS version distribution data](https://telemetrydeck.com/survey/apple/macOS/versions/): macOS 26 (~75%) and macOS 15 (~24%) account for ~99% of the macOS install base; macOS 14 is ~1.4% and falling. The cost of supporting older macOS versions does not earn its keep at that share.
