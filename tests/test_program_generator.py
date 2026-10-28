@@ -386,14 +386,15 @@ def _function_named(description: str) -> str:
 
 class Sites:
     """The entry's nodes and the module's, by the file and the place they
-    start, each node's parent, and each alias's type, for the known-class
-    predicates.  Everything here is read off the programs as written, never
-    off the checker's tables."""
+    start, each node's parent, each function's declaration and each alias's
+    type, for the known-class predicates.  Everything here is read off the
+    programs as written, never off the checker's tables."""
 
     def __init__(self, checked: pipeline.Checked) -> None:
         self.program = checked.program
         self._at: dict[tuple[str | None, int, int], list[ast.Node]] = {}
         self.parent: dict[int, ast.Node | None] = {}
+        self.functions: dict[str, ast.FnDecl] = {}
         self.aliases: dict[str, ast.TypeExpr] = {}
         programs = [(checked.file, checked.program)] + [
             (str(m.file_path), m.program) for m in (checked.resolved or ())]
@@ -401,7 +402,10 @@ class Sites:
             self._index(program, None, file)
             for tld in program.declarations:
                 decl = tld.decl
-                if isinstance(decl, ast.TypeAliasDecl) and not decl.type_params:
+                if isinstance(decl, ast.FnDecl):
+                    for fn in [decl, *(decl.where_fns or ())]:
+                        self.functions[fn.name] = fn
+                elif isinstance(decl, ast.TypeAliasDecl) and not decl.type_params:
                     self.aliases[decl.name] = decl.type_expr
 
     def _index(self, node: object, parent: ast.Node | None, file: str | None) -> None:
@@ -514,7 +518,7 @@ def _narrowing_into_refined_nat(node: ast.Node, sites: Sites) -> bool:
     if isinstance(parent, ast.LetStmt) and parent.value is node:
         target: ast.TypeExpr | None = parent.type_expr
     elif isinstance(parent, (ast.FnCall, ast.ModuleCall)) and any(a is node for a in parent.args):
-        fn = sites.returns.get(parent.name)
+        fn = sites.functions.get(parent.name)
         position = next(n for n, a in enumerate(parent.args) if a is node)
         target = fn.params[position] if fn is not None and position < len(fn.params) else None
     else:
@@ -2042,6 +2046,42 @@ def test_each_known_class_keeps_its_shape(cls: KnownClass) -> None:
         ((cls.kind, cls.obligation, cls.emitter), cls.issue)], finds
     alone = reconcile_finds(cls.repro, known=(cls,))
     assert [f.known for f in alone] == [cls.issue], alone
+
+
+#: The refined-`Nat` class's other site: a call's argument at a parameter
+#: of a refinement of `Nat`, which the class reads off the callee's
+#: declaration (seeds 77, 313 and 659 of the night write one).
+_REFINED_NAT_ARGUMENT = """\
+type Cap = { @Nat | @Nat.0 <= 5 };
+
+private fn take(@Cap -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  0
+}
+
+public fn cap(@Int -> @Int)
+  requires(@Int.0 >= 0 && @Int.0 <= 3)
+  ensures(true)
+  effects(pure)
+{
+  take(@Int.0)
+}
+"""
+
+
+def test_repro_the_refined_nat_class_holds_a_call_argument() -> None:
+    """A narrowing into a refinement of `Nat` at a call's argument is the
+    class's, as at a `let`'s value: the class reads the parameter's type off
+    the callee's declaration."""
+    assert not contract_finds(_REFINED_NAT_ARGUMENT), contract_finds(
+        _REFINED_NAT_ARGUMENT)
+    finds = reconcile_finds(_REFINED_NAT_ARGUMENT)
+    assert [(f.signature, f.known) for f in finds] == [(
+        ("guarded_unrecorded", "nat_bind", "wasm/operators.py:_emit_nat_bind_guard"),
+        "#1695")], finds
 
 
 #: The values at a `@Nat` position where code generation planted a
