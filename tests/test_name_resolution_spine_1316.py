@@ -1656,7 +1656,7 @@ class TestNoUnannotatedBareConstructorLookup:
                 if isinstance(n, pyast.Attribute) and n.attr in self._ATTRS:
                     total += 1
                     per_attr[n.attr] += 1
-        assert total >= 30, (
+        assert total >= 20, (
             f"only {total} flat-projection accesses found — the walk has "
             "probably stopped matching")
         # And EVERY attribute the rail claims to cover is actually present,

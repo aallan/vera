@@ -825,32 +825,30 @@ public forall<T> fn g(@Option<Int>, @Option<T> -> @Pos)
     @staticmethod
     def _declared_slots(source: str) -> list[tuple[str, int]]:
         """``(slot name, De Bruijn index)`` per parameter, as the VERIFIER
-        declares them into its ``SlotEnv``/``SmtContext``.
+        names them in its ``SmtContext``.
 
-        ``_count_slots`` is called exactly once per parameter, at the point
-        the ``@Name.n`` Z3 constant is named, on both paths that declare a
-        function's parameters — so recording it records the names the verifier
-        actually reasons under, not a re-derivation of them.
+        ``_parameter_slots`` names every parameter of a declaration at once,
+        on both paths that declare a function's parameters, and each name is
+        the ``@Name.n`` Z3 constant (#1767) — so recording it records the
+        names the verifier actually reasons under, not a re-derivation of
+        them.
         """
         seen: list[tuple[str, int]] = []
-        original = ContractVerifier._count_slots
+        original = ContractVerifier._parameter_slots
 
-        def patched(env: object, type_name: str) -> int:
-            index = original(env, type_name)  # type: ignore[arg-type]
-            seen.append((type_name, index))
-            return index
+        def patched(self: ContractVerifier, decl: ast.FnDecl,
+                    env: object) -> list[str]:
+            refs = original(self, decl, env)  # type: ignore[arg-type]
+            for ref in refs:
+                name, _, index = ref[1:].rpartition(".")
+                seen.append((name, int(index)))
+            return refs
 
-        # Re-wrapped in `staticmethod` on BOTH sides: `_count_slots` is a
-        # staticmethod, and restoring the bare function would rebind it as an
-        # instance method — a leak that fails unrelated tests later in the
-        # session rather than this one.
-        ContractVerifier._count_slots = staticmethod(  # type: ignore[method-assign]
-            patched)
+        ContractVerifier._parameter_slots = patched  # type: ignore[method-assign]
         try:
             _ = pipeline.verify(source).result
         finally:
-            ContractVerifier._count_slots = staticmethod(  # type: ignore[method-assign]
-                original)
+            ContractVerifier._parameter_slots = original  # type: ignore[method-assign]
         return seen
 
     @staticmethod

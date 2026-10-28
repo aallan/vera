@@ -104,7 +104,7 @@ def _both_oracles(source: str, declared: str) -> tuple[bool, bool]:
     alias_env = alias_env_from_environment(verifier.env)
 
     def semantic(te: ast.TypeExpr) -> narrowing.RefinementChain:
-        resolved = verifier._resolve_type(te)
+        resolved = verifier._written_type(te)
         chain = refined_type_chain(resolved)
         if chain is None:
             return (pretty_type(resolved), frozenset())

@@ -22,7 +22,7 @@ private fn deep_let_chain(@Int -> @Int)
 -- The outer sentinel (10) is at @Int.1 inside the Some arm; the payload is @Int.0.
 private fn let_shadowing_in_match(@Option<Int>, @Int -> @Int)
   requires(true)
-  ensures(true)
+  ensures(match @Option<Int>.0 { None -> @Int.result == @Int.0, Some(@Int) -> @Int.result == @Int.0 })
   effects(pure)
 {
   match @Option<Int>.0 {

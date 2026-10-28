@@ -16,6 +16,8 @@ returned the right answer.
 
 The checker has substituted since #660 (``vera/checker/resolution.py``), which
 is why the program type-checks; only the verifier's parallel resolver did not.
+The verifier now has no resolver of its own: it reads every type expression's
+resolution off the typed program (``ContractVerifier._written_type``, #1525).
 Two halves have to move together and both are asserted here: the alias's body
 must resolve its OWN parameters as type variables at registration (``T`` was
 otherwise registered as an opaque ADT, and ``substitute`` maps type variables),
@@ -79,11 +81,12 @@ def _run(source: str) -> object:
 
 
 def _resolve_in_verifier(source: str, type_name: str) -> object:
-    """What ``ContractVerifier._resolve_type`` makes of ``@<type_name>``.
+    """What the verifier registers for the alias ``<type_name>``.
 
-    Registers *source*'s declarations the way ``verify_program`` does, then
-    resolves the named alias through the verifier's own resolver — the layer
-    under test, one step below any refinement or SMT machinery.
+    Registers *source*'s declarations the way ``verify_program`` does, and
+    reads the alias's registered type: the type the checker resolved its
+    body to, off the typed program (``ContractVerifier._written_type``) — the
+    layer under test, one step below any refinement or SMT machinery.
     """
     typed = pipeline.check(source).typed
     verifier = ContractVerifier(typed, source=source)

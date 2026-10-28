@@ -7,7 +7,7 @@ private data List<T> {
 
 private fn first_some(@List<Option<Int>> -> @Int)
   requires(true)
-  ensures(true)
+  ensures(match @List<Option<Int>>.0 { Cons(Some(@Int), @List<Option<Int>>) -> @Int.result == @Int.0, _ -> true })
   decreases(@List<Option<Int>>.0)
   effects(pure)
 {

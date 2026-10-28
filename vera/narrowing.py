@@ -10,22 +10,24 @@ they disagree the status is simply wrong and nothing local notices.
 
 The RULE lives here once (:func:`nat_narrowing`), and both callers read it over
 the checker's types: code generation the typed program's type of each node, the
-verifier its semantic table (#1525).  What still differs is a pattern-bound or
-destructured component: the verifier traces it to its source
-(:func:`component_narrows`), where code generation reads the type its field is
-instantiated at, so a component the verifier sees built from a non-negative
-value can still be guarded (#1695).  The CLASSIFICATION asks "will codegen plant
-a guard?" and must be answered with codegen's reading, or the status describes a
-component other than the one it is about.  So the oracle is a parameter and the
-rule is not.
+verifier its semantic table (#1525).  A pattern-bound or destructured
+component is traced to its source by both (:func:`component_narrows`), so a
+component built from a non-negative value is neither recorded nor guarded.  The
+CLASSIFICATION asks "will codegen plant a guard?" and must be answered with
+codegen's reading, or the status describes a component other than the one it
+is about.  So the oracle is a parameter and the rule is not.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from vera import ast, binders
+
+if TYPE_CHECKING:
+    from vera.types import Type
 
 #: The effects whose operations code generation can lower at all (#754).
 #:
@@ -570,6 +572,33 @@ def pattern_binding_sources(
     walk(pattern, lambda i: component_sources(
         scrutinee, i, lambda n: n == pattern.name, field_is_generic))
     return tuple(out)
+
+
+def declared_component_is_nat(
+    leaf: ComponentSource,
+    index: int,
+    ctor_name: str,
+    type_of: Callable[[ast.Expr], "Type | None"],
+    field_types: Callable[[str, "Type | None"], "tuple[Type, ...] | None"],
+    is_nat: Callable[["Type"], bool],
+) -> bool | None:
+    """The leaf oracle of :func:`component_narrows` (#1503), as both sides
+    read it (#1525): component *index* of an opaque composite (a slot, a
+    call) is a `@Nat` iff its DECLARED type says so: *ctor_name*'s field
+    *index* at the checker's type of the leaf (*type_of*) followed down its
+    ``path``, each step the field's type at the type reached so far
+    (*field_types*, ``TypedProgram.field_types_at``).  ``None`` where the
+    declaration does not say: no constructor, no such field."""
+    ty = type_of(leaf.expr)
+    for step_ctor, step in leaf.path:
+        fields = field_types(step_ctor, ty)
+        if fields is None or step >= len(fields):
+            return None
+        ty = fields[step]
+    fields = field_types(ctor_name, ty)
+    if fields is None or index >= len(fields):
+        return None
+    return is_nat(fields[index])
 
 
 def component_narrows(

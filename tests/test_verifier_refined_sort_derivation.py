@@ -362,21 +362,24 @@ def test_1421_a_refinement_keys_to_its_base() -> None:
     assert "?" in _adt_sort_key("Option", (TypeVar("T"),))
 
 
-def test_1421_an_unnameable_key_is_still_refused() -> None:
+def test_1421_an_unnameable_type_has_no_sort() -> None:
     """A PIN, not a mutation-killing cell — recorded as such.
 
-    `_parse_adt_sort_key` refuses a key containing `?` rather than
-    round-tripping it into a confident but wrong instantiation.  I could not
-    construct a mutation of the fix that this cell kills and the others do
-    not, so it earns its place by pinning a contract the fix leans on, not by
-    discriminating (review of PR #1431, F5).  Removing the `?` guard makes
-    `_parse_adt_sort_key` return an `AdtType` for a type it cannot name, which
-    is what this refuses to let happen silently.
+    A type argument the sort layer cannot name (a type variable) gives the
+    data type no sort, rather than a confident but wrong instantiation: a
+    construction's sort is its checked type's (#1525), and a type that has
+    none is no term.  It earns its place by pinning a contract the sort
+    derivation leans on, not by discriminating (review of PR #1431, F5).
     """
+    from vera.environment import TypeEnv
     from vera.smt import SmtContext
+    from vera.types import INT, AdtType, TypeVar
 
-    assert SmtContext._parse_adt_sort_key("Option<?>") is None
-    assert SmtContext._parse_adt_sort_key("Option<Int>") is not None
+    smt = SmtContext()
+    for info in TypeEnv().data_types.values():
+        smt.register_adt(info)
+    assert smt._vera_type_to_z3_sort(AdtType("Option", (TypeVar("T"),))) is None
+    assert smt._vera_type_to_z3_sort(AdtType("Option", (INT,))) is not None
 
 
 # ---------------------------------------------------------------------------

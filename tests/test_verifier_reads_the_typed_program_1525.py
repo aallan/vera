@@ -205,16 +205,6 @@ _SORT_CELLS = tuple(
 )
 
 
-#: The cells red at e807be43: a construction whose type the function names
-#: nowhere had no sort, so it did not translate and the obligation resting
-#: on it fell to a runtime check (the `ensures`) or was refused (E501).  A
-#: `Tuple`'s sort was built from its components' sorts, so a `Tuple` alone
-#: translated; inside an `Option` it did not.
-_RED_AT_BASE: frozenset[str] = frozenset(
-    c.name for c in _SORT_CELLS
-    if c.decl.name != "tuple" or c.use == "nested")
-
-
 def _sort_test(cell: SortCell) -> Callable[[Path], None]:
     def test(tmp_path: Path) -> None:
         path = pipeline.write_tree(tmp_path, _program(
@@ -227,12 +217,8 @@ def _sort_test(cell: SortCell) -> Callable[[Path], None]:
 
 
 for _cell in _SORT_CELLS:
-    _test = _sort_test(_cell)
-    if _cell.name in _RED_AT_BASE:
-        _test = pytest.mark.xfail(strict=True, reason=(
-            "red at e807be43: the construction's type has no sort"))(_test)
-    globals()[f"test_sort_{_cell.name}"] = _test
-del _cell, _test
+    globals()[f"test_sort_{_cell.name}"] = _sort_test(_cell)
+del _cell
 
 
 def test_the_sort_matrix_spans_every_combination() -> None:
@@ -286,19 +272,9 @@ def _modular_test(decl: Decl) -> Callable[[Path], None]:
     return test
 
 
-#: The modular cells red at e807be43: the construction did not translate,
-#: so the claim fell to a runtime check where the scalar's is refused.  A
-#: `Tuple` translated, and was refused as the scalar is.
-_MODULAR_RED_AT_BASE: frozenset[str] = frozenset(
-    d.name for d in DECLS if d.name != "tuple")
-
 for _decl in DECLS:
-    _test = _modular_test(_decl)
-    if _decl.name in _MODULAR_RED_AT_BASE:
-        _test = pytest.mark.xfail(strict=True, reason=(
-            "red at e807be43: the construction's type has no sort"))(_test)
-    globals()[f"test_modular_{_decl.name}"] = _test
-del _decl, _test
+    globals()[f"test_modular_{_decl.name}"] = _modular_test(_decl)
+del _decl
 
 
 # =====================================================================
@@ -378,15 +354,39 @@ def _slots_test(case: Slots) -> Callable[[Path], None]:
     return test
 
 
-#: The slot cells red at e807be43: the verifier named the parameters by its
-#: own left-to-right count.
-_SLOTS_RED_AT_BASE: frozenset[str] = frozenset(c.name for c in SLOTS)
-
 for _case in SLOTS:
-    _test = _slots_test(_case)
-    if _case.name in _SLOTS_RED_AT_BASE:
-        _test = pytest.mark.xfail(strict=True, reason=(
-            "red at e807be43: a parameter named by the verifier's own "
-            "count"))(_test)
-    globals()[f"test_slots_{_case.name}"] = _test
-del _case, _test
+    globals()[f"test_slots_{_case.name}"] = _slots_test(_case)
+del _case
+
+
+# =====================================================================
+# A type variable a construction leaves open takes its position's type
+# =====================================================================
+
+_OPEN_NULLARY = """\
+private fn take(@Option<Bool> -> @Int)
+  requires(match @Option<Bool>.0 { Some(@Bool) -> @Bool.0, None -> true })
+  ensures(@Int.result == 4)
+  effects(pure)
+{
+  4
+}
+
+public fn probe(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == 4)
+  effects(pure)
+{
+  take(None)
+}
+"""
+
+
+def test_a_nullary_constructor_takes_the_type_its_position_fixes(
+        tmp_path: Path) -> None:
+    """`None` fixes no type argument of its own; the formal it is passed
+    at does, so it is a term of `Option<Bool>`'s sort, the one `take`'s
+    parameter and its precondition read it at, and the call is modelled
+    (#1525)."""
+    path = pipeline.write_tree(tmp_path, {"main.vera": _OPEN_NULLARY})
+    _every_probe_obligation_proves(path)

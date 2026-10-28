@@ -2117,7 +2117,7 @@ public fn g(@Int -> @Int)
 """
 
 #: The same program with the declaration removed, so `Tuple` is the BUILTIN
-#: variadic carrier: the shape the SMT synthesis door is for.  Written out
+#: variadic carrier.  Written out
 #: rather than derived from the fixture above by string surgery, which
 #: silently yields a different program the moment the fixture is reformatted
 #: (PR #1404 review).
@@ -2139,24 +2139,16 @@ _PAIR_ADT_PROGRAM = _USER_TUPLE_ADT_PROGRAM.replace("Tuple", "Pair")
 
 
 class TestUserTupleCtorRegistryRouting:
-    """The `Tuple` name collision, now settled by reserving the name.
+    """The `Tuple` name collision, settled by reserving the name.
 
-    The SMT layer's synthesis door reverse-maps argument sorts to types (a
-    Nat-typed argument recovers as Int from Z3's IntSort), so routing a
-    REGISTERED Tuple through it would materialise fresh instantiations of a
-    user ADT (`Tuple<Int, Int>`) that the declared-type side never created —
-    violating the #882/#918 never-newly-enables posture and desyncing the
-    constructor term's sort from the declared-side sort.  The registry guard
-    (`expr.name == "Tuple" and "Tuple" not in self._adt_registry`) kept the
-    door shut for a user declaration.
-
-    #1397 removes the collision at its source: `Tuple` is reserved in the
-    data namespace (E158), so no declaration ever registers under that name
-    and the door's registry test can only see the builtin carrier.  The
-    guard stays — it is the condition that makes that true rather than
-    assumed — and these cells pin the two halves it now separates: the
-    declaration is refused, and the BUILTIN carrier still translates through
-    the synthesis door with a profile identical to an isomorphic user ADT.
+    The SMT layer once built the builtin carrier's sort from its arguments'
+    sorts and a registered ADT's only from the instantiations already cached,
+    so a user `data Tuple` had to be kept off the first door (PR #1200).
+    #1397 reserves `Tuple` in the data namespace (E158), so no declaration
+    registers under it, and a construction is a term of the sort its checked
+    type has, whichever it is (#1525).  These cells pin the two halves: the
+    declaration is refused, and the builtin carrier and an isomorphic user
+    ADT prove alike.
     """
 
     def test_a_user_tuple_declaration_is_refused_at_check(self) -> None:
@@ -2177,28 +2169,22 @@ class TestUserTupleCtorRegistryRouting:
         ]
         assert "E158" in codes, codes
 
-    def test_the_two_doors_keep_their_own_postures(self) -> None:
-        """The synthesis door and the registry path, each measured directly.
+    def test_the_builtin_carrier_and_a_registry_adt_answer_alike(self) -> None:
+        """The builtin carrier and a registry ADT of the same shape, each
+        measured directly.
 
         The old cell here was an ISOMORPHIC-RENAME differential: a user
         `data Tuple` and its mechanical `data Pair` rename had to produce
         identical obligation profiles, so a name-keyed shortcut in the SMT
         layer could not give the `Tuple` spelling a proof the `Pair`
         spelling did not earn.  Its two sides can no longer both exist —
-        #1397 reserves the name — so what remains is to measure each door
-        on its own program rather than assert an equality between one that
-        compiles and one that does not.
+        #1397 reserves the name — so each is measured on its own program.
 
-        They answer DIFFERENTLY, on purpose.  The builtin carrier has no
-        registry entry and therefore no declared-side sort to desync from,
-        so #764's synthesis door translates its constructor from the
-        argument sorts and the destructure proves Tier 1.  A registry ADT
-        of the same shape takes the registry path, which only reuses cached
-        instantiations (#882/#918 never-newly-enables), so its ensures
-        honestly demotes.  Pinning both is what would catch the synthesis
-        door widening to registry ADTs — the divergence the rename
-        differential existed to prevent, now stated as the two postures it
-        was really about.
+        They answer ALIKE.  A construction is a term of the sort of the type
+        the checker gave it (#1525), the builtin carrier's and a registry
+        ADT's by one rule, so both destructures prove Tier 1.  The registry
+        path once reused only the instantiations already cached (#882/#918),
+        and the ADT's `ensures` fell to Tier 3 where the carrier's proved.
         """
         builtin_profile = [
             (o.fn_name, o.kind, o.status)
@@ -2216,25 +2202,21 @@ class TestUserTupleCtorRegistryRouting:
             (o.fn_name, o.kind, o.status)
             for o in _verify(_PAIR_ADT_PROGRAM).obligations
         ]
-        assert ("g", "ensures", "tier3") in pair_profile, (
-            f"an isomorphic registry ADT must stay on the conservative "
-            f"registry path, got {pair_profile}"
+        assert pair_profile, "no obligations at all"
+        assert all(status == "verified" for _, _, status in pair_profile), (
+            f"an isomorphic registry ADT proves as the carrier does, got "
+            f"{pair_profile}"
         )
 
-    def test_uncached_user_adt_ctor_instantiation_demotes(self) -> None:
-        """A ctor call whose argument-pinned instantiation was never cached
-        demotes; the SMT layer must not mint the instantiation itself.
-
-        `pick`'s parameter type materialises the user ADT at `<Nat, Nat>`;
-        the call argument `Pair(@Nat.0, @Nat.0)` pins `<Int, Int>` (Nat
-        reverse-maps to Int), which is uncached — so the constructor is
-        untranslatable and `f`'s ensures, which depends on the call result,
-        honestly demotes to the runtime tier.  Spelled `Pair` since #1397:
-        the shape is what is under test, and the `Tuple` spelling of it is
-        no longer a program.  A future improvement may legitimately flip
-        this obligation back to verified — but only by REUSING the declared
-        `<Nat, Nat>` sort (e.g. recorded-type-hint routing), never by
-        minting; the isomorphic-rename differential above still governs.
+    def test_a_nat_built_user_adt_argument_is_the_declared_sort(self) -> None:
+        """A constructor call is a term of the sort of the type the checker
+        gave it (#1525): `Pair(@Nat.0, @Nat.0)` is a `Pair<Nat, Nat>`, the
+        sort `pick`'s parameter declares, `Nat` and `Int` keying one sort,
+        so the call is modelled with `pick`'s `ensures` and `f`'s proves.
+        It demoted to Tier 3 while the argument's instantiation was
+        recovered from its sorts as `<Int, Int>`, which nothing had built.
+        Spelled `Pair` since #1397: the shape is what is under test, and the
+        `Tuple` spelling of it is no longer a program.
         """
         result = _verify("""
 private data Pair<A, B> {
@@ -2269,7 +2251,7 @@ public fn f(@Nat -> @Int)
             if o.fn_name == "f" and o.kind == "ensures"
         ]
         assert len(f_ensures) == 1
-        assert f_ensures[0].status == "tier3", (
-            f"f's ensures depends on an uncached ctor instantiation; "
-            f"expected honest tier3 demotion, got {f_ensures[0].status!r}"
+        assert f_ensures[0].status == "verified", (
+            f"f's ensures rests on `pick`'s, which its argument's sort "
+            f"carries, got {f_ensures[0].status!r}"
         )

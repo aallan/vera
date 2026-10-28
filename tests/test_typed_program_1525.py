@@ -699,10 +699,26 @@ FIXED_BY_THE_BACKEND_READS = frozenset({
 })
 
 
+#: The lines the verifier's reads of the typed program flip (#1525): a
+#: construction is a term of the sort of the type the checker gave it,
+#: whatever file declares the type, `Nat` and `Int` one sort as a
+#: refinement and its base are; and each parameter's solver constant is
+#: named by the slot reference the source binds it to.
+FIXED_BY_THE_VERIFIER_READS = frozenset({
+    "1594_nat_built_tuple_sort",
+    "1767_counterexample_names_in_source_order",
+    "sorts_from_expression_types",
+    "sorts_of_an_imported_constructor",
+})
+
+
 @pytest.mark.parametrize("name", [
     name if name in (FIXED_AT_BASE | FIXED_BY_THE_TYPED_PROGRAM
-                     | FIXED_BY_THE_BACKEND_READS)
-    else pytest.param(name, marks=pytest.mark.xfail(strict=True, reason="red at f1bc772d: a backend reader of the typed program flips it"))
+                     | FIXED_BY_THE_BACKEND_READS
+                     | FIXED_BY_THE_VERIFIER_READS)
+    else pytest.param(name, marks=pytest.mark.xfail(strict=True, reason=(
+        "#1730: `array_find` lays its found element out by a rule of its "
+        "own, not a type it reads")))
     for name in sorted(REPROS)
 ])
 def test_repro_type_level_line(name: str, tmp_path: Path) -> None:
@@ -829,13 +845,53 @@ DELIBERATE: dict[tuple[str, str], str] = {
 }
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "red at e807be43: the verifier's `_resolve_type`, the SMT layer's two "
-    "readers of a parameter's type expression, and code generation's "
-    "readers of a written type"))
+#: Code generation's readers of a written type, #1525's remaining lines: each
+#: derives a type the typed program holds, and each goes when code
+#: generation reads that type off the table instead (#1525 closes in v0.2.7
+#: with #1695's obligation table).  The cell fails on a reader outside this
+#: list, and on an entry whose reader is gone.
+KNOWN: dict[tuple[str, str], str] = {
+    ("vera/codegen/contracts.py", "ContractsMixin._dec_measure_adt_name"): (
+        "a `decreases` measure's data type, from its slot's spelling"),
+    ("vera/codegen/contracts.py", "ContractsMixin._resolve_carrier_type"): (
+        "a refinement guard's carrier, through the alias table"),
+    ("vera/codegen/contracts.py", "ContractsMixin._resolve_tuple_type"): (
+        "a refinement guard's `Tuple`, through the alias table"),
+    ("vera/codegen/contracts.py", "ContractsMixin._resolve_type_alias"): (
+        "an alias's body, for the refinement guards"),
+    ("vera/codegen/core.py", "CodeGenerator._declared_adt_name"): (
+        "the data type a handler's signature names, for `vera serve`"),
+    ("vera/codegen/core.py", "CodeGenerator._type_expr_to_wasm_type"): (
+        "a written type's WASM width: signatures, closures, contracts, "
+        "registration, compilability"),
+    ("vera/codegen/registration.py", "RegistrationMixin._field_vera_type_name"): (
+        "a constructor field's type name, for structural `Eq`"),
+    ("vera/codegen/registration.py", "RegistrationMixin._resolve_field_wasm_type"): (
+        "a constructor field's width in its layout"),
+    ("vera/monomorphize.py", "Monomorphizer._format_type_name"): (
+        "a type expression's name, for clone keys and equality helpers"),
+    ("vera/monomorphize.py", "canonicalize_type_aliases"): (
+        "a type expression with its aliases expanded, for clone keys"),
+    ("vera/monomorphize.py", "declared_return_clone_key"): (
+        "a declared return's clone key"),
+    ("vera/monomorphize.py", "resolve_fn_type_alias"): (
+        "a function type behind an alias, for closures"),
+    ("vera/monomorphize.py", "resolve_type_alias"): (
+        "an alias's body under its arguments"),
+    ("vera/slots.py", "type_expr_slot_name"): (
+        "the spelling code generation's representation walks read"),
+    ("vera/wasm/inference.py", "InferenceMixin._canonical_named_type"): (
+        "a type expression's alias chain followed to its named type"),
+    ("vera/wasm/inference.py", "InferenceMixin._resolve_base_type_name"): (
+        "a type name's alias chain followed to its base"),
+    ("vera/wasm/operators.py", "OperatorsMixin._interp_resolved_type_name"): (
+        "an interpolated part's type name, through the alias table"),
+}
+
+
 def test_no_function_outside_the_checker_derives_a_type() -> None:
     found = {key: line for key, line in _type_derivations().items()
-             if key not in DELIBERATE}
+             if key not in DELIBERATE and key not in KNOWN}
     assert not found, (
         "a type derived outside the checker; read it off the typed program "
         "(`TypedProgram.semantic_type`) instead: "
@@ -846,3 +902,8 @@ def test_no_function_outside_the_checker_derives_a_type() -> None:
 def test_each_deliberate_exception_still_derives_one() -> None:
     stale = set(DELIBERATE) - set(_type_derivations())
     assert not stale, f"exceptions for functions that derive no type: {stale}"
+
+
+def test_each_known_reader_still_derives_one() -> None:
+    stale = set(KNOWN) - set(_type_derivations())
+    assert not stale, f"KNOWN entries for readers that are gone: {stale}"

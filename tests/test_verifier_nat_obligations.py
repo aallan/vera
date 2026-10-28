@@ -1195,35 +1195,39 @@ private fn f(@Int -> @String)
 """, "may be negative")
 
     def test_fresh_slot_var_resolves_nat_alias(self) -> None:
-        """`_fresh_slot_var` dispatches on the *resolved* type, so a
-        destructure slot whose declared type is an alias of a scalar
-        (`type Count = Nat`) is invalidated with the scalar's Z3 invariant,
-        not dropped as an unknown ADT.  Direct unit pin for the alias path
-        the destructure suite only exercises indirectly (#749 item 2)."""
+        """`_fresh_slot_var` dispatches on the type the checker resolved the
+        slot's type expression to, so a destructure slot whose declared type
+        is an alias of a scalar (`type Count = Nat`) is invalidated with the
+        scalar's Z3 invariant, not dropped as a data type.  Direct unit pin
+        for the alias path the destructure suite only exercises indirectly
+        (#749 item 2); the type expressions are the program's own, which
+        the typed program types (#1525)."""
         from vera import ast
         from vera.smt import SmtContext
         from vera.verifier import ContractVerifier
 
-        verifier = ContractVerifier(pipeline.typed())
-        verifier._register_all(parse_to_ast(
+        typed = pipeline.typed(
             "type Count = Nat;\n"
-            "private fn f(@Int -> @Int)\n"
+            "private data Box { B(Int) }\n"
+            "private fn f(@Count, @Nat, @Box -> @Int)\n"
             "  requires(true) ensures(true) effects(pure)\n"
-            "{ @Int.0 }"
-        ))
+            "{ 0 }"
+        )
+        verifier = ContractVerifier(typed)
+        verifier._register_all(typed.program)
         smt = SmtContext()
+        decl = next(tld.decl for tld in typed.program.declarations
+                    if isinstance(tld.decl, ast.FnDecl))
+        count, nat, box = decl.params
 
-        def named(name: str) -> ast.NamedType:
-            return ast.NamedType(name=name, type_args=())
-
-        alias = verifier._fresh_slot_var(smt, named("Count"))
-        direct = verifier._fresh_slot_var(smt, named("Nat"))
+        alias = verifier._fresh_slot_var(smt, count)
+        direct = verifier._fresh_slot_var(smt, nat)
         # The alias resolves to Nat and gets a real Z3 var with the same
         # sort as a directly-@Nat slot...
         assert alias is not None and direct is not None
         assert alias.sort() == direct.sort()
-        # ...while a genuinely-unknown ADT type has no scalar sort.
-        assert verifier._fresh_slot_var(smt, named("SomeUserAdt")) is None
+        # ...while a data type has no scalar sort.
+        assert verifier._fresh_slot_var(smt, box) is None
 
     def test_narrows_into_nat_verifier_codegen_parity(self) -> None:
         """`_narrows_into_nat` is hand-mirrored in the verifier and codegen

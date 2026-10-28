@@ -860,15 +860,14 @@ def _translatable(e: Expr) -> bool:
 
 def _no_term(e: Expr) -> bool:
     """Whether the verifier translates *e* to no term at all: a generic's
-    call, a fold, a cell's read, a handler, a set's size or a constructor
-    of the module's data type anywhere in it, or a slot of a type other
-    than ``Int``, ``Nat`` and ``Bool`` bound to a value it does not
-    translate (a ``let`` of one of those three holds a fresh value of its
-    type)."""
+    call, a fold, a cell's read, a handler or a set's size anywhere in it,
+    or a slot of a type other than ``Int``, ``Nat`` and ``Bool`` bound to a
+    value it does not translate (a ``let`` of one of those three holds a
+    fresh value of its type).  A construction is a term of its checked
+    type's sort, whatever file declares the type (#1525)."""
     for node in _walk(e):
         if (isinstance(node, (Fold, Get, Handle, SetSize))
-                or isinstance(node, Call) and node.fn.forall
-                or isinstance(node, Construct) and node.ctor.data == TALLY):
+                or isinstance(node, Call) and node.fn.forall):
             return True
         if (isinstance(node, Ref) and node.binding.value is not None
                 and node.binding.type not in PRIMITIVES
@@ -880,12 +879,11 @@ def _no_term(e: Expr) -> bool:
 def _untranslated(e: Expr) -> bool:
     """Whether the verifier translates *e* to no term: one it has no term
     for, a call taking one (whose ``ensures`` it then drops), or holding a
-    ``match`` on a constructor applied in place or on ``map_get``'s result.
-    In place, an obligation over such a value is left to Tier 3; a ``let``
-    of one holds a fresh value of the ``let``'s own type, which a later
-    obligation is refuted over (#1696)."""
+    ``match`` on ``map_get``'s result.  In place, an obligation over such a
+    value is left to Tier 3; a ``let`` of one holds a fresh value of the
+    ``let``'s own type, which a later obligation is refuted over (#1696)."""
     return _no_term(e) or any(
-        isinstance(node, Match) and isinstance(node.scrutinee, (Construct, MapGet))
+        isinstance(node, Match) and isinstance(node.scrutinee, MapGet)
         for node in _walk(e))
 
 
@@ -2901,42 +2899,6 @@ def render_module(prog: Program) -> str:
     blocks += [_data_lines(d) for d in prog.module.datas]
     blocks += [_function_lines(f) for f in prog.module.functions]
     return "\n\n".join("\n".join(b) for b in blocks) + "\n"
-
-
-# =====================================================================
-# The counterfactual of #1525's class
-# =====================================================================
-
-def name_constructed_types(prog: Program) -> Program | None:
-    """*prog* with each function first binding an unused ``let @D`` for
-    every data type ``D`` it constructs and does not name in its signature,
-    or ``None`` when no function constructs one.
-
-    The verifier finds a data type's sort by walking a function's signature
-    and its ``let``s rather than reading the checker's types (#1525), so a
-    construction of a type the function names nowhere does not translate,
-    and a call taking it loses the callee's postcondition.  The ``let`` is a
-    construction of literals, legal at the function's start, and adds one
-    binding of ``D`` and of no other type, so nothing else of the program
-    moves."""
-    cand = copy.deepcopy(prog)
-    changed = False
-    datas = all_datas(cand)
-    for fn in all_functions(cand):
-        if fn.forall:
-            continue
-        named = {p.type for p in fn.params} | {fn.ret}
-        built: list[str] = []
-        for node in _walk(fn.body):
-            if isinstance(node, Construct) and node.ctor.data not in (
-                    "Option", "Tuple", "Ordering"):
-                ty = node.ty or node.ctor.data
-                if ty not in named and ty not in built:
-                    built.append(ty)
-        for ty in reversed(built):
-            fn.body.lets.insert(0, Let(Binding(ty, value=_stand_in(ty, None, datas))))
-            changed = True
-    return cand if changed else None
 
 
 # =====================================================================

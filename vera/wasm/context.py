@@ -40,7 +40,7 @@ from vera.trap_registry import (
 
 if TYPE_CHECKING:
     from vera.codegen import ConstructorLayout
-    from vera.typed import Instance
+    from vera.typed import Instance, TypedProgram
 
 from vera.wasm.helpers import (  # noqa: F401 — re-exported for consumers
     _INLINE_I32_TYPES,
@@ -550,6 +550,11 @@ class WasmContext(
         # as a call of that instance's clone, named once from the typed
         # instantiation.
         self._call_targets: Mapping[int, Instance] = {}
+        # #1525: the typed program, for the constructors' field types the
+        # binder guards read a component's declaration from (the verifier's
+        # source walk, `vera.narrowing.component_narrows`).  `None` for a
+        # bare WasmContext, whose binders are guarded as before.
+        self._typed_program: TypedProgram | None = None
 
     def _owned_ctor_layout(
         self, owner: str | None, ctor_name: str,
@@ -611,6 +616,11 @@ class WasmContext(
     def set_call_targets(self, targets: Mapping[int, Instance]) -> None:
         """Seed the instance each generic call calls (#1679)."""
         self._call_targets = targets
+
+    def set_typed_program(self, typed: TypedProgram) -> None:
+        """Share the typed program (#1525), whose constructors' field
+        types the binder and destructure guards read."""
+        self._typed_program = typed
 
     def set_expr_target_types(self, types: Mapping[int, object]) -> None:
         """Seed the checker's TARGET-type side-table (#820) for the

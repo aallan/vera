@@ -8,7 +8,7 @@ private data Color {
 
 private fn color_code(@Color -> @Int)
   requires(true)
-  ensures(true)
+  ensures(match @Color.0 { Red -> @Int.result == 1, Green -> @Int.result == 2, Blue -> @Int.result == 3 })
   effects(pure)
 {
   match @Color.0 {
@@ -24,7 +24,7 @@ private data Pair {
 
 private fn pair_sum(@Pair -> @Int)
   requires(true)
-  ensures(true)
+  ensures(match @Pair.0 { MkPair(@Int, @Int) -> @Int.result == @Int.0 + @Int.1 })
   effects(pure)
 {
   match @Pair.0 {

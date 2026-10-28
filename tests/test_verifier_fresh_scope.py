@@ -871,7 +871,8 @@ public fn go(@Int -> @Int)
 
 class TestScalarAliasObligationParity1205:
     """#1205 obligation↔guard parity: the checker resolves aliases when
-    typing the handler cell (`_handler_cell_type` → `_resolve_type`), so
+    typing the handler cell, and the verifier reads that type
+    (`_handler_cell_type` → `_written_type`), so
     every #1203 obligation fires through a scalar alias exactly as its
     codegen guard does — the fix collapsed the GUARD side's family
     naming, and these pin that neither side drifted."""

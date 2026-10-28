@@ -271,95 +271,12 @@ def contract_finds(program: Source, stages: Stages | None = None) -> list[Find]:
 
 
 def _verify_key(label: str, d: Diagnostic) -> str:
-    """What identifies a verify error when the counterfactual's `let`s move
-    lines: its file, code and description without the counterexample, whose
-    values name the solver's fresh terms in the order it made them, and its
-    source line's text and column, which a whole line inserted above leaves
-    alone."""
+    """What identifies a verify error when lines move: its file, code and
+    description without the counterexample, whose values name the solver's
+    fresh terms in the order it made them, and its source line's text and
+    column, which a whole line inserted above leaves alone."""
     return (f"{label}{d.error_code}: {_without_model(d.description)} "
             f"| {d.source_line.strip()} | {d.location.column}")
-
-
-#: The class of a verify error that vanishes when each function first names,
-#: in an unused `let`, every data type it constructs and does not name in its
-#: signature: the verifier walks a function's signature and `let`s for a data
-#: type's sort instead of reading the checker's types, so a construction it
-#: finds no sort for does not translate, and a call taking it loses the
-#: callee's postcondition (`program_generator.name_constructed_types`).
-CONSTRUCTED_SORT_ISSUE = "#1525"
-CONSTRUCTED_SORT_SHAPE = ("a construction of a data type its function names "
-                          "nowhere, for which the verifier finds no sort")
-
-
-def classify_contract(
-    prog: gen.Program, finds: list[Find], stages: Stages,
-    directory: Path | None = None,
-) -> tuple[list[Find], gen.Program | None]:
-    """*finds* with each verify error that #1525's counterfactual removes
-    marked known, and the counterfactual program when it removes every find
-    of the contract: the program the differentials then run over.
-
-    Run only on a program whose contract failed.  A verify error that
-    survives the counterfactual stays a find; so does every error when the
-    counterfactual reports one the program did not, since it no longer
-    isolates the class.  Each verify error's evidence names the outcome and
-    every obligation whose status the counterfactual changed."""
-    errors = [f for f in finds if f.signature[0] == "verify" and f.key]
-    named = gen.name_constructed_types(prog) if errors else None
-    if named is None:
-        return finds, None
-    after = Stages.of(named, directory if named.module is not None else None)
-    after_finds = contract_finds(named, after)
-    before_keys = {f.key for f in finds}
-    new = [f for f in after_finds if f.key not in before_keys or not f.key]
-    survived = {f.key for f in after_finds}
-    changed = _status_changes(stages.verified, after.verified)
-    out: list[Find] = []
-    for f in finds:
-        if f not in errors:
-            out.append(f)
-        elif new:
-            out.append(replace(f, evidence=(
-                "the counterfactual reported what the program did not: "
-                + "; ".join(x.key or " ".join(x.signature) for x in new))))
-        elif f.key in survived:
-            out.append(replace(f, evidence=(
-                "survived the counterfactual (an unused `let` of each data "
-                "type a function constructs and does not name)")))
-        else:
-            out.append(replace(f, known=CONSTRUCTED_SORT_ISSUE, cls=CONSTRUCTED_SORT_SHAPE,
-                               evidence=(
-                "vanished under the counterfactual (an unused `let` of each "
-                "data type a function constructs and does not name); "
-                "statuses that changed: " + ("; ".join(changed) or "none"))))
-    if all(f.known for f in out) and not after_finds:
-        return out, named
-    return out, None
-
-
-def _statuses(verified: pipeline.Verified) -> dict[tuple[str, str, str, int], str]:
-    """Each obligation's status, keyed by what does not move when lines
-    do: its function, kind, text and place among its namesakes."""
-    seen: dict[tuple[str, str, str], int] = {}
-    out: dict[tuple[str, str, str, int], str] = {}
-    if not verified.ran:
-        return out
-    for o in verified.obligations:
-        k = (o.fn_name, o.kind, o.expr_text)
-        out[(*k, seen.get(k, 0))] = o.status
-        seen[k] = seen.get(k, 0) + 1
-    return out
-
-
-def _status_changes(before: pipeline.Verified, after: pipeline.Verified) -> list[str]:
-    a, b = _statuses(before), _statuses(after)
-    return [
-        f"{kind} in '{fn}' (`{text}`): {a.get(key, 'absent')} -> "
-        f"{b.get(key, 'absent')}"
-        for key in sorted(set(a) | set(b))
-        for fn, kind, text, _ in (key,)
-        if a.get(key) != b.get(key)
-    ]
 
 
 def _first_difference(source: str, canonical: str) -> str:
@@ -469,40 +386,27 @@ def _function_named(description: str) -> str:
 
 class Sites:
     """The entry's nodes and the module's, by the file and the place they
-    start, each node's parent, and what the declarations say: each alias's
-    type, each constructor's fields, and each function's return, for the
-    known-class predicates.  Everything here is read off the programs as
-    written, never off the checker's tables."""
+    start, each node's parent, and each alias's type, for the known-class
+    predicates.  Everything here is read off the programs as written, never
+    off the checker's tables."""
 
     def __init__(self, checked: pipeline.Checked) -> None:
         self.program = checked.program
         self._at: dict[tuple[str | None, int, int], list[ast.Node]] = {}
         self.parent: dict[int, ast.Node | None] = {}
-        self.fields: dict[str, tuple[list[ast.TypeExpr], tuple[str, ...]]] = {}
-        self.returns: dict[str, ast.FnDecl] = {}
         self.aliases: dict[str, ast.TypeExpr] = {}
         programs = [(checked.file, checked.program)] + [
             (str(m.file_path), m.program) for m in (checked.resolved or ())]
-        self._calls: dict[str, list[ast.FnCall]] = {}
         for file, program in programs:
             self._index(program, None, file)
             for tld in program.declarations:
                 decl = tld.decl
-                if isinstance(decl, ast.DataDecl):
-                    for ctor in decl.constructors:
-                        self.fields[ctor.name] = (list(ctor.fields or ()),
-                                                  tuple(decl.type_params or ()))
-                elif isinstance(decl, ast.FnDecl):
-                    for fn in [decl, *(decl.where_fns or ())]:
-                        self.returns[fn.name] = fn
-                elif isinstance(decl, ast.TypeAliasDecl) and not decl.type_params:
+                if isinstance(decl, ast.TypeAliasDecl) and not decl.type_params:
                     self.aliases[decl.name] = decl.type_expr
 
     def _index(self, node: object, parent: ast.Node | None, file: str | None) -> None:
         if isinstance(node, ast.Node):
             self.parent[id(node)] = parent
-            if isinstance(node, ast.FnCall):
-                self._calls.setdefault(node.name, []).append(node)
             span = node.span
             if span is not None:
                 self._at.setdefault((file, span.line, span.column), []).append(node)
@@ -554,167 +458,6 @@ class Sites:
             if len(args) == 2:
                 return ast.NamedType("Option", (args[1],))
         return None
-
-    def enclosing(self, node: ast.Node) -> ast.FnDecl | None:
-        parent = self.parent.get(id(node))
-        while parent is not None and not isinstance(parent, ast.FnDecl):
-            parent = self.parent.get(id(parent))
-        return parent
-
-    def type_variable(self, te: ast.TypeExpr | None, node: ast.Node) -> str | None:
-        """*te*'s name when it is a type variable of the function around
-        *node*."""
-        fn = self.enclosing(node)
-        if (fn is not None and isinstance(te, ast.NamedType) and not te.type_args
-                and te.name in (fn.forall_vars or ())):
-            return te.name
-        return None
-
-    def at_nat(self, node: ast.Node, tvar: str) -> bool:
-        """Whether some call of the generic around *node* instantiates
-        *tvar* at `Nat`: every argument at a parameter of that type is a
-        `Nat` by the declarations."""
-        fn = self.enclosing(node)
-        if fn is None:
-            return False
-        positions = [n for n, p in enumerate(fn.params)
-                     if isinstance(p, ast.NamedType) and p.name == tvar and not p.type_args]
-        if not positions:
-            return False
-        for call in self._calls.get(fn.name, []):
-            if all(n < len(call.args) and self.nat_by_declarations(call.args[n])
-                   for n in positions):
-                return True
-        return False
-
-    def cell(self, node: ast.Node) -> ast.TypeExpr | None:
-        """The `State` cell a `get` reads: the nearest handler's, or the
-        enclosing function's row."""
-        parent = self.parent.get(id(node))
-        while parent is not None:
-            if isinstance(parent, ast.HandleExpr):
-                eff = parent.effect
-                if isinstance(eff, ast.EffectRef) and eff.name == "State" and eff.type_args:
-                    return eff.type_args[0]
-            if isinstance(parent, ast.FnDecl):
-                row = parent.effect
-                if isinstance(row, ast.EffectSet):
-                    for ref in row.effects:
-                        if isinstance(ref, ast.EffectRef) and ref.name == "State" and ref.type_args:
-                            return ref.type_args[0]
-                return None
-            parent = self.parent.get(id(parent))
-        return None
-
-    def nat_by_declarations(self, e: ast.Node) -> bool:
-        """Whether *e*'s value is non-negative by what the program declares:
-        a slot of a `Nat` type or a refinement of one, an element of a
-        `Nat` array, a call whose callee returns `Nat` (a generic one at a
-        `Nat` argument in every position of its type variable), a fold
-        from one, a `get` of a `Nat` cell, a handler or a branch whose value
-        is one, a non-negative literal, and arithmetic over them."""
-        if isinstance(e, ast.SlotRef):
-            tvar = self.type_variable(self.slot_type(e), e)
-            if tvar is not None:
-                return self.at_nat(e, tvar)
-            return self.is_nat(self.slot_type(e))
-        if isinstance(e, ast.IntLit):
-            return e.value >= 0
-        if isinstance(e, ast.BinaryExpr):
-            return (e.op in (ast.BinOp.ADD, ast.BinOp.SUB, ast.BinOp.MUL,
-                             ast.BinOp.DIV, ast.BinOp.MOD)
-                    and self.nat_by_declarations(e.left)
-                    and self.nat_by_declarations(e.right))
-        if isinstance(e, ast.Block):
-            return self.nat_by_declarations(e.expr)
-        if isinstance(e, (ast.IfExpr, ast.MatchExpr)):
-            # A branch that throws gives the construct no value.
-            branches = ([e.then_branch, e.else_branch] if isinstance(e, ast.IfExpr)
-                        else [a.body for a in e.arms])
-            valued = [b for b in branches if not _throws(b)]
-            return bool(valued) and all(self.nat_by_declarations(b) for b in valued)
-        if isinstance(e, ast.HandleExpr):
-            # An `Exn` clause's value is the handler's when the body throws;
-            # a `State` clause's goes back to the body.
-            clauses = ([c.body for c in e.clauses]
-                       if isinstance(e.effect, ast.EffectRef) and e.effect.name == "Exn"
-                       else [])
-            return (self.nat_by_declarations(e.body)
-                    and all(self.nat_by_declarations(c) for c in clauses))
-        if isinstance(e, ast.IndexExpr):
-            return self.is_nat(self.type_of(e))
-        if isinstance(e, ast.QualifiedCall) and e.name == "get":
-            return self.is_nat(self.cell(e))
-        if isinstance(e, (ast.FnCall, ast.ModuleCall)):
-            fn = self.returns.get(e.name)
-            if fn is None and e.name == "array_fold" and len(e.args) == 3:
-                # The checker binds a fold's accumulator to its initial
-                # value's type.
-                return self.nat_by_declarations(e.args[1])
-            if fn is None:
-                return e.name == "get" and not e.args[1:] and self.is_nat(self.cell(e))
-            ret = fn.return_type
-            tvars = fn.forall_vars or ()
-            if isinstance(ret, ast.NamedType) and ret.name in tvars and not ret.type_args:
-                at = [a for p, a in zip(fn.params, e.args)
-                      if isinstance(p, ast.NamedType) and p.name == ret.name]
-                return bool(at) and all(self.nat_by_declarations(a) for a in at)
-            return self.is_nat(ret)
-        return False
-
-    def binder_of_nat_field(self, node: ast.Node) -> bool:
-        """Whether *node* is a `@Nat` binder of a field the declarations type
-        `Nat`: declared so, or a type parameter the scrutinee's declared type
-        instantiates at `Nat`."""
-        if not isinstance(node, ast.BindingPattern):
-            return False
-        tvar = self.type_variable(node.type_expr, node)
-        if tvar is not None:
-            return self.at_nat(node, tvar)
-        if not self.is_nat(node.type_expr):
-            return False
-        pattern = self.parent.get(id(node))
-        if not isinstance(pattern, ast.ConstructorPattern):
-            return False
-        position = next(n for n, sub in enumerate(pattern.sub_patterns) if sub is node)
-        if pattern.name in ("Some", "Tuple"):
-            declared: ast.TypeExpr | None = ast.NamedType(
-                "T" if pattern.name == "Some" else f"T{position}", None)
-            params: tuple[str, ...] = (("T",) if pattern.name == "Some"
-                                       else tuple(f"T{n}" for n in range(
-                                           len(pattern.sub_patterns))))
-        else:
-            fields, params = self.fields.get(pattern.name, ([], ()))
-            declared = fields[position] if position < len(fields) else None
-        if self.is_nat(declared):
-            return True
-        if not (isinstance(declared, ast.NamedType) and declared.name in params):
-            return False
-        arm = self.parent.get(id(pattern))
-        match = self.parent.get(id(arm)) if arm is not None else None
-        if not isinstance(match, ast.MatchExpr):
-            return False
-        args = self.arguments(self.type_of(match.scrutinee))
-        k = params.index(declared.name)
-        return k < len(args) and self.is_nat(args[k])
-
-
-def _throws(e: ast.Node) -> bool:
-    """Whether *e* is a `throw`, which gives its branch no value."""
-    if isinstance(e, ast.Block):
-        return _throws(e.expr)
-    return isinstance(e, (ast.FnCall, ast.QualifiedCall)) and e.name == "throw"
-
-
-def _nat_guard_at_a_binder(node: ast.Node, sites: Sites) -> bool:
-    """The class #1695 holds for a `nat_bind` guard: a `@Nat` binder of a
-    field the declarations type `Nat` (`Sites.binder_of_nat_field`), which
-    code generation guards unless the field is a type parameter instantiated
-    at exactly `Nat`, and which the verifier, tracing the field to the value
-    the construction stored, does not narrow.  A value at a `@Nat` position
-    is outside it: code generation reads its type off the typed program."""
-    return isinstance(node, ast.BindingPattern) and sites.binder_of_nat_field(node)
-
 
 def _refinement_already_held(node: ast.Node, sites: Sites) -> bool:
     """A refinement check where the value already has the refinement's
@@ -812,8 +555,6 @@ class KnownClass:
         return any(test(node, sites) for node in sites.at(mismatch))
 
 
-_NAT_GUARD_SHAPE = ("a `@Nat` binder of a field the declarations type `Nat`, which "
-                    "code generation guards and the verifier does not narrow")
 _REFINED_NAT_SHAPE = "a narrowing into a refinement of `Nat`, recorded as the refinement's"
 _REFINEMENT_HELD_SHAPE = ("a refinement check on a value the declarations already give "
                           "the refinement: a refined parameter, a `let` of refined slots")
@@ -824,7 +565,6 @@ _SHAPES: dict[str, Callable[[ast.Node, Sites], bool]] = {
     "an `@Int` division": lambda node, _s: _division_by(node, literal=False),
     "a division by a non-zero literal":
         lambda node, _s: _division_by(node, literal=True),
-    _NAT_GUARD_SHAPE: _nat_guard_at_a_binder,
     _REFINED_NAT_SHAPE: _narrowing_into_refined_nat,
     _REFINEMENT_HELD_SHAPE: _refinement_already_held,
     _JOIN_SHAPE: _join_typed_as_the_refinement,
@@ -852,6 +592,10 @@ public fn r(@Int -> @Int)
 }
 """
 
+#: A `@Nat` binder of a field the declarations type `Nat`, over a slot: the
+#: repro of #1695's field-binder `nat_bind` class while code generation
+#: guarded the binder by the field's type and the verifier traced it to the
+#: value stored.  Both read the source now (#1525).
 _REPRO_NAT_GUARD = """\
 private data Box {
   Wrap(Nat),
@@ -947,20 +691,6 @@ KNOWN_CLASSES: tuple[KnownClass, ...] = (
         "#1695 (#1629)", "guarded_unrecorded", "div_zero",
         "wasm/operators.py:_translate_binary",
         "a division by a non-zero literal", _REPRO_1629_DIVISOR),
-    # A `@Nat` binder of a field the declarations type `Nat`: code
-    # generation guards every `@Nat` binder but one of a type parameter
-    # instantiated at exactly `Nat`, and the verifier, tracing the field to
-    # the value the construction stored (`vera.narrowing.component_narrows`),
-    # records no narrowing.  Code generation reads every other value's type
-    # off the typed program, so a call's result, a refined slot, a
-    # `State<Nat>` read and its handler, an element of a `Nat` array and a
-    # fold leave no guard without its record (the
-    # `test_repro_*_makes_no_nat_bind_find` cells).  Code generation's
-    # source walk joining the verifier's flips this pin.
-    KnownClass(
-        "#1695", "guarded_unrecorded", "nat_bind",
-        "wasm/operators.py:_emit_nat_bind_guard", _NAT_GUARD_SHAPE,
-        _REPRO_NAT_GUARD),
     # A narrowing into a refinement of `Nat` is one record (`refine_bind`)
     # and two checks (the sign's and the predicate's): the join pairs the
     # sign's with nothing.  The typed program does not change it; one
@@ -1412,13 +1142,7 @@ def differentials(
             stats[f"obligation_{o.status}"] = stats.get(
                 f"obligation_{o.status}", 0) + 1
     if finds:
-        finds, counterfactual = classify_contract(prog, finds, stages, directory)
-        if counterfactual is None:
-            return finds
-        # Every contract find is #1525's: the differentials run over the
-        # program with the counterfactual's `let`s, which verifies clean.
-        prog = counterfactual
-        stages = Stages.of(prog, directory)
+        return finds
     finds += load_finds(prog, prog.calls(), stages)
     finds += reconcile_finds(prog, known, stages)
     finds += distrust_finds(prog, trials, stages, stats)
@@ -1442,12 +1166,6 @@ def _same(find: Find, prog: gen.Program, directory: Path, trials: int) -> Find |
     """The find *prog* reports in *find*'s place, if it reports one."""
     stages = Stages.of(prog, directory)
     contract = contract_finds(prog, stages)
-    if contract:
-        contract, counterfactual = classify_contract(prog, contract, stages, directory)
-        if find.differential != "contract" and counterfactual is not None:
-            prog = counterfactual
-            stages = Stages.of(prog, directory)
-            contract = []
     if find.differential == "contract":
         found = contract
     elif contract:
@@ -2101,18 +1819,16 @@ def _opaque_narrowing(how: str) -> gen.Program:
     return prog
 
 
-@pytest.mark.parametrize("how", ["match", "map_get", "call", "imported", "data_let"])
+@pytest.mark.parametrize("how", ["map_get", "call", "data_let"])
 def test_the_model_reads_no_value_the_verifier_does_not_translate(
         how: str, tmp_path: Path) -> None:
-    """A `match` on a constructor applied in place or on `map_get`'s
-    result, a call taking a generic's call at a data type, a call taking a
-    constructor of the module's data type, and a call taking a data slot
-    bound to a `match` on `map_get` are values the verifier does not
-    translate (#1696; #1525 for the module's constructor): a `let` of one
-    is unconstrained, and narrowing it into a `@Nat` is refused (E503),
-    though it is 0, 1 or 2 on every run.  The generator models
-    each as unconstrained, so it writes no such narrowing: the program is
-    not one it could have written."""
+    """A `match` on `map_get`'s result, a call taking a generic's call at a
+    data type, and a call taking a data slot bound to a `match` on
+    `map_get` are values the verifier does not translate (#1696): a `let`
+    of one is unconstrained, and narrowing it into a `@Nat` is refused
+    (E503), though it is 1 or 2 on every run.  The generator models each
+    as unconstrained, so it writes no such narrowing: the program is not
+    one it could have written."""
     prog = _opaque_narrowing(how)
     finds = contract_finds(prog, Stages.of(prog, tmp_path))
     assert [f.signature for f in finds] == [("verify", "E503")], finds
@@ -2121,6 +1837,23 @@ def test_the_model_reads_no_value_the_verifier_does_not_translate(
     assert let.value is not None
     assert gen.iv(gen.Ref(let), "v") == gen.ANY
     assert gen.iv(let.value, "r").within(0, 2)
+
+
+@pytest.mark.parametrize("how", ["match", "imported"])
+def test_the_model_reads_a_construction_in_place_as_the_verifier_does(
+        how: str, tmp_path: Path) -> None:
+    """A `match` on a constructor applied in place and a call taking a
+    constructor of the module's data type are terms of their checked types'
+    sorts (#1525), so the verifier sees each value the run computes: the
+    narrowing into a `@Nat` proves, and the generator, which models each
+    as the verifier sees it, writes the program."""
+    prog = _opaque_narrowing(how)
+    finds = contract_finds(prog, Stages.of(prog, tmp_path))
+    assert finds == [], finds
+    assert gen.well_formed(prog)
+    let = prog.functions[-1].body.lets[-2].binding
+    assert let.value is not None
+    assert gen.iv(gen.Ref(let), "v") == gen.iv(let.value, "r")
 
 
 def test_a_verify_error_is_keyed_without_its_counterexample() -> None:
@@ -2425,39 +2158,20 @@ def test_repro_an_element_of_a_nat_array_makes_no_nat_bind_find() -> None:
     _makes_no_nat_bind_find(_NO_NAT_GUARD["an element of a Nat array"])
 
 
-#: Members of the `nat_bind` class beside its repro: a `Nat` field's binder
-#: over a construction.
-_NAT_GUARD_MEMBERS = {
-    "a field's binder": """\
-private data Box {
-  Wrap(Nat),
-  Empty
-}
+def test_repro_a_nat_fields_binder_makes_no_nat_bind_find() -> None:
+    """A `@Nat` binder of a `Nat` field over a slot: code generation reads
+    the field's sign through the verifier's source walk, so neither guards
+    nor records it (#1525)."""
+    _makes_no_nat_bind_find(_REPRO_NAT_GUARD)
 
-public fn s(@Nat -> @Nat)
-  requires(@Nat.0 <= 100)
-  ensures(@Nat.result <= 100)
-  effects(pure)
-{
-  match Wrap(@Nat.0) {
-    Wrap(@Nat) -> @Nat.0,
-    Empty -> 0
-  }
-}
-""",
-}
 
-@pytest.mark.parametrize("member", sorted(_NAT_GUARD_MEMBERS))
-def test_the_nat_guard_class_reads_its_mechanism(member: str) -> None:
-    """Each member reports one `nat_bind` mismatch, and the class holds it:
-    the predicate reads the mechanism, a `@Nat` binder of a `Nat` field,
-    from the program as written."""
-    source = _NAT_GUARD_MEMBERS[member]
-    assert not contract_finds(source), contract_finds(source)
-    finds = reconcile_finds(source)
-    nat = [f for f in finds if f.signature[1] == "nat_bind"]
-    assert [f.known for f in nat] == ["#1695"], finds
-    assert all(f.known for f in finds), finds
+def test_repro_a_nat_fields_binder_over_a_construction_makes_no_nat_bind_find(
+) -> None:
+    """The same binder over the construction itself: the stored `@Nat.0`
+    is the field's source, which narrows nothing."""
+    _makes_no_nat_bind_find(_REPRO_NAT_GUARD.replace(
+        "  let @Box = Wrap(@Nat.0);\n  match @Box.0 {",
+        "  match Wrap(@Nat.0) {"))
 
 
 #: Members of the class of a refinement check on a value the declarations
@@ -2509,61 +2223,6 @@ def test_the_held_refinement_class_reads_its_mechanism(member: str) -> None:
     assert all(f.known for f in finds), finds
 
 
-#: Sites the class must and must not hold: a `@Nat` binder of a `Nat`
-#: field, and values at `@Nat` positions (a refined slot's arithmetic, an
-#: `@Int` slot, a negated literal: #1756's shape, which the checker's join
-#: types `@Int`, and a `@Nat` slot's arithmetic).
-_NAT_GUARD_SITES = """\
-type Low = { @Nat | @Nat.0 <= 6 };
-
-private data Box {
-  Wrap(Nat),
-  Empty
-}
-
-public fn sites(@Low, @Int, @Nat -> @Int)
-  requires(@Int.0 >= 1 && @Int.0 <= 5 && @Nat.0 <= 5)
-  ensures(true)
-  effects(pure)
-{
-  let @Int = @Low.0 + 1;
-  let @Int = @Int.0 - 3;
-  let @Int = -1 * -3;
-  let @Int = @Nat.0 + 1;
-  match Wrap(@Nat.0) {
-    Wrap(@Nat) -> 0,
-    Empty -> 0
-  }
-}
-"""
-
-
-def _site_of(source: str, text: str) -> tuple[int, int]:
-    """Where *text* starts in *source*, one-based."""
-    for n, line in enumerate(source.splitlines(), start=1):
-        column = line.find(text)
-        if column >= 0:
-            return n, column + 1
-    raise AssertionError(text)
-
-
-@pytest.mark.parametrize("value,held", [
-    ("@Nat) -> 0", True), ("@Low.0 + 1", False), ("@Int.0 - 3", False),
-    ("-1 * -3", False), ("@Nat.0 + 1", False)])
-def test_the_nat_guard_class_holds_no_other_nat_bind(value: str, held: bool) -> None:
-    """The class's predicate over a `nat_bind` guard at each site: a `@Nat`
-    binder of a `Nat` field is the class's; a value at a `@Nat` position is
-    not, since code generation reads its type off the typed program, so a
-    guard there with no record stays a find."""
-    checked = pipeline.check(_NAT_GUARD_SITES, file=LABEL)
-    assert not checked.diagnostics, checked.diagnostics
-    line, column = _site_of(_NAT_GUARD_SITES, value)
-    cls = next(k for k in KNOWN_CLASSES if k.shape == _NAT_GUARD_SHAPE)
-    mismatch = Mismatch("guarded_unrecorded", "nat_bind", LABEL, line, column,
-                        "sites", emitter=cls.emitter)
-    assert cls.holds(mismatch, Sites(checked)) is held
-
-
 def test_the_distrust_differential_reports_a_refuted_proof() -> None:
     """#1695's composite coercion: proved, and refuted by its one run.  The
     neighbour binds the call and compares the binding with itself, true of
@@ -2583,11 +2242,11 @@ def test_the_distrust_differential_reports_a_refuted_proof() -> None:
 
 def _lost_postcondition(lowest: int) -> gen.Program:
     """`f2` binds `f0(Bravo(@Int.0))`, whose `ensures` says it is 4, and
-    passes it to `f1`, which requires 1 to 9; `f2` names no `Gauge`, so the
-    verifier loses `f0`'s postcondition and refuses the call (#1525's
-    constructed-sort line).  With *lowest* below 1,
-    `f2` also calls `f1` on its own parameter, which may be 0: a refusal no
-    counterfactual removes."""
+    passes it to `f1`, which requires 1 to 9; `f2` names no `Gauge`, which
+    lost the verifier `f0`'s postcondition and refused the call while a
+    construction's sort was found only among the ones `f2` declares (#1525's
+    constructed-sort line).  With *lowest* below 1, `f2` also calls `f1` on
+    its own parameter, which may be 0: a refusal of its own."""
     bravo = gen.Ctor("Bravo", "Gauge", ["Int"])
     gauge = gen.Data("Gauge", True, [bravo])
     f0 = gen.Function("f0", False, [gen.Binding("Gauge")], "Nat",
@@ -2608,38 +2267,24 @@ def _lost_postcondition(lowest: int) -> gen.Program:
     return gen.Program(0, [gauge], [f0, f1, f2], [f2])
 
 
-def test_the_counterfactual_keys_a_lost_postcondition_to_1525(tmp_path: Path) -> None:
-    """The refusal vanishes when `f2` first binds an unused `let @Gauge`, so
-    it is #1525's, the record says why, and the differentials run over the
-    counterfactual program, which verifies clean."""
+def test_repro_a_lost_postcondition_makes_no_find(tmp_path: Path) -> None:
+    """`f0(Bravo(@Int.0))` is a call over a term of `Gauge`'s sort, which
+    `f2` names nowhere, so `f0`'s `ensures` holds of its result and `f1`'s
+    precondition proves: the program keeps the generator's contract and
+    the differentials find nothing (#1525's constructed-sort line)."""
     prog = _lost_postcondition(1)
-    finds = contract_finds(prog.render())
-    assert [f.signature for f in finds] == [("verify", "E501")], finds
+    assert contract_finds(prog.render()) == []
     stats: dict[str, int] = {}
-    classified = differentials(prog, tmp_path, stats=stats)
-    contract = [f for f in classified if f.differential == "contract"]
-    assert [(f.known, f.signature) for f in contract] == [
-        (CONSTRUCTED_SORT_ISSUE, ("verify", "E501"))], classified
-    assert "vanished under the counterfactual" in contract[0].evidence
-    assert "call_pre in 'f2'" in contract[0].evidence, contract[0].evidence
-    assert "violated -> " in contract[0].evidence, contract[0].evidence
-    assert not [f for f in classified if not f.known], classified
+    assert differentials(prog, tmp_path, stats=stats) == []
     assert stats["public_tested"] == 1, stats
-    named = gen.name_constructed_types(prog)
-    assert named is not None
-    assert "  let @Gauge = Bravo(0);\n  let @Int = f0(Bravo(@Int.0));" in (
-        named.render())
 
 
-def test_a_refusal_the_counterfactual_does_not_remove_stays_a_find(
-        tmp_path: Path) -> None:
+def test_a_refusal_of_its_own_stays_a_find(tmp_path: Path) -> None:
     """`f2`'s own parameter may be 0, which `f1` refuses whatever `f2`
-    names: the refusal survives the counterfactual, and is a find."""
+    names: the one refusal is a find."""
     finds = differentials(_lost_postcondition(0), tmp_path)
     assert [(f.differential, f.signature, f.known) for f in finds] == [
-        ("contract", ("verify", "E501"), CONSTRUCTED_SORT_ISSUE),
         ("contract", ("verify", "E501"), "")], finds
-    assert "survived the counterfactual" in finds[1].evidence
 
 
 def test_a_refutation_names_its_function_and_arguments() -> None:
