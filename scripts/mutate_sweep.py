@@ -30,8 +30,9 @@ in ``JOBS`` parallel jobs and carries what each decided:
    test that starts a Python or ``vera`` process is no oracle in the copy
    (``tests/mutation_oracle.py``), and one that fails there with no mutant
    active is dropped from the run and reported.  An exception the engine's
-   own code raises stops the slice instead, dropping nothing, and its record
-   and the night's report name the exception and the engine's frame.
+   own code raises stops the slice instead, dropping no further test, and
+   its record and the night's report name the exception and the engine's
+   frame.
 5. The stitch merges the night's slice records into the state.  When every
    unit's every mutant is decided the cycle closes: its per-module totals are
    kept in the state and written as ``mutation-summary.csv`` and the README
@@ -401,9 +402,12 @@ def check_record(record: Any) -> None:
         _text(record["engine"], _VERSION, "its engine version")
     _check(record.get("stopped") in (None, "budget", "engine", "unmapped", "lane"), "its stop is unknown")
     error = record.get("engine_error")
-    _check(error is None or (isinstance(error, str) and 0 < len(error) <= md.ENGINE_ERROR_CHARS
-                             and "\n" not in error and "\r" not in error),
-           f"its engine error is not one line of at most {md.ENGINE_ERROR_CHARS} characters")
+    # The stitch and the reports read it beside an engine stop alone, and
+    # the lane reads a log's lines as str.splitlines does.
+    _check(error is None or (record.get("stopped") == "engine" and isinstance(error, str)
+                             and 0 < len(error) <= md.ENGINE_ERROR_CHARS and error.splitlines() == [error]),
+           f"its engine error is not one line of at most {md.ENGINE_ERROR_CHARS} characters "
+           "beside an engine stop")
     engine_s = record.get("engine_s", 0.0)
     _check(type(engine_s) in (int, float) and 0 <= engine_s < 1e6, "its engine time is out of range")
     _check(isinstance(record.get("planned"), list) and all(isinstance(p, dict) for p in record["planned"]),

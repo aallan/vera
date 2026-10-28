@@ -52,9 +52,9 @@ mutmut over the lines of those functions near the diff:
    is mutmut's generated file, does) stops that pass; it is no oracle there,
    so the lane drops it, runs again, and names it in the summary and the
    record.  An exception the engine's own code raises stops the pass the
-   same way, and no test is at fault: the run stops there, drops nothing,
-   and the summary and the record name the exception and the engine's frame
-   (:func:`engine_failure`).
+   same way, and no test is at fault: the run stops there, drops no
+   further test, and the summary and the record name the exception and the
+   engine's frame (:func:`engine_failure`).
 5. The run has a wall-clock budget.  When it runs out, mutmut is
    interrupted, then its process group terminated, then killed, and what it
    decided so far is reported.
@@ -221,10 +221,25 @@ _ENGINE_FILE = re.compile(r"[\\/](?:site|dist)-packages[\\/](?P<path>mutmut[\\/]
 #: compiled from a string.
 _NEUTRAL_FILE = re.compile(r"^<[^>]*>$|[\\/]lib[\\/]python\d+\.\d+[\\/](?!(?:site|dist)-packages[\\/])")
 
-#: Exceptions raised wherever the process ran out, not where a fault lies: a
-#: recursion runs out of stack in whatever frame it reached, and inside
-#: mutmut's copy every call through the trampoline adds the engine's frames.
-_RAISED_ANYWHERE = frozenset({"RecursionError"})
+#: The prefix pytest puts on every line of an exception it reports as its
+#: own internal error: a hook raising outside a test's phases, as a stats
+#: hook's ``pytest_runtest_makereport`` or ``pytest_runtest_logstart`` would.
+_INTERNAL_ERROR = "INTERNALERROR> "
+
+#: The rule that heads a section or a report of pytest's output, and the
+#: one that heads a section of what a test printed or logged (``Captured
+#: stderr call``), which runs to the next rule.
+_SECTION = re.compile(r"^[-_=]{3,} .+ [-_=]{3,}$")
+_CAPTURED = re.compile(r"^-{3,} Captured .+ -{3,}$")
+
+#: A file of what mutmut's copy holds: its tests and the code under test.
+_COPY_FILE = re.compile(r"(?:^|[\\/])(?:mutants|tests)[\\/]")
+
+#: A ``RecursionError`` runs out of stack in whatever frame it reached, and
+#: inside the copy every call through mutmut's trampoline adds the engine's
+#: frames, so it is the engine's only when none of its innermost frames
+#: outside the standard library, this many, is the copy's.
+RECURSION_FRAMES = 10
 
 #: Survivors whose ``mutmut show`` diff the summary carries: a step summary
 #: over 1 MiB is dropped whole, and the record lists every survivor.
@@ -933,8 +948,8 @@ def run_dropping(cmd: Sequence[str], *, tree: Path, pyproject: Path,
     active, so it is no oracle there), drop it and run again in what is left
     of the budget, up to ``MAX_COPY_DROPS`` tests.  When the engine's own code
     raised instead (:func:`engine_failure`), no test is at fault: the run
-    stops there, drops nothing, and the returned run's ``error`` names the
-    exception and the engine's frame.  ``config_for(dropped)`` is the
+    stops there, drops no further test, and the returned run's ``error``
+    names the exception and the engine's frame.  ``config_for(dropped)`` is the
     ``pyproject.toml`` text for a run without the tests dropped so far.
     Returns the last run, its log and the tests dropped."""
     dropped: list[str] = []
@@ -974,16 +989,27 @@ def engine_failure(log: str) -> str | None:
 
     The log of a run its stats pass or its clean run stopped holds that
     pass's output alone: mutmut prints it only when the pass fails, and
-    exits there.  Its reports carry tracebacks in Python's own form.  Going
-    outward from a traceback's innermost frame, past the frames no party's
-    code is in (:data:`_NEUTRAL_FILE`), the first frame decides: a file of
-    the installed ``mutmut`` package is the engine's code (a hook of its
-    stats pass, its trampoline), and any other (the test, the code under
-    test, a library either calls, pytest) is the test's.  An exception of
-    :data:`_RAISED_ANYWHERE` is never the engine's."""
+    exits there.  Its reports carry tracebacks in Python's own form, an
+    internal error's with :data:`_INTERNAL_ERROR` on every line; what a test
+    printed or logged (:data:`_CAPTURED`) is no report and is not read.
+    Going outward from a traceback's innermost frame, past the frames no
+    party's code is in (:data:`_NEUTRAL_FILE`), the first frame decides: a
+    file of the installed ``mutmut`` package is the engine's code (a hook of
+    its stats pass, its trampoline), and any other (the test, the code under
+    test, a library either calls, pytest) is the test's.  A
+    ``RecursionError`` is the engine's only when, besides, no frame of the
+    copy lies among its :data:`RECURSION_FRAMES` innermost frames outside
+    the standard library."""
     if not any(stop in log for stop in _COPY_STOPS):
         return None
-    lines = log.splitlines()
+    lines: list[str] = []
+    captured = False
+    for row in log.splitlines():
+        row = row.removeprefix(_INTERNAL_ERROR)
+        if _SECTION.match(row.rstrip()):
+            captured = _CAPTURED.match(row.rstrip()) is not None
+        if not captured:
+            lines.append(row)
     for start, line in enumerate(lines):
         if line.rstrip() != "Traceback (most recent call last):":
             continue
@@ -996,11 +1022,15 @@ def engine_failure(log: str) -> str | None:
             elif row.strip() and not row[0].isspace():
                 raised = row.strip()
                 break
-        if raised is None or raised.split(":", 1)[0].rsplit(".", 1)[-1] in _RAISED_ANYWHERE:
+        if raised is None:
             continue
-        deciding = next((f for f in reversed(frames) if not _NEUTRAL_FILE.search(f["file"])), None)
+        kept = [f for f in frames if not _NEUTRAL_FILE.search(f["file"])]
+        deciding = kept[-1] if kept else None
         engine = _ENGINE_FILE.search(deciding["file"]) if deciding is not None else None
         if deciding is None or engine is None:
+            continue
+        if (raised.split(":", 1)[0].rsplit(".", 1)[-1] == "RecursionError"
+                and any(_COPY_FILE.search(f["file"]) for f in kept[-RECURSION_FRAMES:])):
             continue
         where = f" ({engine['path'].replace(chr(92), '/')}:{deciding['line']})"
         if len(raised) + len(where) > ENGINE_ERROR_CHARS:
@@ -1185,7 +1215,7 @@ def render(record: Mapping[str, Any]) -> str:
     out.append("")
     if record.get("engine_error"):
         out.append(f"Stopped by the engine: `{record['engine_error']}`.  The exception was raised in "
-                   "mutmut's own code, so no test was dropped.")
+                   "mutmut's own code.")
         out.append("")
     if record.get("window"):
         out.append(selection_line(record["window"]))

@@ -29,6 +29,7 @@ on:
       - "uv.lock"
       - "scripts/mutate_diff.py"
       - "scripts/mutate_sweep.py"
+      - "scripts/mutation_report.py"
       - "tests/mutation_oracle.py"
       - "tests/test_mutate_diff.py"
       - "tests/test_mutate_sweep.py"

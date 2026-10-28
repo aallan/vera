@@ -336,6 +336,25 @@ class TestStateChecks:
             sw.load_state(sw.save_state(state, tmp_path), "x")
         assert why in str(caught.value)
 
+    def test_an_engine_error_is_one_line_beside_an_engine_stop_and_nowhere_else(self) -> None:
+        """The stitch and the reports read ``engine_error`` only beside
+        ``stopped == "engine"``, so a record carrying it beside another stop
+        holds an exception nothing shows; and one line is one line as
+        ``str.splitlines`` reads it (U+2028 and U+0085 break a line)."""
+        record = _record(0, 1, {}, stopped="engine")
+        record["engine_error"] = ENGINE_ERROR
+        sw.check_record(record)
+        for stopped in (None, "budget", "unmapped", "lane"):
+            record["stopped"] = stopped
+            with pytest.raises(sw.StateError, match="its engine error"):
+                sw.check_record(record)
+        record["stopped"] = "engine"
+        for broken in (f"{ENGINE_ERROR[:20]} {ENGINE_ERROR[20:]}", f"{ENGINE_ERROR[:20]}\x85{ENGINE_ERROR[20:]}",
+                       ENGINE_ERROR + "\n"):
+            record["engine_error"] = broken
+            with pytest.raises(sw.StateError, match="its engine error"):
+                sw.check_record(record)
+
     @pytest.mark.parametrize("field,value", [
         ("head", "main"), ("state_in", "../x"), ("stopped", "maybe"), ("engine_s", -1),
         ("results", {A.ident: {"hash": "zz", "mutants": 1, "statuses": {}}}),
@@ -346,6 +365,8 @@ class TestStateChecks:
     ])
     def test_a_malformed_slice_record_stops_the_night_short(self, field: str, value: Any) -> None:
         record = _record(0, 1, {A.ident: {"hash": H, "mutants": 4, "statuses": {"1": "killed"}}})
+        if field == "engine_error":
+            record["stopped"] = "engine"  # the one stop the field may stand beside: its shape refuses it
         record[field] = value
         state, night = _stitch([record], jobs=1)
         assert night["problems"][0].startswith("slice 0: a malformed record")
