@@ -1365,6 +1365,26 @@ discharged without a record keeps a trap there unattributed.  The pull
 request's suite runs it at 5 trials per function, and the nightly stress
 workflow at 1,000.
 
+### The architectural cell
+
+A class whose boundary is architectural closes when its mechanism is gone,
+and its instrument holds the tree to that rather than any one program: it
+reads the source for the mechanism.  The class cell of
+`tests/test_typed_program_1525.py` reads every function in `vera/` outside
+`vera/checker/` and `vera/typed.py`, and fails on one that dispatches on an
+expression's or a type expression's class and returns a type (a `vera.types`
+type or a type expression by its annotation, or a string naming one: a
+primitive's or a WASM value's name, a type expression's `.name`, a slot's
+`.type_name`), which is a second derivation of a type the typed program
+holds (#1525).  Its exceptions are two lists, each entry a function with its
+reason: `DELIBERATE`, the derivations that stay (naming's slot names, which
+the check binds before any table exists, and the clone substitution, which
+writes the type expressions the typed program then types), and `KNOWN`, code
+generation's seventeen readers of a written type that #1525 still lists.  An
+entry whose function no longer derives a type fails too, so the lists only
+shrink.  It replaced `tests/test_one_classifier_1503.py`'s roster of the
+readers allowed into the checker's tables, which named them one by one.
+
 ### Where an instrument runs
 
 A class instrument is a burndown tool: it proves the class closed at the fix,
@@ -1465,12 +1485,13 @@ aliases, a refined parameter and a refined `let` among them.  A public function
 takes `Int`, `Nat` and `Bool` parameters, and aliases of them, the types
 `vera test` generates.  A generic's call, a fold, a cell's read, an element and
 a handler's value are opaque to the verifier, so no contract the generator
-writes rests on one.  So are a `match` on a constructor applied in place or on
-`map_get`'s result, and a call taking a generic's call, a fold, a cell's read,
-a handler, a set's size or a constructor of the module's data type (#1525),
+writes rests on one.  So are a `match` on `map_get`'s result, and a call
+taking a generic's call, a fold, a cell's read, a handler or a set's size,
 whose `ensures` the verifier drops: in place an obligation over one is left to
 Tier 3, and a `let` of one holds a fresh value of the `let`'s own type
-(#1696), which is all the generator reads of it.  A fold is an `@Int`, its
+(#1696), which is all the generator reads of it.  A construction is a term of
+the sort of its checked type, whatever file declares the type, so a contract
+may rest on one in place (#1525).  A fold is an `@Int`, its
 closure's return type, whatever its initial value (spec §4.2), and the
 generator writes no `let @Nat` of one.
 
@@ -1493,19 +1514,18 @@ sessions differ in a counterexample alone is #1785's class.
 `KNOWN` as classes, each by its mismatch's kind, obligation and emitter and by
 the shape of its site, which its predicate reads from the program as written:
 #1598 (an `@Int` division); #1695 for #1629 (a division by a non-zero literal);
-#1695 for a `nat_bind` guard at a `@Nat` binder of a field the declarations
-type `Nat`, which code generation guards and the verifier, tracing the field
-to the value the construction stored, does not narrow; #1695 for a
-narrowing into a refinement of `Nat`, recorded once as the refinement's and
-checked twice; #1695 for #1629 for a refinement check on a value the
-declarations already give the refinement (a refined parameter at entry, a
-`let` of a refined slot); and #1695 for a join of a refined arm with an
-unrefined one, bound into the refinement, which the checker types as the
+#1695 for a narrowing into a refinement of `Nat`, recorded once as the
+refinement's and checked twice; #1695 for #1629 for a refinement check on a
+value the declarations already give the refinement (a refined parameter at
+entry, a `let` of a refined slot); and #1695 for a join of a refined arm with
+an unrefined one, bound into the refinement, which the checker types as the
 refinement.
-A verify error is #1525's when it vanishes once each function binds
-an unused `let` of every data type it constructs and does not name in its
-signature (`program_generator.name_constructed_types`); the four
-differentials then run over that program.
+A `nat_bind` guard at a `@Nat` binder of a field the declarations type `Nat`
+was #1695's while code generation guarded the binder by the field's type and
+the verifier traced it to the value stored; both read the binder's source
+now (#1525), and the shape makes no find.  A verify error is a find of the
+contract check: the counterfactual that keyed one to #1525's constructed
+sorts went with that line, and its shape makes no find either.
 A find of the load, reconcile or distrust differential is a class of code
 generation's own reading of a value's type when it vanishes with each fold and
 each handler a branch takes bound in place by a `let` of the type the checker
@@ -1537,11 +1557,11 @@ module included, byte for byte, in the test's process and under two string hash
 seeds; a hundred seeds reach every construct and keep the generator's
 invariants; each differential reports a hand-written program that breaks it,
 or a session built to break it, and passes its nearest neighbour that does not;
-the known-class pins and their members; the fold and handler shapes that make
-no find, and the classification's cells over a class they inject; and the
-minimiser's cells.  A pull request that changes
-the generator, its instrument or the workflow also runs the short night below;
-no other generator work runs on a pull request.
+the known-class pins and their members; the fold, handler, `Nat` field binder
+and construction shapes that make no find, and the classification's cells
+over a class they inject; and the minimiser's cells.  A pull request that
+changes the generator, its instrument or the workflow also runs the short
+night below; no other generator work runs on a pull request.
 [`nightly-generator.yml`](.github/workflows/nightly-generator.yml)
 runs the night's 1,400 seeds, a short night of 1,000 seeds on a pull request
 that changes the generator, its instrument or the workflow, and any seeds
