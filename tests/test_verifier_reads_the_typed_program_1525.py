@@ -35,7 +35,10 @@ obligation proves.  The MODULAR cells hold the other side of the same rule:
 a construction is modelled as any other argument is, so a postcondition its
 callee's contract does not establish is refused, as the same call over an
 `@Int` is.  The SLOT matrix is every parameter list a name can be counted
-wrong over.  Each cell is its own test, unparametrised.
+wrong over.  The NESTED-PATH cells hold the source walk's reading of an
+opaque source's declarations down a nested pattern's path, which the
+verifier's records and code generation's guards share.  Each cell is its own
+test, unparametrised.
 """
 
 from __future__ import annotations
@@ -54,6 +57,8 @@ pytestmark = pytest.mark.matrix(decides=[
     "vera/smt.py",
     "vera/typed.py",
     "vera/registration.py",
+    "vera/narrowing.py",
+    "vera/wasm/data.py",
 ])
 
 _C = "  requires(true)\n  ensures(true)\n  effects(pure)\n"
@@ -390,3 +395,56 @@ def test_a_nullary_constructor_takes_the_type_its_position_fixes(
     (#1525)."""
     path = pipeline.write_tree(tmp_path, {"main.vera": _OPEN_NULLARY})
     _every_probe_obligation_proves(path)
+
+
+# =====================================================================
+# A component's declared type down a nested pattern's path
+# =====================================================================
+#
+# Over an opaque source the source walk reads the declaration, down every
+# step of the pattern's path to the component (`declared_component_is_nat`),
+# for the verifier's narrowing record and code generation's guard alike, so
+# a `@Nat` component the declarations type `Nat` is neither obligated nor
+# guarded: at 37318876 code generation guarded the last two with no record
+# (W004).
+
+_NESTED_PATHS = {
+    "binder": (
+        "  match @Wrap.0 {\n    W(MkBox(@Nat)) -> @Nat.0\n  }", "@Wrap"),
+    "destructure": (
+        "  let W<@Box<Nat>> = @Wrap.0;\n  let MkBox<@Nat> = @Box<Nat>.0;\n"
+        "  @Nat.0", "@Wrap"),
+    "tuple": (
+        "  match @Tuple<Box<Nat>, Int>.0 {\n"
+        "    Tuple(MkBox(@Nat), @Int) -> @Nat.0\n  }", "@Tuple<Box<Nat>, Int>"),
+}
+
+
+def _nested_path_program(body: str, param: str) -> str:
+    return ("private data Box<T> {\n  MkBox(T)\n}\n\n"
+            "private data Wrap {\n  W(Box<Nat>)\n}\n\n"
+            f"public fn probe({param} -> @Nat)\n" + _C + "{\n" + body + "\n}\n")
+
+
+def _nested_path_test(name: str) -> Callable[[Path], None]:
+    def test(tmp_path: Path) -> None:
+        body, param = _NESTED_PATHS[name]
+        path = pipeline.write_tree(
+            tmp_path, {"main.vera": _nested_path_program(body, param)})
+        verified = pipeline.verify(path, reconcile=True)
+        assert verified.ok, [d.format() for d in verified.diagnostics]
+        assert [o for o in verified.obligations if o.kind == "nat_bind"] == []
+        joined = verified.reconciled
+        assert joined is not None and joined.reconciliation is not None
+        assert joined.report()["mismatches"] == [], joined.report()
+        assert "nat_guard" not in [c.kind for c in pipeline.compile(path).checks()]
+    test.__name__ = f"test_nested_path_{name}"
+    test.__doc__ = (f"A `@Nat` {name} component two steps down an opaque "
+                    f"source's declarations, which type it `Nat`: no record "
+                    f"and no guard.")
+    return test
+
+
+for _name in _NESTED_PATHS:
+    globals()[f"test_nested_path_{_name}"] = _nested_path_test(_name)
+del _name
