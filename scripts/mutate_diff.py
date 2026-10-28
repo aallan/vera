@@ -226,11 +226,20 @@ _NEUTRAL_FILE = re.compile(r"^<[^>]*>$|[\\/]lib[\\/]python\d+\.\d+[\\/](?!(?:sit
 #: hook's ``pytest_runtest_makereport`` or ``pytest_runtest_logstart`` would.
 _INTERNAL_ERROR = "INTERNALERROR> "
 
-#: The rule that heads a section or a report of pytest's output, and the
-#: one that heads a section of what a test printed or logged (``Captured
-#: stderr call``), which runs to the next rule.
-_SECTION = re.compile(r"^[-_=]{3,} .+ [-_=]{3,}$")
-_CAPTURED = re.compile(r"^-{3,} Captured .+ -{3,}$")
+#: pytest's rule, heading a section or a report of its output: a title
+#: between runs of one fill character, drawn the terminal's width (80 in
+#: mutmut's copy, which runs with no terminal; one less on Windows), the fill
+#: as short as one character either side of a long title.  A line the
+#: program printed in that shape, but shorter, is no rule.  The rule that
+#: heads what a test printed or logged (``Captured stderr call``) starts a
+#: section that runs to the next rule.
+_RULE = re.compile(r"^([-_=])\1* .+ \1+$")
+_RULE_WIDTH = 79
+_CAPTURED = re.compile(r"^-+ Captured .+ -+$")
+
+#: Python's traceback printer prints a frame repeated in a row three times,
+#: then this count of the rest.
+_REPEATED = re.compile(r"^\s*\[Previous line repeated (\d+) more times?\]$")
 
 #: A file of what mutmut's copy holds: its tests and the code under test.
 _COPY_FILE = re.compile(r"(?:^|[\\/])(?:mutants|tests)[\\/]")
@@ -238,7 +247,8 @@ _COPY_FILE = re.compile(r"(?:^|[\\/])(?:mutants|tests)[\\/]")
 #: A ``RecursionError`` runs out of stack in whatever frame it reached, and
 #: inside the copy every call through mutmut's trampoline adds the engine's
 #: frames, so it is the engine's only when none of its innermost frames
-#: outside the standard library, this many, is the copy's.
+#: outside the standard library, this many, is the copy's.  A frame printed
+#: with a repeat count counts that many more times, up to this many.
 RECURSION_FRAMES = 10
 
 #: Survivors whose ``mutmut show`` diff the summary carries: a step summary
@@ -991,7 +1001,9 @@ def engine_failure(log: str) -> str | None:
     pass's output alone: mutmut prints it only when the pass fails, and
     exits there.  Its reports carry tracebacks in Python's own form, an
     internal error's with :data:`_INTERNAL_ERROR` on every line; what a test
-    printed or logged (:data:`_CAPTURED`) is no report and is not read.
+    printed or logged, from its :data:`_CAPTURED` rule to the next of
+    pytest's rules (:data:`_RULE`, drawn :data:`_RULE_WIDTH` wide or more),
+    is no report and is not read.
     Going outward from a traceback's innermost frame, past the frames no
     party's code is in (:data:`_NEUTRAL_FILE`), the first frame decides: a
     file of the installed ``mutmut`` package is the engine's code (a hook of
@@ -999,15 +1011,17 @@ def engine_failure(log: str) -> str | None:
     test, a library either calls, pytest) is the test's.  A
     ``RecursionError`` is the engine's only when, besides, no frame of the
     copy lies among its :data:`RECURSION_FRAMES` innermost frames outside
-    the standard library."""
+    the standard library, a frame printed with a repeat count
+    (:data:`_REPEATED`) counting that many more times."""
     if not any(stop in log for stop in _COPY_STOPS):
         return None
     lines: list[str] = []
     captured = False
     for row in log.splitlines():
         row = row.removeprefix(_INTERNAL_ERROR)
-        if _SECTION.match(row.rstrip()):
-            captured = _CAPTURED.match(row.rstrip()) is not None
+        rule = row.rstrip()
+        if len(rule) >= _RULE_WIDTH and _RULE.match(rule):
+            captured = _CAPTURED.match(rule) is not None
         if not captured:
             lines.append(row)
     for start, line in enumerate(lines):
@@ -1017,8 +1031,11 @@ def engine_failure(log: str) -> str | None:
         raised: str | None = None
         for row in lines[start + 1:]:
             frame = _FRAME.match(row.rstrip())
+            repeated = _REPEATED.match(row)
             if frame is not None:
                 frames.append(frame)
+            elif repeated is not None and frames:
+                frames += [frames[-1]] * min(int(repeated.group(1)), RECURSION_FRAMES)
             elif row.strip() and not row[0].isspace():
                 raised = row.strip()
                 break

@@ -1300,6 +1300,118 @@ FAILED tests/test_m.py::test_g - assert 6 == 7
 failed to collect stats. runner returned 1
 """
 
+#: A function of the engine recursing on itself inside a test's call: the
+#: test calls the code under test, which calls the engine's ``walk``.
+#: Python's traceback printer prints a frame repeated in a row three times
+#: and then a count of the rest, so the ten innermost printed frames reach
+#: the copy's (pytest 9.2.0, a module placed at ``mutmut/rec.py``, the stop
+#: line mutmut prints after it; pytest's and pluggy's frames left out).
+SELF_RECURSION_LOG = """\
+F
+=================================== FAILURES ===================================
+____________________________________ test_g ____________________________________
+Traceback (most recent call last):
+  File "/venv/lib/python3.12/site-packages/_pytest/runner.py", line 361, in from_call
+    result: TResult | None = func()
+  File "/work/tree/mutants/tests/test_m.py", line 5, in test_g
+    f()
+  File "/work/tree/mutants/vera/m.py", line 5, in f
+    return walk(0)
+           ^^^^^^^
+  File "/venv/lib/python3.12/site-packages/mutmut/rec.py", line 2, in walk
+    return walk(n + 1)
+           ^^^^^^^^^^^
+  File "/venv/lib/python3.12/site-packages/mutmut/rec.py", line 2, in walk
+    return walk(n + 1)
+           ^^^^^^^^^^^
+  File "/venv/lib/python3.12/site-packages/mutmut/rec.py", line 2, in walk
+    return walk(n + 1)
+           ^^^^^^^^^^^
+  [Previous line repeated 963 more times]
+RecursionError: maximum recursion depth exceeded
+=========================== short test summary info ============================
+FAILED tests/test_m.py::test_g - RecursionError: maximum recursion depth exce...
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+1 failed in 0.01s
+failed to collect stats. runner returned 1
+"""
+
+#: A test that prints two banners of its own and then a traceback raised in
+#: the engine's trampoline to its stdout, and fails in its own body: lines
+#: shaped like pytest's rules, but not drawn its width, inside its captured
+#: output (mutmut 3.8.1, pytest 9.2.0; pytest's and pluggy's frames left
+#: out).
+BANNER_LOG = """\
+    done in 23ms (2 files mutated, 0 ignored, 0 unmodified)
+
+.F
+=================================== FAILURES ===================================
+____________________________________ test_g ____________________________________
+Traceback (most recent call last):
+  File "/venv/lib/python3.12/site-packages/_pytest/runner.py", line 361, in from_call
+    result: TResult | None = func()
+  File "/work/tree/mutants/tests/test_m.py", line 18, in test_g
+    assert g(3) == 7
+AssertionError: assert 6 == 7
+ +  where 6 = g(3)
+----------------------------- Captured stdout call -----------------------------
+=============== the program's own banner ===============
+--- a heading the program printed ---
+Traceback (most recent call last):
+  File "/work/tree/mutants/tests/test_m.py", line 15, in test_g
+    f(1, 2)
+  File "/venv/lib/python3.12/site-packages/mutmut/mutation/trampoline.py", line 172, in _trampoline_wrapper
+    return trampoline(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/venv/lib/python3.12/site-packages/mutmut/mutation/trampoline.py", line 100, in trampoline
+    return orig_func(*call_args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: x_f__mutmut_orig() takes 1 positional argument but 2 were given
+=========================== short test summary info ============================
+FAILED tests/test_m.py::test_g - assert 6 == 7
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+1 failed, 1 passed in 0.01s
+failed to collect stats. runner returned 1
+"""
+
+#: The night's engine (mutmut 3.8.0, pytest 9.2.0) under a test with a
+#: 73-character name, whose fixture reaches a mutated function, logs a
+#: warning and raises: the test's own setup error, carrying ``Captured log
+#: setup``, then the engine's teardown hook raising.  pytest draws both
+#: reports' rules with one fill character either side of the long title
+#: (pytest's and pluggy's frames left out).
+LONG_NAME_LOG = """\
+    done in 21ms (2 files mutated, 0 ignored, 0 unmodified)
+
+EE
+==================================== ERRORS ====================================
+_ ERROR at setup of test_a_name_vera_writes_as_a_sentence_a_name_vera_writes_as_a_sentence_a_ _
+Traceback (most recent call last):
+  File "/venv/lib/python3.12/site-packages/_pytest/runner.py", line 361, in from_call
+    result: TResult | None = func()
+  File "/work/tree/mutants/tests/test_m.py", line 12, in broken
+    raise RuntimeError('the fixture cannot start')
+RuntimeError: the fixture cannot start
+------------------------------ Captured log setup ------------------------------
+WARNING  fixture:test_m.py:11 the fixture logs before it fails
+_ ERROR at teardown of test_a_name_vera_writes_as_a_sentence_a_name_vera_writes_as_a_sentence_a_ _
+Traceback (most recent call last):
+  File "/venv/lib/python3.12/site-packages/_pytest/runner.py", line 361, in from_call
+    result: TResult | None = func()
+  File "/venv/lib/python3.12/site-packages/mutmut/runners/harness.py", line 157, in pytest_runtest_teardown
+    state().tests_by_mangled_function_name[function].add(strip_prefix(item._nodeid, prefix="mutants/"))
+                                                                      ^^^^^^^^^^^^
+AttributeError: 'Function' object has no attribute '_nodeid'. Did you mean: 'nodeid'?
+------------------------------ Captured log setup ------------------------------
+WARNING  fixture:test_m.py:11 the fixture logs before it fails
+=========================== short test summary info ============================
+ERROR tests/test_m.py::test_a_name_vera_writes_as_a_sentence_a_name_vera_writes_as_a_sentence_a_
+ERROR tests/test_m.py::test_a_name_vera_writes_as_a_sentence_a_name_vera_writes_as_a_sentence_a_
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 2 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+2 errors in 0.01s
+failed to collect stats. runner returned 1
+"""
+
 
 class TestEngineFailure:
     """An exception the engine's own code raised stops its stats pass or its
@@ -1437,7 +1549,38 @@ class TestRunDropping:
         run, dropped, attempts = self._run(tmp_path, monkeypatch, lambda deselected: (
             ("", 0) if "tests/test_m.py::test_g" in deselected else (CAPTURED_LOG, 1)))
         assert (len(attempts), dropped) == (2, ["tests/test_m.py::test_g"])
-        assert run.returncode == 0 and run.error is None
+        assert run.returncode == 0  # an engine stop would end the first attempt, dropping nothing
+
+    def test_an_engine_function_recursing_on_itself_in_a_tests_call_is_named_at_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The printed ``[Previous line repeated 963 more times]`` counts:
+        the engine's frames fill the ten innermost, though the copy's are
+        printed within them."""
+        run, dropped, attempts = self._run(tmp_path, monkeypatch, lambda deselected: (SELF_RECURSION_LOG, 1))
+        assert (len(attempts), dropped) == (1, [])
+        assert run.error == "RecursionError: maximum recursion depth exceeded (mutmut/rec.py:2)"
+
+    def test_a_banner_in_a_tests_captured_output_leaves_the_test_dropped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Lines the program printed in the shape of pytest's rules, inside
+        its captured stdout, end nothing: a rule is drawn the terminal's
+        width."""
+        run, dropped, attempts = self._run(tmp_path, monkeypatch, lambda deselected: (
+            ("", 0) if "tests/test_m.py::test_g" in deselected else (BANNER_LOG, 1)))
+        assert (len(attempts), dropped) == (2, ["tests/test_m.py::test_g"])
+        assert run.returncode == 0  # an engine stop would end the first attempt, dropping nothing
+
+    def test_an_engine_failure_behind_a_long_named_tests_setup_error_is_named_at_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The teardown report's rule, after the setup report's captured
+        log, has one fill character either side of its long title, and ends
+        that section."""
+        run, dropped, attempts = self._run(tmp_path, monkeypatch, lambda deselected: (LONG_NAME_LOG, 1))
+        assert (len(attempts), dropped) == (1, [])
+        assert run.error == NIGHT_ERROR
 
 
 class TestOracle:
