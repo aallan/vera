@@ -202,8 +202,11 @@ def _observe(cell: Cell, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
         monkeypatch.setenv("VERA_EAGER_GC", "1")
     verified = pipeline.verify(path, reconcile=True)
     assert verified.ok, [d.format() for d in verified.diagnostics]
-    report = verified.reconciled.report() if verified.reconciled else {}
-    assert not report.get("mismatches"), report
+    joined = verified.reconciled
+    assert joined is not None and joined.reconciliation is not None, (
+        "the reconciliation join did not run")
+    report = joined.report()
+    assert report["mismatches"] == [], report
     ran = pipeline.run(path, "cell", [])
     assert ran.ok, ran.stderr or ran.trap
     assert ran.value == cell.expect, ran.value
@@ -421,6 +424,100 @@ def test_repro_every_declared_type_of_a_clone_is_typed(tmp_path: Path,
     assert [i.name for i in checked.typed.instances if i.clone], "no clone"
     assert _untyped(checked) == []
     assert pipeline.run(path, "main", []).value == 1
+
+
+_PERMUTED_ALIAS = """\
+type Swap<A, B> = Result<B, A>;
+
+private forall<A, B> fn side(@Swap<A, B> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Swap<A, B>.0 {
+    Ok(@B) -> 1,
+    Err(@A) -> 2
+  }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Swap<Option<Int>, Array<String>> = Ok(["a"]);
+  side(@Swap<Option<Int>, Array<String>>.0)
+}
+"""
+
+
+def test_repro_a_permuted_alias_types_each_part_as_itself(tmp_path: Path,
+                                                          ) -> None:
+    """An alias applied to arguments resolves to another constructor's
+    arguments, here in the other order (`Swap<Option<Int>, Array<String>>`
+    is a `Result<Array<String>, Option<Int>>`): each part the clone's
+    substitution parsed is typed as what it names.  Paired by position with
+    the resolved type's arguments, the parameter's and the slot reference's
+    `Int` were recorded at `String`, and their `String` at `Int`."""
+    from dataclasses import fields
+
+    from vera import ast
+    from vera.types import pretty_type
+
+    path = tmp_path / "swap.vera"
+    path.write_text(_PERMUTED_ALIAS, encoding="utf-8")
+    checked = pipeline.check(path)
+    assert checked.ok, [d.format() for d in checked.diagnostics]
+    typed = checked.typed
+    clones = [inst.clone for inst in typed.instances if inst.clone]
+    assert clones, "no clone"
+    parts: list[tuple[str, str | None]] = []
+    stack: list[object] = list(clones)
+    while stack:
+        item = stack.pop()
+        if isinstance(item, tuple):
+            stack.extend(item)
+            continue
+        if not isinstance(item, ast.Node):
+            continue
+        if (isinstance(item, ast.NamedType) and not item.type_args
+                and item.name in ("Int", "String")):
+            ty = (typed.semantic.get(item.node_id)
+                  if item.node_id is not None else None)
+            parts.append((item.name, None if ty is None else pretty_type(ty)))
+        stack.extend(getattr(item, f.name) for f in fields(item)
+                     if f.name != "span" and not f.metadata.get("identity"))
+    # The parameter's, the slot reference's and the binders' parsed parts,
+    # two each, and the return type's `Int`.
+    assert len(parts) == 7, parts
+    assert all(name == recorded for name, recorded in parts), parts
+    assert pipeline.run(path, "main", []).value == 1
+
+
+def test_repro_an_untyped_expression_has_no_stack_shape() -> None:
+    """Whether an expression leaves words on the stack is its checked
+    type's question: a `Unit` leaves none and an `Int` one, and an
+    expression the check did not type is refused as a broken invariant,
+    never read as one that leaves nothing, which would leave its value with
+    no `drop` and no root."""
+    from vera import ast
+    from vera.skip import CodegenInvariantError
+    from vera.types import INT, UNIT
+    from vera.wasm.context import WasmContext
+    from vera.wasm.helpers import StringPool
+
+    ctx = WasmContext(StringPool())
+    unit, one, bare = (ast.IntLit(value=1, node_id=ast.fresh_node_id())
+                       for _ in range(3))
+    assert unit.node_id is not None and one.node_id is not None
+    ctx.set_expr_semantic_types({unit.node_id: UNIT, one.node_id: INT})
+    assert ctx._is_void_expr(unit) is True
+    assert ctx._is_void_expr(one) is False
+    assert ctx._compute_stack_shape(one) == "i64"
+    with pytest.raises(CodegenInvariantError):
+        ctx._is_void_expr(bare)
+    with pytest.raises(CodegenInvariantError):
+        ctx._compute_stack_shape(bare)
 
 
 _HELLO = """\

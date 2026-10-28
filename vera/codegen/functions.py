@@ -615,13 +615,11 @@ class FunctionCompilationMixin:
         # #932: share the truncated→full constrained-var name map so the direct
         # `==` path inside a generic clone body resolves a truncated slot type
         # (`List<List>`) on its fully-nested name for the derivability decision.
-        # Build function return type map for FnCall type inference.
-        # Include Unit-returning fns explicitly with None so `_is_void_expr`
-        # in vera/wasm/context.py can distinguish "Unit return" (key present,
-        # value is None) from "unknown function" (key absent).  Without this,
-        # a user @Unit fn called in non-tail block-statement position fell
-        # through to "produces a value", emitting a stray drop and breaking
-        # WASM validation (#584).
+        # The functions' return widths, a `@Unit` return held as None: a
+        # call in tail position is lowered to `return_call` only where its
+        # callee's return width is the caller's (`CallsMixin._translate_call`).
+        # Whether a call leaves a value is its checked type's question
+        # (`_is_void_expr`), not this map's.
         fn_ret_types: dict[str, str | None] = {}
         for fn_name, (_, ret_wt) in self._fn_sigs.items():
             if ret_wt != "unsupported":

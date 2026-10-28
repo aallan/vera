@@ -1469,9 +1469,9 @@ writes rests on one.  So are a `match` on a constructor applied in place or on
 a handler, a set's size or a constructor of the module's data type (#1525),
 whose `ensures` the verifier drops: in place an obligation over one is left to
 Tier 3, and a `let` of one holds a fresh value of the `let`'s own type
-(#1696), which is all the generator reads of it.  A fold takes its initial
-value's type, as the checker gives it, and a `@Nat` one's run stays
-non-negative.
+(#1696), which is all the generator reads of it.  A fold is an `@Int`, its
+closure's return type, whatever its initial value (spec §4.2), and the
+generator writes no `let @Nat` of one.
 
 Each program is held to the generator's contract and four differentials:
 
@@ -1536,8 +1536,9 @@ module included, byte for byte, in the test's process and under two string hash
 seeds; a hundred seeds reach every construct and keep the generator's
 invariants; each differential reports a hand-written program that breaks it,
 or a session built to break it, and passes its nearest neighbour that does not;
-the known-class pins and their members, and the counterfactual classes' pins,
-members and boundary; and the minimiser's cells.  A pull request that changes
+the known-class pins and their members; the fold and handler shapes that make
+no find, and the classification's cells over a class they inject; and the
+minimiser's cells.  A pull request that changes
 the generator, its instrument or the workflow also runs the short night below;
 no other generator work runs on a pull request.
 [`nightly-generator.yml`](.github/workflows/nightly-generator.yml)
@@ -1575,13 +1576,11 @@ Closures beyond `array_fold`'s argument, effect-row variables, parameterised
 aliases, user-declared effects and abilities, `String`, `Float64` and `Byte`
 values beyond `main`'s output and a map's keys, relational preconditions and
 the product of two variables are outside version two's grammar, and so is an
-index into anything but a `let`-bound array literal (#1525's line from #1680:
-code generation infers no element type for an array in place).  The shapes at
-which code generation reads a type of its own, a fold as a scrutinee or as a
-constructor's argument and a branch whose every arm is a fold, a `throw` or a
-handler, are inside it, each counted by its counterfactual class above; so is
-an arithmetic argument at a generic's type variable, whose call runs against
-the instance the checker chose (#1791).
+index into anything but a `let`-bound array literal.  A fold as a scrutinee or
+as a constructor's argument, and a branch whose every arm is a fold, a `throw`
+or a handler, are inside it and make no find (the `test_repro_*_makes_no_find`
+cells); so is an arithmetic argument at a generic's type variable, whose call
+runs against the instance the checker chose (#1791).
 
 ## Adding Tests
 

@@ -1954,8 +1954,7 @@ class CallsArraysMixin:
             raise CodegenSkip(
                 arr_arg,
                 "could not recover inner element type for array_flatten "
-                "(need Array<Array<T>> from a slot or alias, an inline "
-                "nested literal, or a resolvable call)",
+                "from the argument's checked Array<Array<T>> type",
             )
         t_size = self._element_mem_size(t_type)
         if t_size is None:  # pragma: no cover — defensive: _element_mem_size never returns None (falls back to 4)

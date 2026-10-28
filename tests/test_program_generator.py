@@ -610,9 +610,11 @@ class Sites:
         """Whether *e*'s value is non-negative by what the program declares:
         a slot of a `Nat` type or a refinement of one, an element of a
         `Nat` array, a call whose callee returns `Nat` (a generic one at a
-        `Nat` argument in every position of its type variable), a fold
-        from one, a `get` of a `Nat` cell, a handler or a branch whose value
-        is one, a non-negative literal, and arithmetic over them."""
+        `Nat` argument in every position of its type variable), a `get` of
+        a `Nat` cell, a handler or a branch whose value is one, a
+        non-negative literal, and arithmetic over them.  A fold is none,
+        whatever its initial value: its closure's `@Int` return fixes it at
+        `Int` (spec §4.2)."""
         if isinstance(e, ast.SlotRef):
             tvar = self.type_variable(self.slot_type(e), e)
             if tvar is not None:
@@ -647,10 +649,6 @@ class Sites:
             return self.is_nat(self.cell(e))
         if isinstance(e, (ast.FnCall, ast.ModuleCall)):
             fn = self.returns.get(e.name)
-            if fn is None and e.name == "array_fold" and len(e.args) == 3:
-                # The checker binds a fold's accumulator to its initial
-                # value's type.
-                return self.nat_by_declarations(e.args[1])
             if fn is None:
                 return e.name == "get" and not e.args[1:] and self.is_nat(self.cell(e))
             ret = fn.return_type
@@ -2562,6 +2560,52 @@ def test_the_nat_guard_class_holds_no_other_nat_bind(value: str, held: bool) -> 
     mismatch = Mismatch("guarded_unrecorded", "nat_bind", LABEL, line, column,
                         "sites", emitter=cls.emitter)
     assert cls.holds(mismatch, Sites(checked)) is held
+
+
+_FOLD_AT_A_GENERIC = """\
+private data Wrap<T> {
+  Hold(T),
+  Empty
+}
+
+private forall<T> fn pick(@T -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match Hold(@T.0) {
+    Hold(@T) -> 0,
+    Empty -> 1
+  }
+}
+
+public fn fold_in(@Nat -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  pick(array_fold([1, 2], @Nat.0, fn(@Int, @Int -> @Int) effects(pure) { @Int.1 + @Int.0 }))
+}
+"""
+
+
+def test_a_fold_from_a_nat_instantiates_no_generic_at_nat() -> None:
+    """A fold is an `@Int`, its closure's return, whatever its initial value
+    (spec §4.2), so a generic called only with a fold from a `@Nat` is
+    instantiated at `Int`, and a `@T` binder in it is no `Nat` binder: a
+    guard there would be outside the `nat_bind` class.  The predicate read a
+    fold as its initial value's type and called the binder the class's."""
+    checked = pipeline.check(_FOLD_AT_A_GENERIC, file=LABEL)
+    assert not checked.diagnostics, checked.diagnostics
+    sites = Sites(checked)
+    fold = next(node for node in sites._at[(LABEL, *_site_of(
+        _FOLD_AT_A_GENERIC, "array_fold("))] if isinstance(node, ast.FnCall))
+    assert sites.nat_by_declarations(fold) is False
+    line, column = _site_of(_FOLD_AT_A_GENERIC, "@T) -> 0")
+    cls = next(k for k in KNOWN_CLASSES if k.shape == _NAT_GUARD_SHAPE)
+    mismatch = Mismatch("guarded_unrecorded", "nat_bind", LABEL, line, column,
+                        "sites", emitter=cls.emitter)
+    assert cls.holds(mismatch, sites) is False
 
 
 def test_the_distrust_differential_reports_a_refuted_proof() -> None:

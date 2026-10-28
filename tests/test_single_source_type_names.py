@@ -1,12 +1,13 @@
 """#1327 / #1357 / #1365 / #1366: one source for an expression's type.
 
-Monomorphization names a generic's type arguments by walking the call's
-arguments, and it does so TWICE — once in discovery
-(``Monomorphizer._infer_vera_type_name``, which decides which clones are
-emitted and which are verified) and once in the WASM call-site rewrite
-(``InferenceMixin._infer_vera_type``, which decides which symbol the call
-references).  The two are hand-maintained walkers over the same grammar with
-different arm sets, and every member of this family is that difference:
+Monomorphization named a generic's type arguments by walking the call's
+arguments, and it did so TWICE — once in discovery
+(``Monomorphizer._infer_vera_type_name``, which decided which clones were
+emitted and which were verified) and once in the WASM call-site rewrite
+(``InferenceMixin._infer_vera_type``, which decided which symbol the call
+referenced).  The two were hand-maintained walkers over the same grammar
+with different arm sets, and every member of this family was that
+difference:
 
 * **#1327** — discovery has no ``IndexExpr`` arm; the rewrite resolves
   indexing.  ``idg(@Array<Int>.0[1])`` discovers nothing, falls to the phantom
@@ -24,31 +25,38 @@ different arm sets, and every member of this family is that difference:
   the ``ModuleCall``'s ``path`` so the call lands on a bare name the importer's
   flat namespace does not have.
 
-Three changes make the two walkers stop being independent:
+Three changes made the two walkers stop being independent:
 
-1. **The checker is the fallback.**  Both namers consult the checker's
-   span-keyed resolved-type table when their own walk names nothing, through
+1. **The checker was the fallback.**  Both namers consulted the checker's
+   span-keyed resolved-type table when their own walk named nothing, through
    one shared function (``checker_clone_type_name``) and in the same position
-   — after the walk, never before it.  A missing arm on either side is then
-   filled from the same source for both, so "one walker lacks an arm" stops
-   being a way for them to disagree.  The precedence is measured, not
-   stylistic: 1,976 namer calls across 73 shapes would CHANGE if the checker
-   won outright (an integer literal names ``Int`` where the checker says
-   ``Nat``; a ``ConstructorCall`` names the bare ``List`` where the checker
-   says ``List<List<Nat>>``; a declared ``-> @Age`` names ``Age`` where the
-   checker resolves the alias to ``Int``) — a re-granulation of
-   monomorphization, not this repair.
+   — after the walk, never before it.  A missing arm on either side was then
+   filled from the same source for both, so "one walker lacks an arm" stopped
+   being a way for them to disagree.  The precedence was measured, not
+   stylistic: 1,976 namer calls across 73 shapes would have CHANGED had the
+   checker won outright (an integer literal named ``Int`` where the checker
+   says ``Nat``; a ``ConstructorCall`` named the bare ``List`` where the
+   checker says ``List<List<Nat>>``; a declared ``-> @Age`` named ``Age``
+   where the checker resolves the alias to ``Int``) — a re-granulation of
+   monomorphization, not that repair.
 
 2. **A pipe names its RESULT.**  The transform writes a pipe as the call it
    stands for, the piped value folded in as the call's first argument and the
    right operand's node type KEPT, so a ``ModuleCall`` stays one and its
-   ``path`` still routes to the declaring module's clone.  Neither namer, and
-   no walk that discovers an instantiation, sees a pipe.
+   ``path`` still routes to the declaring module's clone.  No walk that
+   discovers an instantiation sees a pipe.
 
-3. **The parameterised branch asks too.**  Matching ``@Array<T>`` against an
-   argument needs the argument's own base and type arguments, and
-   ``_get_arg_type_info`` has the same missing arms; it falls back to
+3. **The parameterised branch asked too.**  Matching ``@Array<T>`` against
+   an argument needed the argument's own base and type arguments, and
+   ``_get_arg_type_info`` had the same missing arms; it fell back to
    ``checker_arg_type_info``.
+
+The walkers, the fallback and the helper are gone.  The typed program
+derives each instance once from the type arguments the checker inferred at
+the call (#1679): discovery (``ContractVerifier._typed_instances``) and the
+rewrite (``CallsMixin._resolve_generic_call``) read that instance, and code
+generation reads every other type off the same program
+(``InferenceMixin._type_of``, #1525).
 
 What this file asserts is not "the four repros run" — though each runs here
 verbatim — but the invariant underneath them: **discovery and the rewrite name
@@ -60,9 +68,8 @@ that is representation-compatible still returns the right answer, which is
 exactly why #1327's and #1366's guesses survived so long.
 
 Every fixture is compiled through :func:`_compile_checked`, which threads the
-checker's artefacts as the CLI does.  ``tests.codegen_helpers._compile``
-deliberately skips the type-check pass, so the table these consultors fall back
-to is absent there — a cell built on it would pass whatever this change did.
+checker's artefacts as the CLI does, so both consultors read the typed
+program the check built.
 
 Every witness passes an ``Int`` (or an ``Array<Int>``), never a ``Bool``:
 ``Bool`` is the phantom default's own value, so a ``Bool`` witness cannot
@@ -227,7 +234,7 @@ _SINGLE_FILE_MATRIX: list[tuple[str, str, object, list[str]]] = [
         8,
         ["idg$Int"],
     ),
-    # A chained index — the rewrite's arm resolves this through
+    # A chained index — the rewrite's arm resolved this through
     # `_infer_index_element_type`; discovery never could.
     (
         "chained_index_argument",
@@ -361,10 +368,10 @@ def test_matrix_discovery_matches_the_rewrite(
 def test_nested_type_var_names_the_element_type() -> None:
     """`takes_arr(@Array<Array<Int>>.0[0])` instantiates at `Int` (#1395).
 
-    A variable reached only through a parameter's TYPE ARGUMENTS is bound by
-    `_get_arg_type_info`, not by the type namer, and that helper carried the
-    same missing arms the namers did — so `T` stayed unbound and both walkers
-    named `takes_arr$Bool` for an `Array<Int>`.  It ran, because
+    A variable reached only through a parameter's TYPE ARGUMENTS was bound
+    by `_get_arg_type_info`, not by the type namer, and that helper carried
+    the same missing arms the namers did — so `T` stayed unbound and both
+    walkers named `takes_arr$Bool` for an `Array<Int>`.  It ran, because
     `array_length` never reads `T`.
 
     Asserted on the emitted name rather than the value for exactly that

@@ -1353,11 +1353,21 @@ def _type_parsed_parts(te: ast.Node, ty: Type,
     the check typed no type of (a slot reference's type arguments, which
     name a slot): each is the matching part of the type its parent was
     typed at.  A part whose template node was typed is typed by that, when
-    the walk reaches it."""
+    the walk reaches it.
+
+    The parts pair with the type's arguments only where the expression
+    names the type's own constructor: an alias applied to arguments
+    (`Swap<Int, String>` under `type Swap<A, B> = Result<B, A>`) resolves
+    to another constructor's arguments, in another order, and its parts
+    are typed by their own template nodes."""
     ty = base_type(ty)
     parts: Sequence[tuple[ast.TypeExpr, Type]] = ()
+    head = (te.name if isinstance(te, ast.NamedType)
+            else te.type_name if isinstance(te, (ast.SlotRef, ast.ResultRef))
+            else None)
     if (isinstance(te, (ast.NamedType, ast.SlotRef, ast.ResultRef))
             and te.type_args and isinstance(ty, AdtType)
+            and head == ty.name
             and len(ty.type_args) == len(te.type_args)):
         parts = tuple(zip(te.type_args, ty.type_args))
     elif (isinstance(te, ast.FnType) and isinstance(ty, FunctionType)

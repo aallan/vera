@@ -45,23 +45,27 @@ public fn f(@Int -> @Int)
 """
 
 
-def _compiled(*, semantic_types: dict | None = None):
-    """Compile `_ADD` through the checker artefacts, as the CLI does.
+_SUB = _ADD.replace("@Int.0 + 1", "@Int.0 - 1")
+
+
+def _compiled(*, semantic_types: dict | None = None, source: str = _ADD):
+    """Compile *source* (`_ADD`) through the checker artefacts, as the CLI
+    does.
 
     `module_artifacts` is threaded too (CR PR-review): this helper exists to
     exercise the real pipeline, and a compile that silently drops one of the
     artefact channels is a different pipeline from the one the cells are
     about.
     """
-    program = parse_to_ast(_ADD)
-    diags, arts = typecheck_with_artifacts(program, _ADD,
+    program = parse_to_ast(source)
+    diags, arts = typecheck_with_artifacts(program, source,
                                            collect_module_artifacts=True)
     assert not [d for d in diags if d.severity == "error"], diags
     typed = build_typed(program, [], arts)
     if semantic_types is not None:
         # The cell's own fault: the table the guards read, replaced.
         typed = dataclasses.replace(typed, semantic=semantic_types)
-    return compile(typed, source=_ADD)
+    return compile(typed, source=source)
 
 
 def _wat(*, semantic_types: dict | None = None) -> str:
@@ -76,8 +80,22 @@ def test_an_unnameable_width_is_guarded_as_int(
     Patched at the classifier's own seam rather than at a program feature,
     because no program feature reaches it.  What the patch simulates is the
     one state the `None` return exists for; what the assertion reads is the
-    emitted module.
+    emitted module.  The unpatched classifier is read first, at the same
+    site: it names `Int` there, so the guard below is the `or "Int"`
+    default's and not a width the classifier named.
     """
+    answers: list[str | None] = []
+    original = OperatorsMixin._overflow_arith_codegen_type
+
+    def recording(self: OperatorsMixin, expr: object) -> str | None:
+        answers.append(original(self, expr))  # type: ignore[arg-type]
+        return answers[-1]
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            OperatorsMixin, "_overflow_arith_codegen_type", recording)
+        _compiled()
+    assert answers == ["Int"], answers
     monkeypatch.setattr(
         OperatorsMixin, "_overflow_arith_codegen_type",
         lambda self, expr: None,
@@ -89,18 +107,47 @@ def test_an_unnameable_width_is_guarded_as_int(
         "emitted no overflow guard, so it wraps in silence while the "
         "obligation claims a runtime check:\n" + wat[:800]
     )
-    # And the SIGNED family specifically.  The default picks which guard is
-    # emitted, and `_emit_overflow_guard` dispatches on it: the `Int` guard
-    # tests the sign-agreement with `i64.xor`, the `Nat` one an unsigned
-    # wrap with `i64.lt_u`.  A regression to `Nat` would still emit an
-    # overflow signal and satisfy the assertion above while range-checking
-    # the site against the wrong bound (CR PR-review).
+    # And the SIGNED sequence specifically: the sign-agreement test with
+    # `i64.xor`, never an unsigned wrap with `i64.lt_u`.  The sequence is
+    # not the default's to pick: `_emit_overflow_guard` checks a `Nat`'s
+    # range as an `Int`'s (spec §2.2).  The default is read at one place,
+    # the subtraction cell below.
     assert "i64.xor" in wat, (
-        "the guard emitted is not the signed `Int` one, so the unknown "
-        "width was read as `Nat` and the site is checked against the "
-        "unsigned range:\n" + wat[:800]
+        "the guard emitted is not the signed sequence, so the site is "
+        "checked against the unsigned range:\n" + wat[:800]
     )
     assert "i64.lt_u" not in wat, wat[:800]
+
+
+def test_an_unnameable_subtraction_is_guarded_as_int(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The one place the fail-closed default is read: a subtraction the
+    classifier names `Nat` is left to the `nat_sub` underflow check and
+    takes no overflow guard, so an unknown width read as `Nat` would leave
+    an unclassified subtraction unguarded.  Read as `Int`, it is guarded.
+    The unpatched classifier names this site `Int` first, as above."""
+    answers: list[str | None] = []
+    original = OperatorsMixin._overflow_arith_codegen_type
+
+    def recording(self: OperatorsMixin, expr: object) -> str | None:
+        answers.append(original(self, expr))  # type: ignore[arg-type]
+        return answers[-1]
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            OperatorsMixin, "_overflow_arith_codegen_type", recording)
+        _compiled(source=_SUB)
+    assert answers == ["Int"], answers
+    monkeypatch.setattr(
+        OperatorsMixin, "_overflow_arith_codegen_type",
+        lambda self, expr: None,
+    )
+    result = _compiled(source=_SUB)
+    assert checks(result, kind="overflow"), (
+        "a subtraction whose width the classifier could not name took the "
+        "`Nat` exclusion and no overflow guard:\n" + result.wat[:800]
+    )
 
 
 def test_the_classifier_itself_still_answers_none(

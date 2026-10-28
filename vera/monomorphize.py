@@ -118,17 +118,16 @@ def resolve_type_alias(
 
     The general transitive alias walker every representation-level
     classifier shares — :func:`resolve_fn_type_alias` below is the
-    fn-type-specialised view over this walk, and the fused-await
-    classifier (``vera/wasm/async_fusion.py``, #1109) uses it to
-    resolve alias-typed slots and declared returns before its literal
-    ``Future<Result<String, String>>`` check.  Aliases are transparent
-    everywhere else in the language; a classifier that probes runtime
-    representation must see through them too.
+    fn-type-specialised view over this walk, and an interpolation's
+    converter (``OperatorsMixin._interp_resolved_type_name``) uses it to
+    resolve a type name to the shape that renders it.  Aliases are
+    transparent everywhere else in the language; a classifier that probes
+    runtime representation must see through them too.
 
     Lives here — the deliberately codegen-free shared monomorphizer
-    module (see the module docstring / #732) — so the WASM backend,
-    the codegen-free fusion predicates, and the monomorphizer can all
-    import it without an import cycle.
+    module (see the module docstring / #732) — so the WASM backend
+    imports it, and the verifier reaches it through
+    :func:`resolve_fn_type_alias`, without an import cycle.
 
     Walks iteratively (until a terminal shape or a cycle):
 
@@ -412,9 +411,11 @@ def declared_return_clone_key(te: ast.TypeExpr | None) -> str | None:
     never pattern-match or project ``T`` (the body doesn't know ``T``'s
     constructors), so ``Option<Decimal>`` and ``Option<Int>`` share one identity
     clone ``pick$Option`` with byte-identical WAT.  (A parameterized *parameter*
-    like ``Option<T>`` — where the body CAN project the field — is a different
-    path that recovers the full type argument via ``_get_arg_type_info*``; this
-    key is only the bare-``@T`` case.)
+    like ``Option<T>`` — where the body CAN project the field — took a
+    different path, which recovered the full type argument through
+    ``_get_arg_type_info*``; the typed program now reads every type argument
+    off the checker's instantiation at the call (#1679).  This key is only
+    the bare-``@T`` case.)
     """
     while isinstance(te, ast.RefinementType):
         te = te.base_type

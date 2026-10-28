@@ -1464,7 +1464,15 @@ class WasmContext(
 
         An expression statement's `drop`s and the stack shape the scoping
         wrapper keeps read this and :meth:`_is_pair_result_expr`, so the
-        words the value occupies are the width of its checked type."""
+        words the value occupies are the width of its checked type.  An
+        expression with no type is refused, never read as one that leaves
+        nothing: a value it leaves would then have no `drop`, and no root
+        across the scope that restores the shadow stack."""
+        if self._type_of(expr) is None:
+            raise CodegenInvariantError(
+                "an expression the check did not type reached code "
+                "generation, which reads the words it leaves on the stack "
+                "off its checked type", expr)
         return self._expr_width(expr) is None
 
     def _is_pair_result_expr(self, expr: ast.Expr) -> bool:

@@ -70,9 +70,9 @@ public fn main(@Unit -> @Int)
 }
 """
 
-# The same shape through a scalar ALIAS cell: the clone is named at the
-# alias-OPAQUE source spelling, `pick$Count`, which an alignment that resolved
-# the alias on one side only would have left dangling.
+# The same shape through a scalar ALIAS cell: the cell's alias is resolved
+# where it is written (#1511), so the clone is named at the type it resolves
+# to, `pick$Nat`, the clone the call names.
 _HANDLER_ALIAS = """
 type Count = Nat;
 """ + _PICK + """

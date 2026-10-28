@@ -893,11 +893,14 @@ private forall<T> fn dup(@Option<T> -> @Tuple<Array<T>, Array<T>>)
 class _Shape:
     """Parts whose open variable occurs twice, or that the join does not
     fill.  *expect* maps each site to the part it refuses there (None for
-    none) and the type the parts are recorded with where it refuses none."""
+    none) and the type the parts are recorded with where it refuses none.
+    *then_branch* is the type the `if` site's refusal gives its `then`
+    branch, where that type is what the cell pins."""
 
     parts: tuple[str, ...]
     expect: dict[str, tuple[int | None, str | None]]
     description: str | None = None
+    then_branch: str | None = None
 
 
 def _everywhere(refused: int | None, element: str | None,
@@ -994,7 +997,11 @@ SHAPES: dict[str, _Shape] = {
         ("map_values(@M.0)[0]", "0 - 5"), _everywhere(None, "Int")),
     "refined-disagree": _Shape(
         ("map_values(@M.0)[0]", '"s"'),
-        {"literal": (1, "Int"), "if": (0, None), "match": (1, None)}),
+        {"literal": (1, "Int"), "if": (0, None), "match": (1, None)},
+        # The `if` refuses at the same place either way; what the unwrap
+        # gives is the `then` branch's `Int`, where a refinement left
+        # unwrapped gives `?`.
+        then_branch="Int"),
     # A built-in's variable no parameter mentions is fresh: filled.
     "map-agree": _Shape(
         ("map_new()", 'map_insert(map_new(), "k", 1)'),
@@ -1046,6 +1053,9 @@ def test_shape_the_join_binds_once_or_leaves(shape: str, site: str) -> None:
     assert _where(checked) == expected, checked.diagnostics
     if site == "literal" and spec.description is not None:
         assert checked.errors[0].description == spec.description
+    if site == "if" and spec.then_branch is not None:
+        assert (f"then-branch is {spec.then_branch},"
+                in checked.errors[0].description), checked.errors[0].description
     if element is not None:
         assert _literal_types(checked)[_place(source, literal)] == (
             f"Array<{element}>")
