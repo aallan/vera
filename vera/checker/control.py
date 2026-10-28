@@ -1908,14 +1908,14 @@ class ControlFlowMixin:
         written = _span_text(self.source, clause.body.span)
         example = self._example_value(ty)
         if written is None or example is None:
-            return (f"Make the clause produce a {wanted}, the handled "
-                    f"body's type, or give the handled body the clause's "
+            return (f"Make the clause's value the handled body's type, "
+                    f"{wanted}, or give the handled body the clause's "
                     f"type.")
         if written.lstrip().startswith("{"):
             example = "{ " + example + " }"
-        return (f"Make the clause produce a {wanted}, the handled body's "
-                f"type: replace '{written}' with '{example}', or give the "
-                f"handled body the clause's type.")
+        return (f"Make the clause's value the handled body's type, "
+                f"{wanted}: replace '{written}' with '{example}', or give "
+                f"the handled body the clause's type.")
 
     def _example_value(self, ty: Type) -> str | None:
         """A value of *ty* written with no context, or None: a primitive's

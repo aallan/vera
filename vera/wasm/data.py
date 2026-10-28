@@ -423,8 +423,8 @@ class DataMixin:
                 # — the canonical "produces no stack value" check — catches a
                 # *Unit-returning call* in field position (`IO.print("x")`, a
                 # user `@Unit` fn, a void effect op, a `ModuleCall` to a `@Unit`
-                # fn), laid out zero-size instead of skipping (#902 completeness:
-                # `_infer_vera_type` returns None for Qualified/Module calls).
+                # fn), laid out zero-size instead of skipping (#902
+                # completeness).
                 # #1031: a *transparent* `Future<Unit>` field (`async(())`)
                 # produces no stack value either — `_expr_width` already
                 # returned None by recursing through the Future to its zero-size
@@ -595,43 +595,6 @@ class DataMixin:
         instructions.append(f"local.get {tmp}")
         return instructions
 
-    def _ctor_field_targets_byte(
-        self, expr: ast.ConstructorCall, field_i: int,
-    ) -> bool:
-        """Whether constructor field ``field_i`` is a type-parameter field
-        instantiated at ``@Byte`` by the construction's TARGET type (#1092).
-
-        Decides the literal-width coercion in
-        :py:meth:`_translate_constructor_call`: the literal alone cannot —
-        ``MkB(0)`` is equally legal as ``Box<Int>`` (i64 field) and as
-        ``Box<Byte>`` (i32 field); only the checker-recorded target type
-        (``_target_codegen_type_full``, the #820 side-table) knows which.
-        The target's argument name is grounded through the shared
-        canonicalizer so an alias spelling (``Box<MB>``, ``type MB =
-        Byte;``) instantiates like the literal ``Byte``.  Conservative
-        ``False`` when the field is not a bare type parameter, the table is
-        unthreaded, or the target carries no matching argument — the
-        literal then keeps its i64 translation (the pre-#1092 behaviour).
-        """
-        # ctor-owner-exempt: resolved in the compiling namespace's scoped
-        # projection (#1436)
-        tp_idx = self._ctor_adt_tp_indices.get(expr.name)
-        if not tp_idx or field_i >= len(tp_idx):
-            return False
-        pos = tp_idx[field_i]
-        if pos is None:
-            return False  # concrete declared field (a literal there is E213)
-        target = self._target_codegen_type_full(expr)
-        args = getattr(target, "type_args", None)
-        if not args or pos >= len(args):
-            return False
-        arg_ty = args[pos]
-        base = getattr(arg_ty, "base", arg_ty)  # unwrap a refinement
-        name = getattr(base, "name", None)
-        if name is None:
-            return False
-        return self._canonical_field_type(name) == "Byte"
-
     # -----------------------------------------------------------------
     # Let destructuring
     # -----------------------------------------------------------------
@@ -800,15 +763,13 @@ class DataMixin:
         # the instantiation-aware width of a WILDCARD over a bare
         # type-parameter field — that field registers generically as i32 but
         # is laid out per the concrete type arg at construction (Unit → 0
-        # bytes).  #1065: a DIRECT-CALL scrutinee recovers its full
-        # instantiation from the callee's declared return type
-        # (`_infer_vera_type` alone drops the type args and a type-parameter
-        # wildcard then LOUD-skipped a check-green program); None only when
-        # the type is genuinely unrecoverable, and a type-parameter wildcard
-        # still LOUD-skips rather than reading a shifted offset.  #1380
-        # reads it one step earlier than #1060 did, because the pair guard
-        # below now needs to tell a String from an `Array<T>` of the same
-        # representation.
+        # bytes).  It is the checker's type of the scrutinee (#1525), a
+        # direct call's included, with its type arguments (#1065); None only
+        # when the scrutinee has no checked type, and a type-parameter
+        # wildcard then LOUD-skips rather than reading a shifted offset.
+        # #1380 reads it one step earlier than #1060 did, because the pair
+        # guard below now needs to tell a String from an `Array<T>` of the
+        # same representation.
         scrutinee_type = self._type_name_of(expr.scrutinee)
 
         # Save scrutinee to a local
@@ -900,44 +861,6 @@ class DataMixin:
 
         instructions.extend(arm_instrs)
         return instructions
-
-
-    def _render_type_substituted(
-        self,
-        te: ast.TypeExpr,
-        forall_vars: tuple[str, ...],
-        mapping: dict[str, str],
-    ) -> str | None:
-        """Render *te* as a full Vera type name with every forall variable
-        replaced by its call-site binding (#1072) — the substituting sibling of
-        ``_format_named_type``, which renders names verbatim.
-
-        A leaf that is a forall variable renders its ``mapping`` binding —
-        ``None`` (propagated to the caller) when unbound, so an unresolved
-        instantiation is never guessed.  Concrete leaves render verbatim;
-        parameterized nodes recurse into their type args.  A non-``NamedType``
-        node (after refinement unwrap) is unrenderable → ``None``.
-        """
-        if isinstance(te, ast.RefinementType):
-            te = te.base_type
-        if not isinstance(te, ast.NamedType):
-            return None
-        if not te.type_args:
-            if te.name in forall_vars:
-                return mapping.get(te.name)
-            return te.name
-        if te.name in forall_vars:
-            # A parameterized node whose HEAD is a type variable — Vera type
-            # vars are not higher-kinded, so this cannot arise from a checked
-            # program; refuse to render rather than emit a var-headed name.
-            return None
-        parts = []
-        for ta in te.type_args:
-            rendered = self._render_type_substituted(ta, forall_vars, mapping)
-            if rendered is None:
-                return None
-            parts.append(rendered)
-        return f"{te.name}<{', '.join(parts)}>"
 
 
     def _compile_match_arms(

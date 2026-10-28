@@ -126,7 +126,6 @@ class WasmContext(
         generic_fn_info: (
             dict[str, tuple[tuple[str, ...], tuple[ast.TypeExpr, ...]]] | None
         ) = None,
-        generic_constrained_vars: dict[str, frozenset[str]] | None = None,
         ctor_to_adt: dict[str, str] | None = None,
         known_fns: set[str] | None = None,
         scoped_fns: set[str] | None = None,
@@ -255,13 +254,6 @@ class WasmContext(
         self._generic_fn_info: dict[
             str, tuple[tuple[str, ...], tuple[ast.TypeExpr, ...]]
         ] = generic_fn_info or {}
-        # Per-generic set of type vars carrying an ability bound (`where Eq<T>`).
-        # Used by `_unify_param_arg_wasm` to keep a `ConstructorCall`'s type
-        # argument when rewriting the call site, so the mangled call name matches
-        # the parameterized clone Pass 1.5 emitted (#772).
-        self._generic_constrained_vars: dict[str, frozenset[str]] = (
-            generic_constrained_vars or {}
-        )
         # Constructor name → ADT name reverse mapping
         self._ctor_to_adt: dict[str, str] = ctor_to_adt or {}
         # Every WASM symbol this compilation registered — the REGISTRATION
@@ -422,15 +414,8 @@ class WasmContext(
         # fn_name → return_wasm_type (str | None)
         self._fn_ret_types: dict[str, str | None] = {}
         # Function return *Vera* type expressions, retained alongside
-        # `_fn_ret_types` because some inference paths need the full
-        # NamedType (with type_args) — e.g. resolving the element type
-        # of an Array returned from a function call so `f()[i]` can
-        # type-infer (#614).  Pre-fix this dict didn't exist and
-        # `_infer_index_element_type_expr` only handled SlotRef and
-        # nested-IndexExpr collections, silently returning None for
-        # FnCall collections — `_translate_index_expr` then returned
-        # None too, causing the enclosing function (or closure) to
-        # be dropped from the output.
+        # `_fn_ret_types` (#614): `_is_byte_expr` reads a call's declared
+        # `@Byte` return from them.
         self._fn_ret_type_exprs: dict[str, ast.TypeExpr] = {}
         # #747: per-parameter concrete-@Nat flags per function, for the
         # runtime @Int -> @Nat narrowing guard at call sites.
@@ -530,17 +515,15 @@ class WasmContext(
         # bug class against any future inference gap (ADT types in
         # interpolation, novel composite kinds, etc.).
         self._interp_inference_failures: list[ast.Expr] = []
-        # #632 — apply_fn closure-arg shapes that the inference
-        # dispatcher in `_infer_apply_fn_return_type` doesn't
-        # recognise (today: anything other than SlotRef-into-FnType
-        # alias or AnonFn — e.g. `apply_fn(make_mapper(), 7)` where
-        # `make_mapper` is a FnCall returning a closure).  Pre-#632
-        # the apply_fn translation site silently used the `"i64"`
-        # default for the call_indirect sig, producing a WASM
-        # validation trap with no source-located diagnostic.
-        # Post-#632 the failing closure_arg is appended here and the
-        # codegen base's `_harvest_inference_failures` emits a
-        # specific [E616] before falling through to [E602].
+        # #632 — apply_fn closure arguments the checker did not type as a
+        # function (#1516: any shape it did type compiles, a call
+        # returning a closure and a cell read included).  Pre-#632 the
+        # apply_fn translation site silently used the `"i64"` default
+        # for the call_indirect sig, producing a WASM validation trap
+        # with no source-located diagnostic.  Post-#632 the failing
+        # closure_arg is appended here and the codegen base's
+        # `_harvest_inference_failures` emits a specific [E616] before
+        # falling through to [E602].
         self._apply_fn_inference_failures: list[ast.Expr] = []
         # #798: the checker's type of every expression, keyed by node
         # identity (``ast.Node.node_id``, #1679), threaded from the
@@ -601,8 +584,8 @@ class WasmContext(
         # Nor does it fall back to the flat by-name map: re-resolving an
         # owner-stamped reference by bare name is the defect this method
         # exists to prevent, and doing it here would reintroduce it at the
-        # one site that knows better.  Returning None keeps that policy the
-        # same as `_recover_ptype_via_nested_fields`'s (finding D).
+        # one site that knows better.  Returning None keeps that policy
+        # (finding D).
         # NOTE: resolving an owner-stamped reference against the BUILT-IN
         # snapshot first was tried and reverted.  It repairs the
         # constructor's layout but not the RENDER side, which enumerates

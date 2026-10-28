@@ -109,13 +109,9 @@ class MonomorphizationMixin:
         self._generic_fn_info: dict[
             str, tuple[tuple[str, ...], tuple[ast.TypeExpr, ...]]
         ] = {}
-        self._generic_constrained_vars: dict[str, frozenset[str]] = {}
         for name, decl in generic_decls.items():
             assert decl.forall_vars is not None  # noqa: S101
             self._generic_fn_info[name] = (decl.forall_vars, decl.params)
-            self._generic_constrained_vars[name] = frozenset(
-                c.type_var for c in (decl.forall_constraints or ())
-            )
 
         # #904/#1223: hoist every clone's ``where``-helpers into standalone
         # mono decls, a FIXPOINT with the top-level worklist: a hoisted
@@ -288,9 +284,6 @@ class MonomorphizationMixin:
             assert gen.forall_vars is not None  # noqa: S101
             # Register for Pass 2 generic-call resolution under the emission name.
             self._generic_fn_info[gen.name] = (gen.forall_vars, gen.params)
-            self._generic_constrained_vars[gen.name] = frozenset(
-                c.type_var for c in (gen.forall_constraints or ())
-            )
             helper_bare = gen.name[len(parent_clone_name) + len("$where$"):]
             chain_key = f"{base_chain}$where${helper_bare}"
             if parent is None:

@@ -13197,7 +13197,7 @@ class ContractVerifier:
         Descend the ``Block`` / ``IfExpr`` / ``MatchExpr`` join to each leaf
         return expression and apply the per-value ``_narrows_into_nat`` there —
         the value narrows iff ANY leaf narrows, exactly the set codegen's
-        ``_is_static_nat_typed`` (an all-arms-@Nat test) guards.  The whole-body
+        per-leaf descent (``_collect_narrowing_return_leaves``) guards.  The whole-body
         ``>= 0`` obligation (translated in :py:meth:`_check_nat_binding_obligation`)
         still folds in each arm's path condition, so a provable join proves.
         """

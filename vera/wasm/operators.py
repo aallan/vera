@@ -301,8 +301,8 @@ class OperatorsMixin:
         if isinstance(expr, ast.FnCall):
             # Byte-ness of a call operand comes from the callee's DECLARED
             # Vera return type, NOT its WASM return width: `Byte` and `Bool`
-            # are both i32, and the `_infer_vera_type` fallback below maps an
-            # i32 return to "Bool" unconditionally — collapsing the two and
+            # are both i32, and the former `_infer_vera_type` fallback mapped
+            # an i32 return to "Bool" unconditionally — collapsing the two and
             # leaving a `@Byte`-returning call's result compared at i64 (the
             # same #766 width mismatch in a different operand shape).  The
             # `_fn_ret_type_exprs` registry holds the un-canonical declared
@@ -1403,15 +1403,14 @@ class OperatorsMixin:
                         ast.StringLit(value=p, span=expr.span), STRING))
             else:
                 # Determine Vera type for auto-conversion, on its
-                # RESOLVED form (#1347).  `_infer_vera_type` answers with
-                # the type's SPELLING — `Celsius` for a `type Celsius =
-                # Float64` slot — and this dispatch used to look that up
-                # directly, so every alias and every refinement missed
-                # the table and fell into the loud-skip branch below: a
-                # check-green program dropped with "Cannot interpolate
-                # value of unknown type".  The walker unwraps refinements
-                # and follows alias chains to the terminal shape, which
-                # is what actually decides how the value renders.
+                # RESOLVED form (#1347): the checker's type of the part
+                # (#1525), which holds no alias.  The former walker
+                # answered with the type's SPELLING — `Celsius` for a
+                # `type Celsius = Float64` slot — and this dispatch looked
+                # that up directly, so every alias and every refinement
+                # missed the table and fell into the loud-skip branch
+                # below: a check-green program dropped with "Cannot
+                # interpolate value of unknown type".
                 vera_type = self._interp_resolved_type_name(
                     self._type_name_of(p),
                 )
@@ -1431,7 +1430,7 @@ class OperatorsMixin:
                     # #630 Tier 2 — record every inference failure and
                     # bail at the end.  Pre-#630 this branch silently
                     # wrapped `p` in `to_string(...)`, which reads its
-                    # arg as `i64`.  When `_infer_vera_type(p)` returns
+                    # arg as `i64`.  When the part's type name is
                     # None or a non-recognised name (e.g. an `i32_pair`
                     # String/Array value the canonicaliser couldn't
                     # walk), the `to_string` wrapper produced invalid
@@ -1961,18 +1960,16 @@ class OperatorsMixin:
         ]
 
     def _narrows_into_nat(self, value: ast.Expr) -> bool:
-        """Codegen mirror of ``ContractVerifier._narrows_into_nat`` (#552).
+        """Codegen mirror of ``ContractVerifier._narrows_into_nat`` (#552):
+        the one rule both read (:func:`vera.narrowing.nat_narrowing`), each
+        node at the checker's type of it (#1525).
 
         True iff binding *value* into a @Nat slot needs a runtime
-        ``value >= 0`` guard — a genuine @Int narrowing, or a value whose
-        tree contains a pure-literal subtraction (``0 - 1``) that
-        ``_is_static_nat_typed`` calls @Nat but which can underflow
-        negative.  Should agree with the verifier so a Tier-1-clean
-        program never *traps*.  (Codegen sees a user function's i64
-        return type, not its @Nat Vera type, so it may emit a dead guard
-        on ``let @Nat = <user-fn returning @Nat>`` — harmless, since the
-        value is provably >= 0 and never trips the trap; recovering @Nat
-        user-fn returns is a precision follow-up.)
+        ``value >= 0`` guard — a genuine @Int narrowing, or a @Nat value
+        whose tree holds a subtraction no @Nat-subtraction check covers.
+        It agrees with the verifier's record, so a Tier-1-clean program
+        never *traps*, and a value the checker types @Nat, a user
+        function's @Nat result among them, is not guarded again.
         """
         return narrowing.nat_narrowing(value, self._is_nat_value)
 
@@ -2000,15 +1997,15 @@ class OperatorsMixin:
         clone from the arguments' own types (`pick$Int`), so the clone's
         `@Nat` flags say nothing, a built-in's translator has none, and the
         call's result is a `@Nat` by the checker's types, which the return
-        boundary trusts (:func:`vera.narrowing.is_declared_nat`).  A generic
+        boundary trusts (:func:`vera.narrowing.nat_narrowing`).  A generic
         body computes no `T` of its own, so checking each argument where it
         enters is what makes that trust sound.
 
-        Guarded where the argument narrows and is no `@Nat` by its
-        declarations: the pair the return boundary asks (#758), and the
-        verifier's answer, which records nothing for a generic call the
-        checker instantiated at `Nat` (its own arguments are checked at
-        its own call).
+        Guarded where the argument narrows by the checker's type of it: the
+        question the return boundary asks (#758), and the verifier's
+        answer, which records nothing for a generic call the checker
+        instantiated at `Nat` (its own arguments are checked at its own
+        call).
         """
         if self._instantiated_at_nat(arg) and self._narrows_into_nat(arg):
             return self._emit_nat_bind_guard(instrs, at=arg)
@@ -2031,12 +2028,11 @@ class OperatorsMixin:
         its ``return_call`` survives and the chain runs constant-stack.
 
         A leaf narrows exactly when ``_narrows_into_nat`` says binding it into a
-        @Nat slot needs a ``>= 0`` guard AND it is not a @Nat by its
-        declarations (:func:`vera.narrowing.is_declared_nat` — a genuine
-        @Nat->@Nat tail call resolves its callee's @Nat return there and so is
-        NOT collected), the per-leaf form of the whole-body ``narrow_guarded``
-        gate.  Descends ``Block`` / ``IfExpr`` / ``MatchExpr`` joins exactly as
-        the verifier does.
+        @Nat slot needs a ``>= 0`` guard, reading the checker's type of each
+        node (:func:`vera.narrowing.nat_narrowing` — a genuine @Nat->@Nat
+        tail call is a @Nat there and so is NOT collected), the per-leaf form
+        of the whole-body ``narrow_guarded`` gate.  Descends ``Block`` /
+        ``IfExpr`` / ``MatchExpr`` joins exactly as the verifier does.
         """
         leaves: set[int] = set()
         #: The leaves this descent decided need no guard, for the record a
@@ -2102,15 +2098,10 @@ class OperatorsMixin:
 
         This is the codegen mirror of
         :py:meth:`ContractVerifier._overflow_int_type`, classifying on the
-        checker's resolved type first — the threaded ``_expr_semantic_types``
+        checker's resolved type — the threaded ``_expr_semantic_types``
         side-table — so codegen and the verifier classify every site alike.
-
-        The AST-only fallback runs only when the side-table is absent or has
-        no entry for this span — e.g. a ``transform -> compile`` caller that
-        skipped typecheck.  It follows the checker's own rules: a value is a
-        ``@Nat`` by its declarations (:func:`vera.narrowing.is_declared_nat`),
-        and every literal is an ``Int`` (spec §4.2), so ``@Nat.0 - 1`` is an
-        ``@Int`` subtraction with or without the table.
+        The table is the only reading (#1525): every literal is an ``Int``
+        there (spec §4.2), so ``@Nat.0 - 1`` is an ``@Int`` subtraction.
         """
         return self._resolved_codegen_type(expr)
 

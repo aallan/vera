@@ -77,13 +77,6 @@ def fused_async_arg_target(arg: ast.Expr) -> str | None:
     return target[0]
 
 
-def fused_async_target(call: ast.FnCall) -> str | None:
-    """``fused_async_arg_target`` lifted to the ``async(...)`` FnCall."""
-    if call.name != "async" or len(call.args) != 1:
-        return None
-    return fused_async_arg_target(call.args[0])
-
-
 def is_fused_future_type(ty: Type | None) -> bool:
     """True iff *ty*, a type the checker gave a value, is exactly
     ``Future<Result<String, String>>``, the only type a fused future

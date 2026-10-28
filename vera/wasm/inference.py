@@ -1,4 +1,4 @@
-"""Type inference and utility mixin for WasmContext."""
+"""Type reads and utility mixin for WasmContext."""
 
 from __future__ import annotations
 
@@ -41,8 +41,7 @@ _VARIADIC_ADTS = frozenset({"Tuple"})
 # WASM backend.  Re-exported here so the existing
 # `from vera.wasm.inference import substitute_type_vars` call sites
 # (codegen/core.py, codegen/registration.py, codegen/contracts.py)
-# keep working.  (wasm/calls.py now imports `resolve_fn_type_alias`
-# from `vera.monomorphize` directly instead — PR #880.)
+# keep working.
 __all__ = ["InferenceMixin", "substitute_type_vars"]
 
 
@@ -101,10 +100,11 @@ class InferenceMixin:
 
     def _type_of(self, node: ast.Node) -> Type | None:
         """The checker's type of *node* (#1525): the typed program's table,
-        by the node's identity, a clone's node included, or the type a node
-        code generation built after the check was built at
-        (:meth:`_built`).  ``None`` for a node with neither: a pattern, or
-        a node a test builds into a bare context.
+        by the node's identity, a clone's node included (a pattern's is
+        the type it matches, a type expression's the type it resolves to),
+        or the type a node code generation built after the check was built
+        at (:meth:`_built`).  ``None`` for a node with neither, such as a
+        node a test builds into a bare context.
 
         Code generation derives no type of its own: every width, every
         element, key and value type, every scrutinee's and every closure's
@@ -246,24 +246,6 @@ class InferenceMixin:
         if isinstance(ty, FunctionType):
             return value_type_name(ty.return_type)
         return None
-
-    @staticmethod
-    def _format_named_type(te: ast.NamedType) -> str:
-        """Format a NamedType as a full type name including type args.
-
-        Note: duplicated in Monomorphizer._format_type_name
-        (vera/monomorphize.py). Both must remain in sync.
-        """
-        if not te.type_args:
-            return te.name
-        arg_names = []
-        for ta in te.type_args:
-            if isinstance(ta, ast.NamedType):
-                arg_names.append(
-                    InferenceMixin._format_named_type(ta))
-            else:
-                return te.name
-        return f"{te.name}<{', '.join(arg_names)}>"
 
     def _canonical_named_type(
         self,
@@ -489,64 +471,6 @@ class InferenceMixin:
             return False
 
 
-    def _resolve_i32_pair_ret_te(
-        self, ret_te: ast.TypeExpr | None,
-    ) -> str | None:
-        """Canonicalise a fn's return TypeExpr for `i32_pair` lookup.
-
-        Several shapes can appear at user-fn return positions for
-        `String` / `Array<T>` (i32_pair) returns:
-
-          - `NamedType("String")` — bare type, common case.
-          - `NamedType("MyAlias")` where the alias resolves to String —
-            `_resolve_base_type_name` follows the chain to `"String"`.
-          - `RefinementType(base_type=NamedType("String"), ...)` — the
-            inline `@{ @String | predicate }` form.  `_register_fn`
-            stores the literal AST, so the registry holds a
-            `RefinementType` directly.
-          - **Nested refinements** (`@{ @{ @String | p1 } | p2 }`) —
-            the grammar admits `refinement_type` over any `type_expr`,
-            so refinements can wrap refinements.  Empirically reachable
-            via valid Vera (the type checker accepts the nested form
-            at fn return positions).  The unwrap below loops to handle
-            arbitrary nesting depth.
-
-        Without unwrapping these shapes, a fn declared with any of the
-        wrapper forms reproduces the original #602 trap inside
-        interpolation — `_fn_ret_type_exprs.get(name)` returns the
-        un-canonical AST, the downstream consumer's `vera_type ==
-        "String"` check fails, and `_translate_interpolated_string`
-        falls through to `to_string(...)` over an `i32_pair` value
-        (`expected i64, found i32` at WASM validation).
-
-        See [#626](https://github.com/aallan/vera/issues/626) — every
-        `return None` here is an instance of the broader silent-skip
-        pattern.  The downstream `to_string` fallback at
-        `vera/wasm/operators.py` carries the matching commentary.
-
-        Returns the canonical Vera type name (`"String"` / `"Array"` /
-        etc.), or None for shapes the unwrap can't reduce to a
-        `NamedType` (e.g. `FnType`, or a `RefinementType` whose
-        innermost base is non-`NamedType`).  None-returns are
-        currently triggered for cross-module imports too (the
-        registry isn't populated cross-module — see #628).
-
-        Post-#630: thin delegate over `_canonical_named_type`, the
-        single canonicalisation walker.  The bare-name return
-        (without `type_args`) matches both consumers' expectations
-        — they compare against `"String"` / `"Array"` and ignore
-        parameterisation.
-        """
-        if ret_te is None:
-            return None
-        canonical = self._canonical_named_type(ret_te)
-        return canonical.name if canonical is not None else None
-
-    def _ctor_to_adt_name(self, ctor_name: str) -> str | None:
-        """Find the ADT type name for a constructor name."""
-        # ctor-owner-exempt: the flat ownership projection itself
-        return self._ctor_to_adt.get(ctor_name)
-
     def _strip_future_scoped(self, name: str) -> str:
         """:func:`~vera.wasm.helpers._strip_future`, asked in this namespace.
 
@@ -579,8 +503,9 @@ class InferenceMixin:
 
         String and Array<T> elements are represented as two consecutive
         i32 values (pointer + length), requiring 8 bytes of storage.
-        Bare "Array" (without type args) also matches, since the element
-        type name from _infer_vera_type may not include type parameters.
+        Bare "Array" (without type args) also matches, since a type name
+        renders bare where an argument has no name of its own
+        (:func:`vera.types.value_type_name`).
 
         ``Future<…>`` is stripped first (#1045): a ``Future<String>`` /
         ``Future<Array<T>>`` element is a pair exactly like its payload.
@@ -781,44 +706,6 @@ class InferenceMixin:
                 or resolved.startswith("Array<"))
 
 
-    def _closure_arg_return_type(
-        self, closure_arg: ast.Expr,
-    ) -> ast.TypeExpr | None:
-        """Declared return TypeExpr of the closure an ``apply_fn`` applies.
-
-        The mixin-side shape dispatch shared by both inference consultors
-        (``_infer_apply_fn_return_type`` — the ``call_indirect`` signature
-        — and ``_infer_fncall_vera_type``'s ``apply_fn`` arm — the
-        Vera-type inference).  A ``SlotRef`` is resolved through the shared
-        :func:`resolve_fn_type_alias`, which follows the alias chain
-        **transitively** to the terminal ``FnType`` (``type Fetcher =
-        InnerFetcher;`` — #867) and substitutes any generic alias's type
-        params from the slot's bound type args; an inline ``AnonFn`` yields
-        its declared return type directly.  Any other shape yields
-        ``None``.
-
-        This is the same resolution the fused-await classifier's
-        ``_apply_fn_closure_ret_type`` (``vera/wasm/async_fusion.py``)
-        performs — both route the ``SlotRef`` through
-        :func:`resolve_fn_type_alias`, so the signature this builds and
-        the classification that gates the runtime fused-handle check can
-        never consult a differently-resolved return type.
-        """
-        if isinstance(closure_arg, ast.SlotRef):
-            fn_type = resolve_fn_type_alias(
-                ast.NamedType(
-                    name=closure_arg.type_name,
-                    type_args=closure_arg.type_args,
-                ),
-                self._alias_env.aliases,
-                self._alias_env.alias_params,
-            )
-            return fn_type.return_type if fn_type is not None else None
-        if isinstance(closure_arg, ast.AnonFn):
-            return closure_arg.return_type
-        return None
-
-
     def _type_expr_base_is_nat(self, te: ast.TypeExpr) -> bool:
         """True iff *te* resolves (through aliases) to ``@Nat`` (#984).
         Alias-aware
@@ -989,19 +876,6 @@ class InferenceMixin:
         the checker bound the slot under.
         """
         return naming.slot_name_or_none(te, self._alias_env)
-
-    def _type_name_to_wasm(self, type_name: str) -> str:
-        """Map a Vera type name string to a WASM type string."""
-        if type_name in ("Int", "Nat"):
-            return "i64"
-        if type_name == "Float64":
-            return "f64"
-        if type_name in ("Bool", "Byte"):
-            return "i32"
-        if type_name == "Unit":  # pragma: no cover
-            return "i32"  # shouldn't appear, safe fallback
-        # ADT or function type alias → i32 pointer
-        return "i32"
 
     def _type_expr_to_slot_name(self, te: ast.TypeExpr) -> str | None:
         """The slot-binding name of *te*, as the checker binds it (#1208).
@@ -1253,12 +1127,10 @@ class InferenceMixin:
         After the top-level hops, an alias sitting INSIDE a transparent
         ``Future<…>`` payload is canonicalized too (``Future<FlagA>`` ->
         ``Future<Bool>``, #1074) — the hop-by-hop walk resolves only the
-        outer NAME, so the four array-element-type deciders that route the
-        result to the module-level element-size / store-op helpers
-        (``_infer_concat_elem_type``, ``_translate_array_lit``, the
-        ``array_flatten`` inner walk, ``_infer_index_element_type``) get a
-        payload the size dict can key on, not a bare alias that falls to the
-        4-byte i32 default.
+        outer NAME, so the array-element-type deciders that route the result
+        to the module-level element-size / store-op helpers get a payload the
+        size dict can key on, not a bare alias that falls to the 4-byte i32
+        default.
 
         Returns the canonical name plus the accumulated seen-set; callers
         whose own recursion re-enters this walk (the transparent

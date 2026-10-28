@@ -326,21 +326,6 @@ class FunctionCompilationMixin:
         else:
             self._emit_contract_predicate_skip(ctx, exc, decl)
 
-    def _mark_byte_return_leaves(
-        self, ctx: WasmContext, return_type: ast.TypeExpr, body: ast.Block,
-    ) -> None:
-        """Mark *body*'s literal leaves when the return resolves to `@Byte`.
-
-        The return-boundary arm of #1212's ONE marking, shared by the named
-        path (`_compile_fn`) and the closure path
-        (`_compile_lifted_closure`) so the two cannot decide a return width
-        differently — which is exactly what the ninth and tenth shapes were.
-        The declared return resolves through `WasmContext._boundary_base`,
-        the ONE representation-base derivation every #1212 boundary now
-        shares (#1256), so a refined `@Byte` alias is a Byte boundary here
-        as it is at the `apply_fn` argument and the `throw` payload.
-        """
-
     def _lift_closures_or_drop(
         self, ctx: WasmContext, decl: ast.FnDecl,
     ) -> bool:
@@ -610,8 +595,6 @@ class FunctionCompilationMixin:
             value_data_types=self._value_data_type_names(),
             adt_ctor_tp_indices=self._adt_ctor_tp_indices,
             generic_fn_info=getattr(self, "_generic_fn_info", None),
-            generic_constrained_vars=getattr(
-                self, "_generic_constrained_vars", None),
             ctor_to_adt=ctor_to_adt,
             known_fns=set(self._fn_sigs.keys()),
             # #1299: the ownership predicate's table is the LEXICAL one —
@@ -645,9 +628,8 @@ class FunctionCompilationMixin:
                 fn_ret_types[fn_name] = ret_wt
         ctx.set_fn_ret_types(fn_ret_types)
         # #614: full Vera return-type expressions, paired with the WAT-
-        # types above.  Used by `_infer_index_element_type_expr` to
-        # resolve the element type of `f()[i]` when `f` returns
-        # `Array<T>`.
+        # types above; `_is_byte_expr` reads a call's declared `@Byte`
+        # return from them.
         ctx.set_fn_ret_type_exprs(self._fn_ret_type_exprs)
         # #798: the checker's types by node identity, for the integer-overflow
         # guard's Int/Nat operand classifier (kept in lockstep with the
@@ -1060,19 +1042,9 @@ class FunctionCompilationMixin:
         #    The audit-and-convert pass (Phase 3, tracked in #657) is
         #    migrating these sites to ``raise CodegenSkip``; until
         #    that's complete this branch stays as the catch-all.
-        # #1212: the RETURN is a `@Byte` write boundary like any other, so
-        # mark the body's literal leaves before translating it.  The
-        # whole-body `i32.wrap_i64` below cannot cover a HETEROGENEOUS join
-        # — `_infer_block_result_type` reads the then-branch / first arm
-        # only, so a join whose read arm is an i32 `@Byte` slot and whose
-        # sibling is a bare literal was annotated from one arm while the
-        # other lowered at its own width, and ARM ORDER decided which way
-        # the module failed to validate.  Marking makes every arm i32, after
-        # which whichever arm the decider reads gives the same answer; a
-        # decider taught to read every arm would not have helped, since the
-        # literal arm would still emit `i64.const`.  Alias-aware, so a
-        # refined `@Byte` alias return marks too.
-        self._mark_byte_return_leaves(ctx, decl.return_type, decl.body)
+        # #1212: a `@Byte` return's literal arms need no marking: a literal
+        # lowers at its checked type's width, and a join's at the join's
+        # (#1525).
         try:
             body_instrs = ctx.translate_block(decl.body, env)
         except CodegenSkip as skip:

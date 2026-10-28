@@ -1436,11 +1436,9 @@ class CallsHandlersMixin:
         if init_instrs is not None:
             instructions.append(f"call {put_import}")
 
-        # 3. Save current effect_ops and inject handler ops.  Record `get`'s
-        #    result WAT type (#914 A2: a `match get(())` inside the body needs
-        #    it to type the scrutinee — State<T>'s T is validated non-pair by
-        #    the checker, so `_type_name_to_wasm` yields the op's result WT).
-        # The four registries are SAVED BY REFERENCE and REPLACED with fresh
+        # 3. Save current effect_ops and inject handler ops (a `get(())`'s
+        #    result is typed by the checker, #1525).
+        # The registries are SAVED BY REFERENCE and REPLACED with fresh
         # copies, so this handler's `get`/`put` never land in a dict some
         # enclosing scope (or a `StateClauseEntry` from an outer handler)
         # still holds — the in-place `self._effect_ops["get"] = …` this

@@ -99,8 +99,7 @@ class CallsArraysMixin:
         # The element is `T`'s argument: checked where `T` is `Nat`.
         elem_instrs = self._guard_nat_instantiated_arg(elem_arg, elem_instrs)
 
-        # Infer element type from the pushed element.
-        # NB: uses _infer_vera_type on the element (not the array)
+        # The element type is the pushed element's (not the array's)
         # because array_append's element is the value-shaped arg,
         # not the container.  That's why this site doesn't call
         # _array_elem_triad_or_skip (which expects an array arg).
@@ -1337,11 +1336,12 @@ class CallsArraysMixin:
     #     closure signature
     #   - Build the result (new array, Option, or Bool)
     #
-    # Element types flow through _element_mem_size, _element_wasm_type,
-    # _element_load_op, _element_store_op, _is_pair_element_type, and
-    # self._infer_concat_elem_type / _infer_closure_return_vera_type,
-    # so pair-typed elements (String, Array<X>) and scalar-typed
-    # elements share a single translator body with minor branching.
+    # Element types are the checker's (`_type_arg_name_of`,
+    # `_return_name_of`) and flow through _element_mem_size,
+    # _element_wasm_type, _element_load_op, _element_store_op and
+    # _is_pair_element_type, so pair-typed elements (String, Array<X>) and
+    # scalar-typed elements share a single translator body with minor
+    # branching.
 
     def _translate_array_reverse(
         self, arr_arg: ast.Expr, env: WasmSlotEnv,

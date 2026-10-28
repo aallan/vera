@@ -692,14 +692,6 @@ class ClosureLiftingMixin:
         # See the parallel block in vera/codegen/functions.py::_compile_fn
         # for the matching catch in the non-closure path.
         try:
-            # #1212: the closure's RETURN is a `@Byte` write boundary, so
-            # its body's literal leaves are marked before translation —
-            # the same call `_compile_fn` makes, which is what keeps a
-            # heterogeneous join lowering identically on both paths.  MUST
-            # precede `translate_block`; the `i32.wrap_i64` mirror below
-            # only rescues a body the decider calls i64 WHOLE.
-            self._mark_byte_return_leaves(
-                ctx, anon_fn.return_type, anon_fn.body)
             body_instrs = ctx.translate_block(anon_fn.body, env)
         except CodegenSkip as skip:
             # Closure-body skips emit their own structured [E602]

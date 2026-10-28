@@ -8,21 +8,16 @@ rule are two things that can drift, and a drift here is invisible from inside
 either component: the verifier reports a status about codegen's behaviour, so if
 they disagree the status is simply wrong and nothing local notices.
 
-The RULE lives here once.  What legitimately differs between the callers is the
-TYPE ORACLE, not the rule:
-
-* codegen reads a `SlotRef`'s declared ``type_name`` and infers a call's return
-  type from its own tables;
-* the verifier reads the checker's SEMANTIC types, which are more precise — a
-  handler-clause binder declared ``@Nat`` carries the thrown ``@Int`` as its
-  semantic source, which is exactly why the verifier obligates a narrowing there
-  that codegen does not see.
-
-Both readings are correct for their own question.  The verifier asks "is there a
-narrowing to obligate?" and needs the semantic one; the CLASSIFICATION asks
-"will codegen plant a guard?" and must be answered with codegen's, or the status
-describes a component other than the one it is about.  So the oracle is a
-parameter and the rule is not.
+The RULE lives here once (:func:`nat_narrowing`), and both callers read it over
+the checker's types: code generation the typed program's type of each node, the
+verifier its semantic table (#1525).  What still differs is a pattern-bound or
+destructured component: the verifier traces it to its source
+(:func:`component_narrows`), where code generation reads the type its field is
+instantiated at, so a component the verifier sees built from a non-negative
+value can still be guarded (#1695).  The CLASSIFICATION asks "will codegen plant
+a guard?" and must be answered with codegen's reading, or the status describes a
+component other than the one it is about.  So the oracle is a parameter and the
+rule is not.
 """
 
 from __future__ import annotations
@@ -312,55 +307,6 @@ def is_guarded_nat_subtraction(
     `@Int` subtraction and no `@Nat` one (spec §4.4)."""
     return (isinstance(expr, ast.BinaryExpr) and expr.op == ast.BinOp.SUB
             and is_nat(expr.left) and is_nat(expr.right))
-
-
-#: Answers "is this expression's value a `@Nat` by its DECLARATION?" — the
-#: checker's resolved type of a slot or a call — for :func:`is_declared_nat`.
-DeclaredIsNatOracle = Callable[[ast.Expr], bool]
-
-
-def is_declared_nat(expr: ast.Expr, declared_is_nat: DeclaredIsNatOracle) -> bool:
-    """True iff *expr*'s value is a `@Nat` by its declarations: a `@Nat`
-    slot, a call *declared_is_nat* types `@Nat` (``nat_to_int(x)`` is ``x``),
-    arithmetic over two such values — a subtraction of two being the guarded
-    `@Nat` one — and the `Block` / `if` / `match` joins whose every arm is
-    one.
-
-    Code generation's #758 exemption at a `@Nat` return reads it: the
-    return's `>= 0` check is stood down for a leaf the syntactic rule
-    (:func:`narrows_into_nat`) cannot place but the checker's types do — a
-    generic call instantiated at `Nat`, whose callee codegen's oracle does
-    not resolve.  Such a call's value is a `@Nat` because a generic body
-    computes no `T` of its own and each argument at a `Nat` formal is
-    checked where it enters (`_guard_nat_instantiated_arg`), so
-    `pick(-3, 5)` traps at its `-3`.  It trusts nothing else: an index, an
-    effect operation or a `handle` keeps the check, so
-    `@Array<Nat>.0[0] - @Nat.0`, whose underflow no `@Nat`-subtraction
-    guard sees, cannot come back negative from a `@Nat` function.
-    """
-    if isinstance(expr, ast.SlotRef):
-        return expr.type_name == "Nat"
-    if isinstance(expr, ast.BinaryExpr):
-        return (expr.op in (ast.BinOp.ADD, ast.BinOp.SUB, ast.BinOp.MUL,
-                            ast.BinOp.DIV, ast.BinOp.MOD)
-                and is_declared_nat(expr.left, declared_is_nat)
-                and is_declared_nat(expr.right, declared_is_nat))
-    if isinstance(expr, ast.Block):
-        return (expr.expr is not None
-                and is_declared_nat(expr.expr, declared_is_nat))
-    if isinstance(expr, ast.IfExpr):
-        return (expr.else_branch is not None
-                and is_declared_nat(expr.then_branch, declared_is_nat)
-                and is_declared_nat(expr.else_branch, declared_is_nat))
-    if isinstance(expr, ast.MatchExpr):
-        return bool(expr.arms) and all(
-            is_declared_nat(arm.body, declared_is_nat) for arm in expr.arms)
-    if isinstance(expr, (ast.FnCall, ast.ModuleCall)):
-        if (isinstance(expr, ast.FnCall) and expr.name == "nat_to_int"
-                and len(expr.args) == 1):
-            return is_declared_nat(expr.args[0], declared_is_nat)
-        return declared_is_nat(expr)
-    return False
 
 
 # =====================================================================
