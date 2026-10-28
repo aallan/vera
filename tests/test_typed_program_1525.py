@@ -365,6 +365,25 @@ _SORTS = _source(
 )
 
 
+#: The constructed-sort line's imported member (#1525, 23 October): a call
+#: taking a constructor of a data type the entry imports, applied in place.
+_IMPORTED_SORT_LIB = _source(
+    "module gen_lib;",
+    "public data Tally {\n  Amber(Nat),\n  Basalt\n}",
+)
+_IMPORTED_SORT_MAIN = _source(
+    "import gen_lib(Tally);",
+    "private fn zero(@Tally -> @Nat)\n  requires(true)\n"
+    "  ensures(@Nat.result <= 0)\n  effects(pure)\n{\n  0\n}",
+    "private fn need(@Int -> @Int)\n  requires(@Int.0 >= 0 && @Int.0 <= 5)\n"
+    "  ensures(true)\n  effects(pure)\n{\n  @Int.0\n}",
+    "public fn by_payload(@Unit -> @Int)\n" + _C
+    + "{\n  let @Int = zero(Amber(0));\n  need(@Int.0)\n}",
+    "public fn by_nullary(@Unit -> @Int)\n" + _C
+    + "{\n  let @Int = zero(Basalt);\n  need(@Int.0)\n}",
+)
+
+
 def _every_obligation_tier1(verified: pipeline.Verified) -> None:
     statuses = {(o.fn_name, o.kind.value if hasattr(o.kind, "value") else o.kind,
                  o.status.value if hasattr(o.status, "value") else o.status)
@@ -560,6 +579,9 @@ REPROS: dict[str, Repro] = {
         _runs("show_neg", [5], "-5")),
     "sorts_from_expression_types": Repro(
         {"main.vera": _SORTS}, _verifies(_every_obligation_tier1)),
+    "sorts_of_an_imported_constructor": Repro(
+        {"gen_lib.vera": _IMPORTED_SORT_LIB, "main.vera": _IMPORTED_SORT_MAIN},
+        _verifies(_every_obligation_tier1)),
     "interpolation_converter_from_checker_type": Repro(
         {"main.vera": _INTERPOLATION_CONVERTER},
         _runs("main", None, stdout="call A\nbound A\n")),
@@ -687,3 +709,140 @@ def test_repro_type_level_line(name: str, tmp_path: Path) -> None:
     repro = REPROS[name]
     path = pipeline.write_tree(tmp_path, repro.files)
     repro.expect(path)
+
+
+# ---------------------------------------------------------------------
+# The class cell: no type is derived outside the checker
+# ---------------------------------------------------------------------
+#
+# A type is derived once, by the checker, and every later phase reads it
+# off the typed program.  A function outside `vera/checker/` and
+# `vera/typed.py` that dispatches on an expression's or a type
+# expression's class and returns a type (a `vera.types` type or a type
+# expression, by its annotation, or a string naming one: a primitive's or
+# a WASM value's name, a type expression's `.name`, a slot's `.type_name`)
+# is a second derivation, whatever it is for.  A reader of the typed
+# program dispatches on nothing: it reads a node's type by the node's
+# identity.
+
+_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _class_names(module: object, base: type) -> frozenset[str]:
+    return frozenset(name for name, value in vars(module).items()
+                     if isinstance(value, type) and issubclass(value, base))
+
+
+def _type_derivations() -> dict[tuple[str, str], int]:
+    """Every function outside the checker and the typed program that
+    derives a type, as ``(file, qualified name)``, with its line."""
+    import ast as pyast
+
+    from vera import ast as vera_ast
+    from vera import types as vera_types
+
+    expressions = _class_names(vera_ast, vera_ast.Expr)
+    type_expressions = _class_names(vera_ast, vera_ast.TypeExpr)
+    types = _class_names(vera_types, vera_types.Type)
+    type_words = {"Int", "Nat", "Bool", "String", "Float64", "Byte", "Unit",
+                  "Never", "i32", "i64", "f64", "i32_pair"}
+    collections = ("Iterator", "Iterable", "list", "tuple", "dict", "set",
+                   "Sequence", "Mapping")
+
+    def dispatch(fn: pyast.AST) -> tuple[bool, bool]:
+        on_expr = on_type = False
+        for node in pyast.walk(fn):
+            if (isinstance(node, pyast.Call)
+                    and isinstance(node.func, pyast.Name)
+                    and node.func.id == "isinstance" and len(node.args) == 2):
+                for part in pyast.walk(node.args[1]):
+                    if (isinstance(part, pyast.Attribute)
+                            and isinstance(part.value, pyast.Name)
+                            and part.value.id == "ast"):
+                        on_expr |= part.attr in expressions
+                        on_type |= part.attr in type_expressions
+        return on_expr, on_type
+
+    def returns_a_type(fn: pyast.FunctionDef | pyast.AsyncFunctionDef,
+                       on_type: bool) -> bool:
+        if fn.returns is None:
+            return False
+        text = pyast.unparse(fn.returns).strip("'\"")
+        words = set(re.findall(r"[A-Za-z_]\w*", text))
+        if words & types:
+            return True
+        if (words & type_expressions
+                and not text.split("[")[0].endswith(collections)):
+            return True
+        if text not in ("str", "str | None", "None | str"):
+            return False
+        for node in pyast.walk(fn):
+            if isinstance(node, pyast.Return) and node.value is not None:
+                for part in pyast.walk(node.value):
+                    if (isinstance(part, pyast.Constant)
+                            and part.value in type_words):
+                        return True
+                    if isinstance(part, pyast.Attribute) and (
+                            part.attr == "type_name"
+                            or (on_type and part.attr == "name")):
+                        return True
+        return False
+
+    found: dict[tuple[str, str], int] = {}
+    for path in sorted((_ROOT / "vera").rglob("*.py")):
+        rel = path.relative_to(_ROOT).as_posix()
+        if rel.startswith("vera/checker/") or rel == "vera/typed.py":
+            continue
+        tree = pyast.parse(path.read_text(encoding="utf-8"))
+
+        def visit(node: pyast.AST, prefix: tuple[str, ...]) -> None:
+            for child in pyast.iter_child_nodes(node):
+                if isinstance(child, pyast.ClassDef):
+                    visit(child, (*prefix, child.name))
+                elif isinstance(child, (pyast.FunctionDef,
+                                        pyast.AsyncFunctionDef)):
+                    on_expr, on_type = dispatch(child)
+                    if ((on_expr or on_type)
+                            and returns_a_type(child, on_type)):
+                        found[(rel, ".".join((*prefix, child.name)))] = (
+                            child.lineno)
+                    visit(child, (*prefix, child.name))
+
+        visit(tree, ())
+    return found
+
+
+#: The functions that derive a type outside the checker by design, each
+#: with the reason it must.
+DELIBERATE: dict[tuple[str, str], str] = {
+    ("vera/naming.py", "_resolve"): (
+        "a slot's name, which the check binds every slot reference by "
+        "while it runs, so it is rendered before any table exists"),
+    ("vera/naming.py", "slot_name"): (
+        "a slot's name, rendered by `_resolve` for the same reason"),
+    ("vera/monomorphize.py", "substitute_type_vars"): (
+        "the clone substitution: `vera.typed.build` writes each clone's "
+        "type expressions under its instance's substitution, and types "
+        "them from the template's"),
+    ("vera/monomorphize.py", "Monomorphizer._substitute_type_expr"): (
+        "the clone substitution, as `substitute_type_vars`"),
+}
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "red at e807be43: the verifier's `_resolve_type`, the SMT layer's two "
+    "readers of a parameter's type expression, and code generation's "
+    "readers of a written type"))
+def test_no_function_outside_the_checker_derives_a_type() -> None:
+    found = {key: line for key, line in _type_derivations().items()
+             if key not in DELIBERATE}
+    assert not found, (
+        "a type derived outside the checker; read it off the typed program "
+        "(`TypedProgram.semantic_type`) instead: "
+        + ", ".join(f"{f}:{line} {name}"
+                    for (f, name), line in sorted(found.items())))
+
+
+def test_each_deliberate_exception_still_derives_one() -> None:
+    stale = set(DELIBERATE) - set(_type_derivations())
+    assert not stale, f"exceptions for functions that derive no type: {stale}"
