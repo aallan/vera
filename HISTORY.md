@@ -1,6 +1,6 @@
 # History
 
-How the Vera compiler was built, from initial commit through the one resolver of Stage 25, across 163 active development days.
+How the Vera compiler was built, from initial commit through the one typed program of Stage 26, across 166 active development days.
 
 Vera was developed in an interleaved spiral — each phase added a complete compiler layer with tests, documentation, and working examples before moving to the next. The compiler was built by a single developer working with Claude Code, with CodeRabbit providing AI code review on pull requests from v0.0.80 onwards. The entire project — language design, specification, compiler, test suite, documentation, website — was built from scratch starting 22 February 2026.
 
@@ -33,6 +33,7 @@ Version rows follow one rule: one sentence, at most one issue link.  [CHANGELOG.
 | 23 | 13–15 Oct | `Nat` and the lowering boundary | v0.2.3 |
 | 24 | 15–16 Oct | Hosts and the fold | v0.2.4 |
 | 25 | 21–22 Oct | One resolver | v0.2.5 |
+| 26 | 22–28 Oct | One typed program | v0.2.6 |
 
 ---
 
@@ -526,6 +527,16 @@ v0.2.5 gave names one owner.  A binding pass, `vera/binding.py`, gives every dec
 |---------|------|-------------|
 | v0.2.5 | 22 Oct | **One resolver** — every name bound once to one declaration and read by the checker, the verifier and code generation, the prelude's names reserved, `vera verify` reconciled by default, `Map` and `Set` keyed per instantiation, contracts held to purity, a program generator with three nightly differentials, and the conformance corpus running what it names. |
 
+## Stage 26: One typed program (22–28 October)
+
+*Every type derived once.*
+
+v0.2.6 gave types one owner.  The checker records each generic call's type arguments, and `vera.typed` derives from those records the instances a program needs, links the program once and builds each clone once, every node with a type of its own; code generation and the verifier each read every type, instantiation and clone from that typed program, which `verify`, `compile` and `test` take as their one input, and derive none, so code generation's 23 `_infer_*` walkers, the two discoveries of a program's instances and the verifier's `_resolve_type` are gone.  A rule whose answer depends on a generic's instantiation is judged at check, at the call that chooses the type arguments, and a cycle of instances that grows without bound is refused there.  Thirty-one programs whose types code generation re-derived compile, load and run at the checker's types; a type variable inside a function-typed argument is fixed by the polarity of the position it holds, and a call argument's open variable takes one type; a construction is modelled at the sort of its checked type; and an `Exn` handler's value is the join of its body's and its clauses'.  Around the typed program: every diagnostic carries a registered code, the command line's refusals and the runtime trap included; a source that is not UTF-8 is refused at every reading; the collector no longer marks a block on the free list; a module declares only the `State` cells and `Exn` tags its code uses; the program generator's second version writes recursion, generics, imports, containers and handlers and adds a warm-session differential; a release starts when CI's run on the merge commit completes; the mutation lanes install the lock and name an engine failure; and the lock moves to z3-solver 5.3.2.0, ending the hold on 5.x.
+
+| Version | Date | What shipped |
+|---------|------|-------------|
+| v0.2.6 | 28 Oct | **One typed program** — every generic's instances derived once from the check and judged at the call that chooses them, code generation and the verifier each reading every type from the typed program and deriving none, a call argument's open type variable bound to one type and a function-typed argument's by the polarity of its position, every diagnostic with a registered code, every source decoded by one reader with a file that is not UTF-8 refused, a collector that never marks a free block, a module declaring only the cells and tags its code uses, the program generator's second version with a warm-session differential, the mutation lanes installing the lock with an engine-failure classifier and its class matrix, and the lock on z3-solver 5.3.2.0 with the hold on 5.x ended. |
+
 ---
 
 ## By the numbers
@@ -545,4 +556,4 @@ Ten releases, chosen for the capability each one unlocked rather than even spaci
 | Spec chapters | 7 | 10 | 12 | 13 | 13 | 13 | 13 | 14 | 14 | 14 |
 | Python coverage | — | — | 90% | 96% | 95% | 95% | 95% | 95% | 95% | 95% |
 
-Total: **3,200+ commits, 220 tagged releases, 163 active development days.**
+Total: **3,200+ commits, 218 tagged releases, 166 active development days.**

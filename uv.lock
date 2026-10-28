@@ -1638,7 +1638,7 @@ wheels = [
 
 [[package]]
 name = "veralang"
-version = "0.2.5"
+version = "0.2.6"
 source = { editable = "." }
 dependencies = [
     { name = "lark" },

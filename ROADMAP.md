@@ -14,7 +14,7 @@ Ordering derives from the design principles ([DESIGN.md](DESIGN.md)): verificati
 
 [TESTING.md](TESTING.md#overview) counts the tests, the conformance programs and the examples.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs, plus the *limitations* the stages below retire.
 
-v0.3.0 is the sound base (Stage 29), reached through v0.2.6 to v0.2.8 (Stages 26 to 28) after v0.2.5's resolver (Stage 25, in [HISTORY.md](HISTORY.md)).  The feature release follows it in Stage 30: the `Decision` effect ([#1467](https://github.com/aallan/vera/issues/1467)) and its blockers, [#351](https://github.com/aallan/vera/issues/351) and [#370](https://github.com/aallan/vera/issues/370).
+v0.3.0 is the sound base (Stage 29), reached through v0.2.7 and v0.2.8 (Stages 27 and 28) after v0.2.6's typed program (Stage 26, in [HISTORY.md](HISTORY.md)).  The feature release follows it in Stage 30: the `Decision` effect ([#1467](https://github.com/aallan/vera/issues/1467)) and its blockers, [#351](https://github.com/aallan/vera/issues/351) and [#370](https://github.com/aallan/vera/issues/370).
 
 ## The bug queue
 
@@ -55,25 +55,13 @@ Exit criterion: each listed drift class has a generator or a gate, and a release
 | [#1611](https://github.com/aallan/vera/issues/1611) | Five test cells that can pass without exercising what they assert — each shown by a mutation or a direct run. |
 | [#1612](https://github.com/aallan/vera/issues/1612) | Stale comments and docstrings in tests and two compiler helpers, a test cache that never hits, and a mis-positioned constructor call. |
 
-## Stage 26 — One typed program (v0.2.6)
-
-*Every type derived once.*
-
-Stages 26 and 27 finish the shared representation [#1525](https://github.com/aallan/vera/issues/1525) asks for, after v0.2.5's names: types, then obligations, each derived once and read by every later phase.
-
-Monomorphisation runs once, before verify and compile, and every node of every clone carries its type in a table keyed by node identity; literal typing is sound for the value and carries its sign.  The backend's own inference (the `_infer_*` functions), both clone namers, code generation's AST fallbacks for `Nat` and the verifier's `_resolve_type` go, and so does the roster of readers allowed into the checker's tables.  Code generation's seventeen remaining readers of a written type, `_type_expr_to_wasm_type` among them, are lines of [#1525](https://github.com/aallan/vera/issues/1525) that close in v0.2.7, with Stage 27's table.  Clone names change, so WAT moves across the corpus.  The stage closes the re-derived-type cluster ([milestone v0.2.6](https://github.com/aallan/vera/milestone/6)).
-
-Exit criterion: the corpus differential names every mover, the existing matrices and the generator's differentials are green, and the typed program is a required input of `verify` and `compile`: no table parameter is optional and no fallback branch remains.
-
-| Change | What |
-|---|---|
-| The program generator, version two | Recursion with `decreases`, generics, aliases, imports, nested containers, `State` and `Exn` handlers, and the non-commutative operator forms; a fourth differential runs a generated edit sequence through a warm `VerificationSession` against a fresh session. |
-
 ## Stage 27 — One obligation table (v0.2.7)
 
 *Every obligation listed once.*
 
-One pass lists every obligation site; the verifier discharges what it can and code generation guards the rest, so whether an obligation is `tier3` or `tier3_unguarded` is read from its record rather than predicted.  `_walk_for_nat_binding_obligations`, code generation's hand-down, the verifier's `guarded=` claims and the mirror predicates go.  Once coverage is complete, `tier3_unguarded` becomes an error, §6.4.2's taint rules go, and `test_nested_container_guards` moves wholly to the nightly lane.  The table wants node types, so this stage may ship inside Stage 26's release.  It closes the guard-agreement cluster ([milestone v0.2.7](https://github.com/aallan/vera/milestone/7)).
+Stage 27 finishes the shared representation [#1525](https://github.com/aallan/vera/issues/1525) asks for, after v0.2.5's names and v0.2.6's types: obligations, derived once and read by every later phase.
+
+One pass lists every obligation site; the verifier discharges what it can and code generation guards the rest, so whether an obligation is `tier3` or `tier3_unguarded` is read from its record rather than predicted.  `_walk_for_nat_binding_obligations`, code generation's hand-down, the verifier's `guarded=` claims and the mirror predicates go.  Once coverage is complete, `tier3_unguarded` becomes an error, §6.4.2's taint rules go, and `test_nested_container_guards` moves wholly to the nightly lane.  The table reads the node types v0.2.6's typed program carries.  It closes the guard-agreement cluster ([milestone v0.2.7](https://github.com/aallan/vera/milestone/7)).  Code generation's seventeen remaining readers of a written type, `_type_expr_to_wasm_type` among them, are lines of [#1525](https://github.com/aallan/vera/issues/1525) that close in v0.2.7, with Stage 27's table.
 
 Exit criterion: every obligation record and every emitted guard come from one table entry, by construction.
 
