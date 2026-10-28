@@ -1372,21 +1372,21 @@ and its instrument holds the tree to that rather than any one program: it
 reads the source for the mechanism.  The class cell of
 `tests/test_typed_program_1525.py` reads every function in `vera/` outside
 `vera/checker/` and `vera/typed.py`, and fails on one that dispatches on an
-expression's or a type expression's class (an `isinstance` or a `match` class
-pattern, however its file imports `vera.ast`) and returns a type (a
-`vera.types` type or a type expression by its annotation, or a string naming
-one: a primitive's or a WASM value's name, a type expression's `.name`, a
-slot's `.type_name`), which is a second derivation of a type the typed
-program holds (#1525).  Its exceptions are two lists, each entry a function
-with its reason: `DELIBERATE`, the derivations that stay (naming's slot
-names, which the check binds before any table exists, the clone
-substitution, which writes the type expressions the typed program then
-types, and `vera fmt`'s rendering of a type expression as its source text),
-and `KNOWN`, code generation's seventeen readers of a written type that
-#1525 still lists.  An
-entry whose function no longer derives a type fails too, so the lists only
-shrink.  It replaced `tests/test_one_classifier_1503.py`'s roster of the
-readers allowed into the checker's tables, which named them one by one.
+expression's or a type expression's class (an `isinstance`, a `match` class
+pattern or a table keyed by `type(...)`, however its file imports `vera.ast`)
+and returns a type (a `vera.types` type or a type expression by its
+annotation, or a string naming one: a primitive's or a WASM value's name, a
+type expression's `.name`, a slot's `.type_name`), which is a second
+derivation of a type the typed program holds (#1525).  Its exceptions are two
+lists, each entry a function with its reason: `DELIBERATE`, the derivations
+that stay (naming's slot names, which the check binds before any table
+exists, the clone substitution, which writes the type expressions the typed
+program then types, and `vera fmt`'s rendering of a type expression as its
+source text), and `KNOWN`, code generation's seventeen readers of a written
+type that #1525 still lists.  An entry whose function no longer derives a
+type fails too, so the lists only shrink.  It replaced
+`tests/test_one_classifier_1503.py`'s roster of the readers allowed into the
+checker's tables, which named them one by one.
 
 ### Where an instrument runs
 

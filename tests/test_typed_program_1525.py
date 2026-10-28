@@ -797,7 +797,8 @@ def _type_derivations(root: Path = _ROOT) -> dict[tuple[str, str], int]:
         """Whether *fn* tests a value against an expression class and a
         type-expression class: an `isinstance` whose classes, or a `match`
         whose class patterns, name one through the file's bindings of
-        `vera.ast` or by the class's own name."""
+        `vera.ast` or by the class's own name; a table looked up by a
+        value's `type(...)` counts as a test of an expression's class."""
         def named(part: pyast.AST) -> str | None:
             if isinstance(part, pyast.Attribute) and (
                     isinstance(part.value, pyast.Name)
@@ -808,7 +809,13 @@ def _type_derivations(root: Path = _ROOT) -> dict[tuple[str, str], int]:
                 return names.get(part.id, part.id)
             return None
 
+        def type_of_value(part: pyast.AST) -> bool:
+            return (isinstance(part, pyast.Call)
+                    and isinstance(part.func, pyast.Name)
+                    and part.func.id == "type")
+
         tested: list[str | None] = []
+        keyed = False
         for node in pyast.walk(fn):
             if (isinstance(node, pyast.Call)
                     and isinstance(node.func, pyast.Name)
@@ -816,7 +823,14 @@ def _type_derivations(root: Path = _ROOT) -> dict[tuple[str, str], int]:
                 tested.extend(named(part) for part in pyast.walk(node.args[1]))
             elif isinstance(node, pyast.MatchClass):
                 tested.append(named(node.cls))
-        return (any(cls in expressions for cls in tested),
+            elif isinstance(node, pyast.Subscript) and type_of_value(node.slice):
+                keyed = True
+            elif (isinstance(node, pyast.Call)
+                    and isinstance(node.func, pyast.Attribute)
+                    and node.func.attr == "get" and node.args
+                    and type_of_value(node.args[0])):
+                keyed = True
+        return (keyed or any(cls in expressions for cls in tested),
                 any(cls in type_expressions for cls in tested))
 
     def returns_a_type(fn: pyast.FunctionDef | pyast.AsyncFunctionDef,
@@ -945,9 +959,9 @@ def test_no_function_outside_the_checker_derives_a_type() -> None:
 
 #: Every spelling of a dispatch on an AST class the scan must read: the
 #: `ast.<Class>` test, a class imported by name, a `match` class pattern,
-#: a module alias, a renamed import, a dotted `vera.ast` and a relative
-#: import, each in a function that returns a type or a type's name, beside
-#: one that returns none.
+#: a module alias, a renamed import, a dotted `vera.ast`, a relative import
+#: and a table keyed by the value's class, each in a function that returns
+#: a type or a type's name, beside one that returns none.
 _SPELLINGS = """\
 import vera.ast
 from vera import ast
@@ -1001,6 +1015,14 @@ def by_relative(e: object) -> str:
     return "Int"
 
 
+def by_keyed(e: object) -> Type:
+    return {ast.IntLit: INT}[type(e)]
+
+
+def by_keyed_get(e: object) -> Type | None:
+    return {ast.IntLit: INT}.get(type(e))
+
+
 def not_one(e: object) -> str:
     if isinstance(e, Named):
         return "a name"
@@ -1024,17 +1046,18 @@ def by_star(e: object) -> Type:
 
 def test_the_class_cell_reads_every_spelling_of_a_dispatch(
         tmp_path: Path) -> None:
-    """The scan reads each file's own imports of `vera.ast` and both forms
+    """The scan reads each file's own imports of `vera.ast` and every form
     of a class test, so a type derived through a module alias, a class
-    imported by name, a dotted `vera.ast`, a relative import or a `match`
-    class pattern is found as `isinstance(x, ast.<Class>)` is, and a
-    function that returns no type's name is not."""
+    imported by name, a dotted `vera.ast`, a relative import, a `match`
+    class pattern or a table keyed by `type(...)` is found as
+    `isinstance(x, ast.<Class>)` is, and a function that returns no type's
+    name is not."""
     (tmp_path / "vera").mkdir()
     (tmp_path / "vera" / "fake.py").write_text(_SPELLINGS, encoding="utf-8")
     (tmp_path / "vera" / "fake_star.py").write_text(_STAR, encoding="utf-8")
     assert sorted(name for _, name in _type_derivations(tmp_path)) == [
-        "by_alias", "by_dotted", "by_imported", "by_match", "by_plain",
-        "by_relative", "by_renamed", "by_star"]
+        "by_alias", "by_dotted", "by_imported", "by_keyed", "by_keyed_get",
+        "by_match", "by_plain", "by_relative", "by_renamed", "by_star"]
 
 
 def test_each_deliberate_exception_still_derives_one() -> None:

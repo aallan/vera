@@ -600,3 +600,99 @@ def test_a_clones_composite_result_is_named_by_its_template() -> None:
     as the template writes it, beside its parameter `@T.0`."""
     assert sorted(_counterexample_names(_WRAP_BAD, "wrap_bad")) == [
         "@Option<T>.result", "@T.0"]
+
+
+# =====================================================================
+# An imported type's refinement calls its own module's function
+# =====================================================================
+#
+# The module's declarations are registered by a second verifier, which
+# reads each declared type off the typed program; a refinement's predicate
+# there is the checker's node as the module writes it, and only the linked
+# twin names the module's own `small` rather than the importer's.
+
+_SMALL_LIB = """\
+module gen_lib;
+
+public fn small(@Int -> @Bool)
+  requires(true)
+  ensures(@Bool.result == (@Int.0 < 10))
+  effects(pure)
+{
+  @Int.0 < 10
+}
+
+type Small = { @Int | small(@Int.0) };
+
+public fn take(@Small -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Small.0
+}
+
+public fn mk(@Int -> @Small)
+  requires(@Int.0 < 10)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+"""
+
+#: The importer's own `small`, true of every value: read in place of
+#: `gen_lib.small`, it proves any narrowing into `Small`.
+_IMPORTER_SMALL_TRUE = """\
+private fn small(@Int -> @Bool)
+  requires(true)
+  ensures(@Bool.result)
+  effects(pure)
+{
+  true
+}
+"""
+
+#: The importer's own `small`, true of the negative values: assumed in
+#: place of `gen_lib.small`, it makes a `Small` negative.
+_IMPORTER_SMALL_NEGATIVE = """\
+private fn small(@Int -> @Bool)
+  requires(true)
+  ensures(@Bool.result == (@Int.0 < 0))
+  effects(pure)
+{
+  @Int.0 < 0
+}
+"""
+
+
+def _imported_refinement(entry: str, tmp_path: Path) -> list[tuple[str, str]]:
+    path = pipeline.write_tree(tmp_path, {
+        "main.vera": entry, "gen_lib.vera": _SMALL_LIB})
+    verified = pipeline.verify(path)
+    return sorted((o.kind, o.status) for o in verified.obligations
+                  if o.fn_name == "main"
+                  and o.kind in ("refine_bind", "ensures"))
+
+
+def test_repro_an_imported_parameters_refinement_calls_its_modules_function(
+        tmp_path: Path) -> None:
+    """`take(50)` narrows 50 into `gen_lib`'s `Small`, whose predicate is
+    `gen_lib.small`, false at 50: the narrowing is refuted, where the
+    importer's own `small`, true of every value, was read in its place and
+    the call proved, to trap at run time."""
+    entry = ("import gen_lib(take);\n\n" + _IMPORTER_SMALL_TRUE
+             + "\npublic fn main(@Unit -> @Int)\n" + _C + "{\n  take(50)\n}\n")
+    assert _imported_refinement(entry, tmp_path) == [
+        ("ensures", "verified"), ("refine_bind", "violated")]
+
+
+def test_repro_an_imported_results_refinement_calls_its_modules_function(
+        tmp_path: Path) -> None:
+    """`mk(5)` returns a `Small`, which assumes `gen_lib.small` of the
+    result, so `main`'s `ensures(@Int.result < 0)` is refuted, where the
+    importer's own `small` was assumed in its place and proved it."""
+    entry = ("import gen_lib(mk);\n\n" + _IMPORTER_SMALL_NEGATIVE
+             + "\npublic fn main(@Unit -> @Int)\n  requires(true)\n"
+             + "  ensures(@Int.result < 0)\n  effects(pure)\n{\n  mk(5)\n}\n")
+    assert _imported_refinement(entry, tmp_path) == [("ensures", "violated")]

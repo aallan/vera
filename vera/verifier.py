@@ -2026,6 +2026,11 @@ class ContractVerifier:
         builtin_fn_names = set(TypeEnv().functions)
         for mod in self._resolved_modules:
             temp = ContractVerifier(self._typed, source=mod.source)
+            # #1694: a type the module declares reads its refinement
+            # predicates as the linked program's nodes, as this verifier's
+            # do, so a call in one names the declaration its module binds
+            # it to, not a same-named function of the importer.
+            temp._linked_twins = self._linked_twins
             temp._register_all(mod.program)
             # #1208: this module's naming environment, from the same
             # registration its contracts are harvested from: the env every
