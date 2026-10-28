@@ -51,7 +51,10 @@ mutmut over the lines of those functions near the diff:
    reads a file the copy lacks, or ``vera/``'s source text, which in the copy
    is mutmut's generated file, does) stops that pass; it is no oracle there,
    so the lane drops it, runs again, and names it in the summary and the
-   record.
+   record.  An exception the engine's own code raises stops the pass the
+   same way, and no test is at fault: the run stops there, drops nothing,
+   and the summary and the record name the exception and the engine's frame
+   (:func:`engine_failure`).
 5. The run has a wall-clock budget.  When it runs out, mutmut is
    interrupted, then its process group terminated, then killed, and what it
    decided so far is reported.
@@ -202,6 +205,26 @@ MAX_COPY_DROPS = 5
 #: What mutmut prints when its stats pass or its clean run of the covering
 #: tests stops on a failing test (both run with ``-x``).
 _COPY_STOPS = ("failed to collect stats", "Failed to run clean test")
+
+#: The longest ``engine_error`` the lane records (:func:`engine_failure`).
+ENGINE_ERROR_CHARS = 500
+
+#: A traceback's frame, as Python prints it: mutmut runs pytest with
+#: ``--tb=native``.
+_FRAME = re.compile(r'^  File "(?P<file>.+)", line (?P<line>\d+), in (?P<func>.+)$')
+
+#: A file of the installed engine: the ``mutmut`` package.
+_ENGINE_FILE = re.compile(r"[\\/](?:site|dist)-packages[\\/](?P<path>mutmut[\\/].+)$")
+
+#: A frame no party's code is in: the standard library (a frozen module, a
+#: file under ``lib/pythonX.Y/`` outside the installed packages) or code
+#: compiled from a string.
+_NEUTRAL_FILE = re.compile(r"^<[^>]*>$|[\\/]lib[\\/]python\d+\.\d+[\\/](?!(?:site|dist)-packages[\\/])")
+
+#: Exceptions raised wherever the process ran out, not where a fault lies: a
+#: recursion runs out of stack in whatever frame it reached, and inside
+#: mutmut's copy every call through the trampoline adds the engine's frames.
+_RAISED_ANYWHERE = frozenset({"RecursionError"})
 
 #: Survivors whose ``mutmut show`` diff the summary carries: a step summary
 #: over 1 MiB is dropped whole, and the record lists every survivor.
@@ -853,6 +876,9 @@ class EngineRun:
     returncode: int | None
     stopped: str | None
     elapsed_s: float
+    #: The exception the engine's own code raised that stopped its stats pass
+    #: or its clean run (:func:`engine_failure`), or None.
+    error: str | None = None
 
 
 def run_engine(cmd: Sequence[str], *, cwd: Path, budget_s: float, log_path: Path,
@@ -905,8 +931,11 @@ def run_dropping(cmd: Sequence[str], *, tree: Path, pyproject: Path,
     """Run the engine in ``tree`` within ``budget_s``; when a test stops its
     stats pass or its clean run (it fails inside mutmut's copy with no mutant
     active, so it is no oracle there), drop it and run again in what is left
-    of the budget, up to ``MAX_COPY_DROPS`` tests.  ``config_for(dropped)`` is
-    the ``pyproject.toml`` text for a run without the tests dropped so far.
+    of the budget, up to ``MAX_COPY_DROPS`` tests.  When the engine's own code
+    raised instead (:func:`engine_failure`), no test is at fault: the run
+    stops there, drops nothing, and the returned run's ``error`` names the
+    exception and the engine's frame.  ``config_for(dropped)`` is the
+    ``pyproject.toml`` text for a run without the tests dropped so far.
     Returns the last run, its log and the tests dropped."""
     dropped: list[str] = []
     remaining = budget_s
@@ -917,8 +946,11 @@ def run_dropping(cmd: Sequence[str], *, tree: Path, pyproject: Path,
         log = workdir / f"mutmut-run-{attempt}.log"
         run = run_engine(cmd, cwd=tree, budget_s=remaining, log_path=log, env=env)
         remaining -= run.elapsed_s
-        failing = (copy_failure(log.read_text(encoding="utf-8", errors="replace"))
-                   if run.stopped is None and run.returncode == 1 else None)
+        if run.stopped is not None or run.returncode != 1:
+            return run, log, dropped
+        text = log.read_text(encoding="utf-8", errors="replace")
+        run.error = engine_failure(text)
+        failing = None if run.error is not None else copy_failure(text)
         if (failing is None or failing in dropped or len(dropped) >= MAX_COPY_DROPS
                 or remaining <= 0):
             return run, log, dropped
@@ -932,6 +964,48 @@ def copy_failure(log: str) -> str | None:
         return None
     match = re.search(r"^(?:FAILED|ERROR) (.+?)(?: - .*)?$", log, re.M)
     return match.group(1).strip() if match else None
+
+
+def engine_failure(log: str) -> str | None:
+    """The exception the engine's own code raised that stopped its stats pass
+    or its clean run, read off its log: the exception's first line and the
+    engine's frame, ``AttributeError: … (mutmut/runners/harness.py:157)``;
+    None when the log names no such stop, or a test's code raised.
+
+    The lane reads the tracebacks of the pass that stopped, which mutmut
+    prints in Python's own form.  Going outward from a traceback's innermost
+    frame, past the frames no party's code is in (:data:`_NEUTRAL_FILE`), the
+    first frame decides: a file of the installed ``mutmut`` package is the
+    engine's code (a hook of its stats pass, its trampoline), and any other
+    (the test, the code under test, a library either calls, pytest) is the
+    test's.  An exception of :data:`_RAISED_ANYWHERE` is never the engine's."""
+    stops = [i for i in (log.find(stop) for stop in _COPY_STOPS) if i >= 0]
+    if not stops:
+        return None
+    lines = log[:min(stops)].splitlines()
+    for start, line in enumerate(lines):
+        if line.rstrip() != "Traceback (most recent call last):":
+            continue
+        frames: list[re.Match[str]] = []
+        raised: str | None = None
+        for row in lines[start + 1:]:
+            frame = _FRAME.match(row.rstrip())
+            if frame is not None:
+                frames.append(frame)
+            elif row.strip() and not row[0].isspace():
+                raised = row.strip()
+                break
+        if raised is None or raised.split(":", 1)[0].rsplit(".", 1)[-1] in _RAISED_ANYWHERE:
+            continue
+        deciding = next((f for f in reversed(frames) if not _NEUTRAL_FILE.search(f["file"])), None)
+        engine = _ENGINE_FILE.search(deciding["file"]) if deciding is not None else None
+        if deciding is None or engine is None:
+            continue
+        where = f" ({engine['path'].replace(chr(92), '/')}:{deciding['line']})"
+        if len(raised) + len(where) > ENGINE_ERROR_CHARS:
+            raised = raised[:ENGINE_ERROR_CHARS - len(where) - 1] + "…"
+        return raised + where
+    return None
 
 
 def parse_results(text: str) -> dict[str, str]:
@@ -1108,6 +1182,10 @@ def render(record: Mapping[str, Any]) -> str:
     out.append("")
     out.append(f"**{record['outcome']}**")
     out.append("")
+    if record.get("engine_error"):
+        out.append(f"Stopped by the engine: `{record['engine_error']}`.  The exception was raised in "
+                   "mutmut's own code, so no test was dropped.")
+        out.append("")
     if record.get("window"):
         out.append(selection_line(record["window"]))
         out.append("")
@@ -1408,8 +1486,9 @@ def _lane(args: argparse.Namespace, repo: Path, workdir: Path, engine: list[str]
                    "deleted": v.deleted, "outside": v.outside,
                    "outside_removed": v.outside_removed,
                    "unchanged_code": v.unchanged_code} for v in verdicts],
-        "stopped": None, "engine_exit": None, "outside_diff": [], "outside_window": [],
-        "engine_tail": [], "dropped_tests": [], "subprocess_tests": [], "window": None,
+        "stopped": None, "engine_exit": None, "engine_error": None, "outside_diff": [],
+        "outside_window": [], "engine_tail": [], "dropped_tests": [], "subprocess_tests": [],
+        "window": None,
     }
     rows: list[UnitResult] = []
     stopped: str | None = None
@@ -1446,6 +1525,7 @@ def _lane(args: argparse.Namespace, repo: Path, workdir: Path, engine: list[str]
                 config, only_mutate=files, extra_tests=extra_tests,
                 extra_args=[f"--deselect={test}" for test in dropped]))
         record["dropped_tests"] = dropped
+        record["engine_error"] = run.error
         if skips.exists():
             # One node id a line: a parametrised id can hold a space.
             record["subprocess_tests"] = sorted(

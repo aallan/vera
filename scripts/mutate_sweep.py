@@ -29,7 +29,9 @@ in ``JOBS`` parallel jobs and carries what each decided:
    subprocess, Node and tooling families), the copy holding the whole tree.  A
    test that starts a Python or ``vera`` process is no oracle in the copy
    (``tests/mutation_oracle.py``), and one that fails there with no mutant
-   active is dropped from the run and reported.
+   active is dropped from the run and reported.  An exception the engine's
+   own code raises stops the slice instead, dropping nothing, and its record
+   and the night's report name the exception and the engine's frame.
 5. The stitch merges the night's slice records into the state.  When every
    unit's every mutant is decided the cycle closes: its per-module totals are
    kept in the state and written as ``mutation-summary.csv`` and the README
@@ -398,6 +400,10 @@ def check_record(record: Any) -> None:
     if record.get("engine") is not None:
         _text(record["engine"], _VERSION, "its engine version")
     _check(record.get("stopped") in (None, "budget", "engine", "unmapped", "lane"), "its stop is unknown")
+    error = record.get("engine_error")
+    _check(error is None or (isinstance(error, str) and 0 < len(error) <= md.ENGINE_ERROR_CHARS
+                             and "\n" not in error and "\r" not in error),
+           f"its engine error is not one line of at most {md.ENGINE_ERROR_CHARS} characters")
     engine_s = record.get("engine_s", 0.0)
     _check(type(engine_s) in (int, float) and 0 <= engine_s < 1e6, "its engine time is out of range")
     _check(isinstance(record.get("planned"), list) and all(isinstance(p, dict) for p in record["planned"]),
@@ -716,7 +722,7 @@ def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: li
         "date": today, "planned": [{"unit": p.unit.ident, "hash": p.unit.hash,
                                     "numbers": None if p.numbers is None else list(p.numbers)}
                                    for p in picks],
-        "results": {}, "stopped": None, "engine_exit": None, "engine_s": 0.0,
+        "results": {}, "stopped": None, "engine_exit": None, "engine_error": None, "engine_s": 0.0,
         "dropped_tests": [], "subprocess_tests": [], "selection": 0, "engine_tail": [],
     }
     if not picks:
@@ -752,6 +758,7 @@ def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: li
             beat.stop()
     record["engine_s"] = round(time.monotonic() - started, 1)
     record["dropped_tests"] = dropped
+    record["engine_error"] = run.error
     if skips.exists():
         record["subprocess_tests"] = sorted(
             {line for line in skips.read_text(encoding="utf-8").splitlines() if line.strip()})
@@ -979,9 +986,12 @@ def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[s
     for record in valid:
         added += merge(state, record, problems, notes)
         if record.get("stopped") not in (None, "budget"):
-            why = record.get("engine_tail") or []
+            # What stopped it: a lane's reason, or the exception the engine's
+            # own code raised, when it raised one.
+            why = ((record.get("engine_tail") or [None])[0] if record["stopped"] == "lane"
+                   else record.get("engine_error") if record["stopped"] == "engine" else None)
             problems.append(f"slice {record['slice']}: stopped by the {record['stopped']}"
-                            + (f": {why[0]}" if record["stopped"] == "lane" and why else ""))
+                            + (f": {why}" if why else ""))
     if not problems and added == 0 and any(r.get("planned") for r in valid):
         problems.append("the night decided no mutant and counted no function")
     # A lost slice may have held the night's whole plan, so this is read only
@@ -1070,7 +1080,8 @@ def render_slice(record: Mapping[str, Any]) -> str:
         out.append(", ".join(f"{status}: {n}" for status, n in sorted(counts.items())))
         out.append("")
     if record.get("stopped"):
-        out.append(f"Stopped by the {record['stopped']}.")
+        error = record.get("engine_error") if record["stopped"] == "engine" else None
+        out.append(f"Stopped by the {record['stopped']}" + (f": `{error}`." if error else "."))
         out.append("")
     if record.get("dropped_tests"):
         out.append("Dropped from the oracle (each failed inside mutmut's copy with no mutant "

@@ -33,9 +33,37 @@ import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW = ROOT / ".github" / "workflows" / "mutation-nightly.yml"
+DIFF_WORKFLOW = ROOT / ".github" / "workflows" / "mutation-diff.yml"
+#: Both mutation lanes' install step: uv, as ci.yml's lock check installs
+#: it, then uv.lock's environment, whose ``bin`` every later step runs from.
+LOCKED_INSTALL = ['pip install "uv>=0.5,<2"', "uv sync --locked --extra mutation --python 3.12",
+                  'echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"']
 SEP = "ǁ"
 H = "0" * 16  # a code hash
 HEAD = "a" * 40
+
+#: The night of 28 October 2026's engine log (``test_mutate_diff.py``'s
+#: ``NIGHT_LOG``, pytest's and pluggy's frames left out): mutmut 3.8.0's stats
+#: collector reads ``item._nodeid``, which pytest 9.2.0 dropped, at every
+#: test's teardown.
+ENGINE_FAILURE_LOG = """\
+.E
+==================================== ERRORS ====================================
+_________________________ ERROR at teardown of test_f __________________________
+Traceback (most recent call last):
+  File "/venv/lib/python3.12/site-packages/_pytest/runner.py", line 361, in from_call
+    result: TResult | None = func()
+  File "/venv/lib/python3.12/site-packages/mutmut/runners/harness.py", line 157, in pytest_runtest_teardown
+    state().tests_by_mangled_function_name[function].add(strip_prefix(item._nodeid, prefix="mutants/"))
+AttributeError: 'Function' object has no attribute '_nodeid'. Did you mean: 'nodeid'?
+=========================== short test summary info ============================
+ERROR tests/test_m.py::test_f - AttributeError: 'Function' object has no attr...
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+1 passed, 1 error in 0.01s
+failed to collect stats. runner returned 1
+"""
+ENGINE_ERROR = ("AttributeError: 'Function' object has no attribute '_nodeid'. Did you mean: 'nodeid'? "
+                "(mutmut/runners/harness.py:157)")
 
 
 def _load() -> Any:
@@ -313,6 +341,8 @@ class TestStateChecks:
         ("results", {A.ident: {"hash": "zz", "mutants": 1, "statuses": {}}}),
         ("results", {A.ident: {"hash": H, "mutants": None, "statuses": {}}}),
         ("dropped_tests", ["a\nb"]),
+        ("engine_error", ["AttributeError: x"]), ("engine_error", "AttributeError: x\n(mutmut/x.py:1)"),
+        ("engine_error", "x" * 501),
     ])
     def test_a_malformed_slice_record_stops_the_night_short(self, field: str, value: Any) -> None:
         record = _record(0, 1, {A.ident: {"hash": H, "mutants": 4, "statuses": {"1": "killed"}}})
@@ -608,6 +638,19 @@ class TestStitch:
         assert night["problems"] == ["slice 1: stopped by the engine"]
         assert state["units"][A.ident]["statuses"] == {"1": "killed"}
 
+    def test_the_engines_own_exception_is_named_in_the_nights_problems_and_reports(self) -> None:
+        """A slice whose engine raised in its own code names the exception
+        and the engine's frame, and the night's line and report carry it
+        (the tracking issue links the stitch's report)."""
+        failed = _record(1, 2, {}, stopped="engine")
+        failed["engine_error"] = ENGINE_ERROR
+        state, night = _stitch([
+            _record(0, 2, {A.ident: {"hash": H, "mutants": 4, "statuses": {"1": "killed"}}}), failed])
+        assert night["problems"] == [f"slice 1: stopped by the engine: {ENGINE_ERROR}"]
+        assert f"- slice 1: stopped by the engine: {ENGINE_ERROR}" in sw.render_night(state, night, UNITS)
+        assert f"Stopped by the engine: `{ENGINE_ERROR}`." in sw.render_slice(failed)
+        assert "Stopped by the engine.\n" in sw.render_slice(_record(1, 2, {}, stopped="engine"))
+
     def test_a_night_that_decides_nothing_stops_short_and_survivors_never_do(self) -> None:
         state = _state(f=4)
         _, night = _stitch([_record(0, 1, {A.ident: {"hash": H, "mutants": 4, "statuses": {}}})],
@@ -853,13 +896,27 @@ class TestWorkflow:
                 assert first.split("=", 1)[1].startswith("$(python3 scripts/mutate_sweep.py "), first
 
     def test_the_engine_installed_is_uv_locks(self) -> None:
+        """Both mutation lanes install uv.lock and nothing else, so a release
+        of the engine or of anything it runs with reaches a lane only through
+        a lock bump: a reviewed pull request, which the diff lane's self-tests
+        run on.  ``--locked`` refuses a lock that ``pyproject.toml`` has moved
+        past rather than resolving afresh.  No workflow names a mutmut
+        version of its own: the engine is the lock's, and the version it
+        reports is the one the sweep's state compares."""
         import re
-        import tomllib
 
-        lock = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))
-        (locked,) = [p["version"] for p in lock["package"] if p["name"] == "mutmut"]
-        (install,) = [s for s in self._steps("sweep") if s.get("name") == "Install dependencies"]
-        assert re.findall(r'"mutmut==([^"]+)"', install["run"]) == [locked]
+        ci = yaml.safe_load((ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"))
+        (lock_check,) = [s for j in ci["jobs"].values() for s in j["steps"]
+                         if s.get("name") == "Verify uv.lock is up to date"]
+        assert lock_check["run"].splitlines()[0] == LOCKED_INSTALL[0]  # uv, as the lock check installs it
+        for path, job in ((WORKFLOW, "sweep"), (DIFF_WORKFLOW, "mutate")):
+            steps = yaml.safe_load(path.read_text(encoding="utf-8"))["jobs"][job]["steps"]
+            (install,) = [s for s in steps if s.get("name") == "Install dependencies"]
+            assert install["run"].splitlines() == LOCKED_INSTALL, path.name
+            assert not [s for s in steps if s is not install
+                        and re.search(r"\b(?:pip|uv)\b", s.get("run", ""))], path.name
+        for path in sorted((ROOT / ".github" / "workflows").glob("*.yml")):
+            assert "mutmut==" not in path.read_text(encoding="utf-8"), path.name
 
     def test_the_jobs_are_the_setups_matrix_and_one_failing_slice_stops_no_other(self) -> None:
         sweep = self._wf()["jobs"]["sweep"]
@@ -953,6 +1010,10 @@ with (state / "calls.jsonl").open("a", encoding="utf-8") as fh:
 if args[0] == "--version":
     print("mutmut, version 3.8.0")
     sys.exit(0)
+if args[0] == "run" and os.environ.get("FAKE_RUN_LOG"):
+    # A log the engine printed, as it printed it (its stats pass stopping).
+    print(Path(os.environ["FAKE_RUN_LOG"]).read_text(encoding="utf-8"), end="")
+    sys.exit(1)
 if args[0] == "run":
     import time
     time.sleep(float(os.environ.get("FAKE_RUN_SLEEP", "0")))
@@ -1093,6 +1154,24 @@ class TestEndToEnd:
             "    vera.m.x_f__mutmut_1: killed\n    vera.m.x_g__mutmut_1: killed\n"))
         assert code == 0 and record["dropped_tests"] == ["tests/test_m.py::test_f"]
         assert len([c for c in calls if c["args"][0] == "run"]) == 2
+
+    def test_the_engines_own_failure_stops_the_slice_names_it_and_drops_no_test(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The night of 28 October 2026: every test of the stats pass errored
+        at teardown in mutmut's own hook, and the slice dropped each one as a
+        test failing in the copy until none was left.  The slice stops at its
+        first attempt, and its record and the night's problems name the
+        exception and the engine's frame."""
+        log = tmp_path / "night.log"
+        log.write_text(ENGINE_FAILURE_LOG, encoding="utf-8")
+        monkeypatch.setenv("FAKE_RUN_LOG", str(log))
+        code, record, calls = _night(repo, tmp_path, 1, "    vera.m.x_f__mutmut_1: not checked\n")
+        assert (record["dropped_tests"], len([c for c in calls if c["args"][0] == "run"])) == ([], 1)
+        assert code == 2 and record["stopped"] == "engine" and record["engine_error"] == ENGINE_ERROR
+        sw.check_record(record)
+        code, state = _stitch_cli(repo, tmp_path, 1, None)
+        assert code == 2 and state["nights"][-1]["problems"] == [f"slice 0: stopped by the engine: {ENGINE_ERROR}"]
 
     def test_a_failed_listing_counts_no_function(
         self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
