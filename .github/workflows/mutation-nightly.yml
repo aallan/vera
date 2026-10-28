@@ -94,7 +94,7 @@ jobs:
       matrix:
         slice: ${{ fromJSON(needs.setup.outputs.slices) }}
     runs-on: ubuntu-latest
-    # The script's budget (--budget, 4.5 h) plus installing the extra, the
+    # The script's budget (--budget, 4.5 h) plus installing the lock, the
     # sweep's own tests, the scratch tree and the engine's grace on a stop,
     # inside a hosted job's 6 h.
     timeout-minutes: 330
@@ -113,12 +113,20 @@ jobs:
         with:
           python-version: "3.12"
 
-      # The engine is pinned: the state compares its version exactly, and a
-      # new version starts every function afresh, so a version change is a
-      # reviewed pull request that restarts the cycle (uv.lock's version; a
-      # test holds the two equal).
+      # The engine is uv.lock's, as is everything it runs with: `--locked`
+      # refuses a lock that pyproject.toml has moved past rather than
+      # resolving afresh, so a release reaches a night only through a lock
+      # bump, a reviewed pull request that mutation-diff.yml's self-tests
+      # run on.  The state compares the engine's version exactly, and a new
+      # version starts every function afresh, so a bump that moves mutmut
+      # restarts the cycle (MUTATION.md § The engine and a refused state).
+      # Every later step runs the synced environment's python, pytest and
+      # mutmut.
       - name: Install dependencies
-        run: pip install -e ".[mutation]" "mutmut==3.8.0"
+        run: |
+          pip install "uv>=0.5,<2"
+          uv sync --locked --extra mutation --python 3.12
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
 
       - name: Test the sweep against the engine it installs
         run: pytest tests/test_mutate_sweep.py tests/test_mutate_diff.py -q

@@ -72,10 +72,11 @@ jobs:
 
       # The pull request's own changes, from its merge base (three dots),
       # not what main has gained since it branched.  Only the paths a matrix
-      # can be decided by, the compiler and the test files, which keeps the
-      # list far below the 32,767 characters an environment variable can
-      # hold on Windows.  The delimiter is random, so no file name can end
-      # the value early.
+      # can be decided by, the compiler, the test files and
+      # scripts/mutate_diff.py, the one script a matrix decides on, which
+      # keeps the list far below the 32,767 characters an environment
+      # variable can hold on Windows.  The delimiter is random, so no file
+      # name can end the value early.
       - name: Which files does this pull request change?
         id: changed
         if: github.event_name == 'pull_request'
@@ -85,7 +86,7 @@ jobs:
         run: |
           delimiter="changed_$(openssl rand -hex 16)"
           echo "changed<<$delimiter" >> "$GITHUB_OUTPUT"
-          git diff --name-only "$BASE_SHA...$HEAD_SHA" -- vera/ 'tests/test_*.py' >> "$GITHUB_OUTPUT"
+          git diff --name-only "$BASE_SHA...$HEAD_SHA" -- vera/ 'tests/test_*.py' scripts/mutate_diff.py >> "$GITHUB_OUTPUT"
           echo "$delimiter" >> "$GITHUB_OUTPUT"
 
       # The path filter.  `inert=true` when every file the pull request
