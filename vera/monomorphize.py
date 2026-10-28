@@ -52,10 +52,8 @@ def substitute_type_vars(
     interpolation/apply_fn inference), `CodeGenerator`
     (`vera/codegen/core.py` — the compilability check
     `_type_expr_to_wasm_type`), and :func:`resolve_fn_type_alias`
-    below — the shared transitive walker behind
-    `Monomorphizer._resolve_arg_fn_shape` /
-    `CallsMixin._resolve_arg_fn_shape_wasm` (#604 / #659 CR-4 +
-    CR-5, routed through the resolver by PR #880).  All sites need
+    below (#604 / #659 CR-4 + CR-5, routed through the resolver by
+    PR #880).  All sites need
     the same substitution semantics when
     following a parameterised alias (`type Box<T> = Array<T>`,
     `type Mapper<T> = fn(T -> T)`) so the alias's own type-param
@@ -120,17 +118,16 @@ def resolve_type_alias(
 
     The general transitive alias walker every representation-level
     classifier shares — :func:`resolve_fn_type_alias` below is the
-    fn-type-specialised view over this walk, and the fused-await
-    classifier (``vera/wasm/async_fusion.py``, #1109) uses it to
-    resolve alias-typed slots and declared returns before its literal
-    ``Future<Result<String, String>>`` check.  Aliases are transparent
-    everywhere else in the language; a classifier that probes runtime
-    representation must see through them too.
+    fn-type-specialised view over this walk, and an interpolation's
+    converter (``OperatorsMixin._interp_resolved_type_name``) uses it to
+    resolve a type name to the shape that renders it.  Aliases are
+    transparent everywhere else in the language; a classifier that probes
+    runtime representation must see through them too.
 
     Lives here — the deliberately codegen-free shared monomorphizer
-    module (see the module docstring / #732) — so the WASM backend,
-    the codegen-free fusion predicates, and the monomorphizer can all
-    import it without an import cycle.
+    module (see the module docstring / #732) — so the WASM backend
+    imports it, and the verifier reaches it through
+    :func:`resolve_fn_type_alias`, without an import cycle.
 
     Walks iteratively (until a terminal shape or a cycle):
 
@@ -188,15 +185,12 @@ def resolve_fn_type_alias(
     """Resolve a ``TypeExpr`` to the ``FnType`` it aliases, transitively.
 
     The single transitive-alias-to-fn-type resolver behind every site
-    that discovers a function type through an alias — the ``apply_fn``
-    ``call_indirect`` signature builder (``_infer_apply_fn_return_type``),
-    its Vera-type twin (``_infer_fncall_vera_type``), the fused-await
-    classifier (``_apply_fn_closure_ret_type``,
-    ``vera/wasm/async_fusion.py``), and the generic higher-order-fn
-    consultors (``Monomorphizer._resolve_arg_fn_shape`` /
-    ``_infer_fn_alias_type_args`` below, and their WASM call-rewrite
-    twins in ``vera/wasm/calls.py``).  Routing every site through this
-    one walker makes their depth-N behaviour structurally identical
+    that discovers a function type through an alias — the WASM width of
+    a slot or a reference whose type is a function alias
+    (``InferenceMixin._slot_name_to_wasm_type``,
+    ``_ref_type_name_wasm_type``) and the verifier's closure formals
+    (``ContractVerifier._closure_arg_param_types``).  Routing every site
+    through this one walker makes their depth-N behaviour structurally identical
     rather than replicated per-site: a single-level unwrap at any one
     site desynced it from the signal it must agree with (#867 — a
     two-hop ``type Fetcher = InnerFetcher;`` resolved one hop, saw a
@@ -209,9 +203,8 @@ def resolve_fn_type_alias(
 
     Lives here — the deliberately codegen-free shared monomorphizer
     module (see the module docstring / #732) — so the WASM backend,
-    the codegen-free fusion predicates, and the monomorphizer can all
-    import it without an import cycle (``vera/wasm/async_fusion.py``
-    imports this module, so it cannot host a helper this module needs).
+    the verifier and the monomorphizer can all import it without an
+    import cycle.
 
     The walk itself lives in :func:`resolve_type_alias` above — this is
     the fn-type-specialised view over it: the terminal shape is returned
@@ -397,13 +390,11 @@ def declared_return_clone_key(te: ast.TypeExpr | None) -> str | None:
     its call result is bound to a generic's type variable.
 
     THE single source of truth for this key — discovery
-    (:func:`vera.codegen.monomorphize._simple_return_type_name`), the #732
-    verifier (``ContractVerifier._simple_type_name``), and the WASM call-rewrite
-    (``InferenceMixin._declared_return_clone_name``) ALL delegate here, so the
-    three consultors cannot desync by construction (#878 / #899 whack-a-mole:
-    each independently re-derived this key and they diverged on parameterized
-    returns and scalar-resolving aliases, dropping ``main`` at run time on a
-    check-green program).
+    (:func:`vera.codegen.monomorphize._simple_return_type_name`) delegates
+    here.  The #732 verifier and the WASM call-rewrite each re-derived it
+    once, and they diverged on parameterized returns and scalar-resolving
+    aliases, dropping ``main`` at run time on a check-green program (#878 /
+    #899); both now read the instance the typed program built (#1679).
 
     Convention — refinement-unwrap, then the **base name** with type args
     DROPPED:
@@ -420,9 +411,11 @@ def declared_return_clone_key(te: ast.TypeExpr | None) -> str | None:
     never pattern-match or project ``T`` (the body doesn't know ``T``'s
     constructors), so ``Option<Decimal>`` and ``Option<Int>`` share one identity
     clone ``pick$Option`` with byte-identical WAT.  (A parameterized *parameter*
-    like ``Option<T>`` — where the body CAN project the field — is a different
-    path that recovers the full type argument via ``_get_arg_type_info*``; this
-    key is only the bare-``@T`` case.)
+    like ``Option<T>`` — where the body CAN project the field — took a
+    different path, which recovered the full type argument through
+    ``_get_arg_type_info*``; the typed program now reads every type argument
+    off the checker's instantiation at the call (#1679).  This key is only
+    the bare-``@T`` case.)
     """
     while isinstance(te, ast.RefinementType):
         te = te.base_type
@@ -1087,142 +1080,6 @@ def unmangle_type_name(mangled: str) -> str:
     return "".join(out)
 
 
-def checker_clone_type_name(
-    table: Mapping[int, object] | None, expr: ast.Expr,
-) -> str | None:
-    """The clone-name the CHECKER's recorded type for *expr* denotes (#1327).
-
-    The two type namers — discovery's ``_infer_vera_type_name`` and the WASM
-    call-rewrite's ``_infer_vera_type`` — are hand-maintained walkers over the
-    expression grammar, and every member of the #1327 family is one of them
-    missing an arm the other has: discovery had none for ``IndexExpr``
-    (#1327), none for ``ModuleCall`` (#1366), none for ``ResultRef`` (#1369).
-    A missing arm answers ``None``, the type variable falls to the phantom
-    default, and the two consultors name different clones on check-green
-    source.
-
-    The checker has already typed every expression it synthesised, so this is
-    the answer neither walker has to re-derive.  Both consult it through THIS
-    function, in the same position — after their own walk, never before it —
-    so a shape one of them cannot name is named identically for both, and the
-    class of bug that is "one walker is missing an arm" cannot recur.
-
-    Why after rather than before: the walkers' answers are a deliberate
-    clone-NAMING vocabulary, not a type judgement, and it differs from the
-    checker's semantic type in ways that are load-bearing.  Measured over the
-    corpus, 1,976 namer calls across 73 shapes would change their answer if
-    the checker won: an integer literal names ``Int`` where the checker says
-    ``Nat`` (the WAT-collapsed vocabulary the #732 differential is stated in),
-    a ``ConstructorCall`` names the bare ``List`` where the checker says
-    ``List<List<Nat>>`` (#772 — an unconstrained generic's clone is a uniform
-    pointer, so one ``id$Box`` serves every instantiation), and a user
-    function's declared ``-> @Age`` names ``Age`` where the checker resolves
-    the alias to ``Int`` (#899 — the raw declared name is what discovery keys
-    the clone on).  Reversing the precedence would re-granulate
-    monomorphization across the whole corpus, which is a language decision and
-    not this repair.  Consulted second, the checker changes no name that
-    exists and supplies every name that does not.
-
-    Returns ``None`` when there is no table, no entry for this node, or a type
-    with no clone-name spelling (a still-generic ``TypeVar``, a function type,
-    the checker's unknown) — in which case the caller is exactly as informed as
-    it was before.
-    """
-    if table is None:
-        return None
-    key = expr.node_id
-    if key is None:
-        return None
-    ty = table.get(key)
-    if ty is None:
-        return None
-    return _type_clone_name(ty)
-
-
-def _type_clone_name(ty: object) -> str | None:
-    """Render one checker ``Type`` into the clone-name vocabulary.
-
-    Deliberately narrow: primitives and ADTs by name (with type arguments,
-    which is how a slot reference's declared name already spells them), a
-    refinement by its base (every namer arm unwraps refinements), and nothing
-    at all for a type variable — a still-generic type must never name a
-    concrete clone — or for a function type or the unknown.
-    """
-    from vera.types import AdtType, PrimitiveType, RefinedType
-
-    if isinstance(ty, PrimitiveType):
-        if ty.name == "Never":
-            # A diverging expression has no value, so it can never be the
-            # value a generic is instantiated at.  Answering `Never` here
-            # would defeat the #1286 join, whose whole premise is that a
-            # branch naming NOTHING must not decide the answer: the `then` of
-            # `idg(if c then { throw(x) } else { 42 })` walks to `None` today
-            # and the `else` supplies `Int`, and a checker answer of `Never`
-            # at the recursive level would name `idg$Never` — a clone whose
-            # parameter has no WASM representation, dropped at [E600], taking
-            # `main` with it.  Measured: the whole #1286 battery and
-            # `ch02_generic_arg_branch_join` fail exactly that way without
-            # this line.
-            return None
-        return ty.name
-    if isinstance(ty, AdtType):
-        if not ty.type_args:
-            return ty.name
-        parts = [_type_clone_name(a) for a in ty.type_args]
-        if any(p is None for p in parts):
-            # A partially-generic instantiation has no honest concrete
-            # spelling.  Drop EVERY argument rather than render the ones that
-            # resolved: `Option<Option>` for `Option<Option<T>>` is a name no
-            # clone emission produces, where the bare `Option` is exactly what
-            # both walkers already answer for an unconstrained parameterised
-            # argument (#772).
-            return ty.name
-        return f"{ty.name}<{', '.join(p for p in parts if p is not None)}>"
-    if isinstance(ty, RefinedType):
-        return _type_clone_name(ty.base)
-    return None
-
-
-def checker_arg_type_info(
-    table: Mapping[int, object] | None, expr: ast.Expr,
-) -> tuple[str, tuple[str | None, ...]] | None:
-    """``(base name, per-type-argument names)`` from the CHECKER's type.
-
-    The structural counterpart of :func:`checker_clone_type_name`, for the
-    parameterised branch of unification: matching ``Array<T>`` against an
-    argument needs the argument's own base and type arguments, and the
-    walkers' ``_get_arg_type_info`` has the same missing arms their namers had
-    — no arm for an indexed argument, none for a nested module call — so the
-    variable stays unbound and the phantom default names the clone (#1395).
-
-    Consulted ONLY for variables the walkers left unbound, and only after
-    every parameter has bound what it can.  That ordering is the whole
-    discipline: the checker's answer is a SEMANTIC type and the walkers' is a
-    clone-NAMING vocabulary, and where they differ the walkers' is the one the
-    emitted symbol must use.  `option_unwrap_or(nothing(()), 11)` measures
-    `Option<Nat>` here where the walkers spell the same instantiation `Int`;
-    consulted during the first pass that answer arrives from the FIRST
-    parameter and displaces the correct binding the second parameter's literal
-    supplies, moving six corpus programs' WAT.  Consulted last, into a hole,
-    it can displace nothing.
-    """
-    if table is None:
-        return None
-    key = expr.node_id
-    if key is None:
-        return None
-    ty = table.get(key)
-    if ty is None:
-        return None
-    from vera.types import AdtType, RefinedType
-
-    while isinstance(ty, RefinedType):
-        ty = ty.base
-    if not isinstance(ty, AdtType):
-        return None
-    return ty.name, tuple(_type_clone_name(a) for a in ty.type_args)
-
-
 def _builtin_return_tables() -> tuple[
     dict[str, str], dict[str, tuple[str, tuple[str, ...]]]
 ]:
@@ -1273,46 +1130,6 @@ class Monomorphizer:
         self.alias_env = alias_env
 
     @staticmethod
-    def _unify_type_arg_pair(
-        param_ta: ast.TypeExpr,
-        arg_name: str,
-        forall_vars: tuple[str, ...],
-        mapping: dict[str, str],
-    ) -> None:
-        """Recursively unify ONE parameter type-argument against a concrete
-        type-argument NAME, binding forall vars at any nesting depth (#769
-        gap 2): ``Option<T>`` vs ``"Option<Int>"`` binds ``T = "Int"``, and so
-        does ``Array<Option<T>>`` vs ``"Array<Option<Int>>"`` — the pre-#769
-        zip bound only when the IMMEDIATE type argument was the variable
-        itself, so any deeper var fell to the ``Bool`` phantom default.
-
-        First binding wins (``mapping`` is never overwritten), matching
-        ``_unify_param_arg``'s outer behavior.  Static and self-contained so
-        the WASM call-rewrite twin (``_unify_param_arg_wasm``,
-        vera/wasm/calls.py) calls THIS implementation — the two clone-name
-        consultors bind identically by construction.
-        """
-        if isinstance(param_ta, ast.RefinementType):
-            param_ta = param_ta.base_type
-        if not isinstance(param_ta, ast.NamedType):
-            return
-        if param_ta.name in forall_vars:
-            if param_ta.name not in mapping:
-                mapping[param_ta.name] = arg_name
-            return
-        if not param_ta.type_args:
-            return
-        parsed = Monomorphizer._parse_type_name(arg_name)
-        if parsed.name != param_ta.name or not parsed.type_args:
-            return
-        for p_sub, a_sub in zip(param_ta.type_args, parsed.type_args):
-            if isinstance(a_sub, ast.NamedType):
-                Monomorphizer._unify_type_arg_pair(
-                    p_sub, Monomorphizer._format_type_name(a_sub),
-                    forall_vars, mapping,
-                )
-
-    @staticmethod
     def _parse_type_name(name: str) -> ast.NamedType:
         """Parse a full type name string into a NamedType AST node.
 
@@ -1356,9 +1173,6 @@ class Monomorphizer:
 
         E.g. NamedType("Map", (NamedType("String"), NamedType("Int")))
         becomes "Map<String, Int>".
-
-        Note: duplicated in InferenceMixin._format_named_type (inference.py).
-        Both must remain in sync — the mixin architecture prevents sharing.
         """
         if not te.type_args:
             return te.name

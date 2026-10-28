@@ -845,24 +845,18 @@ public fn g(-> @Int) requires(true) ensures(true) effects(pure) {
 """
         assert _run(src, fn="g") == 88
 
-    def test_index_map_keys_inline_map_arg_stays_loud_skip(self) -> None:
-        """Honest boundary (#1051): when the Map argument is built INLINE by a
-        non-consultor builtin (`map_insert`) instead of let-bound, the shared
-        consultor cannot recover its `Map<K, V>` type, so the class-2 derivation
-        yields None and the enclosing function keeps the LOUD [E602] skip rather
-        than guessing an element type or silently mis-compiling.  (The common
-        let-bound `@Map<K, V>` argument resolves — see
-        test_index_map_keys_string.)"""
+    def test_index_map_keys_inline_map_arg(self) -> None:
+        """An index into `map_keys` of a Map built INLINE (`map_insert`
+        rather than a let-bound slot) reads its element type off the call's
+        checked `Array<String>` (#1525).  A walker over the argument's
+        syntax had no arm for the inline build, and the function was dropped
+        with E602."""
         src = """
 public fn g(-> @Int) requires(true) ensures(true) effects(pure) {
   string_length(map_keys(map_insert(map_new(), "abcde", 99))[0])
 }
 """
-        result = _compile_ok(src)
-        assert "g" not in result.exports, \
-            "inline-built Map arg is unresolvable — must drop, not compile wrong"
-        assert any(d.error_code == "E602" for d in result.diagnostics), \
-            "the unresolvable argument shape must keep the loud E602 skip"
+        assert _run(src, fn="g") == 5
 
     # ---- #1055: alias-spelled arguments canonicalize -----------------------
     # An alias argument (`type M = Map<String, Int>; @M.0`) reached the

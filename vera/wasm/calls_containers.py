@@ -497,42 +497,12 @@ class CallsContainersMixin:
         # adversarial review).
         if vera_type is not None and self._slot_name_erases_to_unit(vera_type):
             return None
-        # ADTs, Map and Set headers, and uninferred (None) element types
-        # from empty collections → i32.  This is the historical
-        # fall-through; CodeRabbit on PR #567 flagged it as a possible
-        # re-introduction of the pre-#475 hole, but the empty-collection
-        # tests (`test_set_empty_to_array`, `test_map_keys_in_if_expr`,
-        # `test_set_to_array_in_if_expr`) depend on this path: the
-        # element type is genuinely unknown but the operation works
-        # because no element value flows through it.  Mis-tagging happens
-        # whenever a REAL (non-None) element type fails inference and a
-        # value flows through the import.  The #1053 container extension
-        # closed the known such failures — alias-spelled slots, registered
-        # user-fn returns (parameterized, bare-alias, generic-alias), and
-        # Block-wrapped arguments now resolve via
-        # `_container_arg_elem_name` — but argument shapes none of the
-        # resolvers type (see that helper's docstring for the list) still
-        # reach this fall-through with real elements and would mis-tag;
-        # they are exactly the shapes with no inference arm today.
+        # ADTs, Map and Set headers → i32, and so is an entry type with no
+        # name: an element the checker left unresolved, where no element
+        # value flows through the operation (`test_set_empty_to_array`).
+        # Every key, value and member type is the checked container's own
+        # argument (#1525), so a real element is never mis-tagged here.
         return "b"
-
-    def _infer_map_key_type(self, call: "ast.FnCall") -> str | None:
-        """Infer the Vera type of a Map's key from the call arguments."""
-        # For map_insert(m, k, v): key is arg[1]
-        # For map_get/contains/remove(m, k): key is arg[1]
-        # For map_new(): no key arg, infer from type context
-        if call.name == "map_new":
-            return None
-        if len(call.args) >= 2:
-            return self._container_entry_type_name(call.args[1])
-        return None
-
-    def _infer_map_val_type(self, call: "ast.FnCall") -> str | None:
-        """Infer the Vera type of a Map's value from the call arguments."""
-        # For map_insert(m, k, v): value is arg[2]
-        if call.name == "map_insert" and len(call.args) >= 3:
-            return self._container_entry_type_name(call.args[2])
-        return None
 
     def _translate_map_new(
         self, call: "ast.FnCall", env: WasmSlotEnv,
@@ -550,8 +520,8 @@ class CallsContainersMixin:
         representations; ``m`` is left as it was, and the header returned
         is rooted where it lands by ``_root_landed_value`` (#1379).
         """
-        key_type = self._container_entry_type_name(call.args[1])
-        val_type = self._container_entry_type_name(call.args[2])
+        key_type = self._type_name_of(call.args[1])
+        val_type = self._type_name_of(call.args[2])
         kt = self._map_wasm_tag(key_type)
         vt = self._map_wasm_tag(val_type)
 
@@ -613,7 +583,7 @@ class CallsContainersMixin:
     ) -> list[str] | None:
         """map_get(m, k) → i32, the `Option<V>` the generated operation
         builds: `Some` of the key's value, or `None`."""
-        key_type = self._container_entry_type_name(call.args[1])
+        key_type = self._type_name_of(call.args[1])
         kt = self._map_wasm_tag(key_type)
 
         if kt is None:
@@ -628,7 +598,7 @@ class CallsContainersMixin:
             )
         # The value tag too: it lays out the Option<V> the operation builds.
         # Infer from the map's type — look at the slot ref for arg[0].
-        val_type = self._infer_map_value_from_map_arg(call.args[0])
+        val_type = self._type_arg_name_of(call.args[0], 1)
         vt = self._map_wasm_tag(val_type)
 
         if vt is None:
@@ -658,110 +628,12 @@ class CallsContainersMixin:
         ins.append(f"call {wasm_name}")
         return ins
 
-    def _container_arg_elem_name(
-        self, expr: "ast.Expr", container: str, idx: int,
-    ) -> str | None:
-        """Type-arg ``idx`` of a ``container``-typed argument expression,
-        resolved through the shared rebuilder (#1053 container extension).
-
-        ``_named_type_from_arg_info`` resolves the argument shapes the
-        local arms in ``_infer_map_key/value_from_map_arg`` and
-        ``_infer_set_elem_from_set_arg`` below don't: an alias-spelled slot
-        (``@M.0`` via `type M = Map<String, Int>;` — #1055), a registered
-        non-generic user fn's declared return — parameterized (#1053),
-        bare-alias (`fn mkm(-> @M)` — #1071), or generic-alias
-        (`-> @MyMap<Int>` via `type MyMap<V> = Map<String, V>`,
-        substituted through the target — #1068) — and a Block-wrapped
-        argument via its tail expression (#1071).  Pre-fix those shapes
-        returned None here and ``_map_wasm_tag(None)`` fell through to the
-        ``"b"`` (i32) tag, so the mis-tagged operation silently truncated
-        i64 values and garbled String keys (a wrong VALUE, not even an
-        [E602] drop).
-
-        Shapes that still return ``None`` and ride the permissive ``"b"``
-        fall-through: genuinely element-type-free arguments (an empty
-        ``map_new()`` / ``set_new()``, where no element value flows through
-        the import), builtin container chains the local arms resolve
-        instead, and argument expressions none of the resolvers type (an
-        effect-op call, a match/if expression, a chained generic alias
-        whose free type params survive substitution).
-        """
-        nt = self._named_type_from_arg_info(expr)
-        if (nt is not None and nt.name == container and nt.type_args
-                and len(nt.type_args) > idx):
-            ta = nt.type_args[idx]
-            if isinstance(ta, ast.NamedType):
-                return self._format_named_type(ta)
-        return None
-
-    def _container_entry_type_name(self, expr: "ast.Expr") -> str | None:
-        """Full Vera type name of a Map/Set ENTRY expression (a key, value,
-        or element argument) for host-tag classification.
-
-        Rebuilder-first (#1075, PR #1083 adversarial review):
-        ``_named_type_from_arg_info`` recovers a registered user fn's
-        declared return with FULL nesting (``Future<Unit>``, ``Array<String>``
-        — including bare-alias and generic-alias returns, #1071/#1068),
-        where ``_infer_vera_type``'s non-generic arm deliberately collapses
-        a parameterized return to its bare head (``"Future"``, the #911
-        convention) — a name the zero-size erasure oracle and the
-        Array-reject branch in :py:meth:`_map_wasm_tag` cannot decide, so a
-        ``fn(-> @Future<Unit>)`` map value fell through to the ``"b"`` tag
-        and emitted invalid WASM.  Falls back to ``_infer_vera_type`` for
-        every shape the rebuilder does not type (literals, effect ops,
-        builtin calls like ``async(...)`` whose inference arm already
-        renders the full spelling), so tags for previously-working entries
-        are unchanged.
-        """
-        nt = self._named_type_from_arg_info(expr)
-        if nt is not None:
-            return self._format_named_type(nt)
-        return self._infer_vera_type(expr)
-
-    def _infer_map_value_from_map_arg(
-        self, expr: "ast.Expr",
-    ) -> str | None:
-        """Infer the value type V from a Map<K, V> expression.
-
-        The shared-rebuilder consult handles alias-spelled and user-fn
-        arguments first (#1053 container extension); it resolves the direct
-        ``@Map<K, V>`` slot to the same answer as the arms below, so
-        ordering is behavior-preserving for the previously-working shapes.
-        """
-        t = self._container_arg_elem_name(expr, "Map", 1)
-        if t is not None:
-            return t
-        # If the map arg is a slot ref like @Map<String, Int>.0,
-        # extract V from the type_args (not the type_name string).
-        if isinstance(expr, ast.SlotRef):
-            if expr.type_name == "Map" and expr.type_args:
-                if len(expr.type_args) == 2:
-                    val_te = expr.type_args[1]
-                    if isinstance(val_te, ast.NamedType):
-                        return val_te.name
-            # Fallback: parse from composite type_name string
-            # Uses depth-aware split to handle nested generics
-            # like Map<Result<Int, Bool>, String>
-            name = expr.type_name
-            if name.startswith("Map<") and name.endswith(">"):
-                v = self._split_map_type_args(name)
-                if v is not None:
-                    return v[1]
-        # If it's a function call that returns Map, try to infer
-        if isinstance(expr, ast.FnCall):
-            if expr.name in ("map_new", "map_insert", "map_remove"):
-                if expr.name == "map_insert" and len(expr.args) >= 3:
-                    return self._container_entry_type_name(expr.args[2])
-                # Recurse into the map argument
-                if expr.args:
-                    return self._infer_map_value_from_map_arg(expr.args[0])
-        return None
 
     def _translate_map_contains(
         self, call: "ast.FnCall", env: WasmSlotEnv,
     ) -> list[str] | None:
         """map_contains(m, k) → i32 (Bool)."""
-        key_type = self._container_entry_type_name(call.args[1])
+        key_type = self._type_name_of(call.args[1])
         kt = self._map_wasm_tag(key_type)
 
         if kt is None:
@@ -795,7 +667,7 @@ class CallsContainersMixin:
     ) -> list[str] | None:
         """map_remove(m, k) → i32, a Map header without the key (``m``
         itself when the key is absent)."""
-        key_type = self._container_entry_type_name(call.args[1])
+        key_type = self._type_name_of(call.args[1])
         kt = self._map_wasm_tag(key_type)
 
         if kt is None:
@@ -841,7 +713,7 @@ class CallsContainersMixin:
     ) -> list[str] | None:
         """map_keys(m) → (i32, i32) Array<K>, in insertion order."""
         # Infer key type from the map argument
-        key_type = self._infer_map_key_from_map_arg(call.args[0])
+        key_type = self._type_arg_name_of(call.args[0], 0)
         kt = self._map_wasm_tag(key_type)
 
         if kt is None:
@@ -867,7 +739,7 @@ class CallsContainersMixin:
         self, call: "ast.FnCall", env: WasmSlotEnv,
     ) -> list[str] | None:
         """map_values(m) → (i32, i32) Array<V>, in insertion order."""
-        val_type = self._infer_map_value_from_map_arg(call.args[0])
+        val_type = self._type_arg_name_of(call.args[0], 1)
         vt = self._map_wasm_tag(val_type)
 
         if vt is None:
@@ -911,76 +783,9 @@ class CallsContainersMixin:
                     return (k, v)
         return None
 
-    def _infer_map_key_from_map_arg(
-        self, expr: "ast.Expr",
-    ) -> str | None:
-        """Infer the key type K from a Map<K, V> expression.
-
-        Shared-rebuilder consult first (#1053 container extension) — see
-        :py:meth:`_container_arg_elem_name`.  For a user-fn argument this
-        also pre-empts the blind ``args[0]`` recursion below, so the
-        DECLARED return type wins over a coincidental map-shaped first
-        argument.
-        """
-        t = self._container_arg_elem_name(expr, "Map", 0)
-        if t is not None:
-            return t
-        if isinstance(expr, ast.SlotRef):
-            if expr.type_name == "Map" and expr.type_args:
-                if len(expr.type_args) >= 1:
-                    key_te = expr.type_args[0]
-                    if isinstance(key_te, ast.NamedType):
-                        return key_te.name
-            name = expr.type_name
-            if name.startswith("Map<") and name.endswith(">"):
-                v = self._split_map_type_args(name)
-                if v is not None:
-                    return v[0]
-        if isinstance(expr, ast.FnCall):
-            if expr.name == "map_insert" and len(expr.args) >= 2:
-                return self._container_entry_type_name(expr.args[1])
-            if expr.args:
-                return self._infer_map_key_from_map_arg(expr.args[0])
-        return None
 
     # ── Set<T> ─────────────────────────────────────────────────────
 
-    def _infer_set_elem_type(self, call: "ast.FnCall") -> str | None:
-        """Infer the Vera type of a Set's element from call arguments."""
-        if call.name == "set_new":
-            return None
-        if len(call.args) >= 2:
-            return self._container_entry_type_name(call.args[1])
-        return None
-
-    def _infer_set_elem_from_set_arg(
-        self, expr: "ast.Expr",
-    ) -> str | None:
-        """Infer the element type T from a Set<T> expression.
-
-        Shared-rebuilder consult first (#1053 container extension) — see
-        :py:meth:`_container_arg_elem_name`.
-        """
-        t = self._container_arg_elem_name(expr, "Set", 0)
-        if t is not None:
-            return t
-        if isinstance(expr, ast.SlotRef):
-            if expr.type_name == "Set" and expr.type_args:
-                if len(expr.type_args) >= 1:
-                    elem_te = expr.type_args[0]
-                    if isinstance(elem_te, ast.NamedType):
-                        return elem_te.name
-            name = expr.type_name
-            if name.startswith("Set<") and name.endswith(">"):
-                return name[4:-1]
-        if isinstance(expr, ast.FnCall):
-            if expr.name == "set_add" and len(expr.args) >= 2:
-                return self._container_entry_type_name(expr.args[1])
-            # Only recurse into set-returning functions
-            if expr.name in ("set_new", "set_add", "set_remove"):
-                if expr.args:
-                    return self._infer_set_elem_from_set_arg(expr.args[0])
-        return None
 
     def _translate_set_new(
         self, call: "ast.FnCall", env: WasmSlotEnv,
@@ -993,7 +798,7 @@ class CallsContainersMixin:
     ) -> list[str] | None:
         """set_add(s, elem) → i32, a Set header with the element (``s``
         itself when the element is present)."""
-        elem_type = self._container_entry_type_name(call.args[1])
+        elem_type = self._type_name_of(call.args[1])
         et = self._map_wasm_tag(elem_type)
 
         if et is None:
@@ -1026,7 +831,7 @@ class CallsContainersMixin:
         self, call: "ast.FnCall", env: WasmSlotEnv,
     ) -> list[str] | None:
         """set_contains(s, elem) → Bool."""
-        elem_type = self._container_entry_type_name(call.args[1])
+        elem_type = self._type_name_of(call.args[1])
         et = self._map_wasm_tag(elem_type)
 
         if et is None:
@@ -1060,7 +865,7 @@ class CallsContainersMixin:
     ) -> list[str] | None:
         """set_remove(s, elem) → i32, a Set header without the element
         (``s`` itself when the element is absent)."""
-        elem_type = self._container_entry_type_name(call.args[1])
+        elem_type = self._type_name_of(call.args[1])
         et = self._map_wasm_tag(elem_type)
 
         if et is None:
@@ -1105,7 +910,7 @@ class CallsContainersMixin:
         self, call: "ast.FnCall", env: WasmSlotEnv,
     ) -> list[str] | None:
         """set_to_array(s) → Array<T>, in insertion order."""
-        elem_type = self._infer_set_elem_from_set_arg(call.args[0])
+        elem_type = self._type_arg_name_of(call.args[0], 0)
         et = self._map_wasm_tag(elem_type)
 
         if et is None:

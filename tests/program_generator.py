@@ -74,18 +74,14 @@ Version two leaves out closures beyond ``array_fold``'s argument, effect-row
 variables, parameterised aliases, user effects and abilities, ``String``,
 ``Float64`` and ``Byte`` values beyond ``main``'s output and a map's keys,
 relational preconditions, the product of two variables, and an index into
-anything but a ``let``-bound array literal (issue #1525's line from #1680:
-code generation infers no element type for an array in place).
+anything but a ``let``-bound array literal.
 
-Some shapes it writes make code generation fail on a program the checker
-and the verifier accept, because code generation re-derives a value's type
-from its own reading of the expression (issue #1525): a fold as a
-scrutinee or a constructor's argument, which it finds no type for, and a
-branch whose every arm is a fold, a ``throw`` or a handler (#1744 for the
-handlers).  :func:`bind_in_place` writes the program with each such value
-bound in place by a ``let`` of the type the checker gives it, and a find
-that vanishes there is counted under the issue; one that does not vanish
-is reported.
+:func:`bind_in_place` writes the program with each fold that is not a
+``let``'s value and each handler a branch takes bound in place by a ``let``
+of the type the checker gives it: the counterfactual a find of code
+generation's own reading of a value's type would vanish under.  Code
+generation reads every value's type off the typed program (issue #1525),
+so no shape the generator writes is one.
 """
 
 from __future__ import annotations
@@ -728,9 +724,9 @@ def static_type(e: Expr) -> str:
     if isinstance(e, SetBuild):
         return "Set<Nat>"
     if isinstance(e, Fold):
-        # The checker binds the accumulator to the initial value's type, so
-        # a fold from a `Nat` is a `Nat` over its `Int` closure.
-        return "Nat" if static_type(e.init) == "Nat" else "Int"
+        # The closure's `Int` return fixes the accumulator at `Int`, whatever
+        # the initial value's type (spec §4.2).
+        return "Int"
     if isinstance(e, (Length, SetSize)):
         return "Int"
     if isinstance(e, Index):
@@ -2090,11 +2086,7 @@ class _Generator:
         finally:
             self.closure = saved
         e = Fold(arr, init, acc, elem, body)
-        r = iv(e, "r")
-        if static_type(e) == "Nat" and (r.lo is None or r.lo < 0):
-            # A fold from a `Nat` is a `Nat`: its run stays inside the type.
-            return None
-        return e if r.safe() else None
+        return e if iv(e, "r").safe() else None
 
     def boolean(self, env: list[Binding], depth: int, block: bool) -> Expr | None:
         refs = self.refs(env, "Bool")
@@ -2952,10 +2944,10 @@ def name_constructed_types(prog: Program) -> Program | None:
 # =====================================================================
 
 #: What :func:`bind_in_place` binds: each fold that is not a ``let``'s
-#: value, which code generation finds no type for as a scrutinee, a
+#: value, which code generation found no type for as a scrutinee, a
 #: constructor's argument or a branch's arm (#1525's class), and each
 #: handler that is a branch's value (#1744's).  Each is bound at the type
-#: the checker gives it, a fold's being its initial value's.  An argument
+#: the checker gives it, a fold's being `Int`, its closure's.  An argument
 #: at a generic's type variable needs no binding: code generation runs a
 #: generic's call against the instance the checker chose (#1791).
 BIND_FOLD = "fold"
@@ -3599,8 +3591,7 @@ def well_formed(prog: Program) -> bool:
     show is non-negative, an argument inside its callee's ``requires``, a
     ``@Nat`` subtraction whose operands cannot cross, a divisor the verifier
     sees is positive, a field inside its construction range, a cell's value
-    inside :data:`CELL_R`, a fold from a ``Nat`` whose run stays
-    non-negative, a recursion in its template with its measure
+    inside :data:`CELL_R`, a recursion in its template with its measure
     decreasing, an instantiation its constraint admits, an effect only where
     a handler or a row admits it, an index only under its bound, a fold's
     closure reading its own parameters alone, and no value a run can reach
@@ -3742,10 +3733,6 @@ def _node_ok(node: object, row: tuple[str, ...], fn: Function) -> bool:
             return d.bounded() and (d.lo or 0) >= 1
         if node.op == "*":
             return isinstance(node.right, Lit)
-    if isinstance(node, Fold) and static_type(node) == "Nat":
-        # A fold from a `Nat` is a `Nat`: its run stays inside the type.
-        r = iv(node, "r")
-        return r.lo is not None and r.lo >= 0
     if isinstance(node, Get):
         return f"State<{node.cell}>" in row
     if isinstance(node, Put):

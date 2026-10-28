@@ -1,29 +1,34 @@
-"""Type inference and utility mixin for WasmContext."""
+"""Type reads and utility mixin for WasmContext."""
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
-from typing import Any, ClassVar
+from typing import ClassVar, TypeVar
 
-from vera import ast, fold, naming
+from vera import ast, naming
 from vera.monomorphize import (
-    Monomorphizer,
-    checker_clone_type_name,
-    _BUILTIN_PARAMETERIZED_RETURNS,
-    _BUILTIN_VERA_RETURN_TYPES,
-    declared_return_clone_key,
     resolve_fn_type_alias,
     substitute_type_vars,
 )
-from vera.skip import CodegenInvariantError
 from vera.slots import (
-    bare_call_denotes_user_fn,
     family_fallback_name,
     type_expr_slot_name,
 )
-from vera.typed import type_arg_name
-from vera.types import AdtType, FunctionType, PrimitiveType, base_type
-from vera.wasm.helpers import _strip_future, state_type_arg
+from vera.types import (
+    NAT,
+    AdtType,
+    FunctionType,
+    RefinedType,
+    Type,
+    base_type,
+    erases_to_unit,
+    value_type_name,
+    value_width,
+)
+from vera.types import TypeVar as TypeVariable
+from vera.wasm.helpers import _INLINE_I32_TYPES, _strip_future, state_type_arg
+
+#: A node code generation builds after the check (:meth:`InferenceMixin._built`).
+_N = TypeVar("_N", bound=ast.Node)
 
 #: A built-in data type whose instances take any number of arguments: its
 #: registered type-parameter count is not an arity (`Tuple<Int, Bool>` is an
@@ -36,33 +41,19 @@ _VARIADIC_ADTS = frozenset({"Tuple"})
 # WASM backend.  Re-exported here so the existing
 # `from vera.wasm.inference import substitute_type_vars` call sites
 # (codegen/core.py, codegen/registration.py, codegen/contracts.py)
-# keep working.  (wasm/calls.py now imports `resolve_fn_type_alias`
-# from `vera.monomorphize` directly instead — PR #880.)
+# keep working.
 __all__ = ["InferenceMixin", "substitute_type_vars"]
 
 
 class InferenceMixin:
-    """Mixin providing type inference and type-mapping utilities.
+    """Mixin providing type reads and type-mapping utilities.
 
-    Extracted methods:
-    - _infer_expr_wasm_type
-    - _infer_fncall_wasm_type
-    - _infer_block_result_type
-    - _infer_vera_type
-    - _infer_fncall_vera_type
-    - _ctor_to_adt_name
-    - _is_pair_type_name
-    - _infer_array_element_type
-    - _infer_index_element_type
-    - _get_arg_type_info_wasm
-    - _infer_apply_fn_return_type
-    - _fn_type_return_wasm
-    - _fn_type_param_wasm_types
-    - _type_expr_name
-    - _type_name_to_wasm
-    - _type_expr_to_slot_name
-    - _resolve_base_type_name
-    - _slot_name_to_wasm_type
+    Every type code generation lowers by is the checker's, read off the
+    typed program (#1525): :meth:`_type_of` for a node, :meth:`_expr_width`
+    for the WAT value it is held in, :meth:`_type_name_of` for the name its
+    layout, conversion and equality are keyed by.  The remaining methods
+    map a type expression the program writes (a parameter's, a binding's)
+    to its representation.
     """
 
     # -----------------------------------------------------------------
@@ -107,421 +98,154 @@ class InferenceMixin:
         ast.BinOp.GE: "f64.ge",
     }
 
-    def _infer_expr_wasm_type(self, expr: ast.Expr) -> str | None:
-        """Infer the WAT result type of an expression.
+    def _type_of(self, node: ast.Node) -> Type | None:
+        """The checker's type of *node* (#1525): the typed program's table,
+        by the node's identity, a clone's node included (a pattern's is
+        the type it matches, a type expression's the type it resolves to),
+        or the type a node code generation built after the check was built
+        at (:meth:`_built`).  ``None`` for a node with neither, such as a
+        node a test builds into a bare context.
 
-        Returns "i64" for Int/Nat, "f64" for Float64, "i32" for Bool,
-        None for unknown/Unit.  Used to select the correct operators.
-
-        One exception to the Int/Nat rule: an ``IntLit`` carrying the #1212
-        Byte-width mark returns "i32", because that is what the lowering
-        emits for it — the two deciders read the same mark so a marked leaf
-        cannot be inferred at one width and lowered at the other.
-
-        Each class's answer is its arm in ``_WASM_TYPE_ARMS``, a
-        ``vera.fold.dispatch`` table, so every `Expr` class has one.
-        """
-        arm = _WASM_TYPE_ARMS.get(type(expr))
-        return arm(self, expr) if arm is not None else None
-
-    _IO_WASM_TYPES: ClassVar[dict[str, str | None]] = {
-        "print": None,
-        "read_line": "i32_pair",
-        "read_file": "i32",
-        "write_file": "i32",
-        "read_bytes": "i32",   # Result<Array<Byte>, String> pointer (#1711)
-        "write_bytes": "i32",  # Result<Unit, String> pointer (#1711)
-        "args": "i32_pair",
-        "exit": None,
-        "get_env": "i32",
-        "read_char": "i32",  # Result<String,String> pointer (#618)
-    }
-
-    def _infer_qualified_call_wasm_type(
-        self, expr: ast.QualifiedCall,
-    ) -> str | None:
-        """Infer the WASM return type of a qualified call (IO/Http ops)."""
-        if expr.qualifier == "IO":
-            return self._IO_WASM_TYPES.get(expr.name)
-        if expr.qualifier == "Http":
-            # Both get and post return Result<String, String> (i32 heap ptr)
-            return "i32"
-        if expr.qualifier == "Inference":
-            # complete returns Result<String, String> (i32 heap ptr)
-            return "i32"
-        if expr.qualifier == "DB":
-            # query / execute both return a Result ADT (i32 heap ptr) (#229)
-            return "i32"
-        # User-defined effect ops (e.g. Exn.throw, State.get/put)
-        if expr.name in self._effect_ops:
-            _target_name, is_void = self._effect_ops[expr.name]
-            if expr.name == "throw" or is_void:
-                return None  # throw → Never; void ops return no value
-            # #914: the op's result type is its State<T> parameter's WAT type,
-            # recorded in `_effect_op_result_wt` at the injection site — NOT a
-            # `_fn_ret_types` lookup on the dispatch target (`$vera.state_get_T`
-            # is never a `_fn_ret_types` key, so the old lookup returned None
-            # for every value-producing op, composite or primitive).
-            return self._effect_op_result_wt.get(expr.name)
-        return None  # pragma: no cover
-
-    def _infer_fncall_wasm_type(self, expr: ast.FnCall) -> str | None:
-        """Infer the WASM return type of a function call.
-
-        For generic calls, resolves the mangled name and looks up its
-        registered return type.  For non-generic calls, uses the
-        registered return type directly.  For apply_fn, infers from
-        the closure's function type.
-        """
-        # array_length(array) → Int (i64)
-        if expr.name == "array_length":
-            return "i64"
-        # array_range(start, end) → Array<Int> (i32_pair)
-        if expr.name in ("array_range", "array_slice"):
-            return "i32_pair"
-        # Array utilities (#466 phase 1):
-        # array_mapi / array_reverse / array_flatten / array_sort_by
-        # → Array<T> (i32_pair). array_find → Option<T> (i32 pointer).
-        # array_any / array_all → Bool (i32).
-        if expr.name in (
-            "array_mapi", "array_reverse", "array_flatten", "array_sort_by",
-        ):
-            return "i32_pair"
-        if expr.name == "array_find":
-            return "i32"
-        if expr.name in ("array_any", "array_all"):
-            return "i32"
-        # string_length(string) → Int (i64)
-        if expr.name == "string_length":
-            return "i64"
-        # string_concat / string_slice / string_strip → String (i32_pair)
-        if expr.name in ("string_concat", "string_slice", "string_strip",
-                          "to_string", "int_to_string",
-                          "bool_to_string", "nat_to_string",
-                          "byte_to_string", "float_to_string"):
-            return "i32_pair"
-        # string_char_code → Nat (i64)
-        if expr.name == "string_char_code":
-            return "i64"
-        # string_from_char_code → String (i32_pair)
-        if expr.name == "string_from_char_code":
-            return "i32_pair"
-        # string_repeat → String (i32_pair)
-        if expr.name == "string_repeat":
-            return "i32_pair"
-        # String search builtins
-        if expr.name in ("string_contains", "string_starts_with",
-                          "string_ends_with"):
-            return "i32"
-        if expr.name == "string_index_of":
-            return "i32"
-        # String transformation builtins
-        if expr.name in ("string_upper", "string_lower", "string_replace",
-                          "string_join"):
-            return "i32_pair"
-        if expr.name == "string_split":
-            return "i32_pair"
-        # String utility built-ins (#470).  string_chars / lines /
-        # words return Array<String> (i32_pair); pad / reverse /
-        # trim_start / trim_end return String (i32_pair).
-        if expr.name in (
-            "string_chars", "string_lines", "string_words",
-            "string_pad_start", "string_pad_end",
-            "string_reverse", "string_trim_start", "string_trim_end",
-        ):
-            return "i32_pair"
-        # Character classification (#471) → Bool (i32).
-        if expr.name in (
-            "is_digit", "is_alpha", "is_alphanumeric",
-            "is_whitespace", "is_upper", "is_lower",
-        ):
-            return "i32"
-        # Single-character case conversion (#471) → String (i32_pair).
-        if expr.name in ("char_to_upper", "char_to_lower"):
-            return "i32_pair"
-        # parse/decode builtins → Result<T, String> (i32 heap pointer)
-        if expr.name in (
-            "parse_nat", "parse_int", "parse_float64", "parse_bool",
-            "base64_decode", "url_decode",
-            "base64_decode_bytes", "bytes_to_string",
-        ):
-            return "i32"
-        if expr.name in ("base64_encode", "url_encode", "url_join",
-                         "base64_encode_bytes"):
-            return "i32_pair"
-        # string_to_bytes → Array<Byte> (i32_pair) (#1711)
-        if expr.name == "string_to_bytes":
-            return "i32_pair"
-        if expr.name == "url_parse":
-            return "i32"
-        # Markdown builtins
-        if expr.name in ("md_parse", "md_has_heading", "md_has_code_block"):
-            return "i32"
-        if expr.name in ("md_render", "md_extract_code_blocks"):
-            return "i32_pair"
-        # Regex builtins — all return Result<T, String> → heap ptr (i32)
-        if expr.name in (
-            "regex_match", "regex_find", "regex_find_all",
-            "regex_replace",
-        ):
-            return "i32"
-        # Ability operations: show → String (i32_pair), hash → Int (i64).
-        # #908: these are name special-cases the checker does NOT reserve
-        # (unlike E151 registry builtins), so a user may define `fn show` /
-        # `fn hash` with a different return width.  `_translate_call` gates its
-        # ability-op dispatch on `call.name not in self._known_fns`, so a
-        # user-defined `show`/`hash` is emitted as a plain call to the USER
-        # function — its DECLARED return width, not the ability-op width.  Defer
-        # to `_fn_ret_types` (the same registry the general user-fn branch below
-        # consults) when the name resolves to a user fn, so the field/element
-        # WASM type matches the emit.  A GENUINE ability op falls through to
-        # the special-case width.
-        #
-        # Which of the two it is comes from `_bare_call_denotes_op`, the
-        # SHARED gate (#1284/#1299), not from `_fn_ret_types` membership.
-        # That registry is flat: it holds every symbol the whole compilation
-        # absorbed, including another module's `fn show` that this
-        # declaration's lexical scope does not contain.  Asked by membership,
-        # this arm answered "the user's" for `show(42)` in a file that merely
-        # IMPORTS such a module, and typed a String result as `i64` — while
-        # `_translate_call`, narrowed to `_scoped_fns` by #1299, correctly
-        # lowered the ability operation.  The two consultors disagreeing is
-        # what #1299 fixed at the lowering and left here.
-        if (expr.name in ("show", "hash")
-                and not self._bare_call_denotes_op(expr.name)
-                and expr.name in self._fn_ret_types):
-            return self._fn_ret_types[expr.name]
-        if expr.name == "show":
-            return "i32_pair"
-        if expr.name == "hash":
-            return "i64"
-        # Async builtins — identity operations (Future<T> is transparent)
-        if expr.name in ("async", "await") and expr.args:
-            return self._infer_expr_wasm_type(expr.args[0])
-        # Decimal builtins
-        if expr.name in ("decimal_from_int", "decimal_from_float",
-                          "decimal_add", "decimal_sub", "decimal_mul",
-                          "decimal_neg", "decimal_round", "decimal_abs"):
-            return "i32"  # opaque handle
-        if expr.name in ("decimal_from_string", "decimal_div"):
-            return "i32"  # Option<Decimal> heap pointer
-        if expr.name == "decimal_compare":
-            return "i32"  # Ordering heap pointer
-        if expr.name == "decimal_eq":
-            return "i32"  # Bool
-        if expr.name == "decimal_to_float":
-            return "f64"
-        if expr.name == "decimal_to_string":
-            return "i32_pair"  # String (ptr, len)
-        # Map builtins
-        if expr.name in ("map_new", "map_insert", "map_remove"):
-            return "i32"  # opaque handle
-        if expr.name == "map_get":
-            return "i32"  # Option heap pointer
-        if expr.name == "map_contains":
-            return "i32"  # Bool
-        if expr.name == "map_size":
-            return "i64"
-        if expr.name in ("map_keys", "map_values"):
-            return "i32_pair"  # Array (ptr, len)
-        # Set builtins
-        if expr.name in ("set_new", "set_add", "set_remove"):
-            return "i32"  # opaque handle
-        if expr.name == "set_contains":
-            return "i32"  # Bool
-        if expr.name == "set_size":
-            return "i64"
-        if expr.name == "set_to_array":
-            return "i32_pair"  # Array (ptr, len)
-        # Json builtins
-        if expr.name == "json_parse":
-            return "i32"  # Result<Json, String> heap pointer
-        if expr.name == "json_stringify":
-            return "i32_pair"  # String (ptr, len)
-        # Html builtins
-        if expr.name == "html_parse":
-            return "i32"  # Result<HtmlNode, String> heap pointer
-        if expr.name == "html_to_string":
-            return "i32_pair"  # String (ptr, len)
-        if expr.name == "html_query":
-            return "i32_pair"  # Array<HtmlNode> (ptr, len)
-        if expr.name == "html_text":
-            return "i32_pair"  # String (ptr, len)
-        # Numeric math builtins
-        if expr.name in ("abs", "min", "max", "floor", "ceil", "round"):
-            return "i64"
-        if expr.name in ("sqrt", "pow"):
-            return "f64"
-        # Math builtins (#467).  Log/trig/constants all return
-        # Float64.  sign returns Int (i64); clamp returns Int;
-        # float_clamp returns Float64.
-        if expr.name in (
-            "log", "log2", "log10",
-            "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
-            "pi", "e", "float_clamp",
-        ):
-            return "f64"
-        if expr.name in ("sign", "clamp"):
-            return "i64"
-        # Numeric type conversions
-        if expr.name == "int_to_float":
-            return "f64"
-        if expr.name in ("float_to_int", "nat_to_int", "byte_to_int"):
-            return "i64"
-        if expr.name in ("int_to_nat", "int_to_byte"):
-            return "i32"
-        # Float64 predicates and constants
-        if expr.name in ("float_is_nan", "float_is_infinite"):
-            return "i32"
-        if expr.name in ("nan", "infinity"):
-            return "f64"
-        # apply_fn(closure, args...) — infer from closure type
-        if expr.name == "apply_fn" and len(expr.args) >= 1:
-            return self._infer_apply_fn_return_type(expr.args[0])
-        # #914: a bare effect-op call (`get(())` inside a State<T> handler /
-        # a fn declaring `<State<T>>`) is an `ast.FnCall`, not a
-        # `QualifiedCall`.  Its result WAT type is the op's registered
-        # result type — needed when the call sits directly in a
-        # constructor-argument (A1) or match-scrutinee (A2) position.
-        # #1284: the registry is complete (it says which cell an op name
-        # reaches, shadowed or not), so whether THIS site is the op is the
-        # ownership predicate's question — a same-named user fn falls
-        # through to the `_fn_ret_types` lookup below, the same answer the
-        # dispatch in `_translate_call` will emit a call for.
-        if self._bare_call_denotes_op(expr.name) and expr.name in self._effect_ops:
-            _target, is_void = self._effect_ops[expr.name]
-            if expr.name == "throw" or is_void:
-                return None
-            return self._effect_op_result_wt.get(expr.name)
-        # Try generic call resolution first
-        if expr.name in self._generic_fn_info:
-            mangled = self._resolve_generic_call(expr)
-            if mangled and mangled in self._fn_ret_types:
-                return self._fn_ret_types[mangled]
-        # Non-generic function — direct lookup
-        if expr.name in self._fn_ret_types:
-            return self._fn_ret_types[expr.name]
-        return None
-
-    def _infer_block_result_type(self, block: ast.Block) -> str | None:
-        """Infer the WAT result type of a block from its final expression.
-
-        #1212: a literal marked for the i32 Byte width lowers as
-        ``i32.const``, so the join built over it must be annotated
-        ``(result i32)`` — the decider and the lowering read the same marks
-        (`_mark_byte_literal_leaves`), which is what keeps the `if` / `match`
-        result type and its arms in agreement.
-        """
-        expr = block.expr
-        if isinstance(expr, ast.IntLit):
-            return "i32" if id(expr) in self._byte_literal_ids else "i64"
-        if isinstance(expr, ast.FloatLit):
-            return "f64"
-        if isinstance(expr, ast.BoolLit):
-            return "i32"
-        if isinstance(expr, ast.UnitLit):
+        Code generation derives no type of its own: every width, every
+        element, key and value type, every scrutinee's and every closure's
+        type it lowers by is this one, the type the program was checked
+        and verified against."""
+        key = node.node_id
+        if key is None:
             return None
-        if isinstance(expr, ast.SlotRef):
-            # Check type name to infer WAT type
-            name = self._resolve_base_type_name(expr.type_name)
-            if name in ("Int", "Nat"):
-                return "i64"
-            if name == "Float64":
-                return "f64"
-            if name in ("Bool", "Byte"):
-                return "i32"
-            if self._is_pair_type_name(name):
-                return "i32_pair"
-            base = name.split("<")[0] if "<" in name else name
-            # #1321/#1331: the DECLARED-ADT branch first, as at every other
-            # decider.  Both arms answer "i32", so this ordering is inert
-            # TODAY — which is exactly the width-luck that hid #1309 and
-            # #1331, and the reason it is corrected rather than left to a
-            # future representation to expose.
-            if self._declares_adt(name):
-                return "i32"
-            # Opaque handle types — i32 handles managed by host runtime
-            if base in ("Decimal", "Map", "Set"):
-                return "i32"
-            return None  # pragma: no cover
-        if isinstance(expr, ast.BinaryExpr):
-            if expr.op in self._ARITH_OPS:
-                inner = self._infer_expr_wasm_type(expr.left)
-                return inner if inner == "f64" else "i64"
-            if expr.op in self._CMP_OPS:
-                return "i32"
-            if expr.op in (ast.BinOp.AND, ast.BinOp.OR, ast.BinOp.IMPLIES):
-                return "i32"
-        if isinstance(expr, ast.UnaryExpr):
-            if expr.op == ast.UnaryOp.NEG:
-                inner = self._infer_expr_wasm_type(expr.operand)
-                return inner if inner == "f64" else "i64"
-            if expr.op == ast.UnaryOp.NOT:
-                return "i32"
-        if isinstance(expr, ast.IfExpr):
-            # #1276 (F4): the twin of the `_infer_expr_wasm_type` arm — a
-            # `then` branch whose every path throws yields no type, and
-            # answering `None` for the whole `if` on that basis left an
-            # enclosing `handle` block result-less while the completing branch
-            # pushed a value into it.
-            then_wt = self._infer_block_result_type(expr.then_branch)
-            if then_wt is not None:
-                return then_wt
-            return self._infer_block_result_type(expr.else_branch)
-        if isinstance(expr, ast.FnCall):
-            return self._infer_fncall_wasm_type(expr)
-        if isinstance(expr, ast.QualifiedCall):
-            return self._infer_qualified_call_wasm_type(expr)
-        if isinstance(expr, ast.StringLit):
-            return "i32_pair"
-        if isinstance(expr, ast.InterpolatedString):
-            return "i32_pair"
-        if isinstance(expr, ast.Block):
-            return self._infer_block_result_type(expr)
-        if isinstance(expr, ast.ConstructorCall):
-            # ctor-owner-exempt: membership test on a parsed name, not a layout
-            # read
-            return "i32" if expr.name in self._ctor_layouts else None
-        if isinstance(expr, ast.NullaryConstructor):
-            # ctor-owner-exempt: membership test on a parsed name, not a layout
-            # read
-            return "i32" if expr.name in self._ctor_layouts else None
-        if isinstance(expr, ast.MatchExpr):
-            # #1276 (F4): the first arm that yields a type — see the twin arm
-            # in `_infer_expr_wasm_type`.
-            for arm in expr.arms:
-                arm_wt = self._infer_expr_wasm_type(arm.body)
-                if arm_wt is not None:
-                    return arm_wt
+        ty = self._expr_semantic_types.get(key)
+        if ty is None:
+            ty = self._built_types.get(key)
+        return ty
+
+    def _built(self, node: _N, ty: Type) -> _N:
+        """*node*, which code generation builds after the check to stand
+        for a computation the program writes (an interpolation's
+        conversions, a desugared `compare`), with the type it is built at
+        recorded under its identity, so :meth:`_type_of` answers for it as
+        for a checked node."""
+        if node.node_id is None:
+            object.__setattr__(node, "node_id", ast.fresh_node_id())
+        assert node.node_id is not None  # noqa: S101
+        self._built_types[node.node_id] = ty
+        return node
+
+    def _width_of(self, ty: Type | None) -> str | None:
+        """The WAT value a value of *ty* is held in
+        (:func:`vera.types.value_width`), with this namespace's own data
+        declarations first: a ``data Array`` or ``data Future`` declared
+        here is a pointer, whatever the built-in of its name is held as
+        (spec §8.4.1, #1321).
+
+        A type variable is held as a pointer.  Only a generic's template
+        holds one, which code generation compiles beside its instances'
+        clones and nothing calls (every call reaches its instance's clone,
+        #1679), and it lays a `T` element or field out as the pointer its
+        own type expressions name."""
+        if isinstance(ty, RefinedType):
+            ty = base_type(ty)
+        if isinstance(ty, TypeVariable):
+            return "i32"
+        if (isinstance(ty, AdtType) and ty.name in ("Array", "Future")
+                and self._declares_adt(ty.name, len(ty.type_args))):
+            return "i32"
+        if (isinstance(ty, AdtType) and ty.name == "Future"
+                and len(ty.type_args) == 1):
+            return self._width_of(ty.type_args[0])
+        return value_width(ty)
+
+    def _expr_width(self, expr: ast.Expr) -> str | None:
+        """The WAT value *expr*'s value is held in: the width of the type
+        the checker gave it.  ``None`` for a value that holds nothing
+        (`Unit`, a `throw`'s `Never`) and for a node with no type.
+
+        An `if`, a `match` and a `handle` take their block's result from
+        here, the join the checker typed, not from an arm: an arm that
+        always throws has no width, and a join whose arms code generation
+        could not type left a value on the stack of a result-less block
+        (#1276, and #1525's line from the program generator)."""
+        return self._width_of(self._type_of(expr))
+
+    def _declared_width(self, node: ast.Node) -> str | None:
+        """The WAT value a value declared at *node*, a type expression or a
+        pattern, is held in: the width of the type the checker resolved the
+        type expression to, or the type the pattern matches (#1525).
+        ``"unit"`` for a type that holds nothing (`Unit`, a `Future` of
+        one), which is stored nowhere; ``None`` for a node the check did not
+        type, and for a bare type variable, which only a generic's template
+        declares a value at: nothing calls the template (every call reaches
+        an instance's clone, #1679), and a value with no width drops it, as
+        the variable's spelling did.
+
+        A parameterised alias is its target under its arguments (`Id<Nat>`
+        is a `Nat`, `W<Int>` under `type W<T> = String` a `String`), which a
+        width read off the type's spelling had none for, and so dropped the
+        function, or read as one word where the value is a pair."""
+        ty = self._type_of(node)
+        if ty is None or isinstance(base_type(ty), TypeVariable):
             return None
-        if isinstance(expr, ast.IndexExpr):
-            elem_type = self._infer_index_element_type(expr)
-            return self._element_wasm_type(elem_type) if elem_type else None
-        if isinstance(expr, ast.ArrayLit):
-            return "i32_pair"
-        if isinstance(expr, (ast.ForallExpr, ast.ExistsExpr)):
-            return "i32"  # quantifiers return Bool
-        if isinstance(expr, (ast.AssertExpr, ast.AssumeExpr)):
-            return None  # pragma: no cover — assert/assume return Unit
-        return None  # pragma: no cover
+        if erases_to_unit(ty):
+            return "unit"
+        return self._width_of(ty)
 
     @staticmethod
-    def _format_named_type(te: ast.NamedType) -> str:
-        """Format a NamedType as a full type name including type args.
+    def _is_nat_type(ty: Type | None) -> bool:
+        """Whether *ty*, a refinement read as its base, is `Nat`."""
+        return ty is not None and base_type(ty) == NAT
 
-        Note: duplicated in Monomorphizer._format_type_name
-        (vera/monomorphize.py). Both must remain in sync.
-        """
-        if not te.type_args:
-            return te.name
-        arg_names = []
-        for ta in te.type_args:
-            if isinstance(ta, ast.NamedType):
-                arg_names.append(
-                    InferenceMixin._format_named_type(ta))
-            else:
-                return te.name
-        return f"{te.name}<{', '.join(arg_names)}>"
+    def _holds_pointer(self, ty: Type | None) -> bool:
+        """Whether a value of *ty* is held in an ``i32`` that addresses the
+        heap (or names a host handle), so a binding of it is a GC root: a
+        pair's pointer half is one, and so is any other ``i32`` but an
+        inline scalar's (`Bool`, `Byte`), a `Future` of one included."""
+        width = self._width_of(ty)
+        if width == "i32_pair":
+            return True
+        while isinstance(ty, (RefinedType, AdtType)) and (
+                isinstance(ty, RefinedType)
+                or (ty.name == "Future" and len(ty.type_args) == 1
+                    and not self._declares_adt("Future", 1))):
+            ty = ty.base if isinstance(ty, RefinedType) else ty.type_args[0]
+        return width == "i32" and value_type_name(ty) not in _INLINE_I32_TYPES
+
+    def _type_name_of(self, expr: ast.Expr) -> str | None:
+        """The name of the type the checker gave *expr*
+        (:func:`vera.types.value_type_name`), by which code generation picks
+        a value's layout as an element, its conversion to `String`, its
+        equality and its container tags.  ``None`` for a node with no type.
+
+        It replaces a walker over the expression's syntax that answered a
+        name of its own: the bare head of a constructed or returned data
+        type (``Option`` for an ``Option<Int>``), ``Int`` for a value the
+        checker types ``Nat`` or ``Byte``, nothing for a closure or a call
+        it had no arm for, and so a dropped function, a module that does
+        not load or a wrong value where its answer and the checker's
+        differed (#1525)."""
+        return value_type_name(self._type_of(expr))
+
+    def _type_arg_name_of(self, expr: ast.Expr, *path: int) -> str | None:
+        """The name of an argument of *expr*'s checked type, reached by
+        argument positions: an `Array`'s element is ``(0,)``, a `Map`'s key
+        ``(0,)`` and value ``(1,)``, a `Set`'s member ``(0,)``, the element
+        of an `Array<Array<T>>`'s element ``(0, 0)``.  ``None`` for a type
+        with no such argument."""
+        ty = self._type_of(expr)
+        for index in path:
+            ty = base_type(ty) if ty is not None else None
+            if not (isinstance(ty, AdtType) and len(ty.type_args) > index):
+                return None
+            ty = ty.type_args[index]
+        return value_type_name(ty)
+
+    def _return_name_of(self, closure: ast.Expr) -> str | None:
+        """The name of the return type of the function type the checker
+        gave *closure*, whatever its shape.  ``None`` for a value the
+        checker did not type as a function."""
+        ty = self._type_of(closure)
+        ty = base_type(ty) if ty is not None else None
+        if isinstance(ty, FunctionType):
+            return value_type_name(ty.return_type)
+        return None
 
     def _canonical_named_type(
         self,
@@ -706,37 +430,6 @@ class InferenceMixin:
             return "i32_pair"
         return self._named_type_to_wasm(canonical.name)
 
-    def _checked_value_wasm_type(self, node: ast.Node) -> str | None:
-        """The WASM type of the value *node* leaves, from the type the
-        checker gave it (#1744): ``None`` for `Unit` and for `Never`, which
-        leave nothing.
-
-        Asked where code generation's own reading of an expression has no
-        answer, a block ending in a handler or an `array_fold` over a
-        closure among them.  The width is the one :meth:`_canonical_wasm_type`
-        reads from the type as a clone's substitution spells it
-        (:func:`vera.typed.type_arg_name`).  A compiled node the check left
-        untyped, or typed with a variable no instantiation bound, is a node
-        no width can be read for.
-        """
-        ty = (self._expr_semantic_types.get(node.node_id)
-              if node.node_id is not None else None)
-        base = base_type(ty) if ty is not None else None
-        if isinstance(base, PrimitiveType):
-            if base.name in ("Unit", "Never"):
-                return None
-            return self._canonical_wasm_type(
-                ast.NamedType(name=base.name, type_args=None))
-        if isinstance(base, FunctionType):
-            return "i32"  # a closure pointer
-        if isinstance(base, AdtType):
-            return self._canonical_wasm_type(
-                Monomorphizer._parse_type_name(type_arg_name(base)))
-        raise CodegenInvariantError(
-            f"code generation reads the type the checker gave this "
-            f"{type(node).__name__}, and it has none it can lower "
-            f"({ty!r})", node)
-
     def _reaches_fn_type(
         self,
         te: ast.TypeExpr,
@@ -777,408 +470,6 @@ class InferenceMixin:
                 continue
             return False
 
-    def _format_named_type_canonical(self, te: ast.NamedType) -> str:
-        """Format a NamedType to its canonical Vera-type-name string.
-
-        Resolves the outer name through the type alias chain (and
-        any `RefinementType` wrappers along the way) via
-        `_canonical_named_type`, then formats the result with the
-        terminal `type_args`.  Examples:
-
-          - `NamedType("Str")` where `type Str = String` → `"String"`
-          - `NamedType("IntList")` where `type IntList = Array<Int>`
-            → `"Array<Int>"` — the terminal type's args propagate.
-          - `NamedType("PosInt")` where `type PosInt = { @Int | p }`
-            → `"Int"`
-
-        If the walk can't reach a `NamedType` (e.g. terminates at a
-        `FnType`-bodied alias), falls back to `_format_named_type(te)`
-        — bare-name format without resolution.  This is a deliberate
-        post-#630 simplification: the pre-#630 fallback resolved the
-        outer name via `_resolve_base_type_name` and formatted with
-        the outer `type_args`, but that path is unreachable when the
-        canonical walker returns None (the walker covers every shape
-        the old fallback did and more), so the unresolved
-        `_format_named_type` fallback is structurally adequate.
-        """
-        canonical = self._canonical_named_type(te)
-        if canonical is None:
-            return self._format_named_type(te)
-        return self._format_named_type(canonical)
-
-    def _ref_vera_type_name(
-        self, type_name: str, type_args: tuple[ast.TypeExpr, ...] | None,
-    ) -> str | None:
-        """Vera type name of a slot/result reference (`@T` / `@T.result`).
-
-        Shared by the `SlotRef` and `ResultRef` arms of `_infer_vera_type` —
-        both carry the same declared @Type shape (`type_name` + optional
-        `type_args`).  A parameterized ref (`@Option<Int>`) renders its type
-        arguments (`"Option<Int>"`) so the composite structural-`==` dispatch
-        can resolve the concrete field types; a ref whose type argument is not a
-        plain `NamedType` (a generic type variable, say) falls back to the bare
-        `type_name` rather than emitting a malformed name.
-        """
-        if type_args:
-            arg_names = []
-            for ta in type_args:
-                if isinstance(ta, ast.NamedType):
-                    arg_names.append(self._format_named_type(ta))
-                else:
-                    return type_name
-            return f"{type_name}<{', '.join(arg_names)}>"
-        return type_name
-
-    def _infer_vera_type(self, expr: ast.Expr) -> str | None:
-        """The Vera type name of an expression for call rewriting, from one
-        source: this walker first, the CHECKER second.
-
-        The precedence and its rationale are stated once, on
-        :func:`vera.monomorphize.checker_clone_type_name`.  The discovery twin
-        (``Monomorphizer._infer_vera_type_name``) asks the same two sources in
-        the same order over the same table — the checker's table for the file
-        the body was written in, the entry program's or a module's own
-        (#1509) — so a shape either walker cannot name is named identically
-        for both rather than becoming a clone only one of them believes in —
-        which is what every member of the #1327 family was.
-        """
-        walked = self._walk_vera_type(expr)
-        if walked is not None:
-            return walked
-        return checker_clone_type_name(self._expr_semantic_types, expr)
-
-    def _walk_vera_type(self, expr: ast.Expr) -> str | None:
-        """Infer the Vera type name of an expression, syntactically.
-
-        Each class's answer is its arm in ``_VERA_TYPE_ARMS``, a
-        ``vera.fold.dispatch`` table, so every `Expr` class has one.
-        """
-        arm = _VERA_TYPE_ARMS.get(type(expr))
-        return arm(self, expr) if arm is not None else None
-
-    def _infer_fncall_vera_type(self, call: ast.FnCall) -> str | None:
-        """Infer Vera return type of a function call.
-
-        For generic calls, resolves type args and substitutes into
-        the return TypeExpr.  For non-generic calls, maps from WASM
-        return type back to Vera type name.
-        """
-        # apply_fn(closure, args...) — infer from closure's return type.
-        #
-        # The closure-arg return TypeExpr is extracted by the shared
-        # `_closure_arg_return_type` dispatch: a `SlotRef` resolves
-        # **transitively** through the alias chain to the terminal
-        # `FnType` (via `resolve_fn_type_alias`, #867 — with any generic
-        # alias's type params substituted), an inline `AnonFn` yields its
-        # declared return type.  Pre-#630 each shape had its own ad-hoc
-        # walk with subset-of-the-concerns coverage — accounting for
-        # triggers 7 (SlotRef + nested-RefinementType return), 8 (SlotRef
-        # + `FnType`-aliased-String return), 9 (AnonFn + plain return),
-        # and 10 (AnonFn + nested-RefinementType return) of the #602 bug
-        # class; the extracted TypeExpr then feeds the centralised
-        # `_canonical_named_type` walker.  Shapes without a single
-        # `return_type` field (`IfExpr` between two closures with the same
-        # Vera-level type, `MatchExpr` arms, etc.) need a unifying step
-        # that's genuinely additional dispatch work, not "plug-in".
-        if call.name == "apply_fn" and call.args:
-            ret_te = self._closure_arg_return_type(call.args[0])
-            if ret_te is not None:
-                canonical = self._canonical_named_type(ret_te)
-                if canonical is not None:
-                    return self._format_named_type(canonical)
-        # Ability operations: show → String, hash → Int.  #908: skip the name
-        # special-case when the user has defined `fn show` / `fn hash` (the
-        # checker doesn't reserve these ability-op names), so the Vera element
-        # type falls through to the general non-generic user-fn resolution below
-        # (which reads the DECLARED return type from `_fn_ret_type_exprs` /
-        # `_fn_ret_types`).
-        #
-        # Which of the two it is comes from `_bare_call_denotes_op`, the SHARED
-        # gate (#1284/#1299), not from `_fn_ret_types` membership — the same
-        # correction its WASM-width twin needed (#1379).  That registry is
-        # flat: it holds every symbol the whole compilation absorbed, including
-        # another module's `fn show` that this declaration's lexical scope does
-        # not contain.  Asked by membership, this arm handed back the OTHER
-        # module's declared return for a call the lowering resolves to the
-        # ability operation, so the Vera type and the emitted WASM result
-        # disagreed.  The two consultors and `_translate_call` now ask one
-        # question.
-        if (self._bare_call_denotes_op(call.name)
-                or call.name not in self._fn_ret_types):
-            if call.name == "show":
-                return "String"
-            if call.name == "hash":
-                return "Int"
-        # Async builtins — Future<T> is transparent
-        if call.name == "async" and call.args:
-            inner = self._infer_fncall_vera_type(call.args[0]) \
-                if isinstance(call.args[0], ast.FnCall) \
-                else self._infer_vera_type(call.args[0])
-            return f"Future<{inner}>" if inner else "Future"
-        if call.name == "await" and call.args:
-            # await(Future<T>) → T; at WASM level it's the inner type
-            inner = self._infer_fncall_vera_type(call.args[0]) \
-                if isinstance(call.args[0], ast.FnCall) \
-                else self._infer_vera_type(call.args[0])
-            # Strip the Future<...> wrapper if present
-            if inner and inner.startswith("Future<") and inner.endswith(">"):
-                return inner[7:-1]
-            return inner
-        # Registry-complete builtin simple-name table (#769 gap 1b) — the SAME
-        # dict instantiation discovery consults
-        # (Monomorphizer._infer_fncall_vera_type_simple), so the two clone-name
-        # consultors cannot drift: an entry added there lands here atomically.
-        # Consulted AFTER the logic arms above (apply_fn / show / hash /
-        # async / await), which need call-shape context no fixed table has —
-        # e.g. `async` prefers the richer "Future<Int>" over the dict's bare
-        # "Future".  Gated on non-registration: a name in _fn_ret_types is a
-        # REAL declaration — a user fn, or a user OVERRIDE of an E151-exempt
-        # prelude combinator (#815: option_map, the json_* family, html_attr)
-        # — whose declared type must win, exactly like the #908 show/hash
-        # gate (adversarial panel, PR #972).  Opaque builtins are never
-        # registered there and fall through to the dict.
-        if call.name not in self._fn_ret_types:
-            builtin_simple = _BUILTIN_VERA_RETURN_TYPES.get(call.name)
-            if builtin_simple is not None:
-                return builtin_simple
-        if call.name in self._generic_fn_info:
-            forall_vars, _params = self._generic_fn_info[call.name]
-            # #1679: the instantiation the checker inferred at the call, which
-            # names the clone the call calls, so the call's type is the
-            # clone's and not a re-derivation from its arguments.
-            mapping = self._call_target_mapping(call, forall_vars)
-            if mapping is None:
-                return None
-            # #769: prefer the callee's DECLARED return TypeExpr substituted
-            # with the inferred instantiation — exactly the substitution
-            # discovery performs (Monomorphizer._generic_return_name), so
-            # both sides mangle the same clone for a generic call in
-            # argument position.  The WAT collapse below names an i32-handle
-            # return "Bool" and a declared-Nat i64 return "Int" — names
-            # discovery never emits (dangling-E602 desyncs pre-#769).
-            # #1509: only a variable the return MENTIONS has to be bound.  A
-            # phantom one no argument determines (`E` in
-            # `result_unwrap_or(Ok(2), 0)`) left this branch answering
-            # nothing, so a generic call nested in a constructor argument
-            # fell to the checker's `Nat` where discovery names the bound
-            # return (`Int`), and the two named different clones for the
-            # call around it.
-            decl_ret = self._fn_ret_type_exprs.get(call.name)
-            if isinstance(decl_ret, ast.RefinementType):
-                decl_ret = decl_ret.base_type
-            if isinstance(decl_ret, ast.NamedType):
-                if decl_ret.name in forall_vars:
-                    return mapping.get(decl_ret.name)
-                return decl_ret.name
-            # #1679: the clone this call calls is the typed program's, named
-            # from the instantiation the checker inferred at the call.
-            mangled = self._resolve_generic_call(call)
-            if mangled is None:
-                return None
-            # Look up WASM return type and map back
-            ret_wt = self._fn_ret_types.get(mangled)
-            if ret_wt == "i64":
-                return "Int"
-            if ret_wt == "i32":
-                return "Bool"
-            if ret_wt == "f64":
-                return "Float64"
-            # Mirror the non-generic `i32_pair` branch below: a
-            # monomorphised generic fn returning `String` or `Array<T>`
-            # has the same disambiguation need.  Without this, a
-            # `forall<T> fn id(@T -> @T)` instantiated at `String` and
-            # called inside interpolation would still fall through to
-            # `to_string(...)` — same #602 failure mode in a different
-            # call shape.  `_register_fn` populates `_fn_ret_type_exprs`
-            # for monomorphised names too (`codegen/core.py:333`).  Currently
-            # latent — generic instantiation over `String` is blocked
-            # upstream by the bare-type-var-param lowering gap (same
-            # class as #604) — but kept symmetric with the non-generic
-            # branch so the fix lands automatically when that gap closes.
-            if ret_wt == "i32_pair":
-                resolved = self._resolve_i32_pair_ret_te(
-                    self._fn_ret_type_exprs.get(mangled),
-                )
-                if resolved is not None:
-                    return resolved
-            return None
-        # Non-generic user-fn call: prefer the PRECISE declared return type
-        # name (#878).  The WAT-type map below collapses every i32 handle
-        # (Decimal, an ADT, an Option/Result pointer) to "Bool" — the exact
-        # phantom-var default value — so a user helper `d` returning `@Decimal`
-        # used in a generic's bare `@VeraT` argument position resolved to the
-        # Bool clone (`option_unwrap_or$Bool`), a symbol Pass 1.5 never emitted.
-        # The declared return TypeExpr (registered by `_register_fn`) carries
-        # the real name, mirroring how the #732 verifier builds `fn_ret_types`
-        # from declared types.  Only the i32-collapse ambiguity needs this;
-        # i64/f64/i32_pair are already unambiguous, and a bare scalar declared
-        # return (`Int`, `Bool`) still yields the same name.
-        #
-        # NB: this returns the ALIAS-RESOLVED name for scalar-resolving aliases
-        # (`type Age = Int` → "Int"), which is what non-clone-naming callers
-        # (interpolation, container element/key typing, `show`/`hash`) require.
-        # The clone-naming path needs the RAW alias name instead and gets it
-        # from `_declared_return_clone_name` (used by `_unify_param_arg_wasm`),
-        # NOT from here — see #899 issue 2.
-        ret_te = self._fn_ret_type_exprs.get(call.name)
-        if isinstance(ret_te, ast.RefinementType):
-            ret_te = ret_te.base_type
-        if isinstance(ret_te, ast.NamedType) and not ret_te.type_args:
-            # Only override the ambiguous i32 collapse: an i32-returning user
-            # fn whose declared base is not a scalar (Decimal, an ADT, …) must
-            # keep its true name.  Gate on the ALIAS-RESOLVED base (so
-            # `type Money = Decimal` is recognised as non-scalar), returning the
-            # raw declared name for it.  i64/f64/i32_pair fall through.
-            if self._resolve_base_type_name(ret_te.name) not in (
-                "Int", "Nat", "Bool", "Byte", "Float64", "String",
-            ):
-                return ret_te.name
-        # #911: a PARAMETERIZED i32-pointer return (`Option<Int>`,
-        # `Result<Int, String>`, a generic ADT) is the same ambiguous
-        # i32-collapse as the scalar-guard above, but the `not ret_te.type_args`
-        # clause skipped it — so it fell through to `i32 → "Bool"` and mis-typed
-        # a composite `show`/`hash` argument.  Return the base head; the
-        # `show`/`hash` site recovers the type args separately via
-        # `_get_arg_type_info_wasm`.  Array is excluded: it is i32_pair, already
-        # disambiguated to "Array" by the `_resolve_i32_pair_ret_te` branch
-        # below — intercepting it here would be a redundant second path.
-        if (
-            isinstance(ret_te, ast.NamedType)
-            and ret_te.type_args
-            and self._fn_ret_types.get(call.name) == "i32"
-            and self._resolve_base_type_name(ret_te.name) not in (
-                "Int", "Nat", "Bool", "Byte", "Float64", "String", "Array",
-            )
-        ):
-            return ret_te.name
-        # Non-generic: map from WASM return type
-        ret_wt = self._fn_ret_types.get(call.name)
-        if ret_wt == "i64":
-            return "Int"
-        if ret_wt == "i32":
-            return "Bool"
-        if ret_wt == "f64":
-            return "Float64"
-        # i32_pair → String or Array.  WAT type alone can't
-        # disambiguate, so consult the full Vera return-type registry
-        # populated by `_register_fn` (see #614 — same registry, same
-        # pattern).  Without this branch, a user fn returning `String`
-        # was mapped to `None` here, which made
-        # `_translate_interpolated_string` fall through to the
-        # `to_string(...)` fallback wrapper.  `to_string` reads its
-        # arg as an `i64`, but the FnCall pushed `i32_pair` — hence
-        # the `expected i64, found i32` trap at WASM validation
-        # (#602).  Same inference gap that #614 exposed for the
-        # *element-type* of an indexed FnCall result; this is the
-        # *return-type* inference half.
-        if ret_wt == "i32_pair":
-            resolved = self._resolve_i32_pair_ret_te(
-                self._fn_ret_type_exprs.get(call.name),
-            )
-            if resolved is not None:
-                return resolved
-        return None
-
-    def _declared_return_clone_name(self, call: ast.FnCall) -> str | None:
-        """The clone-name KEY a non-generic user fn call's declared return
-        contributes when its result is bound to a generic's bare ``@T``, for
-        CLONE NAMING only (#878 / #899).
-
-        Delegates to the shared
-        :func:`vera.monomorphize.declared_return_clone_key` — THE single source
-        of truth that instantiation discovery (``_simple_return_type_name``) and
-        the #732 verifier (``_simple_type_name``) also route through — so the
-        call-rewrite cannot desync from the emitted clone by construction.  This
-        ends the three-round whack-a-mole: the previous ad-hoc gate
-        (``not ret_te.type_args``) BAILED for a parameterized return
-        (``-> @Option<Decimal>``) and fell through to the ``i32 → "Bool"``
-        collapse, so the call site referenced ``pick$Bool`` while discovery
-        emitted ``pick$Option`` — a NET regression vs base, which linked both to
-        ``$Bool``.  The shared key gives the base name for a parameterized
-        return (``Option``), the raw name for an alias/refinement (``Age``), and
-        the plain name for a scalar/handle (``Decimal``), identically to
-        discovery for EVERY shape.
-
-        The general ``_infer_fncall_vera_type`` deliberately alias-RESOLVES
-        scalars for its OTHER callers (interpolation, container typing,
-        ``show``/``hash`` need the canonical ``Int``/``String``), which is why
-        the clone-naming path must consult THIS method instead.  Returns
-        ``None`` for builtins, generics, and fns with no NamedType return, so
-        the caller falls back to ``_infer_vera_type``.
-
-        Gated on the #1284 ownership predicate over the LEXICAL scope
-        (#1299).  ``_fn_ret_type_exprs`` is flat — it holds every declaration
-        the compilation absorbed, including an imported module's private one
-        — and this override BEATS ``_infer_vera_type``, so an invisible
-        ``fn get(@Unit -> @Bool)`` named the clone ``idg$Bool`` at a call site
-        where the general inference had correctly answered the ``State<Int>``
-        cell's ``Int``.  A name no visible declaration owns contributes no
-        declared return: the caller falls back, and reaches the operation.
-        """
-        if call.name in self._generic_fn_info:
-            return None
-        if not bare_call_denotes_user_fn(call.name, self._scoped_fns):
-            return None
-        return declared_return_clone_key(
-            self._fn_ret_type_exprs.get(call.name))
-
-    def _resolve_i32_pair_ret_te(
-        self, ret_te: ast.TypeExpr | None,
-    ) -> str | None:
-        """Canonicalise a fn's return TypeExpr for `i32_pair` lookup.
-
-        Several shapes can appear at user-fn return positions for
-        `String` / `Array<T>` (i32_pair) returns:
-
-          - `NamedType("String")` — bare type, common case.
-          - `NamedType("MyAlias")` where the alias resolves to String —
-            `_resolve_base_type_name` follows the chain to `"String"`.
-          - `RefinementType(base_type=NamedType("String"), ...)` — the
-            inline `@{ @String | predicate }` form.  `_register_fn`
-            stores the literal AST, so the registry holds a
-            `RefinementType` directly.
-          - **Nested refinements** (`@{ @{ @String | p1 } | p2 }`) —
-            the grammar admits `refinement_type` over any `type_expr`,
-            so refinements can wrap refinements.  Empirically reachable
-            via valid Vera (the type checker accepts the nested form
-            at fn return positions).  The unwrap below loops to handle
-            arbitrary nesting depth.
-
-        Without unwrapping these shapes, a fn declared with any of the
-        wrapper forms reproduces the original #602 trap inside
-        interpolation — `_fn_ret_type_exprs.get(name)` returns the
-        un-canonical AST, the downstream consumer's `vera_type ==
-        "String"` check fails, and `_translate_interpolated_string`
-        falls through to `to_string(...)` over an `i32_pair` value
-        (`expected i64, found i32` at WASM validation).
-
-        See [#626](https://github.com/aallan/vera/issues/626) — every
-        `return None` here is an instance of the broader silent-skip
-        pattern.  The downstream `to_string` fallback at
-        `vera/wasm/operators.py` carries the matching commentary.
-
-        Returns the canonical Vera type name (`"String"` / `"Array"` /
-        etc.), or None for shapes the unwrap can't reduce to a
-        `NamedType` (e.g. `FnType`, or a `RefinementType` whose
-        innermost base is non-`NamedType`).  None-returns are
-        currently triggered for cross-module imports too (the
-        registry isn't populated cross-module — see #628).
-
-        Post-#630: thin delegate over `_canonical_named_type`, the
-        single canonicalisation walker.  The bare-name return
-        (without `type_args`) matches both consumers' expectations
-        — they compare against `"String"` / `"Array"` and ignore
-        parameterisation.
-        """
-        if ret_te is None:
-            return None
-        canonical = self._canonical_named_type(ret_te)
-        return canonical.name if canonical is not None else None
-
-    def _ctor_to_adt_name(self, ctor_name: str) -> str | None:
-        """Find the ADT type name for a constructor name."""
-        # ctor-owner-exempt: the flat ownership projection itself
-        return self._ctor_to_adt.get(ctor_name)
 
     def _strip_future_scoped(self, name: str) -> str:
         """:func:`~vera.wasm.helpers._strip_future`, asked in this namespace.
@@ -1212,8 +503,9 @@ class InferenceMixin:
 
         String and Array<T> elements are represented as two consecutive
         i32 values (pointer + length), requiring 8 bytes of storage.
-        Bare "Array" (without type args) also matches, since the element
-        type name from _infer_vera_type may not include type parameters.
+        Bare "Array" (without type args) also matches, since a type name
+        renders bare where an argument has no name of its own
+        (:func:`vera.types.value_type_name`).
 
         ``Future<…>`` is stripped first (#1045): a ``Future<String>`` /
         ``Future<Array<T>>`` element is a pair exactly like its payload.
@@ -1413,645 +705,6 @@ class InferenceMixin:
                 or resolved == "Array"
                 or resolved.startswith("Array<"))
 
-    def _infer_array_element_type(self, expr: ast.ArrayLit) -> str | None:
-        """Infer the Vera element type name from an array literal.
-
-        An element that is itself a literal is spelled in full
-        (``Array<Int>``), not by the bare head the walker names it by (#772):
-        the bare ``Array`` is also how a value of a ``data Array { … }``
-        is spelled, and the deciders read it as the declaration wherever
-        one is in scope (#1539), measuring the container's ``(ptr, len)``
-        element as a one-word pointer.  The full spelling carries the
-        container's argument, which no such declaration takes.
-        """
-        if not expr.elements:
-            return None
-        first = expr.elements[0]
-        if isinstance(first, ast.ArrayLit):
-            inner = self._infer_array_element_type(first)
-            if inner is not None:
-                return f"Array<{inner}>"
-        return self._infer_vera_type(first)
-
-    def _infer_index_element_type(self, expr: ast.IndexExpr) -> str | None:
-        """Infer the Vera element type from an index expression's collection.
-
-        The collection should be a slot ref like @Array<Int>.0, whose
-        type_name is "Array" with type_args (NamedType("Int"),).
-        Also handles chained indexing (e.g. @Array<Array<Int>>.0[0][1])
-        by recursively resolving the inner collection's element type.
-
-        Normally returns the bare element name (`te.name`) — dropping the
-        element's own type args is safe because every ADT element is an i32
-        heap pointer and String/Array match on the bare head, so the
-        representation deciders (`_element_mem_size` / `_element_load_op` /
-        `_element_store_op` / `_element_wasm_type` / `_is_pair_element_type`)
-        need no args.  The ONE exception is `Future<T>` (#1045): it is
-        representation-transparent (#841), so its width IS its payload's —
-        a bare "Future" (args dropped) collapses to the i32 default and
-        mis-sizes an i64 payload (`i32.load` on i64 data) or a pair payload
-        (single i32 load of a two-word String).  Render the full
-        `Future<…>` name so `_strip_future` can recover the payload, keeping
-        this in agreement with the array-literal store side, which gets the
-        full name from `_infer_array_element_type` -> `_infer_vera_type`.
-        An alias INSIDE the payload (`Future<FlagA>`, `type FlagA = Bool`) is
-        canonicalized to `Future<Bool>` first (#1074) so the bare alias does
-        not itself fall to the 4-byte default under `_strip_future`.
-        """
-        te = self._infer_index_element_type_expr(expr)
-        if te is None:
-            return None
-        if te.name == "Future" and te.type_args:
-            # #1074: canonicalize an alias sitting inside the payload
-            # (`Future<FlagA>` -> `Future<Bool>`) so `_strip_future` in the
-            # element helpers hands a resolved payload to the size / load
-            # deciders, not a bare alias that falls to the 4-byte default.
-            canon, _ = self._canonicalize_alias_slot_name(
-                self._format_named_type(te))
-            return canon
-        return te.name
-
-    def _infer_index_element_type_expr(
-        self, expr: ast.IndexExpr,
-    ) -> ast.NamedType | None:
-        """Get the full NamedType of the element from an IndexExpr.
-
-        Returns the NamedType so that chained indexing can inspect
-        nested type_args (e.g. Array<Array<Int>> → Array<Int> → Int).
-        Type aliases on the collection (`type Row = Array<Bool>`) are
-        followed to their underlying Array<...> definition before
-        extracting the element type — without this, indexing through
-        an aliased slot like `@Row.0[1]` silently fails with E602 (#583).
-        """
-        coll = expr.collection
-        if isinstance(coll, ast.SlotRef):
-            ta_te = self._alias_array_element(coll.type_name, coll.type_args)
-            if ta_te is not None:
-                return ta_te
-        # Chained indexing: collection is itself an IndexExpr
-        if isinstance(coll, ast.IndexExpr):
-            inner_te = self._infer_index_element_type_expr(coll)
-            if (inner_te is not None
-                    and inner_te.name == "Array" and inner_te.type_args):
-                ta = inner_te.type_args[0]
-                if isinstance(ta, ast.NamedType):
-                    return ta
-        # FnCall returning Array<T>: e.g. `s_arr(x)[i]`.  Pre-fix this
-        # branch was missing — collection-is-a-call fell through to
-        # `return None` below, `_translate_index_expr` then returned
-        # None, and the enclosing function (or closure) was dropped
-        # from the WAT output.  At top level this surfaced as the #604-
-        # class "function body contains unsupported expressions —
-        # skipped" warning; inside a closure body the registered
-        # closure_id was never added to the function table, so the
-        # `call_indirect` at the use site referenced a missing entry
-        # and WASM validation rejected the module with "unknown table 0:
-        # table index out of bounds" (#614).
-        if isinstance(coll, ast.FnCall):
-            ret_te = self._fn_ret_type_exprs.get(coll.name)
-            # Walk RefinementType layers to a base NamedType so that
-            # inline-refinement return types — both single-layer
-            # `@{ @Array<Int> | predicate }` and nested
-            # `@{ @{ @Array<Int> | p1 } | p2 }` — resolve the same as
-            # a plain `@Array<Int>` return.  Without this, an
-            # IndexExpr-of-FnCall against a refinement-returning fn
-            # silently failed inference, the enclosing function got
-            # dropped, and the symptom matched the original #614 bug.
-            #
-            # Post-#630: delegated to `_canonical_named_type`, which
-            # gives back the canonical `NamedType` (with type_args
-            # preserved) so we can feed `_alias_array_element` —
-            # that helper inspects `.type_args` on the NamedType.
-            canonical = self._canonical_named_type(ret_te)
-            if canonical is None:
-                # #1048: a BUILTIN call has no `_fn_ret_type_exprs` entry
-                # (that registry holds user functions only), so `canonical`
-                # is None above and — pre-fix — the collection fell through
-                # to `return None`, `_translate_index_expr` returned None,
-                # and the enclosing function was dropped via [E602].  Only
-                # the let-bound form (`let @Array<Int> = array_concat(...);
-                # @Array<Int>.0[i]`) worked — it resolves through the SlotRef
-                # arm above, not this FnCall arm.  Recover the builtin's
-                # return NamedType via the same `_get_arg_type_info_wasm`
-                # consultor the sibling Vera-type inference
-                # (`_infer_fncall_vera_type`) and instantiation discovery use,
-                # so all three agree on the shape.  Type-variable-element
-                # builtins (`array_map`/`array_reverse`/`map_keys`/…) are
-                # absent from that consultor's tables — their element type
-                # depends on the arguments — so `_builtin_call_ret_named_type`
-                # derives their return NamedType from the call's arguments per
-                # mechanism class (#1051).  A genuinely unresolvable argument
-                # shape still yields None, so the function keeps the loud
-                # [E602] skip rather than being mis-typed.
-                canonical = self._builtin_call_ret_named_type(coll)
-            if canonical is not None:
-                ta_te = self._alias_array_element(
-                    canonical.name, canonical.type_args)
-                if ta_te is not None:
-                    return ta_te
-        return None
-
-    def _builtin_call_ret_named_type(
-        self, call: ast.FnCall,
-    ) -> ast.NamedType | None:
-        """Full return ``NamedType`` of a builtin ``call`` whose result is a
-        parameterized type (e.g. ``array_concat(...)`` → ``Array<Int>``), or
-        ``None`` if the shape cannot be resolved.
-
-        Two resolution paths:
-
-        1. Builtins whose return NamedType is recoverable from the shared
-           ``(type_name, type_arg_names)`` consultor
-           (:py:meth:`_get_arg_type_info_wasm`, via
-           :py:meth:`_named_type_from_arg_info`): arg-forwarding for
-           ``array_concat`` / ``array_append`` / ``array_slice`` /
-           ``array_filter``, plus the ``_BUILTIN_PARAMETERIZED_RETURNS`` table
-           for the concrete-Array builtins (``array_range``, ``string_split``,
-           ``json_keys``, …).  Sharing that consultor keeps the index element
-           type in lockstep with clone-name discovery (#1048).
-
-        2. #1051: the eight *type-variable-element* Array-returning builtins
-           (``array_reverse`` / ``array_sort_by`` / ``array_flatten`` /
-           ``map_keys`` / ``map_values`` / ``set_to_array`` / ``array_map`` /
-           ``array_mapi``) are deliberately ABSENT from that consultor's tables
-           — their element type depends on the CALL's arguments, not a fixed
-           signature, and ``_BUILTIN_PARAMETERIZED_RETURNS`` is registry-locked
-           to type-var-free returns (``test_parameterized_table_matches_registry``
-           rejects any TypeVar-carrying entry, else discovery would bind a
-           phantom var).  Their return NamedType is derived from the arguments
-           in :py:meth:`_typevar_elem_builtin_ret_named_type`, kept OFF the
-           shared consultor (this helper is only reached from
-           :py:meth:`_infer_index_element_type_expr`), so clone-name discovery
-           is untouched.
-        """
-        nt = self._named_type_from_arg_info(call)
-        if nt is not None:
-            return nt
-        return self._typevar_elem_builtin_ret_named_type(call)
-
-    def _named_type_from_arg_info(
-        self, expr: ast.Expr,
-    ) -> ast.NamedType | None:
-        """Rebuild an expression's parameterized Vera type as a ``NamedType``
-        from the shared :py:meth:`_get_arg_type_info_wasm` consultor:
-        ``(type_name, type_arg_names)`` → ``NamedType``, nested inners parsed
-        via ``Monomorphizer._parse_type_name`` (which handles shapes like
-        ``Array<Json>``).  ``None`` when neither the consultor nor the
-        off-consultor fallbacks below can resolve the shape.
-
-        Alias spellings resolve here so every consumer sees the target
-        type: a bare alias slot canonicalizes (#1055), a GENERIC alias's
-        args substitute through its target (#1068 — `MyMap<Int>` with
-        `type MyMap<V> = Map<String, V>` resolves to `Map<String, Int>`,
-        never a blind read of the alias's own args), and a registered
-        user fn's declared return recovers shapes the consultor reports
-        incompletely or not at all — nested type args (#1053) and bare
-        alias returns (#1071) — OFF the consultor, so clone-name
-        discovery is untouched.  A Block argument resolves via its tail
-        expression (#1071).
-        """
-        # #1071: a Block-wrapped argument (`map_values({ @M.0 })`) types as
-        # its tail expression.
-        while isinstance(expr, ast.Block):
-            expr = expr.expr
-        info = self._get_arg_type_info_wasm(expr)
-        if info is None:
-            # #1071: a user fn whose declared return is a BARE alias of a
-            # container (`fn mkm(-> @M)` with `type M = Map<String, Int>`)
-            # has no type args for the consultor's user-fn arm to report,
-            # so it exits None before any alias handling — recover the
-            # declared return directly.
-            return self._user_fn_declared_ret_named_type(expr)
-        type_name, type_arg_names = info
-        # #1055: an alias-spelled argument (`type Grid = Array<Array<Int>>;`
-        # then `@Grid.0`) arrives as its bare alias name with NO type args,
-        # so the class derivations never see the container shape and the
-        # index E602-dropped where the direct spelling compiled.
-        # Canonicalize to the target's full compound spelling (the #1037
-        # walk) and parse that instead.  A GENERIC alias name is excluded —
-        # its target carries the alias's own free type params, which must
-        # not leak; without args it is unresolvable (falls through to the
-        # arity-checked substitution path below, which yields None).
-        # `alias_params` keys EVERY alias, mapping a non-parameterised one to
-        # `None` (the former flat map simply omitted it), so "is this alias
-        # generic?" is a None test here, not a membership test (#1208).
-        if (not type_arg_names
-                and self._alias_env.alias_params.get(type_name) is None):
-            canonical, _ = self._canonicalize_alias_slot_name(type_name)
-            if canonical != type_name:
-                parsed = Monomorphizer._parse_type_name(canonical)
-                if isinstance(parsed, ast.NamedType):
-                    return parsed
-                return None
-        if any(a is None for a in type_arg_names):
-            # #1053 user-fn extension: a registered non-generic user fn's
-            # PARAMETERIZED return reaches the consultor with nested type-arg
-            # positions blanked to None (its user-fn arm deliberately reports
-            # only depth-one names, staying in clone-name-discovery lockstep),
-            # so `array_flatten(mkn())` with `mkn(-> @Array<Array<Int>>)`
-            # rebuilt as `("Array", (None,))` and stayed unresolvable.  The
-            # declared return TypeExpr carries the full nesting — canonicalize
-            # it directly, OFF the consultor, so discovery is untouched.
-            return self._user_fn_declared_ret_named_type(expr)
-        # #1068: a GENERIC alias spelling (`type MyMap<V> = Map<String, V>;`
-        # then a `@MyMap<Int>`-returning argument) must never have its type
-        # args consumed as the TARGET's — `("MyMap", ("Int",))`'s single arg
-        # is the alias's V, not the Map's K.  Substitute the args through
-        # the alias target and canonicalize; an arity mismatch (or a target
-        # that resolves to no NamedType) is unresolvable — return None so
-        # the caller keeps the loud skip.
-        alias_params = self._alias_env.alias_params.get(type_name)
-        if alias_params is not None:
-            target = self._alias_env.aliases.get(type_name)
-            if (target is not None
-                    and type_arg_names
-                    and len(type_arg_names) == len(alias_params)):
-                subst: dict[str, ast.TypeExpr] = {
-                    p: Monomorphizer._parse_type_name(a)
-                    for p, a in zip(alias_params, type_arg_names)
-                    if a is not None
-                }
-                resolved = substitute_type_vars(target, subst)
-                return self._canonical_named_type(resolved)
-            return None
-        type_args = tuple(
-            Monomorphizer._parse_type_name(a)
-            for a in type_arg_names
-            if a is not None
-        )
-        return ast.NamedType(name=type_name, type_args=type_args or None)
-
-    def _user_fn_declared_ret_named_type(
-        self, expr: ast.Expr,
-    ) -> ast.NamedType | None:
-        """Canonical ``NamedType`` of a registered NON-generic user fn call's
-        declared return — the off-consultor recovery behind
-        :py:meth:`_named_type_from_arg_info` for return shapes the shared
-        consultor cannot report: nested type args (#1053, blanked for
-        discovery lockstep) and bare alias returns (#1071, no type args to
-        report at all).  ``None`` for anything else — non-calls, generic
-        fns (their declared return is over their OWN type vars), builtins,
-        and unresolvable return TypeExprs — so callers keep the loud skip.
-        """
-        if (not isinstance(expr, ast.FnCall)
-                or expr.name in self._generic_fn_info):
-            return None
-        ret_te = self._fn_ret_type_exprs.get(expr.name)
-        if ret_te is None:
-            return None
-        return self._canonical_named_type(ret_te)
-
-    def _arg_named_type_deep(self, arg: ast.Expr) -> ast.NamedType | None:
-        """Resolve a type-variable-element builtin argument's value
-        ``NamedType`` to full depth.  A ``FnCall`` argument goes through
-        :py:meth:`_builtin_call_ret_named_type` — the shared consultor first,
-        then the per-class derivation in
-        :py:meth:`_typevar_elem_builtin_ret_named_type` — so an inner
-        type-variable-element builtin (``array_reverse(array_reverse(x))``,
-        ``array_reverse(map_values(m))``, ``array_flatten(array_reverse(x))``)
-        resolves rather than dropping the enclosing index.  Every other
-        argument shape (``SlotRef``, ``ArrayLit``, ``ConstructorCall``) goes
-        through the shared consultor directly, so alias- and literal-spelled
-        arguments resolve exactly as before.  Routing a ``FnCall`` through
-        :py:meth:`_builtin_call_ret_named_type` can only add resolutions — it
-        tries the same consultor first — and recursion is bounded by the
-        argument's call-nesting depth (each step strips one ``FnCall`` layer).
-        A ``Block``-wrapped argument (``array_reverse({ array_reverse(x) })``)
-        resolves via its tail expression, matching the container emissions'
-        Block handling (#1071).
-        """
-        while isinstance(arg, ast.Block):
-            arg = arg.expr
-        if isinstance(arg, ast.FnCall):
-            return self._builtin_call_ret_named_type(arg)
-        return self._named_type_from_arg_info(arg)
-
-    def _typevar_elem_builtin_ret_named_type(
-        self, call: ast.FnCall,
-    ) -> ast.NamedType | None:
-        """#1051: derive the return ``NamedType`` of a type-variable-element
-        Array-returning builtin from its arguments, per mechanism class.  Any
-        argument shape that cannot be resolved yields ``None`` — the caller
-        then keeps the loud [E602] skip rather than guessing an element type.
-
-        Arguments are resolved by :py:meth:`_arg_named_type_deep`: a ``SlotRef``
-        array/container argument and a *consultor-resolvable* builtin call
-        (``array_concat`` / ``array_range`` / …) resolve through the shared
-        consultor, and an argument that is itself a type-variable-element
-        builtin (``array_reverse(array_reverse(x))``,
-        ``array_reverse(map_values(m))``, ``array_flatten(array_reverse(x))``)
-        resolves by recursing through :py:meth:`_builtin_call_ret_named_type`
-        back into this per-class derivation.
-        """
-        name = call.name
-        args = call.args
-        # ---- Class 1: argument-forwarding --------------------------------
-        # array_reverse(Array<T>) and array_sort_by(Array<T>, cmp) return
-        # arg0's type verbatim; array_flatten(Array<Array<T>>) returns arg0's
-        # type with one Array<> layer unwrapped.
-        if name in ("array_reverse", "array_sort_by") and args:
-            return self._arg_named_type_deep(args[0])
-        if name == "array_flatten" and args:
-            outer = self._arg_named_type_deep(args[0])
-            if (outer is not None and outer.name == "Array"
-                    and outer.type_args
-                    and isinstance(outer.type_args[0], ast.NamedType)):
-                return outer.type_args[0]
-            return None
-        # ---- Class 2: container-arg-derived ------------------------------
-        # map_keys(Map<K, V>) -> Array<K>; map_values(Map<K, V>) -> Array<V>;
-        # set_to_array(Set<T>) -> Array<T>.
-        if name in ("map_keys", "map_values", "set_to_array") and args:
-            container = self._arg_named_type_deep(args[0])
-            # #1068: verify the resolved argument type IS the expected
-            # container before reading K/V/T off its type args.  The
-            # rebuilder resolves alias spellings (including a generic
-            # alias's substitution through its target), so a well-formed
-            # aliased argument arrives here named `Map`/`Set`; anything
-            # else must not have its args consumed positionally — a
-            # `("MyMap", ("Int",))` read K = Int where the target says
-            # String, deriving an element type the emission contradicts
-            # (a validation-failing module behind a clean `vera compile`).
-            expected = "Set" if name == "set_to_array" else "Map"
-            if (container is None or container.name != expected
-                    or not container.type_args):
-                return None
-            if name == "map_values":
-                if len(container.type_args) < 2:
-                    return None
-                elem = container.type_args[1]
-            else:
-                elem = container.type_args[0]
-            if isinstance(elem, ast.NamedType):
-                return ast.NamedType(name="Array", type_args=(elem,))
-            return None
-        # ---- Class 3: closure-return-derived -----------------------------
-        # array_map(Array<A>, fn(A -> B)) and
-        # array_mapi(Array<A>, fn(A, Nat -> B)) return Array<B>; B is the
-        # closure argument's declared return type.
-        if name in ("array_map", "array_mapi") and len(args) >= 2:
-            ret_te = self._closure_arg_return_type(args[1])
-            if ret_te is not None:
-                elem_nt = self._canonical_named_type(ret_te)
-                if elem_nt is not None:
-                    return ast.NamedType(name="Array", type_args=(elem_nt,))
-            return None
-        return None
-
-    def _alias_array_element(
-        self,
-        type_name: str,
-        type_args: tuple[ast.TypeExpr, ...] | None,
-    ) -> ast.NamedType | None:
-        """If (type_name, type_args) names an Array<T> (possibly via alias
-        or refinement-of-alias), return T as a *canonical* NamedType —
-        i.e. with any alias chain on the element type itself fully
-        resolved.  Returns None otherwise.
-
-        Canonicalisation on the returned element type matters for
-        nested aliases (#559).  Example: ``type Row = Array<Int>;
-        type Grid = Array<Row>`` — without canonicalisation, indexing
-        ``@Grid.0[0]`` returns ``NamedType("Row")``.  The chained-
-        indexing branch in ``_infer_index_element_type_expr`` then
-        checks ``inner_te.name == "Array"`` and fails (it's
-        ``"Row"``), so ``@Grid.0[0][1]`` falls back to ``None``.
-        Worse, downstream element-WASM-type lookups treat the
-        opaque alias name as a scalar and emit a load-as-i32 +
-        ``i64.extend_i32_u`` against what is actually a heap
-        pointer to an array pair, producing a stack-shape mismatch
-        at WASM validation.  Returning the *canonical* element
-        ensures the chained-indexing branch matches and downstream
-        size lookups see the real shape.
-        """
-        # Direct Array<T>
-        if type_name == "Array" and type_args:
-            ta = type_args[0]
-            if isinstance(ta, ast.NamedType):
-                # #559: canonicalise the element type so nested
-                # aliases (`type Row = Array<Int>` used as the
-                # element of an outer `Array<Row>`) resolve through
-                # the chain instead of stopping at the alias name.
-                # ``_canonical_named_type`` returns ``None`` for
-                # non-NamedType terminals (e.g. element is a
-                # ``FnType`` — not a useful array shape today); fall
-                # back to the original NamedType in that case so we
-                # don't regress the pre-#559 behaviour of returning
-                # *something* for a direct ``Array<T>``.
-                canonical = self._canonical_named_type(ta)
-                return canonical if canonical is not None else ta
-            return None
-        # Type alias — follow to its target.  Only handles the common case
-        # of a non-generic alias pointing at a concrete Array<T>; generic
-        # aliases (`type Box<T> = Array<T>`) would need substitution,
-        # which we don't attempt here.
-        #
-        # Refinement-of-alias unwrap (#655 Shape B): if the alias target
-        # is a `RefinementType` (e.g.
-        # `type NonEmptyArray = { @Array<Int> | array_length(@Array<Int>.0) > 0 }`),
-        # peel any `RefinementType` layers before checking whether the
-        # base is a `NamedType` pointing at an array.  Without this, the
-        # IndexExpr translator returns None for `@NonEmptyArray.0[0]`,
-        # the enclosing function (`head`) gets dropped via [E602], and
-        # the call site references a non-existent `$head` — the symptom
-        # documented in #655 Shape B.
-        if type_name in self._alias_env.aliases:
-            target = self._alias_env.aliases[type_name]
-            while isinstance(target, ast.RefinementType):
-                target = target.base_type
-            if isinstance(target, ast.NamedType):
-                return self._alias_array_element(target.name, target.type_args)
-        return None
-
-    def _get_arg_type_info_wasm(
-        self, expr: ast.Expr,
-    ) -> tuple[str, tuple[str | None, ...]] | None:
-        """Get (type_name, type_arg_names) for an argument expression.
-
-        Type arg entries may be None for positions that cannot be inferred
-        from the argument (e.g. T in Err(e) where only E is resolved).
-        """
-        if isinstance(expr, ast.SlotRef):
-            if expr.type_args:
-                arg_names = []
-                for ta in expr.type_args:
-                    if isinstance(ta, ast.NamedType):
-                        arg_names.append(self._format_named_type(ta))
-                    else:  # pragma: no cover
-                        return None
-                return (expr.type_name, tuple(arg_names))
-            return (expr.type_name, ())
-        if isinstance(expr, ast.ConstructorCall):
-            # Infer from constructor args, respecting field→type-param index mapping
-            # so sparse constructors like Err(e) bind to the correct ADT type param.
-            adt_name = self._ctor_to_adt_name(expr.name)
-            if adt_name:
-                # ctor-owner-exempt: resolved in the compiling namespace's
-                # scoped projection (#1436)
-                field_tp_idx = self._ctor_adt_tp_indices.get(expr.name)
-                adt_tp_count = self._adt_tp_counts.get(adt_name, 0)
-                if field_tp_idx is not None and adt_tp_count > 0:
-                    result_tps: list[str | None] = [None] * adt_tp_count
-                    for field_i, tp_idx in enumerate(field_tp_idx):
-                        if tp_idx is not None and field_i < len(expr.args):
-                            t = self._infer_vera_type(expr.args[field_i])
-                            if t is not None:
-                                result_tps[tp_idx] = t
-                            # If t is None, leave position as None (unknown)
-                    return (adt_name, tuple(result_tps))
-                # Fall back to positional inference for unmapped constructors.
-                arg_types = []
-                for a in expr.args:
-                    t = self._infer_vera_type(a)
-                    if t:
-                        arg_types.append(t)
-                    else:  # pragma: no cover
-                        return None
-                return (adt_name, tuple(arg_types))
-        if isinstance(expr, ast.ArrayLit):
-            # #913: an array literal matched against an `Array<T>` formal must
-            # expose its element type so `T` binds from THIS argument.  Mirrors
-            # the discovery-side `Monomorphizer._get_arg_type_info` ArrayLit
-            # branch (vera/monomorphize.py) — without it, the WASM call-rewrite
-            # consultor left `T` unbound for `map_ident([1, 2, 3])`, fell to the
-            # phantom-var `Bool` default, and mangled the call to
-            # `map_ident$Bool` while discovery emitted `map_ident$Int` — a
-            # dangling reference that dropped the enclosing fn.
-            # #769 gap 2: FULL-DEPTH element name (nested literal /
-            # constructor element), mirroring the discovery-side
-            # `_array_elem_type_name` exactly — element-name granularity is
-            # part of the clone-name agreement contract (#772), so the two
-            # sides must move together.
-            if expr.elements:
-                elem = expr.elements[0]
-                elem_type: str | None = None
-                elem_info = self._get_arg_type_info_wasm(elem)
-                if elem_info is not None:
-                    outer, args = elem_info
-                    if args and all(a is not None for a in args):
-                        joined = ", ".join(a for a in args if a is not None)
-                        elem_type = f"{outer}<{joined}>"
-                if elem_type is None:
-                    elem_type = self._infer_vera_type(elem)
-                if elem_type:
-                    return ("Array", (elem_type,))
-            return ("Array", ())
-        if isinstance(expr, ast.FnCall):
-            # #878: a call whose result is itself a parameterized type
-            # (`Option<Decimal>`, `Array<Int>`) matched against a
-            # parameterized formal (`Option<VeraT>`) must expose its type
-            # args so the type var binds from THIS argument.  Mirrors the
-            # discovery-side `Monomorphizer._get_arg_type_info` FnCall branch
-            # (vera/monomorphize.py) so the WASM call-rewrite consultor and
-            # instantiation discovery agree on the concrete instantiation.
-            # Without it, `option_unwrap_or(decimal_div(a, b), …)` bound
-            # nothing from arg0 and fell through to the phantom-var default.
-            # Gated on non-registration, mirroring the discovery side: a
-            # registered name may be a user override of an E151-exempt
-            # prelude combinator (#815) whose declared return must win
-            # (adversarial panel, PR #972).
-            if expr.name not in self._fn_ret_types:
-                param_ret = _BUILTIN_PARAMETERIZED_RETURNS.get(expr.name)
-                if param_ret is not None:
-                    return param_ret
-            if expr.name in ("array_concat", "array_append",
-                             "array_slice", "array_filter"):
-                if expr.args:
-                    return self._get_arg_type_info_wasm(expr.args[0])
-            # User-fn call returning a parameterized type: read the declared
-            # return TypeExpr (registered by `_register_fn`).  A NON-generic
-            # user helper returning `Option<Decimal>` in `Option<VeraT>`
-            # position resolves `VeraT = Decimal` here — the user-fn half of
-            # #878, symmetric with the builtin table above.
-            #
-            # A GENERIC call (`option_map(None, …)` → `Option<B>`) is excluded:
-            # its declared return type is parameterized over the callee's OWN
-            # type vars (`B`), not concrete types, so its type args would bind
-            # a phantom `B` here.  Such calls fall through to the generic-return
-            # resolution in `_infer_fncall_vera_type` instead, and the outer
-            # generic then binds from another argument (e.g. the `0` default) —
-            # exactly as instantiation discovery does (its FnCall branch has no
-            # user-generic case either, so the two consultors stay in lockstep).
-            if expr.name in self._generic_fn_info:
-                return None
-            ret_te = self._fn_ret_type_exprs.get(expr.name)
-            if isinstance(ret_te, ast.RefinementType):
-                ret_te = ret_te.base_type
-            if (isinstance(ret_te, ast.NamedType)
-                    and ret_te.type_args):
-                ta_names: list[str | None] = []
-                for ta in ret_te.type_args:
-                    if isinstance(ta, ast.NamedType) and not ta.type_args:
-                        ta_names.append(self._format_named_type(ta))
-                    else:
-                        ta_names.append(None)
-                return (ret_te.name, tuple(ta_names))
-        return None
-
-    def _closure_arg_return_type(
-        self, closure_arg: ast.Expr,
-    ) -> ast.TypeExpr | None:
-        """Declared return TypeExpr of the closure an ``apply_fn`` applies.
-
-        The mixin-side shape dispatch shared by both inference consultors
-        (``_infer_apply_fn_return_type`` — the ``call_indirect`` signature
-        — and ``_infer_fncall_vera_type``'s ``apply_fn`` arm — the
-        Vera-type inference).  A ``SlotRef`` is resolved through the shared
-        :func:`resolve_fn_type_alias`, which follows the alias chain
-        **transitively** to the terminal ``FnType`` (``type Fetcher =
-        InnerFetcher;`` — #867) and substitutes any generic alias's type
-        params from the slot's bound type args; an inline ``AnonFn`` yields
-        its declared return type directly.  Any other shape yields
-        ``None``.
-
-        This is the same resolution the fused-await classifier's
-        ``_apply_fn_closure_ret_type`` (``vera/wasm/async_fusion.py``)
-        performs — both route the ``SlotRef`` through
-        :func:`resolve_fn_type_alias`, so the signature this builds and
-        the classification that gates the runtime fused-handle check can
-        never consult a differently-resolved return type.
-        """
-        if isinstance(closure_arg, ast.SlotRef):
-            fn_type = resolve_fn_type_alias(
-                ast.NamedType(
-                    name=closure_arg.type_name,
-                    type_args=closure_arg.type_args,
-                ),
-                self._alias_env.aliases,
-                self._alias_env.alias_params,
-            )
-            return fn_type.return_type if fn_type is not None else None
-        if isinstance(closure_arg, ast.AnonFn):
-            return closure_arg.return_type
-        return None
-
-    def _closure_arg_param_types(
-        self, closure_arg: ast.Expr,
-    ) -> tuple[ast.TypeExpr, ...] | None:
-        """Declared *parameter* TypeExprs of the closure an ``apply_fn`` applies
-        (#820) — the formal-type recovery the @Int -> @Nat argument narrowing
-        guard needs, the parameter dual of :py:meth:`_closure_arg_return_type`.
-
-        A ``SlotRef`` is resolved through the shared
-        :func:`resolve_fn_type_alias` (transitively to the terminal ``FnType``),
-        an inline ``AnonFn`` yields its declared params directly; any other
-        shape yields ``None``.  The closure *return* direction (narrowing
-        #984) is handled separately — those gates read the
-        ``AnonFn``'s own ``return_type`` in ``_compile_lifted_closure``, not a
-        recovered formal — so this argument-side recovery stands alone.
-        """
-        if isinstance(closure_arg, ast.SlotRef):
-            fn_type = resolve_fn_type_alias(
-                ast.NamedType(
-                    name=closure_arg.type_name,
-                    type_args=closure_arg.type_args,
-                ),
-                self._alias_env.aliases,
-                self._alias_env.alias_params,
-            )
-            return tuple(fn_type.params) if fn_type is not None else None
-        if isinstance(closure_arg, ast.AnonFn):
-            return tuple(closure_arg.params)
-        return None
 
     def _type_expr_base_is_nat(self, te: ast.TypeExpr) -> bool:
         """True iff *te* resolves (through aliases) to ``@Nat`` (#984).
@@ -2066,67 +719,19 @@ class InferenceMixin:
             return False
         return self._resolve_base_type_name(name) == "Nat"
 
-    def _infer_apply_fn_return_type(
-        self, closure_arg: ast.Expr,
-    ) -> str | None:
-        """Infer the WASM return type for a closure application.
+    def _closure_return_width(self, closure_arg: ast.Expr) -> str | None:
+        """The WAT value a closure application returns: the width of the
+        return type of the function type the checker gave *closure_arg*,
+        whatever its shape (a closure literal, a slot, a call that returns
+        one, a cell read, #1516).  ``None`` for a `Unit` return, and for an
+        argument the checker did not type as a function."""
+        ty = self._type_of(closure_arg)
+        if isinstance(ty, RefinedType):
+            ty = base_type(ty)
+        if not isinstance(ty, FunctionType):
+            return None
+        return self._width_of(ty.return_type)
 
-        Walks `closure_arg` to extract its declared return TypeExpr
-        and feeds it (with any generic alias_map binding) to the
-        centralised `_canonical_wasm_type` walker.  Two arg shapes
-        are supported today:
-
-          - `SlotRef` into a `FnType` type alias (let-bound closure
-            ref, possibly with generic type_args bound at the call
-            site like a user `MapFn<Int, String>`).
-          - `AnonFn` (inline closure literal).
-
-        Future closure-arg shapes with a single `return_type` field
-        (e.g. `FnCall` returning a closure) can be added as an extra
-        `elif` that extracts `ret_te` and reuses the walker call —
-        no per-shape canonicalisation logic needed.  Shapes without
-        a single return type (e.g. `IfExpr` selecting between two
-        closures with the same Vera-level type) need a unifying
-        step that's genuinely additional dispatch work, not "plug-in".
-
-        Defaults to `"i64"` if no return TypeExpr can be extracted.
-        This default *is* reachable for unhandled shapes — the
-        pre-#630 `# pragma: no cover` claim that closure returns
-        weren't refinement types was disproved (#629); this method's
-        own fallthrough remains reachable for any closure-arg shape
-        not in the `if`/`elif` ladder.  Unlike the interpolation
-        path (where #630's Tier 2 wires a specific [E615]), this
-        site's fallthrough still surfaces only as a `call_indirect`
-        type mismatch at WASM validation — diagnosable but not
-        source-located.  Bringing this site under the same
-        diagnostic discipline as Tier 2 is queued for the #626
-        Layer 1 work.
-        """
-        ret_te = self._closure_arg_return_type(closure_arg)
-        if ret_te is not None:
-            return self._canonical_wasm_type(ret_te)
-        return "i64"
-
-    def _resolve_generic_fn_return(
-        self,
-        fn_type: ast.FnType,
-        alias_params: tuple[str, ...],
-        type_args: tuple[ast.TypeExpr, ...],
-    ) -> str | None:
-        """Resolve the return type of a generic FnType alias.
-
-        Builds an alias_map from the FnType alias's type params to
-        the concrete type args bound at the call site, then delegates
-        to the centralised `_canonical_wasm_type` walker (#630).
-
-        Pre-#630: this site re-implemented the substitute-and-resolve
-        sequence ad-hoc, with a single-level RefinementType unwrap
-        and a string→string substitution dict.  That worked for the
-        bare-NamedType type-arg case but missed RefinementType-wrapped
-        type args; the centralised walker handles both uniformly.
-        """
-        alias_map = dict(zip(alias_params, type_args))
-        return self._canonical_wasm_type(fn_type.return_type, alias_map)
 
     def _declares_adt(self, type_name: str, arity: int | None = None) -> bool:
         """Is *type_name* a ``data`` declaration of the namespace compiling?
@@ -2271,19 +876,6 @@ class InferenceMixin:
         the checker bound the slot under.
         """
         return naming.slot_name_or_none(te, self._alias_env)
-
-    def _type_name_to_wasm(self, type_name: str) -> str:
-        """Map a Vera type name string to a WASM type string."""
-        if type_name in ("Int", "Nat"):
-            return "i64"
-        if type_name == "Float64":
-            return "f64"
-        if type_name in ("Bool", "Byte"):
-            return "i32"
-        if type_name == "Unit":  # pragma: no cover
-            return "i32"  # shouldn't appear, safe fallback
-        # ADT or function type alias → i32 pointer
-        return "i32"
 
     def _type_expr_to_slot_name(self, te: ast.TypeExpr) -> str | None:
         """The slot-binding name of *te*, as the checker binds it (#1208).
@@ -2436,7 +1028,7 @@ class InferenceMixin:
         for Unit / unknown.
 
         Shared by the ``SlotRef`` and ``ResultRef`` arms of
-        :meth:`_infer_expr_wasm_type` so a monomorphized clone's
+        :meth:`_expr_width` so a monomorphized clone's
         ``@T.result`` and ``@T.0`` — which carry the *same* concrete
         ``type_name`` after substitution — agree on their WAT type.  Before
         #891 the ResultRef arm inferred only the scalar primitives, so an
@@ -2478,7 +1070,7 @@ class InferenceMixin:
         # and `_named_type_to_wasm`'s canonical-walk Future arm; this SlotRef /
         # ResultRef mapper was the odd one out that lacked it, so a
         # `match await(@Future<T>.0) { ... }` scrutinee — whose `await` FnCall
-        # arm of `_infer_expr_wasm_type` delegates to this mapper on the
+        # arm of `_expr_width` delegates to this mapper on the
         # `@Future<T>` slot ref — inferred None and E602-skipped the enclosing
         # function on a check/verify-green program (#1038).  Delegating to
         # `_canonical_wasm_type` lowers the inner type through the same walk the
@@ -2535,12 +1127,10 @@ class InferenceMixin:
         After the top-level hops, an alias sitting INSIDE a transparent
         ``Future<…>`` payload is canonicalized too (``Future<FlagA>`` ->
         ``Future<Bool>``, #1074) — the hop-by-hop walk resolves only the
-        outer NAME, so the four array-element-type deciders that route the
-        result to the module-level element-size / store-op helpers
-        (``_infer_concat_elem_type``, ``_translate_array_lit``, the
-        ``array_flatten`` inner walk, ``_infer_index_element_type``) get a
-        payload the size dict can key on, not a bare alias that falls to the
-        4-byte i32 default.
+        outer NAME, so the array-element-type deciders that route the result
+        to the module-level element-size / store-op helpers get a payload the
+        size dict can key on, not a bare alias that falls to the 4-byte i32
+        default.
 
         Returns the canonical name plus the accumulated seen-set; callers
         whose own recursion re-enters this walk (the transparent
@@ -2687,334 +1277,3 @@ class InferenceMixin:
         if name.startswith("Future<") and name.endswith(">"):
             return self._slot_name_erases_to_unit(name[7:-1], _seen)
         return False
-
-
-# =====================================================================
-# `_infer_expr_wasm_type`: one arm per expression class
-# =====================================================================
-
-def _wt_int(ctx: InferenceMixin, expr: ast.IntLit) -> str | None:
-    # #1212: same Byte-width mark the lowering reads — a `match`
-    # result type is inferred from an arm BODY through here, so the
-    # two deciders must agree about a marked leaf.
-    return "i32" if id(expr) in ctx._byte_literal_ids else "i64"
-
-
-def _wt_ref(ctx: InferenceMixin, expr: ast.SlotRef | ast.ResultRef) -> str | None:
-    # #891: a `@T.result` in a monomorphized clone carries the same
-    # concrete `type_name` as `@T.0` (e.g. `Box` once `T = Box`), so it
-    # must lower through the SAME type-name → WAT-type logic.  Inferring
-    # only the scalar primitives here left an ADT-bound (pointer-
-    # represented) return inferred as `None`, so the postcondition
-    # `@T.result == @T.0` fell through to the i64 comparison default
-    # while both operands were i32 heap pointers — an ill-typed
-    # `i64.eq` that traps `gid$Box` at run with `expected i64, found
-    # i32`.  Sharing `_ref_type_name_wasm_type` keeps the ResultRef and
-    # SlotRef operands in agreement (ADT, pair, and handle types alike).
-    return ctx._ref_type_name_wasm_type(expr.type_name, expr.type_args)
-
-
-def _wt_binary(ctx: InferenceMixin, expr: ast.BinaryExpr) -> str | None:
-    if expr.op in ctx._ARITH_OPS:
-        # Propagate operand type: f64 if operands are f64
-        inner = ctx._infer_expr_wasm_type(expr.left)
-        return inner if inner == "f64" else "i64"
-    if expr.op in ctx._CMP_OPS:
-        return "i32"
-    if expr.op in (ast.BinOp.AND, ast.BinOp.OR, ast.BinOp.IMPLIES):
-        return "i32"
-    return None
-
-
-def _wt_unary(ctx: InferenceMixin, expr: ast.UnaryExpr) -> str | None:
-    if expr.op == ast.UnaryOp.NEG:
-        inner = ctx._infer_expr_wasm_type(expr.operand)
-        return inner if inner == "f64" else "i64"
-    if expr.op == ast.UnaryOp.NOT:
-        return "i32"
-    return None
-
-
-def _wt_fn_call(ctx: InferenceMixin, expr: ast.FnCall) -> str | None:
-    return ctx._infer_fncall_wasm_type(expr)
-
-
-def _wt_constructor(
-    ctx: InferenceMixin, expr: ast.ConstructorCall | ast.NullaryConstructor,
-) -> str | None:
-    # ctor-owner-exempt: membership test on a parsed name, not a layout
-    # read
-    return "i32" if expr.name in ctx._ctor_layouts else None
-
-
-def _wt_match(ctx: InferenceMixin, expr: ast.MatchExpr) -> str | None:
-    # #1276 (F4): the FIRST arm that yields a type, not arm 0.  An arm
-    # whose every path throws contributes no WAT type, and reading only
-    # arm 0 answered `None` for the whole match — so an enclosing
-    # `handle` block was emitted result-less while the completing arms
-    # left a value in it (`values remaining on stack at end of block`,
-    # from check-green source).  Arms that DO complete must agree on
-    # their type (the checker enforces that), so the first answer is the
-    # answer.
-    for arm in expr.arms:
-        arm_wt = ctx._infer_expr_wasm_type(arm.body)
-        if arm_wt is not None:
-            return arm_wt
-    return None
-
-
-def _wt_handle(ctx: InferenceMixin, expr: ast.HandleExpr) -> str | None:
-    # Handle expression result type is the body's result type
-    if expr.body.expr:
-        return ctx._infer_expr_wasm_type(expr.body.expr)
-    return None  # pragma: no cover
-
-
-def _wt_index(ctx: InferenceMixin, expr: ast.IndexExpr) -> str | None:
-    elem_type = ctx._infer_index_element_type(expr)
-    return ctx._element_wasm_type(elem_type) if elem_type else None
-
-
-def _wt_qualified_call(ctx: InferenceMixin, expr: ast.QualifiedCall) -> str | None:
-    return ctx._infer_qualified_call_wasm_type(expr)
-
-
-def _wt_if(ctx: InferenceMixin, expr: ast.IfExpr) -> str | None:
-    # #1276 (F4): fall through to the ELSE branch when the THEN branch
-    # yields no type.  A `then` that always throws is typeless, and
-    # answering `None` for the whole `if` on that basis mistyped every
-    # consumer of the result — see the MatchExpr arm above, same shape.
-    then_wt = ctx._infer_block_result_type(expr.then_branch)
-    if then_wt is not None:
-        return then_wt
-    return ctx._infer_block_result_type(expr.else_branch)
-
-
-def _wt_block(ctx: InferenceMixin, expr: ast.Block) -> str | None:
-    return ctx._infer_block_result_type(expr)
-
-
-def _wt_module_call(ctx: InferenceMixin, expr: ast.ModuleCall) -> str | None:
-    # #1694: no qualified call survives the link step (`vera.binding.link`);
-    # one that reaches code generation is refused when it is translated.
-    return None
-
-
-def _wt_state_read(ctx: InferenceMixin, expr: ast.OldExpr | ast.NewExpr) -> str | None:
-    # #914 finding 1: `old(State<T>)` / `new(State<T>)` in a postcondition
-    # each yield a value of type T — the snapshot local (old) or a fresh
-    # `state_get` (new).  Without a width here a composite `old == new`
-    # over a pointer-typed T (`Option<Int>` → i32) fell through to the
-    # i64 comparison default and emitted an ill-typed `i64.eq` on two
-    # i32 pointers (`expected i64, found i32`).  Resolve T's WAT type via
-    # the shared canonical-slot-name → WASM map so the `==` picks i32.
-    #
-    # The cell's REPRESENTATION name, not the source spelling, before
-    # the WT map — `old(State<Count>)` over `type Count = Nat` is an
-    # i64 read, not the unknown-name i32 default (#1205).  The base
-    # rather than the family (#1218): a refined cell's identity
-    # carries its predicate and would miss every entry in the map,
-    # silently defaulting a refined `Int` cell's `old`/`new` read to
-    # i32 — the base is the width both sides of the comparison have.
-    return ctx._type_name_to_wasm(
-        ctx._state_effect_family_base(expr.effect_ref))
-
-
-def _answer(value: str | None) -> Callable[[InferenceMixin, ast.Expr], str | None]:
-    """An arm that gives every expression of its classes one answer."""
-    def arm(ctx: InferenceMixin, expr: ast.Expr) -> str | None:
-        return value
-    return arm
-
-
-_TypeArm = Callable[[InferenceMixin, Any], "str | None"]
-
-#: The WAT type of an expression's value, by class.
-_WASM_TYPE_ARMS: Mapping[type[ast.Expr], _TypeArm] = fold.dispatch(
-    "_infer_expr_wasm_type", {
-        ast.IntLit: _wt_int,
-        ast.FloatLit: _answer("f64"),
-        ast.BoolLit: _answer("i32"),
-        ast.UnitLit: _answer(None),
-        ast.SlotRef: _wt_ref,
-        ast.ResultRef: _wt_ref,
-        ast.BinaryExpr: _wt_binary,
-        ast.UnaryExpr: _wt_unary,
-        ast.FnCall: _wt_fn_call,
-        ast.ConstructorCall: _wt_constructor,
-        ast.NullaryConstructor: _wt_constructor,
-        ast.MatchExpr: _wt_match,
-        ast.HandleExpr: _wt_handle,
-        ast.IndexExpr: _wt_index,
-        **fold.each((ast.ArrayLit, ast.StringLit, ast.InterpolatedString),
-                    _answer("i32_pair")),
-        ast.QualifiedCall: _wt_qualified_call,
-        ast.IfExpr: _wt_if,
-        ast.Block: _wt_block,
-        # Quantifiers return Bool.
-        **fold.each((ast.ForallExpr, ast.ExistsExpr), _answer("i32")),
-        # assert/assume return Unit.
-        **fold.each((ast.AssertExpr, ast.AssumeExpr), _answer(None)),
-        # Defensive add (#597): AnonFn literals are typically lifted
-        # before reaching this helper, but if one does flow here it
-        # represents a closure handle on the WASM stack (i32 ptr).
-        ast.AnonFn: _answer("i32"),
-        ast.ModuleCall: _wt_module_call,
-        **fold.each((ast.OldExpr, ast.NewExpr), _wt_state_read),
-        # A parser placeholder the check rejects before code generation.
-        ast.HoleExpr: _answer(None),
-    })
-
-
-# =====================================================================
-# `_walk_vera_type`: one arm per expression class
-# =====================================================================
-
-def _vt_ref(ctx: InferenceMixin, expr: ast.SlotRef | ast.ResultRef) -> str | None:
-    # #912: a `@T.result` operand of `==`/`!=` in an `ensures` reaches
-    # here from the runtime postcondition-check lowering, carrying the
-    # same declared @Type shape as a SlotRef (`type_name` + optional
-    # `type_args`, no `index`).  Sharing the SlotRef name logic lets the
-    # composite structural-`==` dispatch in `operators.py` resolve
-    # `@Box.result` → "Box" (or "Option<Int>", "Tuple<Int, Int>", …) and
-    # route to structural equality instead of the scalar `i32.eq`
-    # pointer compare that spuriously trapped a proved composite
-    # postcondition.  `_infer_expr_wasm_type` already handled the
-    # ResultRef *width* (#891); this closes the parallel Vera-type gap.
-    return ctx._ref_vera_type_name(expr.type_name, expr.type_args)
-
-
-def _vt_constructor_call(ctx: InferenceMixin, expr: ast.ConstructorCall) -> str | None:
-    return ctx._ctor_to_adt_name(expr.name)
-
-
-def _vt_nullary(ctx: InferenceMixin, expr: ast.NullaryConstructor) -> str | None:
-    # #1414: a compiler-generated reference already knows its ADT.
-    # The by-name lookup below reads a table flattened across every
-    # ADT, so a user declaration sharing the name would answer for
-    # it — which is how `compare`'s desugared `Less` came back as
-    # the user's `ZzBox`.
-    return expr.owner or ctx._ctor_to_adt_name(expr.name)
-
-
-def _vt_binary(ctx: InferenceMixin, expr: ast.BinaryExpr) -> str | None:
-    if expr.op in (ast.BinOp.EQ, ast.BinOp.NEQ, ast.BinOp.LT,
-                   ast.BinOp.GT, ast.BinOp.LE, ast.BinOp.GE,
-                   ast.BinOp.AND, ast.BinOp.OR, ast.BinOp.IMPLIES):
-        return "Bool"
-    return ctx._infer_vera_type(expr.left)
-
-
-def _vt_unary(ctx: InferenceMixin, expr: ast.UnaryExpr) -> str | None:
-    if expr.op == ast.UnaryOp.NOT:
-        return "Bool"
-    return ctx._infer_vera_type(expr.operand)
-
-
-def _vt_fn_call(ctx: InferenceMixin, expr: ast.FnCall) -> str | None:
-    # #1006: an effect op in a Vera-type-needing position (the
-    # array-literal ELEMENT case) — the op is not in the fn tables,
-    # so consult the op registry first.  Guarded on `_effect_ops`
-    # membership (op names only bind where ops are injected) AND on
-    # bare-call ownership (#1284), so a user fn shadowing an op name
-    # resolves through the normal fn path below — the registry
-    # itself no longer withholds the name, because it answers which
-    # cell the op reaches rather than whose name this is.  `get`
-    # maps to State<T>'s T; `put`/`throw` record no Vera result type
-    # and return None (unchanged skip for value-position uses).
-    if (ctx._bare_call_denotes_op(expr.name)
-            and expr.name in ctx._effect_ops):
-        return ctx._effect_op_result_vera.get(expr.name)
-    return ctx._infer_fncall_vera_type(expr)
-
-
-def _vt_index(ctx: InferenceMixin, expr: ast.IndexExpr) -> str | None:
-    return ctx._infer_index_element_type(expr)
-
-
-def _vt_if(ctx: InferenceMixin, expr: ast.IfExpr) -> str | None:
-    # #1286: the FIRST branch that yields a name, not the `then`
-    # branch alone — the Vera-level twin of the #1276 WAT join
-    # (`_infer_expr_wasm_type` / `_infer_block_result_type`).  A
-    # `then` whose every path throws names no type, and answering
-    # `None` for the whole `if` on that basis lost the type the
-    # completing branch carries: as an array-literal element the
-    # literal was dropped with the loud [E602] skip, and as a
-    # generic argument the instantiation fell to the phantom-var
-    # default (`idg$Bool` for an `Int` argument) and the module
-    # failed to load — both from check- and verify-green source.
-    # Branches that DO complete must agree on their type (the
-    # checker enforces that), so the first answer is the answer.
-    then_vt = ctx._infer_vera_type(expr.then_branch.expr)
-    if then_vt is not None:
-        return then_vt
-    return ctx._infer_vera_type(expr.else_branch.expr)
-
-
-def _vt_block(ctx: InferenceMixin, expr: ast.Block) -> str | None:
-    # Defensive adds (#597) — this and the match and handle arms: these
-    # compound expressions could flow in here from generic-arg inference
-    # paths, but today most callers preprocess first.  Returning the
-    # right Vera type instead of None hardens against a future caller
-    # extending the surface.  Block.expr is non-Optional.
-    return ctx._infer_vera_type(expr.expr)
-
-
-def _vt_match(ctx: InferenceMixin, expr: ast.MatchExpr) -> str | None:
-    # #1286: the first arm that yields a name — see the `IfExpr`
-    # arm above, same shape and same two symptoms.
-    for arm in expr.arms:
-        arm_vt = ctx._infer_vera_type(arm.body)
-        if arm_vt is not None:
-            return arm_vt
-    return None
-
-
-def _vt_handle(ctx: InferenceMixin, expr: ast.HandleExpr) -> str | None:
-    # HandleExpr.body is non-Optional Block; its .expr is also
-    # non-Optional.
-    return ctx._infer_vera_type(expr.body.expr)
-
-
-def _vt_module_call(ctx: InferenceMixin, expr: ast.ModuleCall) -> str | None:
-    # #1694: as `_wt_module_call`.
-    return None
-
-
-#: The Vera type name of an expression, read off its syntax, by class.
-_VERA_TYPE_ARMS: Mapping[type[ast.Expr], _TypeArm] = fold.dispatch(
-    "_walk_vera_type", {
-        ast.IntLit: _answer("Int"),
-        ast.BoolLit: _answer("Bool"),
-        ast.FloatLit: _answer("Float64"),
-        ast.UnitLit: _answer("Unit"),
-        ast.SlotRef: _vt_ref,
-        ast.ResultRef: _vt_ref,
-        ast.ConstructorCall: _vt_constructor_call,
-        ast.NullaryConstructor: _vt_nullary,
-        ast.BinaryExpr: _vt_binary,
-        ast.UnaryExpr: _vt_unary,
-        ast.FnCall: _vt_fn_call,
-        **fold.each((ast.StringLit, ast.InterpolatedString), _answer("String")),
-        ast.ArrayLit: _answer("Array"),
-        ast.IndexExpr: _vt_index,
-        ast.IfExpr: _vt_if,
-        ast.Block: _vt_block,
-        ast.MatchExpr: _vt_match,
-        ast.HandleExpr: _vt_handle,
-        **fold.each((ast.AssertExpr, ast.AssumeExpr), _answer("Unit")),
-        ast.ModuleCall: _vt_module_call,
-        # AnonFn / QualifiedCall: None rather than a placeholder string.
-        # AnonFn's Vera type would be a full `FnType` shape that isn't
-        # typically needed for call rewriting; QualifiedCall carries a
-        # `qualifier` the bare-name `FnCall` dispatcher cannot consume —
-        # synthesising a fake `FnCall` would drop it and could match a
-        # same-name local fn instead.  None lets callers handle the
-        # unknown-type case explicitly rather than propagating a wrong type
-        # silently.
-        **fold.each((ast.AnonFn, ast.QualifiedCall), _answer(None)),
-        # Contract-only (`old`, `new`, the quantifiers) or rejected at
-        # check (a hole): never asked here.
-        **fold.each((ast.OldExpr, ast.NewExpr, ast.ForallExpr,
-                     ast.ExistsExpr, ast.HoleExpr), _answer(None)),
-    })

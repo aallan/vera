@@ -14,7 +14,7 @@ runtime (runtime.mjs).
 from __future__ import annotations
 
 from vera import ast
-from vera.wasm.async_fusion import await_needs_check, fused_async_arg_target
+from vera.wasm.async_fusion import fused_async_arg_target, is_fused_future_type
 from vera.wasm.calls_containers import _FUTURE_HANDLE_TAG, _WRAP_KIND_FUTURE
 from vera.wasm.helpers import WasmSlotEnv
 
@@ -383,9 +383,10 @@ class CallsMarkupMixin:
     ) -> list[str] | None:
         """Translate await(future) → T.
 
-        For shapes that can carry a fused future (``await_needs_check``
-        — statically typed Future<Result<String, String>>, the only
-        type fused futures inhabit), emit a runtime probe of the
+        For a value the checker typed ``Future<Result<String, String>>``,
+        the only type a fused future inhabits, whatever the expression's
+        shape (a slot, a call, an ``apply_fn`` of any closure, a join, an
+        element), emit a runtime probe of the
         value's first word: the fused wrapper's tag (0xFEEDC004) can
         never collide with an eager Result pointer's constructor tag,
         and both are valid heap pointers, so the load is always safe.
@@ -398,12 +399,7 @@ class CallsMarkupMixin:
         futures (e.g. Future<Int>, an i64) can never hold a fused
         handle.
         """
-        if not await_needs_check(
-            arg,
-            self._future_ret_fns,
-            self._alias_env.aliases,
-            self._alias_env.alias_params,
-        ):
+        if not is_fused_future_type(self._type_of(arg)):
             return self.translate_expr(arg, env)
         arg_instrs = self.translate_expr(arg, env)
         if arg_instrs is None:

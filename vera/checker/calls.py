@@ -1237,8 +1237,9 @@ class CallsMixin:
         the call leaves, which a join fills (`[map_new(), map_insert(...)]`
         is one map type).  A variable a parameter mentions that the
         arguments left unbound (*bound* lacks it) stays the built-in's: it
-        stands for a type a failed substitution lost (`map_values` read
-        through a refinement alias, #1688), and the join leaves it alone.
+        stands for a type a failed substitution lost (`array_map`'s `B`
+        beside a refinement of a function type, which its function-typed
+        parameter does not unify through), and the join leaves it alone.
         Read off the signature, so no built-in is named."""
         mentioned: Counter[str] = Counter()
         for param in fn_info.param_types:

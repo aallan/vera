@@ -252,8 +252,8 @@ def _is_leaked_placeholder_var(ty: Type) -> bool:
     ``_is_fresh_typevar``) that inference never filled, and a namespaced
     built-in generic var (``V#b`` — the #970/#982 ``BUILTIN_TYPEVAR_MARKER``)
     that escaped unresolved because a built-in's result type could not be
-    substituted (e.g. the element type of ``map_values(@M.0)[0]`` read through
-    a refinement alias, #1069).  A genuine *user* ``forall`` var (plain ``T``,
+    substituted (e.g. the element type of ``map_values(map_new())[0]``, whose
+    ``V`` nothing fixes, #1069).  A genuine *user* ``forall`` var (plain ``T``,
     no marker) is NOT a leak — it is the spelling the programmer wrote — so it
     is left untouched.
     """
@@ -529,6 +529,73 @@ def wasm_representation(t: Type) -> str | None:
         # (CodeRabbit on PR #1478).
         return "i32"  # closure pointer
     return "unsupported"
+
+
+def value_width(t: Type | None) -> str | None:
+    """The WebAssembly value a value of *t* is held in, or ``None`` for a
+    value that has none (#1525).
+
+    `Int` and `Nat` are an ``i64``, `Float64` an ``f64``, `Bool` and `Byte`
+    an ``i32``; `String` and `Array<T>` a ``(ptr, len)`` pair, ``i32_pair``;
+    every other data type, the host handles of `Map`, `Set` and `Decimal`
+    among them, an ``i32`` pointer, and so is a function value, a closure;
+    `Future<T>` is held as `T` is (#841), and a refinement as its base.
+    `Unit` and `Never` hold nothing.  A type variable has no width of its
+    own: only a generic's template holds one, and code generation lays a
+    template out by its own rule (``InferenceMixin._width_of``).
+
+    This is the width of a value whose type the checker gave, which code
+    generation reads off the typed program for every expression it lowers;
+    :func:`wasm_representation` answers the narrower question of which
+    widths a `State` cell or a host signature takes.
+    """
+    t = base_type(t) if t is not None else None
+    if isinstance(t, PrimitiveType):
+        return {"Int": "i64", "Nat": "i64", "Float64": "f64", "Bool": "i32",
+                "Byte": "i32", "String": "i32_pair"}.get(t.name)
+    if isinstance(t, AdtType):
+        if t.name == "Array":
+            return "i32_pair"
+        if t.name == "Future" and len(t.type_args) == 1:
+            return value_width(t.type_args[0])
+        return "i32"
+    if isinstance(t, FunctionType):
+        return "i32"
+    return None
+
+
+def value_type_name(t: Type | None) -> str | None:
+    """The name code generation keys a value of *t* by (#1525): its layout
+    as an array element, a map key or value or a set member, its
+    `*_to_string` conversion, its structural equality.
+
+    A primitive by its name, a data type by its name with its arguments'
+    (``Option<Int>``; the bare name when an argument has none), a function
+    value as ``Fn`` (the name a function type's slot already has,
+    :func:`vera.slots.type_expr_slot_name`), a refinement as its base, and
+    a type variable by its own name, which only a generic's template holds.
+    ``None`` for `Never`, the type of a value that does not exist, and for a
+    type with no name.
+
+    *t* is the type the checker gave the value, read off the typed program,
+    so an alias is already its target and a generic call's result already
+    its instance's: the name is the checked type's, never one re-derived
+    from the value's syntax."""
+    t = base_type(t) if t is not None else None
+    if isinstance(t, PrimitiveType):
+        return None if t.name == "Never" else t.name
+    if isinstance(t, AdtType):
+        if not t.type_args:
+            return t.name
+        args = [value_type_name(a) for a in t.type_args]
+        if any(a is None for a in args):
+            return t.name
+        return f"{t.name}<{', '.join(a for a in args if a is not None)}>"
+    if isinstance(t, FunctionType):
+        return "Fn"
+    if isinstance(t, TypeVar):
+        return t.name
+    return None
 
 
 def is_pair_represented(ty: Type) -> bool:

@@ -6,8 +6,8 @@ from typing import TYPE_CHECKING
 
 from vera import ast, naming, narrowing
 from vera.skip import CodegenSkip
+from vera.types import contains_typevar, value_type_name
 from vera.wasm.helpers import (
-    _INLINE_I32_TYPES,
     WasmSlotEnv,
     bind_slot_value_from_field,
     bind_slot_value_from_locals,
@@ -409,15 +409,6 @@ class DataMixin:
         arg_instrs_list: list[list[str]] = []
         arg_wasm_types: list[str] = []
         for i, arg in enumerate(expr.args):
-            # #1092/#1212: an int literal the checker coerced into a GENERIC
-            # field instantiated at @Byte is marked BEFORE translation, so
-            # both its lowering and the `arg_wt` inference below see the
-            # field's i32 width — including a literal inside an `if` /
-            # `match` argument, through the ONE branch descent.  See the
-            # #1092 note on `_ctor_field_targets_byte` for why the literal
-            # alone cannot decide this.
-            if self._ctor_field_targets_byte(expr, i):
-                self._mark_byte_write_value(arg, "Byte")
             # R-1412 F3: hand this argument's own component type down, so a
             # nested literal — which the checker records no target for — can
             # guard its components from the enclosing store's knowledge.
@@ -425,23 +416,23 @@ class DataMixin:
                 arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
                 return None
-            arg_wt = self._infer_expr_wasm_type(arg)
+            arg_wt = self._expr_width(arg)
             if arg_wt is None:
                 # Distinguish a genuine zero-size field (handled) from a true
                 # inability to infer the WASM type (still a skip).  `_is_void_expr`
                 # — the canonical "produces no stack value" check — catches a
                 # *Unit-returning call* in field position (`IO.print("x")`, a
                 # user `@Unit` fn, a void effect op, a `ModuleCall` to a `@Unit`
-                # fn), laid out zero-size instead of skipping (#902 completeness:
-                # `_infer_vera_type` returns None for Qualified/Module calls).
+                # fn), laid out zero-size instead of skipping (#902
+                # completeness).
                 # #1031: a *transparent* `Future<Unit>` field (`async(())`)
-                # produces no stack value either — `_infer_expr_wasm_type` already
+                # produces no stack value either — `_expr_width` already
                 # returned None by recursing through the Future to its zero-size
                 # Unit payload — but it is not structurally void, so also lay it
                 # out zero-size when its inferred Vera type erases to Unit.  This
                 # gates reachability: without it the constructor skips and the
                 # destructure/match declaration guards below are never reached.
-                arg_vera = self._infer_vera_type(arg)
+                arg_vera = self._type_name_of(arg)
                 if self._is_void_expr(arg) or (
                     arg_vera is not None
                     and self._slot_name_erases_to_unit(arg_vera)
@@ -604,43 +595,6 @@ class DataMixin:
         instructions.append(f"local.get {tmp}")
         return instructions
 
-    def _ctor_field_targets_byte(
-        self, expr: ast.ConstructorCall, field_i: int,
-    ) -> bool:
-        """Whether constructor field ``field_i`` is a type-parameter field
-        instantiated at ``@Byte`` by the construction's TARGET type (#1092).
-
-        Decides the literal-width coercion in
-        :py:meth:`_translate_constructor_call`: the literal alone cannot —
-        ``MkB(0)`` is equally legal as ``Box<Int>`` (i64 field) and as
-        ``Box<Byte>`` (i32 field); only the checker-recorded target type
-        (``_target_codegen_type_full``, the #820 side-table) knows which.
-        The target's argument name is grounded through the shared
-        canonicalizer so an alias spelling (``Box<MB>``, ``type MB =
-        Byte;``) instantiates like the literal ``Byte``.  Conservative
-        ``False`` when the field is not a bare type parameter, the table is
-        unthreaded, or the target carries no matching argument — the
-        literal then keeps its i64 translation (the pre-#1092 behaviour).
-        """
-        # ctor-owner-exempt: resolved in the compiling namespace's scoped
-        # projection (#1436)
-        tp_idx = self._ctor_adt_tp_indices.get(expr.name)
-        if not tp_idx or field_i >= len(tp_idx):
-            return False
-        pos = tp_idx[field_i]
-        if pos is None:
-            return False  # concrete declared field (a literal there is E213)
-        target = self._target_codegen_type_full(expr)
-        args = getattr(target, "type_args", None)
-        if not args or pos >= len(args):
-            return False
-        arg_ty = args[pos]
-        base = getattr(arg_ty, "base", arg_ty)  # unwrap a refinement
-        name = getattr(base, "name", None)
-        if name is None:
-            return False
-        return self._canonical_field_type(name) == "Byte"
-
     # -----------------------------------------------------------------
     # Let destructuring
     # -----------------------------------------------------------------
@@ -664,7 +618,7 @@ class DataMixin:
         scr_local = self.alloc_local("i32")
         instrs: list[str] = list(val_instrs)
         instrs.append(f"local.set {scr_local}")
-        value_type = self._match_scrutinee_vera_type(stmt.value)
+        value_type = self._type_name_of(stmt.value)
 
         # Extract each field through the same layout rule construction lays
         # the object out by (`helpers.field_layout`), rather than a second
@@ -678,15 +632,18 @@ class DataMixin:
                 raise CodegenSkip(
                     stmt, "let-destruct binding type has no slot name"
                 )
+            # Each binding is laid out by the type the checker resolved its
+            # declared type to (#1525): a parameterised alias is its target
+            # under its arguments, which its spelling has no width for.
+            declared = self._type_of(te)
+            wt = self._declared_width(te)
             # Zero-size bindings (Unit, transparent Future<Unit>, …): no WASM
             # representation — bind nothing and advance no offset, exactly like
-            # a zero-size constructor field.  Keyed on erasure, not the bare
-            # string "Unit" (#1031), so Future<Unit> erases like Unit instead of
-            # skipping the whole function.
-            if self._slot_name_erases_to_unit(type_name):
+            # a zero-size constructor field (#1031).
+            if wt == "unit":
                 continue
             # Pair types (String, Array<T>): two consecutive i32 locals
-            if self._is_pair_type_name(type_name):
+            if wt == "i32_pair":
                 field_off, offset = field_layout(offset, "i32_pair")
                 # The whole representation, from the layout construction
                 # wrote: the guard below reads the length through the local
@@ -711,9 +668,8 @@ class DataMixin:
                     te, ptr_local, f"let {stmt.constructor}(…) destructure",
                     stmt, new_env, at=te,
                 ))
-                new_env = new_env.push(type_name, ptr_local)
+                new_env = new_env.push(type_name, ptr_local, declared)
                 continue
-            wt = self._slot_name_to_wasm_type(type_name)
             if wt is None:
                 raise CodegenSkip(
                     stmt,
@@ -734,7 +690,7 @@ class DataMixin:
             # `_resolve_base_type_name` so a `type Age = Nat` alias / refined
             # @Nat target is guarded too (CR #756), matching the alias-aware
             # call-arg / ctor-field metadata.
-            if (self._resolve_base_type_name(type_name) == "Nat"
+            if (self._is_nat_type(declared)
                     and not self._field_instantiated_at_nat(
                         stmt.constructor, idx, value_type)):
                 load = self._emit_nat_bind_guard(load, at=te)
@@ -756,10 +712,10 @@ class DataMixin:
             # allocation can reclaim the bound heap pointer.  This was
             # missed by the original #705 fix — match-arm paths were
             # rooted but the parallel let-destruct path was not.
-            if wt == "i32" and type_name not in _INLINE_I32_TYPES:
+            if wt == "i32" and self._holds_pointer(declared):
                 self.needs_alloc = True
                 instrs.extend(gc_shadow_push(local_idx))
-            new_env = new_env.push(type_name, local_idx)
+            new_env = new_env.push(type_name, local_idx, declared)
 
         return (instrs, new_env)
 
@@ -789,7 +745,7 @@ class DataMixin:
         if scr_instrs is None:
             return None
 
-        scr_wasm_type = self._infer_expr_wasm_type(expr.scrutinee)
+        scr_wasm_type = self._expr_width(expr.scrutinee)
         if scr_wasm_type is None:
             raise CodegenSkip(
                 expr.scrutinee,
@@ -807,16 +763,14 @@ class DataMixin:
         # the instantiation-aware width of a WILDCARD over a bare
         # type-parameter field — that field registers generically as i32 but
         # is laid out per the concrete type arg at construction (Unit → 0
-        # bytes).  #1065: a DIRECT-CALL scrutinee recovers its full
-        # instantiation from the callee's declared return type
-        # (`_infer_vera_type` alone drops the type args and a type-parameter
-        # wildcard then LOUD-skipped a check-green program); None only when
-        # the type is genuinely unrecoverable, and a type-parameter wildcard
-        # still LOUD-skips rather than reading a shifted offset.  #1380
-        # reads it one step earlier than #1060 did, because the pair guard
-        # below now needs to tell a String from an `Array<T>` of the same
-        # representation.
-        scrutinee_type = self._match_scrutinee_vera_type(expr.scrutinee)
+        # bytes).  It is the checker's type of the scrutinee (#1525), a
+        # direct call's included, with its type arguments (#1065); None only
+        # when the scrutinee has no checked type, and a type-parameter
+        # wildcard then LOUD-skips rather than reading a shifted offset.
+        # #1380 reads it one step earlier than #1060 did, because the pair
+        # guard below now needs to tell a String from an `Array<T>` of the
+        # same representation.
+        scrutinee_type = self._type_name_of(expr.scrutinee)
 
         # Save scrutinee to a local
         instructions: list[str] = list(scr_instrs)
@@ -895,7 +849,7 @@ class DataMixin:
             instructions.append(f"local.set {scr_local}")
 
         # Infer result type of the match
-        result_type = self._infer_match_result_type(expr)
+        result_type = self._expr_width(expr)
 
         # Compile arms as chained if-else
         arm_instrs = self._compile_match_arms(
@@ -908,128 +862,6 @@ class DataMixin:
         instructions.extend(arm_instrs)
         return instructions
 
-    def _match_scrutinee_vera_type(self, scrutinee: ast.Expr) -> str | None:
-        """Concrete Vera type of a match scrutinee for the #1060 wildcard walks.
-
-        A ``SlotRef`` scrutinee (``@Box<Unit>.0``) already carries its concrete
-        type args, which ``_infer_vera_type`` renders in full.  A DIRECT-CALL
-        scrutinee (``mk()``) does NOT: ``_infer_fncall_vera_type`` returns the
-        bare base head (``"Box"``) for a parameterized i32-pointer return (#911),
-        dropping the ``<Unit>`` a type-parameter WILDCARD needs to recompute its
-        erased width — so the #1060 walk LOUD-skipped (E602) a check-green
-        program on a shape the slot form compiled correctly (#1065).
-
-        For a NON-generic direct-call scrutinee the callee's DECLARED return type
-        IS the concrete instantiation — a non-generic signature mentions no type
-        variables, so ``mk() -> @Box<Unit>`` declares exactly ``Box<Unit>``.
-        Recover it from ``_fn_ret_type_exprs`` (the same #614/#878 declared-return
-        registry other consultors read, populated by ``_register_fn`` in both the
-        CLI and the ``transform -> compile`` test-harness path) and render it in
-        full, matching the SlotRef form so the wildcard walks receive an
-        identical concrete type.  A non-parameterized return (``ret_te.type_args``
-        empty) needs no recovery and falls through unchanged.
-
-        A GENERIC callee's declared return carries type variables
-        (``forall<T> fn wrap(@T -> @P2<T, Unit>)``) — #1072 resolves them from
-        the call site via the same ``_unify_param_arg_wasm`` unification the
-        generic call-rewrite performs, then renders the substituted return in
-        full (``P2<Int, Unit>``).  On main this family read shifted offsets
-        SILENTLY (the pre-#1060 walk); the #1049 stack made it a sound
-        LOUD-skip; now it compiles like the slot form.  An unresolved variable
-        falls through to ``_infer_vera_type`` — whose bare base head keeps the
-        wildcard walk's LOUD-skip (sound) — though no check-green shape reaches
-        it (var-at-Unit is E206-rejected, a phantom-var callee is E121-rejected).
-
-        A MODULE-qualified callee (``boxlib::mk()``, #1073) reaches here as the
-        plain call of its link name (``mod$boxlib$mk``, `vera.binding.link`),
-        whose declared return is in ``_fn_ret_type_exprs`` like any other.
-        """
-        if isinstance(scrutinee, ast.FnCall):
-            if scrutinee.name in self._generic_fn_info:
-                rendered = self._generic_call_ret_vera_type(scrutinee)
-                if rendered is not None:
-                    return rendered
-            elif scrutinee.name in self._fn_ret_type_exprs:
-                ret_te = self._fn_ret_type_exprs[scrutinee.name]
-                if isinstance(ret_te, ast.RefinementType):
-                    ret_te = ret_te.base_type
-                if isinstance(ret_te, ast.NamedType) and ret_te.type_args:
-                    return self._format_named_type(ret_te)
-        return self._infer_vera_type(scrutinee)
-
-    def _generic_call_ret_vera_type(self, call: ast.FnCall) -> str | None:
-        """Render a GENERIC call's declared return with its type variables
-        resolved from the call site (#1072) — ``wrap(5)`` against
-        ``forall<T> fn wrap(@T -> @P2<T, Unit>)`` yields ``"P2<Int, Unit>"``.
-
-        Unifies each parameter TypeExpr against its argument exactly as the
-        generic call-rewrite does (``_unify_param_arg_wasm``), substitutes the
-        bound variables into the declared return, and renders the full name.
-        Returns ``None`` — caller falls back to ``_infer_vera_type`` — when the
-        return is not a parameterized ``NamedType`` (nothing to recover) or any
-        variable in it stays unbound (the render must never guess: a wrong
-        concrete type would put the wildcard walk back on a shifted offset,
-        whereas the bare-head fallback keeps the sound LOUD-skip).
-        """
-        ret_te: ast.TypeExpr | None = self._fn_ret_type_exprs.get(call.name)
-        if isinstance(ret_te, ast.RefinementType):
-            ret_te = ret_te.base_type
-        if not (isinstance(ret_te, ast.NamedType) and ret_te.type_args):
-            return None
-        forall_vars, _params = self._generic_fn_info[call.name]
-        # #1679: the instantiation the checker inferred at the call, which
-        # names the clone the call calls.
-        mapping = self._call_target_mapping(call, forall_vars)
-        if mapping is None:
-            return None
-        return self._render_type_substituted(ret_te, forall_vars, mapping)
-
-    def _render_type_substituted(
-        self,
-        te: ast.TypeExpr,
-        forall_vars: tuple[str, ...],
-        mapping: dict[str, str],
-    ) -> str | None:
-        """Render *te* as a full Vera type name with every forall variable
-        replaced by its call-site binding (#1072) — the substituting sibling of
-        ``_format_named_type``, which renders names verbatim.
-
-        A leaf that is a forall variable renders its ``mapping`` binding —
-        ``None`` (propagated to the caller) when unbound, so an unresolved
-        instantiation is never guessed.  Concrete leaves render verbatim;
-        parameterized nodes recurse into their type args.  A non-``NamedType``
-        node (after refinement unwrap) is unrenderable → ``None``.
-        """
-        if isinstance(te, ast.RefinementType):
-            te = te.base_type
-        if not isinstance(te, ast.NamedType):
-            return None
-        if not te.type_args:
-            if te.name in forall_vars:
-                return mapping.get(te.name)
-            return te.name
-        if te.name in forall_vars:
-            # A parameterized node whose HEAD is a type variable — Vera type
-            # vars are not higher-kinded, so this cannot arise from a checked
-            # program; refuse to render rather than emit a var-headed name.
-            return None
-        parts = []
-        for ta in te.type_args:
-            rendered = self._render_type_substituted(ta, forall_vars, mapping)
-            if rendered is None:
-                return None
-            parts.append(rendered)
-        return f"{te.name}<{', '.join(parts)}>"
-
-    def _infer_match_result_type(
-        self, expr: ast.MatchExpr
-    ) -> str | None:
-        """Infer the WASM result type from the first arm body."""
-        for arm in expr.arms:
-            wt = self._infer_expr_wasm_type(arm.body)
-            if wt is not None:
-                return wt
-        return None
 
     def _compile_match_arms(
         self,
@@ -1325,6 +1157,7 @@ class DataMixin:
                     pattern,
                     "binding pattern type has no slot name",
                 )
+            declared = self._type_of(pattern.type_expr)
             if scr_wasm_type == "i32_pair":
                 # #1305: a pair scrutinee lives in two consecutive locals
                 # (``scr_local`` = ptr, ``scr_local + 1`` = len), so the
@@ -1343,15 +1176,15 @@ class DataMixin:
                     pattern.type_expr, ptr_local, "match binding pattern",
                     pattern, env,
                 ))
-                return (instrs, env.push(type_name, ptr_local))
+                return (instrs, env.push(type_name, ptr_local, declared))
             local_idx = self.alloc_local(scr_wasm_type)
             bind_val = [f"local.get {scr_local}"]
             # #747: runtime-guard a top-level `match <Int> { @Nat -> ... }`
             # narrowing — the scrutinee binds as @Nat, so trap if it is a
             # negative i64 (Tier-3 backstop; never trips on a valid @Nat).
-            # Alias-aware (`type Age = Nat`) via `_resolve_base_type_name`
-            # (CR #756).
-            if (self._resolve_base_type_name(type_name) == "Nat"
+            # The binder's declared type as the checker resolved it, an
+            # alias of `Nat` included (CR #756, #1525).
+            if (self._is_nat_type(declared)
                     and scr_wasm_type == "i64"):
                 bind_val = self._emit_nat_bind_guard(bind_val, at=pattern)
             instrs = [
@@ -1372,13 +1205,10 @@ class DataMixin:
             # to the conservative scan until shadow-pushed.  Without
             # this, the inner ``set_new()`` allocation can reclaim
             # the bound Json block.
-            if (
-                scr_wasm_type == "i32"
-                and type_name not in _INLINE_I32_TYPES
-            ):
+            if scr_wasm_type == "i32" and self._holds_pointer(declared):
                 self.needs_alloc = True
                 instrs.extend(gc_shadow_push(local_idx))
-            new_env = env.push(type_name, local_idx)
+            new_env = env.push(type_name, local_idx, declared)
             return (instrs, new_env)
 
         if isinstance(pattern, ast.ConstructorPattern):
@@ -1431,20 +1261,23 @@ class DataMixin:
 
         for i, sub_pat in enumerate(pattern.sub_patterns):
             if isinstance(sub_pat, ast.BindingPattern):
-                # Resolve concrete WASM type from the binding's type_expr
+                # The binding's width is its declared type's as the checker
+                # resolved it (#1525); its slot name keys the environment.
                 type_name = self._type_expr_to_slot_name(sub_pat.type_expr)
                 if type_name is None:
                     raise CodegenSkip(
                         sub_pat,
                         "constructor field binding has no slot name",
                     )
+                declared = self._type_of(sub_pat.type_expr)
+                wt = self._declared_width(sub_pat.type_expr)
                 # Zero-size bindings (Unit, transparent Future<Unit>, …): no
-                # WASM representation — skip extraction, advance no offset.
-                # Keyed on erasure, not the bare string "Unit" (#1031).
-                if self._slot_name_erases_to_unit(type_name):
+                # WASM representation — skip extraction, advance no offset
+                # (#1031).
+                if wt == "unit":
                     continue
                 # Pair types (String, Array<T>): two consecutive i32 locals
-                if self._is_pair_type_name(type_name):
+                if wt == "i32_pair":
                     field_off, offset = field_layout(offset, "i32_pair")
                     # As the destructure above: the whole representation,
                     # bound from the layout construction wrote (#1466).
@@ -1474,9 +1307,8 @@ class DataMixin:
                         f"constructor sub-pattern {pattern.name}(…)",
                         sub_pat, new_env,
                     ))
-                    new_env = new_env.push(type_name, ptr_local)
+                    new_env = new_env.push(type_name, ptr_local, declared)
                     continue
-                wt = self._slot_name_to_wasm_type(type_name)
                 if wt is None:
                     raise CodegenSkip(
                         sub_pat,
@@ -1494,9 +1326,9 @@ class DataMixin:
                 # (`match opt { Some(@Nat.0) -> }` on `Option<Int>`).  The
                 # field loads as @Nat; trap if it is a negative i64 (Tier-3
                 # backstop; never trips on a valid @Nat in [0, 2^63)).
-                # Alias-aware (`type Age = Nat`) via `_resolve_base_type_name`
-                # (CR #756).
-                if (self._resolve_base_type_name(type_name) == "Nat"
+                # The binder's declared type as the checker resolved it, an
+                # alias of `Nat` included (CR #756, #1525).
+                if (self._is_nat_type(declared)
                         and not self._field_instantiated_at_nat(
                             pattern.name, i, scrutinee_type)):
                     load = self._emit_nat_bind_guard(load, at=sub_pat)
@@ -1528,28 +1360,34 @@ class DataMixin:
                 # a function that has a heap-pointer match binding
                 # but no other allocation would emit WAT referencing
                 # undefined globals.
-                if wt == "i32" and type_name not in _INLINE_I32_TYPES:
+                if wt == "i32" and self._holds_pointer(declared):
                     self.needs_alloc = True
                     instrs.extend(gc_shadow_push(local_idx))
-                new_env = new_env.push(type_name, local_idx)
+                new_env = new_env.push(type_name, local_idx, declared)
                 offset = next_off
 
-            elif isinstance(sub_pat, ast.WildcardPattern):
-                # Skip this field but advance the offset by its width.  #1060:
-                # a bare type-PARAMETER field registers generically as i32, but
-                # construction laid it out per the concrete instantiation
-                # (Unit → 0 bytes) — recompute the width from the scrutinee's
-                # type args, mirroring the eq/show recomputation, so every later
-                # field reads the address construction actually wrote.  A
-                # concrete field keeps its registered (#1043-erasure-aware)
-                # width; an unrecoverable type-parameter instantiation LOUD-skips.
-                if i < len(layout.field_offsets):
-                    _, generic_wt = layout.field_offsets[i]
-                    wt = self._wildcard_field_wasm_type(
-                        pattern.name, i, generic_wt, scrutinee_type, sub_pat,
-                        self._later_sub_pattern_reads(pattern.sub_patterns, i),
-                    )
+            elif isinstance(sub_pat, (ast.WildcardPattern, ast.BoolPattern,
+                                      ast.IntPattern, ast.StringPattern)):
+                # Bind nothing, but advance the offset by the field's width:
+                # the width of the type the pattern was matched at (#1525),
+                # a `Tuple` component's included, which no registered layout
+                # holds; a literal's comparison is the arm's condition
+                # (`_collect_nested_tag_checks`).  Where that type still
+                # holds a type variable, the registered layout's
+                # instantiation-aware width stands (#1060), and a width that
+                # is unrecoverable there LOUD-skips when a later field is
+                # read (`_sub_pattern_wasm_type`).
+                wt = self._sub_pattern_wasm_type(
+                    sub_pat, i, layout, pattern.name, scrutinee_type,
+                    self._later_sub_pattern_reads(pattern.sub_patterns, i),
+                )
+                if wt is not None:
                     _, offset = field_layout(offset, wt)
+                elif self._later_sub_pattern_reads(pattern.sub_patterns, i):
+                    raise CodegenSkip(
+                        sub_pat,
+                        "nested pattern field has no WASM type",
+                    )
 
             elif isinstance(sub_pat, ast.ConstructorPattern):
                 # Nested constructor: load the field pointer (i32),
@@ -1618,11 +1456,9 @@ class DataMixin:
         for sp in sub_patterns[index + 1:]:
             if isinstance(sp, ast.WildcardPattern):
                 continue
-            if isinstance(sp, ast.BindingPattern):
-                type_name = self._type_expr_to_slot_name(sp.type_expr)
-                if (type_name is not None
-                        and self._slot_name_erases_to_unit(type_name)):
-                    continue
+            if (isinstance(sp, ast.BindingPattern)
+                    and self._declared_width(sp.type_expr) == "unit"):
+                continue
             return True
         return False
 
@@ -1637,36 +1473,34 @@ class DataMixin:
     ) -> str | None:
         """Return the WASM type for a sub-pattern's field.
 
-        Used for offset computation when walking nested patterns.  *ctor_name*,
-        *scrutinee_type*, and *later_read* (#1060) let a WILDCARD over a bare
-        type-parameter field resolve its instantiation-aware width instead of
-        the generic i32 placeholder the registered layout records for a type
-        parameter (LOUD-skipping only when the width is unrecoverable AND a
-        later field is read).
+        Used for offset computation when walking nested patterns.  The width
+        is the checker's (#1525): a binder's is its declared type's as the
+        checker resolved it, a parameterised alias's target under its
+        arguments; a wildcard's, a literal's and a nested constructor's is
+        the type the pattern was matched at, the field's at the scrutinee's
+        instantiation (a `Tuple`'s component included, which no registered
+        layout holds).  A zero-size field is ``"unit"``: construction stores
+        nothing for it, so the walk advances by nothing (#1042, #1043).
+
+        Where the matched type still holds a type variable (a template's own
+        patterns, or a constructor pattern over a scrutinee typed by one),
+        *ctor_name*, *scrutinee_type*, and *later_read* (#1060) let a
+        WILDCARD over a bare type-parameter field resolve its
+        instantiation-aware width from the registered layout instead
+        (LOUD-skipping only when the width is unrecoverable AND a later
+        field is read).
         """
         if isinstance(sub_pat, ast.BindingPattern):
-            type_name = self._type_expr_to_slot_name(sub_pat.type_expr)
-            if type_name is None:
+            wt = self._declared_width(sub_pat.type_expr)
+            if wt is None:
                 raise CodegenSkip(
                     sub_pat,
-                    "sub-pattern binding has no slot name",
+                    "sub-pattern binding has no WASM representation",
                 )
-            # Zero-size bindings (Unit, transparent Future<Unit>, …): no WASM
-            # representation — construction stores NOTHING for them, so the
-            # offset walk must give them zero width (#1042).  Consulting the
-            # registered layout here is wrong twice over: the builtin Tuple's
-            # layout is empty (its per-call layout is recomputed erasure-aware),
-            # and the registered user-ADT layout gives zero-size fields 4 bytes
-            # (#1043) — either way the walk would advance past bytes that were
-            # never stored and every later nested tag check would read garbage.
-            # Keyed on erasure, not the bare string "Unit" (#1031), so
-            # Future<Unit> behaves identically to Unit.
-            if self._slot_name_erases_to_unit(type_name):
-                return "unit"
-            # Pair types (String, Array<T>) use i32_pair representation
-            if self._is_pair_type_name(type_name):
-                return "i32_pair"
-            return self._slot_name_to_wasm_type(type_name)
+            return wt
+        matched = self._type_of(sub_pat)
+        if matched is not None and not contains_typevar(matched):
+            return self._declared_width(sub_pat)
         if isinstance(sub_pat, ast.WildcardPattern):
             if field_index < len(layout.field_offsets):
                 _, generic_wt = layout.field_offsets[field_index]
@@ -1838,7 +1672,16 @@ class DataMixin:
                 )
             field_off, next_off = field_layout(offset, wt)
 
-            if isinstance(sub_pat, (ast.ConstructorPattern, ast.NullaryPattern)):
+            if isinstance(sub_pat, (ast.BoolPattern, ast.IntPattern,
+                                    ast.StringPattern)):
+                # A literal sub-pattern is a comparison of the field, read at
+                # the width it was stored at, with the literal (#1525): the
+                # top-level arm's own comparison, over a local the field is
+                # loaded into.  The walk once had no width for it and
+                # dropped the function.
+                checks.append(self._nested_literal_check(
+                    sub_pat, scr_local, field_off, wt))
+            elif isinstance(sub_pat, (ast.ConstructorPattern, ast.NullaryPattern)):
                 name = sub_pat.name
                 # ctor-owner-exempt: a parsed sub-pattern, resolved in the
                 # compiling namespace's scoped projection (#1436)
@@ -1880,6 +1723,29 @@ class DataMixin:
 
         return checks
 
+    def _nested_literal_check(
+        self, sub_pat: ast.Pattern, scr_local: int, field_off: int, wt: str,
+    ) -> list[str]:
+        """The condition a literal sub-pattern adds to its arm: the field at
+        *field_off* of the object at *scr_local*, loaded into a local of its
+        width *wt*, compared with the literal by the top-level arm's own
+        comparison (:meth:`_literal_arm_condition`) at the type the pattern
+        was matched at."""
+        if wt == "i32_pair":
+            binding = bind_slot_value_from_field(
+                self.alloc_local, "i32_pair", scr_local, field_off)
+            load = list(binding.load)
+            value_local = binding.slot_local
+        else:
+            value_local = self.alloc_local(wt)
+            load = [
+                f"local.get {scr_local}",
+                f"{wt}.load offset={field_off}",
+                f"local.set {value_local}",
+            ]
+        return [*load, *self._literal_arm_condition(
+            sub_pat, value_local, wt, value_type_name(self._type_of(sub_pat)))]
+
     # -----------------------------------------------------------------
     # Array literals
     # -----------------------------------------------------------------
@@ -1896,29 +1762,16 @@ class DataMixin:
         if n == 0:
             return ["i32.const 0", "i32.const 0"]
 
-        elem_type = self._infer_array_element_type(expr)
+        # The element type is the literal's checked `Array<T>`'s `T`, an
+        # alias already its target (#583, #1058) and a closure a pointer
+        # (#1525: a literal of closures was dropped when the element was
+        # read off the first element's syntax).
+        elem_type = self._type_arg_name_of(expr, 0)
         if elem_type is None:
             raise CodegenSkip(
                 expr,
                 "could not infer array literal element type",
             )
-        # Resolve type aliases — `type Row = Array<Bool>` makes the
-        # inferred element name "Row", but the element-layout helpers
-        # below match on bare "Array" / "Array<...>".  Without this,
-        # an alias-typed element falls through to the 4-byte i32 path
-        # and the literal emits a malformed WAT (#583).
-        #
-        # Canonicalize to the target's FULL compound spelling first
-        # (#1058): the name-only `_resolve_base_type_name` hop drops type
-        # arguments, so `type FI = Future<Int>` resolved to bare "Future".
-        # A `Future<T>` element is representation-transparent (#841) —
-        # its width is its payload T's — but the bare head collapses to
-        # the i32 default, storing an i64 payload with `i32.store` (a
-        # "expected i32, found i64" validation trap) on a check-green
-        # program.  Mirrors the `_is_pair_type_name` canonicalize-then-
-        # resolve order (#1046).
-        elem_type, _ = self._canonicalize_alias_slot_name(elem_type)
-        elem_type = self._resolve_base_type_name(elem_type)
         elem_size = self._element_mem_size(elem_type)
         if elem_size is None:
             raise CodegenSkip(
@@ -2034,7 +1887,7 @@ class DataMixin:
         # gives — and the checker then admits an index over it anyway, which
         # is the hole #1315/#1320 describe.  Until that hole closes, codegen
         # refuses here rather than shipping an artifact no runtime can load.
-        coll_wt = self._infer_expr_wasm_type(expr.collection)
+        coll_wt = self._expr_width(expr.collection)
         if coll_wt is not None and coll_wt != "i32_pair":
             raise CodegenSkip(
                 expr,
@@ -2045,7 +1898,8 @@ class DataMixin:
                 "§8.4.1), so a type spelled like a container here may be "
                 "that declaration",
             )
-        elem_type = self._infer_index_element_type(expr)
+        # The element type is the index expression's own checked type.
+        elem_type = self._type_name_of(expr)
         if elem_type is None:
             raise CodegenSkip(
                 expr,

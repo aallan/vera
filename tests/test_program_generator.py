@@ -31,7 +31,8 @@ handed over by the entry's path, as `vera` resolves them:
 A find of (1), (2) or (3) that vanishes once each value code generation
 types by its own reading is bound in place by a `let` of the type the
 checker gives it is counted under that class's issue (:data:`REDERIVED`);
-one that does not vanish is a find.
+one that does not vanish is a find.  Code generation reads every value's
+type off the typed program (#1525), so no such class is open.
 
 Every pull request runs the contract and the four differentials over the
 ten pinned :data:`SEEDS`, and holds the instrument to its own contract: a seed
@@ -39,8 +40,8 @@ writes its program byte for byte in every process, a hundred seeds reach
 every construct of the grammar, each differential reports a hand-written
 program that breaks it and passes that program's nearest neighbour that does
 not, the minimiser keeps the failure it shrinks and drops a handler, a
-recursive call and an import, each known class still has its shape, and each
-counterfactual class still holds its repro and its members.  The
+recursive call and an import, each known class still has its shape, and the
+counterfactual classifies by its rules over a class the cells inject.  The
 nightly lane (`.github/workflows/nightly-generator.yml`) runs the same cell
 over the night's seeds, which ``VERA_GENERATOR_SEEDS`` names
 (:func:`night_seeds`).  A find outside the known classes is minimised and
@@ -73,6 +74,7 @@ import yaml
 
 from tests import pipeline
 from tests import program_generator as gen
+from tests.codegen_helpers import skip_map_inserts  # noqa: F401  (the fixture)
 from tests.test_distrust_corpus import _FALSE_PROOF
 from vera import ast
 from vera.errors import Diagnostic, SourceLocation
@@ -88,13 +90,8 @@ LABEL = gen.ENTRY
 
 #: The pull request lane's seeds: the first eight, 173 and 737, which
 #: between them write every construct of the grammar
-#: (:func:`test_the_pinned_seeds_reach_every_construct`) and a find of each
-#: counterfactual class, #1744's at 7 and #1525's at 737
-#: (:data:`PINNED_CLASSES`).
+#: (:func:`test_the_pinned_seeds_reach_every_construct`).
 SEEDS = (0, 1, 2, 3, 4, 5, 6, 7, 173, 737)
-
-#: A pinned seed whose program makes a find of each counterfactual class.
-PINNED_CLASSES = (("#1744", 7), ("#1525", 737))
 
 #: Trials per public function in the distrust differential.
 TRIALS = int(os.environ.get("VERA_GENERATOR_TRIALS", "20"))
@@ -613,9 +610,11 @@ class Sites:
         """Whether *e*'s value is non-negative by what the program declares:
         a slot of a `Nat` type or a refinement of one, an element of a
         `Nat` array, a call whose callee returns `Nat` (a generic one at a
-        `Nat` argument in every position of its type variable), a fold
-        from one, a `get` of a `Nat` cell, a handler or a branch whose value
-        is one, a non-negative literal, and arithmetic over them."""
+        `Nat` argument in every position of its type variable), a `get` of
+        a `Nat` cell, a handler or a branch whose value is one, a
+        non-negative literal, and arithmetic over them.  A fold is none,
+        whatever its initial value: its closure's `@Int` return fixes it at
+        `Int` (spec §4.2)."""
         if isinstance(e, ast.SlotRef):
             tvar = self.type_variable(self.slot_type(e), e)
             if tvar is not None:
@@ -650,10 +649,6 @@ class Sites:
             return self.is_nat(self.cell(e))
         if isinstance(e, (ast.FnCall, ast.ModuleCall)):
             fn = self.returns.get(e.name)
-            if fn is None and e.name == "array_fold" and len(e.args) == 3:
-                # The checker binds a fold's accumulator to its initial
-                # value's type.
-                return self.nat_by_declarations(e.args[1])
             if fn is None:
                 return e.name == "get" and not e.args[1:] and self.is_nat(self.cell(e))
             ret = fn.return_type
@@ -709,41 +704,14 @@ def _throws(e: ast.Node) -> bool:
     return isinstance(e, (ast.FnCall, ast.QualifiedCall)) and e.name == "throw"
 
 
-def _nat_by_declared_names(e: ast.Node) -> bool:
-    """Code generation's static rule for a value bound into a `@Nat` slot,
-    as it reads one: a slot whose declared type is spelled `Nat`, a
-    non-negative literal, arithmetic over them and a branch whose every
-    value is one; a call, an element, a handler and a binder it does not
-    read as one."""
-    if isinstance(e, ast.SlotRef):
-        return e.type_name == "Nat" and not e.type_args
-    if isinstance(e, ast.IntLit):
-        return e.value >= 0
-    if isinstance(e, ast.BinaryExpr):
-        return (e.op in (ast.BinOp.ADD, ast.BinOp.SUB, ast.BinOp.MUL,
-                         ast.BinOp.DIV, ast.BinOp.MOD)
-                and _nat_by_declared_names(e.left) and _nat_by_declared_names(e.right))
-    if isinstance(e, ast.Block):
-        return _nat_by_declared_names(e.expr)
-    if isinstance(e, ast.IfExpr):
-        return (_nat_by_declared_names(e.then_branch)
-                and _nat_by_declared_names(e.else_branch))
-    if isinstance(e, ast.MatchExpr):
-        return bool(e.arms) and all(_nat_by_declared_names(a.body) for a in e.arms)
-    return False
-
-
-def _nat_guard_on_a_declared_nat(node: ast.Node, sites: Sites) -> bool:
-    """The class #1695 holds for a `nat_bind` guard: a value the program's
-    declarations make non-negative, so the verifier, which reads the
-    checker's types, records no narrowing, and which code generation's own
-    static rule, reading declared names, does not read as a `@Nat`, so it
-    plants the guard (`Sites.nat_by_declarations` against
-    `_nat_by_declared_names`).  A branch the declarations type `Int`, a
-    negated literal among them (#1756's shape), is outside it."""
-    if isinstance(node, ast.BindingPattern):
-        return sites.binder_of_nat_field(node)
-    return sites.nat_by_declarations(node) and not _nat_by_declared_names(node)
+def _nat_guard_at_a_binder(node: ast.Node, sites: Sites) -> bool:
+    """The class #1695 holds for a `nat_bind` guard: a `@Nat` binder of a
+    field the declarations type `Nat` (`Sites.binder_of_nat_field`), which
+    code generation guards unless the field is a type parameter instantiated
+    at exactly `Nat`, and which the verifier, tracing the field to the value
+    the construction stored, does not narrow.  A value at a `@Nat` position
+    is outside it: code generation reads its type off the typed program."""
+    return isinstance(node, ast.BindingPattern) and sites.binder_of_nat_field(node)
 
 
 def _refinement_already_held(node: ast.Node, sites: Sites) -> bool:
@@ -842,8 +810,8 @@ class KnownClass:
         return any(test(node, sites) for node in sites.at(mismatch))
 
 
-_NAT_GUARD_SHAPE = ("a `@Nat` value the declarations make non-negative, which "
-                    "code generation's declared-name rule does not read as one")
+_NAT_GUARD_SHAPE = ("a `@Nat` binder of a field the declarations type `Nat`, which "
+                    "code generation guards and the verifier does not narrow")
 _REFINED_NAT_SHAPE = "a narrowing into a refinement of `Nat`, recorded as the refinement's"
 _REFINEMENT_HELD_SHAPE = ("a refinement check on a value the declarations already give "
                           "the refinement: a refined parameter, a `let` of refined slots")
@@ -854,7 +822,7 @@ _SHAPES: dict[str, Callable[[ast.Node, Sites], bool]] = {
     "an `@Int` division": lambda node, _s: _division_by(node, literal=False),
     "a division by a non-zero literal":
         lambda node, _s: _division_by(node, literal=True),
-    _NAT_GUARD_SHAPE: _nat_guard_on_a_declared_nat,
+    _NAT_GUARD_SHAPE: _nat_guard_at_a_binder,
     _REFINED_NAT_SHAPE: _narrowing_into_refined_nat,
     _REFINEMENT_HELD_SHAPE: _refinement_already_held,
     _JOIN_SHAPE: _join_typed_as_the_refinement,
@@ -883,6 +851,27 @@ public fn r(@Int -> @Int)
 """
 
 _REPRO_NAT_GUARD = """\
+private data Box {
+  Wrap(Nat),
+  Empty
+}
+
+public fn t(@Nat -> @Nat)
+  requires(@Nat.0 <= 100)
+  ensures(@Nat.result <= 100)
+  effects(pure)
+{
+  let @Box = Wrap(@Nat.0);
+  match @Box.0 {
+    Wrap(@Nat) -> @Nat.0,
+    Empty -> 0
+  }
+}
+"""
+
+#: A call's `@Nat` result bound at `@Nat` (#1557), which code generation
+#: guarded while it read the call's type by the callee's declared name.
+_NAT_CALL = """\
 private fn nat_id(@Nat -> @Nat)
   requires(@Nat.0 <= 100)
   ensures(@Nat.result == @Nat.0)
@@ -956,13 +945,16 @@ KNOWN_CLASSES: tuple[KnownClass, ...] = (
         "#1695 (#1629)", "guarded_unrecorded", "div_zero",
         "wasm/operators.py:_translate_binary",
         "a division by a non-zero literal", _REPRO_1629_DIVISOR),
-    # One mechanism, met at every value the checker types `Nat` by its
-    # leaves where code generation's own rule reads declared names: a call
-    # (#1557), a `Nat` field's binder, a generic one's at `Nat` and a
-    # refined slot (#1629), a `State<Nat>` read and its handler, an element
-    # of a `Nat` array, a fold from a `Nat` over its `Int` closure.  The typed program's second pull request, in which
-    # code generation reads the checker's types, flips this pin: the repro
-    # then reports nothing, the cell fails, and the entry comes out.
+    # A `@Nat` binder of a field the declarations type `Nat`: code
+    # generation guards every `@Nat` binder but one of a type parameter
+    # instantiated at exactly `Nat`, and the verifier, tracing the field to
+    # the value the construction stored (`vera.narrowing.component_narrows`),
+    # records no narrowing.  Code generation reads every other value's type
+    # off the typed program, so a call's result, a refined slot, a
+    # `State<Nat>` read and its handler, an element of a `Nat` array and a
+    # fold leave no guard without its record (the
+    # `test_repro_*_makes_no_nat_bind_find` cells).  Code generation's
+    # source walk joining the verifier's flips this pin.
     KnownClass(
         "#1695", "guarded_unrecorded", "nat_bind",
         "wasm/operators.py:_emit_nat_bind_guard", _NAT_GUARD_SHAPE,
@@ -1233,8 +1225,8 @@ def _key(f: Find) -> tuple[str, tuple[str, ...], str]:
 
 def _at_a_bound_value(f: Find, sites: Sites) -> bool:
     """Whether *f* is a mismatch at the value of a `let` the counterfactual
-    wrote, `{ let @T = value; @T.0 }`: a `let @Nat` of a fold from a `Nat`
-    makes the `nat_bind` class's guard there by construction."""
+    wrote, `{ let @T = value; @T.0 }`: a known find there is the
+    counterfactual's own, made by the `let` it wrote."""
     if f.site is None:
         return False
     for node in sites._at.get(f.site, []):
@@ -1274,8 +1266,7 @@ def classify_rederived(
     counterfactual that does not check and verify clean, or that makes a
     find outside the known classes the program does not, isolates nothing,
     and classifies nothing more.  A known find the counterfactual makes
-    anew, as binding a fold from a `Nat` in a `let @Nat` makes the
-    `nat_bind` class's guard, does not.  A find that vanishes under none
+    anew at a value it binds does not.  A find that vanishes under none
     stays a find.  Where every find
     vanishes, *stats* takes the counterfactual's distrust run, which ran
     the functions the program's module could not."""
@@ -1361,11 +1352,10 @@ def _one(body: gen.Expr, *, lets: Sequence[gen.Let] = (), ret: str = "Int",
 
 
 def _repro_fold_argument() -> gen.Program:
-    """`Some(array_fold(...))`: code generation infers no type for a fold as
-    a constructor's argument, and drops the function (E602; #1525's line
-    from #1680).  The arm's `@Nat.0 * 2` gives the function a postcondition
-    the verifier proves, so `vera test --distrust` runs the function the
-    counterfactual compiles."""
+    """`Some(array_fold(...))`, a fold as a constructor's argument, #1525's
+    line from #1680, which code generation dropped (E602) while it typed the
+    fold by its own reading.  The arm's `@Nat.0 * 2` gives the function a
+    postcondition the verifier proves, so `vera test --distrust` runs it."""
     items = _items()
     x = gen.Binding("Int", gen.ANY, gen.Iv(9, 9))
     n = gen.Binding("Nat", gen.Iv(0, 5), gen.Iv(0, 5))
@@ -1378,10 +1368,11 @@ def _repro_fold_argument() -> gen.Program:
 
 
 def _repro_handler_arms() -> gen.Program:
-    """An `if` whose two arms are each a `handle[State<Int>]`: code
-    generation lowers it with no result type, and the module does not load
-    (#1744's handler block).  Its `ensures`, which the verifier leaves to
-    Tier 3, gives `vera test` a check to run once the module loads."""
+    """An `if` whose two arms are each a `handle[State<Int>]`, which code
+    generation lowered with no result type while it typed the `if` by its
+    own reading, so the module did not load (#1744's handler block).  Its
+    `ensures`, which the verifier leaves to Tier 3, gives `vera test` a
+    check to run."""
     flag = gen.Binding("Bool")
     prog = _one(gen.If(gen.Ref(flag), gen.Block([], _cell(3)),
                        gen.Block([], _cell(4, -2))), params=[flag], example=[True])
@@ -1391,15 +1382,11 @@ def _repro_handler_arms() -> gen.Program:
 
 
 #: The classes of code generation's own reading of a value's type, each
-#: binding its values on top of the classes before it.
-REDERIVED: tuple[Rederived, ...] = (
-    Rederived("#1525", "a fold as a scrutinee, a constructor's argument or a "
-              "branch's every arm, which code generation finds no type for",
-              (gen.BIND_FOLD,), _repro_fold_argument),
-    Rederived("#1744", "a handler a branch takes, which code generation "
-              "lowers with no result type", (gen.BIND_HANDLER_ARM,),
-              _repro_handler_arms),
-)
+#: binding its values on top of the classes before it.  None is open: code
+#: generation reads every value's type off the typed program (#1525), and
+#: the shapes #1525's fold class and #1744's handler class held make no find
+#: (the `test_repro_*_makes_no_find` cells).
+REDERIVED: tuple[Rederived, ...] = ()
 
 
 # =====================================================================
@@ -1679,9 +1666,8 @@ def _measured(step: gen.Expr | None) -> gen.Program:
 
 def _fold_less_its_init() -> gen.Program:
     """`array_fold` from a `@Nat` init over `fn(@Int, @Int -> @Int)`, less
-    the same `@Nat`: the checker types the fold `@Nat`, so the subtraction
-    is a `@Nat` one, whose check fails on every run of the generated
-    input."""
+    the same `@Nat`: the checker types the fold `@Int`, its closure's
+    return, so the subtraction is an `@Int` one."""
     n = gen.Binding("Nat", gen.Iv(20, 35), gen.Iv(20, 35))
     items = gen.Binding("Array<Int>", value=gen.ArrayLit("Int", [gen.Lit(20), gen.Lit(-1)]))
     acc, elem = gen.Binding("Int", gen.ANY, gen.Iv(0, 0)), gen.Binding(
@@ -1692,9 +1678,9 @@ def _fold_less_its_init() -> gen.Program:
 
 
 def _member_fold_scrutinee() -> gen.Program:
-    """A `match` on `array_fold(...)`: code generation infers no type for
-    the scrutinee, and drops the function (E602; #1525's line from
-    #1679)."""
+    """A `match` on `array_fold(...)`, #1525's line from #1679, which code
+    generation dropped (E602) while it typed the scrutinee by its own
+    reading."""
     items = _items()
     match = gen.Match(_sum(items), [gen.Arm(gen.Pattern(literal=9), gen.Lit(1)),
                                     gen.Arm(gen.Pattern(), gen.Lit(2))])
@@ -1703,8 +1689,8 @@ def _member_fold_scrutinee() -> gen.Program:
 
 
 def _member_fold_arms() -> gen.Program:
-    """An `if` of two folds: code generation types neither arm, lowers the
-    `if` with no result type, and the module does not load."""
+    """An `if` of two folds, which code generation lowered with no result
+    type while it typed neither arm, so the module did not load."""
     items = _items()
     flag = gen.Binding("Bool")
     return _one(gen.If(gen.Ref(flag), gen.Block([], _sum(items)),
@@ -1713,8 +1699,8 @@ def _member_fold_arms() -> gen.Program:
 
 
 def _member_throw_and_fold() -> gen.Program:
-    """Under `handle[Exn<Int>]`, an `if` of a `throw` and a fold: neither
-    arm typed, and the module does not load."""
+    """Under `handle[Exn<Int>]`, an `if` of a `throw` and a fold, neither
+    arm of which code generation typed, so the module did not load."""
     items = _items()
     flag = gen.Binding("Bool")
     payload = gen.Binding("Int", gen.ANY, gen.Iv(1, 1))
@@ -1725,61 +1711,58 @@ def _member_throw_and_fold() -> gen.Program:
 
 
 def _member_handler_match() -> gen.Program:
-    """A `match` on a `Bool` whose two arms are each a handler: the module
-    does not load (#1744's handler block, at a `match`)."""
+    """A `match` on a `Bool` whose two arms are each a handler, whose module
+    did not load (#1744's handler block, at a `match`)."""
     flag = gen.Binding("Bool")
     return _one(gen.Match(gen.Ref(flag), [gen.Arm(gen.Pattern(literal=True), _cell(3)),
                                           gen.Arm(gen.Pattern(literal=False), _cell(4, -2))]),
                 params=[flag], example=[True])
 
 
-#: Each shape code generation reads a type of its own at, by the issue its
-#: finds are counted under.
-_REDERIVED_MEMBERS: dict[str, tuple[str, Callable[[], gen.Program]]] = {
-    "fold_argument": ("#1525", _repro_fold_argument),
-    "fold_scrutinee": ("#1525", _member_fold_scrutinee),
-    "fold_arms": ("#1525", _member_fold_arms),
-    "throw_and_fold": ("#1525", _member_throw_and_fold),
-    "handler_arms": ("#1744", _repro_handler_arms),
-    "handler_match": ("#1744", _member_handler_match),
-}
-
-
-@pytest.mark.parametrize("member", sorted(_REDERIVED_MEMBERS))
-def test_each_rederived_class_reads_its_members(member: str) -> None:
-    """Each shape the generator writes where code generation reads a type
-    of its own makes a find of the load, reconcile or distrust differential
-    that `vera check` and `vera verify` do not, and each such find vanishes
-    with the shape's values bound in place: it is its class's, and the
-    program fails nothing."""
-    issue, build = _REDERIVED_MEMBERS[member]
-    prog = build()
+def _makes_no_find(prog: gen.Program) -> dict[str, int]:
+    """*prog* keeps the generator's contract and makes no find of the load,
+    reconcile or distrust differential, in a known class or out of one;
+    the distrust run's counts."""
     stages = Stages.of(prog)
     assert contract_finds(prog, stages) == []
-    plain = [f for f in _codegen_finds(prog, stages, TRIALS) if not f.known]
-    assert plain, f"{member} makes no find: has {issue}'s fix landed?"
-    shape = next(c.shape for c in REDERIVED if c.issue == issue)
-    classified = classify_rederived(prog, plain, None)
-    assert {(f.known, f.cls) for f in classified} == {(issue, shape)}, classified
-
-
-@pytest.mark.parametrize("cls", REDERIVED, ids=[c.issue for c in REDERIVED])
-def test_each_rederived_class_keeps_its_repro(cls: Rederived) -> None:
-    """The class's pin: its repro makes a find of the load, reconcile or
-    distrust differential, every such find is the class's, the program
-    fails nothing, and the distrust run counted is the counterfactual's,
-    which ran the function.  The day the issue is fixed the repro makes no
-    find, this fails, and the class comes out."""
     stats: dict[str, int] = {}
-    finds = differentials(cls.repro(), stats=stats, warm=False)
-    assert [f for f in finds if not f.known] == [], finds
-    assert [f for f in finds if f.known == cls.issue and f.cls == cls.shape], finds
-    assert stats["public_tested"] >= 1, stats
-    bound = gen.bind_in_place(cls.repro(), cls.kinds)
-    assert bound is not None
-    assert [n for f in gen.all_functions(bound) for n in gen._walk(f.body)
-            if isinstance(n, gen.Bound)], bound.render()
-    assert pipeline.check(bound.render(), file=LABEL).ok, bound.render()
+    finds = _codegen_finds(prog, stages, TRIALS, stats)
+    assert finds == [], finds
+    return stats
+
+
+def test_repro_a_fold_as_a_constructors_argument_makes_no_find() -> None:
+    """#1525's fold class, its repro: the function compiles, loads and runs,
+    and `vera test --distrust` runs it."""
+    assert _makes_no_find(_repro_fold_argument())["public_tested"] >= 1
+
+
+def test_repro_a_match_on_a_fold_makes_no_find() -> None:
+    """#1525's fold class, a fold as a `match`'s scrutinee."""
+    _makes_no_find(_member_fold_scrutinee())
+
+
+def test_repro_an_if_of_two_folds_makes_no_find() -> None:
+    """#1525's fold class, a branch whose every arm is a fold."""
+    _makes_no_find(_member_fold_arms())
+
+
+def test_repro_a_throw_beside_a_fold_makes_no_find() -> None:
+    """#1525's fold class, an `if` of a `throw` and a fold under
+    `handle[Exn<Int>]`."""
+    _makes_no_find(_member_throw_and_fold())
+
+
+def test_repro_an_if_of_two_handlers_makes_no_find() -> None:
+    """#1744's handler class, its repro: the module loads, and `vera test
+    --distrust` runs the function."""
+    assert _makes_no_find(_repro_handler_arms())["public_tested"] >= 1
+
+
+def test_repro_a_match_of_two_handlers_makes_no_find() -> None:
+    """#1744's handler class, a `match` whose two arms are each a
+    handler."""
+    _makes_no_find(_member_handler_match())
 
 
 def _clauses(text: str) -> list[str]:
@@ -1790,11 +1773,12 @@ def _clauses(text: str) -> list[str]:
 
 def test_the_counterfactual_writes_every_contract_as_the_program_does() -> None:
     """The counterfactual changes bodies alone: over a hundred programs,
-    each binding every value of every class, the contracts of the entry and
-    of the module are the program's, clause for clause, a caller's `ensures`
-    that reads its callee's included (seed 429's: a contract fixed before
-    its caller's was read made the caller's `ensures(true)`)."""
-    kinds = [k for c in REDERIVED for k in c.kinds]
+    each binding every value it binds (`program_generator.BIND_KINDS`), the
+    contracts of the entry and of the module are the program's, clause for
+    clause, a caller's `ensures` that reads its callee's included (seed
+    429's: a contract fixed before its caller's was read made the caller's
+    `ensures(true)`)."""
+    kinds = gen.BIND_KINDS
     bound_some = 0
     for seed in range(100):
         prog = gen.generate(seed)
@@ -1807,9 +1791,39 @@ def test_the_counterfactual_writes_every_contract_as_the_program_does() -> None:
     assert bound_some, "no program of a hundred holds a value to bind"
 
 
+#: The class the cells below hold the classification to its rules over:
+#: none is open (:data:`REDERIVED`), so its one member is injected, a load
+#: find the program makes and its counterfactual, which binds the program's
+#: fold, does not, as #1525's fold class's did.
+_LOCAL = Rederived("#local", "a fold as a constructor's argument, a find by injection",
+                   (gen.BIND_FOLD,), _repro_fold_argument)
+_MEMBER = Find("load", ("compile", "E602"), "the injected member", function="f9")
+
+
+def _bound(program: object) -> bool:
+    """Whether *program* is a counterfactual, its values bound in place."""
+    return isinstance(program, gen.Program) and "{ let @" in program.render()
+
+
+@pytest.fixture
+def local_class(monkeypatch: pytest.MonkeyPatch) -> Rederived:
+    """:data:`_LOCAL` the one class, its member in the load differential of
+    every program the counterfactual has not bound."""
+    real = load_finds
+
+    def with_member(program: Source, calls: Sequence[tuple[str, Sequence[int] | None]],
+                    stages: Stages | None = None) -> list[Find]:
+        out = real(program, calls, stages)
+        return out if _bound(program) else [*out, _MEMBER]
+
+    monkeypatch.setattr(sys.modules[__name__], "REDERIVED", (_LOCAL,))
+    monkeypatch.setattr(sys.modules[__name__], "load_finds", with_member)
+    return _LOCAL
+
+
 def test_a_find_the_counterfactual_does_not_remove_stays_a_find(
-        monkeypatch: pytest.MonkeyPatch) -> None:
-    """The class's boundary: in a program of #1525's class, a find that the
+        local_class: Rederived, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The class's boundary: in a program of the class, a find that the
     counterfactual makes too is a find, beside the class's counted ones,
     though its detail moves with the counterfactual's columns, as a
     mismatch's site does."""
@@ -1825,11 +1839,11 @@ def test_a_find_the_counterfactual_does_not_remove_stays_a_find(
     monkeypatch.setattr(sys.modules[__name__], "load_finds", with_another)
     finds = differentials(_repro_fold_argument(), warm=False)
     assert [f.signature for f in finds if not f.known] == [("call", "elsewhere")], finds
-    assert [f for f in finds if f.known == "#1525"], finds
+    assert [f for f in finds if f.known == local_class.issue], finds
 
 
 def test_a_counterfactual_that_makes_a_find_of_its_own_classifies_nothing(
-        monkeypatch: pytest.MonkeyPatch) -> None:
+        local_class: Rederived, monkeypatch: pytest.MonkeyPatch) -> None:
     """A counterfactual that makes a find the program does not no longer
     isolates the class: the program's finds stay finds."""
     real = load_finds
@@ -1849,54 +1863,56 @@ def test_a_counterfactual_that_makes_a_find_of_its_own_classifies_nothing(
     assert codegen and not [f for f in codegen if f.known], finds
 
 
-def test_a_fold_takes_its_initial_values_type() -> None:
-    """The checker binds a fold's accumulator to its initial value's type:
-    a fold from a `@Nat` is a `@Nat`, so `fold - @Nat.0` is a `@Nat`
-    subtraction, which `vera verify` records (`nat_sub`, Tier 3) and the
-    generator writes only where it is provable, so never here; and the
-    counterfactual binds the fold at `Nat`, the checker's type, so the
-    subtraction stays the `@Nat` one it is."""
+def test_a_fold_takes_its_closures_type() -> None:
+    """The closure's `@Int` return fixes a fold's accumulator at `@Int`
+    (spec §4.2), whatever its initial value: a fold from a `@Nat` over
+    `fn(@Int, @Int -> @Int)` is an `@Int`, so `fold - @Nat.0` is an `@Int`
+    subtraction, which `vera verify` records no `nat_sub` for and the
+    generator writes; and the counterfactual binds the fold at `Int`, the
+    checker's type."""
     prog = _fold_less_its_init()
     value = prog.functions[-1].body.result
     assert isinstance(value, gen.Bin) and isinstance(value.left, gen.Fold)
-    assert gen.static_type(value.left) == "Nat"
+    assert gen.static_type(value.left) == "Int"
     assert gen.static_type(_sum(_items())) == "Int"
-    statuses = {(o.kind, o.status) for o in Stages.of(prog).verified.obligations}
-    assert ("nat_sub", "tier3") in statuses, statuses
-    assert not gen.well_formed(copy.deepcopy(prog))
+    kinds = {o.kind for o in Stages.of(prog).verified.obligations}
+    assert "nat_sub" not in kinds, kinds
+    assert gen.well_formed(copy.deepcopy(prog))
     bound = gen.bind_in_place(prog, [gen.BIND_FOLD])
     assert bound is not None
-    assert "{ let @Nat = array_fold(" in bound.render(), bound.render()
+    assert "{ let @Int = array_fold(" in bound.render(), bound.render()
 
 
-def test_a_fold_from_a_nat_keeps_its_run_non_negative() -> None:
-    """A fold from a `@Nat` is a `@Nat`, so a run of it that goes negative
-    breaks its type at the first binding (the module's guard traps): the
-    generator writes it only where its run stays non-negative, and the
-    minimiser keeps to that."""
+def test_a_let_at_nat_of_a_fold_is_not_well_formed() -> None:
+    """A fold is an `@Int`, its closure's return, so a `let @Nat` of one is
+    a narrowing the verifier cannot show non-negative, whose guard traps a
+    run that goes negative: the generator writes none, whichever way its
+    run goes, and the minimiser keeps to that.  A `let @Int` of the same
+    fold is well formed."""
     n = gen.Binding("Nat", gen.Iv(0, 3), gen.Iv(0, 3))
     items = gen.Binding("Array<Int>", value=gen.ArrayLit("Int", [gen.Lit(1), gen.Lit(2)]))
 
-    def program(step: int) -> gen.Program:
+    def program(step: int, ty: str = "Nat") -> gen.Program:
         acc, elem = gen.Binding("Int", gen.ANY, gen.Iv(0, 0)), gen.Binding(
             "Int", gen.ANY, gen.Iv(0, 0))
         fold = gen.Fold(gen.Ref(items), gen.Ref(n), acc, elem,
                         gen.Bin("+", gen.Ref(acc), gen.Lit(step)))
-        bound = gen.Binding("Nat", value=fold)
-        return _one(gen.Ref(bound), lets=[gen.Let(items), gen.Let(bound)], ret="Nat",
+        bound = gen.Binding(ty, value=fold)
+        return _one(gen.Ref(bound), lets=[gen.Let(items), gen.Let(bound)], ret=ty,
                     params=[n], example=[1])
 
-    assert gen.well_formed(program(1))
+    assert not gen.well_formed(program(1))
     assert not gen.well_formed(program(-5))
+    assert gen.well_formed(program(1, "Int"))
 
 
 def test_a_member_beside_a_known_find_of_its_signature_is_counted(
-        monkeypatch: pytest.MonkeyPatch) -> None:
+        local_class: Rederived, monkeypatch: pytest.MonkeyPatch) -> None:
     """A class's find in a function that also holds a known find of its
     signature: the counterfactual makes the known one again and not the
     member, so the member has vanished and is counted (seed 429's shape, a
     `nat_bind` guard of #1525's beside one of #1695's, until #1791 closed
-    that member's line: here the program's `E602` beside a known one)."""
+    that member's line: here the injected `E602` beside a known one)."""
     real = load_finds
     prog = _repro_fold_argument()
     member = [f for f in real(prog, prog.calls()) if f.signature == ("compile", "E602")]
@@ -1910,12 +1926,12 @@ def test_a_member_beside_a_known_find_of_its_signature_is_counted(
     monkeypatch.setattr(sys.modules[__name__], "load_finds", beside)
     finds = differentials(prog, warm=False)
     assert [f for f in finds if not f.known] == [], finds
-    assert sorted(f.known for f in finds if _key(f) == _key(member[0])) == [
-        "#1525", "#1695"], finds
+    assert sorted(f.known for f in finds if _key(f) == _key(member[0])) == sorted([
+        local_class.issue, "#1695"]), finds
 
 
 def test_a_find_that_stays_beside_a_known_one_that_goes_stays_a_find(
-        monkeypatch: pytest.MonkeyPatch) -> None:
+        local_class: Rederived, monkeypatch: pytest.MonkeyPatch) -> None:
     """A program's open find beside a known find of its signature, of which
     the counterfactual makes the open one again and not the known one: as
     many of the signature as the program made in the classes, but one
@@ -1938,44 +1954,37 @@ def test_a_find_that_stays_beside_a_known_one_that_goes_stays_a_find(
 
 
 def test_a_member_beside_a_guard_the_counterfactual_writes_is_counted(
-        monkeypatch: pytest.MonkeyPatch) -> None:
-    """A class's find in a function holding a fold from a `@Nat`: the
-    counterfactual binds the fold at `Nat`, the checker's type, in a
-    `let @Nat`, whose guard is the `nat_bind` class's by construction; that
-    guard is not the member made again, so the member is counted (seed
-    2101717 of the replay of #1781's night, whose member #1791 closed: here
-    a find of the guard's signature the program alone makes)."""
-    n = gen.Binding("Nat", gen.Iv(0, 5), gen.Iv(0, 5))
-    items = gen.Binding("Array<Int>", value=gen.ArrayLit("Int", [gen.Lit(4), gen.Lit(-3)]))
-    acc, elem = gen.Binding("Int", gen.ANY, gen.Iv(0, 0)), gen.Binding(
-        "Int", gen.ANY, gen.Iv(0, 0))
-    fold = gen.Fold(gen.Ref(items), gen.Ref(n), acc, elem, gen.Lit(0))
-    prog = _one(gen.Bin("+", gen.Ref(n), fold), lets=[gen.Let(items)], params=[n],
-                example=[1])
-    assert gen.static_type(fold) == "Nat"
-    bound = gen.bind_in_place(prog, gen.BIND_KINDS)
+        local_class: Rederived, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A class's find beside a known find of its signature that the
+    counterfactual makes at the value it binds: that find is the
+    counterfactual's own, not the member made again, so the member is
+    counted (seed 2101717 of the replay of #1781's night, whose
+    counterfactual bound a fold in a `let @Nat` whose guard was the
+    `nat_bind` class's: here a known find injected at the bound fold)."""
+    prog = local_class.repro()
+    bound = gen.bind_in_place(prog, local_class.kinds)
     assert bound is not None
-    own = [f for f in reconcile_finds(bound) if f.function == "f9"]
-    assert [(f.signature[:2], f.known) for f in own] == [
-        (("guarded_unrecorded", "nat_bind"), "#1695")], own
-    real = reconcile_finds
+    sites = Sites(Stages.of(bound).verified.checked)
+    at = [site for site in sites._at
+          if _at_a_bound_value(replace(_MEMBER, site=site), sites)]
+    assert len(at) == 1, at
+    own = replace(_MEMBER, detail="the counterfactual's own", known="#1695", site=at[0])
+    real = load_finds
 
-    def alone(program: Source, known: Sequence[KnownClass] = KNOWN_CLASSES,
-              stages: Stages | None = None) -> list[Find]:
-        out = real(program, known, stages)
-        if isinstance(program, gen.Program) and "{ let @" in program.render():
-            return out
-        return out + [replace(own[0], detail="the program's", known="", cls="",
-                              evidence="", site=None)]
+    def at_the_bound_value(program: Source,
+                           calls: Sequence[tuple[str, Sequence[int] | None]],
+                           stages: Stages | None = None) -> list[Find]:
+        out = real(program, calls, stages)
+        return [*out, own] if _bound(program) else out
 
-    monkeypatch.setattr(sys.modules[__name__], "reconcile_finds", alone)
+    monkeypatch.setattr(sys.modules[__name__], "load_finds", at_the_bound_value)
     finds = differentials(prog, warm=False)
     assert [f for f in finds if not f.known] == [], finds
-    assert [f.known for f in finds if _key(f) == _key(own[0])] == ["#1525"], finds
+    assert [f.known for f in finds if _key(f) == _key(_MEMBER)] == [local_class.issue], finds
 
 
 def test_two_sites_of_one_signature_where_one_vanishes_stay_finds(
-        monkeypatch: pytest.MonkeyPatch) -> None:
+        local_class: Rederived, monkeypatch: pytest.MonkeyPatch) -> None:
     """Two finds of one signature in one function, of which the
     counterfactual makes one again: their sites cannot be told apart across
     the counterfactual's columns, so neither is marked, and the one that
@@ -1993,11 +2002,11 @@ def test_two_sites_of_one_signature_where_one_vanishes_stay_finds(
     finds = differentials(_repro_fold_argument(), warm=False)
     twins = [f for f in finds if f.signature == ("call", "twin")]
     assert len(twins) == 2 and not [f for f in twins if f.known], finds
-    assert [f for f in finds if f.known == "#1525"], finds
+    assert [f for f in finds if f.known == local_class.issue], finds
 
 
 def test_a_find_the_counterfactual_makes_again_in_a_known_class_stays_a_find(
-        monkeypatch: pytest.MonkeyPatch) -> None:
+        local_class: Rederived, monkeypatch: pytest.MonkeyPatch) -> None:
     """A find the counterfactual makes again, now inside a known class, has
     not vanished: the class holds its site in the counterfactual, not in the
     program, so it stays a find."""
@@ -2014,11 +2023,11 @@ def test_a_find_the_counterfactual_makes_again_in_a_known_class_stays_a_find(
     finds = differentials(_repro_fold_argument(), warm=False)
     again = [f for f in finds if f.signature == ("call", "again")]
     assert [f.known for f in again] == [""], finds
-    assert [f for f in finds if f.known == "#1525"], finds
+    assert [f for f in finds if f.known == local_class.issue], finds
 
 
 def test_a_counterfactual_that_does_not_check_classifies_nothing(
-        monkeypatch: pytest.MonkeyPatch) -> None:
+        local_class: Rederived, monkeypatch: pytest.MonkeyPatch) -> None:
     """A counterfactual `vera check` refuses makes no find of the load,
     reconcile or distrust differential at all, which is no evidence: the
     program's finds stay finds."""
@@ -2174,10 +2183,9 @@ def test_the_seeds_reach_every_construct_of_version_one() -> None:
 
 
 # A public function the module does not export: code generation drops it
-# (E602), which `vera check` and `vera verify` accept.
+# (E602) under the `skip_map_inserts` injection, and `vera check` and `vera
+# verify` accept it.  No shape the check accepts is dropped at E602.
 _DROPPED_EXPORT = """\
-type Id<T> = T;
-
 public fn kept(@Int -> @Int)
   requires(@Int.0 >= 0 && @Int.0 <= 9)
   ensures(@Int.result >= 0)
@@ -2191,17 +2199,18 @@ public fn dropped(@Nat -> @Nat)
   ensures(@Nat.result <= 10)
   effects(pure)
 {
-  let @Id<Nat> = @Nat.0;
-  @Id<Nat>.0
+  let @Map<String, Int> = map_insert(map_new(), "a", 1);
+  @Nat.0
 }
 """
 
 _DROPPED_EXPORT_CALLS = (("kept", (3,)), ("dropped", (4,)))
 
-_KEPT_EXPORT = _DROPPED_EXPORT.replace("let @Id<Nat>", "let @Nat").replace(
-    "@Id<Nat>.0", "@Nat.0")
+_KEPT_EXPORT = _DROPPED_EXPORT.replace(
+    '  let @Map<String, Int> = map_insert(map_new(), "a", 1);\n', "")
 
 
+@pytest.mark.usefixtures("skip_map_inserts")
 def test_the_load_differential_reports_a_public_function_it_cannot_run() -> None:
     finds = load_finds(_DROPPED_EXPORT, _DROPPED_EXPORT_CALLS)
     assert [f.signature for f in finds] == [
@@ -2246,44 +2255,24 @@ public fn one_cell(@Bool -> @Int)
 """
 
 
-def test_the_load_differential_reports_a_module_that_does_not_load() -> None:
-    """An `if` whose arms are each a handler compiles, with no diagnostic,
-    to a module wasmtime refuses (#1744's handler block): the load
-    differential reports it, once, rather than crash on it.  With the
-    handler bound by a `let` in one arm, the module loads and runs."""
+def test_the_load_differential_reports_a_module_that_does_not_load(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """A module wasmtime refuses, which no program the check accepts is
+    known to compile to (an `if` whose arms are each a handler, #1744's
+    handler block, loads and runs: its block's result is the type the
+    checker gave the `if`), so the refusal is injected at the run: the load
+    differential reports it, once, rather than crash on it."""
     calls = (("one_cell", (1,)),)
+    assert not contract_finds(_TWO_HANDLERS), contract_finds(_TWO_HANDLERS)
+    assert load_finds(_TWO_HANDLERS, calls) == []
+
+    def refused(*args: object, **kwargs: object) -> object:
+        raise wasmtime.WasmtimeError("values remaining on stack at end of block")
+
+    monkeypatch.setattr(pipeline, "run", refused)
     finds = load_finds(_TWO_HANDLERS, calls)
     assert [f.signature for f in finds] == [("module", "invalid")], finds
     assert "values remaining on stack" in finds[0].detail, finds[0].detail
-    neighbour = """\
-public fn one_cell(@Bool -> @Int)
-  requires(true)
-  ensures(@Int.result >= 3 && @Int.result <= 4)
-  effects(pure)
-{
-  let @Int = handle[State<Int>](@Int = 0) {
-    get(@Unit) -> { resume(@Int.0) },
-    put(@Int) -> { resume(()) }
-  } in {
-    put(3);
-    get(())
-  };
-  if @Bool.0 then {
-    @Int.0
-  } else {
-    handle[State<Int>](@Int = -2) {
-      get(@Unit) -> { resume(@Int.0) },
-      put(@Int) -> { resume(()) }
-    } in {
-      put(4);
-      get(())
-    }
-  }
-}
-"""
-    assert neighbour != _TWO_HANDLERS
-    assert not contract_finds(neighbour), contract_finds(neighbour)
-    assert load_finds(neighbour, calls) == []
 
 
 def test_the_reconcile_differential_reports_a_mismatch_outside_its_classes(
@@ -2320,13 +2309,14 @@ def test_each_known_class_keeps_its_shape(cls: KnownClass) -> None:
     assert [f.known for f in alone] == [cls.issue], alone
 
 
-#: Members of the `nat_bind` class beside its repro, a call (#1557), each a
-#: value the declarations make non-negative at a `@Nat` position: a refined
-#: slot, a `Nat` field's binder and a generic one's at `Nat`, a `State<Nat>`
-#: read and its handler, an element of a `Nat` array.  And outside it, #1756's shape:
-#: a join of an `@Int` branch with a `@Nat` one, which the checker typed
-#: `@Nat` and whose guard is the only check of the `@Int` branch.
-_NAT_GUARD_MEMBERS = {
+#: The values at a `@Nat` position where code generation planted a
+#: `nat_bind` guard with no record while it read the value's type by its own
+#: rule: a call's result (#1557, `_NAT_CALL`), a refined slot, a generic
+#: field's binder at `Nat`, a `State<Nat>` read and its handler, a fold from
+#: a `Nat`, an element of a `Nat` array.  Code generation reads each one's
+#: type off the typed program, and each is a narrowing the verifier records
+#: or no narrowing at all.
+_NO_NAT_GUARD = {
     "a refined slot": """\
 type Low = { @Nat | @Nat.0 <= 6 };
 
@@ -2336,23 +2326,6 @@ public fn bump(@Low -> @Nat)
   effects(pure)
 {
   @Low.0 + 1
-}
-""",
-    "a field's binder": """\
-private data Box {
-  Wrap(Nat),
-  Empty
-}
-
-public fn s(@Nat -> @Nat)
-  requires(@Nat.0 <= 100)
-  ensures(@Nat.result <= 100)
-  effects(pure)
-{
-  match Wrap(@Nat.0) {
-    Wrap(@Nat) -> @Nat.0,
-    Empty -> 0
-  }
 }
 """,
     "an element's binder": """\
@@ -2414,12 +2387,69 @@ public fn elem(@Nat -> @Int)
 """,
 }
 
+
+def _makes_no_nat_bind_find(source: str) -> None:
+    """*source* keeps the generator's contract, and its join reports no
+    `nat_bind` mismatch and none outside the known classes."""
+    assert not contract_finds(source), contract_finds(source)
+    finds = reconcile_finds(source)
+    assert not [f for f in finds if f.signature[1] == "nat_bind"], finds
+    assert all(f.known for f in finds), finds
+
+
+def test_repro_a_calls_nat_result_makes_no_nat_bind_find() -> None:
+    """A call's `@Nat` result bound at `@Nat`, the class's repro while code
+    generation read a call's type by the callee's declared name."""
+    _makes_no_nat_bind_find(_NAT_CALL)
+
+
+def test_repro_a_refined_slots_arithmetic_makes_no_nat_bind_find() -> None:
+    _makes_no_nat_bind_find(_NO_NAT_GUARD["a refined slot"])
+
+
+def test_repro_a_generic_fields_binder_makes_no_nat_bind_find() -> None:
+    _makes_no_nat_bind_find(_NO_NAT_GUARD["an element's binder"])
+
+
+def test_repro_a_cells_handler_makes_no_nat_bind_find() -> None:
+    _makes_no_nat_bind_find(_NO_NAT_GUARD["a cell's handler"])
+
+
+def test_repro_a_fold_from_a_nat_makes_no_nat_bind_find() -> None:
+    _makes_no_nat_bind_find(_NO_NAT_GUARD["a fold from a Nat"])
+
+
+def test_repro_an_element_of_a_nat_array_makes_no_nat_bind_find() -> None:
+    _makes_no_nat_bind_find(_NO_NAT_GUARD["an element of a Nat array"])
+
+
+#: Members of the `nat_bind` class beside its repro: a `Nat` field's binder
+#: over a construction.
+_NAT_GUARD_MEMBERS = {
+    "a field's binder": """\
+private data Box {
+  Wrap(Nat),
+  Empty
+}
+
+public fn s(@Nat -> @Nat)
+  requires(@Nat.0 <= 100)
+  ensures(@Nat.result <= 100)
+  effects(pure)
+{
+  match Wrap(@Nat.0) {
+    Wrap(@Nat) -> @Nat.0,
+    Empty -> 0
+  }
+}
+""",
+}
+
 @pytest.mark.parametrize("member", sorted(_NAT_GUARD_MEMBERS))
 def test_the_nat_guard_class_reads_its_mechanism(member: str) -> None:
     """Each member reports one `nat_bind` mismatch, and the class holds it:
-    the predicate reads the mechanism, a value the declarations make
-    non-negative and code generation's declared-name rule does not, from
-    the program as written."""
+    the predicate reads the mechanism, a `@Nat` binder of a `Nat` field,
+    from the program as written."""
     source = _NAT_GUARD_MEMBERS[member]
     assert not contract_finds(source), contract_finds(source)
     finds = reconcile_finds(source)
@@ -2477,12 +2507,17 @@ def test_the_held_refinement_class_reads_its_mechanism(member: str) -> None:
     assert all(f.known for f in finds), finds
 
 
-#: Values at `@Nat` positions the class must and must not hold: the
-#: declarations make each of the first non-negative, and none of the second
-#: (an `@Int` slot, a negated literal: #1756's shape, which the checker's
-#: join now types `@Int`, so the join reports nothing there at base).
+#: Sites the class must and must not hold: a `@Nat` binder of a `Nat`
+#: field, and values at `@Nat` positions (a refined slot's arithmetic, an
+#: `@Int` slot, a negated literal: #1756's shape, which the checker's join
+#: types `@Int`, and a `@Nat` slot's arithmetic).
 _NAT_GUARD_SITES = """\
 type Low = { @Nat | @Nat.0 <= 6 };
+
+private data Box {
+  Wrap(Nat),
+  Empty
+}
 
 public fn sites(@Low, @Int, @Nat -> @Int)
   requires(@Int.0 >= 1 && @Int.0 <= 5 && @Nat.0 <= 5)
@@ -2493,7 +2528,10 @@ public fn sites(@Low, @Int, @Nat -> @Int)
   let @Int = @Int.0 - 3;
   let @Int = -1 * -3;
   let @Int = @Nat.0 + 1;
-  0
+  match Wrap(@Nat.0) {
+    Wrap(@Nat) -> 0,
+    Empty -> 0
+  }
 }
 """
 
@@ -2508,15 +2546,13 @@ def _site_of(source: str, text: str) -> tuple[int, int]:
 
 
 @pytest.mark.parametrize("value,held", [
-    ("@Low.0 + 1", True), ("@Int.0 - 3", False), ("-1 * -3", False),
-    ("@Nat.0 + 1", False)])
+    ("@Nat) -> 0", True), ("@Low.0 + 1", False), ("@Int.0 - 3", False),
+    ("-1 * -3", False), ("@Nat.0 + 1", False)])
 def test_the_nat_guard_class_holds_no_other_nat_bind(value: str, held: bool) -> None:
-    """The class's predicate over a `nat_bind` guard at each value: a refined
-    slot's arithmetic is the declarations' `@Nat` that code generation's
-    declared-name rule misses; an `@Int` slot and a negated literal are no
-    `@Nat` by the declarations, so a guard there stays a find; and
-    `@Nat.0 + 1` code generation's rule reads as a `@Nat` itself, so a guard
-    there is not this mechanism either."""
+    """The class's predicate over a `nat_bind` guard at each site: a `@Nat`
+    binder of a `Nat` field is the class's; a value at a `@Nat` position is
+    not, since code generation reads its type off the typed program, so a
+    guard there with no record stays a find."""
     checked = pipeline.check(_NAT_GUARD_SITES, file=LABEL)
     assert not checked.diagnostics, checked.diagnostics
     line, column = _site_of(_NAT_GUARD_SITES, value)
@@ -2526,17 +2562,62 @@ def test_the_nat_guard_class_holds_no_other_nat_bind(value: str, held: bool) -> 
     assert cls.holds(mismatch, Sites(checked)) is held
 
 
+_FOLD_AT_A_GENERIC = """\
+private data Wrap<T> {
+  Hold(T),
+  Empty
+}
+
+private forall<T> fn pick(@T -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match Hold(@T.0) {
+    Hold(@T) -> 0,
+    Empty -> 1
+  }
+}
+
+public fn fold_in(@Nat -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  pick(array_fold([1, 2], @Nat.0, fn(@Int, @Int -> @Int) effects(pure) { @Int.1 + @Int.0 }))
+}
+"""
+
+
+def test_a_fold_from_a_nat_instantiates_no_generic_at_nat() -> None:
+    """A fold is an `@Int`, its closure's return, whatever its initial value
+    (spec §4.2), so a generic called only with a fold from a `@Nat` is
+    instantiated at `Int`, and a `@T` binder in it is no `Nat` binder: a
+    guard there would be outside the `nat_bind` class.  The predicate read a
+    fold as its initial value's type and called the binder the class's."""
+    checked = pipeline.check(_FOLD_AT_A_GENERIC, file=LABEL)
+    assert not checked.diagnostics, checked.diagnostics
+    sites = Sites(checked)
+    fold = next(node for node in sites._at[(LABEL, *_site_of(
+        _FOLD_AT_A_GENERIC, "array_fold("))] if isinstance(node, ast.FnCall))
+    assert sites.nat_by_declarations(fold) is False
+    line, column = _site_of(_FOLD_AT_A_GENERIC, "@T) -> 0")
+    cls = next(k for k in KNOWN_CLASSES if k.shape == _NAT_GUARD_SHAPE)
+    mismatch = Mismatch("guarded_unrecorded", "nat_bind", LABEL, line, column,
+                        "sites", emitter=cls.emitter)
+    assert cls.holds(mismatch, sites) is False
+
+
 def test_the_distrust_differential_reports_a_refuted_proof() -> None:
-    """#1555's address comparison: proved, and refuted by its one run.  The
-    neighbour binds each call before comparing, the documented workaround,
-    and its proof holds."""
+    """#1695's composite coercion: proved, and refuted by its one run.  The
+    neighbour binds the call and compares the binding with itself, true of
+    whatever value it holds, and its proof holds."""
     finds = distrust_finds(_FALSE_PROOF)
     assert [f.signature[0] for f in finds] == ["E703"], finds
     neighbour = _FALSE_PROOF.replace(
-        "  if mo(7) == mo(7) then { 0 - 1 } else { 1 }\n",
-        "  let @Option<Int> = mo(7);\n"
-        "  let @Option<Int> = mo(7);\n"
-        "  if @Option<Int>.0 == @Option<Int>.1 then { 0 - 1 } else { 1 }\n")
+        "  if mo(7) >= 0 then { 0 - 1 } else { 1 }\n",
+        "  let @Int = mo(7);\n"
+        "  if @Int.0 >= @Int.0 then { 0 - 1 } else { 1 }\n")
     assert neighbour != _FALSE_PROOF
     assert pipeline.verify(neighbour, file=LABEL).ok
     stats: dict[str, int] = {}
@@ -2606,7 +2687,7 @@ def test_a_refusal_the_counterfactual_does_not_remove_stays_a_find(
 
 
 def test_a_refutation_names_its_function_and_arguments() -> None:
-    """#1555's refuted proof over a parameter the precondition pins: the
+    """The false proof refuted over a parameter the precondition pins: the
     find names the function and the arguments it was refuted on, which the
     record hands `program_generator.expectations`.  The diagnostic alone
     names neither."""
@@ -2810,17 +2891,6 @@ def test_the_pinned_seeds_reach_every_construct() -> None:
             totals[name] = totals.get(name, 0) + count
     missing = [name for name in gen.CONSTRUCTS if not totals.get(name)]
     assert not missing, (missing, totals)
-
-
-@pytest.mark.parametrize(("issue", "seed"), PINNED_CLASSES)
-def test_the_pinned_seeds_meet_each_counterfactual_class(
-        issue: str, seed: int, tmp_path: Path) -> None:
-    """A pinned seed makes a find of each counterfactual class, so a pull
-    request runs the classification over a program the generator wrote, not
-    over the hand-written repros alone."""
-    finds = differentials(gen.generate(seed), tmp_path)
-    assert [f for f in finds if f.known == issue], finds
-    assert [f for f in finds if not f.known] == [], finds
 
 
 def test_every_effect_helper_is_called_under_a_handler() -> None:

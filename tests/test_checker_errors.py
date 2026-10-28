@@ -585,6 +585,7 @@ class TestResolutionCoverage:
         checker = TypeChecker.__new__(TypeChecker)
         checker.env = TypeEnv()
         checker._reported_alias_errors: set[str] = set()
+        checker.node_semantic_types = None
 
         # Create a TypeExpr subclass that is none of the known kinds
         bogus = ast.TypeExpr(span=None)

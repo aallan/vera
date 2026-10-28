@@ -423,6 +423,85 @@ _MATCH_FOLD = _source(
 )
 
 
+# ---------------------------------------------------------------------
+# The lines of 22 and 23 October: the generator's, the reviews', and the
+# ones routed here from #1680
+# ---------------------------------------------------------------------
+
+_IF_THROW_FOLD = _source(
+    "public fn throw_fold(@Bool -> @Int)\n" + _C + "{\n"
+    "  let @Array<Int> = [0, 1, 8];\n"
+    "  handle[Exn<Int>] {\n    throw(@Int) -> { 2 }\n  } in {\n"
+    "    if @Bool.0 then {\n      throw(1)\n    } else {\n"
+    "      array_fold(@Array<Int>.0, 0, fn(@Int, @Int -> @Int) effects(pure) "
+    "{ @Int.1 + @Int.0 })\n    }\n  }\n}",
+)
+_IF_TWO_CELLS = _source(
+    "public fn one_cell(@Bool -> @Int)\n" + _C + "{\n"
+    "  if @Bool.0 then {\n"
+    "    handle[State<Int>](@Int = 0) {\n"
+    "      get(@Unit) -> { resume(@Int.0) },\n"
+    "      put(@Int) -> { resume(()) }\n"
+    "    } in {\n      put(3);\n      get(())\n    }\n"
+    "  } else {\n"
+    "    handle[State<Int>](@Int = -2) {\n"
+    "      get(@Unit) -> { resume(@Int.0) },\n"
+    "      put(@Int) -> { resume(()) }\n"
+    "    } in {\n      put(4);\n      get(())\n    }\n  }\n}",
+)
+_CLOSURE_ARRAY = _source(
+    "type IntToInt = fn(Int -> Int) effects(pure);",
+    "public fn main(@Unit -> @Int)\n" + _C + "{\n"
+    "  let @Array<IntToInt> = [fn(@Int -> @Int) effects(pure) { @Int.0 + 1 }, "
+    "fn(@Int -> @Int) effects(pure) { @Int.0 * 2 }];\n"
+    "  apply_fn(@Array<IntToInt>.0[1], 20) + apply_fn(@Array<IntToInt>.0[0], 1)\n}",
+)
+_WRAP_EQ = _source(
+    "private data Box<T> {\n  MkBox(T)\n}",
+    "private forall<T> fn wrap(@T -> @Box<T>)\n" + _C + "{\n  MkBox(@T.0)\n}",
+    "public fn main(@Unit -> @Bool)\n" + _C + "{\n  wrap(1) == wrap(1)\n}",
+)
+_INDEX_LITERAL_ARGUMENT = _source(
+    "private forall<T> fn pick(@T, @T -> @T)\n" + _C + "{\n  @T.1\n}",
+    "public fn f(@Nat -> @Int)\n  requires(@Nat.0 < 2)\n  ensures(true)\n"
+    "  effects(pure)\n{\n  pick([1, 2][@Nat.0], 5)\n}",
+)
+_LITERAL_SUBPATTERN = _source(
+    "public fn f(@Int -> @Int)\n" + _C + "{\n"
+    "  match Some(@Int.0) {\n    Some(3) -> 1,\n    _ -> 0\n  }\n}",
+)
+_TUPLE_WILDCARD = _source(
+    "public fn f(@Int -> @Int)\n" + _C + "{\n"
+    "  match Tuple(@Int.0, true) {\n    Tuple(@Int, _) -> @Int.0 + 1\n  }\n}",
+)
+_GENERIC_ALIAS_LET = _source(
+    "type Two<T> = Tuple<T, T>;",
+    "public fn f(@Int -> @Int)\n" + _C + "{\n"
+    "  let @Two<Int> = Tuple(@Int.0, 2);\n"
+    "  match @Two<Int>.0 {\n    Tuple(@Int, @Int) -> @Int.1 + @Int.0\n  }\n}",
+)
+_CTOR_OF_MAP_RESULT = _source(
+    "private data Bag {\n  Big(Array<String>)\n}",
+    "public fn main(@Unit -> @Int)\n" + _C + "{\n"
+    "  match Big(array_map(array_range(0, 3), fn(@Int -> @String) effects(pure) "
+    "{ int_to_string(@Int.0) })) {\n"
+    "    Big(@Array<String>) -> nat_to_int(array_length(@Array<String>.0))\n  }\n}",
+)
+_PAIR_HANDLER_STATEMENT = _source(
+    "public fn f(@Int -> @Int)\n" + _C + "{\n"
+    "  handle[Exn<Int>] {\n    throw(@Int) -> { \"caught\" }\n  } in {\n"
+    "    if @Int.0 > 5 then { throw(@Int.0) } else { \"quiet\" }\n  };\n"
+    "  @Int.0\n}",
+)
+_MAP_KEYS_OF_AN_IF = _source(
+    "public fn main(@Unit -> @Unit)\n  requires(true)\n  ensures(true)\n"
+    "  effects(<IO>)\n{\n"
+    "  let @Array<String> = map_keys(if true then { map_insert(map_new(), \"a\", 1) } "
+    "else { map_new() });\n"
+    "  IO.print(@Array<String>.0[0]);\n  IO.print(\"\\n\")\n}",
+)
+
+
 REPROS: dict[str, Repro] = {
     "1514_let_through_parameterised_alias": Repro(
         {"main.vera": _I1514_LET}, _runs("main", None, 5)),
@@ -500,6 +579,35 @@ REPROS: dict[str, Repro] = {
         _runs("main", None, stdout="[3, 2, 1]\n[3, 2, 1]\n")),
     "match_on_generic_fold_scrutinee": Repro(
         {"main.vera": _MATCH_FOLD}, _runs("main", None, 1)),
+    # The generator's (PR #1784): an `if` whose block result code
+    # generation derived from its arms, neither of which it could type.
+    "if_of_a_throw_and_a_fold": Repro(
+        {"main.vera": _IF_THROW_FOLD}, _runs("throw_fold", [1], 2)),
+    "if_of_two_cell_handlers": Repro(
+        {"main.vera": _IF_TWO_CELLS}, _runs("one_cell", [1], 3)),
+    # PR #1791's review.
+    "array_literal_of_closures": Repro(
+        {"main.vera": _CLOSURE_ARRAY}, _runs("main", None, 42)),
+    "eq_of_generic_call_results": Repro(
+        {"main.vera": _WRAP_EQ}, _runs("main", None, 1)),
+    # Routed from #1680: PR #1700's review, PR #1705's body, the reviews of
+    # PRs #1721, #1722 and #1737.
+    "index_into_array_literal_as_argument": Repro(
+        {"main.vera": _INDEX_LITERAL_ARGUMENT}, _runs("f", [1], 2)),
+    "literal_subpattern_in_constructor_pattern": Repro(
+        {"main.vera": _LITERAL_SUBPATTERN}, _runs("f", [3], 1)),
+    "wildcard_subpattern_in_tuple_pattern": Repro(
+        {"main.vera": _TUPLE_WILDCARD}, _runs("f", [3], 4)),
+    "generic_alias_as_let_type": Repro(
+        {"main.vera": _GENERIC_ALIAS_LET}, _runs("f", [3], 5)),
+    "constructor_of_array_map_result": Repro(
+        {"main.vera": _CTOR_OF_MAP_RESULT}, _runs("main", None, 3)),
+    "map_keys_of_an_if": Repro(
+        {"main.vera": _MAP_KEYS_OF_AN_IF}, _runs("main", None, stdout="a\n")),
+    # Found building PR #1796: a handler valued at a pair, written as a
+    # statement, dropped one word short of its block's result.
+    "pair_handler_as_a_statement": Repro(
+        {"main.vera": _PAIR_HANDLER_STATEMENT}, _runs("f", [9], 9)),
 }
 
 
@@ -522,9 +630,57 @@ FIXED_BY_THE_TYPED_PROGRAM = frozenset({
 })
 
 
+#: The lines code generation's reads of the typed program flip (#1525):
+#: each value's width is its checked type's (an `if`, a `match` or a
+#: handler block's result the join's, a call's result the call's), an
+#: `apply_fn`'s closure is the function type the checker gave it, and the
+#: name a value's layout, conversion and equality are keyed by is its
+#: checked type's (an element's, a key's, a value's, a scrutinee's, an
+#: operand's of `==`, a `show` argument's, an interpolated part's).  A
+#: value declared at a type the program writes (a `let`, a parameter, a
+#: binder, a cell) is laid out by the type that resolves to, a
+#: parameterised alias's target under its arguments, and a sub-pattern's
+#: field by the type it was matched at, a wildcard's and a literal's
+#: included.
+FIXED_BY_THE_BACKEND_READS = frozenset({
+    "1514_let_through_parameterised_alias",
+    "1514_match_binder",
+    "1514_silent_drop",
+    "1516_apply_fn_on_cell_read",
+    "1516_apply_fn_on_returned_closure",
+    "1555_eq_of_generic_data_calls",
+    "1555_eq_of_option_calls",
+    "1564_index_array_literal",
+    "1564_index_generic_call_result",
+    "1578_match_on_array_fold",
+    "1609_integer_match_over_byte_call",
+    "1685_future_cell_loads",
+    "1686_map_get_on_cell_read",
+    "array_literal_of_closures",
+    "constructor_of_array_map_result",
+    "eq_of_generic_call_results",
+    "generic_alias_as_let_type",
+    "if_of_a_throw_and_a_fold",
+    "if_of_two_cell_handlers",
+    "index_into_array_literal_as_argument",
+    "index_into_generic_array_result",
+    "interpolation_converter_from_checker_type",
+    "literal_subpattern_in_constructor_pattern",
+    "map_keys_of_an_if",
+    "match_on_generic_fold_scrutinee",
+    "neg_nat_interpolation",
+    "pair_handler_as_a_statement",
+    "parameterised_alias_width_let",
+    "parameterised_alias_width_parameter",
+    "show_of_generic_builtin_result",
+    "wildcard_subpattern_in_tuple_pattern",
+})
+
+
 @pytest.mark.parametrize("name", [
-    name if name in FIXED_AT_BASE | FIXED_BY_THE_TYPED_PROGRAM
-    else pytest.param(name, marks=pytest.mark.xfail(strict=True, reason="red at 94cef528: the typed program (#1679) flips it"))
+    name if name in (FIXED_AT_BASE | FIXED_BY_THE_TYPED_PROGRAM
+                     | FIXED_BY_THE_BACKEND_READS)
+    else pytest.param(name, marks=pytest.mark.xfail(strict=True, reason="red at f1bc772d: a backend reader of the typed program flips it"))
     for name in sorted(REPROS)
 ])
 def test_repro_type_level_line(name: str, tmp_path: Path) -> None:

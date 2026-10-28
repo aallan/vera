@@ -1441,6 +1441,7 @@ class TypeChecker(
         for param_te in decl.params:
             self._check_refinement_predicates(param_te)
         self._check_refinement_predicates(decl.return_type)
+        self._check_effect_refinements(decl.effect)
 
         # 3. Set context
         self.env.current_return_type = return_type
@@ -1975,6 +1976,27 @@ class TypeChecker(
             for p in te.params:
                 self._check_refinement_predicates(p)
             self._check_refinement_predicates(te.return_type)
+            self._check_effect_refinements(te.effect)
+
+    def _check_effect_refinements(
+        self, effect: ast.EffectRow | ast.EffectRefNode | None,
+    ) -> None:
+        """Type-check the refinement predicates an effect's type arguments
+        carry (#861, #1525): a signature's row (`effects(<Exn<{ @Int | ...
+        }>>)`), a function type's or a closure's, and the effect a handler
+        handles (`handle[State<Option<{ @Int | ... }>>]`).  Code generation
+        lowers each of these predicates as a runtime guard, and lowers a
+        node at the type the check gave it, so a predicate the check never
+        typed had none."""
+        if isinstance(effect, ast.EffectSet):
+            refs: tuple[ast.EffectRefNode, ...] = effect.effects
+        elif isinstance(effect, ast.EffectRefNode):
+            refs = (effect,)
+        else:
+            refs = ()
+        for ref in refs:
+            for arg in getattr(ref, "type_args", None) or ():
+                self._check_refinement_predicates(arg)
 
     def _check_one_refinement_predicate(
         self, te: ast.RefinementType,

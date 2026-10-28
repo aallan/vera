@@ -797,11 +797,7 @@ _CELLS: dict[str, tuple[str, str, str, str, str, bool]] = {
 #: A cell whose program violates the invariant through another mechanism:
 #: pinned, and flipped when that issue closes.  The row cell reads the
 #: `Future` with no clause inlined, and runs.
-_CELL_KNOWN = {
-    ("Future<Int>", "handler"): "#1680: the clause inlining reads a Future "
-                                "cell as a heap pointer, and the module does "
-                                "not load",
-}
+_CELL_KNOWN: dict[tuple[str, str], str] = {}
 
 #: Where the cell is written: a handler, and a declared row read under one.
 _CELL_PLACES = ("handler", "row")

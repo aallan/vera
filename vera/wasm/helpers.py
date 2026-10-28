@@ -32,6 +32,36 @@ from vera.types import (
 _INLINE_I32_TYPES = frozenset({"Bool", "Byte", "Unit"})
 
 
+def type_implicit_range(
+    predicate: ast.Expr, base: ast.TypeExpr,
+    built: Callable[[ast.Expr, Type], ast.Expr],
+) -> ast.Expr:
+    """*predicate*, a refinement guard's predicate as
+    :func:`vera.naming.refinement_binder_parts` returns it, with the types of
+    the nodes it built around the written one recorded through *built*
+    (#1525): a `Nat` or `Byte` base's implicit range (`@Base.0 >= 0`, and
+    `@Base.0 <= 255` for a `Byte`) conjoined to it, whose binder references
+    and literals are of the base type and whose comparisons and
+    conjunctions are `Bool`.  A built node is one with no identity; the
+    written predicate's nodes are the checker's, typed where they were
+    checked.  *base* is the alias-chased base the parts name."""
+    from vera.types import BOOL, BYTE, NAT
+
+    name = base.name if isinstance(base, ast.NamedType) else ""
+    base_ty = {"Nat": NAT, "Byte": BYTE}.get(name)
+    stack: list[ast.Expr] = [predicate]
+    while stack:
+        node = stack.pop()
+        if node.node_id is not None:
+            continue
+        if isinstance(node, ast.BinaryExpr):
+            built(node, BOOL)
+            stack.extend((node.left, node.right))
+        elif isinstance(node, (ast.SlotRef, ast.IntLit)) and base_ty is not None:
+            built(node, base_ty)
+    return predicate
+
+
 # =====================================================================
 # Slot environment — De Bruijn → WASM local mapping
 # =====================================================================
@@ -46,6 +76,10 @@ class WasmSlotEnv:
     """
 
     _stacks: dict[str, list[int]] = field(default_factory=dict)
+    #: The checked type of each bound local, by the local (#1525): what a
+    #: binding's width and GC-root-ness are read off, its slot name being
+    #: the type's spelling, which a parameterised alias's has no width for.
+    _types: dict[int, Type] = field(default_factory=dict)
 
     def resolve(self, type_name: str, index: int) -> int | None:
         """Look up @Type.index → WASM local index."""
@@ -55,11 +89,21 @@ class WasmSlotEnv:
             return stack[pos]
         return None
 
-    def push(self, type_name: str, local_idx: int) -> WasmSlotEnv:
-        """Return a new environment with *local_idx* pushed for *type_name*."""
+    def push(self, type_name: str, local_idx: int,
+             ty: Type | None = None) -> WasmSlotEnv:
+        """Return a new environment with *local_idx* pushed for *type_name*,
+        holding a value of the checked type *ty*."""
         new_stacks = {k: list(v) for k, v in self._stacks.items()}
         new_stacks.setdefault(type_name, []).append(local_idx)
-        return WasmSlotEnv(new_stacks)
+        types = self._types
+        if ty is not None:
+            types = {**types, local_idx: ty}
+        return WasmSlotEnv(new_stacks, types)
+
+    def type_at(self, local_idx: int) -> Type | None:
+        """The checked type of the value bound at *local_idx*, or ``None``
+        for a binding pushed with none."""
+        return self._types.get(local_idx)
 
     def bindings_added_since(
         self, older: WasmSlotEnv
@@ -176,9 +220,8 @@ class StateClauseEntry:
         get_import / put_import: this handler's own host-cell imports — the
             intrinsic read/store the clause refines, not a declaration-time
             value.
-        decl_effect_ops / decl_effect_op_result_wt / decl_effect_op_result_vera
-        / decl_effect_op_cells:
-            the four op registries as they stood at the declaration.
+        decl_effect_ops / decl_effect_op_cells:
+            the two op registries as they stood at the declaration.
         decl_state_clause_ops: the clause registry as it stood at the
             declaration — the ENCLOSING handlers' clauses, never this
             handler's own, so re-entering an op from inside a clause body
@@ -199,8 +242,6 @@ class StateClauseEntry:
     get_import: str
     put_import: str
     decl_effect_ops: dict[str, tuple[str, bool]]
-    decl_effect_op_result_wt: dict[str, str | None]
-    decl_effect_op_result_vera: dict[str, str | None]
     decl_effect_op_cells: dict[str, CellNames]
     decl_state_clause_ops: dict[str, "StateClauseEntry"]
     decl_addressable_from: int

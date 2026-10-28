@@ -1123,6 +1123,7 @@ ERROR_CODES: dict[str, str] = {
     "E338": "Unknown effect in an effect row",
     "E339": "Handler-clause State operation code generation cannot lower",
     "E340": "Code generation cannot lower this construct",
+    "E341": "Exn handler clause value incompatible with the handler's",
     # E5xx — Verification
     "E500": "Postcondition verified false",
     "E501": "Call-site precondition violation",

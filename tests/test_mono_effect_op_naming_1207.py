@@ -10,11 +10,9 @@ default (``Int``) and emitted ``pick$Int`` where the rewrite asked for
 ``pick$Nat`` — a dangling call target, so the caller is skipped with E602
 and `main` disappears from a check-green, verify-clean program.
 
-The fix single-sources the table: :func:`vera.slots.effect_op_result_names`
-derives ``op name -> Vera result type name`` from an effect reference, and
-all three consumers read it — codegen's per-function registry (the declared
-``effects(<State<T>>)`` row), the handler-expression registry inside
-``_translate_handle_state``, and mono discovery's scoped walk.
+The typed program names the clone at the instantiation the checker
+inferred (#1679), and code generation reads the operation's result type off
+it (#1525), so the clone emitted is the clone called.
 
 The proving check is a DIFFERENTIAL, not a unit test on either side: the
 two consultors are separate code paths, and a unit test on discovery alone
@@ -72,9 +70,9 @@ public fn main(@Unit -> @Int)
 }
 """
 
-# The same shape through a scalar ALIAS cell.  `_effect_op_result_vera`
-# records the alias-OPAQUE source spelling, so the clone is `pick$Count` —
-# an alignment that resolved the alias on one side only would still dangle.
+# The same shape through a scalar ALIAS cell: the cell's alias is resolved
+# where it is written (#1511), so the clone is named at the type it resolves
+# to, `pick$Nat`, the clone the call names.
 _HANDLER_ALIAS = """
 type Count = Nat;
 """ + _PICK + """

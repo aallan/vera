@@ -667,9 +667,11 @@ _CONTEXTS: dict[str, _Context] = {
         _fn("@Int -> @Int", "let @Nat = LIT;\n  nat_to_int(@Nat.0)"), "nat"),
     "let @Int": _Context(
         _fn("@Int -> @Int", "let @Int = LIT;\n  @Int.0"), "int"),
+    # The value read back is `g`'s result, a `@Nat` by the checker's types,
+    # so nothing narrows where it is read (#1695).
     "@Nat argument": _Context(
         _fn("@Nat -> @Nat", "@Nat.0", name="g", vis="private") + "\n"
-        + _fn("@Int -> @Int", "nat_to_int(g(LIT))"), "nat", reads_value=True),
+        + _fn("@Int -> @Int", "nat_to_int(g(LIT))"), "nat"),
     "@Int argument": _Context(
         _fn("@Int -> @Int", "@Int.0", name="g", vis="private") + "\n"
         + _fn("@Int -> @Int", "g(LIT)"), "int"),
@@ -716,7 +718,7 @@ _CONTEXTS: dict[str, _Context] = {
         "nat"),
     "generic call as a @Nat argument": _Context(
         _PICK + _G_NAT + _fn("@Int -> @Int", "nat_to_int(g(pick(LIT, 5)))"),
-        "nat", reads_value=True),
+        "nat"),
     "generic call as a @Nat constructor field": _Context(
         _NB + _PICK + _fn(
             "@Int -> @Int",
@@ -1027,22 +1029,23 @@ _INSTANTIATIONS: dict[str, _Instantiation] = {
 }
 
 
-#: A sub-pattern's bind of a type-parameter field, by how the scrutinee's
-#: type spells the parameter: exactly `Nat` takes no sign guard (the field's
-#: value was checked where it was stored, #1679), and any other spelling,
-#: an alias or a refinement of `Nat` included, keeps it: a dead guard costs
-#: a check, a dropped live one a wrong value.  (declarations, scrutinee
-#: type, guarded)
+#: A sub-pattern's bind of a type-parameter field, by the scrutinee's
+#: checked type: a field the type instantiates at `Nat`, through an alias
+#: or a refinement of it alike, takes no sign guard (the field's value was
+#: checked where it was stored, #1679), and an `Int` field keeps it.  The
+#: name is the checked type's (#1525), so an alias is its target and a
+#: refinement its base.  (declarations, scrutinee type, guarded)
 _FIELD_SPELLINGS: dict[str, tuple[str, str, bool]] = {
     "exactly Nat": ("", "Option<Nat>", False),
-    "an alias of Nat": ("type Age = Nat;\n\n", "Option<Age>", True),
+    "an alias of Nat": ("type Age = Nat;\n\n", "Option<Age>", False),
     "a refinement of Nat": (
-        "type Small = { @Nat | @Nat.0 < 10 };\n\n", "Option<Small>", True),
+        "type Small = { @Nat | @Nat.0 < 10 };\n\n", "Option<Small>", False),
+    "Int": ("", "Option<Int>", True),
 }
 
 
 @pytest.mark.parametrize("spelling", list(_FIELD_SPELLINGS))
-def test_a_field_bind_is_guarded_unless_its_type_is_spelled_nat(
+def test_a_field_bind_is_guarded_unless_its_type_is_nat(
         spelling: str) -> None:
     decls, scrutinee, guarded = _FIELD_SPELLINGS[spelling]
     source = decls + _fn(

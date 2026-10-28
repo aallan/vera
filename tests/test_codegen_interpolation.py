@@ -11,7 +11,6 @@ import pytest
 
 from tests import pipeline
 from tests.codegen_helpers import (
-    _compile,
     _compile_ok,
     _run_io,
 )
@@ -765,23 +764,13 @@ public fn main(-> @Unit)
         # selects 20.
         assert _run_io(source, fn="main") == "20\n"
 
-    def test_e616_apply_fn_unhandled_closure_arg_shape(self) -> None:
-        """`apply_fn(make_mapper(()), 7)` where `make_mapper` is a
-        FnCall returning a closure — the apply_fn return-type
-        dispatcher only recognises `SlotRef` (into a `FnType` alias)
-        and inline `AnonFn` literals.  Any other shape (FnCall,
-        IfExpr, etc.) used to default the call_indirect sig to
-        `i64`, mismatching the actual `i32_pair` (or other) emit
-        and producing a WASM-validation trap with no source-located
-        diagnostic.
-
-        Closes #632 — the apply_fn / call_indirect parallel of
-        #630's interpolation-side `[E615]` work.  Now the failure
-        records the offending closure_arg on
-        `_apply_fn_inference_failures` and the harvest emits a
-        specific `[E616]` before the enclosing fn is dropped via
-        `[E602]`.
-        """
+    def test_apply_fn_on_a_closure_a_call_returns_runs(self) -> None:
+        """`apply_fn(make_mapper(()), 7)` where `make_mapper` is a call
+        returning a closure: the closure's type is the function type the
+        checker gave the call, so the `call_indirect` signature is its
+        (#1525).  #632 refused the shape with [E616], when the signature
+        was read off the closure argument's syntax, which knew only a
+        `SlotRef` and an `AnonFn`."""
         source = """\
 type Maker = fn(Int -> String) effects(pure);
 
@@ -795,48 +784,9 @@ public fn main(-> @Unit)
   IO.print(apply_fn(make_mapper(()), 7))
 }
 """
-        result = _compile(source)
-        warnings = [
-            d for d in result.diagnostics if d.severity == "warning"
-        ]
-        e616 = [d for d in warnings if d.error_code == "E616"]
-        assert e616, (
-            f"Expected an [E616] for the unhandled apply_fn "
-            f"closure-arg shape; warnings: {warnings}"
-        )
-        assert "apply_fn" in e616[0].description.lower() or (
-            "closure" in e616[0].description.lower()
-        ), (
-            f"E616 message should mention apply_fn / closure; got: "
-            f"{e616[0].description}"
-        )
-        # E616 must precede the matching E602 in the warnings
-        # stream so the specific-cause-then-generic-skip narrative
-        # reads correctly per function.  Filter to the E602
-        # mentioning `main` so unrelated prelude E602s don't
-        # confound (parallel to the E615 ordering assertion in
-        # `test_e615_fires_on_adt_in_interpolation`).
-        e602_main = [
-            d for d in warnings
-            if d.error_code == "E602" and "main" in d.description
-        ]
-        assert e602_main, (
-            f"Expected an [E602] for `main` after E616; warnings: "
-            f"{warnings}"
-        )
-        e616_idx = warnings.index(e616[0])
-        main_e602_idx = warnings.index(e602_main[0])
-        assert e616_idx < main_e602_idx, (
-            f"E616 should precede the matching E602 (main) in the "
-            f"warnings stream; got E616 at index {e616_idx}, main's "
-            f"E602 at {main_e602_idx}"
-        )
-        # `main` is dropped via [E602] (the call_indirect would
-        # have referenced a missing return-type signature).
-        assert "main" not in result.exports, (
-            f"main should be skipped when apply_fn can't infer "
-            f"the closure return type; exports: {result.exports}"
-        )
+        ran = pipeline.run(source, "main", [])
+        assert ran.ok, (ran.trap, [d.format() for d in ran.diagnostics])
+        assert ran.stdout == "hello", ran.stdout
 
     def test_e635_parameterised_alias_compilability(self) -> None:
         """`type Id<T> = T;` instantiated with a parameterised type
