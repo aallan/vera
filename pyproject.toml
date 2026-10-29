@@ -1,6 +1,6 @@
 [project]
 name = "veralang"
-version = "0.2.5"
+version = "0.2.6"
 description = "Vera: a programming language designed for LLMs, with full contracts, algebraic effects, and typed slot references"
 readme = "PYPI_README.md"
 license = "MIT"
@@ -20,12 +20,12 @@ classifiers = [
 dependencies = [
     "lark>=1.3.1",
     # `>=4.15.5` is the floor the macOS 15+ baseline was set with: z3-solver
-    # 4.15.5 through 4.16.0 are tagged `macosx_15_0_arm64`, where 4.15.4 and
-    # earlier were `macosx_13_0_arm64`.  The 5.x wheels, 5.3.2.0 among them,
-    # are tagged `macosx_13_0_arm64` again, which pip matches by compatibility
-    # on macOS 15 and later, so the floor no longer encodes the macOS
-    # baseline by itself: README §Supported platforms is the authority, and
-    # `scripts/check_wheel_availability.py` is unaffected.
+    # 4.15.5 through 4.16.0 are tagged `macosx_15_0_arm64`, where 4.13.3
+    # through 4.15.4 were `macosx_13_0_arm64`.  The 5.x wheels, 5.3.2.0
+    # among them, are tagged `macosx_13_0_arm64` again, which pip matches by
+    # compatibility on macOS 15 and later, so the floor no longer encodes the
+    # macOS baseline by itself: README §Supported platforms is the authority,
+    # and `scripts/check_wheel_availability.py` is unaffected.
     "z3-solver>=4.15.5",
     # Floor rationale: `>=45.0.0` was the first wasmtime-py release whose
     # host-import trampoline catches `BaseException` rather than `Exception`

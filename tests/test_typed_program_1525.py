@@ -1046,10 +1046,10 @@ def by_star(e: object) -> Type:
 
 def test_the_class_cell_reads_every_spelling_of_a_dispatch(
         tmp_path: Path) -> None:
-    """The scan reads each file's own imports of `vera.ast` and every form
-    of a class test, so a type derived through a module alias, a class
-    imported by name, a dotted `vera.ast`, a relative import, a `match`
-    class pattern or a table keyed by `type(...)` is found as
+    """The scan reads each file's own imports of `vera.ast` and the forms
+    of a class test it names, so a type derived through a module alias, a
+    class imported by name, a dotted `vera.ast`, a relative import, a
+    `match` class pattern or a table keyed by `type(...)` is found as
     `isinstance(x, ast.<Class>)` is, and a function that returns no type's
     name is not."""
     (tmp_path / "vera").mkdir()

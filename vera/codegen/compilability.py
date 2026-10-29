@@ -570,10 +570,12 @@ class CompilabilityMixin:
         `_signature_refinement_predicates` derives for it, before its body.
 
         A handler is judged where the walk meets it, in the fold's order, a
-        handler's body before its clauses: of the cells or payloads the
-        backend cannot compile, the one E607 or E612 names is the first the
-        walk meets, and a closure's E618 is reported where the walk meets
-        the closure, the order the lowering reports E617 in.
+        handler's body before its clauses: of the cells and payloads the
+        backend cannot compile, the walk names the first `State` cell it
+        refuses in the order it meets the handlers (E607), and, where it
+        refuses none, the first `Exn` payload (E612); a closure's E618 is
+        reported where the walk meets the closure, the order the lowering
+        reports E617 in.
         """
         for found in fold.walk(node):
             if isinstance(found, ast.HandleExpr):
