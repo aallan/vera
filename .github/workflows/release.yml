@@ -40,7 +40,9 @@ jobs:
   # The gate.  A completed CI run starts this workflow, and the gate goes
   # on only for a successful run of the push event on main in this
   # repository: CI also completes for pull requests, a fork's among them,
-  # whose head branch can be named main too, and for the nightly run.  It
+  # whose head branch can be named main too.  The nightly full matrix is a
+  # run of Nightly matrix (nightly-matrix.yml), which calls ci.yml, so its
+  # completion starts no run of this workflow.  The gate also
   # names the commit that run tested, and every later job reads that one:
   # under workflow_run the event's own commit is main's tip when the event
   # fires, which a later merge can have moved past the tested commit.  A
@@ -58,7 +60,7 @@ jobs:
       && github.event.workflow_run.event == 'push'
       && github.event.workflow_run.head_branch == 'main'
       && github.event.workflow_run.head_repository.full_name == github.repository)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 190
     permissions:
       actions: read
@@ -133,7 +135,7 @@ jobs:
   prepare:
     name: Plan and validate release
     needs: ci
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     outputs:
@@ -220,7 +222,7 @@ jobs:
     name: Build and test release archives
     needs: prepare
     if: needs.prepare.outputs.publish == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
@@ -287,7 +289,7 @@ jobs:
     name: Publish to TestPyPI
     needs: [prepare, build]
     if: needs.prepare.outputs.target == 'testpypi'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment:
       name: testpypi
       url: https://test.pypi.org/p/veralang
@@ -310,7 +312,7 @@ jobs:
   verify-testpypi:
     name: Verify TestPyPI archives
     needs: [prepare, publish-testpypi]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
@@ -338,7 +340,7 @@ jobs:
     name: Publish to PyPI
     needs: [prepare, build]
     if: needs.prepare.outputs.target == 'pypi'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment:
       name: pypi
       url: https://pypi.org/p/veralang
@@ -360,7 +362,7 @@ jobs:
   verify-pypi:
     name: Verify PyPI archives
     needs: [prepare, publish-pypi]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
@@ -388,7 +390,7 @@ jobs:
     name: Tag and create GitHub Release
     needs: [prepare, verify-pypi]
     if: needs.prepare.outputs.target == 'pypi'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:

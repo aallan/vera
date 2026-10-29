@@ -293,7 +293,9 @@ class TestTheWiring:
         by_platform: dict[str, list[tuple[int, int]]] = defaultdict(list)
         for cell in cells:
             by_platform[cell["os"]].append((int(cell["shard"]), int(cell["shards"])))
-        assert set(by_platform) == {"ubuntu-latest", "windows-latest"}, by_platform
+        # The images every gating job runs on (README § Supported
+        # platforms), so a label GitHub moves never changes them.
+        assert set(by_platform) == {"ubuntu-24.04", "windows-2025-vs2026"}, by_platform
         for platform, numbers in by_platform.items():
             counts = {count for _, count in numbers}
             assert len(counts) == 1, (platform, numbers)

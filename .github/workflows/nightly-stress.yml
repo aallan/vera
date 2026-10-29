@@ -61,7 +61,7 @@ jobs:
       # not workflow-wide, so the test-runner step keeps the
       # tighter `contents: read` default.
       issues: write
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       PYTHONUTF8: 1
 

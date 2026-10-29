@@ -679,12 +679,17 @@ class TestCoverage:
         as the script: tests/test_gate_placement.py holds the hook to a run
         of the whole suite on every event (`SUITE_COUNTERPART`), and the
         path filter calls no document inert, so a pull request that could
-        add one never skips the suite."""
+        add one never skips the suite.  The nightly run is
+        nightly-matrix.yml's: on its schedule it calls ci.yml, whose jobs
+        are the run's."""
         ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
         assert "scripts/check_doc_examples.py" not in ci
         triggers = ci.split("\njobs:\n", 1)[0]
-        for event in ("push", "pull_request", "schedule"):
+        for event in ("push", "pull_request", "workflow_call"):
             assert re.search(rf"^  {event}:", triggers, re.MULTILINE), event
+        nightly = (ROOT / ".github" / "workflows" / "nightly-matrix.yml").read_text(encoding="utf-8")
+        assert re.search(r"^  schedule:", nightly.split("\njobs:\n", 1)[0], re.MULTILINE)
+        assert re.search(r"^    uses: \./\.github/workflows/ci\.yml$", nightly, re.MULTILINE)
         from tests.test_gate_placement import SUITE_COUNTERPART
 
         assert SUITE_COUNTERPART["scripts/check_doc_examples.py"] == (

@@ -24,7 +24,7 @@ jobs:
     permissions:
       contents: read
       issues: write   # read for the state check; write for the on-failure tracking issue
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7

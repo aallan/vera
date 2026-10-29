@@ -157,6 +157,10 @@ After merge, CI's run on the merge commit runs the full test matrix, and
    version has a published Release. An empty listing of the Releases stops
    the step before the Release is created.
 
+The release hears CI's runs alone: the nightly full matrix is a run of its
+own workflow, Nightly matrix (`nightly-matrix.yml`, which calls `ci.yml`),
+so its completion starts no release run.
+
 Approve the `pypi` deployment only after checking that the commit the first
 job's summary names is the intended release merge and the displayed version is
 correct: the run's own commit is `main`'s tip when CI's run completed.

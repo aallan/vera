@@ -41,6 +41,18 @@ another number of cells each fail it.
 The blocking cells whose conclusion is ``failure`` go to the step's
 ``failed`` output, a JSON list written only when it is not empty, which
 ``matrix-issue`` names in the issue it files.
+
+The nightly run is a run of ``nightly-matrix.yml``, which calls ci.yml, and
+a call's run lists every job of the called workflow under the calling job's
+name: ``CI / test (ubuntu-24.04, 3.11)``.  The gate reads a cell's name
+through that prefix, so the nightly run's listing holds the cells a push
+run's does, and names them as ci.yml does.  On the nightly run the listing
+also holds the ``watch`` job's cells, ``watch (<os>, <python>)``, on the
+floating ``-latest`` labels and the newest image no cell of the matrix
+runs.  They are advisory and no cell of the full matrix: the verdict reads
+none of them, and the ones whose conclusion is ``failure`` go to the
+step's ``watched`` output, a JSON list written only when it is not empty,
+which ``matrix-issue`` files too.
 """
 
 from __future__ import annotations
@@ -59,10 +71,19 @@ _RELEASES = frozenset({"true", "false", ""})
 #: The matrix's results under which it ran, so its listing has cells to read.
 _RAN = frozenset({"success", "failure", "cancelled"})
 
-#: A cell of the full matrix as the run's job listing names it: the ``test``
-#: job's name, ``test (<os>, <python>)``.  A shard of a pull request's suite,
+#: A cell of the full matrix as ci.yml names it: the ``test`` job's name,
+#: ``test (<os>, <python>)``.  A shard of a pull request's suite,
 #: ``test (<os>, 3.12, shard K/N)``, has a third part and is no cell.
 CELL = re.compile(r"test \([^,()]+, [^,()]+\)")
+
+#: A cell of the watched images as ci.yml names it: the ``watch`` job's
+#: name, ``watch (<os>, <python>)``, on the nightly run alone.
+WATCHED = re.compile(r"watch \([^,()]+, [^,()]+\)")
+
+#: The calling job's name before a job's own, as a call's run lists the
+#: called workflow's jobs: ``CI / ``.  A shard's ``K/N`` has no space
+#: around its slash, so no name ci.yml gives a job holds one.
+_CALLER = re.compile(r"[^/]+ / ")
 
 #: The cells allowed to fail: the matrix's ``advisory`` entries, which ci.yml
 #: runs with ``continue-on-error`` (README § Supported platforms).
@@ -85,11 +106,13 @@ class Job(NamedTuple):
 
 
 class Verdict(NamedTuple):
-    """The gate's answer, why, and the blocking cells that failed."""
+    """The gate's answer, why, the blocking cells that failed, and the
+    watched cells that failed, which the answer does not read."""
 
     passed: bool
     why: str
     failed: tuple[str, ...]
+    watched: tuple[str, ...] = ()
 
 
 class ListingError(Exception):
@@ -179,9 +202,28 @@ def gh_list_jobs(run_id: str, attempt: str) -> list[Job]:
     return parse_jobs(result.stdout)
 
 
+def bare(name: str) -> str:
+    """A job's name as ci.yml gives it: the listing's name without the
+    calling job's, which a run of the nightly workflow puts before it."""
+    caller = _CALLER.match(name)
+    return name[caller.end():] if caller else name
+
+
 def cells_of(jobs: Sequence[Job]) -> list[Job]:
-    """The cells of the full matrix in a listing, the advisory ones too."""
-    return [job for job in jobs if CELL.fullmatch(job.name)]
+    """The cells of the full matrix in a listing, the advisory ones too,
+    each under the name ci.yml gives it."""
+    return [job._replace(name=bare(job.name)) for job in jobs if CELL.fullmatch(bare(job.name))]
+
+
+def watched_cells(jobs: Sequence[Job]) -> list[Job]:
+    """The watched images' cells in a listing, each under the name ci.yml
+    gives it."""
+    return [job._replace(name=bare(job.name)) for job in jobs if WATCHED.fullmatch(bare(job.name))]
+
+
+def failed_watched(jobs: Sequence[Job]) -> tuple[str, ...]:
+    """The watched cells in a listing whose conclusion is `failure`."""
+    return tuple(sorted(job.name for job in watched_cells(jobs) if job.conclusion == "failure"))
 
 
 def blocking_cells(jobs: Sequence[Job]) -> list[Job]:
@@ -231,7 +273,8 @@ def gate(
 ) -> Verdict:
     """`decide`'s verdict and, wherever the matrix ran, the listing's too:
     the gate passes only when both do.  `size` is the matrix's size as the
-    `test` job states it, and it and `listing` are read only there."""
+    `test` job states it, and it and `listing` are read only there, as are
+    the watched cells that failed, which the verdict does not read."""
     passed, why = decide(plan, release, matrix)
     if plan != "success" or matrix not in _RAN:
         return Verdict(passed, why, ())
@@ -244,6 +287,7 @@ def gate(
                 f" full test matrix passed is not known: {exc}"
             )
         return Verdict(False, why, ())
+    watched = failed_watched(jobs)
     try:
         listed = judge(jobs, matrix_size(size))
     except ListingError as exc:
@@ -252,8 +296,8 @@ def gate(
             f" is not known: {exc}"
         ), failed_cells(jobs))
     if not passed:
-        return Verdict(False, why, listed.failed)
-    return listed
+        return Verdict(False, why, listed.failed, watched)
+    return listed._replace(watched=watched)
 
 
 def main(list_jobs: Callable[[str, str], Sequence[Job]] | None = None) -> int:
@@ -267,10 +311,15 @@ def main(list_jobs: Callable[[str, str], Sequence[Job]] | None = None) -> int:
         lambda: read(env.get("GITHUB_RUN_ID", ""), env.get("GITHUB_RUN_ATTEMPT", "")),
     )
     output = env.get("GITHUB_OUTPUT")
-    if output and verdict.failed:
+    if output and (verdict.failed or verdict.watched):
         with open(output, "a", encoding="utf-8") as handle:
-            handle.write(f"failed={json.dumps(list(verdict.failed))}\n")
+            if verdict.failed:
+                handle.write(f"failed={json.dumps(list(verdict.failed))}\n")
+            if verdict.watched:
+                handle.write(f"watched={json.dumps(list(verdict.watched))}\n")
     print(verdict.why if verdict.passed else f"::error::{verdict.why}")
+    if verdict.watched:
+        print(f"::warning::watched cells that failed, which block nothing: {', '.join(verdict.watched)}")
     return 0 if verdict.passed else 1
 
 

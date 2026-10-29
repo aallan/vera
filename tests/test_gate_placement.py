@@ -12,8 +12,9 @@ configuration files themselves:
   documents its gate reads.
 - ``.github/workflows/ci.yml``: on each event CI runs on (a pull request, a
   pull request that raises ``[project].version``, the push event a merge
-  produces on ``main``, a release merge's, and the nightly run), every
-  hook's command is a step that runs and can fail the run.  A hook that
+  produces on ``main``, a release merge's, and the nightly run, which
+  ``nightly-matrix.yml`` makes by calling ci.yml on its schedule or on
+  demand), every hook's command is a step that runs and can fail the run.  A hook that
   runs pytest over the staged files or the collection is matched by a run
   of the whole suite: one pytest step that nothing narrows, or the cells of
   one sharded job running every shard of one count between them
@@ -29,7 +30,9 @@ unless ``UNREADABLE_CONDITIONS`` names the step with its reason (a condition
 on a context name the modelled events do not define is unreadable, not
 null), and ``continue-on-error``, a shell other than bash (the default
 ``bash -e`` or ``shell: bash``), or a run command that swallows its own
-failure (``|| true``, ``set +e``) is an error outright.  A gate is a command the step invokes on a line with no
+failure (``|| true``, ``set +e``) is an error outright, bar a step
+``SOFT_STEPS`` names with its reason: one that runs no command, so gates
+nothing, and fails soft.  A gate is a command the step invokes on a line with no
 shell control operator, not text it mentions.
 """
 
@@ -334,14 +337,33 @@ UNREADABLE_CONDITIONS = {
     ),
 }
 
+# Steps allowed to fail soft, each with the reason.  Each runs no command,
+# so it is no gate, and `_gating_steps` reads past it; any other step
+# whose `continue-on-error` can be true is an error.
+SOFT_STEPS = {
+    "Keep the runner image's record": (
+        "uploads the record of the image a matrix cell ran on, which only"
+        " matrix-issue's text reads; an artifact service's error would"
+        " otherwise fail a cell matrix-gate reads, and with it a release,"
+        " over a diagnostic"
+    ),
+}
+
 # Matrix cells allowed to fail without failing the run, each with the reason,
-# keyed by job and the cell's `matrix.os`.  Such a cell gates nothing; a
-# `continue-on-error` that can be true anywhere else is an error.
+# keyed by job and the cell's `matrix.os`, or by job and None for every cell
+# of the job.  Such a cell gates nothing; a `continue-on-error` that can be
+# true anywhere else is an error.
 ADVISORY_CELLS = {
     ("test", "ubuntu-24.04-arm"): (
         "the Linux aarch64 cell is advisory (README § Supported platforms):"
         " the job's `continue-on-error` is its `advisory` matrix value, so a"
         " failure there fails neither the run nor matrix-gate"
+    ),
+    ("watch", None): (
+        "the watched images are advisory (README § Supported platforms): the"
+        " watch job runs on the nightly run alone, its `continue-on-error` is"
+        " true, and a failure there files an issue (matrix-issue) and fails"
+        " neither the run nor matrix-gate"
     ),
 }
 
@@ -349,7 +371,7 @@ ADVISORY_CELLS = {
 def _advisory(job_name: str, job: dict[str, Any], context: dict[str, object]) -> bool:
     """Whether `context` is a cell `ADVISORY_CELLS` names, whose job's
     `continue-on-error` is true there."""
-    if (job_name, context.get("matrix.os")) not in ADVISORY_CELLS:
+    if not {(job_name, context.get("matrix.os")), (job_name, None)} & set(ADVISORY_CELLS):
         return False
     value = job.get("continue-on-error")
     try:
@@ -424,6 +446,8 @@ def _gating_steps(
         where = f"job {job_name}, step {step.get('name') or step.get('uses')!r}"
         if not _runs(step, context, where):
             continue
+        if step.get("name") in SOFT_STEPS:
+            continue
         _can_fail(step, context, where)
         env = {**(workflow.get("env") or {}), **(job.get("env") or {}), **(step.get("env") or {})}
         command = render(str(step.get("run", "")), context, env)
@@ -466,7 +490,12 @@ def _invokes(steps: list[dict[str, Any]], *command: str) -> list[dict[str, Any]]
 # The events every gate has to hold on: a pull request into main, one that
 # raises `[project].version`, the push event a merged pull request produces
 # on main (whether or not the merge raised the version), and the nightly
-# schedule.  `needs.plan.outputs.release` is the plan job's answer to "does
+# run, on its schedule and dispatched.  The nightly run is nightly-matrix.yml
+# calling ci.yml with `nightly: true`: a called workflow reads its caller's
+# `github` context, so its event is the caller's and its `github.workflow`
+# the caller's name, and `inputs.nightly` is true.  On every other event the
+# inputs context holds nothing, and a property it does not hold reads as an
+# empty string.  `needs.plan.outputs.release` is the plan job's answer to "does
 # this change raise the version?", `true` or `false` on a pull request and a
 # push and empty on the nightly run, where its step does not run.
 # `needs.plan.outputs.changed` is the files a pull request changes that a
@@ -478,9 +507,24 @@ def _invokes(steps: list[dict[str, Any]], *command: str) -> list[dict[str, Any]]
 # `needs.test.result` is the full matrix's result as a run in which every
 # gate holds sees it: `success` where the matrix runs, `skipped` where it
 # stands down.  `needs.matrix-gate.outputs.failed` is the cells matrix-gate
-# read as failed from the run's job listing, and in such a run there are
-# none.
-_WORKFLOW = {"github.workflow": "CI", "needs.matrix-gate.outputs.failed": ""}
+# read as failed from the run's job listing, and `watched` the watched cells
+# it read as failed, and in such a run there are none.
+_WORKFLOW = {
+    "github.workflow": "CI", "inputs.nightly": "",
+    "needs.matrix-gate.outputs.failed": "", "needs.matrix-gate.outputs.watched": "",
+}
+_NIGHTLY = {
+    **_WORKFLOW,
+    "github.workflow": "Nightly matrix",
+    "inputs.nightly": True,
+    "github.base_ref": "",
+    "github.ref": "refs/heads/main",
+    "github.sha": "3" * 40,
+    "needs.plan.outputs.release": "",
+    "needs.plan.outputs.changed": "",
+    "needs.plan.outputs.inert": "",
+    "needs.test.result": "success",
+}
 _PULL_REQUEST = {
     **_WORKFLOW,
     "github.event_name": "pull_request",
@@ -530,17 +574,8 @@ EVENTS = {
         "needs.plan.outputs.inert": "",
         "needs.test.result": "success",
     },
-    "nightly schedule": {
-        **_WORKFLOW,
-        "github.event_name": "schedule",
-        "github.base_ref": "",
-        "github.ref": "refs/heads/main",
-        "github.sha": "3" * 40,
-        "needs.plan.outputs.release": "",
-        "needs.plan.outputs.changed": "",
-        "needs.plan.outputs.inert": "",
-        "needs.test.result": "success",
-    },
+    "nightly schedule": {**_NIGHTLY, "github.event_name": "schedule"},
+    "nightly dispatch": {**_NIGHTLY, "github.event_name": "workflow_dispatch"},
 }
 
 
@@ -1038,15 +1073,28 @@ class TestCiRunsEveryGate:
 
     def test_the_advisory_cells_are_real(self) -> None:
         """Every advisory cell is a cell of its job's matrix where the job's
-        `continue-on-error` is true, so the table cannot outlive its reason."""
+        `continue-on-error` is true, so the table cannot outlive its reason.
+        A job named with no `matrix.os` names every cell of its matrix."""
         workflow = _workflow()
         for job_name, os_name in ADVISORY_CELLS:
             job = workflow["jobs"][job_name]
-            cells = [cell for cell in _matrix_cells(job) if cell.get("matrix.os") == os_name]
+            cells = [cell for cell in _matrix_cells(job) if os_name in (None, cell.get("matrix.os"))]
             assert cells, (job_name, os_name)
             for cell in cells:
                 for event, context in EVENTS.items():
                     assert _advisory(job_name, job, {**context, **cell}), (job_name, os_name, event)
+
+    def test_the_soft_steps_are_real(self) -> None:
+        """Every step allowed to fail soft is a step of the workflow that
+        runs no command, so no gate, and fails soft, so the table cannot
+        outlive its reason."""
+        steps = [step for job in _workflow()["jobs"].values() for step in job.get("steps", [])]
+        for name in SOFT_STEPS:
+            named = [step for step in steps if step.get("name") == name]
+            assert named, name
+            for step in named:
+                assert "run" not in step and "uses" in step, step
+                assert step.get("continue-on-error") is True, step
 
     def test_the_unreadable_conditions_are_real(self) -> None:
         """Every allowlisted condition names a step that exists and whose

@@ -1,0 +1,51 @@
+name: Nightly matrix
+
+# The full OS x Python matrix once a day, on main as it stands, with the
+# watched images beside it (README § Supported platforms).  A pull request
+# runs the full matrix only when it raises [project].version, and so does
+# the push event its merge produces on main (ci.yml's test job), so this is
+# what runs every cell every day.
+#
+# Its one job calls ci.yml with `nightly: true`, so the matrix has one
+# definition: the test and watch matrices, matrix-gate and matrix-issue run
+# from ci.yml's own jobs, beside every other job of ci.yml's but the shards
+# and coverage, which run on a pull request and a push alone.  It is a
+# workflow of its own because release.yml starts on the completion of CI's
+# runs: a called workflow's jobs run inside its caller's run, which carries
+# the caller's name and event, so a run of this workflow is no run of CI,
+# and its completion starts no release.  The run lists ci.yml's jobs under
+# this job's name (`CI / test (ubuntu-24.04, 3.11)`), which matrix-gate
+# reads through.
+#
+# A failed cell of a scheduled run files or updates one issue (ci.yml's
+# matrix-issue, which names the image the cell ran on); a dispatched run is
+# watched by whoever started it.
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+# No concurrency group here: ci.yml's own group governs the called run,
+# under this workflow's name, and a caller group of the same name would
+# wait on itself.
+jobs:
+  ci:
+    name: CI
+    uses: ./.github/workflows/ci.yml
+    with:
+      nightly: true
+    # What ci.yml's jobs ask for between them, since a called workflow's
+    # jobs get no more than their caller grants: matrix-gate lists the run's
+    # jobs, matrix-issue files the issue, and security uploads its findings.
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+      security-events: write
+    # The one secret ci.yml reads beyond the token every called workflow
+    # gets: browser-parity's Codecov upload.
+    secrets:
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}

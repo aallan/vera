@@ -320,7 +320,8 @@ def test_every_push_run_to_main_runs() -> None:
     arrival replaces it, so a push run has a group of its own, its commit:
     two pushes never share one, and a push run is never cancelled.  A pull
     request's runs share its group, so a new push cancels the old run, and
-    the nightly run has a group of its own."""
+    the nightly run, nightly-matrix.yml's call of ci.yml, has a group of
+    its own: a called workflow's `github.workflow` is its caller's."""
     first, second = _concurrency(_push("1" * 40)), _concurrency(_push("2" * 40))
     assert first[0] != second[0], (first, second)
     assert first[1] is False and second[1] is False
@@ -331,7 +332,7 @@ def test_every_push_run_to_main_runs() -> None:
     again = {**pull_request, "github.sha": "4" * 40}
     assert _concurrency(pull_request)[0] == _concurrency(again)[0]
     assert _concurrency(pull_request)[1] is True
-    nightly = {**_push("1" * 40), "github.event_name": "schedule"}
+    nightly = {**_push("1" * 40), "github.workflow": "Nightly matrix", "github.event_name": "schedule"}
     assert _concurrency(nightly)[0] not in (first[0], _concurrency(pull_request)[0])
 
 
@@ -490,7 +491,7 @@ class TestTheReleaseStartsWhenCiCompletes:
     ) -> None:
         """`branches: [main]` matches a run's head branch, which a fork's
         pull request can name `main` too, and CI also completes for pull
-        requests and the nightly run; so the gate reads the conclusion, the
+        requests; so the gate reads the conclusion, the
         event, the branch and the repository, and goes on for one cell of
         the 144: a successful push run of this repository on main."""
         from tests.test_gate_placement import evaluate
@@ -583,7 +584,7 @@ def _releases(spec: str) -> str:
 
 
 @pytest.mark.skipif(os.name == "nt" or shutil.which("bash") is None or shutil.which("jq") is None,
-                    reason="the step is a bash script for ubuntu-latest; the stand-in gh needs jq")
+                    reason="the step is a bash script for ubuntu-24.04; the stand-in gh needs jq")
 class TestTheLatestMark:
     """Releases start in the order their merges' CI runs complete, and a
     second version-raising merge's run can complete first, so the GitHub

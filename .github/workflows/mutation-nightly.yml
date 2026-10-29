@@ -19,7 +19,7 @@ name: Mutation (nightly)
 
 on:
   schedule:
-    # 21:00 UTC, clear of ci.yml's nightly run and nightly-stress.yml's.
+    # 21:00 UTC, clear of nightly-matrix.yml's run and nightly-stress.yml's.
     - cron: "0 21 * * *"
   workflow_dispatch:
     inputs:
@@ -44,7 +44,7 @@ jobs:
       contents: read
       # Find the last night's state artifact.
       actions: read
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
       jobs: ${{ steps.jobs.outputs.jobs }}
@@ -93,7 +93,7 @@ jobs:
       fail-fast: false
       matrix:
         slice: ${{ fromJSON(needs.setup.outputs.slices) }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # The script's budget (--budget, 4.5 h) plus installing the lock, the
     # sweep's own tests, the scratch tree and the engine's grace on a stop,
     # inside a hosted job's 6 h.
@@ -184,7 +184,7 @@ jobs:
     permissions:
       contents: read
       actions: read
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
@@ -240,7 +240,7 @@ jobs:
     if: always() && github.event_name == 'schedule' && needs.stitch.result != 'success'
     permissions:
       issues: write
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Open or update the tracking issue

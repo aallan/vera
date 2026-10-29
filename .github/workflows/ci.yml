@@ -5,12 +5,20 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-  # The full test matrix once a day, on main as it stands.  A pull request
-  # runs it only when it raises [project].version, and so does the push
-  # event its merge produces on main (see the test job), so this is what
-  # still runs every cell every day.
-  schedule:
-    - cron: "0 3 * * *"
+  # The nightly run: nightly-matrix.yml calls this workflow on its schedule,
+  # and on demand, with `nightly: true`, which runs the full test matrix and
+  # the watched images (the test and watch jobs).  Its runs are that
+  # workflow's, carrying its name and event, so release.yml, which starts on
+  # the completion of CI's runs, hears none of them.
+  workflow_call:
+    inputs:
+      nightly:
+        description: "Run the full test matrix and the watched images, as the nightly run does"
+        type: boolean
+        default: false
+    secrets:
+      CODECOV_TOKEN:
+        required: false
 
 # Cancel superseded runs of the same PR (each push restarts the run).
 # A push run has a group of its own, its commit: a group holds one pending
@@ -18,9 +26,10 @@ on:
 # group could be dropped before it ran.  Each commit on main keeps a
 # completed run, which bisection relies on, and whose completion starts
 # release.yml; that run measures coverage (see the coverage job), so
-# no pull request waits on it.  The nightly run has a group of its own too.
+# no pull request waits on it.  The nightly run has a group of its own too:
+# a called workflow's `github.workflow` is its caller's, Nightly matrix.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'schedule' && 'nightly' || github.event_name == 'push' && github.sha || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Every job's name is spelled out, since the names are what branch
@@ -40,7 +49,7 @@ jobs:
     name: plan
     permissions:
       contents: read
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       release: ${{ steps.release.outputs.release }}
       changed: ${{ steps.changed.outputs.changed }}
@@ -131,11 +140,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest, shard: 1, shards: 3 }
-          - { os: ubuntu-latest, shard: 2, shards: 3 }
-          - { os: ubuntu-latest, shard: 3, shards: 3 }
-          - { os: windows-latest, shard: 1, shards: 2 }
-          - { os: windows-latest, shard: 2, shards: 2 }
+          - { os: ubuntu-24.04, shard: 1, shards: 3 }
+          - { os: ubuntu-24.04, shard: 2, shards: 3 }
+          - { os: ubuntu-24.04, shard: 3, shards: 3 }
+          - { os: windows-2025-vs2026, shard: 1, shards: 2 }
+          - { os: windows-2025-vs2026, shard: 2, shards: 2 }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -165,18 +174,19 @@ jobs:
 
   # The full OS x Python matrix: on a pull request that raises
   # [project].version, on the push event its merge produces on main (a
-  # release), and nightly.  Every other pull request runs the suite in the
-  # shard job above, on Linux and Windows under Python 3.12, and the push
-  # event any other merge produces runs it once, in the coverage job, so no
-  # ordinary run holds the macOS runners that the next pull request's
+  # release), and on the nightly run (`inputs.nightly`, nightly-matrix.yml's
+  # call, scheduled or dispatched).  Every other pull request runs the suite
+  # in the shard job above, on Linux and Windows under Python 3.12, and the
+  # push event any other merge produces runs it once, in the coverage job,
+  # so no ordinary run holds the macOS runners that the next pull request's
   # checks would queue behind.  Its cells are not required checks:
   # matrix-gate is, and passes only when the matrix ran and passed wherever
-  # the version rises.  A cell that fails on a push or nightly run files an
-  # issue (matrix-issue).
+  # the version rises.  A cell that fails on a push or scheduled nightly
+  # run files an issue (matrix-issue).
   test:
     name: test (${{ matrix.os }}, ${{ matrix.python-version }})
     needs: plan
-    if: github.event_name == 'schedule' || needs.plan.outputs.release == 'true'
+    if: inputs.nightly || needs.plan.outputs.release == 'true'
     # The advisory cell may fail without failing the job, so neither the
     # run, nor matrix-gate, nor matrix-issue turns on it.
     continue-on-error: ${{ matrix.advisory }}
@@ -194,16 +204,21 @@ jobs:
       # (one OS red, others green) legible at a glance.
       fail-fast: false
       matrix:
-        # Explicit macOS and Linux pins (not `macos-latest` or
-        # `ubuntu-latest`) so we don't silently migrate when GitHub flips a
-        # `-latest` alias.  See README §Supported platforms for the policy.
+        # Explicit images, never a `-latest` label, so no cell migrates
+        # when GitHub moves one; the watch job runs the floating labels on
+        # the nightly run.  See README §Supported platforms for the policy.
         # `ubuntu-24.04` is the LTS release README names for x86_64, as
-        # `ubuntu-24.04-arm` is for aarch64.  `macos-15` (Sequoia) is currently
-        # `macos-latest` (May 2026) and the most common single non-current
-        # version among real users (~24% of macOS install base per
+        # `ubuntu-24.04-arm` is for aarch64.  `macos-15` (Sequoia) is the
+        # most common single non-current version among real users (~24% of
+        # macOS install base per
         # https://telemetrydeck.com/survey/apple/macOS/versions/); `macos-26`
-        # (Tahoe) is current and dominant (~75%).
-        os: [ubuntu-24.04, macos-15, macos-26, windows-latest]
+        # (Tahoe) is current and dominant (~75%), and `macos-latest` names it
+        # since June 2026 (actions/runner-images#14167).
+        # `windows-2025-vs2026` is the Windows Server 2025 image by its own
+        # name: GitHub moved `windows-latest` and `windows-2025` to it from
+        # the Visual Studio 2022 image in June 2026
+        # (actions/runner-images#14017).
+        os: [ubuntu-24.04, macos-15, macos-26, windows-2025-vs2026]
         python-version: ["3.11", "3.12", "3.13"]
         advisory: [false]
         include:
@@ -223,6 +238,38 @@ jobs:
     # UTF-8 on every runner regardless of locale, cp1252 Windows included.
 
     steps:
+      # The image the runner booted, by name and build (`ImageOS` and
+      # `ImageVersion`, which every GitHub-hosted runner sets): a label
+      # names an image only until GitHub moves it, and an image's build
+      # changes every week.  The job's summary shows it, and a record of it
+      # goes up for matrix-issue, so the issue a failed cell files says
+      # which build broke.  The watch job runs these same steps, and the
+      # job's id names the cell.
+      - name: Record the runner image
+        shell: bash
+        env:
+          CELL: ${{ github.job }} (${{ matrix.os }}, ${{ matrix.python-version }})
+          RECORD: ${{ github.job }}-${{ matrix.os }}-${{ matrix.python-version }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/runner-image"
+          printf '%s\t%s\t%s\n' "$CELL" "$ImageOS" "$ImageVersion" > "$RUNNER_TEMP/runner-image/$RECORD.tsv"
+          echo "Runner image: $ImageOS $ImageVersion"
+          echo "Runner image: $ImageOS $ImageVersion" >> "$GITHUB_STEP_SUMMARY"
+
+      # `overwrite`: a re-run cell records its image again, under the name
+      # its first attempt's record holds.  `continue-on-error`: the record
+      # is a diagnostic, and an artifact service's error would otherwise
+      # fail a cell matrix-gate reads, a release's among them; matrix-issue
+      # names the images whose records it finds.
+      - name: Keep the runner image's record
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: runner-image-${{ github.job }}-${{ matrix.os }}-${{ matrix.python-version }}
+          path: ${{ runner.temp }}/runner-image/
+          retention-days: 7
+          overwrite: true
+
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
@@ -254,6 +301,72 @@ jobs:
           MATRIX_ARGS: ${{ github.event_name != 'pull_request' && '--matrix=full' || '' }}
         run: pytest -v -n auto $MATRIX_ARGS
 
+  # The watched images, on the nightly run alone (`inputs.nightly`): the
+  # floating `-latest` labels, which GitHub moves to a new OS release on a
+  # date of its own, and the newest release image it offers that no cell of
+  # the full matrix runs, at Python 3.12.  No job that runs on a push or a
+  # pull request takes one of these labels, so a label GitHub moves can
+  # neither block a merge nor change what a release is tested on: the full
+  # matrix's images are pinned, and moving one is a reviewed change, made
+  # once the watched cell of its successor has run green for as long as the
+  # maintainer chooses.  A preview image joins when GitHub lists it as a
+  # release image.  Each cell is advisory: a failed one fails neither the
+  # run nor matrix-gate, and on a scheduled night matrix-issue files it,
+  # naming the image it ran on.  Its steps are the test job's, comments apart
+  # (tests/test_nightly_matrix_workflow.py holds them equal).
+  watch:
+    name: watch (${{ matrix.os }}, ${{ matrix.python-version }})
+    needs: plan
+    if: inputs.nightly
+    continue-on-error: true
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest, ubuntu-26.04]
+        python-version: ["3.12"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Record the runner image
+        shell: bash
+        env:
+          CELL: ${{ github.job }} (${{ matrix.os }}, ${{ matrix.python-version }})
+          RECORD: ${{ github.job }}-${{ matrix.os }}-${{ matrix.python-version }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/runner-image"
+          printf '%s\t%s\t%s\n' "$CELL" "$ImageOS" "$ImageVersion" > "$RUNNER_TEMP/runner-image/$RECORD.tsv"
+          echo "Runner image: $ImageOS $ImageVersion"
+          echo "Runner image: $ImageOS $ImageVersion" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the runner image's record
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: runner-image-${{ github.job }}-${{ matrix.os }}-${{ matrix.python-version }}
+          path: ${{ runner.temp }}/runner-image/
+          retention-days: 7
+          overwrite: true
+
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Run tests
+        shell: bash
+        env:
+          VERA_MATRIX_CHANGED: ${{ needs.plan.outputs.changed }}
+          MATRIX_ARGS: ${{ github.event_name != 'pull_request' && '--matrix=full' || '' }}
+        run: pytest -v -n auto $MATRIX_ARGS
+
   # The required check for the full matrix (scripts/matrix_gate.py).  It runs
   # whatever the plan and the matrix did, and passes when the plan succeeded
   # and the matrix either ran with every cell passing or was skipped because
@@ -263,17 +376,22 @@ jobs:
   # listing, not from the matrix's result alone, which reads `success` once
   # one of two failed cells is re-run on its own and passes (#1659), and
   # holds the listing to the matrix's size; the cells that failed are its
-  # `failed` output, for matrix-issue.
+  # `failed` output, for matrix-issue.  On the nightly run it waits for the
+  # watched images too, and names the ones that failed in its `watched`
+  # output, which its verdict does not read.  A run of the nightly workflow
+  # lists every job of this one under the calling job's name
+  # (`CI / test (ubuntu-24.04, 3.11)`), which the script reads through.
   matrix-gate:
     name: matrix-gate
-    needs: [plan, test]
+    needs: [plan, test, watch]
     if: always()
     permissions:
       actions: read
       contents: read
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       failed: ${{ steps.gate.outputs.failed }}
+      watched: ${{ steps.gate.outputs.watched }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -290,27 +408,46 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: python3 scripts/matrix_gate.py
 
-  # A failed cell on a push or nightly run, where no pull request's checks
+  # A failed cell on a push or scheduled nightly run, where no pull request's checks
   # show it, files one issue per workflow and branch, or comments on the
   # open one: nightly-stress.yml's pattern, deduplicated on the issue's
   # title, labelled bug and ci.  The failed cells are the ones matrix-gate
   # read from the run's job listing, so one cell re-run on its own does not
   # hide another still failed; the matrix's result files too, where the gate
-  # could not read the listing.
+  # could not read the listing.  A failed watched cell (the watch job's, on
+  # the nightly run) files as well, and the issue names the image each
+  # failed cell ran on, from the records the cells keep.  The nightly run
+  # is nightly-matrix.yml's call of this workflow, whose `github.event_name`
+  # is the caller's: `schedule` files, and a dispatched run files nothing.
   matrix-issue:
     name: matrix-issue
     needs: [test, matrix-gate]
-    if: always() && (github.event_name == 'push' || github.event_name == 'schedule') && (needs.test.result == 'failure' || needs.matrix-gate.outputs.failed != '')
+    if: always() && (github.event_name == 'push' || github.event_name == 'schedule') && (needs.test.result == 'failure' || needs.matrix-gate.outputs.failed != '' || needs.matrix-gate.outputs.watched != '')
     permissions:
       issues: write
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
+      # The records of the images the cells ran on.  One that cannot be
+      # fetched names no image, and the issue is filed all the same.
+      - name: Fetch the cells' runner images
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          pattern: runner-image-*
+          path: ${{ runner.temp }}/runner-image
+          merge-multiple: true
+
       - name: File or update the tracking issue
         uses: actions/github-script@v9
         env:
           FAILED: ${{ needs.matrix-gate.outputs.failed }}
+          WATCHED: ${{ needs.matrix-gate.outputs.watched }}
+          TEST_RESULT: ${{ needs.test.result }}
+          IMAGES: ${{ runner.temp }}/runner-image
         with:
           script: |
+            const fs = require("fs");
+            const path = require("path");
             const { owner, repo } = context.repo;
             const branch = context.ref.replace(/^refs\/heads\//, "");
             const title = `${context.workflow}: full test matrix failing on ${branch}`;
@@ -318,27 +455,59 @@ jobs:
             const when = context.eventName === "schedule" ? "the nightly run" : "the push run";
 
             // The cells that failed, as matrix-gate read them from this
-            // run's job listing (its `failed` output, a JSON list).  The
-            // run's page lists them too, which the body points to where the
-            // gate could not read the listing.
-            let cells = [];
+            // run's job listing: its `failed` output, the full matrix's
+            // blocking cells, and its `watched` output, the watched
+            // images' (each a JSON list).  The run's page lists them too,
+            // which the body points to where the gate could not read the
+            // listing.
+            const listed = (name) => {
+              try {
+                const named = JSON.parse(process.env[name] || "[]");
+                return Array.isArray(named) ? named.filter((cell) => typeof cell === "string").sort() : [];
+              } catch (e) {
+                core.warning(`cannot read matrix-gate's ${name.toLowerCase()} cells: ${e.message}`);
+                return [];
+              }
+            };
+            const cells = listed("FAILED");
+            const watched = listed("WATCHED");
+
+            // The image each cell's runner booted, from the records the
+            // cells keep, a line `<cell>\t<ImageOS>\t<ImageVersion>` each.
+            // A cell with no record is named without one.
+            const images = new Map();
             try {
-              const named = JSON.parse(process.env.FAILED || "[]");
-              if (Array.isArray(named)) {
-                cells = named.filter((name) => typeof name === "string").sort();
+              for (const file of fs.readdirSync(process.env.IMAGES)) {
+                const text = fs.readFileSync(path.join(process.env.IMAGES, file), "utf8");
+                for (const line of text.split("\n")) {
+                  const [cell, image, build] = line.replace(/\r$/, "").split("\t");
+                  if (cell && image && build) images.set(cell, `${image} ${build}`);
+                }
               }
             } catch (e) {
-              core.warning(`cannot read matrix-gate's failed cells: ${e.message}`);
+              core.info(`no runner image records: ${e.message}`);
             }
-            const body = [
-              `The full test matrix failed in ${when} of ${context.workflow} on \`${branch}\`, at \`${context.sha.slice(0, 7)}\` (commit ${context.sha}).`,
+            const named = (list) => list
+              .map((cell) => (images.has(cell) ? `\`${cell}\` on ${images.get(cell)}` : `\`${cell}\``))
+              .join(", ");
+
+            // The full matrix's failure leads where there is one; a night
+            // on which a watched image alone failed says so.
+            const matrix = cells.length > 0 || process.env.TEST_RESULT === "failure" || watched.length === 0;
+            const lines = [
+              `${matrix ? "The full test matrix" : "A watched runner image"} failed in ${when} of ${context.workflow} on \`${branch}\`, at \`${context.sha.slice(0, 7)}\` (commit ${context.sha}).`,
               "",
-              cells.length
-                ? `Failed cells: ${cells.map((name) => `\`${name}\``).join(", ")}.`
-                : "The run's page lists the failed cells.",
-              "",
-              `**Run**: ${runUrl}`,
-            ].join("\n");
+            ];
+            if (cells.length) {
+              lines.push(`Failed cells: ${named(cells)}.`, "");
+            } else if (matrix) {
+              lines.push("The run's page lists the failed cells.", "");
+            }
+            if (watched.length) {
+              lines.push(`Failed watched cells, which block nothing: ${named(watched)}.`, "");
+            }
+            lines.push(`**Run**: ${runUrl}`);
+            const body = lines.join("\n");
 
             for (const name of ["bug", "ci"]) {
               try {
@@ -376,7 +545,7 @@ jobs:
     # 2.5x an uninstrumented one, so no pull request waits on it.
     permissions:
       contents: read
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with:
@@ -414,7 +583,7 @@ jobs:
     if: needs.plan.outputs.inert != 'true'
     permissions:
       contents: read
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with:
@@ -435,7 +604,7 @@ jobs:
     name: lint
     permissions:
       contents: read
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with:
@@ -553,7 +722,7 @@ jobs:
     permissions:
       contents: read
       security-events: write
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with:
@@ -571,7 +740,7 @@ jobs:
     if: needs.plan.outputs.inert != 'true'
     permissions:
       contents: read
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with:
@@ -602,7 +771,7 @@ jobs:
     # README documents.
     permissions:
       contents: read
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with:
@@ -626,7 +795,7 @@ jobs:
     # nothing.
     permissions:
       contents: read
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with:
@@ -667,7 +836,7 @@ jobs:
     if: needs.plan.outputs.inert != 'true'
     permissions:
       contents: read
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Generate an SBOM on the push event every merged pull request produces
     # on main.  PRs get the artifact too, useful for reviewing dependency
     # changes.
@@ -713,7 +882,7 @@ jobs:
     # parse, check and verify stages are not repeated here.
     permissions:
       contents: read
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with:
@@ -738,7 +907,7 @@ jobs:
     if: needs.plan.outputs.inert != 'true'
     permissions:
       contents: read
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with:

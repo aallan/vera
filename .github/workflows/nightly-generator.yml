@@ -17,7 +17,7 @@ name: Program generator
 #    two to five hours after its cron on this repository (measured over the
 #    five nights to 2026-10-21; the first night, 2026-10-22, started about
 #    four and a half hours late): the mutation sweep (cron 21:00) ran from
-#    about 23:00 to 05:00, ci.yml's nightly run (03:00) from about 07:15 to
+#    about 23:00 to 05:00, the nightly full matrix (03:00) from about 07:15 to
 #    09:00, and nightly-stress.yml (06:00) from about 10:00 to 12:00, so this
 #    one keeps clear of all three.
 #    A failed scheduled night files or updates one tracking issue, labelled
@@ -67,7 +67,7 @@ jobs:
       # failed scheduled night only.  Scoped to the job, as
       # nightly-stress.yml scopes its own.
       issues: write
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
       # The night's seeds, sized to the per-program cost a pull request's
