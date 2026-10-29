@@ -27,7 +27,7 @@ Nothing is implicit. The signature declares types, preconditions, postconditions
 <!-- vera:run fn="safe_divide" args="2 10" stdout="5" -->
 ```vera
 public fn safe_divide(@Int, @Int -> @Int)
-  requires(@Int.1 != 0)
+  requires(@Int.1 > 0)
   ensures(@Int.result == @Int.0 / @Int.1)
   effects(pure)
 {

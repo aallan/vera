@@ -30,7 +30,7 @@ This is a fair point. The contracts can say what the output *cannot* be, but if 
 
 Vera's answer is that the contracts *are* the link between implementation and requirements. The human writes (or reviews) the contracts — preconditions, postconditions, effect declarations — and those are small, declarative, and human-readable. The compiler then proves the implementation satisfies them. The human audits the specification, not the code.
 
-The bet is that contracts are a better surface for capturing intent than variable names scattered through an implementation. A function signature with `requires(@Int.1 != 0)` and `ensures(@Int.result == @Int.0 / @Int.1)` communicates what the function does more precisely than any variable name could.
+The bet is that contracts are a better surface for capturing intent than variable names scattered through an implementation. A function signature with `requires(@Int.1 > 0)` and `ensures(@Int.result == @Int.0 / @Int.1)` communicates what the function does more precisely than any variable name could.
 
 
 ## How do type aliases interact with `@T.n` references?
