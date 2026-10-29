@@ -178,6 +178,8 @@ CI tests every pull request on Ubuntu x86_64 and Windows against Python 3.12, an
 - **Ubuntu 24.04 LTS** on aarch64, against Python 3.12 (advisory job — does not gate merges)
 - **Windows Server 2025** on x86_64, against Python 3.11, 3.12, 3.13
 
+These are the supported images, pinned by name in every job that gates a merge or a release, so a label GitHub moves to a new OS release changes none of them; the nightly run also watches the floating `ubuntu-latest`, `windows-latest` and `macos-latest` labels and Ubuntu 26.04 under Python 3.12, advisory cells as the aarch64 one is, where a failure files an issue and blocks nothing.
+
 Not tested in CI; every dependency publishes wheels for them:
 
 - Linux x86_64 with glibc 2.27+ (Ubuntu 18.04+ / Debian 10+ / RHEL 8+)

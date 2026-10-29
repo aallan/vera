@@ -49,7 +49,7 @@ jobs:
     name: mutation (diff)
     permissions:
       contents: read
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # The script's budget (--budget, 40 min) plus installing the lock, both
     # lanes' self-tests and the scratch tree.
     timeout-minutes: 55

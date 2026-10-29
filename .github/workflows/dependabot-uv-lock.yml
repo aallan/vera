@@ -51,7 +51,7 @@ jobs:
     # becomes the human on rerun while user.login stays as
     # dependabot. See https://docs.github.com/en/actions/learn-github-actions/contexts#github-context
     if: github.event.pull_request.user.login == 'dependabot[bot]'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Check out PR branch

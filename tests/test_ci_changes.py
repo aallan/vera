@@ -67,13 +67,14 @@ def _tracked(prefix: str) -> list[str]:
 
 # The checks branch protection requires that ci.yml reports (the other
 # required check, `analyze`, is codeql.yml's), as the repository's settings
-# list them on 2026-10-21.  The maintainer edits that list by hand, so a job
-# rename here would leave a required check no job reports.
+# list them: each shard is named by the explicit image it runs on, which a
+# label GitHub moves never changes.  The maintainer edits that list by hand,
+# so a job rename here would leave a required check no job reports.
 REQUIRED = (
     "typecheck", "lint", "wheel-preflight", "browser-parity", "security", "eager-gc",
-    "test (ubuntu-latest, 3.12, shard 1/3)", "test (ubuntu-latest, 3.12, shard 2/3)",
-    "test (ubuntu-latest, 3.12, shard 3/3)", "test (windows-latest, 3.12, shard 1/2)",
-    "test (windows-latest, 3.12, shard 2/2)", "matrix-gate",
+    "test (ubuntu-24.04, 3.12, shard 1/3)", "test (ubuntu-24.04, 3.12, shard 2/3)",
+    "test (ubuntu-24.04, 3.12, shard 3/3)", "test (windows-2025-vs2026, 3.12, shard 1/2)",
+    "test (windows-2025-vs2026, 3.12, shard 2/2)", "matrix-gate",
 )
 
 # The jobs that stand down on a pull request whose every file is inert, at
@@ -561,14 +562,20 @@ class TestTheShellThatReadsAValue:
         assert unread_on_windows(dict(yaml.safe_load(path.read_text(encoding="utf-8")))) == []
 
     def test_the_steps_a_windows_runner_takes_that_read_one(self) -> None:
-        """The shards' and the test matrix's pytest read `$SHARD` and
-        `$MATRIX_ARGS`; the rule above reaches them, as the bash they name
-        shows when it is taken away."""
+        """The shards' and the two matrices' pytest read `$SHARD` and
+        `$MATRIX_ARGS`, and the matrices' image record reads `$CELL`,
+        `$RUNNER_TEMP` and the image's variables; the rule above reaches
+        them, the watch job's Windows cell among them, as the bash they
+        name shows when it is taken away."""
         workflow = _workflow()
-        for job_id in ("shard", "test"):
+        for job_id in ("shard", "test", "watch"):
             for step in workflow["jobs"][job_id]["steps"]:
                 step.pop("shell", None)
-        assert unread_on_windows(workflow) == [("shard", "Run tests"), ("test", "Run tests")]
+        assert unread_on_windows(workflow) == [
+            ("shard", "Run tests"),
+            ("test", "Record the runner image"), ("test", "Run tests"),
+            ("watch", "Record the runner image"), ("watch", "Run tests"),
+        ]
 
     @pytest.mark.parametrize(
         ("shape", "flagged"),

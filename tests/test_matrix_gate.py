@@ -19,9 +19,14 @@ from real runs (`tests/fixtures/matrix_gate/listings.json`): a nightly run
 with every cell green, a run whose second attempt re-ran its one failed cell,
 and a pull request's run with the shards and the matrix skipped.  The command
 line reads the three results from its environment and lists the jobs through
-`gh`, here a stand-in that serves the recordings.  The pins at the end hold
-the gate's reading of cell names and of the advisory cell to ci.yml's
-matrix, and the job to what the script reads.
+`gh`, here a stand-in that serves the recordings.  The nightly run is a
+run of nightly-matrix.yml, which calls ci.yml, and a call's run lists each
+job of ci.yml under the calling job's name (`CI / test (macos-15, 3.12)`):
+the recordings under that name are read as the push run's are, and the
+watched cells it also lists (`watch (ubuntu-latest, 3.12)`) are named
+when they fail and decide nothing.  The pins at the end hold the gate's
+reading of cell names and of the advisory cell to ci.yml's matrix, and
+the job to what the script reads.
 """
 
 from __future__ import annotations
@@ -176,6 +181,33 @@ def _with(listing: dict[str, Any], conclusions: dict[str, str]) -> dict[str, Any
     ]}
 
 
+def _called(listing: dict[str, Any], caller: str = "CI") -> dict[str, Any]:
+    """A listing as a call's run prints it: every job under the calling
+    job's name, `<caller> / <name>`, the form python/cpython's runs of
+    the workflow that calls its reusable ones show (run 40861881955:
+    `Ubuntu / build and test (ubuntu-26.04)`)."""
+    return {"jobs": [{**job, "name": f"{caller} / {job['name']}"} for job in listing["jobs"]]}
+
+
+#: The watched images' cells as a nightly run lists them, each green.
+WATCHED_CELLS = (
+    "watch (ubuntu-latest, 3.12)", "watch (windows-latest, 3.12)",
+    "watch (macos-latest, 3.12)", "watch (ubuntu-26.04, 3.12)",
+)
+
+
+def _watching(listing: dict[str, Any], failed: tuple[str, ...] = ()) -> dict[str, Any]:
+    """A nightly run's listing: the cells of `listing` and the watched
+    cells beside them, all under the calling job's name, the ones
+    `failed` names failed."""
+    assert set(failed) <= set(WATCHED_CELLS), failed
+    watched = [
+        {"name": name, "status": "completed", "conclusion": "failure" if name in failed else "success"}
+        for name in WATCHED_CELLS
+    ]
+    return _called({"jobs": [*listing["jobs"], *watched]})
+
+
 def _jobs(listing: dict[str, Any]) -> list[Any]:
     return list(mg.parse_jobs(json.dumps(listing)))
 
@@ -292,6 +324,107 @@ class TestTheListing:
         ]
         assert not mg.judge(jobs, int(CELLS)).passed
         assert not mg.judge(jobs, 1).passed
+
+
+class TestANightlyRunsListing:
+    """The nightly run is nightly-matrix.yml's call of ci.yml, whose run
+    lists every job under the calling job's name.  Read through it, the
+    listing is the push run's: the same cells under the names ci.yml gives
+    them, the advisory one among them.  Without the reading, a nightly run
+    lists no cell at all and its gate fails every night."""
+
+    def test_every_cell_green_passes(self) -> None:
+        verdict = _judge(_called(_recorded(NIGHTLY)))
+        assert verdict.passed, verdict.why
+        assert len(mg.blocking_cells(_jobs(_called(_recorded(NIGHTLY))))) == 12
+
+    def test_a_failed_cell_is_named_as_ci_yml_names_it(self) -> None:
+        verdict = _judge(_called(_recorded(FAILED_CELL)))
+        assert not verdict.passed
+        assert verdict.failed == (RERUN_CELL,)
+        assert f"{RERUN_CELL} failure" in verdict.why, verdict.why
+
+    def test_the_advisory_cell_red_passes(self) -> None:
+        verdict = _judge(_called(_with(_recorded(NIGHTLY), {ADVISORY_CELL: "failure"})))
+        assert verdict.passed, verdict.why
+
+    def test_a_listing_missing_a_cell_fails(self) -> None:
+        listing = {"jobs": [job for job in _recorded(FAILED_CELL)["jobs"] if job["name"] != RERUN_CELL]}
+        verdict = _judge(_called(listing))
+        assert not verdict.passed
+        assert "12 cells" in verdict.why, verdict.why
+
+    @pytest.mark.parametrize(
+        ("listed", "named"),
+        [
+            ("CI / test (macos-15, 3.12)", "test (macos-15, 3.12)"),
+            ("Nightly / watch (ubuntu-latest, 3.12)", "watch (ubuntu-latest, 3.12)"),
+            ("test (macos-15, 3.12)", "test (macos-15, 3.12)"),
+            ("test (ubuntu-24.04, 3.12, shard 1/3)", "test (ubuntu-24.04, 3.12, shard 1/3)"),
+            ("CI / test (ubuntu-24.04, 3.12, shard 1/3)", "test (ubuntu-24.04, 3.12, shard 1/3)"),
+            ("matrix-gate", "matrix-gate"),
+        ],
+    )
+    def test_a_name_is_read_through_its_caller_alone(self, listed: str, named: str) -> None:
+        """A shard's `K/N` has no space around its slash, so no name ci.yml
+        gives a job loses anything."""
+        assert mg.bare(listed) == named
+
+    def test_a_shard_under_a_caller_is_no_cell(self) -> None:
+        shards = [job for job in _recorded(PULL_REQUEST)["jobs"] if "shard" in job["name"]]
+        red = _called({"jobs": [{**shards[0], "conclusion": "failure"}, *shards[1:]]})
+        verdict = _judge({"jobs": _called(_recorded(NIGHTLY))["jobs"] + red["jobs"]})
+        assert verdict.passed, verdict.why
+
+
+class TestTheWatchedCells:
+    """The nightly run's watch job runs the floating labels and the newest
+    image no cell of the full matrix runs.  Its cells are no cells of the
+    full matrix: the verdict and the matrix's size read none of them, and
+    the ones that failed are the `watched` output, which matrix-issue
+    files."""
+
+    def test_a_green_night_names_none(self) -> None:
+        verdict = mg.gate("success", "", "success", CELLS, lambda: _jobs(_watching(_recorded(NIGHTLY))))
+        assert verdict.passed, verdict.why
+        assert (verdict.failed, verdict.watched) == ((), ())
+
+    def test_a_failed_watched_cell_is_named_and_decides_nothing(self) -> None:
+        failed = ("watch (ubuntu-latest, 3.12)", "watch (windows-latest, 3.12)")
+        verdict = mg.gate("success", "", "success", CELLS, lambda: _jobs(_watching(_recorded(NIGHTLY), failed)))
+        assert verdict.passed, verdict.why
+        assert verdict.failed == ()
+        assert verdict.watched == failed
+
+    def test_a_failed_cell_and_a_failed_watched_cell_are_each_named(self) -> None:
+        failed = ("watch (ubuntu-26.04, 3.12)",)
+        verdict = mg.gate(
+            "success", "", "failure", CELLS, lambda: _jobs(_watching(_recorded(FAILED_CELL), failed)),
+        )
+        assert not verdict.passed
+        assert verdict.failed == (RERUN_CELL,)
+        assert verdict.watched == failed
+
+    def test_a_watched_cell_is_no_cell_of_the_matrix(self) -> None:
+        jobs = _jobs(_watching(_recorded(NIGHTLY)))
+        assert len(mg.cells_of(jobs)) == int(CELLS)
+        assert [job.name for job in mg.watched_cells(jobs)] == list(WATCHED_CELLS)
+
+    @pytest.mark.parametrize("conclusion", ["cancelled", "skipped", "", "timed_out"])
+    def test_only_a_failure_is_named(self, conclusion: str) -> None:
+        """`failure` is what a run that ran its tests and found one red
+        concludes; any other conclusion is the run's page to show."""
+        listing = _watching(_recorded(NIGHTLY))
+        listing = _with(listing, {"CI / watch (macos-latest, 3.12)": conclusion})
+        assert mg.failed_watched(_jobs(listing)) == ()
+
+    def test_an_unreadable_listing_names_no_watched_cell(self) -> None:
+        def unreadable() -> list[Any]:
+            raise mg.ListingError("HTTP 502")
+
+        verdict = mg.gate("success", "", "success", CELLS, unreadable)
+        assert not verdict.passed
+        assert verdict.watched == ()
 
 
 class TestTheVerdict:
@@ -462,6 +595,21 @@ class TestTheCommand:
         assert asked == [RERUN]
         assert output.read_text(encoding="utf-8") == 'failed=["test (windows-latest, 3.11)"]\n'
 
+    def test_a_night_hands_on_its_failed_watched_cells(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path,
+    ) -> None:
+        """A nightly run whose full matrix passed and one of whose watched
+        cells failed: the gate passes, warns, and writes the watched cell to
+        its `watched` output under the name ci.yml gives it."""
+        output = _environment(monkeypatch, tmp_path, "success", "", "success",
+                              run_id="38232649508", attempt="1")
+        listing = _watching(_recorded(NIGHTLY), ("watch (windows-latest, 3.12)",))
+        _serve(monkeypatch, {"gh run view 38232649508 --attempt 1 --json jobs": listing})
+        assert mg.main() == 0
+        out = capsys.readouterr().out
+        assert "::warning::" in out and "watch (windows-latest, 3.12)" in out, out
+        assert output.read_text(encoding="utf-8") == 'watched=["watch (windows-latest, 3.12)"]\n'
+
     def test_the_rerun_of_every_failed_cell_passes(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path,
     ) -> None:
@@ -599,24 +747,33 @@ class TestTheWorkflow:
         for name in names:
             assert not mg.CELL.fullmatch(name), name
 
-    def test_the_linux_and_macos_cells_name_their_release(self) -> None:
-        """No cell runs on an alias GitHub moves (`ubuntu-latest`,
-        `macos-latest`): README § Supported platforms names the releases the
-        full matrix tests, Ubuntu 24.04 on x86_64 and aarch64 among them."""
+    def test_every_cell_names_its_image(self) -> None:
+        """No cell runs on a label GitHub moves (`ubuntu-latest`,
+        `macos-latest`, `windows-latest`): README § Supported platforms
+        names the images the full matrix tests, Ubuntu 24.04 on x86_64 and
+        aarch64 and Windows Server 2025 among them.  The floating labels are
+        the watch job's, on the nightly run alone."""
         runners = {str(cell["matrix.os"]) for cell in _cell_names("test").values()}
-        assert {"ubuntu-24.04", "ubuntu-24.04-arm", "macos-15", "macos-26"} <= runners, runners
+        assert runners == {"ubuntu-24.04", "ubuntu-24.04-arm", "macos-15", "macos-26", "windows-2025-vs2026"}, runners
         for runner in runners:
-            if runner.startswith(("ubuntu", "macos")):
-                assert "latest" not in runner, runner
+            assert "latest" not in runner, runner
+
+    def test_every_watched_cell_is_one_the_gate_reads_as_watched(self) -> None:
+        names = _cell_names("watch")
+        assert sorted(names) == sorted(WATCHED_CELLS), sorted(names)
+        for name in names:
+            assert mg.WATCHED.fullmatch(name) and not mg.CELL.fullmatch(name), name
 
     def test_the_job_hands_the_script_its_results_and_a_token(self) -> None:
-        """The job runs after the plan and the matrix whatever happened to them
-        (`always()`), and passes the script their results and the plan's
-        answer under the names it reads, with a token that can list the
-        run's jobs; the run's id and attempt are Actions' own variables."""
+        """The job runs after the plan, the matrix and the watched images
+        whatever happened to them (`always()`), and passes the script the
+        plan's and the matrix's results and the plan's answer under the
+        names it reads, with a token that can list the run's jobs; the run's
+        id and attempt are Actions' own variables.  It hands on the failed
+        cells and the failed watched cells, as two outputs."""
         job = _ci_jobs()["matrix-gate"]
         needs = job["needs"]
-        assert {"plan", "test"} <= set([needs] if isinstance(needs, str) else needs), needs
+        assert {"plan", "test", "watch"} <= set([needs] if isinstance(needs, str) else needs), needs
         assert str(job["if"]).replace("${{", "").replace("}}", "").strip() == "always()", job["if"]
         assert job["permissions"] == {"actions": "read", "contents": "read"}
         steps = [step for step in job["steps"] if "scripts/matrix_gate.py" in str(step.get("run", ""))]
@@ -629,7 +786,9 @@ class TestTheWorkflow:
             "GH_TOKEN": "${{ github.token }}",
             "GH_REPO": "${{ github.repository }}",
         }
-        assert job["outputs"] == {"failed": f"${{{{ steps.{steps[0]['id']}.outputs.failed }}}}"}
+        assert job["outputs"] == {
+            name: f"${{{{ steps.{steps[0]['id']}.outputs.{name} }}}}" for name in ("failed", "watched")
+        }
 
     def test_the_matrix_states_its_size(self) -> None:
         """Every cell sets the `test` job's `cells` output to the matrix's
