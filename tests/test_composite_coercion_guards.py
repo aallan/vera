@@ -60,16 +60,18 @@ from vera.types import pretty_type
 pytestmark = pytest.mark.matrix(
     decides=[
         "vera/narrowing.py",
+        "vera/wasm/coercion.py",
         "vera/wasm/data.py",
         "vera/wasm/calls_containers.py",
         "vera/wasm/calls_handlers.py",
+        "vera/wasm/calls.py",
+        "vera/wasm/closures.py",
+        "vera/codegen/contracts.py",
     ],
 )
 
 _NAT_TRAP = "Negative value bound into a @Nat slot"
-
-# Red-first: the rule lands in the commits after this one, which drop this.
-_RED_FIRST = pytest.mark.xfail(strict=False, reason="red-first: no rule yet")
+_BOUNDARY_TRAP = "Refinement violation"
 _EMITTER_FILE = "wasm/coercion.py:"
 
 
@@ -291,9 +293,22 @@ def _programs() -> Iterator[tuple[str, str, str]]:
                 yield site, shape, form
 
 
+#: The positions a function boundary already guards (#746): a formal or a
+#: declared result whose type is a tuple with a `Nat` component, which the
+#: callee's entry or epilogue checks for every caller.  An opaque value
+#: coerced there defers to that guard rather than doubling it, so it traps
+#: with the boundary's message and gains no check and no W004 (the negative
+#: space of the deference).
+_BOUNDARY = frozenset(
+    (site, "Tuple")
+    for site in ("call argument", "apply_fn argument", "return",
+                 "closure return")
+)
+
 _PROGRAMS = list(_programs())
 _PROGRAM_IDS = [f"{s} / {sh} / {f}" for s, sh, f in _PROGRAMS]
-_RECORDED = [p for p in _PROGRAMS if (p[0], p[1]) not in _EXCLUDED]
+_RECORDED = [p for p in _PROGRAMS if (p[0], p[1]) not in _EXCLUDED
+             and not ((p[0], p[1]) in _BOUNDARY and p[2] == "opaque")]
 _RECORDED_IDS = [f"{s} / {sh} / {f}" for s, sh, f in _RECORDED]
 
 
@@ -375,11 +390,11 @@ def _ran(src: str, fn: str, arg: float | int) -> pipeline.Ran:
                         capture_stderr=False)
 
 
-def _assert_traps(ran: pipeline.Ran) -> None:
+def _assert_traps(ran: pipeline.Ran, message: str = _NAT_TRAP) -> None:
     assert ran.trap is not None, (
         f"the negative component flowed into a `@Nat` slot: "
         f"returned {ran.execution.value}")
-    assert _NAT_TRAP in str(ran.trap), str(ran.trap)[:300]
+    assert message in str(ran.trap), str(ran.trap)[:300]
 
 
 def _assert_returns(ran: pipeline.Ran, value: int) -> None:
@@ -408,14 +423,15 @@ def test_the_matrix_spans_every_site_and_shape() -> None:
 class TestTheRun:
     """What the compiled program does with each input."""
 
-    @_RED_FIRST
     @pytest.mark.parametrize(("site", "shape", "form", "arg"), _run_cells())
     def test_the_value(self, site: str, shape: str, form: str,
                        arg: float) -> None:
         src = program(site, SHAPES[shape], form)
         ran = _ran(src, "f", arg)
         if arg < 0:
-            _assert_traps(ran)
+            _assert_traps(ran, _BOUNDARY_TRAP
+                          if (site, shape) in _BOUNDARY and form == "opaque"
+                          else _NAT_TRAP)
         elif arg > 0:
             _assert_returns(ran, 5)
         else:
@@ -425,7 +441,6 @@ class TestTheRun:
 class TestTheRecord:
     """`vera verify` and the compiled module agree on every new guard."""
 
-    @_RED_FIRST
     @pytest.mark.parametrize(("site", "shape", "form"), _RECORDED,
                              ids=_RECORDED_IDS)
     def test_one_guard_per_coercion(self, site: str, shape: str,
@@ -466,6 +481,25 @@ class TestTheRecord:
         assert len(nat_guards) == 1, nat_guards
         assert _coercion_checks(compiled) == []
         assert _coercion_w004(_verified(src)) == []
+
+    @pytest.mark.parametrize("site", sorted(s for s, _sh in _BOUNDARY))
+    def test_a_boundary_guard_is_deferred_to(self, site: str) -> None:
+        """An opaque `Tuple<Int, Int>` at a `Tuple<Int, Nat>` formal or
+        result keeps the one guard it had at base, the callee's (#746): one
+        refinement check, its one W004, and no coercion check beside it."""
+        src = program(site, SHAPES["Tuple"], "opaque")
+        verified = _verified(src)
+        assert verified.ok
+        compiled = _compiled(src)
+        assert _coercion_checks(compiled) == []
+        assert pipeline.checks(compiled.result, kind="nat_guard") == ()
+        boundary = pipeline.checks(
+            compiled.result,
+            emitter="codegen/contracts.py:_emit_refinement_check")
+        assert len(boundary) == 1, boundary
+        w004 = [w.description for w in verified.warnings]
+        assert len(w004) == 1 and "'refine_bind'" in w004[0], w004
+        assert {w.error_code for w in verified.warnings} == {"W004"}
 
     @pytest.mark.parametrize(("site", "shape", "form"), sorted(
         (s, sh, f) for s, sh, f in _PROGRAMS if (s, sh) in _EXCLUDED))
@@ -648,7 +682,6 @@ def _assert_one_guard(src: str) -> None:
     _assert_returns(_ran(src, "f", 5), 5)
 
 
-@_RED_FIRST
 def test_repro_p1_index_scrutinee() -> None:
     """A constructor nested in an array literal under an `Array<Wrap<Nat>>`
     binding: the descent reaches the field two levels down (kills the
@@ -656,36 +689,30 @@ def test_repro_p1_index_scrutinee() -> None:
     _assert_one_guard(_P1)
 
 
-@_RED_FIRST
 def test_repro_p2_slot_scrutinee() -> None:
     _assert_one_guard(_P2)
 
 
-@_RED_FIRST
 def test_repro_p3_call_scrutinee() -> None:
     _assert_one_guard(_P3)
 
 
-@_RED_FIRST
 def test_repro_p4_rebound_composite_pattern() -> None:
     """A binder declared `Tuple<Int, Nat>` over a `Tuple<Int, Int>` field
     walks the bound value (kills the binder rule reverted)."""
     _assert_one_guard(_P4)
 
 
-@_RED_FIRST
 def test_repro_p5_option_unwrap_or() -> None:
     _assert_one_guard(_P5)
 
 
-@_RED_FIRST
 def test_repro_p6_let_option_coercion() -> None:
     """A slot reference under a composite target: the opaque walk (kills
     the rule applied to constructions alone)."""
     _assert_one_guard(_P6)
 
 
-@_RED_FIRST
 def test_repro_p7_call_argument_option() -> None:
     """An `Option<Int>` argument at an `Option<Nat>` formal: the opaque walk
     at the argument (kills the rule applied to constructions alone)."""
@@ -730,7 +757,43 @@ private fn none_or(@Int -> @Option<Int>)
 """
 
 
-@_RED_FIRST
+_MIXED_BOUNDARY = """\
+private fn g(@Tuple<Nat, Option<Nat>> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Tuple<Nat, Option<Nat>>.0 {
+    Tuple(@Nat, @Option<Nat>) -> nat_to_int(@Nat.0) + nat_to_int(option_unwrap_or(@Option<Nat>.0, 0))
+  }
+}
+
+public fn f(@Int, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Tuple<Int, Option<Int>> = Tuple(@Int.1, Some(@Int.0));
+  g(@Tuple<Int, Option<Int>>.0)
+}
+"""
+
+
+def test_repro_a_boundary_defers_only_its_own_positions() -> None:
+    """`g`'s entry checks the tuple's `Nat` component (#746) and nothing
+    inside the `Option`: the call site walks the `Option` alone, so a
+    negative first component traps at the boundary, a negative payload at
+    the walk, and one W004 names the coercion."""
+    _assert_one_guard_count(_MIXED_BOUNDARY, 1)
+    compiled = _compiled(_MIXED_BOUNDARY)
+    _assert_traps(pipeline.run(compiled.result, "f", [-5, 1],
+                               capture_stderr=False), _BOUNDARY_TRAP)
+    _assert_traps(pipeline.run(compiled.result, "f", [1, -5],
+                               capture_stderr=False))
+    _assert_returns(pipeline.run(compiled.result, "f", [2, 3],
+                                 capture_stderr=False), 5)
+
+
 def test_repro_the_walk_reads_every_array_element() -> None:
     """The negative is the third element of an opaque `Array<Int>` coerced
     to `Array<Nat>`: a walk that skips the elements, or reads one, lets it
@@ -740,7 +803,6 @@ def test_repro_the_walk_reads_every_array_element() -> None:
     _assert_returns(_ran(_ARRAY_LATE, "f", 5), 1)
 
 
-@_RED_FIRST
 def test_repro_the_walk_passes_none_and_err() -> None:
     """`None` and an `Err` hold no `Nat` component: at 5 both coercions see
     their empty side and the run returns 3 + 4 (kills the walk trapping on

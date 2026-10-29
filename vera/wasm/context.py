@@ -66,6 +66,7 @@ from vera.wasm.calls_math import CallsMathMixin
 from vera.wasm.calls_parsing import CallsParsingMixin
 from vera.wasm.calls_strings import CallsStringsMixin
 from vera.wasm.closures import ClosuresMixin
+from vera.wasm.coercion import CoercionMixin
 from vera.wasm.data import DataMixin
 
 
@@ -99,6 +100,7 @@ class WasmContext(
     CallsParsingMixin,
     CallsStringsMixin,
     ClosuresMixin,
+    CoercionMixin,
     DataMixin,
 ):
     """Generates WAT instructions for a single function body.
@@ -420,6 +422,16 @@ class WasmContext(
         # #747: per-parameter concrete-@Nat flags per function, for the
         # runtime @Int -> @Nat narrowing guard at call sites.
         self._fn_nat_params: dict[str, tuple[bool, ...]] = {}
+        # #1542 (#1695's line): per function, per parameter, the tuple
+        # positions its boundary guard checks (#746), which a composite
+        # coercion into that formal defers to; and the CodeGenerator's
+        # reading of the same decomposition for a closure type's formal and a
+        # declared return (`vera.wasm.coercion`).
+        self._fn_boundary_coercion_paths: dict[
+            str, tuple[frozenset[tuple[int, ...]], ...]] = {}
+        self._boundary_coercion_paths: Callable[
+            [ast.TypeExpr, int | None], frozenset[tuple[int, ...]]] | None = None
+        self._init_component_coercion()
         # #754: `(effect_name, op_name)` -> per-formal base type name, so an
         # effect-operation call site can guard its arguments the way a
         # function call site guards its own.  Seeded empty; codegen calls
@@ -661,6 +673,19 @@ class WasmContext(
         """Set per-parameter concrete-@Nat flags for the call-site
         runtime narrowing guard (#747)."""
         self._fn_nat_params = nat_params
+
+    def set_boundary_coercion_paths(
+        self,
+        per_fn: dict[str, tuple[frozenset[tuple[int, ...]], ...]],
+        oracle: Callable[[ast.TypeExpr, int | None],
+                         frozenset[tuple[int, ...]]],
+    ) -> None:
+        """Set the tuple positions each function boundary's guard checks
+        (#746), by function and parameter, and the oracle reading the same
+        decomposition for any boundary type, which a composite coercion
+        defers to (#1542)."""
+        self._fn_boundary_coercion_paths = per_fn
+        self._boundary_coercion_paths = oracle
 
     def set_effect_op_params(
         self, op_params: dict[tuple[str, str], tuple[str | None, ...]],
@@ -971,9 +996,22 @@ class WasmContext(
         Returns a list of WAT instruction strings, or None if the
         expression contains unsupported constructs (function skipped).
         """
-        instructions = self._translate_expr_unscoped(expr, env)
+        # #1542 (#1695's line): the composite-coercion rule
+        # (`vera.wasm.coercion`) hands a construction's or a join's
+        # components down before they are translated, and walks an opaque
+        # value after.
+        walk = self._coercion_enter(expr)
+        try:
+            instructions = self._translate_expr_unscoped(expr, env)
+        except BaseException:
+            self._coercion_leave(expr, translated=False)
+            raise
+        self._coercion_leave(expr, translated=instructions is not None)
         if instructions is None:
             return None
+        if walk is not None:
+            instructions = self._walk_coerced_value(
+                expr, instructions, walk)
         return self._scope_shadow_roots(expr, instructions)
 
     def _scope_shadow_roots(

@@ -788,6 +788,37 @@ class ContractsMixin:
                     _depth + 1, _at=at, _path=path))
         return instrs
 
+    def _boundary_coercion_paths(
+        self, te: ast.TypeExpr, index: int | None,
+    ) -> frozenset[tuple[int, ...]]:
+        """The tuple positions a function boundary's component guard checks
+        for a value of type *te*, or, with *index*, for parameter *index* of
+        the function type *te* names (a closure's, which every closure of
+        the type guards at its own entry), as paths of component indices.
+
+        Read off the one decomposition the guard is emitted from
+        (:meth:`_tuple_component_guard_sites`), so a composite coercion into
+        the boundary (#1542, `vera.wasm.coercion`) defers to that guard
+        rather than doubling it, and the two cannot disagree about which
+        components the boundary checks.
+        """
+        if index is not None:
+            fn_te = self._resolve_type_alias(te)
+            if not isinstance(fn_te, ast.FnType) or index >= len(fn_te.params):
+                return frozenset()
+            te = fn_te.params[index]
+        return frozenset(self._guarded_component_paths(te, (), 0))
+
+    def _guarded_component_paths(
+        self, te: ast.TypeExpr, prefix: tuple[int, ...], depth: int,
+    ) -> Iterator[tuple[int, ...]]:
+        for site in self._tuple_component_guard_sites(te, depth):
+            if site.nested is not None:
+                yield from self._guarded_component_paths(
+                    site.nested, prefix + (site.index,), depth + 1)
+            elif site.guard is not None:
+                yield prefix + (site.index,)
+
     def _has_guardable_tuple_components(
         self, te: ast.TypeExpr, _depth: int = 0,
     ) -> bool:

@@ -880,6 +880,16 @@ def without_paths(tree: Coercion | None,
     return Coercion(tree.source, tree.target, tree.kind, tuple(parts))
 
 
+def holds_no_component(expr: ast.Expr) -> bool:
+    """True iff *expr* builds a value with no component at all: a nullary
+    constructor, an empty array literal, an empty map or set.  Such a value
+    conforms to any requirement of its shape, whatever type it was given."""
+    return (isinstance(expr, ast.NullaryConstructor)
+            or (isinstance(expr, ast.ArrayLit) and not expr.elements)
+            or (isinstance(expr, ast.FnCall)
+                and expr.name in ("map_new", "set_new") and not expr.args))
+
+
 def component_coercion(
     sources: tuple[ComponentSource, ...],
     index: int,
@@ -889,6 +899,7 @@ def component_coercion(
     type_of: Callable[[ast.Expr], "Type | None"],
     field_types: Callable[[str, "Type | None"], "tuple[Type, ...] | None"],
     constructors_of: Callable[[str], tuple[str, ...]],
+    narrows: Callable[[ast.Expr], bool],
 ) -> tuple[Coercion, ...]:
     """What binding the component *sources* supply into a binder declared
     *declared* must walk: the differing tree (:func:`differing_tree`) from
@@ -897,15 +908,19 @@ def component_coercion(
     :func:`component_narrows` decides).
 
     The generalisation of :func:`component_narrows` from "is it a `@Nat`
-    narrowing" to the composite question, over the same sources: an
-    argument source is the value itself, at its *effective_type* (the type
-    the checker checked it against, else its own: a construction the
-    checker typed at the binder's component is guarded where it is built,
-    and contributes nothing here); an opaque source is a composite whose
-    component the declaration types (:func:`declared_component_type`)."""
+    narrowing" to the composite question, over the same sources.  An opaque
+    source is a composite whose component the declaration types
+    (:func:`declared_component_type`).  An argument source is the value
+    itself, read the way it is built (:func:`_source_differs`): it counts
+    only where it holds a component of the tree that nothing guards where it
+    is built, at its *effective_type* (the type the checker checked it
+    against, else its own)."""
     out: list[Coercion] = []
     for source in sources:
         if source.is_argument:
+            if not _source_differs(source.expr, declared, effective_type,
+                                   field_types, constructors_of, narrows):
+                continue
             ty = effective_type(source.expr)
         else:
             ty = declared_component_type(
@@ -918,12 +933,74 @@ def component_coercion(
     return tuple(out)
 
 
+def _source_differs(
+    expr: ast.Expr,
+    required: "Type",
+    effective_type: Callable[[ast.Expr], "Type | None"],
+    field_types: Callable[[str, "Type | None"], "tuple[Type, ...] | None"],
+    constructors_of: Callable[[str], tuple[str, ...]],
+    narrows: Callable[[ast.Expr], bool],
+) -> bool:
+    """Whether the value *expr* builds can hold an `Int` where *required*
+    holds a `Nat`: its differing tree at its *effective_type*, read through
+    the joins (:func:`value_leaves`) and the constructions it is built of,
+    down to what each position actually holds.  A value that holds nothing
+    (:func:`holds_no_component`) never differs; a scalar at a `Nat` position
+    differs where it narrows (*narrows*); a construction, where one of its
+    children differs at its component; anything else, where its tree has a
+    position at all."""
+    if holds_no_component(expr):
+        return False
+    ty = effective_type(expr)
+    if ty is None:
+        return False
+    tree = differing_tree(ty, required, field_types, constructors_of)
+    if tree is None:
+        return False
+    if tree.kind == "nat":
+        return narrows(expr)
+
+    def child(sub: ast.Expr, target: "Type") -> bool:
+        return _source_differs(sub, target, effective_type, field_types,
+                               constructors_of, narrows)
+
+    if flow_arms(expr) is not None:
+        return any(child(leaf, required) for leaf in value_leaves(expr))
+    if isinstance(expr, ast.ConstructorCall):
+        name = _short_ctor(expr.name)
+        return any(
+            child(expr.args[i], part.target)
+            for ctor, i, part in tree.parts
+            if _short_ctor(ctor) == name and i < len(expr.args))
+    if isinstance(expr, ast.ArrayLit):
+        return any(child(element, part.target)
+                   for _c, _i, part in tree.parts
+                   for element in expr.elements)
+    if isinstance(expr, ast.FnCall) and expr.name in ("map_insert", "set_add"):
+        if child(expr.args[0], required):
+            return True
+        positions = (
+            {"key": 1, "value": 2} if expr.name == "map_insert" else {"": 1})
+        return any(
+            child(expr.args[positions[label]], part.target)
+            for label, _i, part in tree.parts
+            if label in positions and positions[label] < len(expr.args))
+    return True
+
+
+def _short_ctor(name: str) -> str:
+    """A constructor's own name, whichever spelling carries it: the source
+    name (`W`), its link name (`Wrap$W`) or a qualified one."""
+    return name.rsplit("$", 1)[-1].rsplit(".", 1)[-1]
+
+
 def value_coercion(
     value: ast.Expr,
     declared: "Type",
     effective_type: Callable[[ast.Expr], "Type | None"],
     field_types: Callable[[str, "Type | None"], "tuple[Type, ...] | None"],
     constructors_of: Callable[[str], tuple[str, ...]],
+    narrows: Callable[[ast.Expr], bool],
 ) -> tuple[Coercion, ...]:
     """:func:`component_coercion` for a binder that binds *value* whole (a
     top-level binding pattern of a `match`): the sources are the value's
@@ -932,4 +1009,4 @@ def value_coercion(
         tuple(ComponentSource(leaf, is_argument=True)
               for leaf in value_leaves(value)),
         0, "", declared, effective_type, effective_type, field_types,
-        constructors_of)
+        constructors_of, narrows)

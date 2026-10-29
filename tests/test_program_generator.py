@@ -2264,7 +2264,8 @@ def test_the_held_refinement_class_reads_its_mechanism(member: str) -> None:
 
 
 def test_the_distrust_differential_reports_a_refuted_proof() -> None:
-    """#1695's composite coercion: proved, and refuted by its one run.  The
+    """The function-type coercion on #1695's line: proved, and refuted by its
+    one run.  The
     neighbour binds the call and compares the binding with itself, true of
     whatever value it holds, and its proof holds."""
     finds = distrust_finds(_FALSE_PROOF)

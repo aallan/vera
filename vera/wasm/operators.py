@@ -2007,9 +2007,14 @@ class OperatorsMixin:
         instantiated at `Nat` (its own arguments are checked at its own
         call).
         """
-        if self._instantiated_at_nat(arg) and self._narrows_into_nat(arg):
+        if self._instantiated_arg_narrows(arg):
             return self._emit_nat_bind_guard(instrs, at=arg)
         return instrs
+
+    def _instantiated_arg_narrows(self, arg: ast.Expr) -> bool:
+        """Whether :py:meth:`_guard_nat_instantiated_arg` guards *arg*: the
+        in-place decision a store beside it defers to (#1542)."""
+        return self._instantiated_at_nat(arg) and self._narrows_into_nat(arg)
 
     def _collect_narrowing_return_leaves(self, body: ast.Expr) -> set[int]:
         """The ``id()`` of every tail-position return leaf that narrows into a

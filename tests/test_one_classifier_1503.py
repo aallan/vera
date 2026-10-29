@@ -261,22 +261,17 @@ def _program(position: str, value: str, target: str) -> str:
 _MATRIX = [(p, v) for p in _POSITIONS for v in _LITERAL_ARITHMETIC]
 _MATRIX_IDS = [f"{p} / {v}" for p, v in _MATRIX]
 
-#: The cells whose -3 no rule refuses: the literal's `Array<Wrap<Int>>` is
-#: admitted at the `let`'s `Array<Wrap<Nat>>` with no record and no guard,
-#: #1695's composite coercion (its #1542 line).  At f1bc772d only this index
-#: scrutinee trapped, by an accidental guard: code generation's walker named
-#: the element `Wrap`, with no argument, and the sub-pattern bind was guarded
-#: for want of the field's type; slot, call and `let` scrutinees of the same
-#: value were already silent.  Read off the typed program the element is
-#: `Wrap<Nat>`, whose field is a `Nat`, and the bind takes no guard.
+#: The cells whose -3 the composite-coercion rule refuses: the literal's
+#: `Array<Wrap<Int>>` is admitted at the `let`'s `Array<Wrap<Nat>>` with no
+#: record (#1695's composite coercion, its #1542 line), and code generation
+#: guards it by rule (`vera/wasm/coercion.py`): the descent from the
+#: literal's target hands the element `Wrap<Nat>`, and the field its `Nat`,
+#: which is guarded where it is stored.  Read off the typed program the
+#: element is `Wrap<Nat>`, whose field is a `Nat`, so the sub-pattern bind
+#: takes no guard of its own.
 _COMPOSITE_COERCION = frozenset({"nested, ADT in array"})
-_REFUSED_MATRIX = [
-    pytest.param(p, v, id=f"{p} / {v}", marks=pytest.mark.xfail(
-        strict=True, reason="#1695 (#1542): the composite coercion is "
-        "obligated and guarded nowhere"))
-    if p in _COMPOSITE_COERCION else pytest.param(p, v, id=f"{p} / {v}")
-    for p, v in _MATRIX
-]
+_COERCION_EMITTER = "wasm/coercion.py:_emit_component_coercion"
+_REFUSED_MATRIX = [pytest.param(p, v, id=f"{p} / {v}") for p, v in _MATRIX]
 _DIRECT_MATRIX = [(p, v) for p, v in _MATRIX if p not in _NESTED]
 _DIRECT_IDS = [f"{p} / {v}" for p, v in _DIRECT_MATRIX]
 
@@ -367,6 +362,11 @@ class TestNegativeLiteralArithmeticIsRefusedByANatBinding:
         assert _NAT_GUARD in observed.run, (
             f"`vera run` bound -3 at `@Nat`: {observed.run}"
         )
+        if position in _COMPOSITE_COERCION:
+            # Guarded by rule (#1542): the store guard the composite-coercion
+            # rule places, and no accidental one.
+            assert any(c[0] == _COERCION_EMITTER for c in observed.checks), (
+                observed.checks)
 
     @pytest.mark.parametrize(("position", "value"), _DIRECT_MATRIX,
                              ids=_DIRECT_IDS)

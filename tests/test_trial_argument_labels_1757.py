@@ -76,13 +76,15 @@ public fn f({params} -> @Int)
 }}
 """
 
-#: #1695's composite coercion, which the verifier proves and every run
-#: refutes (E703): an `Option<Int>` holding -7 bound into an `@Option<Nat>`
-#: is obligated nowhere, so `mo`'s `@Nat` result is -7 and `mo(7) >= 0`,
-#: proved from its type, runs false; `{premise}` is a statement at the head
-#: of the body.  It replaced #1555's address comparison, which the typed
-#: program fixed (#1525); when #1695 lands, the refutation cells and the
-#: premise repro need another refuted proof.
+#: The function-type coercion on #1695's line, which the verifier proves and
+#: every run refutes (E703): a closure returning -7 passed at a
+#: `fn(Int -> Nat)` formal is obligated nowhere and walked by no guard, so
+#: `mo`'s `@Nat` result is -7 and `mo(7) >= 0`, proved from its type, runs
+#: false; `{premise}` is a statement at the head of the body.  It replaced
+#: the composite coercion of an `Option<Int>` into an `@Option<Nat>` when
+#: that was guarded (#1542), which had replaced #1555's address comparison
+#: (#1525); when #1695 records the function-type coercion, the refutation
+#: cells and the premise repro need another refuted proof.
 _REFUTED = """\
 type Cnt = Nat;
 
@@ -94,17 +96,24 @@ public fn f({params} -> @Int)
 {premise}  if mo(7) >= 0 then {{ 0 - 1 }} else {{ 1 }}
 }}
 
+type IntToNat = fn(Int -> Nat) effects(pure);
+type IntToInt = fn(Int -> Int) effects(pure);
+
+private fn apply_nat(@IntToNat, @Int -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  apply_fn(@IntToNat.0, @Int.0)
+}}
+
 private fn mo(@Int -> @Nat)
   requires(true)
   ensures(true)
   effects(pure)
 {{
-  let @Option<Int> = Some(-7);
-  let @Option<Nat> = @Option<Int>.0;
-  match @Option<Nat>.0 {{
-    Some(@Nat) -> @Nat.0,
-    None -> 0
-  }}
+  let @IntToInt = fn(@Int -> @Int) effects(pure) {{ -7 }};
+  apply_nat(@IntToInt.0, @Int.0)
 }}
 """
 

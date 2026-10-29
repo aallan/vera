@@ -2062,6 +2062,11 @@ class CallsHandlersMixin:
             return []
         if not isinstance(te, ast.TypeExpr):
             return []
+        # #1542: a binder declared narrower than the composite payload the
+        # operation declares walks it (`vera.wasm.coercion`), bar the one
+        # exclusion, a container payload.
+        walk = self._emit_binder_coercions(
+            self._clause_coercions(payload_te, te), value_local, at=node)
         # NARROWER, asked through the ONE derivation the verifier's
         # obligation also calls: `narrows_into_refinement` over the conjoined
         # chains, with this side's oracle — the source's type expressions and
@@ -2074,8 +2079,8 @@ class CallsHandlersMixin:
         if payload_te is not None and not narrowing.narrows_into_refinement(
                 naming.refined_type_expr_chain(payload_te, self._alias_env),
                 naming.refined_type_expr_chain(te, self._alias_env)):
-            return []
-        guard: list[str] = []
+            return walk
+        guard: list[str] = list(walk)
         base = self._resolve_base_type_name(
             self._type_expr_to_slot_name(te) or "")
         if base == "Nat" and family_base != "Nat":

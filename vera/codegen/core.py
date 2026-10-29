@@ -507,6 +507,14 @@ class CodeGenerator(
         # closure body (merged from each WasmContext) and emitted once at
         # module assembly.
         self._adt_eq_helpers: dict[str, str] = {}
+        # #1542 (#1695's line): the generated composite-coercion walk helpers
+        # (`$coerce_<digest>`, vera/wasm/coercion.py), merged from each
+        # WasmContext and emitted once at module assembly like the above; and
+        # per function, per parameter, the tuple positions its boundary guard
+        # checks (#746), which a coercion into that formal defers to.
+        self._coercion_helpers: dict[str, str] = {}
+        self._fn_boundary_coercion_paths: dict[
+            str, tuple[frozenset[tuple[int, ...]], ...]] = {}
         # #924: generated recursive show/hash helper functions ($show_<type> /
         # $hash_<type>), merged from each WasmContext and emitted once at
         # module assembly — the same propagate-then-emit shape as _adt_eq_helpers.

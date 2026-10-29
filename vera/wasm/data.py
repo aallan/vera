@@ -8,7 +8,7 @@ from collections.abc import Callable
 
 from vera import ast, naming, narrowing
 from vera.skip import CodegenSkip
-from vera.types import AdtType, base_type, contains_typevar, value_type_name
+from vera.types import AdtType, Type, base_type, contains_typevar, value_type_name
 from vera.wasm.helpers import (
     WasmSlotEnv,
     bind_slot_value_from_field,
@@ -265,11 +265,13 @@ class DataMixin:
         sign site uses.
         """
         base = getattr(component_ty, "base", component_ty)
-        if getattr(base, "name", None) != "Nat":
-            return value
-        if not self._narrows_into_nat(arg):
-            return value
-        return self._emit_nat_bind_guard(value, at=arg)
+        in_place = (getattr(base, "name", None) == "Nat"
+                    and self._narrows_into_nat(arg))
+        if in_place:
+            value = self._emit_nat_bind_guard(value, at=arg)
+        # #1542: a component a composite coercion made a `Nat`, where the
+        # decision above placed no guard (`vera.wasm.coercion`).
+        return self._coercion_leaf_guard(arg, value, in_place=in_place)
 
     def _refined_slot_wasm_type(self, te: ast.TypeExpr) -> str | None:
         """The WASM REPRESENTATION of a refined slot's value, or None when no
@@ -562,12 +564,18 @@ class DataMixin:
                 # #1416: the built-in variadic `Tuple` carrier has no
                 # per-field metadata, so its narrowing component reads its
                 # target from the checker's table (#820).
-                if (((i < len(layout.nat_fields) and layout.nat_fields[i])
-                        or mono_base == "Nat"
-                        or self._adt_arg_is_nat(tuple_target, i))
-                        and self._narrows_into_nat(expr.args[i])):
+                in_place = (
+                    ((i < len(layout.nat_fields) and layout.nat_fields[i])
+                     or mono_base == "Nat"
+                     or self._adt_arg_is_nat(tuple_target, i))
+                    and self._narrows_into_nat(expr.args[i]))
+                if in_place:
                     field_val = self._emit_nat_bind_guard(
                         field_val, at=expr.args[i])
+                # #1542: a component a composite coercion made a `Nat`, where
+                # the decision above placed no guard (`vera.wasm.coercion`).
+                field_val = self._coercion_leaf_guard(
+                    expr.args[i], field_val, in_place=in_place)
                 # #1426: and the §2.6.5 PREDICATE beside the sign guard.  A
                 # refined component was obligated at this store and checked
                 # by nobody, so a value its own component type forbids went
@@ -667,6 +675,11 @@ class DataMixin:
                 # ``wt == "i32"`` non-inline branch).
                 self.needs_alloc = True
                 instrs.extend(gc_shadow_push(ptr_local))
+                # #1542: a component declared narrower than the composite it
+                # binds is walked (`vera.wasm.coercion`).
+                instrs.extend(self._emit_binder_coercions(
+                    self._destructure_coercions(stmt, idx, declared),
+                    ptr_local, at=te))
                 # #765: refined pair-typed destructure component, guarded
                 # over the pointer half (see the sub-pattern twin).
                 instrs.extend(self._emit_bind_refine_guard(
@@ -698,6 +711,11 @@ class DataMixin:
                 load = self._emit_nat_bind_guard(load, at=te)
             instrs.extend(load)
             instrs.append(f"local.set {local_idx}")
+            # #1542: the composite twin of the guard above
+            # (`vera.wasm.coercion`).
+            instrs.extend(self._emit_binder_coercions(
+                self._destructure_coercions(stmt, idx, declared),
+                local_idx, at=te))
             # #765: the refined twin of the `@Nat` sign guard above — a
             # `let Tuple<@Pos, @Int> = …` component narrows into a refined
             # slot with nothing between it and the rest of the block.
@@ -1181,6 +1199,11 @@ class DataMixin:
                 # in ``_translate_match`` is not: this local receives the
                 # scrutinee's address verbatim, and the shadow stack roots
                 # addresses.  See the note there.
+                # #1542: a binder declared narrower than the composite value
+                # it binds walks it (`vera.wasm.coercion`).
+                instrs.extend(self._emit_binder_coercions(
+                    self._scrutinee_coercions(scrutinee, declared),
+                    ptr_local, at=pattern))
                 # #765: refined pair scrutinee bind, guarded over the pointer.
                 instrs.extend(self._emit_bind_refine_guard(
                     pattern.type_expr, ptr_local, "match binding pattern",
@@ -1204,6 +1227,11 @@ class DataMixin:
             instrs = [
                 *bind_val,
                 f"local.set {local_idx}",
+                # #1542: the composite twin of the guard above
+                # (`vera.wasm.coercion`).
+                *self._emit_binder_coercions(
+                    self._scrutinee_coercions(scrutinee, declared),
+                    local_idx, at=pattern),
             ]
             # #765: the refined twin of the sign guard above — a top-level
             # `match x { @Pos -> … }` narrows the scrutinee into a refined
@@ -1320,6 +1348,12 @@ class DataMixin:
                     # rooting needed.
                     self.needs_alloc = True
                     instrs.extend(gc_shadow_push(ptr_local))
+                    # #1542: a binder declared narrower than the composite
+                    # field it binds walks it (`vera.wasm.coercion`).
+                    instrs.extend(self._emit_binder_coercions(
+                        self._sub_pattern_coercions(
+                            sources, i, pattern.name, declared),
+                        ptr_local, at=sub_pat))
                     # #765: a pair-typed field (String, Array<T>) narrowed
                     # into a refined slot — guarded over the POINTER half,
                     # the same representation the refined String / Array
@@ -1356,6 +1390,13 @@ class DataMixin:
                     load = self._emit_nat_bind_guard(load, at=sub_pat)
                 instrs.extend(load)
                 instrs.append(f"local.set {local_idx}")
+                # #1542: and the composite twin of that guard, a binder
+                # declared narrower than the composite field it binds
+                # (`vera.wasm.coercion`).
+                instrs.extend(self._emit_binder_coercions(
+                    self._sub_pattern_coercions(
+                        sources, i, pattern.name, declared),
+                    local_idx, at=sub_pat))
                 # #765: the refined twin of the sign guard above — a
                 # `MkBox(@Pos)` sub-pattern, at ANY nesting depth (this method
                 # recurses), narrows the field into a refined slot with no
@@ -1662,18 +1703,7 @@ class DataMixin:
         typed = self._typed_program
         if typed is None:
             return True
-        tuple_shape = stmt.constructor == "Tuple"
-        ctor_name: str | None = "Tuple" if tuple_shape else None
-        if ctor_name is None:
-            source = self._type_of(stmt.value)
-            base = base_type(source) if source is not None else None
-            names: tuple[str, ...] = (
-                typed.constructors_of(base.name)
-                if isinstance(base, AdtType) else ())
-            if len(names) == 1:
-                ctor_name = names[0]
-        sources = narrowing.component_sources(
-            stmt.value, index, lambda name: (name == "Tuple") == tuple_shape)
+        sources, ctor_name = self._destructure_sources(stmt, index)
         if ctor_name is None:
             return True
 
@@ -1686,6 +1716,49 @@ class DataMixin:
 
         return narrowing.component_narrows(
             sources, index, self._narrows_into_nat, leaf_is_nat)
+
+    def _destructure_coercions(
+        self, stmt: ast.LetDestruct, index: int, declared: object,
+    ) -> tuple[narrowing.Coercion, ...]:
+        """The composite twin of :py:meth:`_destructure_narrows` (#1542):
+        what binding component *index* at the binding's *declared* type
+        walks, over the same sources."""
+        sources, ctor_name = self._destructure_sources(stmt, index)
+        if ctor_name is None or not isinstance(declared, Type):
+            return ()
+        return self._binder_coercions(sources, index, ctor_name, declared)
+
+    def _sub_pattern_coercions(
+        self, sources: ComponentSources | None, index: int, ctor_name: str,
+        declared: object,
+    ) -> tuple[narrowing.Coercion, ...]:
+        """The composite twin of :py:meth:`_component_narrows` (#1542)."""
+        if sources is None or not isinstance(declared, Type):
+            return ()
+        return self._binder_coercions(
+            sources(index), index, ctor_name, declared)
+
+    def _destructure_sources(
+        self, stmt: ast.LetDestruct, index: int,
+    ) -> tuple[tuple[narrowing.ComponentSource, ...], str | None]:
+        """The sources of component *index* of the destructure *stmt*, and
+        the constructor whose fields type an opaque one (the source type's
+        only constructor, or `Tuple`; ``None`` when there is none)."""
+        typed = self._typed_program
+        assert typed is not None  # noqa: S101
+        tuple_shape = stmt.constructor == "Tuple"
+        ctor_name: str | None = "Tuple" if tuple_shape else None
+        if ctor_name is None:
+            source = self._type_of(stmt.value)
+            base = base_type(source) if source is not None else None
+            names: tuple[str, ...] = (
+                typed.constructors_of(base.name)
+                if isinstance(base, AdtType) else ())
+            if len(names) == 1:
+                ctor_name = names[0]
+        sources = narrowing.component_sources(
+            stmt.value, index, lambda name: (name == "Tuple") == tuple_shape)
+        return sources, ctor_name
 
     def _resolve_nested_scrutinee_type(
         self,

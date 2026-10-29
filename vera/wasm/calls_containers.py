@@ -572,8 +572,12 @@ class CallsContainersMixin:
                 arg_instrs = self._emit_construction_nat_guard(
                     arg_instrs, arg, value_component)
             else:
-                # The key is `K`'s argument: checked where `K` is `Nat`.
+                # The key is `K`'s argument: checked where `K` is `Nat`, and
+                # (#1542) where a composite coercion makes it a `Nat`.
+                in_place = self._instantiated_arg_narrows(arg)
                 arg_instrs = self._guard_nat_instantiated_arg(arg, arg_instrs)
+                arg_instrs = self._coercion_leaf_guard(
+                    arg, arg_instrs, in_place=in_place)
             ins.extend(arg_instrs)
         ins.append(f"call {wasm_name}")
         return ins
@@ -822,8 +826,12 @@ class CallsContainersMixin:
             arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
                 return None
-            # The element is `T`'s argument: checked where `T` is `Nat`.
-            ins.extend(self._guard_nat_instantiated_arg(arg, arg_instrs))
+            # The element is `T`'s argument: checked where `T` is `Nat`, and
+            # (#1542) where a composite coercion makes it a `Nat`.
+            in_place = self._instantiated_arg_narrows(arg)
+            arg_instrs = self._guard_nat_instantiated_arg(arg, arg_instrs)
+            ins.extend(self._coercion_leaf_guard(
+                arg, arg_instrs, in_place=in_place))
         ins.append(f"call {wasm_name}")
         return ins
 

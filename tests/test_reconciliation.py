@@ -324,6 +324,10 @@ _REPRO_KNOWN: tuple[tuple[int, str, str, str, int, int], ...] = (
     (1695, "1530", "recorded_unguarded", "decreases", 4, 3),
     (1695, "1582", "recorded_unguarded", "int_overflow", 6, 23),
     (1695, "1608", "guarded_unrecorded", "nat_bind", 14, 32),
+    # The `Some` payload inside the tuple literal is a composite coercion
+    # (#1542's shape): guarded by its rule, recorded by no reader until
+    # #1695's obligation table gives it a row.
+    (1695, "1613", "guarded_unrecorded", "component_coercion", 6, 45),
 )
 
 
@@ -375,7 +379,8 @@ def test_repro_mismatch_is_fixed(
 
 @pytest.mark.xfail(
     strict=True, raises=AssertionError,
-    reason="#1613: the `Some` payload has neither a record nor a guard")
+    reason="#1613: the `Some` payload is guarded (the composite-coercion "
+           "rule) and has no record")
 def test_1613_payload_is_obligated_and_guarded(repro_dir: Path) -> None:
     """#1613's two sides are silent TOGETHER, so the join has nothing to
     disagree about; its pin is the pair the fix must produce — a `nat_bind`
@@ -416,9 +421,13 @@ def test_a_guard_with_no_record_is_guarded_unrecorded(repro_dir: Path) -> None:
 def test_every_obligation_kind_but_state_decl_has_an_emitter() -> None:
     """The kind map is read off the trap registry: every kind but the one
     with no guard concept is some emitter's runtime half, so no kind's
-    records fall through to `no_mapping` today."""
+    records fall through to `no_mapping` today.  One emitter kind answers
+    no obligation kind: `component_coercion`, the guard of a composite
+    coercion (#1542's shape), whose checks are W004 until #1695's
+    obligation table records the coercion."""
     assert EXCLUDED_KINDS == frozenset({"state_decl"})
-    assert set(EMITTERS_BY_KIND) == set(OBLIGATION_KINDS) - EXCLUDED_KINDS
+    assert set(EMITTERS_BY_KIND) == (
+        set(OBLIGATION_KINDS) - EXCLUDED_KINDS) | {"component_coercion"}
     assert not EXCLUDED_KINDS & set(EMITTERS_BY_KIND)
 
 
