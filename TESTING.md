@@ -1342,6 +1342,19 @@ the edit, and the edit actually moves what the slow path reports.  A cell
 that asserts a LITERAL status instead goes green for a compiler that has
 stopped working.
 
+`tests/test_composite_coercion_guards.py` is this shape for a rule code
+generation applies off the typed program (#1542's shape, #1695's line): every
+position the checker records a target type at (nineteen, the pattern binders
+among them, each at its nesting depth) crossed with fourteen composite shapes,
+two forms (built in place, or opaque behind a slot) and three inputs, each
+cell asserting the run (a negative component traps with the narrowing guard's
+message, an allowed one runs to its value, an empty value passes the walk) and
+the record (exactly one narrowing guard per coercion, one W004 per guard the
+rule adds).  Its negative space is the three guards the rule defers to: a leaf
+the checker typed at `Nat` in place, #1606's construction hand-down and a
+function boundary's tuple-component guard (#746), each keeping the one guard
+it had.
+
 ### The verdict-signature diff
 
 When a change moves *where* a decision is made rather than what it decides —
