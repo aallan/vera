@@ -20,11 +20,12 @@ is about.  So the oracle is a parameter and the rule is not.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from vera import ast, binders
+from vera.types import INT, NAT, AdtType, RefinedType, base_type
 
 if TYPE_CHECKING:
     from vera.types import Type
@@ -589,6 +590,25 @@ def declared_component_is_nat(
     ``path``, each step the field's type at the type reached so far
     (*field_types*, ``TypedProgram.field_types_at``).  ``None`` where the
     declaration does not say: no constructor, no such field."""
+    ty = declared_component_type(leaf, index, ctor_name, type_of, field_types)
+    return None if ty is None else is_nat(ty)
+
+
+def declared_component_type(
+    leaf: ComponentSource,
+    index: int,
+    ctor_name: str,
+    type_of: Callable[[ast.Expr], "Type | None"],
+    field_types: Callable[[str, "Type | None"], "tuple[Type, ...] | None"],
+) -> "Type | None":
+    """The DECLARED type of component *index* of an opaque composite (a
+    slot, a call), the walk :func:`declared_component_is_nat` asks the scalar
+    question of and :func:`component_coercion` the composite one:
+    *ctor_name*'s field *index* at the checker's type of the leaf
+    (*type_of*) followed down its ``path``, each step the field's type at the
+    type reached so far (*field_types*, ``TypedProgram.field_types_at``).
+    ``None`` where the declaration does not say: no constructor, no such
+    field."""
     ty = type_of(leaf.expr)
     for step_ctor, step in leaf.path:
         fields = field_types(step_ctor, ty)
@@ -598,7 +618,7 @@ def declared_component_is_nat(
     fields = field_types(ctor_name, ty)
     if fields is None or index >= len(fields):
         return None
-    return is_nat(fields[index])
+    return fields[index]
 
 
 def component_narrows(
@@ -664,3 +684,252 @@ def narrows_into_nat(
     if not is_static_nat_typed(expr, fncall_ret, slot_is_nat):
         return True
     return has_underflow_leaf(expr, guarded)
+
+
+# ---------------------------------------------------------------------
+# Composite coercions: where a target holds a `Nat` its value's type does not
+# ---------------------------------------------------------------------
+
+#: The heads a handler clause binder's payload may have for the binder to be
+#: guarded by :func:`component_coercion`.  A clause binder over an `Array`,
+#: `Map` or `Set` payload is the one exclusion beside the rule: its `Nat`
+#: component already has a record (`refine_bind`, disclosed
+#: `tier3_unguarded` as E506, by #1410's walk), and a guard beside that
+#: stale disclosure would contradict it; #1695's obligation table gives the
+#: position its row and its guard together.
+CLAUSE_BINDER_UNGUARDED_HEADS = frozenset({"Array", "Map", "Set"})
+
+#: The heads whose type arguments are a value's components with no
+#: constructor between: an element of an `Array` or a `Set`, the key and the
+#: value of a `Map`, the payload of a `Future` (which is the payload itself
+#: at run time, `async` evaluating eagerly).
+_COLLECTION_HEADS = frozenset({"Array", "Set", "Map", "Future"})
+
+
+@dataclass(frozen=True)
+class Coercion:
+    """One node of a differing tree (:func:`differing_tree`): a value of
+    type ``source`` in a position of type ``target``, and the components
+    below it a runtime walk must read.
+
+    ``kind`` says what this node is: ``"nat"`` the position itself, a
+    component whose target is `Nat` where its source is `Int`;
+    ``"tuple"`` / ``"data"`` the fields of a `Tuple` / of every constructor
+    of a data type; ``"array"``, ``"set"``, ``"future"``, ``"map"`` a
+    collection's elements, payload, keys and values; ``"again"`` the same
+    (source, target) pair as an enclosing node of a recursive data type,
+    whose walk is that node's.  ``parts`` holds the children that hold a
+    position: ``(constructor, field, child)`` for a field (``"Tuple"`` for
+    a tuple's), ``("key" | "value", index, child)`` for a map, and
+    ``("", 0, child)`` for an element or a payload.
+    """
+
+    source: "Type"
+    target: "Type"
+    kind: str
+    parts: tuple[tuple[str, int, "Coercion"], ...] = ()
+
+    @property
+    def pair(self) -> tuple["Type", "Type"]:
+        return (self.source, self.target)
+
+
+def differing_tree(
+    source: "Type",
+    target: "Type",
+    field_types: Callable[[str, "Type | None"], "tuple[Type, ...] | None"],
+    constructors_of: Callable[[str], tuple[str, ...]],
+) -> Coercion | None:
+    """D(S, R): the positions where *target* holds a `Nat` and *source*, the
+    type of the value in that position, holds an `Int` — the components a
+    value of type *source* must be checked at before it may stand where a
+    *target* is required.  ``None`` when there is none.
+
+    The walk descends through a `Tuple`'s components, every constructor's
+    fields of a data type (*field_types* is ``TypedProgram.field_types_at``,
+    *constructors_of* ``TypedProgram.constructors_of``), an `Array`'s and a
+    `Set`'s elements, a `Map`'s keys and values and a `Future`'s payload.  A
+    refinement type in *target* holds no position: its predicate is the
+    refinement walk's record (#1410), not a `Nat` component.  A function
+    type holds none either: its components are produced later, by each
+    call, and no walk where the function is passed can read them.  The root
+    itself can be a position (``kind == "nat"``): that difference is a
+    scalar narrowing, which :func:`nat_narrowing` decides, and the callers
+    of this tree act on the components below it.
+
+    A recursive data type is walked to a fixpoint: an inner node with the
+    same (source, target) pair as an enclosing one is ``"again"``, and a
+    node is kept only when some `Nat` position is reachable from it.
+    """
+    raw = _differ(source, target, field_types, constructors_of, ())
+    if raw is None:
+        return None
+    live: set[tuple["Type", "Type"]] = set()
+    nodes = list(_tree_nodes(raw))
+    changed = True
+    while changed:
+        changed = False
+        for node in nodes:
+            if node.pair in live:
+                continue
+            if node.kind == "nat" or any(
+                    child.pair in live for _c, _i, child in node.parts):
+                live.add(node.pair)
+                changed = True
+    return _keep_live(raw, live)
+
+
+def _differ(
+    s: "Type",
+    r: "Type",
+    field_types: Callable[[str, "Type | None"], "tuple[Type, ...] | None"],
+    constructors_of: Callable[[str], tuple[str, ...]],
+    open_pairs: tuple[tuple["Type", "Type"], ...],
+) -> Coercion | None:
+    if isinstance(r, RefinedType):
+        return None
+    sb = base_type(s)
+    if r == NAT:
+        return Coercion(s, r, "nat") if sb == INT else None
+    if not (isinstance(r, AdtType) and isinstance(sb, AdtType)
+            and sb.name == r.name
+            and len(sb.type_args) == len(r.type_args)):
+        return None
+    if sb == r:
+        return None
+    pair = (sb, r)
+    if pair in open_pairs:
+        return Coercion(sb, r, "again")
+    inner = open_pairs + (pair,)
+
+    def child(a: "Type", b: "Type") -> Coercion | None:
+        return _differ(a, b, field_types, constructors_of, inner)
+
+    parts: list[tuple[str, int, Coercion]] = []
+    if r.name in _COLLECTION_HEADS:
+        if r.name == "Map":
+            for label, i in (("key", 0), ("value", 1)):
+                c = child(sb.type_args[i], r.type_args[i])
+                if c is not None:
+                    parts.append((label, i, c))
+        else:
+            c = child(sb.type_args[0], r.type_args[0])
+            if c is not None:
+                parts.append(("", 0, c))
+        kind = r.name.lower()
+    elif r.name == "Tuple":
+        for i, (a, b) in enumerate(zip(sb.type_args, r.type_args)):
+            c = child(a, b)
+            if c is not None:
+                parts.append(("Tuple", i, c))
+        kind = "tuple"
+    else:
+        for ctor in constructors_of(r.name):
+            fs = field_types(ctor, sb)
+            fr = field_types(ctor, r)
+            if fs is None or fr is None or len(fs) != len(fr):
+                continue
+            for i, (a, b) in enumerate(zip(fs, fr)):
+                c = child(a, b)
+                if c is not None:
+                    parts.append((ctor, i, c))
+        kind = "data"
+    if not parts:
+        return None
+    return Coercion(sb, r, kind, tuple(parts))
+
+
+def _tree_nodes(node: Coercion) -> Iterator[Coercion]:
+    yield node
+    for _c, _i, child in node.parts:
+        yield from _tree_nodes(child)
+
+
+def _keep_live(node: Coercion,
+               live: set[tuple["Type", "Type"]]) -> Coercion | None:
+    if node.pair not in live:
+        return None
+    if node.kind in ("nat", "again"):
+        return node
+    parts = tuple(
+        (c, i, kept) for c, i, child in node.parts
+        if (kept := _keep_live(child, live)) is not None)
+    return Coercion(node.source, node.target, node.kind, parts) if parts else None
+
+
+def without_paths(tree: Coercion | None,
+                  covered: frozenset[tuple[int, ...]]) -> Coercion | None:
+    """*tree* less the `Nat` positions another guard of the same coercion
+    already checks: *covered* holds them as paths of tuple-component
+    indices from the root, the only positions a function boundary's
+    component guard decomposes (#746, `_tuple_component_guard_sites`).  A
+    tuple left with no position is dropped; every other node is kept
+    whole, since no boundary guard reaches below it."""
+    if tree is None or not covered or tree.kind != "tuple":
+        return tree
+    parts: list[tuple[str, int, Coercion]] = []
+    for ctor, i, child in tree.parts:
+        if (i,) in covered and child.kind == "nat":
+            continue
+        below = frozenset(p[1:] for p in covered if len(p) > 1 and p[0] == i)
+        kept = without_paths(child, below)
+        if kept is not None:
+            parts.append((ctor, i, kept))
+    if not parts:
+        return None
+    return Coercion(tree.source, tree.target, tree.kind, tuple(parts))
+
+
+def component_coercion(
+    sources: tuple[ComponentSource, ...],
+    index: int,
+    ctor_name: str,
+    declared: "Type",
+    effective_type: Callable[[ast.Expr], "Type | None"],
+    type_of: Callable[[ast.Expr], "Type | None"],
+    field_types: Callable[[str, "Type | None"], "tuple[Type, ...] | None"],
+    constructors_of: Callable[[str], tuple[str, ...]],
+) -> tuple[Coercion, ...]:
+    """What binding the component *sources* supply into a binder declared
+    *declared* must walk: the differing tree (:func:`differing_tree`) from
+    each source's type to *declared*, each distinct tree once, and none
+    whose only position is the root (a scalar narrowing, which
+    :func:`component_narrows` decides).
+
+    The generalisation of :func:`component_narrows` from "is it a `@Nat`
+    narrowing" to the composite question, over the same sources: an
+    argument source is the value itself, at its *effective_type* (the type
+    the checker checked it against, else its own: a construction the
+    checker typed at the binder's component is guarded where it is built,
+    and contributes nothing here); an opaque source is a composite whose
+    component the declaration types (:func:`declared_component_type`)."""
+    out: list[Coercion] = []
+    for source in sources:
+        if source.is_argument:
+            ty = effective_type(source.expr)
+        else:
+            ty = declared_component_type(
+                source, index, ctor_name, type_of, field_types)
+        if ty is None:
+            continue
+        tree = differing_tree(ty, declared, field_types, constructors_of)
+        if tree is not None and tree.kind != "nat" and tree not in out:
+            out.append(tree)
+    return tuple(out)
+
+
+def value_coercion(
+    value: ast.Expr,
+    declared: "Type",
+    effective_type: Callable[[ast.Expr], "Type | None"],
+    field_types: Callable[[str, "Type | None"], "tuple[Type, ...] | None"],
+    constructors_of: Callable[[str], tuple[str, ...]],
+) -> tuple[Coercion, ...]:
+    """:func:`component_coercion` for a binder that binds *value* whole (a
+    top-level binding pattern of a `match`): the sources are the value's
+    leaves (:func:`value_leaves`), each at its *effective_type*."""
+    return component_coercion(
+        tuple(ComponentSource(leaf, is_argument=True)
+              for leaf in value_leaves(value)),
+        0, "", declared, effective_type, effective_type, field_types,
+        constructors_of)

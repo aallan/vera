@@ -756,3 +756,114 @@ def _assert_one_guard_count(src: str, count: int) -> None:
                          for d in verified.errors]
     assert {w.error_code for w in verified.warnings} <= {"W004"}
     assert len(_coercion_w004(verified)) == count, verified.warnings
+
+
+# =====================================================================
+# The differing tree (vera/narrowing.py), the rule's pure half
+# =====================================================================
+
+_TREE_DECLS = """\
+private data List<A> {
+  Nil,
+  Cons(A, List<A>)
+}
+
+private data Spin<A> {
+  Stop,
+  Go(Spin<A>)
+}
+
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+"""
+
+
+def _tree(source: object, target: object) -> object:
+    from vera import narrowing
+
+    typed = pipeline.check(_TREE_DECLS, file="tree.vera").typed
+    return narrowing.differing_tree(
+        source, target, typed.field_types_at, typed.constructors_of)
+
+
+def _positions(tree: object, path: tuple[object, ...] = ()) -> set[tuple[object, ...]]:
+    """Every `Nat` position of *tree* by its path, an `again` by its own."""
+    if tree is None:
+        return set()
+    if tree.kind in ("nat", "again"):
+        return {path + (tree.kind,)}
+    out: set[tuple[object, ...]] = set()
+    for ctor, index, child in tree.parts:
+        out |= _positions(child, path + ((ctor.split("$")[-1], index),))
+    return out
+
+
+def test_the_tree_reaches_every_nested_position() -> None:
+    """A tuple's components, a nested tuple's, an `Option`'s `Some`, a
+    `Map`'s keys and values: each `Int` under a `Nat` is a position, and
+    nothing else is."""
+    from vera.types import INT, NAT, AdtType
+
+    def tup(*args: object) -> AdtType:
+        return AdtType("Tuple", tuple(args))
+
+    source = tup(INT, tup(INT, INT), AdtType("Option", (INT,)),
+                 AdtType("Map", (INT, INT)))
+    target = tup(NAT, tup(INT, NAT), AdtType("Option", (NAT,)),
+                 AdtType("Map", (NAT, INT)))
+    assert _positions(_tree(source, target)) == {
+        (("Tuple", 0), "nat"),
+        (("Tuple", 1), ("Tuple", 1), "nat"),
+        (("Tuple", 2), ("Some", 0), "nat"),
+        (("Tuple", 3), ("key", 0), "nat"),
+    }
+
+
+def test_a_recursive_type_is_walked_to_its_fixpoint() -> None:
+    """`List<Int>` at `List<Nat>`: the head is a position and the tail is
+    the same walk again; `Spin<A>` holds its parameter nowhere, so its
+    recursion alone is no position and there is no tree."""
+    from vera.types import INT, NAT, AdtType
+
+    assert _positions(_tree(AdtType("List", (INT,)),
+                            AdtType("List", (NAT,)))) == {
+        (("Cons", 0), "nat"), (("Cons", 1), "again")}
+    assert _tree(AdtType("Spin", (INT,)), AdtType("Spin", (NAT,))) is None
+
+
+def test_a_refinement_or_a_function_target_holds_no_position() -> None:
+    """A refinement component is the refinement walk's record (#1410), and
+    a function's result or parameter is produced by a later call: neither
+    is a `Nat` position (rulings 1 and 2)."""
+    from vera import ast as vast
+    from vera.types import INT, NAT, AdtType, FunctionType, PureEffectRow, RefinedType
+
+    pos = RefinedType(INT, vast.BoolLit(value=True))
+    assert _tree(AdtType("Option", (INT,)), AdtType("Option", (pos,))) is None
+    fn_int = FunctionType((INT,), INT, PureEffectRow())
+    fn_nat = FunctionType((INT,), NAT, PureEffectRow())
+    assert _tree(AdtType("Option", (fn_int,)),
+                 AdtType("Option", (fn_nat,))) is None
+
+
+def test_a_boundary_guard_s_positions_leave_the_tree() -> None:
+    """`without_paths` drops the tuple positions a function boundary's
+    component guard checks (#746) and keeps every other: the `Some` under
+    the third component is no tuple path, so it stays."""
+    from vera import narrowing
+    from vera.types import INT, NAT, AdtType
+
+    def tup(*args: object) -> AdtType:
+        return AdtType("Tuple", tuple(args))
+
+    tree = _tree(tup(INT, tup(INT, INT), AdtType("Option", (INT,))),
+                 tup(NAT, tup(INT, NAT), AdtType("Option", (NAT,))))
+    pruned = narrowing.without_paths(tree, frozenset({(0,), (1, 1)}))
+    assert _positions(pruned) == {(("Tuple", 2), ("Some", 0), "nat")}
+    assert narrowing.without_paths(
+        _tree(tup(INT, INT), tup(INT, NAT)), frozenset({(1,)})) is None
