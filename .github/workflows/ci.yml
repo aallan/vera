@@ -181,8 +181,8 @@ jobs:
   # so no ordinary run holds the macOS runners that the next pull request's
   # checks would queue behind.  Its cells are not required checks:
   # matrix-gate is, and passes only when the matrix ran and passed wherever
-  # the version rises.  A cell that fails on a push or nightly run files an
-  # issue (matrix-issue).
+  # the version rises.  A cell that fails on a push or scheduled nightly
+  # run files an issue (matrix-issue).
   test:
     name: test (${{ matrix.os }}, ${{ matrix.python-version }})
     needs: plan
@@ -257,8 +257,12 @@ jobs:
           echo "Runner image: $ImageOS $ImageVersion" >> "$GITHUB_STEP_SUMMARY"
 
       # `overwrite`: a re-run cell records its image again, under the name
-      # its first attempt's record holds.
+      # its first attempt's record holds.  `continue-on-error`: the record
+      # is a diagnostic, and an artifact service's error would otherwise
+      # fail a cell matrix-gate reads, a release's among them; matrix-issue
+      # names the images whose records it finds.
       - name: Keep the runner image's record
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: runner-image-${{ github.job }}-${{ matrix.os }}-${{ matrix.python-version }}
@@ -307,8 +311,8 @@ jobs:
   # once the watched cell of its successor has run green for as long as the
   # maintainer chooses.  A preview image joins when GitHub lists it as a
   # release image.  Each cell is advisory: a failed one fails neither the
-  # run nor matrix-gate, and matrix-issue files it, naming the image it ran
-  # on.  Its steps are the test job's, comments apart
+  # run nor matrix-gate, and on a scheduled night matrix-issue files it,
+  # naming the image it ran on.  Its steps are the test job's, comments apart
   # (tests/test_nightly_matrix_workflow.py holds them equal).
   watch:
     name: watch (${{ matrix.os }}, ${{ matrix.python-version }})
@@ -336,6 +340,7 @@ jobs:
           echo "Runner image: $ImageOS $ImageVersion" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Keep the runner image's record
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: runner-image-${{ github.job }}-${{ matrix.os }}-${{ matrix.python-version }}
@@ -403,7 +408,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: python3 scripts/matrix_gate.py
 
-  # A failed cell on a push or nightly run, where no pull request's checks
+  # A failed cell on a push or scheduled nightly run, where no pull request's checks
   # show it, files one issue per workflow and branch, or comments on the
   # open one: nightly-stress.yml's pattern, deduplicated on the issue's
   # title, labelled bug and ci.  The failed cells are the ones matrix-gate

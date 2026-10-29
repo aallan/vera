@@ -193,6 +193,17 @@ def test_a_failed_cell_files_on_the_scheduled_nightly_and_the_push_run() -> None
     assert filing == {"push of a merge into main", "push of a release merge into main", "nightly schedule"}, filing
 
 
+def test_a_failed_watched_cell_alone_files_where_a_failed_cell_does() -> None:
+    """A night on which only a watched cell failed: the matrix passed, the
+    gate named no failed cell, and its `watched` output names one.
+    matrix-issue files on the events it files a failed cell on, and on no
+    other."""
+    job = _load(CI)["jobs"]["matrix-issue"]
+    watched = {"needs.matrix-gate.outputs.watched": '["watch (ubuntu-latest, 3.12)"]'}
+    filing = {event for event in EVENTS if evaluate(str(job["if"]), {**EVENTS[event], **watched})}
+    assert filing == {"push of a merge into main", "push of a release merge into main", "nightly schedule"}, filing
+
+
 def test_the_release_trigger_and_gate_are_as_they_were() -> None:
     """The move asks nothing of release.yml: it hears CI's completed runs on
     main, and its gate admits a dispatch and CI's successful push run of
@@ -279,7 +290,9 @@ def test_every_cell_records_the_image_it_ran_on() -> None:
     """A label names an image only until GitHub moves it, so a cell's first
     steps keep the image its runner booted, by `ImageOS` and `ImageVersion`,
     in a record named for the cell, and matrix-gate waits for every cell
-    whose record matrix-issue reads."""
+    whose record matrix-issue reads.  The upload fails soft: the record is
+    a diagnostic, and an artifact service's error on a version-raising pull
+    request would otherwise fail a cell matrix-gate reads."""
     jobs = _load(CI)["jobs"]
     record, keep = jobs["test"]["steps"][:2]
     assert record["name"] == "Record the runner image"
@@ -287,4 +300,5 @@ def test_every_cell_records_the_image_it_ran_on() -> None:
     assert keep["uses"].startswith("actions/upload-artifact@")
     assert keep["with"]["name"] == "runner-image-${{ github.job }}-${{ matrix.os }}-${{ matrix.python-version }}"
     assert keep["with"]["overwrite"] is True
+    assert keep["continue-on-error"] is True
     assert {"test", "watch"} <= set(jobs["matrix-gate"]["needs"])

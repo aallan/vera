@@ -370,6 +370,20 @@ class TestANightlyRunsListing:
         gives a job loses anything."""
         assert mg.bare(listed) == named
 
+    def test_a_name_under_two_callers_or_of_another_job_is_no_cell(self) -> None:
+        """The gate reads through one caller's name, the one a call's run puts
+        before a job's own, and no further: a job listed under two callers'
+        names is no cell of ci.yml's, and neither is a job whose own name
+        only begins as a cell's does, under a caller or not."""
+        names = (
+            "Nightly / CI / test (macos-15, 3.12)",
+            "test-extra (macos-15, 3.12)",
+            "CI / test-extra (macos-15, 3.12)",
+        )
+        jobs = [mg.Job(name, "completed", "failure") for name in names]
+        assert mg.cells_of(jobs) == []
+        assert mg.failed_cells(jobs) == ()
+
     def test_a_shard_under_a_caller_is_no_cell(self) -> None:
         shards = [job for job in _recorded(PULL_REQUEST)["jobs"] if "shard" in job["name"]]
         red = _called({"jobs": [{**shards[0], "conclusion": "failure"}, *shards[1:]]})
