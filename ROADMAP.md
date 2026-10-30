@@ -84,7 +84,13 @@ Exit criterion: no function is over 500 lines, and the spec carries no implement
 
 *Declared sound by measurement.*
 
-A release only.  Its pull request re-measures the scorecard below and carries one section stating the supported fragment, the trusted components, the runtime enforcement and the refusals, beside the scorecard, and v0.3.0 ships when every target is met.  VeraBench re-runs on v0.3.0 with fresh generation, verify@1 beside pass@1 and adversarial inputs, and the landing page quotes that run.
+A release, plus the one change to what the language accepts that a minor version is for:
+
+| Issue | What |
+|---|---|
+| [#1819](https://github.com/aallan/vera/issues/1819) | A function type's parameters and result are compared under the formal relation only, so a closure typed `fn(Int -> Int)` no longer fits a `fn(Int -> Nat)` formal, nor a `fn(Nat -> Int)` one a `fn(Int -> Int)`: the `Int` to `Nat` relaxation has no value to obligate or guard inside a function type.  The refusal's fix is the eta-expansion, and spec §2.8 rule 5 states where the relaxation applies. |
+
+The release pull request re-measures the scorecard below and carries one section stating the supported fragment, the trusted components, the runtime enforcement and the refusals, beside the scorecard, and v0.3.0 ships when every target is met.  VeraBench re-runs on v0.3.0 with fresh generation, verify@1 beside pass@1 and adversarial inputs, and the landing page quotes that run.
 
 Exit criterion: every target in the scorecard is met.
 
