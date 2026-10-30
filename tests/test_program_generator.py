@@ -565,6 +565,22 @@ _REFINEMENT_HELD_SHAPE = ("a refinement check on a value the declarations alread
 _JOIN_SHAPE = ("a join of a refined arm with an unrefined one, bound into the "
                "refinement, which the checker types as the refinement")
 
+_COMPOSITE_COERCION_SHAPE = ("a composite coercion into a `Nat` component, guarded by "
+                             "code generation's one rule and recorded by nothing")
+
+
+def _composite_coercion_into_nat_component(_node: ast.Node, _sites: Sites) -> bool:
+    """A value whose type holds an `Int` where its position's type holds a
+    `Nat` below the top level: a later element of an array literal, a `let`'s
+    value, a call's argument, a constructor's field, a binder declared
+    narrower than what it binds.  Code generation guards every such
+    component by one rule (`wasm/coercion.py`, #1542's line on #1695) and the
+    verifier records nothing there until the obligation table does, so the
+    emitter names this class and nothing else: every mismatch with its
+    signature is the class, at whichever of its sites the program meets."""
+    return True
+
+
 _SHAPES: dict[str, Callable[[ast.Node, Sites], bool]] = {
     "an `@Int` division": lambda node, _s: _division_by(node, literal=False),
     "a division by a non-zero literal":
@@ -572,6 +588,7 @@ _SHAPES: dict[str, Callable[[ast.Node, Sites], bool]] = {
     _REFINED_NAT_SHAPE: _narrowing_into_refined_nat,
     _REFINEMENT_HELD_SHAPE: _refinement_already_held,
     _JOIN_SHAPE: _join_typed_as_the_refinement,
+    _COMPOSITE_COERCION_SHAPE: _composite_coercion_into_nat_component,
 }
 
 
@@ -683,6 +700,20 @@ public fn bump(@Low -> @Int)
 }
 """
 
+#: A later element of an array literal whose first element fixed the
+#: element type at `Option<Nat>` (spec 4.12.1), coerced through its `Int`
+#: payload: the night's seeds 306 and 709 write one.
+_REPRO_COMPOSITE_COERCION = """\
+public fn later(@Nat, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Array<Option<Nat>> = [Some(@Nat.0), Some(@Int.0)];
+  0
+}
+"""
+
 #: The mismatches the join reports today that a generated program can meet:
 #: each a shape of a `scripts/check_reconciliation.py` `KNOWN` class, or of
 #: an open issue the generator found.
@@ -711,6 +742,14 @@ KNOWN_CLASSES: tuple[KnownClass, ...] = (
         "#1695", "guarded_unrecorded", "refine_bind",
         "codegen/contracts.py:_emit_refinement_check", _JOIN_SHAPE,
         _REPRO_REFINED_JOIN),
+    # Code generation guards a composite coercion into a `Nat` component by
+    # one rule (#1542's line on #1695) and the verifier records nothing
+    # there; the obligation table (#1695, v0.2.7) records it and flips this
+    # pin.
+    KnownClass(
+        "#1695", "guarded_unrecorded", "component_coercion",
+        "wasm/coercion.py:_emit_component_coercion", _COMPOSITE_COERCION_SHAPE,
+        _REPRO_COMPOSITE_COERCION),
 )
 
 
