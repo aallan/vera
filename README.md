@@ -12,7 +12,7 @@
 <!-- vera:run fn="safe_divide" args="2 10" stdout="5" -->
 ```vera
 public fn safe_divide(@Int, @Int -> @Int)
-  requires(@Int.1 != 0)
+  requires(@Int.1 > 0)
   ensures(@Int.result == @Int.0 / @Int.1)
   effects(pure)
 {
@@ -38,12 +38,12 @@ Four examples that show what makes Vera different. For the full tour — contrac
 
 ### Contracts the compiler proves
 
-A precondition like `requires(@Int.1 != 0)` becomes a static obligation at every call site.  A call to `safe_divide` whose divisor the verifier can show may be zero is refused with a counterexample (`E501`); a divisor it can neither prove non-zero nor show may be zero is checked at run time (`E532`).
+A precondition like `requires(@Int.1 > 0)` becomes a static obligation at every call site.  A call to `safe_divide` whose divisor the verifier can show may not be positive is refused with a counterexample (`E501`); a divisor it can neither prove positive nor show may not be is checked at run time (`E532`).
 
 <!-- vera:run fn="safe_divide" args="2 10" stdout="5" -->
 ```vera
 public fn safe_divide(@Int, @Int -> @Int)
-  requires(@Int.1 != 0)
+  requires(@Int.1 > 0)
   ensures(@Int.result == @Int.0 / @Int.1)
   effects(pure)
 {

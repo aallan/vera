@@ -1936,7 +1936,7 @@ class TestBrowserContracts:
         path = EXAMPLES_DIR / "safe_divide.vera"
         wasm_path, result = _compile_file(path, tmp_path)
 
-        # safe_divide(@Int, @Int -> @Int) with requires(@Int.1 != 0)
+        # safe_divide(@Int, @Int -> @Int) with requires(@Int.1 > 0)
         # @Int.1 is the first (leftmost) arg.  safe_divide(0, 5) makes
         # @Int.1 = 0, violating the precondition.
         py_error: str | None = None

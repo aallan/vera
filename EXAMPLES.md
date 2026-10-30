@@ -4,12 +4,12 @@ This document walks through Vera's key features with working code examples. Ever
 
 ## Contracts the compiler proves
 
-`requires(@Int.1 != 0)` means this function cannot be called with a zero divisor. `vera verify` checks every call site to prove the precondition holds: a divisor the verifier can witness as zero is refused with an `E501` error and a counterexample, and only a divisor it can neither prove non-zero nor witness a zero for falls to a runtime guard (`E532`).
+`requires(@Int.1 > 0)` means this function cannot be called with a divisor that is not positive, so its division can neither divide by zero nor overflow. `vera verify` checks every call site to prove the precondition holds: a divisor the verifier can witness as not positive is refused with an `E501` error and a counterexample, and only a divisor it can neither prove positive nor witness otherwise falls to a runtime guard (`E532`).
 
 <!-- vera:run fn="safe_divide" args="2 10" stdout="5" -->
 ```vera
 public fn safe_divide(@Int, @Int -> @Int)
-  requires(@Int.1 != 0)
+  requires(@Int.1 > 0)
   ensures(@Int.result == @Int.0 / @Int.1)
   effects(pure)
 {

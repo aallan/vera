@@ -112,9 +112,9 @@ class TestExampleRoundTrips:
         assert exec_result.value == 3
 
     def test_safe_divide_trap_on_zero(self) -> None:
-        """safe_divide(0, 10) traps: requires(@Int.1 != 0) violated."""
+        """safe_divide(0, 10) traps: requires(@Int.1 > 0) violated."""
         result = _compile_example("safe_divide.vera")
-        # First param (divisor) is 0 → precondition @Int.1 != 0 violated
+        # First param (divisor) is 0 → precondition @Int.1 > 0 violated
         with pytest.raises(WasmTrapError) as excinfo:
             execute(result, fn_name="safe_divide", args=[0, 10])
         assert excinfo.value.kind == "contract_violation"

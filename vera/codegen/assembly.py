@@ -412,6 +412,11 @@ class AssemblyMixin:
         for _name, eq_wat in sorted(self._adt_eq_helpers.items()):
             parts.append(eq_wat)
 
+        # #1542: composite-coercion walk helpers ($coerce_<digest>), deduped
+        # by name and sorted, like the Eq helpers above.
+        for _name, walk_wat in sorted(self._coercion_helpers.items()):
+            parts.append(walk_wat)
+
         # #1172: structural-size helpers for ADT decreases measures
         # ($dec_size_<T>) — same dedupe-by-name/sorted discipline as the
         # Eq helpers above.

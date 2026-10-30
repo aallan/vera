@@ -427,6 +427,16 @@ TRAP_EMITTERS: dict[str, TrapEmitter] = _emitters(
         "wasm/operators.py:_emit_nat_bind_guard", "nat_guard",
         ("nat_bind",), "signal", _VALUE,
     ),
+    # A composite value's `Int` component coerced to a `Nat` component
+    # (#1542's shape): its store's guard, or the walk of an opaque value or a
+    # binder along every such component.  The runtime half of an obligation
+    # kind no reader records yet, so `vera verify` reports each as W004
+    # until #1695's obligation table gives it a row.
+    TrapEmitter(
+        "wasm/coercion.py:_emit_component_coercion", "nat_guard",
+        ("component_coercion",), "signal",
+        "the coerced value expression, or the binder the walk checks",
+    ),
     # --- assertions and indexing --------------------------------------
     TrapEmitter(
         "wasm/operators.py:_translate_assert", "assertion_failed",

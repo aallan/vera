@@ -400,6 +400,8 @@ class ClosureLiftingMixin:
         # #747: per-parameter concrete-@Nat flags for the call-site
         # runtime narrowing guard inside closure bodies too.
         ctx.set_fn_nat_params(self._fn_nat_params)
+        ctx.set_boundary_coercion_paths(
+            self._fn_boundary_coercion_paths, self._boundary_coercion_paths)
         # #754: per-formal base type names for every effect
         # operation, so an op call site guards its narrowing
         # arguments the way a function call site does.
@@ -693,7 +695,12 @@ class ClosureLiftingMixin:
         # See the parallel block in vera/codegen/functions.py::_compile_fn
         # for the matching catch in the non-closure path.
         try:
-            body_instrs = ctx.translate_block(anon_fn.body, env)
+            # #1542: a composite coercion at the closure's return defers to
+            # its epilogue's tuple-component guard (#746) where it stands.
+            with ctx._deferring(
+                    anon_fn.body,
+                    ctx._return_boundary_paths(anon_fn.return_type)):
+                body_instrs = ctx.translate_block(anon_fn.body, env)
         except CodegenSkip as skip:
             # Closure-body skips emit their own structured [E602]
             # pointing at the unsupported node, then return None so
@@ -934,6 +941,8 @@ class ClosureLiftingMixin:
         )
         # #773: structural-Eq helpers generated inside a lifted closure body.
         self._adt_eq_helpers.update(ctx._adt_eq_helpers)
+        # #1542: composite-coercion walk helpers generated in a lifted body.
+        self._coercion_helpers.update(ctx._coercion_helpers)
         # #924: recursive show/hash helpers generated inside a lifted closure.
         self._show_hash_helpers.update(ctx._show_hash_helpers)
         # #1676: Map and Set functions a lifted closure's body calls.

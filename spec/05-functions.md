@@ -76,10 +76,10 @@ public fn absolute_value(@Int -> @Nat)
 
 Multiple `requires` and `ensures` clauses may be specified. They are conjunctive (all must hold):
 
-<!-- vera:skip-verify category="ILLUSTRATIVE" code="E500" reason="safe_divide with imprecise ensures" -->
+<!-- vera:run fn="safe_divide" args="2 10" stdout="5" -->
 ```
 public fn safe_divide(@Int, @Int -> @Int)
-  requires(@Int.1 != 0)
+  requires(@Int.1 > 0)
   requires(@Int.0 >= 0)
   ensures(@Int.result >= 0)
   ensures(@Int.result <= @Int.0)

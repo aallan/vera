@@ -895,6 +895,7 @@ def _guard_mutations() -> list[tuple]:
     """
     from vera.wasm.calls import CallsMixin
     from vera.wasm.data import DataMixin
+    from vera.wasm.operators import OperatorsMixin
 
     return [
         (
@@ -909,9 +910,14 @@ def _guard_mutations() -> list[tuple]:
             # only place a negative can be caught.  `_757_NARROW` — which
             # does read it — cannot isolate this guard: its read has a
             # guard of its own and catches the same value one frame later.
+            # The construction carries a recorded `Box<Nat>` target, so the
+            # composite-coercion rule (#1542) stands behind the decision:
+            # neutering the decision hands the store to the rule's own guard,
+            # which traps alike.  So the cell neuters the guard the decision
+            # places; the rule defers to the decision and does not fire.
             "757 generic instantiated field",
-            DataMixin, "_ctor_field_mono_base",
-            lambda self, arg: None,
+            OperatorsMixin, "_emit_nat_bind_guard",
+            lambda self, value, *, at: value,
             (_757_STORE_ONLY, "f", [-5]),
             "Negative value bound into a @Nat slot", "ran",
         ),

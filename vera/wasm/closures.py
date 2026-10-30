@@ -146,7 +146,11 @@ class ClosuresMixin:
         arg_wasm_types: list[str] = []
         for i, arg in enumerate(value_args):
             formal = formal_types[i] if i < len(formal_types) else None
-            arg_instrs = self.translate_expr(arg, env)
+            # #1542: a composite coercion into the closure's formal defers to
+            # the entry guard every closure of the type has (#746).
+            with self._deferring(
+                    arg, self._closure_boundary_paths(closure_arg, i)):
+                arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
                 return None
             # #1017: the @Int -> @Nat NARROWING.

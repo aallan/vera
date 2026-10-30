@@ -694,6 +694,12 @@ class TypeChecker(
         # (`CheckerMixin._register_pattern_reads`).
         self._pattern_arg_targets: dict[
             tuple[int, int, int, int], Type] = {}
+        # PR #1818 review: the array literal elements whose target the
+        # element record wrote (`ExpressionsMixin._record_element_target`),
+        # by node identity and by span, so a literal checked again clears
+        # its own earlier record and no other check's.
+        self._element_target_ids: set[int] = set()
+        self._element_target_spans: set[tuple[int, int, int, int]] = set()
         self.hole_sites: list[HoleSite] | None = None
         # Resolved modules (C7a: paths for diagnostics, C7b: full list
         # for cross-module type merging).

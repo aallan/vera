@@ -101,6 +101,12 @@ class RegistrationMixin:
         self._fn_nat_params[decl.name] = tuple(
             self._type_resolves_to_nat(p) for p in decl.params
         )
+        # #1542: per parameter, the tuple positions this function's entry
+        # guard checks (#746), which a composite coercion into the formal
+        # defers to rather than doubling.
+        self._fn_boundary_coercion_paths[decl.name] = tuple(
+            self._boundary_coercion_paths(p, None) for p in decl.params
+        )
         # #865: per-parameter concrete-@Byte flags, for the call-site
         # int-literal → i32.const coercion (an int-literal argument otherwise
         # defaults to i64.const against the callee's i32 Byte parameter).

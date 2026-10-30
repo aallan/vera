@@ -12,11 +12,13 @@ the contract admits is a program finding, reported as a failing trial exactly
 as for a Tier-3 function.
 
 The red-first case is an open soundness bug whose repro refutes today:
-#1695's composite coercion (an `Option<Int>` bound into an `@Option<Nat>`
-is obligated nowhere, so a `@Nat` read back out of it holds a negative, and
-`mo(7) >= 0` is proved true and runs false), which the fixtures hold as
-their false proof.  It replaced #1555's address comparison when the typed
-program fixed that (#1525).  Default mode is pinned
+the function-type coercion on #1695's line (a closure returning `@Int`
+passed at a `fn(Int -> Nat)` formal is obligated nowhere and walked by no
+guard, so the `@Nat` the call returns holds a negative, and `mo(7) >= 0` is
+proved true and runs false), which the fixtures hold as their false proof.
+It replaced the composite coercion of an `Option<Int>` into an
+`@Option<Nat>` when that was guarded (#1542), which had replaced #1555's
+address comparison when the typed program fixed that (#1525).  Default mode is pinned
 byte-for-byte on a fixed program (`TestDefaultModeUnchanged`); the corpus-wide
 default-versus-distrust differential lives in `tests/test_distrust_corpus.py`.
 """
@@ -139,25 +141,33 @@ def _main(
 # Fixtures
 # =====================================================================
 
-# #1695's composite coercion as a false proof a fixture can hold: an
-# `Option<Int>` holding -7 is bound into an `@Option<Nat>` with no
-# obligation and no guard (the #1542 line), so `mo`'s `@Nat` result is -7.
+# The function-type coercion on #1695's line as a false proof a fixture can
+# hold: a closure returning -7 is passed at `apply_nat`'s `fn(Int -> Nat)`
+# formal with no obligation and no guard (no walk can read a function's
+# result where it is passed), so `mo`'s `@Nat` result is -7.
 # The verifier reads that result at its type and proves `mo(7) >= 0`, and the
 # compiled comparison runs false.  `mo` raises no obligation of its own, so
 # the false proof brings no proved check with it.  A fixture appends `_MO`
 # after its own functions, so their lines stay where they are.
 _MO = """
+type IntToNat = fn(Int -> Nat) effects(pure);
+type IntToInt = fn(Int -> Int) effects(pure);
+
+private fn apply_nat(@IntToNat, @Int -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  apply_fn(@IntToNat.0, @Int.0)
+}
+
 private fn mo(@Int -> @Nat)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  let @Option<Int> = Some(-7);
-  let @Option<Nat> = @Option<Int>.0;
-  match @Option<Nat>.0 {
-    Some(@Nat) -> @Nat.0,
-    None -> 0
-  }
+  let @IntToInt = fn(@Int -> @Int) effects(pure) { -7 };
+  apply_nat(@IntToInt.0, @Int.0)
 }
 """
 

@@ -91,6 +91,10 @@ FIXTURES: dict[str, tuple[str, int]] = {
     "wasm/operators.py:_emit_nat_bind_guard": (
         "public fn f(@Int -> @Nat)\n" + _HEAD
         + "{\n  let @Nat = @Int.0;\n  @Nat.0\n}\n", 4),
+    "wasm/coercion.py:_emit_component_coercion": (
+        "public fn f(@Option<Int> -> @Nat)\n" + _HEAD
+        + "{\n  let @Option<Nat> = @Option<Int>.0;\n"
+        "  option_unwrap_or(@Option<Nat>.0, 0)\n}\n", 4),
     "wasm/operators.py:_translate_assert": (
         "public fn f(@Int -> @Int)\n" + _HEAD
         + "{\n  assert(@Int.0 > 0);\n  @Int.0\n}\n", 4),

@@ -198,9 +198,9 @@ def test_no_proof_is_refuted(
 # Premises: the instrument can fail, and it reaches proofs
 # =====================================================================
 
-# #1695's composite coercion: proved at Tier 1, refuted by its one run.
-# `mo` raises no obligation of its own, so the false proof brings no proved
-# check with it (tests/test_tester_distrust.py's `_MO`).
+# The function-type coercion on #1695's line: proved at Tier 1, refuted by
+# its one run.  `mo` raises no obligation of its own, so the false proof
+# brings no proved check with it (tests/test_tester_distrust.py's `_MO`).
 _FALSE_PROOF = """\
 public fn main(-> @Int)
   requires(true)
@@ -210,17 +210,24 @@ public fn main(-> @Int)
   if mo(7) >= 0 then { 0 - 1 } else { 1 }
 }
 
+type IntToNat = fn(Int -> Nat) effects(pure);
+type IntToInt = fn(Int -> Int) effects(pure);
+
+private fn apply_nat(@IntToNat, @Int -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  apply_fn(@IntToNat.0, @Int.0)
+}
+
 private fn mo(@Int -> @Nat)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  let @Option<Int> = Some(-7);
-  let @Option<Nat> = @Option<Int>.0;
-  match @Option<Nat>.0 {
-    Some(@Nat) -> @Nat.0,
-    None -> 0
-  }
+  let @IntToInt = fn(@Int -> @Int) effects(pure) { -7 };
+  apply_nat(@IntToInt.0, @Int.0)
 }
 """
 

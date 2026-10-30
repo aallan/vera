@@ -708,6 +708,7 @@ MARKED_FILES = (
     "test_declared_widths_1525.py",
     "test_engine_failure_matrix.py",
     "test_verifier_reads_the_typed_program_1525.py",
+    "test_composite_coercion_guards.py",
 )
 UNMARKED_FILES = (
     "test_obligations.py",

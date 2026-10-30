@@ -298,7 +298,11 @@ class CallsMixin:
         forall_vars, generic_formals = self._generic_fn_info.get(
             call.name, ((), ()))
         for i, arg in enumerate(call.args):
-            arg_instrs = self.translate_expr(arg, env)
+            # #1542: a composite coercion into the formal defers to the
+            # callee's entry guard of its tuple components (#746).
+            with self._deferring(
+                    arg, self._callee_boundary_paths(call_target, i)):
+                arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
                 return None
             if (i < len(nat_params) and nat_params[i]

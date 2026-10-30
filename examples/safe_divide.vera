@@ -1,6 +1,6 @@
 -- Safe division: demonstrates a non-trivial precondition.
 public fn safe_divide(@Int, @Int -> @Int)
-  requires(@Int.1 != 0)
+  requires(@Int.1 > 0)
   ensures(@Int.result == @Int.0 / @Int.1)
   effects(pure)
 {
@@ -11,7 +11,8 @@ public fn safe_divide(@Int, @Int -> @Int)
 --
 -- De Bruijn binding order: the rightmost parameter is @Int.0 (dividend = 10),
 -- the leftmost is @Int.1 (divisor = 2). The body computes @Int.0 / @Int.1 = 10 / 2 = 5.
--- The requires clause guards @Int.1 != 0 (the divisor, i.e. the first argument).
+-- The requires clause holds @Int.1 (the divisor, i.e. the first argument) positive,
+-- which excludes zero and the -1 whose quotient leaves the Int range at INT_MIN.
 public fn test_divide(@Unit -> @Int)
   requires(true)
   ensures(@Int.result == 5)
