@@ -1344,7 +1344,7 @@ stopped working.
 
 `tests/test_composite_coercion_guards.py` is this shape for a rule code
 generation applies off the typed program (#1542's shape, #1695's line): every
-position the checker records a target type at (nineteen, the pattern binders
+position the checker records a target type at (twenty, the pattern binders
 among them, each at its nesting depth) crossed with fourteen composite shapes,
 two forms (built in place, or opaque behind a slot) and three inputs, each
 cell asserting the run (a negative component traps with the narrowing guard's

@@ -1355,6 +1355,7 @@ class ExpressionsMixin:
         """Type-check an array literal."""
         if not expr.elements:
             return AdtType("Array", (UnknownType(),))
+        self._clear_element_targets(expr)
 
         # An element is synthesized with no expected type; where *expected*
         # makes it a `Nat` and a generic call in it let a negative literal
@@ -1489,14 +1490,21 @@ class ExpressionsMixin:
         element; so is one in *conflicting*, whose type gives one type
         variable two types, which that judgement, one position at a time,
         does not see.  An element whose type is already an error was
-        reported by its own check and is not judged again."""
+        reported by its own check and is not judged again.
+
+        Each element it admits whose own type is not the element type, the
+        first typed one among them where the join completed it, has the
+        element type recorded as its target
+        (:meth:`_record_element_target`)."""
         source = f"the type of element {first_at}"
         if completed_by:
             source += f", completed by {_element_list(completed_by)}"
         for i, (elem, ty) in enumerate(zip(expr.elements, elem_types)):
-            if i <= first_at or ty is None or isinstance(ty, UnknownType):
+            if i < first_at or ty is None or isinstance(ty, UnknownType):
                 continue
-            if i not in conflicting and self._fits(ty, element_type):
+            if i == first_at or (
+                    i not in conflicting and self._fits(ty, element_type)):
+                self._record_element_target(elem, ty, element_type)
                 continue
             shown = pretty_inferred_type(element_type)
             self._error(
@@ -1524,6 +1532,60 @@ class ExpressionsMixin:
                 spec_ref='Chapter 4, Section 4.12.1 "Array Literals"',
                 error_code="E162",
             )
+
+    def _record_element_target(self, elem: ast.Expr, ty: Type,
+                               element_type: Type) -> None:
+        """Record *element_type* as the target of the array literal element
+        *elem*, whose own type is *ty*, where the two differ.
+
+        An element is synthesized with no expected type, so nothing records
+        the type it is stored at, and one the element type admits by
+        is_subtype rule 3b (`[@Option<Nat>.0, @Option<Int>.0]`) is a
+        composite coercion the literal does not show: the literal's own
+        type is the first element's, which can equal its requirement, and
+        then nothing reaches the element from the literal (PR #1818
+        review).  The record is the two tables `_synth_expr` writes for an
+        *expected* type, filled where they have no entry for the element:
+        an entry there is another check's, the element's own against the
+        literal's context (`_check_in_literal_context`), and is kept, since
+        this check of the literal first cleared its own earlier record
+        (:meth:`_clear_element_targets`).  The judgement is unchanged: only
+        the record moves."""
+        if ty == element_type:
+            return
+        ids = self.node_target_types
+        if (ids is not None and elem.node_id is not None
+                and elem.node_id not in ids):
+            ids[elem.node_id] = element_type
+            self._element_target_ids.add(elem.node_id)
+        spans = self.expr_target_types
+        if spans is not None and elem.span is not None:
+            key = ast.span_key(elem)
+            if key not in spans:
+                spans[key] = element_type
+                self._element_target_spans.add(key)
+
+    def _clear_element_targets(self, expr: ast.ArrayLit) -> None:
+        """Remove the targets an earlier check of the literal *expr*
+        recorded for its elements (:meth:`_record_element_target`).
+
+        A literal is checked again against the context it meets
+        (`_check_in_literal_context`), and that check can settle on another
+        element type: a generic call among the elements takes the type the
+        context gives it.  A record kept from the earlier check names the
+        element type the literal is no longer given, and missed the walk of
+        a component the last check made a `Nat` (PR #1818 review), so each
+        check of a literal records against its own element type alone."""
+        for elem in expr.elements:
+            if elem.node_id in self._element_target_ids:
+                self._element_target_ids.discard(elem.node_id)
+                if self.node_target_types is not None:
+                    self.node_target_types.pop(elem.node_id, None)
+            key = ast.span_key(elem) if elem.span is not None else None
+            if key in self._element_target_spans:
+                self._element_target_spans.discard(key)
+                if self.expr_target_types is not None:
+                    self.expr_target_types.pop(key, None)
 
     # -----------------------------------------------------------------
     # Typed holes

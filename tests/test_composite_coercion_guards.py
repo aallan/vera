@@ -46,6 +46,7 @@ from __future__ import annotations
 import functools
 from collections.abc import Iterator
 from dataclasses import dataclass, fields
+from pathlib import Path
 
 import pytest
 
@@ -56,7 +57,9 @@ from vera.types import pretty_type
 # A generated class instrument (tests/matrix_sample.py): a pull request runs a
 # sample of its parametrised cells, and all of them when it changes this file
 # or a module that decides its class, here code generation's guard of a
-# composite coercion and the differing tree it is decided by.
+# composite coercion, the differing tree it is decided by, the checker's
+# record of an array literal element's target, and an imported module's
+# boundary positions.
 pytestmark = pytest.mark.matrix(
     decides=[
         "vera/narrowing.py",
@@ -67,6 +70,8 @@ pytestmark = pytest.mark.matrix(
         "vera/wasm/calls.py",
         "vera/wasm/closures.py",
         "vera/codegen/contracts.py",
+        "vera/checker/expressions.py",
+        "vera/codegen/modules.py",
     ],
 )
 
@@ -114,7 +119,7 @@ SHAPES: dict[str, Shape] = {s.name: s for s in (
           "if array_length({v}) > 0 then {{ {v}[0] }} else {{ 7 }}", "[]"),
     Shape("Array<Option>", "Array<Option<{C}>>", "[Some({x})]", "[None]",
           "if array_length({v}) > 0 then {{ option_unwrap_or({v}[0], 7) }} "
-          "else {{ 7 }}", "[None]"),
+          "else {{ 7 }}", "[Some(7)]"),
     Shape("Option<Array>", "Option<Array<{C}>>", "Some([{x}])", "None",
           "match {v} {{ Some(@Array<Int>) -> if array_length("
           "@Array<Int>.0) > 0 then {{ @Array<Int>.0[0] }} else {{ 7 }}, "
@@ -215,6 +220,12 @@ def program(site: str, shape: Shape, form: str) -> str:
     elif site == "array element":
         body = (f"{lets}let @Array<{nat}> = [{v}];\n"
                 f"  let @{nat} = @Array<{nat}>.0[0];\n  {read}")
+    elif site == "later array element":
+        # The first element is already at the target type, so the literal's
+        # own type is its requirement and the coerced element is the second.
+        body = (f"{lets}let @{nat} = {shape.zero};\n"
+                f"  let @Array<{nat}> = [@{nat}.0, {v}];\n"
+                f"  let @{nat} = @Array<{nat}>.0[1];\n  {read}")
     elif site == "tuple component":
         body = (f"{lets}let @Tuple<{nat}, Int> = Tuple({v}, 1);\n"
                 f"  match @Tuple<{nat}, Int>.0 {{\n"
@@ -248,17 +259,19 @@ def program(site: str, shape: Shape, form: str) -> str:
 #: recorded on: a declared binding's initialiser, a function's and a
 #: closure's result, a formal (a call's, a generic call's, an `apply_fn`
 #: closure's, an effect operation's), a constructor's field (a declared and
-#: a type-parameter one), a component of a literal (an array element, a
-#: tuple component), a handler's state, and the pattern binders: inside a
-#: constructor pattern at depth one and two, over a slot scrutinee, at the
-#: top level, in a destructuring `let`, and at a handler clause.
+#: a type-parameter one), a component of a literal (an array element, an
+#: array element after the first, which the checker records at the
+#: literal's element type, and a tuple component), a handler's state, and
+#: the pattern binders: inside a constructor pattern at depth one and two,
+#: over a slot scrutinee, at the top level, in a destructuring `let`, and
+#: at a handler clause.
 SITES = (
     "let", "return", "closure return", "call argument",
     "generic call argument", "apply_fn argument", "put argument",
     "throw argument", "declared field", "generic field", "array element",
-    "tuple component", "state init", "binder, depth 1", "binder, depth 2",
-    "binder, opaque scrutinee", "binder, top level", "destructure binder",
-    "clause binder",
+    "later array element", "tuple component", "state init",
+    "binder, depth 1", "binder, depth 2", "binder, opaque scrutinee",
+    "binder, top level", "destructure binder", "clause binder",
 )
 FORMS = ("opaque", "built")
 ARGS = (-5.0, 5.0, 0.0)
@@ -410,7 +423,7 @@ def _assert_returns(ran: pipeline.Ran, value: int) -> None:
 def test_the_matrix_spans_every_site_and_shape() -> None:
     """The axes are the ones the class spans, and every refused program is
     refused for the reason `_NOT_CELLS` names, so no cell hides there."""
-    assert len(SITES) == 19 and len(SHAPES) == 14
+    assert len(SITES) == 20 and len(SHAPES) == 14
     assert len(_PROGRAMS) == len(SITES) * len(SHAPES) * 2 - 2 * len(_NOT_CELLS)
     for (site, shape), code in _NOT_CELLS.items():
         for form in FORMS:
@@ -720,6 +733,224 @@ def test_repro_p7_call_argument_option() -> None:
 
 
 # =====================================================================
+# An array literal's element after the first (PR #1818 review, finding 1)
+# =====================================================================
+
+# The literal's element type is its first element's, so a later element of
+# another type is admitted at it (is_subtype rule 3b) with the literal's own
+# type equal to its requirement: nothing reaches the element from the
+# literal, and the checker records the element type as its target.
+
+_FI = "public fn f(@Int -> @Int)\n  requires(true)\n  ensures(true)\n  effects(pure)\n"
+
+_LATE_LET = _FI + """\
+{
+  let @Option<Int> = Some(@Int.0);
+  let @Option<Nat> = None;
+  let @Array<Option<Nat>> = [@Option<Nat>.0, @Option<Int>.0];
+  option_unwrap_or(@Array<Option<Nat>>.0[1], 7)
+}
+"""
+
+_LATE_RETURN = """\
+private fn mk(@Option<Nat>, @Option<Int> -> @Array<Option<Nat>>)
+  requires(true)
+  ensures(array_length(@Array<Option<Nat>>.result) == 2)
+  effects(pure)
+{
+  [@Option<Nat>.0, @Option<Int>.0]
+}
+
+""" + _FI + """\
+{
+  let @Option<Int> = Some(@Int.0);
+  let @Option<Nat> = None;
+  let @Array<Option<Nat>> = mk(@Option<Nat>.0, @Option<Int>.0);
+  option_unwrap_or(@Array<Option<Nat>>.0[1], 7)
+}
+"""
+
+_LATE_ARGUMENT = """\
+private fn g(@Array<Option<Nat>> -> @Int)
+  requires(array_length(@Array<Option<Nat>>.0) == 2)
+  ensures(true)
+  effects(pure)
+{
+  option_unwrap_or(@Array<Option<Nat>>.0[1], 7)
+}
+
+""" + _FI + """\
+{
+  let @Option<Int> = Some(@Int.0);
+  let @Option<Nat> = None;
+  g([@Option<Nat>.0, @Option<Int>.0])
+}
+"""
+
+_LATE_DATA = _WRAP + _FI + """\
+{
+  let @Wrap<Int> = W(@Int.0);
+  let @Wrap<Nat> = W(0);
+  let @Array<Wrap<Nat>> = [@Wrap<Nat>.0, @Wrap<Int>.0];
+  match @Array<Wrap<Nat>>.0[1] {
+    W(@Nat) -> nat_to_int(@Nat.0)
+  }
+}
+"""
+
+# `None` leaves the element type open and the second element completes it
+# at `Option<Nat>`, so the third is held to the type the join settled on.
+_LATE_AFTER_JOIN = _FI + """\
+{
+  let @Option<Int> = Some(@Int.0);
+  let @Option<Nat> = Some(3);
+  let @Array<Option<Nat>> = [None, @Option<Nat>.0, @Option<Int>.0];
+  option_unwrap_or(@Array<Option<Nat>>.0[2], 7)
+}
+"""
+
+# A literal nested in another is checked first with no context and then
+# again against the one its position gives it, where the generic call in it
+# takes the context's type: each check records against its own element
+# type.  Here the second check settles on `Tuple<Nat, Nat>`, so the
+# `Tuple<Nat, Int>` element is walked at its second component, where the
+# first check's `Tuple<Int, Int>` would walk nothing.
+_PICK = """\
+private forall<T> fn pick(@T, @T -> @T)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @T.1
+}
+
+"""
+
+_LATE_RECHECKED = _PICK + _FI + """\
+{
+  let @Tuple<Nat, Int> = Tuple(1, @Int.0);
+  let @Array<Array<Tuple<Nat, Nat>>> = [[pick(Tuple(1, 2), Tuple(3, 4)), @Tuple<Nat, Int>.0]];
+  match @Array<Array<Tuple<Nat, Nat>>>.0[0][1] {
+    Tuple(@Nat, @Nat) -> nat_to_int(@Nat.0)
+  }
+}
+"""
+
+# Spec §4.12.1: an array literal is an `Array<T>` whose `T` is its first
+# element's type, completed by the later elements, and every element has
+# that type, so a wider later element enters only through the `Int`-to-`Nat`
+# coercion (is_subtype rule 3b), whose run-time check is the language's.
+# The order of a mixed literal decides whether a check exists, whatever the
+# binding's element type: with the narrower element first the wider one is
+# coerced to it and checked, with the wider first the narrower one widens.
+_NARROWER_FIRST = _FI + """\
+{
+  let @Tuple<Int, Nat> = Tuple(@Int.0, 5);
+  let @Tuple<Nat, Nat> = Tuple(1, 2);
+  let @Array<Tuple<Int, Nat>> = [@Tuple<Nat, Nat>.0, @Tuple<Int, Nat>.0];
+  match @Array<Tuple<Int, Nat>>.0[1] {
+    Tuple(@Int, @Nat) -> @Int.0
+  }
+}
+"""
+
+_WIDER_FIRST = _FI + """\
+{
+  let @Tuple<Int, Nat> = Tuple(@Int.0, 5);
+  let @Tuple<Nat, Nat> = Tuple(1, 2);
+  let @Array<Tuple<Int, Nat>> = [@Tuple<Int, Nat>.0, @Tuple<Nat, Nat>.0];
+  match @Array<Tuple<Int, Nat>>.0[0] {
+    Tuple(@Int, @Nat) -> @Int.0
+  }
+}
+"""
+
+# The open-first-element order: the wide element completes the element
+# type, the literal's own type differs from its requirement, and the
+# literal hands the requirement to every element, as it did before.
+_OPEN_FIRST_OPAQUE = _FI + """\
+{
+  let @Option<Int> = Some(@Int.0);
+  let @Array<Option<Nat>> = [None, @Option<Int>.0];
+  option_unwrap_or(@Array<Option<Nat>>.0[1], 7)
+}
+"""
+
+_OPEN_FIRST_BUILT = _FI + """\
+{
+  let @Array<Option<Nat>> = [None, Some(@Int.0)];
+  option_unwrap_or(@Array<Option<Nat>>.0[1], 7)
+}
+"""
+
+
+def test_repro_a_later_array_element_at_a_let() -> None:
+    """`[@Option<Nat>.0, @Option<Int>.0]` bound at `Array<Option<Nat>>`: the
+    second element is walked (kills the checker's record of a later
+    element's target removed)."""
+    _assert_one_guard(_LATE_LET)
+
+
+def test_repro_a_later_array_element_at_a_declared_return() -> None:
+    _assert_one_guard(_LATE_RETURN)
+
+
+def test_repro_a_later_array_element_at_a_call_argument() -> None:
+    _assert_one_guard(_LATE_ARGUMENT)
+
+
+def test_repro_a_later_array_element_of_a_data_type() -> None:
+    _assert_one_guard(_LATE_DATA)
+
+
+def test_repro_a_later_array_element_after_the_join_completes() -> None:
+    """The record is written against the element type the join settled on,
+    not the first element's open one."""
+    _assert_one_guard(_LATE_AFTER_JOIN)
+
+
+def test_repro_a_rechecked_literal_walks_its_later_element() -> None:
+    """The record is the last check's: a literal checked again against its
+    context walks the component that check's element type makes a `Nat`
+    (kills the earlier check's record kept)."""
+    _assert_one_guard(_LATE_RECHECKED)
+
+
+def test_a_narrower_first_element_checks_a_wider_later_one() -> None:
+    """`[@Tuple<Nat, Nat>.0, @Tuple<Int, Nat>.0]` is an
+    `Array<Tuple<Nat, Nat>>` (spec §4.12.1), so the second element's first
+    component is coerced to `Nat` and checked, though the binding's element
+    type holds an `Int` there."""
+    _assert_one_guard(_NARROWER_FIRST)
+    assert len(_coercion_checks(_compiled(_NARROWER_FIRST))) == 1
+
+
+def test_a_wider_first_element_checks_nothing() -> None:
+    """`[@Tuple<Int, Nat>.0, @Tuple<Nat, Nat>.0]` is an
+    `Array<Tuple<Int, Nat>>` (spec §4.12.1): the second element widens, no
+    component is coerced, and a negative first component runs to its
+    value."""
+    verified = _verified(_WIDER_FIRST)
+    assert verified.ok, [(d.error_code, d.description[:120])
+                         for d in verified.errors]
+    assert "W004" not in {w.error_code for w in verified.warnings}
+    compiled = _compiled(_WIDER_FIRST)
+    assert _coercion_checks(compiled) == []
+    assert pipeline.checks(compiled.result, kind="nat_guard") == ()
+    _assert_returns(_ran(_WIDER_FIRST, "f", -5), -5)
+    _assert_returns(_ran(_WIDER_FIRST, "f", 5), 5)
+
+
+@pytest.mark.parametrize("src", [_OPEN_FIRST_OPAQUE, _OPEN_FIRST_BUILT],
+                         ids=["opaque", "built"])
+def test_an_open_first_element_keeps_the_literal_s_hand_down(src: str) -> None:
+    """`[None, <wide>]` at `Array<Option<Nat>>` was guarded before the
+    record and stays guarded by the one check it had."""
+    _assert_one_guard(src)
+    assert len(_coercion_checks(_compiled(src))) == 1
+
+
+# =====================================================================
 # The walk's own boundaries: each a mutant's killer
 # =====================================================================
 
@@ -794,6 +1025,51 @@ def test_repro_a_boundary_defers_only_its_own_positions() -> None:
                                  capture_stderr=False), 5)
 
 
+_LIB_BOUNDARY = """\
+public fn g(@Tuple<Int, Nat> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Tuple<Int, Nat>.0 {
+    Tuple(@Int, @Nat) -> nat_to_int(@Nat.0)
+  }
+}
+"""
+
+_MAIN_BOUNDARY = "import lib(g);\n\n" + _FI + """\
+{
+  let @Tuple<Int, Int> = Tuple(1, @Int.0);
+  g(@Tuple<Int, Int>.0)
+}
+"""
+
+
+def test_repro_an_imported_callee_s_boundary_is_deferred_to(
+    tmp_path: Path,
+) -> None:
+    """An opaque `Tuple<Int, Int>` at an imported function's
+    `Tuple<Int, Nat>` formal defers to that function's entry guard (#746)
+    as an in-module call does: the linked module holds the one check, the
+    boundary's, none of them in the caller, and -5 traps with the
+    boundary's message (PR #1818 review: the imported module's boundary
+    positions reach the importer's code generation)."""
+    entry = pipeline.write_tree(
+        tmp_path, {"lib.vera": _LIB_BOUNDARY, "main.vera": _MAIN_BOUNDARY})
+    verified = pipeline.verify(entry, root=tmp_path, reconcile=True)
+    assert verified.ok, [(d.error_code, d.description[:120])
+                         for d in verified.errors]
+    assert _coercion_w004(verified) == []
+    compiled = pipeline.compile(entry, root=tmp_path)
+    assert [c.emitter for c in pipeline.checks(compiled.result)] == [
+        "codegen/contracts.py:_emit_refinement_check"]
+    assert pipeline.checks(compiled.result, function="f") == ()
+    _assert_traps(pipeline.run(compiled.result, "f", [-5],
+                               capture_stderr=False), _BOUNDARY_TRAP)
+    _assert_returns(pipeline.run(compiled.result, "f", [5],
+                                 capture_stderr=False), 5)
+
+
 def test_repro_the_walk_reads_every_array_element() -> None:
     """The negative is the third element of an opaque `Array<Int>` coerced
     to `Array<Nat>`: a walk that skips the elements, or reads one, lets it
@@ -801,6 +1077,26 @@ def test_repro_the_walk_reads_every_array_element() -> None:
     _assert_one_guard_count(_ARRAY_LATE, 1)
     _assert_traps(_ran(_ARRAY_LATE, "f", -5))
     _assert_returns(_ran(_ARRAY_LATE, "f", 5), 1)
+
+
+_MAP_LATE = _FI + """\
+{
+  let @Map<String, Int> = map_insert(map_insert(map_new(), "a", 1), "b", @Int.0);
+  let @Map<String, Nat> = @Map<String, Int>.0;
+  match map_get(@Map<String, Nat>.0, "b") {
+    Some(@Nat) -> nat_to_int(@Nat.0),
+    None -> 7
+  }
+}
+"""
+
+
+def test_repro_the_walk_reads_every_map_value() -> None:
+    """The negative is the value under the second key of an opaque
+    `Map<String, Int>` coerced to `Map<String, Nat>`: a walk that skips the
+    values lets it through (kills the walk skipping the `map_values`
+    projection, PR #1818 review, finding 2)."""
+    _assert_one_guard(_MAP_LATE)
 
 
 def test_repro_the_walk_passes_none_and_err() -> None:

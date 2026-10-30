@@ -23,7 +23,7 @@ public fn safe_divide(@Int, @Int -> @Int)
 }
 ```
 
-At every call site of `safe_divide`, the compiler verifies that the first argument is positive — `@Int.1` is the first parameter under most-recent-first indexing (Chapter 3). If it cannot prove this statically, it inserts a runtime check.
+At every call site of `safe_divide`, the compiler verifies that the first argument is positive — `@Int.1` is the first parameter under most-recent-first indexing (Chapter 3). A call whose first argument it can show may not be positive is refused with a counterexample (E501); a call it can neither prove nor refute is checked at run time (E532).
 
 ### 6.2.2 Postconditions (`ensures`)
 
