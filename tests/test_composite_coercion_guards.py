@@ -580,7 +580,7 @@ public fn f(@Int -> @Int)
 _FN_REASON = (
     "#1819 (v0.3.0): a function type gaining a Nat component is admitted "
     "(is_subtype rule 9 with 3b) and no runtime walk can check it where the "
-    "function is passed; the checker refuses it there, with the eta-expansion "
+    "function is passed; v0.3.0 refuses it there, with the eta-expansion "
     "as the fix")
 
 
