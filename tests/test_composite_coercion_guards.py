@@ -578,9 +578,10 @@ public fn f(@Int -> @Int)
 """
 
 _FN_REASON = (
-    "W67 (#1695): a function type gaining a Nat component is admitted "
+    "#1819 (v0.3.0): a function type gaining a Nat component is admitted "
     "(is_subtype rule 9 with 3b) and no runtime walk can check it where the "
-    "function is passed; #1695's row or a checker refusal closes it")
+    "function is passed; the checker refuses it there, with the eta-expansion "
+    "as the fix")
 
 
 @pytest.mark.xfail(strict=True, reason=_FN_REASON)
