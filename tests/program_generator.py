@@ -795,14 +795,6 @@ def iv(e: Expr, which: str) -> Iv:
     if isinstance(e, Neg):
         return iv_neg(iv(e.operand, which))
     if isinstance(e, If):
-        if which == "v" and any(
-                isinstance(s, Let) and isinstance(s.binding.value, (MapBuild, SetBuild))
-                for b in (e.then, e.other) for s in b.lets):
-            # The verifier loses an `if`'s value when a branch block, taken
-            # or not, holds a `let` of a map or set construction (#1696's
-            # line of 2026-11-02, seed 2900205); an array's or a primitive's
-            # `let` leaves it whole, and a map `let` outside the `if` does.
-            return ANY
         branches = [b.result for b in (e.then, e.other)
                     if not isinstance(b.result, Throw)]
         out = _hull_all([iv(b, which) for b in branches])
@@ -869,6 +861,7 @@ def _translatable(e: Expr) -> bool:
 def _no_term(e: Expr) -> bool:
     """Whether the verifier translates *e* to no term at all: a generic's
     call, a fold, a cell's read, a handler or a set's size anywhere in it,
+    an `if` with a map or set `let` in a branch block,
     or a slot of a type other than ``Int``, ``Nat`` and ``Bool`` bound to a
     value it does not translate (a ``let`` of one of those three holds a
     fresh value of its type).  A construction is a term of its checked
@@ -876,6 +869,16 @@ def _no_term(e: Expr) -> bool:
     for node in _walk(e):
         if (isinstance(node, (Fold, Get, Handle, SetSize))
                 or isinstance(node, Call) and node.fn.forall):
+            return True
+        if isinstance(node, If) and any(
+                isinstance(s, Let) and isinstance(s.binding.value, (MapBuild, SetBuild))
+                for b in (node.then, node.other) for s in b.lets):
+            # An `if` whose branch block, taken or not, holds a `let` of a
+            # map or set construction: in place its narrowing is left to
+            # Tier 3, and through a `let` it is refuted over the fresh
+            # value (#1696's line of 2026-11-02, seed 2900205); an array's
+            # or a primitive's `let` in the branch leaves the value whole,
+            # and a map `let` outside the `if` does.
             return True
         if (isinstance(node, Ref) and node.binding.value is not None
                 and node.binding.type not in PRIMITIVES

@@ -1566,9 +1566,12 @@ class TestASecondCollectionInOneProcess:
                               "found": len(found), "lost": lost[:5],
                               "errors": [l for l in text.splitlines() if "not found" in l][:3]}))
             """)
+        # The child reads node ids off `-q`; a `PYTEST_ADDOPTS=-q` in the
+        # environment would make that `-qq`, per-file counts and no ids.
+        env = {k: v for k, v in os.environ.items() if k != "PYTEST_ADDOPTS"}
         result = subprocess.run(
             [sys.executable, "-c", script, *files], cwd=ROOT, capture_output=True,
-            text=True, encoding="utf-8", check=False)
+            text=True, encoding="utf-8", check=False, env=env)
         assert result.returncode == 0, result.stderr[-2000:]
         report = json.loads(result.stdout.strip().splitlines()[-1])
         assert report["first"] == 0 and report["recorded"] > 0, report

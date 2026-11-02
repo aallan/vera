@@ -2911,23 +2911,105 @@ def test_the_night_is_read_as_the_workflow_writes_it() -> None:
         night_seeds("night:0")
 
 
-def test_an_if_with_a_map_let_in_a_branch_is_unconstrained_to_the_verifier() -> None:
-    """#1696's member of 2026-11-02 (seed 2900205): the verifier loses an
-    `if`'s value when a branch block holds a `let` of a map or set
-    construction, the branch taken or not, so a narrowing of that value
-    into `Nat` is refused (E503) where the value is 15.  The real value
-    stays; an array's or a primitive's `let` leaves the verifier's whole,
-    and so does a map `let` outside the `if`."""
+def test_an_if_with_a_map_let_in_a_branch_has_no_term() -> None:
+    """#1696's member of 2026-11-02 (seed 2900205): the verifier translates
+    an `if` whose branch block holds a `let` of a map or set construction,
+    the branch taken or not, to no term.  In place its narrowing is left to
+    Tier 3; bound by a `let` it is a fresh value, and a narrowing of that
+    value into `Nat` is refuted (E503) where the value is 15.  An array's
+    or a primitive's `let` in the branch leaves the value whole, and the
+    real value stays whatever the branch holds."""
     def branch(stmts: list[gen.Let | gen.Do]) -> gen.Block:
         return gen.Block(stmts, gen.Lit(15))
     map_let = gen.Let(gen.Binding("Map<String, Int>", value=gen.MapBuild([("b", gen.Lit(3))])))
+    set_let = gen.Let(gen.Binding("Set<Int>", value=gen.SetBuild([gen.Lit(1)])))
     array_let = gen.Let(gen.Binding("Array<Int>", value=gen.ArrayLit("Int", [gen.Lit(1)])))
     taken = gen.If(gen.Lit(True), branch([map_let]), branch([]))
-    untaken = gen.If(gen.Lit(True), branch([]), branch([map_let]))
+    untaken = gen.If(gen.Lit(True), branch([]), branch([set_let]))
     whole = gen.If(gen.Lit(True), branch([array_let]), branch([]))
-    assert gen.iv(taken, "v") == gen.ANY and gen.iv(untaken, "v") == gen.ANY
-    assert gen.iv(taken, "r") == gen.Iv(15, 15)
-    assert gen.iv(whole, "v") == gen.Iv(15, 15)
+    assert gen._untranslated(taken) and gen._untranslated(untaken)
+    assert not gen._untranslated(whole)
+    assert gen.iv(taken, "r") == gen.Iv(15, 15) == gen.iv(taken, "v")
+    bound = gen.Ref(gen.Binding("Int", value=taken))
+    assert gen.iv(bound, "v") == gen.ANY and gen.iv(bound, "r") == gen.Iv(15, 15)
+    assert gen.iv(gen.Ref(gen.Binding("Int", value=whole)), "v") == gen.Iv(15, 15)
+
+
+_IF_BRANCH_LET_BOUND = """\
+public fn f3(-> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Int = if -4 <= -3 then {
+    %(then)s5 * 3
+  } else {
+    %(other)s8 + 7
+  };
+  handle[State<Nat>](@Nat = @Int.0 + -6) {
+    get(@Unit) -> { resume(@Nat.0) },
+    put(@Nat) -> { resume(()) }
+  } in {
+    true
+  }
+}
+"""
+
+_IF_BRANCH_LET_IN_PLACE = """\
+public fn f3(-> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[State<Nat>](@Nat = (if -4 <= -3 then {
+    %(then)s5 * 3
+  } else {
+    8 + 7
+  }) + -6) {
+    get(@Unit) -> { resume(@Nat.0) },
+    put(@Nat) -> { resume(()) }
+  } in {
+    true
+  }
+}
+"""
+
+_MAP_LET = 'let @Map<String, Int> = map_insert(map_new(), "b", 3);\n    '
+_SET_LET = "let @Set<Int> = set_add(set_new(), 1);\n    "
+_ARRAY_LET = "let @Array<Int> = [1, 2];\n    "
+
+
+def _runtime_checks(verified: pipeline.Verified) -> int:
+    return sum(1 for o in verified.result.obligations if o.status in ("tier3", "timeout"))
+
+
+@pytest.mark.parametrize(("then", "other", "codes"), [
+    pytest.param(_MAP_LET, "", ["E503"], id="map let, taken branch"),
+    pytest.param("", _MAP_LET, ["E503"], id="map let, untaken branch"),
+    pytest.param(_SET_LET, "", ["E503"], id="set let, taken branch"),
+    pytest.param("", _SET_LET, ["E503"], id="set let, untaken branch"),
+    pytest.param(_ARRAY_LET, "", [], id="array let, whole"),
+    pytest.param("", "", [], id="plain, whole"),
+])
+def test_the_if_branch_lets_verdicts_are_the_verifiers(
+    then: str, other: str, codes: list[str],
+) -> None:
+    """The model's claim against the verifier (#1696's member of 2026-11-02):
+    bound by a `let`, an `if` with a map or set `let` in either branch is a
+    fresh value, and the narrowing of it into `Nat` is refuted; an array's
+    `let` or none leaves the value 15 and the narrowing proved."""
+    verified = pipeline.verify(_IF_BRANCH_LET_BOUND % {"then": then, "other": other},
+                               file="bound.vera")
+    assert [d.error_code for d in verified.errors] == codes, [d.format() for d in verified.errors]
+
+
+def test_the_if_branch_let_in_place_is_left_to_a_runtime_check() -> None:
+    """The model's other claim: in place, the same `if`'s narrowing is a
+    runtime check, where the plain `if`'s is proved."""
+    with_let = pipeline.verify(_IF_BRANCH_LET_IN_PLACE % {"then": _MAP_LET}, file="in_place.vera")
+    assert with_let.ok and _runtime_checks(with_let) >= 1, [d.format() for d in with_let.diagnostics]
+    plain = pipeline.verify(_IF_BRANCH_LET_IN_PLACE % {"then": ""}, file="plain.vera")
+    assert plain.ok and _runtime_checks(plain) == 0, [d.format() for d in plain.diagnostics]
 
 
 NIGHT_SEEDS = night_seeds()
