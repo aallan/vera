@@ -1078,6 +1078,14 @@ CLEAN_RUN_EXCEPTION_ERROR = (
     "'tests/test_m.py::test_f[b]']. If your config sets debug=true, the original pytest error "
     "should be above. (mutmut/runners/harness.py:136)")
 
+def _traceback(frames: list[tuple[str, int, str]], exception: str) -> str:
+    """A traceback in Python's own form: *frames* outermost first, each a
+    file, a line and a function, ending in the *exception* line."""
+    return "Traceback (most recent call last):\n" + "".join(
+        f'  File "{file}", line {line}, in {func}\n    pass\n'
+        for file, line, func in frames) + exception + "\n"
+
+
 #: What the night's engine named after both of its tests were deselected.
 NIGHT_LAST_LOG = """\
     done in 13ms (0 files mutated, 1 ignored, 1 unmodified)
@@ -1530,6 +1538,43 @@ class TestEngineFailure:
         run survived, as the night log's is without its stop sentence."""
         log = CLEAN_RUN_EXCEPTION_LOG + "1 passed, 1 error in 0.01s\n"
         assert md.engine_failure(log) is None
+
+    def test_the_last_traceback_decides_not_an_earlier_one_of_its_text(self) -> None:
+        """Where a traceback pytest went on from ends in the same exception
+        line as the last, the last decides: the frame reported is the one
+        the engine died in, and a death in the test's own frames is no
+        engine failure (PR #1826 review)."""
+        went_on = NIGHT_LOG.replace("failed to collect stats. runner returned 1\n", "")
+        exception = NIGHT_ERROR.split(" (")[0]
+        in_the_test = went_on + _traceback(
+            [("/work/vera/mutants/tests/test_m.py", 9, "test_f")], exception)
+        assert md.engine_failure(in_the_test) is None
+        in_the_engine = went_on + _traceback(
+            [("/work/vera/scripts/mutate_diff.py", 885, "engine_main"),
+             ("/venv/lib/python3.12/site-packages/mutmut/runners/harness.py", 136,
+              "execute_pytest")],
+            exception)
+        assert md.engine_failure(in_the_engine) == exception + " (mutmut/runners/harness.py:136)"
+
+    def test_an_exception_whose_message_spans_lines_is_read_whole(self) -> None:
+        """An exception prints a message of several lines as they are, and
+        the lines after the first are the message, not a pass going on;
+        the first line and the frame are reported (PR #1826 review)."""
+        log = CLEAN_RUN_EXCEPTION_LOG + "The ids above were listed by the stats pass.\n"
+        assert md.engine_failure(log) == CLEAN_RUN_EXCEPTION_ERROR
+        assert md.engine_failure(log + "1 passed, 1 error in 0.01s\n") is None
+
+    def test_a_childs_traceback_in_the_engines_message_names_the_childs_death(self) -> None:
+        """mutmut appends a crashed worker's traceback to the exception it
+        raises for it, so the log ends in a traceback inside a message:
+        the child's exception and frame are the engine's death."""
+        child = _traceback(
+            [("/venv/lib/python3.12/site-packages/mutmut/workers/isolation.py", 90, "_child")],
+            "KeyError: 'duration_by_test'")
+        log = CLEAN_RUN_EXCEPTION_LOG.rsplit("mutmut.runners.harness.", 1)[0] + (
+            "RuntimeError: Worker failed\n\nTraceback from the child process:\n" + child)
+        assert md.engine_failure(log) == (
+            "KeyError: 'duration_by_test' (mutmut/workers/isolation.py:90)")
 
 
 class TestASecondCollectionInOneProcess:

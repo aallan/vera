@@ -237,6 +237,11 @@ _RULE = re.compile(r"^([-_=])\1* .+ \1+$")
 _RULE_WIDTH = 79
 _CAPTURED = re.compile(r"^-+ Captured .+ -+$")
 
+#: pytest's closing line, the session's counts: bare under ``-q`` (mutmut's
+#: runs), between rules otherwise.  A traceback this follows is a report
+#: pytest went on from.
+_SUMMARY = re.compile(r"^(?:no tests ran|\d+ \w+(?:, \d+ \w+)*) in \d+\.\d+s(?: \(.*\))?$")
+
 #: Python's traceback printer prints a frame repeated in a row three times,
 #: then this count of the rest.
 _REPEATED = re.compile(r"^\s*\[Previous line repeated (\d+) more times?\]$")
@@ -995,10 +1000,13 @@ def engine_failure(log: str) -> str | None:
     """The exception the engine's own code raised that stopped its stats pass
     or its clean run, read off its log: the exception's first line and the
     engine's frame, ``AttributeError: … (mutmut/runners/harness.py:157)``;
-    None when the log names no such stop, or a test's code raised.  A
-    traceback that ends the log is the engine's death whether or not a
-    pass sentence precedes it: pytest's usage-error exit, which the
-    harness raises past the pass that would have printed one (#1822).
+    None when the log names no such stop, or a test's code raised.
+    Without a stop sentence, the traceback the log ends with is the
+    engine's death: pytest's usage-error exit, which the harness raises
+    past the pass that would have printed one (#1822).  Its message is
+    read whole, a line after the exception's first being the message's,
+    unless pytest's session summary or a rule follows: then the pass went
+    on, and the traceback is a report the run survived.
 
     The log of a run its stats pass or its clean run stopped holds that
     pass's output alone: mutmut prints it only when the pass fails, and
@@ -1026,12 +1034,17 @@ def engine_failure(log: str) -> str | None:
             captured = _CAPTURED.match(rule) is not None
         if not captured:
             lines.append(row)
-    for start, line in enumerate(lines):
-        if line.rstrip() != "Traceback (most recent call last):":
+    starts = [at for at, line in enumerate(lines)
+              if line.rstrip() == "Traceback (most recent call last):"]
+    for start in starts:
+        if not stopped and start != starts[-1]:
+            # Without a stop sentence, only the traceback the log ends
+            # with can be where the engine died.
             continue
         frames: list[re.Match[str]] = []
         raised: str | None = None
-        for row in lines[start + 1:]:
+        after: list[str] = []
+        for at, row in enumerate(lines[start + 1:], start + 1):
             frame = _FRAME.match(row.rstrip())
             repeated = _REPEATED.match(row)
             if frame is not None:
@@ -1040,12 +1053,13 @@ def engine_failure(log: str) -> str | None:
                 frames += [frames[-1]] * min(int(repeated.group(1)), RECURSION_FRAMES)
             elif row.strip() and not row[0].isspace():
                 raised = row.strip()
+                after = lines[at + 1:]
                 break
         if raised is None:
             continue
-        if not stopped and raised != _last_line(lines):
-            # A traceback a pass printed and went on from decides nothing;
-            # one the log ends with is where the engine died.
+        if not stopped and any(_went_on(row) for row in after):
+            # The pass went on past the exception: a report the run
+            # survived.  Otherwise the lines after it are its message.
             continue
         kept = [f for f in frames if not _NEUTRAL_FILE.search(f["file"])]
         deciding = kept[-1] if kept else None
@@ -1062,9 +1076,12 @@ def engine_failure(log: str) -> str | None:
     return None
 
 
-def _last_line(lines: Sequence[str]) -> str:
-    """The last line of *lines* that is not blank, stripped; "" when none."""
-    return next((row.strip() for row in reversed(lines) if row.strip()), "")
+def _went_on(row: str) -> bool:
+    """Whether *row* is a line pytest prints past a report it went on from:
+    its session summary, or one of its rules."""
+    rule = row.rstrip()
+    return (_SUMMARY.match(rule) is not None
+            or len(rule) >= _RULE_WIDTH and _RULE.match(rule) is not None)
 
 
 def parse_results(text: str) -> dict[str, str]:
