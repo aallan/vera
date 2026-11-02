@@ -1113,6 +1113,10 @@ Each stage call and each `pipeline.cli()` call runs under a budget, as a process
 
 The constructs code generation cannot lower are refused at check, at the written type, the operation or the call that instantiates a generic (#1679, #1680), so a test of the drop machinery, the `[E602]` skip, its `[E620]` propagation to every caller (#1100) and the refusal of a dropped entry (#1183, #1186), injects the skip: the `skip_map_inserts` fixture (`tests/codegen_helpers.py`) makes `map_insert`'s translator raise the skip an `Array`-valued map raised, and the fixture program writes a map the check accepts.  Two check-green shapes code generation still drops a function of are bugs, and neither is a fixture: a function type at a generic's type argument (#1783), and an array literal of closures, whose element type code generation's array-literal inference does not read from the check (`[E602]`, "could not infer array literal element type"; #1525's class).
 
+### A parametrised test takes a list, never a generator
+
+`pytest.mark.parametrize` over a generator (or any one-shot iterable) collects its cells once per process: the generator is consumed at the first collection, and a second `pytest.main` in the same process imports no fresh module, so the test then has no parameter sets.  mutmut runs its stats pass, its listing and its clean run as sessions of one process and asks the clean run for the ids the stats pass recorded, so a generator-parametrised test turned the nightly sweep's rerun into pytest's usage-error exit (`ERROR: not found: …`) for three nights (#1822).  pytest names every such usage under `PytestRemovedIn10Warning`, which the suite's configuration makes an error, so the pull-request gate refuses it at collection; `tests/test_mutate_diff.py::TestASecondCollectionInOneProcess` collects the oracle twice in one interpreter and asks for every recorded id the second time, the mechanism's own differential.  Wrap the iterable: `list(cells())`.
+
 ### Running against ANOTHER checkout: the argument decides, not `PYTHONPATH`
 
 To measure a test file against a different revision — a baseline worktree, to

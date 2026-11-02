@@ -169,6 +169,14 @@ markers = [
     "budget(seconds): the test runs under a pipeline budget of that many seconds, which every stage call in it that names no budget_s of its own runs under, in place of the 120 s default; a stress test that names none runs under 600 s (tests/conftest.py, #1670)",
 ]
 addopts = "-m 'not stress'"
+# A deprecated pytest usage is an error, not a warning: a test parametrised over a
+# generator had its cells in the first collection of a process alone, and mutmut,
+# which runs its stats pass, its listing and its clean run as sessions of one
+# process, asked the clean run for cells the second collection no longer had
+# (#1822).  pytest names every such usage under this category.
+filterwarnings = [
+    "error::pytest.PytestRemovedIn10Warning",
+]
 
 [tool.coverage.run]
 # A test's child Python processes are measured too, so the CLI smoke

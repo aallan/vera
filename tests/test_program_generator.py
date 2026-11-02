@@ -2911,6 +2911,128 @@ def test_the_night_is_read_as_the_workflow_writes_it() -> None:
         night_seeds("night:0")
 
 
+def test_an_if_with_a_map_let_in_a_branch_has_no_term() -> None:
+    """#1696's member of 2026-11-02 (seed 2900205): the verifier translates
+    an `if` whose branch block holds a `let` of a map or set construction,
+    the branch taken or not, to no term.  In place its narrowing is left to
+    Tier 3; bound by a `let` it is a fresh value, and a narrowing of that
+    value into `Nat` is refuted (E503) where the value is 15.  An array's
+    or a primitive's `let` in the branch leaves the value whole, and the
+    real value stays whatever the branch holds."""
+    def branch(stmts: list[gen.Let | gen.Do]) -> gen.Block:
+        return gen.Block(stmts, gen.Lit(15))
+    map_let = gen.Let(gen.Binding("Map<String, Int>", value=gen.MapBuild([("b", gen.Lit(3))])))
+    set_let = gen.Let(gen.Binding("Set<Int>", value=gen.SetBuild([gen.Lit(1)])))
+    array_let = gen.Let(gen.Binding("Array<Int>", value=gen.ArrayLit("Int", [gen.Lit(1)])))
+    taken = gen.If(gen.Lit(True), branch([map_let]), branch([]))
+    untaken = gen.If(gen.Lit(True), branch([]), branch([set_let]))
+    whole = gen.If(gen.Lit(True), branch([array_let]), branch([]))
+    assert gen._untranslated(taken) and gen._untranslated(untaken)
+    assert not gen._untranslated(whole)
+    assert gen.iv(taken, "r") == gen.Iv(15, 15) == gen.iv(taken, "v")
+    bound = gen.Ref(gen.Binding("Int", value=taken))
+    assert gen.iv(bound, "v") == gen.ANY and gen.iv(bound, "r") == gen.Iv(15, 15)
+    assert gen.iv(gen.Ref(gen.Binding("Int", value=whole)), "v") == gen.Iv(15, 15)
+
+
+_IF_BRANCH_LET_BOUND = """\
+public fn f3(-> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Int = if -4 <= -3 then {
+    %(then)s5 * 3
+  } else {
+    %(other)s8 + 7
+  };
+  handle[State<Nat>](@Nat = @Int.0 + -6) {
+    get(@Unit) -> { resume(@Nat.0) },
+    put(@Nat) -> { resume(()) }
+  } in {
+    true
+  }
+}
+"""
+
+_IF_BRANCH_LET_IN_PLACE = """\
+public fn f3(-> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[State<Nat>](@Nat = (if -4 <= -3 then {
+    %(then)s5 * 3
+  } else {
+    %(other)s8 + 7
+  }) + -6) {
+    get(@Unit) -> { resume(@Nat.0) },
+    put(@Nat) -> { resume(()) }
+  } in {
+    true
+  }
+}
+"""
+
+_MAP_LET = 'let @Map<String, Int> = map_insert(map_new(), "b", 3);\n    '
+_SET_LET = "let @Set<Int> = set_add(set_new(), 1);\n    "
+_ARRAY_LET = "let @Array<Int> = [1, 2];\n    "
+
+#: The six shapes both differentials below span: `lost` is the model's claim
+#: that a map or set `let` in either branch of the `if` loses its value,
+#: where an array's `let` or none keeps it.
+_IF_BRANCH_LET_CELLS = [
+    pytest.param(_MAP_LET, "", True, id="map let, taken branch"),
+    pytest.param("", _MAP_LET, True, id="map let, untaken branch"),
+    pytest.param(_SET_LET, "", True, id="set let, taken branch"),
+    pytest.param("", _SET_LET, True, id="set let, untaken branch"),
+    pytest.param(_ARRAY_LET, "", False, id="array let, whole"),
+    pytest.param("", "", False, id="plain, whole"),
+]
+
+
+def _runtime_checks(verified: pipeline.Verified) -> int:
+    return sum(1 for o in verified.result.obligations if o.status in ("tier3", "timeout"))
+
+
+def _nat_bind_status(verified: pipeline.Verified) -> str:
+    """The status of the one `nat_bind` obligation a program of this file
+    holds: the narrowing of the `if`'s value into `Nat`."""
+    (bind,) = [o for o in verified.result.obligations if o.kind == "nat_bind"]
+    return bind.status
+
+
+@pytest.mark.parametrize(("then", "other", "lost"), _IF_BRANCH_LET_CELLS)
+def test_the_if_branch_lets_verdicts_are_the_verifiers(
+    then: str, other: str, lost: bool,
+) -> None:
+    """The model's claim against the verifier (#1696's member of 2026-11-02):
+    bound by a `let`, an `if` with a map or set `let` in either branch is a
+    fresh value, and the narrowing of it into `Nat` is refuted; an array's
+    `let` or none leaves the value 15 and the narrowing proved."""
+    verified = pipeline.verify(_IF_BRANCH_LET_BOUND % {"then": then, "other": other},
+                               file="bound.vera")
+    codes = ["E503"] if lost else []
+    assert [d.error_code for d in verified.errors] == codes, [d.format() for d in verified.errors]
+    # An empty error list alone is also what a narrowing left to Tier 3
+    # reports; the status pins "proved" (PR #1826 review).
+    assert _nat_bind_status(verified) == ("violated" if lost else "verified")
+
+
+@pytest.mark.parametrize(("then", "other", "lost"), _IF_BRANCH_LET_CELLS)
+def test_the_if_branch_let_in_place_is_left_to_a_runtime_check(
+    then: str, other: str, lost: bool,
+) -> None:
+    """The model's other claim, over the same six shapes: in place, the
+    `if`'s narrowing is a runtime check where its value is lost, and proved
+    where it is kept."""
+    verified = pipeline.verify(_IF_BRANCH_LET_IN_PLACE % {"then": then, "other": other},
+                               file="in_place.vera")
+    assert verified.ok, [d.format() for d in verified.diagnostics]
+    assert (_runtime_checks(verified) >= 1) == lost
+    assert _nat_bind_status(verified) == ("tier3" if lost else "verified")
+
+
 NIGHT_SEEDS = night_seeds()
 
 if NIGHT_SEEDS:
