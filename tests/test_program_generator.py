@@ -2964,7 +2964,7 @@ public fn f3(-> @Bool)
   handle[State<Nat>](@Nat = (if -4 <= -3 then {
     %(then)s5 * 3
   } else {
-    8 + 7
+    %(other)s8 + 7
   }) + -6) {
     get(@Unit) -> { resume(@Nat.0) },
     put(@Nat) -> { resume(()) }
@@ -2978,6 +2978,18 @@ _MAP_LET = 'let @Map<String, Int> = map_insert(map_new(), "b", 3);\n    '
 _SET_LET = "let @Set<Int> = set_add(set_new(), 1);\n    "
 _ARRAY_LET = "let @Array<Int> = [1, 2];\n    "
 
+#: The six shapes both differentials below span: `lost` is the model's claim
+#: that a map or set `let` in either branch of the `if` loses its value,
+#: where an array's `let` or none keeps it.
+_IF_BRANCH_LET_CELLS = [
+    pytest.param(_MAP_LET, "", True, id="map let, taken branch"),
+    pytest.param("", _MAP_LET, True, id="map let, untaken branch"),
+    pytest.param(_SET_LET, "", True, id="set let, taken branch"),
+    pytest.param("", _SET_LET, True, id="set let, untaken branch"),
+    pytest.param(_ARRAY_LET, "", False, id="array let, whole"),
+    pytest.param("", "", False, id="plain, whole"),
+]
+
 
 def _runtime_checks(verified: pipeline.Verified) -> int:
     return sum(1 for o in verified.result.obligations if o.status in ("tier3", "timeout"))
@@ -2990,16 +3002,9 @@ def _nat_bind_status(verified: pipeline.Verified) -> str:
     return bind.status
 
 
-@pytest.mark.parametrize(("then", "other", "codes"), [
-    pytest.param(_MAP_LET, "", ["E503"], id="map let, taken branch"),
-    pytest.param("", _MAP_LET, ["E503"], id="map let, untaken branch"),
-    pytest.param(_SET_LET, "", ["E503"], id="set let, taken branch"),
-    pytest.param("", _SET_LET, ["E503"], id="set let, untaken branch"),
-    pytest.param(_ARRAY_LET, "", [], id="array let, whole"),
-    pytest.param("", "", [], id="plain, whole"),
-])
+@pytest.mark.parametrize(("then", "other", "lost"), _IF_BRANCH_LET_CELLS)
 def test_the_if_branch_lets_verdicts_are_the_verifiers(
-    then: str, other: str, codes: list[str],
+    then: str, other: str, lost: bool,
 ) -> None:
     """The model's claim against the verifier (#1696's member of 2026-11-02):
     bound by a `let`, an `if` with a map or set `let` in either branch is a
@@ -3007,21 +3012,25 @@ def test_the_if_branch_lets_verdicts_are_the_verifiers(
     `let` or none leaves the value 15 and the narrowing proved."""
     verified = pipeline.verify(_IF_BRANCH_LET_BOUND % {"then": then, "other": other},
                                file="bound.vera")
+    codes = ["E503"] if lost else []
     assert [d.error_code for d in verified.errors] == codes, [d.format() for d in verified.errors]
     # An empty error list alone is also what a narrowing left to Tier 3
     # reports; the status pins "proved" (PR #1826 review).
-    assert _nat_bind_status(verified) == ("violated" if codes else "verified")
+    assert _nat_bind_status(verified) == ("violated" if lost else "verified")
 
 
-def test_the_if_branch_let_in_place_is_left_to_a_runtime_check() -> None:
-    """The model's other claim: in place, the same `if`'s narrowing is a
-    runtime check, where the plain `if`'s is proved."""
-    with_let = pipeline.verify(_IF_BRANCH_LET_IN_PLACE % {"then": _MAP_LET}, file="in_place.vera")
-    assert with_let.ok and _runtime_checks(with_let) >= 1, [d.format() for d in with_let.diagnostics]
-    assert _nat_bind_status(with_let) == "tier3"
-    plain = pipeline.verify(_IF_BRANCH_LET_IN_PLACE % {"then": ""}, file="plain.vera")
-    assert plain.ok and _runtime_checks(plain) == 0, [d.format() for d in plain.diagnostics]
-    assert _nat_bind_status(plain) == "verified"
+@pytest.mark.parametrize(("then", "other", "lost"), _IF_BRANCH_LET_CELLS)
+def test_the_if_branch_let_in_place_is_left_to_a_runtime_check(
+    then: str, other: str, lost: bool,
+) -> None:
+    """The model's other claim, over the same six shapes: in place, the
+    `if`'s narrowing is a runtime check where its value is lost, and proved
+    where it is kept."""
+    verified = pipeline.verify(_IF_BRANCH_LET_IN_PLACE % {"then": then, "other": other},
+                               file="in_place.vera")
+    assert verified.ok, [d.format() for d in verified.diagnostics]
+    assert (_runtime_checks(verified) >= 1) == lost
+    assert _nat_bind_status(verified) == ("tier3" if lost else "verified")
 
 
 NIGHT_SEEDS = night_seeds()
