@@ -1553,7 +1553,10 @@ class TestASecondCollectionInOneProcess:
                     code = pytest.main(["--collect-only", "-q", "-p", "no:cacheprovider",
                                         "-W", "default::pytest.PytestRemovedIn10Warning",
                                         *targets])
-                ids = [line for line in out.getvalue().splitlines() if line.startswith("tests/")]
+                # A node id holds "::"; the matrix plugin's own lines start with a
+                # file's path too ("… runs every matrix cell: …", in CI's mode).
+                ids = [line for line in out.getvalue().splitlines()
+                       if line.startswith("tests/") and "::" in line]
                 return int(code), ids, out.getvalue()
 
             first, recorded, _ = collect(sys.argv[1:])
