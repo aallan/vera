@@ -2983,6 +2983,13 @@ def _runtime_checks(verified: pipeline.Verified) -> int:
     return sum(1 for o in verified.result.obligations if o.status in ("tier3", "timeout"))
 
 
+def _nat_bind_status(verified: pipeline.Verified) -> str:
+    """The status of the one `nat_bind` obligation a program of this file
+    holds: the narrowing of the `if`'s value into `Nat`."""
+    (bind,) = [o for o in verified.result.obligations if o.kind == "nat_bind"]
+    return bind.status
+
+
 @pytest.mark.parametrize(("then", "other", "codes"), [
     pytest.param(_MAP_LET, "", ["E503"], id="map let, taken branch"),
     pytest.param("", _MAP_LET, ["E503"], id="map let, untaken branch"),
@@ -3001,6 +3008,9 @@ def test_the_if_branch_lets_verdicts_are_the_verifiers(
     verified = pipeline.verify(_IF_BRANCH_LET_BOUND % {"then": then, "other": other},
                                file="bound.vera")
     assert [d.error_code for d in verified.errors] == codes, [d.format() for d in verified.errors]
+    # An empty error list alone is also what a narrowing left to Tier 3
+    # reports; the status pins "proved" (PR #1826 review).
+    assert _nat_bind_status(verified) == ("violated" if codes else "verified")
 
 
 def test_the_if_branch_let_in_place_is_left_to_a_runtime_check() -> None:
@@ -3008,8 +3018,10 @@ def test_the_if_branch_let_in_place_is_left_to_a_runtime_check() -> None:
     runtime check, where the plain `if`'s is proved."""
     with_let = pipeline.verify(_IF_BRANCH_LET_IN_PLACE % {"then": _MAP_LET}, file="in_place.vera")
     assert with_let.ok and _runtime_checks(with_let) >= 1, [d.format() for d in with_let.diagnostics]
+    assert _nat_bind_status(with_let) == "tier3"
     plain = pipeline.verify(_IF_BRANCH_LET_IN_PLACE % {"then": ""}, file="plain.vera")
     assert plain.ok and _runtime_checks(plain) == 0, [d.format() for d in plain.diagnostics]
+    assert _nat_bind_status(plain) == "verified"
 
 
 NIGHT_SEEDS = night_seeds()
