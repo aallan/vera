@@ -436,7 +436,10 @@ def test_the_matrix_spans_every_site_and_shape() -> None:
 class TestTheRun:
     """What the compiled program does with each input."""
 
-    @pytest.mark.parametrize(("site", "shape", "form", "arg"), _run_cells())
+    # A list, never the generator itself: a one-shot iterable has its cells
+    # in the first collection of a process alone, and mutmut asks a later
+    # session of the same process for them by id (#1822).
+    @pytest.mark.parametrize(("site", "shape", "form", "arg"), list(_run_cells()))
     def test_the_value(self, site: str, shape: str, form: str,
                        arg: float) -> None:
         src = program(site, SHAPES[shape], form)

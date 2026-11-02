@@ -795,6 +795,14 @@ def iv(e: Expr, which: str) -> Iv:
     if isinstance(e, Neg):
         return iv_neg(iv(e.operand, which))
     if isinstance(e, If):
+        if which == "v" and any(
+                isinstance(s, Let) and isinstance(s.binding.value, (MapBuild, SetBuild))
+                for b in (e.then, e.other) for s in b.lets):
+            # The verifier loses an `if`'s value when a branch block, taken
+            # or not, holds a `let` of a map or set construction (#1696's
+            # line of 2026-11-02, seed 2900205); an array's or a primitive's
+            # `let` leaves it whole, and a map `let` outside the `if` does.
+            return ANY
         branches = [b.result for b in (e.then, e.other)
                     if not isinstance(b.result, Throw)]
         out = _hull_all([iv(b, which) for b in branches])

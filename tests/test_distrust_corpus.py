@@ -60,7 +60,7 @@ from typing import Any
 
 import pytest
 
-from vera.tester import FunctionTestResult, TestResult
+from vera.tester import FunctionTestResult, TestResult, TrialResult
 
 from tests import pipeline
 
@@ -121,14 +121,16 @@ def _tested(path: Path, *, distrust: bool) -> TestResult:
     return tested.result
 
 
-def _outcome(f: FunctionTestResult) -> tuple[object, ...]:
-    """Everything a function's result reports, for the mode differential —
-    its attribution too, which only a distrusted function may carry."""
+def _treatment(f: FunctionTestResult) -> tuple[object, ...]:
+    """What the mode decided about a function's result, for the mode
+    differential: its classification, and that no trial carries what only
+    a distrusted function may (an attribution, a refutation).  Not the
+    trials: Z3 draws each run's inputs, and two runs of one process can
+    draw them apart (#1785), so the failing inputs and their counts are no
+    measure of the mode."""
     return (
-        f.fn_name, f.category, f.reason, f.trials_run, f.trials_passed,
-        f.trials_failed, f.proved,
-        [(t.args, t.status, t.message, t.trap_kind, t.attribution,
-          len(t.refutes)) for t in f.failures],
+        f.fn_name, f.category, f.reason, f.proved, sorted(f.unchecked),
+        all(not t.attribution and not t.refutes for t in f.failures),
     )
 
 
@@ -156,9 +158,9 @@ def _distrust_program(
     for f in default.functions:
         d = by_name[f.fn_name]
         if not f.proved:
-            assert _outcome(d) == _outcome(f), (
+            assert _treatment(d) == _treatment(f), (
                 f"--distrust changed '{f.fn_name}', which it does not "
-                f"distrust:\n  default:  {_outcome(f)}\n  distrust: {_outcome(d)}")
+                f"distrust:\n  default:  {_treatment(f)}\n  distrust: {_treatment(d)}")
             continue
         assert d.proved and d.category in ("tested", "refuted", "verified"), (
             d.category, d.reason)
@@ -230,6 +232,26 @@ private fn mo(@Int -> @Nat)
   apply_nat(@IntToInt.0, @Int.0)
 }
 """
+
+
+def test_the_mode_differential_reads_the_mode_not_the_inputs_z3_drew() -> None:
+    """Two runs of one process can draw a function's inputs apart (#1785:
+    the night of 2026-10-31 saw `ch06_assert_assume`'s `guarded` differ by
+    its trials alone), so over an undistrusted function the differential
+    compares what the mode decided, never the trials."""
+    def result(inputs: list[int], attribution: str = "") -> FunctionTestResult:
+        failures = [
+            TrialResult("guarded", {"@Int.0": a}, "fail", "assertion failed",
+                        trap_kind="contract_violation", attribution=attribution)
+            for a in inputs]
+        return FunctionTestResult(
+            "guarded", "tested", "Tier 3 contract (runtime check)", 1000,
+            1000 - len(failures), len(failures), failures)
+    assert _treatment(result([0, -1, 7])) == _treatment(result([3, -9]))
+    assert _treatment(result([0])) != _treatment(result([0], attribution="the guard at 5:3"))
+    assert _treatment(result([0])) != _treatment(
+        FunctionTestResult("guarded", "tested", "Tier 3 contract (runtime check)",
+                           1000, 1000, 0, [], proved=True))
 
 
 def test_the_instrument_fails_on_a_false_proof(tmp_path: Path) -> None:

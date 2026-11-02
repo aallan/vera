@@ -1046,6 +1046,38 @@ failed to collect stats. runner returned 1
 
 """
 
+#: The engine dying in its clean run: pytest's usage-error exit, which the
+#: harness raises, ends the log with the exception and no pass sentence
+#: (the night of 2026-11-02, run 41366926654, slice 0).
+CLEAN_RUN_EXCEPTION_LOG = """\
+    done in 442ms (0 files mutated, 115 ignored, 4 unmodified)
+    done
+Traceback (most recent call last):
+  File "/work/vera/scripts/mutate_diff.py", line 1659, in <module>
+    raise SystemExit(engine_main(sys.argv[2:]))
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/vera/scripts/mutate_diff.py", line 885, in engine_main
+    engine.cli(args=list(args), prog_name="mutmut")
+  File "/venv/lib/python3.12/site-packages/mutmut/__main__.py", line 991, in _run
+    clean_test_exit_code = runner.run_clean_tests(tests=tests)
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/venv/lib/python3.12/site-packages/mutmut/workers/isolation.py", line 921, in run_clean_tests
+    return self.test_runner.run_tests(mutant_name=None, tests=tests)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/venv/lib/python3.12/site-packages/mutmut/runners/harness.py", line 173, in run_tests
+    return int(self.execute_pytest(self._pytest_args_regular_run(tests)))
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/venv/lib/python3.12/site-packages/mutmut/runners/harness.py", line 136, in execute_pytest
+    raise BadTestExecutionCommandsException(params)
+mutmut.runners.harness.BadTestExecutionCommandsException: Failed to run pytest with args: ['-m', 'not stress', '--rootdir=.', '--tb=native', '-x', '-q', 'tests/test_m.py::test_f[a]', 'tests/test_m.py::test_f[b]']. If your config sets debug=true, the original pytest error should be above.
+"""
+
+CLEAN_RUN_EXCEPTION_ERROR = (
+    "mutmut.runners.harness.BadTestExecutionCommandsException: Failed to run pytest with args: "
+    "['-m', 'not stress', '--rootdir=.', '--tb=native', '-x', '-q', 'tests/test_m.py::test_f[a]', "
+    "'tests/test_m.py::test_f[b]']. If your config sets debug=true, the original pytest error "
+    "should be above. (mutmut/runners/harness.py:136)")
+
 #: What the night's engine named after both of its tests were deselected.
 NIGHT_LAST_LOG = """\
     done in 13ms (0 files mutated, 1 ignored, 1 unmodified)
@@ -1483,6 +1515,62 @@ class TestEngineFailure:
         assert md.engine_failure(NIGHT_LOG.replace("failed to collect stats. runner returned 1\n", "")) is None
         assert md.engine_failure(NIGHT_LOG.replace("failed to collect stats", "Failed to run clean test")) == (
             NIGHT_ERROR)
+
+
+    def test_an_exception_that_ends_the_log_from_the_engines_frame_is_the_engines(self) -> None:
+        """The engine died in its clean run: pytest answered a usage error
+        (an id its collection no longer had, #1822) and the harness raised,
+        so no pass sentence follows and the exception is the log's last
+        line.  No test is at fault, and the stop is named."""
+        assert md.engine_failure(CLEAN_RUN_EXCEPTION_LOG) == CLEAN_RUN_EXCEPTION_ERROR
+        assert md.copy_failure(CLEAN_RUN_EXCEPTION_LOG) is None
+
+    def test_the_same_exception_a_pass_went_on_from_decides_nothing(self) -> None:
+        """Followed by a pass's own summary, the traceback is a report the
+        run survived, as the night log's is without its stop sentence."""
+        log = CLEAN_RUN_EXCEPTION_LOG + "1 passed, 1 error in 0.01s\n"
+        assert md.engine_failure(log) is None
+
+
+class TestASecondCollectionInOneProcess:
+    """mutmut runs its stats pass, its listing and its clean run as pytest
+    sessions of one process, the clean run by the ids the stats pass
+    recorded.  A test parametrised over a one-shot iterable has its cells
+    in the first session alone, and the clean run's ``not found`` is
+    pytest's usage-error exit, which the harness raises (#1822: three
+    nights deciding no mutant).  The two sessions run in a fresh
+    interpreter, since this one has imported the suite already."""
+
+    def test_every_id_the_first_collection_records_is_found_by_the_second(self) -> None:
+        files = sorted(p.relative_to(ROOT).as_posix() for p in (ROOT / "tests").glob("test_*.py"))
+        script = textwrap.dedent("""\
+            import contextlib, io, json, sys
+            import pytest
+
+            def collect(targets):
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+                    code = pytest.main(["--collect-only", "-q", "-p", "no:cacheprovider",
+                                        "-W", "default::pytest.PytestRemovedIn10Warning",
+                                        *targets])
+                ids = [line for line in out.getvalue().splitlines() if line.startswith("tests/")]
+                return int(code), ids, out.getvalue()
+
+            first, recorded, _ = collect(sys.argv[1:])
+            second, found, text = collect(recorded)
+            lost = sorted(set(recorded) - set(found))
+            print(json.dumps({"first": first, "second": second, "recorded": len(recorded),
+                              "found": len(found), "lost": lost[:5],
+                              "errors": [l for l in text.splitlines() if "not found" in l][:3]}))
+            """)
+        result = subprocess.run(
+            [sys.executable, "-c", script, *files], cwd=ROOT, capture_output=True,
+            text=True, encoding="utf-8", check=False)
+        assert result.returncode == 0, result.stderr[-2000:]
+        report = json.loads(result.stdout.strip().splitlines()[-1])
+        assert report["first"] == 0 and report["recorded"] > 0, report
+        assert report["second"] == 0, report
+        assert report["found"] == report["recorded"], report
 
 
 class TestRunDropping:

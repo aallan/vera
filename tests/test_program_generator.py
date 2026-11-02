@@ -2911,6 +2911,25 @@ def test_the_night_is_read_as_the_workflow_writes_it() -> None:
         night_seeds("night:0")
 
 
+def test_an_if_with_a_map_let_in_a_branch_is_unconstrained_to_the_verifier() -> None:
+    """#1696's member of 2026-11-02 (seed 2900205): the verifier loses an
+    `if`'s value when a branch block holds a `let` of a map or set
+    construction, the branch taken or not, so a narrowing of that value
+    into `Nat` is refused (E503) where the value is 15.  The real value
+    stays; an array's or a primitive's `let` leaves the verifier's whole,
+    and so does a map `let` outside the `if`."""
+    def branch(stmts: list[gen.Let | gen.Do]) -> gen.Block:
+        return gen.Block(stmts, gen.Lit(15))
+    map_let = gen.Let(gen.Binding("Map<String, Int>", value=gen.MapBuild([("b", gen.Lit(3))])))
+    array_let = gen.Let(gen.Binding("Array<Int>", value=gen.ArrayLit("Int", [gen.Lit(1)])))
+    taken = gen.If(gen.Lit(True), branch([map_let]), branch([]))
+    untaken = gen.If(gen.Lit(True), branch([]), branch([map_let]))
+    whole = gen.If(gen.Lit(True), branch([array_let]), branch([]))
+    assert gen.iv(taken, "v") == gen.ANY and gen.iv(untaken, "v") == gen.ANY
+    assert gen.iv(taken, "r") == gen.Iv(15, 15)
+    assert gen.iv(whole, "v") == gen.Iv(15, 15)
+
+
 NIGHT_SEEDS = night_seeds()
 
 if NIGHT_SEEDS:

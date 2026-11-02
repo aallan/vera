@@ -995,7 +995,10 @@ def engine_failure(log: str) -> str | None:
     """The exception the engine's own code raised that stopped its stats pass
     or its clean run, read off its log: the exception's first line and the
     engine's frame, ``AttributeError: … (mutmut/runners/harness.py:157)``;
-    None when the log names no such stop, or a test's code raised.
+    None when the log names no such stop, or a test's code raised.  A
+    traceback that ends the log is the engine's death whether or not a
+    pass sentence precedes it: pytest's usage-error exit, which the
+    harness raises past the pass that would have printed one (#1822).
 
     The log of a run its stats pass or its clean run stopped holds that
     pass's output alone: mutmut prints it only when the pass fails, and
@@ -1013,8 +1016,7 @@ def engine_failure(log: str) -> str | None:
     copy lies among its :data:`RECURSION_FRAMES` innermost frames outside
     the standard library, a frame printed with a repeat count
     (:data:`_REPEATED`) counting that many more times."""
-    if not any(stop in log for stop in _COPY_STOPS):
-        return None
+    stopped = any(stop in log for stop in _COPY_STOPS)
     lines: list[str] = []
     captured = False
     for row in log.splitlines():
@@ -1041,6 +1043,10 @@ def engine_failure(log: str) -> str | None:
                 break
         if raised is None:
             continue
+        if not stopped and raised != _last_line(lines):
+            # A traceback a pass printed and went on from decides nothing;
+            # one the log ends with is where the engine died.
+            continue
         kept = [f for f in frames if not _NEUTRAL_FILE.search(f["file"])]
         deciding = kept[-1] if kept else None
         engine = _ENGINE_FILE.search(deciding["file"]) if deciding is not None else None
@@ -1054,6 +1060,11 @@ def engine_failure(log: str) -> str | None:
             raised = raised[:ENGINE_ERROR_CHARS - len(where) - 1] + "…"
         return raised + where
     return None
+
+
+def _last_line(lines: Sequence[str]) -> str:
+    """The last line of *lines* that is not blank, stripped; "" when none."""
+    return next((row.strip() for row in reversed(lines) if row.strip()), "")
 
 
 def parse_results(text: str) -> dict[str, str]:
