@@ -1,52 +1,60 @@
 #!/usr/bin/env python3
-"""The nightly mutation sweep: every function mutmut mutates in ``vera/``, a slice a night.
+"""The nightly mutation sweep: a sample of the mutants mutmut makes in ``vera/``, a cycle a night or two.
 
-The whole-``vera/`` measure (MUTATION.md § The measure-all baseline).  About
-110,000 mutants, each costing anything from a twentieth of a second (killed by
-its first test) to most of an hour on a runner (a survivor runs every test
-that reaches its function), so no run holds all of them; the one marathon that
-tried hung four times under Python 3.14.  The sweep measures a slice a night
-in ``JOBS`` parallel jobs and carries what each decided:
+The whole-``vera/`` measure (MUTATION.md § The measure-all baseline).  The
+tree holds about 113,000 mutants, each costing from a twentieth of a second
+(killed by its first test) to most of an hour on a runner (a survivor runs
+every test that reaches its function, and a compiler's front-end functions
+are reached by thousands); measured over the nights of October 2026, the
+sweep decided 300 to 1,300 a night, so every mutant would take months of
+green nights against a tree that changes daily (#1827).  The sweep measures a
+random sample instead, ``SAMPLE_FRACTION`` of the mutants, in ``JOBS``
+parallel jobs a night, and carries what each decided:
 
 1. The inventory: every unit mutmut mutates (a top-level function, or a
    method of a top-level class), with a hash of its code (``ast``, docstrings
-   set aside).  A unit's mutant count is mutmut's own, learned the first night
-   mutmut generates it; until then the plan estimates it from the unit's size.
+   set aside).  A unit's mutant count is mutmut's own visitor's, asked through
+   the engine's ``count`` command before the plan, so its mutants are
+   ``1`` to ``n`` in the copy.
 2. The state, carried from night to night in the workflow's artifact: each
    unit's hash, mutant count and decided mutants by number.  A unit whose code
    changed starts afresh, a unit gone from the tree is dropped, and a new
    engine version starts every unit afresh, since mutmut numbers a function's
    mutants by its own rules.
-3. The night's plan: the undecided work in the tree's order (path, then
-   line), filled into ``--of`` bins of one job's budget each at an estimated
-   cost a mutant; a unit whose count is known splits across bins by its
-   mutants' numbers, one whose count is not is taken whole.  Every job of the
-   night computes the same plan from the same state, and job ``--slice`` runs
-   its bin.
-4. The run: PR #1727's machinery (``scripts/mutate_diff.py``) over a scratch
+3. The sample: mutant ``n`` of a unit is in the cycle's sample when a hash
+   of the cycle, the unit and ``n`` falls under ``SAMPLE_FRACTION``, so every
+   job of a night and every night of the cycle draws the same sample, each
+   mutant with the same chance, and the next cycle draws another.
+4. The night's plan: the sample's undecided mutants in the tree's order
+   (path, then line), filled into ``--of`` bins of one job's budget each at
+   an estimated cost a mutant, a unit splitting across bins by its mutants'
+   numbers.  Every job of the night computes the same plan from the same
+   state, and job ``--slice`` runs its bin.
+5. The run: PR #1727's machinery (``scripts/mutate_diff.py``) over a scratch
    tree of the head narrowed to the bin's units, the oracle every test file the
    lane's rule admits (one that reaches the compiler in process, bar the
    subprocess, Node and tooling families), the copy holding the whole tree.  A
-   test that starts a Python or ``vera`` process is no oracle in the copy
-   (``tests/mutation_oracle.py``), and one that fails there with no mutant
-   active is dropped from the run and reported.  An exception the engine's
+   test that starts a Python or ``vera`` process, or reads the compiler's
+   source, is no oracle in the copy (``tests/mutation_oracle.py``); one that
+   fails there with no mutant active is dropped from the run and reported, and
+   every night after deselects it from the start.  An exception the engine's
    own code raises stops the slice instead, dropping no further test, and
    its record and the night's report name the exception and the engine's
    frame.
-5. The stitch merges the night's slice records into the state.  When every
-   unit's every mutant is decided the cycle closes: its per-module totals are
-   kept in the state and written as ``mutation-summary.csv`` and the README
-   badge's ``mutation.json`` (``summary``), which a pull request commits, and
-   the next cycle starts.
+6. The stitch merges the night's slice records into the state.  When every
+   sampled mutant is decided the cycle closes: its per-module totals are kept
+   in the state and written as ``mutation-summary.csv`` and the README badge's
+   ``mutation.json`` (``summary``), the score with its 95% interval, which a
+   pull request commits, and the next cycle starts.
 
-A night that decides nothing and a slice whose engine or lane failed exit 2,
-and the workflow files a tracking issue; survivors are the measurement, never
-a failure.  A step that fails before the sweep runs, while the runner is still
-there, writes a lane record (``lane-failed``), reported like any other.  A
-slice whose record is missing (its runner was lost before it could upload
-one) is noted and its work waits for the next night, unless more than one is
-missing in a night or more than LOST_LIMIT over LOST_WINDOW_NIGHTS nights,
-which is a hazard the night reports.
+A night that decides nothing, a slice whose engine or lane failed, and a slice
+whose budget ran out before its first mutant exit 2, and the workflow files a
+tracking issue; survivors are the measurement, never a failure.  A step that
+fails before the sweep runs, while the runner is still there, writes a lane
+record (``lane-failed``), reported like any other.  A slice whose record is
+missing (its runner was lost before it could upload one) is noted and its
+work waits for the next night, unless more than LOST_LIMIT_NIGHT are missing
+in one night, which is a hazard the night reports.
 
 Usage:
     python scripts/mutate_sweep.py night --slice 0 --of 1 --state DIR --out DIR
@@ -91,10 +99,10 @@ STATE_FILE = "sweep-state.json"
 SCHEMA = 1
 
 #: The jobs a scheduled night runs (the workflow's matrix).  The arithmetic:
-#: the measured samples project a cycle at 160 to 250 runner hours of mutants;
 #: a job's budget is 4.5 h, of which FIXED_S goes to the passes before its
-#: first mutant, leaving 3.7 h of mutants a job, so 43 to 68 job-nights a
-#: cycle, and 6.2 to 9.7 nights at seven jobs a night.
+#: first mutant, leaving 2.5 h of mutants a job, 17.5 runner hours a night;
+#: the sample (SAMPLE_FRACTION of about 113,000 mutants) at the measured 10
+#: to 30 s a mutant is 6 to 19 runner hours, so a cycle is a night or two.
 JOBS = 7
 
 #: The most jobs a dispatched night may ask for.
@@ -104,11 +112,21 @@ MAX_JOBS = 12
 DEFAULT_BUDGET_S = 16200
 
 #: Seconds a job spends before its first mutant, on a runner: generating the
-#: bin's mutants, the stats pass over the whole oracle and the clean run of a
-#: bin's covering tests.  A sample bin of five functions took 1,142 s on the
-#: measuring machine (588 s of stats pass, 546 s of clean run), which is
-#: about 2.5 times faster than a runner.
-FIXED_S = 2900
+#: bin's mutants, the stats pass over the whole oracle, the clean run of the
+#: bin's covering tests and the forced-fail run, each on one core.  Over the
+#: fourteen slices of 29 October to 3 November 2026 with a full record, the
+#: stats pass took 45 to 130 minutes, the clean run 40 to 70 and the
+#: forced-fail run up to 25, so the first mutant came 85 to 200 minutes in;
+#: the median, with no test dropped on the way, is about two hours.
+FIXED_S = 7200
+
+#: The share of the tree's mutants a cycle measures: each mutant is in the
+#: cycle's sample with this probability (``in_sample``), so the sample is a
+#: simple random one and the score's interval is a proportion's.  At 2% of
+#: about 113,000 mutants the sample is about 2,300, the whole-tree score's
+#: 95% interval about ±1.7 points, and a night or two of seven jobs decides
+#: it; a module's own interval follows its share.
+SAMPLE_FRACTION = 0.02
 
 #: Estimated runner seconds a mutant at four workers, by family: the soundness
 #: core's mutants run the verifier's tests under Z3 (0.05 to 0.2 a second on
@@ -117,10 +135,9 @@ CORE_RATE_S = 25.0
 OTHER_RATE_S = 2.5
 CORE = ("vera/verifier.py", "vera/smt.py", "vera/checker/", "vera/obligations/")
 
-#: mutmut's mutants per ``ast`` node of a unit, measured over vera/ at
-#: 366bf326 (110,025 mutants in 2,541 units of 450,967 nodes); the estimate of
-#: a unit's count until mutmut has generated it.
-MUTANTS_PER_NODE = 0.24
+#: Seconds the engine's ``count`` of the uncounted units may take: the whole
+#: tree took 46 s on the measuring machine, about two minutes on a runner.
+COUNT_TIMEOUT_S = 1200
 
 #: Statuses that leave a mutant to a later night: mutmut never ran it, or the
 #: run stopped while it ran.
@@ -136,12 +153,12 @@ KEPT_NIGHTS = 120
 
 #: A slice with no record is one whose runner was taken away before it could
 #: upload anything (the nights of 19 and 20 October 2026, #1751): a step that
-#: fails while the runner is still there writes a lane record instead.  One
-#: a night is noted and its work waits for the next night; more than one in a
-#: night, or more than LOST_LIMIT over the last LOST_WINDOW_NIGHTS nights
-#: (that night included), stops the night short.
-LOST_WINDOW_NIGHTS = 7
-LOST_LIMIT = 3
+#: fails while the runner is still there writes a lane record instead.  A
+#: hosted runner is lost under about 7% of the sweep's 4.5-hour jobs (8 of
+#: the first 17 seven-job nights lost one, #1827), so a lost slice is noted
+#: and its work waits for the next night; more than LOST_LIMIT_NIGHT in one
+#: night is an outage rather than weather, and stops the night short.
+LOST_LIMIT_NIGHT = 2
 
 #: Seconds between the heartbeat lines a slice prints while the engine runs:
 #: the elapsed time, the runner's available memory, swap and load, and the
@@ -182,13 +199,12 @@ class StateError(ValueError):
 
 @dataclass(frozen=True)
 class SweepUnit:
-    """A unit mutmut mutates: where it is, its code's hash, and its size."""
+    """A unit mutmut mutates: where it is, and its code's hash."""
 
     path: str
     key: str
     start: int
     hash: str
-    estimate: int
 
     @property
     def ident(self) -> str:
@@ -217,10 +233,8 @@ def units_of(source: str, path: str) -> list[SweepUnit]:
         unit = scanned[md._key(node.name, cls)]
         if unit.excluded is not None:
             continue
-        nodes = sum(1 for _ in ast.walk(node))
         found.append(SweepUnit(path=path, key=unit.key, start=unit.start,
-                               hash=_identity(unit.code, lines[unit.start - 1:unit.end]),
-                               estimate=max(1, round(nodes * MUTANTS_PER_NODE))))
+                               hash=_identity(unit.code, lines[unit.start - 1:unit.end])))
     return found
 
 
@@ -332,8 +346,12 @@ def _check_night(night: Any) -> None:
                f"a night's {key} are not text")
     _check(isinstance(rec["slices"], list) and len(rec["slices"]) <= MAX_JOBS, "a night's slices")
     for line in rec["slices"]:
-        s = _keys(line, {"slice", "planned", "decided", "stopped", "engine_s", "dropped_tests",
-                         "subprocess_tests"}, "a night's slice")
+        slice_keys = {"slice", "planned", "decided", "stopped", "engine_s", "dropped_tests",
+                      "subprocess_tests"}
+        # The source-reading tests entered the line with the sample (#1827).
+        if isinstance(line, dict) and "source_tests" in line:
+            slice_keys.add("source_tests")
+        s = _keys(line, slice_keys, "a night's slice")
         _int(s["slice"], 0, MAX_JOBS - 1, "a night's slice number")
         _int(s["planned"], 0, MAX_MUTANTS, "a night's planned units")
         _int(s["decided"], 0, MAX_MUTANTS * 10_000, "a night's decided mutants")
@@ -343,6 +361,8 @@ def _check_night(night: Any) -> None:
         _check(isinstance(s["dropped_tests"], list) and all(
             isinstance(x, str) and _TESTID.fullmatch(x) for x in s["dropped_tests"]), "a night's drops")
         _int(s["subprocess_tests"], 0, 10**6, "a night's skipped tests")
+        if "source_tests" in s:
+            _int(s["source_tests"], 0, 10**6, "a night's source-reading tests")
 
 
 def check_state(data: Any) -> dict[str, Any]:
@@ -365,9 +385,19 @@ def check_state(data: Any) -> dict[str, Any]:
         check_unit(ident, record)
     last = state["last_complete"]
     if last is not None:
-        rec = _keys(last, {"cycle", "started", "finished", "head", "engine", "modules", "survivors"},
-                    "the last closed cycle")
+        last_keys = {"cycle", "started", "finished", "head", "engine", "modules", "survivors"}
+        # The sample's size entered the record with the sample (#1827); a
+        # cycle closed before carries none of the three.
+        sample_keys = {"sampled", "population", "fraction"} & (set(last) if isinstance(last, dict) else set())
+        rec = _keys(last, last_keys | sample_keys, "the last closed cycle")
         _int(rec["cycle"], 1, 10**6, "the last closed cycle's number")
+        if "sampled" in rec:
+            _int(rec["sampled"], 0, MAX_MUTANTS * 10_000, "the last closed cycle's sample")
+        if "population" in rec:
+            _int(rec["population"], 0, MAX_MUTANTS * 10_000, "the last closed cycle's population")
+        if "fraction" in rec:
+            _check(type(rec["fraction"]) in (int, float) and 0 < rec["fraction"] <= 1,
+                   "the last closed cycle's fraction is not a share from 0 to 1")
         _text(rec["started"], _DATE, "the last closed cycle's start")
         _text(rec["finished"], _DATE, "the last closed cycle's end")
         _text(rec["head"], _HEX40, "the last closed cycle's head")
@@ -375,7 +405,10 @@ def check_state(data: Any) -> dict[str, Any]:
         _check(isinstance(rec["modules"], dict), "the last closed cycle's modules")
         for module, row in rec["modules"].items():
             _text(module, _PATH, f"module {module!r}")
-            counts = _keys(row, {"killed", "survived", "timeout", "no_tests", "other"}, f"{module}'s counts")
+            columns = {"killed", "survived", "timeout", "no_tests", "other"}
+            if isinstance(row, dict) and "mutants" in row:
+                columns.add("mutants")  # the module's population, with the sample (#1827)
+            counts = _keys(row, columns, f"{module}'s counts")
             for column, n in counts.items():
                 _int(n, 0, MAX_MUTANTS * 10_000, f"{module}'s {column}")
         _check(isinstance(rec["survivors"], list), "the last closed cycle's survivors")
@@ -412,9 +445,14 @@ def check_record(record: Any) -> None:
     _check(type(engine_s) in (int, float) and 0 <= engine_s < 1e6, "its engine time is out of range")
     _check(isinstance(record.get("planned"), list) and all(isinstance(p, dict) for p in record["planned"]),
            "its plan is not a list of pieces")
-    for key in ("dropped_tests", "subprocess_tests"):
+    for key in ("dropped_tests", "subprocess_tests", "source_tests", "deselected_tests"):
         _check(isinstance(record.get(key), list) and all(
             isinstance(x, str) and _TESTID.fullmatch(x) for x in record[key]), f"its {key}")
+    counts = record.get("counts")
+    _check(isinstance(counts, dict), "its counts are not a mapping")
+    for ident, n in counts.items():
+        _text(ident, _IDENT, f"its counted function {ident!r}")
+        _int(n, 0, MAX_MUTANTS, f"its count of {ident}")
     results = record.get("results")
     _check(isinstance(results, dict), "its results are not a mapping")
     for ident, result in results.items():
@@ -501,17 +539,91 @@ def undecided(record: Mapping[str, Any]) -> list[int] | None:
 
 
 # ---------------------------------------------------------------------------
+# The counts, and the sample
+# ---------------------------------------------------------------------------
+
+
+def uncounted(state: Mapping[str, Any], units: Iterable[SweepUnit]) -> list[SweepUnit]:
+    """The units whose mutant count the state does not hold yet."""
+    return [u for u in units if state["units"][u.ident]["mutants"] is None]
+
+
+def engine_counts(engine: Sequence[str], env: Mapping[str, str], sources: Mapping[str, str],
+                  units: Sequence[SweepUnit]) -> dict[str, int]:
+    """Each unit's mutant count, by ident, from the engine's ``count``
+    command (``scripts/mutate_diff.py``'s: mutmut's own visitor over the
+    unit's file at the head), which is what ``mutmut run`` generates for it,
+    so the unit's mutants are ``1`` to the count in the copy.  Nothing is
+    counted twice: the state keeps a count by the unit's hash."""
+    if not units:
+        return {}
+    keys: dict[str, list[str]] = {}
+    for unit in units:
+        keys.setdefault(unit.path, []).append(unit.key)
+    request = json.dumps({"sources": {path: sources[path] for path in keys}, "units": keys})
+    result = md._engine_call(engine, [md.COUNT_ARG], cwd=None, env=env, stdin=request,
+                             timeout_s=COUNT_TIMEOUT_S)
+    if result is None:
+        raise md.LaneError(f"the engine's count did not finish in {COUNT_TIMEOUT_S:g} s")
+    if result.returncode != 0:
+        raise md.LaneError(f"the engine could not count the units: {result.stderr.strip()[-500:]}")
+    try:
+        counted = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise md.LaneError(f"the engine's count is not JSON: {exc}") from exc
+    counts: dict[str, int] = {}
+    for unit in units:
+        n = counted.get(unit.path, {}).get(unit.key) if isinstance(counted, dict) else None
+        if type(n) is not int or not 0 <= n <= MAX_MUTANTS:
+            raise md.LaneError(f"the engine's count of {unit.ident} is missing or out of range: {n!r}")
+        counts[unit.ident] = n
+    return counts
+
+
+def apply_counts(state: dict[str, Any], counts: Mapping[str, int]) -> None:
+    for ident, n in counts.items():
+        state["units"][ident]["mutants"] = n
+
+
+def in_sample(cycle: int, ident: str, number: int) -> bool:
+    """Whether mutant ``number`` of unit ``ident`` is in cycle ``cycle``'s
+    sample: a hash of the three falls under ``SAMPLE_FRACTION``.  Every job
+    of a night and every night of the cycle so draw the same sample, each
+    mutant in it with the same chance, and the next cycle draws another."""
+    digest = hashlib.blake2b(f"{cycle}:{ident}:{number}".encode("utf-8"), digest_size=8).digest()
+    return int.from_bytes(digest, "big") < SAMPLE_FRACTION * 2**64
+
+
+def sampled(state: Mapping[str, Any], unit: SweepUnit) -> list[int] | None:
+    """The unit's mutant numbers in the cycle's sample; None while its count
+    is unknown."""
+    count = state["units"][unit.ident]["mutants"]
+    if count is None:
+        return None
+    return [n for n in range(1, count + 1) if in_sample(int(state["cycle"]), unit.ident, n)]
+
+
+def sampled_undecided(state: Mapping[str, Any], unit: SweepUnit) -> list[int] | None:
+    """The unit's sampled mutants not yet decided; None while its count is
+    unknown."""
+    numbers = sampled(state, unit)
+    if numbers is None:
+        return None
+    statuses = state["units"][unit.ident]["statuses"]
+    return [n for n in numbers if str(n) not in statuses]
+
+
+# ---------------------------------------------------------------------------
 # A night's plan
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class Pick:
-    """A job's share of one unit: the mutant numbers it runs, or None for
-    every mutant of a unit whose count is not known yet."""
+    """A job's share of one unit: the mutant numbers it runs."""
 
     unit: SweepUnit
-    numbers: tuple[int, ...] | None
+    numbers: tuple[int, ...]
 
 
 def rate(unit: SweepUnit, calibration: float = 1.0) -> float:
@@ -524,12 +636,12 @@ def plan(state: Mapping[str, Any], units: Sequence[SweepUnit], *, jobs: int,
          budget_s: float) -> list[list[Pick]]:
     """The night's work in ``jobs`` bins of one job's budget each.
 
-    The undecided work in the tree's order fills each bin to the job's
-    budget less ``FIXED_S``, at ``rate`` a mutant: a unit whose count is known
-    splits across bins by its mutants' numbers, one whose count is not goes
-    whole into one bin (into the next one when it does not fit and the bin
-    holds something).  A bin's first piece is taken whatever its cost, so a
-    bin with work open decides something."""
+    The sample's undecided mutants in the tree's order fill each bin to the
+    job's budget less ``FIXED_S``, at ``rate`` a mutant, a unit splitting
+    across bins by its mutants' numbers.  A bin's first piece is taken
+    whatever its cost, so a bin with work open decides something.  Every
+    unit is counted before the plan (:func:`engine_counts`): one that is not
+    cannot be sampled, and stops the plan."""
     capacity = max(budget_s - FIXED_S, budget_s / 4)
     calibration = float(state.get("calibration") or 1.0)
     bins: list[list[Pick]] = [[] for _ in range(jobs)]
@@ -538,21 +650,10 @@ def plan(state: Mapping[str, Any], units: Sequence[SweepUnit], *, jobs: int,
     for unit in units:
         if current >= jobs:
             break
-        todo = undecided(state["units"][unit.ident])
-        cost = rate(unit, calibration)
+        todo = sampled_undecided(state, unit)
         if todo is None:
-            whole = unit.estimate * cost
-            if whole > room and bins[current]:
-                current += 1
-                room = capacity
-                if current >= jobs:
-                    break
-            bins[current].append(Pick(unit=unit, numbers=None))
-            room -= whole
-            if room <= 0:
-                current += 1
-                room = capacity
-            continue
+            raise StateError(f"{unit.ident} has no mutant count, so its sample cannot be planned")
+        cost = rate(unit, calibration)
         while todo and current < jobs:
             fit = int(room // cost)
             if fit <= 0 and not bins[current]:
@@ -571,14 +672,20 @@ def plan(state: Mapping[str, Any], units: Sequence[SweepUnit], *, jobs: int,
 
 
 def engine_targets(picks: Sequence[Pick]) -> list[str]:
-    """mutmut's arguments: a glob for a unit run whole, names for a part."""
-    targets: list[str] = []
-    for pick in picks:
-        if pick.numbers is None:
-            targets.append(md.mutant_glob(pick.unit.path, pick.unit.key))
-        else:
-            targets += [f"{pick.unit.module}.{pick.unit.key}__mutmut_{n}" for n in pick.numbers]
-    return targets
+    """mutmut's arguments: each picked mutant by name."""
+    return [f"{pick.unit.module}.{pick.unit.key}__mutmut_{n}" for pick in picks for n in pick.numbers]
+
+
+def known_drops(state: Mapping[str, Any], tree: Path) -> list[str]:
+    """Every test a kept night dropped from the oracle (it failed inside
+    mutmut's copy with no mutant active) whose file ``tree`` still holds.
+    The night deselects them from the start: a drop costs a stats pass, the
+    pass stopping at the failure with nothing saved and the rerun starting it
+    over, and the four tests of 3 November 2026 cost four slices their whole
+    budget (#1827)."""
+    found = {test for night in state.get("nights", []) for line in night.get("slices", [])
+             for test in line.get("dropped_tests", [])}
+    return sorted(test for test in found if (tree / test.split("::", 1)[0]).is_file())
 
 
 # ---------------------------------------------------------------------------
@@ -712,23 +819,28 @@ def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: li
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["COLUMNS"] = "80"  # the width md.engine_failure reads pytest's rules at
     skips = workdir / "oracle-skips.txt"
-    env["MUTATION_ORACLE_SKIPS"] = str(skips)
+    source_skips = workdir / "oracle-source-skips.txt"
+    env[md.SKIPS_ENV] = str(skips)
+    env[md.SOURCE_SKIPS_ENV] = str(source_skips)
     version = md._engine_version(engine, env)
     if not version:
         raise md.LaneError("the engine did not report its version")
     state_path = Path(args.state) if args.state else None
-    units = inventory(vera_sources(repo, head))
+    sources = vera_sources(repo, head)
+    units = inventory(sources)
     state = reconcile(load_state(state_path, today), units, version)
+    counts = engine_counts(engine, env, sources, uncounted(state, units))
+    apply_counts(state, counts)
     bins = plan(state, units, jobs=args.of, budget_s=args.budget)
     picks = bins[args.slice]
     record: dict[str, Any] = {
         "schema": SCHEMA, "slice": args.slice, "of": args.of, "head": head,
         "state_in": state_digest(state_path), "engine": version, "budget_s": args.budget,
-        "date": today, "planned": [{"unit": p.unit.ident, "hash": p.unit.hash,
-                                    "numbers": None if p.numbers is None else list(p.numbers)}
+        "date": today, "planned": [{"unit": p.unit.ident, "hash": p.unit.hash, "numbers": list(p.numbers)}
                                    for p in picks],
-        "results": {}, "stopped": None, "engine_exit": None, "engine_error": None, "engine_s": 0.0,
-        "dropped_tests": [], "subprocess_tests": [], "selection": 0, "engine_tail": [],
+        "counts": counts, "results": {}, "stopped": None, "engine_exit": None, "engine_error": None,
+        "engine_s": 0.0, "dropped_tests": [], "deselected_tests": [], "subprocess_tests": [],
+        "source_tests": [], "selection": 0, "engine_tail": [],
     }
     if not picks:
         record["elapsed_s"] = round(time.monotonic() - started, 1)
@@ -736,6 +848,8 @@ def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: li
     tree = workdir / "tree"
     tree.mkdir()
     md._extract(repo, head, tree)
+    deselected = known_drops(state, tree)
+    record["deselected_tests"] = deselected
     files = sorted({p.unit.path for p in picks})
     for path in files:
         keep = {p.unit.key for p in picks if p.unit.path == path}
@@ -757,16 +871,15 @@ def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: li
             tree=tree, pyproject=pyproject, budget_s=args.budget, workdir=workdir, env=env,
             config_for=lambda dropped: md.rewrite_config(
                 config, only_mutate=files, extra_tests=selection, also_copy=also_copy,
-                extra_args=[f"--deselect={test}" for test in dropped]))
+                extra_args=[f"--deselect={test}" for test in [*deselected, *dropped]]))
     finally:
         if beat is not None:
             beat.stop()
     record["engine_s"] = round(time.monotonic() - started, 1)
     record["dropped_tests"] = dropped
     record["engine_error"] = run.error
-    if skips.exists():
-        record["subprocess_tests"] = sorted(
-            {line for line in skips.read_text(encoding="utf-8").splitlines() if line.strip()})
+    record["subprocess_tests"] = md.skipped_tests(skips)
+    record["source_tests"] = md.skipped_tests(source_skips)
     record["engine_exit"] = run.returncode
     text = log.read_text(encoding="utf-8", errors="replace")
     no_tests = run.returncode == 1 and md.NO_TESTS_SENTENCE in text
@@ -805,12 +918,9 @@ def decided_count(record: Mapping[str, Any]) -> int:
 
 
 def progress(record: Mapping[str, Any]) -> int:
-    """What a slice moved on: its decided mutants, and the functions it took
-    whole whose count it learned (one with no mutant at all is decided by
-    that alone)."""
-    learned = sum(1 for p in record.get("planned", [])
-                  if p.get("numbers") is None and p.get("unit") in record.get("results", {}))
-    return decided_count(record) + learned
+    """What a slice moved on: its decided mutants (a count is bookkeeping,
+    not progress)."""
+    return decided_count(record)
 
 
 def slice_exit(record: Mapping[str, Any]) -> int:
@@ -828,12 +938,28 @@ def slice_exit(record: Mapping[str, Any]) -> int:
 # ---------------------------------------------------------------------------
 
 
-def merge(state: dict[str, Any], record: Mapping[str, Any], problems: list[str],
-          notes: list[str]) -> int:
+def merge_counts(state: dict[str, Any], record: Mapping[str, Any], problems: list[str]) -> None:
+    """Fold one slice's counts into the state: a count for a function the
+    state holds uncounted.  Every slice counts with the same engine at the
+    same head, so a count that differs from the state's, or one for a
+    function the tree does not hold, is a problem."""
+    where = f"slice {record.get('slice')}"
+    for ident, n in record.get("counts", {}).items():
+        rec = state["units"].get(ident)
+        if rec is None:
+            problems.append(f"{where} counted {ident}, which the tree does not hold")
+        elif rec["mutants"] is None:
+            rec["mutants"] = n
+        elif rec["mutants"] != n:
+            problems.append(f"{where} counted {n} mutants of {ident} where the state holds {rec['mutants']}")
+
+
+def merge(state: dict[str, Any], record: Mapping[str, Any], problems: list[str]) -> int:
     """Fold one slice's results into the state, a function at a time; what
-    it moved on: the mutants newly decided and the functions newly counted.
-    A function run at code the tree does not hold is a problem, and its
-    results are left out; one mutmut counts afresh starts afresh, noted."""
+    it moved on: the mutants newly decided.  A function run at code the tree
+    does not hold is a problem, and its results are left out; so is one
+    mutmut lists more or fewer mutants of than the state counts, since the
+    count is mutmut's own visitor's and the sample was drawn over it."""
     added = 0
     where = f"slice {record.get('slice')}"
     for ident, result in record.get("results", {}).items():
@@ -841,13 +967,12 @@ def merge(state: dict[str, Any], record: Mapping[str, Any], problems: list[str],
         if rec is None or rec["hash"] != result["hash"]:
             problems.append(f"{where} ran {ident} at code the tree does not hold")
             continue
-        if rec["mutants"] is not None and rec["mutants"] != result["mutants"]:
-            notes.append(f"{ident}: mutmut counts {result['mutants']} mutants where the state "
-                         f"counted {rec['mutants']}, so it starts afresh")
-            rec["mutants"], rec["statuses"] = None, {}
         if rec["mutants"] is None:
-            added += 1
-        rec["mutants"] = result["mutants"]
+            rec["mutants"] = result["mutants"]
+        elif rec["mutants"] != result["mutants"]:
+            problems.append(f"{where}: mutmut lists {result['mutants']} mutants of {ident} where the state "
+                            f"counts {rec['mutants']}")
+            continue
         for number, status in result["statuses"].items():
             if number not in rec["statuses"]:
                 added += 1
@@ -867,25 +992,28 @@ def _column(status: str) -> str:
 
 
 def tally(state: Mapping[str, Any], units: Iterable[SweepUnit]) -> dict[str, dict[str, int]]:
-    """Per-module counts of the decided mutants, by summary column."""
+    """Per-module counts of the decided mutants, by summary column, and the
+    module's mutants in all (``mutants``: the population its sample is of)."""
     modules: dict[str, dict[str, int]] = {}
     for unit in units:
         row = modules.setdefault(unit.path, dict.fromkeys(
-            ("killed", "survived", "timeout", "no_tests", "other"), 0))
+            ("killed", "survived", "timeout", "no_tests", "other", "mutants"), 0))
+        row["mutants"] += state["units"][unit.ident]["mutants"] or 0
         for status in state["units"][unit.ident]["statuses"].values():
             row[_column(status)] += 1
     return modules
 
 
 def complete(state: Mapping[str, Any], units: Iterable[SweepUnit]) -> bool:
-    """Whether every unit's count is known and every mutant decided."""
-    return all(undecided(state["units"][u.ident]) == [] for u in units)
+    """Whether every unit's count is known and every sampled mutant decided."""
+    return all(sampled_undecided(state, u) == [] for u in units)
 
 
 def close_cycle(state: dict[str, Any], units: Sequence[SweepUnit], *, head: str,
                 today: str) -> bool:
-    """Close the cycle when it is complete: its per-module totals and its
-    survivors become ``last_complete``, and the next cycle starts."""
+    """Close the cycle when it is complete: its per-module totals, its
+    survivors and its sample's size become ``last_complete``, and the next
+    cycle starts."""
     if not complete(state, units):
         return False
     survivors = sorted(
@@ -893,7 +1021,10 @@ def close_cycle(state: dict[str, Any], units: Sequence[SweepUnit], *, head: str,
         for n, s in state["units"][u.ident]["statuses"].items() if s in ("survived", "timeout"))
     state["last_complete"] = {"cycle": state["cycle"], "started": state["cycle_started"],
                               "finished": today, "head": head, "engine": state["engine"],
-                              "modules": tally(state, units), "survivors": survivors}
+                              "modules": tally(state, units), "survivors": survivors,
+                              "sampled": sum(len(sampled(state, u) or []) for u in units),
+                              "population": sum(state["units"][u.ident]["mutants"] or 0 for u in units),
+                              "fraction": SAMPLE_FRACTION}
     state["cycle"] += 1
     state["cycle_started"] = today
     for rec in state["units"].values():
@@ -966,18 +1097,12 @@ def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[s
     # A slice with no record at all: its job ended before it uploaded anything
     # (a hosted runner taken away under it, #1751).  A record the night
     # rejected is not that: the slice reported.  A lost slice's work waits for
-    # the next night's plan and the night goes on; more than one in a night,
-    # or more than LOST_LIMIT over the last LOST_WINDOW_NIGHTS nights, is a
-    # hazard the night reports, on a night that lost one.
+    # the next night's plan and the night goes on; more than LOST_LIMIT_NIGHT
+    # in a night is a hazard the night reports.
     lost = sorted(set(range(jobs)) - reported)
     notes: list[str] = [f"slice {n}: no record; its work waits for the next night" for n in lost]
-    if len(lost) > 1:
-        problems.append(f"no record from slices {_listed(lost)}: more than one in a night")
-    recent = [len(n.get("lost", [])) for n in state_in.get("nights", [])[-(LOST_WINDOW_NIGHTS - 1):]]
-    recent.append(len(lost))
-    if lost and sum(recent) > LOST_LIMIT:
-        problems.append(f"slices with no record over the last {len(recent)} nights: {sum(recent)}, "
-                        f"more than {LOST_LIMIT}")
+    if len(lost) > LOST_LIMIT_NIGHT:
+        problems.append(f"no record from slices {_listed(lost)}: more than {LOST_LIMIT_NIGHT} in a night")
     # A slice whose lane failed reports no engine; when none reports one,
     # the state keeps its own.
     engine: str | None = next((str(r["engine"]) for r in valid if r.get("engine")), None)
@@ -987,9 +1112,11 @@ def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[s
         notes.append(f"mutmut {state_in.get('engine')} gave way to {engine}: every function "
                      "starts afresh, and so does the cycle")
         state["cycle_started"] = today
+    for record in valid:
+        merge_counts(state, record, problems)
     added = 0
     for record in valid:
-        added += merge(state, record, problems, notes)
+        added += merge(state, record, problems)
         if record.get("stopped") not in (None, "budget"):
             # What stopped it: a lane's reason, or the exception the engine's
             # own code raised, when it raised one.
@@ -997,8 +1124,13 @@ def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[s
                    else record.get("engine_error") if record["stopped"] == "engine" else None)
             problems.append(f"slice {record['slice']}: stopped by the {record['stopped']}"
                             + (f": {why}" if why else ""))
+        elif record.get("stopped") == "budget" and record.get("planned") and decided_count(record) == 0:
+            # The passes before the first mutant ran out the whole budget
+            # (the four checker slices of 3 November 2026, #1827): a green
+            # night must not hide a slice that measured nothing.
+            problems.append(f"slice {record['slice']}: its budget ran out before its first mutant")
     if not problems and added == 0 and any(r.get("planned") for r in valid):
-        problems.append("the night decided no mutant and counted no function")
+        problems.append("the night decided no mutant")
     # A lost slice may have held the night's whole plan, so this is read only
     # from a night every slice reported.
     if not lost and not any(r.get("planned") for r in valid) and not complete(state, units):
@@ -1009,7 +1141,8 @@ def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[s
              "slices": [{"slice": r["slice"], "planned": len(r.get("planned", [])),
                          "decided": decided_count(r), "stopped": r.get("stopped"),
                          "engine_s": r.get("engine_s"), "dropped_tests": r.get("dropped_tests", []),
-                         "subprocess_tests": len(r.get("subprocess_tests", []))}
+                         "subprocess_tests": len(r.get("subprocess_tests", [])),
+                         "source_tests": len(r.get("source_tests", []))}
                         for r in sorted(valid, key=lambda r: r["slice"])],
              "problems": problems, "notes": notes, "closed": closed}
     state["nights"] = [*state.get("nights", []), night][-KEPT_NIGHTS:]
@@ -1025,13 +1158,27 @@ def _pct(caught: int, total: int) -> float:
     return round(caught / total * 100, 1) if total else 0.0
 
 
+def wilson(caught: int, total: int) -> tuple[float, float]:
+    """The 95% Wilson interval of the share ``caught`` is of ``total``, in
+    percentage points: what the sample says of the population's score."""
+    if not total:
+        return (0.0, 0.0)
+    z = 1.959964
+    p = caught / total
+    denominator = 1 + z * z / total
+    centre = (p + z * z / (2 * total)) / denominator
+    half = z * math.sqrt(p * (1 - p) / total + z * z / (4 * total * total)) / denominator
+    return (round(max(0.0, centre - half) * 100, 1), round(min(1.0, centre + half) * 100, 1))
+
+
 def write_summary(state: Mapping[str, Any], directory: Path) -> float:
     """``mutation-summary.csv``, ``mutation.json`` and ``mutation-survivors.csv``
-    from the last closed cycle, in ``scripts/mutation_report.py``'s format;
-    the score.  A module's total is its mutants an in-process test reaches
-    with a known outcome (killed, survived, timeout): its ``no tests``
-    mutants are not observable in process, and its ``segfault`` and
-    ``suspicious`` ones have no outcome to score."""
+    from the last closed cycle, the score with its 95% interval.  A module's
+    total is its sampled mutants an in-process test reaches with a known
+    outcome (killed, survived, timeout): its ``no tests`` mutants are not
+    observable in process, and its ``segfault`` and ``suspicious`` ones have
+    no outcome to score; ``mutants`` is the module's population, which the
+    sample's ``total`` is drawn from."""
     last = state.get("last_complete")
     if not last:
         raise StateError("no cycle has closed yet, so there is no summary to write")
@@ -1039,8 +1186,9 @@ def write_summary(state: Mapping[str, Any], directory: Path) -> float:
     for module, row in last["modules"].items():
         total = row["killed"] + row["survived"] + row["timeout"]
         if total:
+            low, high = wilson(row["killed"] + row["timeout"], total)
             rows.append((module, total, row["killed"], row["survived"], row["timeout"],
-                         _pct(row["killed"] + row["timeout"], total)))
+                         _pct(row["killed"] + row["timeout"], total), row.get("mutants", 0), low, high))
     if not rows:
         raise StateError("the closed cycle scored no mutant")
     rows.sort(key=lambda r: (-r[3], r[0]))
@@ -1049,13 +1197,15 @@ def write_summary(state: Mapping[str, Any], directory: Path) -> float:
     survived = sum(r[3] for r in rows)
     timeout = sum(r[4] for r in rows)
     score = _pct(killed + timeout, total)
+    low, high = wilson(killed + timeout, total)
+    population = last.get("population", sum(r[6] for r in rows))
     directory.mkdir(parents=True, exist_ok=True)
-    lines = ["module,total,killed,survived,timeout,caught_pct"]
+    lines = ["module,total,killed,survived,timeout,caught_pct,mutants,ci95_low,ci95_high"]
     lines += [",".join(str(v) for v in r) for r in rows]
-    lines.append(f"TOTAL (vera),{total},{killed},{survived},{timeout},{score}")
+    lines.append(f"TOTAL (vera),{total},{killed},{survived},{timeout},{score},{population},{low},{high}")
     (directory / "mutation-summary.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
     (directory / "mutation.json").write_text(json.dumps({
-        "schemaVersion": 1, "label": "mutation", "message": f"{score}%",
+        "schemaVersion": 1, "label": "mutation", "message": f"{score}% ±{round((high - low) / 2, 1)}",
         "color": _badge_color(score)}) + "\n", encoding="utf-8")
     inventory_lines = ["module,mutant,status"]
     for entry in last["survivors"]:
@@ -1093,9 +1243,17 @@ def render_slice(record: Mapping[str, Any]) -> str:
                    "active):")
         out += [f"- `{t}`" for t in record["dropped_tests"]]
         out.append("")
+    if record.get("deselected_tests"):
+        out.append("Deselected from the oracle from the start, each dropped on an earlier night:")
+        out += [f"- `{t}`" for t in record["deselected_tests"]]
+        out.append("")
     if record.get("subprocess_tests"):
         out.append(f"{len(record['subprocess_tests'])} test(s) started a Python or `vera` process "
                    "and were no oracle in mutmut's copy (the record lists them).")
+        out.append("")
+    if record.get("source_tests"):
+        out.append(f"{len(record['source_tests'])} test(s) read the compiler's source and were no "
+                   "oracle in mutmut's copy (the record lists them).")
         out.append("")
     if record.get("engine_tail"):
         out += ["```", *record["engine_tail"], "```", ""]
@@ -1105,14 +1263,15 @@ def render_slice(record: Mapping[str, Any]) -> str:
 def render_night(state: Mapping[str, Any], night: Mapping[str, Any],
                  units: Sequence[SweepUnit]) -> str:
     known = [state["units"][u.ident] for u in units]
-    counted = sum(r["mutants"] or 0 for r in known)
-    decided = sum(len(r["statuses"]) for r in known)
+    population = sum(r["mutants"] or 0 for r in known)
     unknown = sum(1 for r in known if r["mutants"] is None)
+    drawn = sum(len(sampled(state, u) or []) for u in units)
+    open_ = sum(len(sampled_undecided(state, u) or []) for u in units)
     out = [f"## Mutation sweep: {night['date']}", "",
-           f"`{night['head'][:12]}`, {night['jobs']} job(s): {night['moved']} mutant(s) decided or "
-           f"function(s) counted tonight.  Cycle {state['cycle']} (from {state['cycle_started']}): {decided} of "
-           f"{counted} counted mutants decided, {unknown} of {len(units)} functions not yet "
-           f"generated.", ""]
+           f"`{night['head'][:12]}`, {night['jobs']} job(s): {night['moved']} mutant(s) decided tonight.  "
+           f"Cycle {state['cycle']} (from {state['cycle_started']}): {drawn - open_} of {drawn} sampled "
+           f"mutants decided, the sample {SAMPLE_FRACTION:.1%} of {population}"
+           + (f", {unknown} of {len(units)} functions not yet counted" if unknown else "") + ".", ""]
     if night["slices"]:
         out += ["| Slice | Units | Decided | Stopped | Engine s |", "|---:|---:|---:|---|---:|"]
         out += [f"| {s['slice']} | {s['planned']} | {s['decided']} | {s['stopped'] or ''} | "
@@ -1163,8 +1322,8 @@ def lane_record(slice_: int, of: int, *, head: str | None, state_path: Path | No
     nothing, and ``why`` is what the stitch reports."""
     return {"schema": SCHEMA, "slice": slice_, "of": of, "head": head,
             "state_in": state_digest(state_path), "engine": None, "budget_s": budget_s,
-            "planned": [], "results": {}, "stopped": "lane", "engine_tail": [why],
-            "dropped_tests": [], "subprocess_tests": []}
+            "planned": [], "counts": {}, "results": {}, "stopped": "lane", "engine_tail": [why],
+            "dropped_tests": [], "deselected_tests": [], "subprocess_tests": [], "source_tests": []}
 
 
 def cmd_lane_failed(args: argparse.Namespace) -> int:
@@ -1288,7 +1447,10 @@ def cmd_matrix(args: argparse.Namespace) -> int:
 def cmd_summary(args: argparse.Namespace) -> int:
     state = load_state(_state_file(args.state), _today())
     score = write_summary(state, Path(args.out))
-    print(f"cycle {state['last_complete']['cycle']}: {score}% caught; wrote "
+    last = state["last_complete"]
+    sample = (f" of {last['sampled']} sampled from {last['population']} mutants"
+              if "sampled" in last and "population" in last else "")
+    print(f"cycle {last['cycle']}: {score}% caught{sample}; wrote "
           f"mutation-summary.csv, mutation.json and mutation-survivors.csv to {args.out}")
     return 0
 
