@@ -85,7 +85,10 @@ mutation = [
     # is ~90x faster on this Z3/WASM suite, and its copy-based model
     # never mutates the working tree in place.  See MUTATION.md.
     "veralang[dev]",
-    "mutmut>=3.6",
+    # 3.8 brought process_isolation (the fork server both lanes run under),
+    # mutmut.state (the record tests/mutation_oracle.py edits) and the
+    # covered-lines hook the diff lane's window reaches mutmut through.
+    "mutmut>=3.8",
     "pytest-timeout>=2.4",
     # scripts/mutation_report.py renders the per-module chart with matplotlib;
     # optional at runtime (the script skips the PNG if it is absent), but

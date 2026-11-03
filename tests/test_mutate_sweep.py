@@ -979,6 +979,33 @@ class TestCycle:
         assert last["survivors"] == ["vera.b.x_g__mutmut_4:survived"]
         assert (last["sampled"], last["population"], last["fraction"]) == (12, 12, 1.0)
 
+    def test_a_decision_outside_the_sample_is_kept_but_never_scored(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A state carried over from the sweep that measured every mutant
+        holds decided mutants outside the cycle's sample, a tree-order prefix
+        rather than a draw (PR #1828 review): the totals, the survivors and
+        the closed cycle's sample are the sample's alone, and the decisions
+        stay in the state for a later cycle's sample."""
+        monkeypatch.setattr(sw, "SAMPLE_FRACTION", 0.5)
+        state = _state(f=40, m=40, g=40)
+        drawn = {u: sw.sampled(state, u) for u in UNITS}
+        outside = {u: [n for n in range(1, 41) if n not in drawn[u]] for u in UNITS}
+        assert all(outside[u] for u in UNITS)
+        for u in UNITS:
+            _decide(state, u, drawn[u])
+            _decide(state, u, outside[u], "survived")  # an exhaustive prefix, every one a survivor
+        assert sw.tally(state, UNITS) == {
+            "vera/a.py": {"killed": len(drawn[A]) + len(drawn[B]), "survived": 0, "timeout": 0, "no_tests": 0,
+                          "other": 0, "mutants": 80},
+            "vera/b.py": {"killed": len(drawn[C]), "survived": 0, "timeout": 0, "no_tests": 0, "other": 0,
+                          "mutants": 40}}
+        kept = json.loads(json.dumps(state))
+        assert sw.close_cycle(state, UNITS, head="h", today="e") is True
+        last = state["last_complete"]
+        assert last["survivors"] == [] and (last["sampled"], last["population"]) == (sum(map(len, drawn.values())), 120)
+        assert state["units"][A.ident]["statuses"] == {}  # the next cycle starts afresh
+        # And while the cycle was open, the decisions outside the sample sat in the state untouched.
+        assert all(kept["units"][u.ident]["statuses"][str(n)] == "survived" for u in UNITS for n in outside[u])
+
     def test_the_interval_is_wilsons(self) -> None:
         """The 95% Wilson interval of a proportion, the textbook values."""
         assert sw.wilson(5, 10) == (23.7, 76.3)

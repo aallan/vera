@@ -991,15 +991,28 @@ def _column(status: str) -> str:
     return "other"
 
 
+def sampled_statuses(state: Mapping[str, Any], unit: SweepUnit) -> dict[str, str]:
+    """The unit's decided mutants in the cycle's sample, by number.  A unit
+    may hold decisions outside the sample too: a state carried over from
+    the sweep that measured every mutant, a tree-order prefix rather than a
+    draw.  They are kept, since a later cycle's sample may hold them, and
+    never scored: the score is the sample's, or its interval means
+    nothing."""
+    numbers = sampled(state, unit) or []
+    statuses = state["units"][unit.ident]["statuses"]
+    return {str(n): statuses[str(n)] for n in numbers if str(n) in statuses}
+
+
 def tally(state: Mapping[str, Any], units: Iterable[SweepUnit]) -> dict[str, dict[str, int]]:
-    """Per-module counts of the decided mutants, by summary column, and the
-    module's mutants in all (``mutants``: the population its sample is of)."""
+    """Per-module counts of the sample's decided mutants, by summary column,
+    and the module's mutants in all (``mutants``: the population its sample
+    is of)."""
     modules: dict[str, dict[str, int]] = {}
     for unit in units:
         row = modules.setdefault(unit.path, dict.fromkeys(
             ("killed", "survived", "timeout", "no_tests", "other", "mutants"), 0))
         row["mutants"] += state["units"][unit.ident]["mutants"] or 0
-        for status in state["units"][unit.ident]["statuses"].values():
+        for status in sampled_statuses(state, unit).values():
             row[_column(status)] += 1
     return modules
 
@@ -1018,7 +1031,7 @@ def close_cycle(state: dict[str, Any], units: Sequence[SweepUnit], *, head: str,
         return False
     survivors = sorted(
         f"{u.module}.{u.key}__mutmut_{n}:{s}" for u in units
-        for n, s in state["units"][u.ident]["statuses"].items() if s in ("survived", "timeout"))
+        for n, s in sampled_statuses(state, u).items() if s in ("survived", "timeout"))
     state["last_complete"] = {"cycle": state["cycle"], "started": state["cycle_started"],
                               "finished": today, "head": head, "engine": state["engine"],
                               "modules": tally(state, units), "survivors": survivors,

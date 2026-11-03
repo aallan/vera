@@ -2037,10 +2037,11 @@ class TestTheRepositoryConfig:
             assert f"def {rest.rpartition('::')[2]}(" in (ROOT / path).read_text(encoding="utf-8"), nodeid
         env = {k: v for k, v in os.environ.items()
                if k not in ("GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE", "PYTEST_ADDOPTS")}
+        env["PYTHONUTF8"] = "1"  # the child's piped stdout is UTF-8 on every platform
         result = subprocess.run(
             [sys.executable, "-m", "pytest", "-q", "-p", "tests.mutation_oracle", "-p", "no:cacheprovider",
              "-o", "addopts=", "-rs", *readers],
-            cwd=ROOT, env=env, capture_output=True, text=True, encoding="utf-8", check=False)
+            cwd=ROOT, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
         assert f"{len(readers)} skipped" in result.stdout, result.stdout + result.stderr
         assert "reads the compiler's source" in result.stdout
 
@@ -2385,12 +2386,16 @@ class TestOraclePlugin:
         skips, source_skips = tmp_path / "skips.txt", tmp_path / "source-skips.txt"
         env = {k: v for k, v in os.environ.items()
                if k not in ("GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE", "PYTEST_ADDOPTS")}
-        env.update(PYTHONPATH=str(ROOT), MUTATION_ORACLE_SKIPS=str(skips),
+        # The child's pytest writes a compiler diagnostic in its failure
+        # report; on Windows its piped stdout is the console code page unless
+        # told otherwise, and a strict UTF-8 reader then returns no stdout.
+        env.update(PYTHONPATH=str(ROOT), PYTHONUTF8="1", MUTATION_ORACLE_SKIPS=str(skips),
                    MUTATION_ORACLE_SOURCE_SKIPS=str(source_skips))
         result = subprocess.run(
             [sys.executable, "-m", "pytest", "-q", "-p", "tests.mutation_oracle", "-p", "no:cacheprovider",
              "-o", "addopts=", "-rs", "test_planted.py"],
-            cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8", check=False)
+            cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",
+            check=False)
         return result, skips, source_skips
 
     def test_a_test_that_reads_the_compilers_source_is_skipped_and_recorded(self, tmp_path: Path) -> None:
