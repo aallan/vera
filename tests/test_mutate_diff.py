@@ -2461,7 +2461,9 @@ class TestOraclePlugin:
         """), encoding="utf-8")
         result, skips, source_skips = self._run_planted(tmp_path)
         assert "1 failed" in result.stdout and "skipped" not in result.stdout, result.stdout + result.stderr
-        assert "vera/parser.py" in result.stdout  # the compiler's frame, its source read and shown
+        # The compiler's frame, its source read and shown: pytest prints the
+        # frame's path with the platform's separator.
+        assert os.path.join("vera", "parser.py") in result.stdout and "ParseError" in result.stdout
         assert not skips.exists() and not source_skips.exists()
 
     def test_the_mutated_source_paths_are_the_configurations(self, tmp_path: Path) -> None:
