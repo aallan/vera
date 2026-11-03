@@ -605,6 +605,35 @@ def _misses(path: str, source: str) -> list[str]:
     return found
 
 
+class TestTheCountInTheEngine:
+    """The engine's ``count`` command: each named unit's mutants by mutmut's
+    own visitor, the count ``mutmut run`` generates, which the nightly sweep
+    draws its sample over."""
+
+    def test_each_named_unit_is_counted_as_mutmut_generates_it(self) -> None:
+        pytest.importorskip("mutmut")
+        from mutmut.mutation.file_mutation import mutate_file_contents
+
+        request = json.dumps({"sources": {"m.py": WINDOWED}, "units": {"m.py": ["x_long", "x_absent"]}})
+        counts = json.loads(md.count_units(request))
+        generated = mutate_file_contents("m.py", WINDOWED).mutant_names
+        assert counts == {"m.py": {"x_long": len([n for n in generated if n.startswith("x_long__mutmut_")]),
+                                   "x_absent": 0}}
+        assert counts["m.py"]["x_long"] >= 5
+
+    def test_the_command_reads_its_request_from_stdin_and_answers_on_stdout(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        pytest.importorskip("mutmut")
+        request = json.dumps({"sources": {"m.py": WINDOWED}, "units": {"m.py": ["x_long"]}})
+        monkeypatch.setattr(sys, "stdin", io.StringIO(request))
+        assert md.engine_main([md.COUNT_ARG]) == 0
+        assert json.loads(capsys.readouterr().out)["m.py"]["x_long"] >= 5
+        monkeypatch.setattr(sys, "stdin", io.StringIO('{"sources": {}}'))
+        assert md.engine_main([md.COUNT_ARG]) == md.NO_COUNT_EXIT
+        assert "cannot be counted" in capsys.readouterr().err
+
+
 class TestTheEnclosingNodes:
     """mutmut places a mutant on the first line of the node it mutates, and
     a call's, a match's and the other enclosing kinds' mutants change text
@@ -1976,40 +2005,53 @@ class TestTheRepositoryConfig:
         for path in self._cfg()["pytest_add_cli_args_test_selection"]:
             assert (ROOT / path).is_file(), path
 
-    def test_the_tests_that_read_a_mutated_modules_text_are_deselected(self) -> None:
+    def test_the_tests_that_read_a_mutated_modules_text_are_the_plugins_to_skip(self) -> None:
         """Inside mutmut's copy, ``inspect.getsourcefile(vera.verifier)`` is
         the generated file, every function's mutants inlined, and so is each
-        mutated module's text: these read it and fail there with no mutant
-        active."""
-        deselected = {arg.removeprefix("--deselect=") for arg in self._cfg()["pytest_add_cli_args"]
-                      if arg.startswith("--deselect=")}
-        reads = "tests/test_verifier_refinements.py::TestANonVerdictIsAttributedToTheRightOutcome::"
-        assert deselected == {
-            reads + "test_no_demotion_site_hardcodes_a_solver_reason",
-            reads + "test_every_possibly_unguarded_demotion_supplies_a_reason",
-            # runs scripts/check_diagnostic_fields.py over the copy's vera/,
-            # where each mutant repeats its function's error codes
+        mutated module's text: a test that reads it fails there with no
+        mutant active.  No such test is deselected by hand any more: the
+        plugin skips each at the read (#1827), and the five the configuration
+        once named, with the four of the night of 3 November 2026, skip so
+        in this tree."""
+        args = self._cfg()["pytest_add_cli_args"]
+        assert not [a for a in args if a.startswith("--deselect=")]
+        readers = [
+            "tests/test_verifier_refinements.py::TestANonVerdictIsAttributedToTheRightOutcome::"
+            "test_no_demotion_site_hardcodes_a_solver_reason",
+            "tests/test_verifier_refinements.py::TestANonVerdictIsAttributedToTheRightOutcome::"
+            "test_every_possibly_unguarded_demotion_supplies_a_reason",
             "tests/test_checker_errors.py::TestErrorCodes::test_error_code_collision_gate_is_clean",
-            # the presence gate over the copy's vera/, and over the copy's
-            # vera/checker/registration.py with its one E188 taken off
             "tests/test_diagnostic_codes_1490.py::"
             "test_the_live_tree_carries_a_code_everywhere_and_builds_none_by_hand",
-            "tests/test_diagnostic_codes_1490.py::"
-            "test_mutant_a_code_removed_from_one_site_fails_the_gate",
-        }
+            "tests/test_diagnostic_codes_1490.py::test_mutant_a_code_removed_from_one_site_fails_the_gate",
+            "tests/test_pipe_desugar.py::TestADiagnosticAtItsStage::test_every_call_level_code_has_a_cell",
+            "tests/test_warning_severity_1513.py::TestTheEnumeration::"
+            "test_every_check_stage_warning_is_a_registered_code",
+            "tests/test_warning_severity_1513.py::TestTheEnumeration::"
+            "test_every_check_stage_warning_and_every_issue_code_has_cells",
+            "tests/test_warning_severity_1513.py::TestTheEnumeration::test_the_warning_set_is_the_one_this_fix_leaves",
+        ]
+        for nodeid in readers:
+            path, _, rest = nodeid.partition("::")
+            assert (ROOT / path).is_file(), nodeid
+            assert f"def {rest.rpartition('::')[2]}(" in (ROOT / path).read_text(encoding="utf-8"), nodeid
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE", "PYTEST_ADDOPTS")}
+        env["PYTHONUTF8"] = "1"  # the child's piped stdout is UTF-8 on every platform
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", "-p", "tests.mutation_oracle", "-p", "no:cacheprovider",
+             "-o", "addopts=", "-rs", *readers],
+            cwd=ROOT, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
+        assert f"{len(readers)} skipped" in result.stdout, result.stdout + result.stderr
+        assert "reads the compiler's source" in result.stdout
 
-    def test_every_deselected_test_exists(self) -> None:
-        args = [a for a in self._cfg()["pytest_add_cli_args"] if a.startswith("--deselect=")]
-        assert args
-        for arg in args:
-            path, _, rest = arg.removeprefix("--deselect=").partition("::")
-            assert (ROOT / path).is_file(), arg
-            cls, _, name = rest.partition("::")
-            text = (ROOT / path).read_text(encoding="utf-8")
-            if name:
-                assert f"class {cls}" in text and f"def {name}(" in text, arg
-            else:  # a module-level test function
-                assert f"\ndef {cls}(" in text, arg
+    def test_every_session_runs_in_a_process_of_its_own(self) -> None:
+        """mutmut's default fork runner runs its stats pass, its listing and
+        its clean run as sessions of one process, and state one left behind
+        broke the next on three nights (#1745, #1747, #1822); the fork
+        server runs each in a fresh child of a parent that never imports
+        pytest."""
+        assert self._cfg()["process_isolation"] == "forkserver"
 
 
 # ---------------------------------------------------------------------------
@@ -2338,6 +2380,103 @@ class TestOraclePlugin:
         i = args.index("-p")
         assert args[i + 1] == "tests.mutation_oracle"
 
+    def _run_planted(self, tmp_path: Path) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
+        """pytest over ``test_planted.py`` in ``tmp_path`` with the plugin
+        loaded; its result and the two files the plugin records skips in."""
+        skips, source_skips = tmp_path / "skips.txt", tmp_path / "source-skips.txt"
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE", "PYTEST_ADDOPTS")}
+        # The child's pytest writes a compiler diagnostic in its failure
+        # report; on Windows its piped stdout is the console code page unless
+        # told otherwise, and a strict UTF-8 reader then returns no stdout.
+        env.update(PYTHONPATH=str(ROOT), PYTHONUTF8="1", MUTATION_ORACLE_SKIPS=str(skips),
+                   MUTATION_ORACLE_SOURCE_SKIPS=str(source_skips))
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", "-p", "tests.mutation_oracle", "-p", "no:cacheprovider",
+             "-o", "addopts=", "-rs", "test_planted.py"],
+            cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",
+            check=False)
+        return result, skips, source_skips
+
+    def test_a_test_that_reads_the_compilers_source_is_skipped_and_recorded(self, tmp_path: Path) -> None:
+        """Three reads of a mutated module's source (`open`; `pathlib`, which
+        reads through `io.open`; `inspect.getsource`) skip the test at the
+        read and record it apart from the process skips; a read of a grammar
+        under `vera/`, of a script, or of a test helper's source does not
+        (#1827)."""
+        (tmp_path / "test_planted.py").write_text(_src(f"""
+            import inspect
+            from pathlib import Path
+
+            import tests.pipeline
+            import vera.types
+
+            ROOT = Path({str(ROOT)!r})
+
+
+            def test_reads_a_module_with_open():
+                with open(ROOT / "vera" / "__init__.py", encoding="utf-8") as fh:
+                    fh.read()
+
+
+            def test_reads_a_module_with_pathlib():
+                (ROOT / "vera" / "types.py").read_text(encoding="utf-8")
+
+
+            def test_reads_a_modules_source_with_inspect():
+                inspect.getsource(vera.types)
+
+
+            def test_reads_the_grammar():
+                assert (ROOT / "vera" / "grammar.lark").read_text(encoding="utf-8")
+
+
+            def test_reads_a_script():
+                assert (ROOT / "scripts" / "mutate_diff.py").read_text(encoding="utf-8")
+
+
+            def test_reads_a_helpers_source():
+                assert inspect.getsource(tests.pipeline)
+        """), encoding="utf-8")
+        result, skips, source_skips = self._run_planted(tmp_path)
+        assert "3 passed, 3 skipped" in result.stdout, result.stdout + result.stderr
+        assert "reads the compiler's source" in result.stdout
+        assert source_skips.read_text(encoding="utf-8").splitlines() == [
+            "test_planted.py::test_reads_a_module_with_open",
+            "test_planted.py::test_reads_a_module_with_pathlib",
+            "test_planted.py::test_reads_a_modules_source_with_inspect"]
+        assert not skips.exists()
+
+    def test_a_failure_through_the_compilers_frames_is_still_a_failure(self, tmp_path: Path) -> None:
+        """pytest formats a failure's traceback by reading each frame's
+        source, the compiler's frames included, through `tokenize.open`,
+        which holds its own reference to the original `open`: the plugin's
+        wrapper never sees those reads, and the failure is reported as one."""
+        (tmp_path / "test_planted.py").write_text(_src("""
+            from vera.parser import parse
+
+
+            def test_fails_inside_the_parser():
+                parse("fn (((")
+        """), encoding="utf-8")
+        result, skips, source_skips = self._run_planted(tmp_path)
+        assert "1 failed" in result.stdout and "skipped" not in result.stdout, result.stdout + result.stderr
+        # The compiler's frame, its source read and shown: pytest prints the
+        # frame's path with the platform's separator.
+        assert os.path.join("vera", "parser.py") in result.stdout and "ParseError" in result.stdout
+        assert not skips.exists() and not source_skips.exists()
+
+    def test_the_mutated_source_paths_are_the_configurations(self, tmp_path: Path) -> None:
+        from tests import mutation_oracle
+
+        assert mutation_oracle.source_roots(ROOT) == ((ROOT / "vera").resolve(),)
+        assert mutation_oracle.source_roots(tmp_path) == ()
+        (tmp_path / "pyproject.toml").write_text("[tool.other]\nx = 1\n", encoding="utf-8")
+        assert mutation_oracle.source_roots(tmp_path) == ()
+        (tmp_path / "pyproject.toml").write_text('[tool.mutmut]\nsource_paths = ["pkg/", "lib/"]\n',
+                                                 encoding="utf-8")
+        assert mutation_oracle.source_roots(tmp_path) == ((tmp_path / "pkg").resolve(), (tmp_path / "lib").resolve())
+
     def test_a_skipped_test_leaves_the_record_under_mutmuts_name_for_it(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -2371,7 +2510,9 @@ class TestOraclePlugin:
         its outcome, the functions the test reached.  A test the plugin skips
         after calling a mutated function must leave no such record, or mutmut
         runs it against that function's mutants, it skips again, and each
-        mutant reads as a survivor where it is `no tests`."""
+        mutant reads as a survivor where it is `no tests`: so for a test that
+        starts a process, and for one that reads the mutated source (#1827),
+        under the fork server the lanes run."""
         pytest.importorskip("mutmut")
         engine = Path(sys.executable).with_name("mutmut")
         project = tmp_path / "project"
@@ -2380,27 +2521,36 @@ class TestOraclePlugin:
         (project / "pkg" / "__init__.py").write_text("", encoding="utf-8")
         (project / "pkg" / "m.py").write_text(
             "def reached_then_skipped(x):\n    return x + 1\n\n\n"
-            "def reached_in_process(x):\n    return x * 2\n", encoding="utf-8")
+            "def reached_in_process(x):\n    return x * 2\n\n\n"
+            "def reached_by_a_reader(x):\n    return x - 3\n", encoding="utf-8")
         (project / "tests" / "__init__.py").write_text("", encoding="utf-8")
         (project / "tests" / "mutation_oracle.py").write_text(
             (ROOT / "tests" / "mutation_oracle.py").read_text(encoding="utf-8"), encoding="utf-8")
         (project / "tests" / "test_m.py").write_text(
-            "import subprocess, sys\n\n"
-            "from pkg.m import reached_in_process, reached_then_skipped\n\n\n"
+            "import subprocess, sys\n"
+            "from pathlib import Path\n\n"
+            "import pkg.m\n"
+            "from pkg.m import reached_by_a_reader, reached_in_process, reached_then_skipped\n\n\n"
             "def test_calls_then_starts_python():\n"
             "    reached_then_skipped(1)\n"
             "    subprocess.run([sys.executable, '-c', 'pass'], check=True)\n\n\n"
             "def test_in_process():\n"
-            "    assert reached_in_process(3) == 6\n", encoding="utf-8")
+            "    assert reached_in_process(3) == 6\n\n\n"
+            "def test_calls_then_reads_the_source():\n"
+            "    assert reached_by_a_reader(5) == 2\n"
+            "    assert 'def reached_by_a_reader' in Path(pkg.m.__file__).read_text(encoding='utf-8')\n",
+            encoding="utf-8")
         (project / "pyproject.toml").write_text(
             '[tool.mutmut]\nsource_paths = ["pkg/"]\nuse_setproctitle = false\n'
+            'process_isolation = "forkserver"\n'
             'pytest_add_cli_args = ["-p", "tests.mutation_oracle", "-p", "no:cacheprovider"]\n'
             'pytest_add_cli_args_test_selection = ["tests/"]\n', encoding="utf-8")
-        skips = tmp_path / "skips.txt"
+        skips, source_skips = tmp_path / "skips.txt", tmp_path / "source-skips.txt"
         env = {k: v for k, v in os.environ.items()
                if k not in ("GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE", "PYTEST_ADDOPTS",
                             "MUTANT_UNDER_TEST")}
-        env.update(PYTHONDONTWRITEBYTECODE="1", MUTATION_ORACLE_SKIPS=str(skips))
+        env.update(PYTHONDONTWRITEBYTECODE="1", MUTATION_ORACLE_SKIPS=str(skips),
+                   MUTATION_ORACLE_SOURCE_SKIPS=str(source_skips))
         run = subprocess.run([str(engine), "run", "--max-children", "2"], cwd=project, env=env,
                              capture_output=True, text=True, encoding="utf-8", check=False, timeout=600)
         listed = subprocess.run([str(engine), "results", "--all", "true"], cwd=project, env=env,
@@ -2410,11 +2560,13 @@ class TestOraclePlugin:
         by_function: dict[str, set[str]] = {}
         for name, status in statuses.items():
             by_function.setdefault(md.unit_of_mutant(name)[1], set()).add(status)
-        assert by_function == {"x_reached_then_skipped": {"no tests"}, "x_reached_in_process": {"killed"}}, (
-            run.stdout + run.stderr)
+        assert by_function == {"x_reached_then_skipped": {"no tests"}, "x_reached_in_process": {"killed"},
+                               "x_reached_by_a_reader": {"no tests"}}, run.stdout + run.stderr
         # Recorded each time it skips (the stats pass, the forced-fail run); the lane lists it once.
         assert set(skips.read_text(encoding="utf-8").splitlines()) == {
             "tests/test_m.py::test_calls_then_starts_python"}
+        assert set(source_skips.read_text(encoding="utf-8").splitlines()) == {
+            "tests/test_m.py::test_calls_then_reads_the_source"}
 
 
 # ---------------------------------------------------------------------------
@@ -2470,10 +2622,12 @@ if args[0] == "run":
         print(f"FAILED {failing} - FileNotFoundError: [Errno 2] No such file or directory: 'CHANGELOG.md'")
         print("failed to collect stats. runner returned 1")
         sys.exit(1)
-    skipped = os.environ.get("FAKE_ORACLE_SKIPS", "")
-    if skipped and os.environ.get("MUTATION_ORACLE_SKIPS"):
-        with open(os.environ["MUTATION_ORACLE_SKIPS"], "a", encoding="utf-8") as fh:
-            fh.write("".join(f"{nodeid}\\n" for nodeid in skipped.split(",")))
+    for fake, env in (("FAKE_ORACLE_SKIPS", "MUTATION_ORACLE_SKIPS"),
+                      ("FAKE_ORACLE_SOURCE_SKIPS", "MUTATION_ORACLE_SOURCE_SKIPS")):
+        skipped = os.environ.get(fake, "")
+        if skipped and os.environ.get(env):
+            with open(os.environ[env], "a", encoding="utf-8") as fh:
+                fh.write("".join(f"{nodeid}\\n" for nodeid in skipped.split(",")))
     print(os.environ.get("FAKE_RUN_OUTPUT", ""), flush=True)
     if os.environ.get("FAKE_RUN_SLEEP"):
         import time
@@ -2838,6 +2992,20 @@ class TestEndToEnd:
         assert record["subprocess_tests"] == [planted, spaced]
         summary = (tmp_path / "summary.md").read_text(encoding="utf-8")
         assert f"`{planted}`" in summary and "Not oracles in mutmut's copy" in summary
+
+    def test_a_test_that_reads_the_source_is_kept_out_and_reported(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The plugin skips, inside mutmut's copy, a test that reads the
+        compiler's source and records it apart; the lane names each one."""
+        reader = "tests/test_scan.py::test_every_site_names_a_code"
+        monkeypatch.setenv("FAKE_ORACLE_SOURCE_SKIPS", f"{reader},{reader}")
+        code, record, _ = _main(repo, tmp_path, "    vera.m.x_kept__mutmut_1: killed\n")
+        assert code == 0 and record["stopped"] is None
+        assert record["source_tests"] == [reader] and record["subprocess_tests"] == []
+        summary = (tmp_path / "summary.md").read_text(encoding="utf-8")
+        assert f"`{reader}`" in summary and "read the compiler's source" in summary
+        assert "Not oracles in mutmut's copy" in summary
 
     def test_a_relative_workdir_still_collects_the_skipped_tests(
         self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,

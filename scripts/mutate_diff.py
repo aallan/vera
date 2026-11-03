@@ -175,6 +175,20 @@ ENGINE_ARG = "--as-engine"
 #: failure to the lane, never a survivor's 1.
 NO_WINDOW_EXIT = 3
 
+#: The engine's ``count`` command (:func:`count_units`): how many mutants
+#: mutmut's own visitor makes in each named unit, which the nightly sweep
+#: plans its sample from.
+COUNT_ARG = "count"
+
+#: The exit status of a ``count`` the engine could not make.
+NO_COUNT_EXIT = 4
+
+#: The variables naming the files ``tests/mutation_oracle.py`` appends the
+#: node id of each test it keeps out of the oracle to: one that starts a
+#: Python or ``vera`` process, and one that reads the compiler's source.
+SKIPS_ENV = "MUTATION_ORACLE_SKIPS"
+SOURCE_SKIPS_ENV = "MUTATION_ORACLE_SOURCE_SKIPS"
+
 #: The kinds of node (libcst's names) whose mutants mutmut 3.8 places on the
 #: node's first line though the text they change can lie below it
 #: (``mutation_operators`` in ``mutmut.mutation.mutators``): a call (an
@@ -871,12 +885,37 @@ def install_window(engine: Any, window_file: Path) -> None:
     engine.get_covered_lines_for_file = covered
 
 
+def count_units(request: str) -> str:
+    """The engine's ``count`` command: for each file of ``request`` (JSON,
+    ``{"sources": {path: source}, "units": {path: [key, ...]}}``), how many
+    mutants mutmut's own visitor makes in each named unit of its source, as
+    JSON ``{path: {key: n}}``, zero for a unit it makes none in.  The count
+    is the one ``mutmut run`` generates, so a unit's mutants are
+    ``<key>__mutmut_1`` to ``<key>__mutmut_n`` in the copy."""
+    from mutmut.mutation.file_mutation import create_mutations
+
+    data = json.loads(request)
+    sources, units = data["sources"], data["units"]
+    counts: dict[str, dict[str, int]] = {}
+    for path, keys in units.items():
+        held = _unit_counts(create_mutations, path, sources[path], None)
+        counts[path] = {str(key): held[str(key)] for key in keys}
+    return json.dumps(counts)
+
+
 def engine_main(args: Sequence[str]) -> int:
     """mutmut's command line, its ``run`` generating only the window's
     mutants when :data:`WINDOW_ENV` names the lane's window file: the lane's
     default engine, this script run with :data:`ENGINE_ARG` first.  An engine
     that cannot apply the window stops with :data:`NO_WINDOW_EXIT` before it
     generates anything, which the lane reads as an engine failure."""
+    if args[:1] == [COUNT_ARG]:
+        try:
+            sys.stdout.write(count_units(sys.stdin.read()))
+        except (ImportError, KeyError, TypeError, ValueError) as exc:
+            print(f"mutate_diff: the units cannot be counted: {exc}", file=sys.stderr)
+            return NO_COUNT_EXIT
+        return 0
     import mutmut.__main__ as engine
 
     window_file = os.environ.get(WINDOW_ENV)
@@ -1325,6 +1364,19 @@ def render(record: Mapping[str, Any]) -> str:
         out.append("")
         out.extend(f"- `{test}`" for test in shown)
         out.append("")
+    if record.get("source_tests"):
+        shown = record["source_tests"][:30]
+        if not record.get("subprocess_tests"):
+            out.append("### Not oracles in mutmut's copy")
+            out.append("")
+        out.append(f"{len(record['source_tests'])} test(s) read the compiler's source, which inside "
+                   "mutmut's copy holds every mutant of the mutated functions inlined, so "
+                   "`tests/mutation_oracle.py` skipped them there"
+                   + (":" if len(shown) == len(record["source_tests"])
+                      else f"; the first {len(shown)}, the record lists every one:"))
+        out.append("")
+        out.extend(f"- `{test}`" for test in shown)
+        out.append("")
     notes = []
     for item in record["files"]:
         if item["outside"] or item["outside_removed"]:
@@ -1408,14 +1460,25 @@ def annotation(code: int, headline: str) -> str | None:
 
 
 def _engine_call(engine: Sequence[str], args: Sequence[str], *, cwd: Path | None,
-                 env: Mapping[str, str]) -> subprocess.CompletedProcess[str] | None:
-    """A short engine command, or None when it does not finish in time."""
+                 env: Mapping[str, str], stdin: str | None = None,
+                 timeout_s: float | None = None) -> subprocess.CompletedProcess[str] | None:
+    """A short engine command, or None when it does not finish in
+    ``timeout_s`` (``ENGINE_CALL_TIMEOUT_S`` by default)."""
     try:
         return subprocess.run([*engine, *args], cwd=cwd, capture_output=True, text=True,
-                              encoding="utf-8", env=dict(env), check=False,
-                              timeout=ENGINE_CALL_TIMEOUT_S)
+                              encoding="utf-8", env=dict(env), check=False, input=stdin,
+                              timeout=ENGINE_CALL_TIMEOUT_S if timeout_s is None else timeout_s)
     except subprocess.TimeoutExpired:
         return None
+
+
+def skipped_tests(path: Path) -> list[str]:
+    """The node ids ``tests/mutation_oracle.py`` appended to ``path``, each
+    once (it appends on every skip: the stats pass, the forced-fail run);
+    one node id a line, since a parametrised id can hold a space."""
+    if not path.exists():
+        return []
+    return sorted({line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()})
 
 
 def _engine_version(engine: Sequence[str], env: Mapping[str, str]) -> str:
@@ -1553,9 +1616,12 @@ def _lane(args: argparse.Namespace, repo: Path, workdir: Path, engine: list[str]
     # pytest draws its rules the terminal's width, which engine_failure reads.
     env["COLUMNS"] = "80"
     # tests/mutation_oracle.py, which [tool.mutmut] loads, appends here each
-    # test it keeps out of the oracle for starting a Python or vera process.
+    # test it keeps out of the oracle: for starting a Python or vera process,
+    # and for reading the compiler's source.
     skips = workdir / "oracle-skips.txt"
-    env["MUTATION_ORACLE_SKIPS"] = str(skips)
+    source_skips = workdir / "oracle-source-skips.txt"
+    env[SKIPS_ENV] = str(skips)
+    env[SOURCE_SKIPS_ENV] = str(source_skips)
     record: dict[str, Any] = {
         "schema": 2, "base": base, "merge_base": merge_base, "head": head,
         "engine_version": "", "budget_s": args.budget, "elapsed_s": 0.0,
@@ -1566,7 +1632,7 @@ def _lane(args: argparse.Namespace, repo: Path, workdir: Path, engine: list[str]
                    "unchanged_code": v.unchanged_code} for v in verdicts],
         "stopped": None, "engine_exit": None, "engine_error": None, "outside_diff": [],
         "outside_window": [], "engine_tail": [], "dropped_tests": [], "subprocess_tests": [],
-        "window": None,
+        "source_tests": [], "window": None,
     }
     rows: list[UnitResult] = []
     stopped: str | None = None
@@ -1604,10 +1670,8 @@ def _lane(args: argparse.Namespace, repo: Path, workdir: Path, engine: list[str]
                 extra_args=[f"--deselect={test}" for test in dropped]))
         record["dropped_tests"] = dropped
         record["engine_error"] = run.error
-        if skips.exists():
-            # One node id a line: a parametrised id can hold a space.
-            record["subprocess_tests"] = sorted(
-                {line for line in skips.read_text(encoding="utf-8").splitlines() if line.strip()})
+        record["subprocess_tests"] = skipped_tests(skips)
+        record["source_tests"] = skipped_tests(source_skips)
         record["engine_exit"] = run.returncode
         no_tests = run.returncode == 1 and NO_TESTS_SENTENCE in log.read_text(
             encoding="utf-8", errors="replace")

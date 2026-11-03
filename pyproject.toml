@@ -85,7 +85,10 @@ mutation = [
     # is ~90x faster on this Z3/WASM suite, and its copy-based model
     # never mutates the working tree in place.  See MUTATION.md.
     "veralang[dev]",
-    "mutmut>=3.6",
+    # 3.8 brought process_isolation (the fork server both lanes run under),
+    # mutmut.state (the record tests/mutation_oracle.py edits) and the
+    # covered-lines hook the diff lane's window reaches mutmut through.
+    "mutmut>=3.8",
     "pytest-timeout>=2.4",
     # scripts/mutation_report.py renders the per-module chart with matplotlib;
     # optional at runtime (the script skips the PNG if it is absent), but
@@ -215,41 +218,53 @@ also_copy = ["examples/", "README.md", "docs/", "spec/", "scripts/", "AGENTS.md"
 # so the working tree is never mutated in place.
 use_setproctitle = false  # required on macOS (mutmut PR #450)
 # Z3 / wasmtime headroom: a generous per-test cap so a slow-but-solvable
-# mutant is not misread as an unkillable timeout survivor.  The two
-# verifier tests parse vera/verifier.py's own text, which inside the
-# ./mutants/ copy is mutmut's generated file with every mutant inlined, and
-# the collision gate runs scripts/check_diagnostic_fields.py over the copy's
-# vera/, where each mutant repeats its function's error codes (a mutated
-# vera/checker/core.py emits E121 from 198 sites), as two cells of
-# tests/test_diagnostic_codes_1490.py do (the live tree, and
-# vera/checker/registration.py's text with its one E188 taken off); so they
-# fail there with no mutant active.  They read the modules' source, not
-# their behaviour, so no mutant can reach them.  scripts/mutate_diff.py
-# drops any other such test from a run and reports it.  tests/mutation_oracle.py
-# skips, in the copy, a test that starts a Python or vera process: the
-# process compiles every mutated module afresh (a mutated _register_builtins
-# makes environment.py 33.6 MB) and records nothing for the stats pass, so
-# the test is no oracle.
+# mutant is not misread as an unkillable timeout survivor.
+# tests/mutation_oracle.py keeps two kinds of test out of the oracle inside
+# the ./mutants/ copy, skipping each at the moment it does the thing, listing
+# it for the lanes and taking it out of mutmut's record of the tests that
+# reach each function: one that starts a Python or vera process (the process
+# compiles every mutated module afresh, a mutated _register_builtins making
+# environment.py 33.6 MB, and records nothing for the stats pass), and one
+# that reads a .py file under source_paths as text or through
+# inspect.getsource.  In the copy that file is mutmut's generated one with
+# every mutant inlined, so a scan of it for a property the mutants break
+# fails with no mutant active: the two verifier tests that parse
+# vera/verifier.py's text, the collision gate that runs
+# scripts/check_diagnostic_fields.py over the copy's vera/ (a mutated
+# vera/checker/core.py emits E121 from 198 sites), the two cells of
+# tests/test_diagnostic_codes_1490.py that do the same, and the four tests
+# that cost four slices of the night of 3 November 2026 their whole budget
+# (#1827), each at the price of a stats pass.  They read the modules' source,
+# not their behaviour, so no mutant can reach them.  scripts/mutate_diff.py
+# drops any other test that fails in the copy from a run and reports it, and
+# the nightly sweep deselects it from the start on every night after.
 # No faulthandler plugin (#1747): it records the process's signal handlers
 # when a pytest session starts and restores them when it ends, and wasmtime
 # installs its trap handlers once per process, at the first Engine.  mutmut's
-# fork runner runs the stats pass and the clean pass as two sessions in one
+# fork runner ran the stats pass and the clean pass as two sessions in one
 # process, so the first session's end took wasmtime's handlers away and the
 # clean pass died on its first trap (SIGILL); the forked mutant runs inherit
 # whatever the parent has.  tests/test_wasmtime_traps_across_pytest_sessions_1747.py
-# shows both halves on Linux, where traps are signals.
+# shows both halves on Linux, where traps are signals.  The fork server
+# (process_isolation, below) now gives each session a process of its own, so
+# the restore reaches no later session; the flag stays as a second guard.
 pytest_add_cli_args = [
     "--timeout=300",
     "-p",
     "tests.mutation_oracle",
     "-p",
     "no:faulthandler",
-    "--deselect=tests/test_verifier_refinements.py::TestANonVerdictIsAttributedToTheRightOutcome::test_no_demotion_site_hardcodes_a_solver_reason",
-    "--deselect=tests/test_verifier_refinements.py::TestANonVerdictIsAttributedToTheRightOutcome::test_every_possibly_unguarded_demotion_supplies_a_reason",
-    "--deselect=tests/test_checker_errors.py::TestErrorCodes::test_error_code_collision_gate_is_clean",
-    "--deselect=tests/test_diagnostic_codes_1490.py::test_the_live_tree_carries_a_code_everywhere_and_builds_none_by_hand",
-    "--deselect=tests/test_diagnostic_codes_1490.py::test_mutant_a_code_removed_from_one_site_fails_the_gate",
 ]
+# Every pytest session in a process of its own (#1827).  mutmut's default
+# fork runner runs its stats pass, its test listing and its clean run as
+# sessions of one process and forks the mutant workers from it, so state one
+# session leaves behind breaks the next: wasmtime's trap handlers put back by
+# the faulthandler plugin (#1745, #1747), a generator parametrisation
+# consumed by the first collection (#1822).  The fork server runs each of
+# those sessions in a fresh child of a parent that never imports pytest, and
+# forks a worker per mutant from a server that only collects.  Both lanes'
+# runners are POSIX, as os.fork needs.
+process_isolation = "forkserver"
 # In-process oracle (positive selection).  Only these suites build Vera
 # programs inline (or from examples/, copied above) and exercise the
 # compiler in-process, so they work inside the ./mutants/ copy and can

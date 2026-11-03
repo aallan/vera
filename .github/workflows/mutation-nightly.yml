@@ -1,17 +1,19 @@
 name: Mutation (nightly)
 
 # The nightly mutation sweep (MUTATION.md § The measure-all baseline):
-# mutmut over every function in vera/, a slice a night, so the whole tree is
-# measured over a cycle of nights and no run is a marathon.
+# mutmut over a random sample of the mutants in vera/, a cycle a night or
+# two, so the whole tree is measured often and no run is a marathon.
 # `scripts/mutate_sweep.py` plans each night from the state the last night
 # left, and each of the night's jobs runs its slice of that plan; the stitch
 # job folds the slices into the state, kept as the `mutation-sweep-state`
 # artifact for 90 days.  When a cycle closes, the artifact holds the
 # `mutation-summary.csv` and `mutation.json` a pull request commits (the
-# README badge reads `mutation.json` on main).
+# README badge reads `mutation.json` on main), the score with its 95%
+# interval.
 #
-# A night that decides nothing, or whose engine or lane fails, ends red, and
-# on the schedule the `issue` job files or updates one tracking issue (the
+# A night that decides nothing, or whose engine or lane fails, or a slice
+# of which ran out its budget before its first mutant, ends red, and on the
+# schedule the `issue` job files or updates one tracking issue (the
 # `mutation-sweep` label), as nightly-stress.yml does.  Survivors are the
 # measurement, never a failure.  The sweep jobs read the repository and the
 # last night's artifact and write nothing back; only the `issue` job can
@@ -254,7 +256,7 @@ jobs:
             const TITLE = "Nightly mutation sweep stopped short on main (tracking)";
             const sha = process.env.COMMIT_SHA;
             const body = [
-              `The nightly mutation sweep stopped short against \`${sha.slice(0, 7)}\` (commit ${sha}): a night that decided no mutant, a slice whose engine or lane failed, or slices with no record beyond what the sweep tolerates (one a night, three over seven nights).`,
+              `The nightly mutation sweep stopped short against \`${sha.slice(0, 7)}\` (commit ${sha}): a night that decided no mutant, a slice whose engine or lane failed, a slice whose budget ran out before its first mutant, or more than two slices with no record in one night.`,
               ``,
               `**Run**: ${process.env.RUN_URL}`,
               ``,
