@@ -1436,4 +1436,8 @@ def test_a_constructor_s_refined_field_binds_its_variable() -> None:
     checked = pipeline.check(_REFINED_FIELD)
     assert checked.ok, [e.format() for e in checked.errors]
     assert pipeline.run(_REFINED_FIELD).value == 5
-    assert _obligation_rows(_REFINED_FIELD) == _obligation_rows(_REFINED_FIELD_PLAIN)
+    refined_rows = _obligation_rows(_REFINED_FIELD)
+    # The row is there: the equality below would hold with it lost on
+    # both sides.
+    assert any(kind == "refine_bind" for kind, _ in refined_rows), refined_rows
+    assert refined_rows == _obligation_rows(_REFINED_FIELD_PLAIN)
