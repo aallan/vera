@@ -1332,3 +1332,108 @@ def test_a_refined_parameter_s_predicate_is_the_call_s_obligation(
     assert verified.ok, [e.format() for e in verified.errors]
     rows = [o.status for o in verified.obligations if o.kind == "refine_bind"]
     assert rows and set(rows) <= {"verified", "tier3"}, rows
+
+
+_EMPTY_INTO_NE = _HEAD_OF + """
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Array<String> = [];
+  nat_to_int(string_length(head_of(@Array<String>.0)))
+}
+"""
+
+_FILTERED_INTO_NE = _HEAD_OF + """
+private fn drop_all(@Array<String> -> @Array<String>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  array_filter(@Array<String>.0, fn(@String -> @Bool) effects(pure) { false })
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  nat_to_int(string_length(head_of(drop_all(["hello"]))))
+}
+"""
+
+
+@pytest.mark.parametrize("source", [_EMPTY_INTO_NE, _FILTERED_INTO_NE],
+                         ids=["a_let", "a_call"])
+def test_a_false_predicate_still_traps_at_the_binding(source: str) -> None:
+    """The negative space of the parameter side: an empty array bound into
+    `NE<T>`, a `let @Array<String> = []` or `array_filter`'s result.  The
+    unification binds `T` to `String` and leaves the predicate to the
+    `refine_bind` row at the call (Tier 3, `E506`), whose guard traps in
+    `head_of$String`.  At 9a1cefba `T` was unbound and the module did not
+    load."""
+    checked = pipeline.check(source)
+    assert checked.ok, [e.format() for e in checked.errors]
+    assert _instances(checked, "head_of") == {("String",)}
+    verified = pipeline.verify(source)
+    assert verified.ok, [e.format() for e in verified.errors]
+    assert [o.status for o in verified.obligations
+            if o.kind == "refine_bind"] == ["tier3"]
+    ran = pipeline.run(source)
+    assert ran.trap is not None, ran.value
+    assert "Refinement violation" in str(ran.trap), str(ran.trap)
+    assert "head_of$String" in str(ran.trap), str(ran.trap)
+
+
+_REFINED_FIELD = _NE_ALIAS + """
+public data Holder<T> {
+  Holder(NE<T>)
+}
+
+public fn main(@Unit -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match Holder(["hello"]) {
+    Holder(@NE<String>) -> string_length(@NE<String>.0[0])
+  }
+}
+"""
+
+_REFINED_FIELD_PLAIN = """\
+type NES = { @Array<String> | array_length(@Array<String>.0) > 0 };
+
+public data Holder {
+  Holder(NES)
+}
+
+public fn main(@Unit -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match Holder(["hello"]) {
+    Holder(@NES) -> string_length(@NES.0[0])
+  }
+}
+"""
+
+
+def _obligation_rows(source: str) -> list[tuple[str, str]]:
+    return sorted((o.kind, o.status) for o in pipeline.verify(source).obligations)
+
+
+def test_a_constructor_s_refined_field_binds_its_variable() -> None:
+    """A constructor's field unifies through the same function:
+    `Holder(NE<T>)` given `["hello"]` binds `T` to `String`.  At 9a1cefba
+    the field bound nothing and the construction was refused with `E213`
+    (`has type Array<String>, expected {@Array<T> | ...}`).  It checks,
+    runs to 5, and its obligation rows are the non-generic field's: the
+    `refine_bind` row at a construction position is `tier3_unguarded` for
+    both (#1695's)."""
+    checked = pipeline.check(_REFINED_FIELD)
+    assert checked.ok, [e.format() for e in checked.errors]
+    assert pipeline.run(_REFINED_FIELD).value == 5
+    assert _obligation_rows(_REFINED_FIELD) == _obligation_rows(_REFINED_FIELD_PLAIN)
