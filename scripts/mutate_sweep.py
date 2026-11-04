@@ -12,14 +12,16 @@ random sample instead, ``SAMPLE_FRACTION`` of the mutants, in ``JOBS``
 parallel jobs a night, and carries what each decided:
 
 1. The inventory: every unit mutmut mutates (a top-level function, or a
-   method of a top-level class), with a hash of its code (``ast``, docstrings
-   set aside).  A unit's mutants are counted by mutmut's own visitor, asked
+   method of a top-level class), with a hash of its text, the lines it
+   spans.  A unit's mutants are counted by mutmut's own visitor, asked
    through the engine's ``count`` command before the plan, in all and by the
    line it places each on (the mutated node's first line, which its
-   covered-lines hook reads a node against).
+   covered-lines hook reads a node against), the lines numbered from the
+   unit's first, so an edit above the unit in its file moves nothing.
 2. The state, carried from night to night in the workflow's artifact: each
    unit's hash, its mutants by line, and its sampled window's verdicts once
-   decided.  A unit whose code changed starts afresh, a unit gone from the
+   decided.  A unit whose text changed (a comment or a docstring included:
+   either moves the lines below it) starts afresh, a unit gone from the
    tree is dropped, and a new engine version starts every unit afresh, since
    mutmut makes a function's mutants by its own rules.
 3. The sample: a line of a unit is in the cycle's sample when a hash of the
@@ -108,9 +110,10 @@ ROOT = Path(__file__).resolve().parent.parent
 #: ``mutation-sweep-state`` artifact.
 STATE_FILE = "sweep-state.json"
 
-#: Schema 2 (#1829): a unit's mutants by line, and its sampled window's
-#: verdicts; a schema 1 state (mutants decided by number) loads with its
-#: counts and its nights, and its cycle starts afresh.
+#: Schema 2 (#1829): a unit's mutants by line, numbered from the unit's
+#: first line, and its sampled window's verdicts; a schema 1 state (mutants
+#: decided by number) loads with its nights, and every unit and its cycle
+#: start afresh.
 SCHEMA = 2
 
 #: The jobs a scheduled night runs (the workflow's matrix).  The arithmetic:
@@ -219,7 +222,8 @@ class StateError(ValueError):
 
 @dataclass(frozen=True)
 class SweepUnit:
-    """A unit mutmut mutates: where it is, and its code's hash."""
+    """A unit mutmut mutates: where it is (``start``, the first line it
+    spans, a decorator's or the ``def``'s), and the hash of its text."""
 
     path: str
     key: str
@@ -235,12 +239,13 @@ class SweepUnit:
         return md.module_name(self.path)
 
 
-def _identity(code: str, lines: Sequence[str]) -> str:
-    """A unit's identity: its code (``ast``, docstrings set aside), and the
-    lines in it that carry a ``pragma: no mutate`` comment, which change
-    mutmut's mutants without changing the code."""
-    pragmas = [line.strip() for line in lines if "pragma: no mutate" in line]
-    return hashlib.sha256("\n".join([code, *pragmas]).encode("utf-8")).hexdigest()[:16]
+def _identity(lines: Sequence[str]) -> str:
+    """A unit's identity: the text of the lines it spans.  Its mutants are
+    placed by line and the state numbers its lines from its first, so a
+    change inside it, a comment, a docstring or a ``pragma: no mutate``
+    included (each moves or changes what a line holds), starts it afresh,
+    and an edit above it in the file moves nothing."""
+    return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()[:16]
 
 
 def units_of(source: str, path: str) -> list[SweepUnit]:
@@ -254,7 +259,7 @@ def units_of(source: str, path: str) -> list[SweepUnit]:
         if unit.excluded is not None:
             continue
         found.append(SweepUnit(path=path, key=unit.key, start=unit.start,
-                               hash=_identity(unit.code, lines[unit.start - 1:unit.end])))
+                               hash=_identity(lines[unit.start - 1:unit.end])))
     return found
 
 
@@ -528,11 +533,13 @@ def check_record(record: Any) -> None:
 
 def convert_state(data: Any, today: str) -> Any:
     """A schema 1 state (the sweep that decided mutants by number, to
-    4 November 2026) as a schema 2 state: each unit keeps its hash and its
-    count, its lines unknown until the engine counts them and its window
-    undecided; the engine, the calibration and the nights (the drop memory)
-    carry over, and the cycle starts afresh, since the sample is now drawn
-    by line.  Anything else is left to :func:`check_state`."""
+    4 November 2026) as a schema 2 state: the engine, the calibration and
+    the nights (the drop memory) carry over, and the cycle starts afresh,
+    since the sample is now drawn by line.  Each unit keeps its hash and its
+    count, its lines unknown and its window undecided, and the reconcile
+    starts every one afresh all the same: a schema 1 hash is of the unit's
+    ``ast``, a schema 2 hash of its text.  Anything else is left to
+    :func:`check_state`."""
     if not isinstance(data, dict) or data.get("schema") != 1 or not isinstance(data.get("units"), dict):
         return data
     units = {}
@@ -635,6 +642,8 @@ def engine_counts(engine: Sequence[str], env: Mapping[str, str], sources: Mappin
     at the head): ``{"mutants": n, "lines": {line: k}}``, the lines being the
     ones mutmut places the mutants on, which its covered-lines hook reads a
     node against, so a window of some lines generates exactly their mutants.
+    The engine names the file's lines; the state numbers a unit's from its
+    first (``1`` is ``unit.start``), so an edit above the unit moves nothing.
     Nothing is counted twice: the state keeps a count by the unit's hash."""
     if not units:
         return {}
@@ -661,7 +670,13 @@ def engine_counts(engine: Sequence[str], env: Mapping[str, str], sources: Mappin
             check_lines(rec["lines"], rec["mutants"], unit.ident)
         except StateError as exc:
             raise md.LaneError(f"the engine's count of {unit.ident} is missing or malformed: {exc}") from exc
-        counts[unit.ident] = {"mutants": rec["mutants"], "lines": dict(rec["lines"])}
+        numbered: dict[str, int] = {}
+        for line, n in rec["lines"].items():
+            if int(line) < unit.start:
+                raise md.LaneError(f"the engine placed a mutant of {unit.ident} on line {line}, above its "
+                                   f"first line {unit.start}")
+            numbered[str(int(line) - unit.start + 1)] = int(n)
+        counts[unit.ident] = {"mutants": rec["mutants"], "lines": numbered}
     return counts
 
 
@@ -672,9 +687,9 @@ def apply_counts(state: dict[str, Any], counts: Mapping[str, Mapping[str, Any]])
 
 
 def in_sample(cycle: int, ident: str, line: int) -> bool:
-    """Whether line ``line`` of unit ``ident``, and so every mutant on it,
-    is in cycle ``cycle``'s sample: a hash of the three falls under
-    ``SAMPLE_FRACTION``.  Every job of a night and every night of the cycle
+    """Whether line ``line`` of unit ``ident`` (its lines numbered from its
+    first), and so every mutant on it, is in cycle ``cycle``'s sample: a
+    hash of the three falls under ``SAMPLE_FRACTION``.  Every job of a night and every night of the cycle
     so draw the same sample, each mutant in it with the same chance, and
     the next cycle draws another."""
     digest = hashlib.blake2b(f"{cycle}:{ident}:{line}".encode("utf-8"), digest_size=8).digest()
@@ -814,10 +829,11 @@ def engine_targets(picks: Sequence[Pick]) -> list[str]:
 
 def window_lines(picks: Sequence[Pick]) -> dict[str, list[int]]:
     """The window file's lines: each file's sampled lines, over its picked
-    units."""
+    units, as the file numbers them (a pick's are the unit's, from its
+    first)."""
     lines: dict[str, set[int]] = {}
     for pick in picks:
-        lines.setdefault(pick.unit.path, set()).update(pick.lines)
+        lines.setdefault(pick.unit.path, set()).update(pick.unit.start + line - 1 for line in pick.lines)
     return {path: sorted(found) for path, found in sorted(lines.items())}
 
 
@@ -1206,14 +1222,18 @@ def close_cycle(state: dict[str, Any], units: Sequence[SweepUnit], *, head: str,
                 today: str) -> bool:
     """Close the cycle when it is complete: its per-module totals, its
     survivors (``module.key__mutmut_n@line:status``, ``n`` the number mutmut
-    gives the mutant over the whole unit) and its sample's size become
-    ``last_complete``, and the next cycle starts with every window
-    undecided."""
+    gives the mutant over the whole unit, the line the file's at ``head``)
+    and its sample's size become ``last_complete``, and the next cycle
+    starts with every window undecided."""
     if not complete(state, units):
         return False
-    survivors = sorted(
-        f"{u.module}.{u.key}__mutmut_{entry}" for u in units
-        for entry in (state["units"][u.ident]["window"] or {}).get("survivors", []))
+    survivors = []
+    for u in units:
+        for entry in (state["units"][u.ident]["window"] or {}).get("survivors", []):
+            at, _, status = entry.partition(":")
+            number, _, line = at.partition("@")
+            survivors.append(f"{u.module}.{u.key}__mutmut_{number}@{u.start + int(line) - 1}:{status}")
+    survivors.sort()
     state["last_complete"] = {"cycle": state["cycle"], "started": state["cycle_started"],
                               "finished": today, "head": head, "engine": state["engine"],
                               "modules": tally(state, units), "survivors": survivors,
@@ -1303,8 +1323,8 @@ def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[s
     engine: str | None = next((str(r["engine"]) for r in valid if r.get("engine")), None)
     state = reconcile(state_in, units, engine)
     if state.pop("converted_from", None) is not None:
-        notes.append("the state was the sweep's that decided mutants by number: its counts and its "
-                     "nights carry over, and the cycle starts afresh with the sample drawn by line")
+        notes.append("the state was the sweep's that decided mutants by number: its nights carry over, "
+                     "and every function and the cycle start afresh with the sample drawn by line")
     if engine is not None and state_in.get("engine") not in (None, engine):
         # Every function starts afresh under another engine: the cycle does.
         notes.append(f"mutmut {state_in.get('engine')} gave way to {engine}: every function "

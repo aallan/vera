@@ -170,13 +170,19 @@ class TestInventory:
         units = sw.units_of(SOURCE, "vera/m.py")
         assert [(u.key, u.start) for u in units] == [("x_plain", 1), (f"x{SEP}Box{SEP}method", 16)]
 
-    def test_a_units_identity_is_its_code_not_its_docstring_or_layout(self) -> None:
+    def test_a_units_identity_is_its_text_and_an_edit_above_it_changes_nothing(self) -> None:
+        """The state numbers a unit's lines from its first, so the identity
+        changes with anything that moves or changes what a line of the unit
+        holds (its docstring, a comment, its layout, its code) and with
+        nothing above it in the file (PR #1831 review)."""
         (plain,) = [u for u in sw.units_of(SOURCE, "m.py") if u.key == "x_plain"]
-        restyled = SOURCE.replace('    """A docstring."""\n', "").replace("x + 1", "x+1  # one more")
-        (same,) = [u for u in sw.units_of(restyled, "m.py") if u.key == "x_plain"]
-        changed = SOURCE.replace("x + 1", "x + 2")
-        (other,) = [u for u in sw.units_of(changed, "m.py") if u.key == "x_plain"]
-        assert same.hash == plain.hash != other.hash
+        (moved,) = [u for u in sw.units_of("import os\n\n\n" + SOURCE, "m.py") if u.key == "x_plain"]
+        assert (moved.hash, moved.start) == (plain.hash, plain.start + 3)
+        for edit in (SOURCE.replace('    """A docstring."""\n', ""), SOURCE.replace("x + 1", "x+1  # one more"),
+                     SOURCE.replace("    return x + 1\n", "    # a comment\n    return x + 1\n"),
+                     SOURCE.replace("x + 1", "x + 2")):
+            (other,) = [u for u in sw.units_of(edit, "m.py") if u.key == "x_plain"]
+            assert other.hash != plain.hash, edit
 
     def test_a_pragma_line_enters_a_units_identity(self) -> None:
         """`# pragma: no mutate` changes mutmut's mutants and not the code, so
@@ -415,8 +421,8 @@ class TestStateChecks:
         written, night = sw.stitch(state, sw.state_digest(path), [_record(0, 1, {}, planned=0, digest=sw.state_digest(path))],
                                    jobs=1, head=HEAD, units=UNITS, today="2026-11-05")
         assert "converted_from" not in written and night["notes"] == [
-            "the state was the sweep's that decided mutants by number: its counts and its nights carry "
-            "over, and the cycle starts afresh with the sample drawn by line"]
+            "the state was the sweep's that decided mutants by number: its nights carry over, and every "
+            "function and the cycle start afresh with the sample drawn by line"]
         assert sw.load_state(sw.save_state(written, tmp_path / "out"), "x") == written
         bad = dict(old, units={A.ident: "not a record"})
         path.write_text(json.dumps(bad), encoding="utf-8")
@@ -619,7 +625,7 @@ class TestPlan:
                  sw.Pick(unit=C, lines=(1,), counts=(1,), before=(0,))]
         assert sw.engine_targets(picks) == ["vera.a.x_f__mutmut_*", f"vera.a.x{SEP}C{SEP}m__mutmut_*",
                                             "vera.b.x_g__mutmut_*"]
-        assert sw.window_lines(picks) == {"vera/a.py": [2, 5, 7], "vera/b.py": [1]}
+        assert sw.window_lines(picks) == {"vera/a.py": [2, 7, 24], "vera/b.py": [1]}  # B starts at line 20
         assert (picks[0].mutants, [picks[0].line_of(n) for n in (1, 2, 3)]) == (3, [2, 7, 7])
         assert [picks[0].full_number(n) for n in (1, 2, 3)] == [2, 5, 6]
         with pytest.raises(sw.StateError, match="past its window"):
@@ -708,7 +714,10 @@ request = json.load(sys.stdin)
 with open(os.environ["COUNTER_SEEN"], "w", encoding="utf-8") as fh:
     json.dump(request, fh)
 reply = os.environ.get("COUNTER_REPLY")
-print(reply if reply else json.dumps({p: {k: {"mutants": len(k), "lines": {"1": len(k) - 1, "9": 1}} for k in keys}
+def start(k):  # the file's line the unit starts on: the test units' B (a method) at 20, the rest at 1
+    return 20 if k.startswith("xǁ") else 1
+print(reply if reply else json.dumps({p: {k: {"mutants": len(k), "lines": {str(start(k)): len(k) - 1,
+                                                                            str(start(k) + 8): 1}} for k in keys}
                                       for p, keys in request["units"].items()}))
 '''
 
@@ -740,6 +749,16 @@ class TestCounts:
         assert sw.uncounted(state, UNITS) == []
         assert state["units"][C.ident] == {"hash": H, "mutants": 3, "lines": {"1": 2, "9": 1}, "window": None}
         assert sw.engine_counts(self._engine(tmp_path), os.environ, sources, []) == {}
+
+    def test_a_mutant_the_engine_places_above_the_units_first_line_fails_the_lane(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The state numbers a unit's lines from its first, so a line the
+        file numbers below the unit's start has no number there."""
+        monkeypatch.setenv("COUNTER_SEEN", str(tmp_path / "seen.json"))
+        monkeypatch.setenv("COUNTER_REPLY", json.dumps({"vera/a.py": {B.key: {"mutants": 1, "lines": {"5": 1}}}}))
+        with pytest.raises(sw.md.LaneError, match="on line 5, above its first line 20"):
+            sw.engine_counts(self._engine(tmp_path), os.environ, {"vera/a.py": "a"}, [B])
 
     @pytest.mark.parametrize("env,why", [
         ({"COUNTER_EXIT": "4"}, "could not count"),
@@ -1103,6 +1122,7 @@ class TestCycle:
     def test_a_complete_cycle_closes_with_its_totals_and_opens_the_next(self) -> None:
         state = _state()
         _complete(state, {A: 4, B: 3, C: 5})
+        _decide(state, B, killed=2, survived=1, survivors=("3@2:survived",))  # B's line 2 is the file's 21
         _decide(state, C, killed=3, survived=1, no_tests=1, survivors=("4@4:survived",))
         assert sw.close_cycle(state, UNITS, head="c" * 40, today="2026-11-30") is True
         assert state["cycle"] == 2 and state["cycle_started"] == "2026-11-30"
@@ -1110,9 +1130,9 @@ class TestCycle:
         last = state["last_complete"]
         assert last["cycle"] == 1 and last["finished"] == "2026-11-30" and last["head"] == "c" * 40
         assert last["modules"] == {
-            "vera/a.py": {"killed": 7, "survived": 0, "timeout": 0, "no_tests": 0, "other": 0, "mutants": 7},
+            "vera/a.py": {"killed": 6, "survived": 1, "timeout": 0, "no_tests": 0, "other": 0, "mutants": 7},
             "vera/b.py": {"killed": 3, "survived": 1, "timeout": 0, "no_tests": 1, "other": 0, "mutants": 5}}
-        assert last["survivors"] == ["vera.b.x_g__mutmut_4@4:survived"]
+        assert last["survivors"] == [f"vera.a.x{SEP}C{SEP}m__mutmut_3@21:survived", "vera.b.x_g__mutmut_4@4:survived"]
         assert (last["sampled"], last["population"], last["fraction"]) == (12, 12, 1.0)
 
     def test_the_cycle_closes_when_every_sampled_window_is_decided(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1382,11 +1402,26 @@ with (state / "calls.jsonl").open("a", encoding="utf-8") as fh:
 if args[0] == "--version":
     print("mutmut, version 3.8.0")
     sys.exit(0)
+def unit_starts(text):
+    # Each unit's def line, keyed as mutmut mangles it.
+    import ast
+    starts = {}
+    for node in ast.parse(text).body:
+        if isinstance(node, ast.FunctionDef):
+            starts["x_" + node.name] = node.lineno
+        elif isinstance(node, ast.ClassDef):
+            for member in node.body:
+                if isinstance(member, ast.FunctionDef):
+                    starts["xǁ" + node.name + "ǁ" + member.name] = member.lineno
+    return starts
 if args[0] == "count":
     data = json.load(sys.stdin)
     n = int(os.environ.get("FAKE_COUNT", "2"))
-    print(json.dumps({path: {key: {"mutants": n, "lines": {str(i): 1 for i in range(1, n + 1)}} for key in keys}
-                      for path, keys in data["units"].items()}))
+    out = {}
+    for path, keys in data["units"].items():
+        starts = unit_starts(data["sources"][path])
+        out[path] = {key: {"mutants": n, "lines": {str(starts[key] + i): 1 for i in range(n)}} for key in keys}
+    print(json.dumps(out))
     sys.exit(0)
 if args[0] == "run" and os.environ.get("MUTATE_DIFF_WINDOW"):
     # As the engine launcher does before mutmut generates: each unit's
@@ -1410,7 +1445,8 @@ if args[0] == "run" and os.environ.get("MUTATE_DIFF_WINDOW"):
         files[path] = {}
         for key, node in units.items():
             kept = "pragma: no mutate block" not in rows[node.lineno - 1]
-            files[path][key] = {"held": n, "window": len([l for l in lines if 1 <= l <= n]) if kept else 0}
+            inside = len([l for l in lines if node.lineno <= l < node.lineno + n])  # its mutants, one a line
+            files[path][key] = {"held": n, "window": inside if kept else 0}
     Path(spec["record"]).write_text(json.dumps({"files": files}), encoding="utf-8")
 if args[0] == "run" and os.environ.get("FAKE_RUN_LOG"):
     # A log the engine printed, as it printed it (its stats pass stopping).
@@ -1539,7 +1575,7 @@ class TestEndToEnd:
         (run,) = [c for c in calls if c["args"][0] == "run"]
         assert run["args"][-2:] == ["vera.m.x_f__mutmut_*", "vera.m.x_g__mutmut_*"]
         window = json.loads((tmp_path / "work1" / "window.json").read_text(encoding="utf-8"))
-        assert window["exact"] is True and window["lines"] == {"vera/m.py": [1, 2]}
+        assert window["exact"] is True and window["lines"] == {"vera/m.py": [1, 2, 5, 6]}  # f at 1, g at 5
         code, state = _stitch_cli(repo, tmp_path, 1, None)
         assert code == 0 and state["cycle"] == 1
         assert state["units"]["vera/m.py::x_g"] == {"hash": state["units"]["vera/m.py::x_g"]["hash"],
