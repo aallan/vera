@@ -4665,7 +4665,14 @@ class SmtContext:
 
         if result == z3.unsat:
             return SmtResult(status="verified")
-        if result != z3.sat or model is None:  # pragma: no cover
+        if result != z3.sat or model is None:
+            # A goal whose refutation rests on a stand-in is undecided short
+            # of a proof (R4), so a query that ran out of its budget reports
+            # the stand-in's reason, not the clock's: a floating-point goal
+            # over a stand-in can take seconds, and one of two identical
+            # runs on a loaded machine timed out where the other did not.
+            if self._rests_on_a_stand_in(goal):
+                return SmtResult(status="opaque")
             return SmtResult(status="unknown")
         if not (self._rests_on_a_stand_in(goal)
                 or self._chosen_for_a_stand_in(

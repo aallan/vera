@@ -1126,3 +1126,35 @@ def test_a_precondition_false_for_every_value_of_the_stand_in_is_refused() -> No
     verified = _verify(PRECONDITION_FALSE_FOR_EVERY_VALUE)
     assert _statuses(verified, "call_pre") == ["violated"]
     assert "E501" in _codes(verified)
+
+
+STAND_IN_RETURN = """
+type Pos = { @Int | @Int.0 > 0 };
+
+public fn f(@Unit -> @Pos)
+  requires(true)
+  ensures(true)
+  effects(<Random>)
+{
+  Random.random_int(1, 9)
+}
+"""
+
+
+def test_repro_an_unknown_over_a_stand_in_reads_as_the_stand_in(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """A refutation that rests on a stand-in is undecided whatever the
+    solver answers short of a proof (R4), so an `unknown` — a query that
+    ran out of its budget — reports the stand-in's reason, not the
+    clock's: `examples/maximum_syntax.vera`'s floating-point queries over
+    `int_to_float`'s stand-in take seconds, and a loaded runner timed one
+    of two identical runs out, so the two disagreed on the rationale."""
+    def stand_in_reason(verified: pipeline.Verified) -> list[str]:
+        return [d.rationale for d in verified.result.diagnostics
+                if d.error_code == "E506"]
+
+    real = stand_in_reason(_verify(STAND_IN_RETURN))
+    assert len(real) == 1 and "opaque stand-in" in real[0], real
+    import z3
+    monkeypatch.setattr(z3.Solver, "check", lambda self, *a: z3.unknown)
+    assert stand_in_reason(_verify(STAND_IN_RETURN)) == real
