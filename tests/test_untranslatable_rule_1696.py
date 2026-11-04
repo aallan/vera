@@ -1342,4 +1342,4 @@ def test_repro_a_destructured_components_guard_holds_only_where_it_runs() -> Non
     verified = _verify(GUARD_UNDER_ITS_BRANCH)
     assert _statuses(verified, "ensures") == ["tier3"]
     ran = pipeline.run(GUARD_UNDER_ITS_BRANCH, "f", [False], file=FILE)
-    assert ran.trap is not None, ran
+    assert ran.trap is not None and "Postcondition" in str(ran.trap), ran
