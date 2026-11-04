@@ -1096,3 +1096,131 @@ def test_mover_a_measure_check_is_rekeyed_once_per_splice() -> None:
     for row_id in report["spliced"]:
         assert report["named"].count(row_id) == 1, (row_id, report)
     assert len(report["named"]) <= report["rows"], report
+
+
+# A refinement over a function type: `naming.refinement_binder_parts` names a
+# binder for an alias base (`{ @IF | P }`) and code generation guards it at
+# every boundary, as at base; for a base written inline (`{ @fn(…) … | P }`)
+# it names none, and the row is unguardable (`REASON_FUNCTION_BASE`).
+_FN_ALIAS = """\
+type IF = fn(Int -> Int) effects(pure);
+
+type One = { @IF | apply_fn(@IF.0, 0) == 1 };
+
+private fn mk(@Int -> @IF)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  fn(@Int -> @Int) effects(pure) { @Int.0 + 5 }
+}
+
+"""
+
+_FN_ALIAS_POSITIONS = {
+    "parameter": """\
+private fn use(@One, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  apply_fn(@One.0, @Int.0)
+}
+
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  use(mk(@Int.0), @Int.0)
+}
+""",
+    "tuple component": """\
+private fn take(@Tuple<One, Nat> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  0
+}
+
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  take(Tuple(mk(@Int.0), 1))
+}
+""",
+    "return": """\
+private fn ret(@Int -> @One)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  mk(@Int.0)
+}
+
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  apply_fn(ret(@Int.0), 0)
+}
+""",
+    "let": """\
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @One = mk(@Int.0);
+  apply_fn(@One.0, 0)
+}
+""",
+}
+
+
+@pytest.mark.parametrize("position", sorted(_FN_ALIAS_POSITIONS))
+def test_a_refinement_over_a_function_type_alias_is_guarded(
+    position: str, tmp_path: Path,
+) -> None:
+    """The alias form is a guarded row at every boundary, and the run traps
+    on the closure the predicate refutes (`apply_fn(·, 0) == 5`)."""
+    source = _FN_ALIAS + _FN_ALIAS_POSITIONS[position]
+    compiled = pipeline.compile(source, file="a.vera")
+    assert compiled.ok, [d.description[:120] for d in compiled.errors]
+    ran = _run(tmp_path, source, "f", "3")
+    assert ran.returncode != 0 and "Refinement violation" in (ran.stdout + ran.stderr), (
+        ran.stdout + ran.stderr[-300:])
+
+
+def test_a_refinement_over_an_inline_function_type_is_no_guard() -> None:
+    """The neighbour: the base written inline names no binder, so the row is
+    listed unguardable with its reason and the module compiles."""
+    source = """\
+type RF = { @fn(Int -> Int) effects(pure) | true };
+
+private fn use(@RF, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  apply_fn(@RF.0, @Int.0)
+}
+
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  use(fn(@Int -> @Int) effects(pure) { @Int.0 + 5 }, @Int.0)
+}
+"""
+    compiled = pipeline.compile(source, file="i.vera")
+    assert compiled.ok, [d.description[:120] for d in compiled.errors]
+    from vera.obligations.table import REASON_FUNCTION_BASE
+    reasons = [row.guard.reason for row in compiled.generator._obligations.rows
+               if row.kind == "refine_bind" and row.fn == "use"]
+    assert reasons and set(reasons) == {REASON_FUNCTION_BASE}, reasons

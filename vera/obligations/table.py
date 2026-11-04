@@ -389,8 +389,9 @@ class _Builder:
         self.fn_decls: dict[str, ast.FnDecl] = {}
         self.fn_requires: dict[str, list[ast.Requires]] = {}
         self.prelude: set[str] = set()
-        #: Nodes whose narrowing rows are listed (a join's leaves are
-        #: reached once through the join and once as children).
+        #: Nodes whose narrowing rows are listed, with the evaluation they
+        #: are listed in (a join's leaves are reached once through the join
+        #: and once as children).
         self.done: set[object] = set()
         #: ``id(arg)`` of a call argument or a return leaf to the boundary
         #: type expression whose entry rows answer its rows.
@@ -423,6 +424,13 @@ class _Builder:
         self._handled: dict[int, list[tuple[ast.Expr, Evaluation]]] = {}
         self._unevaluated: list[str] = []
         self._evaluation: list[Evaluation] = [BODY]
+        #: ``id`` of a written refinement's predicate to its base type
+        #: expression, built on first need (:meth:`_inline_base`).
+        self._refinement_bases: dict[int, ast.TypeExpr] | None = None
+        #: ``id`` of a quantifier's predicate, a closure lowered inline.
+        self._inline_closures: set[int] = set()
+        #: The closures whose rows are listed (:meth:`walk`).
+        self._closures_listed: set[object] = set()
         #: The refinement predicates whose rows are being listed, innermost
         #: last (:meth:`_predicate_rows`).
         self._predicate_chain: list[object] = []
@@ -887,9 +895,11 @@ class _Builder:
         b = _strip(ty)
         if isinstance(b, PrimitiveType) and b.name == "Unit":
             return unguarded(REASON_ERASED_BASE)
-        if isinstance(b, FunctionType):
-            # `naming.refinement_binder_parts` names no binder for it, so the
-            # guard's lowering has nothing to bind the predicate to.
+        if isinstance(b, FunctionType) and self._inline_base(ty):
+            # `naming.refinement_binder_parts` names no binder for a base
+            # written inline (`{ @fn(A -> B) … | P }`), so the guard's
+            # lowering has nothing to bind the predicate to; an alias base
+            # (`{ @F | P }`) names one, and is guarded.
             return unguarded(REASON_FUNCTION_BASE)
         if (isinstance(b, AdtType) and b.name == "Future" and b.type_args
                 and _strip(b.type_args[0]) == PrimitiveType("Unit")):
@@ -899,6 +909,37 @@ class _Builder:
                 and b.name in narrowing.REFINED_CONSTRUCTION_SCALAR_BASES):
             return unguarded(REASON_NON_SCALAR_STORE)
         return CHECK
+
+    def _inline_base(self, ty: RefinedType) -> bool:
+        """Whether *ty*'s refinement is written over a base that is no
+        type name, by the written refinement whose predicate it carries."""
+        if self._refinement_bases is None:
+            bases: dict[int, ast.TypeExpr] = {}
+            seen: set[int] = set()
+
+            def visit(node: object) -> None:
+                if isinstance(node, ast.RefinementType):
+                    bases[id(node.predicate)] = node.base_type
+                if isinstance(node, ast.Node):
+                    if id(node) in seen:
+                        return
+                    seen.add(id(node))
+                    for name in node.__dataclass_fields__:
+                        visit(getattr(node, name))
+                elif isinstance(node, (tuple, list)):
+                    for item in node:
+                        visit(item)
+
+            linked = self.typed.linked
+            visit(linked.program)
+            for mod in linked.modules:
+                visit(mod.program)
+            visit(tuple(linked.prelude))
+            for inst in self.typed.instances:
+                visit(inst.clone)
+            self._refinement_bases = bases
+        base = self._refinement_bases.get(id(ty.predicate))
+        return base is not None and not isinstance(base, ast.NamedType)
 
     # -- the walk -------------------------------------------------------
 
@@ -988,15 +1029,33 @@ class _Builder:
             self.handle_rows(expr, d, in_closure)
             return
         if isinstance(expr, ast.AnonFn):
-            rty = self.sem(expr.return_type)
-            for p in expr.params:
-                self._entry_rows(p, self.sem(p))
-            self._boundary_rows(expr.body, expr.return_type)
-            self.walk(expr.body, d, handed=rty, in_closure=True, under_join=True)
-            self._return_rows(expr.return_type, rty, expr.body)
+            # A closure is lifted and compiled once, as a function of its
+            # own whose body is evaluated as a body is, wherever it is
+            # written: inside a measure or a predicate lowered at several
+            # sites, its rows are listed once, in the body's evaluation.
+            # A quantifier's predicate is the exception: its body is
+            # lowered inline, in the quantifier's own evaluation.
+            inline = id(expr) in self._inline_closures
+            key = ObligationTable._key(expr)
+            if not inline:
+                if key in self._closures_listed:
+                    return
+                self._closures_listed.add(key)
+            self._evaluation.append(self._evaluation[-1] if inline else BODY)
+            try:
+                rty = self.sem(expr.return_type)
+                for p in expr.params:
+                    self._entry_rows(p, self.sem(p))
+                self._boundary_rows(expr.body, expr.return_type)
+                self.walk(expr.body, d, handed=rty, in_closure=True,
+                          under_join=True)
+                self._return_rows(expr.return_type, rty, expr.body)
+            finally:
+                self._evaluation.pop()
             return
         if isinstance(expr, (ast.ForallExpr, ast.ExistsExpr)):
             self._quantifier_layer_rows(expr)
+            self._inline_closures.add(id(expr.predicate))
         req_here = handed
         from_own_type = fallback
         if req_here is None and isinstance(expr, ast.Expr):
@@ -1130,7 +1189,9 @@ class _Builder:
             if req_nat is None:
                 req_nat = req
         sem = self.sem(e)
-        key = ObligationTable._key(e)
+        # Once per evaluation: a measure re-evaluated at each tail call and
+        # a predicate lowered by each guard hold the node's rows again.
+        key = (ObligationTable._key(e), self._evaluation[-1])
         if req is None or sem is None or key in self.done:
             return
         self.done.add(key)
