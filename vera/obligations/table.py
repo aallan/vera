@@ -113,6 +113,7 @@ REASON_MEASURE_NOT_RANKABLE = (
     "cannot be ranked")
 REASON_NESTED_REFINEMENT = "a refinement over a refinement has no guard"
 REASON_ERASED_BASE = "a refinement over an erased base has no value to check"
+REASON_FUNCTION_BASE = "a refinement over a function type has no binder to check"
 REASON_NON_SCALAR_STORE = (
     "a construction store guards only a scalar-based refinement")
 REASON_INSIDE_PAYLOAD = (
@@ -886,6 +887,10 @@ class _Builder:
         b = _strip(ty)
         if isinstance(b, PrimitiveType) and b.name == "Unit":
             return unguarded(REASON_ERASED_BASE)
+        if isinstance(b, FunctionType):
+            # `naming.refinement_binder_parts` names no binder for it, so the
+            # guard's lowering has nothing to bind the predicate to.
+            return unguarded(REASON_FUNCTION_BASE)
         if (isinstance(b, AdtType) and b.name == "Future" and b.type_args
                 and _strip(b.type_args[0]) == PrimitiveType("Unit")):
             return unguarded(REASON_ERASED_BASE)
