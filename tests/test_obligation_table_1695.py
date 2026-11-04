@@ -952,6 +952,130 @@ def test_mover_a_guard_on_a_value_already_of_the_refined_type_goes() -> None:
     assert (340, 26) in sites  # the binder's check stays
 
 
+#: The join forms whose value leaves the table reads (`narrowing.flow_arms`),
+#: each with one arm the `Never` form *n* and one a `@Nat`.
+_NEVER_JOINS = {
+    "if": "if @Bool.0 then {{ {n} }} else {{ @Nat.0 }}",
+    "match": "match @Option<Nat>.0 {{\n    Some(@Nat) -> @Nat.0,\n    None -> {n}\n  }}",
+    "handle": ("handle[Exn<Nat>] {{\n    throw(@Nat) -> {{ @Nat.0 }}\n  }} in {{\n"
+               "    if @Bool.0 then {{ {n} }} else {{ @Nat.0 }}\n  }}"),
+}
+#: The leaves the checker types `Never`: a `throw`, a call of a function
+#: declared `@Never` (which code generation refuses, E601, and its caller
+#: with it, E620, so only the table's row is asserted there), and a nested
+#: join whose every leaf is `Never`.
+_NEVER_LEAVES = {
+    "throw": "throw(4)",
+    "call": "bail(4)",
+    "nested": "if @Bool.0 then { throw(4) } else { throw(5) }",
+}
+_BAIL = """\
+private fn bail(@Int -> @Never)
+  requires(true)
+  ensures(true)
+  effects(<Exn<Int>>)
+{
+  throw(@Int.0)
+}
+
+"""
+
+
+def _never_join_program(value: str, *, bail: bool = False, let: str = "Nat") -> str:
+    return ((_BAIL if bail else "")
+            + f"private fn f(@{let}, @Nat, @Option<Nat>, @Bool -> @Nat)\n"
+            "  requires(true)\n  ensures(true)\n  effects(<Exn<Int>>)\n{\n"
+            f"  let @{let} = {value};\n  0\n}}\n\n"
+            "public fn main(@Unit -> @Unit)\n  requires(true)\n  ensures(true)\n"
+            "  effects(<IO>)\n{\n  ()\n}\n")
+
+
+def _let_value_rows(source: str, kind: str) -> list[tuple[int, int]]:
+    """The *kind* rows the table lists at `f`'s `let` value."""
+    from vera import ast
+    from vera.obligations.table import build
+
+    typed = pipeline.check(source, file="join.vera").typed
+    (fn,) = [d for d in typed.program.declarations
+             if isinstance(getattr(d, "decl", None), ast.FnDecl) and d.decl.name == "f"]
+    (let,) = [st for st in fn.decl.body.statements if isinstance(st, ast.LetStmt)]
+    return [(r.node.span.line, r.node.span.column) for r in build(typed).rows
+            if r.kind == kind and r.node is let.value]
+
+
+def _f_checks(source: str, emitter: str) -> list[tuple[int, int]]:
+    compiled = pipeline.compile(source, file="join.vera")
+    assert compiled.ok, compiled
+    return [(g.line, g.column) for g in pipeline.checks(compiled.result, emitter=emitter)
+            if g.function == "f"]
+
+
+@pytest.mark.parametrize("leaf", sorted(_NEVER_LEAVES))
+@pytest.mark.parametrize("join", sorted(_NEVER_JOINS))
+def test_repro_a_never_leaf_of_a_join_is_no_narrowing_into_nat(join: str, leaf: str) -> None:
+    """A join-leaf reader of the table counted a leaf of semantic type
+    `Never` as a value: a `let @Nat` of a join whose other arms are `@Nat`
+    took a sign row and a guard the verifier, reading the join at the
+    checker's `Nat`, records nothing for (a W004; generator seed 15 and 15
+    more of seeds 0 to 999, none at base 56ae0449).  A `Never` leaf gives the
+    join no value: no row, and the checks base emits (none)."""
+    source = _never_join_program(_NEVER_JOINS[join].format(n=_NEVER_LEAVES[leaf]),
+                                 bail=leaf == "call")
+    assert _let_value_rows(source, "nat_bind") == [], source
+    assert _f_checks(source, "wasm/operators.py:_emit_nat_bind_guard") == [], source
+
+
+@pytest.mark.parametrize("join", ["if", "match"])
+def test_a_join_whose_every_leaf_is_never_narrows_as_base(join: str) -> None:
+    """A join whose every leaf is `Never` is itself of type `Never`, which
+    is no `Nat`: the verifier records its `nat_bind` (Tier 3) and base guards
+    it, so the table keeps the row and its check (no E541)."""
+    value = {"if": "if @Bool.0 then { throw(4) } else { throw(5) }",
+             "match": ("match @Option<Nat>.0 {\n    Some(@Nat) -> throw(4),\n"
+                       "    None -> throw(5)\n  }")}[join]
+    source = _never_join_program(value)
+    assert _let_value_rows(source, "nat_bind") == [(6, 14)], source
+    assert _f_checks(source, "wasm/operators.py:_emit_nat_bind_guard") == [(6, 14)], source
+    verified = _verified(source)
+    assert verified.ran and not verified.errors, verified
+
+
+def test_the_sibling_never_leaf_readers_stand_as_base() -> None:
+    """The two other readers that list a guarded row from a join's leaves
+    keep base's rows, since the verifier reads them the same way: a `@Nat`
+    return's per-leaf rows list a `throw` leaf (recorded, Tier 3), and a
+    refined `let` of a join with a `throw` arm keeps its head row (base's
+    W004, the KNOWN class of a refined join).  Each moves with the
+    verifier's discharge in the second half, not here.  The refined `let`'s
+    sign row is the fixed reader's: a refinement over `Nat` read its `throw`
+    leaf as a narrowing too (a W004 at the join, none at base)."""
+    ret = """\
+private fn h(@Nat, @Bool -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(<Exn<Int>>)
+{
+  match @Bool.0 { true -> throw(4), false -> @Nat.0 }
+}
+
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  ()
+}
+"""
+    compiled = pipeline.compile(ret, file="ret.vera")
+    assert [(g.line, g.column) for g in pipeline.checks(
+        compiled.result, emitter="wasm/operators.py:_emit_nat_bind_guard")
+        if g.function == "h"] == [(6, 27)]
+    refined = "type Cap = { @Nat | @Nat.0 <= 30 };\n\n" + _never_join_program(
+        "if @Bool.0 then { throw(4) } else { @Cap.0 }", let="Cap")
+    assert _let_value_rows(refined, "refine_bind") == [(8, 14)], refined
+    assert _let_value_rows(refined, "nat_bind") == [], refined
+
+
 def test_mover_a_clause_binder_over_a_container_payload_is_walked(
     tmp_path: Path,
 ) -> None:

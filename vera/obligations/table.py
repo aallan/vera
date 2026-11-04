@@ -61,6 +61,7 @@ from vera.types import (
     FLOAT64,
     INT,
     NAT,
+    NEVER,
     AdtType,
     ConcreteEffectRow,
     FunctionType,
@@ -461,8 +462,16 @@ class _Builder:
 
     def narrows_nat_join(self, e: ast.Expr) -> bool:
         """A join narrows where any value leaf does: the checker types the
-        join at the expected type and masks a narrowing arm."""
-        return any(self.narrows_nat(leaf) for leaf in narrowing.value_leaves(e))
+        join at the expected type and masks a narrowing arm.  A leaf the
+        checker types `Never` (a `throw`, a join of such leaves) gives the
+        join no value, so it narrows nothing.  A join whose every leaf is
+        `Never` is itself of type `Never`, read whole as the verifier reads
+        it: a value that is no `Nat`, a narrowing."""
+        leaves = [leaf for leaf in narrowing.value_leaves(e)
+                  if self.sem(leaf) != NEVER]
+        if not leaves:
+            return self.narrows_nat(e)
+        return any(self.narrows_nat(leaf) for leaf in leaves)
 
     def ftypes(self, ctor: str, ty: Type | None) -> tuple[Type, ...] | None:
         return self.typed.field_types_at(ctor, ty)
