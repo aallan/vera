@@ -146,8 +146,11 @@ DENIES_GUARD = "tier3_unguarded"
 
 #: Obligation kinds with no guard concept, excluded from the join by name.
 #: A ``state_decl`` record is violated-or-absent (``ObligationKind``'s own
-#: comment): it is an E533 refusal, never a runtime check.
-EXCLUDED_KINDS: frozenset[str] = frozenset({"state_decl"})
+#: comment): it is an E533 refusal, never a runtime check.  An
+#: ``effect_bind`` row (#1725, the obligation table) is a binder bound at
+#: a narrower effect row, which no runtime check can evaluate: it is
+#: disclosed, never guarded.
+EXCLUDED_KINDS: frozenset[str] = frozenset({"state_decl", "effect_bind"})
 
 
 def _emitters_by_kind() -> dict[str, frozenset[str]]:

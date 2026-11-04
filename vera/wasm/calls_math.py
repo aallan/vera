@@ -44,7 +44,8 @@ class CallsMathMixin:
         instructions.append("if")
         instructions.extend(
             f"  {i}" for i in self._emit_trap(
-                "wasm/calls_math.py:_translate_abs", at=at))
+                "wasm/calls_math.py:_translate_abs",
+                row=self._row(at, "int_overflow")))
         instructions.append("end")
         # select(val_if_true, val_if_false, cond)
         instructions.append(f"local.get {tmp}")          # value (cond true)
@@ -169,7 +170,8 @@ class CallsMathMixin:
         instructions.extend(arg_instrs)
         instructions.append("f64.floor")
         instructions.extend(self._trunc_after_domain_check(self._emit_trap(
-            "wasm/calls_math.py:_translate_floor", at=at,
+            "wasm/calls_math.py:_translate_floor",
+            row=self._row(at, "float_to_int_domain"),
             message=self._float_conversion_message(at))))
         return instructions
 
@@ -189,7 +191,8 @@ class CallsMathMixin:
         instructions.extend(arg_instrs)
         instructions.append("f64.ceil")
         instructions.extend(self._trunc_after_domain_check(self._emit_trap(
-            "wasm/calls_math.py:_translate_ceil", at=at,
+            "wasm/calls_math.py:_translate_ceil",
+            row=self._row(at, "float_to_int_domain"),
             message=self._float_conversion_message(at))))
         return instructions
 
@@ -210,7 +213,8 @@ class CallsMathMixin:
         instructions.extend(arg_instrs)
         instructions.append("f64.nearest")
         instructions.extend(self._trunc_after_domain_check(self._emit_trap(
-            "wasm/calls_math.py:_translate_round", at=at,
+            "wasm/calls_math.py:_translate_round",
+            row=self._row(at, "float_to_int_domain"),
             message=self._float_conversion_message(at))))
         return instructions
 
@@ -343,7 +347,8 @@ class CallsMathMixin:
         instructions: list[str] = []
         instructions.extend(arg_instrs)
         instructions.extend(self._trunc_after_domain_check(self._emit_trap(
-            "wasm/calls_math.py:_translate_float_to_int", at=at,
+            "wasm/calls_math.py:_translate_float_to_int",
+            row=self._row(at, "float_to_int_domain"),
             message=self._float_conversion_message(at))))
         return instructions
 
@@ -363,8 +368,8 @@ class CallsMathMixin:
         measured in #1362).
         """
         instrs = self.translate_expr(arg, env)
-        if instrs is not None and self._narrows_into_nat(arg):
-            instrs = self._emit_nat_bind_guard(instrs, at=arg)
+        if instrs is not None:
+            instrs = self._guard_nat_narrowing(instrs, arg)
         return instrs
 
     def _translate_int_to_nat(

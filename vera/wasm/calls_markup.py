@@ -197,8 +197,7 @@ class CallsMarkupMixin:
             return None
         # #757: runtime-guard an @Int -> @Nat narrowing of the heading level
         # before it is passed to the host import (CR #756).
-        if self._narrows_into_nat(level_arg):
-            l_instrs = self._emit_nat_bind_guard(l_instrs, at=level_arg)
+        l_instrs = self._guard_nat_narrowing(l_instrs, level_arg)
         self._host_imports_used.add("md_has_heading")
         ins: list[str] = []
         ins.extend(b_instrs)

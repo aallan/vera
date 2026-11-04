@@ -12,6 +12,7 @@ from typing import ClassVar
 
 from vera import ast, carriers, naming
 from vera.monomorphize import mangle_type_name
+from vera.obligations.table import ENTRY, MEASURE, RETURN, Evaluation, Row
 from vera.skip import CodegenSkip
 from vera.types import BOOL, INT, NAT
 from vera.wasm import WasmContext, WasmSlotEnv
@@ -226,17 +227,22 @@ class ContractsMixin:
         message: str,
         base_env: WasmSlotEnv,
         *,
+        row: Row | None,
         at: ast.Node | None,
         path: tuple[str, ...] = (),
     ) -> list[str] | None:
         """Compile a refinement-predicate runtime guard over *value_local*
         (#746).
 
-        *at* is the node the per-module record locates the check at and
-        *path* where inside that node's value the checked value sits
-        (``EmittedCheck.path``): a signature's guards all stand at its type,
-        and the path tells the top-level predicate from a component's or an
-        element's.
+        *row* is the obligation table's `refine_bind` row the guard is the
+        runtime half of (#1695): none, or one the table holds unguardable,
+        emits nothing, and the predicate's own operations are lowered under
+        the row's evaluation, so their checks name the rows of that
+        evaluation.  *at* is the node the per-module record locates the
+        check at and *path* where inside that node's value the checked
+        value sits (``EmittedCheck.path``): a signature's guards all stand
+        at its type, and the path tells the top-level predicate from a
+        component's or an element's.
 
         The predicate is closed over the binder ``@<base>.0``; translating it
         against *base_env* extended with that base bound to *value_local* reads
@@ -257,9 +263,13 @@ class ContractsMixin:
         being swallowed to ``return None``, which would silently DROP the guard
         the verifier recorded as runtime-checked (a true boundary silent
         failure).  CR PR-review."""
+        if not ctx._checked(row):
+            return None
+        assert row is not None  # noqa: S101 — `_checked`
         guard_env = base_env.push(base_name, value_local)
         try:
-            cond = ctx.translate_expr(predicate, guard_env)
+            with ctx._evaluating(("predicate", row.id)):
+                cond = ctx.translate_expr(predicate, guard_env)
         except CodegenSkip as skip:
             self._error(
                 predicate,
@@ -279,7 +289,7 @@ class ContractsMixin:
         if cond is None:
             return None
         trap = ctx._emit_trap(
-            "codegen/contracts.py:_emit_refinement_check", at=at,
+            "codegen/contracts.py:_emit_refinement_check", row=row, at=at,
             message=message, path=path)
         return [*cond, "i32.eqz", "if", *(f"  {i}" for i in trap), "end"]
 
@@ -291,10 +301,12 @@ class ContractsMixin:
         message_head: str,
         env: WasmSlotEnv,
         at: ast.Node | None,
+        row: Row | None = None,
     ) -> list[str] | None:
         """The two guard halves — classify then lower — as ONE call, for a
         boundary that reaches this layer from inside expression translation
-        (#1268).
+        (#1268).  *row* is the obligation table's row of the binding
+        (#1695), which decides whether the guard is emitted.
 
         Every other §2.6.5 guard site is CodeGenerator code that already
         holds both halves and calls them in sequence.  A ``throw`` payload is
@@ -327,7 +339,8 @@ class ContractsMixin:
         predicate, base_name = parts
         message = f"{message_head}: {ast.format_expr(predicate)} failed"
         return self._emit_refinement_check(
-            ctx, predicate, base_name, value_local, message, env, at=at,
+            ctx, predicate, base_name, value_local, message, env, row=row,
+            at=at,
         )
 
     def _resolve_type_alias(self, te: ast.TypeExpr) -> ast.TypeExpr:
@@ -519,8 +532,10 @@ class ContractsMixin:
                 f"{ast.format_expr(site.predicate)} failed"
             )
             check = self._emit_refinement_check(
-                ctx, site.predicate, site.base_name, elem, msg, env, at=te,
-                path=(site.kind,))
+                ctx, site.predicate, site.base_name, elem, msg, env,
+                row=ctx.obligations.row(te, "refine_bind", (site.kind,),
+                                        self._boundary_evaluation(role)),
+                at=te, path=(site.kind,))
             if check is None:
                 return []
             prepared.append((site, idx, elem, check))
@@ -779,6 +794,8 @@ class ContractsMixin:
                 )
                 guard = self._emit_refinement_check(
                     ctx, predicate, base_name, binding.slot_local, msg, env,
+                    row=ctx.obligations.row(at, "refine_bind", path,
+                                            self._boundary_evaluation(role)),
                     at=at, path=path)
                 if guard is not None:
                     instrs.extend(guard)
@@ -787,37 +804,6 @@ class ContractsMixin:
                     ctx, sig_text, site.nested, binding.slot_local, env, role,
                     _depth + 1, _at=at, _path=path))
         return instrs
-
-    def _boundary_coercion_paths(
-        self, te: ast.TypeExpr, index: int | None,
-    ) -> frozenset[tuple[int, ...]]:
-        """The tuple positions a function boundary's component guard checks
-        for a value of type *te*, or, with *index*, for parameter *index* of
-        the function type *te* names (a closure's, which every closure of
-        the type guards at its own entry), as paths of component indices.
-
-        Read off the one decomposition the guard is emitted from
-        (:meth:`_tuple_component_guard_sites`), so a composite coercion into
-        the boundary (#1542, `vera.wasm.coercion`) defers to that guard
-        rather than doubling it, and the two cannot disagree about which
-        components the boundary checks.
-        """
-        if index is not None:
-            fn_te = self._resolve_type_alias(te)
-            if not isinstance(fn_te, ast.FnType) or index >= len(fn_te.params):
-                return frozenset()
-            te = fn_te.params[index]
-        return frozenset(self._guarded_component_paths(te, (), 0))
-
-    def _guarded_component_paths(
-        self, te: ast.TypeExpr, prefix: tuple[int, ...], depth: int,
-    ) -> Iterator[tuple[int, ...]]:
-        for site in self._tuple_component_guard_sites(te, depth):
-            if site.nested is not None:
-                yield from self._guarded_component_paths(
-                    site.nested, prefix + (site.index,), depth + 1)
-            elif site.guard is not None:
-                yield prefix + (site.index,)
 
     def _has_guardable_tuple_components(
         self, te: ast.TypeExpr, _depth: int = 0,
@@ -1021,9 +1007,29 @@ class ContractsMixin:
             instrs.extend(
                 f"  {i}" for i in ctx._emit_trap(
                     "codegen/contracts.py:_compile_preconditions",
-                    at=contract, message=msg))
+                    row=ctx._row(contract, "requires"), message=msg))
             instrs.append("end")
         return instrs
+
+    @staticmethod
+    def _boundary_evaluation(role: str) -> Evaluation:
+        """The evaluation a boundary guard's rows are of (#1695): a
+        parameter's at the callee's entry, a return value's at the return."""
+        return RETURN if role == "return value" else ENTRY
+
+    @staticmethod
+    def _return_boundary_rows(
+        ctx: WasmContext, return_te: ast.TypeExpr,
+    ) -> tuple[bool, bool]:
+        """Whether the obligation table lists a guardable tuple-component
+        row, and a guardable element row, at the return type (#1695): what
+        the return epilogue has to guard beside the top-level predicate."""
+        rows = [row for row in ctx.obligations.rows_of(
+                    return_te, "refine_bind", None, RETURN)
+                if row.path and row.guard.check]
+        components = any(row.path[-1].startswith("Tuple.") for row in rows)
+        elements = any(not row.path[-1].startswith("Tuple.") for row in rows)
+        return components, elements
 
     def _compile_postconditions(
         self,
@@ -1060,12 +1066,10 @@ class ContractsMixin:
         # #746 PR-review: a tuple return with refined / @Nat *components* but no
         # top-level refinement still needs per-component exit guards, so don't
         # short-circuit on `refined_ret is None` alone.
-        ret_components = self._has_guardable_tuple_components(decl.return_type)
-        # #1430: an `Array<Refined>` return carries no top-level refinement and
-        # no tuple components, so both gates above miss it — which is how a
-        # violating element left a producer unchecked while the verifier
-        # assumed it downstream.
-        ret_elements = bool(self._element_guard_parts(decl.return_type))
+        # #1695: the table's return rows decide whether the epilogue has a
+        # component or an element to guard.
+        ret_components, ret_elements = self._return_boundary_rows(
+            ctx, decl.return_type)
 
         if (not ensures_clauses and refined_ret is None
                 and not ret_components and not ret_elements):
@@ -1100,6 +1104,7 @@ class ContractsMixin:
                     decl, decl.return_type, "return value")
                 top = self._emit_refinement_check(
                     ctx, predicate, base_name, ptr_l, msg, env,
+                    row=ctx._row(decl.body, "refine_bind", evaluation=RETURN),
                     at=decl.return_type)
                 if top is None and not pair_guard:
                     return []
@@ -1154,6 +1159,7 @@ class ContractsMixin:
                     decl, decl.return_type, "return value")
                 guard = self._emit_refinement_check(
                     ctx, predicate, base_name, result_local, msg, env,
+                    row=ctx._row(decl.body, "refine_bind", evaluation=RETURN),
                     at=decl.return_type)
                 if guard is not None:
                     instrs.extend(guard)
@@ -1171,7 +1177,7 @@ class ContractsMixin:
                 instrs.extend(
                     f"  {i}" for i in ctx._emit_trap(
                         "codegen/contracts.py:_compile_postconditions",
-                        at=ensures, message=msg))
+                        row=ctx._row(ensures, "ensures"), message=msg))
                 instrs.append("end")
 
             # Push result back
@@ -1190,7 +1196,7 @@ class ContractsMixin:
                 instrs.extend(
                     f"  {i}" for i in ctx._emit_trap(
                         "codegen/contracts.py:_compile_postconditions",
-                        at=ensures, message=msg))
+                        row=ctx._row(ensures, "ensures"), message=msg))
                 instrs.append("end")
 
         return instrs
@@ -1422,11 +1428,16 @@ class ContractsMixin:
         # locals, so no handler-side restore can reconstruct it.  No
         # guard rather than a leaky one — the static tier keeps the
         # obligation disclosed (PR #1179 review).
-        if self._dec_declares_exn(decl):
+        # #1695: the table's row decides: a `decreases` on an `Exn` row, or
+        # with a component code generation cannot rank, is unguardable.
+        if not ctx._checked(ctx._row(contract, "decreases")):
             return [], [], None
 
         name = decl.name
-        maybe_components = self._dec_translate_measure(ctx, contract, env)
+        # #1695: the measure's operations at the entry evaluation read the
+        # rows of that evaluation.
+        with ctx._evaluating(MEASURE):
+            maybe_components = self._dec_translate_measure(ctx, contract, env)
         if maybe_components is None:
             return [], [], None
         comp_values = maybe_components
@@ -1485,7 +1496,7 @@ class ContractsMixin:
         entry.extend(
             f"    {i}" for i in ctx._emit_trap(
                 "codegen/contracts.py:_compile_decreases_entry",
-                at=contract, message=msg))
+                row=ctx._row(contract, "decreases"), message=msg))
         entry.append("  end")
         entry.append("end")
 
@@ -1555,12 +1566,26 @@ class ContractsMixin:
             if slot:
                 capture_env = capture_env.push(slot, bind)
 
-        maybe_components = self._dec_translate_measure(
-            ctx, contract, capture_env,
-        )
-        if maybe_components is None:
+        # #1695: the prefix is rendered once and spliced at every
+        # self-recursive tail call; its checks are rendered under the first
+        # such call's evaluation, and `_compile_fn` re-keys each spliced
+        # copy to its own call's rows (`WasmContext._rekey_checks`).
+        first_call = ctx._first_self_tail_call(decl)
+        if first_call is None:
             return None
-        comp_values = maybe_components
+        with ctx._evaluating(("measure_call", first_call.node_id)):
+            prefix_row = ctx._row(contract, "decreases")
+            if prefix_row is None:
+                # The table lists no re-evaluation: the function runs a
+                # check after its body, so no self tail call transfers and
+                # the prefix would never be spliced.
+                return None
+            maybe_components = self._dec_translate_measure(
+                ctx, contract, capture_env,
+            )
+            if maybe_components is None:
+                return None
+            comp_values = maybe_components
 
         n = len(comp_values)
         measured = [ctx.alloc_local("i64") for _ in range(n)]
@@ -1614,7 +1639,7 @@ class ContractsMixin:
         prefix.extend(
             f"    {i}" for i in ctx._emit_trap(
                 "codegen/contracts.py:_dec_self_tail_prefix",
-                at=contract, message=msg))
+                row=prefix_row, message=msg))
         prefix.append("  end")
         prefix.append("end")
         prefix.extend(restore)

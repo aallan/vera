@@ -77,10 +77,6 @@ class RegistrationMixin:
             tld.decl.name for tld in program.declarations
             if isinstance(tld.decl, ast.DataDecl)
         )
-        # #754: after the aliases, so a `type Count = Nat;` effect formal
-        # resolves; before the functions, which is where op call sites are
-        # lowered from.
-        self._register_effect_op_params(program)
         for tld in program.declarations:
             if isinstance(tld.decl, ast.FnDecl):
                 self._register_fn(tld.decl)
@@ -100,12 +96,6 @@ class RegistrationMixin:
         # `type Count = Nat` or `{ @Nat | p }` formal is guarded too.
         self._fn_nat_params[decl.name] = tuple(
             self._type_resolves_to_nat(p) for p in decl.params
-        )
-        # #1542: per parameter, the tuple positions this function's entry
-        # guard checks (#746), which a composite coercion into the formal
-        # defers to rather than doubling.
-        self._fn_boundary_coercion_paths[decl.name] = tuple(
-            self._boundary_coercion_paths(p, None) for p in decl.params
         )
         # #865: per-parameter concrete-@Byte flags, for the call-site
         # int-literal → i32.const coercion (an int-literal argument otherwise
@@ -512,56 +502,6 @@ class RegistrationMixin:
         ``Id<Nat>`` resolves to ``Nat`` rather than the bare type-param ``T``.
         """
         return self._type_resolves_to_base(te, "Nat")
-
-    def _register_effect_op_params(self, program: ast.Program) -> None:
-        """Per-formal base type NAME for every effect operation (#754).
-
-        A call site guards its arguments from the callee's formals — the
-        `_fn_nat_params` bitmap for a function, the cell
-        for a `State` write or an `Exn` payload.  An effect OPERATION had
-        neither: `_effect_ops` carries a dispatch target and nothing about
-        types, so `IO.sleep(@Int.0)` — whose declared formal is `@Nat` —
-        passed a negative straight to the host on a program `vera verify`
-        obligated (E503 on a refutable argument, E504 when opaque).
-
-        Both sources are the ones the CHECKER used, so a formal cannot be
-        obligated without being visible here: :class:`~vera.environment.TypeEnv`
-        for the built-in effects and abilities, and the program's own
-        ``effect`` / ``ability`` declarations for the rest.  Keyed on
-        ``(effect_name, op_name)`` rather than on the op name alone: two
-        effects may declare the same op name (``State.get`` and ``Http.get``
-        do), and a name-keyed table would guard one call site from the
-        other's formals.
-
-        A formal whose base is not a primitive — a type parameter, an ADT, a
-        pair type — records ``None``, which every consumer reads as "no
-        guard from this table".  ``State``'s ``put(T -> Unit)`` is exactly
-        that shape: its formal is the CELL's instantiation, which is a
-        property of the handler rather than of the declaration, and the
-        `_effect_op_cells` registry already answers it.
-        """
-        from vera.environment import TypeEnv
-
-        def _base_of(ty: object) -> str | None:
-            """The base primitive's name, through a refinement."""
-            base = getattr(ty, "base", ty)
-            name = getattr(base, "name", None)
-            return name if isinstance(name, str) else None
-
-        env = TypeEnv()
-        for eff_name, info in env.effects.items():
-            for op_name, op in info.operations.items():
-                self._effect_op_params[(eff_name, op_name)] = tuple(
-                    _base_of(t) for t in (getattr(op, "param_types", ()) or ())
-                )
-        for tld in program.declarations:
-            decl = tld.decl
-            if not isinstance(decl, (ast.EffectDecl, ast.AbilityDecl)):
-                continue
-            for op_decl in decl.operations:
-                self._effect_op_params[(decl.name, op_decl.name)] = tuple(
-                    self._formal_base_name(pt) for pt in op_decl.param_types
-                )
 
     def _formal_base_name(self, te: ast.TypeExpr) -> str | None:
         """``"Nat"`` / ``"Int"`` / ``"Byte"`` when *te* resolves to one of the

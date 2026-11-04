@@ -325,8 +325,6 @@ class CrossModuleMixin:
             # entry guard checks (#746), so a composite coercion into an
             # imported function's formal defers to that guard rather than
             # doubling it, as an in-module call's does.
-            for fn_name, paths in temp._fn_boundary_coercion_paths.items():
-                self._fn_boundary_coercion_paths.setdefault(fn_name, paths)
 
             # #1189: same harvest for the trap source map.  An imported body
             # is compiled into this WASM module (Pass 2.5) and can trap at

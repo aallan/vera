@@ -690,15 +690,6 @@ def narrows_into_nat(
 # Composite coercions: where a target holds a `Nat` its value's type does not
 # ---------------------------------------------------------------------
 
-#: The heads a handler clause binder's payload may have for the binder to be
-#: guarded by :func:`component_coercion`.  A clause binder over an `Array`,
-#: `Map` or `Set` payload is the one exclusion beside the rule: its `Nat`
-#: component already has a record (`refine_bind`, disclosed
-#: `tier3_unguarded` as E506, by #1410's walk), and a guard beside that
-#: stale disclosure would contradict it; #1695's obligation table gives the
-#: position its row and its guard together.
-CLAUSE_BINDER_UNGUARDED_HEADS = frozenset({"Array", "Map", "Set"})
-
 #: The heads whose type arguments are a value's components with no
 #: constructor between: an element of an `Array` or a `Set`, the key and the
 #: value of a `Map`, the payload of a `Future` (which is the payload itself

@@ -1354,10 +1354,11 @@ two forms (built in place, or opaque behind a slot) and three inputs, each
 cell asserting the run (a negative component traps with the narrowing guard's
 message, an allowed one runs to its value, an empty value passes the walk) and
 the record (exactly one narrowing guard per coercion, one W004 per guard the
-rule adds).  Its negative space is the three guards the rule defers to: a leaf
-the checker typed at `Nat` in place, #1606's construction hand-down and a
-function boundary's tuple-component guard (#746), each keeping the one guard
-it had.
+rule adds).  Its negative space is the three guards the obligation table
+(#1695) keeps apart from the walk's: a leaf the checker typed at `Nat` in
+place and #1606's construction hand-down, whose rows keep the store's own
+sign guard, and a function boundary's tuple-component guard (#746), whose
+entry rows answer the argument's, each keeping the one guard it had.
 
 ### The verdict-signature diff
 

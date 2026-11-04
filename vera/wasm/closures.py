@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from vera import ast, fold, naming
 from vera.skip import CodegenInvariantError
-from vera.types import NAT, FunctionType, RefinedType, base_type
+from vera.types import FunctionType, RefinedType, base_type
 from vera.wasm.helpers import (
     WasmSlotEnv,
     _align_up,
@@ -146,11 +146,7 @@ class ClosuresMixin:
         arg_wasm_types: list[str] = []
         for i, arg in enumerate(value_args):
             formal = formal_types[i] if i < len(formal_types) else None
-            # #1542: a composite coercion into the closure's formal defers to
-            # the entry guard every closure of the type has (#746).
-            with self._deferring(
-                    arg, self._closure_boundary_paths(closure_arg, i)):
-                arg_instrs = self.translate_expr(arg, env)
+            arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
                 return None
             # #1017: the @Int -> @Nat NARROWING.
@@ -158,9 +154,7 @@ class ClosuresMixin:
             # otherwise enter the formal reinterpreted (silently) — guard it at
             # the call_indirect boundary, exactly as the verifier's apply_fn
             # branch now obligates it.
-            if (formal is not None and base_type(formal) == NAT
-                    and self._narrows_into_nat(arg)):
-                arg_instrs = self._emit_nat_bind_guard(arg_instrs, at=arg)
+            arg_instrs = self._guard_nat_narrowing(arg_instrs, arg)
             instructions.extend(arg_instrs)
             # The parameter's width in the `call_indirect` signature is the
             # formal's, not the argument's (#1256): both sides of an

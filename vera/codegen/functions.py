@@ -10,6 +10,7 @@ import functools
 
 from vera import ast
 from vera.binding import SYMBOL_PREFIX, source_name, symbol
+from vera.obligations.table import ENTRY
 from vera.skip import AdtEqNotDerivableError, CodegenInvariantError, CodegenSkip
 from vera.tail_position import compute_tail_call_sites
 from vera.monomorphize import mangle_type_name
@@ -583,6 +584,8 @@ class FunctionCompilationMixin:
             self.string_pool,
             # #1479: one record for the whole module, read back from its text.
             checks=self._emitted_checks,
+            # #1695: the one obligation table every guard site reads.
+            obligations=self._obligations,
             effect_ops=effect_ops,
             effect_op_cells=effect_op_cells,
             state_getters=state_getters,
@@ -638,15 +641,6 @@ class FunctionCompilationMixin:
         ctx.set_built_types(self._built_types)
         ctx.set_call_targets(self._typed.call_targets)
         ctx.set_typed_program(self._typed)
-        # #747: per-parameter concrete-@Nat flags for the call-site
-        # runtime narrowing guard.
-        ctx.set_fn_nat_params(self._fn_nat_params)
-        ctx.set_boundary_coercion_paths(
-            self._fn_boundary_coercion_paths, self._boundary_coercion_paths)
-        # #754: per-formal base type names for every effect
-        # operation, so an op call site guards its narrowing
-        # arguments the way a function call site does.
-        ctx.set_effect_op_params(self._effect_op_params)
         # #865: per-parameter concrete-@Byte flags for the call-site
         # int-literal → i32.const coercion.
         ctx.set_fn_byte_params(self._fn_byte_params)
@@ -841,7 +835,6 @@ class FunctionCompilationMixin:
                 and self._refinement_guard_parts(decl.return_type) is None):
             nat_leaf_ids = ctx._collect_narrowing_return_leaves(decl.body)
             self._record_unguarded_return_leaves(ctx)
-        ctx._nat_return_leaf_ids = nat_leaf_ids
 
         ctx.set_tail_call_context(
             tail_sites - nat_leaf_ids,
@@ -911,6 +904,7 @@ class FunctionCompilationMixin:
                     decl, param_te, "parameter")
                 guard = self._emit_refinement_check(
                     ctx, predicate, base_name, value_local, msg, env,
+                    row=ctx._row(param_te, "refine_bind", evaluation=ENTRY),
                     at=param_te)
                 if guard is not None:
                     refine_guard_instrs.extend(guard)
@@ -1047,11 +1041,7 @@ class FunctionCompilationMixin:
         # lowers at its checked type's width, and a join's at the join's
         # (#1525).
         try:
-            # #1542: a composite coercion at the return defers to the
-            # epilogue's tuple-component guard (#746) where it stands.
-            with ctx._deferring(
-                    decl.body, ctx._return_boundary_paths(decl.return_type)):
-                body_instrs = ctx.translate_block(decl.body, env)
+            body_instrs = ctx.translate_block(decl.body, env)
         except CodegenSkip as skip:
             # #626 Layer 3 — structured skip with node-level span.
             self._harvest_interp_inference_failures(ctx)
@@ -1386,6 +1376,10 @@ class FunctionCompilationMixin:
             # same way — the check is never partially emitted.  The GC
             # prepend below composes: it touches only ``$gc_sp``.
             patched_dec: list[str] = []
+            # #1695: the prefix's checks are re-keyed at each splice to the
+            # rows of that call's re-evaluation, in the body's order.
+            self_tail_calls = ctx._self_tail_calls(decl)
+            spliced = 0
             for instr in body_instrs:
                 stripped = instr.lstrip()
                 if not stripped.startswith("return_call "):
@@ -1399,8 +1393,17 @@ class FunctionCompilationMixin:
                 ws = instr[: len(instr) - len(stripped)]
                 if target == decl.name:
                     if dec_self_tail is not None:
-                        patched_dec.extend(
-                            ws + part for part in dec_self_tail)
+                        if spliced >= len(self_tail_calls):
+                            raise CodegenInvariantError(
+                                "a self-recursive return_call with no "
+                                "tail call of the body to re-key its "
+                                "measure checks to (#1695)", decl)
+                        copy = ctx._rekey_checks(
+                            dec_self_tail,
+                            ("measure_call",
+                             self_tail_calls[spliced].node_id))
+                        spliced += 1
+                        patched_dec.extend(ws + part for part in copy)
                         patched_dec.append(instr)
                     else:
                         patched_dec.append(

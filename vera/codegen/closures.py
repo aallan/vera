@@ -10,6 +10,7 @@ import functools
 from collections import deque
 
 from vera import ast
+from vera.obligations.table import ENTRY, RETURN
 from vera.skip import CodegenInvariantError, CodegenSkip
 from vera.wasm import WasmContext, WasmSlotEnv
 from vera.wasm.helpers import (
@@ -327,6 +328,8 @@ class ClosureLiftingMixin:
             self.string_pool,
             # #1479: one record for the whole module, read back from its text.
             checks=self._emitted_checks,
+            # #1695: the one obligation table every guard site reads.
+            obligations=self._obligations,
             ctor_layouts=ctor_layouts,
             # #1414: the LIVE nested map, not a copy of it — the flat
             # `ctor_layouts` above is already derived from it, and a
@@ -397,15 +400,6 @@ class ClosureLiftingMixin:
         ctx.set_typed_program(self._typed)
         # #1525: the types of the nodes code generation built.
         ctx.set_built_types(self._built_types)
-        # #747: per-parameter concrete-@Nat flags for the call-site
-        # runtime narrowing guard inside closure bodies too.
-        ctx.set_fn_nat_params(self._fn_nat_params)
-        ctx.set_boundary_coercion_paths(
-            self._fn_boundary_coercion_paths, self._boundary_coercion_paths)
-        # #754: per-formal base type names for every effect
-        # operation, so an op call site guards its narrowing
-        # arguments the way a function call site does.
-        ctx.set_effect_op_params(self._effect_op_params)
         # #865: per-parameter concrete-@Byte flags for the call-site
         # int-literal → i32.const coercion inside closure bodies too.
         ctx.set_fn_byte_params(self._fn_byte_params)
@@ -678,15 +672,8 @@ class ClosureLiftingMixin:
         ret_refined_parts = self._refinement_guard_parts(anon_fn.return_type)
         if (ctx._type_expr_base_is_nat(anon_fn.return_type)
                 and ret_refined_parts is None):
-            ctx._nat_return_leaf_ids = ctx._collect_narrowing_return_leaves(
-                anon_fn.body)
+            ctx._collect_narrowing_return_leaves(anon_fn.body)
             self._record_unguarded_return_leaves(ctx)
-        else:
-            # Reset unconditionally, as `_compile_fn` does for the top-level
-            # return: each closure gets a fresh WasmContext today, so this
-            # branch is insurance against a future shared-ctx refactor
-            # leaking a @Nat closure's leaf set into a non-@Nat sibling.
-            ctx._nat_return_leaf_ids = set()
 
         # Compile the body.  Three failure modes are handled:
         #   1. CodegenSkip — translator hit unsupported shape (#626 L3)
@@ -695,12 +682,7 @@ class ClosureLiftingMixin:
         # See the parallel block in vera/codegen/functions.py::_compile_fn
         # for the matching catch in the non-closure path.
         try:
-            # #1542: a composite coercion at the closure's return defers to
-            # its epilogue's tuple-component guard (#746) where it stands.
-            with ctx._deferring(
-                    anon_fn.body,
-                    ctx._return_boundary_paths(anon_fn.return_type)):
-                body_instrs = ctx.translate_block(anon_fn.body, env)
+            body_instrs = ctx.translate_block(anon_fn.body, env)
         except CodegenSkip as skip:
             # Closure-body skips emit their own structured [E602]
             # pointing at the unsupported node, then return None so
@@ -810,11 +792,10 @@ class ClosureLiftingMixin:
         # on both sides, exactly as `_compile_fn` and `_compile_postconditions`
         # order them: a refinement OVER a tuple may have its predicate read
         # the components, so those are established first.
-        ret_has_components = self._has_guardable_tuple_components(
-            anon_fn.return_type)
+        # #1695: the table's return rows decide what the epilogue guards.
+        ret_has_components, ret_has_elements = self._return_boundary_rows(
+            ctx, anon_fn.return_type)
         refine_guard_instrs: list[str] = []
-        ret_has_elements = (
-            bool(self._element_guard_parts(anon_fn.return_type)))
         if (refined_param_checks or component_param_checks
                 or element_param_checks
                 or ret_refined_parts is not None or ret_has_components
@@ -844,6 +825,7 @@ class ClosureLiftingMixin:
                 )
                 guard = self._emit_refinement_check(
                     ctx, predicate, base_name, value_local, msg, env,
+                    row=ctx._row(param_te, "refine_bind", evaluation=ENTRY),
                     at=param_te)
                 if guard is not None:
                     refine_guard_instrs.extend(guard)
@@ -890,6 +872,8 @@ class ClosureLiftingMixin:
                         predicate, base_name = ret_refined_parts
                         guard = self._emit_refinement_check(
                             ctx, predicate, base_name, ptr_l, msg, env,
+                            row=ctx._row(anon_fn.body, "refine_bind",
+                                         evaluation=RETURN),
                             at=anon_fn.return_type)
                         if guard is not None:
                             ret_guard.extend(guard)
@@ -907,6 +891,8 @@ class ClosureLiftingMixin:
                         predicate, base_name = ret_refined_parts
                         guard = self._emit_refinement_check(
                             ctx, predicate, base_name, ret_local, msg, env,
+                            row=ctx._row(anon_fn.body, "refine_bind",
+                                         evaluation=RETURN),
                             at=anon_fn.return_type)
                         if guard is not None:
                             ret_guard.extend(guard)

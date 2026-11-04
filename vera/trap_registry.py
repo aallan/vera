@@ -1155,6 +1155,12 @@ class EmittedCheck:
     top-level predicate, each component's and each element's are told apart
     by their path."""
 
+    row: int | None = None
+    """The obligation table row the check is the runtime half of
+    (:class:`vera.obligations.table.Row`, by its id; #1695): every check a
+    compiled module holds names one, since code generation records a check
+    by its row.  ``None`` only for a record built outside a compile."""
+
     def to_dict(self) -> dict[str, object]:
         """A JSON-compatible form (field names as keys)."""
         return {
@@ -1169,4 +1175,5 @@ class EmittedCheck:
             "file": self.file,
             "prelude": self.prelude,
             "path": list(self.path),
+            "row": self.row,
         }

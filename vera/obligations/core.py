@@ -88,6 +88,11 @@ ObligationKind = Literal[
                   # symbolic arg -> honest tier3 (Z3's FP<->Real reasoning is
                   # unreliable; codegen's `float_conversion` check is the
                   # guard).
+    "effect_bind",  # a binder bound at a function type whose effect row is
+                    # narrower than the matched value's (#1725, #1695's
+                    # table): a row no runtime check can evaluate, since an
+                    # effect row has no runtime representation.  Listed by
+                    # the obligation table; discharged to `tier3_unguarded`.
     "state_decl",  # a generic handler's declared state type diverging from
                   # the instantiated State<T> cell (#1206's E336 defers on a
                   # TypeVar cell; the monomorphized clone re-checks it and a
