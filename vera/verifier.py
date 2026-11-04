@@ -10941,8 +10941,8 @@ class ContractVerifier:
         smt._generic_callee_hook = self._generic_callee_info
         # #1525: the same types as the main path, a construction's and an
         # opaque stand-in's.
-        smt._recorded_type_hook = self._resolved_type_of
-        smt._constructed_type_hook = self._constructed_type_of
+        smt._recorded_type_hook = self._resolved_type_of  # pragma: no mutate — equivalent: a generic function's refined return is decided by its clones' verification, so this fast path's record is never the one read
+        smt._constructed_type_hook = self._constructed_type_of  # pragma: no mutate — equivalent: as the line above, the clone path decides the record
         # #1480 review: and let a call-site check ask whether its goal rests
         # on a placeholder one of the walks bound.  A bound method, so it
         # reads the live `_opaque_shadows`, which each walk resets.

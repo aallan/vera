@@ -1220,3 +1220,126 @@ def test_a_refutation_tied_to_a_stand_in_by_a_range_stands() -> None:
     point = _verify(_ABS_TIED.replace("BODY", "10 / @Int.1"))
     assert _statuses(point, "div_zero") == ["tier3"]
     assert not point.errors, _codes(point)
+
+
+_BIND_A_STATE_READ = """
+type Pos = { @Int | @Int.0 > 0 };
+
+private fn need(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+
+public fn f(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(<State<Int>>)
+{
+  BIND
+  need(@Pos.0)
+}
+"""
+
+
+def test_a_destructured_component_of_a_stand_in_does_not_read_its_guard_yet() -> None:
+    """The two spellings of one guarded bind, pinned where they stand.
+
+    `let @Pos = get(())` gives the binder the value the bind's guard
+    establishes (`SmtContext.guarded_binding`, through the verifier's
+    `_apply_let_binding`), so `need(@Pos.0)`'s `> 0` is discharged.  A
+    destructure's component in a function body, `let Tuple<@Pos, @Int> =
+    Tuple(get(()), 1)`, does not reach those guarded facts: the verifier's
+    destructure walks decide the call without them, so it is `tier3`/E532
+    where Tier 1 holds.  Under a handler whose body translates the
+    translation decides the call and reads them
+    (`test_repro_a_destructured_component_reads_its_guarded_value`).  A
+    later fix of those walks flips the second assertion."""
+    let = _verify(_BIND_A_STATE_READ.replace("BIND", "let @Pos = get(());"))
+    assert _statuses(let, "call_pre") == [], _statuses(let, "call_pre")
+    destructured = _verify(_BIND_A_STATE_READ.replace(
+        "BIND", "let Tuple<@Pos, @Int> = Tuple(get(()), 1);"))
+    assert [(o.status, o.error_code) for o in destructured.obligations
+            if o.kind == "call_pre"] == [("tier3", "E532")]
+
+
+DESTRUCTURE_IN_A_HANDLE = """
+type Pos = { @Int | @Int.0 > 0 };
+
+private fn need(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+
+public fn f(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[State<Tuple<Int, Int>>](@Tuple<Int, Int> = INIT) {
+    get(@Unit) -> { resume(@Tuple<Int, Int>.0) },
+    put(@Tuple<Int, Int>) -> { resume(()) }
+  } in {
+    let Tuple<@Pos, @Int> = get(());
+    need(@Pos.0)
+  }
+}
+"""
+
+
+def test_repro_a_destructured_component_reads_its_guarded_value() -> None:
+    """Under a handler whose body translates, a destructure of `get(())`
+    gives its refined component the value its bind's guard establishes
+    (`SmtContext.guarded_components`), so `need(@Pos.0)`'s `> 0` is
+    discharged, as a `let @Pos = get(())` is; the guard stops a state
+    outside the refinement before the call, the run the oracle."""
+    src = DESTRUCTURE_IN_A_HANDLE.replace("INIT", "Tuple(5, 7)")
+    verified = _verify(src)
+    assert _statuses(verified, "call_pre") == [], [
+        (o.kind, o.status, o.error_code) for o in verified.obligations]
+    assert _run(src, "f", []).trap is None
+    bad = _run(DESTRUCTURE_IN_A_HANDLE.replace("INIT", "Tuple(-5, 7)"),
+               "f", [])
+    assert bad.trap is not None and "Refinement violation" in str(bad.trap), bad
+
+
+GUARD_UNDER_ITS_BRANCH = """
+type Pos = { @Int | @Int.0 > 0 };
+
+public fn f(@Bool -> @Int)
+  requires(true)
+  ensures(@Int.result > 0)
+  effects(pure)
+{
+  handle[State<Tuple<Int, Int>>](@Tuple<Int, Int> = Tuple(-5, 7)) {
+    get(@Unit) -> { resume(@Tuple<Int, Int>.0) },
+    put(@Tuple<Int, Int>) -> { resume(()) }
+  } in {
+    let @Tuple<Int, Int> = get(());
+    if @Bool.0 then {
+      let Tuple<@Pos, @Int> = @Tuple<Int, Int>.0;
+      @Pos.0
+    } else {
+      let Tuple<@Int, @Int> = @Tuple<Int, Int>.0;
+      @Int.1
+    }
+  }
+}
+"""
+
+
+def test_repro_a_destructured_components_guard_holds_only_where_it_runs() -> None:
+    """The guarded value of a destructure's refined component is stated
+    under the path its bind runs on: the `else` branch reads the same
+    state's first component unguarded, so `ensures(@Int.result > 0)` is not
+    proved, and the run with `false` fails it (the state is `Tuple(-5, 7)`).
+    Stated on every path, the `then` branch's guard proved it."""
+    verified = _verify(GUARD_UNDER_ITS_BRANCH)
+    assert _statuses(verified, "ensures") == ["tier3"]
+    ran = pipeline.run(GUARD_UNDER_ITS_BRANCH, "f", [False], file=FILE)
+    assert ran.trap is not None, ran

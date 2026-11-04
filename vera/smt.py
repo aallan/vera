@@ -3667,17 +3667,17 @@ class SmtContext:
         pattern it is."""
         hook = self._guarded_binder_hook
         reach = self.reach_conditions()
-        if hook is None or reach is None:
+        if hook is None or reach is None:  # pragma: no mutate — equivalent: the verifier sets the hook on every context whose translation knows where it stands, so one is never present without the other
             return components
         pattern = ast.ConstructorPattern(
             name=stmt.constructor,
             sub_patterns=tuple(
-                ast.BindingPattern(type_expr=te, span=te.span)
+                ast.BindingPattern(type_expr=te, span=te.span)  # pragma: no mutate — equivalent: the hook reads a pattern's shape and types, never its spans
                 for te in stmt.type_bindings),
-            span=stmt.span)
-        guarded = hook(stmt.value, term, pattern, self, reach)
-        return [cast("z3.ExprRef", guarded.get(c.get_id(), c))
-                for c in components]
+            span=stmt.span)  # pragma: no mutate — equivalent: as above, no reader of the pattern reads its span
+        guarded: dict[int, z3.ExprRef] = hook(
+            stmt.value, term, pattern, self, reach)
+        return [guarded.get(c.get_id(), c) for c in components]
 
     def _named(self, base: str, node: ast.Node, key: Any) -> str:
         """The name *key* takes at *base*: ``<base>_<line>_<col>`` after the
