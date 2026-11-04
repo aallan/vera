@@ -27,6 +27,21 @@ it, or, for a function compiled at its own type, what to write instead.
 Where the join fails only at a built-in's variable a failed substitution
 lost (#1688), both keep the verdict they gave before.
 
+A refinement unifies by its base, on either side of the judgement and at
+every level of the type (`ResolutionMixin._unify_for_inference`, the two
+2026-10-28 lines of #1684).  Inference unwrapped a refinement on the
+argument's side against a data-type parameter alone, so a refined function
+type at `array_map`'s function-typed parameter left `B` unbound (a false
+`E202`), and a parameterised refinement alias at a parameter bound nothing:
+`head_of(@NE<Int>.0) + 1` was `E140`, and `head_of(["abc", "d"])` checked
+and verified with `T` unbound and built a module that did not load.  The
+side × branch matrix below crosses which side is refined (neither, the
+argument, the parameter, both) with the branch of the type (a data type, a
+function type, a tuple, an `Array`, a `Map`), binding `T` to `String`, a
+type no fallback gives, and asserts the instance the typed program records
+and the value `main` reads; the predicate stays the obligation the binding
+site records.
+
 The matrix crosses the shape of the argument's type over `T` (a closure, a
 closure from an `Option` to an `Array`, a data value holding a closure, a
 data value with two `Option<T>` fields, a tuple of two, a nested tuple) with
@@ -41,6 +56,7 @@ bound.
 from __future__ import annotations
 
 import re
+import typing
 
 import pytest
 
@@ -49,16 +65,17 @@ from tests import pipeline
 pytestmark = pytest.mark.matrix(decides=[
     "vera/checker/calls.py",
     "vera/checker/expressions.py",
+    "vera/checker/resolution.py",
 ])
 
 
 def _fn(name: str, formals: str, ret: str, body: str, *,
         forall: str = "", effect: str = "pure",
-        visibility: str = "private") -> str:
+        visibility: str = "private", requires: str = "true") -> str:
     indented = "\n".join(f"  {line}" if line else line
                          for line in body.splitlines())
     return (f"{visibility} {forall}fn {name}({formals} -> @{ret})\n"
-            "  requires(true)\n  ensures(true)\n"
+            f"  requires({requires})\n  ensures(true)\n"
             f"  effects({effect})\n{{\n{indented}\n}}\n")
 
 
@@ -1063,3 +1080,255 @@ def test_a_lost_built_in_variable_fits_no_other_type() -> None:
     is a `String`."""
     source = _LOST_AT_ARGUMENT.format(param="Nat", body="@Nat.0")
     assert not pipeline.check(source).ok
+
+
+# ---------------------------------------------------------------------
+# A refinement unifies by its base, on either side and in every branch
+# ---------------------------------------------------------------------
+
+_REFINED_FN_AT_ARRAY_MAP = """\
+type Foo = { @fn(Int -> Int) effects(pure) | true };
+
+private fn use_foo(@Foo -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  array_map([40], @Foo.0)[0]
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  use_foo(fn(@Int -> @Int) effects(pure) { @Int.0 + 2 })
+}
+"""
+
+
+def test_repro_a_refined_function_type_binds_the_callee_s_variable() -> None:
+    """The 2026-10-28 11:08 line of #1684: `array_map([40], @Foo.0)` with
+    `Foo` a refinement of `fn(Int -> Int)`.  At 9a1cefba the unification
+    unwrapped a refinement only against a data type, so `B` stayed unbound
+    and the call was refused with `E202` (`expected fn(Int -> B)`).  `B` is
+    bound from the refinement's base, and the program runs."""
+    checked = pipeline.check(_REFINED_FN_AT_ARRAY_MAP)
+    assert checked.ok, [e.format() for e in checked.errors]
+    assert pipeline.run(_REFINED_FN_AT_ARRAY_MAP).value == 42
+
+
+_REFINED_FN_RESULT_HELD = """\
+type Foo = { @fn(Int -> Int) effects(pure) | true };
+
+private fn use_foo(@Foo -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @String = array_map([1], @Foo.0)[0];
+  string_length(@String.0)
+}
+"""
+
+
+def test_a_refined_function_type_s_result_is_its_base_s() -> None:
+    """The result of that call is an `Int`, held as one: a `let @String` of
+    it is `E170` at the `let`.  At 9a1cefba the argument was refused
+    instead (`E202`), and the result's `B` was a wildcard."""
+    checked = pipeline.check(_REFINED_FN_RESULT_HELD)
+    assert [e.error_code for e in checked.errors] == ["E170"], (
+        [e.format() for e in checked.errors])
+    assert checked.errors[0].location.line == 8
+
+
+_NE_ALIAS = "type NE<T> = { @Array<T> | array_length(@Array<T>.0) > 0 };\n"
+
+_HEAD_OF = _NE_ALIAS + """
+private forall<T> fn head_of(@NE<T> -> @T)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @NE<T>.0[0]
+}
+"""
+
+_REFINED_ALIAS_PARAMETER = _HEAD_OF + """
+private fn first_plus_one(@NE<Int> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  head_of(@NE<Int>.0) + 1
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  first_plus_one([4, 5])
+}
+"""
+
+
+def _instances(checked: pipeline.Checked, key: str) -> set[tuple[str, ...]]:
+    return {inst.args for inst in checked.typed.instances if inst.key == key}
+
+
+def test_repro_a_parameterised_refinement_alias_binds_its_variable() -> None:
+    """The 2026-10-28 13:42 line of #1684: `head_of(@NE<Int>.0) + 1`, with
+    `head_of(@NE<T> -> @T)` over the refinement alias `NE<T>`.  At
+    9a1cefba the unification did not unwrap a refinement on the parameter's
+    side, so `T` stayed unbound and the sum was `E140` (`found ? and Int`).
+    `T` is bound from the alias's base, `head_of` is recorded at `Int`, and
+    the program runs."""
+    checked = pipeline.check(_REFINED_ALIAS_PARAMETER)
+    assert checked.ok, [e.format() for e in checked.errors]
+    assert _instances(checked, "head_of") == {("Int",)}
+    assert pipeline.run(_REFINED_ALIAS_PARAMETER).value == 5
+
+
+_REFINED_ALIAS_LOADS = _HEAD_OF + """
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  nat_to_int(string_length(head_of(["abc", "d"])))
+}
+"""
+
+
+def test_repro_a_call_through_a_refinement_alias_loads() -> None:
+    """The same line's silent half: at 9a1cefba `vera check` and
+    `vera verify` passed with `T` unbound, no `head_of` clone was emitted,
+    the call emitted nothing, and the module did not load (`expected a
+    type but nothing on stack`).  `head_of` is recorded at `String`, and
+    the module loads and runs."""
+    checked = pipeline.check(_REFINED_ALIAS_LOADS)
+    assert checked.ok, [e.format() for e in checked.errors]
+    assert _instances(checked, "head_of") == {("String",)}
+    assert pipeline.run(_REFINED_ALIAS_LOADS).value == 3
+
+
+class _Branch(typing.NamedTuple):
+    """One branch of a type a refinement can stand over: the declarations
+    it needs, the generic `g`'s type variables, its parameter's plain type
+    over them, the refinement alias over them and its declaration, the
+    refinement alias at the bound types and its declaration, `g`'s result,
+    its body and its `requires` over the parameter's slot `{slot}`, the
+    plain argument, the extra parameter and argument the branch needs, how
+    `main` reads a `String` out of the result, and the instance the call
+    fixes."""
+
+    decls: str
+    variables: str
+    plain: str
+    refined: str
+    refined_decl: str
+    at_string: str
+    at_string_decl: str
+    result: str
+    body: str
+    requires: str
+    argument: str
+    extra_param: str
+    extra_arg: str
+    reader: str
+    instance: tuple[str, ...]
+
+
+#: `T` is bound to `String`, a type no fallback gives: an unbound variable
+#: is compiled at `Bool`, and a literal's hole defaults to `Int`.
+_BRANCHES: dict[str, _Branch] = {
+    "data": _Branch(
+        "public data Box<T> {\n  Box(T)\n}\n", "T", "Box<T>",
+        "RBox<T>", "type RBox<T> = { @Box<T> | true };\n",
+        "RBoxS", "type RBoxS = { @Box<String> | true };\n",
+        "T", "match @{slot}.0 {{\n  Box(@T) -> @T.0\n}}", "true",
+        'Box("hello")', "", "", "string_length({call})", ("String",)),
+    "fn": _Branch(
+        "type F<A, B> = fn(A -> B) effects(pure);\n", "A, B", "F<A, B>",
+        "RF<A, B>", "type RF<A, B> = { @fn(A -> B) effects(pure) | true };\n",
+        "RFS", "type RFS = { @fn(Int -> String) effects(pure) | true };\n",
+        "B", "apply_fn(@{slot}.0, @A.0)", "true",
+        'fn(@Int -> @String) effects(pure) { "hello" }', ", @A", ", 7",
+        "string_length({call})", ("Int", "String")),
+    "tuple": _Branch(
+        "", "T", "Tuple<T, Int>",
+        "RT<T>", "type RT<T> = { @Tuple<T, Int> | true };\n",
+        "RTS", "type RTS = { @Tuple<String, Int> | true };\n",
+        "T", "match @{slot}.0 {{\n  Tuple(@T, @Int) -> @T.0\n}}", "true",
+        'Tuple("hello", 1)', "", "", "string_length({call})", ("String",)),
+    "array": _Branch(
+        "", "T", "Array<T>",
+        "NE<T>", _NE_ALIAS,
+        "NES", "type NES = { @Array<String> | array_length(@Array<String>.0) > 0 };\n",
+        "T", "@{slot}.0[0]", "array_length(@{slot}.0) > 0",
+        '["hello", "x"]', "", "", "string_length({call})", ("String",)),
+    "map": _Branch(
+        "", "K, V", "Map<K, V>",
+        "RM<K, V>", "type RM<K, V> = { @Map<K, V> | true };\n",
+        "RMS", "type RMS = { @Map<Int, String> | true };\n",
+        "Array<V>", "map_values(@{slot}.0)", "true",
+        'map_insert(map_new(), 1, "hello")', "", "",
+        "string_length({call}[0])", ("Int", "String")),
+}
+
+#: Which side of the judgement is refined: neither (the accepted
+#: neighbour), the argument (a slot of a refinement alias at the bound
+#: types), the parameter (a refinement alias over `g`'s variables), both.
+_SIDES = ("neither", "argument", "parameter", "both")
+
+
+def _refined_program(branch: str, side: str) -> str:
+    b = _BRANCHES[branch]
+    param = b.refined if side in ("parameter", "both") else b.plain
+    decls = b.decls
+    if side in ("parameter", "both"):
+        decls += b.refined_decl
+    if side in ("argument", "both"):
+        decls += b.at_string_decl
+    out = decls + "\n" + _fn(
+        "g", f"@{param}{b.extra_param}", b.result, b.body.format(slot=param),
+        forall=f"forall<{b.variables}> ",
+        requires=b.requires.format(slot=param))
+    if side in ("argument", "both"):
+        bind = f"let @{b.at_string} = {b.argument};\n"
+        argument = f"@{b.at_string}.0"
+    else:
+        bind, argument = "", b.argument
+    call = f"g({argument}{b.extra_arg})"
+    return out + "\n" + _fn("main", "@Unit", "Nat",
+                            bind + b.reader.format(call=call),
+                            visibility="public")
+
+
+@pytest.mark.parametrize("side", _SIDES)
+@pytest.mark.parametrize("branch", list(_BRANCHES))
+def test_a_refinement_unifies_by_its_base(branch: str, side: str) -> None:
+    """A refinement on either side of the argument judgement, over any
+    branch of a type, binds the callee's variables from its base: the call
+    checks, `g` is recorded at the instance the base fixes, and `main` reads
+    the `String` the call returns.  The `neither` side is the accepted
+    neighbour, whose verdict does not move."""
+    source = _refined_program(branch, side)
+    checked = pipeline.check(source)
+    assert checked.ok, [e.format() for e in checked.errors]
+    assert _instances(checked, "g") == {_BRANCHES[branch].instance}
+    assert pipeline.run(source).value == 5
+
+
+@pytest.mark.parametrize("side", ("parameter", "both"))
+def test_a_refined_parameter_s_predicate_is_the_call_s_obligation(
+        side: str) -> None:
+    """The predicate of a refinement alias at a parameter is not the
+    unification's: it is the obligation the call records where the value
+    binds (`refine_bind`), proved or checked at run time."""
+    source = _refined_program("array", side)
+    verified = pipeline.verify(source)
+    assert verified.ok, [e.format() for e in verified.errors]
+    rows = [o.status for o in verified.obligations if o.kind == "refine_bind"]
+    assert rows and set(rows) <= {"verified", "tier3"}, rows

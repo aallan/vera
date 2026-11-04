@@ -1353,21 +1353,31 @@ class ResolutionMixin:
                              ) -> None:
         """Simple unification for type argument inference.
 
+        A refinement's values are its base's, so a refinement on either
+        side unifies by its base, at every level of the type (#1684): the
+        `NE<T>` of `type NE<T> = { @Array<T> | ... }` at a parameter binds
+        `T` from an `Array<Int>` argument, and a `{ @fn(Int -> Int) | ... }`
+        argument binds `array_map`'s `B`; the predicate is the obligation
+        the binding site records.  A bare variable binds to the type it
+        meets, refinement and all.
+
         Inside a function type (*polarity* not 0: 1 at a position whose
         values the generic receives, -1 at one it fills), a variable met at
         `Int` positively or at `Nat` negatively is recorded in *pins*, for
         :meth:`_infer_type_args_in_context` to fix by spec §4.2's polarity
         rule; the binding is made as anywhere else."""
+        pattern = base_type(pattern)
+        structure = base_type(concrete)
         # Skip when the concrete type has TypeVars matching the callee's
         # own forall vars (e.g. map_new() returns Map<K, V> where K, V
         # are the callee's forall vars — not yet resolved from args).
         # Other TypeVars (e.g. E$6 from constructor inference, or U from
         # an enclosing forall scope) are fine to unify with.
         if (forall_vars
-                and isinstance(concrete, AdtType)
-                and concrete.type_args
+                and isinstance(structure, AdtType)
+                and structure.type_args
                 and any(isinstance(a, TypeVar) and a.name in forall_vars
-                        for a in concrete.type_args)):
+                        for a in structure.type_args)):
             return
         if isinstance(pattern, TypeVar):
             if pins is not None and polarity:
@@ -1433,11 +1443,7 @@ class ResolutionMixin:
                 mapping[pattern.name] = merged
             return
 
-        if isinstance(pattern, AdtType) and isinstance(concrete, RefinedType):
-            # A refinement's values are its base's: `map_values` of a
-            # `{ @Map<String, String> | ... }` binds its variables from the
-            # `Map` (#1688).
-            concrete = base_type(concrete)
+        concrete = structure
         if isinstance(pattern, AdtType) and isinstance(concrete, AdtType):
             if pattern.name == concrete.name:
                 for p_arg, c_arg in zip(pattern.type_args, concrete.type_args):
