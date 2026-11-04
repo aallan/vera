@@ -488,6 +488,11 @@ def _leaves(e: ast.Node) -> list[ast.Node]:
         return _leaves(e.then_branch) + _leaves(e.else_branch)
     if isinstance(e, ast.MatchExpr):
         return [leaf for a in e.arms for leaf in _leaves(a.body)]
+    if (isinstance(e, ast.HandleExpr) and isinstance(e.effect, ast.EffectRef)
+            and e.effect.name == "State"):
+        # A `State` handler's clauses each resume, so the handle's value is
+        # its body's (#1696, R3); an `Exn` clause can give it another.
+        return _leaves(e.body)
     return [e]
 
 
@@ -2054,6 +2059,40 @@ def test_the_reconcile_differential_reports_a_mismatch_outside_its_classes(
         "@Int.result <= 2", "@Int.result <= 100").replace("@Int.0 % 3", "@Int.0")
     assert not contract_finds(neighbour), contract_finds(neighbour)
     assert reconcile_finds(neighbour, known=()) == []
+
+
+#: The night's seeds 197, 363, 818 and 995 at #1696's model: a canonical
+#: `State` handler has its body's value, so the generator binds one into a
+#: `let` of a refinement, where the body's value is a slot of that refinement.
+_REPRO_REFINED_HANDLE = """\
+type Span = { @Int | @Int.0 >= -17 && @Int.0 <= -13 };
+
+public fn f(@Span -> @Int)
+  requires(true)
+  ensures(@Int.result == 7)
+  effects(pure)
+{
+  let @Span = handle[State<Int>](@Int = -13) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) }
+  } in {
+    @Span.0
+  };
+  7
+}
+"""
+
+
+def test_repro_a_refined_let_of_a_state_handle_holds_the_refinement() -> None:
+    """A `let` of a refinement whose value is a `State` handle of a slot of
+    that refinement is the held-refinement class at the `let` as at the
+    parameter: the handle's value is its body's, so the leaves the class
+    reads go through it.  Base and head report the same two mismatches; the
+    seeds reach the shape because the model now lets a canonical handler
+    have its body's value (#1696)."""
+    finds = reconcile_finds(_REPRO_REFINED_HANDLE)
+    assert len(finds) == 2, finds
+    assert [f.known for f in finds] == ["#1695 (#1629)"] * 2, finds
 
 
 @pytest.mark.parametrize(
