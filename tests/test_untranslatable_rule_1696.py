@@ -1158,3 +1158,65 @@ def test_repro_an_unknown_over_a_stand_in_reads_as_the_stand_in(
     import z3
     monkeypatch.setattr(z3.Solver, "check", lambda self, *a: z3.unknown)
     assert stand_in_reason(_verify(STAND_IN_RETURN)) == real
+
+
+STATE_POS_RESUME = """
+type Pos = { @Int | @Int.0 > 0 };
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result > 0)
+  effects(pure)
+{
+  handle[State<Pos>](@Pos = 1) {
+    get(@Unit) -> { resume(@Pos.0 - 1) },
+    put(@Pos) -> { resume(()) }
+  } in {
+    get(())
+  }
+}
+"""
+
+
+def test_repro_a_get_clause_resuming_outside_the_refinement_proves_nothing_of_it() -> None:
+    """A `State<Pos>` handler whose `get` clause resumes with `@Pos.0 - 1`:
+    the value `get(())` returns is the clause's, whose refinement is not
+    established (`tier3_unguarded`/E506 at the `resume`), so the handle's
+    value carries `Pos`'s base alone and the `ensures` is not proved.  The
+    run, the oracle, fails it: the state is 1, the clause resumes with 0.
+    The `State<Nat>` cells beside it keep their `>= 0`: a `Nat` `resume` is
+    guarded."""
+    verified = _verify(STATE_POS_RESUME)
+    assert not verified.errors, _codes(verified)
+    assert _statuses(verified, "ensures") == ["tier3"], _statuses(
+        verified, "ensures")
+    ran = _run(STATE_POS_RESUME, "main", [])
+    assert ran.returncode != 0
+
+
+_ABS_TIED = """
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Int = apply_fn(fn(@Int -> @Int) effects(pure) { abs(@Int.0) }, @Int.0);
+  assert(@Int.0 == @Int.1);
+  BODY
+}
+"""
+
+
+def test_a_refutation_tied_to_a_stand_in_by_a_range_stands() -> None:
+    """The rule's stated bound (spec §6.4.2): the forced choice is a choice
+    of one value.  Tied to the stand-in only through the `assert`, a range
+    goal over the input (`@Nat` of `@Int.1`) is refuted at `@Int.1 = -1`
+    though no run reaches the bind with it (`abs` gives 1, the `assert`
+    fails first), while a point goal (a divisor of 0) is Tier 3."""
+    ranged = _verify(_ABS_TIED.replace("-> @Int)", "-> @Nat)", 1).replace(
+        "BODY", "let @Nat = @Int.1;\n  @Nat.0"))
+    assert _statuses(ranged, "nat_bind") == ["violated"]
+    assert "E503" in _codes(ranged)
+    point = _verify(_ABS_TIED.replace("BODY", "10 / @Int.1"))
+    assert _statuses(point, "div_zero") == ["tier3"]
+    assert not point.errors, _codes(point)

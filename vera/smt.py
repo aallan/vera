@@ -2316,11 +2316,38 @@ class SmtContext:
         result a stand-in of its type (`get(())` under `handle[State<Nat>]`
         is a `Nat`).  A clause of any other shape — one that does not
         resume, the `Exn` handler's — can give the handle its own value, so
-        such a handle is a stand-in of its type, as it was."""
+        such a handle is a stand-in of its type, as it was.
+
+        An operation whose result type is a refinement returns what its
+        clause resumes with, and a `resume` argument's refinement is not
+        established by anything here: it is the clause's own obligation,
+        unguarded at a `State` `get` (E506).  So a handle whose body
+        performs such an operation is a stand-in carrying its type's base
+        alone (R2): `handle[State<Pos>]` with `get` resuming `@Pos.0 - 1`
+        proved its caller's `> 0` from `Pos`, and the run broke it.  A
+        `Nat` result is a primitive's, its `resume` guarded."""
         if not expr.clauses or not all(
                 _resumes_in_tail_position(clause) for clause in expr.clauses):
             return None
+        if self._performs_a_refined_operation(expr):
+            return self._stand_in(expr, env, base_only=True)
         return self.translate_expr(expr.body, env)
+
+    def _performs_a_refined_operation(self, expr: ast.HandleExpr) -> bool:
+        """Whether *expr*'s body calls one of its clauses' operations at a
+        refined result type, by the checker's recorded type of the call;
+        True where a call's type is unknown, the direction that claims
+        less."""
+        ops = {clause.op_name for clause in expr.clauses}
+        hook = self._recorded_type_hook
+        for node in fold.walk(expr.body):
+            if (not isinstance(node, (ast.FnCall, ast.QualifiedCall))
+                    or node.name not in ops):
+                continue
+            ty = hook(node) if hook is not None else None
+            if ty is None or isinstance(ty, RefinedType):
+                return True
+        return False
 
     def _is_user_fn(self, name: str) -> bool:
         """True if a user (or module) function of this name is registered.
@@ -3504,7 +3531,7 @@ class SmtContext:
 
     def _stand_in(
         self, node: ast.Node, env: SlotEnv, tag: str | None = None,
-        ty: Type | None = None,
+        ty: Type | None = None, *, base_only: bool = False,
     ) -> z3.ExprRef | None:
         """One constant standing for the value of *node*, a node the
         translation has no term for (#1696, R1).
@@ -3547,14 +3574,16 @@ class SmtContext:
             return None
         if tag is None:
             tag = _STAND_IN_TAGS.get(type(node), "value")
-        key = (tag, _identity(node), self._reads_digest(node, env), str(sort))
+        key = (tag, _identity(node), self._reads_digest(node, env), str(sort),
+               base_only)
         found = self._stand_ins.get(key)
         if found is not None:
             return found
         const = z3.Const(self._named(f"_opaque_{tag}", node, key), sort)
         self._stand_ins[key] = const
         self._taint(const)
-        for stated in self._type_facts(const, ty):
+        for stated in (self._base_facts(const, ty) if base_only
+                       else self._type_facts(const, ty)):
             self.assume(stated)
         self._inherit_disclosure(node, const)
         return const
