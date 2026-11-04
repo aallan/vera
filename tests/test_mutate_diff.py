@@ -339,6 +339,40 @@ class TestTheWindowInTheEngine:
         counts = json.loads(record.read_text(encoding="utf-8"))["files"]
         assert counts == {"m.py": {"x_long": {"held": len(every), "window": len(generated)}}}
 
+    def test_an_exact_window_takes_the_named_lines_alone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The diff lane widens its window to the first line of a node that
+        spans a named line; the nightly sweep names the lines mutmut places
+        mutants on and wants those alone (#1829)."""
+        pytest.importorskip("mutmut")
+        import mutmut.__main__ as engine
+        from mutmut.configuration import reset_config
+
+        source = _src("""
+            def long(x):
+                a = (x
+                     + 1
+                     )
+                return a
+        """)
+        (tmp_path / "pyproject.toml").write_text('[tool.mutmut]\nsource_paths = ["."]\n', encoding="utf-8")
+        (tmp_path / "m.py").write_text(source, encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(engine, "get_covered_lines_for_file", engine.get_covered_lines_for_file)
+        reset_config()
+        try:
+            for exact, widened in ((False, True), (True, False)):
+                window_file, record = _window_file(tmp_path, {"m.py": [4]})
+                spec = json.loads(window_file.read_text(encoding="utf-8"))
+                spec["exact"] = exact
+                window_file.write_text(json.dumps(spec), encoding="utf-8")
+                md.install_window(engine, window_file)
+                inside = json.loads(record.read_text(encoding="utf-8"))["files"]["m.py"]["x_long"]["window"]
+                assert (inside > 0) is widened, (exact, inside)  # line 4, a bracket alone, starts no node
+        finally:
+            reset_config()
+
     def _stub_engine(self, monkeypatch: pytest.MonkeyPatch, **attrs: Any) -> list[dict[str, Any]]:
         """An engine module with only ``attrs`` and a command line that
         records its calls, in place of mutmut's."""
@@ -610,16 +644,26 @@ class TestTheCountInTheEngine:
     own visitor, the count ``mutmut run`` generates, which the nightly sweep
     draws its sample over."""
 
-    def test_each_named_unit_is_counted_as_mutmut_generates_it(self) -> None:
+    def test_each_named_unit_is_counted_as_mutmut_generates_it_line_by_line(self) -> None:
+        """The count is mutmut's own generation, in all and on each line;
+        a window of some of a unit's lines generates exactly those lines'
+        mutants (the nightly sweep's sample, #1829)."""
         pytest.importorskip("mutmut")
-        from mutmut.mutation.file_mutation import mutate_file_contents
+        from mutmut.mutation.file_mutation import create_mutations, mutate_file_contents
 
-        request = json.dumps({"sources": {"m.py": WINDOWED}, "units": {"m.py": ["x_long", "x_absent"]}})
-        counts = json.loads(md.count_units(request))
+        request = json.dumps({"sources": {"m.py": WINDOWED}, "units": {"m.py": ["x_long", "x_other", "x_absent"]}})
+        counts = json.loads(md.count_units(request))["m.py"]
         generated = mutate_file_contents("m.py", WINDOWED).mutant_names
-        assert counts == {"m.py": {"x_long": len([n for n in generated if n.startswith("x_long__mutmut_")]),
-                                   "x_absent": 0}}
-        assert counts["m.py"]["x_long"] >= 5
+        for key in ("x_long", "x_other"):
+            assert counts[key]["mutants"] == len([n for n in generated if n.startswith(f"{key}__mutmut_")])
+            assert counts[key]["mutants"] == sum(counts[key]["lines"].values()) >= 1
+        assert counts["x_absent"] == {"mutants": 0, "lines": {}}
+        assert len(counts["x_long"]["lines"]) >= 5  # one line a statement, each with mutants of its own
+        lines = sorted(int(line) for line in counts["x_long"]["lines"])
+        some = frozenset(lines[1::2])
+        inside = md._unit_counts(create_mutations, "m.py", WINDOWED, some)
+        assert inside["x_long"] == sum(counts["x_long"]["lines"][str(line)] for line in some)
+        assert inside["x_other"] == 0
 
     def test_the_command_reads_its_request_from_stdin_and_answers_on_stdout(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
@@ -628,7 +672,7 @@ class TestTheCountInTheEngine:
         request = json.dumps({"sources": {"m.py": WINDOWED}, "units": {"m.py": ["x_long"]}})
         monkeypatch.setattr(sys, "stdin", io.StringIO(request))
         assert md.engine_main([md.COUNT_ARG]) == 0
-        assert json.loads(capsys.readouterr().out)["m.py"]["x_long"] >= 5
+        assert json.loads(capsys.readouterr().out)["m.py"]["x_long"]["mutants"] >= 5
         monkeypatch.setattr(sys, "stdin", io.StringIO('{"sources": {}}'))
         assert md.engine_main([md.COUNT_ARG]) == md.NO_COUNT_EXIT
         assert "cannot be counted" in capsys.readouterr().err

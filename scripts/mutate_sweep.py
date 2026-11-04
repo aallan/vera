@@ -13,36 +13,45 @@ parallel jobs a night, and carries what each decided:
 
 1. The inventory: every unit mutmut mutates (a top-level function, or a
    method of a top-level class), with a hash of its code (``ast``, docstrings
-   set aside).  A unit's mutant count is mutmut's own visitor's, asked through
-   the engine's ``count`` command before the plan, so its mutants are
-   ``1`` to ``n`` in the copy.
+   set aside).  A unit's mutants are counted by mutmut's own visitor, asked
+   through the engine's ``count`` command before the plan, in all and by the
+   line it places each on (the mutated node's first line, which its
+   covered-lines hook reads a node against).
 2. The state, carried from night to night in the workflow's artifact: each
-   unit's hash, mutant count and decided mutants by number.  A unit whose code
-   changed starts afresh, a unit gone from the tree is dropped, and a new
-   engine version starts every unit afresh, since mutmut numbers a function's
-   mutants by its own rules.
-3. The sample: mutant ``n`` of a unit is in the cycle's sample when a hash
-   of the cycle, the unit and ``n`` falls under ``SAMPLE_FRACTION``, so every
-   job of a night and every night of the cycle draws the same sample, each
-   mutant with the same chance, and the next cycle draws another.
-4. The night's plan: the sample's undecided mutants in the tree's order
-   (path, then line), filled into ``--of`` bins of one job's budget each at
-   an estimated cost a mutant, a unit splitting across bins by its mutants'
-   numbers.  Every job of the night computes the same plan from the same
-   state, and job ``--slice`` runs its bin.
+   unit's hash, its mutants by line, and its sampled window's verdicts once
+   decided.  A unit whose code changed starts afresh, a unit gone from the
+   tree is dropped, and a new engine version starts every unit afresh, since
+   mutmut makes a function's mutants by its own rules.
+3. The sample: a line of a unit is in the cycle's sample when a hash of the
+   cycle, the unit and the line falls under ``SAMPLE_FRACTION``, and the
+   sample is every mutant on a sampled line, so every job of a night and
+   every night of the cycle draws the same sample, each mutant with the same
+   chance, and the next cycle draws another.  mutmut generates a kept unit's
+   mutants whole, every one into the copy, so a sample of mutants drawn one
+   by one would need bins of hundreds of units to fill a job, and those bins
+   spent hours generating and compiling the copy (#1829); a sample of lines
+   reaches mutmut's generator through the covered-lines hook, and the copy
+   holds the sample's mutants alone.
+4. The night's plan: the sample's undecided windows (a unit's sampled lines,
+   decided whole) in the tree's order (path, then line), filled into
+   ``--of`` bins of one job's budget each at an estimated cost a mutant.
+   Every job of the night computes the same plan from the same state, and
+   job ``--slice`` runs its bin.
 5. The run: PR #1727's machinery (``scripts/mutate_diff.py``) over a scratch
-   tree of the head narrowed to the bin's units, the oracle every test file the
-   lane's rule admits (one that reaches the compiler in process, bar the
-   subprocess, Node and tooling families), the copy holding the whole tree.  A
-   test that starts a Python or ``vera`` process, or reads the compiler's
-   source, is no oracle in the copy (``tests/mutation_oracle.py``); one that
-   fails there with no mutant active is dropped from the run and reported, and
-   every night after deselects it from the start.  An exception the engine's
-   own code raises stops the slice instead, dropping no further test, and
-   its record and the night's report name the exception and the engine's
-   frame.
+   tree of the head narrowed to the bin's units, the window file naming each
+   file's sampled lines exactly, the oracle every test file the lane's rule
+   admits (one that reaches the compiler in process, bar the subprocess, Node
+   and tooling families), the copy holding the whole tree.  The engine counts
+   what it generated against the window, and a unit's mutants are ``1`` to
+   its window's count in the order of its lines.  A test that starts a Python
+   or ``vera`` process, or reads the compiler's source, is no oracle in the
+   copy (``tests/mutation_oracle.py``); one that fails there with no mutant
+   active is dropped from the run and reported, and every night after
+   deselects it from the start.  An exception the engine's own code raises
+   stops the slice instead, dropping no further test, and its record and the
+   night's report name the exception and the engine's frame.
 6. The stitch merges the night's slice records into the state.  When every
-   sampled mutant is decided the cycle closes: its per-module totals are kept
+   sampled window is decided the cycle closes: its per-module totals are kept
    in the state and written as ``mutation-summary.csv`` and the README badge's
    ``mutation.json`` (``summary``), the score with its 95% interval, which a
    pull request commits, and the next cycle starts.
@@ -96,7 +105,10 @@ ROOT = Path(__file__).resolve().parent.parent
 #: ``mutation-sweep-state`` artifact.
 STATE_FILE = "sweep-state.json"
 
-SCHEMA = 1
+#: Schema 2 (#1829): a unit's mutants by line, and its sampled window's
+#: verdicts; a schema 1 state (mutants decided by number) loads with its
+#: counts and its nights, and its cycle starts afresh.
+SCHEMA = 2
 
 #: The jobs a scheduled night runs (the workflow's matrix).  The arithmetic:
 #: a job's budget is 4.5 h, of which FIXED_S goes to the passes before its
@@ -120,13 +132,18 @@ DEFAULT_BUDGET_S = 16200
 #: the median, with no test dropped on the way, is about two hours.
 FIXED_S = 7200
 
-#: The share of the tree's mutants a cycle measures: each mutant is in the
-#: cycle's sample with this probability (``in_sample``), so the sample is a
-#: simple random one and the score's interval is a proportion's.  At 2% of
-#: about 113,000 mutants the sample is about 2,300, the whole-tree score's
-#: 95% interval about ±1.7 points, and a night or two of seven jobs decides
-#: it; a module's own interval follows its share.
+#: The share of the tree's mutants a cycle measures: each line a unit's
+#: mutants sit on is in the cycle's sample with this probability
+#: (``in_sample``), with every mutant on it, so each mutant is in the sample
+#: with the same chance and the score's interval is close to a proportion's
+#: (a line holds a few mutants, so the sample is drawn in small clusters).
+#: At 2% of about 113,000 mutants the sample is about 2,300, the whole-tree
+#: score's 95% interval about ±2 points, and a night or two of seven jobs
+#: decides it; a module's own interval follows its share.
 SAMPLE_FRACTION = 0.02
+
+#: The most lines a unit's mutants may sit on, and the furthest line.
+MAX_LINES = 100_000
 
 #: Estimated runner seconds a mutant at four workers, by family: the soundness
 #: core's mutants run the verifier's tests under Z3 (0.05 to 0.2 a second on
@@ -283,8 +300,14 @@ _PART = r"[A-Za-z_][A-Za-z0-9_]*"
 _PATH = re.compile(rf"vera/(?:{_PART}/)*{_PART}\.py")
 _KEY = rf"x(?:_{_PART}|{md.SEP}{_PART}{md.SEP}{_PART})"
 _IDENT = re.compile(rf"{_PATH.pattern}::{_KEY}")
-_SURVIVOR = re.compile(rf"(?:{_PART}\.)*{_PART}\.{_KEY}__mutmut_[1-9][0-9]*:(?:survived|timeout)")
+#: A closed cycle's survivor: ``module.key__mutmut_n@line:status`` (schema
+#: 2), or without the line (a cycle closed under schema 1).
+_SURVIVOR = re.compile(rf"(?:{_PART}\.)*{_PART}\.{_KEY}__mutmut_[1-9][0-9]*(?:@[1-9][0-9]*)?:(?:survived|timeout)")
+#: A unit's window survivor: ``n@line:status``.
+_WINDOW_SURVIVOR = re.compile(r"[1-9][0-9]*@[1-9][0-9]*:(?:survived|timeout)")
 _TESTID = re.compile(r"[^\x00-\x1f]{1,1000}")
+#: The summary's columns of a decided window.
+COLUMNS = ("killed", "survived", "timeout", "no_tests", "other")
 
 
 def _check(ok: bool, what: str) -> None:
@@ -308,22 +331,45 @@ def _keys(value: Any, keys: set[str], what: str) -> Mapping[str, Any]:
     return value  # type: ignore[no-any-return]
 
 
+def check_lines(lines: Any, count: Any, what: str) -> None:
+    """A unit's mutants by line: each line a number, each count at least
+    one, and the counts summing to the unit's count."""
+    _check(isinstance(lines, dict) and len(lines) <= MAX_LINES, f"{what}'s lines are not a mapping")
+    total = 0
+    for line, n in lines.items():
+        _check(isinstance(line, str) and _NUMBER.fullmatch(line) is not None and int(line) <= MAX_LINES,
+               f"{what}'s line {line!r} is out of range")
+        total += _int(n, 1, MAX_MUTANTS, f"{what}'s mutants on line {line}")
+    _check(count is not None and total == count, f"{what}'s lines do not sum to its count")
+
+
+def check_window(window: Any, what: str) -> None:
+    """A decided window: the summary's columns summing to its size, and its
+    survivors each ``n@line:status``."""
+    rec = _keys(window, {*COLUMNS, "mutants", "survivors"}, f"{what}'s window")
+    size = _int(rec["mutants"], 0, MAX_MUTANTS, f"{what}'s window size")
+    _check(sum(_int(rec[c], 0, MAX_MUTANTS, f"{what}'s {c}") for c in COLUMNS) == size,
+           f"{what}'s window columns do not sum to its size")
+    _check(isinstance(rec["survivors"], list) and len(rec["survivors"]) <= size, f"{what}'s survivors")
+    for entry in rec["survivors"]:
+        _text(entry, _WINDOW_SURVIVOR, f"{what}'s survivor {entry!r}")
+
+
 def check_unit(ident: Any, record: Any) -> None:
-    """One function's record: its ident, its code hash, its count, and its
-    decided mutants, each a number within the count and a decided status."""
+    """One function's record: its ident, its code hash, its mutants in all
+    and by line (both unknown until the engine counted it), and its sampled
+    window's verdicts once decided."""
     _text(ident, _IDENT, f"function {ident!r}")
-    rec = _keys(record, {"hash", "mutants", "statuses"}, f"{ident}'s record")
+    rec = _keys(record, {"hash", "mutants", "lines", "window"}, f"{ident}'s record")
     _text(rec["hash"], _HEX16, f"{ident}'s hash")
     count = rec["mutants"]
     if count is not None:
         _int(count, 0, MAX_MUTANTS, f"{ident}'s mutant count")
-    statuses = rec["statuses"]
-    _check(isinstance(statuses, dict), f"{ident}'s statuses are not a mapping")
-    _check(count is not None or not statuses, f"{ident} has decided mutants and no count")
-    for number, status in statuses.items():
-        _check(isinstance(number, str) and _NUMBER.fullmatch(number) is not None
-               and int(number) <= (count or 0), f"{ident}'s mutant {number!r} is out of range")
-        _check(status in DECIDED, f"{ident}'s mutant {number} has a status mutmut does not print")
+    if rec["lines"] is not None:
+        check_lines(rec["lines"], count, ident)
+    if rec["window"] is not None:
+        _check(rec["lines"] is not None, f"{ident} has a decided window and no lines")
+        check_window(rec["window"], ident)
 
 
 def _check_night(night: Any) -> None:
@@ -368,9 +414,13 @@ def _check_night(night: Any) -> None:
 def check_state(data: Any) -> dict[str, Any]:
     """``data`` as a sweep state, every field's type and bounds checked: the
     state comes from an artifact, so nothing in it is trusted."""
-    state = _keys(data, {"schema", "engine", "cycle", "cycle_started", "calibration", "units",
-                         "last_complete", "nights"}, "the state")
+    keys = {"schema", "engine", "cycle", "cycle_started", "calibration", "units", "last_complete", "nights"}
+    if isinstance(data, dict) and "converted_from" in data:
+        keys.add("converted_from")  # a schema 1 state read (convert_state); the stitch notes it
+    state = _keys(data, keys, "the state")
     _check(state["schema"] == SCHEMA and type(state["schema"]) is int, f"not a schema {SCHEMA} state")
+    if "converted_from" in state:
+        _int(state["converted_from"], 1, SCHEMA - 1, "the schema the state was converted from")
     if state["engine"] is not None:
         _text(state["engine"], _VERSION, "the engine version")
         _check(len(state["engine"]) <= 40, "the engine version is too long")
@@ -450,19 +500,53 @@ def check_record(record: Any) -> None:
             isinstance(x, str) and _TESTID.fullmatch(x) for x in record[key]), f"its {key}")
     counts = record.get("counts")
     _check(isinstance(counts, dict), "its counts are not a mapping")
-    for ident, n in counts.items():
+    for ident, counted in counts.items():
         _text(ident, _IDENT, f"its counted function {ident!r}")
-        _int(n, 0, MAX_MUTANTS, f"its count of {ident}")
+        rec = _keys(counted, {"mutants", "lines"}, f"its count of {ident}")
+        _int(rec["mutants"], 0, MAX_MUTANTS, f"its count of {ident}")
+        check_lines(rec["lines"], rec["mutants"], f"its count of {ident}")
     results = record.get("results")
     _check(isinstance(results, dict), "its results are not a mapping")
     for ident, result in results.items():
-        check_unit(ident, result)
-        _check(result["mutants"] is not None, f"its result for {ident} has no count")
+        _text(ident, _IDENT, f"its result for {ident!r}")
+        rec = _keys(result, {"hash", "window", "lines", "statuses", "survivors"}, f"its result for {ident}")
+        _text(rec["hash"], _HEX16, f"its result for {ident}: the hash")
+        size = _int(rec["window"], 0, MAX_MUTANTS, f"its result for {ident}: the window")
+        _check(isinstance(rec["lines"], list) and all(type(n) is int and 1 <= n <= MAX_LINES for n in rec["lines"])
+               and rec["lines"] == sorted(set(rec["lines"])), f"its result for {ident}: the lines")
+        statuses = _keys(rec["statuses"], set(COLUMNS), f"its result for {ident}: the statuses")
+        _check(sum(_int(statuses[c], 0, MAX_MUTANTS, f"its result for {ident}: {c}") for c in COLUMNS) == size,
+               f"its result for {ident}: the statuses do not sum to the window")
+        _check(isinstance(rec["survivors"], list) and len(rec["survivors"]) <= size,
+               f"its result for {ident}: the survivors")
+        for entry in rec["survivors"]:
+            _text(entry, _WINDOW_SURVIVOR, f"its result for {ident}: survivor {entry!r}")
+
+
+def convert_state(data: Any, today: str) -> Any:
+    """A schema 1 state (the sweep that decided mutants by number, to
+    4 November 2026) as a schema 2 state: each unit keeps its hash and its
+    count, its lines unknown until the engine counts them and its window
+    undecided; the engine, the calibration and the nights (the drop memory)
+    carry over, and the cycle starts afresh, since the sample is now drawn
+    by line.  Anything else is left to :func:`check_state`."""
+    if not isinstance(data, dict) or data.get("schema") != 1 or not isinstance(data.get("units"), dict):
+        return data
+    units = {}
+    for ident, rec in data["units"].items():
+        if not isinstance(rec, dict):
+            return data
+        units[ident] = {"hash": rec.get("hash"), "mutants": rec.get("mutants"), "lines": None, "window": None}
+    cycle = data.get("cycle")
+    return {"schema": SCHEMA, "engine": data.get("engine"),
+            "cycle": cycle + 1 if type(cycle) is int else cycle, "cycle_started": today,
+            "calibration": data.get("calibration"), "units": units,
+            "last_complete": data.get("last_complete"), "nights": data.get("nights"), "converted_from": 1}
 
 
 def load_state(path: Path | None, today: str) -> dict[str, Any]:
     """The state in ``path``, checked field by field, or the first cycle's
-    when there is none."""
+    when there is none; a schema 1 state converted (:func:`convert_state`)."""
     if path is None or not path.exists():
         return empty_state(today)
     try:
@@ -470,7 +554,7 @@ def load_state(path: Path | None, today: str) -> dict[str, Any]:
     except json.JSONDecodeError as exc:
         raise StateError(f"{path} is not JSON: {exc}") from exc
     try:
-        return check_state(data)
+        return check_state(convert_state(data, today))
     except StateError as exc:
         raise StateError(f"{path} is not a sweep state this script wrote: {exc}") from exc
 
@@ -510,7 +594,7 @@ def save_state(state: Mapping[str, Any], directory: Path) -> Path:
 
 
 def _fresh(unit: SweepUnit) -> dict[str, Any]:
-    return {"hash": unit.hash, "mutants": None, "statuses": {}}
+    return {"hash": unit.hash, "mutants": None, "lines": None, "window": None}
 
 
 def reconcile(state: Mapping[str, Any], units: Iterable[SweepUnit],
@@ -524,18 +608,11 @@ def reconcile(state: Mapping[str, Any], units: Iterable[SweepUnit],
         old = state["units"].get(unit.ident)
         if same_engine and old is not None and old.get("hash") == unit.hash:
             records[unit.ident] = {"hash": unit.hash, "mutants": old.get("mutants"),
-                                   "statuses": dict(old.get("statuses", {}))}
+                                   "lines": None if old.get("lines") is None else dict(old["lines"]),
+                                   "window": None if old.get("window") is None else dict(old["window"])}
         else:
             records[unit.ident] = _fresh(unit)
     return {**state, "engine": engine if engine is not None else state.get("engine"), "units": records}
-
-
-def undecided(record: Mapping[str, Any]) -> list[int] | None:
-    """A unit's undecided mutant numbers; None while its count is unknown."""
-    count = record["mutants"]
-    if count is None:
-        return None
-    return [n for n in range(1, count + 1) if str(n) not in record["statuses"]]
 
 
 # ---------------------------------------------------------------------------
@@ -544,17 +621,18 @@ def undecided(record: Mapping[str, Any]) -> list[int] | None:
 
 
 def uncounted(state: Mapping[str, Any], units: Iterable[SweepUnit]) -> list[SweepUnit]:
-    """The units whose mutant count the state does not hold yet."""
-    return [u for u in units if state["units"][u.ident]["mutants"] is None]
+    """The units whose mutants by line the state does not hold yet."""
+    return [u for u in units if state["units"][u.ident]["lines"] is None]
 
 
 def engine_counts(engine: Sequence[str], env: Mapping[str, str], sources: Mapping[str, str],
-                  units: Sequence[SweepUnit]) -> dict[str, int]:
-    """Each unit's mutant count, by ident, from the engine's ``count``
-    command (``scripts/mutate_diff.py``'s: mutmut's own visitor over the
-    unit's file at the head), which is what ``mutmut run`` generates for it,
-    so the unit's mutants are ``1`` to the count in the copy.  Nothing is
-    counted twice: the state keeps a count by the unit's hash."""
+                  units: Sequence[SweepUnit]) -> dict[str, dict[str, Any]]:
+    """Each unit's mutants, by ident, from the engine's ``count`` command
+    (``scripts/mutate_diff.py``'s: mutmut's own visitor over the unit's file
+    at the head): ``{"mutants": n, "lines": {line: k}}``, the lines being the
+    ones mutmut places the mutants on, which its covered-lines hook reads a
+    node against, so a window of some lines generates exactly their mutants.
+    Nothing is counted twice: the state keeps a count by the unit's hash."""
     if not units:
         return {}
     keys: dict[str, list[str]] = {}
@@ -571,46 +649,62 @@ def engine_counts(engine: Sequence[str], env: Mapping[str, str], sources: Mappin
         counted = json.loads(result.stdout)
     except json.JSONDecodeError as exc:
         raise md.LaneError(f"the engine's count is not JSON: {exc}") from exc
-    counts: dict[str, int] = {}
+    counts: dict[str, dict[str, Any]] = {}
     for unit in units:
-        n = counted.get(unit.path, {}).get(unit.key) if isinstance(counted, dict) else None
-        if type(n) is not int or not 0 <= n <= MAX_MUTANTS:
-            raise md.LaneError(f"the engine's count of {unit.ident} is missing or out of range: {n!r}")
-        counts[unit.ident] = n
+        found = counted.get(unit.path, {}).get(unit.key) if isinstance(counted, dict) else None
+        try:
+            rec = _keys(found, {"mutants", "lines"}, unit.ident)
+            _int(rec["mutants"], 0, MAX_MUTANTS, unit.ident)
+            check_lines(rec["lines"], rec["mutants"], unit.ident)
+        except StateError as exc:
+            raise md.LaneError(f"the engine's count of {unit.ident} is missing or malformed: {exc}") from exc
+        counts[unit.ident] = {"mutants": rec["mutants"], "lines": dict(rec["lines"])}
     return counts
 
 
-def apply_counts(state: dict[str, Any], counts: Mapping[str, int]) -> None:
-    for ident, n in counts.items():
-        state["units"][ident]["mutants"] = n
+def apply_counts(state: dict[str, Any], counts: Mapping[str, Mapping[str, Any]]) -> None:
+    for ident, counted in counts.items():
+        state["units"][ident]["mutants"] = counted["mutants"]
+        state["units"][ident]["lines"] = dict(counted["lines"])
 
 
-def in_sample(cycle: int, ident: str, number: int) -> bool:
-    """Whether mutant ``number`` of unit ``ident`` is in cycle ``cycle``'s
-    sample: a hash of the three falls under ``SAMPLE_FRACTION``.  Every job
-    of a night and every night of the cycle so draw the same sample, each
-    mutant in it with the same chance, and the next cycle draws another."""
-    digest = hashlib.blake2b(f"{cycle}:{ident}:{number}".encode("utf-8"), digest_size=8).digest()
+def in_sample(cycle: int, ident: str, line: int) -> bool:
+    """Whether line ``line`` of unit ``ident``, and so every mutant on it,
+    is in cycle ``cycle``'s sample: a hash of the three falls under
+    ``SAMPLE_FRACTION``.  Every job of a night and every night of the cycle
+    so draw the same sample, each mutant in it with the same chance, and
+    the next cycle draws another."""
+    digest = hashlib.blake2b(f"{cycle}:{ident}:{line}".encode("utf-8"), digest_size=8).digest()
     return int.from_bytes(digest, "big") < SAMPLE_FRACTION * 2**64
 
 
-def sampled(state: Mapping[str, Any], unit: SweepUnit) -> list[int] | None:
-    """The unit's mutant numbers in the cycle's sample; None while its count
-    is unknown."""
-    count = state["units"][unit.ident]["mutants"]
-    if count is None:
+def sampled_lines(state: Mapping[str, Any], unit: SweepUnit) -> list[int] | None:
+    """The unit's lines in the cycle's sample, in order; None while its
+    mutants by line are unknown."""
+    lines = state["units"][unit.ident]["lines"]
+    if lines is None:
         return None
-    return [n for n in range(1, count + 1) if in_sample(int(state["cycle"]), unit.ident, n)]
+    return sorted(int(line) for line in lines if in_sample(int(state["cycle"]), unit.ident, int(line)))
 
 
-def sampled_undecided(state: Mapping[str, Any], unit: SweepUnit) -> list[int] | None:
-    """The unit's sampled mutants not yet decided; None while its count is
+def window_counts(state: Mapping[str, Any], unit: SweepUnit) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    """The unit's sampled window: its lines, and the mutants on each."""
+    lines = sampled_lines(state, unit) or []
+    counts = state["units"][unit.ident]["lines"] or {}
+    return tuple(lines), tuple(int(counts[str(line)]) for line in lines)
+
+
+def sampled_undecided(state: Mapping[str, Any], unit: SweepUnit) -> int | None:
+    """The mutants of the unit's sampled window still to decide: its size
+    until the window is decided, then none; None while its lines are
     unknown."""
-    numbers = sampled(state, unit)
-    if numbers is None:
+    if state["units"][unit.ident]["lines"] is None:
         return None
-    statuses = state["units"][unit.ident]["statuses"]
-    return [n for n in numbers if str(n) not in statuses]
+    if state["units"][unit.ident]["window"] is not None:
+        return 0
+    return sum(window_counts(state, unit)[1])
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -620,10 +714,26 @@ def sampled_undecided(state: Mapping[str, Any], unit: SweepUnit) -> list[int] | 
 
 @dataclass(frozen=True)
 class Pick:
-    """A job's share of one unit: the mutant numbers it runs."""
+    """A job's piece of work: one unit's sampled window, its lines and the
+    mutants on each, decided whole."""
 
     unit: SweepUnit
-    numbers: tuple[int, ...]
+    lines: tuple[int, ...]
+    counts: tuple[int, ...]
+
+    @property
+    def mutants(self) -> int:
+        return sum(self.counts)
+
+    def line_of(self, number: int) -> int:
+        """The line mutant ``number`` of the window sits on: mutmut numbers
+        a unit's generated mutants from one in the order of their lines."""
+        seen = 0
+        for line, count in zip(self.lines, self.counts, strict=True):
+            seen += count
+            if number <= seen:
+                return line
+        raise StateError(f"{self.unit.ident}: mutant {number} is past its window of {seen}")
 
 
 def rate(unit: SweepUnit, calibration: float = 1.0) -> float:
@@ -636,12 +746,13 @@ def plan(state: Mapping[str, Any], units: Sequence[SweepUnit], *, jobs: int,
          budget_s: float) -> list[list[Pick]]:
     """The night's work in ``jobs`` bins of one job's budget each.
 
-    The sample's undecided mutants in the tree's order fill each bin to the
-    job's budget less ``FIXED_S``, at ``rate`` a mutant, a unit splitting
-    across bins by its mutants' numbers.  A bin's first piece is taken
-    whatever its cost, so a bin with work open decides something.  Every
-    unit is counted before the plan (:func:`engine_counts`): one that is not
-    cannot be sampled, and stops the plan."""
+    The sample's undecided windows in the tree's order fill each bin to the
+    job's budget less ``FIXED_S``, at ``rate`` a mutant, a window going
+    whole into one bin (into the next one when it does not fit and the bin
+    holds something).  A bin's first piece is taken whatever its cost, so a
+    bin with work open decides something.  Every unit is counted before the
+    plan (:func:`engine_counts`): one that is not cannot be sampled, and
+    stops the plan."""
     capacity = max(budget_s - FIXED_S, budget_s / 4)
     calibration = float(state.get("calibration") or 1.0)
     bins: list[list[Pick]] = [[] for _ in range(jobs)]
@@ -652,28 +763,37 @@ def plan(state: Mapping[str, Any], units: Sequence[SweepUnit], *, jobs: int,
             break
         todo = sampled_undecided(state, unit)
         if todo is None:
-            raise StateError(f"{unit.ident} has no mutant count, so its sample cannot be planned")
-        cost = rate(unit, calibration)
-        while todo and current < jobs:
-            fit = int(room // cost)
-            if fit <= 0 and not bins[current]:
-                fit = 1
-            if fit <= 0:
-                current += 1
-                room = capacity
-                continue
-            take, todo = todo[:fit], todo[fit:]
-            bins[current].append(Pick(unit=unit, numbers=tuple(take)))
-            room -= cost * len(take)
-            if room < cost:
-                current += 1
-                room = capacity
+            raise StateError(f"{unit.ident} has no mutants by line, so its sample cannot be planned")
+        if not todo:
+            continue
+        lines, counts = window_counts(state, unit)
+        whole = todo * rate(unit, calibration)
+        if whole > room and bins[current]:
+            current += 1
+            room = capacity
+            if current >= jobs:
+                break
+        bins[current].append(Pick(unit=unit, lines=lines, counts=counts))
+        room -= whole
+        if room <= 0:
+            current += 1
+            room = capacity
     return bins
 
 
 def engine_targets(picks: Sequence[Pick]) -> list[str]:
-    """mutmut's arguments: each picked mutant by name."""
-    return [f"{pick.unit.module}.{pick.unit.key}__mutmut_{n}" for pick in picks for n in pick.numbers]
+    """mutmut's arguments: a glob for each picked unit, every mutant the
+    window generates for it."""
+    return [md.mutant_glob(pick.unit.path, pick.unit.key) for pick in picks]
+
+
+def window_lines(picks: Sequence[Pick]) -> dict[str, list[int]]:
+    """The window file's lines: each file's sampled lines, over its picked
+    units."""
+    lines: dict[str, set[int]] = {}
+    for pick in picks:
+        lines.setdefault(pick.unit.path, set()).update(pick.lines)
+    return {path: sorted(found) for path, found in sorted(lines.items())}
 
 
 def known_drops(state: Mapping[str, Any], tree: Path) -> list[str]:
@@ -693,32 +813,55 @@ def known_drops(state: Mapping[str, Any], tree: Path) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def slice_results(picks: Sequence[Pick], results: Mapping[str, str], *,
+def slice_results(picks: Sequence[Pick], results: Mapping[str, str],
+                  generated: Mapping[tuple[str, str], tuple[int, int]], *,
                   cut_short: bool, finished: bool) -> dict[str, Any]:
-    """Each picked unit's mutant count and its decided mutants, from a
-    listing ``mutmut results`` printed.  A unit's count is the number of its
-    mutants mutmut lists (it generates every mutant of a unit it keeps, a
-    file at a time).  A unit it lists nothing for has no mutant only when the
-    run finished; from a run that stopped short, it has no count yet.  A
-    mutant of a unit the bin does not hold means the narrowing went wrong."""
-    owners = {(p.unit.module, p.unit.key): p.unit for p in picks}
+    """Each picked window the run decided, from a listing ``mutmut results``
+    printed and the engine's count of what it generated against the window
+    (``scripts/mutate_diff.py``'s window record).  A window is decided whole:
+    every mutant mutmut generated for it listed with a decided status, and
+    none the budget cut short; otherwise it waits for another night.  The
+    engine generating more or fewer mutants of a unit than its window holds,
+    a mutant of a unit the bin does not hold, or a numbering with gaps means
+    the narrowing, the window or the counts went wrong."""
+    owners = {(p.unit.module, p.unit.key): p for p in picks}
     listed: dict[str, dict[int, str]] = {p.unit.ident: {} for p in picks}
     for name, status in results.items():
-        unit = owners.get(md.unit_of_mutant(name))
-        if unit is None:
+        pick = owners.get(md.unit_of_mutant(name))
+        if pick is None:
             raise StateError(f"a result for a function the night did not plan: {name}")
-        listed[unit.ident][md._mutant_number(name)] = status
+        listed[pick.unit.ident][md._mutant_number(name)] = status
     out: dict[str, Any] = {}
     for pick in picks:
+        held, inside = generated.get((pick.unit.path, pick.unit.key), (None, None))
         statuses = listed[pick.unit.ident]
-        if not statuses and not finished:
+        if inside is None:
+            if statuses or finished:
+                raise StateError(f"the engine did not count {pick.unit.ident}'s window")
             continue
-        count = len(statuses)
-        if sorted(statuses) != list(range(1, count + 1)):
-            raise StateError(f"mutmut numbered {pick.unit.ident}'s mutants with gaps")
-        decided = {str(n): s for n, s in statuses.items()
-                   if s not in UNDECIDED and not (cut_short and s in CUT_SHORT)}
-        out[pick.unit.ident] = {"hash": pick.unit.hash, "mutants": count, "statuses": decided}
+        if inside != pick.mutants:
+            raise StateError(f"the engine generated {inside} mutants of {pick.unit.ident} where its "
+                             f"window holds {pick.mutants}")
+        if not statuses:
+            if finished and inside:
+                raise StateError(f"mutmut listed nothing for {pick.unit.ident}'s {inside} mutants")
+            if not inside:
+                out[pick.unit.ident] = {"hash": pick.unit.hash, "window": 0, "lines": list(pick.lines),
+                                        "statuses": dict.fromkeys(COLUMNS, 0), "survivors": []}
+            continue
+        if sorted(statuses) != list(range(1, inside + 1)):
+            raise StateError(f"mutmut listed {len(statuses)} mutants of {pick.unit.ident} where the window "
+                             f"holds {inside}, or numbered them with gaps")
+        if any(s in UNDECIDED or (cut_short and s in CUT_SHORT) for s in statuses.values()):
+            continue  # the window waits for another night
+        columns = dict.fromkeys(COLUMNS, 0)
+        survivors = []
+        for number, status in sorted(statuses.items()):
+            columns[_column(status)] += 1
+            if status in ("survived", "timeout"):
+                survivors.append(f"{number}@{pick.line_of(number)}:{status}")
+        out[pick.unit.ident] = {"hash": pick.unit.hash, "window": inside, "lines": list(pick.lines),
+                                "statuses": columns, "survivors": survivors}
     return out
 
 
@@ -838,8 +981,8 @@ def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: li
     record: dict[str, Any] = {
         "schema": SCHEMA, "slice": args.slice, "of": args.of, "head": head,
         "state_in": state_digest(state_path), "engine": version, "budget_s": args.budget,
-        "date": today, "planned": [{"unit": p.unit.ident, "hash": p.unit.hash, "numbers": list(p.numbers)}
-                                   for p in picks],
+        "date": today, "planned": [{"unit": p.unit.ident, "hash": p.unit.hash, "lines": list(p.lines),
+                                    "mutants": p.mutants} for p in picks],
         "counts": counts, "results": {}, "stopped": None, "engine_exit": None, "engine_error": None,
         "engine_s": 0.0, "dropped_tests": [], "deselected_tests": [], "subprocess_tests": [],
         "source_tests": [], "selection": 0, "engine_tail": [],
@@ -852,6 +995,14 @@ def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: li
     md._extract(repo, head, tree)
     deselected = known_drops(state, tree)
     record["deselected_tests"] = deselected
+    # The window: each file's sampled lines, exactly, which the engine makes
+    # mutmut generate alone (scripts/mutate_diff.py's install_window) and
+    # counts per unit for the check against each pick.
+    counts_file = workdir / "window-counts.json"
+    window_file = workdir / "window.json"
+    window_file.write_text(json.dumps({"context": 0, "record": str(counts_file), "exact": True,
+                                       "lines": window_lines(picks)}, indent=1) + "\n", encoding="utf-8")
+    env[md.WINDOW_ENV] = str(window_file)
     files = sorted({p.unit.path for p in picks})
     for path in files:
         keep = {p.unit.key for p in picks if p.unit.path == path}
@@ -899,12 +1050,17 @@ def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: li
         except md.ResultsError as exc:
             stopped = "engine"
             record["engine_tail"] = [str(exc)]
-    if results is not None:
+    generated = md.read_window_counts(counts_file)
+    if generated is None and results is not None:
+        # Nothing says the engine generated the window's mutants alone.
+        stopped = "engine"
+        record["engine_tail"] = ["the engine wrote no count of what it generated against the window"]
+    elif results is not None and generated is not None:
         if no_tests:
             results = {name: "no tests" for name in results}
         try:
-            record["results"] = slice_results(picks, results, cut_short=run.stopped is not None,
-                                              finished=finished)
+            record["results"] = slice_results(picks, results, generated,
+                                              cut_short=run.stopped is not None, finished=finished)
         except StateError as exc:
             stopped = stopped or "unmapped"
             record["engine_tail"] = [str(exc)]
@@ -916,7 +1072,8 @@ def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: li
 
 
 def decided_count(record: Mapping[str, Any]) -> int:
-    return sum(len(r["statuses"]) for r in record.get("results", {}).values())
+    """The mutants of the windows a slice decided."""
+    return sum(int(r["window"]) for r in record.get("results", {}).values())
 
 
 def progress(record: Mapping[str, Any]) -> int:
@@ -946,39 +1103,46 @@ def merge_counts(state: dict[str, Any], record: Mapping[str, Any], problems: lis
     same head, so a count that differs from the state's, or one for a
     function the tree does not hold, is a problem."""
     where = f"slice {record.get('slice')}"
-    for ident, n in record.get("counts", {}).items():
+    for ident, counted in record.get("counts", {}).items():
         rec = state["units"].get(ident)
         if rec is None:
             problems.append(f"{where} counted {ident}, which the tree does not hold")
-        elif rec["mutants"] is None:
-            rec["mutants"] = n
-        elif rec["mutants"] != n:
-            problems.append(f"{where} counted {n} mutants of {ident} where the state holds {rec['mutants']}")
+        elif rec["lines"] is None and rec["mutants"] in (None, counted["mutants"]):
+            rec["mutants"], rec["lines"] = counted["mutants"], dict(counted["lines"])
+        elif rec["mutants"] != counted["mutants"] or rec["lines"] != counted["lines"]:
+            problems.append(f"{where} counted {counted['mutants']} mutants of {ident} where the state holds "
+                            f"{rec['mutants']}, or on other lines")
 
 
-def merge(state: dict[str, Any], record: Mapping[str, Any], problems: list[str]) -> int:
-    """Fold one slice's results into the state, a function at a time; what
-    it moved on: the mutants newly decided.  A function run at code the tree
-    does not hold is a problem, and its results are left out; so is one
-    mutmut lists more or fewer mutants of than the state counts, since the
-    count is mutmut's own visitor's and the sample was drawn over it."""
+def merge(state: dict[str, Any], record: Mapping[str, Any], units: Mapping[str, SweepUnit],
+          problems: list[str]) -> int:
+    """Fold one slice's results into the state, a window at a time; what it
+    moved on: the mutants of the windows newly decided.  A function run at
+    code the tree does not hold, a window of other lines than the cycle's
+    sample, or one of another size than the state's lines give is a problem,
+    and that result is left out; a window decided twice counts once."""
     added = 0
     where = f"slice {record.get('slice')}"
     for ident, result in record.get("results", {}).items():
         rec = state["units"].get(ident)
-        if rec is None or rec["hash"] != result["hash"]:
+        unit = units.get(ident)
+        if rec is None or unit is None or rec["hash"] != result["hash"]:
             problems.append(f"{where} ran {ident} at code the tree does not hold")
             continue
-        if rec["mutants"] is None:
-            rec["mutants"] = result["mutants"]
-        elif rec["mutants"] != result["mutants"]:
-            problems.append(f"{where}: mutmut lists {result['mutants']} mutants of {ident} where the state "
-                            f"counts {rec['mutants']}")
+        if rec["lines"] is None:
+            problems.append(f"{where} ran {ident}, which the state holds uncounted")
             continue
-        for number, status in result["statuses"].items():
-            if number not in rec["statuses"]:
-                added += 1
-            rec["statuses"][number] = status
+        lines, counts = window_counts(state, unit)
+        if list(lines) != list(result["lines"]) or sum(counts) != result["window"]:
+            problems.append(f"{where} ran {ident} over lines {_listed(result['lines']) or 'none'}, "
+                            f"{result['window']} mutants, where the cycle's sample is lines "
+                            f"{_listed(lines) or 'none'}, {sum(counts)} mutants")
+            continue
+        if rec["window"] is not None:
+            continue
+        rec["window"] = {**{c: int(result["statuses"][c]) for c in COLUMNS}, "mutants": int(result["window"]),
+                         "survivors": list(result["survivors"])}
+        added += int(result["window"])
     return added
 
 
@@ -993,57 +1157,46 @@ def _column(status: str) -> str:
     return "other"
 
 
-def sampled_statuses(state: Mapping[str, Any], unit: SweepUnit) -> dict[str, str]:
-    """The unit's decided mutants in the cycle's sample, by number.  A unit
-    may hold decisions outside the sample too: a state carried over from
-    the sweep that measured every mutant, a tree-order prefix rather than a
-    draw.  They are kept, since a later cycle's sample may hold them, and
-    never scored: the score is the sample's, or its interval means
-    nothing."""
-    numbers = sampled(state, unit) or []
-    statuses = state["units"][unit.ident]["statuses"]
-    return {str(n): statuses[str(n)] for n in numbers if str(n) in statuses}
-
-
 def tally(state: Mapping[str, Any], units: Iterable[SweepUnit]) -> dict[str, dict[str, int]]:
     """Per-module counts of the sample's decided mutants, by summary column,
     and the module's mutants in all (``mutants``: the population its sample
     is of)."""
     modules: dict[str, dict[str, int]] = {}
     for unit in units:
-        row = modules.setdefault(unit.path, dict.fromkeys(
-            ("killed", "survived", "timeout", "no_tests", "other", "mutants"), 0))
-        row["mutants"] += state["units"][unit.ident]["mutants"] or 0
-        for status in sampled_statuses(state, unit).values():
-            row[_column(status)] += 1
+        row = modules.setdefault(unit.path, dict.fromkeys((*COLUMNS, "mutants"), 0))
+        rec = state["units"][unit.ident]
+        row["mutants"] += rec["mutants"] or 0
+        if rec["window"] is not None:
+            for column in COLUMNS:
+                row[column] += int(rec["window"][column])
     return modules
 
 
 def complete(state: Mapping[str, Any], units: Iterable[SweepUnit]) -> bool:
-    """Whether every unit's count is known and every sampled mutant decided."""
-    return all(sampled_undecided(state, u) == [] for u in units)
+    """Whether every unit's lines are known and every sampled window decided."""
+    return all(sampled_undecided(state, u) == 0 for u in units)
 
 
 def close_cycle(state: dict[str, Any], units: Sequence[SweepUnit], *, head: str,
                 today: str) -> bool:
     """Close the cycle when it is complete: its per-module totals, its
     survivors and its sample's size become ``last_complete``, and the next
-    cycle starts."""
+    cycle starts with every window undecided."""
     if not complete(state, units):
         return False
     survivors = sorted(
-        f"{u.module}.{u.key}__mutmut_{n}:{s}" for u in units
-        for n, s in sampled_statuses(state, u).items() if s in ("survived", "timeout"))
+        f"{u.module}.{u.key}__mutmut_{entry.replace(':', ':', 1)}" for u in units
+        for entry in (state["units"][u.ident]["window"] or {}).get("survivors", []))
     state["last_complete"] = {"cycle": state["cycle"], "started": state["cycle_started"],
                               "finished": today, "head": head, "engine": state["engine"],
                               "modules": tally(state, units), "survivors": survivors,
-                              "sampled": sum(len(sampled(state, u) or []) for u in units),
+                              "sampled": sum(sum(window_counts(state, u)[1]) for u in units),
                               "population": sum(state["units"][u.ident]["mutants"] or 0 for u in units),
                               "fraction": SAMPLE_FRACTION}
     state["cycle"] += 1
     state["cycle_started"] = today
     for rec in state["units"].values():
-        rec["statuses"] = {}
+        rec["window"] = None
     return True
 
 
@@ -1053,7 +1206,7 @@ def calibrate(state: dict[str, Any], records: Sequence[Mapping[str, Any]],
     ``rate``: the mutants' runner seconds against their estimate."""
     spent = estimate = 0.0
     for record in records:
-        decided = [(ident, len(r["statuses"])) for ident, r in record.get("results", {}).items()]
+        decided = [(ident, int(r["window"])) for ident, r in record.get("results", {}).items()]
         cost = sum(rate(units[ident]) * n for ident, n in decided if ident in units)
         if cost <= 0:
             continue
@@ -1122,6 +1275,9 @@ def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[s
     # the state keeps its own.
     engine: str | None = next((str(r["engine"]) for r in valid if r.get("engine")), None)
     state = reconcile(state_in, units, engine)
+    if state.pop("converted_from", None) is not None:
+        notes.append("the state was the sweep's that decided mutants by number: its counts and its "
+                     "nights carry over, and the cycle starts afresh with the sample drawn by line")
     if engine is not None and state_in.get("engine") not in (None, engine):
         # Every function starts afresh under another engine: the cycle does.
         notes.append(f"mutmut {state_in.get('engine')} gave way to {engine}: every function "
@@ -1129,9 +1285,10 @@ def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[s
         state["cycle_started"] = today
     for record in valid:
         merge_counts(state, record, problems)
+    by_ident = {u.ident: u for u in units}
     added = 0
     for record in valid:
-        added += merge(state, record, problems)
+        added += merge(state, record, by_ident, problems)
         if record.get("stopped") not in (None, "budget"):
             # What stopped it: a lane's reason, or the exception the engine's
             # own code raised, when it raised one.
@@ -1225,8 +1382,9 @@ def write_summary(state: Mapping[str, Any], directory: Path) -> float:
     inventory_lines = ["module,mutant,status"]
     for entry in last["survivors"]:
         name, _, status = entry.rpartition(":")
+        name, at, line = name.partition("@")
         module, key = md.unit_of_mutant(name)
-        inventory_lines.append(f"{module},{key}__mutmut_{md._mutant_number(name)},{status}")
+        inventory_lines.append(f"{module},{key}__mutmut_{md._mutant_number(name)}{'@L' + line if at else ''},{status}")
     (directory / "mutation-survivors.csv").write_text("\n".join(inventory_lines) + "\n",
                                                       encoding="utf-8")
     return score
@@ -1238,16 +1396,19 @@ def write_summary(state: Mapping[str, Any], directory: Path) -> float:
 
 
 def render_slice(record: Mapping[str, Any]) -> str:
-    counts: Counter[str] = Counter(s for r in record.get("results", {}).values()
-                                   for s in r["statuses"].values())
+    counts: Counter[str] = Counter()
+    for result in record.get("results", {}).values():
+        counts.update({column: int(n) for column, n in result["statuses"].items() if n})
+    planned = sum(int(p.get("mutants", 0)) for p in record.get("planned", []))
     out = [f"## Mutation sweep: slice {record['slice']} of {record['of']}", "",
            f"`{str(record['head'])[:12]}`, mutmut {record.get('engine') or '(not run)'}, "
            f"budget {record['budget_s']:g} s, {record.get('elapsed_s', 0):.0f} s elapsed; "
-           f"{len(record['planned'])} unit(s) planned, {decided_count(record)} mutant(s) decided"
+           f"{len(record['planned'])} window(s) of {planned} sampled mutant(s) planned, "
+           f"{len(record.get('results', {}))} decided, {decided_count(record)} mutant(s)"
            + (f", the oracle {record['selection']} test files" if record.get("selection") else "")
            + ".", ""]
     if counts:
-        out.append(", ".join(f"{status}: {n}" for status, n in sorted(counts.items())))
+        out.append(", ".join(f"{column.replace('_', ' ')}: {n}" for column, n in sorted(counts.items())))
         out.append("")
     if record.get("stopped"):
         error = record.get("engine_error") if record["stopped"] == "engine" else None
@@ -1279,16 +1440,18 @@ def render_night(state: Mapping[str, Any], night: Mapping[str, Any],
                  units: Sequence[SweepUnit]) -> str:
     known = [state["units"][u.ident] for u in units]
     population = sum(r["mutants"] or 0 for r in known)
-    unknown = sum(1 for r in known if r["mutants"] is None)
-    drawn = sum(len(sampled(state, u) or []) for u in units)
-    open_ = sum(len(sampled_undecided(state, u) or []) for u in units)
+    unknown = sum(1 for r in known if r["lines"] is None)
+    drawn = sum(sum(window_counts(state, u)[1]) for u in units)
+    open_ = sum(sampled_undecided(state, u) or 0 for u in units)
+    windows = sum(1 for u in units if window_counts(state, u)[0])
+    decided = sum(1 for u in units if state["units"][u.ident]["window"] is not None)
     out = [f"## Mutation sweep: {night['date']}", "",
            f"`{night['head'][:12]}`, {night['jobs']} job(s): {night['moved']} mutant(s) decided tonight.  "
-           f"Cycle {state['cycle']} (from {state['cycle_started']}): {drawn - open_} of {drawn} sampled "
-           f"mutants decided, the sample {SAMPLE_FRACTION:.1%} of {population}"
+           f"Cycle {state['cycle']} (from {state['cycle_started']}): {decided} of {windows} sampled windows "
+           f"decided, {drawn - open_} of {drawn} sampled mutants, the sample {SAMPLE_FRACTION:.1%} of {population}"
            + (f", {unknown} of {len(units)} functions not yet counted" if unknown else "") + ".", ""]
     if night["slices"]:
-        out += ["| Slice | Units | Decided | Stopped | Engine s |", "|---:|---:|---:|---|---:|"]
+        out += ["| Slice | Windows | Mutants decided | Stopped | Engine s |", "|---:|---:|---:|---|---:|"]
         out += [f"| {s['slice']} | {s['planned']} | {s['decided']} | {s['stopped'] or ''} | "
                 f"{s['engine_s'] or 0:.0f} |" for s in night["slices"]]
         out.append("")

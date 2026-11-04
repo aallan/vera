@@ -20,9 +20,9 @@ name: Mutation (nightly)
 # write, and only issues.  Every context value reaches a shell through `env`.
 
 on:
-  # The schedule (21:00 UTC, clear of nightly-matrix.yml's run and
-  # nightly-stress.yml's) is paused while the sample is drawn by line rather
-  # than by mutant (#1829): a night runs on demand meanwhile.
+  schedule:
+    # 21:00 UTC, clear of nightly-matrix.yml's run and nightly-stress.yml's.
+    - cron: "0 21 * * *"
   workflow_dispatch:
     inputs:
       jobs:

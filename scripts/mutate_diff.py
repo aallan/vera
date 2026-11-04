@@ -859,12 +859,15 @@ def install_window(engine: Any, window_file: Path) -> None:
     ``mutate_only_covered_lines`` feeds); the hook here names each narrowed
     file's window, and leaves every other file to the hook it replaces.  The
     window is the lines the lane names and the first line of each node of
-    :data:`ENCLOSING_KINDS` that spans one of them (:func:`first_lines`).
-    Before that, each file's mutants are counted per unit by mutmut's own
-    visitor, of every line and of the window's (:func:`_unit_counts`), so
-    the lane can check what the engine generated against the window.  A
-    mutmut without the hook or the visitor raises :class:`WindowError`."""
+    :data:`ENCLOSING_KINDS` that spans one of them (:func:`first_lines`),
+    unless the window is ``exact``: the nightly sweep names the lines mutmut
+    places mutants on (:func:`count_units`), and takes those alone.  Before
+    that, each file's mutants are counted per unit by mutmut's own visitor,
+    of every line and of the window's (:func:`_unit_counts`), so the lane
+    can check what the engine generated against the window.  A mutmut
+    without the hook or the visitor raises :class:`WindowError`."""
     spec = json.loads(window_file.read_text(encoding="utf-8"))
+    exact = bool(spec.get("exact", False))
     hook = getattr(engine, "get_covered_lines_for_file", None)
     if not callable(hook):
         raise WindowError("mutmut.__main__ has no get_covered_lines_for_file, the hook mutmut 3.8 "
@@ -877,7 +880,8 @@ def install_window(engine: Any, window_file: Path) -> None:
     counts: dict[str, dict[str, dict[str, int]]] = {}
     for path, named in spec["lines"].items():
         source = Path(path).read_text(encoding="utf-8")
-        lines = kept[path] = frozenset(named) | first_lines(enclosing_spans(source), named)
+        lines = kept[path] = (frozenset(named) if exact
+                              else frozenset(named) | first_lines(enclosing_spans(source), named))
         held = _unit_counts(create_mutations, path, source, None)
         inside = _unit_counts(create_mutations, path, source, lines)
         counts[path] = {key: {"held": held[key], "window": inside[key]}
@@ -891,21 +895,61 @@ def install_window(engine: Any, window_file: Path) -> None:
     engine.get_covered_lines_for_file = covered
 
 
+def _unit_line_counts(path: str, source: str) -> dict[str, dict[int, int]]:
+    """How many mutants mutmut's own visitor makes in each unit of
+    ``source``, by the line it places them on: the mutated node's first
+    line, the line its covered-lines hook reads a node against.  mutmut's
+    ``create_mutations`` run step by step with its metadata kept, so each
+    mutation's node resolves to a position; the same visitor over the same
+    module, so the counts are the ones ``mutmut run`` generates."""
+    import libcst as cst
+    from libcst.metadata import MetadataWrapper, PositionProvider
+    from mutmut.mutation.file_mutation import MutationVisitor
+    from mutmut.mutation.mutators import mutation_operators
+    from mutmut.mutation.pragma_handling import get_ignored_lines
+
+    wrapper = MetadataWrapper(cst.parse_module(source))
+    visitor = MutationVisitor(mutation_operators, get_ignored_lines(path, source, wrapper, None), None)
+    wrapper.visit(visitor)
+    positions = wrapper.resolve(PositionProvider)
+    keys: dict[Any, str] = {}
+    for stmt in wrapper.module.body:
+        if isinstance(stmt, cst.FunctionDef):
+            keys[stmt] = _key(stmt.name.value, None)
+        elif isinstance(stmt, cst.ClassDef) and isinstance(stmt.body, cst.IndentedBlock):
+            keys.update({m: _key(m.name.value, stmt.name.value) for m in stmt.body.body
+                         if isinstance(m, cst.FunctionDef)})
+    counts: dict[str, dict[int, int]] = {}
+    for mutation in visitor.mutations:
+        key = keys.get(mutation.contained_by_top_level_function)
+        if key is None:
+            continue
+        line = positions[mutation.original_node].start.line
+        by_line = counts.setdefault(key, {})
+        by_line[line] = by_line.get(line, 0) + 1
+    return counts
+
+
 def count_units(request: str) -> str:
     """The engine's ``count`` command: for each file of ``request`` (JSON,
     ``{"sources": {path: source}, "units": {path: [key, ...]}}``), how many
-    mutants mutmut's own visitor makes in each named unit of its source, as
-    JSON ``{path: {key: n}}``, zero for a unit it makes none in.  The count
-    is the one ``mutmut run`` generates, so a unit's mutants are
-    ``<key>__mutmut_1`` to ``<key>__mutmut_n`` in the copy."""
-    from mutmut.mutation.file_mutation import create_mutations
-
+    mutants mutmut's own visitor makes in each named unit of its source and
+    on which lines, as JSON ``{path: {key: {"mutants": n, "lines": {line:
+    k}}}}``, zero and no lines for a unit it makes none in.  The count is
+    the one ``mutmut run`` generates: a unit's mutants are ``<key>__mutmut_1``
+    to ``<key>__mutmut_n`` in the copy, and with a window of its lines
+    (:func:`install_window`) the mutants on those lines alone, numbered from
+    one in the order of the lines."""
     data = json.loads(request)
     sources, units = data["sources"], data["units"]
-    counts: dict[str, dict[str, int]] = {}
+    counts: dict[str, dict[str, dict[str, Any]]] = {}
     for path, keys in units.items():
-        held = _unit_counts(create_mutations, path, sources[path], None)
-        counts[path] = {str(key): held[str(key)] for key in keys}
+        by_line = _unit_line_counts(path, sources[path])
+        counts[path] = {}
+        for key in keys:
+            lines = by_line.get(str(key), {})
+            counts[path][str(key)] = {"mutants": sum(lines.values()),
+                                      "lines": {str(line): n for line, n in sorted(lines.items())}}
     return json.dumps(counts)
 
 
