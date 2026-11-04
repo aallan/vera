@@ -80,8 +80,10 @@ public fn main(-> @Int) requires(true) ensures(true) effects(pure) {
 # A PUBLIC function with a Tier 3 contract whose body is dropped: reaches
 # the tester's export check (the trivial-contract filter would otherwise
 # short-circuit it).
+#: Tier 3 by its `ensures`: the map's size is a stand-in's, non-negative and
+#: nothing more (#1696), so `> 1` is undecided.
 _TIER3_PUBLIC_DROPPED = """\
-public fn tally(@Int -> @Int) requires(@Int.0 > 0) ensures(@Int.0 >= 0) effects(pure) {
+public fn tally(@Int -> @Int) requires(@Int.0 > 0) ensures(@Int.result > 1) effects(pure) {
   let @Map<String, Int> = map_insert(map_new(), "a", 1);
   map_size(@Map<String, Int>.0) + @Int.0
 }

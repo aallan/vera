@@ -1517,13 +1517,14 @@ helper's call under one; `handle[Exn<Int>]` and `handle[Exn<Nat>]` over a
 `where` clause admits, and of the module's functions; and slots named by
 aliases, a refined parameter and a refined `let` among them.  A public function
 takes `Int`, `Nat` and `Bool` parameters, and aliases of them, the types
-`vera test` generates.  A generic's call, a fold, a cell's read, an element and
-a handler's value are opaque to the verifier, so no contract the generator
-writes rests on one.  So are a `match` on `map_get`'s result, and a call
-taking a generic's call, a fold, a cell's read, a handler or a set's size,
-whose `ensures` the verifier drops: in place an obligation over one is left to
-Tier 3, and a `let` of one holds a fresh value of the `let`'s own type
-(#1696), which is all the generator reads of it.  A construction is a term of
+`vera test` generates.  A generic's call, a fold, an element read and an `Exn`
+handler's value are stand-ins to the verifier, carrying their type's facts
+alone, so a contract the generator writes rests on one only through those
+facts: a `State<Nat>` cell's read is a `Nat`, a `State` handler with the
+canonical clauses has its body's value, a `match` on `map_get`'s result has
+its arms' value, a literal keeps its length whatever its elements, a call
+taking a stand-in keeps its `ensures`, and a `let` of any of them holds the
+value's own term (#1696's rule).  A construction is a term of
 the sort of its checked type, whatever file declares the type, so a contract
 may rest on one in place (#1525).  A fold is an `@Int`, its
 closure's return type, whatever its initial value (spec §4.2), and the
@@ -1585,7 +1586,7 @@ Version one's first scheduled night (2026-10-22, 5,010 programs, #1781) counted
 under #1695 for #1629.
 
 **Where it runs.**  Every pull request runs the contract and the four
-differentials over ten pinned seeds, which between them write every construct
+differentials over eleven pinned seeds, which between them write every construct
 of the grammar, with the instrument's own cells: a seed writes its program, its
 module included, byte for byte, in the test's process and under two string hash
 seeds; a hundred seeds reach every construct and keep the generator's
@@ -1856,7 +1857,7 @@ GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs the
 | **eager-gc** | Python 3.12 x Ubuntu | The conformance programs' runs and the examples' (`pytest tests/test_conformance.py tests/test_check_examples_run.py::TestRealExamples -k run -n auto`) again under `VERA_EAGER_GC=1`, which collects at every allocation so a GC-rooting bug fails deterministically rather than by timing (see [ENVIRONMENT.md](ENVIRONMENT.md)) |
 | **browser-parity** | Python 3.12 + Node.js 22 x Ubuntu | `pytest tests/test_browser.py -v` — verifies JS runtime matches Python runtime; collects V8 coverage via `NODE_V8_COVERAGE` and uploads to Codecov |
 
-[`mutation-diff.yml`](.github/workflows/mutation-diff.yml)'s one job, `mutation (diff)`, runs beside these on a pull request that changes a `vera/**/*.py` file, `uv.lock`, or either mutation lane's workflow, script or self-tests ([Mutation Testing](#mutation-testing)).  It is not a required check.  [`nightly-generator.yml`](.github/workflows/nightly-generator.yml)'s one job runs the program generator's four differentials over the night's seeds, scheduled at 14:17 UTC, over a short night on a pull request that changes the generator, its instrument or the workflow, and on demand ([Program Generator](#program-generator)); it has `contents: read` and the `issues: write` its tracking-issue step needs on a failed scheduled night, and it is not a required check.  The pull request's shards run the generator's ten pinned seeds as ordinary tests.  [`mutation-nightly.yml`](.github/workflows/mutation-nightly.yml) runs nightly at 21:00 UTC and on demand, never on a pull request: a `setup` job, seven `sweep` jobs, a `stitch` job, and an `issue` job, the only one with write access (`issues: write`), when a scheduled night stops short.
+[`mutation-diff.yml`](.github/workflows/mutation-diff.yml)'s one job, `mutation (diff)`, runs beside these on a pull request that changes a `vera/**/*.py` file, `uv.lock`, or either mutation lane's workflow, script or self-tests ([Mutation Testing](#mutation-testing)).  It is not a required check.  [`nightly-generator.yml`](.github/workflows/nightly-generator.yml)'s one job runs the program generator's four differentials over the night's seeds, scheduled at 14:17 UTC, over a short night on a pull request that changes the generator, its instrument or the workflow, and on demand ([Program Generator](#program-generator)); it has `contents: read` and the `issues: write` its tracking-issue step needs on a failed scheduled night, and it is not a required check.  The pull request's shards run the generator's eleven pinned seeds as ordinary tests.  [`mutation-nightly.yml`](.github/workflows/mutation-nightly.yml) runs nightly at 21:00 UTC and on demand, never on a pull request: a `setup` job, seven `sweep` jobs, a `stitch` job, and an `issue` job, the only one with write access (`issues: write`), when a scheduled night stops short.
 
 The coverage threshold of **94%** is enforced in CI, by the coverage job. Coverage is **95% Python, 87% JavaScript** — matching the overview table above. The two are reported as two figures and never blended into one: they come from different collectors over different line populations (`pytest --cov` over the Python compiler, V8 over `vera/browser/`), so a combined percentage would need a line-weighted total that neither report produces. JavaScript coverage for `vera/browser/runtime.mjs` is collected separately using V8's built-in coverage and uploaded to Codecov with the `javascript` flag, independently of the Python `pytest --cov` report.
 

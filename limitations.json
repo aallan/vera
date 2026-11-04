@@ -163,7 +163,7 @@
       "issues": [439],
       "rows": {
         "KNOWN_ISSUES.md#limitations": [
-          "Contracts that depend on a `handle[...]` expression's value fall to Tier 3 — the verifier does not model the `handle[...]` expression's value or handler-clause state, so an `ensures` over a handle result is runtime-checked rather than statically proved. (Primitive-op and binding obligations *inside* the handle body walk at enclosing-scope precision and can prove Tier-1; a clause body's slot-dependent obligations are fresh-scope Tier-3, while a manifest violation there — `5 / 0` — stays a loud compile error.)"
+          "Contracts that depend on a `handle[...]` expression's value fall to Tier 3 unless every clause is exactly `{ resume(x) }` in tail position and no operation the body performs has a refined result type, in which case the handle has its body's value — the verifier does not model handler-clause state or any other handler's value, so an `ensures` over such a handle result is runtime-checked rather than statically proved. (Primitive-op and binding obligations *inside* the handle body walk at enclosing-scope precision and can prove Tier-1; a clause body's slot-dependent obligations are fresh-scope Tier-3, while a manifest violation there — `5 / 0` — stays a loud compile error.)"
         ]
       }
     },

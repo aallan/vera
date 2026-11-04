@@ -1342,8 +1342,10 @@ private fn f(@Int -> @Nat)
 
         `@PosInt`'s seeded `> 0` (from the `PosInt` source component) must not
         leak onto a *separate* `let @PosInt2 = @Int.0` whose value is genuinely
-        unconstrained: that second narrowing must still E505 rather than ride
-        the first slot's fact."""
+        unconstrained: that second narrowing must still be obligated rather
+        than ride the first slot's fact.  The destructured `@Int` is the
+        walk's own stand-in (#1696, R1), so the refutation over it is
+        undecided (R4): a guarded `tier3`/E506, never `verified`."""
         result = _verify("""
 type PosInt = { @Int | @Int.0 > 0 };
 
@@ -1356,12 +1358,14 @@ public fn f(@Tuple<PosInt, Int>, @Int -> @Int)
 }
 """)
         # The first @PosInt (from a PosInt source) is R3-exempt; the second
-        # narrows an unconstrained @Int param into @PosInt and must E505 — the
-        # first slot's seeded `> 0` fact does not bleed onto the second.
-        errs = [d for d in result.diagnostics if d.error_code == "E505"]
-        assert errs, (
-            "the second, independent @PosInt narrowing must still obligate"
-        )
+        # narrows the unconstrained destructured @Int into @PosInt and stays
+        # undecided — the first slot's seeded `> 0` fact does not bleed onto
+        # the second, which would have recorded it `verified`.
+        binds = [(o.status, o.error_code) for o in result.obligations
+                 if o.kind == "refine_bind"]
+        assert binds == [("tier3", "E506")], (
+            "the second, independent @PosInt narrowing must still obligate",
+            binds)
 
     def test_projected_field_uses_source_refinement_fact(self) -> None:
         """A projected ADT field's own declared type is a sound premise for the
@@ -1805,6 +1809,8 @@ public fn use(@Byte -> @Int)
 
         `string_length` over a non-literal is deliberately untranslatable
         (#802), and `String` is a modelled base, so this separates the two.
+        Under #1696's rule the call is a stand-in inside the predicate
+        (R2), so the rationale names the stand-in the predicate holds.
         """
         result = _verify("""
 type NonEmpty = { @String | string_length(@String.0) > 0 };
@@ -1830,7 +1836,8 @@ public fn use(@String -> @Int)
         assert len(warns) == 1, [d.description[:90] for d in result.diagnostics]
         assert warns[0].severity == "warning", warns[0].severity
         rationale = warns[0].rationale
-        assert "predicate is outside" in rationale, rationale
+        assert "stand-in for a value the verifier cannot translate" in (
+            rationale), rationale
         assert "does not model" not in rationale, rationale
 
     def test_the_symbolic_demotion_survives_the_concrete_gate(self) -> None:

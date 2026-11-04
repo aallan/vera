@@ -227,6 +227,13 @@ private fn sub_compound(@Nat -> @Nat)
         ]
 
 
+def _nat_bind_statuses(source: str) -> list[str]:
+    """The statuses of *source*'s `nat_bind` obligations, asserting no error."""
+    result = _verify(source)
+    assert [d for d in result.diagnostics if d.severity == "error"] == []
+    return [o.status for o in result.obligations if o.kind == "nat_bind"]
+
+
 class TestNatBindingObligation552:
     """`@Int` narrowing into a `@Nat` slot carries a Tier-1 `value >= 0`
     obligation at every binding site (#552, generalising #520).
@@ -1094,8 +1101,10 @@ private fn f(@Int -> @Nat)
         slots must be rebound to fresh vars — otherwise `takes_nat(@Int.0)`
         would wrongly discharge against the `@Int` param's
         `requires(@Int.0 >= 0)` instead of the unknown destructured value
-        (CodeRabbit, PR #748)."""
-        _verify_err("""
+        (CodeRabbit, PR #748).  The destructured slots are the walk's own
+        stand-ins (#1696, R1), so the narrowing is undecided (R4): a
+        guarded `tier3`, where the stale binding would read `verified`."""
+        assert _nat_bind_statuses("""
 private fn takes_nat(@Nat -> @Nat)
   requires(true)
   ensures(true)
@@ -1110,17 +1119,19 @@ private fn f(@Int -> @Nat)
   let Tuple<@Int, @Int> = if @Int.0 > 0 then { Tuple(0 - 1, 0 - 1) } else { Tuple(1, 1) };
   takes_nat(@Int.0)
 }
-""", "may be negative")
+""") == ["tier3"]
 
     def test_let_non_translatable_source_invalidates_stale_binding(
         self,
     ) -> None:
-        """An untranslatable `let` RHS (here `array_length(string_lines(...))`)
+        """An untranslatable `let` RHS (here over `array_length(string_lines(...))`)
         rebinds the slot to a fresh var, so a later `takes_nat(@Int.0)` cannot
         falsely discharge against the `@Int` param's `requires(@Int.0 >= 0)` —
         the let-statement analogue of the destructure stale-binding fix
-        (CodeRabbit, PR #748)."""
-        _verify_err("""
+        (CodeRabbit, PR #748).  The length is a stand-in carrying `>= 0`
+        (#1696, R2), so the value negates it to stay one the stale binding
+        would prove and the stand-in does not: undecided (R4), `tier3`."""
+        assert _nat_bind_statuses("""
 private fn takes_nat(@Nat -> @Nat)
   requires(true)
   ensures(true)
@@ -1132,10 +1143,10 @@ private fn f(@Int -> @Nat)
   ensures(true)
   effects(pure)
 {
-  let @Int = array_length(string_lines("ab"));
+  let @Int = 0 - array_length(string_lines("ab"));
   takes_nat(@Int.0)
 }
-""", "may be negative")
+""") == ["tier3"]
 
     def test_narrowing_inside_array_literal_caught(self) -> None:
         """A narrowing nested in an expression container (array literal)
@@ -1563,11 +1574,11 @@ public fn f(@Int -> @Int)
     def test_untranslatable_builtin_return_is_tier3_guarded(self) -> None:
         """`array_length(...)` returns `@Int` (registry), so returning it into a
         `@Nat` slot is a narrowing.  Over an opaque (let-bound) array the value
-        is untranslatable to Z3, so it is an honest Tier-3 narrowing (a codegen
-        runtime guard backs it) — never a silent Tier-1 pass, and never a loud
-        E503 (not provably negative).  This is the return-position analogue of
-        the untranslatable let-site narrowing and the shape that makes
-        `examples/nested_closures.vera` gain a Tier-3."""
+        is a stand-in carrying a length's `>= 0` (#1696, R2), so the narrowing
+        proves at Tier 1 — the fact the stand-in states, not a silent pass —
+        and never a loud E503.  This is the return-position analogue of the
+        untranslatable let-site narrowing, and the shape that moved
+        `examples/nested_closures.vera`'s record to Tier 1."""
         result = _verify("""
 public fn f(@Unit -> @Nat)
   requires(true)
@@ -1580,7 +1591,7 @@ public fn f(@Unit -> @Nat)
 """)
         assert [d for d in result.diagnostics if d.severity == "error"] == []
         assert [o.status for o in result.obligations
-                if o.kind == "nat_bind"] == ["tier3"]
+                if o.kind == "nat_bind"] == ["verified"]
 
 
 # =====================================================================

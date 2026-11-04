@@ -210,8 +210,17 @@ _BASE_NEIGHBOUR: dict[str, tuple[tuple[str, str], ...]] = {
 }
 
 
+#: The forms whose performed value the neighbour's `assert` is proved of
+#: (#1696's rule): `IO.time`'s result is a `Nat`, so its stand-in is
+#: non-negative, and the three `match`es yield `true` in both arms.
+_PROVED_NEIGHBOUR_FORMS = {"IO.time", "Http.get", "DB.execute", "Inference.complete"}
+
+
 def _base_neighbour(kind: str, form: str) -> tuple[tuple[str, str], ...]:
     statuses = _BASE_NEIGHBOUR[kind]
+    if form in _PROVED_NEIGHBOUR_FORMS:
+        statuses = tuple(("assert", "verified") if s == ("assert", "tier3") else s
+                         for s in statuses)
     if form == "a call":
         statuses = (*statuses, ("ensures", "verified"), ("requires", "verified"))
     return tuple(sorted(statuses))
@@ -269,7 +278,9 @@ _HANDLED: dict[str, str] = {
 _BASE_HANDLED: dict[str, tuple[tuple[str, str], ...]] = {
     "requires": (("ensures", "verified"), ("requires", "tier3")),
     "ensures": (("ensures", "tier3"), ("requires", "verified")),
-    "decreases": (("decreases", "tier3"), ("ensures", "verified"),
+    # The measure `if PRED then { @Nat.0 } else { @Nat.0 }` is `@Nat.0`
+    # whatever the handled predicate's stand-in says (#1696's rule).
+    "decreases": (("decreases", "verified"), ("ensures", "verified"),
                   ("int_overflow", "verified"), ("nat_bind", "verified"),
                   ("requires", "verified")),
     "assert": (("assert", "tier3"), ("ensures", "verified"),
@@ -612,7 +623,9 @@ def test_a_handler_of_another_instantiation_does_not_handle(
 _BASE_SAME_HANDLER: dict[str, tuple[tuple[str, str], ...]] = {
     "requires": (("requires", "tier3"), ("ensures", "verified")),
     "ensures": (("ensures", "tier3"), ("requires", "verified")),
-    "decreases": (("decreases", "tier3"), ("ensures", "verified"),
+    # The measure `if PRED then { @Nat.0 } else { @Nat.0 }` is `@Nat.0`
+    # whatever the handle's value (#1696's rule).
+    "decreases": (("decreases", "verified"), ("ensures", "verified"),
                   ("int_overflow", "verified"), ("nat_bind", "verified"),
                   ("requires", "verified")),
     "assert": (("assert", "tier3"), ("ensures", "verified"),
@@ -626,18 +639,38 @@ _CALLEE = {"State": (("ensures", "verified"), ("requires", "verified"),
            "Exn": (("ensures", "verified"), ("requires", "verified"))}
 
 
+#: A `State` handler with the canonical clauses has its body's value
+#: (#1696's rule): `bump(())`'s result, which `bump`'s `ensures(true)`
+#: leaves free.  A `requires` over it translates, and a claim that it is
+#: non-negative — the `ensures`, the refined `result` — is refuted by the
+#: modular rule, as `f(-> @Int) ensures(@Int.result >= 0) { bump(()) }`
+#: is.  An `Exn` handler's clause does not resume, so the handle stays a
+#: stand-in of its type and the base's statuses stand.
+_STATE_SAME_HANDLER: dict[str, tuple[tuple[str, str], ...]] = {
+    "requires": (("requires", "verified"), ("ensures", "verified")),
+    "ensures": (("ensures", "violated"), ("requires", "verified")),
+    "result": (("refine_bind", "violated"), ("ensures", "verified"),
+               ("requires", "verified")),
+}
+_REFUTED_SAME_HANDLER = {("ensures", "State"), ("result", "State")}
+
+
 @pytest.mark.parametrize("effect", list(_INSTANCES))
 @pytest.mark.parametrize("kind", list(_KINDS))
 def test_a_handler_of_the_same_instantiation_handles(kind: str, effect: str) -> None:
     """The neighbour: the call under a handler of its own instantiation,
-    written inside the predicate, is pure there, accepted with the base's
-    verdict and statuses."""
+    written inside the predicate, is pure there, accepted at the check and
+    verified with the base's statuses — or refuted, where the predicate
+    claims what `bump`'s contract does not state (`_STATE_SAME_HANDLER`)."""
     source = _instance_program(kind, effect, "a call", same=True)
     checked = pipeline.check(source)
     assert not checked.diagnostics, (
         [(d.error_code, d.description) for d in checked.diagnostics], source)
-    base = tuple(sorted((*_BASE_SAME_HANDLER[kind], *_CALLEE[effect])))
-    assert _statuses(source) == (True, base), source
+    statuses = (_STATE_SAME_HANDLER.get(kind, _BASE_SAME_HANDLER[kind])
+                if effect == "State" else _BASE_SAME_HANDLER[kind])
+    base = tuple(sorted((*statuses, *_CALLEE[effect])))
+    accepted = (kind, effect) not in _REFUTED_SAME_HANDLER
+    assert _statuses(source) == (accepted, base), source
 
 
 # =====================================================================

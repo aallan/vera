@@ -1396,6 +1396,19 @@ public fn shout3(@NonEmpty -> @String)
 """
         data = self._json(tmp_path, capsys, source)
         fn = {f["name"]: f for f in data["functions"]}["shout3"]
+        # The `ensures` is proved — `string_length`'s result is a `Nat`
+        # whatever the string, a stand-in's fact (#1696) — so the function is
+        # Tier 1 and not exercised at all: no trial can trap on the entry
+        # guard the predicate lowers to.
+        assert fn["category"] == "verified", fn
+        assert fn["trials_run"] == 0, fn
+        assert data["summary"]["failed"] == 0, data["summary"]
+        # A goal the stand-in's fact does not give stays Tier 3, and the
+        # skip this test is named for still names the predicate.
+        data = self._json(tmp_path, capsys, source.replace(
+            "string_length(@String.result) >= 0",
+            "string_length(@String.result) > 1"))
+        fn = {f["name"]: f for f in data["functions"]}["shout3"]
         assert fn["category"] == "skipped", fn
         assert "string_length(@String.0) > 0" in fn["reason"], fn["reason"]
         assert data["summary"]["failed"] == 0, data["summary"]

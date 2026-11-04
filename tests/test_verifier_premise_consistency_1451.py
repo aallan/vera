@@ -969,8 +969,18 @@ def test_1451_a_guarded_tier3_obligation_keeps_its_status_and_code(
     ), _triples(sat)
 
     unsat = _verify(_write(tmp_path / "unsat", _GUARDED_UNDER_UNSAT))
-    kept = [o for o in unsat["obligations"] if o["kind"] == "refine_bind"]
-    assert len(kept) == len(guarded), _triples(unsat)
+    binds = [o for o in unsat["obligations"] if o["kind"] == "refine_bind"]
+    assert len(binds) == len(guarded), _triples(unsat)
+    # The `throw` site's narrowing has no term (an effect operation's
+    # argument in a handler's clause) and keeps its guarded `tier3`/E506.
+    # The `Some(…)` payload is the handler's value, a stand-in (#1696, R1):
+    # it translates, so under premises no state satisfies it proves
+    # vacuously and is demoted to E538 like the contract obligations.
+    kept = [o for o in binds if o["location"]["line"] == 9]
+    vacuous = [o for o in binds if o["location"]["line"] == 8]
+    assert len(kept) == 1 and len(vacuous) == 1, _triples(unsat)
+    assert (vacuous[0]["status"], vacuous[0]["error_code"]) == (
+        "tier3_unguarded", "E538"), _triples(unsat)
     assert all(
         (o["status"], o["error_code"]) == ("tier3", "E506") for o in kept
     ), _triples(unsat)

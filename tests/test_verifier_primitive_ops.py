@@ -475,16 +475,16 @@ private fn at(@Array<Int>, @Nat -> @Int)
 { if @Nat.0 < array_length(@Array<Int>.0) then { @Array<Int>.0[@Nat.0] } else { 0 } }
 """)
 
-    def test_refinement_nonempty_array_index_is_tier3(self) -> None:
-        """A `@NonEmptyArray` refinement index is honest Tier 3, not an error.
+    def test_refinement_nonempty_array_index_proves(self) -> None:
+        """A `@NonEmptyArray` refinement index proves at Tier 1, no error.
 
         The `array_length(@Array<Int>.0) > 0` predicate is over a non-primitive
-        (Array) base that Z3 cannot decide at Tier 1 (the same reason the
-        refinement narrowing itself is a Tier-3 E506; see
+        (Array) base, and a declared parameter of a refined type carries its
+        predicate whatever its base (#1696, R2; m14): the parameter's
+        `array_length > 0` discharges `[0]`, as in
         examples/refinement_types.vera and TestAdtDecreasesVerification's tier
-        ledger).  So the `[0]` access degrades to a runtime-guarded Tier 3 —
-        no error, never silent.  Lifting this to Tier 1 is #427 (Tier-2 array
-        reasoning)."""
+        ledger.  Before the rule the predicate over an `Array` base was not
+        stated and the access was a runtime-guarded Tier 3."""
         result = _verify("""
 type NonEmptyArray = { @Array<Int> | array_length(@Array<Int>.0) > 0 };
 
@@ -497,7 +497,7 @@ private fn head(@NonEmptyArray -> @Int)
         errors = [d for d in result.diagnostics if d.severity == "error"]
         assert errors == [], f"expected no error, got: {[e.description for e in errors]}"
         idx = [o for o in result.obligations if o.kind == "index_bounds"]
-        assert len(idx) == 1 and idx[0].status == "tier3"
+        assert len(idx) == 1 and idx[0].status == "verified"
 
     def test_opaque_unguarded_index_is_tier3(self) -> None:
         """An unguarded index into a dynamic-length array is NOT an error —

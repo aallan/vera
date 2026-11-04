@@ -713,9 +713,20 @@ class TestStringLengthVerification:
     """
 
     def test_string_length_slot_in_ensures_defers_to_tier3(self) -> None:
-        """ensures over a slot-arg string_length can't be Tier-1 proved (the
-        byte count is unknown to Z3); it defers to a runtime-guarded Tier-3
-        obligation rather than the old unsound z3.Length proof."""
+        """A slot-arg string_length is a stand-in carrying a length's `>= 0`
+        and nothing more (#1696, R2), never the old unsound z3.Length: the
+        byte count is unknown to Z3, so an ensures that needs it defers to
+        Tier 3, and one that needs only the length's sign proves."""
+        result = _verify("""
+private fn get_length(@String -> @Int)
+  requires(true)
+  ensures(@Int.result > 0)
+  effects(pure)
+{
+  string_length(@String.0)
+}
+""")
+        assert result.summary.tier3_runtime >= 1
         result = _verify("""
 private fn get_length(@String -> @Int)
   requires(true)
@@ -725,7 +736,8 @@ private fn get_length(@String -> @Int)
   string_length(@String.0)
 }
 """)
-        assert result.summary.tier3_runtime >= 1
+        assert result.summary.tier3_runtime == 0
+        assert result.summary.tier1_verified == 2
 
     def test_string_length_literal_byte_length_tier1(self) -> None:
         """string_length of a literal is modeled at its exact UTF-8 byte length
@@ -744,11 +756,12 @@ private fn two(@Unit -> @Int)
 
     def test_string_length_slot_comparison_defers(self) -> None:
         """A slot-arg string_length in an ensures comparison defers to Tier 3
-        (was an unsound Tier-1 z3.Length proof)."""
+        where it needs the byte count (was an unsound Tier-1 z3.Length
+        proof); `>= 0` alone is the stand-in's own fact (#1696, R2)."""
         result = _verify("""
 private fn longer_than(@String, @Int -> @Bool)
   requires(@Int.0 >= 0)
-  ensures(string_length(@String.0) >= 0)
+  ensures(string_length(@String.0) >= 1)
   effects(pure)
 {
   string_length(@String.0) > @Int.0
