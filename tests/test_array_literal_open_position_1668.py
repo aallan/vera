@@ -1154,26 +1154,33 @@ def test_mutant_a_data_field_holding_a_function_keeps_its_variable() -> None:
         ("E302", *_place(source, literal, literal.index("MkBox(")))]
 
 
-#: A refinement of a function type: at `array_map`'s function-typed
-#: parameter it leaves `B` unbound, a variable a parameter mentions and the
-#: arguments left unbound, and draws an E202 of its own (#1684's class).
-#: `map_values` read through a refinement alias was the lost variable's
-#: vehicle until #1688's fix bound it.
-_FOO_ALIAS = "type Foo = { @fn(Int -> Int) effects(pure) | true };\n"
+#: An argument whose type is an empty literal's unknown (`first([])`),
+#: which inference skips: at `array_map`'s function-typed parameter it
+#: leaves `B` unbound, a variable a parameter mentions and the arguments
+#: left unbound.  `map_values` read through a refinement alias was the lost
+#: variable's vehicle until #1688's fix bound it, and a refinement of a
+#: function type until #1684's unwrap bound `B` through its base.
+_FIRST = """private forall<T> fn first(@Array<T> -> @T)
+  requires(array_length(@Array<T>.0) > 0)
+  ensures(true)
+  effects(pure)
+{
+  @Array<T>.0[0]
+}
+"""
 
 
 def _lost_source(body: str) -> str:
-    return _fn(body, params="@Foo, @M, @Bool, @Nat",
-               pre=_FOO_ALIAS + _SHAPES_PRE)
+    return _fn(body, params="@M, @Bool, @Nat", pre=_SHAPES_PRE + _FIRST)
 
 
 def test_mutant_a_lost_builtin_variable_is_not_filled() -> None:
-    # `array_map`'s `B` is a parameter's, left unbound beside the refined
-    # function: the literal keeps it, as it did before the join.
-    literal = "[array_map([1], @Foo.0)[0], 0 - 5]"
+    # `array_map`'s `B` is a parameter's, left unbound beside an argument
+    # nothing types: the literal keeps it, as it did before the join.
+    literal = "[array_map([1], first([]))[0], 0 - 5]"
     source = _lost_source(f"array_length({literal})")
     checked = _checked(source)
-    assert [d.error_code for d in checked.diagnostics] == ["E202"]
+    assert _where(checked) == []
     assert _literal_types(checked)[_place(source, literal)] == "Array<B>"
 
 
@@ -1193,11 +1200,11 @@ def test_mutant_a_fresh_builtin_variable_is_filled() -> None:
 def test_mutant_a_lost_builtin_variable_keeps_the_match_verdict() -> None:
     # A `match` cannot synthesize its earlier arms again: an arm after a
     # lost variable gives the match its type, as it did before the join.
-    literal = ("[match @Nat.0 { 0 -> array_map([1], @Foo.0)[0], "
+    literal = ("[match @Nat.0 { 0 -> array_map([1], first([]))[0], "
                "_ -> 0 - 5 }]")
     source = _lost_source(f"array_length({literal})")
     checked = _checked(source)
-    assert [d.error_code for d in checked.diagnostics] == ["E202"]
+    assert _where(checked) == []
     assert _literal_types(checked)[_place(source, literal)] == "Array<Int>"
 
 
