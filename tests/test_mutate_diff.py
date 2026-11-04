@@ -665,6 +665,37 @@ class TestTheCountInTheEngine:
         assert inside["x_long"] == sum(counts["x_long"]["lines"][str(line)] for line in some)
         assert inside["x_other"] == 0
 
+    def test_mutmut_places_a_units_mutants_in_the_order_of_their_lines(self) -> None:
+        """A window's mutants are numbered densely in mutmut's visitor order,
+        and the nightly sweep names a survivor's line from its number by the
+        count on each line (``Pick.line_of``), which holds because the
+        visitor records a node's mutations on visiting it, before its
+        children's: an outer node that spans lines comes before the inner
+        nodes on the lines below, so the lines run in order."""
+        pytest.importorskip("mutmut")
+        import libcst as cst
+        from libcst.metadata import MetadataWrapper, PositionProvider
+        from mutmut.mutation.file_mutation import MutationVisitor
+        from mutmut.mutation.mutators import mutation_operators
+        from mutmut.mutation.pragma_handling import get_ignored_lines
+
+        source = ("def f(a, b):\n"
+                  "    x = g(a + 1,\n"
+                  "          b * 2,\n"
+                  "          [c for c in a if c],\n"
+                  "          key=lambda v: v - 1)\n"
+                  "    if x and a > b:\n"
+                  "        return x\n"
+                  "    return None\n")
+        wrapper = MetadataWrapper(cst.parse_module(source))
+        visitor = MutationVisitor(mutation_operators, get_ignored_lines("m.py", source, wrapper, None), None)
+        wrapper.visit(visitor)
+        positions = wrapper.resolve(PositionProvider)
+        lines = [positions[m.original_node].start.line for m in visitor.mutations]
+        assert lines == sorted(lines) and len(set(lines)) >= 4, lines
+        assert lines[0] == 2 and lines.count(2) >= 2  # the call's own mutants first, on its first line
+        assert md._unit_line_counts("m.py", source)["x_f"] == {line: lines.count(line) for line in set(lines)}
+
     def test_the_command_reads_its_request_from_stdin_and_answers_on_stdout(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
     ) -> None:
