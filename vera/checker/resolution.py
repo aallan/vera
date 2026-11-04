@@ -1,8 +1,8 @@
 """Type resolution mixin — AST TypeExpr to semantic Type conversion.
 
 Provides _resolve_type, _resolve_named_type, _resolve_effect_row,
-_resolve_effect_ref, _slot_type_name, _infer_type_args, and
-_unify_for_inference methods extracted from TypeChecker.
+_resolve_effect_ref, _slot_type_name and _unify_for_inference methods
+extracted from TypeChecker.
 """
 
 from __future__ import annotations
@@ -1161,7 +1161,7 @@ class ResolutionMixin:
                 continue
             pins = _Pins()
             self._unify_for_inference(param_ty, self._as_holes(soft_ty),
-                                      mapping, None, conflicts, pins=pins)
+                                      mapping, conflicts, pins=pins)
             pinned.extend((index, pin) for pin in pins.found)
         holed = [tv for tv, b in mapping.items() if contains_literal_hole(b)]
         if holed:
@@ -1317,35 +1317,8 @@ class ResolutionMixin:
             return RefinedType(self._as_holes(ty.base), ty.predicate)
         return ty
 
-    def _infer_type_args(self, forall_vars: tuple[str, ...],
-                         param_types: tuple[Type, ...],
-                         arg_types: list[Type | None],
-                         conflicts: set[str] | None = None,
-                         ) -> dict[str, Type]:
-        """Infer type variable bindings by matching args against params.
-
-        When a forall var is bound by several arguments whose types share a
-        parameterised head but each pin a *different* type parameter (a sparse
-        multi-parameter ADT, `data Res<A, B> { MkOk(A), MkErr(B) }` reached via
-        `eq2(MkErr(5), MkOk("x"))`), the per-argument bindings are MERGED
-        position-wise so the fully-determined `Res<String, Int>` is recovered
-        rather than the first-argument-wins `Res<?, Int>` (#898).  A genuine
-        per-position CONFLICT (two arguments fixing the same parameter to
-        different concrete types) records the var in *conflicts* so the caller
-        emits a clear conflict diagnostic instead of a wrong-type E202.
-        """
-        mapping: dict[str, Type] = {}
-        forall_set = set(forall_vars)
-        for param_ty, arg_ty in zip(param_types, arg_types):
-            if arg_ty is None or isinstance(arg_ty, UnknownType):
-                continue
-            self._unify_for_inference(param_ty, arg_ty, mapping, forall_set,
-                                      conflicts)
-        return mapping
-
     def _unify_for_inference(self, pattern: Type, concrete: Type,
                              mapping: dict[str, Type],
-                             forall_vars: set[str] | None = None,
                              conflicts: set[str] | None = None,
                              *,
                              polarity: int = 0,
@@ -1367,18 +1340,6 @@ class ResolutionMixin:
         :meth:`_infer_type_args_in_context` to fix by spec §4.2's polarity
         rule; the binding is made as anywhere else."""
         pattern = base_type(pattern)
-        structure = base_type(concrete)
-        # Skip when the concrete type has TypeVars matching the callee's
-        # own forall vars (e.g. map_new() returns Map<K, V> where K, V
-        # are the callee's forall vars — not yet resolved from args).
-        # Other TypeVars (e.g. E$6 from constructor inference, or U from
-        # an enclosing forall scope) are fine to unify with.
-        if (forall_vars
-                and isinstance(structure, AdtType)
-                and structure.type_args
-                and any(isinstance(a, TypeVar) and a.name in forall_vars
-                        for a in structure.type_args)):
-            return
         if isinstance(pattern, TypeVar):
             if pins is not None and polarity:
                 _record_pin(pattern.name, concrete, polarity, pins)
@@ -1443,12 +1404,12 @@ class ResolutionMixin:
                 mapping[pattern.name] = merged
             return
 
-        concrete = structure
+        concrete = base_type(concrete)
         if isinstance(pattern, AdtType) and isinstance(concrete, AdtType):
             if pattern.name == concrete.name:
                 for p_arg, c_arg in zip(pattern.type_args, concrete.type_args):
                     self._unify_for_inference(
-                        p_arg, c_arg, mapping, forall_vars, conflicts,
+                        p_arg, c_arg, mapping, conflicts,
                         polarity=polarity, pins=pins)
 
         if isinstance(pattern, FunctionType) and isinstance(concrete, FunctionType):
@@ -1458,7 +1419,7 @@ class ResolutionMixin:
                 if pins is not None:
                     pins.path.append(("param", i))
                 self._unify_for_inference(
-                    p_param, c_param, mapping, forall_vars, conflicts,
+                    p_param, c_param, mapping, conflicts,
                     polarity=-inner, pins=pins)
                 if pins is not None:
                     pins.path.pop()
@@ -1466,7 +1427,7 @@ class ResolutionMixin:
                 pins.path.append(("ret", 0))
             self._unify_for_inference(
                 pattern.return_type, concrete.return_type,
-                mapping, forall_vars, conflicts, polarity=inner, pins=pins)
+                mapping, conflicts, polarity=inner, pins=pins)
             if pins is not None:
                 pins.path.pop()
 
