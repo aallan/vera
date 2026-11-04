@@ -8,7 +8,7 @@
 -- second op-injection site).
 private fn snapshot_pair(@Unit -> @Int)
   requires(true)
-  ensures(true)
+  ensures(@Int.result == 74)
   effects(<State<Int>>)
 {
   let @Array<Int> = [get(()), 4];

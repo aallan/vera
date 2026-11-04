@@ -13,7 +13,7 @@
 -- established, so 7 * 10 = 70.
 private fn row_order(@Unit -> @Int)
   requires(true)
-  ensures(true)
+  ensures(@Int.result == 70)
   effects(<State<Int>, Http>)
 {
   get(()) * 10
@@ -23,7 +23,7 @@ private fn row_order(@Unit -> @Int)
 -- the handled effect wins over the row, so the bare get reads the cell, 9 * 10 = 90.
 private fn handled_first(@Unit -> @Int)
   requires(true)
-  ensures(true)
+  ensures(@Int.result == 90)
   effects(<Http>)
 {
   handle[State<Int>](@Int = 9) {

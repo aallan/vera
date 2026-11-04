@@ -24,7 +24,7 @@ from dataclasses import dataclass, field, replace
 from dataclasses import fields as ast_fields
 from fractions import Fraction
 from collections.abc import Sequence
-from functools import lru_cache, partial
+from functools import lru_cache
 from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple, cast
 from typing import TypeVar as _TypeVar
 
@@ -2177,9 +2177,10 @@ class ContractVerifier:
         """What a value's DECLARED type says about it, as solver facts.
 
         #746: a refined value satisfies its predicate — for a parameter, the
-        matched half of the call-site discharge (R1).  An untranslatable
-        predicate or a non-primitive base yields nothing, which leaves the
-        value constrained by its base alone: sound, never over-assumed.
+        matched half of the call-site discharge (R1).  A predicate with a
+        sub-expression the solver has no term for states its translatable
+        part, over any base, and the value is then one no refutation may
+        rest on (#1696): sound, never over-assumed.
 
         #1430: and the refinements written INSIDE the type — an
         `Array<PosInt>` element, an ADT payload — under the same R1 licence.
@@ -2198,12 +2199,11 @@ class ContractVerifier:
         it is a bug, and a term can acquire a disclosed site through
         cross-module widening.
         """
-        facts: list[object] = []
-        if self._is_refined_type(ty):
-            pred = self._translate_refined_predicate(smt, ty, var)
-            if pred is not None:
-                facts.append(pred)
         nested_facts, _ = self._nested_refinement_facts(smt, ty, var)
+        # #1696: the head refinement's predicates over any base, and the
+        # value registered as one no refutation may rest on where a
+        # predicate of its type holds a stand-in (#1470).
+        facts: list[object] = list(smt.declared_facts(var, ty, nested_facts))
         facts.extend(self._established_facts(
             nested_facts, source=None, term=var, smt=smt))
         return facts
@@ -2255,13 +2255,6 @@ class ContractVerifier:
         # (shared) smt too.
         smt._recorded_type_hook = self._resolved_type_of
         smt._constructed_type_hook = self._constructed_type_of
-        # J1: and let the SORT derivation ask whether a refinement's whole
-        # predicate can be stated, so a refinement it cannot state is not
-        # modelled rather than modelled without its meaning.  The chain walk
-        # and the predicate translation live here, so the question is
-        # answered here and asked once, by `SmtContext._refinement_statable`.
-        smt._refinement_statable_hook = partial(
-            self._refinement_predicate_statable, smt)
         # #1480 review: and let a call-site check ask whether its goal rests
         # on a placeholder one of the walks bound.  A bound method, so it
         # reads the live `_opaque_shadows`, which each walk resets.
@@ -3669,7 +3662,15 @@ class ContractVerifier:
                     z3_pre = smt.translate_expr(contract.expr, slot_env)
                 finally:
                     del smt._path_conditions[pc_depth:]
-                if z3_pre is None:
+                if z3_pre is not None:
+                    # The clause holds in the body whatever the solver can
+                    # read of it, since the prologue checks the whole clause
+                    # before the body runs.
+                    assumptions.append(z3_pre)
+                if z3_pre is None or smt._mentions_stand_in(z3_pre):
+                    # No term, or a term holding a stand-in for a construct
+                    # outside the fragment (#1696): the clause is one the
+                    # solver cannot read whole, checked at run time.
                     self._record_obligation(
                         decl.name, "requires", contract, "tier3",
                         error_code="E521",
@@ -3688,7 +3689,6 @@ class ContractVerifier:
                         tier=3,
                     )
                     continue
-                assumptions.append(z3_pre)
                 self._record_obligation(
                     decl.name, "requires", contract, "verified",
                 )
@@ -3727,12 +3727,10 @@ class ContractVerifier:
                     smt, slot_env, assumptions, EvaluatedAt("measure"),
                 )
 
-        # 5. Translate function body.  Its call checks are the ones recorded
-        #    before #1480, and keep #804's strict rule over an opaque value
-        #    (`SmtContext.strict_preconditions`); every other position's are
-        #    #1480's, and do not refuse on a value it cannot state.
-        with smt.strict_preconditions():
-            body_expr = smt.translate_expr(decl.body, slot_env)
+        # 5. Translate function body.  Its call checks refuse on a value the
+        #    verifier cannot state only where the precondition is false for
+        #    every value it could take (#1696), as every other position's do.
+        body_expr = smt.translate_expr(decl.body, slot_env)
 
         # 5.05. #1407: does this function HAND ON a disclosed value?  A
         #       forwarding wrapper makes no claim that needs the disclosed
@@ -3934,14 +3932,15 @@ class ContractVerifier:
                     self._warning(
                         contract,
                         f"Cannot statically verify postcondition in "
-                        f"'{decl.name}'. The function body binds an "
-                        f"effect-operation value the verifier models "
-                        f"opaquely, and the postcondition depends on "
-                        f"it. Contract will be checked at runtime.",
-                        rationale="An effect operation's result is "
-                                  "outside the decidable fragment; the "
-                                  "verifier binds it as an unconstrained "
-                                  "value, so a postcondition that "
+                        f"'{decl.name}'. The function body holds a "
+                        f"value the verifier cannot translate, which it "
+                        f"models as a stand-in, and the postcondition "
+                        f"depends on it. Contract will be checked at runtime.",
+                        rationale="An expression outside the decidable "
+                                  "fragment (an effect operation's result, "
+                                  "a closure applied, a generic call) is "
+                                  "modelled as a stand-in that carries only "
+                                  "its type's facts, so a postcondition that "
                                   "depends on it can be neither proven "
                                   "nor refuted statically.",
                         spec_ref='Chapter 6, Section 6.8 "Summary of Verification Tiers"',
@@ -5180,10 +5179,11 @@ class ContractVerifier:
 
         THE derivation of what a block binding does to the slot env, so the
         scope a `Block` implies cannot differ by which reader walks into it.
-        The translating case is the same for every caller; the caller's
-        `policy` decides only what an untranslatable RHS does, and each
-        policy carries its own rationale on
-        :class:`BlockBindingPolicy`.
+        The translating case is the same for every caller, and since #1696
+        a value the SMT layer cannot translate translates too, to a
+        stand-in of its type; the caller's `policy` decides only what a
+        value with no sort does, and each policy carries its own rationale
+        on :class:`BlockBindingPolicy`.
 
         Returning None means HALT — the caller stops reading the block — and
         is reachable only under that policy.  Every other policy returns an
@@ -5194,56 +5194,29 @@ class ContractVerifier:
         if val is None:
             if policy is BlockBindingPolicy.HALT:
                 return None
-            if policy is BlockBindingPolicy.FRESH_VAR:
-                val = self._fresh_slot_var(smt, stmt.type_expr)
-                if val is None and type_name is not None:
-                    # #1524 review: `_fresh_slot_var` has a sort only for a
-                    # scalar, so an ADT, `Array`, `Tuple` or `Map` binding
-                    # was left out of the env, and a later `@T.0` read the
-                    # outer value it shadows: `decreases(@NList.0)` was
-                    # proved over the parameter's tail while the program
-                    # recursed on the tail of a longer list.  The outer has
-                    # this binding's slot name, so its sort is this
-                    # binding's sort.  With no outer there is nothing a
-                    # later reference could read in its place.
-                    #
-                    # The const is an opaque shadow, as OPAQUE_SHADOW's is:
-                    # a countermodel that picks it names no value the
-                    # program produces, so a refinement binding refuted over
-                    # it takes the #1460 re-ask and falls to its runtime
-                    # guard when the predicate is satisfiable.  Untracked,
-                    # it turned the stale-read Tier 1 of `let @PosInt =
-                    # nat_to_int(array_length(@Array<Int>.0))` into an E505
-                    # on a program that runs.  The scalar placeholder above
-                    # stays untracked; its refutations are #1470's.
-                    stale = env.resolve(type_name, 0)
-                    if stale is not None:
-                        val = z3.FreshConst(stale.sort(), "fresh")
-                        self._opaque_shadows.append(val)
-            elif (policy is BlockBindingPolicy.OPAQUE_SHADOW
-                    and type_name is not None):
+            # A value the SMT layer has no term for is a stand-in of its
+            # type (#1696), so None here is a value with no sort at all.
+            # Under either other policy the binding takes a tracked
+            # stand-in of its own type (`_fresh_slot_var`): FRESH_VAR's
+            # untracked scalar and OPAQUE_SHADOW's shadow of the outer's
+            # sort were two of the mints the one rule replaces.  With no
+            # sort, an outer binding
+            # of the same slot name is still shadowed (#1524 review: a later
+            # `@T.0` read the outer value, and `decreases(@NList.0)` was
+            # proved over the parameter's tail while the program recursed on
+            # the tail of a longer list); with no outer there is nothing a
+            # later reference could read in its place.
+            val = self._fresh_slot_var(smt, stmt.type_expr)
+            if val is None and type_name is not None:
                 stale = env.resolve(type_name, 0)
                 if stale is not None:
                     val = z3.FreshConst(stale.sort(), "shadow")
-                else:
-                    # No outer to shadow, but the slot still names a value
-                    # later code reads — a call's argument, an `assume`'s
-                    # subject — so it is bound to an unknown value of its
-                    # declared type rather than left unbound (#1480 review):
-                    # a scalar, an array or an ADT, as a destructure's
-                    # component is (`_shadow_destructured_slots`).
-                    val = self._fresh_slot_var(smt, stmt.type_expr)
-                    if val is None:
-                        resolved = self._written_type(stmt.type_expr)
-                        if self._is_array_type(resolved):
-                            val = self._declare_array_var(
-                                smt, smt._fresh_name("shadow"), resolved)
-                        elif self._is_adt_type(resolved):
-                            val = smt.declare_adt(
-                                smt._fresh_name("shadow"), resolved)
-                if val is not None:
                     self._opaque_shadows.append(val)
             self._guarded_binder_value(smt, stmt.type_expr, val)
+        elif smt._mentions_stand_in(val):
+            # A refined binder of a stand-in reads the value the guard at
+            # the bind establishes (#1696; `SmtContext.guarded_binding`).
+            val = smt.guarded_binding(stmt.value, val, stmt.type_expr)
         if val is not None and type_name is not None:
             return env.push(type_name, val)
         return env
@@ -5382,7 +5355,7 @@ class ContractVerifier:
         """
         pushed = arm.condition is not None
         if pushed:
-            smt._path_conditions.append(arm.condition)
+            smt.branch_premise(arm.condition)
         try:
             yield
         finally:
@@ -5485,7 +5458,7 @@ class ContractVerifier:
                 decl, arm, expected, smt, slot_env, assumptions, site=site,
             )
             return
-        smt._path_conditions.append(path_cond)
+        smt.branch_premise(path_cond)
         try:
             self._descend_construction_container(
                 decl, arm, expected, smt, slot_env, assumptions, site=site,
@@ -5791,22 +5764,19 @@ class ContractVerifier:
         self, smt: SmtContext, te: ast.TypeExpr, prefix: str,
     ) -> object:
         """A TRACKED fresh value of *te*'s sort, for a slot whose value the
-        walk cannot know.
+        walk cannot know: a recursive call's argument the measure is
+        evaluated over.
 
-        Tracked in `_opaque_shadows`, so an obligation whose operand is one
-        falls to Tier 3 rather than taking the unconstrained value's
-        countermodel as real.  A type with no SMT sort of its own still gets
-        a value, an integer one, so the De Bruijn positions of the slots
-        pushed after it stay aligned.
+        A stand-in of the type's sort carrying what the type states
+        (`SmtContext.fresh_stand_in`, #1696), counter-named rather than
+        keyed by *te*: two call sites' arguments at one parameter are two
+        values.  Tracked in `_opaque_shadows`, so an obligation whose
+        operand is one falls to Tier 3 rather than taking the unconstrained
+        value's countermodel as real.  A type with no SMT sort of its own
+        still gets a value, an integer one, so the De Bruijn positions of
+        the slots pushed after it stay aligned.
         """
-        value = self._fresh_slot_var(smt, te)
-        if value is None:
-            resolved = self._written_type(te)
-            if self._is_array_type(resolved):
-                value = self._declare_array_var(
-                    smt, smt._fresh_name(prefix), resolved)
-            elif self._is_adt_type(resolved):
-                value = smt.declare_adt(smt._fresh_name(prefix), resolved)
+        value = smt.fresh_stand_in(self._written_type(te), prefix)
         if value is None:
             value = smt.declare_int(smt._fresh_name(prefix))
         self._opaque_shadows.append(value)
@@ -6731,13 +6701,13 @@ class ContractVerifier:
         z3_cond = smt.translate_expr(expr.condition, path.env)
         if z3_cond is not None:
             import z3 as z3mod
-            smt._path_conditions.append(z3_cond)
+            smt.branch_premise(z3_cond)
             try:
                 yield expr.then_branch, path
             finally:
                 smt._path_conditions.pop()
             if expr.else_branch is not None:
-                smt._path_conditions.append(z3mod.Not(z3_cond))
+                smt.branch_premise(z3mod.Not(z3_cond))
                 try:
                     yield expr.else_branch, path
                 finally:
@@ -7988,13 +7958,13 @@ class ContractVerifier:
         z3_cond = smt.translate_expr(expr.condition, path.env)
         if z3_cond is not None:
             import z3 as z3mod
-            smt._path_conditions.append(z3_cond)
+            smt.branch_premise(z3_cond)
             try:
                 yield expr.then_branch, path
             finally:
                 smt._path_conditions.pop()
             if expr.else_branch is not None:
-                smt._path_conditions.append(z3mod.Not(z3_cond))
+                smt.branch_premise(z3mod.Not(z3_cond))
                 try:
                     yield expr.else_branch, path
                 finally:
@@ -9265,34 +9235,25 @@ class ContractVerifier:
     def _fresh_slot_var(
         self, smt: SmtContext, te: ast.TypeExpr,
     ) -> object | None:
-        """A fresh Z3 var carrying the binding type's invariant.
+        """The stand-in for a binding whose value this walk cannot know, of
+        the binding type's sort, carrying its base's fact (#1696;
+        `SmtContext.bound_stand_in`, which says why it is the walk's own and
+        why its refinement is not stated on it).
 
-        Used to invalidate a stale outer binding when a destructure rebinds
-        a slot to a value the SMT layer cannot translate (a non-literal
-        source, or a literal component that does not translate), so a later
-        obligation never reads the old, more-constrained binding of the same
-        slot name (CodeRabbit, PR #748).  Dispatches on the *resolved* type
-        so a scalar reached through an alias (e.g. ``type Count = Nat``) is
-        still invalidated; returns ``None`` only for a type with no scalar
-        SMT sort (the stale binding is then irrelevant to a `value >= 0`
-        obligation anyway).
+        A `let`, a destructured component or a `match` binder the SMT layer
+        cannot read binds to it, so a later obligation never reads the
+        stale outer binding of the same slot name (CodeRabbit, PR #748).
+        Dispatches on the *resolved* type, so a scalar reached through an
+        alias (``type Count = Nat``), a container and a data type alike get
+        their sort; returns ``None`` only for a type with no sort at all.
+
+        Every such value is tracked in ``_opaque_shadows``: an obligation
+        refuted only over it is Tier 3 behind its guard, never a refusal on
+        a value the program never produces (#1470), in a body as in a
+        contract position (#1480).
         """
-        resolved = self._written_type(te)
-        fresh = smt._fresh_name("destructure")
-        result: object | None = None
-        if self._is_nat_type(resolved):
-            result = smt.declare_nat(fresh)
-        elif resolved == INT or (
-            isinstance(resolved, RefinedType) and resolved.base == INT
-        ):
-            result = smt.declare_int(fresh)
-        elif self._is_bool_type(resolved):
-            result = smt.declare_bool(fresh)
-        elif self._is_float64_type(resolved):
-            result = smt.declare_float64(fresh)
-        elif self._is_string_type(resolved):
-            result = smt.declare_string(fresh)
-        if result is not None and self._track_fresh_placeholders:
+        result = smt.bound_stand_in(self._written_type(te))
+        if result is not None:
             self._opaque_shadows.append(result)
         return result
 
@@ -9333,12 +9294,14 @@ class ContractVerifier:
         narrowing field out of it, so it is invalidated too — shadowed by a
         fresh const of its own sort when an outer binding exists.
 
-        ``track=True`` additionally records each fresh var in
-        ``self._opaque_shadows`` so a trapping-primitive obligation over it
-        (division / subtraction) falls to Tier-3 instead of a *false E526 /
-        E502* — the fresh var carries no ``!= 0`` invariant, so without the
-        shadow tag it would read as a real zero counterexample (#680 review,
-        the match-arm analogue of the untranslatable-`let` shadow).
+        Each binder's stand-in is tracked in ``self._opaque_shadows``
+        (`_fresh_slot_var`, #1696), so a trapping-primitive obligation over
+        it (division / subtraction) falls to Tier-3 instead of a *false
+        E526 / E502* — the fresh var carries no ``!= 0`` invariant, so
+        without the shadow tag it would read as a real zero counterexample
+        (#680 review, the match-arm analogue of the untranslatable-`let`
+        shadow).  ``track=True`` tracks the shadow of a stale outer binding
+        the same way, for a slot whose type has no sort of its own.
         """
         if isinstance(pattern, ast.BindingPattern):
             slot_name = smt._type_expr_to_slot_name(pattern.type_expr)
@@ -9348,18 +9311,18 @@ class ContractVerifier:
                 smt, pattern.type_expr,
                 self._fresh_slot_var(smt, pattern.type_expr))
             if fresh is None:
-                # Non-scalar slot: `_fresh_slot_var` can't type it, but if an
-                # outer binding of the same slot exists a nested projection in
-                # the arm would read it as STALE.  Shadow it with a fresh const
-                # of the same sort to invalidate it (CR #756).  With no outer
-                # binding there is nothing stale, and an unbound slot already
-                # projects fresh.
+                # A slot whose type has no sort: `_fresh_slot_var` can't type
+                # it, but if an outer binding of the same slot exists a
+                # nested projection in the arm would read it as STALE.
+                # Shadow it with a fresh const of the same sort to invalidate
+                # it (CR #756).  With no outer binding there is nothing
+                # stale, and an unbound slot already projects fresh.
                 stale = env.resolve(slot_name, 0)
                 if stale is None:
                     return env
                 fresh = z3.FreshConst(stale.sort(), prefix="patbind")
-            if track:
-                self._opaque_shadows.append(fresh)
+                if track:
+                    self._opaque_shadows.append(fresh)
             return env.push(slot_name, fresh)
         if isinstance(pattern, ast.ConstructorPattern):
             cur = env
@@ -9867,6 +9830,13 @@ class ContractVerifier:
         if isinstance(expr, (ast.ConstructorCall, ast.NullaryConstructor,
                              ast.ArrayLit)):
             return True
+        if isinstance(expr, ast.HandleExpr):
+            # The construction descent does not enter a handler's body, so a
+            # construction inside one carries no record of its own, and the
+            # value the handle translates to — its body's, for a `State`
+            # handler whose clauses each resume once (#1696) — must not
+            # stand in for one: the obligation stays with this position.
+            return False
         val = smt.translate_expr(expr, slot_env)
         if val is None:
             return False
@@ -10702,10 +10672,12 @@ class ContractVerifier:
         :py:meth:`~vera.smt.SmtContext.check_valid` has FIVE outcomes, and the
         three that reach a Tier-3 demotion are not the same event.  ``unknown``
         is the solver declining to decide — a timeout, or a goal outside what
-        it can settle.  ``opaque`` is the #1199 verdict: the solver decided
-        promptly and SAT, but every countermodel ran over an effect-operation
-        stand-in (``_fresh_opaque_slot``), so it refutes nothing the effect
-        actually produces and must not be reported as a definite E505.
+        it can settle.  ``opaque`` is the #1696 verdict (#1199's before it):
+        the solver decided promptly and SAT, but the query rests on a
+        stand-in for a value the verifier cannot translate
+        (``SmtContext._stand_in``) and the goal holds for some value of it,
+        so the model refutes nothing the program produces and must not be
+        reported as a definite E505.
 
         Shared by both demotion families — the refinement predicate and the
         ``>= 0`` narrowing (E504) — so the wording names the OBLIGATION rather
@@ -10739,8 +10711,9 @@ class ContractVerifier:
         """
         if status == "opaque":
             return (
-                "the only countermodel ran over an opaque effect-operation "
-                "stand-in, which refutes nothing the effect actually produces"
+                "the only countermodel ran over an opaque stand-in for a "
+                "value the verifier cannot translate, which refutes nothing "
+                "the program produces"
             )
         if status == "unknown":
             return f"the solver returned no decision on {subject}"
@@ -10961,13 +10934,6 @@ class ContractVerifier:
         # opaque stand-in's.
         smt._recorded_type_hook = self._resolved_type_of
         smt._constructed_type_hook = self._constructed_type_of
-        # J1: and let the SORT derivation ask whether a refinement's whole
-        # predicate can be stated, so a refinement it cannot state is not
-        # modelled rather than modelled without its meaning.  The chain walk
-        # and the predicate translation live here, so the question is
-        # answered here and asked once, by `SmtContext._refinement_statable`.
-        smt._refinement_statable_hook = partial(
-            self._refinement_predicate_statable, smt)
         # #1480 review: and let a call-site check ask whether its goal rests
         # on a placeholder one of the walks bound.  A bound method, so it
         # reads the live `_opaque_shadows`, which each walk resets.
@@ -13942,61 +13908,6 @@ class ContractVerifier:
         (#1226).  Delegates to the shared ``naming.predicate_binder_key`` so
         the verifier, codegen, and SMT refined-return paths can't drift."""
         return naming.predicate_binder_key(predicate, env)
-
-    def _refinement_predicate_statable(
-        self, smt: SmtContext, ty: Type,
-    ) -> bool:
-        """Whether *ty*'s whole refinement predicate translates.
-
-        The verifier's half of the question `strip_refinements` states the
-        rule for and `SmtContext._refinement_statable` asks: a refinement is
-        represented as its base only while its predicate can be STATED, or
-        the sort exists with nothing said about the value it carries.
-
-        Asked against a FRESH const of the chain's primitive base rather than
-        against any particular value, because it is a property of the type:
-        the same answer has to hold at every site that models one.  That base
-        is primitive by construction — :py:meth:`_refined_chain` walks to it
-        and :py:meth:`_base_slot_name` refuses anything else — so deriving
-        its sort cannot re-enter this question.
-
-        BOUNDED TO A CHAIN OVER A SCALAR CARRIER, and the early returns say
-        so.  A single refinement answers yes — see the comment on that
-        return.  And:
-        where the chain does not bottom out in a primitive — a refinement
-        over an ADT (`{ @Box | P }`), over an `Array`, over a `Tuple` — the
-        answer is "model it", as before.  The hazard this question exists to
-        stop is a scalar the solver may pick a forbidden value for; a refined
-        ADT's sort is what lets a projection out of it be reasoned about at
-        all, and its predicate was never stated (spec §2.6.4 cause 2 refuses
-        the base outright, not the predicate).  Declining THAT sort would
-        take away structural reasoning and buy nothing.  A refinement over a
-        base with no scalar carrier is therefore not this question's business
-        and answers yes.
-        """
-        parts = self._refined_chain(ty)
-        if parts is None:
-            return True
-        base, predicates = parts
-        if len(predicates) < 2:
-            # A SINGLE refinement is outside this question, and deliberately:
-            # its carrier has been modelled without its predicate since long
-            # before a chain could be unwrapped at all, so declining it here
-            # would trade that base's false refusals for lost Tier-1 proofs
-            # on obligations that never needed the predicate — a trade this
-            # change is not designed for and the corpus cannot measure,
-            # since it declares no such refinement.  That is its own class
-            # (#1470) and its own fix: one under-constrained gate consulted
-            # by every refutation site.  What this question decides is the
-            # thing this change introduced — whether to unwrap a CHAIN.
-            return True
-        if self._base_slot_name(base) is None:
-            return True
-        base_sort = smt._vera_type_to_z3_sort(base)
-        if base_sort is None:
-            return True
-        probe = z3.FreshConst(base_sort, "statable")
-        return self._translate_refined_predicate(smt, ty, probe) is not None
 
     @staticmethod
     def _translate_refined_predicate(

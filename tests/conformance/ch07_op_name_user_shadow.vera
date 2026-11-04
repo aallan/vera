@@ -30,7 +30,7 @@ private fn put(@Nat -> @Nat)
 -- cell's value, so a call routed to the intrinsic cannot produce this result.
 private fn shadowed_body(@Unit -> @Int)
   requires(true)
-  ensures(true)
+  ensures(@Int.result == 465)
   effects(pure)
 {
   handle[State<Int>](@Int = 5) {
@@ -47,7 +47,7 @@ private fn shadowed_body(@Unit -> @Int)
 -- question (7.5.2) never arises for a call that reaches no cell at all.
 private fn nested_same_family(@Unit -> @Int)
   requires(true)
-  ensures(true)
+  ensures(@Int.result == 4)
   effects(pure)
 {
   handle[State<Int>](@Int = 1) {
@@ -69,7 +69,7 @@ private fn nested_same_family(@Unit -> @Int)
 -- i32 where an i64 belongs.  Same 4 as above, from the same clause-scope override.
 private fn nested_cross_family(@Unit -> @Int)
   requires(true)
-  ensures(true)
+  ensures(@Int.result == 4)
   effects(pure)
 {
   handle[State<Bool>](@Bool = false) {
@@ -90,7 +90,7 @@ private fn nested_cross_family(@Unit -> @Int)
 -- and the qualified one reads the caller's cell.  4 * 10 + 6 = 46.
 private fn shadowed_row(@Unit -> @Int)
   requires(true)
-  ensures(true)
+  ensures(@Int.result == 46)
   effects(<State<Int>>)
 {
   nat_to_int(get(3)) * 10 + State.get(())

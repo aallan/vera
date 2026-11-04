@@ -1517,13 +1517,14 @@ helper's call under one; `handle[Exn<Int>]` and `handle[Exn<Nat>]` over a
 `where` clause admits, and of the module's functions; and slots named by
 aliases, a refined parameter and a refined `let` among them.  A public function
 takes `Int`, `Nat` and `Bool` parameters, and aliases of them, the types
-`vera test` generates.  A generic's call, a fold, a cell's read, an element and
-a handler's value are opaque to the verifier, so no contract the generator
-writes rests on one.  So are a `match` on `map_get`'s result, and a call
-taking a generic's call, a fold, a cell's read, a handler or a set's size,
-whose `ensures` the verifier drops: in place an obligation over one is left to
-Tier 3, and a `let` of one holds a fresh value of the `let`'s own type
-(#1696), which is all the generator reads of it.  A construction is a term of
+`vera test` generates.  A generic's call, a fold, an element read and an `Exn`
+handler's value are stand-ins to the verifier, carrying their type's facts
+alone, so a contract the generator writes rests on one only through those
+facts: a `State<Nat>` cell's read is a `Nat`, a `State` handler with the
+canonical clauses has its body's value, a `match` on `map_get`'s result has
+its arms' value, a literal keeps its length whatever its elements, a call
+taking a stand-in keeps its `ensures`, and a `let` of any of them holds the
+value's own term (#1696's rule).  A construction is a term of
 the sort of its checked type, whatever file declares the type, so a contract
 may rest on one in place (#1525).  A fold is an `@Int`, its
 closure's return type, whatever its initial value (spec §4.2), and the

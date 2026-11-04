@@ -1396,6 +1396,10 @@ public fn shout3(@NonEmpty -> @String)
 """
         data = self._json(tmp_path, capsys, source)
         fn = {f["name"]: f for f in data["functions"]}["shout3"]
-        assert fn["category"] == "skipped", fn
-        assert "string_length(@String.0) > 0" in fn["reason"], fn["reason"]
+        # The `ensures` is proved — `string_length`'s result is a `Nat`
+        # whatever the string, a stand-in's fact (#1696) — so the function is
+        # Tier 1 and not exercised at all: no trial can trap on the entry
+        # guard the predicate lowers to.
+        assert fn["category"] == "verified", fn
+        assert fn["trials_run"] == 0, fn
         assert data["summary"]["failed"] == 0, data["summary"]

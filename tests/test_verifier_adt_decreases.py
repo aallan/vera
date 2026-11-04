@@ -785,9 +785,23 @@ private fn sum(@List<Int> -> @Int)
         # five `ensures(true)` proved and the index into the copy compared
         # (`@Array<Byte>.1[@Nat.0]`) left to its bounds check: +10 T1, +1 T3:
         # 440/111/551 -> 450/112/562.
-        assert t1 == 450, f"Expected 450 T1, got {t1}"
-        assert t3 == 112, f"Expected 112 T3, got {t3}"
-        assert total == 562, f"Expected 562 total, got {total}"
+        #
+        # #1696: an expression the verifier cannot translate is one stand-in
+        # of its type, carrying what the type states, and the context
+        # translates around it.  Four `ensures(@Int.result >= 0)` prove from
+        # the `Nat` a stand-in carries (`collections.vera` 62 and 89,
+        # `html.vera` 18, `scoreboard.vera` 39); four `nat_bind`s prove from
+        # a stand-in's length (`string_utilities.vera` 32, 45 and 58,
+        # `nested_closures.vera` 46); `refinement_types.vera`'s
+        # `@NonEmptyArray.0[0]` bound (59) proves from the parameter's
+        # predicate, stated over its `Array` base; and `life.vera`'s call
+        # precondition `@Nat.1 <= @Nat.0` at `run_loop(..., 1, 300)` (280),
+        # E532 beside an untranslatable argument, is discharged, and a
+        # discharged user precondition leaves no record: +9 T1, -10 T3,
+        # -1 total: 450/112/562 -> 459/102/561.
+        assert t1 == 459, f"Expected 459 T1, got {t1}"
+        assert t3 == 102, f"Expected 102 T3, got {t3}"
+        assert total == 561, f"Expected 561 total, got {total}"
         # Zero is the load-bearing value, not a vacuous one: every corpus
         # narrowing is now covered by an emitted guard, so any reappearance
         # is a REGRESSION in guard coverage rather than a new example.  The

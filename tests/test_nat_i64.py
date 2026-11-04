@@ -940,8 +940,10 @@ _INSTANTIATED_ARGUMENTS: dict[str, _Argument] = {
     "a literal subtraction above zero": _Argument("3 - 1", 2),
     "an undecided join with a negative arm": _Argument(
         f"if {_UNDECIDED} then {{ 1 }} else {{ 0 - 1 }}", -1, decided=False),
-    "an undecided join of non-negative arms": _Argument(
-        f"if {_UNDECIDED} then {{ 1 }} else {{ 3 - 1 }}", 2, decided=False),
+    # The condition is a stand-in, and the join of two non-negative arms is
+    # non-negative whatever it says (#1696's rule).
+    "a join of non-negative arms under an undecided condition": _Argument(
+        f"if {_UNDECIDED} then {{ 1 }} else {{ 3 - 1 }}", 2),
     "a non-negative literal": _Argument("5", 5, narrows=False),
 }
 

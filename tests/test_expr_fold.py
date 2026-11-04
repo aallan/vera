@@ -830,8 +830,8 @@ def test_the_smt_table_answers_each_shape() -> None:
         (_if(_ONE, two), "If(True, 1, 2)"), (_tail(two), "2"),
         (_match(_arm(two), scrutinee=_ONE), "2"),
         (ast.FnCall(name="abs", args=(x0,)), "If(x >= 0, x, -x)"),
-        (pair, "_call_array_lit_N"),
-        (ast.IndexExpr(collection=pair, index=_ONE), "index_Array_Int(_call_array_lit_N, 1)"),
+        (pair, "_lit"),
+        (ast.IndexExpr(collection=pair, index=_ONE), "index_Array_Int(_lit, 1)"),
         # A bare context registers no module function and no data type.
         (ast.ModuleCall(path=("m",), name="f", args=(_ONE,)), None),
         (ast.ConstructorCall(name="Some", args=(_ONE,)), None),

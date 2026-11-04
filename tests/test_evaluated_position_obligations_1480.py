@@ -1062,18 +1062,19 @@ def test_an_assumed_let_value_discharges_the_call() -> None:
     assert v.ok, v.errors
 
 
-def test_an_unassumed_let_value_leaves_the_call_refuted() -> None:
+def test_an_unassumed_let_value_leaves_the_call_undecided() -> None:
     """The twin that makes the cell above non-vacuous: without the `assume`
     the call is reached and its precondition is NOT established.  It is
-    E501: the call sits where the function body's own translation checks
-    it, which recorded it before #1480 and keeps #804's strict posture
-    (§6.4.2, `SmtContext.strict_preconditions`)."""
+    E532 in the function body as in every other position (#1696 retired
+    #804's strict posture): the value is a stand-in some value of which
+    satisfies the precondition, so the callee's own check stands behind
+    the call."""
     src = ASSUMED_LET.replace("  assume(@Int.0 > 0);\n", "")
     assert "assume" not in src
     v = _verify(src)
     call = _at(src, "need_pos(@Int.0)")
-    assert _records(v, "call_pre", call) == ["violated/E501"]
-    assert ("E501", *call) in v.errors
+    assert _records(v, "call_pre", call) == ["tier3/E532"]
+    assert ("E501", *call) not in v.errors
 
 
 # The same, for a value of an array type: the walk binds a placeholder of the
@@ -1900,6 +1901,13 @@ class SubPosition:
     #: an empty env: a call over an enclosing slot is recorded Tier 3
     #: (E532), with the callee's own check behind it.
     reads_enclosing: bool = True
+    #: Whether the position runs under a premise that reads a stand-in: the
+    #: arm of a `match` whose scrutinee the SMT layer has no term for runs
+    #: under its pattern's condition over the scrutinee's stand-in, so a
+    #: refutation there is undecided (#1696, R4) — Tier 3 (E532), with the
+    #: call's own check behind it — while a proof holds for every value the
+    #: stand-in could take.
+    under_a_stand_in: bool = False
     helpers: str = ""
 
 
@@ -1918,7 +1926,8 @@ _SUB_POSITIONS: tuple[SubPosition, ...] = (
                 "else {{ false }}"),
     SubPosition("arm under a scrutinee that does not translate",
                 "match map_get(map_insert(map_new(), 1, true), 1) {{ "
-                "Some(@Bool) -> {c} >= 0 || @Bool.0, None -> true }}"),
+                "Some(@Bool) -> {c} >= 0 || @Bool.0, None -> true }}",
+                under_a_stand_in=True),
     SubPosition("handle body",
                 "handle[State<Bool>](@Bool = true) {{ "
                 "get(@Unit) -> {{ resume(@Bool.0) }}, "
@@ -2009,8 +2018,12 @@ def _sub_position_cells() -> list[object]:
     cells = []
     for position in _SUB_AT:
         for sub in _SUB_POSITIONS:
-            statuses = (("verified", "violated") if sub.reads_enclosing
-                        else ("tier3",))
+            if not sub.reads_enclosing:
+                statuses: tuple[str, ...] = ("tier3",)
+            elif sub.under_a_stand_in:
+                statuses = ("verified", "tier3")
+            else:
+                statuses = ("verified", "violated")
             for op in _CALL_OPS:
                 if sub.name == "interpolated part" and '"' in op.value:
                     # An interpolated expression cannot hold a string
@@ -2139,9 +2152,10 @@ def _unknown_cells() -> list[object]:
     return cells
 
 
-#: The one cell the function body's own translation checks, which keeps
-#: #804's E501 (`SmtContext.strict_preconditions`).
-_BODY_TRANSLATION_CHECKS = {("top of the let's body", "call_pre")}
+#: The cell the function body's own translation checks, which kept #804's
+#: E501 until #1696 made a precondition refuted only over a stand-in the
+#: E532 demotion in every position: no cell is strict now.
+_BODY_TRANSLATION_CHECKS: set[tuple[str, str]] = set()
 
 
 @pytest.mark.parametrize(("position", "op"), _unknown_cells())
@@ -2703,6 +2717,14 @@ _REFINED_BINDERS = {
     "constructor sub-pattern": (
         "Option<Pos>", "Some(5)", None,
         _arm("Some(@Pos)", "need_pos(@Pos.0)", "None"), "need_pos("),
+    # The payload's declared type is the binder's own, so the binder reads
+    # it (#1696, R2: what a stand-in's type states), as a parameter of that
+    # type and an equal-typed `let` do — whether or not code generation
+    # could guard a bind of it, since no bind narrows here; a producer's
+    # bind of such a type that nothing guards is that bind's own record.
+    "refinement over a refinement": (
+        "Option<Small>", "Some(5)", None,
+        _arm("Some(@Small)", "need_pos(@Small.0)", "None"), "need_pos("),
     "narrowing sub-pattern": (
         "Option<Int>", "Some(5)", "Some(-5)",
         _arm("Some(@Pos)", "need_pos(@Pos.0)", "None"), "need_pos("),
@@ -2769,10 +2791,6 @@ _REFINED_BINDER_CONTROLS = {
     "unrefined binder": (
         "Option<Int>", "Some(5)",
         _arm("Some(@Int)", "need_pos(@Int.0)", "None"), "need_pos(",
-        "call_pre", ["tier3/E532"]),
-    "refinement over a refinement": (
-        "Option<Small>", "Some(5)",
-        _arm("Some(@Small)", "need_pos(@Small.0)", "None"), "need_pos(",
         "call_pre", ["tier3/E532"]),
     "a goal beyond the refinement": (
         "Option<Int>", "Some(5)",
@@ -3681,7 +3699,9 @@ def test_every_refusal_is_classified_against_a_placeholder() -> None:
         and n.func.id == "CallViolation")
     assert set(calls) == {"_check_builtin_domain",
                           "_check_call_preconditions"}, set(calls)
-    assert all("_rests_on_unknown(" in s for s in calls.values())
+    # Classified where the refutation is made (`_check_refutation`, #1696):
+    # a `sat` resting on a stand-in is `opaque`, and each site demotes it.
+    assert all("opaque" in s for s in calls.values())
 
 
 def _adds_to_the_solver(node: object) -> bool:
@@ -3701,10 +3721,13 @@ def test_every_assumption_is_stated_over_the_projections() -> None:
         **{f"verifier.{k}": v for k, v in _enclosing_functions(
             "vera/verifier.py", _adds_to_the_solver).items()},
     }
+    # `_premises` holds one refutation's premises and `_chosen_for_a_stand_in`
+    # its probes (#1696), each inside the scope `_premises` pushes.
     assert set(writers) == {"smt.assume", "smt._check_refutation",
+                            "smt._premises", "smt._chosen_for_a_stand_in",
                             "verifier._full_premises_satisfiable"}, set(
         writers)
-    for query in ("smt._check_refutation",
+    for query in ("smt._premises", "smt._chosen_for_a_stand_in",
                   "verifier._full_premises_satisfiable"):
         assert "solver.push()" in writers[query], query
 
@@ -3878,10 +3901,13 @@ public fn main(@Nat -> @Nat)
 
 
 def test_a_statement_in_a_sibling_branch_says_nothing_at_a_tail_call() -> None:
+    """The measure's subtraction is never proved from the sibling's
+    `assert`; it is undecided (Tier 3), since the branch runs only where
+    the condition's stand-in says (#1696's rule), and the run traps."""
     src = _STEP_AFTER_A_SIBLING_STATEMENT
     v = _verify(src)
     tail = _at(src, "step(@Nat.1")
-    assert _records(v, "nat_sub", tail) == ["violated/E502"]
+    assert _records(v, "nat_sub", tail) == ["tier3"]
     ran = _run(src, "main", [5])
     assert ran.trap_kind is not None, ran
     assert "Precondition violation" not in ran.trap_message, ran

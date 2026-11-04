@@ -1610,13 +1610,21 @@ def test_a_user_callee_keeps_the_guard_the_record_claims(
 
     Swapping `array_length(a[0])` for a call to `consume(@Array<Pos> -> @Int)`
     changes nothing but the callee, and the callee is where the prologue is.
-    A `tier3` here is backed by a loop in that function.
+    The element record at the call is never a disclosure: it is `verified`
+    — the argument `a[0]` is an `Array<Pos>` by the parameter's own type,
+    which the record reads now that the index has a term (#1696's rule;
+    before it the index of a nested array had none, and the record was
+    `tier3`) — and the loop in `consume` backs the boundary all the same.
     """
     envelope = _verify(tmp_path, _USER_CALLEE, "user-callee")
-    statuses = _refine_bind_statuses(envelope)
-    assert statuses["tier3"] >= 1, (
-        f"a user callee's element boundary lost its guarded record: "
-        f"{statuses}"
+    at_the_call = [
+        o["status"] for o in envelope["obligations"]
+        if o["kind"] == "refine_bind"
+        and o.get("description") == "@Array<Array<Pos>>.0[0]"
+    ]
+    assert at_the_call == ["verified"], (
+        f"a user callee's element boundary lost its record: "
+        f"{_refine_bind_statuses(envelope)}"
     )
     loops = _element_loops(tmp_path, _USER_CALLEE, "user-callee")
     assert loops, (

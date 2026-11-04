@@ -250,7 +250,7 @@ private fn boom(@Unit -> @Int)
   ensures(true)
   effects(<Exn<Nat>>)
 {
-  throw(array_length(string_lines("a\\nb")))
+  throw(array_length(string_lines("a\\nb")) - 1)
 }
 
 public fn main(@Unit -> @Int)
@@ -359,8 +359,9 @@ public fn main(@Int -> @Int)
 """
 
     def test_an_undischargeable_payload_discloses_guarded(self) -> None:
-        """`array_length` over a non-literal is deliberately untranslatable
-        (#802), so the obligation reaches Tier 3 — and lands on the
+        """`string_lines` over a literal has no term, so its length is a
+        stand-in's, non-negative and nothing more (#1696): the payload's
+        `- 1` leaves the obligation undecided, Tier 3 — and it lands on the
         runtime-GUARDED leg, counted in the totals, because the guard the leg
         promises is emitted at the throw."""
         result = _verify(self._UNTRANSLATABLE)
