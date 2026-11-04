@@ -382,7 +382,8 @@ private fn greet(@Int -> @String)
 """)
 
     def test_postcondition_body_unsupported_tier3(self) -> None:
-        """Lambda body -> can't translate -> Tier 3 for postcondition."""
+        """Lambda body -> can't translate -> a stand-in (#1696) -> Tier 3
+        for the postcondition that depends on it."""
         _verify_warn("""
 type IntToInt = fn(Int -> Int) effects(pure);
 
@@ -397,7 +398,7 @@ private fn use_adder(@Int -> @Int)
   ensures(@Int.result > 0)
   effects(pure)
 { apply_fn(make_adder(1), @Int.0) }
-""", "outside the decidable fragment")
+""", "models as a stand-in")
 
     def test_postcondition_with_string_literal_comparison_tier1(self) -> None:
         """String literal comparison in postcondition is Tier 1 via Z3 string theory."""

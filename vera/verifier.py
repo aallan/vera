@@ -10459,8 +10459,17 @@ class ContractVerifier:
         # `consume(mk(x))` and `verified` spelled
         # `let @T = mk(x); consume(@T.0)`.  The gate asks of the VALUE, so
         # both spellings agree.
-        premises.extend(self._established_facts(
-            source_facts, source=value_node, term=val, smt=smt))
+        #
+        # A value whose term holds a stand-in (#1696) carries its type's
+        # facts and no composite's component facts (R2): its payload is
+        # whatever its producer made of it, which nothing here obligated
+        # (a closure's return, a call refused at its precondition).  Its
+        # declared type's nested facts as premises certified the very claim
+        # this obligation asks: `consume(apply_fn(maker, x))` recorded
+        # `verified` while the run broke the payload's refinement.
+        if not smt._mentions_stand_in(val):
+            premises.extend(self._established_facts(
+                source_facts, source=value_node, term=val, smt=smt))
         goal = z3.And(*goal_facts) if len(goal_facts) > 1 else goal_facts[0]
         result = smt.check_valid(goal, premises)
         if self._refuted_only_over_a_placeholder(

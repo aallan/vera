@@ -256,16 +256,15 @@ public fn f(@Array<Int>, @Array<Int> -> @Array<Int>)
         narrows = [
             o for o in result.obligations
             if o.kind == "nat_bind"
-            and o.status in ("tier3", "tier3_unguarded")
         ]
         # Exactly TWO records, and the count is the assertion (a stopped
         # descent drops to 1, a double-record rises to 3): the nested
         # closure's @Nat RETURN (the #985 subject), plus the fresh-scope
-        # walk's conservative record on the outer `nat_to_int` ARGUMENT —
-        # inside the closure the `array_length(...)` value's @Nat-ness is
-        # not provable from the empty environment, so the call-argument
-        # arm records an honest Tier-3 (the value is provably @Nat at
-        # runtime; the record can never trap).
+        # walk's record on the outer `nat_to_int` ARGUMENT — inside the
+        # closure the `array_length(...)` value is a stand-in carrying a
+        # length's `>= 0` (#1696, R2), so the call-argument arm proves it
+        # at Tier 1 (before the rule its @Nat-ness was not provable from the
+        # empty environment and the record was an honest Tier 3).
         assert len(narrows) == 2, (
             "the nested closure's @Nat return + the conservative "
             "nat_to_int-argument record must both be obligated — "
@@ -284,8 +283,10 @@ public fn f(@Array<Int>, @Array<Int> -> @Array<Int>)
         # whether it is warranted, which is exactly why the parity
         # differential in `test_verifier_truth_consult_status.py` checks the
         # claim against the artifact rather than against another claim.
+        # Under #1696 the argument's record is `verified`, from the fact the
+        # length's stand-in states; the closure's return stays `tier3`.
         by_status = sorted(o.status for o in narrows)
-        assert by_status == ["tier3", "tier3"], by_status
+        assert by_status == ["tier3", "verified"], by_status
 
 
 # =====================================================================
