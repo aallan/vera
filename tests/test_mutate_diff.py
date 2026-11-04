@@ -1677,6 +1677,37 @@ class TestRunDropping:
             budget_s=100.0, workdir=tmp_path, env={})
         return run, dropped, attempts
 
+    def test_a_copy_failure_the_log_does_not_name_is_read_from_the_plugins_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Each attempt starts with the file empty, so the id read is the
+        attempt's own; the drop and the rerun follow as from a `FAILED` line."""
+        failures = tmp_path / "failures.txt"
+        attempts: list[tuple[str, bool]] = []
+
+        def fake_run_engine(cmd: Any, *, cwd: Path, budget_s: float, log_path: Path,
+                            env: Any = None, grace_s: Any = None) -> Any:
+            config = (cwd / "pyproject.toml").read_text(encoding="utf-8")
+            attempts.append((config, failures.exists()))
+            for test in ("tests/test_m.py::test_f", "tests/test_m.py::test_g"):
+                if f"--deselect={test}" not in config:
+                    failures.write_text(test + "\n", encoding="utf-8")
+                    log_path.write_text("Running stats\nfailed to collect stats. runner returned 1\n",
+                                        encoding="utf-8")
+                    return md.EngineRun(1, None, 0.1)
+            log_path.write_text("done\n", encoding="utf-8")
+            return md.EngineRun(0, None, 0.1)
+
+        monkeypatch.setattr(md, "run_engine", fake_run_engine)
+        run, _, dropped = md.run_dropping(
+            ["mutmut", "run"], tree=tmp_path, pyproject=tmp_path / "pyproject.toml",
+            config_for=lambda dropped: "".join(f"--deselect={t}\n" for t in dropped),
+            budget_s=100.0, workdir=tmp_path, env={md.FAILURES_ENV: str(failures)})
+        assert run.returncode == 0 and dropped == ["tests/test_m.py::test_f", "tests/test_m.py::test_g"]
+        assert [existed for _, existed in attempts] == [False, False, False]  # emptied before each attempt
+        assert md.copy_failure("failed to collect stats. runner returned 1\n", None) is None
+        assert md.copy_failure("Running stats\n", failures) is None  # no stop sentence: not a copy failure
+
     @staticmethod
     def _night(deselected: set[str]) -> tuple[str, int]:
         """The night's engine: each of its two tests errors at teardown in
@@ -2466,6 +2497,41 @@ class TestOraclePlugin:
         assert os.path.join("vera", "parser.py") in result.stdout and "ParseError" in result.stdout
         assert not skips.exists() and not source_skips.exists()
 
+    def test_a_failure_with_no_mutant_active_is_recorded_for_the_lane(self, tmp_path: Path) -> None:
+        """The stats pass and the clean run are the passes a copy failure
+        stops; under the fork server their pytest output never reaches the
+        log, so the plugin writes each failing test's id to the lane's file
+        in those passes alone, not in a mutant's run (#1829)."""
+        (tmp_path / "test_planted.py").write_text(_src("""
+            def test_passes():
+                pass
+
+
+            def test_fails():
+                assert 1 == 2
+
+
+            def test_errors_at_setup(missing_fixture):
+                pass
+        """), encoding="utf-8")
+        failures = tmp_path / "failures.txt"
+        base = {k: v for k, v in os.environ.items()
+                if k not in ("GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE", "PYTEST_ADDOPTS", "MUTANT_UNDER_TEST")}
+        seen: dict[str, list[str]] = {}
+        for marker in ("stats", "", "fail", "vera.m.x_f__mutmut_3"):
+            failures.unlink(missing_ok=True)
+            env = {**base, "PYTHONPATH": str(ROOT), "PYTHONUTF8": "1", "MUTATION_ORACLE_FAILURES": str(failures),
+                   "MUTANT_UNDER_TEST": marker}
+            result = subprocess.run(
+                [sys.executable, "-m", "pytest", "-q", "-p", "tests.mutation_oracle", "-p", "no:cacheprovider",
+                 "-o", "addopts=", "test_planted.py"],
+                cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                check=False)
+            assert "1 failed" in result.stdout and "1 error" in result.stdout, result.stdout + result.stderr
+            seen[marker] = failures.read_text(encoding="utf-8").splitlines() if failures.exists() else []
+        assert seen["stats"] == seen[""] == ["test_planted.py::test_fails", "test_planted.py::test_errors_at_setup"]
+        assert seen["fail"] == [] and seen["vera.m.x_f__mutmut_3"] == []
+
     def test_the_mutated_source_paths_are_the_configurations(self, tmp_path: Path) -> None:
         from tests import mutation_oracle
 
@@ -2549,8 +2615,7 @@ class TestOraclePlugin:
         env = {k: v for k, v in os.environ.items()
                if k not in ("GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE", "PYTEST_ADDOPTS",
                             "MUTANT_UNDER_TEST")}
-        env.update(PYTHONDONTWRITEBYTECODE="1", MUTATION_ORACLE_SKIPS=str(skips),
-                   MUTATION_ORACLE_SOURCE_SKIPS=str(source_skips))
+        env.update(MUTATION_ORACLE_SKIPS=str(skips), MUTATION_ORACLE_SOURCE_SKIPS=str(source_skips))
         run = subprocess.run([str(engine), "run", "--max-children", "2"], cwd=project, env=env,
                              capture_output=True, text=True, encoding="utf-8", check=False, timeout=600)
         listed = subprocess.run([str(engine), "results", "--all", "true"], cwd=project, env=env,
@@ -2619,7 +2684,11 @@ if args[0] == "run":
     config = Path("pyproject.toml").read_text(encoding="utf-8")
     if failing and (os.environ.get("FAKE_COPY_FAILURE_STICKY") or f"--deselect={failing}" not in config):
         print("Running stats")
-        print(f"FAILED {failing} - FileNotFoundError: [Errno 2] No such file or directory: 'CHANGELOG.md'")
+        if os.environ.get("FAKE_COPY_FAILURE_SILENT"):
+            with open(os.environ["MUTATION_ORACLE_FAILURES"], "a", encoding="utf-8") as fh:
+                fh.write(failing + "\\n")
+        else:
+            print(f"FAILED {failing} - FileNotFoundError: [Errno 2] No such file or directory: 'CHANGELOG.md'")
         print("failed to collect stats. runner returned 1")
         sys.exit(1)
     for fake, env in (("FAKE_ORACLE_SKIPS", "MUTATION_ORACLE_SKIPS"),
@@ -2992,6 +3061,20 @@ class TestEndToEnd:
         assert record["subprocess_tests"] == [planted, spaced]
         summary = (tmp_path / "summary.md").read_text(encoding="utf-8")
         assert f"`{planted}`" in summary and "Not oracles in mutmut's copy" in summary
+
+    def test_a_copy_failure_the_log_does_not_name_is_read_from_the_plugins_file(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Under the fork server the stats pass's pytest output dies with
+        its child (#1829): the plugin's file names the failing test, and the
+        lane drops it and runs again, as it does from a `FAILED` line."""
+        failing = self._plant_a_tree_reading_test(repo)
+        monkeypatch.setenv("FAKE_COPY_FAILURE", failing)
+        monkeypatch.setenv("FAKE_COPY_FAILURE_SILENT", "1")
+        code, record, calls = _main(repo, tmp_path, "    vera.m.x_kept__mutmut_1: killed\n")
+        assert code == 0 and record["stopped"] is None
+        assert record["dropped_tests"] == [failing]
+        assert len([c for c in calls if c["args"][0] == "run"]) == 2
 
     def test_a_test_that_reads_the_source_is_kept_out_and_reported(
         self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
