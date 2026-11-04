@@ -1157,9 +1157,12 @@ class EmittedCheck:
 
     row: int | None = None
     """The obligation table row the check is the runtime half of
-    (:class:`vera.obligations.table.Row`, by its id; #1695): every check a
-    compiled module holds names one, since code generation records a check
-    by its row.  ``None`` only for a record built outside a compile."""
+    (:class:`vera.obligations.table.Row`, by its id; #1695): code
+    generation records a check by its row.  ``None`` for the check of a
+    generated helper shared by every rendering of its type (a recursive
+    data type's ``$show_<type>`` truncation, #1482), which belongs to no
+    one call and carries no span either, and for a record built outside a
+    compile."""
 
     def to_dict(self) -> dict[str, object]:
         """A JSON-compatible form (field names as keys)."""

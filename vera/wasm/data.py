@@ -214,6 +214,13 @@ class DataMixin:
         row = self._row(arg, "refine_bind")
         if not self._checked(row):
             return value
+        assert row is not None  # noqa: S101 — `_checked`
+        if te is None or self._refined_component_wasm_type(
+                te, self._alias_env) is None:
+            # A generic field instantiated at a refinement, whose declared
+            # type is a variable and whose argument carries no recorded
+            # target: the row's own target is the instantiated field type.
+            te = self.refined_type_expr(row.target)
         wasm_ty = (self._refined_component_wasm_type(te, self._alias_env)
                    if te is not None else None)
         if te is None or wasm_ty is None:

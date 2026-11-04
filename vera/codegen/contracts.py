@@ -1649,21 +1649,6 @@ class ContractsMixin:
             return expr.type_name
         return None
 
-    @staticmethod
-    def _dec_declares_exn(decl: ast.FnDecl) -> bool:
-        """True when *decl*'s effect row names ``Exn`` (any payload).
-
-        Shared by `_compile_decreases_entry` (which declines the guard)
-        and core's ``_dec_collect`` pre-pass (so the tail-call
-        discipline never demotes a call into a function that has no
-        guard) — the two MUST agree or a `return_call` patch and the
-        emitted entry desynchronize.
-        """
-        return isinstance(decl.effect, ast.EffectSet) and any(
-            isinstance(eff, ast.EffectRef) and eff.name == "Exn"
-            for eff in decl.effect.effects
-        )
-
     def _dec_rank_helper(self, adt_name: str) -> str | None:
         """Emit (once) and name the structural-size helper for *adt_name*.
 

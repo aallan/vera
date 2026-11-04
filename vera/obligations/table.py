@@ -689,9 +689,15 @@ class _Builder:
         element of the return): then no self tail call transfers, every
         hop re-enters through the entry check, and the measure is
         re-evaluated at no call."""
+        # The function's own return boundary: its head row at the body, its
+        # component and element rows at the return type; a closure's
+        # return rows inside the body are the closure's epilogue.
+        own = {ObligationTable._key(d.return_type)}
+        if d.body is not None:
+            own.add(ObligationTable._key(d.body))
         boundary = any(
-            row.fn == self.fn and row.evaluation == RETURN and row.guard.check
-            and row.kind == "refine_bind"
+            row.evaluation == RETURN and row.guard.check
+            and row.kind == "refine_bind" and ObligationTable._key(row.node) in own
             for row in self.rows)
         if self._pair(ret_ty):
             return boundary

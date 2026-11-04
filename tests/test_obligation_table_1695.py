@@ -779,9 +779,15 @@ def _identity(files: dict[str, str], entry: str, tmp_path: Path) -> None:
 
     entry_path = pipeline.write_tree(tmp_path, files, entry=entry)
     compiled = pipeline.compile(entry_path, file=entry, budget_s=_BUDGET_S)
-    if not compiled.ok:
+    if compiled.checked.errors:
         pytest.skip("the program is refused before code generation: "
-                    + "; ".join(d.error_code or "" for d in compiled.errors[:3]))
+                    + "; ".join(d.error_code or "" for d in compiled.checked.errors[:3]))
+    # Code generation's own refusals (an E6xx a program is written to meet)
+    # skip; an internal error (E699, a check with no row among them) fails.
+    codes = [d.error_code or "" for d in compiled.errors]
+    assert "E699" not in codes, [d.description[:200] for d in compiled.errors]
+    if codes:
+        pytest.skip("code generation refuses the program: " + "; ".join(codes[:3]))
     assert compiled.generator is not None
     table = compiled.generator._obligations
     held = {source_name(m.group(1)) for m in _WAT_FN.finditer(compiled.wat)}
@@ -1224,3 +1230,54 @@ public fn f(@Int -> @Int)
     reasons = [row.guard.reason for row in compiled.generator._obligations.rows
                if row.kind == "refine_bind" and row.fn == "use"]
     assert reasons and set(reasons) == {REASON_FUNCTION_BASE}, reasons
+
+
+def test_a_closures_return_rows_are_no_epilogue_of_the_function() -> None:
+    """A refined-return closure in a self-recursive `decreases` function
+    guards its own return inside the closure: the function keeps its
+    `return_call` and its measure re-evaluation at the tail call."""
+    source = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+public fn count(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  let @Int = apply_fn(fn(@Int -> @Pos) effects(pure) { @Int.0 + 1 }, 1);
+  if @Nat.0 == 0 then { 0 } else { count(@Nat.0 - 1) }
+}
+"""
+    compiled = pipeline.compile(source, file="c.vera")
+    assert compiled.ok, [d.description[:120] for d in compiled.errors]
+    assert "return_call" in compiled.wat
+
+
+def test_a_generic_field_at_a_refinement_is_guarded_in_an_array_literal(
+    tmp_path: Path,
+) -> None:
+    """`[MkBox(@Int.0)]` held to `Array<Box<Pos>>`: the field's row is
+    guarded by its own target type where the declared field is a variable
+    and the argument records none, and the run traps on a non-positive
+    value (code generation refused the program before)."""
+    source = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+private data Box<T> { MkBox(T) }
+
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Array<Box<Pos>> = [MkBox(@Int.0)];
+  0
+}
+"""
+    compiled = pipeline.compile(source, file="b.vera")
+    assert compiled.ok, [d.description[:120] for d in compiled.errors]
+    ran = _run(tmp_path, source, "f", "-3")
+    assert ran.returncode != 0 and "Refinement violation" in (ran.stdout + ran.stderr), (
+        ran.stdout + ran.stderr[-300:])
+    assert _run(tmp_path, source, "f", "3").returncode == 0

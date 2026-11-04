@@ -506,9 +506,7 @@ class CodeGenerator(
         self._adt_eq_helpers: dict[str, str] = {}
         # #1542 (#1695's line): the generated composite-coercion walk helpers
         # (`$coerce_<digest>`, vera/wasm/coercion.py), merged from each
-        # WasmContext and emitted once at module assembly like the above; and
-        # per function, per parameter, the tuple positions its boundary guard
-        # checks (#746), which a coercion into that formal defers to.
+        # WasmContext and emitted once at module assembly like the above.
         self._coercion_helpers: dict[str, str] = {}
         # #924: generated recursive show/hash helper functions ($show_<type> /
         # $hash_<type>), merged from each WasmContext and emitted once at
@@ -2100,14 +2098,17 @@ class CodeGenerator(
         # of every decreases-carrying function any ``return_call`` might
         # target, before Pass 2 compiles the first body.
         def _dec_collect(fdecl: ast.FnDecl, emit_name: str) -> None:
+            # #1695: the function's `decreases` row decides, as it does
+            # for `_compile_decreases_entry`: the set tracks the functions
+            # that actually RECEIVE an entry guard (an `Exn` row and an
+            # unrankable measure receive none), or the tail-call patch and
+            # the emitted entries desynchronize.
             if any(
                 isinstance(c, ast.Decreases) and c.exprs
+                and (row := self._obligations.row(c, "decreases")) is not None
+                and row.guard.check
                 for c in fdecl.contracts
-            ) and not self._dec_declares_exn(fdecl):
-                # The Exn exclusion mirrors `_compile_decreases_entry`'s
-                # guard decline — the set must track functions that
-                # actually RECEIVE a guard, or the tail-call patch and
-                # the emitted entries desynchronize.
+            ):
                 self._dec_guarded_names.add(emit_name)
             for wfn in fdecl.where_fns or ():
                 _dec_collect(wfn, wfn.name)

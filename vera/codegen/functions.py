@@ -1393,15 +1393,32 @@ class FunctionCompilationMixin:
                 ws = instr[: len(instr) - len(stripped)]
                 if target == decl.name:
                     if dec_self_tail is not None:
-                        if spliced >= len(self_tail_calls):
-                            raise CodegenInvariantError(
-                                "a self-recursive return_call with no "
-                                "tail call of the body to re-key its "
-                                "measure checks to (#1695)", decl)
-                        copy = ctx._rekey_checks(
-                            dec_self_tail,
-                            ("measure_call",
-                             self_tail_calls[spliced].node_id))
+                        try:
+                            if spliced >= len(self_tail_calls):
+                                raise CodegenInvariantError(
+                                    "a self-recursive return_call with no "
+                                    "tail call of the body to re-key its "
+                                    "measure checks to (#1695)", decl)
+                            copy = ctx._rekey_checks(
+                                dec_self_tail,
+                                ("measure_call",
+                                 self_tail_calls[spliced].node_id))
+                        except CodegenInvariantError as inv:
+                            # One loud [E699] for the function, as every
+                            # earlier phase of `_compile_fn` reports one.
+                            self._harvest_interp_inference_failures(ctx)
+                            self._error(
+                                inv.node if inv.node is not None else decl,
+                                "Internal compiler error while compiling "
+                                f"'{decl.name}': {inv.msg}",
+                                rationale="This is a codegen invariant "
+                                "violation — the type checker should have "
+                                "rejected the input before it reached this "
+                                "point.  Please file a bug report with the "
+                                "offending program.",
+                                error_code="E699",
+                            )
+                            return None
                         spliced += 1
                         patched_dec.extend(ws + part for part in copy)
                         patched_dec.append(instr)
