@@ -43,8 +43,11 @@ parallel jobs a night, and carries what each decided:
    admits (one that reaches the compiler in process, bar the subprocess, Node
    and tooling families), the copy holding the whole tree.  The engine counts
    what it generated against the window, and a unit's mutants are ``1`` to
-   its window's count in the order of its lines.  A test that starts a Python
-   or ``vera`` process, or reads the compiler's source, is no oracle in the
+   its window's count in the order of its lines; a survivor is named by the
+   number mutmut gives the mutant in a run over the whole unit (the mutants
+   on every earlier line counted in) and the line it sits on.  A test that
+   starts a Python or ``vera`` process, or reads the compiler's source, is no
+   oracle in the
    copy (``tests/mutation_oracle.py``); one that fails there with no mutant
    active is dropped from the run and reported, and every night after
    deselects it from the start.  An exception the engine's own code raises
@@ -687,11 +690,19 @@ def sampled_lines(state: Mapping[str, Any], unit: SweepUnit) -> list[int] | None
     return sorted(int(line) for line in lines if in_sample(int(state["cycle"]), unit.ident, int(line)))
 
 
-def window_counts(state: Mapping[str, Any], unit: SweepUnit) -> tuple[tuple[int, ...], tuple[int, ...]]:
-    """The unit's sampled window: its lines, and the mutants on each."""
+def window_counts(state: Mapping[str, Any], unit: SweepUnit,
+                  ) -> tuple[tuple[int, ...], tuple[int, ...], tuple[int, ...]]:
+    """The unit's sampled window: its lines, the mutants on each, and for
+    each the unit's mutants on every earlier line, sampled or not (what
+    :meth:`Pick.full_number` adds to a window's number)."""
     lines = sampled_lines(state, unit) or []
     counts = state["units"][unit.ident]["lines"] or {}
-    return tuple(lines), tuple(int(counts[str(line)]) for line in lines)
+    before: dict[int, int] = {}
+    seen = 0
+    for line in sorted(int(n) for n in counts):
+        before[line] = seen
+        seen += int(counts[str(line)])
+    return tuple(lines), tuple(int(counts[str(line)]) for line in lines), tuple(before[line] for line in lines)
 
 
 def sampled_undecided(state: Mapping[str, Any], unit: SweepUnit) -> int | None:
@@ -714,26 +725,40 @@ def sampled_undecided(state: Mapping[str, Any], unit: SweepUnit) -> int | None:
 
 @dataclass(frozen=True)
 class Pick:
-    """A job's piece of work: one unit's sampled window, its lines and the
-    mutants on each, decided whole."""
+    """A job's piece of work: one unit's sampled window, its lines, the
+    mutants on each and the unit's mutants before each, decided whole."""
 
     unit: SweepUnit
     lines: tuple[int, ...]
     counts: tuple[int, ...]
+    before: tuple[int, ...]
 
     @property
     def mutants(self) -> int:
         return sum(self.counts)
 
-    def line_of(self, number: int) -> int:
-        """The line mutant ``number`` of the window sits on: mutmut numbers
-        a unit's generated mutants from one in the order of their lines."""
+    def _locate(self, number: int) -> tuple[int, int]:
+        """Which of the window's lines mutant ``number`` sits on, and which
+        of that line's mutants it is: mutmut numbers the mutants it
+        generates from one in the order of their lines (the visitor records
+        a node's mutations on visiting it, before its children's)."""
         seen = 0
-        for line, count in zip(self.lines, self.counts, strict=True):
+        for index, count in enumerate(self.counts):
+            if number <= seen + count:
+                return index, number - seen
             seen += count
-            if number <= seen:
-                return line
         raise StateError(f"{self.unit.ident}: mutant {number} is past its window of {seen}")
+
+    def line_of(self, number: int) -> int:
+        """The line mutant ``number`` of the window sits on."""
+        return self.lines[self._locate(number)[0]]
+
+    def full_number(self, number: int) -> int:
+        """The number mutmut gives mutant ``number`` of the window in a run
+        over the whole unit: the unit's mutants on every earlier line, then
+        its place on its own line, whose mutants the window holds whole."""
+        index, place = self._locate(number)
+        return self.before[index] + place
 
 
 def rate(unit: SweepUnit, calibration: float = 1.0) -> float:
@@ -766,14 +791,14 @@ def plan(state: Mapping[str, Any], units: Sequence[SweepUnit], *, jobs: int,
             raise StateError(f"{unit.ident} has no mutants by line, so its sample cannot be planned")
         if not todo:
             continue
-        lines, counts = window_counts(state, unit)
+        lines, counts, before = window_counts(state, unit)
         whole = todo * rate(unit, calibration)
         if whole > room and bins[current]:
             current += 1
             room = capacity
             if current >= jobs:
                 break
-        bins[current].append(Pick(unit=unit, lines=lines, counts=counts))
+        bins[current].append(Pick(unit=unit, lines=lines, counts=counts, before=before))
         room -= whole
         if room <= 0:
             current += 1
@@ -859,7 +884,7 @@ def slice_results(picks: Sequence[Pick], results: Mapping[str, str],
         for number, status in sorted(statuses.items()):
             columns[_column(status)] += 1
             if status in ("survived", "timeout"):
-                survivors.append(f"{number}@{pick.line_of(number)}:{status}")
+                survivors.append(f"{pick.full_number(number)}@{pick.line_of(number)}:{status}")
         out[pick.unit.ident] = {"hash": pick.unit.hash, "window": inside, "lines": list(pick.lines),
                                 "statuses": columns, "survivors": survivors}
     return out
@@ -1132,7 +1157,7 @@ def merge(state: dict[str, Any], record: Mapping[str, Any], units: Mapping[str, 
         if rec["lines"] is None:
             problems.append(f"{where} ran {ident}, which the state holds uncounted")
             continue
-        lines, counts = window_counts(state, unit)
+        lines, counts, _ = window_counts(state, unit)
         if list(lines) != list(result["lines"]) or sum(counts) != result["window"]:
             problems.append(f"{where} ran {ident} over lines {_listed(result['lines']) or 'none'}, "
                             f"{result['window']} mutants, where the cycle's sample is lines "
@@ -1180,12 +1205,14 @@ def complete(state: Mapping[str, Any], units: Iterable[SweepUnit]) -> bool:
 def close_cycle(state: dict[str, Any], units: Sequence[SweepUnit], *, head: str,
                 today: str) -> bool:
     """Close the cycle when it is complete: its per-module totals, its
-    survivors and its sample's size become ``last_complete``, and the next
-    cycle starts with every window undecided."""
+    survivors (``module.key__mutmut_n@line:status``, ``n`` the number mutmut
+    gives the mutant over the whole unit) and its sample's size become
+    ``last_complete``, and the next cycle starts with every window
+    undecided."""
     if not complete(state, units):
         return False
     survivors = sorted(
-        f"{u.module}.{u.key}__mutmut_{entry.replace(':', ':', 1)}" for u in units
+        f"{u.module}.{u.key}__mutmut_{entry}" for u in units
         for entry in (state["units"][u.ident]["window"] or {}).get("survivors", []))
     state["last_complete"] = {"cycle": state["cycle"], "started": state["cycle_started"],
                               "finished": today, "head": head, "engine": state["engine"],

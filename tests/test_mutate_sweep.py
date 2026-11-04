@@ -614,14 +614,35 @@ class TestPlan:
         assert _bins(_plan(state, mutants=8)) == [[("x_f", (1, 2, 3, 4))]]
 
     def test_the_targets_are_the_picked_units_globs_and_the_window_their_lines(self) -> None:
-        picks = [sw.Pick(unit=A, lines=(2, 7), counts=(1, 2)), sw.Pick(unit=B, lines=(5,), counts=(3,)),
-                 sw.Pick(unit=C, lines=(1,), counts=(1,))]
+        picks = [sw.Pick(unit=A, lines=(2, 7), counts=(1, 2), before=(1, 4)),
+                 sw.Pick(unit=B, lines=(5,), counts=(3,), before=(0,)),
+                 sw.Pick(unit=C, lines=(1,), counts=(1,), before=(0,))]
         assert sw.engine_targets(picks) == ["vera.a.x_f__mutmut_*", f"vera.a.x{SEP}C{SEP}m__mutmut_*",
                                             "vera.b.x_g__mutmut_*"]
         assert sw.window_lines(picks) == {"vera/a.py": [2, 5, 7], "vera/b.py": [1]}
         assert (picks[0].mutants, [picks[0].line_of(n) for n in (1, 2, 3)]) == (3, [2, 7, 7])
+        assert [picks[0].full_number(n) for n in (1, 2, 3)] == [2, 5, 6]
         with pytest.raises(sw.StateError, match="past its window"):
             picks[0].line_of(4)
+
+    def test_a_windows_numbers_map_back_to_mutmuts_over_the_whole_function(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A window numbers its mutants from one, so a survivor is named by
+        the number mutmut gives the mutant in a run over the whole function,
+        the mutants on every earlier line counted in, which holds since mutmut
+        places a function's mutants in the order of their lines (the engine's
+        test of that order in test_mutate_diff.py)."""
+        state = _state()
+        state["units"][A.ident].update(mutants=9, lines={"2": 3, "5": 2, "9": 4})
+        monkeypatch.setattr(sw, "in_sample", lambda cycle, ident, line: line in (5, 9))
+        assert sw.window_counts(state, A) == ((5, 9), (2, 4), (3, 5))
+        ((pick,),) = sw.plan(state, [A], jobs=1, budget_s=1e9)
+        assert pick == sw.Pick(unit=A, lines=(5, 9), counts=(2, 4), before=(3, 5))
+        assert [pick.line_of(n) for n in range(1, 7)] == [5, 5, 9, 9, 9, 9]
+        assert [pick.full_number(n) for n in range(1, 7)] == [4, 5, 6, 7, 8, 9]
+        with pytest.raises(sw.StateError, match="mutant 7 is past its window of 6"):
+            pick.full_number(7)
 
 
 # ---------------------------------------------------------------------------
@@ -663,11 +684,11 @@ class TestSample:
         state["units"][A.ident]["lines"] = {str(line): line % 3 + 1 for line in range(1, 101)}
         lines = sw.sampled_lines(state, A)
         assert lines and lines == sorted(set(lines)) and all(1 <= line <= 100 for line in lines)
-        drawn, counts = sw.window_counts(state, A)
+        drawn, counts, before = sw.window_counts(state, A)
         assert drawn == tuple(lines) and counts == tuple(line % 3 + 1 for line in lines)
         assert sw.sampled_undecided(state, A) == sum(counts)
         _decide(state, A, killed=sum(counts))
-        assert sw.sampled_undecided(state, A) == 0 and sw.window_counts(state, A) == (drawn, counts)
+        assert sw.sampled_undecided(state, A) == 0 and sw.window_counts(state, A) == (drawn, counts, before)
 
 
 COUNTER = '''
@@ -752,8 +773,9 @@ class TestCounts:
 # ---------------------------------------------------------------------------
 
 
-PICK_A = sw.Pick(unit=A, lines=(3, 7), counts=(1, 2))  # mutant 1 on line 3, mutants 2 and 3 on line 7
-PICK_C = sw.Pick(unit=C, lines=(5,), counts=(1,))
+# Window mutant 1 on line 3 (two mutants on earlier lines), 2 and 3 on line 7 (three earlier).
+PICK_A = sw.Pick(unit=A, lines=(3, 7), counts=(1, 2), before=(2, 3))
+PICK_C = sw.Pick(unit=C, lines=(5,), counts=(1,), before=(0,))
 GENERATED = {("vera/a.py", "x_f"): (10, 3), ("vera/b.py", "x_g"): (4, 1)}  # held in all, in the window
 
 
@@ -763,7 +785,7 @@ class TestSliceResults:
             "vera.a.x_f__mutmut_1": "killed", "vera.a.x_f__mutmut_2": "survived", "vera.a.x_f__mutmut_3": "timeout",
             "vera.b.x_g__mutmut_1": "no tests"}, GENERATED, cut_short=False, finished=True)
         assert out == {
-            A.ident: {"hash": H, "window": 3, "lines": [3, 7], "survivors": ["2@7:survived", "3@7:timeout"],
+            A.ident: {"hash": H, "window": 3, "lines": [3, 7], "survivors": ["4@7:survived", "5@7:timeout"],
                       "statuses": {"killed": 1, "survived": 1, "timeout": 1, "no_tests": 0, "other": 0}},
             C.ident: {"hash": H, "window": 1, "lines": [5], "survivors": [],
                       "statuses": {"killed": 0, "survived": 0, "timeout": 0, "no_tests": 1, "other": 0}}}
@@ -780,7 +802,7 @@ class TestSliceResults:
         assert sw.slice_results([PICK_A], listing, GENERATED, cut_short=True, finished=False) == {}
         decided = sw.slice_results([PICK_A], listing, GENERATED, cut_short=False, finished=True)[A.ident]
         assert decided["statuses"] == {"killed": 0, "survived": 0, "timeout": 1, "no_tests": 0, "other": 2}
-        assert decided["survivors"] == ["3@7:timeout"]
+        assert decided["survivors"] == ["5@7:timeout"]  # the window's mutant 3, the fifth of the unit
 
     def test_a_window_the_engine_generated_otherwise_than_counted_is_refused(self) -> None:
         listing = {"vera.a.x_f__mutmut_1": "killed", "vera.a.x_f__mutmut_2": "killed"}
@@ -796,7 +818,7 @@ class TestSliceResults:
                              GENERATED, cut_short=False, finished=True)
         with pytest.raises(sw.StateError, match="listed nothing for vera/a.py::x_f's 3 mutants"):
             sw.slice_results([PICK_A], {}, GENERATED, cut_short=False, finished=True)
-        empty = sw.Pick(unit=B, lines=(), counts=())
+        empty = sw.Pick(unit=B, lines=(), counts=(), before=())
         out = sw.slice_results([empty], {}, {("vera/a.py", B.key): (6, 0)}, cut_short=False, finished=True)
         assert out[B.ident]["window"] == 0 and out[B.ident]["lines"] == []
 
