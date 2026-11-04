@@ -839,6 +839,85 @@ def _identity(files: dict[str, str], entry: str, tmp_path: Path) -> None:
     assert problems == [], problems
 
 
+#: A closure written inside a position lowered at several sites: a measure
+#: re-evaluated at each self tail call it transfers to, a refinement
+#: predicate lowered by each guard of its type.  The table lists the
+#: closure's rows once, in the body's evaluation (`_closures_listed`);
+#: code generation lifts one copy per lowering site, each with its check.
+_CLOSURE_AT_SEVERAL_SITES = {
+    "measure": """\
+public fn count(@Int -> @Int)
+  requires(@Int.0 >= 0 && @Int.0 < 1000)
+  ensures(true)
+  decreases(apply_fn(fn(@Int -> @Int) effects(pure) { @Int.0 * 2 }, @Int.0))
+  effects(pure)
+{
+  if @Int.0 == 0 then { 0 } else { count(@Int.0 - 1) }
+}
+""",
+    "predicate": """\
+type Small = { @Int | apply_fn(fn(@Int -> @Int) effects(pure) { @Int.0 * 2 }, @Int.0) < 100 };
+
+public fn put_twice(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(<State<Small>>)
+{
+  put(@Int.0);
+  put(@Int.0);
+  0
+}
+""",
+}
+
+
+def _closure_sources_at_several_sites() -> list[object]:
+    """The two shapes above, and the #1480 matrix's closure-body cells (a
+    closure in a measure at entry, in a refinement predicate, in a body)."""
+    from tests import test_evaluated_position_obligations_1480 as m1480
+
+    out: list[object] = [pytest.param(src, id=name)
+                         for name, src in sorted(_CLOSURE_AT_SEVERAL_SITES.items())]
+    for param in m1480._sub_position_cells():
+        sub, op, position, status = param.values  # type: ignore[attr-defined]
+        if sub.name == "closure body":
+            out.append(pytest.param(
+                m1480._sub_position_cell(sub, op, position, status).source,
+                id=f"1480-{position}-{op.name}"))
+    return out
+
+
+@pytest.mark.parametrize("source", _closure_sources_at_several_sites())
+def test_no_two_rows_share_a_node_and_an_evaluation(source: str) -> None:
+    """A closure inside a position lowered at several sites is walked once
+    per site; whatever rows its operations take, no two of the table's rows
+    share a (node, kind, path, evaluation) key, the key code generation
+    looks a check's row up by."""
+    from vera.obligations.table import ObligationTable, build
+
+    typed = pipeline.check(source, file="p.vera").typed
+    keys = [(ObligationTable._key(r.node), r.kind, r.path, r.evaluation)
+            for r in build(typed).rows]
+    assert len(keys) == len(set(keys)), sorted(
+        k for k in set(keys) if keys.count(k) > 1)
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "a closure inside a position lowered at several sites is lifted once per "
+    "site, each copy with its own check, and one row answers both; 67b makes "
+    "rows and checks one-to-one, either rows keyed per rendering site with "
+    "closures.py passing the site's evaluation to the copy, or one lifted copy "
+    "per closure node"))
+@pytest.mark.parametrize("site", sorted(_CLOSURE_AT_SEVERAL_SITES))
+def test_a_closure_lowered_at_several_sites_has_one_check_per_row(
+    site: str, tmp_path: Path,
+) -> None:
+    """Each lifted copy (`anon_0`, `anon_1`) carries its own check of the
+    closure's one row, so the identity reads two checks for it."""
+    source = _CLOSURE_AT_SEVERAL_SITES[site]
+    _identity({"p.vera": source}, "p.vera", tmp_path)
+
+
 _CORPUS = sorted((ROOT / "examples").rglob("*.vera")) + sorted(
     (ROOT / "tests" / "conformance").rglob("*.vera"))
 
