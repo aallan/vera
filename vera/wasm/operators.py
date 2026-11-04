@@ -2058,32 +2058,6 @@ class OperatorsMixin:
     # of the signed range), so emitting ``str(_I64_MIN_CODEGEN)`` is correct.
     _I64_MIN_CODEGEN = -(2**63)
 
-    def _resolved_codegen_type(self, expr: ast.Expr) -> str | None:
-        """Look up *expr*'s checker-resolved type as ``"Int"`` / ``"Nat"``,
-        else ``None`` (no table, no entry, or a non-Int/Nat type).
-
-        Mirrors :py:meth:`ContractVerifier._overflow_int_type` over
-        ``_resolved_type_of``: it dispatches on the resolved type's base so a
-        ``@Nat`` reached through a refinement/alias still classifies as Nat.
-        """
-        table = self._expr_semantic_types
-        key = expr.node_id
-        if key is None:
-            return None
-        ty = table.get(key)
-        if ty is None:
-            return None
-        # Avoid importing the type module at call time on every arithmetic
-        # site: dispatch on the resolved type's *base name*.  ``PrimitiveType``
-        # has a ``name``; ``RefinedType`` has a ``base`` carrying it.
-        base = getattr(ty, "base", ty)
-        name = getattr(base, "name", None)
-        if name == "Nat":
-            return "Nat"
-        if name == "Int":
-            return "Int"
-        return None
-
     @contextmanager
     def _handing_down(
         self, expr: ast.Expr, component_ty: object | None,
@@ -2272,21 +2246,6 @@ class OperatorsMixin:
         if not isinstance(args, tuple) or index >= len(args):
             return None
         return args[index]
-
-    @staticmethod
-    def _adt_arg_is_nat(target: object | None, index: int) -> bool:
-        """True iff *target* is an ``AdtType`` whose ``index``-th type
-        argument resolves (through a refinement) to ``@Nat`` (#1416): the
-        component target the narrowing guard at a tuple component reads from
-        the checker's threaded table (#820), so `Tuple(@Int.0, 2)` into a
-        `Tuple<Nat, Int>` is guarded at the store.
-        """
-        args = getattr(target, "type_args", None)
-        if not args or index >= len(args):
-            return False
-        arg = args[index]
-        base = getattr(arg, "base", arg)
-        return getattr(base, "name", None) == "Nat"
 
 
     def _emit_overflow_guard(

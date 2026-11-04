@@ -120,7 +120,6 @@ def test_the_verifier_defines_no_mirror_of_code_generation() -> None:
     assert defined == [], defined
 
 
-@_RED
 def test_a_check_is_recorded_by_its_row() -> None:
     """`WasmContext._record_check` takes the row the check is the runtime
     half of, so an `EmittedCheck` names it."""
@@ -132,7 +131,6 @@ def test_a_check_is_recorded_by_its_row() -> None:
     assert "row" in EmittedCheck.__dataclass_fields__
 
 
-@_RED
 def test_the_table_lists_every_kind_of_a_program() -> None:
     """`vera.obligations.table.build` lists, for one program holding every
     kind, one row per site; no kind is listed by the verifier's walk."""
@@ -713,3 +711,362 @@ public fn f(@Int -> @Int)
     v = _verified(source)
     assert ("tier3", 14, 14) in _records(v, "nat_bind"), _records(v, "nat_bind")
     assert not [c for c in _codes(v) if c in ("E541", "W004")], _codes(v)
+
+
+# =====================================================================
+# 67a: code generation guards rows and decides no guard of its own
+# =====================================================================
+
+
+def test_a_check_without_a_row_is_refused() -> None:
+    """`_record_check` takes the row the check is the runtime half of: a
+    check with no row, or for a row the table holds unguardable, is a
+    compiler invariant, never a guard decided at the site."""
+    from vera.obligations.table import TRIVIAL, Row
+    from vera.skip import CodegenInvariantError
+    from vera.wasm.context import StringPool, WasmContext
+
+    compiled = pipeline.compile(_SAFE_DIVIDE, file="s.vera")
+    assert compiled.ok and compiled.generator is not None
+    table = compiled.generator._obligations
+    ctx = WasmContext(StringPool(), obligations=table)
+    requires = next(row for row in table.rows if row.kind == "requires")
+    with pytest.raises(CodegenInvariantError, match="lists no row"):
+        ctx._record_check(None, emitter="wasm/operators.py:_translate_binary")
+    trivial = Row(id=len(table.rows), node=requires.node, kind="requires",
+                  fn=requires.fn, target=None, guard=TRIVIAL)
+    with pytest.raises(CodegenInvariantError, match="unguardable"):
+        ctx._record_check(trivial, emitter="codegen/contracts.py:_compile_preconditions")
+    assert ctx._record_check(
+        requires, emitter="codegen/contracts.py:_compile_preconditions").startswith(" (;vera-check:")
+
+
+def test_every_emission_names_its_row() -> None:
+    """No emitter call outside a row: every `_emit_trap` in the
+    code-generation package passes `row=`, and every `_record_check` its
+    row first, bar the emission path itself, which passes the caller's
+    through."""
+    offenders: list[str] = []
+    for path in sorted((ROOT / "vera" / "wasm").glob("*.py")) + sorted(
+            (ROOT / "vera" / "codegen").glob("*.py")):
+        tree = pyast.parse(path.read_text(encoding="utf-8"))
+        for node in pyast.walk(tree):
+            if not isinstance(node, pyast.Call):
+                continue
+            func = node.func
+            name = func.attr if isinstance(func, pyast.Attribute) else None
+            where = f"{path.relative_to(ROOT).as_posix()}:{node.lineno}"
+            if name == "_emit_trap":
+                if not any(kw.arg == "row" for kw in node.keywords):
+                    offenders.append(f"{where}: _emit_trap without row=")
+            elif name == "_record_check" and not node.args:
+                offenders.append(f"{where}: _record_check names no row")
+    assert offenders == [], offenders
+
+
+# ---------------------------------------------------------------------
+# The identity differential, code generation's half: every check names a
+# row, every guardable row with a check of its own, in a function the
+# module holds, has exactly one.
+# ---------------------------------------------------------------------
+
+_WAT_FN = re.compile(r"^\s*\(func \$([^\s()]+)", re.MULTILINE)
+
+
+def _identity(files: dict[str, str], entry: str, tmp_path: Path) -> None:
+    from vera import ast as vera_ast
+    from vera.binding import source_name
+
+    entry_path = pipeline.write_tree(tmp_path, files, entry=entry)
+    compiled = pipeline.compile(entry_path, file=entry, budget_s=_BUDGET_S)
+    if not compiled.ok:
+        pytest.skip("the program is refused before code generation: "
+                    + "; ".join(d.error_code or "" for d in compiled.errors[:3]))
+    assert compiled.generator is not None
+    table = compiled.generator._obligations
+    held = {source_name(m.group(1)) for m in _WAT_FN.finditer(compiled.wat)}
+    prelude = {tld.decl.name for tld in compiled.checked.typed.linked.prelude
+               if isinstance(tld.decl, vera_ast.FnDecl)}
+    checks = [c for c in compiled.result.emitted_checks if not c.prelude]
+    named: dict[int, int] = {}
+    for check in checks:
+        assert check.row is not None, (check.emitter, check.line, check.column)
+        named[check.row] = named.get(check.row, 0) + 1
+        row = table.rows[check.row]
+        assert row.guard.check and row.answered_by is None, (
+            check.emitter, check.line, check.column, row)
+    problems: list[str] = []
+    for row in table.rows:
+        if (not row.guard.check or row.answered_by is not None
+                or row.fn.split("$")[0] in prelude
+                or not (row.fn in held or row.fn.split("$where$")[0] in held)):
+            continue
+        count = named.get(row.id, 0)
+        if count != 1:
+            span = row.node.span
+            problems.append(
+                f"{row.kind} {row.path} at "
+                f"{span.line if span else '?'}:{span.column if span else '?'} "
+                f"{row.evaluation} in {row.fn}: {count} check(s)")
+    assert problems == [], problems
+
+
+_CORPUS = sorted((ROOT / "examples").rglob("*.vera")) + sorted(
+    (ROOT / "tests" / "conformance").rglob("*.vera"))
+
+
+@pytest.mark.parametrize(
+    "path", _CORPUS, ids=[p.relative_to(ROOT).as_posix() for p in _CORPUS])
+def test_identity_over_the_corpus(path: Path, tmp_path: Path) -> None:
+    files = {sib.relative_to(path.parent).as_posix(): sib.read_text(encoding="utf-8")
+             for sib in path.parent.rglob("*.vera")}
+    _identity(files, path.name, tmp_path)
+
+
+def _doc_blocks() -> list[tuple[str, str]]:
+    import sys
+
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import check_doc_examples as cde
+    from doc_annotations import strip_annotations
+
+    out: list[tuple[str, str]] = []
+    for pattern in cde.DOC_GATES:
+        for path in sorted(ROOT.glob(pattern)):
+            blocks, _problems = cde.scan_document(path)
+            for block in blocks:
+                if cde.selects(block):
+                    out.append((f"{path.relative_to(ROOT).as_posix()}:{block.line}",
+                                strip_annotations(block.content)))
+    return out
+
+
+_DOC_BLOCKS = _doc_blocks()
+
+
+@pytest.mark.parametrize(
+    "source", [b[1] for b in _DOC_BLOCKS], ids=[b[0] for b in _DOC_BLOCKS])
+def test_identity_over_the_doc_blocks(source: str, tmp_path: Path) -> None:
+    _identity({"doc.vera": source}, "doc.vera", tmp_path)
+
+
+@pytest.mark.parametrize("seed", range(1000), ids=[f"seed{s}" for s in range(1000)])
+def test_identity_over_the_generator(seed: int, tmp_path: Path) -> None:
+    from tests import program_generator as gen
+
+    _identity(gen.generate(seed).files(), gen.ENTRY, tmp_path)
+
+
+# ---------------------------------------------------------------------
+# The WAT movers: a guard that appears or goes because the table lists the
+# row the old decision missed, or lists none where it emitted one
+# ---------------------------------------------------------------------
+
+
+_BARE_PUT = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+private fn write(@Int -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<State<Pos>>)
+{
+  put(@Int.0)
+}
+
+public fn main(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[State<Pos>](@Pos = 1) {
+    get(@Unit) -> { resume(@Pos.0) },
+    put(@Pos) -> { resume(()) }
+  } in {
+    write(@Int.0);
+    nat_to_int(0) + get(())
+  }
+}
+"""
+
+
+def test_mover_a_bare_put_into_a_refined_cell_takes_the_predicate_guard(
+    tmp_path: Path,
+) -> None:
+    """The find of report 1: on the intrinsic route the write took the sign
+    guard alone; the `refine_bind` row at the argument is the predicate's,
+    and the run traps where it printed -3."""
+    compiled = pipeline.compile(_BARE_PUT, file="p.vera")
+    assert compiled.ok
+    guards = pipeline.checks(
+        compiled.result, emitter="codegen/contracts.py:_emit_refinement_check")
+    assert [(g.line, g.column) for g in guards if g.function == "write"] == [(8, 7)]
+    ran = _run(tmp_path, _BARE_PUT, "main", "-3")
+    assert ran.returncode != 0 and "Refinement violation" in (ran.stdout + ran.stderr), (
+        ran.stdout + ran.stderr[-300:])
+
+
+def test_mover_a_guard_on_a_value_already_of_the_refined_type_goes() -> None:
+    """`examples/ephemeris.vera` stored a refined slot into a field of its
+    own type (lines 269 and 292) and bound a sub-pattern at its field's own
+    refinement (line 340): three §2.6.5 checks whose predicate held by
+    typing, with no record (the KNOWN entries removed with them).  The table
+    lists no row where the value already carries the refinement."""
+    compiled = pipeline.compile(ROOT / "examples" / "ephemeris.vera", file="ephemeris.vera")
+    assert compiled.ok
+    sites = {(g.line, g.column) for g in pipeline.checks(
+        compiled.result, emitter="codegen/contracts.py:_emit_refinement_check")}
+    assert not sites & {(269, 50), (292, 50), (340, 26)}, sorted(sites)
+    assert (211, 35) in sites and (223, 36) in sites  # the entry checks stay
+
+
+def test_mover_a_clause_binder_over_a_container_payload_is_walked(
+    tmp_path: Path,
+) -> None:
+    """The one exclusion beside #1818's rule goes: a handler clause binder
+    over an `Array` payload declared narrower than it is a `nat_bind` row
+    with a tree, so the payload is walked and a negative element traps.
+    The verifier still discloses the binder (E506) until 67b records the
+    row, so the walk is a W004 by design in 67a."""
+    from tests.test_composite_coercion_guards import SHAPES, program
+
+    source = program("clause binder", SHAPES["Array"], "opaque")
+    compiled = pipeline.compile(source, file="c.vera")
+    assert compiled.ok
+    walks = pipeline.checks(
+        compiled.result, emitter="wasm/coercion.py:_emit_component_coercion")
+    assert len(walks) == 1, walks
+    ran = _run(tmp_path, source, "f", "-5.0")
+    assert ran.returncode != 0 and "Negative value bound into a @Nat slot" in (
+        ran.stdout + ran.stderr), ran.stdout + ran.stderr[-300:]
+    v = _verified(source, "c.vera")
+    assert "E506" in _codes(v) and "W004" in _codes(v), _codes(v)
+
+
+_LATER_ELEMENT = """\
+public fn f(@Int -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Nat = 3;
+  [@Nat.0, @Int.0][1]
+}
+"""
+
+
+def test_mover_a_later_array_element_is_guarded(tmp_path: Path) -> None:
+    """`[@Nat.0, @Int.0]` is an `Array<Nat>` (spec §4.12.1 fixes the element
+    type from the first element): the `@Int` element's row is the
+    literal's own, where the store guard read only a requirement the
+    literal's context handed it, so `f(-5)` printed -5 (#1695's line)."""
+    compiled = pipeline.compile(_LATER_ELEMENT, file="l.vera")
+    assert compiled.ok
+    guards = pipeline.checks(compiled.result, kind="nat_guard")
+    assert [(g.line, g.column) for g in guards] == [(7, 12)], guards
+    ran = _run(tmp_path, _LATER_ELEMENT, "f", "-5")
+    assert ran.returncode != 0 and "Negative value bound into a @Nat slot" in (
+        ran.stdout + ran.stderr), ran.stdout + ran.stderr[-300:]
+
+
+def test_mover_the_second_guard_on_a_clause_binders_use_goes() -> None:
+    """#1782's program: the clause binder `@Nat` over a thrown `@Int` is one
+    row, guarded at the clause; its use at `nat_to_int`'s `@Nat` formal is
+    no row under the post-fact rule, so the second sign guard goes."""
+    compiled = pipeline.compile(_CLAUSE_BINDER, file="b.vera")
+    assert compiled.ok
+    guards = pipeline.checks(compiled.result, kind="nat_guard")
+    assert [(g.line, g.column) for g in guards] == [(5, 5)], guards
+
+
+_PREFIX = """\
+public fn count(@Nat, @Nat -> @Nat)
+  requires(true)
+  ensures({ENSURES})
+  decreases(@Nat.1)
+  effects(pure)
+{
+  if @Nat.1 == 0 then { @Nat.0 } else { count(@Nat.0 + 1, @Nat.1 - 1) }
+}
+"""
+
+
+def test_mover_the_self_tail_prefix_is_rendered_only_where_it_splices() -> None:
+    """A `decreases` function's self-tail prefix re-evaluates the measure
+    before each `return_call`: the table lists its rows once per tail call
+    the function transfers to, and none where a runtime postcondition
+    reverts every `return_call` to `call` (the entry check then covers
+    each hop).  The prefix rendered for rows that do not exist was dead
+    lowering: its locals go."""
+    spliced = pipeline.compile(_PREFIX.replace("{ENSURES}", "true"), file="s.vera")
+    reverted = pipeline.compile(_PREFIX.replace("{ENSURES}", "@Nat.result >= 0"), file="r.vera")
+    assert spliced.ok and reverted.ok
+    for compiled, copies in ((spliced, 1), (reverted, 0)):
+        assert compiled.generator is not None
+        table = compiled.generator._obligations
+        re_evaluations = [row for row in table.rows
+                          if row.kind == "decreases" and row.evaluation[0] == "measure_call"]
+        assert len(re_evaluations) == copies, [r.evaluation for r in re_evaluations]
+        prefixes = pipeline.checks(
+            compiled.result, emitter="codegen/contracts.py:_dec_self_tail_prefix")
+        assert len(prefixes) == copies, prefixes
+    assert "return_call" in spliced.wat and "return_call" not in reverted.wat
+
+
+# A self-recursive tail call whose measure carries a check of its own
+# (`@Nat.1 - @Nat.0`, a `nat_sub` row): the spliced prefix holds a marker,
+# and re-keying it once per splice must terminate (examples/fizzbuzz.vera
+# looped in the re-keying and grew without bound).
+_CHECKED_MEASURE = """\
+private fn loop(@Nat, @Nat -> @Nat)
+  requires(@Nat.0 <= @Nat.1)
+  ensures(true)
+  decreases(@Nat.1 - @Nat.0)
+  effects(pure)
+{
+  if @Nat.0 < @Nat.1 then { loop(@Nat.1, @Nat.0 + 1) } else { @Nat.0 }
+}
+
+public fn main(@Unit -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  loop(10, 1)
+}
+"""
+
+_CHECKED_MEASURE_CHILD = """\
+import json, sys
+from tests import pipeline
+compiled = pipeline.compile(sys.stdin.read(), file="m.vera")
+assert compiled.ok and compiled.generator is not None
+table = compiled.generator._obligations
+spliced = [row.id for row in table.rows
+           if row.fn == "loop" and isinstance(row.evaluation, tuple)
+           and row.evaluation[0] == "measure_call"]
+named = [check.row for check in compiled.result.emitted_checks]
+print(json.dumps({"spliced": spliced, "named": named,
+                  "rows": len(table.rows)}))
+"""
+
+
+def test_mover_a_measure_check_is_rekeyed_once_per_splice() -> None:
+    """Each spliced copy of the self-tail prefix names its own call's
+    measure rows exactly once, and compiling it terminates: a subprocess
+    under a 30 s timeout, since the defect this pins was a loop."""
+    import json
+    import subprocess
+    import sys
+
+    root = Path(__file__).resolve().parent.parent
+    done = subprocess.run(
+        [sys.executable, "-c", _CHECKED_MEASURE_CHILD],
+        input=_CHECKED_MEASURE, capture_output=True, text=True,
+        encoding="utf-8", cwd=root, timeout=30, check=False)
+    assert done.returncode == 0, done.stderr[-2000:]
+    report = json.loads(done.stdout.strip().splitlines()[-1])
+    assert report["spliced"], "no measure re-evaluation row at the tail call"
+    for row_id in report["spliced"]:
+        assert report["named"].count(row_id) == 1, (row_id, report)
+    assert len(report["named"]) <= report["rows"], report

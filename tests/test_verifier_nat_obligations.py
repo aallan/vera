@@ -1229,24 +1229,23 @@ private fn f(@Int -> @String)
         # ...while a data type has no scalar sort.
         assert verifier._fresh_slot_var(smt, box) is None
 
-    def test_narrows_into_nat_verifier_codegen_parity(self) -> None:
-        """`_narrows_into_nat` is hand-mirrored in the verifier and codegen
-        (#749 item 3).  The soundness-relevant property is an *implication*,
-        not equality: codegen must emit a runtime guard for everything the
-        verifier obligates (`verifier ⟹ codegen`).  The reverse — codegen
-        guarding a value the verifier already proves @Nat — is a harmless
-        over-guard (e.g. `string_length`, whose @Nat return codegen's
-        `_is_static_nat_typed` does not recognise, so it conservatively
-        guards while the verifier raises no obligation).  The *dangerous*
-        desync is verifier-obligates-but-codegen-doesn't-guard, which would
-        let a negative @Nat escape an unverified compile — a builtin's @Nat
-        return wired into the verifier mirror but not codegen would trip the
-        assertion below."""
+    def test_narrows_into_nat_verifier_table_parity(self) -> None:
+        """`_narrows_into_nat` is the verifier's reading of the one rule
+        (`vera.narrowing.nat_narrowing`) that the obligation table reads
+        for the `nat_bind` rows code generation guards (#1695; #749 item
+        3).  The soundness-relevant property is an *implication*, not
+        equality: the table must list a row, so code generation emits a
+        guard, for everything the verifier obligates (`verifier ⟹ table`).
+        The reverse — a row for a value the verifier already proves @Nat —
+        is a harmless over-guard (e.g. `string_length`, whose @Nat return
+        the untyped reading here does not recognise).  The *dangerous*
+        desync is verifier-obligates-but-no-row, which would let a negative
+        @Nat escape an unverified compile."""
+        from vera.obligations.table import _Builder
         from vera.verifier import ContractVerifier
-        from vera.wasm.context import StringPool, WasmContext
 
         verifier = ContractVerifier(pipeline.typed())
-        codegen = WasmContext(StringPool())
+        table = _Builder(pipeline.typed())
         corpus = [
             "@Int.0", "@Nat.0", "0 - 1", "5 - 1", "@Int.0 + 1",
             "@Nat.0 - @Nat.1", "-1", "{ 0 - 1 }",
@@ -1264,11 +1263,11 @@ private fn f(@Int -> @String)
             )
             expr = parse_to_ast(src).declarations[0].decl.body.expr
             v = verifier._narrows_into_nat(expr)
-            c = codegen._narrows_into_nat(expr)
-            # codegen guards ⊇ verifier obligates (no unsound miss).
+            c = table.narrows_nat(expr)
+            # the table's rows ⊇ the verifier's obligations (no unsound miss).
             assert (not v) or c, (
                 f"unsound `_narrows_into_nat` desync on {body!r}: the verifier "
-                f"obligates a `>= 0` check but codegen emits no runtime guard")
+                f"obligates a `>= 0` check but the table lists no row")
 
     def test_effect_op_argument_narrowing_caught(self) -> None:
         """An @Int narrowing into an effect operation's @Nat formal

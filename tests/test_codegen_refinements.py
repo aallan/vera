@@ -574,9 +574,10 @@ public fn entry_ok(@Unit -> @Int)
     def test_tuple_component_return_guard_traps(self) -> None:
         """Symmetric exit guard: a `fn -> Tuple<PosInt, Int>` whose body yields
         a refinement-violating component traps at the boundary rather than
-        handing back a Tier-1-violating tuple.  Exercises the
-        `_has_guardable_tuple_components` early-return fix — the return has no
-        top-level refinement and trivial ensures, yet must not short-circuit."""
+        handing back a Tier-1-violating tuple.  Exercises the epilogue's
+        early-return gate (#746; the table's return rows since #1695) — the
+        return has no top-level refinement and trivial ensures, yet must not
+        short-circuit."""
         src = self._PRE + """
 public fn mk(@Int -> @Tuple<PosInt, Int>)
   requires(true) ensures(true) effects(pure)

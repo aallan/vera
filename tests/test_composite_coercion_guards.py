@@ -293,8 +293,10 @@ _EXCLUDED = frozenset(
     for shape in ("Array", "Array<Option>", "Map.value", "Map.key", "Set")
 )
 _EXCLUDED_REASON = (
-    "W67 (#1695): a handler clause binder over an Array, Map or Set payload "
-    "is recorded refine_bind tier3_unguarded (E506) and is not guarded")
+    "67b (#1695): the verifier discharges the clause binder's row over an "
+    "Array, Map or Set payload, which the obligation table lists guarded "
+    "and code generation walks (67a); until then it discloses E506 beside "
+    "the guard, a designed W004")
 
 
 def _programs() -> Iterator[tuple[str, str, str]]:
@@ -329,12 +331,7 @@ def _run_cells() -> Iterator[object]:
     for site, shape, form in _PROGRAMS:
         for arg in ARGS:
             cell_id = f"{site} / {shape} / {form} / {arg}"
-            if (site, shape) in _EXCLUDED and arg == -5.0:
-                yield pytest.param(site, shape, form, arg, id=cell_id,
-                                   marks=pytest.mark.xfail(
-                                       strict=True, reason=_EXCLUDED_REASON))
-            else:
-                yield pytest.param(site, shape, form, arg, id=cell_id)
+            yield pytest.param(site, shape, form, arg, id=cell_id)
 
 
 # =====================================================================
@@ -519,17 +516,19 @@ class TestTheRecord:
 
     @pytest.mark.parametrize(("site", "shape", "form"), sorted(
         (s, sh, f) for s, sh, f in _PROGRAMS if (s, sh) in _EXCLUDED))
-    def test_the_excluded_position_is_disclosed(
+    @pytest.mark.xfail(strict=True, reason=_EXCLUDED_REASON)
+    def test_the_excluded_position_is_recorded_and_guarded(
         self, site: str, shape: str, form: str,
     ) -> None:
-        """A clause binder over a container payload keeps its disclosure,
-        E506, and no guard stands beside it."""
+        """A clause binder over a container payload is one row the table
+        lists guarded: code generation walks the payload (67a), and the
+        verifier records the row `tier3` with no E506 and no W004 (67b)."""
         src = program(site, SHAPES[shape], form)
         verified = _verified(src)
         assert verified.ok
-        assert "E506" in {w.error_code for w in verified.warnings}
+        assert "E506" not in {w.error_code for w in verified.warnings}
         assert _coercion_w004(verified) == []
-        assert _coercion_checks(_compiled(src)) == []
+        assert len(_coercion_checks(_compiled(src))) == 1
 
 
 # =====================================================================

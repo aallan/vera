@@ -1511,7 +1511,6 @@ class TestBoundaryGuardDerivationIsShared:
     def test_every_consumer_reads_the_one_decomposition(self) -> None:
         for consumer in (
             "_emit_component_refinement_guards",   # the emitter
-            "_has_guardable_tuple_components",     # the epilogue gate
             "_component_guard_predicates",         # the pre-scan's enumeration
         ):
             calls = _self_calls(_CONTRACTS, consumer)
@@ -1532,7 +1531,6 @@ class TestBoundaryGuardDerivationIsShared:
         """
         for consumer in (
             "_emit_component_refinement_guards",
-            "_has_guardable_tuple_components",
             "_component_guard_predicates",
         ):
             calls = _self_calls(_CONTRACTS, consumer)

@@ -9,7 +9,7 @@ from collections.abc import Callable
 from vera import ast, naming, narrowing
 from vera.obligations.table import Row
 from vera.skip import CodegenInvariantError, CodegenSkip
-from vera.types import AdtType, base_type, contains_typevar, value_type_name
+from vera.types import contains_typevar, value_type_name
 from vera.wasm.helpers import (
     WasmSlotEnv,
     bind_slot_value_from_field,
@@ -59,41 +59,6 @@ class DataMixin:
         if tp_idx is None or index >= len(tp_idx):
             return None
         return tp_idx[index]
-
-    def _ctor_field_mono_base(self, arg: ast.Expr) -> str | None:
-        """Base type NAME a constructor field is instantiated to at this
-        construction site, read from the argument's own recorded target
-        (#757), or ``None`` when the table has no answer.
-
-        A constructor layout is registered ONCE per ADT, so its ``nat_fields``
-        bitmap describes the DECLARED field types: for
-        ``data Box<T> { Wrap(T) }`` every flag is False whatever ``Box`` is
-        instantiated to, and the ``@Int -> @Nat`` narrowing guard that fires
-        for a concrete ``Wrap(Nat)`` field was skipped for ``Wrap(@Int.0)``
-        building a ``Box<Nat>``.  The negative was stored, and only a reader
-        that happened to bind it back at ``@Nat`` caught it — a reader binding
-        it at ``@Int`` returned it, breaking a postcondition the verifier
-        proved from the field's ``>= 0``.
-
-        Keyed on the ARGUMENT rather than on the constructed ADT's type args
-        (which :meth:`_ctor_field_tp_index` could also map) because that is
-        the question the verifier asks: ``_nat_binding_target`` resolves a
-        generic field through ``_target_type_of(arg)``, the checker-side twin
-        of this table.  Asking the same question of the same table is what
-        keeps the obligation's ``guarded`` flag equal to whether a guard is
-        actually emitted; deriving the answer a second way would be a second
-        rule, free to disagree.
-
-        ``None`` when the target-type table was not threaded (an unverified
-        ``transform -> compile``) or the span carries no target — the caller
-        then falls back to the layout bitmaps rather than guessing.  A
-        refinement OVER the target unwraps to its base, so ``Box<{ @Nat | P }>``
-        takes the sign guard here and its predicate at the boundary.
-        """
-        target = self._target_codegen_type_full(arg)
-        if target is None:
-            return None
-        return getattr(getattr(target, "base", target), "name", None)
 
     # -----------------------------------------------------------------
     # Narrowing-bind refinement guards (#765)
@@ -571,9 +536,7 @@ class DataMixin:
                 # concrete @Nat constructor field (`WrapN(@Int.0)` where
                 # `WrapN(Nat)`).  #757: and into a GENERIC field instantiated
                 # to @Nat here (`Wrap(@Int.0)` building a `Box<Nat>`), whose
-                # answer the per-ADT `nat_fields` bitmap cannot carry —
-                # `_ctor_field_mono_base` reads it from this site's
-                # instantiation instead.
+                # answer the per-ADT `nat_fields` bitmap cannot carry.
                 # #1695: the field's `nat_bind` row is the decision, the
                 # store's own and the composite coercion's (#1542) alike.
                 field_val = self._guard_nat_narrowing(field_val, expr.args[i])
@@ -1657,28 +1620,6 @@ class DataMixin:
                 outer(index), step, j, lambda name: name == nested,
                 typed.field_is_generic)
         return sources
-
-    def _destructure_sources(
-        self, stmt: ast.LetDestruct, index: int,
-    ) -> tuple[tuple[narrowing.ComponentSource, ...], str | None]:
-        """The sources of component *index* of the destructure *stmt*, and
-        the constructor whose fields type an opaque one (the source type's
-        only constructor, or `Tuple`; ``None`` when there is none)."""
-        typed = self._typed_program
-        assert typed is not None  # noqa: S101
-        tuple_shape = stmt.constructor == "Tuple"
-        ctor_name: str | None = "Tuple" if tuple_shape else None
-        if ctor_name is None:
-            source = self._type_of(stmt.value)
-            base = base_type(source) if source is not None else None
-            names: tuple[str, ...] = (
-                typed.constructors_of(base.name)
-                if isinstance(base, AdtType) else ())
-            if len(names) == 1:
-                ctor_name = names[0]
-        sources = narrowing.component_sources(
-            stmt.value, index, lambda name: (name == "Tuple") == tuple_shape)
-        return sources, ctor_name
 
     def _resolve_nested_scrutinee_type(
         self,

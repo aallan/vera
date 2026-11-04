@@ -27,11 +27,11 @@ import pytest
 from tests import pipeline
 from vera import ast
 from vera.checker import typecheck_with_artifacts
+from vera.obligations.table import ObligationTable
+from vera.obligations.table import build as build_table
 from vera.typed import build as build_typed
 from vera.parser import parse_to_ast
 from vera.verifier import ContractVerifier
-from vera.wasm import StringPool
-from vera.wasm.context import WasmContext
 
 REPO_ROOT = Path(__file__).parent.parent
 EXAMPLES_DIR = REPO_ROOT / "examples"
@@ -101,15 +101,22 @@ def _verifier_gated_type(verifier: ContractVerifier, site: ast.BinaryExpr):
     return ovf
 
 
-def _codegen_gated_type(ctx: WasmContext, site: ast.BinaryExpr):
-    """The type the codegen guard fires at, mirroring the gate in
-    ``_translate_binary`` — the operands' common (coerced) type (#798)."""
-    ovf = ctx._overflow_arith_codegen_type(site)
-    if ovf is None:
-        return None
-    if site.op == ast.BinOp.SUB and ovf == "Nat":
-        return None
-    return ovf
+def _codegen_gated_type(table: ObligationTable, site: ast.BinaryExpr):
+    """Whether code generation guards *site*: the obligation table lists an
+    `int_overflow` row there with a check (#1695), the one decision
+    `_translate_binary` reads.  The guard's sequence is the signed one for
+    an `@Int` and a `@Nat` alike (a `@Nat` is the non-negative half of the
+    same i64), so what the two sides must agree on is the SITE, which the
+    verifier's gated type names when it is not ``None``.  A site inside a
+    `State` clause's body has its rows in the clause's evaluation, one per
+    operation call the clause is inlined at, so every evaluation is read."""
+    rows = table.rows_of(site, "int_overflow", (), None)
+    return "guarded" if any(row.guard.check for row in rows) else None
+
+
+def _verifier_guards(verifier: ContractVerifier, site: ast.BinaryExpr):
+    """The verifier's gate, as a site answer, for the comparison."""
+    return "guarded" if _verifier_gated_type(verifier, site) else None
 
 
 def _assert_in_lockstep(source: str) -> None:
@@ -119,18 +126,16 @@ def _assert_in_lockstep(source: str) -> None:
     assert not errors, f"typecheck errors: {[d.description for d in errors]}"
     arts = checked.artifacts
 
-    verifier = ContractVerifier(
-        build_typed(program, [], arts), source=source,
-    )
-    ctx = WasmContext(StringPool())
-    ctx.set_expr_semantic_types(arts.node_semantic_types)
+    typed = build_typed(program, [], arts)
+    verifier = ContractVerifier(typed, source=source)
+    table = build_table(typed)
 
     sites = _binary_sites(program)
     assert sites, "corpus program has no +/-/* sites"
     mismatches = []
     for site in sites:
-        v = _verifier_gated_type(verifier, site)
-        c = _codegen_gated_type(ctx, site)
+        v = _verifier_guards(verifier, site)
+        c = _codegen_gated_type(table, site)
         if v != c:
             key = ast.span_key(site)
             mismatches.append((key, site.op.name, v, c))
@@ -255,14 +260,14 @@ class TestVerifierCodegenOverflowDifferential798:
         verifier = ContractVerifier(
             build_typed(program, [], arts), source=source,
         )
-        ctx = WasmContext(StringPool())
-        ctx.set_expr_semantic_types(arts.node_semantic_types)
+        table = build_table(build_typed(program, [], arts))
         site = _binary_sites(program)[0]
         assert isinstance(site.left, ast.IntLit) and site.left.value == 5
         v = verifier._overflow_arith_type(site)
-        c = ctx._overflow_arith_codegen_type(site)
-        assert v == c == "Int", (
-            f"literal-left classification: verifier={v}, codegen={c} (want Int)"
+        c = _codegen_gated_type(table, site)
+        assert v == "Int" and c == "guarded", (
+            f"literal-left classification: verifier={v}, table={c} "
+            "(want Int, guarded)"
         )
 
     def test_literal_left_int_overflow_is_caught(self) -> None:
@@ -374,16 +379,15 @@ class TestCorpusOverflowDifferential798:
             build_typed(program, [], arts), source=source,
             file=str(path),
         )
-        ctx = WasmContext(StringPool())
-        ctx.set_expr_semantic_types(arts.node_semantic_types)
+        table = build_table(build_typed(program, [], arts))
 
         mismatches = []
         for site in _binary_sites(program):
-            v = _verifier_gated_type(verifier, site)
-            c = _codegen_gated_type(ctx, site)
+            v = _verifier_guards(verifier, site)
+            c = _codegen_gated_type(table, site)
             if v != c:
                 mismatches.append((ast.span_key(site), site.op.name, v, c))
         assert not mismatches, (
-            f"{path.name}: verifier<->codegen overflow classification desync "
-            f"(span, op, verifier, codegen): {mismatches}"
+            f"{path.name}: verifier<->table overflow site desync "
+            f"(span, op, verifier, table): {mismatches}"
         )

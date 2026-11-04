@@ -607,12 +607,12 @@ class ContractsMixin:
 
         THE tuple decomposition (#1210 round 7).  Every consumer that needs to
         know what the boundary-guard layer does to a tuple reads it from here:
-        the emitter (`_emit_component_refinement_guards`), the return-epilogue
-        gate (`_has_guardable_tuple_components`), and the host-import pre-scan
-        (`_signature_refinement_predicates`).  They used to carry three
-        hand-kept copies of the same classification, and the pre-scan's copy
-        did not exist at all — a `handle[State<Nat>]` written in the
-        refinement of a tuple COMPONENT was lowered as a guard here and
+        the emitter (`_emit_component_refinement_guards`) and the host-import
+        pre-scan (`_signature_refinement_predicates`); the return epilogue's
+        gate reads the obligation table's return rows (#1695).  They used to
+        carry three hand-kept copies of the same classification, and the
+        pre-scan's copy did not exist at all — a `handle[State<Nat>]` written
+        in the refinement of a tuple COMPONENT was lowered as a guard here and
         registered by nobody, so a check-green program died at whole-module
         WAT with `unknown func $vera.state_push_Nat`.  A component that is not
         described by a yielded `_ComponentGuardSite` is one no guard is
@@ -804,34 +804,6 @@ class ContractsMixin:
                     ctx, sig_text, site.nested, binding.slot_local, env, role,
                     _depth + 1, _at=at, _path=path))
         return instrs
-
-    def _has_guardable_tuple_components(
-        self, te: ast.TypeExpr, _depth: int = 0,
-    ) -> bool:
-        """True iff *te* resolves to a tuple with at least one component that
-        ``_emit_component_refinement_guards`` would guard (refined / ``@Nat`` /
-        a nested guardable tuple).
-
-        Used to keep ``_compile_postconditions`` from early-returning ``[]`` for
-        a tuple *return* that carries no top-level refinement but does have
-        guardable components.  Reads the SAME decomposition the emitter does
-        (``_tuple_component_guard_sites``) rather than mirroring its
-        classification, so the early-return decision cannot disagree with what
-        the epilogue would emit; it stays a pure predicate, needing no ``ctx``,
-        because the sites carry the classification without emitting anything.
-
-        A type nested past the depth limit yields no sites and reports the
-        decomposition's own fail-closed E617, so this returns False for one —
-        and the compile fails on that error rather than on a missing guard.
-        """
-        for site in self._tuple_component_guard_sites(te, _depth):
-            if site.guard is not None:
-                return True
-            if (site.nested is not None
-                    and self._has_guardable_tuple_components(
-                        site.nested, _depth + 1)):
-                return True
-        return False
 
     def _signature_refinement_predicates(
         self, sig: ast.FnDecl | ast.AnonFn,
