@@ -14,8 +14,8 @@ The pins below are the issue's open lines, the seven #1542 positions, the
 #1598 rows, #1642, #1641, #1782, #1602, #1567, #1563, #1725's disclosure and
 #1696's m04, each asserting the verdict the table gives; the regression
 cells hold the nine lines that do not reproduce where they are.  Every red
-cell carries the non-strict `_RED` marker until the table lands, as the
-composite-coercion instrument did before #1818 (PR #1818's first commit).
+cell carries the strict `_RED` marker until the verifier discharges the
+table's rows, and the commit that turns a cell green removes its marker.
 """
 
 from __future__ import annotations
@@ -42,9 +42,11 @@ pytestmark = pytest.mark.matrix(
     ],
 )
 
-#: Red until the table lands; removed with the change (never strict: a cell
-#: this marker carries is one the change turns green).
-_RED = pytest.mark.xfail(strict=False, reason="red until the obligation table lands (#1695)")
+#: Red until the verifier discharges the table's rows (the second half of
+#: #1695): strict, so a cell that turns green fails loudly and the commit that
+#: turns it green removes its marker.
+_RED = pytest.mark.xfail(
+    strict=True, reason="red until the verifier discharges the table's rows (67b, #1695)")
 
 _BUDGET_S = 300
 
