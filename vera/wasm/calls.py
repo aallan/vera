@@ -5,6 +5,7 @@ from __future__ import annotations
 from vera import ast
 from vera.binding import symbol
 from vera.builtins import INTRINSICS, Binding, Intrinsic
+from vera.obligations.table import REASON_NESTED_REFINEMENT
 from vera.skip import CodegenInvariantError, CodegenSkip
 from vera.slots import bare_call_denotes_user_fn
 from vera.wasm.helpers import WasmSlotEnv
@@ -217,6 +218,16 @@ class CallsMixin:
                               "Refinement violation in State put(…) write\n"
                               f"  {ast.format_type_expr(refined_payload)} "
                               "binding"))
+                elif (is_exn_throw and refine is not None
+                        and refine.guard.reason == REASON_NESTED_REFINEMENT):
+                    # A refinement over a refinement at a `throw` boundary is
+                    # refused loudly (E618) by the guard's own classifier,
+                    # which emits nothing for it (#1268).
+                    refined_payload = self._refined_exn_payload_type(cell, call)
+                    if refined_payload is not None:
+                        instructions = self._emit_exn_payload_refine_guard(
+                            instructions, refined_payload, cell, call, env,
+                            row=refine)
                 instructions = self._guard_nat_narrowing(
                     instructions, call.args[0])
             # #754's registry contributes NOTHING on this route, and the

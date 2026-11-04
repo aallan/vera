@@ -1672,8 +1672,11 @@ class OperatorsMixin:
         # i32, outermost first.
         layer_conds: list[list[str]] = []
         for layer in self._index_refinement_layers(expr.binding_type):
-            cond = self.translate_expr(
-                layer.predicate, env.push(layer.binder_name, counter_local))
+            # #1695: the layer's operations are the table's rows of this
+            # quantifier's evaluation.
+            with self._evaluating(("quantifier", expr.node_id)):
+                cond = self.translate_expr(
+                    layer.predicate, env.push(layer.binder_name, counter_local))
             if cond is None:
                 return None  # pragma: no cover — the [E615] channel above
             layer_conds.append(cond)

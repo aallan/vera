@@ -403,6 +403,10 @@ class _Builder:
         self._answerers: dict[tuple[int, tuple[str, ...]], int] = {}
         #: ``(row index, answering node, path)`` resolved at the end.
         self._pending: list[tuple[int, ast.Node, tuple[str, ...]]] = []
+        #: ``id(expr)`` of a `throw` payload and its value leaves: a refined
+        #: payload's predicate guard is its only one (#1268), the sign guard
+        #: standing only where the payload is no refinement.
+        self._predicate_only: set[int] = set()
         #: ``id(arg)`` of a built-in's argument no guard checks, to why.
         self._arg_reason: dict[int, str] = {}
         #: ``id(expr)`` of a value the walk hands a requirement to from
@@ -418,6 +422,9 @@ class _Builder:
         self._handled: dict[int, list[tuple[ast.Expr, Evaluation]]] = {}
         self._unevaluated: list[str] = []
         self._evaluation: list[Evaluation] = [BODY]
+        #: The refinement predicates whose rows are being listed, innermost
+        #: last (:meth:`_predicate_rows`).
+        self._predicate_chain: list[object] = []
         self.fn = ""
 
     # -- type readers ---------------------------------------------------
@@ -541,9 +548,32 @@ class _Builder:
         guard of row *guard_row*: a row each, keyed by that evaluation."""
         if isinstance(target.base, RefinedType):
             return
+        # A predicate whose closure's signature holds the refinement again
+        # (#1234) would list its own rows for ever; code generation refuses
+        # the cycle (E602), and its chain lists them once.
+        key = ObligationTable._key(target.predicate)
+        if key in self._predicate_chain:
+            return
+        self._predicate_chain.append(key)
         self._evaluation.append(("predicate", guard_row))
         try:
             self.walk(target.predicate, None, in_contract=True)
+        finally:
+            self._evaluation.pop()
+            self._predicate_chain.pop()
+
+    def _quantifier_layer_rows(
+        self, expr: ast.ForallExpr | ast.ExistsExpr,
+    ) -> None:
+        """The operations of each refinement layer of a quantifier's index
+        type, which the lowering evaluates at every index to test the range
+        (#1506): a row each, keyed by the quantifier's evaluation."""
+        ty = self.sem(expr.binding_type)
+        self._evaluation.append(("quantifier", expr.node_id))
+        try:
+            while isinstance(ty, RefinedType):
+                self.walk(ty.predicate, None, in_contract=True)
+                ty = ty.base
         finally:
             self._evaluation.pop()
 
@@ -639,9 +669,10 @@ class _Builder:
             self._return_rows(d.return_type, ret_ty, d.body)
         if measure is not None:
             self._measure_rows(d, *measure, epilogue=self._has_epilogue(d, ret_ty))
+        # A generic helper's template compiles too, as a top-level
+        # generic's does (its clones are the instances'), so it has rows.
         for h in d.where_fns or ():
-            if not h.forall_vars:
-                self.function(h)
+            self.function(h)
 
     def _has_epilogue(self, d: ast.FnDecl, ret_ty: Type | None) -> bool:
         """Whether *d*'s return runs a check after the body (a non-trivial
@@ -959,6 +990,8 @@ class _Builder:
             self.walk(expr.body, d, handed=rty, in_closure=True, under_join=True)
             self._return_rows(expr.return_type, rty, expr.body)
             return
+        if isinstance(expr, (ast.ForallExpr, ast.ExistsExpr)):
+            self._quantifier_layer_rows(expr)
         req_here = handed
         from_own_type = fallback
         if req_here is None and isinstance(expr, ast.Expr):
@@ -1110,9 +1143,14 @@ class _Builder:
                     self.add("refine_bind", e, target=req,
                              guard=self._refinement_guardable(req),
                              answer=self._boundary.get(id(e)))
-            elif _is_nat(req_nat) and self.narrows_nat_join(e):
-                self.add("nat_bind", e, target=NAT,
-                         answer=self._boundary.get(id(e)), handed=handed_only)
+            # A refinement over `Nat` takes the sign row beside its
+            # predicate's, as a bare `Nat` does.
+            # The sign is checked where the value narrows, a refined
+            # formal's entry checking its predicate alone.
+            if (_is_nat(req_nat) and self.narrows_nat_join(e)
+                    and not (isinstance(req, RefinedType)
+                             and id(e) in self._predicate_only)):
+                self.add("nat_bind", e, target=NAT, handed=handed_only)
             return
         if self._construction_components(e, req) is not None:
             # a construction: its components carry the requirement; the
@@ -1191,6 +1229,11 @@ class _Builder:
         is_builtin = name not in self.fn_decls
         if isinstance(e, ast.FnCall) and is_builtin and name in ("get", "put"):
             self._register_op_call(e)
+        if isinstance(e, ast.FnCall) and is_builtin and name == "throw":
+            for arg in e.args:
+                self._predicate_only.add(id(arg))
+                for leaf in narrowing.value_leaves(arg):
+                    self._predicate_only.add(id(leaf))
         if isinstance(e, ast.FnCall) and is_builtin and len(e.args) == 1:
             if name in FLOAT_CONVERSIONS:
                 self.add("float_to_int_domain", e)
@@ -1252,11 +1295,17 @@ class _Builder:
                     self.add("refine_bind", e, target=req,
                              guard=self._refinement_guardable(req, construction=store),
                              answer=boundary, answer_row=at_entry)
-            elif _is_nat(req_nat) and self.narrows_nat(e):
+            # A refinement over `Nat` takes the sign row beside its
+            # predicate's, as a bare `Nat` does.
+            if (_is_nat(req_nat) and self.narrows_nat(e)
+                    and not (isinstance(req, RefinedType)
+                             and id(e) in self._predicate_only)):
                 reason = self._arg_reason.get(id(e))
+                # The sign is checked where the value narrows, a refined
+                # formal's entry checking its predicate alone.
                 self.add("nat_bind", e, target=NAT,
                          guard=CHECK if reason is None else unguarded(reason),
-                         answer=boundary, handed=handed_only)
+                         handed=handed_only)
         # components
         required = _strip(req_nat)
         tree = (narrowing.differing_tree(base_type(sem), required,
@@ -1375,10 +1424,13 @@ class _Builder:
                 return
             source = Source(scrutinee)
             if isinstance(declared, RefinedType):
-                if not _same_refinement(matched, declared):
-                    self.add("refine_bind", pattern, target=declared,
-                             guard=self._refinement_guardable(declared),
-                             source=source)
+                # A refined bind is guarded ungated, as code generation
+                # always has (#765): the field's refinement is no fact
+                # unless its producer was checked, which a payload's
+                # entry is not.
+                self.add("refine_bind", pattern, target=declared,
+                         guard=self._refinement_guardable(declared),
+                         source=source)
             elif _is_nat(declared) and self.narrows_nat(scrutinee):
                 self.add("nat_bind", pattern, target=NAT, source=source)
             for tree in narrowing.value_coercion(
@@ -1401,10 +1453,13 @@ class _Builder:
                 continue
             source = Source(scrutinee, steps.get(id(sub), ()))
             if isinstance(declared, RefinedType):
-                if not _same_refinement(matched, declared):
-                    self.add("refine_bind", sub, target=declared,
-                             guard=self._refinement_guardable(declared),
-                             source=source)
+                # A refined bind is guarded ungated, as code generation
+                # always has (#765): the field's refinement is no fact
+                # unless its producer was checked, which a payload's
+                # entry is not.
+                self.add("refine_bind", sub, target=declared,
+                         guard=self._refinement_guardable(declared),
+                         source=source)
             elif _is_nat(declared):
                 def leaf_is_nat(leaf: narrowing.ComponentSource, idx: int,
                                 _c: str = ctor_name) -> bool | None:
@@ -1451,20 +1506,21 @@ class _Builder:
                 return (n == "Tuple") == tuple_shape
             return n == ctor_name or ((n == "Tuple") == tuple_shape)
 
-        fields = self.ftypes(ctor_name, src_ty) if ctor_name else None
         for i, te in enumerate(stmt.type_bindings):
             declared = self.sem(te)
             if declared is None:
                 continue
             sources = narrowing.component_sources(
                 stmt.value, i, ctor_matches, self.typed.field_is_generic)
-            fty = fields[i] if fields is not None and i < len(fields) else None
             source = Source(stmt.value, ((ctor_name or stmt.constructor, i),))
             if isinstance(declared, RefinedType):
-                if not _same_refinement(fty, declared):
-                    self.add("refine_bind", te, target=declared,
-                             guard=self._refinement_guardable(declared),
-                             source=source)
+                # A refined bind is guarded ungated, as code generation
+                # always has (#765): the field's refinement is no fact
+                # unless its producer was checked, which a payload's
+                # entry is not.
+                self.add("refine_bind", te, target=declared,
+                         guard=self._refinement_guardable(declared),
+                         source=source)
             elif _is_nat(declared) and ctor_name is not None:
                 def leaf_is_nat(leaf: narrowing.ComponentSource, idx: int,
                                 _c: str = ctor_name) -> bool | None:

@@ -787,10 +787,29 @@ def _identity(files: dict[str, str], entry: str, tmp_path: Path) -> None:
     held = {source_name(m.group(1)) for m in _WAT_FN.finditer(compiled.wat)}
     prelude = {tld.decl.name for tld in compiled.checked.typed.linked.prelude
                if isinstance(tld.decl, vera_ast.FnDecl)}
+    # A generic `where` helper's template has rows (it compiles where it is
+    # called at no instance); a module that holds only its clones holds
+    # none of the template's code, whatever its parent holds.
+    templates: set[str] = set()
+
+    def generic_helpers(decl: vera_ast.FnDecl) -> None:
+        for h in decl.where_fns or ():
+            if h.forall_vars:
+                templates.add(h.name)
+            generic_helpers(h)
+
+    for tld in compiled.checked.typed.linked.program.declarations:
+        if isinstance(tld.decl, vera_ast.FnDecl):
+            generic_helpers(tld.decl)
     checks = [c for c in compiled.result.emitted_checks if not c.prelude]
     named: dict[int, int] = {}
     for check in checks:
-        assert check.row is not None, (check.emitter, check.line, check.column)
+        if check.row is None:
+            # A generated helper shared by every rendering of its type
+            # (`_record_shared_check`, #1482): no row, no span.
+            assert (check.emitter.endswith(":_float_to_string_core")
+                    and check.line == 0), (check.emitter, check.line, check.column)
+            continue
         named[check.row] = named.get(check.row, 0) + 1
         row = table.rows[check.row]
         assert row.guard.check and row.answered_by is None, (
@@ -799,10 +818,13 @@ def _identity(files: dict[str, str], entry: str, tmp_path: Path) -> None:
     for row in table.rows:
         if (not row.guard.check or row.answered_by is not None
                 or row.fn.split("$")[0] in prelude
+                or (row.fn in templates and row.fn not in held)
                 or not (row.fn in held or row.fn.split("$where$")[0] in held)):
             continue
         count = named.get(row.id, 0)
-        if count != 1:
+        # A rendering checks each `Float64` its inline lowering holds, one
+        # truncation per component (`show(Tuple(1.5, @Float64.0))`).
+        if count != 1 and not (row.kind == "float_to_int_domain" and count > 1):
             span = row.node.span
             problems.append(
                 f"{row.kind} {row.path} at "
@@ -908,16 +930,20 @@ def test_mover_a_bare_put_into_a_refined_cell_takes_the_predicate_guard(
 
 def test_mover_a_guard_on_a_value_already_of_the_refined_type_goes() -> None:
     """`examples/ephemeris.vera` stored a refined slot into a field of its
-    own type (lines 269 and 292) and bound a sub-pattern at its field's own
-    refinement (line 340): three §2.6.5 checks whose predicate held by
-    typing, with no record (the KNOWN entries removed with them).  The table
-    lists no row where the value already carries the refinement."""
+    own type (lines 269 and 292): two §2.6.5 checks whose predicate held by
+    typing, since the slot's own binding is checked, with no record (the
+    KNOWN entries removed with them).  The table lists no row where a value
+    already carries the refinement.  A binder is the other case: the
+    sub-pattern at its field's own refinement (line 340) is still checked,
+    since a field's refinement is no fact unless its producer was checked,
+    and a parameter's payload is not (#1706's cells)."""
     compiled = pipeline.compile(ROOT / "examples" / "ephemeris.vera", file="ephemeris.vera")
     assert compiled.ok
     sites = {(g.line, g.column) for g in pipeline.checks(
         compiled.result, emitter="codegen/contracts.py:_emit_refinement_check")}
-    assert not sites & {(269, 50), (292, 50), (340, 26)}, sorted(sites)
+    assert not sites & {(269, 50), (292, 50)}, sorted(sites)
     assert (211, 35) in sites and (223, 36) in sites  # the entry checks stay
+    assert (340, 26) in sites  # the binder's check stays
 
 
 def test_mover_a_clause_binder_over_a_container_payload_is_walked(

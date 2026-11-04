@@ -113,6 +113,7 @@ KNOWN: tuple[Known, ...] = (
     Known(1695, "tests/conformance/ch02_nat_i64.vera", "guarded_unrecorded", "div_zero", "ch02_nat_i64.vera:41:3"),
     Known(1695, "examples/ephemeris.vera", "guarded_unrecorded", "refine_bind", "ephemeris.vera:211:35"),
     Known(1695, "examples/ephemeris.vera", "guarded_unrecorded", "refine_bind", "ephemeris.vera:223:36"),
+    Known(1695, "examples/ephemeris.vera", "guarded_unrecorded", "refine_bind", "ephemeris.vera:340:26"),
     Known(1695, "examples/ephemeris.vera", "guarded_unrecorded", "div_zero", "ephemeris.vera:448:146"),
     Known(1695, "examples/ephemeris.vera", "guarded_unrecorded", "div_zero", "ephemeris.vera:448:205"),
     Known(1695, "examples/fizzbuzz.vera", "guarded_unrecorded", "div_zero", "fizzbuzz.vera:6:6"),

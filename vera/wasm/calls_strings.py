@@ -1026,9 +1026,12 @@ class CallsStringsMixin:
         # magnitude of 2^63 or more (#1482), so it carries its record entry's
         # marker (#1479), as a native division does.
         instructions.append(f"local.get {fval}")
-        instructions.append("i64.trunc_f64_s" + self._record_check(
-            self._row(at, "float_to_int_domain"),
-            emitter="wasm/calls_strings.py:_float_to_string_core", at=at))
+        instructions.append("i64.trunc_f64_s" + (
+            self._record_shared_check(
+                emitter="wasm/calls_strings.py:_float_to_string_core")
+            if at is None else self._record_check(
+                self._row(at, "float_to_int_domain"),
+                emitter="wasm/calls_strings.py:_float_to_string_core", at=at)))
         instructions.append(f"local.set {ival}")
 
         # Compute the fractional part NOW, before writing integer

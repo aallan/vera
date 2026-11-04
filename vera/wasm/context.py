@@ -89,7 +89,7 @@ _CHECK_IDS = itertools.count(1)
 #: `TRAP_EMITTERS` key, the node the check's span comes from, its path
 #: within that node's value (:attr:`vera.trap_registry.EmittedCheck.path`),
 #: and the obligation table row it is the runtime half of (#1695, by id).
-CheckRecord = dict[int, tuple[str, ast.Node | None, tuple[str, ...], int]]
+CheckRecord = dict[int, tuple[str, ast.Node | None, tuple[str, ...], int | None]]
 
 
 class WasmContext(
@@ -926,6 +926,26 @@ class WasmContext(
                 f"{emitter}: a check at a node the obligation table lists "
                 "no row for (#1695)", at,
             )
+        return self._record_row_check(row, emitter=emitter, at=at, path=path)
+
+    def _record_shared_check(self, *, emitter: str) -> str:
+        """Enter the check of a generated helper shared by every rendering
+        of its type (a recursive data type's `$show_<type>`, #1482): it
+        belongs to no one call, so it names no row and no span, and each
+        rendering's row is answered by the helper it reaches."""
+        if emitter not in TRAP_EMITTERS:
+            raise CodegenInvariantError(
+                f"trap emitter {emitter!r} is not in "
+                "vera.trap_registry.TRAP_EMITTERS", None,
+            )
+        check_id = next(_CHECK_IDS)
+        self._emitted_checks[check_id] = (emitter, None, (), None)
+        return check_marker(check_id)
+
+    def _record_row_check(
+        self, row: Row, *, emitter: str, at: ast.Node | None,
+        path: tuple[str, ...],
+    ) -> str:
         if not row.guard.check:
             raise CodegenInvariantError(
                 f"{emitter}: a check for a row the obligation table holds "
@@ -1027,6 +1047,8 @@ class WasmContext(
         def rekey(match: re.Match[str]) -> str:
             emitter, at, path, row_id = self._emitted_checks[
                 int(match.group(1))]
+            if row_id is None:
+                return match.group(0)  # a shared helper's: no row to re-key
             row = self.obligations.rows[row_id]
             again = self.obligations.row(
                 row.node, row.kind, row.path, evaluation)
