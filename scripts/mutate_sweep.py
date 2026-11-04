@@ -816,12 +816,14 @@ def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: li
     started = time.monotonic()
     head = md._git(repo, "rev-parse", "--verify", "HEAD^{commit}").strip()
     env = md._git_env()
-    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    # The copy caches bytecode (scripts/mutate_diff.py says why, #1829).
+    env.pop("PYTHONDONTWRITEBYTECODE", None)
     env["COLUMNS"] = "80"  # the width md.engine_failure reads pytest's rules at
     skips = workdir / "oracle-skips.txt"
     source_skips = workdir / "oracle-source-skips.txt"
     env[md.SKIPS_ENV] = str(skips)
     env[md.SOURCE_SKIPS_ENV] = str(source_skips)
+    env[md.FAILURES_ENV] = str(workdir / "oracle-failures.txt")
     version = md._engine_version(engine, env)
     if not version:
         raise md.LaneError("the engine did not report its version")

@@ -30,6 +30,15 @@ own reads), goes as usual: a ``.lark`` grammar or a ``.wat`` runtime under
 pytest's own reads of a traceback's source go through ``tokenize.open``,
 which holds its own reference to the original ``open``.
 
+A test that fails with no mutant active, in the stats pass or the clean
+run, is the one that stops the pass under ``-x``, and the lane drops it
+from the oracle and runs again.  Under the fork server each pass runs in a
+child whose pytest output never reaches mutmut's log (its output catcher
+replaces ``sys.stdout`` in Python, so the child's writes die with it;
+#1829), so the plugin appends the node id of each test that fails in those
+two passes to the file ``MUTATION_ORACLE_FAILURES`` names, where the lane
+reads the first.
+
 The skipped test is out of the oracle entirely.  mutmut's stats pass records,
 at each test's teardown and whatever its outcome, the functions the test
 reached, and runs a mutant against the tests recorded for its function; a
@@ -52,7 +61,7 @@ import sys
 import tomllib
 from collections.abc import Generator
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -61,6 +70,15 @@ SKIPS_ENV = "MUTATION_ORACLE_SKIPS"
 
 #: The variable naming the file each test skipped for a source read is appended to.
 SOURCE_SKIPS_ENV = "MUTATION_ORACLE_SOURCE_SKIPS"
+
+#: The variable naming the file each test that fails in mutmut's stats pass
+#: or its clean run is appended to.
+FAILURES_ENV = "MUTATION_ORACLE_FAILURES"
+
+#: mutmut's marker for the passes with no mutant active: the stats pass,
+#: and the clean run of the covering tests (the forced-fail run is ``fail``,
+#: a mutant's run its name, a listing ``list_all_tests``).
+_CLEAN_PASSES = ("", "stats")
 
 #: Why a test is skipped, as its skip reason.
 REASON = ("starts a Python or vera process, which inside mutmut's copy runs the mutated "
@@ -188,12 +206,12 @@ def pytest_configure(config: pytest.Config) -> None:
     if _original_open is None:
         _source_roots = source_roots(Path(__file__).resolve().parent.parent)
         _original_open = builtins.open
-        builtins.open = _skipping_open  # type: ignore[assignment]
-        io.open = _skipping_open  # type: ignore[assignment]
+        builtins.open = _skipping_open
+        io.open = _skipping_open
         _original_getsource = inspect.getsource
         _original_getsourcelines = inspect.getsourcelines
-        inspect.getsource = _skipping_getsource  # type: ignore[assignment]
-        inspect.getsourcelines = _skipping_getsourcelines  # type: ignore[assignment]
+        inspect.getsource = cast(Any, _skipping_getsource)
+        inspect.getsourcelines = cast(Any, _skipping_getsourcelines)
 
 
 def pytest_unconfigure(config: pytest.Config) -> None:
@@ -208,6 +226,16 @@ def pytest_unconfigure(config: pytest.Config) -> None:
         inspect.getsourcelines = _original_getsourcelines
         _original_open = _original_getsource = _original_getsourcelines = None
         _source_roots = ()
+
+
+def pytest_runtest_logreport(report: pytest.TestReport) -> None:
+    """A test that fails with no mutant active fails in the copy: its node
+    id goes to the file ``MUTATION_ORACLE_FAILURES`` names, for the lane to
+    drop it by, since the fork server keeps the pass's output from the log."""
+    path = os.environ.get(FAILURES_ENV)
+    if path and report.failed and os.environ.get("MUTANT_UNDER_TEST", "") in _CLEAN_PASSES:
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(report.nodeid + "\n")
 
 
 @pytest.hookimpl(wrapper=True)

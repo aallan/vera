@@ -189,6 +189,12 @@ NO_COUNT_EXIT = 4
 SKIPS_ENV = "MUTATION_ORACLE_SKIPS"
 SOURCE_SKIPS_ENV = "MUTATION_ORACLE_SOURCE_SKIPS"
 
+#: The variable naming the file the plugin appends the node id of each test
+#: that fails in mutmut's stats pass or its clean run to: under the fork
+#: server those passes run in a child whose pytest output never reaches the
+#: log, so the test that stopped the pass is read from here (#1829).
+FAILURES_ENV = "MUTATION_ORACLE_FAILURES"
+
 #: The kinds of node (libcst's names) whose mutants mutmut 3.8 places on the
 #: node's first line though the text they change can lie below it
 #: (``mutation_operators`` in ``mutmut.mutation.mutators``): a call (an
@@ -1009,9 +1015,12 @@ def run_dropping(cmd: Sequence[str], *, tree: Path, pyproject: Path,
     dropped: list[str] = []
     remaining = budget_s
     attempt = 0
+    failures = Path(env[FAILURES_ENV]) if env.get(FAILURES_ENV) else None
     while True:
         attempt += 1
         pyproject.write_text(config_for(dropped), encoding="utf-8")
+        if failures is not None:
+            failures.unlink(missing_ok=True)  # each attempt's failures are its own
         log = workdir / f"mutmut-run-{attempt}.log"
         run = run_engine(cmd, cwd=tree, budget_s=remaining, log_path=log, env=env)
         remaining -= run.elapsed_s
@@ -1019,20 +1028,28 @@ def run_dropping(cmd: Sequence[str], *, tree: Path, pyproject: Path,
             return run, log, dropped
         text = log.read_text(encoding="utf-8", errors="replace")
         run.error = engine_failure(text)
-        failing = None if run.error is not None else copy_failure(text)
+        failing = None if run.error is not None else copy_failure(text, failures)
         if (failing is None or failing in dropped or len(dropped) >= MAX_COPY_DROPS
                 or remaining <= 0):
             return run, log, dropped
         dropped.append(failing)
 
 
-def copy_failure(log: str) -> str | None:
-    """The test that stopped mutmut's stats pass or its clean run, read off
-    its log, when that is how the run stopped."""
+def copy_failure(log: str, failures: Path | None = None) -> str | None:
+    """The test that stopped mutmut's stats pass or its clean run, when that
+    is how the run stopped: read off the log's ``FAILED`` line, or, when the
+    log has none because the pass ran in the fork server's child, the first
+    node id the plugin appended to ``failures`` (:data:`FAILURES_ENV`)."""
     if not any(stop in log for stop in _COPY_STOPS):
         return None
     match = re.search(r"^(?:FAILED|ERROR) (.+?)(?: - .*)?$", log, re.M)
-    return match.group(1).strip() if match else None
+    if match:
+        return match.group(1).strip()
+    if failures is not None and failures.exists():
+        for line in failures.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                return line.strip()
+    return None
 
 
 def engine_failure(log: str) -> str | None:
@@ -1610,9 +1627,14 @@ def _lane(args: argparse.Namespace, repo: Path, workdir: Path, engine: list[str]
                          "--", "tests/").split()
 
     # The engine runs the selected tests, and a test that spawns git must
-    # not inherit a hook's GIT_DIR.
+    # not inherit a hook's GIT_DIR.  The copy caches bytecode: a mutated
+    # module compiles in tens of seconds (vera/checker/calls.py with its
+    # 3,515 mutants inlined is 24 MB and takes 47 s) and loads from its .pyc
+    # in a fifth of a second, and under the fork server every pass and every
+    # mutant's worker is a fresh process (#1829); the copy is written once a
+    # run, before any import, so a stale .pyc cannot arise.
     env = _git_env()
-    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env.pop("PYTHONDONTWRITEBYTECODE", None)
     # pytest draws its rules the terminal's width, which engine_failure reads.
     env["COLUMNS"] = "80"
     # tests/mutation_oracle.py, which [tool.mutmut] loads, appends here each
@@ -1622,6 +1644,7 @@ def _lane(args: argparse.Namespace, repo: Path, workdir: Path, engine: list[str]
     source_skips = workdir / "oracle-source-skips.txt"
     env[SKIPS_ENV] = str(skips)
     env[SOURCE_SKIPS_ENV] = str(source_skips)
+    env[FAILURES_ENV] = str(workdir / "oracle-failures.txt")
     record: dict[str, Any] = {
         "schema": 2, "base": base, "merge_base": merge_base, "head": head,
         "engine_version": "", "budget_s": args.budget, "elapsed_s": 0.0,

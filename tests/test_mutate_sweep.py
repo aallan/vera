@@ -1087,9 +1087,12 @@ class TestWorkflow:
         assert isinstance(steps, list)
         return steps
 
-    def test_it_runs_nightly_and_on_demand_with_one_job_by_default(self) -> None:
+    def test_it_runs_on_demand_with_one_job_by_default_while_the_schedule_is_paused(self) -> None:
+        """The 21:00 UTC schedule is paused while the sample is drawn by line
+        rather than by mutant (#1829); the `issue` job keeps its scheduled
+        condition for the schedule's return."""
         on = self._wf()[True]
-        assert set(on) == {"schedule", "workflow_dispatch"} and len(on["schedule"]) == 1
+        assert set(on) == {"workflow_dispatch"}
         assert on["workflow_dispatch"]["inputs"]["jobs"]["default"] == 1
 
     def test_only_the_issue_job_writes_and_it_writes_only_issues(self) -> None:
@@ -1250,7 +1253,8 @@ from pathlib import Path
 state = Path(os.environ["FAKE_STATE"])
 args = sys.argv[1:]
 with (state / "calls.jsonl").open("a", encoding="utf-8") as fh:
-    fh.write(json.dumps({"cwd": os.getcwd(), "args": args, "columns": os.environ.get("COLUMNS")}) + "\\n")
+    fh.write(json.dumps({"cwd": os.getcwd(), "args": args, "columns": os.environ.get("COLUMNS"),
+                         "bytecode_off": os.environ.get("PYTHONDONTWRITEBYTECODE")}) + "\\n")
 if args[0] == "--version":
     print("mutmut, version 3.8.0")
     sys.exit(0)
@@ -1270,7 +1274,13 @@ if args[0] == "run":
     config = Path("pyproject.toml").read_text(encoding="utf-8")
     if failing and f"--deselect={failing}" not in config:
         print("Running stats")
-        print(f"FAILED {failing} - FileNotFoundError: x")
+        if os.environ.get("FAKE_COPY_FAILURE_SILENT"):
+            # The fork server: the pass's pytest output never reaches the
+            # log; the plugin wrote the failing test's id to the lane's file.
+            with open(os.environ["MUTATION_ORACLE_FAILURES"], "a", encoding="utf-8") as fh:
+                fh.write(failing + "\\n")
+        else:
+            print(f"FAILED {failing} - FileNotFoundError: x")
         print("failed to collect stats. runner returned 1")
         sys.exit(1)
     for fake, env in (("FAKE_ORACLE_SKIPS", "MUTATION_ORACLE_SKIPS"),
@@ -1418,6 +1428,31 @@ class TestEndToEnd:
             "    vera.m.x_f__mutmut_1: killed\n    vera.m.x_g__mutmut_1: killed\n"))
         assert code == 0 and record["dropped_tests"] == ["tests/test_m.py::test_f"]
         assert len([c for c in calls if c["args"][0] == "run"]) == 2
+
+    def test_a_copy_failure_the_log_does_not_name_is_read_from_the_plugins_file(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Under the fork server the stats pass's pytest output dies with
+        its child, so the log holds no `FAILED` line (the three engine stops
+        of 3 and 4 November 2026, #1829): the plugin's file names the test,
+        and the slice drops it as before."""
+        monkeypatch.setenv("FAKE_COPY_FAILURE", "tests/test_m.py::test_f")
+        monkeypatch.setenv("FAKE_COPY_FAILURE_SILENT", "1")
+        code, record, calls = _night(repo, tmp_path, 1, (
+            "    vera.m.x_f__mutmut_1: killed\n    vera.m.x_g__mutmut_1: killed\n"))
+        assert code == 0 and record["stopped"] is None
+        assert record["dropped_tests"] == ["tests/test_m.py::test_f"]
+        assert len([c for c in calls if c["args"][0] == "run"]) == 2
+
+    def test_the_copy_caches_bytecode(self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A mutated module compiles in tens of seconds and loads from its
+        .pyc in a fifth of a second; under the fork server every pass and
+        every mutant's worker is a fresh process (#1829)."""
+        monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "1")  # the night's own shell may set it
+        code, _, calls = _night(repo, tmp_path, 1, "    vera.m.x_f__mutmut_1: killed\n    vera.m.x_g__mutmut_1: killed\n")
+        assert code == 0
+        (run,) = [c for c in calls if c["args"][0] == "run"]
+        assert run["bytecode_off"] is None
 
     def test_a_test_dropped_on_an_earlier_night_is_deselected_from_the_start(
         self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
