@@ -784,25 +784,38 @@ private fn caller(@Unit -> @Int)
 # #1199: block translation continues through an untranslatable let
 # =====================================================================
 
+def _assert_e532(source: str) -> None:
+    """The one call precondition of *source* is obligated and undecided:
+    `tier3`/E532 with its warning, no error (#1696, R4)."""
+    result = _verify(source)
+    pres = [(o.status, o.error_code) for o in result.obligations
+            if o.kind == "call_pre"]
+    assert pres == [("tier3", "E532")], pres
+    assert [d.error_code for d in result.diagnostics] == ["E532"], [
+        (d.error_code, d.description[:60]) for d in result.diagnostics]
+
+
 class TestCallPreAfterOpaqueLet:
     """#1199 (folded into the #764 fix): a `let` whose value the SMT layer
     cannot translate — an effect-op result — no longer truncates the block.
     The slot binds to a fresh unconstrained constant of the value's
     recorded type and translation continues, so a later call's E501 is
-    still checked.  Against an opaque value an unprovable precondition
-    fires — the posture an opaque *function* result already had — and the
-    repair is an `assert`/`assume`, whose fact the #804 threading carries
-    into the check.  Opaque constants are span-keyed: distinct statements
+    still checked.  Against an opaque value an unprovable precondition is
+    undecided (#1696, R4): the stand-in's model value is not a run, so it is
+    `tier3`/E532 behind the callee's check, never E501 — and the repair is an
+    `assert`/`assume`, whose fact the #804 threading carries into the
+    check.  Opaque constants are span-keyed: distinct statements
     yield distinct constants (two effect results are never provably
     equal), while every translation pass over one statement sees the same
     term.
     """
 
     def test_call_violated_after_opaque_let(self) -> None:
-        """An unconstrained effect-op value fed to `requires(> 0)` fires
-        E501 (pre-fix the block truncated and this verified silently
-        clean)."""
-        _verify_err("""
+        """An unconstrained effect-op value fed to `requires(> 0)` is
+        obligated, and undecided: `tier3`/E532, not E501, since some value
+        of the stand-in satisfies it (#1696, R4); pre-#1199 the block
+        truncated and this verified silently clean."""
+        _assert_e532("""
 private fn needs_pos(@Int -> @Int)
   requires(@Int.0 > 0)
   ensures(true)
@@ -817,7 +830,7 @@ private fn caller(@Unit -> @Int)
   let @Int = Random.random_int(0, 9);
   needs_pos(@Int.0)
 }
-""", "precondition")
+""")
 
     def test_assert_repairs_opaque_let_call(self) -> None:
         """The documented repair: an `assert` on the opaque value threads
@@ -844,10 +857,11 @@ private fn caller(@Unit -> @Int)
 
     def test_two_opaque_lets_are_distinct(self) -> None:
         """Two effect-op lets bind DISTINCT opaque constants — a
-        `requires(@Int.0 == @Int.1)` callee cannot prove them equal, so
-        E501 fires.  A shared-constant bug (same name for both) would prove
-        the equality and silently drop this E501."""
-        _verify_err("""
+        `requires(@Int.0 == @Int.1)` callee cannot prove them equal, so the
+        precondition is undecided (`tier3`/E532, #1696 R4).  A
+        shared-constant bug (same name for both) would prove the equality
+        and record it `verified`."""
+        _assert_e532("""
 private fn same(@Int, @Int -> @Int)
   requires(@Int.0 == @Int.1)
   ensures(true)
@@ -863,7 +877,7 @@ private fn caller(@Unit -> @Int)
   let @Int = Random.random_int(0, 9);
   same(@Int.1, @Int.0)
 }
-""", "precondition")
+""")
 
     def test_ensures_after_opaque_let_proves(self) -> None:
         """A postcondition independent of the opaque value proves at
@@ -951,8 +965,9 @@ private fn f(@Unit -> @Int)
     def test_call_violated_after_opaque_destructure(self) -> None:
         """The destructure analogue: a tuple of effect-op results is
         unprojectable, so each component binds a fresh opaque constant and
-        the later violating call still fires E501 (pre-fix: silent)."""
-        _verify_err("""
+        the later call is still obligated, undecided over the stand-ins
+        (`tier3`/E532, #1696 R4; pre-#1199: silent)."""
+        _assert_e532("""
 private fn needs_pos(@Int -> @Int)
   requires(@Int.0 > 0)
   ensures(true)
@@ -967,7 +982,7 @@ private fn caller(@Unit -> @Int)
   let Tuple<@Int, @Int> = Tuple(Random.random_int(0, 9), Random.random_int(0, 9));
   needs_pos(@Int.1)
 }
-""", "precondition")
+""")
 
 
 # =====================================================================
@@ -1105,7 +1120,8 @@ public fn main(@Unit -> @Bool)
 
     def test_untranslatable_adt_field_demotes_to_e532(self) -> None:
         """A precondition over a host-handle value (`map_size` on a `Map`)
-        can't be modelled in Z3.  The obligation must demote LOUDLY to
+        can't be decided in Z3: the size is a stand-in carrying `>= 0`
+        alone (#1696, R2), so a bound it does not imply is undecided.  The obligation must demote LOUDLY to
         Tier-3 (E532 warning), never silently vanish — DESIGN.md degrades
         loudly (#882).  (The fixture's original shape — `==` on an ADT
         wrapping a Map — is now E243-rejected at check by the #874 Eq
@@ -1116,7 +1132,7 @@ public fn main(@Unit -> @Bool)
         meaning is a *postcondition* demotion (body undecidable)."""
         src = """
 private fn g(@Map<String, Int> -> @Bool)
-  requires(map_size(@Map<String, Int>.0) >= 0)
+  requires(map_size(@Map<String, Int>.0) < 100)
   ensures(true)
   effects(pure)
 { true }

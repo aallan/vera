@@ -803,8 +803,11 @@ def test_repro_a_fact_from_a_right_operand_needs_its_left_operand() -> None:
 @pytest.mark.parametrize("op", OPS)
 def test_an_unstated_left_operand_protects_nothing(op: str) -> None:
     """The nearest neighbour of the fresh premise: the right operand's
-    division is refused as it is under an `if` whose condition does not
-    translate, so the stand-in states nothing about the divisor."""
+    division reads as it does under an `if` whose condition does not
+    translate.  The stand-in states nothing about the divisor, and a
+    refutation under it rests on it (#1696's rule): the division is a
+    runtime check, since the closure may be what keeps the divisor from
+    zero, as it is here, and never a proof."""
     left = "apply_fn(fn(@Int -> @Bool) effects(pure) { @Int.0 != 0 }, @Int.0)"
     if op == "||":
         left = f"!{left}"
@@ -818,5 +821,5 @@ def test_an_unstated_left_operand_protects_nothing(op: str) -> None:
     v, w = _verify(source), _verify(defined)
     assert _records_at(v, _at(source, "10 / ")) == _records_at(
         w, _at(defined, "10 / "))
-    assert "div_zero:violated/E526" in _records_at(v, _at(source, "10 / "))
+    assert "div_zero:tier3" in _records_at(v, _at(source, "10 / "))
     assert _signature(v) == _signature(w)

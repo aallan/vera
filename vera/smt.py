@@ -15,7 +15,7 @@ import hashlib
 
 import contextlib
 import os
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, cast
 
@@ -319,6 +319,29 @@ _CMP_OPS: dict[ast.BinOp, str] = {
 
 _BOOL_OPS: set[ast.BinOp] = {ast.BinOp.AND, ast.BinOp.OR, ast.BinOp.IMPLIES}
 
+#: The primitive bases whose refinement predicates the solver may state over
+#: a term: each has an SMT sort and the base's own semantics (`Nat`'s `>= 0`
+#: is stated beside the predicate).  A `Byte`'s arithmetic wraps at 256 and
+#: a `Unit` has one value, neither of which the `Int` sort carries, so a
+#: predicate over them stated as written would be a different fact (CR
+#: db24433); a data type or container base is modelled by its sort.
+_MODELLED_BASES: tuple[PrimitiveType, ...] = (INT, NAT, BOOL, FLOAT64, STRING)
+
+#: The word a stand-in's name carries for the kind of node it stands for
+#: (`SmtContext._stand_in`): ``_opaque_call_12_7`` for a call at line 12,
+#: column 7.  Any other node is a ``value``.
+_STAND_IN_TAGS: Mapping[type[ast.Node], str] = {
+    ast.FnCall: "call",
+    ast.QualifiedCall: "op",
+    ast.IfExpr: "if",
+    ast.MatchExpr: "match",
+    ast.HandleExpr: "handle",
+    ast.Block: "block",
+    ast.ArrayLit: "array",
+    ast.IndexExpr: "index",
+    ast.AnonFn: "closure",
+}
+
 
 # =====================================================================
 # ADT type helpers
@@ -359,22 +382,23 @@ def strip_refinements(ty: Type) -> Type:
     payload the chain does NOT exclude is still refused
     (`tests/test_verifier_refined_sort_derivation.py`).
 
-    THE RULE THIS OBEYS, and the reason it is not the whole story: *a
-    refinement is represented as its base only while its predicate can be
-    STATED*.  Unwrapping is what makes the sort; the predicate is what gives
-    the sort its meaning, and a level of the chain that calls something
-    outside the decidable fragment (spec §2.6.4 cause 3) leaves the value a
-    bare `Int` with nothing said about it.  Such a term must not exist at
-    all: the solver is free to choose a value the type forbids, so
-    `{ @L1 | int_to_float(@L1.0) > 0.0 }` over `{ @Int | @Int.0 > 0 }`
-    refuted `100 / @L2.0` with the divisor 0 — a value `L1` excludes and
-    `vera run` never produces (review of PR #1415, J1).  So the question
-    "does this refinement's whole predicate translate, at every depth?" is
-    asked ONCE, by `SmtContext._refinement_statable`, and the SORT
-    derivation reads it: an unstatable refinement keeps the `?` key and the
-    `None` sort, exactly as it did before a chain could be unwrapped at all.
-    This function stays pure and unconditional; it says what a refinement is
-    REPRESENTED as, and its callers decide whether to represent it.
+    THE RULE THIS OBEYS (#1696): a refinement is represented as its base,
+    and what its predicate states is a FACT about the value, stated over
+    the term by `SmtContext._type_facts` — whole where the predicate
+    translates, and in its translatable part where a sub-expression of it
+    has no term, that sub-expression then standing in as a constant of its
+    own.  A level of the chain that calls something outside the decidable
+    fragment (spec §2.6.4 cause 3) therefore no longer leaves the value a
+    bare `Int` with nothing said about it: `{ @L1 | int_to_float(@L1.0) >
+    0.0 }` over `{ @Int | @Int.0 > 0 }` states `@Int.0 > 0` of the value,
+    and `100 / @L2.0` proves.  Where the stated part does not exclude a
+    value the type forbids, the solver may still choose it, so a value
+    whose refinement is not fully stated is registered as one no refutation
+    may rest on (`declared_facts`, #1470): a `sat` over it reports the
+    obligation undecided, never a counterexample.  The earlier gate, which
+    kept an unstatable refinement at the `?` key and the `None` sort
+    (review of PR #1415, J1), is retired by that rule.  This function stays
+    pure and unconditional; it says what a refinement is REPRESENTED as.
     """
     while isinstance(ty, RefinedType):
         ty = ty.base
@@ -401,11 +425,7 @@ def _holds_a_chosen_value(term: z3.ExprRef) -> bool:
     return False
 
 
-def _adt_sort_key(
-    adt_name: str,
-    type_args: tuple[Type, ...],
-    statable: "Callable[[Type], bool] | None" = None,
-) -> str:
+def _adt_sort_key(adt_name: str, type_args: tuple[Type, ...]) -> str:
     """Build a canonical key for an ADT sort, e.g. ``List<Int>``.
 
     ONE derivation of the sort a type argument contributes, wherever a term
@@ -428,13 +448,6 @@ def _adt_sort_key(
         return adt_name
     arg_strs = []
     for a in type_args:
-        if (statable is not None and isinstance(a, RefinedType)
-                and not statable(a)):
-            # A refinement whose predicate cannot be STATED is not modelled:
-            # see `strip_refinements`.  `?` is the same refusal a type
-            # variable earns, and it keeps the key and the sort agreeing.
-            arg_strs.append("?")
-            continue
         a = strip_refinements(a)
         if isinstance(a, PrimitiveType):
             # A `Nat` contributes `Int`: the two share one carrier, `Nat`
@@ -442,7 +455,7 @@ def _adt_sort_key(
             # so they are one sort as a refinement and its base are (#1594).
             arg_strs.append("Int" if a.name == "Nat" else a.name)
         elif isinstance(a, AdtType):
-            arg_strs.append(_adt_sort_key(a.name, a.type_args, statable))
+            arg_strs.append(_adt_sort_key(a.name, a.type_args))
         else:
             # A type variable or a shape the sort layer does not model: the
             # key stays un-nameable on purpose.
@@ -645,11 +658,32 @@ class SmtContext:
         # clone the call calls (`ContractVerifier._generic_callee_info`).
         self._generic_callee_hook: Callable[[Any, Any], Any] | None = None
         self._call_violations: list[CallViolation] = []
-        # #1199: True once any opaque stand-in constant entered this
-        # function's body model (see _fresh_opaque_slot).  The verifier's
-        # ensures / refined-return checks consult it: a failed proof over a
-        # tainted model demotes to Tier-3 instead of claiming a definite
-        # violation the opaque value may never realise.
+        # #1696: the stand-ins this function's model holds, one per node the
+        # translation has no term for (`_stand_in`), keyed by the node's
+        # identity, the terms it reads and its sort, so every pass over the
+        # node sees one term.  The names given out are counted per spelling
+        # (`_named`), so a second key at one span takes a suffix rather than
+        # the first key's constant; a call's result and a literal's constant
+        # are named through the same table.
+        self._stand_ins: dict[tuple[Any, ...], z3.ExprRef] = {}
+        self._names: dict[str, dict[Any, str]] = {}
+        #: The ast ids of the terms a refutation may not rest on (#1696, R4):
+        #: every stand-in, a call result or literal built on one, and a
+        #: declared value whose refinement holds one (`declared_facts`).
+        self._tainted_ids: set[int] = set()
+        #: The ast ids of the path conditions that are BRANCH premises: an
+        #: `if`'s condition, a `match` arm's pattern and the earlier arms'
+        #: negations, a short-circuit operand's premise (`_branch_premise`).
+        #: An obligation under one of these runs only where the premise
+        #: says, so a premise that reads a stand-in is a place a refutation
+        #: rests (R4); a fact the verifier pushes beside them — a
+        #: top-level `assert`'s, checked at run time — is not.
+        self._branch_premise_ids: set[int] = set()
+        #: The terms behind both id sets, held so that Z3 cannot collect
+        #: one and give its id to a later term (CodeRabbit, PR #1833).
+        self._id_holders: list[z3.ExprRef] = []
+        # True once any such term entered this function's model: the cheap
+        # gate `_check_refutation` asks before it walks a query's terms.
         self._opaque_tainted = False
         # #882: call sites whose precondition obligation cannot be checked
         # statically (untranslatable ADT-argument, etc.) — demoted to a loud
@@ -703,14 +737,6 @@ class SmtContext:
         # own condition is inexact.  A default arm's path already holds the
         # negation of every earlier arm's.  Read by `_arm_guarded_binders`.
         self._reach_extras: list[z3.ExprRef | None] = []
-        # #1480 review: whether a call-site precondition refuted over an
-        # opaque value (#1199) is a violation.  True only while the verifier
-        # translates a function BODY (`strict_preconditions`): the position
-        # whose call checks were recorded before #1480, where §6.4.2 keeps a
-        # user callee's precondition strict (#804).  Every other check is one
-        # #1480 records, and a refutation of it that rests on a value the
-        # verifier cannot state is a Tier-3 demotion (`_rests_on_unknown`).
-        self._strict_preconditions = False
         # Optional hook (injected by the verifier) answering whether a term
         # is, or embeds, a placeholder one of its walks bound for a `let`, a
         # destructure or a `match` binder whose value does not translate —
@@ -791,19 +817,6 @@ class SmtContext:
         # the construction's.  Signature: (expr_ast) -> Type | None.  None
         # when no verifier is driving: then no construction has a term.
         self._constructed_type_hook: Any = None
-        # Optional hook (injected by the verifier) answering whether a
-        # refinement's WHOLE predicate translates — the chain walk and the
-        # predicate translation both live on the verifier.  Signature:
-        # (Type) -> bool.  None means "no predicates are in play", which is
-        # true of a pure-SMT test and is what this layer assumed before the
-        # question existed.  See `strip_refinements` for the rule.
-        self._refinement_statable_hook: Any = None
-        #: Its memo, keyed by the type's repr.  Per context: the answer is a
-        #: property of the type, but the translation that decides it runs
-        #: against this context's registries.
-        self._statable: dict[str, bool] = {}
-        #: The types currently being asked about, for the re-entrant case.
-        self._asking: set[str] = set()
         # ADT support
         self._adt_registry: dict[str, AdtInfo] = {}
         self._adt_registry_version = 0
@@ -1255,57 +1268,24 @@ class SmtContext:
         holds its condition, and restore them on exit; None holds nothing."""
         depth = len(self._path_conditions)
         if fact is not None:
-            self._path_conditions.append(fact)
+            self.branch_premise(fact)
         try:
             yield
         finally:
             del self._path_conditions[depth:]
 
-    @contextlib.contextmanager
-    def strict_preconditions(self) -> Iterator[None]:
-        """Translate a function body under #804's strict precondition rule.
-
-        The verifier wraps its translation of a function's body in this, and
-        nothing else: that translation checked and recorded every call it
-        reached before #1480, and §6.4.2 keeps a user callee's precondition
-        over an opaque value (#1199) an E501 there.  Everywhere else (a
-        contract clause, a measure, a predicate, a call only the obligation
-        walk reaches) the check is one #1480 records, and it may not refuse
-        on a value the verifier cannot state (`_rests_on_unknown`).
-        """
-        saved = self._strict_preconditions
-        self._strict_preconditions = True
-        try:
-            yield
-        finally:
-            self._strict_preconditions = saved
-
-    def _rests_on_unknown(
-        self, goal: z3.ExprRef, result: SmtResult, *, strict: bool,
-    ) -> bool:
-        """Whether a call-site check that failed with *result* was refuted
-        only over a value the verifier cannot state (#1480 review).
-
-        Such a value is a placeholder: a binding one of the verifier's walks
-        made for a `let`, a destructure or a `match` binder whose value does
-        not translate (`_placeholder_hook`), or an opaque stand-in (#1199,
-        the ``"opaque"`` status) unless *strict* keeps #804's rule.  Z3 may
-        give it any value, so its countermodel names no value the program
-        produces, and the compiled code checks the precondition at the call:
-        the obligation is a Tier-3 demotion, never a refusal.
-
-        But embedding a placeholder is not depending on it, so the goal is
-        asked again, negated, as #1460 asks a refinement's: a precondition
-        false for EVERY value the placeholder could take is refuted outright.
-        """
-        rests = (
-            (result.status == "opaque" and not strict)
-            or (self._placeholder_hook is not None
-                and self._placeholder_hook(goal))
-        )
-        if not rests:
-            return False
-        return self.check_valid(z3.Not(goal), []).status != "verified"
+    def branch_premise(self, condition: z3.ExprRef) -> None:
+        """Push *condition* as a branch premise: a path condition under
+        which the obligations of a branch, an arm or a short-circuit
+        operand are asked, and which a refutation rests on where it reads
+        a stand-in (#1696, R4; `_branch_premise_ids`).  The translation
+        and the verifier's walks push every such condition through here,
+        and pop it as they do any path condition; a fact a block
+        establishes (an `assert`, a `let`'s predicate) is a path condition
+        that is not a branch premise."""
+        self._path_conditions.append(condition)
+        self._branch_premise_ids.add(condition.get_id())
+        self._id_holders.append(condition)
 
     def _record_call_demotion(
         self,
@@ -1421,61 +1401,6 @@ class SmtContext:
         self._vars[name] = v
         return v
 
-    def _refinement_statable(self, ty: Type) -> bool:
-        """Can this refinement's WHOLE predicate be stated to the solver?
-
-        THE one place that question is asked; `strip_refinements` explains
-        why the sort derivation has to ask it.  Answered by the verifier
-        through `_refinement_statable_hook`, which owns the chain walk and
-        the predicate translation; without a hook — a pure-SMT test, where no
-        predicate is in play — the answer is yes, which is what this layer
-        did before the question existed.
-
-        Memoised per type, and the entry is planted BEFORE the hook runs:
-        translating a predicate can ask for a sort, which can ask this again
-        for the same type, and an optimistic in-progress answer breaks that
-        cycle the way it would be broken anyway for a type whose predicate
-        does translate.
-        """
-        if self._refinement_statable_hook is None:
-            return True
-        key = repr(ty)
-        if self._statable.get(key):
-            return True
-        if key in self._asking:
-            # Re-entered while answering: translating a predicate can ask for
-            # a sort, which can ask this again for the same type.  An
-            # optimistic answer breaks the cycle the way it would be broken
-            # anyway for a type whose predicate does translate.
-            return True
-        self._asking.add(key)
-        try:
-            answer = bool(self._refinement_statable_hook(ty))
-        finally:
-            self._asking.discard(key)
-        if answer:
-            # Only a YES is a property of the type and worth keeping.  A NO
-            # may be "not yet": translating the predicate LOOKS UP the sorts
-            # it mentions and does not create them, so a predicate naming a
-            # constructor answers no until something else has built that
-            # sort.  Caching that turned one unrelated `let` nobody reads
-            # into the difference between accepting and refusing a program
-            # (review of PR #1415, L1), so a no is re-asked.
-            #
-            # DEFENSIVE, not load-bearing, and said plainly because this
-            # project does not keep an addition nothing can distinguish:
-            # what closes L1 at the current bound is the DEPTH rule above —
-            # a single refinement is outside this question, and the
-            # constructor-naming predicates that make a no unstable are
-            # single-level in every program either the review or I could
-            # build.  Memoising the no reds nothing today.  It is kept
-            # because the bound is the narrow part: the day this question
-            # decides more than whether to unwrap a chain, a cached "not
-            # yet" is exactly the failure L1 was, and #1470's fix has to
-            # make the answer a property of the type before that is safe.
-            self._statable[key] = True
-        return answer
-
     def _vera_type_to_z3_sort(
         self,
         ty: Type,
@@ -1508,16 +1433,9 @@ class SmtContext:
         # degrade the whole structure to a weaker model (CR PR-review).
         # Through the shared helper, and through it in a CHAIN: a single
         # unwrap here disagreed with the sort key's loop on a refinement over
-        # a refinement (#1431 review, F1).
-        #
-        # ... but only while the predicate can be STATED.  An unwrap that
-        # models the carrier while the predicate stays untranslated creates a
-        # term with nothing said about it, which the solver may then choose a
-        # forbidden value for; `strip_refinements` states the rule and
-        # :py:meth:`_refinement_statable` is where the question is asked
-        # (review of PR #1415, J1).
-        if isinstance(ty, RefinedType) and not self._refinement_statable(ty):
-            return None
+        # a refinement (#1431 review, F1).  Whatever the predicate states is
+        # a fact over the value, not a property of the sort (#1696;
+        # `strip_refinements` states the rule).
         ty = strip_refinements(ty)
         if isinstance(ty, PrimitiveType):
             if ty.name in ("Int", "Nat"):
@@ -1530,8 +1448,7 @@ class SmtContext:
                 return _FLOAT64_SORT
             return None
         if isinstance(ty, AdtType):
-            key = _adt_sort_key(
-                ty.name, ty.type_args, self._refinement_statable)
+            key = _adt_sort_key(ty.name, ty.type_args)
             # In-progress member of the current mutually-recursive group:
             # hand back its builder so Z3 resolves the forward reference.
             if builders is not None and key in builders:
@@ -1605,7 +1522,7 @@ class SmtContext:
         worklist: list[tuple[str, tuple[Type, ...]]] = [(root_name, root_args)]
         while worklist:
             name, args = worklist.pop()
-            key = _adt_sort_key(name, args, self._refinement_statable)
+            key = _adt_sort_key(name, args)
             if key in group or key in self._z3_sorts:
                 continue
             info = self._adt_registry.get(name)
@@ -1672,8 +1589,7 @@ class SmtContext:
         single pass instead of recursing unboundedly into fresh sort creation.
         A self-recursive datatype is the singleton-group case.
         """
-        key = _adt_sort_key(
-            adt_name, type_args, self._refinement_statable)
+        key = _adt_sort_key(adt_name, type_args)
         if key in self._z3_sorts:
             return self._z3_sorts[key]
 
@@ -1867,17 +1783,32 @@ class SmtContext:
     def translate_expr(
         self, expr: ast.Expr, env: SlotEnv
     ) -> z3.ExprRef | None:
-        """Translate a Vera AST expression to a Z3 formula.
+        """Translate a Vera AST expression to a Z3 term.
 
-        Returns None if the expression contains unsupported constructs
-        (triggers Tier 3 fallback).  Each class's translation is its arm in
-        ``_SMT_ARMS``, a ``vera.fold.dispatch`` table, so every `Expr` class
-        has one.  SMT translation is intentionally narrow: contracts permit a
-        subset of expression shapes, so the classes outside it answer
-        ``None`` there, each with its reason.
+        Each class's translation is its arm in ``_SMT_ARMS``, a
+        ``vera.fold.dispatch`` table, so every `Expr` class has one.  SMT
+        translation is intentionally narrow: contracts permit a subset of
+        expression shapes, so the classes outside it answer ``None`` there,
+        each with its reason.
+
+        An expression the arm has no term for is a STAND-IN (#1696, R1):
+        one constant of the sort of its checked type, named by the node and
+        seen as one term by every pass, carrying what its type states
+        (`_stand_in`).  The context then translates around it — an `if`
+        under the condition's stand-in, a call with a stand-in argument, a
+        literal with a stand-in element, a `match` on a stand-in scrutinee —
+        and a refutation that rests on it reports the obligation undecided
+        (`_check_refutation`).  Returns None only for a node whose type has
+        no sort (a closure, a `Unit`), or when no verifier drives this
+        context, and for a slot or result reference that does not resolve:
+        a scope the walk entered without its values is read as it was, not
+        as an unknown value of each reference.
         """
         arm = _SMT_ARMS.get(type(expr))
-        return None if arm is None else arm(self, expr, env)
+        term = None if arm is None else arm(self, expr, env)
+        if term is None and not isinstance(expr, (ast.SlotRef, ast.ResultRef)):
+            term = self._stand_in(expr, env)
+        return term
 
     def _translate_slot_ref(
         self, ref: ast.SlotRef, env: SlotEnv
@@ -2288,9 +2219,19 @@ class SmtContext:
         if any(e.sort() != element_sort for e in element_z3s[1:]):
             return None
         array_sort = self._get_array_sort(element_sort)
-        lit_name = self._fresh_name("array_lit")
+        # Named by the literal and its elements' terms (#1696, R1), so every
+        # pass over one literal reads one constant.
+        lit_name = self._named(
+            "_lit", expr, tuple(e.get_id() for e in element_z3s))
         lit_const = z3.Const(lit_name, array_sort)
         self._vars[lit_name] = lit_const
+        if any(self._mentions_stand_in(e) for e in element_z3s):
+            # An element the translation had no term for is a stand-in, and
+            # the literal is built on it: a refutation over the literal's
+            # elements rests on the stand-in as a refutation over the element
+            # would (R4).  Its length is the literal's own, so a goal over
+            # the length alone still proves (R3).
+            self._taint(lit_const)
         # Length axiom: `length(lit) == N`.
         length_fn = self._get_length_fn(array_sort)
         self.assume(length_fn(lit_const) == len(expr.elements))
@@ -2331,20 +2272,20 @@ class SmtContext:
         """
         cond = self.translate_expr(expr.condition, env)
         if cond is None:
-            # Can't translate condition — no path condition available
-            then = self.translate_expr(expr.then_branch, env)
-            else_ = self.translate_expr(expr.else_branch, env)
-            if then is None or else_ is None:  # pragma: no cover
-                return None
+            # A condition with no term at all (no verifier drives this
+            # context): the branches are not read, since a fact learned in
+            # one — a callee's `ensures` — would be assumed on the runs that
+            # take the other (#1571).  Under a verifier the condition is a
+            # stand-in `Bool` (#1696, R3), and each branch runs under it.
             return None
 
         # Translate then-branch with cond as path condition
-        self._path_conditions.append(cond)
+        self.branch_premise(cond)
         then = self.translate_expr(expr.then_branch, env)
         self._path_conditions.pop()
 
         # Translate else-branch with Not(cond) as path condition
-        self._path_conditions.append(z3.Not(cond))
+        self.branch_premise(z3.Not(cond))
         else_ = self.translate_expr(expr.else_branch, env)
         self._path_conditions.pop()
 
@@ -2369,6 +2310,48 @@ class SmtContext:
             # crash removed, not a soundness guarantee added.
             return None
         return z3.If(cond, then, else_)
+
+    def _translate_handle(
+        self, expr: ast.HandleExpr, env: SlotEnv,
+    ) -> z3.ExprRef | None:
+        """A `handle` whose every clause is `{ resume(x) }` has its body's
+        value (#1696, R3): each operation resumes once, in tail position,
+        so the handled block runs to its own value, with each operation's
+        result a stand-in of its type (`get(())` under `handle[State<Nat>]`
+        is a `Nat`).  A clause of any other shape — one that does not
+        resume, the `Exn` handler's — can give the handle its own value, so
+        such a handle is a stand-in of its type, as it was.
+
+        An operation whose result type is a refinement returns what its
+        clause resumes with, and a `resume` argument's refinement is not
+        established by anything here: it is the clause's own obligation,
+        unguarded at a `State` `get` (E506).  So a handle whose body
+        performs such an operation is a stand-in carrying its type's base
+        alone (R2): `handle[State<Pos>]` with `get` resuming `@Pos.0 - 1`
+        proved its caller's `> 0` from `Pos`, and the run broke it.  A
+        `Nat` result is a primitive's, its `resume` guarded."""
+        if not expr.clauses or not all(
+                _resumes_in_tail_position(clause) for clause in expr.clauses):
+            return None
+        if self._performs_a_refined_operation(expr):
+            return self._stand_in(expr, env, base_only=True)
+        return self.translate_expr(expr.body, env)
+
+    def _performs_a_refined_operation(self, expr: ast.HandleExpr) -> bool:
+        """Whether *expr*'s body calls one of its clauses' operations at a
+        refined result type, by the checker's recorded type of the call;
+        True where a call's type is unknown, the direction that claims
+        less."""
+        ops = {clause.op_name for clause in expr.clauses}
+        hook = self._recorded_type_hook
+        for node in fold.walk(expr.body):
+            if (not isinstance(node, (ast.FnCall, ast.QualifiedCall))
+                    or node.name not in ops):
+                continue
+            ty = hook(node) if hook is not None else None
+            if ty is None or isinstance(ty, RefinedType):
+                return True
+        return False
 
     def _is_user_fn(self, name: str) -> bool:
         """True if a user (or module) function of this name is registered.
@@ -2862,16 +2845,14 @@ class SmtContext:
                     precondition=contract.requires,
                 ))
             return
-        if result.status == "disclosed" or self._rests_on_unknown(
-                goal, result, strict=False):
+        if result.status in ("disclosed", "opaque"):
             # Holds only from a disclosed fact (the #1363 rule
             # `_check_call_preconditions` applies to a user callee), or is
-            # refuted only over a value the verifier cannot state: a
-            # demotion, never a proof and never a violation.  A built-in's
-            # domain is obligated by #1480 everywhere, so no call to one
-            # takes #804's strict rule, the function body included; the
-            # check at the call is the guarantee, and an `assume` about the
-            # value still discharges it.
+            # refuted only over a value the verifier cannot state
+            # (`_check_refutation`'s ``opaque``): a demotion, never a proof
+            # and never a violation.  The check at the call is the
+            # guarantee, and an `assume` about the value still discharges
+            # it.
             self._record_call_demotion_for(
                 call.name, call, contract.requires)
             return
@@ -3107,11 +3088,14 @@ class SmtContext:
                     callee_name, call_node, recorded,
                 )
                 return False
-            if result.status != "verified" and self._rests_on_unknown(
-                    z3_pre, result, strict=self._strict_preconditions):
-                # #1480 review: refuted only over a value the verifier cannot
-                # state, at a check #1480 records.  The callee's own check
-                # stands behind the call, so it is the E532 demotion.
+            if result.status == "opaque":
+                # Refuted only over a value the verifier cannot state, and
+                # not false for every value it could take
+                # (`_check_refutation`, #1696 R4): the callee's own check
+                # stands behind the call, so it is the E532 demotion, in a
+                # function body as in every other position.  #804's rule,
+                # which kept a body's call strict over an opaque value, is
+                # retired: a stand-in's model value is not a run.
                 self._record_call_demotion_for(
                     callee_name, call_node, recorded,
                 )
@@ -3295,7 +3279,14 @@ class SmtContext:
         # `@Float64` a sort its own predicates cannot translate against.
         refined_chain = naming.refined_type_chain(ret_type)
         base_ret = refined_chain[0] if refined_chain is not None else ret_type
-        fresh = self._fresh_name(callee_name)
+        # Named by the call and its arguments' terms (#1696, R1): every pass
+        # over one call reads one result, so a fact a pass learns of it — an
+        # `assume` over the `let` it is bound by (#1601) — is a fact every
+        # later query reads; a contract's call translated at two sites under
+        # two argument lists reads two results.
+        fresh = self._named(
+            f"_call_{callee_name}", call_node,
+            tuple(a.get_id() for a in z3_args))
         # Mirror the parameter-declaration dispatch in
         # `vera/verifier.py::_verify_decl`: each Vera type gets a
         # typed Z3 variable.  Pre-#667 follow-up this branch only
@@ -3368,6 +3359,11 @@ class SmtContext:
                 if sites:
                     self._disclosed_term_sites.setdefault(
                         ret_var.get_id(), []).extend(sites)
+        # #1696, R4: a result built on a stand-in argument is a value the
+        # stand-in decides, so a refutation over the result rests on it as
+        # one over the argument would.
+        if any(self._mentions_stand_in(a) for a in z3_args):
+            self._taint(ret_var)
 
         # #1706: every fact below is assumed under what the arguments owe the
         # callee's parameters — the call's own facts, and the arm facts a
@@ -3416,10 +3412,41 @@ class SmtContext:
             None if (i < len(zero_size) and zero_size[i]) else next(translated)
             for i in range(len(args))
         ]
-        facts = self._call_binding_hook(call_node, callee_info, terms, self)
+        facts = [
+            part for fact in
+            self._call_binding_hook(call_node, callee_info, terms, self)
+            if (part := self._statable_part(fact)) is not None
+        ]
         if not facts:
             return None
         return facts[0] if len(facts) == 1 else z3.And(*facts)
+
+    def _statable_part(self, fact: z3.ExprRef) -> z3.ExprRef | None:
+        """*fact* without the conjuncts that mention a stand-in, or None when
+        nothing of it is left (#1696).
+
+        A binding is what the callee's own proof assumed of its parameter,
+        and a conjunct of a parameter's refinement the translation has no
+        term for is one the callee's prologue checks at run time rather than
+        one the solver can ask of the argument: kept in the binding, the
+        stand-in it holds would withhold the callee's facts from every proof
+        after the call, as nothing could ever discharge it.  Dropped, the
+        facts are assumed under the part the argument can be shown to owe,
+        on a continuation that exists only where the prologue's check held.
+        An implication keeps its antecedent (a constructor's recognizer) and
+        is stripped in its consequent.
+        """
+        if z3.is_and(fact):
+            kept = [c for c in fact.children()
+                    if not self._mentions_stand_in(c)]
+            if not kept:
+                return None
+            return kept[0] if len(kept) == 1 else z3.And(*kept)
+        if z3.is_implies(fact):
+            antecedent, consequent = fact.children()
+            body = self._statable_part(consequent)
+            return None if body is None else z3.Implies(antecedent, body)
+        return None if self._mentions_stand_in(fact) else fact
 
     def _assume_callee_facts(
         self,
@@ -3467,55 +3494,26 @@ class SmtContext:
         # WHOLE: the caller saw an unconstrained result and refuted programs
         # that hold — measured as an E505 on `needpos(mk(x))` and an E500 on a
         # postcondition, both of which verify when spelled flat.
-        chain_base = refined_chain[0] if refined_chain is not None else None
-        if (
-            refined_chain is not None
-            and isinstance(chain_base, PrimitiveType)
-            and chain_base in (INT, NAT, BOOL, FLOAT64, STRING)
-        ):
-            # Push the value under the key the predicate's OWN binder reference
-            # resolves through (alias-aware: `@Age.0` for `type Age = Nat;
-            # { @Age | @Age.0 >= 18 }`), not the resolved base name — otherwise
-            # `@Age.0` won't resolve against `Nat`, `z3_pred` is None, and the
-            # refined-return fact is silently dropped so a caller cannot rely
-            # on it (CR PR-review — the SMT analogue of the verifier/codegen
-            # binder fix).  Through `naming.predicate_binder_key`, so the key
-            # is the WHOLE reference rendered, not its head identifier: a
-            # parameterised base binds `Box<Nat>` where the head alone said
-            # `Box`, and that miss rejected valid programs (#1226).
-            # In the CALLEE's namespace, like the `requires` / `ensures`
-            # translations above (#1208; PR #1224 review).  This predicate is
-            # written in the DEFINING module's namespace, so an alias it names
-            # has to resolve there — the importer's env is a different
-            # namespace, and a name minted one way and looked up another misses
-            # SILENTLY.  The binder derivation is inside the scope too, and now
-            # reads the env directly, so the push side and the reference side
-            # cannot end up scoped differently.
-            chain_predicates = refined_chain[1]
+        if refined_chain is not None:
+            # Every level of the chain, over any base (#1696, R2), in the
+            # CALLEE's namespace like the `requires` / `ensures` translations
+            # above (#1208; PR #1224 review): the predicate is written in the
+            # DEFINING module's namespace, so an alias it names has to
+            # resolve there, and a name minted one way and looked up another
+            # misses SILENTLY.  `_type_facts` binds each level as
+            # `_translate_refined_predicate` binds it, under the resolved
+            # primitive and the syntactic binder, so the fact the caller
+            # ASSUMES is the one the callee's return position was OBLIGATED
+            # to prove.  A level with a sub-expression the translation has
+            # no term for states its translatable part, the rest standing in;
+            # the result is then a value whose type is not fully stated, and
+            # no refutation rests on it (R4; #1470 at a refined return).
             with self._callee_contract_scope(callee_info):
-                for predicate in chain_predicates:
-                    # Bound exactly as `_translate_refined_predicate` binds it
-                    # — under the resolved primitive AND, when it differs, the
-                    # syntactic binder — so the fact the caller ASSUMES is the
-                    # one the callee's return position was OBLIGATED to prove.
-                    # Each level binds its own name (`@Pos.0 < 10` over
-                    # `@Int.0 > 0`) over the same value, which is why the
-                    # levels get separate envs rather than one conjoined term.
-                    inner_env = SlotEnv().push(chain_base.name, ret_var)
-                    binder = naming.predicate_binder_key(
-                        predicate, self._alias_env)
-                    if binder is not None and binder != chain_base.name:
-                        inner_env = inner_env.push(binder, ret_var)
-                    z3_pred = self.translate_expr(predicate, inner_env)
-                    if z3_pred is not None:
-                        self.assume(self._guard_fact(z3_pred))
-                    # An untranslatable level is DROPPED here, where
-                    # `_translate_refined_predicate` returns None for the same
-                    # case.  The directions are opposite on purpose: there the
-                    # conjunction is the GOAL, so dropping a conjunct would
-                    # discharge a membership the run cannot establish; here it
-                    # is an ASSUMPTION, so dropping one only tells the caller
-                    # less and can cost a proof, never soundness.
+                facts = self._type_facts(ret_var, callee_info.return_type)
+            for fact in facts:
+                self.assume(self._guard_fact(fact))
+            if any(self._mentions_stand_in(fact) for fact in facts):
+                self._taint(ret_var)
 
         # #1706: and the refinements written INSIDE the return type, which
         # the callee's return position was obligated for as it was for the
@@ -3531,46 +3529,286 @@ class SmtContext:
                     callee_info, call_node, ret_var, self):
                 self.assume(self._guard_fact(fact))
 
-    def _fresh_opaque_slot(
-        self, node: ast.Expr, tag: str, ty: Type | None = None,
+    # -----------------------------------------------------------------
+    # Stand-ins: what the translation has no term for (#1696)
+    # -----------------------------------------------------------------
+
+    def _stand_in(
+        self, node: ast.Node, env: SlotEnv, tag: str | None = None,
+        ty: Type | None = None, *, base_only: bool = False,
     ) -> z3.ExprRef | None:
-        """#1199: a fresh unconstrained constant standing in for a value the
-        SMT layer cannot translate — an effect-op result (``IO.read(...)``,
-        ``random_int(...)``) bound by a ``let``.
+        """One constant standing for the value of *node*, a node the
+        translation has no term for (#1696, R1).
 
-        The sort comes from *ty* when the caller already resolved it (a
-        destructure component's source type), else from the checker's
-        recorded type for *node* via the verifier-injected
-        ``_recorded_type_hook``.  Returns ``None`` — callers keep their
-        conservative bail — when no hook, no recorded type, or no
-        representable sort.
+        Of the sort of the node's checked type: *ty* when the caller holds
+        it (a binding's declared type, a destructure component's source
+        type), else the checker's recorded type through the verifier's
+        ``_recorded_type_hook``, with the containers at their carrier sorts
+        (`_value_sort`).  None when no type or no sort is known, which keeps
+        every caller's conservative bail: a closure, a `Unit`, a pure-SMT
+        test with no verifier driving.
 
-        The name is **span-keyed**, not counter-keyed: the warm
-        ``VerificationSession`` and a cold ``verify()`` must mint identical
-        names for the same program (the full-corpus warm==cold differential
-        compares diagnostic text), and every translation pass over the same
-        statement must see the *same* term.  Two different statements get
-        different spans, hence distinct constants — two ``random_int`` lets
-        must never be provably equal.
+        ONE TERM PER NODE: keyed by the node's identity, by the terms the
+        slot references under it resolve to in *env* (`_reads_digest`) and
+        by its sort, so every pass over the node — the body's translation,
+        the obligation walks, an `assume` the block threads — reads one
+        constant, while a contract node translated at two call sites under
+        two argument lists reads two.  Named ``_opaque_<tag>_<line>_<col>``
+        after the span, since a cold ``verify()`` and the warm session must
+        mint identical names for one program (the warm==cold differential
+        compares diagnostic text); a second key at one span takes a suffix
+        (`_named`).  Two different nodes get two constants: two
+        ``random_int`` calls are never provably equal.
+
+        The constant carries what its type states and nothing more (R2,
+        `_type_facts`), is registered as a term no refutation may rest on
+        (R4, `_taint`), and inherits the disclosure of any disclosed call
+        under the node (`_inherit_disclosure`).  A binder the walk cannot
+        read is not a node of this kind: see `bound_stand_in`.
         """
         if ty is None:
-            hook = getattr(self, "_recorded_type_hook", None)
+            hook = self._recorded_type_hook
             if hook is None:
                 return None
             ty = hook(node)
             if ty is None:
                 return None
-        ty = strip_refinements(ty)
-        sort = self._vera_type_to_z3_sort(ty)
+        sort = self._value_sort(ty)
         if sort is None:
             return None
-        span = getattr(node, "span", None)
-        if span is None:  # pragma: no cover — parser always spans statements
+        if tag is None:
+            tag = _STAND_IN_TAGS.get(type(node), "value")
+        key = (tag, _identity(node), self._reads_digest(node, env), str(sort),
+               base_only)
+        found = self._stand_ins.get(key)
+        if found is not None:
+            return found
+        const = z3.Const(self._named(f"_opaque_{tag}", node, key), sort)
+        self._stand_ins[key] = const
+        self._taint(const)
+        for stated in (self._base_facts(const, ty) if base_only
+                       else self._type_facts(const, ty)):
+            self.assume(stated)
+        self._inherit_disclosure(node, const)
+        return const
+
+    def fresh_stand_in(
+        self, ty: Type, tag: str, *, binder: bool = False,
+    ) -> z3.ExprRef | None:
+        """A stand-in of *ty*'s sort for a value no node names once — the
+        argument a recursive call's measure is evaluated over
+        (`ContractVerifier._opaque_value`), a binder a walk cannot read
+        (`bound_stand_in`): counter-named, since two sites' arguments are
+        two values; otherwise as `_stand_in` mints one.  A *binder*'s
+        carries its base's intrinsic fact alone (`_base_facts`)."""
+        sort = self._value_sort(ty)
+        if sort is None:
             return None
+        self._fresh_counter += 1
+        const = z3.Const(f"_opaque_{tag}_{self._fresh_counter}", sort)
+        self._taint(const)
+        for stated in (self._base_facts(const, ty) if binder
+                       else self._type_facts(const, ty)):
+            self.assume(stated)
+        return const
+
+    def bound_stand_in(self, ty: Type) -> z3.ExprRef | None:
+        """The stand-in a walk binds a binding whose value it cannot know
+        to — a `let`, a destructured component or a `match` binder, at its
+        resolved type *ty* (`ContractVerifier._fresh_slot_var`).
+
+        The walk's own, minted afresh for each walk, and carrying its
+        base's fact alone: the binder's refinement is the bind's own
+        obligation, which one reader grants where a guard at the bind
+        establishes it (`ContractVerifier._guarded_binder_value`) and
+        another withholds where the binding's source is a value a producer
+        disclosed (`ContractVerifier._established_facts`).  One constant
+        shared by every walk carried the first reader's grant into the
+        second's query: a destructured component of a disclosed payload was
+        re-narrowed at Tier 1 (#1413's cell), where each walk's own constant
+        keeps a grant with the walk that made it.
+        """
+        return self.fresh_stand_in(ty, "bind", binder=True)
+
+    def guarded_binding(
+        self, value: ast.Expr, term: z3.ExprRef, te: ast.TypeExpr,
+    ) -> z3.ExprRef:
+        """The term a binder declared *te* reads for *value*, whose term
+        holds a stand-in (#1696): the binder's guarded fresh value where
+        code generation guards the bind, so `need_pos(@Pos.0)` after
+        `let @Pos = get(())` is discharged from the predicate the guard
+        establishes (#1480 review), and *term* itself otherwise.
+
+        Through the verifier's own rule for a `match` arm's binders
+        (`_guarded_binder_hook`, `ContractVerifier._guarded_binder_values`),
+        the binding read as the binding pattern it is: the fresh value is
+        `taken ⟹ (fresh == term ∧ P(fresh))` to a query that reads it, and
+        the bind's own obligation is over *term*, which never reads the
+        fresh value, so the predicate never proves the guard it stands
+        behind.  Only where the translation knows where it stands
+        (`reach_conditions`), as an arm's binders are bound.
+        """
+        hook = self._guarded_binder_hook
+        reach = self.reach_conditions()
+        if hook is None or reach is None:
+            return term
+        pattern = ast.BindingPattern(type_expr=te, span=te.span)
+        guarded = hook(value, term, pattern, self, reach)
+        return cast("z3.ExprRef", guarded.get(term.get_id(), term))
+
+    def guarded_components(
+        self, stmt: ast.LetDestruct, term: z3.ExprRef,
+        components: list[z3.ExprRef],
+    ) -> list[z3.ExprRef]:
+        """The terms a destructure's binders read for a source *term* that
+        holds a stand-in (#1696): each refined component's guarded fresh
+        value where code generation guards its bind, as `guarded_binding`
+        gives a `let` its own, the destructure read as the constructor
+        pattern it is."""
+        hook = self._guarded_binder_hook
+        reach = self.reach_conditions()
+        if hook is None or reach is None:  # pragma: no mutate — equivalent: the verifier sets the hook on every context whose translation knows where it stands, so one is never present without the other
+            return components
+        pattern = ast.ConstructorPattern(
+            name=stmt.constructor,
+            sub_patterns=tuple(
+                ast.BindingPattern(type_expr=te, span=te.span)  # pragma: no mutate — equivalent: the hook reads a pattern's shape and types, never its spans
+                for te in stmt.type_bindings),
+            span=stmt.span)  # pragma: no mutate — equivalent: as above, no reader of the pattern reads its span
+        guarded: dict[int, z3.ExprRef] = hook(
+            stmt.value, term, pattern, self, reach)
+        return [guarded.get(c.get_id(), c) for c in components]
+
+    def _named(self, base: str, node: ast.Node, key: Any) -> str:
+        """The name *key* takes at *base*: ``<base>_<line>_<col>`` after the
+        node's span, with a suffix when another key already holds that
+        spelling in this function, so two keys are two constants and one
+        key is one name on every pass."""
+        span = node.span
+        spelling = (f"{base}_{span.line}_{span.column}" if span is not None
+                    else base)
+        taken = self._names.setdefault(spelling, {})
+        name = taken.get(key)
+        if name is None:
+            name = spelling if not taken else f"{spelling}_{len(taken)}"
+            taken[key] = name
+        return name
+
+    def _reads_digest(self, node: ast.Node, env: SlotEnv) -> tuple[int, ...]:
+        """The ids of the terms the slot and result references under *node*
+        resolve to in *env*, in traversal order (-1 for one that does not),
+        the part of a stand-in's key that tells one contract node translated
+        under two argument lists apart."""
+        ids: list[int] = []
+        for sub in fold.walk(node):
+            if isinstance(sub, ast.SlotRef):
+                term = env.resolve(
+                    naming.slot_ref_key(sub, self._alias_env), sub.index)
+                ids.append(-1 if term is None else term.get_id())
+            elif isinstance(sub, ast.ResultRef):
+                ids.append(-1 if self._result_var is None
+                           else self._result_var.get_id())
+        return tuple(ids)
+
+    def _value_sort(self, ty: Type) -> z3.SortRef | None:
+        """The sort a value of *ty* is modelled at: its base's for a
+        refinement, the `Array_<elt>` carrier for an `Array<T>` of any
+        element with a sort (nested arrays included), the `Map<k,v>` /
+        `Set<v>` carrier for the projected containers (#1430), and
+        `_vera_type_to_z3_sort`'s for everything else.  None where no sort
+        exists."""
+        ty = strip_refinements(ty)
+        if isinstance(ty, AdtType):
+            if ty.name == "Array" and len(ty.type_args) == 1:
+                element = self._value_sort(ty.type_args[0])
+                return None if element is None else self._get_array_sort(element)
+            kind = carriers.projected_carrier_name(ty)
+            if kind is not None:
+                element_sorts: list[z3.SortRef] = []
+                for arg in ty.type_args:
+                    arg_sort = self._value_sort(arg)
+                    if arg_sort is None:
+                        return None
+                    element_sorts.append(arg_sort)
+                sort = self._get_collection_sort(
+                    self.collection_sort_name(kind, tuple(element_sorts)))
+                self._collection_sorts.add(str(sort))
+                return sort
+        return self._vera_type_to_z3_sort(ty)
+
+    def _type_facts(self, term: z3.ExprRef, ty: Type) -> list[z3.ExprRef]:
+        """What *ty* states about a value *term* of it (#1696, R2): `Nat`'s
+        `>= 0`, and each predicate of a refinement chain translated over
+        *term*, whatever the base.
+
+        Each level binds its own name over the same value, as
+        `ContractVerifier._translate_refined_predicate` binds it: under the
+        resolved primitive's name, and under the key the predicate's own
+        binder reference resolves through (`naming.predicate_binder_key`,
+        #1226), in the alias environment in force.  A sub-expression of a
+        predicate the translation has no term for is a stand-in of its own,
+        so the translatable part of the predicate is what is stated: an
+        assumption, never an obligation, so a part the solver cannot read is
+        a weaker fact and not a wrong one.
+        """
+        facts = self._base_facts(term, ty)
+        chain = naming.refined_type_chain(ty)
+        if chain is None:
+            return facts
+        chain_base, predicates = chain
+        if not (isinstance(chain_base, AdtType)
+                or chain_base in _MODELLED_BASES):
+            # A base the solver does not model (`Byte`, `Unit`): its
+            # predicate stated as written would be a different fact
+            # (`_MODELLED_BASES`), so the value carries its base alone.
+            return facts
+        for predicate in predicates:
+            inner_env = SlotEnv()
+            if isinstance(chain_base, PrimitiveType):
+                inner_env = inner_env.push(chain_base.name, term)
+            binder = naming.predicate_binder_key(predicate, self._alias_env)
+            if binder is not None:
+                inner_env = inner_env.push(binder, term)
+            fact = self.translate_expr(predicate, inner_env)
+            if fact is not None and fact.sort() == z3.BoolSort():
+                facts.append(fact)
+        return facts
+
+    def _base_facts(self, term: z3.ExprRef, ty: Type) -> list[z3.ExprRef]:
+        """What *ty*'s base states of a value *term* of it: `Nat`'s `>= 0`,
+        and nothing of any other base."""
+        if strip_refinements(ty) == NAT and term.sort() == z3.IntSort():
+            return [term >= 0]
+        return []
+
+    def declared_facts(
+        self, term: z3.ExprRef, ty: Type,
+        nested: Sequence[z3.ExprRef] = (),
+    ) -> list[z3.ExprRef]:
+        """The facts a value *term* DECLARED at *ty* carries — a parameter's,
+        a predicate's binder's (`ContractVerifier._declared_type_facts`):
+        its head refinement's predicates over *term*, whatever the base
+        (#1696, R2), as the verifier states its base's `>= 0`.
+
+        A declared value whose refinement is not fully stated — a predicate
+        of its head, or one of the *nested* facts the verifier derived for
+        the positions inside its type, holding a stand-in — is registered
+        as a value no refutation may rest on (#1470, R4): the solver may
+        choose a value the type forbids, and a `sat` over such a value is
+        undecided, never a counterexample.  An unrefined value carries
+        nothing here.
+        """
+        facts = (self._type_facts(term, ty)
+                 if isinstance(ty, RefinedType) else [])
+        if any(self._mentions_stand_in(f) for f in (*facts, *nested)):
+            self._taint(term)
+        return facts
+
+    def _taint(self, term: z3.ExprRef) -> None:
+        """Register *term* as one no refutation may rest on (#1696, R4)."""
+        self._tainted_ids.add(term.get_id())
+        self._id_holders.append(term)
         self._opaque_tainted = True
-        stand_in = z3.Const(f"_opaque_{tag}_{span.line}_{span.column}", sort)
-        self._inherit_disclosure(node, stand_in)
-        return stand_in
 
     def _inherit_disclosure(self, node: object, stand_in: z3.ExprRef) -> None:
         """A stand-in term inherits the disclosure of the value it replaces.
@@ -3628,10 +3866,11 @@ class SmtContext:
                 stack.extend(cur)
         return found, sites
 
-    def _term_mentions_opaque(self, term: z3.ExprRef) -> bool:
-        """#1199: True when *term* contains an ``_opaque_``-named constant
-        minted by :py:meth:`_fresh_opaque_slot`.  Iterative with an id-keyed
-        seen-set (shared subterms are common in translated goals)."""
+    def _mentions_stand_in(self, term: z3.ExprRef) -> bool:
+        """Whether *term* holds a term no refutation may rest on (#1696,
+        R4): a stand-in or a value built on one, by `_taint`'s ids, or any
+        ``_opaque_``-named constant.  Iterative with an id-keyed seen-set
+        (shared subterms are common in translated goals)."""
         seen: set[int] = set()
         stack: list[z3.ExprRef] = [term]
         while stack:
@@ -3640,6 +3879,8 @@ class SmtContext:
             if tid in seen:
                 continue
             seen.add(tid)
+            if tid in self._tainted_ids:
+                return True
             if (z3.is_app(t) and t.num_args() == 0
                     and t.decl().name().startswith("_opaque_")):
                 return True
@@ -3666,20 +3907,18 @@ class SmtContext:
                 if isinstance(stmt, ast.LetStmt):
                     val = self.translate_expr(stmt.value, current_env)
                     if val is None:
-                        # #1199: an untranslatable value (an effect-op
-                        # result) no longer truncates the block — bind a
-                        # fresh opaque constant of the value's recorded
-                        # type and continue, so a later call's E501 is
-                        # still checked.  Against an unconstrained value
-                        # an unprovable precondition fires, the posture an
-                        # opaque *function* result already gets; the
-                        # repair is an assert/assume, whose fact the #804
-                        # threading carries into the check.  No recorded
-                        # type / representable sort keeps the pre-#1199
-                        # bail.
-                        val = self._fresh_opaque_slot(stmt.value, "let")
-                        if val is None:
-                            return None
+                        # A value the translation has no term for is a
+                        # stand-in of its recorded type (#1696, R1; #1199
+                        # before it, for an effect-op result), so the block
+                        # continues past it and a later call's precondition
+                        # is still checked.  None here is a value with no
+                        # sort at all — a closure, a `Unit` — which keeps
+                        # the pre-#1199 bail.
+                        return None
+                    if self._mentions_stand_in(val):
+                        # A refined binder of a stand-in reads the value the
+                        # guard at the bind establishes (#1696).
+                        val = self.guarded_binding(stmt.value, val, stmt.type_expr)
                     # Extract slot type name from the let binding
                     type_name = self._type_expr_to_slot_name(stmt.type_expr)
                     if type_name is None:  # pragma: no cover
@@ -3738,6 +3977,10 @@ class SmtContext:
                             val.sort().accessor(idx, i)(val)
                             for i in range(len(stmt.type_bindings))
                         ]
+                        if self._mentions_stand_in(val):
+                            # A refined component of a stand-in reads the
+                            # value its bind's guard establishes (#1696).
+                            comps = self.guarded_components(stmt, val, comps)
                     else:
                         # The opaque fallback derives component sorts from
                         # the source type's arguments, which equal the
@@ -3766,8 +4009,9 @@ class SmtContext:
                                 == len(stmt.type_bindings)):
                             return None
                         for i, src_ty in enumerate(rhs_ty.type_args):
-                            opaque = self._fresh_opaque_slot(
-                                stmt.value, f"destr{i}", ty=src_ty)
+                            opaque = self._stand_in(
+                                stmt.value, current_env, f"destr{i}",
+                                ty=src_ty)
                             if opaque is None:
                                 return None
                             comps.append(opaque)
@@ -3849,7 +4093,7 @@ class SmtContext:
 
         # Default arm: none of the preceding patterns matched
         for pc in preceding_conds:
-            self._path_conditions.append(z3.Not(pc))
+            self.branch_premise(z3.Not(pc))
         last_facts = self._arm_source_facts(
             expr.scrutinee, scrutinee, arms[-1].pattern)
         for f in last_facts:
@@ -3887,9 +4131,17 @@ class SmtContext:
             if arm_env is None:  # pragma: no cover
                 return None
 
-            self._path_conditions.append(cond)
-            # The arm runs only if no earlier arm matched, which the path
-            # does not say.
+            # The arm runs only where no earlier arm matched (#1696, R3;
+            # #1571's twin): a fact learned in it, a callee's `ensures`, is
+            # assumed under the earlier arms' negations as under its own
+            # pattern, and a precondition in it is checked under them.  Only
+            # an exact earlier condition is negated, as for the default arm:
+            # the arms translate last to first, so an inexact earlier one
+            # is met after this arm, and its negation would exclude runs
+            # that reach it (CodeRabbit, PR #1833).
+            earlier = [z3.Not(c) for c, e in zip(conds[:index], exact[:index])
+                       if c is not None and e]
+            self.branch_premise(z3.And(*earlier, cond) if earlier else cond)
             self._reach_extras.append(self._arm_reach(conds, index))
             arm_facts = self._arm_source_facts(
                 expr.scrutinee, scrutinee, arm.pattern)
@@ -4256,7 +4508,8 @@ class SmtContext:
         Also includes any accumulated ``_path_conditions`` from
         if/match branches so branch-guarded preconditions verify.
         - unsat → goal always holds (verified)
-        - sat → counterexample found (violated)
+        - sat → counterexample found (violated), unless the query rests on a
+          stand-in and the goal holds for some value of it (opaque, #1696)
         - unknown → solver timeout or incomplete (unknown)
         - provable only with a disclosed fact → disclosed (#1363)
 
@@ -4403,64 +4656,167 @@ class SmtContext:
         *,
         tainted: bool,
     ) -> SmtResult:
-        """One refutation attempt, with or without the tainted facts (#1363)."""
-        self.solver.push()
-        for a in assumptions:
-            self.solver.add(a)
-        for pc in self._path_conditions:
-            self.solver.add(pc)
-        if tainted:
-            for tf in self._tainted_facts:
-                self.solver.add(tf)
-        for vf in self._facts_of_values_read(goal, assumptions):
-            self.solver.add(vf)
-        self.solver.add(z3.Not(goal))
+        """One refutation attempt, with or without the tainted facts (#1363).
 
-        result = self.solver.check()
-        # Extract the model BEFORE popping: a Z3 model is only valid
-        # while the assertions that produced it remain on the solver
-        # stack.  Popping first leaves model() describing the base
-        # context, so model_completion fills the now-unconstrained
-        # slots with arbitrary defaults — yielding counterexamples that
-        # don't witness the violation (e.g. `@Int.0 = 0` for the goal
-        # `@Int.0 >= 0`).  Affects E502 / E503 / call-site precondition
-        # diagnostics alike.
-        ce: dict[str, str] | None = None
-        if result == z3.sat:
-            ce = self._extract_counterexample(self.solver.model())
-        self.solver.pop()
+        A `sat` is a counterexample unless the refutation rests on a
+        stand-in (#1696, R4): the goal, an assumption or a path condition
+        mentions a term no refutation may rest on (`_mentions_stand_in`),
+        the goal holds a placeholder one of the verifier's walks bound
+        (`_placeholder_hook`), or the model's choice for such a term is
+        what the refutation needs — no refuting model exists with the term
+        at another value the premises allow (`_chosen_for_a_stand_in`),
+        which is how a refutation reaches a stand-in the query never
+        names: a fact assumed under a condition's stand-in, `c ⟹ P`, is
+        escaped by choosing `c` false.  Such a term
+        may take any value in a model, so the model names no value the
+        program produces — `random_int(1, 9)` never returns 0, yet its
+        stand-in "witnesses" a zero divisor — and a fact linking a goal
+        variable to it lets the model assign both freely (CodeRabbit, PR
+        #1200 round 5).  The goal is then asked once more, asserted: unsat
+        means it is false for EVERY value the stand-in could take, which is
+        a violation whatever the value (the re-ask #1460 made for a
+        refinement and #1480 for a precondition, now for every kind);
+        otherwise the obligation is ``opaque``, and every caller routes
+        that to its undecided leg — Tier 3 behind the operation's own
+        guard, or the E532 demotion at a call.  Per goal, not per function:
+        a genuine violation elsewhere in a function that also holds a
+        stand-in stays loud.
+        """
+        with self._premises(goal, assumptions, tainted):
+            self.solver.add(z3.Not(goal))
+            result = self.solver.check()
+            # Extract the model BEFORE popping: a Z3 model is only valid
+            # while the assertions that produced it remain on the solver
+            # stack.  Popping first leaves model() describing the base
+            # context, so model_completion fills the now-unconstrained
+            # slots with arbitrary defaults — yielding counterexamples that
+            # don't witness the violation (e.g. `@Int.0 = 0` for the goal
+            # `@Int.0 >= 0`).  Affects E502 / E503 / call-site precondition
+            # diagnostics alike.
+            ce: dict[str, str] | None = None
+            model: z3.ModelRef | None = None
+            if result == z3.sat:
+                model = self.solver.model()
+                ce = self._extract_counterexample(model)
 
         if result == z3.unsat:
             return SmtResult(status="verified")
-        elif result == z3.sat:
-            # #1199: a countermodel over an opaque effect-op stand-in
-            # (`_fresh_opaque_slot`) refutes nothing the effect actually
-            # produces — `random_int(1, 9)` never returns 0, yet its opaque
-            # constant "witnesses" a zero divisor.  Every obligation kind
-            # whose goal mentions such a constant reports "opaque" instead
-            # of "violated"; callers route it to their non-violated leg
-            # (Tier-3 / demotion), while a call precondition's strict
-            # `!= "verified"` check still records the E501 — establishing
-            # a precondition is the caller's obligation.  The check is
-            # per-goal (term traversal), not per-function: a genuine
-            # violation elsewhere in a function that also binds an opaque
-            # value stays loud.
-            if self._opaque_tainted and (
-                self._term_mentions_opaque(goal)
-                or any(self._term_mentions_opaque(a) for a in assumptions)
-                or any(self._term_mentions_opaque(pc)
-                       for pc in self._path_conditions)
-            ):
-                # The goal itself, an assumption, or a path condition
-                # mentioning an opaque constant all poison the countermodel
-                # the same way — a fact linking a goal variable to an
-                # opaque value lets the "witness" assign both freely
-                # (CodeRabbit, PR #1200 round 5).  Demoting is the safe
-                # direction: the runtime guard still enforces the contract.
+        if result != z3.sat or model is None:
+            # A goal whose refutation rests on a stand-in is undecided short
+            # of a proof (R4), so a query that ran out of its budget reports
+            # the stand-in's reason, not the clock's: a floating-point goal
+            # over a stand-in can take seconds, and one of two identical
+            # runs on a loaded machine timed out where the other did not.
+            if self._rests_on_a_stand_in(goal):
                 return SmtResult(status="opaque")
-            return SmtResult(status="violated", counterexample=ce)
-        else:  # pragma: no cover
             return SmtResult(status="unknown")
+        if not (self._rests_on_a_stand_in(goal)
+                or self._chosen_for_a_stand_in(
+                    goal, assumptions, tainted, model)):
+            return SmtResult(status="violated", counterexample=ce)
+        with self._premises(goal, assumptions, tainted):
+            self.solver.add(goal)
+            never = self.solver.check() == z3.unsat
+        if never:
+            return SmtResult(status="violated", counterexample=ce)
+        return SmtResult(status="opaque")
+
+    @contextlib.contextmanager
+    def _premises(
+        self, goal: z3.ExprRef, assumptions: list[z3.ExprRef], tainted: bool,
+    ) -> Iterator[None]:
+        """A solver scope holding one refutation's premises: *assumptions*,
+        the path conditions, the tainted facts when *tainted*, and the
+        recorded facts of every placeholder the query reads."""
+        self.solver.push()
+        try:
+            for a in assumptions:
+                self.solver.add(a)
+            for pc in self._path_conditions:
+                self.solver.add(pc)
+            if tainted:
+                for tf in self._tainted_facts:
+                    self.solver.add(tf)
+            for vf in self._facts_of_values_read(goal, assumptions):
+                self.solver.add(vf)
+            yield
+        finally:
+            self.solver.pop()
+
+    def _rests_on_a_stand_in(self, goal: z3.ExprRef) -> bool:
+        """Whether a refutation of *goal* rests on a stand-in by where it
+        stands (#1696, R4): the goal reads a term no refutation may rest on,
+        the obligation sits under a branch premise that does (the branch
+        runs only where the stand-in says; `_branch_premise`), or the goal
+        holds a placeholder one of the verifier's walks bound
+        (`_placeholder_hook`).  A fact that reads a stand-in — an
+        assumption, a top-level `assert`'s predicate the verifier pushes
+        beside the premises — is not such a place: the run checks it, and
+        whether the refutation needs the stand-in's value is what
+        `_chosen_for_a_stand_in` asks of the model."""
+        if self._opaque_tainted and (
+            self._mentions_stand_in(goal)
+            or any(self._mentions_stand_in(pc) for pc in self._path_conditions
+                   if pc.get_id() in self._branch_premise_ids)
+        ):
+            return True
+        hook = self._placeholder_hook
+        return hook is not None and bool(hook(goal))
+
+    def _chosen_for_a_stand_in(
+        self, goal: z3.ExprRef, assumptions: list[z3.ExprRef],
+        tainted: bool, model: z3.ModelRef,
+    ) -> bool:
+        """Whether the refutation *model* witnesses rests on a value the
+        solver CHOSE for a term no refutation may rest on (#1696, R4): a
+        fact assumed under a condition's stand-in, `c ⟹ P`, is escaped by
+        choosing `c` false, and the goal never names `c`.
+
+        For each such term the model interprets: a term the solver's base
+        context pins to the model's value (a stand-in whose type fixes
+        it), or that a premise pins (an `assume` over it, which the run
+        warrants, or an `assert`, which the run checks), was no choice and
+        takes no part; of the others, one that every refuting model needs
+        at the chosen value — the refutation asked again with the term
+        held to any other value the premises allow is unsat — is what the
+        refutation rests on.
+        """
+        if not self._opaque_tainted:
+            return False
+        chosen: list[tuple[z3.ExprRef, z3.ExprRef]] = []
+        for decl in model.decls():
+            if decl.arity() != 0:
+                continue
+            const = decl()
+            if (const.get_id() in self._tainted_ids
+                    or decl.name().startswith("_opaque_")):
+                chosen.append((const, model.eval(const, model_completion=True)))
+        if not chosen:
+            return False
+        free: list[tuple[z3.ExprRef, z3.ExprRef]] = []
+        for const, value in chosen:
+            self.solver.push()
+            try:
+                self.solver.add(const != value)
+                if self.solver.check() != z3.unsat:
+                    free.append((const, value))
+            finally:
+                self.solver.pop()
+        if not free:
+            return False
+        with self._premises(goal, assumptions, tainted):
+            for const, value in free:
+                self.solver.push()
+                try:
+                    self.solver.add(const != value)
+                    if self.solver.check() == z3.unsat:
+                        continue
+                    self.solver.add(z3.Not(goal))
+                    if self.solver.check() == z3.unsat:
+                        return True
+                finally:
+                    self.solver.pop()
+        return False
 
     def _extract_counterexample(
         self, model: z3.ModelRef
@@ -4521,6 +4877,11 @@ class SmtContext:
         self._call_discharges.clear()
         self._fresh_counter = 0
         self._opaque_tainted = False
+        self._stand_ins.clear()  # #1696: per function, as the solver is
+        self._names.clear()
+        self._tainted_ids.clear()
+        self._branch_premise_ids.clear()
+        self._id_holders.clear()
         self._path_conditions.clear()
         self._call_bindings.clear()  # #1706: empty between calls already
         self._tainted_facts.clear()   # #1363: per-function, must not survive
@@ -4529,13 +4890,6 @@ class SmtContext:
         self._reach_extras.clear()
         self._disclosed_terms.clear()  # #1406: ditto — see the docstring
         self._disclosed_term_sites.clear()  # and the citations riding on them
-        # The statability memo is per FUNCTION, not per process: the answer is
-        # a property of the type, but it is decided by a translation run
-        # against this context's live scope, and a warm session that kept it
-        # would answer a later function from an earlier one's environment —
-        # the warm/cold divergence `_tainted_facts` is cleared to avoid.
-        self._statable.clear()
-        self._asking.clear()
         self._length_fns = {
             "Int": z3.Function("length", z3.IntSort(), z3.IntSort()),
         }
@@ -4616,6 +4970,25 @@ def _untranslated(ctx: SmtContext, expr: ast.Expr, env: SlotEnv) -> None:
     return None
 
 
+def _resumes_in_tail_position(clause: ast.HandlerClause) -> bool:
+    """Whether *clause*'s body is `{ resume(x) }` and nothing else: the
+    continuation resumed once, as the whole clause (#1696)."""
+    body = clause.body
+    return (isinstance(body, ast.Block) and not body.statements
+            and isinstance(body.expr, ast.FnCall)
+            and body.expr.name == "resume" and len(body.expr.args) == 1)
+
+
+def _identity(node: ast.Node) -> Any:
+    """What tells *node* from every other node of its program: its number
+    (#1679), else its class and span, else the object itself."""
+    if node.node_id is not None:
+        return node.node_id
+    if node.span is not None:
+        return (type(node).__name__, node.span.line, node.span.column)
+    return id(node)
+
+
 #: The Z3 term an expression translates to, by class.
 _SMT_ARMS: Mapping[type[ast.Expr], _SmtArm] = fold.dispatch(
     "translate_expr", {
@@ -4656,12 +5029,16 @@ _SMT_ARMS: Mapping[type[ast.Expr], _SmtArm] = fold.dispatch(
         ast.NullaryConstructor: lambda ctx, e, env: ctx._translate_nullary_ctor(e),
         ast.ConstructorCall: lambda ctx, e, env: ctx._translate_ctor_call(e, env),
         ast.QualifiedCall: _translate_effect_op,
-        # Outside the contract grammar, so no term and a Tier 3 fallback:
-        # lambdas and `handle` are not contract expressions; quantifier
+        # A `handle` whose clauses each resume once has its body's value
+        # (#1696); any other is a stand-in of its type.
+        ast.HandleExpr: lambda ctx, e, env: ctx._translate_handle(e, env),
+        # Outside the contract grammar, so no term of their own: a stand-in
+        # of the checked type where one has a sort (#1696), else a Tier 3
+        # fallback.  Lambdas are not contract expressions; quantifier
         # translation is deferred (#427); `old` and `new` are contract
         # operators; `assert` and `assume` are statement-like, not
         # predicates; a predicate is a `Bool`, never a `Unit`.
-        **fold.each((ast.AnonFn, ast.HandleExpr, ast.ForallExpr, ast.ExistsExpr,
+        **fold.each((ast.AnonFn, ast.ForallExpr, ast.ExistsExpr,
                      ast.OldExpr, ast.NewExpr, ast.AssertExpr, ast.AssumeExpr,
                      ast.UnitLit), _untranslated),
         # Cannot occur: an interpolation is not in a contract predicate, and

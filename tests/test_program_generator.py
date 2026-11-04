@@ -91,7 +91,7 @@ LABEL = gen.ENTRY
 #: The pull request lane's seeds: the first eight, 173 and 737, which
 #: between them write every construct of the grammar
 #: (:func:`test_the_pinned_seeds_reach_every_construct`).
-SEEDS = (0, 1, 2, 3, 4, 5, 6, 7, 173, 737)
+SEEDS = (0, 1, 2, 3, 4, 5, 6, 7, 43, 173, 737)
 
 #: Trials per public function in the distrust differential.
 TRIALS = int(os.environ.get("VERA_GENERATOR_TRIALS", "20"))
@@ -488,6 +488,11 @@ def _leaves(e: ast.Node) -> list[ast.Node]:
         return _leaves(e.then_branch) + _leaves(e.else_branch)
     if isinstance(e, ast.MatchExpr):
         return [leaf for a in e.arms for leaf in _leaves(a.body)]
+    if (isinstance(e, ast.HandleExpr) and isinstance(e.effect, ast.EffectRef)
+            and e.effect.name == "State"):
+        # A `State` handler's clauses each resume, so the handle's value is
+        # its body's (#1696, R3); an `Exn` clause can give it another.
+        return _leaves(e.body)
     return [e]
 
 
@@ -1901,34 +1906,17 @@ def _opaque_narrowing(how: str) -> gen.Program:
     return prog
 
 
-@pytest.mark.parametrize("how", ["map_get", "call", "data_let"])
-def test_the_model_reads_no_value_the_verifier_does_not_translate(
-        how: str, tmp_path: Path) -> None:
-    """A `match` on `map_get`'s result, a call taking a generic's call at a
-    data type, and a call taking a data slot bound to a `match` on
-    `map_get` are values the verifier does not translate (#1696): a `let`
-    of one is unconstrained, and narrowing it into a `@Nat` is refused
-    (E503), though it is 1 or 2 on every run.  The generator models each
-    as unconstrained, so it writes no such narrowing: the program is not
-    one it could have written."""
-    prog = _opaque_narrowing(how)
-    finds = contract_finds(prog, Stages.of(prog, tmp_path))
-    assert [f.signature for f in finds] == [("verify", "E503")], finds
-    assert not gen.well_formed(prog)
-    let = prog.functions[-1].body.lets[-2].binding
-    assert let.value is not None
-    assert gen.iv(gen.Ref(let), "v") == gen.ANY
-    assert gen.iv(let.value, "r").within(0, 2)
-
-
-@pytest.mark.parametrize("how", ["match", "imported"])
+@pytest.mark.parametrize("how", ["match", "imported", "map_get", "call", "data_let"])
 def test_the_model_reads_a_construction_in_place_as_the_verifier_does(
         how: str, tmp_path: Path) -> None:
     """A `match` on a constructor applied in place and a call taking a
     constructor of the module's data type are terms of their checked types'
-    sorts (#1525), so the verifier sees each value the run computes: the
-    narrowing into a `@Nat` proves, and the generator, which models each
-    as the verifier sees it, writes the program."""
+    sorts (#1525); a `match` on `map_get`'s result, a call taking a
+    generic's call at a data type, and a call taking a data slot bound to a
+    `match` on `map_get` read a stand-in of the value's type and keep the
+    facts around it (#1696's rule).  So the verifier sees each value the
+    run computes: the narrowing into a `@Nat` proves, and the generator,
+    which models each as the verifier sees it, writes the program."""
     prog = _opaque_narrowing(how)
     finds = contract_finds(prog, Stages.of(prog, tmp_path))
     assert finds == [], finds
@@ -2110,6 +2098,40 @@ def test_the_reconcile_differential_reports_a_mismatch_outside_its_classes(
         "@Int.result <= 2", "@Int.result <= 100").replace("@Int.0 % 3", "@Int.0")
     assert not contract_finds(neighbour), contract_finds(neighbour)
     assert reconcile_finds(neighbour, known=()) == []
+
+
+#: The night's seeds 197, 363, 818 and 995 at #1696's model: a canonical
+#: `State` handler has its body's value, so the generator binds one into a
+#: `let` of a refinement, where the body's value is a slot of that refinement.
+_REPRO_REFINED_HANDLE = """\
+type Span = { @Int | @Int.0 >= -17 && @Int.0 <= -13 };
+
+public fn f(@Span -> @Int)
+  requires(true)
+  ensures(@Int.result == 7)
+  effects(pure)
+{
+  let @Span = handle[State<Int>](@Int = -13) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) }
+  } in {
+    @Span.0
+  };
+  7
+}
+"""
+
+
+def test_repro_a_refined_let_of_a_state_handle_holds_the_refinement() -> None:
+    """A `let` of a refinement whose value is a `State` handle of a slot of
+    that refinement is the held-refinement class at the `let` as at the
+    parameter: the handle's value is its body's, so the leaves the class
+    reads go through it.  Base and head report the same two mismatches; the
+    seeds reach the shape because the model now lets a canonical handler
+    have its body's value (#1696)."""
+    finds = reconcile_finds(_REPRO_REFINED_HANDLE)
+    assert len(finds) == 2, finds
+    assert [f.known for f in finds] == ["#1695 (#1629)"] * 2, finds
 
 
 @pytest.mark.parametrize(
@@ -2603,7 +2625,7 @@ def test_the_seeds_reach_every_construct_of_version_two() -> None:
 
 
 def test_the_pinned_seeds_reach_every_construct() -> None:
-    """The pull request's ten seeds write every construct of the grammar,
+    """The pull request's eleven seeds write every construct of the grammar,
     version two's among them: a change that breaks one fails on a pull
     request, not only at night."""
     totals: dict[str, int] = {}
@@ -2951,14 +2973,12 @@ def test_the_night_is_read_as_the_workflow_writes_it() -> None:
         night_seeds("night:0")
 
 
-def test_an_if_with_a_map_let_in_a_branch_has_no_term() -> None:
-    """#1696's member of 2026-11-02 (seed 2900205): the verifier translates
-    an `if` whose branch block holds a `let` of a map or set construction,
-    the branch taken or not, to no term.  In place its narrowing is left to
-    Tier 3; bound by a `let` it is a fresh value, and a narrowing of that
-    value into `Nat` is refuted (E503) where the value is 15.  An array's
-    or a primitive's `let` in the branch leaves the value whole, and the
-    real value stays whatever the branch holds."""
+def test_an_if_with_a_map_let_in_a_branch_keeps_its_value() -> None:
+    """#1696's member of 2026-11-02 (seed 2900205), under the rule: the
+    `Map` or `Set` a branch block binds is a stand-in, so the `if` keeps
+    its branches' value, the branch taken or not, as it does with an
+    array's `let` in the branch; bound by a `let`, the value is the same
+    term, so a narrowing of it into `Nat` proves where the value is 15."""
     def branch(stmts: list[gen.Let | gen.Do]) -> gen.Block:
         return gen.Block(stmts, gen.Lit(15))
     map_let = gen.Let(gen.Binding("Map<String, Int>", value=gen.MapBuild([("b", gen.Lit(3))])))
@@ -2967,12 +2987,10 @@ def test_an_if_with_a_map_let_in_a_branch_has_no_term() -> None:
     taken = gen.If(gen.Lit(True), branch([map_let]), branch([]))
     untaken = gen.If(gen.Lit(True), branch([]), branch([set_let]))
     whole = gen.If(gen.Lit(True), branch([array_let]), branch([]))
-    assert gen._untranslated(taken) and gen._untranslated(untaken)
-    assert not gen._untranslated(whole)
-    assert gen.iv(taken, "r") == gen.Iv(15, 15) == gen.iv(taken, "v")
-    bound = gen.Ref(gen.Binding("Int", value=taken))
-    assert gen.iv(bound, "v") == gen.ANY and gen.iv(bound, "r") == gen.Iv(15, 15)
-    assert gen.iv(gen.Ref(gen.Binding("Int", value=whole)), "v") == gen.Iv(15, 15)
+    for shape in (taken, untaken, whole):
+        assert gen.iv(shape, "r") == gen.Iv(15, 15) == gen.iv(shape, "v")
+        bound = gen.Ref(gen.Binding("Int", value=shape))
+        assert gen.iv(bound, "v") == gen.Iv(15, 15) == gen.iv(bound, "r")
 
 
 _IF_BRANCH_LET_BOUND = """\
@@ -3018,16 +3036,16 @@ _MAP_LET = 'let @Map<String, Int> = map_insert(map_new(), "b", 3);\n    '
 _SET_LET = "let @Set<Int> = set_add(set_new(), 1);\n    "
 _ARRAY_LET = "let @Array<Int> = [1, 2];\n    "
 
-#: The six shapes both differentials below span: `lost` is the model's claim
-#: that a map or set `let` in either branch of the `if` loses its value,
-#: where an array's `let` or none keeps it.
+#: The six shapes both differentials below span: the model's claim is that
+#: the `if` keeps its value whatever `let` either branch holds, a map's or
+#: a set's as an array's or none (#1696).
 _IF_BRANCH_LET_CELLS = [
-    pytest.param(_MAP_LET, "", True, id="map let, taken branch"),
-    pytest.param("", _MAP_LET, True, id="map let, untaken branch"),
-    pytest.param(_SET_LET, "", True, id="set let, taken branch"),
-    pytest.param("", _SET_LET, True, id="set let, untaken branch"),
-    pytest.param(_ARRAY_LET, "", False, id="array let, whole"),
-    pytest.param("", "", False, id="plain, whole"),
+    pytest.param(_MAP_LET, "", id="map let, taken branch"),
+    pytest.param("", _MAP_LET, id="map let, untaken branch"),
+    pytest.param(_SET_LET, "", id="set let, taken branch"),
+    pytest.param("", _SET_LET, id="set let, untaken branch"),
+    pytest.param(_ARRAY_LET, "", id="array let, whole"),
+    pytest.param("", "", id="plain, whole"),
 ]
 
 
@@ -3042,35 +3060,34 @@ def _nat_bind_status(verified: pipeline.Verified) -> str:
     return bind.status
 
 
-@pytest.mark.parametrize(("then", "other", "lost"), _IF_BRANCH_LET_CELLS)
+@pytest.mark.parametrize(("then", "other"), _IF_BRANCH_LET_CELLS)
 def test_the_if_branch_lets_verdicts_are_the_verifiers(
-    then: str, other: str, lost: bool,
+    then: str, other: str,
 ) -> None:
-    """The model's claim against the verifier (#1696's member of 2026-11-02):
-    bound by a `let`, an `if` with a map or set `let` in either branch is a
-    fresh value, and the narrowing of it into `Nat` is refuted; an array's
-    `let` or none leaves the value 15 and the narrowing proved."""
+    """The model's claim against the verifier (#1696's member of 2026-11-02,
+    under the rule): bound by a `let`, an `if` with a map or set `let` in
+    either branch is the value 15 as an array's `let` or none leaves it,
+    and the narrowing of it into `Nat` is proved."""
     verified = pipeline.verify(_IF_BRANCH_LET_BOUND % {"then": then, "other": other},
                                file="bound.vera")
-    codes = ["E503"] if lost else []
-    assert [d.error_code for d in verified.errors] == codes, [d.format() for d in verified.errors]
+    assert not verified.errors, [d.format() for d in verified.errors]
     # An empty error list alone is also what a narrowing left to Tier 3
     # reports; the status pins "proved" (PR #1826 review).
-    assert _nat_bind_status(verified) == ("violated" if lost else "verified")
+    assert _nat_bind_status(verified) == "verified"
 
 
-@pytest.mark.parametrize(("then", "other", "lost"), _IF_BRANCH_LET_CELLS)
-def test_the_if_branch_let_in_place_is_left_to_a_runtime_check(
-    then: str, other: str, lost: bool,
+@pytest.mark.parametrize(("then", "other"), _IF_BRANCH_LET_CELLS)
+def test_the_if_branch_let_in_place_is_proved(
+    then: str, other: str,
 ) -> None:
     """The model's other claim, over the same six shapes: in place, the
-    `if`'s narrowing is a runtime check where its value is lost, and proved
-    where it is kept."""
+    `if`'s narrowing is proved too, and the program holds no runtime
+    check."""
     verified = pipeline.verify(_IF_BRANCH_LET_IN_PLACE % {"then": then, "other": other},
                                file="in_place.vera")
     assert verified.ok, [d.format() for d in verified.diagnostics]
-    assert (_runtime_checks(verified) >= 1) == lost
-    assert _nat_bind_status(verified) == ("tier3" if lost else "verified")
+    assert _runtime_checks(verified) == 0
+    assert _nat_bind_status(verified) == "verified"
 
 
 NIGHT_SEEDS = night_seeds()

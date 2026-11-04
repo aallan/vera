@@ -1101,11 +1101,11 @@ class TestObligationKinds:
         assert "self.assume(self._guard_fact(z3_post))" in src, (
             "the callee postcondition must be guarded by the path conditions"
         )
-        assert "self.assume(self._guard_fact(z3_pred))" in src, (
+        assert "self.assume(self._guard_fact(fact))" in src, (
             "the refined-return predicate must be guarded by the path conditions"
         )
-        for bare in ("self.solver.add(z3_post)", "self.solver.add(z3_pred)",
-                     "self.assume(z3_post)", "self.assume(z3_pred)"):
+        for bare in ("self.solver.add(z3_post)", "self.solver.add(fact)",
+                     "self.assume(z3_post)", "self.assume(fact)"):
             assert bare not in src, f"bare, unguarded assumption: {bare}"
 
     def test_let_nat_subtraction_records_once(self) -> None:

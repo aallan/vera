@@ -708,6 +708,7 @@ MARKED_FILES = (
     "test_closure_argument_polarity.py",
     "test_declared_widths_1525.py",
     "test_engine_failure_matrix.py",
+    "test_untranslatable_rule_1696.py",
     "test_verifier_reads_the_typed_program_1525.py",
     "test_composite_coercion_guards.py",
 )

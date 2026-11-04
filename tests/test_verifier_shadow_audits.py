@@ -1259,14 +1259,24 @@ private fn f(@Int -> @Int)
         assert len(divs) == 1 and divs[0].status == "tier3", [(o.kind, o.status) for o in divs]
 
     def test_let_value_is_opaque_match_then_divisor_is_tier3(self) -> None:
-        """A `let @Int = match <opaque-scrutinee> {...}` value is opaque (the
-        SMT layer returns None for a match over an effect op), so a later
-        `1 / @Int.0` is Tier-3 even when both arms are non-zero literals (the
-        arm taken is unknown)."""
+        """A `let @Int = match <opaque-scrutinee> {...}` over an effect op's
+        result matches a stand-in (#1696, R3), so the value is one of its
+        arms' and a later `1 / @Int.0` proves at Tier 1 when both arms are
+        non-zero literals, whichever arm is taken.  Before the rule the match
+        had no term and the division was Tier 3."""
         result = _verify("""
 private fn f(@Int -> @Int)
   requires(@Int.0 != 0) ensures(true) effects(<State<Option<Int>>>)
 { let @Int = match get(()) { Some(@Int) -> 7, None -> 1 }; 1 / @Int.0 }
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        divs = [o for o in result.obligations if o.kind == "div_zero"]
+        assert len(divs) == 1 and divs[0].status == "verified", [(o.kind, o.status) for o in divs]
+        # The arm taken is still unknown: an arm of 0 leaves it undecided.
+        result = _verify("""
+private fn f(@Int -> @Int)
+  requires(@Int.0 != 0) ensures(true) effects(<State<Option<Int>>>)
+{ let @Int = match get(()) { Some(@Int) -> 7, None -> 0 }; 1 / @Int.0 }
 """)
         assert [d for d in result.diagnostics if d.severity == "error"] == []
         divs = [o for o in result.obligations if o.kind == "div_zero"]

@@ -1529,41 +1529,43 @@ def test_1403_the_class_instrument_shape_x_consumer(tmp_path: Path) -> None:
 #: untranslatable scrutinee is an operation's result rather than a call, so
 #: there is no producer for a disclosure to come from.
 #:
-#: The extra `refine_bind` entries are the `State` cell's own initialiser
-#: (`Some(5)` at `Option<Pos>`), which is the wrapper's and not the arm's;
-#: the arm's is the LAST entry, which is what `_payload_entry` reads.
+#: The extra `refine_bind` entries in a `store` row are the wrapper's and
+#: not the arm's: the `State` cell's own initialiser (`Some(5)` at
+#: `Option<Pos>`), and the `get` clause's `resume`, which the verifier
+#: cannot read (`tier3_unguarded`); the arm's is the LAST entry, the
+#: handle's value at the return type, which is what `_payload_entry` reads.
+#: The arm's own construction (`Some(@Pos.0)` at `Option<NonNeg>`) has no
+#: record of its own, since the construction descent does not enter a
+#: handler's body — code generation guards it, and `vera verify` reports
+#: the guard without a record (W004), at the base of #1696 as after it.
+#:
+#: The scrutinee is a stand-in of its type (#1696, R1), and the arm's
+#: binders read the payload's DECLARED type through the one reader every
+#: scrutinee's arms share (R3), so each row is the twin's: a chain-typed
+#: binder reads its chain's predicates like any other (R2), where it read
+#: nothing before and its call was #882's E532.
 _MATRIX_EXPECTED_UNTRANSLATABLE: dict[tuple[str, str], tuple[bool, list]] = {
     **{
         (shape, consumer): verdict
         for shape in ("direct", "nested", "tuple", "chain")
         for consumer, verdict in (
-            ("ensures", (True, [("verified", None), ("tier3", "E522")])),
+            ("assert", (True, [("verified", None)])),
+            ("ensures", (True, [("verified", None), ("verified", None)])),
             ("store", (True, [("verified", None),
                               ("tier3_unguarded", "E506"),
-                              ("tier3_unguarded", "E506")])),
-        )
-    },
-    # The binder is declared `@Pos`, whose bind code generation guards
-    # (§2.6.5), so its placeholder carries that predicate (#1480 review): an
-    # assertion and a call precondition it entails are discharged.
-    **{
-        (shape, consumer): verdict
-        for shape in ("direct", "nested", "tuple", "narrowing")
-        for consumer, verdict in (
-            ("assert", (True, [("verified", None)])),
+                              ("verified", None)])),
             ("call_pre", (True, [])),
         )
     },
-    # A chain-typed binder is one the walk cannot represent, and its bind
-    # has no guard: the assertion is not proved, and the call's argument
-    # does not translate, which is #882's E532, since no `assume` over it
-    # translates either.
-    ("chain", "assert"): (True, [("tier3", "E535")]),
-    ("chain", "call_pre"): (True, [("tier3", "E532")]),
+    # A genuine narrowing: the bind is the `refine_bind` Tier 3 a violating
+    # value traps on before anything in the arm runs, and every consumer
+    # reads the predicate that guard establishes (#1480 review).
+    ("narrowing", "assert"): (True, [("verified", None)]),
     ("narrowing", "ensures"): (
-        True, [("verified", None), ("tier3", "E522")]),
+        True, [("verified", None), ("verified", None)]),
     ("narrowing", "store"): (
-        True, [("tier3", "E506"), ("tier3_unguarded", "E506")]),
+        True, [("tier3", "E506"), ("verified", None)]),
+    ("narrowing", "call_pre"): (True, []),
 }
 
 
@@ -1608,13 +1610,13 @@ def test_1403_an_untranslatable_scrutinee_is_never_more_permissive(
     relation between the two grids is then asserted, over the payload entry
     of each (leg 1) and over every refutation the twin reports (leg 2):
 
-    1. nothing that reads the payload is `verified` here but what the
-       binder's own refinement establishes.  The placeholder a binder gets
-       here carries one fact, the predicate of a refinement whose bind code
-       generation guards (§2.6.5, #1480 review), so a `verified` payload
-       entry is allowed only where the binder is such a refinement, and the
-       `chain` row, whose bind has no guard, has none.  The direction that
-       used to fail: the call walk kept the OUTER env under an
+    1. nothing that reads the payload is `verified` here that the
+       translatable twin does not verify too.  The scrutinee is a stand-in
+       of its type and the arm's binders read the payload's DECLARED type
+       through the one reader every scrutinee's arms share (#1696, R1-R3),
+       so a `verified` payload entry is allowed exactly where the twin's
+       is — and never where the twin refutes or demotes.  The direction
+       that used to fail: the call walk kept the OUTER env under an
        untranslatable scrutinee, so a recursive call's argument translated
        against the enclosing parameter and a `decreases` measure was proved
        about a value the arm never binds — `verified` for a function whose
@@ -1624,16 +1626,17 @@ def test_1403_an_untranslatable_scrutinee_is_never_more_permissive(
        only the bind itself, and here that bind is the `refine_bind` Tier 3
        a violating value traps on, before anything in the arm runs.
 
-    `call_pre` is discharged here where the binder's refinement entails the
-    precondition, as the twin's is, since both binders carry the predicate
-    their bind's guard establishes.  A value the placeholder carries no fact
-    for is refuted only over the placeholder, so a precondition #1480
-    records over it is `tier3`/E532 (§6.4.2), with an `assume` about the
-    binder as the repair.  A `chain` binder, which the walk cannot represent
-    at all, is an argument that does not translate: `tier3`/E532, as #882
-    has it.  Before #1480 it recorded nothing, because the obligation was a
-    side effect of translating the enclosing expression and
-    `_translate_match` bails at the scrutinee.
+    `call_pre` is discharged here where the binder's declared type entails
+    the precondition, as the twin's is: a `narrowing` binder carries the
+    predicate its bind's guard establishes, and every other binder reads
+    the payload's declared type, the `chain` binder its chain's predicates
+    among them (#1696, R2), where it read nothing before and its call was
+    #882's E532.  A value the binder carries no fact for is refuted only
+    over the stand-in, so a precondition #1480 records over it is
+    `tier3`/E532 (§6.4.2), with an `assume` about the binder as the repair.
+    Before #1480 it recorded nothing, because the obligation was a side
+    effect of translating the enclosing expression and `_translate_match`
+    bailed at the scrutinee.
     """
     measured = {
         (shape, consumer): _matrix_cell(
@@ -1655,7 +1658,7 @@ def test_1403_an_untranslatable_scrutinee_is_never_more_permissive(
     verified_here = {
         k for k, (_ok, obls) in measured.items()
         if _payload_entry(obls) == ("verified", None)
-        and not _guarded_binder(k[0])
+        and _payload_entry(_MATRIX_EXPECTED[k][1]) != ("verified", None)
     }
     # Leg 2 follows every refutation the twin reports, wherever it sits in
     # the cell's list: the twin refutes the `narrowing` bind itself, the
@@ -2181,12 +2184,15 @@ def test_1403_the_arm_context_has_one_assembly_point() -> None:
 
 
 # ---------------------------------------------------------------------------
-# A refinement the solver cannot STATE is not modelled (review J1)
+# A refinement the solver cannot state whole states what it can (#1696)
 # ---------------------------------------------------------------------------
 
 #: `L2`'s outer level calls `int_to_float`, which is outside the decidable
-#: fragment, so `_translate_refined_predicate` declines the WHOLE chain —
-#: spec §2.6.4 cause 3.  Its inner level still forbids 0.
+#: fragment: that call is a stand-in of its own inside the predicate, the
+#: inner level's `> 0` is stated, and a value declared `L2` is one no
+#: refutation rests on (#1696, R2 and R4).  Before the rule the WHOLE chain
+#: was declined (review J1 of PR #1415), and before that modelled with
+#: nothing said about its value.
 _UNSTATABLE = """\
 type L1 = {{ @Int | @Int.0 > 0 }};
 type L2 = {{ @L1 | int_to_float(@L1.0) > 0.0 }};
@@ -2222,9 +2228,14 @@ public fn use_it(@Int -> {ret})
 #: consumer -> (return type, postcondition, arm body, other arm, the kind
 #: whose verdict this cell reads, the verdict it must read).
 _UNSTATABLE_CASES = {
-    "div": ("@Int", "true", "100 / @L2.0", "0", "div_zero", ("tier3", None)),
+    # The divisor's `> 0` and the postcondition hold from `L1`'s level, which
+    # `mk`'s own chain bind disclosed rather than discharged (one record for
+    # the chain, unguarded at a constructor field), so each holds only from a
+    # fact this run could neither prove nor guard: E534, Tier 3 (#1363).
+    "div": ("@Int", "true", "100 / @L2.0", "0", "div_zero",
+            ("tier3", "E534")),
     "ensures": ("@Int", "@Int.result > 0", "@L2.0", "1", "ensures",
-                ("tier3", "E522")),
+                ("tier3", "E534")),
     # The arm's payload is a refinement chain the walk cannot represent, so
     # the call's argument does not translate: #882's E532, and no `assume`
     # over the payload translates either.
@@ -2246,23 +2257,24 @@ def test_1403_an_unstatable_refinement_is_not_a_counterexample(
     A refinement's Z3 sort is its base's and its predicate is carried
     separately, so unwrapping the carrier while the predicate stays
     untranslated leaves a term with NOTHING said about the value it holds.
-    The solver is then free to choose a value the type forbids, and it does:
+    The solver is then free to choose a value the type forbids, and it did:
     with the whole-chain unwrap and no statability question, all four
     consumers below refused this program — `100 / @L2.0` with the divisor 0,
     which `L1` excludes and `vera run` never produces (review of PR #1415,
     J1).
 
-    The cure is not to filter such a counterexample at each site that might
-    produce one, but not to create the term: the question "does this
-    refinement's whole predicate translate, at every depth?" is asked once
-    and the SORT derivation reads it, so an unstatable refinement keeps the
-    `?` key and the `None` sort it had before a chain could be unwrapped at
-    all.  A chain whose levels all translate still unwraps — that is what the
-    `chain` row of the grid above measures, and it is why this is not a
-    revert.
+    The rule (#1696) states what it can of such a chain: `L1`'s level over
+    the value, and `L2`'s with its `int_to_float` call standing in, so the
+    value is one no refutation may rest on (R4) and the solver cannot
+    choose 0 for it.  What `L1`'s level proves is then only as good as the
+    record that established it, `mk`'s own chain bind, which is disclosed
+    (one record for the chain, unguarded at a constructor field): a consumer
+    that holds only from it is E534, Tier 3, never Tier 1 (#1363), and
+    never a refusal.  Before the rule the WHOLE chain was declined and the
+    consumers were Tier 3 for want of a term.
 
-    Every cell is the verdict `release/v0.2.0` gives, because the program was
-    always accepted; what changed is that this head no longer refuses it.
+    Every cell is accepted, as `release/v0.2.0` accepted the program; what
+    the rule changed is the reason each Tier-3 record gives.
     """
     ret, post, body, fallback, kind, verdict = _UNSTATABLE_CASES[consumer]
     src = _UNSTATABLE.format(
@@ -2535,9 +2547,11 @@ public fn use_it(@Int -> @Int)
 }}
 """
 
-#: A SINGLE refinement whose predicate cannot be stated.  Its carrier is
-#: modelled without it, which is a false refusal — and deliberately left
-#: alone here; see the cell.
+#: A SINGLE refinement whose predicate cannot be stated whole: #1470's
+#: program.  Its carrier was modelled with nothing said about its value,
+#: and `100 / @U.0` was refused E526 with the divisor 0 on a program that
+#: runs to 25; the rule states the conjunct it can (#1696, R2), and the
+#: division proves.
 _SINGLE_UNSTATABLE = """\
 type U = { @Int | int_to_float(@Int.0) > 0.0 && @Int.0 > 0 };
 
@@ -2562,31 +2576,14 @@ public fn use_it(@Int -> @Int)
 """
 
 
-def test_1403_the_statability_gate_decides_chains_only(tmp_path: Path) -> None:
-    """The gate's boundary, in the two directions that could over-reach.
-
-    It decides ONE thing: whether to unwrap a CHAIN.  Two neighbours are
-    deliberately outside it, and this cell is what stops the boundary
-    drifting:
-
-    * a SINGLE refinement whose predicate cannot be stated keeps the
-      behaviour it has on `release/v0.2.0` and on `main` — its carrier is
-      modelled without its predicate and `100 / @U.0` is refused E526 with
-      the divisor 0, on a program that runs and returns 25.  That is a real
-      defect and it is [#1470](https://github.com/aallan/vera/issues/1470),
-      whose fix is one under-constrained gate consulted by every refutation
-      site.  Closing it HERE would trade that false refusal for lost Tier-1
-      proofs at every parameter and result of such a type, on obligations
-      that never needed the predicate — a trade this change is not designed
-      for and the corpus cannot measure, since it declares no such
-      refinement.
-    * the ORDER of the program does not decide the verdict.  A chain whose
-      predicate names a constructor translated only once that constructor's
-      sort existed, so an unrelated earlier `let` changed it, `tier3_unguarded`
-      /E506 without the `let` and `violated`/E505 with it.  A construction is
-      a term of the sort its checked type has now (#1525), so both variants
-      are refused alike, and asserting both pins that.
-    """
+def test_1403_the_order_of_the_program_does_not_decide_the_verdict(
+    tmp_path: Path,
+) -> None:
+    """A chain whose predicate names a constructor translated only once that
+    constructor's sort existed, so an unrelated earlier `let` changed it,
+    `tier3_unguarded`/E506 without the `let` and `violated`/E505 with it.  A
+    construction is a term of the sort its checked type has now (#1525), so
+    both variants are refused alike, and asserting both pins that."""
     plain = _verify(_tree(tmp_path / "plain", {
         "p": _ORDER.format(pre="")})["p"])
     letfirst = _verify(_tree(tmp_path / "letfirst", {
@@ -2600,15 +2597,32 @@ def test_1403_the_statability_gate_decides_chains_only(tmp_path: Path) -> None:
         f"an unrelated earlier `let` changed the verdict: {binds}"
     )
 
+
+def test_1470_a_single_unstatable_conjunct_states_the_rest(
+    tmp_path: Path,
+) -> None:
+    """#1470's program: a single refinement with a conjunct the solver
+    cannot state (`int_to_float(@Int.0) > 0.0`) beside one it can
+    (`@Int.0 > 0`).
+
+    Its carrier was modelled with nothing said about its value, and
+    `100 / @U.0` was refused E526 with the divisor 0 — a value the type
+    forbids — on a program that runs and returns 25.  The rule (#1696, R2)
+    states the conjunct it can over the value, with the other's call
+    standing in, so the division proves from `> 0`, the program verifies,
+    and the run is what it was.  The guard the J1 review of PR #1415 chose
+    for a CHAIN — declining the whole predicate — is gone with the rule, and
+    this cell holds both directions: accepted, and still running to 25.
+    """
     single = _verify(_tree(tmp_path / "single", {"p": _SINGLE_UNSTATABLE})["p"])
-    assert single["ok"] is False, _triples(single)
+    assert single["ok"] is True, _triples(single)
     assert [
         (o["status"], o.get("error_code")) for o in single["obligations"]
         if o["kind"] == "div_zero"
-    ] == [("violated", "E526")], _triples(single)
+    ] == [("verified", None)], _triples(single)
     run = pipeline.cli("run", str(_tree(tmp_path / "single", {
         "p": _SINGLE_UNSTATABLE})["p"]), "--fn", "use_it", "--", "4", budget_s=_BUDGET_S)
     assert run.returncode == 0 and run.stdout.strip().endswith("25"), (
-        f"#1470's program stopped running clean, so the refusal may no "
-        f"longer be false: {run.stdout} {run.stderr}"
+        f"#1470's program stopped running clean, so the proof may be "
+        f"false: {run.stdout} {run.stderr}"
     )

@@ -514,13 +514,17 @@ COMPONENTS: dict[str, tuple[str, str, str]] = {
 
 #: Each neighbour's obligations at 94cef528, (kind/status, count).
 _NEIGHBOUR_OBLIGATIONS: dict[str, tuple[tuple[str, int], ...]] = {
-    "inferred_map_key": (("ensures/verified", 1), ("nat_bind/tier3", 1), ("requires/verified", 1)),
+    # The `nat_bind` is `map_size`'s or `set_size`'s result narrowed at
+    # `nat_to_int`: a stand-in container's size is non-negative (#1696's
+    # rule), where a `Map` or `Set` value the solver has no term for (a zero
+    # size value, an `Option` of an array) leaves the size undecided.
+    "inferred_map_key": (("ensures/verified", 1), ("nat_bind/verified", 1), ("requires/verified", 1)),
     "inferred_map_value": (("ensures/verified", 1), ("nat_bind/tier3", 1), ("requires/verified", 1)),
-    "inferred_set_element": (("ensures/verified", 1), ("nat_bind/tier3", 1), ("requires/verified", 1)),
+    "inferred_set_element": (("ensures/verified", 1), ("nat_bind/verified", 1), ("requires/verified", 1)),
     "inferred_zero_size_value": (("ensures/verified", 1), ("nat_bind/tier3", 1), ("requires/verified", 1)),
-    "written_map_key": (("ensures/verified", 1), ("nat_bind/tier3", 1), ("requires/verified", 1)),
+    "written_map_key": (("ensures/verified", 1), ("nat_bind/verified", 1), ("requires/verified", 1)),
     "written_map_value": (("ensures/verified", 1), ("nat_bind/tier3", 1), ("requires/verified", 1)),
-    "written_set_element": (("ensures/verified", 1), ("nat_bind/tier3", 1), ("requires/verified", 1)),
+    "written_set_element": (("ensures/verified", 1), ("nat_bind/verified", 1), ("requires/verified", 1)),
 }
 
 

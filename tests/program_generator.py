@@ -31,13 +31,14 @@ What makes a program well formed, by construction rather than by retry:
   two intervals: what the verifier can see (*V*), and what a run of the
   program can reach (*R*).  A field of a data value is unbounded in *V*; a
   call is what the callee's ``ensures`` states; a ``requires`` or a
-  refinement bounds each numeric parameter; a call to a generic, a fold, a
-  ``State`` read, an array element, a map's value and a handler's value are
-  opaque to the verifier, so *V* holds their type alone; a ``let`` of
-  what the verifier does not translate (those, a ``match`` on a constructor
-  applied in place or on ``map_get``'s result, a call taking one) holds the
-  ``let``'s own type alone (issue #1696).  A fold's type is its initial
-  value's, as the checker gives it.
+  refinement bounds each numeric parameter; a call to a generic, a fold, an
+  array element, a map's value and an ``Exn`` handler's value are stand-ins
+  to the verifier, so *V* holds their type alone, a ``State<Nat>`` read's
+  sign included; a ``State`` handler with the canonical clauses has its
+  body's *V*, a ``match`` on ``map_get``'s result its arms', a call taking
+  a stand-in its callee's ``ensures``, and a ``let`` of any of them its
+  value's *V* (issue #1696's rule).  A fold's type is its initial value's,
+  as the checker gives it.
   So an ``ensures``
   written from *V* holds in the verifier's model, an argument whose *V* lies
   inside the callee's ``requires`` meets it, a ``@Nat`` subtraction whose
@@ -768,13 +769,10 @@ def iv(e: Expr, which: str) -> Iv:
     if isinstance(e, Ref):
         b = e.binding
         if b.value is not None:
-            out = iv(b.value, which)
-            if which == "v" and _untranslated(b.value):
-                # A `let` of a value the verifier does not translate holds a
-                # fresh value of the `let`'s own type: of a `Nat`, its sign
-                # at most (#1696).
-                return NAT_ANY if b.type == "Nat" and out.lo is not None and out.lo >= 0 else ANY
-            return out
+            # A `let` holds its value's own term, whatever the verifier can
+            # say of it: a value it cannot translate is a stand-in carrying
+            # its type's facts, and the `let` reads that stand-in (#1696).
+            return iv(b.value, which)
         out = b.v if which == "v" else b.r
         assert out is not None, b
         return out
@@ -813,12 +811,18 @@ def iv(e: Expr, which: str) -> Iv:
                     else _generic_r(e))
         return visible(e.fn) if which == "v" else body_r(e.fn)
     if isinstance(e, Get):
-        return ANY if which == "v" else CELL_R[e.cell]
+        # A cell's read is a stand-in of the cell's type: of a `Nat` cell,
+        # its sign (#1696).
+        return _default(e.cell) if which == "v" else CELL_R[e.cell]
     if isinstance(e, Handle):
         if which == "v":
-            # The verifier models a handler's value as unconstrained, a
-            # `Nat` one included (#1696's `State<Nat>` line).
-            return ANY
+            if e.clause is not None:
+                # An `Exn` handler's clause can give the handle its value, so
+                # the handle is a stand-in of its type (#1696).
+                return _default(static_type(e))
+            # A `State` handler's clauses each resume once, in tail
+            # position, so the handle has its body's value (#1696).
+            return iv(e.body.result, "v")
         out = iv(e.body.result, "r") if not isinstance(e.body.result, Throw) else None
         if e.clause is not None:
             clause = iv(e.clause, "r")
@@ -826,13 +830,10 @@ def iv(e: Expr, which: str) -> Iv:
         assert out is not None, e
         return out
     if isinstance(e, Length):
-        lit = _literal_of(e.arr)
-        n = len(lit.items)
-        if which == "v" and not all(_translatable(x) for x in lit.items):
-            # The verifier models a literal holding an expression it cannot
-            # translate as an unknown array, whose length it knows nothing
-            # of, not even that it is non-negative.
-            return ANY
+        # A literal keeps its length whatever its elements: an element the
+        # verifier cannot translate is a stand-in, not an unknown array
+        # (#1696).
+        n = len(_literal_of(e.arr).items)
         return Iv(n, n)
     if isinstance(e, Index):
         if which == "v":
@@ -843,59 +844,12 @@ def iv(e: Expr, which: str) -> Iv:
     if isinstance(e, Fold):
         return ANY if which == "v" else _fold_r(e)
     if isinstance(e, SetSize):
-        return ANY if which == "v" else Iv(1, len(_set_of(e.set).items))
+        # A set's size is non-negative to the verifier, the set a stand-in
+        # (#1696); a run's is the set's own.
+        return NAT_ANY if which == "v" else Iv(1, len(_set_of(e.set).items))
     if isinstance(e, Bound):
         return iv(e.value, which)
     raise TypeError(e)
-
-
-def _translatable(e: Expr) -> bool:
-    """Whether the verifier models *e*: no call to a generic, no fold, no
-    cell read, no handler, no element read, no set's size."""
-    return not any(
-        isinstance(node, (Fold, Get, Handle, Index, Guarded, MapGet, SetSize))
-        or isinstance(node, Call) and node.fn.forall
-        for node in _walk(e))
-
-
-def _no_term(e: Expr) -> bool:
-    """Whether the verifier translates *e* to no term at all: a generic's
-    call, a fold, a cell's read, a handler or a set's size anywhere in it,
-    an `if` with a map or set `let` in a branch block,
-    or a slot of a type other than ``Int``, ``Nat`` and ``Bool`` bound to a
-    value it does not translate (a ``let`` of one of those three holds a
-    fresh value of its type).  A construction is a term of its checked
-    type's sort, whatever file declares the type (#1525)."""
-    for node in _walk(e):
-        if (isinstance(node, (Fold, Get, Handle, SetSize))
-                or isinstance(node, Call) and node.fn.forall):
-            return True
-        if isinstance(node, If) and any(
-                isinstance(s, Let) and isinstance(s.binding.value, (MapBuild, SetBuild))
-                for b in (node.then, node.other) for s in b.lets):
-            # An `if` whose branch block, taken or not, holds a `let` of a
-            # map or set construction: in place its narrowing is left to
-            # Tier 3, and through a `let` it is refuted over the fresh
-            # value (#1696's line of 2026-11-02, seed 2900205); an array's
-            # or a primitive's `let` in the branch leaves the value whole,
-            # and a map `let` outside the `if` does.
-            return True
-        if (isinstance(node, Ref) and node.binding.value is not None
-                and node.binding.type not in PRIMITIVES
-                and _untranslated(node.binding.value)):
-            return True
-    return False
-
-
-def _untranslated(e: Expr) -> bool:
-    """Whether the verifier translates *e* to no term: one it has no term
-    for, a call taking one (whose ``ensures`` it then drops), or holding a
-    ``match`` on ``map_get``'s result.  In place, an obligation over such a
-    value is left to Tier 3; a ``let`` of one holds a fresh value of the
-    ``let``'s own type, which a later obligation is refuted over (#1696)."""
-    return _no_term(e) or any(
-        isinstance(node, Match) and isinstance(node.scrutinee, MapGet)
-        for node in _walk(e))
 
 
 def _cell_of(fn: Function) -> str:
