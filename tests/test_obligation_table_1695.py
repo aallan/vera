@@ -1004,10 +1004,13 @@ def _let_value_rows(source: str, kind: str) -> list[tuple[int, int]]:
 
 
 def _f_checks(source: str, emitter: str) -> list[tuple[int, int]]:
+    """The *emitter* checks the compiled `f` holds; `f` must be compiled
+    (`pipeline.checks` refuses an absence asked of a function the module
+    does not define)."""
     compiled = pipeline.compile(source, file="join.vera")
     assert compiled.ok, compiled
-    return [(g.line, g.column) for g in pipeline.checks(compiled.result, emitter=emitter)
-            if g.function == "f"]
+    return [(g.line, g.column) for g in pipeline.checks(
+        compiled.result, emitter=emitter, function="f")]
 
 
 @pytest.mark.parametrize("leaf", sorted(_NEVER_LEAVES))
@@ -1022,6 +1025,13 @@ def test_repro_a_never_leaf_of_a_join_is_no_narrowing_into_nat(join: str, leaf: 
     source = _never_join_program(_NEVER_JOINS[join].format(n=_NEVER_LEAVES[leaf]),
                                  bail=leaf == "call")
     assert _let_value_rows(source, "nat_bind") == [], source
+    if leaf == "call":
+        # `bail` is refused (E601) and `f`, its caller, with it (E620): no
+        # module function to ask, so the row is the cell's evidence.
+        compiled = pipeline.compile(source, file="join.vera")
+        codes = {d.error_code for d in compiled.warnings}
+        assert {"E601", "E620"} <= codes, codes
+        return
     assert _f_checks(source, "wasm/operators.py:_emit_nat_bind_guard") == [], source
 
 
@@ -1068,8 +1078,8 @@ public fn main(@Unit -> @Unit)
 """
     compiled = pipeline.compile(ret, file="ret.vera")
     assert [(g.line, g.column) for g in pipeline.checks(
-        compiled.result, emitter="wasm/operators.py:_emit_nat_bind_guard")
-        if g.function == "h"] == [(6, 27)]
+        compiled.result, emitter="wasm/operators.py:_emit_nat_bind_guard",
+        function="h")] == [(6, 27)]
     refined = "type Cap = { @Nat | @Nat.0 <= 30 };\n\n" + _never_join_program(
         "if @Bool.0 then { throw(4) } else { @Cap.0 }", let="Cap")
     assert _let_value_rows(refined, "refine_bind") == [(8, 14)], refined
