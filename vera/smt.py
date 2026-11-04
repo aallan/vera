@@ -679,6 +679,9 @@ class SmtContext:
         #: rests (R4); a fact the verifier pushes beside them — a
         #: top-level `assert`'s, checked at run time — is not.
         self._branch_premise_ids: set[int] = set()
+        #: The terms behind both id sets, held so that Z3 cannot collect
+        #: one and give its id to a later term (CodeRabbit, PR #1833).
+        self._id_holders: list[z3.ExprRef] = []
         # True once any such term entered this function's model: the cheap
         # gate `_check_refutation` asks before it walks a query's terms.
         self._opaque_tainted = False
@@ -1282,6 +1285,7 @@ class SmtContext:
         that is not a branch premise."""
         self._path_conditions.append(condition)
         self._branch_premise_ids.add(condition.get_id())
+        self._id_holders.append(condition)
 
     def _record_call_demotion(
         self,
@@ -3803,6 +3807,7 @@ class SmtContext:
     def _taint(self, term: z3.ExprRef) -> None:
         """Register *term* as one no refutation may rest on (#1696, R4)."""
         self._tainted_ids.add(term.get_id())
+        self._id_holders.append(term)
         self._opaque_tainted = True
 
     def _inherit_disclosure(self, node: object, stand_in: z3.ExprRef) -> None:
@@ -4129,12 +4134,14 @@ class SmtContext:
             # The arm runs only where no earlier arm matched (#1696, R3;
             # #1571's twin): a fact learned in it, a callee's `ensures`, is
             # assumed under the earlier arms' negations as under its own
-            # pattern, and a precondition in it is checked under them.  The
-            # earlier conditions are exact, since an inexact one declined
-            # the translation above.
-            self.branch_premise(
-                z3.And(*[z3.Not(c) for c in conds[:index] if c is not None],
-                       cond) if index else cond)
+            # pattern, and a precondition in it is checked under them.  Only
+            # an exact earlier condition is negated, as for the default arm:
+            # the arms translate last to first, so an inexact earlier one
+            # is met after this arm, and its negation would exclude runs
+            # that reach it (CodeRabbit, PR #1833).
+            earlier = [z3.Not(c) for c, e in zip(conds[:index], exact[:index])
+                       if c is not None and e]
+            self.branch_premise(z3.And(*earlier, cond) if earlier else cond)
             self._reach_extras.append(self._arm_reach(conds, index))
             arm_facts = self._arm_source_facts(
                 expr.scrutinee, scrutinee, arm.pattern)
@@ -4874,6 +4881,7 @@ class SmtContext:
         self._names.clear()
         self._tainted_ids.clear()
         self._branch_premise_ids.clear()
+        self._id_holders.clear()
         self._path_conditions.clear()
         self._call_bindings.clear()  # #1706: empty between calls already
         self._tainted_facts.clear()   # #1363: per-function, must not survive

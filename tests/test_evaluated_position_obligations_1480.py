@@ -3700,8 +3700,10 @@ def test_every_refusal_is_classified_against_a_placeholder() -> None:
     assert set(calls) == {"_check_builtin_domain",
                           "_check_call_preconditions"}, set(calls)
     # Classified where the refutation is made (`_check_refutation`, #1696):
-    # a `sat` resting on a stand-in is `opaque`, and each site demotes it.
-    assert all("opaque" in s for s in calls.values())
+    # a `sat` resting on a stand-in is `opaque`, and each site demotes it:
+    # the verdict's string constant as `ast.unparse` spells it, which a
+    # docstring, a comment or a name holding the word does not match.
+    assert all("'opaque'" in s for s in calls.values()), set(calls)
 
 
 def _adds_to_the_solver(node: object) -> bool:
