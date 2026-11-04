@@ -1441,3 +1441,50 @@ def test_a_constructor_s_refined_field_binds_its_variable() -> None:
     # both sides.
     assert any(kind == "refine_bind" for kind, _ in refined_rows), refined_rows
     assert refined_rows == _obligation_rows(_REFINED_FIELD_PLAIN)
+
+
+# ---------------------------------------------------------------------
+# The data-type branch takes two data types and nothing else
+# ---------------------------------------------------------------------
+
+_FN_PARAMETER_GIVEN_DATA = """\
+public fn main(@Unit -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  array_length(array_map([1], Some(5)))
+}
+"""
+
+_DATA_PARAMETER_GIVEN_FN = """\
+public fn main(@Unit -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  array_length(fn(@Int -> @Int) effects(pure) { @Int.0 })
+}
+"""
+
+
+def test_a_function_typed_parameter_given_a_data_value_is_refused() -> None:
+    """A data value at a function-typed parameter is `E202`: the
+    unification's data-type branch takes both sides as data types and
+    nothing else.  With its `and` weakened to `or` (the `mutation (diff)`
+    lane's mutmut_12 at cf271af9), the branch read `pattern.name` off a
+    `FunctionType`, which has none."""
+    error = _only_error(_FN_PARAMETER_GIVEN_DATA)
+    assert error.description == (
+        "Argument 1 of 'array_map' has type Option<Int>, expected "
+        "fn(Int -> B) effects(pure).")
+
+
+def test_a_data_type_parameter_given_a_function_is_refused() -> None:
+    """A closure at a data-type parameter is `E202`, the other direction of
+    the same branch: with the `and` weakened, it read `concrete.name` off
+    the closure's `FunctionType`."""
+    error = _only_error(_DATA_PARAMETER_GIVEN_FN)
+    assert error.description == (
+        "Argument 0 of 'array_length' has type fn(Int -> Int) effects(pure), "
+        "expected Array<T>.")
