@@ -20,18 +20,23 @@ See spec/11-compilation.md for the compilation specification.
 from __future__ import annotations
 
 import itertools
-from collections.abc import Mapping
+import re
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, Callable, NoReturn
 
 from vera import ast, fold
 from vera.naming import EMPTY_ALIAS_ENV, AliasEnv
+from vera.obligations.table import BODY, Evaluation, ObligationTable, Row
 from vera.skip import (
     DERIVED_HELPER_DEPTH_CAP,
     CodegenInvariantError,
     CodegenSkip,
 )
 from vera.slots import bare_call_denotes_user_fn
+from vera.tail_position import compute_tail_call_sites
 from vera.trap_registry import (
+    CHECK_MARKER_RE,
     TRAP_EMITTERS,
     TRAP_KINDS,
     check_marker,
@@ -81,10 +86,10 @@ from vera.wasm.data import DataMixin
 _CHECK_IDS = itertools.count(1)
 
 #: The per-module record while a module is compiled: entry id -> (the
-#: `TRAP_EMITTERS` key, the node the check's span comes from).
-#: check id -> (emitter key, the node the check stands at, its path within
-#: that node's value: :attr:`vera.trap_registry.EmittedCheck.path`).
-CheckRecord = dict[int, tuple[str, ast.Node | None, tuple[str, ...]]]
+#: `TRAP_EMITTERS` key, the node the check's span comes from, its path
+#: within that node's value (:attr:`vera.trap_registry.EmittedCheck.path`),
+#: and the obligation table row it is the runtime half of (#1695, by id).
+CheckRecord = dict[int, tuple[str, ast.Node | None, tuple[str, ...], int | None]]
 
 
 class WasmContext(
@@ -139,8 +144,18 @@ class WasmContext(
         adt_ctor_tp_indices: (
             dict[str, dict[str, tuple[int | None, ...]]] | None) = None,
         fn_display_names: Mapping[str, str] | None = None,
+        obligations: ObligationTable | None = None,
     ) -> None:
         self.string_pool = string_pool
+        # #1695: the typed program's obligation table, the one source of
+        # every guard this context emits: a site asks for its row
+        # (`_row`) and emits iff the row is guardable; a check at a node
+        # the table lists no row for is a `CodegenInvariantError`
+        # (`_record_check`).  `_evaluation` names the evaluation the rows
+        # read are of: the body's, or a measure's or a predicate's lowering
+        # in progress (`_evaluating`).
+        self._obligations: ObligationTable | None = obligations
+        self._evaluation: Evaluation = BODY
         # #1694: each module declaration's link name to the name a message
         # shows for it (`vera.binding.display_names`), which every site
         # message `_emit_trap` interns is spelled through.
@@ -419,25 +434,10 @@ class WasmContext(
         # `_fn_ret_types` (#614): `_is_byte_expr` reads a call's declared
         # `@Byte` return from them.
         self._fn_ret_type_exprs: dict[str, ast.TypeExpr] = {}
-        # #747: per-parameter concrete-@Nat flags per function, for the
-        # runtime @Int -> @Nat narrowing guard at call sites.
-        self._fn_nat_params: dict[str, tuple[bool, ...]] = {}
-        # #1542 (#1695's line): per function, per parameter, the tuple
-        # positions its boundary guard checks (#746), which a composite
-        # coercion into that formal defers to; and the CodeGenerator's
-        # reading of the same decomposition for a closure type's formal and a
-        # declared return (`vera.wasm.coercion`).
-        self._fn_boundary_coercion_paths: dict[
-            str, tuple[frozenset[tuple[int, ...]], ...]] = {}
-        self._boundary_coercion_paths: Callable[
-            [ast.TypeExpr, int | None], frozenset[tuple[int, ...]]] | None = None
+        # #1542 (#1695): the composite-coercion walk's helpers
+        # (`vera.wasm.coercion`); which positions a walk checks is the
+        # obligation table's.
         self._init_component_coercion()
-        # #754: `(effect_name, op_name)` -> per-formal base type name, so an
-        # effect-operation call site can guard its arguments the way a
-        # function call site guards its own.  Seeded empty; codegen calls
-        # `set_effect_op_params` before translation.
-        self._effect_op_params: dict[
-            tuple[str, str], tuple[str | None, ...]] = {}
         # #865: per-parameter concrete-@Byte flags, for the call-site
         # int-literal → i32.const coercion (spec §11 — @Byte is i32).
         self._fn_byte_params: dict[str, tuple[bool, ...]] = {}
@@ -471,7 +471,8 @@ class WasmContext(
         # thread-through would meet rather than a silently unguarded payload.
         self._refinement_guard_emitter: (
             Callable[
-                [ast.TypeExpr, int, str, WasmSlotEnv, ast.Node | None],
+                [ast.TypeExpr, int, str, WasmSlotEnv, ast.Node | None,
+                 Row | None],
                 list[str] | None,
             ]
             | None
@@ -503,17 +504,6 @@ class WasmContext(
         # ``vera/codegen/closures.py``) emit plain ``call``.
         self._tail_call_sites: set[int] = set()
         self._self_ret_wt: str | None = None
-        # #758/#983 — per-narrowing-leaf @Int->@Nat return guard.  The set of
-        # ``id(leaf)`` tail-position return leaves that narrow into a @Nat
-        # return, so ``translate_expr`` / the block-trailing / match-arm
-        # emission sites wrap EACH such leaf with ``_emit_nat_bind_guard``
-        # inline (mirroring the verifier 7d leaf descent) rather than wrapping
-        # the whole body.  The whole-body wrap reverted EVERY ``return_call`` —
-        # breaking TCO for a non-narrowing @Nat->@Nat recursive tail call
-        # (`drain`) that stack-exhausted at depth (the #983 regression).
-        # Populated per-fn by ``CodeGenerator._compile_fn``; defaults empty so
-        # closure bodies and untargeted contexts guard nothing.
-        self._nat_return_leaf_ids: set[int] = set()
         # #630 Tier 2 — interpolation-segment inference failures.
         # When `_translate_interpolated_string` can't classify a segment's
         # Vera type, it appends the offending `Expr` here and returns
@@ -667,33 +657,6 @@ class WasmContext(
         """Set function return Vera-type exprs for richer inference (#614)."""
         self._fn_ret_type_exprs = ret_type_exprs
 
-    def set_fn_nat_params(
-        self, nat_params: dict[str, tuple[bool, ...]],
-    ) -> None:
-        """Set per-parameter concrete-@Nat flags for the call-site
-        runtime narrowing guard (#747)."""
-        self._fn_nat_params = nat_params
-
-    def set_boundary_coercion_paths(
-        self,
-        per_fn: dict[str, tuple[frozenset[tuple[int, ...]], ...]],
-        oracle: Callable[[ast.TypeExpr, int | None],
-                         frozenset[tuple[int, ...]]],
-    ) -> None:
-        """Set the tuple positions each function boundary's guard checks
-        (#746), by function and parameter, and the oracle reading the same
-        decomposition for any boundary type, which a composite coercion
-        defers to (#1542)."""
-        self._fn_boundary_coercion_paths = per_fn
-        self._boundary_coercion_paths = oracle
-
-    def set_effect_op_params(
-        self, op_params: dict[tuple[str, str], tuple[str | None, ...]],
-    ) -> None:
-        """Set the per-formal base type names of every effect operation, for
-        the op-call-site narrowing guards (#754)."""
-        self._effect_op_params = op_params
-
     def set_fn_byte_params(
         self, byte_params: dict[str, tuple[bool, ...]],
     ) -> None:
@@ -715,15 +678,17 @@ class WasmContext(
     def set_refinement_guard_emitter(
         self,
         emitter: Callable[
-            [ast.TypeExpr, int, str, WasmSlotEnv, ast.Node | None],
+            [ast.TypeExpr, int, str, WasmSlotEnv, ast.Node | None,
+             Row | None],
             list[str] | None,
         ],
     ) -> None:
         """Install the §2.6.5 refinement-predicate guard lowering (#1268).
 
-        *emitter* takes ``(type_expr, value_local, message, env, at)`` —
-        *at* the node the per-module record locates the check at (#1479) —
-        and returns
+        *emitter* takes ``(type_expr, value_local, message, env, at, row)``
+        — *at* the node the per-module record locates the check at (#1479),
+        *row* the obligation table row the guard is the runtime half of
+        (#1695) — and returns
         the WAT that traps via ``$vera.contract_fail`` when the value in
         *value_local* violates *type_expr*'s predicate — or ``None`` when the
         type is unrefined, or refined over a base codegen emits no guard for
@@ -868,7 +833,8 @@ class WasmContext(
         self,
         emitter: str,
         *,
-        at: ast.Node | None,
+        row: Row | None,
+        at: ast.Node | None = None,
         message: str | None = None,
         path: tuple[str, ...] = (),
     ) -> list[str]:
@@ -884,24 +850,31 @@ class WasmContext(
 
         *emitter* is the caller's own :data:`vera.trap_registry.TRAP_EMITTERS`
         key, and the kind comes from its row rather than from the caller, so
-        an emitter cannot raise a kind its row does not state.  *message* is
-        required exactly for a kind whose sites carry their own
-        (``TrapKind.site_message``) and refused for one that reports its
-        canonical description.  *path* is where, inside the value *at*
+        an emitter cannot raise a kind its row does not state.  *row* is the
+        obligation table row the check is the runtime half of (#1695); a
+        check with none is a :class:`CodegenInvariantError`, since code
+        generation guards the table's rows and decides no guard of its own.
+        *message* is required exactly for a kind whose sites carry their
+        own (``TrapKind.site_message``) and refused for one that reports
+        its canonical description.  *at* is the node the check's span is
+        taken from, the row's own node unless the emitter stands elsewhere
+        (``TrapEmitter.span``); *path* is where, inside the value *at*
         stands for, the checked value sits (``EmittedCheck.path``): empty
         for the value itself.
         """
-        row = TRAP_EMITTERS.get(emitter)
-        if row is None or not row.per_site or row.via not in (
+        if at is None and row is not None:
+            at = row.node
+        emitter_row = TRAP_EMITTERS.get(emitter)
+        if emitter_row is None or not emitter_row.per_site or emitter_row.via not in (
                 "signal", "contract"):
             raise CodegenInvariantError(
                 f"{emitter!r} is not a per-site signalling emitter in "
                 "vera.trap_registry.TRAP_EMITTERS", at,
             )
-        kind = TRAP_KINDS[row.kind]
+        kind = TRAP_KINDS[emitter_row.kind]
         if kind.site_message != bool(message):
             raise CodegenInvariantError(
-                f"{emitter}: trap kind {row.kind!r} "
+                f"{emitter}: trap kind {emitter_row.kind!r} "
                 + ("needs a site message" if kind.site_message
                    else "reports its canonical description, not a message"),
                 at,
@@ -914,38 +887,181 @@ class WasmContext(
             from vera.binding import display_message
             message = display_message(message, self._fn_display_names)
         ptr, length = self.string_pool.intern(message) if message else (0, 0)
-        if row.kind == "contract_violation":
+        if emitter_row.kind == "contract_violation":
             self._needs_contract_fail = True
         else:
             self._needs_trap = True
         return signal_instructions(
-            row.kind, ptr, length,
-            marker=self._record_check(emitter, at, path))
+            emitter_row.kind, ptr, length,
+            marker=self._record_check(row, emitter=emitter, at=at, path=path))
 
     def _record_check(
-        self, emitter: str, at: ast.Node | None,
+        self, row: Row | None, *, emitter: str, at: ast.Node | None = None,
         path: tuple[str, ...] = (),
     ) -> str:
-        """Enter one check in the per-module record (#1479); returns the
+        """Enter one check in the per-module record (#1479), by the
+        obligation table row it is the runtime half of (#1695); returns the
         marker the instruction that IS the check must carry.
 
-        *emitter* is the :data:`vera.trap_registry.TRAP_EMITTERS` key of the
-        function emitting the check, *at* the node its span is taken from
-        (``TrapEmitter.span`` says which node that is), and *path* where
-        inside that node's value the checked value sits.  The entry
-        counts once for every copy of the marker in the assembled module and
-        not at all when no copy survives — a translation thrown away, a
-        function dropped after it compiled, a rendering spliced twice — so
-        the caller only has to put the marker on its instruction.
+        *row* is the table's row; a check with none is a
+        :class:`CodegenInvariantError`, the architectural cell of #1695:
+        code generation guards rows and decides no guard of its own.
+        *emitter* is the :data:`vera.trap_registry.TRAP_EMITTERS` key of
+        the function emitting the check, *at* the node its span is taken
+        from (``TrapEmitter.span`` says which node that is; the row's own
+        node when the caller passes none), and *path* where inside that
+        node's value the checked value sits.  The entry counts once for
+        every copy of the marker in the assembled module and not at all
+        when no copy survives — a translation thrown away, a function
+        dropped after it compiled, a rendering spliced twice — so the
+        caller only has to put the marker on its instruction.
         """
         if emitter not in TRAP_EMITTERS:
             raise CodegenInvariantError(
                 f"trap emitter {emitter!r} is not in "
                 "vera.trap_registry.TRAP_EMITTERS", at,
             )
+        if row is None:
+            raise CodegenInvariantError(
+                f"{emitter}: a check at a node the obligation table lists "
+                "no row for (#1695)", at,
+            )
+        return self._record_row_check(row, emitter=emitter, at=at, path=path)
+
+    def _record_shared_check(self, *, emitter: str) -> str:
+        """Enter the check of a generated helper shared by every rendering
+        of its type (a recursive data type's `$show_<type>`, #1482): it
+        belongs to no one call, so it names no row and no span, and each
+        rendering's row is answered by the helper it reaches."""
+        if emitter not in TRAP_EMITTERS:
+            raise CodegenInvariantError(
+                f"trap emitter {emitter!r} is not in "
+                "vera.trap_registry.TRAP_EMITTERS", None,
+            )
         check_id = next(_CHECK_IDS)
-        self._emitted_checks[check_id] = (emitter, at, path)
+        self._emitted_checks[check_id] = (emitter, None, (), None)
         return check_marker(check_id)
+
+    def _record_row_check(
+        self, row: Row, *, emitter: str, at: ast.Node | None,
+        path: tuple[str, ...],
+    ) -> str:
+        if not row.guard.check:
+            raise CodegenInvariantError(
+                f"{emitter}: a check for a row the obligation table holds "
+                f"unguardable ({row.guard.reason}; #1695)", at,
+            )
+        check_id = next(_CHECK_IDS)
+        self._emitted_checks[check_id] = (
+            emitter, row.node if at is None else at, path, row.id)
+        return check_marker(check_id)
+
+    # -----------------------------------------------------------------
+    # #1695 — the obligation table, read at every guard site
+    # -----------------------------------------------------------------
+
+    def set_obligation_table(self, table: ObligationTable) -> None:
+        """Hand this context the typed program's obligation table."""
+        self._obligations = table
+
+    @property
+    def obligations(self) -> ObligationTable:
+        """The obligation table every guard site reads its row from."""
+        table = self._obligations
+        if table is None:
+            raise CodegenInvariantError(
+                "code generation runs with no obligation table (#1695)", None)
+        return table
+
+    def _row(
+        self, node: ast.Node, kind: str, path: tuple[str, ...] = (), *,
+        evaluation: Evaluation | None = None,
+    ) -> Row | None:
+        """The table's row of *kind* at *node* and *path*, at the current
+        evaluation (the body's unless a measure's or a predicate's lowering
+        is in progress), or ``None`` where the table lists none."""
+        return self.obligations.row(
+            node, kind, path,
+            self._evaluation if evaluation is None else evaluation)
+
+    def _rows(
+        self, node: ast.Node, kind: str, path: tuple[str, ...] | None = None,
+        *, evaluation: Evaluation | None = None,
+    ) -> list[Row]:
+        """Every row of *kind* at *node* (at every path when *path* is
+        ``None``), at the current evaluation."""
+        return self.obligations.rows_of(
+            node, kind, path,
+            self._evaluation if evaluation is None else evaluation)
+
+    def _checked(self, row: Row | None) -> bool:
+        """Whether *row* is one code generation emits a check for: a row
+        with a check of its own (not one another row's check answers)."""
+        return row is not None and row.guard.check and row.answered_by is None
+
+    def _clause_evaluation(self, call: ast.Node) -> Evaluation:
+        """The evaluation of a State clause inlined at the operation *call*
+        (#1695): the chain of inlining sites down to it, since a clause
+        body inlined inside another's copy is a copy of its own per copy
+        of the outer one."""
+        chain = (self._evaluation[1:]
+                 if self._evaluation and self._evaluation[0] == "clause" else ())
+        return ("clause", *chain, call.node_id)
+
+    @contextmanager
+    def _evaluating(self, evaluation: Evaluation) -> Iterator[None]:
+        """While a measure, a refinement predicate or an inlined clause is
+        lowered, the rows its operations read are the ones of that
+        evaluation."""
+        saved = self._evaluation
+        self._evaluation = evaluation
+        try:
+            yield
+        finally:
+            self._evaluation = saved
+
+    @staticmethod
+    def _self_tail_calls(decl: ast.FnDecl) -> list[ast.FnCall]:
+        """The self-recursive calls in tail position of *decl*'s body, in
+        the order the body holds them: the order the table lists a
+        measure's re-evaluation rows in, and the order `_compile_fn`
+        splices the self-tail prefix in."""
+        if decl.body is None:
+            return []
+        sites = compute_tail_call_sites(decl, None)
+        return [n for n in fold.walk(decl.body)
+                if isinstance(n, ast.FnCall) and n.name == decl.name
+                and id(n) in sites]
+
+    def _first_self_tail_call(self, decl: ast.FnDecl) -> ast.FnCall | None:
+        calls = self._self_tail_calls(decl)
+        return calls[0] if calls else None
+
+    def _rekey_checks(
+        self, lines: list[str], evaluation: Evaluation,
+    ) -> list[str]:
+        """*lines* with every record marker replaced by a fresh entry naming
+        the row of the same node, kind and path at *evaluation* (#1695):
+        a rendering spliced at several sites, the self-tail prefix, is
+        rendered once, and each copy answers its own site's rows."""
+        def rekey(match: re.Match[str]) -> str:
+            emitter, at, path, row_id = self._emitted_checks[
+                int(match.group(1))]
+            if row_id is None:
+                return match.group(0)  # a shared helper's: no row to re-key
+            row = self.obligations.rows[row_id]
+            again = self.obligations.row(
+                row.node, row.kind, row.path, evaluation)
+            if again is None:
+                raise CodegenInvariantError(
+                    f"{emitter}: the obligation table lists no row of "
+                    f"evaluation {evaluation!r} for a spliced check "
+                    "(#1695)", at)
+            return self._record_check(again, emitter=emitter, at=at, path=path)
+
+        # One pass per line: `sub` never rescans its own replacement, so
+        # the fresh marker is not re-keyed again.
+        return [CHECK_MARKER_RE.sub(rekey, line) for line in lines]
 
     def _register_rendering_site(self, node: ast.Node, site: ast.Node) -> None:
         """Record that *node*, a node code generation built to render a value,
@@ -996,22 +1112,14 @@ class WasmContext(
         Returns a list of WAT instruction strings, or None if the
         expression contains unsupported constructs (function skipped).
         """
-        # #1542 (#1695's line): the composite-coercion rule
-        # (`vera.wasm.coercion`) hands a construction's or a join's
-        # components down before they are translated, and walks an opaque
-        # value after.
-        walk = self._coercion_enter(expr)
-        try:
-            instructions = self._translate_expr_unscoped(expr, env)
-        except BaseException:
-            self._coercion_leave(expr, translated=False)
-            raise
-        self._coercion_leave(expr, translated=instructions is not None)
+        instructions = self._translate_expr_unscoped(expr, env)
         if instructions is None:
             return None
-        if walk is not None:
-            instructions = self._walk_coerced_value(
-                expr, instructions, walk)
+        # #1542 (#1695): an opaque value the obligation table lists
+        # composite rows at is walked along each row's tree after it is
+        # translated (`vera.wasm.coercion`).
+        for row in self._walk_rows(expr):
+            instructions = self._walk_coerced_value(expr, instructions, row)
         return self._scope_shadow_roots(expr, instructions)
 
     def _scope_shadow_roots(
@@ -1414,7 +1522,7 @@ class WasmContext(
                     # String / Array parameter and return guards check.
                     stmt_instrs.extend(self._emit_bind_refine_guard(
                         stmt.type_expr, ptr_idx, "let binding", stmt,
-                        current_env,
+                        current_env, row=self._row(stmt.value, "refine_bind"),
                     ))
                     current_env = current_env.push(
                         type_name, ptr_idx, declared)
@@ -1435,15 +1543,12 @@ class WasmContext(
                 # belt-and-suspenders role.  Alias-aware (`type Age = Nat`)
                 # via `_resolve_base_type_name` so an alias/refined @Nat let
                 # target is guarded too (CR #756).
-                if (self._is_nat_type(declared)
-                        and self._narrows_into_nat(stmt.value)):
-                    stmt_instrs.extend(self._emit_nat_bind_guard(
-                        val_instrs, at=stmt.value))
-                else:
-                    # A `@Byte` target's literals were already marked before
-                    # the translation above, so `val_instrs` is the i32
-                    # lowering — nothing to override here (#865 / #1212).
-                    stmt_instrs.extend(val_instrs)
+                # #1695: the value's `nat_bind` row is the decision.  A
+                # `@Byte` target's literals were already marked before the
+                # translation above, so `val_instrs` is the i32 lowering —
+                # nothing to override here (#865 / #1212).
+                stmt_instrs.extend(self._guard_nat_narrowing(
+                    val_instrs, stmt.value))
                 stmt_instrs.append(f"local.set {local_idx}")
                 # #765: the refined twin of the `@Nat` sign guard above.  A
                 # `let @Pos = <@Int>` narrows into a refined slot with no
@@ -1452,7 +1557,7 @@ class WasmContext(
                 # then reads a slot whose predicate nothing established.
                 stmt_instrs.extend(self._emit_bind_refine_guard(
                     stmt.type_expr, local_idx, "let binding", stmt,
-                    current_env,
+                    current_env, row=self._row(stmt.value, "refine_bind"),
                 ))
                 # #705: a heap-pointer let binding must be rooted, or a
                 # later allocation in the same block (a ``set_to_array``

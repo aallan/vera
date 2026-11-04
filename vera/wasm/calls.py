@@ -5,7 +5,8 @@ from __future__ import annotations
 from vera import ast
 from vera.binding import symbol
 from vera.builtins import INTRINSICS, Binding, Intrinsic
-from vera.skip import CodegenSkip
+from vera.obligations.table import REASON_NESTED_REFINEMENT
+from vera.skip import CodegenInvariantError, CodegenSkip
 from vera.slots import bare_call_denotes_user_fn
 from vera.wasm.helpers import WasmSlotEnv
 
@@ -176,28 +177,6 @@ class CallsMixin:
                 call.name == "throw" and len(call.args) == 1
                 and cell is not None
             )
-            # `_boundary_base`'s composition with its FIRST hop already
-            # performed, at registration: the registry carries a name, not
-            # the type expression, so this site cannot call the named helper
-            # and applies the residue chase itself.  Two of the three
-            # producers (both `handle` sites) store an already-chased base,
-            # so this is a no-op for them; the declaration-row producer
-            # (`codegen/functions.py`) has no `_resolve_base_type_name` to
-            # reach, which is the only reason the hop still lives here.
-            #
-            # UNTESTED as of #1273: deleting the chase leaves the suite green,
-            # because `family_base_name` already answers `Byte` for every
-            # refinement and alias reachable today, so no producer stores a
-            # base that still needs chasing.  It is defence for the residue
-            # `family_fallback_name` can return (a function or unknown type),
-            # which no boundary that asks this question can currently carry.
-            # A fixture exercising it needs a producer that stores an
-            # UNCHASED base — construct one and this becomes testable.
-            base = (
-                self._resolve_base_type_name(cell.base)
-                if (is_state_put or is_exn_throw) and cell is not None
-                else None
-            )
             for arg in call.args:
                 arg_instrs = self.translate_expr(arg, env)
                 if arg_instrs is None:
@@ -217,16 +196,40 @@ class CallsMixin:
             # so the sign guards would be redundant under it, and running
             # them instead of it would check `>= 0` where the boundary
             # invariant is `> 0`.
-            refined_payload: ast.TypeExpr | None = None
-            if is_exn_throw and cell is not None:
-                refined_payload = self._refined_exn_payload_type(cell, call)
-                if refined_payload is not None:
+            # #1695: the written value's rows are the decision, on `throw`
+            # and on the bare `put` alike (the `put` into a refined cell
+            # took the sign guard alone on this route): its `refine_bind`
+            # row lowers to the predicate guard, its `nat_bind` row to the
+            # sign guard, and the table lists one or the other.
+            if (is_state_put or is_exn_throw) and cell is not None:
+                refine = self._row(call.args[0], "refine_bind")
+                if self._checked(refine):
+                    assert refine is not None  # noqa: S101 — `_checked`
+                    refined_payload = self._refined_exn_payload_type(cell, call)
+                    if refined_payload is None:
+                        raise CodegenInvariantError(
+                            "the obligation table holds the written payload "
+                            "guardable, and the cell carries no refinement "
+                            "to guard (#1695)", call)
                     instructions = self._emit_exn_payload_refine_guard(
-                        instructions, refined_payload, cell, call, env)
-            if refined_payload is None and (is_state_put or is_exn_throw):
-                if base == "Nat" and self._narrows_into_nat(call.args[0]):
-                    instructions = self._emit_nat_bind_guard(
-                        instructions, at=call.args[0])
+                        instructions, refined_payload, cell, call, env,
+                        row=refine,
+                        head=(None if is_exn_throw else
+                              "Refinement violation in State put(…) write\n"
+                              f"  {ast.format_type_expr(refined_payload)} "
+                              "binding"))
+                elif (is_exn_throw and refine is not None
+                        and refine.guard.reason == REASON_NESTED_REFINEMENT):
+                    # A refinement over a refinement at a `throw` boundary is
+                    # refused loudly (E618) by the guard's own classifier,
+                    # which emits nothing for it (#1268).
+                    refined_payload = self._refined_exn_payload_type(cell, call)
+                    if refined_payload is not None:
+                        instructions = self._emit_exn_payload_refine_guard(
+                            instructions, refined_payload, cell, call, env,
+                            row=refine)
+                instructions = self._guard_nat_narrowing(
+                    instructions, call.args[0])
             # #754's registry contributes NOTHING on this route, and the
             # reason is a property of the route rather than an omission.
             # Only `get`, `put` and `throw` have a bare one — every other
@@ -283,35 +286,15 @@ class CallsMixin:
 
         # Regular function call
         instructions = []
-        # #747 (CR #756): key the @Nat-parameter guard bitmap on the *resolved*
-        # ``call_target``, not ``call.name``.  Monomorphisation registers the
-        # specialised instance (`pick$Nat`) with its concrete @Nat flags
-        # ``(True, …)`` while the generic decl (`pick`) keeps the erased
-        # ``(False, …)``; looking up ``call.name`` would miss the guard on the
-        # actual callee.  So `f<Nat>(@Int.0)` runtime-guards the narrowing
-        # exactly like a concrete `f(@Nat -> …)` call.
-        nat_params = self._fn_nat_params.get(call_target, ())
-        # A formal the generic DECLARES with a type variable is guarded where
-        # the checker instantiated it at `Nat` (`_guard_nat_instantiated_arg`):
-        # the clone is named from the arguments' own types, so `pick(-3, 5)`
-        # at `Nat` calls `pick$Int`, whose flags above are all False.
-        forall_vars, generic_formals = self._generic_fn_info.get(
-            call.name, ((), ()))
-        for i, arg in enumerate(call.args):
-            # #1542: a composite coercion into the formal defers to the
-            # callee's entry guard of its tuple components (#746).
-            with self._deferring(
-                    arg, self._callee_boundary_paths(call_target, i)):
-                arg_instrs = self.translate_expr(arg, env)
+        for arg in call.args:
+            arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
                 return None
-            if (i < len(nat_params) and nat_params[i]
-                    and self._narrows_into_nat(arg)):
-                arg_instrs = self._emit_nat_bind_guard(arg_instrs, at=arg)
-            elif (i < len(generic_formals)
-                    and _mentions_type_var(generic_formals[i],
-                                           frozenset(forall_vars))):
-                arg_instrs = self._guard_nat_instantiated_arg(arg, arg_instrs)
+            # #1695: the argument's `nat_bind` row, at a `@Nat` formal or a
+            # generic one the checker instantiated at `Nat`, is the one
+            # decision; a refined formal's rows are answered by the
+            # callee's entry check and emit nothing here.
+            arg_instrs = self._guard_nat_narrowing(arg_instrs, arg)
             instructions.extend(arg_instrs)
 
         # #517 — emit ``return_call $target`` for tail-position
@@ -365,32 +348,6 @@ class CallsMixin:
         if binding is Binding.NAMED:
             return emit(call.name, *call.args, env)
         raise AssertionError(f"{call.name}: no argument convention {binding}")
-
-    def _guard_effect_op_arg(
-        self,
-        arg: ast.Expr,
-        arg_instrs: list[str],
-        op_formals: tuple[str | None, ...],
-        index: int,
-    ) -> list[str]:
-        """Wrap one effect-operation argument in the guard its FORMAL calls
-        for (#754) — the operation-site twin of the `_fn_nat_params` bitmap
-        a function call site reads.
-
-        The same condition the function call site applies it under: an
-        ``@Int`` value narrowing into a ``@Nat`` formal traps if it is
-        negative.  It is gated on the VALUE — a value already at the
-        formal's type needs no check — so a program whose arguments are
-        provably in range pays dead instructions and never a trap.
-
-        Returns *arg_instrs* unchanged for a formal the registry has nothing
-        to say about: a type parameter, an ADT, a pair type, or an operation
-        the registry does not know.
-        """
-        base = op_formals[index] if index < len(op_formals) else None
-        if base == "Nat" and self._narrows_into_nat(arg):
-            return self._emit_nat_bind_guard(arg_instrs, at=arg)
-        return arg_instrs
 
     def _translate_qualified_call(
         self, call: ast.QualifiedCall, env: WasmSlotEnv
@@ -451,13 +408,13 @@ class CallsMixin:
         # from the CELL (a property of the handler, not of the declaration);
         # every other op has no bare route at all (E217), so the two loops
         # together cover every reachable operation argument.
-        op_formals = self._effect_op_params.get((call.qualifier, call.name), ())
-        for i, arg in enumerate(call.args):
+        for arg in call.args:
             arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
                 return None
-            instructions.extend(
-                self._guard_effect_op_arg(arg, arg_instrs, op_formals, i))
+            # #1695: the argument's `nat_bind` row, at an operation's `@Nat`
+            # formal, is the one decision.
+            instructions.extend(self._guard_nat_narrowing(arg_instrs, arg))
         # User-defined effect ops (e.g. Exn.throw, State.get/put) — delegate to
         # the effect_ops table, exactly as the unqualified _translate_call path does.
         # Guard: skip for host-import built-ins (Http, Inference, IO) whose op names

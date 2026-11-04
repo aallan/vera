@@ -538,8 +538,10 @@ def test_every_obligation_kind_is_classified() -> None:
     assert sorted(_CONTRACT_KINDS) == [
         "assert", "decreases", "ensures", "requires",
     ], sorted(_CONTRACT_KINDS)
+    # `effect_bind` (#1725) is a binder's row like `refine_bind`, and never
+    # guardable, so no Tier-3 instance of it exists to demote anything.
     assert sorted(safety) == [
-        "call_pre", "div_zero", "float_to_int_domain",
+        "call_pre", "div_zero", "effect_bind", "float_to_int_domain",
         "index_bounds", "int_overflow", "nat_bind", "nat_sub",
         "refine_bind", "state_decl",
     ], (

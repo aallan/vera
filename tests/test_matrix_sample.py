@@ -692,6 +692,7 @@ MARKED_FILES = (
     "test_persistent_map_set_1676.py",
     "test_keyed_string_hash_1736.py",
     "test_literal_branch_join_1756.py",
+    "test_obligation_table_1695.py",
     "test_trial_argument_labels_1757.py",
     "test_contract_purity_1708.py",
     "test_resolver_1694.py",

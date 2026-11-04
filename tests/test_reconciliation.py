@@ -419,13 +419,14 @@ def test_a_guard_with_no_record_is_guarded_unrecorded(repro_dir: Path) -> None:
 # =====================================================================
 
 def test_every_obligation_kind_but_state_decl_has_an_emitter() -> None:
-    """The kind map is read off the trap registry: every kind but the one
-    with no guard concept is some emitter's runtime half, so no kind's
-    records fall through to `no_mapping` today.  One emitter kind answers
-    no obligation kind: `component_coercion`, the guard of a composite
-    coercion (#1542's shape), whose checks are W004 until #1695's
-    obligation table records the coercion."""
-    assert EXCLUDED_KINDS == frozenset({"state_decl"})
+    """The kind map is read off the trap registry: every kind but the two
+    with no guard concept (`state_decl`, a refusal; `effect_bind`, a
+    binder bound at a narrower effect row, #1725) is some emitter's runtime
+    half, so no kind's records fall through to `no_mapping` today.  One
+    emitter kind answers no obligation kind: `component_coercion`, the
+    guard of a composite coercion (#1542's shape), whose checks are W004
+    until #1695's obligation table records the coercion."""
+    assert EXCLUDED_KINDS == frozenset({"state_decl", "effect_bind"})
     assert set(EMITTERS_BY_KIND) == (
         set(OBLIGATION_KINDS) - EXCLUDED_KINDS) | {"component_coercion"}
     assert not EXCLUDED_KINDS & set(EMITTERS_BY_KIND)

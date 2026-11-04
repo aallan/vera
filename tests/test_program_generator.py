@@ -572,6 +572,22 @@ _JOIN_SHAPE = ("a join of a refined arm with an unrefined one, bound into the "
 
 _COMPOSITE_COERCION_SHAPE = ("a composite coercion into a `Nat` component, guarded by "
                              "code generation's one rule and recorded by nothing")
+_LATER_ELEMENT_SHAPE = ("a later element of an array literal narrowed into the `Nat` "
+                        "component the first element fixed, guarded by its own row")
+
+
+def _later_element_into_nat_component(node: ast.Node, sites: Sites) -> bool:
+    """A value inside an array literal's second or later element, through
+    constructor payloads alone: the element type the first element fixed
+    holds a `Nat` there and the value an `Int` (spec 4.12.1)."""
+    child, parent = node, sites.parent.get(id(node))
+    while parent is not None:
+        if isinstance(parent, ast.ArrayLit):
+            return any(e is child for e in parent.elements[1:])
+        if not isinstance(parent, ast.ConstructorCall):
+            return False
+        child, parent = parent, sites.parent.get(id(parent))
+    return False
 
 
 def _composite_coercion_into_nat_component(_node: ast.Node, _sites: Sites) -> bool:
@@ -591,6 +607,7 @@ _SHAPES: dict[str, Callable[[ast.Node, Sites], bool]] = {
     "a division by a non-zero literal":
         lambda node, _s: _division_by(node, literal=True),
     _REFINED_NAT_SHAPE: _narrowing_into_refined_nat,
+    _LATER_ELEMENT_SHAPE: _later_element_into_nat_component,
     _REFINEMENT_HELD_SHAPE: _refinement_already_held,
     _JOIN_SHAPE: _join_typed_as_the_refinement,
     _COMPOSITE_COERCION_SHAPE: _composite_coercion_into_nat_component,
@@ -705,10 +722,25 @@ public fn bump(@Low -> @Int)
 }
 """
 
+#: An opaque value coerced into a composite with a `Nat` component, which
+#: code generation walks at run time (`wasm/coercion.py`).
+_REPRO_COMPOSITE_COERCION = """\
+public fn opaque(@Array<Option<Int>> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Array<Option<Nat>> = @Array<Option<Int>>.0;
+  0
+}
+"""
+
 #: A later element of an array literal whose first element fixed the
 #: element type at `Option<Nat>` (spec 4.12.1), coerced through its `Int`
-#: payload: the night's seeds 306 and 709 write one.
-_REPRO_COMPOSITE_COERCION = """\
+#: payload: the night's seeds 306 and 709 write one.  The obligation table
+#: (#1695) lists the payload's `nat_bind` row and code generation guards it
+#: inline; the verifier records it from the second half on.
+_REPRO_LATER_ELEMENT = """\
 public fn later(@Nat, @Int -> @Int)
   requires(true)
   ensures(true)
@@ -755,6 +787,13 @@ KNOWN_CLASSES: tuple[KnownClass, ...] = (
         "#1695", "guarded_unrecorded", "component_coercion",
         "wasm/coercion.py:_emit_component_coercion", _COMPOSITE_COERCION_SHAPE,
         _REPRO_COMPOSITE_COERCION),
+    # The later element's payload is the table's own `nat_bind` row, guarded
+    # inline where the walk guarded it before (#1695's first half); the
+    # verifier records it in the second.
+    KnownClass(
+        "#1695", "guarded_unrecorded", "nat_bind",
+        "wasm/operators.py:_emit_nat_bind_guard", _LATER_ELEMENT_SHAPE,
+        _REPRO_LATER_ELEMENT),
 )
 
 
@@ -2087,12 +2126,14 @@ def test_repro_a_refined_let_of_a_state_handle_holds_the_refinement() -> None:
     """A `let` of a refinement whose value is a `State` handle of a slot of
     that refinement is the held-refinement class at the `let` as at the
     parameter: the handle's value is its body's, so the leaves the class
-    reads go through it.  Base and head report the same two mismatches; the
-    seeds reach the shape because the model now lets a canonical handler
-    have its body's value (#1696)."""
+    reads go through it.  The seeds reach the shape because the model now
+    lets a canonical handler have its body's value (#1696).  The `let`'s
+    check went with the obligation table (#1695): the handle's value is a
+    slot of the refinement, which its own binding checks, so the table
+    lists no row there and code generation emits none; the parameter's
+    entry check is the one mismatch left."""
     finds = reconcile_finds(_REPRO_REFINED_HANDLE)
-    assert len(finds) == 2, finds
-    assert [f.known for f in finds] == ["#1695 (#1629)"] * 2, finds
+    assert [(f.known, f.site[1:]) for f in finds] == [("#1695 (#1629)", (3, 14))], finds
 
 
 @pytest.mark.parametrize(
@@ -2313,14 +2354,15 @@ public fn joined(@Bool, @Int -> @Int)
 
 @pytest.mark.parametrize("member", sorted(_HELD_MEMBERS))
 def test_the_held_refinement_class_reads_its_mechanism(member: str) -> None:
-    """Each member reports one `refine_bind` mismatch, which the class holds:
-    a `let` of a refined type whose value's every arm is a slot of that type
-    is checked by code generation and recorded by no one."""
+    """Each member reports no `refine_bind` mismatch: a `let` of a refined
+    type whose value's every arm is a slot of that type holds the predicate
+    by typing, so the obligation table lists no row there and code
+    generation emits no check (#1695), where it once checked it and no one
+    recorded it.  The class's repro, a refined parameter, still reports."""
     source = _HELD_MEMBERS[member]
     assert not contract_finds(source), contract_finds(source)
     finds = reconcile_finds(source)
-    refine = [f for f in finds if f.signature[1] == "refine_bind"]
-    assert [f.known for f in refine] == ["#1695 (#1629)"], finds
+    assert [f for f in finds if f.signature[1] == "refine_bind"] == [], finds
     assert all(f.known for f in finds), finds
 
 

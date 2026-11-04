@@ -7,8 +7,9 @@ from typing import TYPE_CHECKING
 from collections.abc import Callable
 
 from vera import ast, naming, narrowing
-from vera.skip import CodegenSkip
-from vera.types import AdtType, Type, base_type, contains_typevar, value_type_name
+from vera.obligations.table import Row
+from vera.skip import CodegenInvariantError, CodegenSkip
+from vera.types import contains_typevar, value_type_name
 from vera.wasm.helpers import (
     WasmSlotEnv,
     bind_slot_value_from_field,
@@ -59,41 +60,6 @@ class DataMixin:
             return None
         return tp_idx[index]
 
-    def _ctor_field_mono_base(self, arg: ast.Expr) -> str | None:
-        """Base type NAME a constructor field is instantiated to at this
-        construction site, read from the argument's own recorded target
-        (#757), or ``None`` when the table has no answer.
-
-        A constructor layout is registered ONCE per ADT, so its ``nat_fields``
-        bitmap describes the DECLARED field types: for
-        ``data Box<T> { Wrap(T) }`` every flag is False whatever ``Box`` is
-        instantiated to, and the ``@Int -> @Nat`` narrowing guard that fires
-        for a concrete ``Wrap(Nat)`` field was skipped for ``Wrap(@Int.0)``
-        building a ``Box<Nat>``.  The negative was stored, and only a reader
-        that happened to bind it back at ``@Nat`` caught it — a reader binding
-        it at ``@Int`` returned it, breaking a postcondition the verifier
-        proved from the field's ``>= 0``.
-
-        Keyed on the ARGUMENT rather than on the constructed ADT's type args
-        (which :meth:`_ctor_field_tp_index` could also map) because that is
-        the question the verifier asks: ``_nat_binding_target`` resolves a
-        generic field through ``_target_type_of(arg)``, the checker-side twin
-        of this table.  Asking the same question of the same table is what
-        keeps the obligation's ``guarded`` flag equal to whether a guard is
-        actually emitted; deriving the answer a second way would be a second
-        rule, free to disagree.
-
-        ``None`` when the target-type table was not threaded (an unverified
-        ``transform -> compile``) or the span carries no target — the caller
-        then falls back to the layout bitmaps rather than guessing.  A
-        refinement OVER the target unwraps to its base, so ``Box<{ @Nat | P }>``
-        takes the sign guard here and its predicate at the boundary.
-        """
-        target = self._target_codegen_type_full(arg)
-        if target is None:
-            return None
-        return getattr(getattr(target, "base", target), "name", None)
-
     # -----------------------------------------------------------------
     # Narrowing-bind refinement guards (#765)
     # -----------------------------------------------------------------
@@ -106,16 +72,21 @@ class DataMixin:
         node: ast.Node,
         env: WasmSlotEnv,
         *,
+        row: Row | None,
         at: ast.Node | None = None,
     ) -> list[str]:
         """The §2.6.5 predicate guard for a value bound into a REFINED slot by
         a pattern (#765) — the refined twin of ``_emit_nat_bind_guard``, which
         already covers the ``@Nat`` case at these same three sites.
 
-        *at* is the node the per-module record locates the check at, when
-        that is not *node* (which a refusal is reported at): a destructure's
-        component is checked at its own type binding, where its sign guards
-        stand, rather than at the statement every component shares.
+        *row* is the obligation table's `refine_bind` row of the binding
+        (#1695), the one decision whether the guard is emitted: none, or
+        one the table holds unguardable (an erased base, a refinement over
+        a refinement), emits nothing.  *at* is the node the per-module
+        record locates the check at, when that is not *node* (which a
+        refusal is reported at): a destructure's component is checked at
+        its own type binding, where its sign guards stand, rather than at
+        the statement every component shares.
 
         ``@Nat`` is a refinement whose predicate codegen happens to know how
         to write by hand (``>= 0``), so the sign guard covered one member of
@@ -153,9 +124,15 @@ class DataMixin:
         # for no soundness gain: the bind is unguarded either way.  Measured
         # on `type Tiny = { @Pos | @Pos.0 < 10 }` bound by a `let`, which
         # returns 5 at base and was E618 here.
+        if not self._checked(row):
+            return []
+        assert row is not None  # noqa: S101 — `_checked`
         parts = naming.refinement_binder_parts(te, self._alias_env)
         if parts is None or parts.base_is_refinement:
-            return []
+            raise CodegenInvariantError(
+                f"the obligation table holds the refined bind in {where} "
+                "guardable, and this lowering has no guard for its type "
+                "(#1695)", node)
         emitter = self._refinement_guard_emitter
         if emitter is None:
             raise CodegenSkip(
@@ -167,7 +144,7 @@ class DataMixin:
         head = (f"Refinement violation in {where}\n"
                 f"  {ast.format_type_expr(te)} binding")
         return emitter(te, value_local, head, env,
-                       node if at is None else at) or []
+                       node if at is None else at, row) or []
 
     def _emit_construction_refine_guard(
         self,
@@ -232,13 +209,27 @@ class DataMixin:
             resolved = (component_ty if component_ty is not None
                         else self._target_codegen_type_refined(arg))
             te = self.refined_type_expr(resolved)
-        if te is None:
+        # #1695: the component's `refine_bind` row is the decision; the
+        # type resolution above is the lowering's.
+        row = self._row(arg, "refine_bind")
+        if not self._checked(row):
             return value
-        wasm_ty = self._refined_component_wasm_type(te, self._alias_env)
-        if wasm_ty is None:
-            return value
+        assert row is not None  # noqa: S101 — `_checked`
+        if te is None or self._refined_component_wasm_type(
+                te, self._alias_env) is None:
+            # A generic field instantiated at a refinement, whose declared
+            # type is a variable and whose argument carries no recorded
+            # target: the row's own target is the instantiated field type.
+            te = self.refined_type_expr(row.target)
+        wasm_ty = (self._refined_component_wasm_type(te, self._alias_env)
+                   if te is not None else None)
+        if te is None or wasm_ty is None:
+            raise CodegenInvariantError(
+                f"the obligation table holds the refined {site} store "
+                "guardable, and this lowering resolves no scalar type for "
+                "it (#1695)", arg)
         tmp = self.alloc_local(wasm_ty)
-        guard = self._emit_bind_refine_guard(te, tmp, where, arg, env)
+        guard = self._emit_bind_refine_guard(te, tmp, where, arg, env, row=row)
         if not guard:
             return value
         return [*value, f"local.tee {tmp}", *guard]
@@ -264,14 +255,9 @@ class DataMixin:
         holds, and narrows on the same `_narrows_into_nat` rule every other
         sign site uses.
         """
-        base = getattr(component_ty, "base", component_ty)
-        in_place = (getattr(base, "name", None) == "Nat"
-                    and self._narrows_into_nat(arg))
-        if in_place:
-            value = self._emit_nat_bind_guard(value, at=arg)
-        # #1542: a component a composite coercion made a `Nat`, where the
-        # decision above placed no guard (`vera.wasm.coercion`).
-        return self._coercion_leaf_guard(arg, value, in_place=in_place)
+        # #1695: the component's `nat_bind` row is the decision, the
+        # store's own and the composite coercion's (#1542) alike.
+        return self._guard_nat_narrowing(value, arg)
 
     def _refined_slot_wasm_type(self, te: ast.TypeExpr) -> str | None:
         """The WASM REPRESENTATION of a refined slot's value, or None when no
@@ -557,25 +543,10 @@ class DataMixin:
                 # concrete @Nat constructor field (`WrapN(@Int.0)` where
                 # `WrapN(Nat)`).  #757: and into a GENERIC field instantiated
                 # to @Nat here (`Wrap(@Int.0)` building a `Box<Nat>`), whose
-                # answer the per-ADT `nat_fields` bitmap cannot carry —
-                # `_ctor_field_mono_base` reads it from this site's
-                # instantiation instead.
-                mono_base = self._ctor_field_mono_base(expr.args[i])
-                # #1416: the built-in variadic `Tuple` carrier has no
-                # per-field metadata, so its narrowing component reads its
-                # target from the checker's table (#820).
-                in_place = (
-                    ((i < len(layout.nat_fields) and layout.nat_fields[i])
-                     or mono_base == "Nat"
-                     or self._adt_arg_is_nat(tuple_target, i))
-                    and self._narrows_into_nat(expr.args[i]))
-                if in_place:
-                    field_val = self._emit_nat_bind_guard(
-                        field_val, at=expr.args[i])
-                # #1542: a component a composite coercion made a `Nat`, where
-                # the decision above placed no guard (`vera.wasm.coercion`).
-                field_val = self._coercion_leaf_guard(
-                    expr.args[i], field_val, in_place=in_place)
+                # answer the per-ADT `nat_fields` bitmap cannot carry.
+                # #1695: the field's `nat_bind` row is the decision, the
+                # store's own and the composite coercion's (#1542) alike.
+                field_val = self._guard_nat_narrowing(field_val, expr.args[i])
                 # #1426: and the §2.6.5 PREDICATE beside the sign guard.  A
                 # refined component was obligated at this store and checked
                 # by nobody, so a value its own component type forbids went
@@ -677,14 +648,13 @@ class DataMixin:
                 instrs.extend(gc_shadow_push(ptr_local))
                 # #1542: a component declared narrower than the composite it
                 # binds is walked (`vera.wasm.coercion`).
-                instrs.extend(self._emit_binder_coercions(
-                    self._destructure_coercions(stmt, idx, declared),
-                    ptr_local, at=te))
+                instrs.extend(self._emit_binder_walks(
+                    self._walk_rows(te), ptr_local, at=te))
                 # #765: refined pair-typed destructure component, guarded
                 # over the pointer half (see the sub-pattern twin).
                 instrs.extend(self._emit_bind_refine_guard(
                     te, ptr_local, f"let {stmt.constructor}(…) destructure",
-                    stmt, new_env, at=te,
+                    stmt, new_env, at=te, row=self._row(te, "refine_bind"),
                 ))
                 new_env = new_env.push(type_name, ptr_local, declared)
                 continue
@@ -706,22 +676,19 @@ class DataMixin:
             # walk (#1525), so one built from a non-negative value is not
             # guarded.  The binding's declared type as the checker resolved
             # it, an alias of `Nat` included (CR #756).
-            if (self._is_nat_type(declared)
-                    and self._destructure_narrows(stmt, idx)):
-                load = self._emit_nat_bind_guard(load, at=te)
+            load = self._guard_nat_narrowing(load, te)
             instrs.extend(load)
             instrs.append(f"local.set {local_idx}")
             # #1542: the composite twin of the guard above
             # (`vera.wasm.coercion`).
-            instrs.extend(self._emit_binder_coercions(
-                self._destructure_coercions(stmt, idx, declared),
-                local_idx, at=te))
+            instrs.extend(self._emit_binder_walks(
+                self._walk_rows(te), local_idx, at=te))
             # #765: the refined twin of the `@Nat` sign guard above — a
             # `let Tuple<@Pos, @Int> = …` component narrows into a refined
             # slot with nothing between it and the rest of the block.
             instrs.extend(self._emit_bind_refine_guard(
                 te, local_idx, f"let {stmt.constructor}(…) destructure",
-                stmt, new_env, at=te,
+                stmt, new_env, at=te, row=self._row(te, "refine_bind"),
             ))
             # PR #707 review: same heap-pointer rooting
             # discipline as ``_extract_constructor_fields`` (line ~515)
@@ -1201,13 +1168,12 @@ class DataMixin:
                 # addresses.  See the note there.
                 # #1542: a binder declared narrower than the composite value
                 # it binds walks it (`vera.wasm.coercion`).
-                instrs.extend(self._emit_binder_coercions(
-                    self._scrutinee_coercions(scrutinee, declared),
-                    ptr_local, at=pattern))
+                instrs.extend(self._emit_binder_walks(
+                    self._walk_rows(pattern), ptr_local, at=pattern))
                 # #765: refined pair scrutinee bind, guarded over the pointer.
                 instrs.extend(self._emit_bind_refine_guard(
                     pattern.type_expr, ptr_local, "match binding pattern",
-                    pattern, env,
+                    pattern, env, row=self._row(pattern, "refine_bind"),
                 ))
                 return (instrs, env.push(type_name, ptr_local, declared))
             local_idx = self.alloc_local(scr_wasm_type)
@@ -1219,26 +1185,21 @@ class DataMixin:
             # (#1525), so `match 5 { @Nat -> ... }` is not guarded.  The
             # binder's declared type as the checker resolved it, an alias of
             # `Nat` included (CR #756).
-            if (self._is_nat_type(declared)
-                    and scr_wasm_type == "i64"
-                    and (scrutinee is None
-                         or self._narrows_into_nat(scrutinee))):
-                bind_val = self._emit_nat_bind_guard(bind_val, at=pattern)
+            bind_val = self._guard_nat_narrowing(bind_val, pattern)
             instrs = [
                 *bind_val,
                 f"local.set {local_idx}",
                 # #1542: the composite twin of the guard above
                 # (`vera.wasm.coercion`).
-                *self._emit_binder_coercions(
-                    self._scrutinee_coercions(scrutinee, declared),
-                    local_idx, at=pattern),
+                *self._emit_binder_walks(
+                    self._walk_rows(pattern), local_idx, at=pattern),
             ]
             # #765: the refined twin of the sign guard above — a top-level
             # `match x { @Pos -> … }` narrows the scrutinee into a refined
             # slot, and the arm body then reasons from the predicate.
             instrs.extend(self._emit_bind_refine_guard(
                 pattern.type_expr, local_idx, "match binding pattern",
-                pattern, env,
+                pattern, env, row=self._row(pattern, "refine_bind"),
             ))
             # PR #707 review: same heap-pointer rooting
             # discipline as ``_extract_constructor_fields`` (below) —
@@ -1350,10 +1311,8 @@ class DataMixin:
                     instrs.extend(gc_shadow_push(ptr_local))
                     # #1542: a binder declared narrower than the composite
                     # field it binds walks it (`vera.wasm.coercion`).
-                    instrs.extend(self._emit_binder_coercions(
-                        self._sub_pattern_coercions(
-                            sources, i, pattern.name, declared),
-                        ptr_local, at=sub_pat))
+                    instrs.extend(self._emit_binder_walks(
+                        self._walk_rows(sub_pat), ptr_local, at=sub_pat))
                     # #765: a pair-typed field (String, Array<T>) narrowed
                     # into a refined slot — guarded over the POINTER half,
                     # the same representation the refined String / Array
@@ -1361,7 +1320,7 @@ class DataMixin:
                     instrs.extend(self._emit_bind_refine_guard(
                         sub_pat.type_expr, ptr_local,
                         f"constructor sub-pattern {pattern.name}(…)",
-                        sub_pat, new_env,
+                        sub_pat, new_env, row=self._row(sub_pat, "refine_bind"),
                     ))
                     new_env = new_env.push(type_name, ptr_local, declared)
                     continue
@@ -1385,18 +1344,14 @@ class DataMixin:
                 # where the field's sources narrow, the verifier's rule
                 # (#1525).  The binder's declared type as the checker
                 # resolved it, an alias of `Nat` included (CR #756).
-                if (self._is_nat_type(declared)
-                        and self._component_narrows(sources, i, pattern.name)):
-                    load = self._emit_nat_bind_guard(load, at=sub_pat)
+                load = self._guard_nat_narrowing(load, sub_pat)
                 instrs.extend(load)
                 instrs.append(f"local.set {local_idx}")
                 # #1542: and the composite twin of that guard, a binder
                 # declared narrower than the composite field it binds
                 # (`vera.wasm.coercion`).
-                instrs.extend(self._emit_binder_coercions(
-                    self._sub_pattern_coercions(
-                        sources, i, pattern.name, declared),
-                    local_idx, at=sub_pat))
+                instrs.extend(self._emit_binder_walks(
+                    self._walk_rows(sub_pat), local_idx, at=sub_pat))
                 # #765: the refined twin of the sign guard above — a
                 # `MkBox(@Pos)` sub-pattern, at ANY nesting depth (this method
                 # recurses), narrows the field into a refined slot with no
@@ -1405,7 +1360,7 @@ class DataMixin:
                 instrs.extend(self._emit_bind_refine_guard(
                     sub_pat.type_expr, local_idx,
                     f"constructor sub-pattern {pattern.name}(…)",
-                    sub_pat, new_env,
+                    sub_pat, new_env, row=self._row(sub_pat, "refine_bind"),
                 ))
                 # #705: shadow-push heap-pointer match bindings so
                 # subsequent allocations (e.g. ``set_new()`` inside
@@ -1672,93 +1627,6 @@ class DataMixin:
                 outer(index), step, j, lambda name: name == nested,
                 typed.field_is_generic)
         return sources
-
-    def _component_narrows(
-        self, sources: ComponentSources | None, index: int, ctor_name: str,
-    ) -> bool:
-        """Whether binding field *index* into a `@Nat` slot is a narrowing:
-        the verifier's rule over the field's sources
-        (:func:`vera.narrowing.component_narrows`), a source built here read
-        by its value, an opaque one by its declared field type.  A field
-        whose sources or declaration code generation cannot read is a
-        narrowing: a dead guard costs a check, a dropped one a wrong value."""
-        typed = self._typed_program
-        if sources is None or typed is None:
-            return True
-
-        def leaf_is_nat(leaf: narrowing.ComponentSource, i: int) -> bool:
-            declared = narrowing.declared_component_is_nat(
-                leaf, i, ctor_name, self._type_of, typed.field_types_at,
-                self._is_nat_type)
-            return bool(declared)
-
-        return narrowing.component_narrows(
-            sources(index), index, self._narrows_into_nat, leaf_is_nat)
-
-    def _destructure_narrows(self, stmt: ast.LetDestruct, index: int) -> bool:
-        """Whether binding component *index* of the destructure *stmt* into
-        a `@Nat` slot is a narrowing: the verifier's rule over its sources,
-        an opaque one read by the declared field type of the constructor the
-        destructure binds (the source type's one, or `Tuple`)."""
-        typed = self._typed_program
-        if typed is None:
-            return True
-        sources, ctor_name = self._destructure_sources(stmt, index)
-        if ctor_name is None:
-            return True
-
-        def leaf_is_nat(leaf: narrowing.ComponentSource, i: int) -> bool:
-            assert ctor_name is not None  # noqa: S101
-            declared = narrowing.declared_component_is_nat(
-                leaf, i, ctor_name, self._type_of, typed.field_types_at,
-                self._is_nat_type)
-            return bool(declared)
-
-        return narrowing.component_narrows(
-            sources, index, self._narrows_into_nat, leaf_is_nat)
-
-    def _destructure_coercions(
-        self, stmt: ast.LetDestruct, index: int, declared: object,
-    ) -> tuple[narrowing.Coercion, ...]:
-        """The composite twin of :py:meth:`_destructure_narrows` (#1542):
-        what binding component *index* at the binding's *declared* type
-        walks, over the same sources."""
-        sources, ctor_name = self._destructure_sources(stmt, index)
-        if ctor_name is None or not isinstance(declared, Type):
-            return ()
-        return self._binder_coercions(sources, index, ctor_name, declared)
-
-    def _sub_pattern_coercions(
-        self, sources: ComponentSources | None, index: int, ctor_name: str,
-        declared: object,
-    ) -> tuple[narrowing.Coercion, ...]:
-        """The composite twin of :py:meth:`_component_narrows` (#1542)."""
-        if sources is None or not isinstance(declared, Type):
-            return ()
-        return self._binder_coercions(
-            sources(index), index, ctor_name, declared)
-
-    def _destructure_sources(
-        self, stmt: ast.LetDestruct, index: int,
-    ) -> tuple[tuple[narrowing.ComponentSource, ...], str | None]:
-        """The sources of component *index* of the destructure *stmt*, and
-        the constructor whose fields type an opaque one (the source type's
-        only constructor, or `Tuple`; ``None`` when there is none)."""
-        typed = self._typed_program
-        assert typed is not None  # noqa: S101
-        tuple_shape = stmt.constructor == "Tuple"
-        ctor_name: str | None = "Tuple" if tuple_shape else None
-        if ctor_name is None:
-            source = self._type_of(stmt.value)
-            base = base_type(source) if source is not None else None
-            names: tuple[str, ...] = (
-                typed.constructors_of(base.name)
-                if isinstance(base, AdtType) else ())
-            if len(names) == 1:
-                ctor_name = names[0]
-        sources = narrowing.component_sources(
-            stmt.value, index, lambda name: (name == "Tuple") == tuple_shape)
-        return sources, ctor_name
 
     def _resolve_nested_scrutinee_type(
         self,
@@ -2122,7 +1990,8 @@ class DataMixin:
         instructions.append("if")
         instructions.extend(
             f"  {i}" for i in self._emit_trap(
-                "wasm/data.py:_translate_index_expr", at=expr,
+                "wasm/data.py:_translate_index_expr",
+                row=self._row(expr, "index_bounds"),
                 message=self._index_message(expr)))
         instructions.append("end")
         instructions.append(f"local.get {tmp_idx64}")

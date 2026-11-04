@@ -894,6 +894,12 @@ DELIBERATE: dict[tuple[str, str], str] = {
         "while it runs, so it is rendered before any table exists"),
     ("vera/naming.py", "slot_name"): (
         "a slot's name, rendered by `_resolve` for the same reason"),
+    ("vera/obligations/table.py", "_Builder._construction_components"): (
+        "the obligation table's projection of a requirement the checker "
+        "recorded onto a construction's children, by the typed program's "
+        "own field types (`TypedProgram.field_types_at`): it derives no "
+        "expression's type, and a child's own type is not the component it "
+        "is held to"),
     ("vera/monomorphize.py", "substitute_type_vars"): (
         "the clone substitution: `vera.typed.build` writes each clone's "
         "type expressions under its instance's substitution, and types "

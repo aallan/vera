@@ -441,7 +441,8 @@ class CallsStringsMixin:
         instructions.append("if")
         instructions.extend(
             f"  {i}" for i in self._emit_trap(
-                "wasm/calls_strings.py:_translate_char_code", at=at,
+                "wasm/calls_strings.py:_translate_char_code",
+                row=self._row(at, "call_pre"),
                 message=self._char_code_message(arg_s, arg_idx, at)))
         instructions.append("end")
 
@@ -472,8 +473,7 @@ class CallsStringsMixin:
 
         # #757: runtime-guard an @Int -> @Nat narrowing of the char code
         # before it is wrapped to i32 and stored as a byte (CR #756).
-        if self._narrows_into_nat(arg):
-            n_instrs = self._emit_nat_bind_guard(n_instrs, at=arg)
+        n_instrs = self._guard_nat_narrowing(n_instrs, arg)
 
         self.needs_alloc = True
 
@@ -522,8 +522,7 @@ class CallsStringsMixin:
         # is wrapped to i32 and used in `len * count` (a negative would wrap to
         # a huge i32 and overallocate).  Builtin translators bypass
         # `_fn_nat_params`, so the guard is applied per-translator (CR #756).
-        if self._narrows_into_nat(arg_n):
-            n_instrs = self._emit_nat_bind_guard(n_instrs, at=arg_n)
+        n_instrs = self._guard_nat_narrowing(n_instrs, arg_n)
 
         self.needs_alloc = True
 
@@ -634,8 +633,7 @@ class CallsStringsMixin:
         arg_instrs = self.translate_expr(arg, env)
         if arg_instrs is None:
             return None
-        if self._narrows_into_nat(arg):
-            arg_instrs = self._emit_nat_bind_guard(arg_instrs, at=arg)
+        arg_instrs = self._guard_nat_narrowing(arg_instrs, arg)
         return self._to_string_core(arg_instrs)
 
     def _to_string_core(self, arg_instrs: list[str]) -> list[str]:
@@ -1028,8 +1026,12 @@ class CallsStringsMixin:
         # magnitude of 2^63 or more (#1482), so it carries its record entry's
         # marker (#1479), as a native division does.
         instructions.append(f"local.get {fval}")
-        instructions.append("i64.trunc_f64_s" + self._record_check(
-            "wasm/calls_strings.py:_float_to_string_core", at))
+        instructions.append("i64.trunc_f64_s" + (
+            self._record_shared_check(
+                emitter="wasm/calls_strings.py:_float_to_string_core")
+            if at is None else self._record_check(
+                self._row(at, "float_to_int_domain"),
+                emitter="wasm/calls_strings.py:_float_to_string_core", at=at)))
         instructions.append(f"local.set {ival}")
 
         # Compute the fractional part NOW, before writing integer
@@ -3407,9 +3409,7 @@ class CallsStringsMixin:
         # it is wrapped to i32 and used to size the allocation (a negative
         # would wrap to a huge i32 and overallocate).  Per-translator because
         # builtins bypass `_fn_nat_params` (CR #756).
-        if self._narrows_into_nat(arg_target):
-            target_instrs = self._emit_nat_bind_guard(
-                target_instrs, at=arg_target)
+        target_instrs = self._guard_nat_narrowing(target_instrs, arg_target)
 
         self.needs_alloc = True
 

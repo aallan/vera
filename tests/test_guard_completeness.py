@@ -893,7 +893,6 @@ def _guard_mutations() -> list[tuple]:
     contain WITH the guard and WITHOUT it.  They differ for every entry,
     which is the whole content of the check.
     """
-    from vera.wasm.calls import CallsMixin
     from vera.wasm.data import DataMixin
     from vera.wasm.operators import OperatorsMixin
 
@@ -901,7 +900,7 @@ def _guard_mutations() -> list[tuple]:
         (
             "765 refined pattern bind",
             DataMixin, "_emit_bind_refine_guard",
-            lambda self, te, local, where, node, env: [],
+            lambda self, te, local, where, node, env, **_: [],
             (_765_DIRECT, "f", [-5]),
             "Refinement violation", "ran",
         ),
@@ -917,14 +916,17 @@ def _guard_mutations() -> list[tuple]:
             # places; the rule defers to the decision and does not fire.
             "757 generic instantiated field",
             OperatorsMixin, "_emit_nat_bind_guard",
-            lambda self, value, *, at: value,
+            lambda self, value, **_: value,
             (_757_STORE_ONLY, "f", [-5]),
             "Negative value bound into a @Nat slot", "ran",
         ),
         (
+            # The effect operation's argument is guarded by its row (#1695)
+            # through the one sign-guard decision every narrowing reads; the
+            # probe holds no other narrowing.
             "754 effect-operation argument",
-            CallsMixin, "_guard_effect_op_arg",
-            lambda self, arg, instrs, formals, index: instrs,
+            OperatorsMixin, "_guard_nat_narrowing",
+            lambda self, value, node, **_: value,
             (_754_OP_ARG, "f", [-5]),
             "Negative value bound into a @Nat slot", "ran",
         ),

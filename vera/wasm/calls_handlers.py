@@ -23,6 +23,7 @@ from vera.lowering import (
 )
 from vera.naming import display_adt_name
 from vera.monomorphize import mangle_type_name
+from vera.obligations.table import Row
 from vera.slots import type_expr_slot_name
 from vera.skip import CodegenInvariantError, CodegenSkip
 from vera.types import STRING
@@ -76,7 +77,8 @@ class CallsHandlersMixin:
     _clause_inline_depth: int
     _refinement_guard_emitter: (
         Callable[
-            [ast.TypeExpr, int, str, WasmSlotEnv, ast.Node | None],
+            [ast.TypeExpr, int, str, WasmSlotEnv, ast.Node | None,
+             Row | None],
             list[str] | None,
         ]
         | None
@@ -1422,10 +1424,8 @@ class CallsHandlersMixin:
             init_instrs = self._emit_state_write_refine_guard(
                 init_instrs, type_arg, expr.state.init_expr,
                 "State cell init", env)
-            if (family_base == "Nat"
-                    and self._narrows_into_nat(expr.state.init_expr)):
-                init_instrs = self._emit_nat_bind_guard(
-                    init_instrs, at=expr.state.init_expr)
+            init_instrs = self._guard_nat_narrowing(
+                init_instrs, expr.state.init_expr)
             instructions.extend(init_instrs)
 
         # 2. Push a fresh state cell (isolates this handler from any outer
@@ -1726,6 +1726,11 @@ class CallsHandlersMixin:
         """
         entry = self._state_clause_ops[call.name]
         clause = entry.clause
+        # #1695: the clause's rows are listed once per site it is inlined
+        # at; this site's copy of the clause (its binder guard, its body,
+        # its `with` update) reads its own, under the site's evaluation,
+        # while the operation's own argument stays the caller's.
+        site = self._clause_evaluation(call)
         # Only the cell's REPRESENTATION is needed here (#1218): every
         # decision below is a width, a pointer-ness, or a write guard,
         # and all of those are the base's.  The IDENTITY (`entry.family`)
@@ -1823,10 +1828,7 @@ class CallsHandlersMixin:
             arg_instrs = self._emit_state_write_refine_guard(
                 arg_instrs, entry.family_type_expr, call.args[0],
                 "State put(…) write", env)
-            if (family_base == "Nat"
-                    and self._narrows_into_nat(call.args[0])):
-                arg_instrs = self._emit_nat_bind_guard(
-                    arg_instrs, at=call.args[0])
+            arg_instrs = self._guard_nat_narrowing(arg_instrs, call.args[0])
             arg_local = self.alloc_local(state_wt)
             instructions.extend(arg_instrs)
             instructions.append(f"local.set {arg_local}")
@@ -1878,9 +1880,11 @@ class CallsHandlersMixin:
                     clause.params[0],
                     "handler clause parameter has no slot name",
                 )
-            instructions.extend(self._emit_clause_binder_guard(
-                clause.params[0], arg_local, family_base, entry.family_type_expr,
-                f"{clause.op_name}(…) clause binder", clause, clause_env))
+            with self._evaluating(site):
+                instructions.extend(self._emit_clause_binder_guard(
+                    clause.params[0], arg_local, family_base,
+                    entry.family_type_expr,
+                    f"{clause.op_name}(…) clause binder", clause, clause_env))
             clause_env = clause_env.push(param_slot, arg_local)
         if state_slot_name is not None and state_local is not None:
             clause_env = clause_env.push(state_slot_name, state_local)
@@ -1925,11 +1929,12 @@ class CallsHandlersMixin:
         self._addressable_from = entry.decl_addressable_from
         self._clause_inline_depth += 1
         try:
-            body_instrs = self.translate_expr(clause.body, clause_env)
-            upd_instrs = (
-                self.translate_expr(clause.state_update[1], clause_env)
-                if clause.state_update is not None else None
-            )
+            with self._evaluating(site):
+                body_instrs = self.translate_expr(clause.body, clause_env)
+                upd_instrs = (
+                    self.translate_expr(clause.state_update[1], clause_env)
+                    if clause.state_update is not None else None
+                )
         finally:
             self._in_state_clause = saved_in_clause
             self._effect_ops = saved_ops
@@ -1945,28 +1950,25 @@ class CallsHandlersMixin:
         # site — so guard a narrowing resume value the same way
         # the closure-return guard works (`_compile_lifted_closure`'s
         # analogue for the inlined clause).
-        if call.name == "get":
-            resume_arg = self._tail_resume_arg(clause.body)
-            if resume_arg is not None:
-                if (family_base == "Nat"
-                        and self._narrows_into_nat(resume_arg)):
-                    body_instrs = self._emit_nat_bind_guard(
-                        body_instrs, at=resume_arg)
-        instructions.extend(body_instrs)
-        if clause.state_update is not None:
-            if upd_instrs is None:
-                return None
-            # #1203: `with @T = <expr>` overrides the state cell — the
-            # third write boundary; same guard as put's argument.
-            upd_instrs = self._emit_state_write_refine_guard(
-                upd_instrs, entry.family_type_expr, clause.state_update[1],
-                "State with(…) override", env)
-            if (family_base == "Nat"
-                    and self._narrows_into_nat(clause.state_update[1])):
-                upd_instrs = self._emit_nat_bind_guard(
-                    upd_instrs, at=clause.state_update[1])
-            instructions.extend(upd_instrs)
-            instructions.append(f"call {put_import}")
+        with self._evaluating(site):
+            if call.name == "get":
+                resume_arg = self._tail_resume_arg(clause.body)
+                if resume_arg is not None:
+                    body_instrs = self._guard_nat_narrowing(
+                        body_instrs, resume_arg)
+            instructions.extend(body_instrs)
+            if clause.state_update is not None:
+                if upd_instrs is None:
+                    return None
+                # #1203: `with @T = <expr>` overrides the state cell — the
+                # third write boundary; same guard as put's argument.
+                upd_instrs = self._emit_state_write_refine_guard(
+                    upd_instrs, entry.family_type_expr, clause.state_update[1],
+                    "State with(…) override", env)
+                upd_instrs = self._guard_nat_narrowing(
+                    upd_instrs, clause.state_update[1])
+                instructions.extend(upd_instrs)
+                instructions.append(f"call {put_import}")
         return instructions
 
     def _emit_state_write_refine_guard(
@@ -2012,17 +2014,20 @@ class CallsHandlersMixin:
         because "one local" is a property of the type rather than of this
         emitter, and that is the whole defect.
         """
-        if te is None:
-            return value
-        if "State write boundary" not in narrowing.REFINED_BIND_GUARDED_SITES:
+        # #1695: the write's `refine_bind` row, at the written value, is the
+        # decision; the representation below is the lowering's.
+        row = self._row(arg, "refine_bind")
+        if te is None or not self._checked(row):
             return value
         wasm_ty = self._refined_slot_wasm_type(te)
         if wasm_ty is None:
-            return value
+            raise CodegenInvariantError(
+                f"the obligation table holds the {where} guardable, and "
+                "this lowering binds no local for it (#1695)", arg)
         binding = bind_slot_value_from_stack(
             self.alloc_local, wasm_ty, keep_on_stack=True)
         guard = self._emit_bind_refine_guard(
-            te, binding.slot_local, where, arg, env)
+            te, binding.slot_local, where, arg, env, row=row)
         if not guard:
             return value
         return [*value, *binding.load, *guard, *binding.tail]
@@ -2065,8 +2070,8 @@ class CallsHandlersMixin:
         # #1542: a binder declared narrower than the composite payload the
         # operation declares walks it (`vera.wasm.coercion`), bar the one
         # exclusion, a container payload.
-        walk = self._emit_binder_coercions(
-            self._clause_coercions(payload_te, te), value_local, at=node)
+        walk = self._emit_binder_walks(
+            self._walk_rows(te), value_local, at=node)
         # NARROWER, asked through the ONE derivation the verifier's
         # obligation also calls: `narrows_into_refinement` over the conjoined
         # chains, with this side's oracle — the source's type expressions and
@@ -2081,14 +2086,16 @@ class CallsHandlersMixin:
                 naming.refined_type_expr_chain(te, self._alias_env)):
             return walk
         guard: list[str] = list(walk)
-        base = self._resolve_base_type_name(
-            self._type_expr_to_slot_name(te) or "")
-        if base == "Nat" and family_base != "Nat":
+        # #1695: the binder's `nat_bind` row, at the clause's parameter
+        # type, is the decision; the check keeps its span at the clause.
+        sign = self._row(te, "nat_bind")
+        if self._checked(sign):
+            assert sign is not None  # noqa: S101 — `_checked`
             guard.extend(self._emit_nat_bind_guard(
-                [f"local.get {value_local}"], at=node))
+                [f"local.get {value_local}"], row=sign, at=node))
             guard.append("drop")
         guard.extend(self._emit_bind_refine_guard(
-            te, value_local, where, node, env))
+            te, value_local, where, node, env, row=self._row(te, "refine_bind")))
         return guard
 
 
@@ -2130,7 +2137,8 @@ class CallsHandlersMixin:
 
     def _emit_exn_payload_refine_guard(
         self, value: list[str], payload_te: ast.TypeExpr, cell: CellNames,
-        call: ast.FnCall, env: WasmSlotEnv,
+        call: ast.FnCall, env: WasmSlotEnv, *, row: Row,
+        head: str | None = None,
     ) -> list[str]:
         """Wrap *value* with the §2.6.5 predicate guard for a refined
         ``Exn<E>`` payload (#1268) — the refined twin of the sign guard
@@ -2170,11 +2178,12 @@ class CallsHandlersMixin:
         # family renders its own predicate (#1218), so naming the cell that
         # way printed the predicate twice in one two-line message, once as
         # the "type" and again as the thing that failed.
-        head = (
-            f"Refinement violation in "
-            f"throw({ast.format_type_expr(payload_te)})\n"
-            "  payload"
-        )
+        if head is None:
+            head = (
+                f"Refinement violation in "
+                f"throw({ast.format_type_expr(payload_te)})\n"
+                "  payload"
+            )
         # The payload's width is its declared type's as the checker resolved
         # it (#1525).
         payload_wt = self._declared_width(payload_te)
@@ -2186,7 +2195,7 @@ class CallsHandlersMixin:
             binding = bind_slot_value_from_stack(
                 self.alloc_local, "i32_pair")
             guard = emitter(
-                payload_te, binding.slot_local, head, env, call.args[0])
+                payload_te, binding.slot_local, head, env, call.args[0], row)
             if guard is None:
                 return value
             return [*value, *binding.load, *guard, *binding.push]
@@ -2195,7 +2204,7 @@ class CallsHandlersMixin:
                 "a refined Exn<E> payload with no single-value checked type "
                 "reached its throw guard", call)
         value_local = self.alloc_local(payload_wt)
-        guard = emitter(payload_te, value_local, head, env, call.args[0])
+        guard = emitter(payload_te, value_local, head, env, call.args[0], row)
         if guard is None:
             return value
         return [

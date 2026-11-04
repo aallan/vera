@@ -203,7 +203,12 @@ def emission_calls_for_tree(
                 else func.id if isinstance(func, pyast.Name) else None)
         if name not in _EMISSION_CALLS:
             continue
-        arg = node.args[0] if node.args else None
+        # The key is the first argument, or, for a `_record_check` that
+        # names its row first (#1695), the `emitter=` keyword.
+        arg: pyast.expr | None = node.args[0] if node.args else None
+        if name == "_record_check":
+            arg = next((kw.value for kw in node.keywords
+                        if kw.arg == "emitter"), None)
         literal = (arg.value if isinstance(arg, pyast.Constant)
                    and isinstance(arg.value, str) else None)
         out.append((name, f"{rel}:{owner.get(id(node), '<module>')}", literal))
@@ -259,8 +264,12 @@ def test_the_enumeration_contains_the_emitters() -> None:
     assert registered <= modules, registered - modules
 
 
-#: The emission path itself, whose own calls pass the caller's key through.
+#: The emission path itself, whose own calls pass the caller's key through,
+#: and the re-keying of a spliced rendering's copies (#1695, `rekey` inside
+#: `_rekey_checks`), which records each copy under the emitter its entry
+#: already names.
 _THE_PATH = "wasm/context.py:_emit_trap"
+_PASS_THROUGH = frozenset({_THE_PATH, "wasm/context.py:rekey"})
 
 
 def test_every_emission_names_its_own_row() -> None:
@@ -269,7 +278,7 @@ def test_every_emission_names_its_own_row() -> None:
     row cannot be satisfied by a call made somewhere else."""
     problems: list[str] = []
     for call, site, literal in emission_calls():
-        if site == _THE_PATH:
+        if site in _PASS_THROUGH:
             continue
         if call == "signal_instructions":
             row = TRAP_EMITTERS.get(site)

@@ -42,6 +42,8 @@ from vera.prelude import (
     mentioned_fn_names,
     prelude_adt_names,
 )
+from vera.obligations.table import ObligationTable
+from vera.obligations.table import build as build_obligations
 from vera.skip import CodegenInvariantError
 from vera.slots import family_fallback_name
 from vera.trap_registry import (
@@ -178,6 +180,11 @@ class CodeGenerator(
         # every instance built once, and every node's type and target by
         # its identity, a clone's and a module's included.
         self._typed = typed
+        # #1695: the typed program's obligation table, built once here and
+        # handed to every `WasmContext`: every guard code generation emits
+        # is the runtime half of one of its rows, and no site decides a
+        # guard of its own.
+        self._obligations: ObligationTable = build_obligations(typed)
         # #798/#820: the checker's type and target of every expression by
         # node identity (`TypedProgram.semantic` / `.target`), threaded into
         # every ``WasmContext`` so the overflow and narrowing guards classify
@@ -211,16 +218,6 @@ class CodeGenerator(
         # position.  Disjoint from the @Nat bitmap (a formal resolves to one
         # primitive base or neither).
         self._fn_byte_params: dict[str, tuple[bool, ...]] = {}
-        # #754: per-formal base type NAME for every effect OPERATION, keyed
-        # `(effect_name, op_name)`.  The narrowing guards at a call site read
-        # the callee's formals from `_fn_nat_params`; an
-        # effect operation had no such table, so `IO.sleep(@Int.0)` — whose
-        # formal is `@Nat` — stored whatever it was given, and a negative
-        # reached the host.  Built from the SAME registry the checker typed
-        # the call against (`TypeEnv.effects` for the built-ins, the program's
-        # own `effect` / `ability` declarations for the rest), so a formal
-        # cannot be obligated by the verifier without being visible here.
-        self._effect_op_params: dict[tuple[str, str], tuple[str | None, ...]] = {}
         # #735: the host imports the module's emitted code calls, by import
         # name (a row's, or an instance's: `map_insert$ks_vi`), each
         # `WasmContext`'s merged in, which `_declare_host_imports` declares
@@ -509,12 +506,8 @@ class CodeGenerator(
         self._adt_eq_helpers: dict[str, str] = {}
         # #1542 (#1695's line): the generated composite-coercion walk helpers
         # (`$coerce_<digest>`, vera/wasm/coercion.py), merged from each
-        # WasmContext and emitted once at module assembly like the above; and
-        # per function, per parameter, the tuple positions its boundary guard
-        # checks (#746), which a coercion into that formal defers to.
+        # WasmContext and emitted once at module assembly like the above.
         self._coercion_helpers: dict[str, str] = {}
-        self._fn_boundary_coercion_paths: dict[
-            str, tuple[frozenset[tuple[int, ...]], ...]] = {}
         # #924: generated recursive show/hash helper functions ($show_<type> /
         # $hash_<type>), merged from each WasmContext and emitted once at
         # module assembly — the same propagate-then-emit shape as _adt_eq_helpers.
@@ -894,7 +887,7 @@ class CodeGenerator(
                         f"{marker.group(0).strip()!r}, which names no entry "
                         "of this module's record", None,
                     )
-                emitter, node, path = entry
+                emitter, node, path, row_id = entry
                 row = TRAP_EMITTERS[emitter]
                 span = node.span if node is not None else None
                 out.append(EmittedCheck(
@@ -910,6 +903,7 @@ class CodeGenerator(
                           else source[0] if source is not None else self.file),
                     prelude=prelude,
                     path=path,
+                    row=row_id,
                 ))
         stray = sum(1 for _ in find_check_markers(wat)) - len(out)
         if stray:
@@ -2104,14 +2098,17 @@ class CodeGenerator(
         # of every decreases-carrying function any ``return_call`` might
         # target, before Pass 2 compiles the first body.
         def _dec_collect(fdecl: ast.FnDecl, emit_name: str) -> None:
+            # #1695: the function's `decreases` row decides, as it does
+            # for `_compile_decreases_entry`: the set tracks the functions
+            # that actually RECEIVE an entry guard (an `Exn` row and an
+            # unrankable measure receive none), or the tail-call patch and
+            # the emitted entries desynchronize.
             if any(
                 isinstance(c, ast.Decreases) and c.exprs
+                and (row := self._obligations.row(c, "decreases")) is not None
+                and row.guard.check
                 for c in fdecl.contracts
-            ) and not self._dec_declares_exn(fdecl):
-                # The Exn exclusion mirrors `_compile_decreases_entry`'s
-                # guard decline — the set must track functions that
-                # actually RECEIVE a guard, or the tail-call patch and
-                # the emitted entries desynchronize.
+            ):
                 self._dec_guarded_names.add(emit_name)
             for wfn in fdecl.where_fns or ():
                 _dec_collect(wfn, wfn.name)

@@ -3,64 +3,53 @@
 The checker admits a value whose type holds an `Int` where the position it
 stands in holds a `Nat` (`Option<Int>` at an `Option<Nat>` formal, an array
 literal of `Wrap<Int>` under an `Array<Wrap<Nat>>` binding), and records the
-target on the coerced node alone.  Nothing obligates the component, so code
-generation guards it, by ONE rule decided off the typed program.
+target on the coerced node alone.  The obligation table (#1695,
+:mod:`vera.obligations.table`) lists every such component as a `nat_bind`
+row with the component's path, by one rule over the typed program: the
+requirement a node is held to is the component an enclosing construction
+handed it, else the target the checker recorded, and the differing tree
+against the node's own type (:func:`vera.narrowing.differing_tree`) names
+the positions.  This module is the LOWERING of those rows:
 
-For an expression node N the REQUIREMENT is the type an enclosing descent
-handed N, else the type the checker checked N against; its differing tree
-against N's own type (:func:`vera.narrowing.differing_tree`) names every
-component where the requirement holds a `Nat` and N's type an `Int`.  When
-the tree has a position below the root (a difference at the root alone is a
-scalar narrowing, the existing guards' business):
+* a scalar child of a construction the requirement makes a `Nat` has a
+  head row at the child, guarded where it is stored by the sign guard
+  (``_guard_nat_narrowing``), under this module's emitter where the
+  requirement reached it from the construction alone (``Row.handed``);
+* an OPAQUE value (a slot, a call's result, an index, a field read) with
+  rows below its head has its first such row carry the tree
+  (``Row.tree``), and its value is walked at run time along the tree's
+  positions after it is translated (``_walk_coerced_value``), by a helper
+  generated per tree on the ``$eq_*`` model, and a negative component
+  traps exactly as a scalar narrowing does (``nat_guard``);
+* a pattern binder, a destructure component and a handler clause binder
+  declared narrower than what they bind walk the bound value the same way
+  (``_emit_binder_walks``), each walk one row.
 
-* a CONSTRUCTION (a constructor call, a tuple, an array literal,
-  ``map_insert``, ``set_add``) hands each child its component of the
-  requirement, and a scalar child the requirement makes a `Nat` is guarded
-  where it is STORED (:meth:`CoercionMixin._coercion_leaf_guard`), beside the
-  store's existing in-place decision and only where that decision placed no
-  guard; a nullary constructor, ``[]``, ``map_new()`` and ``set_new()`` hold
-  nothing;
-* a JOIN (a block's tail, an ``if``, a ``match``, a ``handle``) hands the
-  requirement to each value leaf and is never guarded itself;
-* any other node is OPAQUE (a slot, a call's result, an index, a field read):
-  its value is walked at run time along the tree's positions, by a helper
-  generated per tree on the ``$eq_*`` model, and a negative component traps
-  exactly as a scalar narrowing does (``nat_guard``).
-
-A pattern binder declared narrower than the component it binds walks the
-bound value (:func:`vera.narrowing.component_coercion`), and so does a
-destructure and a handler clause binder, bar the one exclusion
-(:data:`vera.narrowing.CLAUSE_BINDER_UNGUARDED_HEADS`).
-
-Three existing guards of the same coercion are deferred to, never doubled:
-the in-place decision at a store, #1606's construction hand-down (which that
-decision reads), and a function boundary's tuple-component guard (#746),
-whose positions leave the tree before it is acted on (:meth:`_deferring`).
-
-A handed requirement nothing consumes is a lost guard, so it is loud: the
-node that handed it raises :class:`CodegenInvariantError` when its own
-translation ends.  A `Map` or `Set` walk reads the collection through the
-same projections a program's own ``map_keys`` / ``map_values`` /
-``set_to_array`` call does, so its guard is O(n) and allocates; the walked
-value and every projected array are rooted on the GC shadow stack across it.
+A tuple position a function boundary's component guard checks (#746) is a
+row the boundary's entry row answers, and is no position of the walk: the
+table prunes it from the tree (:func:`vera.narrowing.without_paths`), so
+the two guards never double.  A `Map` or `Set` walk reads the collection
+through the same projections a program's own ``map_keys`` / ``map_values``
+/ ``set_to_array`` call does, so its guard is O(n) and allocates; the
+walked value and every projected array are rooted on the GC shadow stack
+across it.
 """
 
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Iterator
-from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from vera import ast, narrowing
 from vera.narrowing import Coercion
+from vera.obligations.table import Evaluation, Row
 from vera.skip import CodegenInvariantError
-from vera.types import NAT, AdtType, Type, pretty_type, value_type_name
+from vera.types import AdtType, Type, pretty_type, value_type_name
 from vera.wasm.helpers import element_sequence_loop, gc_shadow_push
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Mapping
 
     from vera.codegen.memory import ConstructorLayout
     from vera.typed import TypedProgram
@@ -73,16 +62,6 @@ _PROJECTIONS: dict[tuple[str, str], tuple[str, str]] = {
     ("map", "key"): ("map_keys", "k"),
     ("map", "value"): ("map_values", "v"),
 }
-
-
-@dataclass
-class _Handed:
-    """A requirement a descent handed one node, until that node consumes it."""
-
-    expr: ast.Expr
-    target: Type
-    covered: frozenset[tuple[int, ...]]
-    consumed: bool = False
 
 
 @dataclass
@@ -123,12 +102,16 @@ class CoercionMixin:
         needs_alloc: bool
 
         def alloc_local(self, wasm_type: str) -> int: ...
-        def _emit_trap(self, emitter: str, *, at: ast.Node | None,
+        def _emit_trap(self, emitter: str, *, row: Row | None,
+                       at: ast.Node | None = None,
                        message: str | None = None,
                        path: tuple[str, ...] = ()) -> list[str]: ...
         def _emit_negative_i64_guard(self, value: list[str], *,
                                      trap: list[str]) -> list[str]: ...
-        def _narrows_into_nat(self, expr: ast.Expr) -> bool: ...
+        def _rows(self, node: ast.Node, kind: str,
+                  path: tuple[str, ...] | None = None, *,
+                  evaluation: Evaluation | None = None) -> list[Row]: ...
+        def _checked(self, row: Row | None) -> bool: ...
         def _type_of(self, node: ast.Node) -> Type | None: ...
         def _map_wasm_tag(self, vera_type: str | None) -> str | None: ...
         def _collection_fn(self, op: str, **tags: str) -> str: ...
@@ -139,18 +122,8 @@ class CoercionMixin:
             self, field_type_names: list[str]) -> list[tuple[int, str]]: ...
 
         _adt_ctor_layouts: dict[str, dict[str, ConstructorLayout]]
-        _boundary_coercion_paths: Callable[
-            [ast.TypeExpr, int | None], frozenset[tuple[int, ...]]] | None
-        _fn_boundary_coercion_paths: dict[
-            str, tuple[frozenset[tuple[int, ...]], ...]]
 
     def _init_component_coercion(self) -> None:
-        #: The requirement each node was handed, by node identity.
-        self._coercion_handed: dict[int, _Handed] = {}
-        #: The keys each handing node registered, checked when it ends.
-        self._coercion_owned: dict[int, list[int]] = {}
-        #: The positions a boundary guard checks, by the node they leave.
-        self._coercion_deferred: dict[int, frozenset[tuple[int, ...]]] = {}
         #: The generated walk helpers, by name, merged into the module.
         self._coercion_helpers: dict[str, str] = {}
         self._coercion_pending: set[str] = set()
@@ -158,7 +131,7 @@ class CoercionMixin:
         self._coercion_trees: dict[tuple[Type, Type], Coercion | None] = {}
 
     # -----------------------------------------------------------------
-    # The rule
+    # The rows a walk lowers
     # -----------------------------------------------------------------
 
     def _differing(self, source: Type, target: Type) -> Coercion | None:
@@ -171,267 +144,48 @@ class CoercionMixin:
                 source, target, typed.field_types_at, typed.constructors_of)
         return self._coercion_trees[key]
 
-    def _effective_type(self, expr: ast.Expr) -> Type | None:
-        """The type *expr* was checked against, else its own."""
-        if expr.node_id is None:
-            return None
-        target = self._expr_target_types.get(expr.node_id)
-        if isinstance(target, Type):
-            return target
-        own = self._expr_semantic_types.get(expr.node_id)
-        return own if isinstance(own, Type) else None
+    def _walk_rows(self, node: ast.Node) -> list[Row]:
+        """The rows at *node* a walk lowers (#1695): each `nat_bind` row
+        below the head that carries a tree and a check of its own."""
+        return [row for row in self._rows(node, "nat_bind")
+                if row.path and row.tree is not None and self._checked(row)]
 
-    def _coercion_enter(self, expr: ast.Expr) -> Coercion | None:
-        """Act on *expr*'s requirement before it is translated: hand a
-        construction's or a join's components down, and return the tree an
-        opaque value is walked along after it is translated."""
-        if expr.node_id is None or self._typed_program is None:
-            return None
-        handed = self._coercion_handed.get(id(expr))
-        if handed is not None and handed.expr is not expr:
-            handed = None
-        if handed is not None:
-            target: object = handed.target
-            covered = handed.covered
-        else:
-            target = self._expr_target_types.get(expr.node_id)
-            covered = self._coercion_deferred.get(id(expr), frozenset())
-        source = self._expr_semantic_types.get(expr.node_id)
-        if not (isinstance(target, Type) and isinstance(source, Type)):
-            if handed is not None:
-                handed.consumed = True
-            return None
-        tree = narrowing.without_paths(self._differing(source, target), covered)
-        if tree is not None and tree.kind == "nat":
-            # A scalar requirement: the store that receives the value guards
-            # it (`_coercion_leaf_guard`), and consumes it there.
-            return None
-        if handed is not None:
-            handed.consumed = True
-        if tree is None:
-            return None
-        if narrowing.flow_arms(expr) is not None:
-            for leaf in narrowing.value_leaves(expr):
-                self._hand(expr, leaf, target, covered)
-            return None
-        if self._hand_construction(expr, tree, target, covered):
-            return None
-        return tree
-
-    def _coercion_leave(self, expr: ast.Expr, *, translated: bool) -> None:
-        """End *expr*'s scope: every requirement it handed is consumed, or
-        a guard was lost and the compile says so."""
-        keys = self._coercion_owned.pop(id(expr), None)
-        if not keys:
-            return
-        lost = []
-        for key in keys:
-            handed = self._coercion_handed.pop(key, None)
-            if handed is not None and not handed.consumed:
-                lost.append(handed)
-        if lost and translated:
-            raise CodegenInvariantError(
-                f"a composite coercion handed {len(lost)} component "
-                f"requirement(s) no translation consumed (the first at "
-                f"{type(lost[0].expr).__name__}): a guard would be lost",
-                lost[0].expr,
-            )
-
-    def _hand(self, owner: ast.Expr, node: ast.Expr, target: Type,
-              covered: frozenset[tuple[int, ...]]) -> None:
-        """Hand *target* to *node*; the outermost hand-down wins."""
-        key = id(node)
-        if key in self._coercion_handed:
-            return
-        self._coercion_handed[key] = _Handed(node, target, covered)
-        self._coercion_owned.setdefault(id(owner), []).append(key)
-
-    def _hand_construction(
-        self, expr: ast.Expr, tree: Coercion, target: Type,
-        covered: frozenset[tuple[int, ...]],
-    ) -> bool:
-        """Hand a construction's children their components of *target*;
-        False for a node that is no construction."""
-        if narrowing.holds_no_component(expr):
-            return True
-        if isinstance(expr, ast.ConstructorCall):
-            name = _short(expr.name)
-            for ctor, index, child in tree.parts:
-                if _short(ctor) != name or index >= len(expr.args):
-                    continue
-                below = (frozenset(p[1:] for p in covered
-                                   if len(p) > 1 and p[0] == index)
-                         if tree.kind == "tuple" else frozenset())
-                self._hand(expr, expr.args[index], child.target, below)
-            return True
-        if isinstance(expr, ast.ArrayLit):
-            for _ctor, _index, child in tree.parts:
-                for element in expr.elements:
-                    self._hand(expr, element, child.target, frozenset())
-            return True
-        if not isinstance(expr, ast.FnCall):
-            return False
-        if expr.name == "map_insert" and len(expr.args) == 3:
-            self._hand(expr, expr.args[0], target, frozenset())
-            for label, index, child in tree.parts:
-                arg = expr.args[1] if label == "key" else expr.args[2]
-                self._hand(expr, arg, child.target, frozenset())
-            return True
-        if expr.name == "set_add" and len(expr.args) == 2:
-            self._hand(expr, expr.args[0], target, frozenset())
-            for _ctor, _index, child in tree.parts:
-                self._hand(expr, expr.args[1], child.target, frozenset())
-            return True
-        return False
-
-    def _coercion_leaf_guard(
-        self, arg: ast.Expr, value: list[str], *, in_place: bool,
-    ) -> list[str]:
-        """The store-site guard of a scalar component a descent made a
-        `Nat`: *value* (the component's translation) checked where the
-        store's own in-place decision placed no guard (*in_place* False),
-        on the same narrowing rule every sign guard reads."""
-        handed = self._coercion_handed.get(id(arg))
-        if handed is None or handed.expr is not arg:
-            return value
-        handed.consumed = True
-        if in_place or handed.target != NAT:
-            return value
-        if not self._narrows_into_nat(arg):
-            return value
-        return self._emit_negative_i64_guard(
-            value, trap=self._emit_component_coercion(at=arg))
-
-    # -----------------------------------------------------------------
-    # The deference to a function boundary's tuple-component guard (#746)
-    # -----------------------------------------------------------------
-
-    @contextmanager
-    def _deferring(self, expr: ast.Expr,
-                   covered: frozenset[tuple[int, ...]]) -> Iterator[None]:
-        """While *expr* is translated, the tuple positions *covered* (the
-        ones the receiving boundary's guard checks) are no position of its
-        requirement, nor of any node its value flows through."""
-        keys: list[int] = []
-        if covered:
-            for node in _flow_nodes(expr):
-                if id(node) not in self._coercion_deferred:
-                    self._coercion_deferred[id(node)] = covered
-                    keys.append(id(node))
-        try:
-            yield
-        finally:
-            for key in keys:
-                self._coercion_deferred.pop(key, None)
-
-    def _callee_boundary_paths(
-        self, call_target: str, index: int,
-    ) -> frozenset[tuple[int, ...]]:
-        paths = self._fn_boundary_coercion_paths.get(call_target, ())
-        return paths[index] if index < len(paths) else frozenset()
-
-    def _closure_boundary_paths(
-        self, closure: ast.Expr, index: int,
-    ) -> frozenset[tuple[int, ...]]:
-        """The positions every closure that can be *closure*'s value checks
-        at its parameter *index*: each guards its own formal's tuple
-        components (#746), and a closure whose formal holds an `Int` where
-        the closure type holds a `Nat` binds no `Nat` there to guard."""
-        oracle = self._boundary_coercion_paths
-        if oracle is None:
-            return frozenset()
-        if isinstance(closure, ast.AnonFn):
-            if index < len(closure.params):
-                return oracle(closure.params[index], None)
-            return frozenset()
-        if isinstance(closure, ast.SlotRef):
-            return oracle(ast.NamedType(name=closure.type_name,
-                                        type_args=closure.type_args), index)
-        return frozenset()
-
-    def _return_boundary_paths(
-        self, return_te: ast.TypeExpr,
-    ) -> frozenset[tuple[int, ...]]:
-        oracle = self._boundary_coercion_paths
-        return oracle(return_te, None) if oracle is not None else frozenset()
-
-    # -----------------------------------------------------------------
-    # Binders
-    # -----------------------------------------------------------------
-
-    def _binder_coercions(
-        self, sources: tuple[narrowing.ComponentSource, ...], index: int,
-        ctor_name: str, declared: Type | None,
-    ) -> tuple[Coercion, ...]:
-        typed = self._typed_program
-        if typed is None or declared is None:
-            return ()
-        return narrowing.component_coercion(
-            sources, index, ctor_name, declared, self._effective_type,
-            self._type_of, typed.field_types_at, typed.constructors_of,
-            self._narrows_into_nat)
-
-    def _scrutinee_coercions(
-        self, scrutinee: ast.Expr | None, declared: Type | None,
-    ) -> tuple[Coercion, ...]:
-        typed = self._typed_program
-        if typed is None or declared is None or scrutinee is None:
-            return ()
-        return narrowing.value_coercion(
-            scrutinee, declared, self._effective_type, typed.field_types_at,
-            typed.constructors_of, self._narrows_into_nat)
-
-    def _clause_coercions(
-        self, payload_te: ast.TypeExpr | None, binder_te: object,
-    ) -> tuple[Coercion, ...]:
-        """A handler clause binder's walk: from the payload the operation
-        declares to the type the binder declares, bar a container payload
-        (:data:`vera.narrowing.CLAUSE_BINDER_UNGUARDED_HEADS`)."""
-        if payload_te is None or not isinstance(binder_te, ast.TypeExpr):
-            return ()
-        payload = self._type_of(payload_te)
-        declared = self._type_of(binder_te)
-        if payload is None or declared is None:
-            return ()
-        head = getattr(declared, "name", None)
-        if head in narrowing.CLAUSE_BINDER_UNGUARDED_HEADS:
-            return ()
-        tree = self._differing(payload, declared)
-        if tree is None or tree.kind == "nat":
-            return ()
-        return (tree,)
-
-    def _emit_binder_coercions(
-        self, trees: tuple[Coercion, ...], local: int, *, at: ast.Node,
+    def _emit_binder_walks(
+        self, rows: list[Row], local: int, *, at: ast.Node,
     ) -> list[str]:
         """The walk of a bound value, in *local* (and, for an array, the
-        length in ``local + 1``), along each of *trees*."""
+        length in ``local + 1``), along each of *rows*' trees."""
         out: list[str] = []
-        for tree in trees:
-            out.extend(self._emit_walk(tree, local, at=at))
+        for row in rows:
+            assert row.tree is not None  # noqa: S101 — `_walk_rows`
+            out.extend(self._emit_walk(row.tree, local, row=row, at=at))
         return out
 
     # -----------------------------------------------------------------
     # The walk
     # -----------------------------------------------------------------
 
-    def _emit_component_coercion(self, *, at: ast.Node) -> list[str]:
+    def _emit_component_coercion(
+        self, *, row: Row, at: ast.Node | None = None,
+    ) -> list[str]:
         """The trap of one composite-coercion check, the one emitter of every
         check this module plants (``TRAP_EMITTERS``): a scalar narrowing's
         ``nat_guard``, recorded as the runtime half of
-        ``component_coercion``."""
+        ``component_coercion``, by its row (#1695)."""
         return self._emit_trap(
-            "wasm/coercion.py:_emit_component_coercion", at=at)
+            "wasm/coercion.py:_emit_component_coercion", row=row, at=at)
 
     def _walk_coerced_value(
-        self, expr: ast.Expr, value: list[str], tree: Coercion,
+        self, expr: ast.Expr, value: list[str], row: Row,
     ) -> list[str]:
-        """*value* (an opaque node's translation) walked along *tree*'s
-        positions, left on the stack when every component conforms."""
+        """*value* (an opaque node's translation) walked along *row*'s
+        tree, left on the stack when every component conforms."""
+        tree = row.tree
+        assert tree is not None  # noqa: S101 — `_walk_rows`
         node = _unwrap_future(tree)
         if node.kind == "nat":
             return self._emit_negative_i64_guard(
-                value, trap=self._emit_component_coercion(at=expr))
+                value, trap=self._emit_component_coercion(row=row, at=expr))
         pair = node.kind == "array"
         local = self.alloc_local("i32")
         if pair:
@@ -444,12 +198,13 @@ class CoercionMixin:
         else:
             spill = [f"local.set {local}"]
             reload = [f"local.get {local}"]
-        return [*value, *spill, *self._emit_walk(node, local, at=expr), *reload]
+        return [*value, *spill,
+                *self._emit_walk(node, local, row=row, at=expr), *reload]
 
-    def _emit_walk(self, tree: Coercion, local: int, *,
-                   at: ast.Node) -> list[str]:
+    def _emit_walk(self, tree: Coercion, local: int, *, row: Row,
+                   at: ast.Node | None = None) -> list[str]:
         """Check the value in *local* along *tree*; trap on a negative."""
-        trap = self._emit_component_coercion(at=at)
+        trap = self._emit_component_coercion(row=row, at=at)
         node = _unwrap_future(tree)
         if node.kind == "nat":
             return [f"local.get {local}", "i64.const 0", "i64.lt_s",
@@ -717,13 +472,3 @@ def _elem_name(collection: Type, index: int) -> str:
         raise CodegenInvariantError(
             f"no element type in {pretty_type(collection)} to walk", None)
     return name
-
-
-def _flow_nodes(expr: ast.Expr) -> Iterator[ast.Expr]:
-    """*expr* and every node its value flows through: the joins'
-    arms (:func:`vera.narrowing.flow_arms`) down to their leaves."""
-    yield expr
-    arms = narrowing.flow_arms(expr)
-    if arms:
-        for arm in arms:
-            yield from _flow_nodes(arm)
