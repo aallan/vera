@@ -2126,12 +2126,14 @@ def test_repro_a_refined_let_of_a_state_handle_holds_the_refinement() -> None:
     """A `let` of a refinement whose value is a `State` handle of a slot of
     that refinement is the held-refinement class at the `let` as at the
     parameter: the handle's value is its body's, so the leaves the class
-    reads go through it.  Base and head report the same two mismatches; the
-    seeds reach the shape because the model now lets a canonical handler
-    have its body's value (#1696)."""
+    reads go through it.  The seeds reach the shape because the model now
+    lets a canonical handler have its body's value (#1696).  The `let`'s
+    check went with the obligation table (#1695): the handle's value is a
+    slot of the refinement, which its own binding checks, so the table
+    lists no row there and code generation emits none; the parameter's
+    entry check is the one mismatch left."""
     finds = reconcile_finds(_REPRO_REFINED_HANDLE)
-    assert len(finds) == 2, finds
-    assert [f.known for f in finds] == ["#1695 (#1629)"] * 2, finds
+    assert [(f.known, f.site[1:]) for f in finds] == [("#1695 (#1629)", (3, 14))], finds
 
 
 @pytest.mark.parametrize(
