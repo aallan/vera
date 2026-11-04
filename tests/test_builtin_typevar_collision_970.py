@@ -693,16 +693,20 @@ def _fn(ret: str, body: str) -> str:
 # An `if` fills a built-in's variable that no parameter mentions from its
 # other branch (#1668's join), so ``map_values(map_new())`` makes no E301.
 # The E301 rows take a variable a parameter mentions and the arguments
-# leave unbound: ``array_map``'s ``B`` beside a refinement of a function
-# type, which its function-typed parameter does not unify through (an E202
-# of its own sits beside each, an instance of #1684's class).
-_FOO_ALIAS = "type Foo = { @fn(Int -> Int) effects(pure) | true };\n"
-_LOST = "array_map([1], @Foo.0)[0]"
+# leave unbound: ``array_map``'s ``B`` beside an argument whose type is an
+# empty literal's unknown (``first([])``), which inference skips (an E121
+# for the body sits beside each).  A refinement of a function type was the
+# vehicle until #1684's unwrap bound ``B`` through its base.
+_FIRST = (
+    "private forall<T> fn first(@Array<T> -> @T)\n"
+    "  requires(array_length(@Array<T>.0) > 0) ensures(true) effects(pure)\n"
+    "{ @Array<T>.0[0] }\n"
+)
+_LOST = "array_map([1], first([]))[0]"
 
 
 def _fn_lost(ret: str, body: str) -> str:
-    return _FOO_ALIAS + _PURE_FN.replace("@M", "@Foo").format(
-        ret=ret, body=body)
+    return _M_ALIAS + _FIRST + _PURE_FN.format(ret=ret, body=body)
 
 
 # One row per converted render slot: (error code, source, corrected
