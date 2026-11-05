@@ -36,7 +36,6 @@ from vera.types import (
     TypeVar,
     base_type,
     erases_to_unit,
-    types_equal,
     BOOL,
     FLOAT64,
     INT,
@@ -5045,7 +5044,7 @@ def _resumes_in_tail_position(clause: ast.HandlerClause) -> bool:
 
 def _same_type(a: Type | None, b: Type) -> bool:
     """Whether *a* is the type *b* (``None`` is no type)."""
-    return a is not None and types_equal(a, b)
+    return narrowing.same_established(a, b)
 
 
 def _identity(node: ast.Node) -> Any:

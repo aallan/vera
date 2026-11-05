@@ -253,13 +253,31 @@ def test_a_payload_no_leaf_establishes_is_not_proved(
 def test_a_payload_every_leaf_establishes_stays_proved(
         form: Form, k: int, position: str, leaf: str) -> None:
     """Carrier 1's neighbour: every leaf's payload holds; the run
-    completes, nothing is refuted, and what the base proved stays proved."""
+    completes, nothing is refuted, and every record is what it was at the
+    base (`_neighbour_records`)."""
     source = program_1(form, k, position, leaf, breaks=False)
     assert _run(source).ok, source
     verified = _verify(source)
     statuses = _f_refine_binds(verified)
-    assert "violated" not in statuses, (statuses, source)
+    assert statuses == _neighbour_records(form, position, leaf), (
+        statuses, source)
     assert not verified.errors, source
+
+
+def _neighbour_records(form: Form, position: str, leaf: str) -> list[str]:
+    """The neighbour's coercion records, as at da406983.  A slot or a call
+    of `Option<PosInt>` beside `None` leaves is no row (every leaf carries
+    the refinement already).  `Some(7)` is its field's row, proved; under an
+    `Exn` handler the construction has no record and the value's row is
+    disclosed (#1695's construction-in-a-handler line); as a tuple field
+    through a join it is the field's guarded row."""
+    if leaf != "construction":
+        return []
+    if form.id == "exn_arm":
+        return ["tier3_unguarded"]
+    if position == "field" and form.id in ("if", "match2", "match3", "block"):
+        return ["tier3"]
+    return ["verified"]
 
 
 # =====================================================================
@@ -580,3 +598,100 @@ def test_a_never_leaf_takes_no_part_in_the_shared_type() -> None:
     source = _exn_let("@PosInt.0", LITERAL_CLAUSE_BODIES["throw_arm"])
     assert _f_ensures(_verify(source)) == "verified"
     assert pipeline.run(source, "f", [1, 3], file=FILE).ok
+
+
+# =====================================================================
+# Two leaves share a type only where they state the same facts
+# =====================================================================
+
+_REFINEMENTS = """\
+type PosInt = { @Int | @Int.0 > 0 };
+type NegInt = { @Int | @Int.0 < 0 };
+type AlsoPos = PosInt;
+type SamePos = { @Int | @Int.0 > 0 };
+"""
+
+#: The second leaf's type beside a `PosInt` leaf, the run's value for it,
+#: and whether the two state the same facts (so the proof stands).
+PAIRS = {
+    "the_same_name": ("PosInt", "3", True),
+    "another_name_for_it": ("AlsoPos", "3", True),
+    "the_predicate_written_again": ("SamePos", "3", True),
+    "another_predicate": ("NegInt", "0 - 4", False),
+}
+
+
+def _pair_carrier_1(other: str, value: str) -> str:
+    return (
+        f"{_REFINEMENTS}\n"
+        "private fn consume(@Option<PosInt> -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  match @Option<PosInt>.0 {\n    Some(@PosInt) -> @PosInt.0,\n"
+        "    None -> 1\n  }\n}\n\n"
+        f"public fn f(@Bool, @Option<PosInt>, @Option<{other}> -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        f"{{\n  consume(if @Bool.0 then {{ @Option<PosInt>.0 }} "
+        f"else {{ @Option<{other}>.0 }})\n}}\n\n"
+        "public fn t(@Int -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        f"{{\n  f(@Int.0 > 0, Some(3), Some({value}))\n}}\n")
+
+
+def _pair_carrier_2(other: str, value: str) -> str:
+    return (
+        f"{_REFINEMENTS}\n"
+        f"public fn f(@Bool, @PosInt, @{other} -> @Int)\n"
+        "  requires(true)\n  ensures(@Int.result > 0)\n  effects(pure)\n"
+        "{\n  let @Int = handle[Exn<Int>] {\n"
+        "    throw(@Int) -> { @PosInt.0 }\n"
+        f"  }} in {{\n    if @Bool.0 then {{ @PosInt.0 }} else {{ @{other}.0 }}\n"
+        "  };\n  @Int.0\n}\n\n"
+        "public fn t(@Int -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        f"{{\n  f(@Int.0 > 0, 3, {value})\n}}\n")
+
+
+@pytest.mark.parametrize("pair", list(PAIRS))
+def test_two_refinements_share_a_type_only_by_their_predicate(pair: str) -> None:
+    """A join of a `PosInt` leaf and a second refined leaf over one base, on
+    both carriers, run at the second leaf's arm (`t(-5)`): a second name
+    for the predicate, or the predicate written again, shares it and the
+    proof stands with a clean run; another predicate (`NegInt`) shares
+    nothing, and the run breaks what a shared type would have proved."""
+    other, value, shared = PAIRS[pair]
+    for build, statuses in (
+            (_pair_carrier_1, lambda v: _f_refine_binds(v)),
+            (_pair_carrier_2, lambda v: [_f_ensures(v)])):
+        source = build(other, value)
+        got = statuses(_verify(source))
+        ran = _run(source)
+        if shared:
+            # Carrier 1 lists no row where the leaves carry the refinement
+            # already (the table's own rule); carrier 2's `ensures` is one.
+            assert all(s == "verified" for s in got), (got, source)
+            assert ran.ok, source
+        else:
+            assert got and "verified" not in got, (got, source)
+            assert ran.trap is not None, source
+
+
+def test_an_unknown_leaf_shares_no_type() -> None:
+    """A leaf whose type is unknown (or holds an unknown part) establishes
+    nothing, where `types_equal` would call it equal to any type, `Never`
+    included."""
+    from vera import ast, narrowing
+    from vera.types import INT, NEVER, AdtType, RefinedType, UnknownType
+
+    pos = RefinedType(INT, ast.BinaryExpr(
+        op=ast.BinOp.GT, left=ast.SlotRef(type_name="Int", type_args=None,
+                                          index=0),
+        right=ast.IntLit(value=0)))
+    for unknown in (UnknownType(), AdtType("Option", (UnknownType(),))):
+        for other in (pos, AdtType("Option", (pos,)), NEVER):
+            left, right = ast.BoolLit(value=True), ast.BoolLit(value=False)
+            join = ast.IfExpr(condition=ast.BoolLit(value=True),
+                              then_branch=left, else_branch=right)
+            types = {id(left): other, id(right): unknown}
+            assert narrowing.established_type(
+                join, lambda e: types.get(id(e))) is None, (unknown, other)
+        assert not narrowing.same_established(unknown, unknown)
