@@ -7,7 +7,6 @@
       "rule": "|-----------|-------|",
       "issue_column": 1,
       "rows": [
-        "1837",
         "1233",
         "1561",
         "427",
@@ -113,15 +112,6 @@
     }
   ],
   "limitations": [
-    {
-      "id": "1837",
-      "issues": [1837],
-      "rows": {
-        "KNOWN_ISSUES.md#limitations": [
-          "Code generation emits no store check for a refined value produced inside a `handle` body or a non-resuming `Exn` clause that yields the handle's value: the requirement the handle is held to is not handed into its body, so `Some(float_to_int(@Float64.0))` built as a handler's value and returned at `Option<PosInt>` takes no check. `vera verify` discloses it (`E506`, neither proved nor checked), except where the handle is an arm of a `match` with other arms, which reads `verified` (#1716); bind the payload to a slot outside the handle and construct the value from the slot, which is a checked store."
-        ]
-      }
-    },
     {
       "id": "1233",
       "issues": [1233],
