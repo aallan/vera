@@ -675,8 +675,11 @@ class TestIssueColumnScoping:
         # consolidated into the bare-name class #1694 on 2026-10-14, whose
         # row cites no other issue.  #1451 and #1459 left it the same way
         # when #1468's row left the table: #1468 was consolidated into the
-        # instantiation class #1679 on 2026-10-16.
-        prose_only: set[int] = {1426}
+        # instantiation class #1679 on 2026-10-16.  #1426 left it when
+        # #1602's row left the table (#1695's second half); #1695 joined it
+        # when its own row left: three rows still cite it as the class
+        # their fix belongs to.
+        prose_only: set[int] = {1695}
         narrow: set[int] = set()
         wide: set[int] = set()
         for header in ("## Limitations", "## Bugs"):
