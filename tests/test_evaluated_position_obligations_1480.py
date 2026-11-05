@@ -182,14 +182,17 @@ class TestMeasureIsObligated:
         v = _verify(COUNT_TO)
         measure = _at(COUNT_TO, "@Nat.1 - @Nat.0 + 1")
         tail_call = _at(COUNT_TO, "loop(@Nat.1, @Nat.0 + 1)")
+        # The evaluation at the tail call is a copy of the measure's written
+        # operation, discharged under the call's facts, and shares its one
+        # record (#1695, A3); each copy's refutation is its own error.
         assert _records(v, "nat_sub", measure) == ["violated/E502"]
-        assert _records(v, "nat_sub", tail_call) == ["violated/E502"]
+        assert _records(v, "nat_sub", tail_call) == []
         # The measure's own `+ 1` is a checked add in the WAT at both points.
         # On entry the difference can be `i64.MAX`; at the tail call the
-        # subtrahend is `@Nat.0 + 1`, at least 1, so the difference is at most
-        # `i64.MAX - 1` and the add is proved.
+        # subtrahend is `@Nat.0 + 1`, at least 1, so that copy is proved, and
+        # the one record carries the meet: Tier 3.
         assert _records(v, "int_overflow", measure) == ["tier3"]
-        assert _records(v, "int_overflow", tail_call) == ["verified"]
+        assert _records(v, "int_overflow", tail_call) == []
         assert ("E502", *measure) in v.errors
         assert ("E502", *tail_call) in v.errors
         assert not v.ok
@@ -253,8 +256,12 @@ class TestMeasureOperations:
         v = _verify(DEC_DIV)
         measure = _at(DEC_DIV, "@Nat.1 / @Nat.0")
         tail_call = _at(DEC_DIV, "loop(@Nat.1 - 1, @Nat.0)")
+        # One record for the written division, its copy at the tail call
+        # sharing it (#1695, A3); both refutations are errors.
         assert _records(v, "div_zero", measure) == ["violated/E526"]
-        assert _records(v, "div_zero", tail_call) == ["violated/E526"]
+        assert _records(v, "div_zero", tail_call) == []
+        assert ("E526", *measure) in v.errors
+        assert ("E526", *_at(DEC_DIV, "loop(@Nat.1 - 1, @Nat.0)")) in v.errors
         assert not v.ok
         assert _run(DEC_DIV, "loop", [3, 0]).trap_kind == "divide_by_zero"
 
@@ -262,8 +269,11 @@ class TestMeasureOperations:
         v = _verify(DEC_CALL_PRE)
         in_measure = _at(DEC_CALL_PRE, "pred(@Nat.0))")
         tail_call = _at(DEC_CALL_PRE, "loop(@Nat.0 - 1)")
+        # One record for the written call, its copy at the tail call sharing
+        # it (#1695, A3); both refutations are errors.
         assert _records(v, "call_pre", in_measure) == ["violated/E501"]
-        assert _records(v, "call_pre", tail_call) == ["violated/E501"]
+        assert _records(v, "call_pre", tail_call) == []
+        assert ("E501", *tail_call) in v.errors
         assert not v.ok
         ran = _run(DEC_CALL_PRE, "loop", [3])
         assert ran.trap_kind == "contract_violation"
@@ -667,7 +677,16 @@ public fn f(@Int, @Nat -> @Nat)
 def test_two_preconditions_spelled_alike_at_one_call_are_two() -> None:
     v = _verify(SAME_TEXT_AT_A_TAIL_CALL)
     call = _at(SAME_TEXT_AT_A_TAIL_CALL, "f(-3, @Nat.0 - 1)")
-    assert _records(v, "call_pre", call) == ["violated/E501", "violated/E501"]
+    # Two obligations, two records: the call's own at the call, and the
+    # measure's call, whose copy at the tail call decides its record, which
+    # stands at the measure and names the call (#1695, A3).  Both errors are
+    # at the call, where both copies are refuted.
+    assert _records(v, "call_pre", call) == ["violated/E501"]
+    measure = _at(SAME_TEXT_AT_A_TAIL_CALL, "need_pos(@Int.0))")
+    assert [o.expr_text for o in v.obligations if o.kind == "call_pre"
+            and (o.line, o.column) == measure] == [
+        f"@Int.0 > 0 (at the self tail call at {call[0]}:{call[1]})"]
+    assert v.errors.count(("E501", *call)) == 2, v.errors
     ran = _run(SAME_TEXT_AT_A_TAIL_CALL, "f", [1, 1])
     # The measure is evaluated on the arguments first, so it is
     # `need_pos`'s precondition that stops the hop, not `f`'s.
@@ -827,7 +846,14 @@ public fn main(@Unit -> @Nat)
 def test_an_opaque_tail_argument_leaves_the_measure_to_its_guard() -> None:
     v = _verify(OPAQUE_TAIL_ARGUMENT)
     tail = _at(OPAQUE_TAIL_ARGUMENT, "f(@Nat.0)")
-    assert _records(v, "nat_sub", tail) == ["tier3"]
+    # The copy at the tail call decides the measure's one record, which
+    # stands at the measure and names the call (#1695, A3).
+    measure = _at(OPAQUE_TAIL_ARGUMENT, '@Nat.0 - string_length("a")')
+    assert _records(v, "nat_sub", tail) == []
+    assert [(o.status, o.expr_text) for o in v.obligations
+            if o.kind == "nat_sub" and (o.line, o.column) == measure] == [
+        ("tier3", '@Nat.0 - string_length("a") (at the self tail call at '
+                  f'{tail[0]}:{tail[1]})')]
     # `0` also fails `f`'s precondition, which the compiled call checks
     # only after the measure, so the trap must be the measure's own.
     ran = _run(OPAQUE_TAIL_ARGUMENT, "main", [])
@@ -919,7 +945,8 @@ def test_a_call_nested_in_a_measure_is_obligated() -> None:
     assert "need_pos" in _run(MEASURE_CALL_NESTED, "loop", [-3, 2]).trap_message
 
 
-# A piped call is the call its desugaring makes, located at the pipe.
+# A piped call is the call its desugaring makes, located at its stage, the
+# call the pipe makes (#1641, #1695).
 PIPED_CALL = """\
 private fn need_pos(@Int -> @Int)
   requires(@Int.0 > 0)
@@ -941,8 +968,9 @@ public fn f(@Int -> @Nat)
 
 def test_a_piped_call_is_obligated() -> None:
     v = _verify(PIPED_CALL)
-    pipe = _at(PIPED_CALL, "@Int.0 |> need_pos()")
-    assert _records(v, "call_pre", pipe) == ["violated/E501"]
+    stage = _at(PIPED_CALL, "need_pos()")
+    assert _records(v, "call_pre", stage) == ["violated/E501"]
+    assert ("E501", *stage) in v.errors
     assert "need_pos" in _run(PIPED_CALL, "f", [-3]).trap_message
 
 
@@ -1027,7 +1055,7 @@ def test_a_call_over_an_unknown_arm_binder_is_tier3(
     assert assumed != OPAQUE_ARGUMENT
     av = _verify(assumed)
     assert _records(av, "call_pre", _at(assumed, call)) == (
-        ["verified"] if fn == "g" else [])
+        ["verified"])  # discharged at the call: its row's record (#1695)
     assert _run(assumed, fn, [good]).trap_kind is None
 
 
@@ -1058,7 +1086,8 @@ public fn g(@Unit -> @Int)
 
 def test_an_assumed_let_value_discharges_the_call() -> None:
     v = _verify(ASSUMED_LET)
-    assert _records(v, "call_pre", _at(ASSUMED_LET, "need_pos(@Int.0)")) == []
+    assert _records(v, "call_pre", _at(ASSUMED_LET, "need_pos(@Int.0)")) == [
+        "verified"]  # discharged at the call: its row's record (#1695)
     assert v.ok, v.errors
 
 
@@ -1103,7 +1132,7 @@ public fn g(@Unit -> @Int)
 def test_an_assumed_array_let_discharges_the_call() -> None:
     v = _verify(ASSUMED_ARRAY_LET)
     call = _at(ASSUMED_ARRAY_LET, "need_len(@Array<Int>.0)")
-    assert _records(v, "call_pre", call) == []
+    assert _records(v, "call_pre", call) == ["verified"]  # discharged at the call: its row's record (#1695)
     assert v.ok, v.errors
     twin = ASSUMED_ARRAY_LET.replace(
         "  assume(array_length(@Array<Int>.0) > 0);\n", "")
@@ -1399,7 +1428,10 @@ class TestDeclarationPositions:
             "type NeedsPos = { @Pos | need_pos(@Pos.0) > 0 };\n")
         v = _verify(source)
         assert v.ok, v.errors
-        assert not [o for o in v.obligations if o.kind == "call_pre"]
+        # Discharged at the declaration, the call's row's record (#1695).
+        where = _at(source, "need_pos(@Pos.0)")
+        assert [(o.status, o.line, o.column) for o in v.obligations
+                if o.kind == "call_pre"] == [("verified", *where)]
 
     def test_a_type_used_nowhere_is_checked(self) -> None:
         v = _verify(DECLARATION_POSITIONS)
@@ -1526,12 +1558,10 @@ class Op:
     #: The precondition text a `call_pre` obligation carries, to tell it
     #: from another at the same site.
     pre_text: str = ""
-    #: Whether a DISCHARGED obligation is recorded.  Phase A records a user
-    #: callee's precondition only when it is not discharged — its check is
-    #: in the callee's prologue, whose own `requires` record stands for it —
-    #: so a `verified` cell of that kind asserts the record ABSENT, and its
-    #: `violated` twin is what shows the walk reaches the position.  A
-    #: built-in's domain is checked inline at the call and IS recorded.
+    #: Whether a DISCHARGED obligation is recorded.  Every kind's is: a
+    #: user callee's precondition, discharged at the call, is the record of
+    #: the call's `call_pre` row (#1695; the row the callee's `requires`
+    #: check answers), as a built-in's inline domain check always was.
     records_discharge: bool = True
 
     def statuses(self) -> tuple[str, ...]:
@@ -1557,7 +1587,7 @@ _OPS: tuple[Op, ...] = (
        "0", "1", 0, 1, "tier3", provably_bad="{v} == 1"),
     Op("call_pre", "call_pre", "E501", "Int", "need_pos({v})", "{v} >= 1",
        "2", "-3", 2, -3, "violated", helpers=_NEED_POS,
-       pre_text="@Int.0 > 0", records_discharge=False),
+       pre_text="@Int.0 > 0"),
     Op("nat_bind", "nat_bind", "E503", "Int", "nat_id({v})", "{v} >= 0",
        "2", "-3", 2, -3, "violated", offset=len("nat_id("),
        helpers=_NAT_ID),
@@ -1638,6 +1668,11 @@ class Cell:
     #: The code a `tier3` record carries, where it carries one: a call-site
     #: precondition the run cannot check is E532.
     tier3_code: str = ""
+    #: Where a `violated` record's error stands when that is not the
+    #: record's site: a measure refuted at a self tail call, whose record is
+    #: the measure's and names the call, and whose error is at the call
+    #: (#1695).
+    error_at: str = ""
 
 
 def _slot(op: Op, position: str) -> str:
@@ -1750,20 +1785,24 @@ def _cell_measure_tail(op: Op, status: str) -> Cell:
     """The measure on a tail call's arguments.  The `violated` cell passes a
     value outside the domain to a callee whose entry measure is proved: the
     site is the one evaluation that traps, and it traps before the callee's
-    `requires` could."""
+    `requires` could.  The evaluation at the call and the one at entry are
+    two copies of the measure's written operation, each discharged under its
+    own facts, and share its one record (#1695): it stands at the measure,
+    with the worse of the two statuses (the call's, in every cell here)."""
     v = _slot(op, "measure")
     if status == "violated":
         val = op.value.format(v=v)
         call = f"f({op.bad}, @Nat.0 - 1)"
         src = _measure_fn(op, op.domain.format(v=v), val, call)
-        return Cell(src, op.kind, status, op.code, at=call,
+        return Cell(src, op.kind, status, op.code, at=val,
+                    at_offset=op.offset, error_at=call,
                     pre_text=op.pre_text, args=(op.good_arg, 1),
                     trap=_not_the_callers_precondition)
     premise, value, _lit, arg = _variant(op, status)
     val = value.format(v=v)
     call = f"f({v}, @Nat.0 - 1)"
     src = _measure_fn(op, premise.format(v=v), val, call)
-    return Cell(src, op.kind, status, op.code, at=call,
+    return Cell(src, op.kind, status, op.code, at=val, at_offset=op.offset,
                 pre_text=op.pre_text,
                 args=(arg, 0 if status != "verified" else 2),
                 trap=None if status == "verified" else _any_trap)
@@ -1814,7 +1853,8 @@ def _record_matches(v: Verified, cell_kind: str, where: tuple[int, int],
         f"{o.status}/{o.error_code}" if o.error_code else o.status
         for o in v.obligations
         if o.kind == cell_kind and (o.line, o.column) == where
-        and (not pre_text or o.expr_text == pre_text)
+        and (not pre_text
+             or o.expr_text.split(" (at the self tail call at ")[0] == pre_text)
     )
 
 
@@ -1835,7 +1875,13 @@ def _check_cell(cell: Cell) -> Verified:
         f"{cell.source}"
     )
     if cell.status == "violated":
-        assert (cell.code, *where) in v.errors, (cell.code, where, v.errors)
+        err_at = _at(cell.source, cell.error_at) if cell.error_at else where
+        assert (cell.code, *err_at) in v.errors, (cell.code, err_at, v.errors)
+        if cell.error_at:
+            named = [o.expr_text for o in v.obligations
+                     if o.kind == cell.kind and (o.line, o.column) == where]
+            assert all(f"(at the self tail call at {err_at[0]}:{err_at[1]})"
+                       in t for t in named), named
     for kind, status, text in cell.also:
         also_at = _at(cell.source, text)
         also_got = _record_matches(v, kind, also_at, cell.pre_text)
@@ -2137,7 +2183,9 @@ def _unknown_program(position: str, op: str, assumed: bool,
         stmt = f"  assume({dom});\n" if assumed else ""
     src = (_UNKNOWN_PRELUDE + stmt + f"  {text}\n}}\n"
            + _UNKNOWN_MAIN.replace("{state}", str(state)))
-    return src, c
+    # A piped call's record stands at its stage, the call the pipe makes
+    # (#1641, #1695).
+    return src, c.split("|> ", 1)[1] if is_piped else c
 
 
 def _unknown_cells() -> list[object]:
@@ -2181,7 +2229,7 @@ def test_an_unknown_value_is_tier3_where_1480_records_the_check(
     src, at = _unknown_program(position, op, assumed=True, state=good)
     v = _verify(src)
     assert _records(v, "call_pre", _at(src, at)) == (
-        ["verified"] if op == "string_char_code" else [])
+        ["verified"])  # discharged at the call: its row's record (#1695)
     assert v.ok, v.errors
     assert _run(src, "main", []).trap_kind is None
 
@@ -2466,12 +2514,14 @@ _PLACEHOLDER_KINDS = {
     "call precondition, in a requires": (
         _REQUIRES_CALL, ("need_pos(", 1), "call_pre", ["tier3/E532"],
         "f", [5], (_REQUIRES_CALL, [-5]), "Precondition violation in need_pos"),
+    # A measure's copy at a tail call shares the measure's record, which
+    # stands at the measure (#1695, A3).
     "built-in domain, in a measure at a tail call": (
-        _MEASURE_CHAR_CODE, ("f(@Nat.0 - 1", 0), "call_pre",
-        ["tier3/E532", "tier3/E532"], "main", [1],
+        _MEASURE_CHAR_CODE, ('string_char_code("abc", @Int.0)', 0), "call_pre",
+        ["tier3/E532"], "main", [1],
         (_MEASURE_CHAR_CODE, [7]), "String index out of bounds"),
     "division, in a measure at a tail call": (
-        _MEASURE_DIVISION, ("f(@Nat.2 - 1", 0), "div_zero", ["tier3"],
+        _MEASURE_DIVISION, ("100 / @Nat.0", 0), "div_zero", ["tier3"],
         "main", [5], (_MEASURE_DIVISION, [0]), "division by zero"),
     "@Nat narrowing, in a requires": (
         _REQUIRES_NAT, ("@Int.0) >= 0", 0), "nat_bind", ["tier3"],
@@ -2496,8 +2546,9 @@ _PLACEHOLDER_KINDS = {
     # branch refused it before this change; one rule for every narrowing.
     **{
         f"refinement narrowing of a sub-pattern, in {where}": (
+            # The binder's record stands at its row, the binder (#1695).
             _subpattern_over_a_placeholder(slot, _SUBPATTERN_MATCH),
-            ("@Option<Int>.0 {", 0), "refine_bind",
+            ("@Pos) -> true", 0), "refine_bind",
             ["tier3/E506"], "main", [5],
             (_subpattern_over_a_placeholder(slot, _SUBPATTERN_MATCH), [-3]),
             "Refinement violation")
@@ -2760,10 +2811,10 @@ def test_a_refined_binder_carries_its_refinement(position: str) -> None:
     sty, good, bad, body, call = _REFINED_BINDERS[position]
     src = _refined_binder_program(sty, good, body)
     v = _verify(src)
-    # A discharged user callee's precondition is not recorded (its check is
-    # the callee's prologue); a built-in's domain is, since its check is at
-    # the call.
-    discharged = ["verified"] if call == "string_char_code(" else []
+    # A discharged precondition is recorded at the call: a built-in's domain
+    # check stands there, and a user callee's is the call's `call_pre` row,
+    # which the callee's `requires` check answers (#1695).
+    discharged = ["verified"]
     # `need_pos(` first occurs in its own declaration.
     where = _at(src, call, 1 if call == "need_pos(" else 0)
     assert _records(v, "call_pre", where) == discharged, (
@@ -2775,10 +2826,12 @@ def test_a_refined_binder_carries_its_refinement(position: str) -> None:
         return
     # The bind's own obligation is over the state, which the fact never
     # mentions: it stays a runtime guard, and that guard is what stops a
-    # violating value, before the call can see it.
+    # violating value, before the call can see it.  Its record stands at the
+    # binder's row (#1695), on the scrutinee's line or the arm's below it.
     bind_line = _at(src, "get(())")[0]
     assert "tier3" in [o.status for o in v.obligations
-                       if o.kind == "refine_bind" and o.line == bind_line]
+                       if o.kind == "refine_bind"
+                       and o.line in (bind_line, bind_line + 1)]
     ran = _run(_refined_binder_program(sty, bad, body), "f", [])
     assert "Refinement violation" in ran.trap_message, ran
 
@@ -2903,10 +2956,11 @@ def test_a_let_bound_scrutinees_narrowing_binder_carries_its_refinement(
     obligation stays the runtime guard, `tier3`, never proved."""
     src = _LET_NARROWING.replace("STATE", "Some(5)")
     v = _verify(src)
-    assert _records(v, "call_pre", _at(src, "need_pos(", 1)) == []
+    assert _records(v, "call_pre", _at(src, "need_pos(", 1)) == ["verified"]  # discharged at the call: its row's record (#1695)
     assert v.ok, v.errors
+    # The bind's record stands at its row, the arm's binder (#1695).
     bind = [o.status for o in v.obligations if o.kind == "refine_bind"
-            and o.line == _at(src, "match @Option<Int>.0")[0]]
+            and o.line == _at(src, "match @Option<Int>.0")[0] + 1]
     assert bind == ["tier3"], bind
     assert _run(src, "main", []).value == 5
     bad = _run(_LET_NARROWING.replace("STATE", "Some(-5)"), "main", [])
@@ -2916,11 +2970,13 @@ def test_a_let_bound_scrutinees_narrowing_binder_carries_its_refinement(
 #: arm -> (pattern, what the arm does with the binder, the text its record
 #: is located at, the record's kind, and the record once discharged).
 _MK_ARMS = {
+    # A discharged user callee's precondition is its call's row's record
+    # (#1695).
     "call": ("Some(@Pos)", "need_pos(@Pos.0)", "need_pos(@Pos.0)",
-             "call_pre", []),
+             "call_pre", ["verified"]),
     "call only the walk reaches": (
         "Some(@Pos)", "nat_to_int(string_length(show(need_pos(@Pos.0))))",
-        "need_pos(@Pos.0)", "call_pre", []),
+        "need_pos(@Pos.0)", "call_pre", ["verified"]),
     "built-in domain": (
         "Some(@Idx)", 'nat_to_int(string_char_code("abc", @Idx.0))',
         "string_char_code(", "call_pre", ["verified"]),
@@ -2942,8 +2998,9 @@ def test_a_call_scrutinees_narrowing_binder_carries_its_refinement(
     assert _records(v, kind, _at(src, at)) == record, (
         [(o.kind, o.status, o.error_code, o.line, o.column)
          for o in v.obligations], src)
-    match_line = _at(src, "match mk(")[0]
-    assert [(e[0], e[1]) for e in v.errors] == [("E505", match_line)], (
+    # The refutation stands with its record, at the binder's row (#1695).
+    bind_line = _at(src, pattern)[0]
+    assert [(e[0], e[1]) for e in v.errors] == [("E505", bind_line)], (
         v.errors)
     assert _run(src, "f", [6]).trap_kind is None
     assert "Refinement violation" in _run(src, "f", [2]).trap_message
@@ -3257,7 +3314,8 @@ public fn f(@Int -> @Int)
 def test_a_match_in_a_condition_carries_its_fact_into_the_branch() -> None:
     src = _MATCH_IN_A_CONDITION
     v = _verify(src)
-    assert _records(v, "call_pre", _at(src, "need_pos(@Int.0)")) == []
+    assert _records(v, "call_pre", _at(src, "need_pos(@Int.0)")) == [
+        "verified"]  # discharged at the call: its row's record (#1695)
     assert v.ok, v.errors
     assert _run(src, "f", [5]).value == 5
     assert "Refinement violation" in _run(src, "f", [-3]).trap_message
@@ -3307,7 +3365,7 @@ public fn use_it(@Int -> @Int)
     None -> 0
   }
 }
-""", "use_it", "call_pre", ("need_gt5(@Int.0)", 0), []),
+""", "use_it", "call_pre", ("need_gt5(@Int.0)", 0), ["verified"]),
     "a callee's ensures, under the caller's ensures": (_MK_GT5 + """
 public fn use_it(@Int -> @Int)
   requires(true)
@@ -3346,7 +3404,7 @@ public fn use_it(@Int -> @Int)
 {
   f(Some(@Int.0))
 }
-""", "use_it", "call_pre", ("need_gt5(@Int.0)", 0), []),
+""", "use_it", "call_pre", ("need_gt5(@Int.0)", 0), ["verified"]),
 }
 
 
@@ -3373,8 +3431,9 @@ def test_a_subpattern_bind_refuted_for_every_value_is_refused() -> None:
     src = _subpattern_over_a_placeholder("REQUIRES", match)
     assert constant in src
     v = _verify(src)
-    where = _at(src, "Some(@Option<Int>) -> match")
-    assert ("E505", where[0]) in [(c, line) for c, line, _ in v.errors], (
+    # The refutation stands with its record, at the binder's row (#1695).
+    where = _at(src, "@Pos) -> true")
+    assert ("E505", *where) in v.errors, (
         v.errors)
     assert "Refinement violation" in _run(src, "main", [5]).trap_message
 
@@ -3660,8 +3719,10 @@ def _records_violated(node: object) -> bool:
 #: is valid, i.e. for every value; "no placeholder": a position #1480 records
 #: nothing at, or a literal value.
 _VIOLATED_SITES = {
-    "_verify_fn": "no placeholder: the function's own `ensures` and "
-                  "refined return, recorded before #1480",
+    "_verify_fn_contracts": "no placeholder: the function's own `ensures` "
+                            "and refined return, recorded before #1480",
+    # #1598's quotient row: refused only where `INT_MIN / -1` itself is valid.
+    "_check_quotient_obligation": "two-check",
     "_record_call_obligations": "gate: SmtContext._rests_on_unknown",
     "_check_state_decl_divergence": "no placeholder: a handler's state",
     "_check_subtraction_obligation": "gate",
@@ -3867,7 +3928,11 @@ def test_a_tail_measure_reads_the_statements_before_it(
         shape: str, stmt: str) -> None:
     src = shape.replace("STMT", stmt)
     v = _verify(src)
-    assert _records(v, "nat_sub", _at(src, "step(@Nat.1")) == ["verified"], (
+    # The tail call's copy of the measure shares the measure's one record
+    # (#1695, A3): both copies proved, so it is `verified`.
+    assert _records(v, "nat_sub", _at(src, "step(@Nat.1")) == []
+    assert _records(v, "nat_sub", _at(src, "@Nat.1 - @Nat.0")) == [
+        "verified"], (
         [(o.kind, o.status, o.error_code, o.line, o.column)
          for o in v.obligations])
     assert v.ok, v.errors
@@ -3909,7 +3974,14 @@ def test_a_statement_in_a_sibling_branch_says_nothing_at_a_tail_call() -> None:
     src = _STEP_AFTER_A_SIBLING_STATEMENT
     v = _verify(src)
     tail = _at(src, "step(@Nat.1")
-    assert _records(v, "nat_sub", tail) == ["tier3"]
+    # The copy at the tail call decides the measure's one record, which
+    # names it (#1695, A3).
+    assert _records(v, "nat_sub", tail) == []
+    assert [(o.status, o.expr_text) for o in v.obligations
+            if o.kind == "nat_sub"
+            and (o.line, o.column) == _at(src, "@Nat.1 - @Nat.0")] == [
+        ("tier3", f"@Nat.1 - @Nat.0 (at the self tail call at "
+                  f"{tail[0]}:{tail[1]})")]
     ran = _run(src, "main", [5])
     assert ran.trap_kind is not None, ran
     assert "Precondition violation" not in ran.trap_message, ran
@@ -4385,9 +4457,9 @@ public fn main(@Int -> @Int)
 def test_a_narrowing_over_an_untranslatable_adt_let_is_its_guards(
         source: str, args: list[int], value: object) -> None:
     v = _verify(source)
-    # Located at the narrowed value: the second `match`'s scrutinee.
-    scrutinee = _at(source, "@Option<Int>.0 {\n", 1)
-    assert _records(v, "refine_bind", scrutinee) == ["tier3/E506"], (
+    # Located at the binder's row, the second `match`'s `@Pos` (#1695).
+    binder = _at(source, "@Pos) ->")
+    assert _records(v, "refine_bind", binder) == ["tier3/E506"], (
         [(o.kind, o.status, o.error_code, o.line, o.column)
          for o in v.obligations])
     assert v.ok, v.errors
@@ -4485,7 +4557,15 @@ def test_a_tail_call_by_the_modules_own_path_evaluates_the_measure(
     src = _STEP_TAIL_BY_PATH.replace("CALL", call).replace("COND", cond)
     v = _verify(src)
     site = _at(src, f"{call}(@Nat.1")
-    assert _records(v, "nat_sub", site) == [status], (
+    # The tail call's copy shares the measure's one record, which names the
+    # call where that copy decides it (#1695, A3).
+    assert _records(v, "nat_sub", site) == []
+    measure = [(f"{o.status}/{o.error_code}" if o.error_code else o.status,
+                o.expr_text) for o in v.obligations if o.kind == "nat_sub"
+               and (o.line, o.column) == _at(src, "@Nat.1 - @Nat.0")]
+    named = ("@Nat.1 - @Nat.0" if status == "verified" else
+             f"@Nat.1 - @Nat.0 (at the self tail call at {site[0]}:{site[1]})")
+    assert measure == [(status, named)], (
         [(o.kind, o.status, o.error_code, o.line, o.column)
          for o in v.obligations])
     ran = _run(src, "main", [3])
@@ -4620,10 +4700,15 @@ public fn f(@Nat -> @Nat)
 def test_the_termination_proof_reports_no_call_of_its_own() -> None:
     src = _MEASURE_CALL_AFTER_AN_UNTRANSLATABLE_LET
     v = _verify(src)
-    assert [
+    # The two rows' records, both discharged (#1695): the tail call's own
+    # precondition and the measure's call (its entry and tail-call copies
+    # sharing one record, A3).  The termination proof adds none.
+    assert sorted(
         (o.status, o.error_code, o.line, o.column)
         for o in v.obligations if o.kind == "call_pre"
-    ] == [], [(o.kind, o.status, o.error_code, o.line, o.column)
-              for o in v.obligations]
+    ) == [("verified", "", *_at(src, "g(@Nat.0))")),
+          ("verified", "", *_at(src, "f(@Nat.0)"))], [
+        (o.kind, o.status, o.error_code, o.line, o.column)
+        for o in v.obligations]
     assert v.ok, v.errors
     assert _run(src, "f", [5]).value == 0

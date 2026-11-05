@@ -1883,8 +1883,13 @@ class ContractVerifier:
         record = self.obligations[-1]
         at = self._evaluated_at
         if at is not None and at.position == "predicate":
-            self._predicate_records.setdefault(
-                obligation_table.ObligationTable._key(node), record)
+            # Keyed by the node a guard's copy row stands at: the node, or
+            # the site it is located at (a call's precondition is recorded at
+            # its contract and stands at the call).
+            for n in (node, span_node):
+                if n is not None:
+                    self._predicate_records.setdefault(
+                        obligation_table.ObligationTable._key(n), record)
         self._record_anchors[id(record)] = (
             weakref.ref(record), node, span_node,
             at.call if at is not None else None)
@@ -3606,6 +3611,12 @@ class ContractVerifier:
                 record = replace(record, expr_text=(
                     f"{record.expr_text} (at the self tail call at "
                     f"{decided.line}:{decided.column})"))
+            elif head is not None and decided.error_code and (
+                    decided.line, decided.column) != (head.line, head.column):
+                # The record stands at its row; the diagnostic that reports
+                # it stands there too (a tail call's copy keeps its error at
+                # the call, which the record names).
+                self._relocate_diagnostic(decided, head)
             if site_rows[0].path:
                 # A component of the site's value is its own obligation: the
                 # path names it, in the text the record's identity hashes.
@@ -3625,6 +3636,20 @@ class ContractVerifier:
         self.obligations[start:] = [
             o for o in self.obligations[start:] if id(o) not in own_ids
         ] + kept + settled
+
+    def _relocate_diagnostic(
+        self, rec: ProofObligation, head: ast.Span,
+    ) -> None:
+        """Move the one diagnostic reporting *rec* (its code, at its
+        location) to *head*, the site of the row it was keyed to."""
+        for i, d in enumerate(self.errors):
+            if (d.error_code == rec.error_code
+                    and d.location.line == rec.line
+                    and d.location.column == rec.column):
+                loc = replace(d.location, line=head.line, column=head.column)
+                self.errors[i] = replace(
+                    d, location=loc, source_line=self._get_source_line(head.line))
+                return
 
     def _anchored_rows(
         self, rec: ProofObligation, rows: list[obligation_table.Row],

@@ -1,33 +1,27 @@
 """#1406 / #1407 — a disclosed fact's taint follows the VALUE, not the syntax.
 
-**The disclosure in this file is produced by a patched guard table, and that
-is deliberate.**  #1426 gave every construction-position store the §2.6.5
-guard, so a producer that builds a refined payload now ESTABLISHES its
-declared return type on every completing run — and a caller leaning on a
-guarded fact is sound, so `verified` there is the truth.  That closed the
-only shipping shape these cells had: measured on this tree, the original
-producer records `refine_bind` / `tier3` and the caller's postcondition is
-`verified`.
+**The disclosure in this file is produced by the producer's own site.**
+Since #1695 the verifier reads each row's guard from the obligation table,
+the one the compiled module's checks are emitted from, so a site is disclosed
+exactly when the module holds no check for it.  A payload CONSTRUCTED in the
+producer, `Some(float_to_int(@Float64.0))`, is checked at its construction
+store (#1426): its row is `refine_bind`/`tier3`/E506, the run is refused
+inside `mk`, and its value taints nothing downstream (`_MK_GUARDED`, the
+guarded half of every matrix below).  A payload NARROWED from a composite
+the producer did not build, `let @Option<Int> = Some(float_to_int(…));
+@Option<Int>.0` returned as `Option<PosInt>`, is a refinement inside a
+constructor payload that no boundary decomposes: no check guards it, its row
+is `tier3_unguarded`/E506 (`REASON_INSIDE_PAYLOAD`), and the taint has to
+follow it (`_MK_DISCLOSED`).  Nothing is simulated: the fixtures, the
+spellings, the envelope and the runs are the shipped ones.
 
-Four other carriers were measured and none reinstates the premise.  The
-by-design roster (`string_slice`'s clamping `@Nat` index, #475) discloses an
-ARGUMENT's sign, which no postcondition leans on — the producer discloses and
-the caller still proves.  A refinement over a refinement withholds the fact
-durably but the SMT layer models no such base, so the goal comes back opaque
-(E522) rather than disclosed (E534), which is a different verdict about a
-different thing.  A refinement over `String` is un-guardable at a
-construction store but its predicate is opaque to the solver, so it lands on
-E522 too.  An imported producer establishes its type exactly as a local one
-does, the guard being emitted in the imported body.
-
-So the fixture removes the producer's construction sites from
-`vera.narrowing.REFINED_BIND_GUARDED_SITES` — the one table both components
-read at call time, the verifier to classify and code generation to decide
-whether to emit.  Removing an entry reinstates precisely what the machinery
-exists for: a construction store that is obligated and unguarded.  Nothing
-else is simulated; the fixtures, the spellings, the envelope and the runs are
-the real ones, and `test_the_patch_is_what_produces_the_disclosure` restores
-the entry to show the cells go green-by-guard without it.
+Before #1695 these cells removed the construction sites from
+`vera.narrowing.REFINED_BIND_GUARDED_SITES` to reinstate a disclosure; the
+verifier no longer reads that roster, and with the table deciding both sides
+the patch reinstated nothing the module did not already check, so the cells
+it fed pinned a disclosure the run itself refused (#1695's M1 class: base's
+`tier3_unguarded` there was spurious, the compiled program trapped at the
+construction store at base and head alike).
 
 The property under test is unchanged and is the release's central safety net:
 a fact the same run disclosed as neither proved nor guarded is never assumed
@@ -59,16 +53,18 @@ THE CARRIER IS LOAD-BEARING.  `Option<PosInt>` is used rather than the tuple
 of #1363's own reproducer because codegen guards a refined RETURN and a
 refined TUPLE COMPONENT at the function boundary — the tuple shape traps
 inside `mk` and never reaches the caller's postcondition, so it can exhibit a
-status difference but not a runtime one.  An ADT payload is guarded nowhere,
-so the disclosed fact is genuinely unenforced and `f`'s contract really is
-refutable.  `float_to_int` supplies the opacity: the payload's `> 0` can be
+status difference but not a runtime one.  An ADT payload narrowed from a
+composite the producer did not build is guarded nowhere, so the disclosed
+fact is genuinely unenforced and the run is refused only at the consumer's
+own sub-pattern check.  `float_to_int` supplies the opacity: the payload's `> 0` can be
 neither proved nor refuted, which is what `tier3_unguarded` means.  A
 refutable narrowing would be `violated`/E505 — an error, not a disclosure —
 and would exhibit nothing.
 
-EVERY SPELLING CARRIES ITS CLEAN CONTROL.  The two differ in `mk`'s body
-alone: `Some(float_to_int(@Float64.0))` discloses, `Some(7)` proves.  Same
-name, same signature, same call at the caller.  Without the control a fix that
+EVERY SPELLING CARRIES ITS GUARDED AND CLEAN CONTROLS.  The three differ in
+`mk`'s body alone: `_DISCLOSED_BODY` discloses, `_GUARDED_BODY` is checked at
+its store, `Some(7)` proves.  Same name, same signature, same call at the
+caller.  Without the control a fix that
 demoted every `match` would pass the whole file, and the controls are what
 measure that it does not — none of them may leave `verified`.
 """
@@ -80,50 +76,10 @@ from pathlib import Path
 import pytest
 
 from tests import pipeline
-from vera import narrowing
 
 #: The bound each call below that this file makes to the pipeline had as a
 #: `vera` process; in process it is the call's budget (tests/pipeline.py).
 _BUDGET_S = 300
-
-
-@pytest.fixture(autouse=True)
-def _unguard_the_producer_site(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Remove the producer's construction site from the shared guard table.
-
-    Every cell runs in this process, the CLI-driven cells and the
-    warm-session cells alike, so this one patch is the table they all read.
-    One fixture, so the two halves of every warm/cold agreement cell are
-    compared under the same rules — which is the whole point of those cells.
-    """
-    from vera import narrowing
-
-    # The subtraction's PREMISE, asserted rather than assumed (R-1412 G1).
-    # Both sites have to be in the shipped table for the patch to reinstate
-    # anything: measured, deleting `"tuple component"` upstream leaves all
-    # of this file green — the patched-vs-shipped control included — while
-    # the cells quietly test a premise other than the documented one.
-    assert _PATCHED_SITES <= narrowing.REFINED_BIND_GUARDED_SITES, (
-        f"the shipped table no longer guards "
-        f"{sorted(_PATCHED_SITES - narrowing.REFINED_BIND_GUARDED_SITES)}, "
-        f"so subtracting it reinstates nothing and every verdict in this "
-        f"file is about a different program than its header describes"
-    )
-    monkeypatch.setattr(
-        narrowing, "REFINED_BIND_GUARDED_SITES",
-        narrowing.REFINED_BIND_GUARDED_SITES - _PATCHED_SITES,
-    )
-
-
-#: The producer construction sites removed from the shared guard table for
-#: the length of every invocation below.  See the module docstring for why.
-#:
-#: Two, because the producers in this file build their payload two ways: a
-#: constructor field (`Some(x)`) and a tuple component (`Some(Tuple(x, 5))`).
-#: Patching only the first left the `destructure` spelling's payload
-#: established by the tuple store, so its consumer re-narrowing proved at
-#: Tier 1 and the cell measured nothing.
-_PATCHED_SITES = frozenset({"constructor field", "tuple component"})
 
 
 def _verify(tmp_path: Path, source: str, name: str = "p.vera") -> dict:
@@ -165,7 +121,28 @@ def _run(tmp_path: Path, source: str, arg: str = "-7.0",
 
 _POSINT = "type PosInt = { @Int | @Int.0 > 0 };\n"
 
+# The producer's body, three ways (the module docstring says why): the
+# DISCLOSED payload is narrowed from an `Option<Int>` the producer did not
+# build, which no check guards; the GUARDED payload is constructed here and
+# checked at its store; the CLEAN payload proves.  The `%s` templates below
+# take these bodies whole, so each program differs from its twins in the
+# producer's body alone.
+_DISCLOSED_BODY = (
+    "let @Option<Int> = Some(float_to_int(@Float64.0)); @Option<Int>.0")
+_GUARDED_BODY = "Some(float_to_int(@Float64.0))"
+_CLEAN_BODY = "Some(7)"
+
 _MK_DISCLOSED = """
+private fn mk(@Float64 -> @Option<PosInt>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Option<Int> = Some(float_to_int(@Float64.0)); @Option<Int>.0
+}
+"""
+
+_MK_GUARDED = """
 private fn mk(@Float64 -> @Option<PosInt>)
   requires(true)
   ensures(true)
@@ -433,6 +410,36 @@ def test_1406_a_clean_producer_stays_verified_through_every_spelling(
     )
 
 
+@pytest.mark.parametrize("spelling", sorted(_SPELLINGS))
+def test_1406_a_guarded_producer_taints_nothing_however_it_is_spelled(
+    tmp_path: Path, spelling: str,
+) -> None:
+    """The guarded half of the producer, over the same ten routes.
+
+    `Some(float_to_int(@Float64.0))` is checked at its construction store, so
+    its row is `tier3` with E506's runtime-check text, never a disclosure, and
+    the value every route hands `f` is one the run has already refused to
+    build wrongly: `f`'s postcondition proves.  A taint keyed on the
+    producer's opacity rather than on its row's guard would demote here.
+    """
+    result = _verify(tmp_path, _POSINT + _MK_GUARDED + _SPELLINGS[spelling])
+    assert result["ok"] is True, result.get("diagnostics")
+    statuses = [(o["kind"], o["status"], o.get("error_code"))
+                for o in result["obligations"]]
+    assert ("refine_bind", "tier3", "E506") in statuses, (
+        f"{spelling}: the guarded producer's construction store is not on "
+        f"the record as checked at run time — {statuses}"
+    )
+    assert not [st for st in statuses if st[1] == "tier3_unguarded"], (
+        f"{spelling}: a checked store was disclosed — {statuses}"
+    )
+    assert _f_ensures(result) == ("verified", None), (
+        f"{spelling}: a guarded producer establishes its type on every run "
+        f"that completes, so the postcondition proves — got "
+        f"{_f_ensures(result)}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # The runtime differential — why the demotion is not merely tidier
 # ---------------------------------------------------------------------------
@@ -453,6 +460,21 @@ def test_1406_the_demoted_contract_is_one_the_program_refutes(
     assert _f_ensures(_verify(tmp_path, source)) == ("tier3", "E534")
     out = _run(tmp_path, source)
     _assert_refused(out, f"{spelling}: ")
+
+
+@pytest.mark.parametrize("spelling", ["let_bound", "wrap1", "rebuild_ctor"])
+def test_1406_the_guarded_producer_is_refused_where_it_builds(
+    tmp_path: Path, spelling: str,
+) -> None:
+    """The guarded half's runtime: the store's check refuses `-7` in `mk`.
+
+    The proof of `f`'s postcondition above is sound only because no run that
+    reaches `f` carries the bad payload; the trap at the construction store
+    is that fact, observed.
+    """
+    out = _run(tmp_path, _POSINT + _MK_GUARDED + _SPELLINGS[spelling])
+    _assert_refused(out, f"{spelling}: ")
+    assert "in mk" in out, out[-700:]
 
 
 @pytest.mark.parametrize("spelling", ["let_bound", "wrap1", "rebuild_ctor"])
@@ -522,24 +544,23 @@ private fn consume(@Option<PosInt> -> @Int)
 """ + _F + "{\n  consume(mk(@Float64.0))\n}\n"
 
 
-def test_1410_the_argument_position_is_obligated(
+def test_1410_a_same_type_argument_is_no_row_and_the_callee_checks_it(
     tmp_path: Path,
 ) -> None:
-    """#1410's shape: a disclosed value passed as an ARGUMENT is obligated
-    at the argument position.
+    """#1410's shape: a disclosed value passed as an ARGUMENT.
 
     `consume`'s postcondition is proved once for every caller, on the
     standing rule that some producer discharged the refined payload it
-    assumes, so no amount of tainting in `f` can reach that proof; the
-    value's own position carries the obligation instead.  The argument
-    `mk(@Float64.0)` (line 27) is recorded `refine_bind` /
-    `tier3_unguarded` / E506 beside the producer's own disclosure (line 8),
-    so the refutation the run gives is on the record rather than behind a
-    clean Tier 1.  The callee's `ensures` stays `verified`: that proof is
-    sound over the payload it assumes.  The caller's, which reads it, is Tier
-    3 (E534), as in every other spelling: the callee's postcondition is
-    assumed only under the argument fitting the parameter (#1706), and here
-    that fit rests on the producer's disclosure.
+    assumes.  At base the argument `mk(@Float64.0)` (line 27) carried a
+    record of its own; since #1695 an argument of exactly the parameter's
+    type narrows nothing, so it is no row and has no record (the class R110
+    found on PR #1834).  The payload is checked where `consume` takes it
+    apart: the sub-pattern binder (line 17) is a guarded row, recorded
+    `tier3`, and the run is refused there.  The callee's `ensures` stays
+    `verified` over the payload that check guarantees; the caller's, which
+    reads it, is Tier 3 (E534): the callee's postcondition is assumed only
+    under the argument fitting the parameter (#1706), and here that fit
+    rests on the producer's disclosure (line 8).
     """
     result = _verify(tmp_path, _ARGUMENT)
     assert result["ok"] is True, result.get("diagnostics")
@@ -549,14 +570,14 @@ def test_1410_the_argument_position_is_obligated(
         for o in result["obligations"]
     ]
     assert ("refine_bind", "tier3_unguarded", "E506",
-            "float_to_int(@Float64.0)", 8) in records, (
+            "@Option<Int>.0 [Some.0]", 8) in records, (
         "the producer did not disclose, so this pin measures nothing"
     )
-    assert ("refine_bind", "tier3_unguarded", "E506",
-            "mk(@Float64.0)", 27) in records, (
-        f"the argument position carries no obligation for the refined "
-        f"payload it publishes (#1410): {records}"
+    assert not [r for r in records if r[4] == 27], (
+        f"a same-type argument narrows nothing, so it has no record: "
+        f"{records}"
     )
+    assert ("refine_bind", "tier3", None, "@PosInt", 17) in records, records
     consume_ens = [o for o in result["obligations"]
                    if o["kind"] == "ensures"
                    and o["description"] == "@Int.result > 0"]
@@ -567,6 +588,7 @@ def test_1410_the_argument_position_is_obligated(
     ]
     out = _run(tmp_path, _ARGUMENT)
     _assert_refused(out)
+    assert "in consume" in out, out[-700:]
 
 
 # ---------------------------------------------------------------------------
@@ -770,7 +792,7 @@ _BIG = "type Big = { @Int | @Int.0 > -3 };\n"
 # Reader 2: `_check_refined_binding_obligation_term`'s `src_fact`.  The arm
 # binds the `PosInt` payload as a DIFFERENT refinement, and the narrowing is
 # discharged from `PosInt`'s predicate — which the run disclosed.
-_REBIND = _POSINT + _BIG + _MK_DISCLOSED + """
+_REBIND_F = """
 public fn f(@Float64 -> @Int)
   requires(true)
   ensures(true)
@@ -782,6 +804,7 @@ public fn f(@Float64 -> @Int)
   }
 }
 """
+_REBIND = _POSINT + _BIG + _MK_DISCLOSED + _REBIND_F
 
 # Reader 3: the let-destructure component seed.  The tuple is reached through
 # an ADT payload on purpose — a refined tuple component IS guarded at the
@@ -789,13 +812,13 @@ public fn f(@Float64 -> @Int)
 # Tier-1 CLAIM whose value another guard happens to catch.  Through a payload
 # there is no guard and the wrong value comes out, which is what makes this a
 # soundness cell rather than a bookkeeping one.
-_DESTRUCTURE = _POSINT + _BIG + """
+_DESTRUCTURE_T = _POSINT + _BIG + """
 private fn mk(@Float64 -> @Option<Tuple<PosInt, Int>>)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  Some(Tuple(float_to_int(@Float64.0), 5))
+  %s
 }
 
 public fn f(@Float64 -> @Int)
@@ -813,13 +836,20 @@ public fn f(@Float64 -> @Int)
   }
 }
 """
+# Disclosed: the tuple arrives inside an `Option<Tuple<Int, Int>>` the
+# producer did not build, so the component's refinement is below a payload no
+# boundary decomposes.  Guarded: the tuple is built here, and the component
+# store is checked (#1426).
+_DESTRUCTURE = _DESTRUCTURE_T % (
+    "let @Option<Tuple<Int, Int>> = Some(Tuple(float_to_int(@Float64.0), 5));"
+    " @Option<Tuple<Int, Int>>.0")
+_DESTRUCTURE_GUARDED = _DESTRUCTURE_T % "Some(Tuple(float_to_int(@Float64.0), 5))"
 
 # The clean twins: identical shape, a producer whose payload the solver
 # settles.  `Some(7)` / `Some(Tuple(7, 5))` narrow into `Big` provably.
-_REBIND_CLEAN = _REBIND.replace(
-    "Some(float_to_int(@Float64.0))", "Some(7)")
-_DESTRUCTURE_CLEAN = _DESTRUCTURE.replace(
-    "Some(Tuple(float_to_int(@Float64.0), 5))", "Some(Tuple(7, 5))")
+_REBIND_CLEAN = _POSINT + _BIG + _MK_CLEAN + _REBIND_F
+_DESTRUCTURE_CLEAN = _DESTRUCTURE_T % "Some(Tuple(7, 5))"
+_REBIND_GUARDED = _POSINT + _BIG + _MK_GUARDED + _REBIND_F
 
 
 def _narrowing_binds(result: dict) -> list[tuple[str, str | None]]:
@@ -898,14 +928,21 @@ def test_1413_a_renarrowing_off_a_clean_value_still_proves(
                 if o["status"] == "tier3_unguarded"], (
         f"{label}: the control's producer disclosed something"
     )
-    # TWO here, not one: the clean producer's own `Some(7)` narrowing into
-    # `PosInt` is itself a `refine_bind`, and it has no `float_to_int` site for
-    # `_narrowing_binds` to filter on — so the count is asserted rather than
-    # the filter widened, which would let the consumer's bind go missing
-    # unnoticed.
+    # The clean producer's own `Some(7)` narrowing into `PosInt` is itself a
+    # `refine_bind`, with no `float_to_int` site for `_narrowing_binds` to
+    # filter on, so the whole list is asserted rather than the filter
+    # widened, which would let the consumer's bind go missing unnoticed.
+    # The destructure's `Tuple<@PosInt, @Int>` binder takes the component at
+    # its own type and is checked there: at base the module held that check
+    # and the run recorded nothing (W004); since #1695 its row is recorded
+    # `tier3`, guarded.
     binds = [(o["status"], o.get("error_code")) for o in result["obligations"]
              if o["kind"] == "refine_bind"]
-    assert binds == [("verified", None), ("verified", None)], (
+    expected = {
+        "rebind": [("verified", None), ("verified", None)],
+        "destructure": [("verified", None), ("tier3", None), ("verified", None)],
+    }[label]
+    assert binds == expected, (
         f"{label}: a clean source's invariant must still discharge the "
         f"re-narrowing, and the producer's own narrowing must still prove — "
         f"got {binds}"
@@ -913,6 +950,33 @@ def test_1413_a_renarrowing_off_a_clean_value_still_proves(
     out = _run(tmp_path, source)
     assert "violation" not in out, out[-400:]
     assert out.strip().split()[-1] == "7", out[-400:]   # exact, not a suffix
+
+
+@pytest.mark.parametrize(
+    "label,source",
+    [("rebind", _REBIND_GUARDED), ("destructure", _DESTRUCTURE_GUARDED)],
+    ids=["rebind", "destructure"],
+)
+def test_1413_a_renarrowing_off_a_guarded_value_proves(
+    tmp_path: Path, label: str, source: str,
+) -> None:
+    """The guarded half: a re-narrowing off a checked store is Tier 1.
+
+    The producer's store is checked, so the source's invariant holds on every
+    run that reaches the consumer, and the re-narrowing discharges from it
+    (the post-fact rule, #1695); the run is refused inside `mk`.
+    """
+    result = _verify(tmp_path, source)
+    assert result["ok"] is True, result.get("diagnostics")
+    assert not [o for o in result["obligations"]
+                if o["status"] == "tier3_unguarded"], label
+    big = [(o["status"], o.get("error_code")) for o in result["obligations"]
+           if o["kind"] == "refine_bind"
+           and o["description"] in ("@Big", "@PosInt.0")]
+    assert big == [("verified", None)], f"{label}: {big}"
+    out = _run(tmp_path, source)
+    _assert_refused(out, f"{label}: ")
+    assert "in mk" in out, out[-700:]
 
 
 #: The fourth reader, as a program rather than as an AST walk.  `consume`
@@ -926,7 +990,7 @@ private fn mk(@Float64 -> @Option<PosInt>)
   ensures(true)
   effects(pure)
 {
-  Some(%s)
+  %s
 }
 
 private fn consume(@Option<PosInt> -> @Int)
@@ -969,15 +1033,18 @@ def test_1418_a_nested_refinement_premise_follows_the_value(
     reader added after #1406 was fixed, which is why the structural cell
     below now names this producer too.
     """
-    src = _ARG_NESTED % ("float_to_int(@Float64.0)", body)
+    src = _ARG_NESTED % (_DISCLOSED_BODY, body)
     result = _verify(tmp_path, src)
     assert result["ok"] is True, result.get("diagnostics")
     binds = [(o["status"], o.get("error_code")) for o in result["obligations"]
              if o["kind"] == "refine_bind"]
-    assert ("tier3_unguarded", "E506") in binds, binds
-    assert ("verified", None) not in binds, (
+    # Since #1695 the argument, of exactly `consume`'s parameter type, is no
+    # row: the nested refinement is checked where `consume` takes the
+    # payload apart (its sub-pattern binder, guarded, `tier3`), so the two
+    # spellings agree by having no argument record to disagree about.
+    assert binds == [("tier3_unguarded", "E506"), ("tier3", None)], (
         f"a nested-refinement premise was granted at Tier 1 over a disclosed "
-        f"value — {binds}"
+        f"value, or the two spellings disagree — {binds}"
     )
 
 
@@ -986,13 +1053,19 @@ def test_1418_a_nested_refinement_premise_follows_the_value(
 def test_1418_a_nested_refinement_premise_over_a_clean_value_still_proves(
     tmp_path: Path, body: str,
 ) -> None:
-    """The control: routing through the gate did not demote every argument."""
-    src = _ARG_NESTED % ("7", body)
+    """The control: the clean producer proves, and nothing else moves.
+
+    The producer's `Some(7)` is `verified`; `consume`'s sub-pattern binder is
+    the guarded row it is in the disclosed twin (at base the module held its
+    check and the run recorded nothing, W004; since #1695 it is recorded
+    `tier3`).  The only difference from the cell above is the producer's row.
+    """
+    src = _ARG_NESTED % (_CLEAN_BODY, body)
     result = _verify(tmp_path, src)
     assert result["ok"] is True, result.get("diagnostics")
     binds = [(o["status"], o.get("error_code")) for o in result["obligations"]
              if o["kind"] == "refine_bind"]
-    assert binds and all(b == ("verified", None) for b in binds), binds
+    assert binds == [("verified", None), ("tier3", None)], binds
 
 
 def test_1413_every_reader_of_a_source_fact_consults_the_one_gate() -> None:
@@ -1140,7 +1213,7 @@ public fn mk(@Float64 -> @Option<PosInt>)
   ensures(true)
   effects(pure)
 {
-  Some(float_to_int(@Float64.0))
+  let @Option<Int> = Some(float_to_int(@Float64.0)); @Option<Int>.0
 }
 """
 
@@ -1273,7 +1346,7 @@ private fn mk(@Float64 -> @Option<PosInt>)
   ensures(true)
   effects(pure)
 {
-  Some(%s)
+  %s
 }
 
 private fn warr(@Float64 -> @Option<PosInt>)
@@ -1307,7 +1380,7 @@ def test_1418_f1_a_lost_value_behind_a_clean_forwarder_still_carries_it(
     to `verified`, which is what makes this a third cell `M_mint` reds rather
     than a third cell that happens to pass.
     """
-    src = _F1_FORWARDER % "float_to_int(@Float64.0)"
+    src = _F1_FORWARDER % _DISCLOSED_BODY
     result = _verify(tmp_path, src)
     assert result["ok"] is True, result.get("diagnostics")
     statuses = [(o["kind"], o["status"], o.get("error_code"))
@@ -1321,7 +1394,7 @@ def test_1418_f1_a_lost_clean_value_behind_a_forwarder_still_proves(
     tmp_path: Path,
 ) -> None:
     """The control: losing a value is not itself a disclosure."""
-    src = _F1_FORWARDER % "7"
+    src = _F1_FORWARDER % _CLEAN_BODY
     result = _verify(tmp_path, src)
     assert result["ok"] is True, result.get("diagnostics")
     assert _f_ensures(result) == ("verified", None), [
@@ -1450,7 +1523,7 @@ where {
     ensures(true)
     effects(pure)
   {
-    Some(float_to_int(@Float64.0))
+    let @Option<Int> = Some(float_to_int(@Float64.0)); @Option<Int>.0
   }
 }
 
@@ -1623,68 +1696,65 @@ def test_1418_a_nested_helper_is_keyed_under_the_top_level_owner(
 # survey of six carriers did not show it, because a survey can only ever be
 # evidence about the carriers surveyed (#1418 review J1).
 #
-# The carrier that shows it is a HANDLER-CLAUSE `@Nat` payload narrowing: the
-# handler is declared `Exn<Int>`, so `throw`'s payload is an `@Int`, and the
-# clause pattern `throw(@Nat)` narrows it into a `@Nat` slot.  That site is
-# #1362's category, which #1412's guards do not cover, so it stays
-# `nat_bind`/`tier3_unguarded`/E504 — and `wrap` forwarding it publishes no
-# refinement of its own.
+# The carrier was a HANDLER-CLAUSE `@Nat` payload narrowing, recorded
+# `nat_bind`/`tier3_unguarded`/E504 at base.  That record was spurious: the
+# module checked the clause binder at base and head alike (the run traps
+# "Negative value bound into a @Nat slot"), and since #1695 the row is
+# guarded and recorded `tier3`.  The carrier is now the site-unguardable
+# producer of the rest of this file, `_DISCLOSED_BODY`, in a public `mk`
+# that `wrap` forwards at exactly its own type, so `wrap` narrows nothing
+# and publishes no obligation of its own.
 #
 # THE ONE-FILE ORACLE IS THE POINT.  The same three declarations in one file
 # demote; across an import they did not.  So the cells below assert EQUALITY
 # with that oracle rather than a literal status: if the rule changes what a
 # disclosed forwarder does, both sides move together or the cell fails.
-_J1_LIB = """public fn mk(@Int -> @Option<Nat>)
+_J1_LIB = _POSINT + """public fn mk(@Float64 -> @Option<PosInt>)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  int_to_nat(handle[Exn<Int>] {
-    throw(@Nat) -> { nat_to_int(@Nat.0) }
-  } in {
-    throw(@Int.0)
-  })
+  %s
 }
 
-public fn wrap(@Int -> @Option<Nat>)
+public fn wrap(@Float64 -> @Option<PosInt>)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  mk(@Int.0)
+  mk(@Float64.0)
 }
-"""
+""" % _DISCLOSED_BODY
 
 _J1_MID = """import lib;
-
-public fn reexport(@Int -> @Option<Nat>)
+""" + _POSINT + """
+public fn reexport(@Float64 -> @Option<PosInt>)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  lib::wrap(@Int.0)
+  lib::wrap(@Float64.0)
 }
 """
 
-_J1_USE = """
-public fn use_it(@Int -> @Int)
+_J1_USE = _POSINT + """
+public fn use_it(@Float64 -> @Int)
   requires(true)
-  ensures(@Int.result >= 0)
+  ensures(@Int.result > 0)
   effects(pure)
 {
-  match %s(@Int.0) {
-    Some(@Nat) -> nat_to_int(@Nat.0),
-    None -> 0
+  match %s(@Float64.0) {
+""" + _ARMS.replace("%", "%%") + """
   }
 }
 """
 
-_J1_ONEFILE = _J1_LIB + _J1_USE % "wrap"
+_J1_ONEFILE = _J1_LIB + _J1_USE.replace(_POSINT, "", 1) % "wrap"
 
 
 def _j1_ensures(result: dict) -> tuple[str, str | None]:
     hits = [o for o in result["obligations"]
-            if o["kind"] == "ensures" and o["description"] == "@Int.result >= 0"]
+            if o["kind"] == "ensures" and o["description"] == "@Int.result > 0"]
     assert len(hits) == 1, [
         (o["kind"], o["description"], o["status"]) for o in result["obligations"]
     ]
@@ -1715,22 +1785,21 @@ def test_1418_j1_an_imported_forwarder_publishes_its_disclosure(
     same value, and the verdict turned on which side of an import the
     forwarder sat.
 
-    The exhibit is that ASYMMETRY, not a runtime refutation: `int_to_nat`
-    filters a negative into `None`, so the program returns 0 and keeps its
-    postcondition.  What is wrong is a Tier-1 claim resting on a fact the same
-    run reported as neither proved nor guarded — which the in-module half of
-    this rule already refuses.
+    The exhibit is that ASYMMETRY: a Tier-1 claim resting on a fact the same
+    run reported as neither proved nor guarded, which the in-module half of
+    this rule already refuses.  (Measured on the handler-clause carrier this
+    file used before #1695; the carrier is `_DISCLOSED_BODY` now.)
     """
-    # The premise: the library discloses exactly once, at the handler clause.
+    # The premise: the library discloses exactly once, at `mk`'s payload.
     (tmp_path / "lib.vera").write_text(_J1_LIB, encoding="utf-8")
     lib = _verify(tmp_path, _J1_LIB, name="lib.vera")
     disclosing = [(o["kind"], o["status"], o.get("error_code"))
                   for o in lib["obligations"]
                   if o["status"] == "tier3_unguarded"
                   or (o["status"] == "tier3" and o.get("error_code") == "E534")]
-    assert disclosing == [("nat_bind", "tier3_unguarded", "E504")], (
-        f"the library must disclose exactly once, at the handler-clause "
-        f"`@Nat` payload bind — got {disclosing}"
+    assert disclosing == [("refine_bind", "tier3_unguarded", "E506")], (
+        f"the library must disclose exactly once, at `mk`'s payload "
+        f"narrowing — got {disclosing}"
     )
 
     result = _j1_importer(tmp_path, callee, mid=mid)
@@ -1789,7 +1858,7 @@ public fn mk(@Float64 -> @Option<PosInt>)
   ensures(true)
   effects(pure)
 {
-  Some(float_to_int(@Float64.0))
+  let @Option<Int> = Some(float_to_int(@Float64.0)); @Option<Int>.0
 }
 """
 
@@ -1936,7 +2005,7 @@ private fn mk(@Float64 -> @Option<PosInt>)
   ensures(true)
   effects(pure)
 {
-  Some(float_to_int(@Float64.0))
+  let @Option<Int> = Some(float_to_int(@Float64.0)); @Option<Int>.0
 }
 
 public fn f(@Float64 -> @Int)
@@ -1999,7 +2068,7 @@ private fn mk(@Float64 -> @Option<PosInt>)
   ensures(true)
   effects(pure)
 {
-  Some(%s)
+  %s
 }
 
 private fn rebuild(@Float64 -> @Option<PosInt>)
@@ -2024,7 +2093,7 @@ def test_1418_j3_the_literal_rebuilt_spelling_is_disclosed(
     containing a projection of a disclosed value contains that value.  What
     changed is only that the program now reaches the verifier at all.
     """
-    src = _REBUILT_LITERAL % "float_to_int(@Float64.0)"
+    src = _REBUILT_LITERAL % _DISCLOSED_BODY
     result = _verify(tmp_path, src)
     assert result["ok"] is True, result.get("diagnostics")
     statuses = [(o["kind"], o["status"], o.get("error_code"))
@@ -2038,7 +2107,7 @@ def test_1418_j3_the_literal_rebuilt_spelling_of_a_clean_value_proves(
     tmp_path: Path,
 ) -> None:
     """The control: rebuilding is not itself a disclosure."""
-    src = _REBUILT_LITERAL % "7"
+    src = _REBUILT_LITERAL % _CLEAN_BODY
     result = _verify(tmp_path, src)
     assert result["ok"] is True, result.get("diagnostics")
     assert _f_ensures(result) == ("verified", None), [
@@ -2116,24 +2185,24 @@ def test_1418_a_value_rebuilt_from_a_disclosed_component_is_disclosed() -> None:
 # two arms, and a join is exactly the thing `ite_join` already exercises — if
 # the demotion there came from the join rather than from the construction,
 # these two cells are where that shows, because here there is no join to
-# blame.  `mk` builds the payload with `float_to_int` as everywhere else, and
-# an ADT payload is guarded by codegen nowhere, so the contract is genuinely
-# refutable.
+# blame.  `mk` narrows a `Box<Int>` it did not build into `Box<PosInt>`, the
+# disclosed shape of `_MK_DISCLOSED` on a one-constructor carrier, so no check
+# guards the payload and the contract is genuinely refutable.
 _BOX = """type PosInt = { @Int | @Int.0 > 0 };
 
-private data Box {
-  Wrap(PosInt)
+private data Box<T> {
+  Wrap(T)
 }
 
-private fn mk(@Float64 -> @Box)
+private fn mk(@Float64 -> @Box<PosInt>)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  Wrap(%s)
+  %s
 }
 
-private fn rebuild(@Float64 -> @Box)
+private fn rebuild(@Float64 -> @Box<PosInt>)
   requires(true)
   ensures(true)
   effects(pure)
@@ -2162,7 +2231,7 @@ def test_1418_a_single_arm_rebuild_is_disclosed(tmp_path: Path) -> None:
     refutes it: the full soundness signature, on a shape with no `let`, no
     wrapper, and no join — only a value pulled apart and put back together.
     """
-    src = _BOX % "float_to_int(@Float64.0)"
+    src = _BOX % "let @Box<Int> = Wrap(float_to_int(@Float64.0)); @Box<Int>.0"
     result = _verify(tmp_path, src)
     assert result["ok"] is True, result.get("diagnostics")
     statuses = [(o["kind"], o["status"], o.get("error_code"))
@@ -2181,7 +2250,7 @@ def test_1418_a_single_arm_rebuild_of_a_clean_value_still_proves(
 
     Without this a fix that demoted every rebuild would pass the cell above.
     """
-    src = _BOX % "7"
+    src = _BOX % "Wrap(7)"
     result = _verify(tmp_path, src)
     assert result["ok"] is True, result.get("diagnostics")
     assert _f_ensures(result) == ("verified", None), [
@@ -2193,53 +2262,37 @@ def test_1418_a_single_arm_rebuild_of_a_clean_value_still_proves(
     assert out.strip().split()[-1] == "7", out[-400:]
 
 
-def test_the_patch_is_what_produces_the_disclosure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+def test_the_producer_site_is_what_produces_the_disclosure(
+    tmp_path: Path,
 ) -> None:
-    """Restore the table entry and the cells go green BY GUARD, not by proof.
+    """The guard is the producer's site's, read from the table, never patched.
 
-    Without this the file could not be read: every verdict above is taken
-    under a patched table, and a reader has no way to tell a fixture that
-    reinstates a real condition from one that invents a verdict.  So the same
-    source is verified twice, through the same stage, differing only in
-    whether the producer's construction site is in the shared table.
-
-    Patched, the producer discloses and the caller's postcondition is demoted
-    to `tier3` with E534.  As SHIPPED, the store is guarded, the producer
-    establishes its declared type, and the postcondition is `verified` —
-    which is the truth #1426 created and the reason these cells needed a
-    carrier at all.
+    Same caller, same value, two producer bodies: the one built from an
+    `Option<Int>` the producer did not take apart is disclosed and `f`'s
+    postcondition is demoted (`tier3`/E534); the one that constructs the
+    payload is checked at its store, so it is `tier3`/E506 and `f` proves.
+    Both runs are refused, at the two places the compiled module checks.
+    Before #1695 this cell restored a patched guard roster; the verifier no
+    longer reads that roster, so a patch to it decides nothing.
     """
-    source = _source("direct", disclosed=True)
-    path = tmp_path / "control.vera"
-    path.write_text(source, encoding="utf-8")
-
-    patched = pipeline.verify(path, budget_s=_BUDGET_S).envelope()
-    with monkeypatch.context() as shipped_table:
-        # The autouse fixture asserted the patched sites are in the shipped
-        # table, so putting them back is the table as shipped.
-        shipped_table.setattr(
-            narrowing, "REFINED_BIND_GUARDED_SITES",
-            narrowing.REFINED_BIND_GUARDED_SITES | _PATCHED_SITES,
-        )
-        shipped = pipeline.verify(path, budget_s=_BUDGET_S).envelope()
-
     def binds(result: dict) -> list[tuple[str, str | None]]:
         return [(o["status"], o.get("error_code"))
                 for o in result["obligations"] if o["kind"] == "refine_bind"]
 
-    def ensures(result: dict) -> tuple[str, str | None]:
-        hit = [o for o in result["obligations"]
-               if o["kind"] == "ensures"
-               and o["description"] == "@Int.result > 0"]
-        assert len(hit) == 1, result["obligations"]
-        return hit[0]["status"], hit[0].get("error_code")
-
-    assert ("tier3_unguarded", "E506") in binds(patched), binds(patched)
-    assert ensures(patched) == ("tier3", "E534"), ensures(patched)
-
-    assert ("tier3_unguarded", "E506") not in binds(shipped), binds(shipped)
-    assert ensures(shipped) == ("verified", None), (
-        f"with the site in the table the store is guarded, so the producer "
-        f"establishes its type and the caller proves — got {ensures(shipped)}"
+    disclosed = _verify(tmp_path, _source("direct", disclosed=True), "d.vera")
+    guarded = _verify(tmp_path, _POSINT + _MK_GUARDED + _SPELLINGS["direct"],
+                      "g.vera")
+    assert ("tier3_unguarded", "E506") in binds(disclosed), binds(disclosed)
+    assert _f_ensures(disclosed) == ("tier3", "E534"), _f_ensures(disclosed)
+    assert ("tier3_unguarded", "E506") not in binds(guarded), binds(guarded)
+    assert ("tier3", "E506") in binds(guarded), binds(guarded)
+    assert _f_ensures(guarded) == ("verified", None), (
+        f"the store is checked, so the producer establishes its type and the "
+        f"caller proves — got {_f_ensures(guarded)}"
     )
+    out_d = _run(tmp_path, _source("direct", disclosed=True), name="rd.vera")
+    out_g = _run(tmp_path, _POSINT + _MK_GUARDED + _SPELLINGS["direct"],
+                 name="rg.vera")
+    _assert_refused(out_d, "disclosed: ")
+    _assert_refused(out_g, "guarded: ")
+    assert "in mk" in out_g and "in mk" not in out_d, (out_d[-400:], out_g[-400:])
