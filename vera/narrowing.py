@@ -467,31 +467,29 @@ def same_established(a: "Type | None", b: "Type | None") -> bool:
     part unknown.  Not `types_equal`, which compares a refinement by its base
     alone and an unknown part as equal to anything: a type equal by that
     test can state a fact the other does not."""
-    if a is None or b is None:
-        return False
-    if isinstance(a, UnknownType) or isinstance(b, UnknownType):
-        return False
-    if type(a) is not type(b):
-        return False
-    if isinstance(a, RefinedType) and isinstance(b, RefinedType):
-        return (a.predicate == b.predicate
+    if isinstance(a, RefinedType):
+        return (isinstance(b, RefinedType)
+                and a.predicate == b.predicate
                 and same_established(a.base, b.base))
-    if isinstance(a, AdtType) and isinstance(b, AdtType):
-        return (a.name == b.name
+    if isinstance(a, AdtType):
+        return (isinstance(b, AdtType)
+                and a.name == b.name
                 and len(a.type_args) == len(b.type_args)
                 and all(same_established(x, y)
                         for x, y in zip(a.type_args, b.type_args)))
-    if isinstance(a, FunctionType) and isinstance(b, FunctionType):
-        return (len(a.params) == len(b.params)
+    if isinstance(a, FunctionType):
+        return (isinstance(b, FunctionType)
+                and len(a.params) == len(b.params)
                 and all(same_established(x, y)
                         for x, y in zip(a.params, b.params))
                 and same_established(a.return_type, b.return_type)
                 and effects_equal(a.effect, b.effect))
-    if isinstance(a, PrimitiveType) and isinstance(b, PrimitiveType):
-        return a.name == b.name
-    if isinstance(a, TypeVar) and isinstance(b, TypeVar):
-        return a.name == b.name
-    return bool(a == b)
+    if isinstance(a, PrimitiveType):
+        return isinstance(b, PrimitiveType) and a.name == b.name
+    if isinstance(a, TypeVar):
+        return isinstance(b, TypeVar) and a.name == b.name
+    # An unknown type, or no type: nothing is established.
+    return False
 
 
 def is_literal(expr: ast.Expr) -> bool:

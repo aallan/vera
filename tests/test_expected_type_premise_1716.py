@@ -695,3 +695,117 @@ def test_an_unknown_leaf_shares_no_type() -> None:
             assert narrowing.established_type(
                 join, lambda e: types.get(id(e))) is None, (unknown, other)
         assert not narrowing.same_established(unknown, unknown)
+
+
+# =====================================================================
+# The comparison and the literal rule, one branch per cell
+# =====================================================================
+
+def _pred(op: "object", bound: int) -> "object":
+    from vera import ast
+    return ast.BinaryExpr(
+        op=op, left=ast.SlotRef(type_name="Int", type_args=None, index=0),
+        right=ast.IntLit(value=bound))
+
+
+def _types() -> dict[str, "object"]:
+    from vera import ast
+    from vera.types import (
+        INT, NAT, AdtType, ConcreteEffectRow, EffectInstance, FunctionType,
+        PureEffectRow, RefinedType, TypeVar)
+    pos = RefinedType(INT, _pred(ast.BinOp.GT, 0))
+    io = ConcreteEffectRow(frozenset({EffectInstance("IO", ())}))
+    return {
+        "pos": pos, "pos_again": RefinedType(INT, _pred(ast.BinOp.GT, 0)),
+        "neg": RefinedType(INT, _pred(ast.BinOp.LT, 0)),
+        "pos_over_nat": RefinedType(NAT, _pred(ast.BinOp.GT, 0)),
+        "int": INT, "nat": NAT,
+        "opt_pos": AdtType("Option", (pos,)),
+        "opt_neg": AdtType("Option", (RefinedType(INT, _pred(ast.BinOp.LT, 0)),)),
+        "res_pos": AdtType("Result", (pos,)),
+        "pair": AdtType("Tuple", (pos, INT)),
+        "fn": FunctionType((pos,), INT, PureEffectRow()),
+        "fn_two": FunctionType((pos, INT), INT, PureEffectRow()),
+        "fn_param": FunctionType((INT,), INT, PureEffectRow()),
+        "fn_ret": FunctionType((pos,), pos, PureEffectRow()),
+        "fn_io": FunctionType((pos,), INT, io),
+        "t": TypeVar("T"), "u": TypeVar("U"),
+    }
+
+
+def test_same_established_compares_a_refinement_by_its_predicate_and_base() -> None:
+    from vera.narrowing import same_established
+    ty = _types()
+    assert same_established(ty["pos"], ty["pos_again"])
+    assert not same_established(ty["pos"], ty["neg"])
+    assert not same_established(ty["pos"], ty["int"])
+    assert not same_established(ty["int"], ty["pos"])
+    assert not same_established(ty["pos"], ty["pos_over_nat"])
+
+
+def test_same_established_compares_a_data_type_by_name_arity_and_arguments() -> None:
+    from vera.narrowing import same_established
+    ty = _types()
+    assert same_established(ty["opt_pos"], ty["opt_pos"])
+    assert not same_established(ty["opt_pos"], ty["opt_neg"])
+    assert not same_established(ty["opt_pos"], ty["res_pos"])
+    assert not same_established(ty["opt_pos"], ty["pair"])
+    assert not same_established(ty["opt_pos"], ty["int"])
+
+
+def test_same_established_compares_a_function_type_part_by_part() -> None:
+    from vera.narrowing import same_established
+    ty = _types()
+    assert same_established(ty["fn"], ty["fn"])
+    for other in ("fn_two", "fn_param", "fn_ret", "fn_io", "int"):
+        assert not same_established(ty["fn"], ty[other]), other
+
+
+def test_same_established_compares_a_primitive_and_a_variable_by_name() -> None:
+    from vera.narrowing import same_established
+    from vera.types import NEVER, UnknownType
+    ty = _types()
+    assert same_established(ty["int"], ty["int"])
+    assert same_established(NEVER, NEVER)
+    assert not same_established(ty["int"], ty["nat"])
+    assert not same_established(ty["int"], ty["t"])
+    assert same_established(ty["t"], ty["t"])
+    assert not same_established(ty["t"], ty["u"])
+    assert not same_established(ty["t"], ty["int"])
+    assert not same_established(UnknownType(), UnknownType())
+    assert not same_established(None, ty["int"])
+    assert not same_established(ty["int"], None)
+
+
+def test_a_negated_number_is_a_literal_and_a_negated_bool_is_not() -> None:
+    from vera import ast
+    from vera.narrowing import is_literal
+    three = ast.IntLit(value=3)
+    assert is_literal(ast.UnaryExpr(op=ast.UnaryOp.NEG, operand=three))
+    assert not is_literal(ast.UnaryExpr(
+        op=ast.UnaryOp.NOT, operand=ast.BoolLit(value=True)))
+    assert not is_literal(ast.UnaryExpr(
+        op=ast.UnaryOp.NEG, operand=ast.SlotRef(
+            type_name="Int", type_args=None, index=0)))
+
+
+def test_a_literal_satisfies_a_type_only_by_every_fact_it_states() -> None:
+    """True where the solver proves each fact of the literal, false where
+    one fails, where the literal is of another sort, and where a predicate
+    of the type has no term."""
+    from vera import ast
+    from vera.smt import SmtContext
+    from vera.types import INT, NAT, RefinedType
+    smt, ty = SmtContext(), _types()
+    three, zero = ast.IntLit(value=3), ast.IntLit(value=0)
+    assert smt._literal_satisfies(three, ty["pos"])
+    assert not smt._literal_satisfies(zero, ty["pos"])
+    assert smt._literal_satisfies(three, INT)
+    assert smt._literal_satisfies(zero, NAT)
+    assert not smt._literal_satisfies(
+        ast.UnaryExpr(op=ast.UnaryOp.NEG, operand=three), NAT)
+    assert not smt._literal_satisfies(ast.BoolLit(value=True), ty["pos"])
+    assert not smt._literal_satisfies(ast.FloatLit(value=3.0), ty["pos"])
+    no_term = RefinedType(INT, ast.SlotRef(
+        type_name="Bool", type_args=None, index=0))
+    assert not smt._literal_satisfies(three, no_term)
