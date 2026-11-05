@@ -36,6 +36,7 @@ from vera.environment import (
     OpInfo,
 )
 from vera.types import (
+    is_unknown_like,
     BUILTIN_TYPEVAR_MARKER,
     FREE_BUILTIN_TYPEVAR_MARKER,
     ORDERABLE_TYPES,
@@ -1305,7 +1306,8 @@ class CallsMixin:
         # the remaining arguments (to surface errors inside them) and
         # give up on structural checking.
         fn_ty = base_type(fn_ty_raw) if fn_ty_raw is not None else None
-        if fn_ty is None or isinstance(fn_ty, (UnknownType, TypeVar)):
+        if (fn_ty is None or isinstance(fn_ty, TypeVar)
+                or is_unknown_like(fn_ty)):
             for arg in rest:
                 self._synth_expr(arg)
             return UnknownType()

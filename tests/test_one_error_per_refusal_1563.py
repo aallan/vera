@@ -701,3 +701,53 @@ def test_a_container_no_name_makes_eq_still_draws_e243() -> None:
               "{\n  @Array<Qzt>.0 == @Array<Qzt>.0\n}\n")
     codes = _codes(source)
     assert "E243" in codes and set(codes) == {"E136", "E243"}, codes
+
+
+_SITE_HELPERS = (
+    "private fn take_int(@Int -> @Int)\n" + _SIG + "{\n  @Int.0\n}\n\n"
+    "private forall<T> fn idg(@T -> @T)\n" + _SIG + "{\n  @T.0\n}\n\n"
+)
+
+_PLACEHOLDER_SITES = {
+    "apply_fn": "apply_fn(@Qzt.0, 1)",
+    "if_cond": "if @Qzt.0 then { 1 } else { 0 }",
+    "if_branches": "if true then { @Qzt.0 } else { 1 }",
+    "match_scrutinee_int_arms": "match @Qzt.0 {\n    1 -> 1,\n    _ -> 0\n  }",
+    "match_scrutinee_ctor_arms": "match @Qzt.0 {\n    Some(@Int) -> @Int.0,\n    None -> 0\n  }",
+    "match_scrutinee_no_wild": "match @Qzt.0 {\n    1 -> 1\n  }",
+    "match_arms_mixed": "match 1 {\n    1 -> @Qzt.0,\n    _ -> 0\n  }",
+    "call_arg": "take_int(@Qzt.0)",
+    "generic_call": "nat_to_int(0) + idg(@Qzt.0)",
+    "array_literal": "array_length([@Qzt.0, 1])",
+    "array_index_with": "[1, 2][@Qzt.0]",
+    "destructure": "let Tuple<@Int, @Int> = @Qzt.0;\n  @Int.0",
+    "let_nat": "let @Nat = @Qzt.0;\n  0",
+    "not": "!@Qzt.0",
+    "string_concat": "string_length(string_concat(@Qzt.0, \"a\"))",
+    "interp": "string_length(\"\\(@Qzt.0)\")",
+    "handle_init": "handle[State<Int>](@Int = @Qzt.0) {\n    get(@Unit) -> { resume(@Int.0) },\n    put(@Int) -> { resume(()) }\n  } in {\n    get(())\n  }",
+    "assert": "assert(@Qzt.0);\n  0",
+    "pipe": "@Qzt.0 |> take_int()",
+    "ctor_arg": "option_unwrap_or(Some(@Qzt.0), 1)",
+    "closure_body": "apply_fn(fn(@Int -> @Int) effects(pure) { @Qzt.0 }, 1)",
+    "eq_int": "if @Qzt.0 == 1 then { 1 } else { 0 }",
+    "neq": "if 1 != @Qzt.0 then { 1 } else { 0 }",
+    "mod": "@Qzt.0 % 2",
+    "implies": "if @Qzt.0 ==> true then { 1 } else { 0 }",
+}
+
+
+
+@pytest.mark.parametrize("site", sorted(_PLACEHOLDER_SITES))
+def test_a_value_of_an_undeclared_type_draws_nothing_further_at_any_site(
+        site: str) -> None:
+    """The census's sweep: a value of an undeclared type (`@Qzt.0`) at every
+    expression site a judgement reads, each early guard reading the shared
+    predicate (`is_unknown_like`, `is_subtype`'s rule, `is_eq_derivable`), so
+    its E136 is the one error.  At the base 22 of these 25 sites drew a
+    second error; `apply_fn`'s E202 was the last, its guard reading
+    `UnknownType` alone."""
+    source = (_SITE_HELPERS + "private fn f(@Qzt -> @Int)\n" + _SIG + "{\n  "
+              + _PLACEHOLDER_SITES[site] + "\n}\n")
+    codes = _codes(source)
+    assert codes and set(codes) == {"E136"}, codes
