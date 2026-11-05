@@ -751,10 +751,11 @@ public fn later(@Nat, @Int -> @Int)
 }
 """
 
-#: The mismatches the join reports today that a generated program can meet:
-#: each a shape of a `scripts/check_reconciliation.py` `KNOWN` class, or of
-#: an open issue the generator found.
-KNOWN_CLASSES: tuple[KnownClass, ...] = (
+#: The classes the join reported before the obligation table's second half
+#: (#1695): the verifier discharges the table's rows and the join keys on
+#: row identity, so each class's repro reports nothing
+#: (`test_each_retired_class_reports_nothing`).
+_RETIRED_CLASSES: tuple[KnownClass, ...] = (
     KnownClass(
         "#1598", "guarded_unrecorded", "int_overflow",
         "wasm/operators.py:_note_quotient_overflow", "an `@Int` division",
@@ -795,6 +796,11 @@ KNOWN_CLASSES: tuple[KnownClass, ...] = (
         "wasm/operators.py:_emit_nat_bind_guard", _LATER_ELEMENT_SHAPE,
         _REPRO_LATER_ELEMENT),
 )
+
+#: The mismatches the join reports today that a generated program can meet:
+#: each a shape of a `scripts/check_reconciliation.py` `KNOWN` class, or of
+#: an open issue the generator found.  None since the obligation table.
+KNOWN_CLASSES: tuple[KnownClass, ...] = ()
 
 
 def reconcile_finds(
@@ -2080,11 +2086,44 @@ def test_the_load_differential_reports_a_module_that_does_not_load(
     assert "values remaining on stack" in finds[0].detail, finds[0].detail
 
 
+def _put_back_the_divisor_class(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The join with the retired divisor class put back: a mismatch at each
+    check of a division by a non-zero literal, as the join reported before
+    the obligation table (#1695).  The join reports none on a generated
+    program since, so a cell that needs a reconcile find makes one here."""
+    from vera import ast as vera_ast
+
+    real = join
+
+    def with_divisor(verify_result, compile_result, **kwargs):  # type: ignore[no-untyped-def]
+        joined = real(verify_result, compile_result, **kwargs)
+        table = verify_result.table
+        for check in compile_result.emitted_checks:
+            if check.row is None or "div_zero" not in check.obligations:
+                continue
+            node = table.rows[check.row].node
+            if (isinstance(node, vera_ast.BinaryExpr)
+                    and isinstance(node.right, vera_ast.IntLit)
+                    and node.right.value != 0):
+                joined.mismatches.append(Mismatch(
+                    kind="guarded_unrecorded", obligation="div_zero",
+                    file=check.file, line=check.line, column=check.column,
+                    function=check.function, emitter=check.emitter,
+                    detail="put back"))
+        return joined
+
+    monkeypatch.setattr(sys.modules[__name__], "join", with_divisor)
+
+
 def test_the_reconcile_differential_reports_a_mismatch_outside_its_classes(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The divisor mismatch of #1629 is a known class; with no class to
-    hold it, the same mismatch is a find."""
-    known = reconcile_finds(_REPRO_1629_DIVISOR)
+    """A mismatch the join reports is a find, carrying the issue of the
+    class that holds it; with no class to hold it, the same mismatch is a
+    find of its own (the retired divisor class, put back)."""
+    _put_back_the_divisor_class(monkeypatch)
+    divisor = next(c for c in _RETIRED_CLASSES if c.obligation == "div_zero")
+    known = reconcile_finds(_REPRO_1629_DIVISOR, known=(divisor,))
     assert [(f.signature, f.known) for f in known] == [(
         ("guarded_unrecorded", "div_zero", "wasm/operators.py:_translate_binary"),
         "#1695 (#1629)")], known
@@ -2092,12 +2131,6 @@ def test_the_reconcile_differential_reports_a_mismatch_outside_its_classes(
     assert [(f.signature, f.known) for f in unknown] == [(
         known[0].signature, "")], unknown
     assert "guarded_unrecorded 'div_zero' at 6:3 in 'r'" in unknown[0].detail
-    # The neighbour keeps its contract, so the join runs over it and
-    # reports nothing because nothing is there.
-    neighbour = _REPRO_1629_DIVISOR.replace(
-        "@Int.result <= 2", "@Int.result <= 100").replace("@Int.0 % 3", "@Int.0")
-    assert not contract_finds(neighbour), contract_finds(neighbour)
-    assert reconcile_finds(neighbour, known=()) == []
 
 
 #: The night's seeds 197, 363, 818 and 995 at #1696's model: a canonical
@@ -2130,24 +2163,21 @@ def test_repro_a_refined_let_of_a_state_handle_holds_the_refinement() -> None:
     lets a canonical handler have its body's value (#1696).  The `let`'s
     check went with the obligation table (#1695): the handle's value is a
     slot of the refinement, which its own binding checks, so the table
-    lists no row there and code generation emits none; the parameter's
-    entry check is the one mismatch left."""
-    finds = reconcile_finds(_REPRO_REFINED_HANDLE)
-    assert [(f.known, f.site[1:]) for f in finds] == [("#1695 (#1629)", (3, 14))], finds
+    lists no row there and code generation emits none, and the parameter's
+    entry check is its row's, which the verifier records (the second
+    half)."""
+    finds = reconcile_finds(_REPRO_REFINED_HANDLE, known=())
+    assert finds == [], finds
 
 
 @pytest.mark.parametrize(
-    "cls", KNOWN_CLASSES, ids=lambda c: f"{c.issue} {c.obligation}")
-def test_each_known_class_keeps_its_shape(cls: KnownClass) -> None:
-    """Each class's repro reports exactly that class, once.  The day its
-    issue is fixed the repro reports nothing, this fails, and the entry
-    comes out, as `scripts/check_reconciliation.py`'s `KNOWN` entries do."""
+    "cls", _RETIRED_CLASSES, ids=lambda c: f"{c.issue} {c.obligation}")
+def test_each_retired_class_reports_nothing(cls: KnownClass) -> None:
+    """Each class the join reported before the obligation table's second
+    half (#1695) reports nothing: its repro's records and checks name the
+    same rows."""
     assert not contract_finds(cls.repro), contract_finds(cls.repro)
-    finds = reconcile_finds(cls.repro)
-    assert [(f.signature, f.known) for f in finds] == [
-        ((cls.kind, cls.obligation, cls.emitter), cls.issue)], finds
-    alone = reconcile_finds(cls.repro, known=(cls,))
-    assert [f.known for f in alone] == [cls.issue], alone
+    assert reconcile_finds(cls.repro, known=()) == []
 
 
 #: The refined-`Nat` class's other site: a call's argument at a parameter
@@ -2175,15 +2205,13 @@ public fn cap(@Int -> @Int)
 
 
 def test_repro_the_refined_nat_class_holds_a_call_argument() -> None:
-    """A narrowing into a refinement of `Nat` at a call's argument is the
-    class's, as at a `let`'s value: the class reads the parameter's type off
-    the callee's declaration."""
+    """A narrowing into a refinement of `Nat` at a call's argument was the
+    refined-`Nat` class's, as at a `let`'s value; since the obligation table
+    (#1695) its sign and predicate are rows the verifier records, and the
+    join reports nothing."""
     assert not contract_finds(_REFINED_NAT_ARGUMENT), contract_finds(
         _REFINED_NAT_ARGUMENT)
-    finds = reconcile_finds(_REFINED_NAT_ARGUMENT)
-    assert [(f.signature, f.known) for f in finds] == [(
-        ("guarded_unrecorded", "nat_bind", "wasm/operators.py:_emit_nat_bind_guard"),
-        "#1695")], finds
+    assert reconcile_finds(_REFINED_NAT_ARGUMENT, known=()) == []
 
 
 #: The values at a `@Nat` position where code generation planted a
@@ -2474,18 +2502,22 @@ def test_the_minimiser_never_accepts_the_program_it_holds() -> None:
     assert constructs(minimal)
 
 
-def test_the_minimiser_keeps_the_failure_it_shrinks(tmp_path: Path) -> None:
+def test_the_minimiser_keeps_the_failure_it_shrinks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The smallest of the first hundred single-file programs that divides
     by a literal is shrunk to the smallest program whose join still reports
-    the divisor class, keeping the generator's contract: a reduction that
-    lost the find or broke the program would have been refused."""
+    the divisor mismatch (the retired class, put back), keeping the
+    generator's contract: a reduction that lost the find or broke the
+    program would have been refused."""
+    _put_back_the_divisor_class(monkeypatch)
     candidates = sorted(
         (gen.size(p), p.seed) for p in map(gen.generate, range(100))
         if p.module is None and p.shape()["/lit"] + p.shape()["%lit"])
     assert candidates, "no seed below 100 divides by a literal"
     prog = gen.generate(candidates[0][1])
     finds = [f for f in reconcile_finds(prog.render())
-             if f.known == "#1695 (#1629)" and f.signature[1] == "div_zero"]
+             if f.signature[1] == "div_zero"]
     assert finds, prog.render()
     holds = still_fails(finds[0], tmp_path)
     minimal = gen.minimize(prog, holds, budget=MINIMISE_BUDGET)

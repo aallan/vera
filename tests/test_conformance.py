@@ -278,40 +278,50 @@ def test_the_run_stage_runs_under_its_budget(monkeypatch: pytest.MonkeyPatch) ->
 # The verify stage and the reconciliation gate's KNOWN list
 # ---------------------------------------------------------------------------
 
-#: The conformance program `vera verify` refuses by default, with the E541
-#: the reconciliation gate lists under its open issue.
-_KNOWN_E541 = next(entry for entry in reconciliation_gate.KNOWN
-                   if entry.kind == "recorded_unguarded"
-                   and entry.program.startswith("tests/conformance/"))
+#: The conformance program whose E541 the gate listed under #1530's line of
+#: #1695 until the obligation table's second half: its `decreases` on an
+#: `Exn` row is disclosed now (E543), and `vera verify` passes it.
+_ONCE_E541 = "tests/conformance/ch02_adt_tuple_recursive.vera"
+
+#: A `KNOWN` entry for the listed-E541 rule, at that program's old site:
+#: the corpus has none to list since the obligation table (#1695), so the
+#: rule is held to an entry made here.
+_LISTED = reconciliation_gate.Known(
+    1695, _ONCE_E541, "recorded_unguarded", "decreases",
+    "ch02_adt_tuple_recursive.vera:15:3")
 
 
-def _known_e541_site() -> tuple[str, str | None, int, int]:
-    _name, line, column = _KNOWN_E541.site.rsplit(":", 2)
-    return ("E541", str(ROOT / _KNOWN_E541.program), int(line), int(column))
+def _listed_site() -> tuple[str, str | None, int, int]:
+    _name, line, column = _LISTED.site.rsplit(":", 2)
+    return ("E541", str(ROOT / _LISTED.program), int(line), int(column))
 
 
-def test_the_verify_stage_holds_the_known_e541_and_nothing_else() -> None:
-    """The listed program fails `vera verify` with exactly its listed E541
-    when the join runs, and verifies clean without it: the stage passes on
-    the listed error and on nothing more."""
-    path = ROOT / _KNOWN_E541.program
-    joined = pipeline.verify(path, reconcile=True)
-    errors = _sites(joined.errors)
-    assert [code for code, *_ in errors] == ["E541"], errors
-    assert reconciliation_gate.unlisted_verify_errors(
-        _KNOWN_E541.program, errors) == []
-    assert pipeline.verify(path).ok
+def test_the_verify_stage_passes_the_disclosed_decreases() -> None:
+    """The program the gate listed fails `vera verify` no more: its row has
+    no check, so it is disclosed, not claimed (#1530's line of #1695)."""
+    joined = pipeline.verify(ROOT / _ONCE_E541, reconcile=True)
+    assert _sites(joined.errors) == [], _sites(joined.errors)
+    assert "E543" in {d.error_code for d in joined.warnings}
+
+
+def test_a_listed_e541_passes_the_verify_stage(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An E541 a `KNOWN` entry names, at its site, is the one error the
+    stage passes."""
+    monkeypatch.setattr(reconciliation_gate, "KNOWN", (_LISTED,))
+    error = _listed_site()
+    assert reconciliation_gate.unlisted_verify_errors(_LISTED.program, [error]) == []
 
 
 @pytest.mark.parametrize("cell", ["another_site", "another_program", "another_code"])
 def test_an_error_the_known_list_does_not_name_fails_the_verify_stage(
-    cell: str,
+    cell: str, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The listed error's nearest neighbours each fail the stage: the same
     code one line on, the same site in another program, another code at the
     same site."""
-    program = _KNOWN_E541.program
-    code, file, line, column = _known_e541_site()
+    monkeypatch.setattr(reconciliation_gate, "KNOWN", (_LISTED,))
+    program = _LISTED.program
+    code, file, line, column = _listed_site()
     if cell == "another_site":
         line += 1
     elif cell == "another_program":

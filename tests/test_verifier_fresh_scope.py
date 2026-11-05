@@ -577,9 +577,9 @@ public fn f(@Array<Int> -> @Array<Int>)
 """, "bounds")
         assert any(e.error_code == "E527" for e in errs)
 
-    def test_ensures_position_quantifier_index_is_tier3(self) -> None:
+    def test_ensures_position_quantifier_index_is_disclosed(self) -> None:
         """The walker also runs on ensures clauses: an index inside an
-        ensures-position quantifier predicate records Tier-3 (the common
+        ensures-position quantifier predicate records a Tier-3 record (the common
         real-world contract shape — all corpus quantifiers are
         body-position, so this documents the intent)."""
         src = """
@@ -604,7 +604,12 @@ public fn f(@Array<Int> -> @Array<Int>)
         assert not errors
         idx = [o for o in result.obligations if o.kind == "index_bounds"]
         assert len(idx) == 1
-        assert idx[0].status == "tier3"
+        # The `ensures` over an `Array` result is not lowered, so nothing
+        # checks the index inside it: since #1695 the record discloses that
+        # (`tier3_unguarded`, E543) where it claimed a runtime check no
+        # module holds (`tier3`, an E541 at the join).
+        assert idx[0].status == "tier3_unguarded"
+        assert idx[0].error_code == "E543"
 
 
 # =====================================================================

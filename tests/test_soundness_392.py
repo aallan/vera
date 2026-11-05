@@ -498,8 +498,10 @@ public fn f(@Int -> @Int)
         assert ensures_obs and all(o.status == "verified" for o in ensures_obs), [
             (o.kind, o.status) for o in result.obligations
         ]
-        call_pres = [o for o in result.obligations if o.kind == "call_pre"]
-        assert call_pres == [], [(o.kind, o.status) for o in result.obligations]
+        # The discharged precondition is its row's record since #1695.
+        call_pres = [o.status for o in result.obligations if o.kind == "call_pre"]
+        assert call_pres == ["verified"], [
+            (o.kind, o.status) for o in result.obligations]
 
     def test_prior_assume_discharges_call_precondition(self) -> None:
         # CR #805 round-2: the assume-half analog — a prior `assume(P)` discharges
@@ -520,8 +522,10 @@ public fn f(@Int -> @Int)
         assert ensures_obs and all(o.status == "verified" for o in ensures_obs), [
             (o.kind, o.status) for o in result.obligations
         ]
-        call_pres = [o for o in result.obligations if o.kind == "call_pre"]
-        assert call_pres == [], [(o.kind, o.status) for o in result.obligations]
+        # The discharged precondition is its row's record since #1695.
+        call_pres = [o.status for o in result.obligations if o.kind == "call_pre"]
+        assert call_pres == ["verified"], [
+            (o.kind, o.status) for o in result.obligations]
 
     def test_weaker_assert_does_not_discharge_call_precondition(self) -> None:
         # Soundness guard: a prior assert that does NOT entail the callee's

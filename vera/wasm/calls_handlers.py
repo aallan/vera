@@ -2051,11 +2051,11 @@ class CallsHandlersMixin:
         type the value need not satisfy.
 
         Emitted over the local the binder is about to be pushed under, so the
-        check runs before any of the body does, and gated on the site being
-        in `vera.narrowing.REFINED_BIND_GUARDED_SITES` — the same table the
-        verifier's classification reads, asked with the same site name from
-        the same registry, so the guard and the guarded status cannot
-        disagree.
+        check runs before any of the body does, for the binder's rows in the
+        obligation table (#1695), whose guard the verifier's record reads
+        too, so the guard and the guarded status cannot disagree; the site's
+        lowering exists where `vera.narrowing.REFINED_BIND_GUARDED_SITES`
+        lists it.
 
         Both directions, because the two spellings fail differently: the sign
         guard for a `@Nat` binder over a plain payload, and the §2.6.5
@@ -2063,6 +2063,11 @@ class CallsHandlersMixin:
         base, so a binder no narrower than what it receives is left alone.
         """
         site = binders.site_of(ast.HandlerClause, "params")
+        # The roster gate decides a guard beside the row: emptying
+        # `REFINED_BIND_GUARDED_SITES` drops these checks while the table
+        # still lists the rows guarded, which the guard matrices and the
+        # identity cells catch.  Its removal, the row the one decision, is a
+        # line of #1836, which deletes the verifier's walk.
         if site not in narrowing.REFINED_BIND_GUARDED_SITES:
             return []
         if not isinstance(te, ast.TypeExpr):

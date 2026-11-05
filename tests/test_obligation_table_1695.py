@@ -13,9 +13,7 @@ span the other side does not use.
 The pins below are the issue's open lines, the seven #1542 positions, the
 #1598 rows, #1642, #1641, #1782, #1602, #1567, #1563, #1725's disclosure and
 #1696's m04, each asserting the verdict the table gives; the regression
-cells hold the nine lines that do not reproduce where they are.  Every red
-cell carries the non-strict `_RED` marker until the table lands, as the
-composite-coercion instrument did before #1818 (PR #1818's first commit).
+cells hold the nine lines that do not reproduce where they are.
 """
 
 from __future__ import annotations
@@ -41,10 +39,6 @@ pytestmark = pytest.mark.matrix(
         "vera/codegen/contracts.py",
     ],
 )
-
-#: Red until the table lands; removed with the change (never strict: a cell
-#: this marker carries is one the change turns green).
-_RED = pytest.mark.xfail(strict=False, reason="red until the obligation table lands (#1695)")
 
 _BUDGET_S = 300
 
@@ -104,7 +98,6 @@ def _guard_claims(path: Path) -> list[str]:
     return out
 
 
-@_RED
 def test_the_verifier_claims_no_guard() -> None:
     """No `*guarded=` argument in `vera/verifier.py`: the verifier reads
     whether a row is guarded from the row and never predicts it."""
@@ -112,7 +105,6 @@ def test_the_verifier_claims_no_guard() -> None:
     assert claims == [], claims
 
 
-@_RED
 def test_the_verifier_defines_no_mirror_of_code_generation() -> None:
     text = (ROOT / "vera" / "verifier.py").read_text(encoding="utf-8")
     defined = [name for name in _MIRRORS
@@ -166,16 +158,19 @@ public fn f(@Int, @Array<Int>, @Float64, @Nat, @Nat -> @Nat)
                      "nat_bind", "nat_sub", "refine_bind", "call_pre"}, kinds
 
 
-@_RED
 def test_the_gates_carry_no_known_mismatch() -> None:
     """`scripts/check_reconciliation.py`'s `KNOWN` and the generator's
     `KNOWN_CLASSES` are both empty: no mismatch is allowlisted."""
     import importlib.util
 
+    import sys
+
     spec = importlib.util.spec_from_file_location(
         "_gate_1695", ROOT / "scripts" / "check_reconciliation.py")
     assert spec is not None and spec.loader is not None
     gate = importlib.util.module_from_spec(spec)
+    # Registered first, so the script's dataclasses resolve their annotations.
+    sys.modules["_gate_1695"] = gate
     spec.loader.exec_module(gate)
     from tests.test_program_generator import KNOWN_CLASSES
 
@@ -199,17 +194,15 @@ public fn safe_divide(@Int, @Int -> @Int)
 """
 
 
-@_RED
 def test_repro_1598_the_int_min_division_is_a_row() -> None:
     """`INT_MIN / -1` is an `int_overflow` row of the division, `tier3` under
     `requires(@Int.1 != 0)`, and the module's check answers it."""
     v = _verified(_SAFE_DIVIDE)
     rows = _records(v, "int_overflow")
-    assert [r for r in rows if r[1] == 7] == [("tier3", 7, 3)], rows
+    assert [r for r in rows if r[1] == 6] == [("tier3", 6, 3)], rows
     assert not [c for c in _codes(v) if c in ("E541", "W004")], _codes(v)
 
 
-@_RED
 def test_repro_1629_a_literal_divisor_is_a_verified_row() -> None:
     source = """\
 public fn f(@Int -> @Int)
@@ -225,7 +218,6 @@ public fn f(@Int -> @Int)
     assert "W004" not in _codes(v)
 
 
-@_RED
 def test_repro_1629_a_refined_parameters_entry_check_is_a_row_of_the_callee() -> None:
     source = """\
 type PosInt = { @Int | @Int.0 > 0 };
@@ -269,7 +261,6 @@ public fn main(@Unit -> @Nat)
 """
 
 
-@_RED
 def test_repro_1530_a_decreases_on_an_exn_row_is_disclosed_unguarded() -> None:
     v = _verified(_EXN_DECREASES)
     assert _records(v, "decreases") == [("tier3_unguarded", 4, 3)], _records(v, "decreases")
@@ -296,7 +287,6 @@ public fn main(@Unit -> @Int)
 """
 
 
-@_RED
 def test_repro_1607_an_ensures_over_an_array_result_is_disclosed_unguarded() -> None:
     v = _verified(_QUANTIFIED_ENSURES)
     rows = [r for r in _records(v, "ensures") if r[1] == 3]
@@ -304,7 +294,6 @@ def test_repro_1607_an_ensures_over_an_array_result_is_disclosed_unguarded() -> 
     assert "E541" not in _codes(v)
 
 
-@_RED
 def test_repro_1607_an_ensures_over_a_string_result_is_disclosed_unguarded() -> None:
     source = """\
 public fn f(@Int -> @String)
@@ -332,7 +321,6 @@ public fn g(@Float64 -> @Int)
 """
 
 
-@_RED
 def test_repro_1613_a_payload_nested_in_a_container_literal_is_a_row(tmp_path: Path) -> None:
     v = _verified(_NESTED_PAYLOAD)
     assert _records(v, "nat_bind") == [("tier3", 6, 45)], _records(v, "nat_bind")
@@ -371,13 +359,12 @@ public fn g(@Int, @Int -> @Int)
 """
 
 
-@_RED
 def test_repro_1642_one_row_per_guarded_component() -> None:
     """The opaque argument of a tuple-typed parameter: one `refine_bind` row
     per component, each answered by the callee's component guard."""
     v = _verified(_PARTIAL_COMPONENTS)
-    rows = [r for r in _records(v, "refine_bind") if r[1] == 25]
-    assert rows == [("tier3", 25, 5), ("tier3", 25, 5)], _records(v, "refine_bind")
+    rows = [r for r in _records(v, "refine_bind") if r[1] == 24]
+    assert rows == [("tier3", 24, 5), ("tier3", 24, 5)], _records(v, "refine_bind")
     assert not [c for c in _codes(v) if c in ("E541", "W004")], _codes(v)
 
 
@@ -394,10 +381,9 @@ public fn f(@Int -> @Int)
 """
 
 
-@_RED
 def test_repro_1782_a_guarded_clause_binder_is_one_row() -> None:
     v = _verified(_CLAUSE_BINDER)
-    assert _records(v, "nat_bind") == [("tier3", 5, 11)], _records(v, "nat_bind")
+    assert _records(v, "nat_bind") == [("tier3", 5, 12)], _records(v, "nat_bind")
     assert not [c for c in _codes(v) if c in ("E504", "E541", "W004")], _codes(v)
 
 
@@ -428,7 +414,6 @@ public fn main(@Int -> @Int)
 """
 
 
-@_RED
 def test_repro_1567_a_call_in_a_callees_ensures_is_the_callees() -> None:
     v = _verified(_CALLEES_ENSURES)
     e501 = [d for d in v.diagnostics if d.error_code == "E501"]
@@ -459,7 +444,6 @@ public fn f(@Int -> @Int)
 """
 
 
-@_RED
 def test_repro_1563_a_refused_binder_draws_no_second_error() -> None:
     v = _verified(_REFUSED_BINDER)
     errors = [d.error_code for d in v.errors]
@@ -492,15 +476,13 @@ public fn main(-> @Int)
 """
 
 
-@_RED
 def test_repro_1725_an_arm_binder_narrowing_an_effect_row_is_disclosed() -> None:
     v = _verified(_EFFECT_ROW)
-    assert _records(v, "refine_bind") == [("tier3_unguarded", 12, 9)], _records(v, "refine_bind")
-    e506 = [d for d in v.warnings if d.error_code == "E506"]
-    assert e506 and "effect row" in e506[0].rationale, [d.rationale[:200] for d in e506]
+    assert _records(v, "effect_bind") == [("tier3_unguarded", 12, 9)], _records(v, "effect_bind")
+    e542 = [d for d in v.warnings if d.error_code == "E542"]
+    assert e542 and "effect row" in e542[0].rationale, [d.rationale[:200] for d in e542]
 
 
-@_RED
 def test_repro_1582_nothing_inside_an_assume_is_a_row() -> None:
     source = """\
 public fn f(@Array<Int> -> @Int)
@@ -537,7 +519,6 @@ public fn g(@Float64 -> @Int)
 """
 
 
-@_RED
 def test_repro_1608_a_map_insert_value_outside_a_let_is_a_row() -> None:
     v = _verified(_MAP_VALUE)
     assert _records(v, "nat_bind") == [("tier3", 14, 32)], _records(v, "nat_bind")
@@ -558,7 +539,50 @@ public fn mk(@Float64 -> @Option<Small>)
 """
 
 
-@_RED
+def test_a_predicate_copy_shares_its_own_kinds_record_in_every_pass() -> None:
+    """A guard's copy of a refinement predicate shares the declaration's
+    record of its own kind: a division's `div_zero` and its quotient's
+    `int_overflow` stand at one node, and each keeps its record.  `mk`'s
+    disclosure makes the verifier run a second pass, whose records the
+    copies share, not the discarded first pass's (no W004)."""
+    v = _verified(
+        "type NonNeg = { @Int | @Int.0 >= 0 };\n"
+        "type Q = { @Int | @Int.0 / @Int.0 == 1 };\n\n"
+        "private fn mk(@Float64 -> @Option<NonNeg>)\n  requires(true)\n"
+        "  ensures(true)\n  effects(pure)\n{\n"
+        "  let @Option<Int> = Some(float_to_int(@Float64.0));\n"
+        "  @Option<Int>.0\n}\n\n"
+        "public fn f(@Int -> @Int)\n  requires(@Int.0 > 0)\n  ensures(true)\n"
+        "  effects(pure)\n{\n  let @Q = @Int.0;\n  @Q.0\n}\n")
+    at = sorted(o.kind for o in v.result.obligations
+                if (o.line, o.column) == (2, 19))
+    assert at == ["div_zero", "int_overflow"], at
+    recon = v.envelope()["reconciliation"]
+    assert recon["guarded_unrecorded"] == recon["recorded_unguarded"] == 0, recon
+    assert "W004" not in [w["error_code"] for w in v.envelope()["warnings"]]
+
+
+def test_an_unguarded_binder_holds_no_post_fact() -> None:
+    """The post-fact rule's negative space: a binder whose row no check can
+    guard (a refinement over a refinement) and whose value the solver
+    cannot decide holds nothing for the rest of its scope, so a call that
+    needs its predicate is not proved from it (a Tier 3, `E532`)."""
+    v = _verified(
+        "type Pos = { @Int | @Int.0 > 0 };\n"
+        "type Small = { @Pos | @Pos.0 < 10 };\n\n"
+        "private fn need(@Int -> @Int)\n  requires(@Int.0 < 10)\n"
+        "  ensures(true)\n  effects(pure)\n{\n  @Int.0\n}\n\n"
+        "public fn f(@Float64 -> @Int)\n  requires(true)\n  ensures(true)\n"
+        "  effects(pure)\n{\n  let @Small = float_to_int(@Float64.0);\n"
+        "  need(@Small.0)\n}\n")
+    binds = [(o.status, o.error_code) for o in v.result.obligations
+             if o.kind == "refine_bind"]
+    assert binds == [("tier3_unguarded", "E506")], binds
+    pre = [(o.status, o.error_code) for o in v.result.obligations
+           if o.kind == "call_pre"]
+    assert pre == [("tier3", "E532")], pre
+
+
 def test_repro_1602_the_e506_rationale_names_the_rows_reason() -> None:
     v = _verified(_NESTED_REFINEMENT)
     e506 = [d for d in v.warnings if d.error_code == "E506"]
@@ -580,7 +604,6 @@ public fn f(@Nat -> @Int)
 """
 
 
-@_RED
 def test_repro_1696_m04_the_index_rows_post_fact_bounds_the_element() -> None:
     """After the guarded `index_bounds` row the index is in range, so the
     element is one of the literal's and the narrowing is no E503."""
@@ -902,24 +925,104 @@ def test_no_two_rows_share_a_node_and_an_evaluation(source: str) -> None:
         k for k in set(keys) if keys.count(k) > 1)
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "a closure inside a position lowered at several sites is lifted once per "
-    "site, each copy with its own check, and one row answers both; 67b makes "
-    "rows and checks one-to-one, either rows keyed per rendering site with "
-    "closures.py passing the site's evaluation to the copy, or one lifted copy "
-    "per closure node"))
 @pytest.mark.parametrize("site", sorted(_CLOSURE_AT_SEVERAL_SITES))
 def test_a_closure_lowered_at_several_sites_has_one_check_per_row(
     site: str, tmp_path: Path,
 ) -> None:
-    """Each lifted copy (`anon_0`, `anon_1`) carries its own check of the
-    closure's one row, so the identity reads two checks for it."""
+    """A closure node is lifted once per function context, whatever the
+    number of sites that lower it (amendment 2 to the design note): one
+    copy, one check, one row."""
     source = _CLOSURE_AT_SEVERAL_SITES[site]
     _identity({"p.vera": source}, "p.vera", tmp_path)
 
 
+_ANON_FN = re.compile(r"^\s*\(func \$anon_\d+", re.MULTILINE)
+
+
+def _closure_sources_lowered_twice() -> list[object]:
+    """The two shapes, and the #1480 matrix's closure-body cells in a measure
+    (the cells whose measure lowers at entry and at a self tail call)."""
+    from tests import test_evaluated_position_obligations_1480 as m1480
+
+    out: list[object] = [pytest.param(src, id=name)
+                         for name, src in sorted(_CLOSURE_AT_SEVERAL_SITES.items())]
+    for param in m1480._sub_position_cells():
+        sub, op, position, status = param.values  # type: ignore[attr-defined]
+        if sub.name == "closure body" and position.startswith("measure"):
+            out.append(pytest.param(
+                m1480._sub_position_cell(sub, op, position, status).source,
+                id=f"1480-{position}-{op.name}"))
+    return out
+
+
+@pytest.mark.parametrize("source", _closure_sources_lowered_twice())
+def test_one_lifted_function_per_closure_node(source: str) -> None:
+    """The module holds as many lifted `anon_` functions as the closure
+    nodes the program writes, every site of one node reusing its copy (the
+    memo's killer: a module that lifts per site holds two)."""
+    from vera import ast as vera_ast
+
+    written: set[object] = set()
+
+    def visit(node: object) -> None:
+        if isinstance(node, vera_ast.AnonFn):
+            written.add(node.node_id)
+        if isinstance(node, vera_ast.Node):
+            for name in node.__dataclass_fields__:
+                visit(getattr(node, name))
+        elif isinstance(node, (tuple, list)):
+            for item in node:
+                visit(item)
+
+    # Each shape lowers its closure in one function, so a node is one copy.
+    visit(pipeline.check(source, file="p.vera").typed.program)
+    compiled = pipeline.compile(source, file="p.vera")
+    assert compiled.ok, compiled
+    assert len(_ANON_FN.findall(compiled.wat)) == len(written), compiled.wat[:400]
+
+
+def test_a_rolled_back_lifting_leaves_no_memo_entry() -> None:
+    """A translation of a closure that rolls back (a capture with no local
+    at the site) takes its registration back, so the node's next
+    translation lifts it once, under the id the rollback returned."""
+    from vera.wasm.closures import ClosuresMixin
+
+    class _Env:
+        def __init__(self, resolves: bool) -> None:
+            self.resolves = resolves
+
+        def resolve(self, name: str, index: int) -> int | None:
+            return 3 if self.resolves else None
+
+    class _Ctx(ClosuresMixin):
+        def __init__(self) -> None:
+            self._pending_closures: list[object] = []
+            self._next_closure_id = 7
+            self._lifted_closure_ids: dict[object, int] = {}
+            self.needs_alloc = False
+
+        def _collect_free_vars(self, anon: object) -> list[tuple[str, int, str]]:
+            return [("Int", 0, "i64")]
+
+        def alloc_local(self, wt: str) -> int:
+            return 9
+
+    from vera import ast as vera_ast
+
+    anon = vera_ast.AnonFn(params=(), return_type=None, effect=None, body=None)  # type: ignore[arg-type]
+    ctx = _Ctx()
+    assert ctx._translate_anon_fn(anon, _Env(False)) is None  # type: ignore[arg-type]
+    assert ctx._pending_closures == [] and ctx._next_closure_id == 7
+    assert ctx._lifted_closure_ids == {}
+    assert ctx._translate_anon_fn(anon, _Env(True)) is not None  # type: ignore[arg-type]
+    assert ctx._translate_anon_fn(anon, _Env(True)) is not None  # type: ignore[arg-type]
+    assert [cid for _, _, cid in ctx._pending_closures] == [7]  # type: ignore[misc]
+    assert ctx._next_closure_id == 8
+
+
 _CORPUS = sorted((ROOT / "examples").rglob("*.vera")) + sorted(
     (ROOT / "tests" / "conformance").rglob("*.vera"))
+_CORPUS_FILES = _CORPUS
 
 
 @pytest.mark.parametrize(
@@ -962,6 +1065,298 @@ def test_identity_over_the_generator(seed: int, tmp_path: Path) -> None:
     from tests import program_generator as gen
 
     _identity(gen.generate(seed).files(), gen.ENTRY, tmp_path)
+
+
+# ---------------------------------------------------------------------
+# The identity differential, the verifier's half: every row of a function
+# the verifier discharged has exactly one record, which names it, and every
+# record of a table kind names its rows.
+# ---------------------------------------------------------------------
+
+
+def _verifier_identity(files: dict[str, str], entry: str, tmp_path: Path) -> None:
+    from collections import Counter
+
+    from vera import ast as vera_ast
+    from vera import verifier as vmod
+
+    entry_path = pipeline.write_tree(tmp_path, files, entry=entry)
+    # Every record `_settle_rows` keys was anchored where it was recorded
+    # (span keying is gone, so an unanchored record could only be dropped):
+    # the population is zero, and a record made outside `_record_obligation`
+    # would show here.
+    unanchored: list[tuple[str, str, int, int]] = []
+    fallback: list[tuple[str, str, str]] = []
+    real_anchored = vmod.ContractVerifier._anchored_rows
+    real_row_record = vmod.ContractVerifier._row_record
+
+    def anchored(self, rec, rows, decl):  # type: ignore[no-untyped-def]
+        entry_ = self._record_anchors.get(id(rec))
+        if entry_ is None or entry_[0]() is not rec:
+            unanchored.append((rec.fn_name, rec.kind, rec.line, rec.column))
+        return real_anchored(self, rec, rows, decl)
+
+    def row_record(self, decl, row):  # type: ignore[no-untyped-def]
+        rec = real_row_record(self, decl, row)
+        fallback.append(_fallback_class(row, rec.status))
+        return rec
+
+    vmod.ContractVerifier._anchored_rows = anchored  # type: ignore[method-assign]
+    vmod.ContractVerifier._row_record = row_record  # type: ignore[method-assign]
+    try:
+        v = pipeline.verify(entry_path, file=entry, budget_s=_BUDGET_S,
+                            reconcile=True)
+    finally:
+        vmod.ContractVerifier._anchored_rows = real_anchored  # type: ignore[method-assign]
+        vmod.ContractVerifier._row_record = real_row_record  # type: ignore[method-assign]
+    if not v.ran:
+        pytest.skip("the program is refused before verification")
+    assert unanchored == [], unanchored
+    # The rows no record reached, by class: each class is pinned with the
+    # fact its status rests on (`_FALLBACK_CLASSES`), so a new class
+    # entering the fallback is loud.
+    assert not [c for c in fallback if c not in _FALLBACK_CLASSES], fallback
+    assert _envelope_inconsistencies(v) == [], _envelope_inconsistencies(v)
+    assert _leaf_omissions(v) == [], _leaf_omissions(v)
+    table = v.result.table
+    assert table is not None
+    named = Counter(r for o in v.result.obligations for r in o.rows)
+    twice = [(table.rows[r].kind, table.rows[r].content_key[3:]) for r, n in named.items()
+             if n != 1]
+    assert twice == [], twice
+    no_row = [(o.kind, o.line, o.column) for o in v.result.obligations
+              if not o.rows and o.kind != "state_decl"]
+    assert no_row == [], no_row
+    prelude = {tld.decl.name for tld in v.checked.typed.linked.prelude
+               if isinstance(tld.decl, vera_ast.FnDecl)}
+    # A generic's template is verified through its clones, whose records
+    # carry the clones' rows; the template's own rows (its helpers' too)
+    # have none.
+    template_rows: set[int] = set()
+
+    def template(decl: vera_ast.FnDecl, generic: bool) -> None:
+        generic = generic or bool(decl.forall_vars)
+        if generic and decl.body is not None:
+            template_rows.update(table.by_body.get(id(decl.body), ()))
+        for helper in decl.where_fns or ():
+            template(helper, generic)
+
+    for tld in v.checked.typed.linked.program.declarations:
+        if isinstance(tld.decl, vera_ast.FnDecl):
+            template(tld.decl, False)
+    verified = {table.rows[r].fn for r in named}
+    unrecorded = [
+        (row.kind, row.content_key[3:], row.evaluation[0], row.fn)
+        for row in table.rows
+        if row.fn in verified and row.id not in named
+        and row.fn.split("$")[0] not in prelude and row.id not in template_rows]
+    assert unrecorded == [], unrecorded
+    assert not [c for c in _codes(v) if c in ("E541", "W004")], _codes(v)
+
+
+#: The classes of a row no verification record reached, and the fact each
+#: status rests on (`ContractVerifier._row_record`):
+#:
+#: * a `div_zero` row whose divisor is a non-zero literal: `verified`, the
+#:   literal is the proof;
+#: * a refined formal's ENTRY row: `verified`, the callee's assumption, which
+#:   each caller's argument row discharges as it does a `requires`;
+#: * a row with no check to plant (`TRIVIAL`): `verified`;
+#: * any other row, left to its check: `tier3` where the row is guarded (the
+#:   corpus's are base's W004 sites, the check emitted and nothing recorded),
+#:   disclosed where it is not.  None of these is ever `violated`.
+_FALLBACK_CLASSES = {
+    ("literal divisor", "verified"),
+    ("refined formal entry", "verified"),
+    ("trivial", "verified"),
+    ("left to its check", "tier3"),
+}
+
+
+def _fallback_class(row: object, status: str) -> tuple[str, str]:
+    from vera import ast as vera_ast
+    from vera.obligations import table as obligation_table
+
+    node = row.node  # type: ignore[attr-defined]
+    if row.guard == obligation_table.TRIVIAL:  # type: ignore[attr-defined]
+        return ("trivial", status)
+    if (row.kind == "div_zero"  # type: ignore[attr-defined]
+            and isinstance(node, vera_ast.BinaryExpr)
+            and isinstance(node.right, vera_ast.IntLit) and node.right.value != 0):
+        return ("literal divisor", status)
+    if row.evaluation == obligation_table.ENTRY:  # type: ignore[attr-defined]
+        return ("refined formal entry", status)
+    return ("left to its check", status)
+
+
+_TAIL_NAMED = re.compile(r"\(at the self tail call at (\d+):(\d+)\)")
+#: Verification errors that stand at no record of their own: a premise
+#: refusal, the reconciliation's E541, and the disclosures.
+_NO_RECORD_CODES = {"E538", "E539", "E540", "E541", "E542", "E543"}
+
+
+def _envelope_inconsistencies(v: pipeline.Verified) -> list[object]:
+    """Every `violated` record has an error at its site (or at a self tail
+    call one of its rows is evaluated at, which a measure's copy names);
+    every verification error stands at such a site: no E50x beside a record
+    that is not `violated`, none with no record at all, and no more errors
+    at a site than `violated` records stand there (one diagnostic per
+    record, whichever copies discharged it)."""
+    from vera import ast as vera_ast
+    from vera import fold
+
+    res = v.result
+    table = res.table
+    calls: dict[object, tuple[int, int]] = {}
+    for n in fold.walk(v.checked.typed.linked.program):
+        if isinstance(n, vera_ast.FnCall) and n.node_id is not None and n.span:
+            calls[n.node_id] = (n.span.line, n.span.column)
+    sites: list[set[tuple[int, int]]] = []
+    bad: list[object] = []
+    for o in res.obligations:
+        if o.status != "violated":
+            continue
+        at = {(o.line, o.column)}
+        named = _TAIL_NAMED.search(o.expr_text)
+        if named:
+            at.add((int(named.group(1)), int(named.group(2))))
+        for r in o.rows:
+            ev = table.rows[r].evaluation
+            if ev and ev[0] == "measure_call" and ev[1] in calls:
+                at.add(calls[ev[1]])
+        sites.append(at)
+    listed = [((d.location.line, d.location.column), d.error_code)
+              for d in res.diagnostics if d.severity == "error"
+              and d.error_code.startswith("E5")
+              and d.error_code not in _NO_RECORD_CODES]
+    errors = dict(listed)
+    for at in sites:
+        if not at & errors.keys():
+            bad.append(("violated record with no error", sorted(at)))
+    every = set().union(*sites) if sites else set()
+    bad += [("error with no violated record", code, at)
+            for at, code in errors.items() if at not in every]
+    for at in errors:
+        n = sum(1 for where, _ in listed if where == at)
+        held = sum(1 for s in sites if at in s)
+        if n > held:
+            bad.append(("more errors than violated records", at, n, held))
+    return bad
+
+
+def _leaf_omissions(v: pipeline.Verified) -> list[object]:
+    """Every value leaf a function's body yields into a return type that
+    writes a refinement the leaf's type does not equal has a row: in the
+    leaf (a construction's field, the leaf itself) or at the return.  A
+    narrowing leaf with no row is an omission, the direction the identity
+    cells cannot see (a site the table does not list is a site nothing
+    records)."""
+    from vera import ast as vera_ast
+    from vera import fold, narrowing
+    from vera.obligations.table import ObligationTable
+    from vera.types import NEVER, AdtType, RefinedType
+
+    def refined(t: object, depth: int = 0) -> bool:
+        if isinstance(t, RefinedType):
+            return True
+        return (depth < 6 and isinstance(t, AdtType)
+                and any(refined(a, depth + 1) for a in t.type_args))
+
+    typed = v.checked.typed
+    table = v.result.table
+    key = ObligationTable._key
+    narrowing_rows = [r for r in table.rows if r.kind in ("refine_bind", "nat_bind")]
+    out: list[object] = []
+    for tld in typed.linked.program.declarations:
+        decl = tld.decl
+        if (not isinstance(decl, vera_ast.FnDecl) or decl.body is None
+                or decl.forall_vars):
+            continue
+        req = typed.semantic_type(decl.return_type)
+        if req is None or not refined(req):
+            continue
+        at_return = {key(n) for n in fold.walk(decl.return_type)} | {key(decl.body)}
+        if any(key(r.node) in at_return for r in narrowing_rows):
+            continue
+        for leaf in narrowing.value_leaves(decl.body):
+            sem = typed.semantic_type(leaf)
+            if sem is None or sem == req or sem == NEVER:
+                continue
+            inside = {key(n) for n in fold.walk(leaf)}
+            if not any(key(r.node) in inside for r in narrowing_rows):
+                out.append((decl.name, leaf.span.line if leaf.span else 0,
+                            str(sem), str(req)))
+    return out
+
+
+@pytest.mark.parametrize(
+    "path", _CORPUS_FILES, ids=[p.relative_to(ROOT).as_posix() for p in _CORPUS_FILES])
+def test_verifier_identity_over_the_corpus(path: Path, tmp_path: Path) -> None:
+    files = {sib.relative_to(path.parent).as_posix(): sib.read_text(encoding="utf-8")
+             for sib in path.parent.rglob("*.vera")}
+    _verifier_identity(files, path.name, tmp_path)
+
+
+@pytest.mark.parametrize(
+    "source", [b[1] for b in _DOC_BLOCKS], ids=[b[0] for b in _DOC_BLOCKS])
+def test_verifier_identity_over_the_doc_blocks(source: str, tmp_path: Path) -> None:
+    _verifier_identity({"doc.vera": source}, "doc.vera", tmp_path)
+
+
+@pytest.mark.parametrize("seed", range(1000), ids=[f"seed{s}" for s in range(1000)])
+def test_verifier_identity_over_the_generator(seed: int, tmp_path: Path) -> None:
+    from tests import program_generator as gen
+
+    _verifier_identity(gen.generate(seed).files(), gen.ENTRY, tmp_path)
+
+
+#: A measure whose operation proves at the function's entry (`@Nat.0 >= 1`)
+#: and is left undecided at the self tail call, whose argument the verifier
+#: cannot see into: the copies share one record, which takes the tail
+#: call's status and names it (amendment 3 to the design note).
+_MEASURE_DECIDED_AT_THE_TAIL_CALL = """\
+public fn down(@Nat, @Bool -> @Nat)
+  requires(@Nat.0 >= 1)
+  ensures(true)
+  decreases(@Nat.0 - 1)
+  effects(pure)
+{
+  if @Nat.0 <= 2 then { 0 } else { down(apply_fn(fn(@Nat -> @Nat) effects(pure) { @Nat.0 }, @Nat.0 - 1), @Bool.0) }
+}
+"""
+
+
+def test_a_measures_copies_share_one_record_with_the_worst_status() -> None:
+    v = _verified(_MEASURE_DECIDED_AT_THE_TAIL_CALL)
+    (record,) = [o for o in v.result.obligations
+                 if o.kind == "int_overflow" and (o.line, o.column) == (4, 13)]
+    assert record.status == "tier3", record
+    assert "self tail call at 7:36" in record.expr_text, record.expr_text
+    assert len(record.rows) == 2, record.rows
+
+
+#: A measure whose `@Nat` subtraction proves at the entry (`requires` gives
+#: `a >= b`) and is refuted at the self tail call, whose second argument is
+#: `b + 5`: one record, violated, naming the tail call (E502 there).
+_MEASURE_REFUTED_AT_THE_TAIL_CALL = """\
+public fn down(@Nat, @Nat -> @Nat)
+  requires(@Nat.1 >= @Nat.0)
+  ensures(true)
+  decreases(@Nat.1 - @Nat.0)
+  effects(pure)
+{
+  if @Nat.1 == @Nat.0 then { 0 } else { down(@Nat.1, @Nat.0 + 5) }
+}
+"""
+
+
+def test_a_measure_refuted_at_the_tail_call_is_one_violated_record() -> None:
+    v = _verified(_MEASURE_REFUTED_AT_THE_TAIL_CALL)
+    (record,) = [o for o in v.result.obligations if o.kind == "nat_sub"]
+    assert (record.status, record.line, record.column) == ("violated", 4, 13), record
+    assert "self tail call at 7:41" in record.expr_text, record.expr_text
+    assert len(record.rows) == 2, record.rows
+    assert "E502" in _codes(v), _codes(v)
 
 
 # ---------------------------------------------------------------------
@@ -1115,29 +1510,29 @@ def test_repro_a_never_leaf_of_a_join_is_no_narrowing_into_nat(join: str, leaf: 
 
 
 @pytest.mark.parametrize("join", ["if", "match"])
-def test_a_join_whose_every_leaf_is_never_narrows_as_base(join: str) -> None:
-    """A join whose every leaf is `Never` is itself of type `Never`, which
-    is no `Nat`: the verifier records its `nat_bind` (Tier 3) and base guards
-    it, so the table keeps the row and its check (no E541)."""
+def test_a_join_whose_every_leaf_is_never_is_no_row(join: str) -> None:
+    """A join whose every leaf is `Never` yields no value: nothing to prove
+    a fact of, nothing to guard, so the table lists no row at the `let`
+    (amendment 1 to the design note: a `Never` leaf is no row), code
+    generation emits no guard after the throws, and the verifier records
+    nothing there."""
     value = {"if": "if @Bool.0 then { throw(4) } else { throw(5) }",
              "match": ("match @Option<Nat>.0 {\n    Some(@Nat) -> throw(4),\n"
                        "    None -> throw(5)\n  }")}[join]
     source = _never_join_program(value)
-    assert _let_value_rows(source, "nat_bind") == [(6, 14)], source
-    assert _f_checks(source, "wasm/operators.py:_emit_nat_bind_guard") == [(6, 14)], source
+    assert _let_value_rows(source, "nat_bind") == [], source
+    assert _f_checks(source, "wasm/operators.py:_emit_nat_bind_guard") == [], source
     verified = _verified(source)
     assert verified.ran and not verified.errors, verified
+    assert _records(verified, "nat_bind") == [], _records(verified, "nat_bind")
 
 
-def test_the_sibling_never_leaf_readers_stand_as_base() -> None:
+def test_the_sibling_never_leaf_readers_list_no_row_at_a_throw() -> None:
     """The two other readers that list a guarded row from a join's leaves
-    keep base's rows, since the verifier reads them the same way: a `@Nat`
-    return's per-leaf rows list a `throw` leaf (recorded, Tier 3), and a
-    refined `let` of a join with a `throw` arm keeps its head row (base's
-    W004, the KNOWN class of a refined join).  Each moves with the
-    verifier's discharge in the second half, not here.  The refined `let`'s
-    sign row is the fixed reader's: a refinement over `Nat` read its `throw`
-    leaf as a narrowing too (a W004 at the join, none at base)."""
+    read a `throw` leaf as the fixed reader does, as no value (amendment 1):
+    a `@Nat` return's per-leaf rows skip the `throw` arm, so no dead guard
+    follows it, and a refined `let` of a join whose value leaf already has
+    the refinement takes no head row and no sign row."""
     ret = """\
 private fn h(@Nat, @Bool -> @Nat)
   requires(true)
@@ -1158,11 +1553,17 @@ public fn main(@Unit -> @Unit)
     compiled = pipeline.compile(ret, file="ret.vera")
     assert [(g.line, g.column) for g in pipeline.checks(
         compiled.result, emitter="wasm/operators.py:_emit_nat_bind_guard",
-        function="h")] == [(6, 27)]
+        function="h")] == []
+    assert _records(_verified(ret), "nat_bind") == []
     refined = "type Cap = { @Nat | @Nat.0 <= 30 };\n\n" + _never_join_program(
         "if @Bool.0 then { throw(4) } else { @Cap.0 }", let="Cap")
-    assert _let_value_rows(refined, "refine_bind") == [(8, 14)], refined
+    assert _let_value_rows(refined, "refine_bind") == [], refined
     assert _let_value_rows(refined, "nat_bind") == [], refined
+    # The value leaf that narrows keeps its row: a `Never` beside an `@Int`
+    # arm takes the `@Int` arm's sign row and check.
+    keeps = _never_join_program("if @Bool.0 then { throw(4) } else { 0 - @Nat.0 }")
+    assert _let_value_rows(keeps, "nat_bind") == [(6, 14)], keeps
+    assert _f_checks(keeps, "wasm/operators.py:_emit_nat_bind_guard") == [(6, 14)], keeps
 
 
 def test_mover_a_clause_binder_over_a_container_payload_is_walked(
@@ -1170,9 +1571,9 @@ def test_mover_a_clause_binder_over_a_container_payload_is_walked(
 ) -> None:
     """The one exclusion beside #1818's rule goes: a handler clause binder
     over an `Array` payload declared narrower than it is a `nat_bind` row
-    with a tree, so the payload is walked and a negative element traps.
-    The verifier still discloses the binder (E506) until 67b records the
-    row, so the walk is a W004 by design in 67a."""
+    with a tree, so the payload is walked and a negative element traps; the
+    verifier records the row Tier 3 (no E506 disclosure, no W004: the
+    designed W004 of the first half retires with the verifier's discharge)."""
     from tests.test_composite_coercion_guards import SHAPES, program
 
     source = program("clause binder", SHAPES["Array"], "opaque")
@@ -1185,7 +1586,8 @@ def test_mover_a_clause_binder_over_a_container_payload_is_walked(
     assert ran.returncode != 0 and "Negative value bound into a @Nat slot" in (
         ran.stdout + ran.stderr), ran.stdout + ran.stderr[-300:]
     v = _verified(source, "c.vera")
-    assert "E506" in _codes(v) and "W004" in _codes(v), _codes(v)
+    assert _records(v, "nat_bind") == [("tier3", 26, 12)], _records(v, "nat_bind")
+    assert not [c for c in _codes(v) if c in ("E506", "W004", "E541")], _codes(v)
 
 
 _LATER_ELEMENT = """\
@@ -1494,3 +1896,404 @@ public fn f(@Int -> @Int)
     assert ran.returncode != 0 and "Refinement violation" in (ran.stdout + ran.stderr), (
         ran.stdout + ran.stderr[-300:])
     assert _run(tmp_path, source, "f", "3").returncode == 0
+
+
+# ---------------------------------------------------------------------
+# The fourth join: a value produced inside a `handle` body (#1695).  The
+# table hands the requirement there as it does through a block, an `if` and
+# a `match`, and lists the rows the hand-down alone produces unguarded: code
+# generation hands no requirement into a handle (its coercion walk stops at
+# it), so no store check is emitted there, at base or head (the follow-up
+# closes it).  The verdicts are base's: a disclosure where the solver cannot
+# decide, a refutation where it can.
+# ---------------------------------------------------------------------
+
+_HANDLE_VALUE = """\
+type PosInt = {{ @Int | @Int.0 > 0 }};
+
+public fn f(@Float64 -> @Option<PosInt>)
+  requires(true)
+  ensures(true)
+  effects({eff})
+{{
+  {handle}
+}}
+"""
+
+#: form -> (the handle, the effects row, the leaf the row stands at).
+_HANDLE_FORMS = {
+    "body": ("handle[State<Int>](@Int = 1) {\n"
+             "    get(@Unit) -> { resume(@Int.0) },\n"
+             "    put(@Int) -> { resume(()) }\n"
+             "  } in {\n    Some(VALUE)\n  }", "pure"),
+    "clause": ("handle[Exn<Int>] {\n"
+               "    throw(@Int) -> { Some(VALUE) }\n"
+               "  } in {\n    throw(1)\n  }", "pure"),
+}
+
+
+def _handle_program(form: str, value: str) -> str:
+    handle, eff = _HANDLE_FORMS[form]
+    return _HANDLE_VALUE.format(eff=eff, handle=handle.replace("VALUE", value))
+
+
+@pytest.mark.parametrize("form", list(_HANDLE_FORMS))
+def test_a_value_inside_a_handle_is_disclosed_as_at_base(
+    form: str, tmp_path: Path,
+) -> None:
+    """Undecided: `tier3_unguarded`/E506 with the row's reason and the fix
+    the user applies today; the module holds no check, as at base, and the
+    run lets the payload through (the follow-up's subject)."""
+    from vera.obligations import table as obligation_table
+
+    src = _handle_program(form, "float_to_int(@Float64.0)")
+    v = _verified(src)
+    binds = [(o.status, o.error_code) for o in v.result.obligations
+             if o.kind == "refine_bind"]
+    assert binds == [("tier3_unguarded", "E506")], binds
+    e506 = [d for d in v.result.diagnostics if d.error_code == "E506"]
+    assert len(e506) == 1, e506
+    assert obligation_table.REASON_HANDLE_VALUE in e506[0].rationale
+    assert "outside" in e506[0].fix
+    module = pipeline.compile(src).result
+    assert pipeline.checks(module, obligation="refine_bind", function="f") == ()
+
+
+# A `@Nat` return's value leaves, each discharged in its own branch's
+# context (R111's finding 1 on PR #1835): two and three leaves, an `if` and
+# a `match`, the violating leaf at each position.  The statuses are the
+# leaves' own, in source order.
+_NAT_RETURN_LEAVES = {
+    "if2-violating-last": (
+        "if @Int.0 > 0 then { @Int.0 } else { @Int.0 - 1 }",
+        ["verified", "violated"]),
+    "if2-violating-first": (
+        "if @Int.0 > 0 then { @Int.0 - 5 } else { 0 - @Int.0 }",
+        ["violated", "verified"]),
+    "if2-both-violating": (
+        "if @Int.0 > 0 then { @Int.0 - 5 } else { @Int.0 - 1 }",
+        ["violated", "violated"]),
+    "if3-violating-first": (
+        "if @Int.0 > 10 then { @Int.0 - 20 } else "
+        "{ if @Int.0 > 0 then { @Int.0 } else { 0 - @Int.0 } }",
+        ["violated", "verified", "verified"]),
+    "if3-violating-middle": (
+        "if @Int.0 > 10 then { @Int.0 } else "
+        "{ if @Int.0 > 0 then { @Int.0 - 5 } else { 0 - @Int.0 } }",
+        ["verified", "violated", "verified"]),
+    "if3-violating-last": (
+        "if @Int.0 > 10 then { @Int.0 } else "
+        "{ if @Int.0 > 0 then { @Int.0 } else { @Int.0 - 1 } }",
+        ["verified", "verified", "violated"]),
+    "match2-violating-last": (
+        "match @Int.0 > 0 { true -> @Int.0, false -> @Int.0 - 1 }",
+        ["verified", "violated"]),
+    "match2-violating-first": (
+        "match @Int.0 > 0 { true -> @Int.0 - 5, false -> 0 - @Int.0 }",
+        ["violated", "verified"]),
+    "match3-violating-first": (
+        "match @Int.0 { 0 -> @Int.0 - 1, 1 -> @Int.0, _ -> @Int.0 - @Int.0 }",
+        ["violated", "verified", "verified"]),
+    "match3-violating-middle": (
+        "match @Int.0 { 0 -> @Int.0, 1 -> @Int.0 - 2, _ -> @Int.0 - @Int.0 }",
+        ["verified", "violated", "verified"]),
+    "match3-violating-last": (
+        "match @Int.0 { 0 -> @Int.0, 1 -> @Int.0, _ -> @Int.0 - 1 }",
+        ["verified", "verified", "violated"]),
+    # A `handle` is one leaf, as the table lists it (CodeRabbit on
+    # cfc78e6a): the leaf beside it is discharged on its own.
+    "if2-handle-leaf": (
+        "if @Int.0 > 0 then { @Int.0 } else { handle[State<Int>](@Int = 0) "
+        "{ get(@Unit) -> { resume(@Int.0) }, put(@Int) -> { resume(()) } } "
+        "in { @Int.0 - 1 } }",
+        ["verified", "violated"]),
+}
+
+
+def _nat_return_program(body: str) -> str:
+    return ("public fn pick(@Int -> @Nat)\n  requires(true)\n  ensures(true)\n"
+            f"  effects(pure)\n{{\n  {body}\n}}\n")
+
+
+@pytest.mark.parametrize("shape", list(_NAT_RETURN_LEAVES))
+def test_a_nat_return_leaf_is_discharged_in_its_own_context(shape: str) -> None:
+    """Each value leaf of a `@Nat` return is its own record, discharged
+    under its branch's path condition: a leaf that holds is `verified`, a
+    leaf that can be negative is `violated` with its own E503 at the leaf,
+    and no status is copied from another leaf or from the body."""
+    body, want = _NAT_RETURN_LEAVES[shape]
+    v = _verified(_nat_return_program(body))
+    recs = sorted((o.line, o.column, o.status) for o in v.result.obligations
+                  if o.kind == "nat_bind")
+    assert [s for _, _, s in recs] == want, recs
+    e503 = sorted((d.location.line, d.location.column)
+                  for d in v.result.diagnostics if d.error_code == "E503")
+    assert e503 == [(ln, col) for ln, col, s in recs if s == "violated"], e503
+    assert _envelope_inconsistencies(v) == [], _envelope_inconsistencies(v)
+
+
+def test_repro_r111_a_holding_nat_return_leaf_carries_no_error() -> None:
+    """R111's program: the leaf under `@Int.0 > 0` holds and the `else`
+    leaf does not; the E503 stands at the `else` leaf (6:40), and the leaf
+    at 6:24 is `verified`."""
+    v = _verified(_nat_return_program(
+        "if @Int.0 > 0 then { @Int.0 } else { @Int.0 - 1 }"))
+    assert _envelope_inconsistencies(v) == []
+    recs = {(o.line, o.column): o.status for o in v.result.obligations
+            if o.kind == "nat_bind"}
+    assert recs == {(6, 24): "verified", (6, 40): "violated"}, recs
+    e503 = [(d.location.line, d.location.column)
+            for d in v.result.diagnostics if d.error_code == "E503"]
+    assert e503 == [(6, 40)], e503
+
+
+_SPANNING_VALUES = {
+    "two-slot-leaves": (
+        "if @Int.0 > 0 then { @Option<Int>.0 } else { @Option<Int>.0 }",
+        "violated"),
+    "a-holding-and-a-violating-leaf": (
+        "match @Option<Int>.0 { Some(@Int) -> if @Int.0 > 0 then "
+        "{ @Option<Int>.0 } else { @Option<Int>.0 }, None -> None }",
+        "violated"),
+    "both-leaves-holding": (
+        "match @Option<Int>.0 { Some(@Int) -> if @Int.0 > 0 then "
+        "{ @Option<Int>.0 } else { None }, None -> @Option<Int>.0 }",
+        "verified"),
+}
+
+
+@pytest.mark.parametrize("shape", list(_SPANNING_VALUES))
+def test_a_value_discharged_once_is_one_record_naming_its_leaf_rows(
+        shape: str) -> None:
+    """A value's nested refinement, discharged once for the whole value,
+    whose component rows stand at several leaves, is one record at the
+    value naming every one of those rows, never a copy of its status at
+    each leaf; its one diagnostic stands where the record does."""
+    body, want = _SPANNING_VALUES[shape]
+    v = _verified(
+        "type PosInt = { @Int | @Int.0 > 0 };\n"
+        "public fn f(@Int, @Option<Int> -> @Option<PosInt>)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n{\n"
+        f"  {body}\n}}\n")
+    recs = [o for o in v.result.obligations if o.kind == "refine_bind"]
+    assert [(o.status, len(o.rows)) for o in recs] == [(want, 2)], recs
+    e505 = [(d.location.line, d.location.column)
+            for d in v.result.diagnostics if d.error_code == "E505"]
+    assert e505 == ([(recs[0].line, recs[0].column)] if want == "violated"
+                    else []), e505
+    assert _envelope_inconsistencies(v) == [], _envelope_inconsistencies(v)
+
+
+_HELD_BY_FIELDS = {
+    # A field the solver does not decide (`float_to_int`): its row is
+    # guarded, which proves nothing about the return's component.
+    "undecided-field": (
+        "public fn f(@Float64 -> @Tuple<PosInt, Int>)\n  requires(true)\n"
+        "  ensures(true)\n  effects(pure)\n{\n"
+        "  Tuple(float_to_int(@Float64.0), 1)\n}\n"),
+    # A field written as a piped stage: its record stands at the stage.
+    "piped-field": (
+        "public fn f(@Int -> @Tuple<PosInt, Int>)\n  requires(@Int.0 > 0)\n"
+        "  ensures(true)\n  effects(pure)\n{\n  Tuple(@Int.0 |> id(), 1)\n}\n"
+        "private fn id(@Int -> @Int)\n  requires(true)\n  ensures(true)\n"
+        "  effects(pure)\n{\n  @Int.0\n}\n"),
+    # A piped field that is proved: found at its stage, it proves the
+    # component.
+    "piped-proved-field": (
+        "public fn f(@Int -> @Tuple<PosInt, Int>)\n  requires(@Int.0 > 0)\n"
+        "  ensures(true)\n  effects(pure)\n{\n  Tuple(@Int.0 |> keep(), 1)\n}\n"
+        "private fn keep(@Int -> @Int)\n  requires(@Int.0 > 0)\n"
+        "  ensures(@Int.result > 0)\n  effects(pure)\n{\n  @Int.0\n}\n"),
+}
+
+
+@pytest.mark.parametrize("shape", list(_HELD_BY_FIELDS))
+def test_a_constructed_returns_component_is_proved_only_by_proved_fields(
+        shape: str) -> None:
+    """The return type's component row of a constructed body is `verified`
+    only where every field record of the construction is `verified`
+    (CodeRabbit's finding on PR #1835 at `_check_nested_refinement_obligation`):
+    a field left to its check or refuted proves nothing, and the component
+    row is left to the return's check; a proved field written as a piped
+    stage is found where its record stands, at the stage."""
+    v = _verified("type PosInt = { @Int | @Int.0 > 0 };\n"
+                  + _HELD_BY_FIELDS[shape])
+    table = v.result.table
+    assert table is not None
+    ret = [o.status for o in v.result.obligations if o.kind == "refine_bind"
+           and any(table.rows[r].evaluation == ("return",) for r in o.rows)]
+    assert ret == (["verified"] if shape == "piped-proved-field"
+                   else ["tier3"]), ret
+
+
+def test_repro_a_guarded_field_proves_no_return_component() -> None:
+    """The reported instance, unsampled: a field left to its check leaves
+    the constructed return's component row `tier3`, not `verified`."""
+    test_a_constructed_returns_component_is_proved_only_by_proved_fields(
+        "undecided-field")
+
+
+def test_repro_a_value_record_is_not_copied_to_its_leaves() -> None:
+    """The reported shape, unsampled: one record at the value naming both
+    leaf rows, with its one E505 where it stands."""
+    test_a_value_discharged_once_is_one_record_naming_its_leaf_rows(
+        "a-holding-and-a-violating-leaf")
+
+
+_UNTAKEN_READS = {
+    # A literal index out of range in a branch that never runs.
+    "literal-dead-branch": "if false then { @Array<Int>.0[0 - 1] } else { 0 - 1 }",
+    # An index in range only where its branch runs: read unguarded, its
+    # fact would confine the parameter on the other branch too.
+    "parameter-branch": (
+        "if @Int.0 > 100 then { @Array<Int>.0[@Int.0 - 50] } else { @Int.0 }"),
+    # A refined `let` (#1563's post-fact) whose bind is refused, in a branch
+    # that never runs.
+    "refused-let-dead-branch": (
+        "if false then { let @Pos = 0 - 1; @Pos.0 } else { 0 - 1 }"),
+    # A refined `let` of a value the solver does not translate (the
+    # refinement guard's post-fact over a fresh value), in a branch that
+    # never runs, whose refinement no value satisfies.
+    "opaque-let-dead-branch": (
+        "if false then { let @Empty = float_to_int(1.5); @Empty.0 } "
+        "else { 0 - 1 }"),
+    # A `match` arm binder at a refinement (the guarded fresh value) in a
+    # branch that never runs.
+    "arm-binder-dead-branch": (
+        "if false then { match Some(0 - 1) { Some(@Pos) -> @Pos.0, "
+        "None -> 1 } } else { 0 - 1 }"),
+}
+
+
+@pytest.mark.parametrize("shape", list(_UNTAKEN_READS))
+def test_an_element_reads_fact_holds_only_on_its_branch(shape: str) -> None:
+    """A post-fact (an element read's index in range, #1696 m04; a
+    refined bind's predicate, guarded or refused, #1563; a guarded binder's
+    fresh value) holds where its read or bind runs, under its branch's
+    conditions, never on a path it is not on (CodeRabbit on 3332cdfd): the
+    argument the other branch yields is refuted at the callee's
+    `requires`."""
+    v = _verified(
+        "type Pos = { @Int | @Int.0 > 0 };\n"
+        "type Empty = { @Int | @Int.0 > 0 && @Int.0 < 0 };\n"
+        "private fn g(@Int -> @Int)\n  requires(@Int.0 >= 0)\n  ensures(true)\n"
+        "  effects(pure)\n{\n  @Int.0\n}\n"
+        "public fn f(@Array<Int>, @Int -> @Int)\n  requires(true)\n"
+        "  ensures(true)\n  effects(pure)\n{\n"
+        f"  g({_UNTAKEN_READS[shape]})\n}}\n")
+    pre = [o.status for o in v.result.obligations if o.kind == "call_pre"]
+    assert pre == ["violated"], pre
+    assert "E501" in _codes(v)
+
+
+def test_repro_an_untaken_element_read_proves_no_precondition() -> None:
+    """The reported instance, unsampled."""
+    test_an_element_reads_fact_holds_only_on_its_branch("literal-dead-branch")
+
+
+def test_repro_a_row_two_discharges_reach_reports_one_error() -> None:
+    """A `map_insert` value is one row (#1608): the call-argument walk and
+    the stored-value walk both refute `-3`, and the site's one record keeps
+    one E503; the other discharge's error goes with its record."""
+    v = _verified(
+        "public fn f(@Int -> @Int)\n  requires(true)\n  ensures(true)\n"
+        "  effects(pure)\n{\n"
+        '  let @Map<String, Nat> = map_insert(map_new(), "k", -3);\n'
+        '  match map_get(@Map<String, Nat>.0, "k") {\n'
+        "    Some(@Int) -> @Int.0,\n    None -> 7\n  }\n}\n")
+    recs = [o.status for o in v.result.obligations if o.kind == "nat_bind"]
+    assert recs == ["violated"], recs
+    e503 = [d for d in v.result.diagnostics if d.error_code == "E503"]
+    assert len(e503) == 1, [d.description for d in e503]
+    assert _envelope_inconsistencies(v) == []
+
+
+@pytest.mark.parametrize("form", list(_HANDLE_FORMS))
+def test_a_refuted_value_inside_a_handle_keeps_its_record(form: str) -> None:
+    """Refutable: the E505 has its `violated` record, at the row.  An `Exn`
+    clause's value is one the solver does not translate, so there the
+    verdict is base's disclosure, at the row."""
+    v = _verified(_handle_program(form, "0 - 5"))
+    viol = [(o.status, o.error_code, o.line) for o in v.result.obligations
+            if o.kind == "refine_bind"]
+    want = ("violated", "E505") if form == "body" else ("tier3_unguarded", "E506")
+    assert [x[:2] for x in viol] == [want], viol
+    assert _envelope_inconsistencies(v) == []
+
+
+def test_the_handle_values_fix_is_a_guarded_construction(tmp_path: Path) -> None:
+    """The fix text applied: the payload bound outside the handle and the
+    value constructed from it is a checked store (`tier3`, no disclosure),
+    and the run is refused there."""
+    src = _HANDLE_VALUE.format(eff="pure", handle=(
+        "let @Int = handle[State<Int>](@Int = 1) {\n"
+        "    get(@Unit) -> { resume(@Int.0) },\n"
+        "    put(@Int) -> { resume(()) }\n"
+        "  } in {\n    float_to_int(@Float64.0)\n  };\n  Some(@Int.0)"))
+    v = _verified(src)
+    assert [(o.status, o.error_code) for o in v.result.obligations
+            if o.kind == "refine_bind"] == [("tier3", "E506")]
+    assert "E506" not in [d.error_code for d in v.result.diagnostics
+                          if "no runtime check" in d.description]
+    out = _run(tmp_path, src, "f", "-5.0")
+    assert "Refinement violation" in out.stdout + out.stderr
+
+
+_SAME_TYPE_ARGUMENT = """\
+type PosInt = { @Int | @Int.0 > 0 };
+
+private fn mk(@Float64 -> @Option<PosInt>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Some(float_to_int(@Float64.0))
+}
+
+private fn consume(@Option<PosInt> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Option<PosInt>.0 {
+    Some(@PosInt) -> @PosInt.0,
+    None -> 1
+  }
+}
+
+public fn f(@Float64 -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  consume(mk(@Float64.0))
+}
+"""
+
+
+def test_the_walk_decides_nothing_at_a_site_with_no_row() -> None:
+    """The binding walk still visits sites and records there (the known
+    gap: it is the verifier's context provider); at a site the table lists
+    no row, here an argument of exactly its parameter's type, what it
+    records is dropped with its warning, so it decides nothing."""
+    from vera import verifier as vmod
+
+    dropped: list[tuple[int, int]] = []
+    real = vmod.ContractVerifier._anchored_rows
+
+    def anchored(self, rec, rows, decl):  # type: ignore[no-untyped-def]
+        hit = real(self, rec, rows, decl)
+        if not hit and rec.fn_name == "f":
+            dropped.append((rec.line, rec.column))
+        return hit
+
+    vmod.ContractVerifier._anchored_rows = anchored  # type: ignore[method-assign]
+    try:
+        v = _verified(_SAME_TYPE_ARGUMENT)
+    finally:
+        vmod.ContractVerifier._anchored_rows = real  # type: ignore[method-assign]
+    site = (27, 11)
+    assert site in dropped, dropped
+    assert [o for o in v.result.obligations if (o.line, o.column) == site] == []
+    assert [d for d in v.result.diagnostics
+            if (d.location.line, d.location.column) == site] == []

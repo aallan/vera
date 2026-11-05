@@ -781,9 +781,9 @@ public fn f(@Option<Option<Int>> -> @Int)
   }
 }
 """)
-    assert _statuses(verified, "f") == [
-        ("requires", "verified"), ("refine_bind", "violated"),
-        ("ensures", "verified")]
+    assert sorted(_statuses(verified, "f")) == [
+        ("ensures", "verified"), ("refine_bind", "violated"),
+        ("requires", "verified")]
 
 
 def test_named_a_nested_binder_discharges_a_call_in_its_arm() -> None:

@@ -101,16 +101,19 @@ def test_1362_unguarded_narrowing_is_disclosed_not_claimed_guarded(
     # about (CodeRabbit on PR #1465).  The clause BINDER's node is the clause
     # body, which has no renderable source text and renders `<expr>`; the
     # CALL's is the argument `@Nat.0`, so the descriptions name them apart.
+    # Since #1695 the record stands at the binder's row, `@Nat`, and is the
+    # only one: `nat_to_int(@Nat.0)` passes a `@Nat` to a `@Nat` formal,
+    # which narrows nothing, so it is no row.  Base's `tier3_unguarded`
+    # there claimed a narrowing the program does not make; the module checks
+    # the binder, and nothing else here needs a check.
     binds = sorted(
         (o["description"], o["status"]) for o in result["obligations"]
         if o["kind"] == "nat_bind"
     )
-    assert binds == [
-        ("<expr>", "tier3"),
-        ("@Nat.0", "tier3_unguarded"),
-    ], [(o["kind"], o["description"], o["status"])
+    assert binds == [("@Nat", "tier3")], [
+        (o["kind"], o["description"], o["status"])
         for o in result["obligations"]]
-    assert "E504" in [w.get("error_code") for w in result["warnings"]]
+    assert "E504" not in [w.get("error_code") for w in result["warnings"]]
 
 
 def test_1362_the_claim_and_the_module_agree(tmp_path: Path) -> None:
@@ -392,26 +395,38 @@ def test_nat_arg_guard_parity(tmp_path: Path, name: str) -> None:
 # run could neither prove nor guard it, so it is withheld from the first proof
 # attempt, and `use_it`'s postcondition — which holds only once it is added —
 # is reported `tier3` with E534 instead of `verified`.
-_E534_SHAPE = """\
-public fn mk(@Int -> @Option<Nat>)
+#: A producer whose payload no check guards (#1695): narrowed from an
+#: `Option<Int>` it did not build, a refinement inside a constructor payload
+#: no boundary decomposes, so its row is disclosed (`refine_bind` /
+#: `tier3_unguarded` / E506).  The closure's result is opaque to the solver
+#: and non-negative at run time.  The cells below assert only that the
+#: consumer's trials run, not that each completes (`0 - @Int.0` traps on
+#: `INT_MIN`).
+#: (The carrier was a handler clause's `@Nat` binder until #1695, whose
+#: module checked the binder all along.)
+_DISCLOSING_MK = """\
+type NonNeg = { @Int | @Int.0 >= 0 };
+
+public fn mk(@Int -> @Option<NonNeg>)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  int_to_nat(handle[Exn<Int>] {
-    throw(@Nat) -> { nat_to_int(@Nat.0) }
-  } in {
-    throw(@Int.0)
-  })
+  let @Option<Int> = Some(apply_fn(fn(@Int -> @Int) effects(pure) {
+    if @Int.0 >= 0 then { @Int.0 } else { 0 - @Int.0 }
+  }, @Int.0));
+  @Option<Int>.0
 }
+"""
 
+_E534_SHAPE = _DISCLOSING_MK + """
 public fn use_it(@Int -> @Int)
   requires(true)
   ensures(@Int.result >= 0)
   effects(pure)
 {
   match mk(@Int.0) {
-    Some(@Nat) -> nat_to_int(@Nat.0),
+    Some(@NonNeg) -> @NonNeg.0,
     None -> 0
   }
 }
@@ -445,10 +460,10 @@ def test_1363_a_disclosed_fact_demotes_the_goal_that_needs_it(
     result = _verify(tmp_path, _E534_SHAPE)
     by_kind = [(o["kind"], o["status"], o.get("error_code"))
                for o in result["obligations"]]
-    assert ("nat_bind", "tier3_unguarded", "E504") in by_kind, by_kind
+    assert ("refine_bind", "tier3_unguarded", "E506") in by_kind, by_kind
     assert ("ensures", "tier3", "E534") in by_kind, by_kind
     codes = [w.get("error_code") for w in result["warnings"]]
-    assert "E504" in codes and "E534" in codes, codes
+    assert "E506" in codes and "E534" in codes, codes
 
 
 def test_1375_a_demoted_contract_is_given_trials(tmp_path: Path) -> None:
@@ -711,13 +726,7 @@ public fn use_bool(@Bool -> @Bool)
     assert result["verification"]["assumptions"] == 1, result["verification"]
 
 
-_DISCLOSED_CALL_PRE = """\
-public fn mk(@Int -> @Option<Nat>)
-  requires(true) ensures(true) effects(pure)
-{
-  int_to_nat(handle[Exn<Int>] { throw(@Nat) -> { nat_to_int(@Nat.0) } } in { throw(@Int.0) })
-}
-
+_DISCLOSED_CALL_PRE = _DISCLOSING_MK + """
 public fn needs_nonneg(@Int -> @Int)
   requires(@Int.0 >= 0) ensures(true) effects(pure)
 { @Int.0 }
@@ -726,7 +735,7 @@ public fn use_it(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   match mk(@Int.0) {
-    Some(@Nat) -> needs_nonneg(nat_to_int(@Nat.0)),
+    Some(@NonNeg) -> needs_nonneg(@NonNeg.0),
     None -> 0
   }
 }
@@ -798,30 +807,26 @@ def test_the_guard_question_is_answered_as_codegen_answers_it() -> None:
     answer — a literal read as a `@Nat` would make it a guarded `@Nat`
     subtraction, which narrows nothing.
     """
-    from vera.parser import parse
-    from vera.transform import transform
-
     source = """\
 public fn f(@Nat -> @Int)
   requires(@Nat.0 > 0) ensures(true) effects(pure)
 { nat_to_int(@Nat.0 - 1) }
 """
-    fn = transform(parse(source)).declarations[0].decl
-    body = fn.body
-    call = getattr(body, "expr", None) or body
-    arg = call.args[0]
     module = pipeline.compile(source).result
     assert pipeline.checks(module, kind="nat_guard", function="f"), (
         "code generation no longer guards this argument")
-
-    from vera.verifier import ContractVerifier
-
-    verifier = ContractVerifier(
-        pipeline.typed(source, file="f.vera"), source=source, file="f.vera")
-    assert verifier._call_arg_nat_guarded("nat_to_int", arg) is True, (
-        "the verifier's `guarded` claim disagrees with the guard code "
-        "generation emits for the same argument"
-    )
+    # Since #1695 the claim is the row's: the table both sides read lists
+    # the argument's narrowing, guarded, and the verifier's one record of it
+    # names that row (#1362's question, asked of the one answer).  The
+    # `requires` proves the subtraction non-negative, so it is `verified`.
+    result = pipeline.verify(source).result
+    rows = [r for r in result.table.rows
+            if r.fn == "f" and r.kind == "nat_bind"]
+    assert len(rows) == 1 and rows[0].guard.check, rows
+    recs = [o for o in result.obligations if o.kind == "nat_bind"]
+    assert [(o.status, o.rows) for o in recs] == [("verified", (rows[0].id,))], (
+        "the verifier's record disagrees with the guard the table lists and "
+        "code generation emits for the same argument")
 
 
 def test_a_disclosed_fact_does_not_survive_into_the_next_function() -> None:

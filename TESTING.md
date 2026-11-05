@@ -1353,12 +1353,27 @@ among them, each at its nesting depth) crossed with fourteen composite shapes,
 two forms (built in place, or opaque behind a slot) and three inputs, each
 cell asserting the run (a negative component traps with the narrowing guard's
 message, an allowed one runs to its value, an empty value passes the walk) and
-the record (exactly one narrowing guard per coercion, one W004 per guard the
-rule adds).  Its negative space is the three guards the obligation table
+the record (exactly one narrowing guard per coercion, and each guard answered
+by its row's record, where a W004 stood per guard before #1695's second half).  Its negative space is the three guards the obligation table
 (#1695) keeps apart from the walk's: a leaf the checker typed at `Nat` in
 place and #1606's construction hand-down, whose rows keep the store's own
 sign guard, and a function boundary's tuple-component guard (#746), whose
 entry rows answer the argument's, each keeping the one guard it had.
+
+`tests/test_obligation_table_1695.py` is the obligation table's instrument
+(#1695, Stage 27).  Its architectural cells hold the shape: every emitted
+check names its row, every row a held function lists has one check or a
+reason it has none, the verifier makes no guard claim of its own and
+defines no mirror of code generation's decisions, and the corpus gate's
+`KNOWN` and the generator's `KNOWN_CLASSES` are empty.  Its identity
+differential runs over the corpus, the doc blocks and generator seeds 0 to
+999, in both directions: every row of a verified function has exactly one
+record and every record names rows (no record is dropped without an
+anchor, and the fallback that discharges a row no record reached is pinned
+per class), every `violated` record has its error and no site carries more
+errors than records, and every value leaf that narrows has a row (the
+census for a site the table does not list, which the identity alone
+cannot see).
 
 ### The verdict-signature diff
 
@@ -1548,14 +1563,14 @@ sessions differ in a counterexample alone is #1785's class.
 
 **Known classes.**  `KNOWN_CLASSES` reads `scripts/check_reconciliation.py`'s
 `KNOWN` as classes, each by its mismatch's kind, obligation and emitter and by
-the shape of its site, which its predicate reads from the program as written:
-#1598 (an `@Int` division); #1695 for #1629 (a division by a non-zero literal);
-#1695 for a narrowing into a refinement of `Nat`, recorded once as the
-refinement's and checked twice; #1695 for #1629 for a refinement check on a
-value the declarations already give the refinement (a refined parameter at
-entry, a `let` of a refined slot); and #1695 for a join of a refined arm with
-an unrefined one, bound into the refinement, which the checker types as the
-refinement.
+the shape of its site, which its predicate reads from the program as written.
+Both are empty since the obligation table's second half (#1695): the join
+keys on the rows the records and the checks share, and the classes it
+reported before (#1598's `@Int` division, a division by a non-zero literal, a
+narrowing into a refinement of `Nat`, a refinement check on a value the
+declarations already give the refinement, a join of a refined arm with an
+unrefined one, a composite coercion, a later array element) are each a
+repro in `_RETIRED_CLASSES` that reports nothing.
 A `nat_bind` guard at a `@Nat` binder of a field the declarations type `Nat`
 was #1695's while code generation guarded the binder by the field's type and
 the verifier traced it to the value stored; both read the binder's source
@@ -1580,8 +1595,9 @@ the seed ran alone in a new process, so the mechanism is not established and
 the class has no pin.
 A find inside a known class is counted under its issue, with its class and the
 evidence in its record, and fails nothing; the night's report gives each class
-its count, its programs and its first seeds.  Each class but #1785's is pinned
-by a repro cell that fails the day its issue is fixed, and the entry comes out.
+its count, its programs and its first seeds.  The one class left is #1785's, a
+warm counterexample, which has no pin; the reconciliation classes are retired,
+and each one's repro cell reports nothing.
 Version one's first scheduled night (2026-10-22, 5,010 programs, #1781) counted
 8 mismatches under #1525, 182 under #1598, 3,889 under #1695 for #1557 and 7,426
 under #1695 for #1629.
@@ -1593,9 +1609,9 @@ module included, byte for byte, in the test's process and under two string hash
 seeds; a hundred seeds reach every construct and keep the generator's
 invariants; each differential reports a hand-written program that breaks it,
 or a session built to break it, and passes its nearest neighbour that does not;
-the known-class pins and their members; the fold, handler, `Nat` field binder
-and construction shapes that make no find, and the classification's cells
-over a class they inject; and the minimiser's cells.  A pull request that
+the retired classes' cells and the warm-model classification; the fold,
+handler, `Nat` field binder and construction shapes that make no find, and
+the classification's cells over a class they inject; and the minimiser's cells.  A pull request that
 changes the generator, its instrument or the workflow also runs the short
 night below; no other generator work runs on a pull request.
 [`nightly-generator.yml`](.github/workflows/nightly-generator.yml)

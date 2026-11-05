@@ -241,8 +241,13 @@ public fn f(@Unit -> @Int)
             if d.get("severity") == "error"
             and not (d.get("error_code") or "").startswith("E5")
         ], envelope["diagnostics"]
+        # A binder at its value's own type is a row code generation checks,
+        # recorded since #1695 as the guarded Tier 3 the module holds (no
+        # code; base: a W004 at it).  It narrows nothing, so it is not the
+        # position's narrowing this differential counts.
         return sum(1 for o in envelope["obligations"]
-                   if o["kind"] == "refine_bind")
+                   if o["kind"] == "refine_bind"
+                   and not (o["status"] == "tier3" and not o.get("error_code")))
 
     return count(program(bodies[position])) > count(program(bodies["control"]))
 
@@ -341,8 +346,10 @@ _SAME_SPELLING = _ALIAS_IN_THE_BASE.replace(
 
 
 def _clause_binder_records(source: str) -> list[tuple[str, str]]:
-    """The clause binder's records — the ones on the clause BODY node, which
-    has no renderable source text and renders `<expr>`."""
+    """The clause binder's records: since #1695 they stand at the binder and
+    name its declared type (`@SBig`, a slot with no index; `<expr>` before,
+    when they stood at the clause body)."""
+    import re
     import tempfile
     from pathlib import Path as _Path
 
@@ -354,7 +361,9 @@ def _clause_binder_records(source: str) -> list[tuple[str, str]]:
                 if d.get("severity") == "error"], envelope["diagnostics"]
     return sorted(
         (o["kind"], o["status"]) for o in envelope["obligations"]
-        if o["kind"] == "refine_bind" and o["description"] == "<expr>"
+        if o["kind"] == "refine_bind"
+        and (o["description"] == "<expr>"
+             or re.fullmatch(r"@[A-Za-z_][\w<>, ]*", o["description"]))
     )
 
 

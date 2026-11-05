@@ -71,55 +71,11 @@ class Known:
         return (self.program, self.kind, self.obligation, self.site)
 
 
-#: Every mismatch the corpus has today, by the issue whose class it is.
-#: Two of the shapes below are instances of #1695 (the verifier's
-#: obligation record and code generation's emitted guards are computed by
-#: two different rules), so their entries key on #1695 and name the instance:
-#:
-#: * #1695 (#1530) — a `decreases` whose termination guard code generation
-#:   declines (`_compile_decreases_entry`: the function declares `Exn`, or a
-#:   measure component it cannot translate or rank) is recorded `tier3` (E525).
-#: * #1598 — a signed division's `INT_MIN / -1` check
-#:   (`_note_quotient_overflow`) has no `int_overflow` obligation.
-#: * #1695 (#1629) — a site the verifier records no obligation for is still checked:
-#:   a division by a non-zero literal, a refinement guard on a value already
-#:   of the refined type.
-KNOWN: tuple[Known, ...] = (
-    # #1695 (#1530)
-    Known(1695, "tests/conformance/ch02_adt_tuple_recursive.vera", "recorded_unguarded", "decreases", "ch02_adt_tuple_recursive.vera:15:3"),
-    # #1598
-    Known(1598, "tests/conformance/ch02_refinement_types.vera", "guarded_unrecorded", "int_overflow", "ch02_refinement_types.vera:17:3"),
-    Known(1598, "tests/conformance/ch03_slot_noncommutative.vera", "guarded_unrecorded", "int_overflow", "ch03_slot_noncommutative.vera:18:26"),
-    Known(1598, "tests/conformance/ch03_slot_noncommutative.vera", "guarded_unrecorded", "int_overflow", "ch03_slot_noncommutative.vera:21:3"),
-    Known(1598, "tests/conformance/ch04_primitive_obligations.vera", "guarded_unrecorded", "int_overflow", "ch04_primitive_obligations.vera:15:3"),
-    Known(1598, "tests/conformance/ch04_primitive_obligations.vera", "guarded_unrecorded", "int_overflow", "ch04_primitive_obligations.vera:40:3"),
-    # The `@Int` division a left operand guards (`@Int.0 != 0 && 10 / @Int.0 > 0`, and the `==>` form).
-    Known(1598, "tests/conformance/ch04_short_circuit.vera", "guarded_unrecorded", "int_overflow", "ch04_short_circuit.vera:29:18"),
-    Known(1598, "tests/conformance/ch04_short_circuit.vera", "guarded_unrecorded", "int_overflow", "ch04_short_circuit.vera:53:19"),
-    Known(1598, "tests/conformance/ch06_requires.vera", "guarded_unrecorded", "int_overflow", "ch06_requires.vera:5:26"),
-    Known(1598, "tests/conformance/ch06_requires.vera", "guarded_unrecorded", "int_overflow", "ch06_requires.vera:8:3"),
-    Known(1598, "tests/conformance/ch07_exn_handler.vera", "guarded_unrecorded", "int_overflow", "ch07_exn_handler.vera:11:5"),
-    Known(1598, "examples/effect_handler.vera", "guarded_unrecorded", "int_overflow", "effect_handler.vera:73:5"),
-    Known(1598, "examples/maximum_syntax.vera", "guarded_unrecorded", "int_overflow", "maximum_syntax.vera:255:5"),
-    Known(1598, "examples/refinement_types.vera", "guarded_unrecorded", "int_overflow", "refinement_types.vera:30:3"),
-    Known(1598, "examples/safe_divide.vera", "guarded_unrecorded", "int_overflow", "safe_divide.vera:4:26"),
-    Known(1598, "examples/safe_divide.vera", "guarded_unrecorded", "int_overflow", "safe_divide.vera:7:3"),
-    # #1695 (#1629)
-    Known(1695, "tests/conformance/ch04_arithmetic.vera", "guarded_unrecorded", "div_zero", "ch04_arithmetic.vera:32:3"),
-    Known(1695, "tests/conformance/ch04_arithmetic.vera", "guarded_unrecorded", "div_zero", "ch04_arithmetic.vera:40:3"),
-    Known(1695, "tests/conformance/ch04_primitive_obligations.vera", "guarded_unrecorded", "refine_bind", "ch04_primitive_obligations.vera:35:29"),
-    Known(1695, "tests/conformance/ch07_diverge.vera", "guarded_unrecorded", "div_zero", "ch07_diverge.vera:16:8"),
-    Known(1695, "tests/conformance/ch07_diverge.vera", "guarded_unrecorded", "div_zero", "ch07_diverge.vera:17:21"),
-    Known(1695, "tests/conformance/ch02_nat_i64.vera", "guarded_unrecorded", "div_zero", "ch02_nat_i64.vera:41:3"),
-    Known(1695, "examples/ephemeris.vera", "guarded_unrecorded", "refine_bind", "ephemeris.vera:211:35"),
-    Known(1695, "examples/ephemeris.vera", "guarded_unrecorded", "refine_bind", "ephemeris.vera:223:36"),
-    Known(1695, "examples/ephemeris.vera", "guarded_unrecorded", "refine_bind", "ephemeris.vera:340:26"),
-    Known(1695, "examples/ephemeris.vera", "guarded_unrecorded", "div_zero", "ephemeris.vera:448:146"),
-    Known(1695, "examples/ephemeris.vera", "guarded_unrecorded", "div_zero", "ephemeris.vera:448:205"),
-    Known(1695, "examples/fizzbuzz.vera", "guarded_unrecorded", "div_zero", "fizzbuzz.vera:6:6"),
-    Known(1695, "examples/fizzbuzz.vera", "guarded_unrecorded", "div_zero", "fizzbuzz.vera:9:8"),
-    Known(1695, "examples/fizzbuzz.vera", "guarded_unrecorded", "div_zero", "fizzbuzz.vera:12:10"),
-)
+#: Every mismatch the corpus has today, by the issue whose class it is:
+#: none since the obligation table (#1695), whose rows both the verifier's
+#: records and code generation's checks name.  An entry here is a mismatch a
+#: change introduced, keyed by the open issue that names its mechanism.
+KNOWN: tuple[Known, ...] = ()
 
 #: Library modules under the corpus that do not type-check on their own,
 #: and why: they are halves of a program the manifest declares, not

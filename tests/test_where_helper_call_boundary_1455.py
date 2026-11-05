@@ -39,7 +39,7 @@ import pytest
 
 from tests import pipeline
 from tests.codegen_helpers import _run_refine_trap
-from tests.verifier_helpers import _verify
+from tests.verifier_helpers import _verify, entry_only
 
 #: The bound each call below that this file makes to the pipeline had as a
 #: `vera` process; in process it is the call's budget (tests/pipeline.py).
@@ -123,6 +123,7 @@ def _binds(source: str) -> list[tuple[str, str, str | None]]:
         (o.kind, o.status, o.error_code or None)
         for o in result.obligations
         if o.kind in ("refine_bind", "nat_bind")
+        and not entry_only(result, o)
     )
 
 
@@ -457,10 +458,11 @@ class TestTheCalleeIsResolvedWhereTheCallIsWritten:
     def test_and_the_sibling_call_still_reaches_the_top_level_one(self) -> None:
         """One record, not two: `other`'s `h(0 - 5)` obligates nothing,
         because the declaration IT reaches takes a plain `@Int`."""
+        result = _verify(_SHADOWED)
         lines = sorted(
             o.line
-            for o in _verify(_SHADOWED).obligations
-            if o.kind == "refine_bind"
+            for o in result.obligations
+            if o.kind == "refine_bind" and not entry_only(result, o)
         )
         assert lines == [24], lines
 
@@ -572,7 +574,7 @@ _CALL_ORACLES = (
     "_declared_ret_type_name",
     "_is_nat_typed",
     "narrows_into_nat",
-    "_call_arg_nat_guarded",
+    "the call's nat_bind row",
 )
 
 
@@ -599,7 +601,10 @@ def _oracle_readings(source: str) -> tuple[object, ...]:
                 narrowing.narrows_into_nat(
                     expr, self._declared_ret_type_name,
                     self._is_guarded_nat_subtraction),
-                self._call_arg_nat_guarded("nat_to_int", expr),
+                # Since #1695 the call-argument guard question is the
+                # table's: whether the call is a `nat_bind` row at all.
+                any(r.kind == "nat_bind"
+                    for r in self._table.rows_at(expr)),
             )
         return original(self, decl, expr, path, smt)
 

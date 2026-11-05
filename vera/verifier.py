@@ -44,6 +44,7 @@ if TYPE_CHECKING:
     from vera.typed import Instance, TypedProgram
 from vera.errors import Diagnostic, SourceLocation
 from vera.lexical import blank_comments
+from vera.obligations import table as obligation_table
 from vera.obligations.core import (
     ObligationKind,
     ObligationStatus,
@@ -68,11 +69,8 @@ from vera.smt import (
     SmtResult,
     resolve_timeout_ms,
 )
-from vera.lowering import state_cell_lowerable, tail_resume_arg
+from vera.lowering import tail_resume_arg
 from vera.types import (
-    erases_to_unit,
-    has_no_wasm_representation,
-    is_pair_represented,
     BOOL,
     BYTE,
     FLOAT64,
@@ -157,44 +155,6 @@ _OPAQUE_SCRUTINEE_REASON = (
     "projected and the predicate was never given a value to reason about"
 )
 
-#: The default closing sentence of an unguarded E506 (#746) — what codegen does
-#: and does not check here.
-#:
-#: It names TWO possibilities rather than asserting one, because since #765 the
-#: SITE is no longer the reliable cause.  The sentence this replaced said the
-#: guard lives only at a function boundary "not at this internal narrowing
-#: site", which was true when every pattern bind was unguarded and is false
-#: now: `let binding`, `match binding`, `tuple destructure` and `ADT
-#: sub-pattern bind` are all in `narrowing.REFINED_BIND_GUARDED_SITES`, so a
-#: `let @Tiny = mk(...)` that lands here was told to move a binding it has no
-#: reason to move.  What is actually missing at such a site is the BASE — a
-#: refinement over a refinement, which `_emit_bind_refine_guard` will not lower
-#: — and a reader sent to the wrong half of the question changes the wrong
-#: thing.  The nested-refinement family passes its own note instead, because
-#: its site is a boundary and the gap there is a third thing (see
-#: `_NESTED_SITE_GUARD_NOTE`).
-_UNGUARDED_TWO_CAUSE_NOTE = (
-    "No runtime guard covers it either, for one of two reasons: the SITE is "
-    "one codegen does not guard (a constructor field, a tuple component, an "
-    "array element or a `Map` value at construction, or a user effect "
-    "operation's argument), or the refinement's own BASE is one no guard can "
-    "be emitted for — a base that is itself a refinement, or one that erases "
-    "to nothing at run time.  So the predicate is neither statically proven "
-    "nor runtime-checked."
-)
-
-#: The closing sentence for a refinement written INSIDE a boundary type (#1410).
-#: The site IS a boundary; what it lacks is that codegen's decomposition
-#: (`_tuple_component_guard_sites`) reaches a parameter's own refinement and its
-#: TUPLE components and stops there.
-_NESTED_SITE_GUARD_NOTE = (
-    "Codegen's boundary guard decomposes a parameter's own refinement and its "
-    "TUPLE components and no further, so a refinement written on an ADT "
-    "payload or an array element is checked at no boundary: this one is "
-    "neither statically proven nor runtime-checked."
-)
-
-
 class _FloatConversion(NamedTuple):
     """How one built-in reaches `i64.trunc_f64_s` (#807, #1480)."""
 
@@ -236,29 +196,6 @@ _PREDICATE_FIX = (
     "evaluates only the branch its condition selects — or rewrite the "
     "predicate without it (`@Int.0 >= 1 && @Int.0 <= 50`)."
 )
-
-
-#: Construction-position sites whose `@Nat` store codegen actually guards.
-#:
-#: Measured per site by a STORE-ONLY differential (build the container, never
-#: read it back), because a fixture that reads the component out is answered
-#: by the read-side bind guard (#765) and cannot tell the two apart.  A tuple
-#: component traps at construction (#1416), the constructor field since
-#: #747/#757, and the array element and `Map` value since #1440 — the
-#: store-only differential traps for each.  A site left out of this set
-#: while its store guards under-counts the runtime checks and tells a
-#: reader to add a bound they already have; a site put IN it while its
-#: store does not guard asserts a check that is not there.  Both are the
-#: same desync, so the set is re-measured whenever a store gains a guard.
-#: Derived from :data:`vera.binders.GUARD_SITES` since #1455, so a
-#: construction position and its guard answers are declared in one
-#: place (the measurement behind each answer is the entry's note).
-_NAT_CONSTRUCTION_GUARDED_SITES = binders.guarded_sites(
-    "nat_sign_at_construction")
-
-
-
-
 
 
 class BlockBindingPolicy(enum.Enum):
@@ -1034,6 +971,10 @@ class VerifyResult:
     #: program in one file demotes (#1418 review J1).
     result_disclosed: dict[str, list[DisclosureSite]] = field(
         default_factory=dict)
+    #: The obligation table the records discharge (#1695): what
+    #: `vera.reconcile.join` pairs a record's rows with the module's checks
+    #: by.  ``None`` for a result built outside a verifier run.
+    table: obligation_table.ObligationTable | None = None
 
 
 def verify(
@@ -1063,6 +1004,80 @@ def verify(
 # =====================================================================
 # Contract verifier
 # =====================================================================
+
+
+#: The obligation kinds the table lists (#1695); a record of another kind
+#: (`state_decl`) is no row's and is kept as it is.
+_TABLE_KINDS = frozenset({
+    "requires", "ensures", "decreases", "nat_sub", "nat_bind", "refine_bind",
+    "call_pre", "div_zero", "index_bounds", "int_overflow", "assert",
+    "float_to_int_domain", "effect_bind",
+})
+
+#: The disclosure code of a row neither proved nor guardable, by kind.
+_DISCLOSURE_CODES: dict[str, str] = {
+    "nat_bind": "E504", "refine_bind": "E506", "effect_bind": "E542",
+}
+
+_DISCLOSED_WHAT: dict[str, str] = {
+    "nat_bind": "The @Nat narrowing",
+    "refine_bind": "The refinement narrowing",
+    "effect_bind": "The narrower effect row",
+    "ensures": "The postcondition",
+    "requires": "The precondition",
+    "decreases": "The termination measure",
+}
+
+_DISCLOSURE_FIXES: dict[str, str] = {
+    "E542": ("Bind the field at its own type: write the binder at the "
+             "field's declared function type, with its effect row, and "
+             "declare those effects on the function that applies it."),
+}
+
+#: The fix of a disclosure whose reason has a repair of its own, by reason.
+_REASON_FIXES: dict[str, str] = {
+    obligation_table.REASON_HANDLE_VALUE: (
+        "Produce the payload inside the handle and build the value outside "
+        "it: bind the handle's result with a `let` at the payload's type "
+        "and construct from that slot (`let @Int = handle[...] {...} in "
+        "{...}; Some(@Int.0)`), where the construction's store is checked "
+        "at run time."),
+}
+
+#: The warnings a disclosure replaces (each claims a runtime check), and the
+#: disclosures a guarded row's record replaces.
+_RUNTIME_CLAIM_CODES = frozenset({
+    "E504", "E506", "E520", "E521", "E522", "E523", "E524", "E525", "E532",
+})
+_DISCLOSURE_WARNINGS = frozenset({"E504", "E506"})
+
+#: The refusals of a function's premises (#1451): a record withheld from
+#: both tiers because no call can reach the body, or none is known to.  Its
+#: status is the premise's verdict, not a guard's, so the row's guard
+#: neither confirms nor replaces it.
+_PREMISE_CODES = frozenset({"E538", "E539", "E540"})
+
+
+def _site_span(node: ast.Node) -> ast.Span | None:
+    """Where an obligation about *node*, and a diagnostic about it, stands:
+    a piped call's stage, where the call is written (#1641), else the
+    node's span (the obligation table's rows stand at the same place)."""
+    stage = getattr(node, "stage_span", None)
+    return stage if stage is not None else node.span
+
+
+def _source_component(source: obligation_table.Source) -> ast.Node | None:
+    """The written expression a binder row's *source* names: its value,
+    taken apart along the steps through constructor applications written
+    in place (``let Tuple<@Nat, @Int> = Tuple(@Int.0, 2)`` binds
+    ``@Int.0``); ``None`` where a step takes apart a value not built there."""
+    node: ast.Node = source.value
+    for _ctor, i in source.steps:
+        if isinstance(node, ast.ConstructorCall) and i < len(node.args):
+            node = node.args[i]
+        else:
+            return None
+    return node
 
 
 class ContractVerifier:
@@ -1103,6 +1118,10 @@ class ContractVerifier:
         # #1679: the typed program, the one input this verifier reads a
         # type, an instantiation or a clone from.
         self._typed = typed
+        # #1695: the obligation table, which lists every obligation of the
+        # typed program and decides which a runtime check can guard; this
+        # verifier discharges its rows (`_settle_rows`) and lists none.
+        self._table = obligation_table.build(typed)
         self.env = TypeEnv()
         self.errors: list[Diagnostic] = []
         # #222 Phase A: reified obligations in discharge order.
@@ -1206,9 +1225,35 @@ class ContractVerifier:
         # entry cannot answer for a later record that reuses a discarded
         # one's `id` (its reference is dead, or is to a record that is not
         # the one asked about), and it keeps no discarded record alive.
+        #: The premise refusal (#1451) of the function being verified, set
+        #: by :meth:`_demote_function_obligations`: a record its rows'
+        #: discharge makes after the demotion takes the refusal too.
+        self._premise_code: str | None = None
         self._call_pre_contracts: dict[
             int, tuple[weakref.ref[ProofObligation], ast.Node]
         ] = {}
+        #: #1695: the node each record was made at (the expression it
+        #: discharges, the node it is located at, and the tail call of a
+        #: measure's evaluation), by which :meth:`_settle_rows` keys it to
+        #: the row at that node.
+        #: #1695: the record of each refinement predicate's operation at its
+        #: declaration (#1480), by the operation's node: the one record of
+        #: that written site, which every guard's copy of the predicate in a
+        #: function shares, the declaration's discharge (under the base
+        #: type's facts alone) holding at every guard.
+        self._predicate_records: dict[object, ProofObligation] = {}
+        #: The records `_anchored_rows` keyed to the rows at several of a
+        #: value's leaves, in the settling in progress (one record each).
+        self._value_spanning: set[int] = set()
+        self._record_anchors: dict[int, tuple[
+            weakref.ref[ProofObligation], ast.Node, ast.Node | None,
+            ast.FnCall | ast.ModuleCall | None,
+        ]] = {}
+        #: Why a Tier 3 record was not discharged statically (#1251), by the
+        #: record: a disclosure of its row states it beside the row's reason
+        #: for having no check, so the two causes are both named.
+        self._static_reasons: dict[int, tuple[
+            weakref.ref[ProofObligation], str]] = {}
         # Warm-session hook: when provided (by
         # obligations.session.VerificationSession), _verify_fn calls
         # shared_smt.reset() per function instead of constructing a
@@ -1640,9 +1685,10 @@ class ContractVerifier:
             # same edit, made in the predicate.
             fix = _PREDICATE_FIX
         loc = SourceLocation(file=self._current_file)
-        if node.span:
-            loc.line = node.span.line
-            loc.column = node.span.column
+        span = _site_span(node)
+        if span:
+            loc.line = span.line
+            loc.column = span.column
         self.errors.append(Diagnostic(
             description=description + self._evaluation_note(),
             location=loc,
@@ -1717,9 +1763,10 @@ class ContractVerifier:
         """
         node = self._evaluation_site(node)
         loc = SourceLocation(file=self._current_file)
-        if node.span:
-            loc.line = node.span.line
-            loc.column = node.span.column
+        span = _site_span(node)
+        if span:
+            loc.line = span.line
+            loc.column = span.column
         self.errors.append(Diagnostic(
             description=description + self._evaluation_note(),
             location=loc,
@@ -1786,12 +1833,12 @@ class ContractVerifier:
         shares a site with — and, for an imported clone, named a line the
         entry file does not have.
         """
-        loc = self._evaluation_site(
-            span_node if span_node is not None else node)
-        line = loc.span.line if loc.span else 0
-        column = loc.span.column if loc.span else 0
-        end_line = loc.span.end_line if loc.span else 0
-        end_column = loc.span.end_column if loc.span else 0
+        site = _site_span(self._evaluation_site(
+            span_node if span_node is not None else node))
+        line = site.line if site else 0
+        column = site.column if site else 0
+        end_line = site.end_line if site else 0
+        end_column = site.end_column if site else 0
         self.obligations.append(ProofObligation(
             fn_name=fn_name,
             kind=kind,
@@ -1813,10 +1860,22 @@ class ContractVerifier:
             end_line=end_line,
             end_column=end_column,
         ))
+        record = self.obligations[-1]
+        at = self._evaluated_at
+        if at is not None and at.position == "predicate":
+            # Keyed by the node a guard's copy row stands at: the node, or
+            # the site it is located at (a call's precondition is recorded at
+            # its contract and stands at the call).
+            for n in (node, span_node):
+                if n is not None:
+                    self._predicate_records.setdefault(
+                        (obligation_table.ObligationTable._key(n), kind), record)
+        self._record_anchors[id(record)] = (
+            weakref.ref(record), node, span_node,
+            at.call if at is not None else None)
         if kind == "call_pre":
             # #1480: which precondition this record is about, by identity —
             # see `_call_pre_recorded` and `_call_pre_contract_of`.
-            record = self.obligations[-1]
             self._call_pre_contracts[id(record)] = (weakref.ref(record), node)
 
     def _call_pre_contract_of(self, record: ProofObligation) -> ast.Node | None:
@@ -2625,6 +2684,7 @@ class ContractVerifier:
                 self._shown_fn_key(key): sites
                 for key, sites in self._result_disclosed_fns.items()
             },
+            table=self._table,
         )
 
     def displayed(
@@ -2868,6 +2928,8 @@ class ContractVerifier:
             # pass's proofs were made against a context this one no longer
             # offers.
             self.errors, self.obligations = [], []
+            # The records a guard's predicate copy shares are this pass's.
+            self._predicate_records = {}
             # The construction-position memo is a property of the buffer it
             # was built against: keeping it here would let the discarded
             # pass's entries suppress this pass's recordings, and the
@@ -3230,7 +3292,9 @@ class ContractVerifier:
                 ),
                 members[0],
             )
-            self.obligations.append(replace(rep_ob, status=met))
+            self.obligations.append(replace(
+                rep_ob, status=met,
+                rows=tuple(sorted({r for _, ob in members for r in ob.rows}))))
             # The summary is derived from the obligation stream (#967), so the
             # append above is the whole count.  A non-`verified` met status
             # still re-surfaces its representative diagnostic: `tier3` re-emits
@@ -3427,6 +3491,431 @@ class ContractVerifier:
             tier=None,
         ))
 
+    # -----------------------------------------------------------------
+    # #1695: the rows a verified function lists, discharged
+    # -----------------------------------------------------------------
+
+    def _settle_rows(
+        self, decl: ast.FnDecl, start: int, *, premise: str | None = None,
+    ) -> None:
+        """Key the records verifying *decl* made to the table's rows, and
+        discharge every row of *decl* exactly once.
+
+        The table lists the obligations; a record this verification made at
+        a site the table lists no row at is no obligation and is dropped,
+        and a row no record reached is discharged here (:meth:`_row_record`).
+        A record answers the rows of its kind at the node it was recorded
+        at (:meth:`_anchored_rows`): a measure's operation re-evaluated at a
+        self tail call is the measure's row in that call's evaluation, a
+        binder's narrowing recorded at the value its pattern takes apart is
+        the binder's row, and a refined return recorded at the body is the
+        row of each component the return type checks (a ``@Nat`` return is
+        discharged at each value leaf, in the body walk).  A record keyed to
+        the rows of several sites, discharged once for a whole value, is one
+        record naming all of them, never a copy at each.  No record is
+        keyed by where it is located.
+
+        One record per written site (the row's ``content_key``): a site's
+        copies, each discharged in its own evaluation's context, share it,
+        with the meet of their statuses (``violated`` first), and the record
+        names every row.  Whether a row is guarded is the row's: a record a
+        row with no check claims is checked at run time is disclosed instead
+        (:meth:`_disclose_row`), and a guarded row's record is ``tier3``
+        where the solver left it undecided."""
+        rows = self._table.rows_of_function(decl)
+        if rows is None:
+            return
+        generic = bool(decl.forall_vars)
+        # A record already keyed (a `where` helper's, verified inside this
+        # function's verification; a generic's clones' aggregate) names its
+        # rows; every record of a table kind is keyed or dropped here.
+        own = [o for o in self.obligations[start:] if not o.rows]
+        if not own and generic:
+            return
+        calls: dict[object, tuple[int, int]] = {}
+        if decl.body is not None:
+            for n in fold.walk(decl.body):
+                site = _site_span(n)
+                if isinstance(n, ast.FnCall) and n.node_id is not None and site:
+                    calls[n.node_id] = (site.line, site.column)
+        status: dict[int, list[ProofObligation]] = {}
+        anchored: dict[int, set[int]] = {}
+        self._value_spanning = set()
+        kept: list[ProofObligation] = []
+        for rec in own:
+            if rec.kind not in _TABLE_KINDS:
+                kept.append(rec)
+                continue
+            hit = self._anchored_rows(rec, rows, decl)
+            if not hit:
+                # No obligation: its disclosure, if it made one, goes too.
+                self._retract_disclosure(rec)
+            anchored[id(rec)] = {row.id for row in hit or ()}
+            for row in hit or ():
+                status.setdefault(row.id, []).append(rec)
+        # One record per written site, in the order the rows are listed.
+        by_site: dict[tuple[object, ...], list[obligation_table.Row]] = {}
+        for row in rows:
+            by_site.setdefault((row.content_key, row.path), []).append(row)
+        # A record keyed to the rows of several sites (a value's, at each
+        # leaf its rows stand at) was discharged once, for the whole value:
+        # it is one record, where it was made, naming every one of those
+        # rows, and its status is copied to no leaf it was not discharged
+        # at (A3).  The sites it spans settle together.
+        site_of = {row.id: (row.content_key, row.path) for row in rows}
+        joined: dict[tuple[object, ...], tuple[object, ...]] = {
+            k: k for k in by_site}
+
+        def _root(k: tuple[object, ...]) -> tuple[object, ...]:
+            while joined[k] != k:
+                k = joined[k]
+            return k
+
+        spanning: set[tuple[object, ...]] = set()
+        for rec_id, ids in anchored.items():
+            if rec_id not in self._value_spanning:
+                continue
+            keys = list(dict.fromkeys(site_of[i] for i in ids if i in site_of))
+            for other_site in keys[1:]:
+                joined[_root(other_site)] = _root(keys[0])
+            if len(keys) > 1:
+                spanning.add(keys[0])
+        spans = {_root(spanned) for spanned in spanning}
+        groups: dict[tuple[object, ...], list[obligation_table.Row]] = {}
+        for site_key, site_rows_ in by_site.items():
+            groups.setdefault(_root(site_key), []).extend(site_rows_)
+        settled: list[ProofObligation] = []
+        for root, site_rows in groups.items():
+            whole = root in spans
+            recs = [r for row in site_rows for r in status.get(row.id, ())]
+            if not recs and site_rows[0].evaluation[:1] == ("predicate",):
+                shared = self._predicate_records.get(
+                    (obligation_table.ObligationTable._key(site_rows[0].node),
+                     site_rows[0].kind))
+                if shared is not None:
+                    # A guard's copy of a predicate: the declaration's
+                    # record is the site's, and names this copy's rows.
+                    shared.rows = tuple(dict.fromkeys(
+                        (*shared.rows, *(row.id for row in site_rows))))
+                    continue
+            if not recs:
+                if generic:
+                    continue
+                recs = [self._row_record(decl, row) for row in site_rows[:1]]
+            met = self._meet_status([r.status for r in recs])
+            if met == "tier3" and any(r.status == "timeout" for r in recs) and all(
+                    r.status in ("timeout", "verified") for r in recs):
+                met = "timeout"
+            # The record the meet takes its status from; where that is a
+            # copy recorded at another site (a measure at a self tail call),
+            # the record says so, and is located at the written site.
+            decided = next((r for r in recs if r.status == met),
+                           next((r for r in recs if r.status != "verified"), recs[0]))
+            # One diagnostic per record: a discharge of this site alone that
+            # the site's record does not take its status from takes its
+            # diagnostic with it.
+            site_ids = {row.id for row in site_rows}
+            for other in recs:
+                if other is not decided and anchored.get(id(other), {-1}) <= site_ids:
+                    self._retract_diagnostic(other, keep=decided)
+            head = None if whole else _site_span(site_rows[0].node)
+            base = next((r for r in recs if head is not None
+                         and (r.line, r.column) == (head.line, head.column)), None)
+            record = replace(decided, status=met,
+                             rows=tuple(row.id for row in site_rows),
+                             expr_text=(base.expr_text if base is not None
+                                        else decided.expr_text if whole
+                                        else site_rows[0].content_key[2]))
+            if head is not None:
+                record = replace(record, line=head.line, column=head.column,
+                                 end_line=head.end_line, end_column=head.end_column)
+            tail_calls = {calls.get(row.evaluation[1]) for row in site_rows
+                          if row.evaluation and row.evaluation[0] == "measure_call"}
+            if met != "verified" and (decided.line, decided.column) in tail_calls:
+                record = replace(record, expr_text=(
+                    f"{record.expr_text} (at the self tail call at "
+                    f"{decided.line}:{decided.column})"))
+            elif head is not None and decided.error_code and (
+                    decided.line, decided.column) != (head.line, head.column):
+                # The record stands at its row; the diagnostic that reports
+                # it stands there too (a tail call's copy keeps its error at
+                # the call, which the record names).
+                self._relocate_diagnostic(decided, head)
+            if site_rows[0].path and not whole:
+                # A component of the site's value is its own obligation: the
+                # path names it, in the text the record's identity hashes.
+                record = replace(record, expr_text=(
+                    f"{record.expr_text} [{'.'.join(site_rows[0].path)}]"))
+            static = self._static_reason(decided)
+            if static is not None:
+                self._note_static_reason(record, static)
+            record = self._guarded_by_row(record, site_rows)
+            settled.append(record)
+        if premise is not None:
+            # Under a refused premise set nothing is proved (#1451): a row
+            # this settling discharged `verified` is withheld as the
+            # function's other records were.
+            settled = [replace(r, status="tier3_unguarded", error_code=premise)
+                       if r.status == "verified" else r for r in settled]
+            kept = [replace(r, status="tier3_unguarded", error_code=premise)
+                    if r.status == "verified" else r for r in kept]
+        own_ids = {id(o) for o in own}
+        self.obligations[start:] = [
+            o for o in self.obligations[start:] if id(o) not in own_ids
+        ] + kept + settled
+
+    def _note_static_reason(self, rec: ProofObligation, reason: str) -> None:
+        """Keep *reason*, why *rec* was not discharged statically, for the
+        disclosure its row may make (:meth:`_disclose_row`)."""
+        self._static_reasons[id(rec)] = (weakref.ref(rec), reason)
+
+    def _static_reason(self, rec: ProofObligation) -> str | None:
+        entry = self._static_reasons.get(id(rec))
+        if entry is None or entry[0]() is not rec:
+            return None
+        return entry[1]
+
+    def _retract_diagnostic(
+        self, rec: ProofObligation, *, keep: ProofObligation,
+    ) -> None:
+        """Remove the one diagnostic reporting *rec* (its code, at its
+        location), a discharge of a row whose record is *keep*'s; a
+        diagnostic *keep* reports at the same place is left standing."""
+        if not rec.error_code:
+            return
+        at = [i for i, d in enumerate(self.errors)
+              if d.error_code == rec.error_code
+              and d.location.line == rec.line
+              and d.location.column == rec.column]
+        if (keep.error_code, keep.line, keep.column) == (
+                rec.error_code, rec.line, rec.column) and len(at) < 2:
+            return
+        if at:
+            del self.errors[at[-1]]
+
+    def _relocate_diagnostic(
+        self, rec: ProofObligation, head: ast.Span,
+    ) -> None:
+        """Move the one diagnostic reporting *rec* (its code, at its
+        location) to *head*, the site of the row it was keyed to."""
+        for i, d in enumerate(self.errors):
+            if (d.error_code == rec.error_code
+                    and d.location.line == rec.line
+                    and d.location.column == rec.column):
+                loc = replace(d.location, line=head.line, column=head.column)
+                self.errors[i] = replace(
+                    d, location=loc, source_line=self._get_source_line(head.line))
+                return
+
+    def _anchored_rows(
+        self, rec: ProofObligation, rows: list[obligation_table.Row],
+        decl: ast.FnDecl,
+    ) -> list[obligation_table.Row] | None:
+        """The rows *rec* discharges, by the node it was recorded at: the
+        rows of its kind at that node (or at the node it is located at), in
+        the evaluation it was made in (a measure's copy at its tail call),
+        a call precondition's the row its contract answers; else the rows
+        whose binder takes apart that node (a destructure's or a pattern's
+        component), or the value leaves of the body it narrows (a return).
+        ``None`` for a record whose anchor no row of *rows* stands at or
+        takes apart: a record at a site that is no obligation."""
+        entry = self._record_anchors.get(id(rec))
+        if entry is None or entry[0]() is not rec:
+            return None
+        _, node, span_node, call = entry
+        keys = {obligation_table.ObligationTable._key(n)
+                for n in (node, span_node) if n is not None}
+        mine = [r for r in rows if r.kind == rec.kind]
+        hit = [r for r in mine
+               if obligation_table.ObligationTable._key(r.node) in keys]
+        if hit:
+            if call is not None:
+                copy = [r for r in hit if r.evaluation
+                        and r.evaluation[0] == "measure_call"
+                        and r.evaluation[1] == call.node_id]
+                hit = copy or hit
+            else:
+                hit = [r for r in hit if not (
+                    r.evaluation and r.evaluation[0] == "measure_call")] or hit
+            if rec.kind == "call_pre":
+                contract = self._call_pre_contract_of(rec)
+                own = [r for r in hit if r.answered_by is not None
+                       and r.answered_by >= 0 and contract is not None
+                       and obligation_table.ObligationTable._key(
+                           self._table.by_id(r.answered_by).node)
+                       == obligation_table.ObligationTable._key(contract)]
+                hit = own or hit
+            return hit
+        component = [r for r in mine if r.source is not None
+                     and _source_component(r.source) is node]
+        if component:
+            return component
+        # A handler clause's binder, recorded at the clause's body (no
+        # operation site pins the payload): the binder's rows.
+        if decl.body is not None:
+            binders_of = {
+                obligation_table.ObligationTable._key(c.params[0])
+                for h in fold.walk(decl.body) if isinstance(h, ast.HandleExpr)
+                for c in h.clauses if c.params and c.body is node}
+            clause = [r for r in mine if obligation_table.ObligationTable._key(
+                r.node) in binders_of]
+            if clause:
+                return clause
+        # A binder's narrowing recorded at the value its pattern takes
+        # apart (a sub-pattern of a `match` over a slot): the binder rows
+        # of that value.
+        taken = [r for r in mine if r.source is not None
+                 and obligation_table.ObligationTable._key(r.source.value)
+                 in keys]
+        if taken:
+            return taken
+        if rec.kind in ("nat_bind", "refine_bind"):
+            leaves = {obligation_table.ObligationTable._key(n)
+                      for n in fold.walk(node)}
+            if node is decl.body:
+                # The body's value held to the return type: its component
+                # rows stand at the return type, where code generation
+                # checks them.
+                leaves |= {obligation_table.ObligationTable._key(n)
+                           for n in fold.walk(decl.return_type)}
+            ret = [r for r in mine if r.evaluation == obligation_table.RETURN
+                   and obligation_table.ObligationTable._key(r.node) in leaves]
+            if isinstance(node, ast.Expr):
+                # A component of a value narrowed at a boundary (the return,
+                # a call's argument) is a row at each of the value's leaves,
+                # by its path (a payload the target refines and the value's
+                # type does not): the value's record is those rows'.
+                tails = {obligation_table.ObligationTable._key(n)
+                         for n in narrowing.value_leaves(node)}
+                ret += [r for r in mine if r.path and r not in ret
+                        and r.evaluation != obligation_table.RETURN
+                        and obligation_table.ObligationTable._key(r.node) in tails]
+                # A value produced inside a `handle` body is held to the
+                # requirement by the hand-down's rows, at the leaves and the
+                # constructions below them: the value's record is theirs.
+                inner = {obligation_table.ObligationTable._key(n)
+                         for leaf in narrowing.value_leaves(node)
+                         for n in fold.walk(leaf)}
+                ret += [r for r in mine if r not in ret
+                        and r.guard.reason == obligation_table.REASON_HANDLE_VALUE
+                        and obligation_table.ObligationTable._key(r.node) in inner]
+            if ret:
+                if rec.status in ("verified", "violated") and len(
+                        {(r.content_key, r.path) for r in ret}) > 1:
+                    # Discharged once for the whole value, whose rows stand
+                    # at several of its leaves: one record names them all.
+                    # A record left undecided (a closure body's opaque
+                    # return) is each leaf's own status, the one the row's
+                    # fallback gives it.
+                    self._value_spanning.add(id(rec))
+                return ret
+        return None
+
+    def _row_record(
+        self, decl: ast.FnDecl, row: obligation_table.Row,
+    ) -> ProofObligation:
+        """The record of a row no verification record reached: a trivial
+        or a literal-divisor row holds, a refined parameter's entry row is
+        the callee's assumption (each call's argument row discharges it, as
+        a ``requires``), and any other row is left to its runtime check
+        (``tier3``), or, where it has none, disclosed."""
+        node = row.node
+        status: ObligationStatus = "tier3"
+        if row.guard == obligation_table.TRIVIAL:
+            status = "verified"
+        elif (row.kind == "div_zero" and isinstance(node, ast.BinaryExpr)
+                and isinstance(node.right, ast.IntLit) and node.right.value != 0):
+            status = "verified"
+        elif row.evaluation == obligation_table.ENTRY:
+            status = "verified"
+        span = node.span
+        return ProofObligation(
+            fn_name=decl.name, kind=row.kind,
+            expr_text=expr_text_for(self._as_written(node))
+            if isinstance(node, (ast.Expr, ast.Contract)) else row.content_key[2],
+            status=status,
+            line=span.line if span else 0, column=span.column if span else 0,
+            file=self._current_file,
+            owner=self._scope_owner if self._scope_is_helper else "",
+            end_line=span.end_line if span else 0,
+            end_column=span.end_column if span else 0,
+        )
+
+    def _guarded_by_row(
+        self, record: ProofObligation, rows: list[obligation_table.Row],
+    ) -> ProofObligation:
+        """*record* with the status its rows' guard gives an undecided
+        site: ``tier3`` where a check guards it, disclosed where none can."""
+        if record.error_code in _PREMISE_CODES:
+            return record
+        guarded = any(self._row_checked(r) for r in rows)
+        if record.status in ("tier3", "timeout", "tier3_unguarded") and not guarded:
+            self._disclose_row(record, rows[0])
+            return replace(record, status="tier3_unguarded",
+                           error_code=_DISCLOSURE_CODES.get(record.kind, "E543"))
+        if record.status == "tier3_unguarded" and guarded:
+            self._retract_disclosure(record)
+            return replace(record, status="tier3", error_code="")
+        return record
+
+    def _row_checked(self, row: obligation_table.Row) -> bool:
+        """Whether a check answers *row*: its own, or the check of the row
+        that answers it (a value's component at a boundary is checked by
+        the boundary's entry or return row), or a closure's entry."""
+        if row.guard.check:
+            return True
+        if row.answered_by == obligation_table.ANSWERED_AT_CLOSURE_ENTRY:
+            return True
+        if row.answered_by is not None and row.answered_by >= 0:
+            return self._table.by_id(row.answered_by).guard.check
+        return False
+
+    def _disclose_row(
+        self, record: ProofObligation, row: obligation_table.Row,
+    ) -> None:
+        """The warning of a row that is neither proved nor guardable: its
+        reason, the table's, is the rationale (#1602, #1782)."""
+        self._retract_disclosure(record, runtime_claims=True)
+        code = _DISCLOSURE_CODES.get(record.kind, "E543")
+        loc = SourceLocation(file=record.file or self._current_file,
+                             line=record.line, column=record.column)
+        what = _DISCLOSED_WHAT.get(record.kind, f"The '{record.kind}' obligation")
+        self.errors.append(Diagnostic(
+            description=(
+                f"{what} in '{record.fn_name}' could not be verified "
+                f"statically, and no runtime check can be emitted for it: "
+                f"{row.guard.reason}. It is counted in neither tier."),
+            location=loc,
+            source_line=self._get_source_line(loc.line),
+            rationale=(
+                (f"It was not discharged statically: {static}.  "
+                 if (static := self._static_reason(record)) else "")
+                + f"No runtime check guards this site because {row.guard.reason}, "
+                "so a value that violates it is not caught at run time; the "
+                "verifier discloses it rather than claim a runtime check."),
+            fix=_REASON_FIXES.get(row.guard.reason) or _DISCLOSURE_FIXES.get(code, (
+                "Restate the obligation so the solver can prove it, or move "
+                "the fact to a site a runtime check guards.")),
+            spec_ref='Chapter 6, Section 6.8.1 "Obligation Vocabulary"',
+            severity="warning",
+            error_code=code,
+        ))
+
+    def _retract_disclosure(
+        self, record: ProofObligation, *, runtime_claims: bool = False,
+    ) -> None:
+        """Remove the warnings the verification made at *record*'s site
+        that the row's guard contradicts: a disclosure where a check guards
+        the row, or (with *runtime_claims*) a "checked at run time" warning
+        where none can."""
+        codes = _RUNTIME_CLAIM_CODES if runtime_claims else _DISCLOSURE_WARNINGS
+        self.errors = [
+            d for d in self.errors
+            if not (d.severity == "warning" and d.error_code in codes
+                    and d.location.line == record.line
+                    and d.location.column == record.column)
+        ]
+
     @staticmethod
     def _meet_status(statuses: list[ObligationStatus]) -> ObligationStatus:
         """Worst-case status across instantiations, collapsed to the
@@ -3441,6 +3930,22 @@ class ContractVerifier:
         return "verified"
 
     def _verify_fn(
+        self,
+        decl: ast.FnDecl,
+        parent_where_group: ast.FnDecl | None = None,
+        enclosing: tuple[ast.FnDecl, ...] = (),
+    ) -> None:
+        """Verify *decl*, then discharge its rows from the records the
+        verification made (:meth:`_settle_rows`)."""
+        start = len(self.obligations)
+        outer, self._premise_code = self._premise_code, None
+        try:
+            self._verify_fn_contracts(decl, parent_where_group, enclosing)
+            self._settle_rows(decl, start, premise=self._premise_code)
+        finally:
+            self._premise_code = outer
+
+    def _verify_fn_contracts(
         self,
         decl: ast.FnDecl,
         parent_where_group: ast.FnDecl | None = None,
@@ -3785,10 +4290,15 @@ class ContractVerifier:
         #      side-tables in, so the scrutinee/instantiated type is known
         #      here.  Emits `value >= 0` at each, discharged from
         #      preconditions and path conditions exactly like #520.
+        # 7d's leaves (below): a `@Nat` return's value leaves the table lists
+        # a row at are each discharged in this walk, at the leaf, under the
+        # branch conditions and the bindings the walk holds there.
+        nat_return_leaves = self._nat_return_leaf_keys(decl, ret_type)
         if decl.body is not None:
             self._walk_handled_effects = []
             self._walk_for_nat_binding_obligations(
                 decl, decl.body, smt, slot_env, assumptions,
+                return_leaves=nat_return_leaves or frozenset(),
             )
 
         # 5.75. #804: a top-level (unconditional) assert/assume holds whenever
@@ -4015,7 +4525,7 @@ class ContractVerifier:
                 # disclosure says (#1251).
                 self._record_refined_bind_tier3(
                     decl, ret_node, "return type",
-                    guarded=self._refined_boundary_codegen_guardable(ret_type),
+
                     reason=self._refined_bail_reason(ret_type, body_expr))
             else:
                 ret_result = smt.check_valid(goal, list(assumptions))
@@ -4041,8 +4551,7 @@ class ContractVerifier:
                     # what the disclosure says (#1251).
                     self._record_refined_bind_tier3(
                         decl, ret_node, "return type",
-                        guarded=self._refined_boundary_codegen_guardable(
-                            ret_type),
+
                         reason=self._undecided_reason(
                             ret_result.status))
 
@@ -4059,10 +4568,11 @@ class ContractVerifier:
         #     one site.  Codegen backs the undischarged/Tier-3 case with the
         #     return nat-bind guard so the function traps before returning a
         #     negative.
-        if (decl.body is not None
-                and self._is_nat_type(ret_type)
-                and not self._is_refined_type(ret_type)
-                and self._return_narrows_into_nat(decl.body)):
+        #     Each leaf the table lists a row at was discharged by the body
+        #     walk (5.7) in its own branch's context, one record per leaf
+        #     row; the whole body is discharged here where it has one such
+        #     leaf, or the table lists no rows of the function.
+        if nat_return_leaves is None and self._nat_return_narrows(decl, ret_type):
             self._check_nat_binding_obligation(
                 decl, decl.body, smt, slot_env, list(assumptions),
                 site="return type",
@@ -4762,6 +5272,7 @@ class ContractVerifier:
         would be relabelled "neither proved nor guarded" (§6.8) while codegen,
         which consults no verdict, still emits its guard.
         """
+        self._premise_code = error_code
         for obligation in self.obligations[obl_start:]:
             if obligation.status != "verified":
                 continue
@@ -5074,22 +5585,6 @@ class ContractVerifier:
                 return True
         return False
 
-    def _construction_refined_guarded(self, site: str, refined_ty: object) -> bool:
-        """Whether codegen lowers a §2.6.5 guard for *refined_ty* at *site*.
-
-        The site half, intersected with the CONSTRUCTION-position base rule:
-        a construction store tees the value into one scalar local, so a base
-        with no scalar representation takes no guard there however guardable
-        it is at a boundary (`{ @String | … }` on a parameter emits one; the
-        same refinement in a constructor field emits none).  Reading the
-        boundary rule alone claimed a check the store does not make.
-        """
-        base = getattr(refined_ty, "base", None)
-        return (
-            self._refined_bind_site_guarded(site)
-            and getattr(base, "name", None)
-            in narrowing.REFINED_CONSTRUCTION_SCALAR_BASES
-        )
 
     def _obligate_construction_component(
         self,
@@ -5143,14 +5638,13 @@ class ContractVerifier:
             self._check_refined_binding_obligation(
                 decl, expr, refined_target, smt, slot_env, assumptions,
                 site=site,
-                guarded=self._construction_refined_guarded(
-                    site, refined_target),
+
             )
         elif (self._nat_binding_target(expr, expected)
                 and self._narrows_into_nat(expr)):
             self._check_nat_binding_obligation(
                 decl, expr, smt, slot_env, assumptions, site=site,
-                guarded=site in _NAT_CONSTRUCTION_GUARDED_SITES,
+
             )
         else:
             self._descend_construction_container(
@@ -5213,9 +5707,12 @@ class ContractVerifier:
                     val = z3.FreshConst(stale.sort(), "shadow")
                     self._opaque_shadows.append(val)
             self._guarded_binder_value(smt, stmt.type_expr, val)
-        elif smt._mentions_stand_in(val):
-            # A refined binder of a stand-in reads the value the guard at
-            # the bind establishes (#1696; `SmtContext.guarded_binding`).
+        else:
+            # A refined binder reads the value the guard at the bind
+            # establishes (#1696; `SmtContext.guarded_binding`), whatever its
+            # value: the post-fact rule (#1695), so a refused or guarded
+            # bind's predicate holds for the rest of its scope (#1563) and an
+            # unguarded one's does not.
             val = smt.guarded_binding(stmt.value, val, stmt.type_expr)
         if val is not None and type_name is not None:
             return env.push(type_name, val)
@@ -5927,7 +6424,7 @@ class ContractVerifier:
         always in the stream.
         """
         site = self._evaluation_site(call_node)
-        span = site.span
+        span = _site_span(site)
         line = span.line if span else 0
         column = span.column if span else 0
         return any(
@@ -6853,6 +7350,13 @@ class ContractVerifier:
                 self._check_div_zero_obligation(
                     decl, expr, smt, path.env, path.facts,
                 )
+            if (expr.op == ast.BinOp.DIV
+                    and self._table.rows_of(expr, "int_overflow")):
+                # #1598: a signed quotient whose divisor can be -1 leaves
+                # the range at INT_MIN / -1; the table lists that row.
+                self._check_quotient_obligation(
+                    decl, expr, smt, path.env, path.facts,
+                )
         elif expr.op in (ast.BinOp.ADD, ast.BinOp.SUB, ast.BinOp.MUL):
             # #798: @Int/@Nat add/sub/mul wrap at the i64 boundary and
             # now trap, so each carries an `int_overflow` range obligation.
@@ -7007,8 +7511,6 @@ class ContractVerifier:
         assumptions: list[object],
         *,
         site: str,
-        nat_guarded: bool,
-        refined_guarded: bool = False,
     ) -> None:
         """The refined-first / @Nat binding-obligation pair for a
         single value flowing into a typed slot (#1203 — shared by the
@@ -7016,27 +7518,24 @@ class ContractVerifier:
         `throw`-payload sites; the older call-argument and constructor-field
         copies carry site-specific side-table subtleties and stay inline).
 
-        *refined_guarded* defaults to False because most of those sites emit
-        sign guards only — a handler write boundary lowers no refinement
-        predicate, so its refined arm discloses E506 honestly.  The `throw`
-        payload is the exception (#1268): codegen lowers the predicate there,
-        so that site passes True and the arm records a guarded Tier-3.  The
-        flag is only ever an upper bound — `_check_refined_binding_obligation`
-        intersects it with `_refined_boundary_codegen_guardable`, so a shape
-        codegen emits no guard for stays unguarded whatever a caller claims.
+        Whether a check guards each site is its row's, in the obligation
+        table (#1695): an undecided record here is ``tier3``, and
+        :meth:`_settle_rows` discloses it where the row has no check (a
+        handler write boundary lowers no refinement predicate; the `throw`
+        payload's row, #1268, has one).
         """
         refined = self._refined_binding_target(value, formal)
         if (refined is not None
                 and self._narrows_into_refined(value, refined)):
             self._check_refined_binding_obligation(
                 decl, value, refined, smt, slot_env, assumptions,
-                site=site, guarded=refined_guarded,
+                site=site,
             )
         elif (self._nat_binding_target(value, formal)
                 and self._narrows_into_nat(value)):
             self._check_nat_binding_obligation(
                 decl, value, smt, slot_env, assumptions,
-                site=site, guarded=nat_guarded,
+                site=site,
             )
         # #1410 (PR review F6): a refinement written INSIDE the formal, at
         # every site this triple serves — an effect operation's argument
@@ -7052,7 +7551,7 @@ class ContractVerifier:
         # positions are unguarded whatever the head's guard does.
         self._check_nested_refinement_obligation(
             decl, value, self._nested_refinement_formal(value, formal),
-            smt, slot_env, assumptions, site=site, guarded=False,
+            smt, slot_env, assumptions, site=site,
         )
 
     def _check_state_decl_divergence(
@@ -7277,8 +7776,8 @@ class ContractVerifier:
                     # unclassifiable to it, and that gate exists so a
                     # SOLVER-outcome reason cannot be fixed at a call site.
                     self._record_refined_bind_tier3(
-                        decl, clause.body, site, refined_ty=binder,
-                        guarded=False,
+                        decl, clause.body, site,
+
                         reason=(
                             "the bound value is the payload the operation "
                             "delivers, which no throw or put site pins, and "
@@ -7288,7 +7787,7 @@ class ContractVerifier:
                     )
                 else:
                     self._record_refined_bind_tier3(
-                        decl, clause.body, site, refined_ty=binder,
+                        decl, clause.body, site,
                         reason=(
                             "the bound value is the payload the operation "
                             "delivers, which no throw or put site pins, so "
@@ -7299,7 +7798,7 @@ class ContractVerifier:
                     and not self._is_nat_type(payload)):
                 self._record_nat_bind_tier3(
                     decl, clause.body, site, "tier3",
-                    guarded=self._refined_bind_site_guarded(site),
+
                     reason=(
                         "the bound value is the payload the operation "
                         "delivers, which no throw or put site pins, so "
@@ -7317,9 +7816,7 @@ class ContractVerifier:
                 # same question one level in, so it is asked of the same
                 # registry the element fact and the element guard read.
                 self._record_refined_bind_tier3(
-                    decl, clause.body, site, refined_ty=binder,
-                    guarded=(site in carriers.ELEMENT_GUARD_SITES
-                             and self._element_guard_emitted(smt, binder)),
+                    decl, clause.body, site,
                     reason=(
                         "the bound value is the payload the operation "
                         "delivers, which no throw or put site pins, so "
@@ -7340,6 +7837,8 @@ class ContractVerifier:
         smt: SmtContext,
         slot_env: SlotEnv,
         assumptions: list[object],
+        *,
+        return_leaves: frozenset[object] = frozenset(),
     ) -> None:
         """Walk *expr* emitting ``value >= 0`` at @Int→@Nat narrowing sites.
 
@@ -7401,9 +7900,18 @@ class ContractVerifier:
         obligated them, between the children it walks.
         """
         start = _Path(assumptions, slot_env)
-        for _node, _path in fold.contexts(
+        for node, path in fold.contexts(
                 expr, self._nat_step(decl, smt), start):
-            pass
+            if (return_leaves and isinstance(node, ast.Expr)
+                    and obligation_table.ObligationTable._key(node)
+                    in return_leaves):
+                # A `@Nat` return's value leaf: `leaf >= 0` under the path
+                # conditions of the branches that reach it and the bindings
+                # in scope there, its own record at its row.
+                self._check_nat_binding_obligation(
+                    decl, node, smt, path.env, list(path.facts),
+                    site="return type",
+                )
 
     def _nat_step(
         self, decl: ast.FnDecl, smt: SmtContext,
@@ -7499,7 +8007,7 @@ class ContractVerifier:
                         self._check_refined_binding_obligation(
                             decl, arg, refined_target, smt, path.env,
                             path.facts, site="closure argument",
-                            guarded=True,
+
                         )
                     # #1017: the @Int -> @Nat NARROWING.  A provably-negative
                     # @Int argument narrowing into a
@@ -7512,7 +8020,7 @@ class ContractVerifier:
                             and self._narrows_into_nat(arg)):
                         self._check_nat_binding_obligation(
                             decl, arg, smt, path.env, path.facts,
-                            site="closure argument", guarded=True,
+                            site="closure argument",
                         )
                     # #1410, the closure-boundary twin of the call argument.
                     # `apply_fn` is a checker special form with no
@@ -7600,7 +8108,6 @@ class ContractVerifier:
             if op is None:
                 op = self.env.lookup_effect_op(expr.name)
             if op is not None:
-                op_guarded = op.parent_effect in ("State", "Exn")
                 op_site = ("State-op argument"
                            if op.parent_effect == "State"
                            else "effect-operation argument")
@@ -7608,17 +8115,11 @@ class ContractVerifier:
                     self._obligate_binding_triple(
                         decl, arg, None, smt, path.env, path.facts,
                         site=op_site,
-                        nat_guarded=op_guarded,
+
                         # #1268 for the `throw` payload, #1439 for the
                         # `State` writes — both read from the shared
                         # site table, so this leg and the qualified one
                         # below cannot answer differently.
-                        refined_guarded=(
-                            op.parent_effect == "Exn"
-                            or (op.parent_effect == "State"
-                                and self._refined_bind_site_guarded(
-                                    _STATE_WRITE_SITE))
-                        ),
                     )
         if param_types is not None:
             # A generic function whose `TypeVar` formal is fixed to @Nat
@@ -7645,7 +8146,7 @@ class ContractVerifier:
                     self._check_refined_binding_obligation(
                         decl, arg, refined_target, smt, path.env,
                         path.facts, site="call argument",
-                        guarded=True,
+
                     )
                 elif owed.nat and self._narrows_into_nat(arg):
                     self._check_nat_binding_obligation(
@@ -7662,8 +8163,7 @@ class ContractVerifier:
                         # same way, and one of them plants no guard at
                         # all, so the flag is READ FROM the measured
                         # inventory rather than assumed (#1362).
-                        guarded=self._call_arg_nat_guarded(
-                            expr.name, arg),
+
                     )
                 # #1410: a refinement written INSIDE the formal — an ADT
                 # payload, a tuple component — is assumed by the callee's
@@ -7718,8 +8218,7 @@ class ContractVerifier:
         if self._is_refined_type(resolved_ret):
             self._record_refined_bind_tier3(
                 decl, expr.body, "closure return",
-                guarded=self._refined_boundary_codegen_guardable(
-                    resolved_ret),
+
                 reason=(
                     "a closure body is opaque to the verifier, so its "
                     "returned value is never translated and the predicate "
@@ -7741,7 +8240,7 @@ class ContractVerifier:
         elif (self._is_nat_type(resolved_ret)
                 and self._return_narrows_into_nat(expr.body)):
             self._record_nat_bind_tier3(
-                decl, expr.body, "closure return", "tier3", guarded=True)
+                decl, expr.body, "closure return", "tier3")
         # #779/#985: descend into the closure BODY under an EMPTY slot
         # environment — the fresh-scope walk.  Interior slot-dependent
         # binding sites are obligated Tier-3, while literal-only shapes
@@ -7774,8 +8273,7 @@ class ContractVerifier:
                     self._check_refined_binding_obligation(
                         decl, arg, refined_target, smt, path.env,
                         path.facts, site="constructor field",
-                        guarded=self._construction_refined_guarded(
-                            "constructor field", refined_target),
+
                     )
                 elif (self._nat_binding_target(arg, field_ty)
                         and self._narrows_into_nat(arg)):
@@ -7789,7 +8287,7 @@ class ContractVerifier:
                         # same question) `_nat_binding_target` above just
                         # consulted.  Reaching this arm therefore means the
                         # guard is emitted, by either route.
-                        guarded=True,
+
                     )
                 # #1410 (PR review F3): a field whose TYPE writes a
                 # refinement on a component.  A field like
@@ -7923,14 +8421,10 @@ class ContractVerifier:
                 # (the declaration codegen reads does not), so the two
                 # must be asked separately rather than folded into one
                 # per-operation flag.
-                op_guarded = (
-                    op_effect in ("State", "Exn")
-                    or self._effect_op_formal_guarded(op_effect, formal)
-                )
                 self._obligate_binding_triple(
                     decl, arg, formal, smt, path.env, path.facts,
                     site=op_site,
-                    nat_guarded=op_guarded,
+
                     # #1268 gave the `throw` payload the refinement
                     # predicate, and #1439 the `State` write boundaries
                     # — the init, `put`'s argument, and a clause's
@@ -7938,12 +8432,6 @@ class ContractVerifier:
                     # now lower it.  Read from the shared site table
                     # rather than restated here, so the classification
                     # and the emitter move together.
-                    refined_guarded=(
-                        op_effect == "Exn"
-                        or (op_effect == "State"
-                            and self._refined_bind_site_guarded(
-                                _STATE_WRITE_SITE))
-                    ),
                 )
         for arg in expr.args:
             yield arg, path
@@ -8044,7 +8532,7 @@ class ContractVerifier:
                 # neighbour three lines up (PR #1420 review).
                 self._check_nested_refinement_obligation(
                     decl, stmt.value, let_ty, smt, cur_env,
-                    block_assumptions, site="let binding", guarded=False,
+                    block_assumptions, site="let binding",
                 )
                 # Rebind the let slot in cur_env so a later obligation
                 # translates against this value, not a stale outer binding
@@ -8374,9 +8862,7 @@ class ContractVerifier:
             self._obligate_binding_triple(
                 decl, expr.state.init_expr, state_ty, smt, path.env,
                 path.facts, site="handler state init",
-                nat_guarded=True,
-                refined_guarded=self._refined_bind_site_guarded(
-                    _STATE_WRITE_SITE),
+
             )
             yield expr.state, path
         # The handled effect's NAME wraps the BODY walk ONLY — the
@@ -8420,7 +8906,7 @@ class ContractVerifier:
                     self._obligate_binding_triple(
                         decl, r_arg, cell_ty, smt, resumed.env, resumed.facts,
                         site="State-op resume",
-                        nat_guarded=True,
+
                     )
             cells.append(cell_ty)
             try:
@@ -8450,9 +8936,7 @@ class ContractVerifier:
             self._obligate_binding_triple(
                 decl, clause.state_update[1], upd_ty, smt,
                 written.env, written.facts, site="handler state update",
-                nat_guarded=True,
-                refined_guarded=self._refined_bind_site_guarded(
-                    _STATE_WRITE_SITE),
+
             )
             yield clause.state_update[1], _Path.fresh()
 
@@ -8923,6 +9407,46 @@ class ContractVerifier:
                 otherwise="tier3",
             )
 
+    def _check_quotient_obligation(
+        self,
+        decl: ast.FnDecl,
+        expr: ast.BinaryExpr,
+        smt: SmtContext,
+        slot_env: SlotEnv,
+        assumptions: list[object],
+    ) -> None:
+        """Discharge a signed quotient's range row (#1598): ``a / b`` leaves
+        the i64 range exactly at ``a == INT_MIN && b == -1``, the one pair
+        whose quotient, ``2^63``, no ``Int`` holds.  Proved where the facts
+        exclude that pair (a positive divisor, a dividend above
+        ``INT_MIN``), refuted (E528) where they force it, else the runtime
+        check guards it."""
+        left = smt.translate_expr(expr.left, slot_env)
+        right = smt.translate_expr(expr.right, slot_env)
+        if (left is None or right is None
+                or left.sort() != z3.IntSort() or right.sort() != z3.IntSort()
+                or self._contains_opaque_shadow(left)
+                or self._contains_opaque_shadow(right)):
+            self._record_obligation(decl.name, "int_overflow", expr, "tier3")
+            return
+        overflow = z3.And(left == z3.IntVal(_I64_MIN), right == z3.IntVal(-1))
+        safe = smt.check_valid(z3.Not(overflow), list(assumptions))
+        if safe.status == "verified":
+            self._record_obligation(decl.name, "int_overflow", expr, "verified")
+            return
+        bad = smt.check_valid(overflow, list(assumptions))
+        if bad.status == "verified":
+            self._record_obligation(
+                decl.name, "int_overflow", expr, "violated",
+                error_code="E528", counterexample=safe.counterexample,
+            )
+            self._report_overflow(decl, expr, safe.counterexample)
+            return
+        self._record_undecided_safety(
+            decl, "int_overflow", expr, safe,
+            subject=f"Arithmetic in '{decl.name}'", otherwise="tier3",
+        )
+
     def _is_builtin_call(self, name: str) -> bool:
         """Whether a bare call to *name* here reaches the BUILT-IN — not a
         `where` helper or a user function that shadows its name."""
@@ -9096,9 +9620,9 @@ class ContractVerifier:
         `match get(()) { Some(@Pos) -> … }` was refused E501 on a program
         whose call cannot fail.
 
-        Only where the guard exists: `_refined_boundary_codegen_guardable`
-        is codegen's own bail (an erased base, a refinement over a
-        refinement), mirrored.  The predicate is read through
+        Only where the guard exists: the obligation table's refinement guard
+        (`_table_guards_refinement`), which code generation reads too (an
+        erased base, a refinement over a refinement, has none).  The predicate is read through
         `_established_facts`, the one gate for a declared-type fact, and
         recorded on the value (`SmtContext.assume_of_value`), so a query
         reads it exactly when it reads the value.  The bind's own
@@ -9108,14 +9632,16 @@ class ContractVerifier:
         if value is None:
             return None
         ty = self._written_type(te)
-        if not self._refined_boundary_codegen_guardable(ty):
+        if not self._table_guards_refinement(ty):
             return value
         pred = self._translate_refined_predicate(smt, ty, value)
         if pred is None:
             return value
         for fact in self._established_facts(
                 [pred], source=None, term=value, smt=smt):
-            smt.assume_of_value(value, fact)
+            # Where the bind runs: under the path to it and the bindings of
+            # the calls being modelled, never on a path it is not on.
+            smt.assume_of_value(value, smt._guard_fact(fact))
         return value
 
     def _guarded_binder_values(
@@ -9149,8 +9675,8 @@ class ContractVerifier:
         earlier arm's failing, in the translation's If-chain).  The guard is
         there because a fresh value can outlive the arm inside the `match`'s
         own translated value, where a query about the result reads it on
-        paths the arm was not taken.  Only where the guard exists
-        (`_refined_boundary_codegen_guardable`); a `@Nat` binder is not a
+        paths the arm was not taken.  Only where the guard exists (the
+        table's, `_table_guards_refinement`); a `@Nat` binder is not a
         refinement and is left as it is.
         """
         out: dict[int, object] = {}
@@ -9159,7 +9685,7 @@ class ContractVerifier:
         guard = z3.And(*taken) if taken else z3.BoolVal(True)
 
         def bind_fresh(term: z3.ExprRef, target: Type) -> None:
-            if not self._refined_boundary_codegen_guardable(target):
+            if not self._table_guards_refinement(target):
                 return
             fresh = z3.FreshConst(term.sort(), "guarded")
             pred = self._translate_refined_predicate(smt, target, fresh)
@@ -9331,32 +9857,6 @@ class ContractVerifier:
             return cur
         return env
 
-    def _element_callee_guards(self, site: str, callee: str | None) -> bool:
-        """Whether the callee at *site* carries the element guard the roster
-        promises (#1430; PR #1447 review F1).
-
-        `carriers.ELEMENT_GUARD_SITES` names, for a `call argument`, the
-        emitter in `vera/codegen/functions.py` — the CALLEE's prologue.  A
-        built-in has none, so the site name alone is not the guarantee: at
-        `array_length(a[0])` over an `Array<Array<Pos>>` the element record
-        read `tier3` — a promised runtime check — while the module carried no
-        element loop anywhere and a `-5` ran through.
-
-        Asked through the SAME predicate the `@Nat` arm asks at a call
-        argument, so the two cannot answer differently about one callee.  A
-        site that is not a call is unaffected: a return epilogue, a closure
-        boundary and a construction position are all in the compiling
-        function itself.
-        """
-        if site != "call argument":
-            return True
-        if callee is None:
-            # The caller did not name a callee, so nothing establishes that
-            # a prologue exists.  Fail closed: an unclaimed guard discloses,
-            # where a claimed one that is absent is the defect.
-            return False
-        return (self._callee_guards_in_its_prologue(callee)
-                or callee in _ARG_GUARDED_BY_LIFTED_CLOSURE)
 
     @staticmethod
     def _callee_guards_in_its_prologue(callee: str) -> bool:
@@ -9375,49 +9875,6 @@ class ContractVerifier:
         """
         return callee not in _builtin_fn_names()
 
-    def _call_arg_nat_guarded(self, callee: str, arg: ast.Expr) -> bool:
-        """Whether codegen plants a ``>= 0`` guard for this argument (#1362).
-
-        MEASURED, and it is three cases rather than one — each verified by
-        compiling the shape and running a negative through it:
-
-        1. A USER function's ``@Nat`` formal is guarded unconditionally, from
-           ``_fn_nat_params`` at the call site.  It does not consult the
-           argument at all: a clause binder already declared ``@Nat`` still
-           traps.
-        2. A BUILTIN that guards does so only when the argument NARROWS — its
-           translator asks ``_narrows_into_nat`` first — so the same callee
-           guards ``nat_to_int(array_length(...))`` and guards nothing at
-           ``nat_to_int(@Nat.0)``.
-        3. ``string_slice`` never guards, by design rather than omission: it
-           clamps its indices to ``[0, len]`` (#475), so a negative index is
-           defined behaviour and a trap would change documented semantics.
-
-        Neither key alone is the rule.  Callee-only cannot separate the two
-        halves of case 2; argument-only gets case 1 backwards and case 3
-        wrong.  Asked with CODEGEN's oracle throughout, deliberately: this
-        verifier obligates the clause binder because the checker's semantic
-        type carries the thrown ``@Int``, which is the right reading for "is
-        there a narrowing to prove?" and the wrong one for "will a guard be
-        emitted?", a statement about codegen that has to be answered the way
-        codegen answers it.
-        """
-        if callee in _NAT_ARG_UNGUARDED_BUILTINS:
-            return False
-        if self._callee_guards_in_its_prologue(callee):
-            return True
-        return narrowing.narrows_into_nat(
-            arg,
-            self._declared_ret_type_name,
-            # Codegen's own @Nat-subtraction question, asked the way codegen
-            # asks it: over the checker's resolved types, which both sides
-            # read from one table.  A constant stood here once, and claimed a
-            # runtime check the module did not hold (#1362, CR PR-review).
-            # Divergence from codegen's oracle is the bug, in either
-            # direction, which is why the shared derivation takes the oracle
-            # as a parameter rather than baking one in.
-            self._is_guarded_nat_subtraction,
-        )
 
     def _declared_ret_type_name(self, call: ast.Expr) -> str | None:
         """The DECLARED return type name of *call*'s callee, or None.
@@ -9441,20 +9898,16 @@ class ContractVerifier:
         assumptions: list[object],
         *,
         site: str,
-        guarded: bool = True,
     ) -> None:
         """Discharge a ``value >= 0`` obligation at one @Nat binding site.
 
         Mirrors :py:meth:`_check_subtraction_obligation`: on success
         records a ``verified`` obligation (Tier 1); on a Z3 counterexample a
         ``violated`` obligation plus an E503 error.  When the value is
-        untranslatable or the solver times
-        out the outcome depends on the caller-supplied ``guarded`` flag —
-        codegen-guarded sites (``guarded=True``) record a ``tier3`` obligation
-        (``tier3_runtime``), while the unguarded ones (effect-operation
-        argument and generic-instantiated constructor field —
-        ``guarded=False``) are surfaced as an E504 warning and excluded
-        from the totals
+        untranslatable or the solver times out it records ``tier3``, and
+        whether a check guards the site is its row's (#1695):
+        :meth:`_settle_rows` keeps it ``tier3`` where the row has a check and
+        discloses it (E504, excluded from the totals) where it has none
         (#747; see :py:meth:`_record_nat_bind_tier3`).  Path conditions in
         ``smt._path_conditions`` are folded in automatically by
         :py:meth:`SmtContext.check_valid`.
@@ -9462,7 +9915,7 @@ class ContractVerifier:
         val = smt.translate_expr(value_node, slot_env)
         if val is None:
             self._record_nat_bind_tier3(
-                decl, value_node, site, "tier3", guarded=guarded,
+                decl, value_node, site, "tier3",
                 reason=(
                     "the narrowed value is outside the SMT layer's decidable "
                     "fragment, so there is no term to test `>= 0` against"
@@ -9475,7 +9928,7 @@ class ContractVerifier:
         if self._refuted_only_over_a_placeholder(
                 smt, val, val < 0, result, assumptions):
             self._record_nat_bind_tier3(
-                decl, value_node, site, "tier3", guarded=guarded,
+                decl, value_node, site, "tier3",
                 reason=_PLACEHOLDER_NARROWING_REASON)
             return
         if result.status == "verified":
@@ -9498,7 +9951,7 @@ class ContractVerifier:
                 decl, value_node, site,
                 "tier3" if result.status in ("opaque", "disclosed")
                 else "timeout",
-                guarded=guarded,
+
                 reason=self._undecided_reason(result.status))
 
     def _check_nat_binding_obligation_term(
@@ -9530,7 +9983,7 @@ class ContractVerifier:
                 smt, term, term < 0,  # type: ignore[operator]
                 result, assumptions):
             self._record_nat_bind_tier3(
-                decl, node, site, "tier3", guarded=True,
+                decl, node, site, "tier3",
                 reason=_PLACEHOLDER_NARROWING_REASON)
             return
         if result.status == "verified":
@@ -9551,8 +10004,7 @@ class ContractVerifier:
             self._record_nat_bind_tier3(
                 decl, node, site,
                 "tier3" if result.status in ("opaque", "disclosed")
-                else "timeout",
-                guarded=True)
+                else "timeout")
 
     def _closure_arg_param_types(
         self, closure_arg: ast.Expr,
@@ -9582,7 +10034,6 @@ class ContractVerifier:
         assumptions: list[object],
         *,
         site: str,
-        guarded: bool | None = None,
     ) -> None:
         """Discharge a refinement-predicate obligation at one binding site.
 
@@ -9615,28 +10066,15 @@ class ContractVerifier:
           ``opaque`` countermodel, distinguished by
           :py:meth:`_undecided_reason`.
 
-        *guarded* says whether codegen runtime-guards this site.  ``None`` —
-        the default — reads it from :py:data:`narrowing.REFINED_BIND_GUARDED_SITES`,
-        which is where the answer belongs: the site string is already a
-        parameter here, so a caller restating the same fact as a literal is a
-        second copy that can disagree with the first.  A caller passes an
-        explicit flag only where the site alone does not settle it — an
-        effect-operation argument, whose guard depends on the parent EFFECT
-        rather than on the syntactic position.
+        Whether codegen runtime-guards the site is its row's, in the
+        obligation table (#1695), never this method's: an undecided record is
+        ``tier3``, and :meth:`_settle_rows` discloses it where the row has no
+        check.
         """
-        # A `@Unit` refinement is codegen-UNguarded (erased binder), so its
-        # Tier-3 fallback must not claim a runtime guard (CR db24433).
-        if guarded is None:
-            guarded = self._refined_bind_site_guarded(site)
-        eff_guarded = (
-            guarded
-            and self._refined_boundary_codegen_guardable(refined_ty)
-            and self._state_write_cell_lowerable(site, refined_ty)
-        )
         val = smt.translate_expr(value_node, slot_env)
         if val is None:
             self._record_refined_bind_tier3(
-                decl, value_node, site, guarded=eff_guarded,
+                decl, value_node, site,
                 reason=(
                     "the value being narrowed is outside the SMT layer's "
                     "decidable fragment, so there is no term to test the "
@@ -9653,7 +10091,7 @@ class ContractVerifier:
             concrete = self._concrete_refined_verdict(smt, refined_ty, val)
             if concrete is None:
                 self._record_refined_bind_tier3(
-                    decl, value_node, site, guarded=eff_guarded,
+                    decl, value_node, site,
                     reason=self._refined_untranslatable_reason(refined_ty),
                 )
             elif concrete[0]:
@@ -9667,7 +10105,7 @@ class ContractVerifier:
             else:
                 self._reject_or_excuse_concrete_violation(
                     decl, value_node, refined_ty, smt, assumptions,
-                    site=site, guarded=eff_guarded, value=concrete[1],
+                    site=site, value=concrete[1],
                 )
             return
 
@@ -9714,7 +10152,7 @@ class ContractVerifier:
             unsat = smt.check_valid(z3mod.Not(goal), list(assumptions))
             if unsat.status != "verified":
                 self._record_refined_bind_tier3(
-                    decl, value_node, site, guarded=eff_guarded,
+                    decl, value_node, site,
                     reason=(
                         "the value being narrowed is, or embeds, a "
                         "placeholder for a slot rebound by a `let` or "
@@ -9736,7 +10174,7 @@ class ContractVerifier:
                 decl, value_node, refined_ty, site, result.counterexample)
         else:  # pragma: no cover — no solver verdict (unknown / #1199 opaque)
             self._record_refined_bind_tier3(
-                decl, value_node, site, guarded=eff_guarded,
+                decl, value_node, site,
                 reason=self._undecided_reason(result.status),
             )
     # -----------------------------------------------------------------
@@ -9944,68 +10382,6 @@ class ContractVerifier:
                 return True
         return False
 
-    def _nested_refinements_guarded(
-        self,
-        ty: Type | None,
-        *,
-        tuple_path: bool = True,
-        _seen: frozenset[str] = frozenset(),
-    ) -> bool:
-        """Whether codegen boundary-guards EVERY refinement nested in *ty*
-        (#1410) — the nested-position sibling of
-        :py:meth:`_refined_boundary_codegen_guardable`; KEEP IN SYNC with
-        ``_tuple_component_guard_sites`` (``vera/codegen/contracts.py``).
-
-        Codegen decomposes TUPLES at a parameter / return boundary
-        (``_emit_component_refinement_guards``) and nothing else, so a position
-        is guarded exactly when every step from the root to it went through a
-        tuple.  Measured, not assumed: a ``Tuple<PosInt, Int>`` parameter fed a
-        violating component traps on the callee's entry guard ("Refinement
-        violation … parameter (tuple component)"), an ``Option<PosInt>`` one
-        runs on to refute the callee's postcondition instead.
-
-        Type-only, so the no-term path and the discharged path read ONE
-        derivation — a second copy inside the fact walk would be free to drift,
-        and a guardedness claim that drifts is exactly #1362.
-        """
-        base = self._strip_refinements(ty)
-        if not self._contains_refinement(base, frozenset()):
-            return True
-        if not isinstance(base, AdtType):
-            return False
-        key = self._type_key(base)
-        if key in _seen:
-            return False
-        deeper = _seen | {key}
-        pos_guarded = tuple_path and base.name == "Tuple"
-        constructors = self._adt_constructor_names(base)
-        if not constructors:
-            # FAIL CLOSED.  A carrier this walk cannot decompose — `Array`,
-            # `Map`, `Set`, or an ADT the env does not know — reaches its
-            # refined positions only through the type ARGUMENTS, and codegen's
-            # boundary decomposition does not reach them at all.  Falling out
-            # of an empty loop into `True` claimed a guard for exactly those:
-            # `Array<PosInt>` recorded `tier3` ("checked at run time") for a
-            # position nothing checks, which is the #1362 misclassification
-            # one family over.
-            return False
-        for ctor in constructors:
-            fields = self._payload_field_types(ctor, base)
-            if fields is None:
-                # The instantiation is unreadable here, so the positions it
-                # would expose are unknown — the same fail-closed answer.  A
-                # NULLARY constructor is `()`, not None: `Option`'s `None`
-                # carries no payload and must not close this walk.
-                return False
-            for field_ty in fields:
-                if not self._contains_refinement(field_ty, frozenset()):
-                    continue
-                if isinstance(field_ty, RefinedType) and not pos_guarded:
-                    return False
-                if not self._nested_refinements_guarded(
-                        field_ty, tuple_path=pos_guarded, _seen=deeper):
-                    return False
-        return True
 
     def _nested_refinement_facts(
         self,
@@ -10117,53 +10493,6 @@ class ContractVerifier:
         None, "map_keys", "map_values", "set_to_array",
     })
 
-    def _element_guard_emitted(
-        self, smt: SmtContext, ty: Type | None,
-    ) -> bool:
-        """Whether codegen emits an element-wise boundary guard for *ty*.
-
-        True when EVERY element position of the carrier that carries a
-        refinement is one the emitter can check: a refinement over a scalar
-        base it can load.  False for a pair-shaped element
-        (``Array<Array<T>>``, ``Array<String>``), which the emitter declines
-        because its ptr half alone does not carry the value the predicate
-        reads — a half-guard would be worse than an honest disclosure.
-
-        Every, not any, and that is the point at a two-position carrier: a
-        ``Map<NonEmpty, PosInt>`` has a guardable value position and an
-        unguardable key one, and claiming `guarded` for the obligation on the
-        strength of the value half would promise a check the keys never get.
-
-        This is the verifier half of a cross-component invariant, so it is
-        held by a differential against the emitter rather than by inspection:
-        a `guarded` status that codegen does not back is exactly the defect
-        #1430 stage 1 introduced, one level down.
-        """
-        # #1429: through the same rule the fact walk asks, and for the same
-        # reason — `_contains_refinement` descends through constructor fields
-        # and a non-regular declaration gives it no fixed point.
-        if not smt.type_is_regular(ty):
-            return False
-        refined = [
-            carrier for carrier in carriers.element_carriers(ty)
-            if self._contains_refinement(carrier.element_type, frozenset())
-        ]
-        if not refined:
-            return False
-        for carrier in refined:
-            if carrier.projection not in self._GUARDABLE_ELEMENT_PROJECTIONS:
-                return False
-            element = carrier.element_type
-            if not isinstance(element, RefinedType):
-                # The refinement is deeper than the element itself
-                # (`Array<Option<PosInt>>`): the emitter loads one scalar per
-                # element and cannot decompose a payload behind it.
-                return False
-            inner = self._strip_refinements(element)
-            name = getattr(inner, "name", None)
-            if name not in self._GUARDABLE_ELEMENT_BASES:
-                return False
-        return True
 
     def _carrier_element_facts(
         self,
@@ -10334,7 +10663,6 @@ class ContractVerifier:
         assumptions: list[object],
         *,
         site: str,
-        guarded: bool | None = None,
         callee: str | None = None,
     ) -> None:
         """Obligate a value against the refinements written INSIDE its target
@@ -10385,6 +10713,26 @@ class ContractVerifier:
         if not self._has_nested_refinement(formal_ty):
             return
         if self._all_leaves_construct(value_node, smt, slot_env):
+            if site == "return type" and value_node is decl.body:
+                # #1695: the return type's component rows, which code
+                # generation checks at the return, hold by the body's
+                # constructions, each of whose fields is its own row: proved
+                # where every one of those is proved, and left to the
+                # return's check (`tier3`, settled by its row) where one is
+                # not.  A field's record stands where it is located (a piped
+                # stage's at the stage); a guarded or undecided field proves
+                # nothing here, since its row is settled later, and a body
+                # with no field record proves nothing.
+                spans = {(sp.line, sp.column) for n in fold.walk(value_node)
+                         if (sp := _site_span(n)) is not None}
+                fields = [o for o in self.obligations
+                          if o.fn_name == decl.name and o.kind == "refine_bind"
+                          and (o.line, o.column) in spans]
+                held = bool(fields) and all(
+                    o.status == "verified" for o in fields)
+                self._record_obligation(
+                    decl.name, "refine_bind", value_node,
+                    "verified" if held else "tier3")
             return
         # #1430 stage 1b: a carrier boundary that carries an element-wise
         # runtime guard makes an undecided element obligation GUARDED —
@@ -10403,47 +10751,24 @@ class ContractVerifier:
         # guard anywhere, which let a violating element laundered through an
         # opaque producer reach a Tier-1-clean callee and refute its
         # postcondition at run time.
-        if (guarded is None
-                and self._element_guard_emitted(smt, formal_ty)
-                and site in carriers.ELEMENT_GUARD_SITES
-                and self._element_callee_guards(site, callee)):
-            guarded = True
         val = smt.translate_expr(value_node, slot_env)
         source_ty = self._resolved_type_of(value_node)
-        # Guardedness is the SITE half intersected with the TYPE half, the
-        # same shape every other `refine_bind` leg uses (#765): the roster
-        # says whether codegen guards AT this position, and
-        # `_nested_refinements_guarded` says whether its decomposition
-        # reaches the refinement's position INSIDE the type.  Naming the
-        # non-boundary sites again here — as a literal `guarded=False` at the
-        # constructor-field and tuple-component calls — made this leg a
-        # second authority on a question the roster already answers, and two
-        # authorities are how the answer went stale before.  A caller still
-        # passes an explicit flag where the site alone does not settle it,
-        # and an explicit False is final.
-        if guarded is None:
-            guarded = (
-                self._refined_bind_site_guarded(site)
-                and self._nested_refinements_guarded(formal_ty)
-            )
         if val is None:
             self._record_refined_bind_tier3(
-                decl, value_node, site, guarded=guarded,
+                decl, value_node, site,
                 reason=(
                     "the value being narrowed is outside the SMT layer's "
                     "decidable fragment, so there is no term to test the "
                     "target type's nested refinements against"
                 ),
-                guard_note=_NESTED_SITE_GUARD_NOTE,
             )
             return
         goal_facts, complete = self._nested_refinement_facts(
             smt, formal_ty, val)
         if not goal_facts:
             self._record_refined_bind_tier3(
-                decl, value_node, site, guarded=guarded,
+                decl, value_node, site,
                 reason=self._nested_unstatable_reason(formal_ty),
-                guard_note=_NESTED_SITE_GUARD_NOTE,
             )
             return
         source_facts, _ = self._nested_refinement_facts(smt, source_ty, val)
@@ -10477,9 +10802,8 @@ class ContractVerifier:
             # As at every narrowing (#1480 review): a payload refuted only
             # over a placeholder names no value the program produces.
             self._record_refined_bind_tier3(
-                decl, value_node, site, guarded=guarded,
+                decl, value_node, site,
                 reason=_PLACEHOLDER_REFINEMENT_REASON,
-                guard_note=_NESTED_SITE_GUARD_NOTE,
             )
             return
         if result.status == "verified" and complete:
@@ -10487,9 +10811,8 @@ class ContractVerifier:
                 decl.name, "refine_bind", value_node, "verified")
         elif result.status == "verified":
             self._record_refined_bind_tier3(
-                decl, value_node, site, guarded=guarded,
+                decl, value_node, site,
                 reason=self._nested_unstatable_reason(formal_ty),
-                guard_note=_NESTED_SITE_GUARD_NOTE,
             )
         elif result.status == "violated":
             self._record_obligation(
@@ -10500,9 +10823,8 @@ class ContractVerifier:
                 decl, value_node, formal_ty, site, result.counterexample)
         else:
             self._record_refined_bind_tier3(
-                decl, value_node, site, guarded=guarded,
+                decl, value_node, site,
                 reason=self._undecided_reason(result.status),
-                guard_note=_NESTED_SITE_GUARD_NOTE,
             )
 
     @staticmethod
@@ -10602,7 +10924,6 @@ class ContractVerifier:
         assumptions: list[object],
         *,
         site: str,
-        guarded: bool,
         value: str,
     ) -> None:
         """Report a literal that fails its predicate — unless it cannot run.
@@ -10643,7 +10964,7 @@ class ContractVerifier:
             return
         if reachable.status != "violated":
             self._record_refined_bind_tier3(
-                decl, value_node, site, guarded=guarded,
+                decl, value_node, site,
                 reason=self._unsettled_reachability_reason(
                     value, reachable.status),
             )
@@ -10806,10 +11127,7 @@ class ContractVerifier:
         value_node: ast.Expr,
         site: str,
         *,
-        guarded: bool | None = None,
         reason: str,
-        guard_note: str = _UNGUARDED_TWO_CAUSE_NOTE,
-        refined_ty: Type | None = None,
     ) -> None:
         """Record a Tier-3 ``refine_bind`` outcome — the predicate was not
         discharged statically — distinguishing codegen-guarded boundary sites
@@ -10828,59 +11146,28 @@ class ContractVerifier:
         :py:meth:`_undecided_reason` wherever the answer depends on
         state, and pass a literal only where the site itself is the cause.
 
-        Codegen emits a runtime guard at the function boundary — a refined
-        parameter at entry, a refined return at exit — and, since #765, at
-        every narrowing PATTERN BIND (``let`` / match-bind / tuple-destructure
-        / ADT-sub-pattern, at any nesting depth).  Those are
-        ``tier3_runtime`` with an informational E506, like any other Tier-3
-        contract Vera checks at run time.  What is left unguarded is a
-        constructor field or tuple component AT CONSTRUCTION and a user
-        effect operation's argument (#754): E506 warnings excluded from the
-        totals rather than overstating a runtime check they never get (R7).
+        Whether a runtime check guards the site is its row's, in the
+        obligation table (#1695): the record is ``tier3`` here, and
+        :meth:`_settle_rows` keeps it ``tier3`` where the row has a check and
+        discloses it (``tier3_unguarded``, with the row's reason) where it has
+        none.
 
         Required and non-EMPTY: an empty string is a caller that has not
         decided wearing the shape of one that has, and it renders the same
-        broken sentence a missing reason would.
-
-        *guarded* defaults to ``None`` — read the site from
-        :py:data:`narrowing.REFINED_BIND_GUARDED_SITES` rather than restating it — and
-        is intersected with :py:meth:`_refined_boundary_codegen_guardable`
-        when *refined_ty* is supplied, since a guarded site still emits
-        nothing for a base codegen cannot check.
-
-        *guard_note* is the UNGUARDED report's closing sentence — what codegen
-        does and does not check at this site.  The default names the two
-        causes a reader has to choose between (an unguarded SITE, or a BASE no
-        guard can be emitted for), because since #765 the site alone no longer
-        settles it.  The nested-refinement family passes its own: its site IS
-        a function boundary, and what is missing there is a third thing —
-        codegen's boundary decomposition reaches a parameter's own refinement
-        and its TUPLE components and nothing else — so the default's two
-        causes would send a reader looking at a call argument to neither of
-        the halves that apply, in the one field written to say exactly
-        where the guard is."""
+        broken sentence a missing reason would."""
         if not reason:
             raise ValueError(
                 "a refinement Tier-3 demotion emits an E506 that must say "
                 f"why (site {site!r} in {decl.name!r}): `reason` is empty"
             )
-        if guarded is None:
-            guarded = self._refined_bind_site_guarded(site)
-        if guarded and refined_ty is not None:
-            guarded = self._refined_boundary_codegen_guardable(refined_ty)
-        if guarded:
-            self._record_obligation(
-                decl.name, "refine_bind", value_node, "tier3",
-                error_code="E506",
-            )
-            self._report_refined_runtime(decl, value_node, site, reason)
-        else:
-            self._record_obligation(
-                decl.name, "refine_bind", value_node, "tier3_unguarded",
-                error_code="E506",
-            )
-            self._report_refined_unguarded(
-                decl, value_node, site, reason, guard_note)
+        # Whether a check guards the site is its row's (#1695): the record
+        # is `tier3`, and `_settle_rows` discloses it where the row has none.
+        self._record_obligation(
+            decl.name, "refine_bind", value_node, "tier3",
+            error_code="E506",
+        )
+        self._note_static_reason(self.obligations[-1], reason)
+        self._report_refined_runtime(decl, value_node, site, reason)
 
     def _check_generic_refined_return(
         self, decl: ast.FnDecl, ret_type: Type,
@@ -11022,7 +11309,7 @@ class ContractVerifier:
         if goal is None:
             self._record_refined_bind_tier3(
                 decl, decl.body, "return type",
-                guarded=self._refined_boundary_codegen_guardable(ret_type),
+
                 reason=self._refined_bail_reason(ret_type, body_expr))
             return
         result = smt.check_valid(goal, list(assumptions))
@@ -11041,7 +11328,7 @@ class ContractVerifier:
         else:  # pragma: no cover — no solver verdict (unknown / #1199 opaque)
             self._record_refined_bind_tier3(
                 decl, decl.body, "return type",
-                guarded=self._refined_boundary_codegen_guardable(ret_type),
+
                 reason=self._undecided_reason(result.status))
 
     def _check_refined_binding_obligation_term(
@@ -11082,7 +11369,7 @@ class ContractVerifier:
         goal = self._translate_refined_predicate(smt, refined_ty, term)
         if goal is None:
             self._record_refined_bind_tier3(
-                decl, node, site, refined_ty=refined_ty,
+                decl, node, site,
                 reason=self._refined_untranslatable_reason(refined_ty))
             return
         local_assumptions = list(assumptions)
@@ -11106,7 +11393,7 @@ class ContractVerifier:
             # in a `requires` on a program that runs, where its guard traps
             # on a violating payload.
             self._record_refined_bind_tier3(
-                decl, node, site, refined_ty=refined_ty,
+                decl, node, site,
                 reason=_PLACEHOLDER_REFINEMENT_REASON)
             return
         if result.status == "verified":
@@ -11120,7 +11407,7 @@ class ContractVerifier:
                 decl, node, refined_ty, site, result.counterexample)
         else:  # pragma: no cover — no solver verdict (unknown / #1199 opaque)
             self._record_refined_bind_tier3(
-                decl, node, site, refined_ty=refined_ty,
+                decl, node, site,
                 reason=self._undecided_reason(result.status))
 
     def _term_source_fact(
@@ -12059,7 +12346,7 @@ class ContractVerifier:
                     # (excluded from totals), not a silent pass (R7).
                     self._record_refined_bind_tier3(
                         decl, scrutinee, "ADT sub-pattern bind",
-                        refined_ty=target, reason=_OPAQUE_SCRUTINEE_REASON)
+                        reason=_OPAQUE_SCRUTINEE_REASON)
                 continue
             if (self._is_nat_type(target)
                     and narrowing.component_narrows(
@@ -12084,8 +12371,7 @@ class ContractVerifier:
                     # obligation rather than dropping it silently (the summary
                     # derives its count from it, #967).
                     self._record_nat_bind_tier3(
-                        decl, scrutinee, "ADT sub-pattern bind", "tier3",
-                        guarded=True)
+                        decl, scrutinee, "ADT sub-pattern bind", "tier3")
 
     def _record_nested_subpattern_fallbacks(
         self,
@@ -12142,14 +12428,13 @@ class ContractVerifier:
                     and self._refined_field_narrows(target, field_ty)):
                 self._record_refined_bind_tier3(
                     decl, scrutinee, "ADT sub-pattern bind",
-                    refined_ty=target, reason=_OPAQUE_SCRUTINEE_REASON)
+                    reason=_OPAQUE_SCRUTINEE_REASON)
             elif (self._is_nat_type(target)
                     and narrowing.component_narrows(
                         field_sources, i, self._narrows_into_nat,
                         leaf_is_nat)):
                 self._record_nat_bind_tier3(
-                    decl, scrutinee, "ADT sub-pattern bind", "tier3",
-                    guarded=True)
+                    decl, scrutinee, "ADT sub-pattern bind", "tier3")
 
     def _obligate_destructure_narrowings(
         self,
@@ -12269,12 +12554,10 @@ class ContractVerifier:
             # Tier-3 excluded from totals — never a silent pass (R7).
             for _ in nat_narrowing:
                 self._record_nat_bind_tier3(
-                    decl, stmt.value, "tuple destructure", "tier3",
-                    guarded=True)
+                    decl, stmt.value, "tuple destructure", "tier3")
             for _, refined_target in refined_narrowing:
                 self._record_refined_bind_tier3(
                     decl, stmt.value, "tuple destructure",
-                    refined_ty=refined_target,
                     reason=(
                         "the destructured value cannot be projected into its "
                         "components (an effect-op result, or another term the "
@@ -12370,99 +12653,29 @@ class ContractVerifier:
         site: str,
         status: ObligationStatus,
         *,
-        guarded: bool,
         reason: str | None = None,
     ) -> None:
         """Record a Tier-3 nat_bind outcome (untranslatable value or solver
-        timeout), distinguishing codegen-guarded narrowings from unguarded
-        ones via the caller-supplied *guarded* flag.
+        timeout), *status* ``tier3`` or ``timeout``.
 
-        Codegen guards the `let`, tuple-destructure, top-level match-bind,
-        and ADT-sub-pattern sites, the *concrete* @Nat constructor-field, and
-        *all* call-arguments — concrete directly, generic on the
-        monomorphised callee (#747), so a Tier-3 narrowing there genuinely
-        falls to a runtime check (``tier3_runtime``).  The unguarded cases —
-        the operation argument of a user-declared effect or of the builtin
-        ``Exn`` ``throw`` (#1268; the builtin State-op sites are guarded
-        since #1203) and the generic-instantiated
-        constructor field (constructors carry no per-field @Nat mono
-        metadata) — may be neither statically proven nor runtime-checked, so
-        surface an E504 warning and exclude them from the discharged totals
-        (like a violation) rather than silently counting a runtime check they
-        never
-        get.  The caller knows which case applies (it has the formal /
-        field type), so it passes *guarded* rather than inferring it from
-        the broad *site* string.
+        Whether a runtime check guards the site is its row's, in the
+        obligation table (#1695): :meth:`_settle_rows` keeps the record where
+        the row has a check (``tier3_runtime``) and discloses it, E504,
+        excluded from the totals, where it has none (a user effect
+        operation's argument, a generic-instantiated constructor field).
 
-        *reason* is WHY the obligation was not discharged, spliced into the
-        E504 rationale (#1251).  It is required on the UNGUARDED leg and
-        refused-by-raise if missing, because that leg emits a disclosure that
-        has to state a cause and there is no honest default: the value may not
-        have translated, or the solver may have returned no verdict, and those
-        ask the reader to change different things.  The GUARDED leg emits no
-        disclosure at all, so it neither needs the text nor should carry dead
-        text for the sake of a uniform signature.
+        *reason*, optional, is WHY the obligation was not discharged (the
+        value did not translate, or the solver returned no verdict); it is
+        kept for that disclosure's rationale (#1251), beside the row's
+        reason for having no check.
         """
-        if guarded:
-            self._record_obligation(decl.name, "nat_bind", value_node, status)
-        else:
-            # `not reason` rather than `is None`: an EMPTY reason renders a
-            # broken sentence ("could not be discharged: .") and is a caller
-            # that has not decided, which is the same defect the parameter
-            # exists to prevent — a default by another spelling.
-            if not reason:
-                raise ValueError(
-                    "an unguarded nat_bind demotion emits an E504 that must "
-                    f"say why (site {site!r} in {decl.name!r}): pass `reason`"
-                )
-            self._record_obligation(
-                decl.name, "nat_bind", value_node, "tier3_unguarded",
-                error_code="E504",
-            )
-            self._report_nat_binding_unguarded(decl, value_node, site, reason)
+        # Whether a check guards the site is its row's (#1695): the record
+        # is `tier3` (or `timeout`), and `_settle_rows` discloses it where
+        # the row has none.
+        self._record_obligation(decl.name, "nat_bind", value_node, status)
+        if reason:
+            self._note_static_reason(self.obligations[-1], reason)
 
-    def _report_nat_binding_unguarded(
-        self,
-        decl: ast.FnDecl,
-        node: ast.Expr,
-        site: str,
-        reason: str,
-    ) -> None:
-        """Emit an E504 warning for a non-let @Nat narrowing the SMT layer
-        could not discharge and codegen does not guard (#747).
-
-        *reason* names WHY it was not discharged and is spliced in verbatim
-        (#1251).  This method does not decide the cause and must not describe
-        one: it emitted a fixed "outside Z3's decidable fragment
-        (untranslatable or the solver timed out)" for every caller — two
-        different events, neither of which is what happens at the site this
-        warning is actually reachable from."""
-        self._warning(
-            node,
-            (
-                f"@Int value narrowing into a @Nat {site} in '{decl.name}' "
-                "could not be verified statically and is not runtime-guarded "
-                "(#754) — add `requires(... >= 0)`, bind it to a `let @Nat` "
-                "first (which is guarded), or guard it with "
-                "`if ... >= 0 then ... else ...`."
-            ),
-            rationale=(
-                f"The `>= 0` obligation could not be discharged: {reason}.  "
-                "Codegen runtime-guards "
-                "the concrete @Nat binding sites (let, destructure, match, "
-                "sub-pattern, concrete field) and all call-arguments (generic "
-                "ones on the monomorphised callee) but not this one — a "
-                "USER-declared effect operation's argument (the built-in "
-                "`State` write boundaries and the `Exn` `throw` payload ARE "
-                "guarded), or a generic-instantiated constructor field with "
-                "no per-field mono metadata — so here "
-                "the narrowing is neither statically proven nor "
-                "runtime-checked."
-            ),
-            spec_ref='Chapter 11, Section 11.2.1 "Nat as i64"',
-            error_code="E504",
-            tier=3,
-        )
 
     def _report_underflow(
         self,
@@ -12963,52 +13176,6 @@ class ContractVerifier:
             tier=3,
         )
 
-    def _report_refined_unguarded(
-        self,
-        decl: ast.FnDecl,
-        node: ast.Expr,
-        site: str,
-        reason: str,
-        guard_note: str = _UNGUARDED_TWO_CAUSE_NOTE,
-    ) -> None:
-        """Emit an E506 warning for a refinement narrowing the SMT layer could
-        not discharge and codegen does NOT runtime-guard (#746).
-
-        *reason* is the caller's clause naming WHY it was not discharged, and
-        it is spliced into the rationale verbatim (#1251) — this method does
-        not decide the cause and must not describe one, for the reason its
-        guarded twin :py:meth:`_report_refined_runtime` records.
-
-        Two things reach this leg, and since #765 they are different in kind.
-        The SITE may be one codegen does not guard — a constructor field or a
-        tuple component AT CONSTRUCTION, or a user effect operation's
-        argument.  Or the site is guarded and the TYPE is not: a refinement
-        whose base is itself a refinement, or one whose base erases (`@Unit`,
-        a `Future<Unit>`), for which no guard can be emitted anywhere.  The
-        pattern binds this warning used to name — `let`, match bind,
-        tuple destructure, ADT sub-pattern — are guarded now, so naming them
-        as the cause would send a reader to change the site when the answer
-        is usually the base.  The rationale therefore names the two
-        possibilities rather than asserting the one that used to be true."""
-        self._warning(
-            node,
-            (
-                f"Refinement predicate at a {site} in '{decl.name}' could not "
-                "be verified statically and is not runtime-guarded — add a "
-                "`requires(...)` implying the predicate, or guard the binding "
-                "with an `if`."
-            ),
-            rationale=(
-                f"The refinement predicate was not discharged statically: "
-                f"{reason}.  {guard_note}"
-            ),
-            spec_ref=(
-                'Chapter 2, Section 2.6 "Refinement Types" and Chapter 6, '
-                'Section 6.8 "Summary of Verification Tiers"'
-            ),
-            error_code="E506",
-            tier=3,
-        )
 
     def _is_guarded_nat_subtraction(self, expr: ast.Expr) -> bool:
         """Whether *expr* is a `@Nat` subtraction the walk obligates
@@ -13117,6 +13284,40 @@ class ContractVerifier:
         if self._is_nat_type(resolved):
             return "Nat"
         return getattr(resolved, "name", None)
+
+    def _nat_return_narrows(self, decl: ast.FnDecl, ret_type: Type) -> bool:
+        """Whether *decl*'s body narrows into its bare ``@Nat`` return (7d's
+        gate; a refinement over ``@Nat`` is 7b's)."""
+        return (decl.body is not None
+                and self._is_nat_type(ret_type)
+                and not self._is_refined_type(ret_type)
+                and self._return_narrows_into_nat(decl.body))
+
+    def _nat_return_leaf_keys(
+        self, decl: ast.FnDecl, ret_type: Type,
+    ) -> frozenset[object] | None:
+        """The value leaves of *decl*'s ``@Nat`` return the table lists a
+        row at, by node key, each discharged where the body walk reaches it
+        (R111's finding 1 on PR #1835: one discharge of the whole body gave
+        every leaf the body's status).  Empty where the return does not
+        narrow; ``None`` where the body is discharged whole: a function the
+        table lists no rows of, or a body with one such leaf, whose record
+        is that leaf's (the whole body's translation, a destructure read
+        through its producer's contract, is the more precise there)."""
+        if decl.body is None or not self._nat_return_narrows(decl, ret_type):
+            return frozenset()
+        rows = self._table.rows_of_function(decl)
+        if rows is None:
+            return None
+        key = obligation_table.ObligationTable._key
+        # The table's own leaf rule (a `handle` is one leaf), so every leaf
+        # row is reached.
+        leaves = {key(n) for n in obligation_table.return_leaves(decl.body)}
+        keys = frozenset(
+            key(r.node) for r in rows
+            if r.kind == "nat_bind" and r.evaluation == obligation_table.RETURN
+            and key(r.node) in leaves)
+        return keys if len(keys) > 1 else None
 
     def _return_narrows_into_nat(self, body: ast.Expr) -> bool:
         """Whether a @Nat function-return slot receives a value that can be
@@ -13599,121 +13800,14 @@ class ContractVerifier:
         ``@Array`` (a pair), whose binders DO lower, so those stay guarded."""
         return isinstance(ty, RefinedType) and ty.base == UNIT
 
-    @staticmethod
-    def _effect_op_formal_guarded(
-        effect_name: str | None, formal: Type | None,
-    ) -> bool:
-        """Whether codegen guards an argument bound into effect-operation
-        *formal* — the semantic mirror of ``_guard_effect_op_arg``'s
-        condition (``vera/wasm/calls.py``); KEEP IN SYNC (#754).
 
-        Two conditions, and both are about whether a guard can exist at all.
+    def _table_guards_refinement(self, ty: Type) -> bool:
+        """Whether a check guards a value bound at the refinement *ty*, as
+        the obligation table decides it for every row into *ty* (#1695):
+        the post-fact rule, a guarded binder's predicate holds for the rest
+        of its scope, and an unguarded one's does not."""
+        return self._table.refinement_guard(ty).check
 
-        First, the OPERATION has to be one codegen lowers: a user-declared
-        effect's operation is lowered nowhere, and the checker refuses every
-        use of one (E340, `vera.lowering` rule 6: a row naming the effect, a
-        handler for it, a call of its operation under a row that does not
-        name it), so there is no run for a guard to protect and claiming one
-        would repeat #1268's promise about a runtime that is never reached.
-        The roster is :data:`~vera.narrowing.COMPILABLE_EFFECTS`, read by
-        codegen's own `_is_compilable` to make the same decision.
-
-        Second, the FORMAL has to resolve to a concrete `@Nat` or `@Int`,
-        which is what codegen's registry records and what its narrowing
-        guards key on.  A formal that is a type PARAMETER records
-        nothing there, so a generic operation instantiated to `@Nat` at this
-        call site is obligated and unguarded — which is why this asks about
-        the declared formal rather than about the instantiated target
-        `_nat_binding_target` resolves.
-        """
-        if effect_name not in narrowing.COMPILABLE_EFFECTS:
-            return False
-        base = getattr(formal, "base", formal)
-        return getattr(base, "name", None) in ("Nat", "Int")
-
-    @staticmethod
-    def _refined_bind_site_guarded(site: str) -> bool:
-        """The SITE half of the refinement-guard question (#765).
-
-        Reads :py:data:`narrowing.REFINED_BIND_GUARDED_SITES`, which is the one place
-        the answer is written down; intersect with
-        :py:meth:`_refined_boundary_codegen_guardable` wherever the
-        refinement's own type is in hand, since a guarded site still emits
-        nothing for a base codegen cannot check.
-        """
-        return site in narrowing.REFINED_BIND_GUARDED_SITES
-
-    def _state_write_cell_lowerable(self, site: str, ty: Type) -> bool:
-        """Whether a `State` write at *site* is inside a cell code generation
-        registers at all (#1439).
-
-        The THIRD clause of the type half, beside the erased base and the
-        nested refinement, and it belongs only to the `State` writes: their
-        value crosses host imports carrying one word, so a `(ptr, len)` cell
-        is refused at registration (E607) and the enclosing function is
-        dropped.  A guarded Tier-3 there would promise a check inside a
-        function the module does not contain — #1268's lesson at the write
-        boundary — so the obligation discloses instead.
-
-        The rule is :func:`vera.lowering.state_cell_lowerable`, which
-        `_state_cell_refusal` reads with its own oracle, so the record
-        cannot claim a cell the backend declines.  Every other site answers
-        True: the question is about a `State` cell, not about the value.
-        """
-        if site not in _STATE_WRITE_SITES:
-            return True
-        return state_cell_lowerable(
-            representable=not has_no_wasm_representation(ty),
-            pair=is_pair_represented(ty),
-        )
-
-    @staticmethod
-    def _refined_boundary_codegen_guardable(ty: Type) -> bool:
-        """Whether codegen's boundary refinement guard actually fires for
-        *ty* — the semantic mirror of ``_refinement_guard_parts``'s bail
-        conditions (``vera/codegen/contracts.py``); KEEP IN SYNC (#1036).
-
-        Codegen bails (emits NO guard) in exactly two cases: (a) the base is
-        the erased ``@Unit`` (no local to check — the ``_is_unit_refinement``
-        case), and (b) the base is itself a REFINEMENT, which it refuses
-        outright rather than emitting a partial guard.  A ``guarded=True``
-        Tier-3 for either was an unfulfilled runtime-guard promise: an empty
-        array flowed through a NonEmpty-refined closure boundary silently
-        while the obligation stream claimed a runtime check (PR #1034
-        adversarial review).
-
-        A base carrying a NON-PLAIN type argument — ``Array<{ @Int | ... }>``,
-        ``Array<fn(…)>`` — was a third bail, on the premise that the binder
-        slot name could not be spelt (#1036).  It can: since #1208 the binder
-        is named by :func:`vera.naming.slot_name`, whose ARGUMENTS go through
-        the checker's own renderer, so a refinement or a function type in
-        argument position renders like any other type and the guard is
-        emitted.  Keeping the clause made the mirror wrong in the opposite
-        direction — disclosing ``tier3_unguarded`` for a boundary that DOES
-        trap, which under-counts the runtime checks and tells a reader to add
-        a bound they already have.  Measured on both the named and the
-        closure path before removal, and held by the guard-parity
-        differential afterwards."""
-        if not isinstance(ty, RefinedType):
-            return False
-        if erases_to_unit(ty):
-            # Representation-keyed, not name-keyed: a `Future<Unit>` base
-            # erases exactly like bare `@Unit` (#841), so neither has a
-            # local for the guard to check (PR #1034 full review).
-            return False
-        if isinstance(ty.base, RefinedType):
-            # Refinement OVER a refinement (`type Tiny = { @Pos | @Pos.0 < 10 }`
-            # where `Pos = { @Int | @Int.0 > 0 }`).  `_refinement_guard_parts`
-            # answers None for this shape — it records a loud E618 and emits
-            # nothing, because the outer guard alone would silently drop the
-            # inner membership predicate.  This mirror claimed True anyway, so
-            # `vera verify` exited 0 recording a Tier-3 that "will be checked
-            # at run time" for a program `vera compile` then REFUSES: a
-            # promise about a runtime that cannot be reached at all.  The
-            # honest answer is unguarded (the obligation discloses E506) and
-            # E618 still refuses at compile.
-            return False
-        return True
 
     @staticmethod
     def _is_bool_type(ty: Type) -> bool:

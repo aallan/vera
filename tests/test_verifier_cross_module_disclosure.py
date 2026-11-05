@@ -38,13 +38,26 @@ from tests import pipeline
 _BUDGET_S = 600
 
 
+def _with_alias(text: str) -> str:
+    """*text* with `NonNeg` declared after its `module` and `import` lines,
+    where it names `NonNeg` and does not declare it."""
+    if "NonNeg" not in text or "type NonNeg" in text:
+        return text
+    lines = text.split("\n")
+    i = 0
+    while i < len(lines) and (lines[i].startswith(("module ", "import "))
+                              or not lines[i].strip()):
+        i += 1
+    return "\n".join(lines[:i] + [_NONNEG] + lines[i:])
+
+
 def _tree(tmp_path: Path, files: dict[str, str]) -> dict[str, Path]:
     """Write a module tree and return name -> path."""
     tmp_path.mkdir(parents=True, exist_ok=True)
     out: dict[str, Path] = {}
     for name, text in files.items():
         p = tmp_path / f"{name}.vera"
-        p.write_text(text, encoding="utf-8")
+        p.write_text(_with_alias(text), encoding="utf-8")
         out[name] = p
     return out
 
@@ -73,13 +86,10 @@ def _obl(
     fixture here is assembled from templates, so a line index would silently
     re-point at a different function the moment a template gains a line.
 
-    *status* separates two records of one kind at one site.  Since #1445 the
-    disclosing fixture carries both: the clause BINDER, now guarded and so
-    `tier3`, and the `nat_to_int(@Nat.0)` call in the clause body, which has
-    no guard of its own and stays `tier3_unguarded`.  A citation is about the
-    second — it is the one that produced the E504 a reader is being sent to —
-    so the caller says which, rather than the helper picking whichever comes
-    first.
+    *status* separates two records of one kind at one site: a library's
+    disclosure (`tier3_unguarded`) beside a guarded record of the same kind
+    (`tier3`), where a citation is about the first, the one that produced
+    the warning a reader is being sent to.
     """
     hits = [
         o for o in result["obligations"]
@@ -100,35 +110,58 @@ def _obl(
 # Fixture sources
 # ---------------------------------------------------------------------------
 
-#: The body whose `@Nat` handler-clause binder nothing guards: `vera verify` on
-#: the file that holds it reports `nat_bind` / `tier3_unguarded` / E504, which
-#: is the disclosure every cell in this file is built on.
+#: The refinement every payload in this file carries; `_tree` declares it in
+#: every module that names it.
+_NONNEG = "type NonNeg = { @Int | @Int.0 >= 0 };\n\n"
+
+#: The opaque payload: a closure's result, which the solver cannot see.
+_OPAQUE = "apply_fn(fn(@Int -> @Int) effects(pure) {{ @Int.0 }}, @Int.0)"
+
+#: The body whose payload nothing guards: it is narrowed from an `Option<Int>`
+#: the producer did not build, a refinement inside a constructor payload that
+#: no boundary decomposes, so `vera verify` on the file that holds it reports
+#: `refine_bind` / `tier3_unguarded` / E506, which is the disclosure every cell
+#: in this file is built on.  (Until #1695 the carrier was a handler clause's
+#: `@Nat` binder, recorded `tier3_unguarded`/E504; the module checked that
+#: binder at base and head alike, so the record was spurious, and since #1695
+#: the row is guarded and recorded `tier3`.  No `@Nat` payload is unguardable
+#: by its site since #1818 guards every composite `Nat` coercion, so the
+#: payload is a refinement.)
 _DISCLOSING_MK = """\
-{visibility} fn mk(@Int -> @Option<Nat>)
+{visibility} fn mk(@Int -> @Option<NonNeg>)
   requires(true)
   ensures(true)
   effects(pure)
 {{
-  int_to_nat(handle[Exn<Int>] {{
-    throw(@Nat) -> {{ nat_to_int(@Nat.0) }}
-  }} in {{
-    throw(@Int.0)
-  }})
+  let @Option<Int> = Some(""" + _OPAQUE + """); @Option<Int>.0
+}}
+"""
+
+#: The same opaque payload CONSTRUCTED here, so its store is checked: the
+#: row is `refine_bind` / `tier3` / E506, nothing is disclosed, and an
+#: importer proves from the payload's type (the guarded half of the cells).
+_GUARDED_MK = """\
+{visibility} fn mk(@Int -> @Option<NonNeg>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  Some(""" + _OPAQUE + """)
 }}
 """
 
 #: The same signature with nothing to disclose — the over-rejection control.
 _CLEAN_MK = """\
-{visibility} fn mk(@Int -> @Option<Nat>)
+{visibility} fn mk(@Int -> @Option<NonNeg>)
   requires(true)
   ensures(true)
   effects(pure)
 {{
-  int_to_nat(@Int.0)
+  if @Int.0 >= 0 then {{ Some(@Int.0) }} else {{ None }}
 }}
 """
 
-#: Reads `mk`'s `@Nat` field off a match and leans on it.  `{call}` is the
+#: Reads `mk`'s `NonNeg` field off a match and leans on it.  `{call}` is the
 #: caller's spelling of `mk` — bare in one file, `lib::mk` across two.
 _USE_IT = """\
 public fn use_it(@Int -> @Int)
@@ -137,7 +170,7 @@ public fn use_it(@Int -> @Int)
   effects(pure)
 {{
   match {call}(@Int.0) {{
-    Some(@Nat) -> nat_to_int(@Nat.0),
+    Some(@NonNeg) -> @NonNeg.0,
     None -> 0
   }}
 }}
@@ -169,22 +202,22 @@ public fn use_it(@Int -> @Int)
 #: rather than for a gap, it is not a site a future guard-completeness change
 #: can take away, which is what a witness has to be.
 #:
-#: The discriminator is unchanged in shape: the index is `nat_to_int(@Nat.0)`,
-#: whose `>= 0` obligation the bound `@Nat` payload's declared fact discharges
+#: The discriminator is unchanged in shape: the index is `@NonNeg.0`, whose
+#: `>= 0` obligation the bound `NonNeg` payload's declared fact discharges
 #: exactly.  With the bottom module DISCLOSED the fact is withheld, the
 #: obligation cannot prove, and it records `tier3_unguarded` / E504 — so the
 #: relay is disclosed in turn.  With the bottom module CLEAN the fact is there
 #: and it proves at Tier 1, so the relay is clean.
 _RELAY = """\
-public fn {name}(@Int -> @Option<Nat>)
+public fn {name}(@Int -> @Option<NonNeg>)
   requires(true)
   ensures(true)
   effects(pure)
 {{
   match {call}(@Int.0) {{
-    Some(@Nat) -> {{
-      let @String = string_slice("ab", nat_to_int(@Nat.0), 1);
-      Some(nat_to_int(@Nat.0))
+    Some(@NonNeg) -> {{
+      let @String = string_slice("ab", @NonNeg.0, 1);
+      Some(@NonNeg.0)
     }},
     None -> None
   }}
@@ -211,7 +244,7 @@ public fn use_pre(@Int -> @Int)
   effects(pure)
 {{
   match {call}(@Int.0) {{
-    Some(@Nat) -> needs_nonneg(nat_to_int(@Nat.0)),
+    Some(@NonNeg) -> needs_nonneg(@NonNeg.0),
     None -> 0
   }}
 }}
@@ -235,7 +268,7 @@ def test_1399_the_library_alone_discloses(tmp_path: Path) -> None:
         "lib": _DISCLOSING_MK.format(visibility="public"),
     })
     result = _verify(paths["lib"])
-    assert ("nat_bind", "tier3_unguarded", "E504") in _triples(result), (
+    assert ("refine_bind", "tier3_unguarded", "E506") in _triples(result), (
         _triples(result)
     )
 
@@ -248,7 +281,7 @@ def test_1399_one_file_demotes(tmp_path: Path) -> None:
     })
     result = _verify(paths["single"])
     triples = _triples(result)
-    assert ("nat_bind", "tier3_unguarded", "E504") in triples, triples
+    assert ("refine_bind", "tier3_unguarded", "E506") in triples, triples
     assert ("ensures", "tier3", "E534") in triples, triples
 
 
@@ -382,6 +415,62 @@ def test_1399_a_local_shadow_is_not_read_as_the_import(
 
 
 # ---------------------------------------------------------------------------
+# The guarded half of the producer, and the runtime differential (#1695)
+# ---------------------------------------------------------------------------
+
+_GUARDED_TREES = {
+    "one-hop": ({
+        "lib": _GUARDED_MK.format(visibility="public"),
+        "main": "import lib;\n\n" + _USE_IT.format(call="lib::mk"),
+    }, "main", "lib"),
+    "three-hop": ({
+        "cb": _GUARDED_MK.format(visibility="public"),
+        "ca": "import cb;\n\n" + _RELAY.format(name="relay", call="cb::mk"),
+        "centry": "import ca;\n\n"
+        + _USE_IT.format(call="ca::relay").replace("use_it", "top"),
+    }, "centry", "cb"),
+}
+
+
+@pytest.mark.parametrize("shape", list(_GUARDED_TREES))
+def test_1399_a_guarded_producer_taints_no_importer(
+    tmp_path: Path, shape: str,
+) -> None:
+    """The same opaque payload, constructed in the library: its store is
+    checked, so the library discloses nothing (`refine_bind`/`tier3`/E506)
+    and every importer proves from the payload's type."""
+    tree, entry, bottom = _GUARDED_TREES[shape]
+    paths = _tree(tmp_path, tree)
+    lib = _verify(paths[bottom])
+    assert ("refine_bind", "tier3", "E506") in _triples(lib), _triples(lib)
+    assert not [t for t in _triples(lib) if t[1] == "tier3_unguarded"], (
+        _triples(lib))
+    ens = _obl(_verify(paths[entry]), "ensures", text="@Int.result >= 0")
+    assert (ens["status"], ens.get("error_code")) == ("verified", None), ens
+
+
+@pytest.mark.parametrize("producer", ["disclosed", "guarded"])
+def test_1399_the_run_refuses_the_payload_where_the_module_checks_it(
+    tmp_path: Path, producer: str,
+) -> None:
+    """The runtime half: `-5` is refused in both, at the importer's
+    sub-pattern binder where the library checks nothing, and at the
+    library's construction store where it does."""
+    mk = _DISCLOSING_MK if producer == "disclosed" else _GUARDED_MK
+    paths = _tree(tmp_path, {
+        "lib": mk.format(visibility="public"),
+        "main": "import lib;\n\n" + _USE_IT.format(call="lib::mk"),
+    })
+    proc = pipeline.cli("run", str(paths["main"]), "--fn", "use_it", "--",
+                        "-5", budget_s=_BUDGET_S)
+    out = proc.stdout + proc.stderr
+    assert "Refinement violation" in out, out[-600:]
+    where = ("constructor sub-pattern" if producer == "disclosed"
+             else "construction")
+    assert where in out, out[-600:]
+
+
+# ---------------------------------------------------------------------------
 # The second consumer: a call precondition in the arm body
 # ---------------------------------------------------------------------------
 
@@ -415,9 +504,9 @@ def test_1399_call_precondition_control_clean_module(
         + "\n" + _USE_PRE.format(call="lib::mk"),
     })
     result = _verify(paths["main"])
-    assert not [
-        o for o in result["obligations"] if o["kind"] == "call_pre"
-    ], _triples(result)
+    # Discharged at Tier 1: the call's row's record (#1695).
+    assert [o["status"] for o in result["obligations"]
+            if o["kind"] == "call_pre"] == ["verified"], _triples(result)
 
 
 # ---------------------------------------------------------------------------
@@ -507,7 +596,7 @@ def test_1399_three_hop_control_clean_bottom(tmp_path: Path) -> None:
     # cannot be proved — that is its by-design posture — so a taint cell
     # reading only "is there an unguarded record" would pass with no taint
     # present.  This control is what separates the two: with a CLEAN bottom
-    # the bound `@Nat`'s declared fact discharges `nat_to_int(@Nat.0) >= 0`,
+    # the bound payload's declared fact discharges `@NonNeg.0 >= 0`,
     # so the same obligation must PROVE rather than disclose.
     assert ("nat_bind", "verified", None) in _triples(mid), _triples(mid)
     entry = _verify(paths["centry"])
@@ -661,7 +750,7 @@ def test_1399_warm_session_follows_an_edit_to_the_import(
     )
 
     paths["lib"].write_text(
-        _CLEAN_MK.format(visibility="public"), encoding="utf-8",
+        _with_alias(_CLEAN_MK.format(visibility="public")), encoding="utf-8",
     )
     assert _warm_ensures(session, paths["main"]) == ("verified", None), (
         "the library stopped disclosing and the warm session kept the "
@@ -670,7 +759,8 @@ def test_1399_warm_session_follows_an_edit_to_the_import(
     )
 
     paths["lib"].write_text(
-        _DISCLOSING_MK.format(visibility="public"), encoding="utf-8",
+        _with_alias(_DISCLOSING_MK.format(visibility="public")),
+        encoding="utf-8",
     )
     assert _warm_ensures(session, paths["main"]) == ("tier3", "E534"), (
         "the library began disclosing and the warm session kept the Tier-1 "
@@ -732,28 +822,24 @@ def test_1399_warm_equals_cold_across_the_boundary(tmp_path: Path) -> None:
 _GENERIC_LIB = """\
 module glib;
 
-public forall<T> fn gen(@T, @Int -> @Option<Nat>)
+public forall<T> fn gen(@T, @Int -> @Option<NonNeg>)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  int_to_nat(handle[Exn<Int>] {
-    throw(@Nat) -> { nat_to_int(@Nat.0) }
-  } in {
-    throw(@Int.0)
-  })
+  let @Option<Int> = Some(apply_fn(fn(@Int -> @Int) effects(pure) { @Int.0 }, @Int.0)); @Option<Int>.0
 }
 """
 
 _GENERIC_MAIN = """\
 import glib;
 
-private fn gen(@Int -> @Option<Nat>)
+private fn gen(@Int -> @Option<NonNeg>)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  int_to_nat(@Int.0)
+  if @Int.0 >= 0 then { Some(@Int.0) } else { None }
 }
 
 public fn use_it(@Int -> @Int)
@@ -762,7 +848,7 @@ public fn use_it(@Int -> @Int)
   effects(pure)
 {
   match glib::gen("x", @Int.0) {
-    Some(@Nat) -> nat_to_int(@Nat.0),
+    Some(@NonNeg) -> @NonNeg.0,
     None -> 0
   }
 }
@@ -859,6 +945,7 @@ def _resolved(tmp_path: Path, name: str, source: str, *, direct: bool = True):
 
     tmp_path.mkdir(parents=True, exist_ok=True)
     path = tmp_path / f"{name}.vera"
+    source = _with_alias(source)
     path.write_text(source, encoding="utf-8")
     return ResolvedModule(
         path=(name,), file_path=path,
@@ -1414,17 +1501,17 @@ public fn use_it(@Int -> @Int)
   effects(pure)
 {
   match mk(@Int.0) {
-    Some(@Nat) -> nat_to_int(@Nat.0),
+    Some(@NonNeg) -> @NonNeg.0,
     None -> 0
   }
 }
 where {
-  fn mk(@Int -> @Option<Nat>)
+  fn mk(@Int -> @Option<NonNeg>)
     requires(true)
     ensures(true)
     effects(pure)
   {
-    int_to_nat(@Int.0)
+    if @Int.0 >= 0 then { Some(@Int.0) } else { None }
   }
 }
 """
@@ -1494,7 +1581,7 @@ def test_1399_a_where_helper_does_not_hide_a_disclosed_import(
 def test_1399_the_cross_module_e534_cites_the_culprit(tmp_path: Path) -> None:
     """Across an import, the E534 must name the callee, its file and its code.
 
-    In one file the reader already has the culprit: the `E504` that disclosed
+    In one file the reader already has the culprit: the `E506` that disclosed
     the fact is in the same output. Across an import it is not, and cannot be
     — the library's diagnostics belong to the library's run, which this one
     discards on purpose — so a message that only says "a fact this run could
@@ -1503,7 +1590,7 @@ def test_1399_the_cross_module_e534_cites_the_culprit(tmp_path: Path) -> None:
 
     Four things are asserted, because three of them can be present while the
     message is still useless: the callee's qualified name, the DEFINING file
-    (not the importing one), the line the library's own run put its `E504` on,
+    (not the importing one), the line the library's own run put its `E506` on,
     and that code.
     """
     paths = _tree(tmp_path, {
@@ -1511,7 +1598,7 @@ def test_1399_the_cross_module_e534_cites_the_culprit(tmp_path: Path) -> None:
         "main": "import lib;\n\n" + _USE_IT.format(call="lib::mk"),
     })
     lib_result = _verify(paths["lib"])
-    culprit = _obl(lib_result, "nat_bind", status="tier3_unguarded")
+    culprit = _obl(lib_result, "refine_bind", status="tier3_unguarded")
     assert culprit["status"] == "tier3_unguarded", culprit
 
     result = _verify(paths["main"])
@@ -1521,10 +1608,10 @@ def test_1399_the_cross_module_e534_cites_the_culprit(tmp_path: Path) -> None:
     assert "lib::mk" in text, text
     assert "lib.vera" in text, text
     assert f":{culprit['location']['line']}" in text, (
-        f"the citation does not carry the library's own E504 line "
+        f"the citation does not carry the library's own E506 line "
         f"({culprit['location']['line']}): {text}"
     )
-    assert "E504" in text, text
+    assert "E506" in text, text
     # ... and the untrue clause is gone: this run reported nothing of the kind.
     assert "the run reported it as neither proved nor guarded" not in text, text
 
@@ -1532,7 +1619,7 @@ def test_1399_the_cross_module_e534_cites_the_culprit(tmp_path: Path) -> None:
 def test_1399_the_in_module_e534_text_is_unchanged(tmp_path: Path) -> None:
     """The one-file wording stays as #1373 left it.
 
-    There the `E504` really is beside the `E534`, and the run really did
+    There the `E506` really is beside the `E534`, and the run really did
     report it — so the citation would be noise and the original sentence is
     true. A fix that rewrote both would be changing a message it had no
     finding against.
@@ -1554,7 +1641,7 @@ def test_1399_the_in_module_e534_text_is_unchanged(tmp_path: Path) -> None:
     assert "the run reported it as neither proved nor guarded" in \
         warnings[0]["rationale"], warnings[0]["rationale"]
     # The culprit is in this output, which is why no citation is needed.
-    assert "E504" in [w.get("error_code") for w in result["warnings"]]
+    assert "E506" in [w.get("error_code") for w in result["warnings"]]
 
 
 def test_1399_a_citation_does_not_leak_between_functions(
@@ -1595,9 +1682,9 @@ def test_1399_a_citation_does_not_leak_between_functions(
 # The citation's grammar has to match what it is citing
 # ---------------------------------------------------------------------------
 
-#: A postcondition that needs a `@Nat` field from EACH of two calls: the inner
-#: match binds the more recent `@Nat`, so `@Nat.0` is the inner payload and
-#: `@Nat.1` the outer, and the sum is `>= 0` only if both are.
+#: A postcondition that needs a `NonNeg` field from EACH of two calls: the
+#: inner match binds the more recent `@NonNeg`, so `@NonNeg.0` is the inner
+#: payload and `@NonNeg.1` the outer, and the sum is `>= 0` only if both are.
 _TWO_SITES_MAIN = """\
 {imports}
 
@@ -1607,9 +1694,9 @@ public fn both(@Int -> @Int)
   effects(pure)
 {{
   match {first}(@Int.0) {{
-    Some(@Nat) -> match {second}(@Int.0) {{
-      Some(@Nat) -> nat_to_int(@Nat.1) + nat_to_int(@Nat.0),
-      None -> nat_to_int(@Nat.0)
+    Some(@NonNeg) -> match {second}(@Int.0) {{
+      Some(@NonNeg) -> @NonNeg.1 + @NonNeg.0,
+      None -> @NonNeg.0
     }},
     None -> 0
   }}

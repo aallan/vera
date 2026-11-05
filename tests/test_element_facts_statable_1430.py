@@ -434,9 +434,15 @@ def test_a_recursive_tail_forwards_per_value(tmp_path: Path) -> None:
     )
     envelope = _verify(tmp_path, source, "recursive-tail")
     assert envelope["ok"] is True, envelope["diagnostics"]
-    assert dict(_refine_bind_statuses(envelope)) == {"verified": 1}, (
-        _refine_bind_statuses(envelope)
+    # Since #1695 the argument `consume(@Chain.0)` passes a `Chain` where a
+    # `Chain` is wanted, which narrows nothing and is no row; the two
+    # sub-pattern binders `Link(@PosInt, …)` are rows code generation checks,
+    # recorded as the guarded Tier 3 they are (base: W004 at both).
+    refine = sorted(
+        (o["location"]["line"], o["status"])
+        for o in envelope["obligations"] if o["kind"] == "refine_bind"
     )
+    assert refine == [(14, "tier3"), (25, "tier3")], refine
 
 
 def test_a_violating_recursive_construction_is_refused(tmp_path: Path) -> None:
@@ -541,9 +547,16 @@ def test_two_contradictory_refinements_do_not_share_a_predicate(
     )
     envelope = _verify(tmp_path, source, "same-generic-opposite")
     assert envelope["ok"] is False, envelope
-    assert dict(_refine_bind_statuses(envelope)) == {"violated": 1}, (
+    # The argument's component row is refuted; the callee's sub-pattern
+    # binder `Link(@NegInt, …)` is a checked row recorded as guarded Tier 3
+    # since #1695 (base: a W004 at it).
+    refine = sorted(
+        (o["location"]["line"], o["status"])
+        for o in envelope["obligations"] if o["kind"] == "refine_bind"
+    )
+    assert refine == [(12, "tier3"), (22, "violated")], (
         "a positive chain discharged a negative refinement: "
-        f"{_refine_bind_statuses(envelope)}"
+        f"{refine}"
     )
     assert "E505" in {d.get("error_code") for d in envelope["diagnostics"]}
 
@@ -1596,7 +1609,14 @@ def test_a_builtin_callee_discloses_rather_than_claiming_a_guard(
         f"a built-in callee claims a runtime check it cannot carry: "
         f"{statuses}"
     )
-    assert statuses["tier3_unguarded"] >= 1, statuses
+    if name == "array":
+        # The disclosure is the producer's: `hide` builds the bad value.
+        assert statuses["tier3_unguarded"] >= 1, statuses
+    else:
+        # No producer: the value is `entry`'s own formal, and handing a
+        # `Map<Int, Pos>` to `map_size` at its own type narrows nothing, so
+        # since #1695 the argument is no row and nothing is disclosed.
+        assert statuses["tier3_unguarded"] == 0, statuses
     assert _element_loops(tmp_path, source, f"builtin-{name}") == {}, (
         "no element guard can be emitted for a built-in callee, so any loop "
         "here belongs to something else"
@@ -1614,9 +1634,13 @@ def test_a_user_callee_keeps_the_guard_the_record_claims(
     """
     envelope = _verify(tmp_path, _USER_CALLEE, "user-callee")
     statuses = _refine_bind_statuses(envelope)
-    assert statuses["tier3"] >= 1, (
-        f"a user callee's element boundary lost its guarded record: "
-        f"{statuses}"
+    # Since #1695 `consume(a[0])` hands an `Array<Pos>` to an `Array<Pos>`
+    # formal: no row at the call.  The bad value is `hide`'s, disclosed at
+    # its return, and the callee's prologue still checks it (the loop below;
+    # the run traps in `consume` at base and here).
+    assert statuses["tier3"] == 0, statuses
+    assert statuses["tier3_unguarded"] >= 1, (
+        f"the producer of the bad value is no longer disclosed: {statuses}"
     )
     loops = _element_loops(tmp_path, _USER_CALLEE, "user-callee")
     assert loops, (
@@ -1847,12 +1871,23 @@ def test_a_nested_refinement_at_a_clause_binder_does_not_overclaim(
         "    throw(@NonEmptyPos) -> { 1 }\n"
         "  } in {\n    throw([0 - 5])\n  }\n}\n"
     )
-    statuses = _refine_bind_statuses(_verify(tmp_path, source, "clause-nested"))
-    assert statuses["tier3"] == 0, (
-        f"the clause binder claims a runtime check that covers the outer "
-        f"predicate only: {statuses}"
+    envelope = _verify(tmp_path, source, "clause-nested")
+    # Since #1695 the binder is two rows (#1642: one per component): the
+    # outer predicate, which the clause's check lowers (`throw([])` traps),
+    # recorded guarded Tier 3, and the element half, which nothing checks,
+    # disclosed.  The guarded record claims exactly the outer predicate.
+    rows = sorted(
+        (o["status"], o["description"])
+        for o in envelope["obligations"] if o["kind"] == "refine_bind"
+        and o["location"]["line"] == 11
     )
-    assert statuses["tier3_unguarded"] >= 1, statuses
+    assert rows == [
+        ("tier3", "@NonEmptyPos"),
+        ("tier3_unguarded", "@NonEmptyPos [array element]"),
+    ], (
+        f"the clause binder claims a runtime check that covers the outer "
+        f"predicate only: {rows}"
+    )
     assert _element_loops(tmp_path, source, "clause-nested") == {}, (
         "no element walk is wired at this position, so any loop here is "
         "something else"

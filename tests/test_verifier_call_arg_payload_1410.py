@@ -30,6 +30,18 @@ belongs in obligation EMISSION at the argument position rather than in the
 disclosure taint: on ``origin/release/v0.2.0`` at ``aecc1a6a`` both verified
 clean (exit 0) and both refuted at run time.
 
+Since #1695 the obligation table decides what an argument position owes,
+and an argument of EXACTLY its parameter's type narrows nothing: it is no
+row and has no record (R110's finding on PR #1834).  The payload is checked
+where the callee takes it apart, its sub-pattern binder or its entry's tuple
+components, a guarded row recorded `tier3`, and the run is refused there.
+The callee's Tier-1 postcondition is sound over the payload that check
+guarantees; the caller's, which reads it, still carries the producer's
+disclosure (E534).  An argument whose type differs from its parameter's (an
+unrefined producer) narrows, is a row at each of the value's leaves, and is
+refuted or disclosed there.  The cells below that measured an argument record
+at a same-type call now measure its absence and the check that replaces it.
+
 Every cell below pairs the obligation stream with what the compiled program
 does — the ``ensures`` + ``vera run`` differential, never ``assert`` (an
 ``assert`` raises no Tier-1 obligation, so it cannot witness a false one).
@@ -435,17 +447,16 @@ def test_1410_disclosed_producer_argument_is_not_verified(tmp_path: Path) -> Non
     its postcondition at Tier 1, which is what makes the pairing below a
     false-Tier-1 differential rather than a Tier-3 check doing its job.
     """
-    binds = _refine_binds(_1410_REPRO, "f")
-    assert binds, "the call argument raised no refinement obligation at all"
-    assert all(o.status != "verified" for o in binds), (
-        "the argument's payload refinement was proved from a fact this run "
-        f"disclosed it could not establish: {_statuses(binds)}"
-    )
-    # A disclosed producer feeding an ADT payload is neither proved nor
-    # runtime-guarded — codegen component-guards tuples only — so the honest
-    # bucket is the unguarded one, surfaced as E506.
-    assert ("tier3_unguarded", "E506") in _statuses(binds), _statuses(binds)
-    _assert_accounting(tmp_path, _1410_REPRO)
+    # The argument is of `consume`'s parameter type: no row (#1695).  The
+    # payload is checked at `consume`'s sub-pattern binder, and `f`'s
+    # postcondition, which reads `consume`'s, is demoted by the producer's
+    # disclosure.
+    assert _refine_binds(_1410_REPRO, "f") == []
+    assert _statuses(_refine_binds(_1410_REPRO, "consume")) == [("tier3", "")]
+    env = _assert_accounting(tmp_path, _1410_REPRO)
+    f_ens = [(o["status"], o.get("error_code")) for o in env["obligations"]
+             if o["kind"] == "ensures" and o["location"]["line"] == 27]
+    assert f_ens == [("tier3", "E534")], env["obligations"]
 
 
 def _assert_refuses_the_payload(proc: pipeline.CliResult) -> None:
@@ -497,9 +508,9 @@ def test_constructed_argument_keeps_exactly_one_violation(tmp_path: Path) -> Non
 def test_clean_producer_argument_verifies(tmp_path: Path) -> None:
     """A producer whose own construction discharged at Tier 1 makes its
     declared return type a fact — the argument proves, and `verify` is clean."""
-    binds = _refine_binds(_CLEAN_PRODUCER, "f")
-    assert binds, "the argument obligation must be emitted here too"
-    assert all(o.status == "verified" for o in binds), _statuses(binds)
+    # A same-type argument is no row (#1695); the producer's store proves.
+    assert _refine_binds(_CLEAN_PRODUCER, "f") == []
+    assert _statuses(_refine_binds(_CLEAN_PRODUCER, "mk")) == [("verified", "")]
     env = _assert_accounting(tmp_path, _CLEAN_PRODUCER)
     assert env["ok"] is True, env["diagnostics"]
 
@@ -507,9 +518,8 @@ def test_clean_producer_argument_verifies(tmp_path: Path) -> None:
 def test_forwarded_parameter_argument_verifies(tmp_path: Path) -> None:
     """R1 param-assume establishes the caller's own parameter's payload
     refinement, so forwarding it discharges at Tier 1."""
-    binds = _refine_binds(_FORWARDED, "g")
-    assert binds, "the forwarded argument must still raise the obligation"
-    assert all(o.status == "verified" for o in binds), _statuses(binds)
+    # Forwarding a parameter at its own type is no row (#1695).
+    assert _refine_binds(_FORWARDED, "g") == []
     env = _assert_accounting(tmp_path, _FORWARDED)
     assert env["ok"] is True, env["diagnostics"]
 
@@ -536,13 +546,16 @@ def test_wrapper_chain_discloses_at_every_link(tmp_path: Path) -> None:
     measures is the fixpoint carrying one along the chain, not a gap in the
     guard set that a later PR would quietly close underneath it.
     """
-    at_wrap = _refine_binds(_WRAPPER, "wrap")
-    at_f = _refine_binds(_WRAPPER, "f")
-    assert at_wrap, "the wrapper's own return raised no obligation"
-    assert at_f, "the wrapped argument raised no obligation"
-    assert all(o.status != "verified" for o in at_wrap + at_f), (
-        _statuses(at_wrap), _statuses(at_f))
-    _assert_accounting(tmp_path, _WRAPPER)
+    # Since #1695 neither the forwarding return nor the argument narrows (each
+    # is of the type it meets), so neither is a row; the disclosure travels
+    # by the disclosed-set fixpoint, which demotes `f`'s postcondition, and
+    # the payload is checked where `consume` takes it apart.
+    assert _refine_binds(_WRAPPER, "wrap") == []
+    assert _refine_binds(_WRAPPER, "f") == []
+    env = _assert_accounting(tmp_path, _WRAPPER)
+    assert ("ensures", "tier3", "E534") in [
+        (o["kind"], o["status"], o.get("error_code"))
+        for o in env["obligations"]], env["obligations"]
 
     proc = _run(tmp_path, _WRAPPER, "-7.0", name="w1.vera")
     assert proc.returncode != 0, proc.stdout
@@ -595,7 +608,7 @@ def test_piped_argument_matches_the_direct_spelling() -> None:
     with the same status — a spelling must not change the answer."""
     direct = _refine_binds(_1410_REPRO, "f")
     piped = _refine_binds(_PIPED, "f")
-    assert piped, "the piped argument raised no obligation"
+    # Both are the same-type argument, no row (#1695), and they agree.
     assert sorted(_statuses(piped)) == sorted(_statuses(direct)), (
         _statuses(direct), _statuses(piped))
 
@@ -659,7 +672,8 @@ _ARRAY_UNESTABLISHED = _ARRAY_ESTABLISHED.replace(
 
 @pytest.mark.parametrize(
     "source,expected",
-    [(_ARRAY_ESTABLISHED, [("verified", "")]),
+    # Established: the argument is of the parameter's type, no row (#1695).
+    [(_ARRAY_ESTABLISHED, []),
      (_ARRAY_UNESTABLISHED, [("violated", "E505")])],
     ids=["source-carries-it", "source-does-not"])
 def test_array_element_refinement_is_discharged_not_disclosed(
@@ -698,14 +712,20 @@ def test_unguarded_disclosure_names_the_right_boundary(tmp_path: Path) -> None:
     is that its decomposition stops at tuple components.  A rationale that
     names the wrong reason sends the reader to change the wrong thing.
     """
+    # Since #1695 the rationale is the row's reason, the table's, read off
+    # the lowering (#1602): the producer's return publishes a payload
+    # refinement no boundary decomposes.  (The call argument the cell first
+    # read is of its parameter's type and no row.)
+    from vera.obligations import table as obligation_table
+
     env = _verify_json(tmp_path, _1410_REPRO, "r.vera")
-    at_call = [
+    at_return = [
         w for w in env["warnings"]
-        if w.get("error_code") == "E506" and "call argument" in w["description"]
+        if w.get("error_code") == "E506" and w["location"]["line"] == 11
     ]
-    assert at_call, env["warnings"]
-    rationale = at_call[0]["rationale"]
-    assert "TUPLE components" in rationale, rationale
+    assert len(at_return) == 1, env["warnings"]
+    rationale = at_return[0]["rationale"]
+    assert obligation_table.REASON_INSIDE_PAYLOAD in rationale, rationale
     assert "internal narrowing site" not in rationale, rationale
 
 
@@ -776,9 +796,13 @@ def test_generic_formal_reads_its_instantiated_target() -> None:
     # different program's behaviour.  The outer argument is `ident(mk(...))`
     # at `consume`'s call and the inner is `mk(...)` at `ident`'s, so the
     # inner starts to the RIGHT — the columns are what pin the attribution.
-    assert sorted((o.status, o.column) for o in binds) == [
-        ("tier3_unguarded", 11), ("tier3_unguarded", 17),
-    ], [(o.status, o.line, o.column) for o in binds]
+    # Since #1695 both positions are of the type they meet (`ident` is
+    # instantiated at `Option<PosInt>`), so neither is a row; the payload is
+    # checked at `consume`'s binder.
+    assert sorted((o.status, o.column) for o in binds) == [], [
+        (o.status, o.line, o.column) for o in binds]
+    assert _statuses(_refine_binds(_GENERIC_FORMAL, "consume")) == [
+        ("tier3", "")]
 
 
 _NONE_ONLY_PRODUCER = _PRELUDE + """
@@ -870,9 +894,20 @@ def test_disclosed_tuple_component_records_the_guarded_tier3() -> None:
     store establishes the declared type since #1426, so the withholding this
     cell classifies would not have happened at all.
     """
-    binds = _refine_binds(_TUPLE_DISCLOSED, "f")
-    assert ("tier3", "E506") in _statuses(binds), _statuses(binds)
-    assert ("tier3_unguarded", "E506") not in _statuses(binds), _statuses(binds)
+    # Since #1695 the argument is no row (it is of the parameter's type).  The
+    # component is checked at `mk`'s return, which a tuple boundary
+    # decomposes: that row is guarded, recorded `tier3`/E506, and the run
+    # traps there.  `consume`'s entry row is its assumption, `verified`, as
+    # a `requires` is, discharged by what its callers pass.
+    assert _statuses(_refine_binds(_TUPLE_DISCLOSED, "f")) == []
+    at_return = [(o.status, o.error_code)
+                 for o in _refine_binds(_TUPLE_DISCLOSED, "mk")
+                 if o.expr_text == "@Tuple<PosInt, Int> [Tuple.0]"]
+    assert at_return == [("tier3", "E506")], at_return
+    entry = [(o.status, o.error_code)
+             for o in _refine_binds(_TUPLE_DISCLOSED, "consume")
+             if o.expr_text == "@Tuple<PosInt, Int> [Tuple.0]"]
+    assert entry == [("verified", "")], entry
 
 
 _PARTIALLY_STATABLE = _PRELUDE + """
@@ -1059,11 +1094,12 @@ def test_imported_callee_argument_carries_the_obligation(
         o for o in env["obligations"]
         if o["kind"] == "refine_bind" and o["location"]["line"] == call_line
     ]
-    assert at_call, [
-        (o["kind"], o["status"], o["location"]["line"])
-        for o in env["obligations"]
-    ]
-    assert all(o["status"] != "verified" for o in at_call), at_call
+    # The argument is of the imported parameter's type: no row (#1695); the
+    # importer's postcondition carries the library's disclosure (E534).
+    assert at_call == [], at_call
+    assert ("ensures", "tier3", "E534") in [
+        (o["kind"], o["status"], o.get("error_code"))
+        for o in env["obligations"]], env["obligations"]
 
     run = pipeline.cli("run", str(main), "--fn", "f", "--", "-7.0", budget_s=_BUDGET_S)
     assert run.returncode != 0
@@ -1143,9 +1179,12 @@ def test_imported_disclosed_producer_demotes_through_the_manifest(
     main.write_text(_XMOD_DISCLOSED_MAIN, encoding="utf-8")
 
     env = pipeline.verify(main, budget_s=_BUDGET_S).envelope()
+    # The argument is no row (#1695): the importer's one `refine_bind` is
+    # `consume`'s guarded binder, and the library's own two stay in the
+    # library's stream.
     binds = [o for o in env["obligations"] if o["kind"] == "refine_bind"]
-    assert [(o["status"], o["error_code"]) for o in binds] == [
-        ("tier3_unguarded", "E506")
+    assert [(o["status"], o.get("error_code")) for o in binds] == [
+        ("tier3", None)
     ], binds
 
     run = pipeline.cli("run", str(main), "--fn", "f", "--", "-7.0", budget_s=_BUDGET_S)
@@ -1221,9 +1260,9 @@ def test_clean_forwarding_return_still_verifies() -> None:
 
 public fn f(@Float64 -> @Int)""",
     ).replace("consume(mk(@Float64.0))", "consume(wrap(@Float64.0))")
+    # Neither the forwarding return nor the argument narrows: no row (#1695).
     binds = _refine_binds(src, "wrap") + _refine_binds(src, "f")
-    assert binds, "the forwarding return and argument raised no obligation"
-    assert all(o.status == "verified" for o in binds), _statuses(binds)
+    assert binds == [], _statuses(binds)
 
 
 def test_nullary_constructor_is_no_payload_not_an_unreadable_one() -> None:
@@ -1391,11 +1430,11 @@ def test_let_bound_disclosed_value_still_raises_the_obligation() -> None:
     cells that did go red, so the spelling under test is once again the one
     described.
     """
+    # Since #1695 both the `let` and the argument are of the type they meet,
+    # so neither is a row, whichever spelling: the emission does not depend
+    # on how the producer was spelled because there is none to emit.
     binds = _refine_binds(_LET_BOUND_DISCLOSED, "f")
-    assert binds, (
-        "the let-bound argument raised no obligation at all; emission must not "
-        "depend on how the producer was spelled, whatever the taint can reach"
-    )
+    assert binds == [], _statuses(binds)
 
 
 _VIOLATED_PRECONDITION = _PRELUDE + """
@@ -1444,8 +1483,10 @@ def test_an_opaque_call_result_discloses_rather_than_certifying() -> None:
     """
     at_mk = _refine_binds(_VIOLATED_PRECONDITION, "mk")
     assert _statuses(at_mk) == [("verified", "")], _statuses(at_mk)
+    # The argument is of the parameter's type: no row (#1695), so nothing
+    # is disclosed beside the call's E501.
     binds = _refine_binds(_VIOLATED_PRECONDITION, "f")
-    assert _statuses(binds) == [("tier3_unguarded", "E506")], _statuses(binds)
+    assert _statuses(binds) == [], _statuses(binds)
 
 
 # =====================================================================
@@ -2093,6 +2134,11 @@ def test_a_let_binding_never_claims_a_boundary_guard() -> None:
     refinement would make the type half answer first and the cell would stop
     distinguishing the two derivations at all.
     """
+    # Since #1695 the `let` is of its value's type, so it is no row and claims
+    # nothing; the one record in `f` is the arm's `Tuple(@PosInt, @Int)`
+    # binder, which code generation checks (a guarded row, `tier3`).
     binds = _refine_binds(_LET_TUPLE_FROM_DISCLOSED, "f")
-    assert ("tier3_unguarded", "E506") in _statuses(binds), _statuses(binds)
-    assert ("tier3", "E506") not in _statuses(binds), _statuses(binds)
+    let_line = 1 + _LET_TUPLE_FROM_DISCLOSED.splitlines().index(
+        "  let @Tuple<PosInt, Int> = mkt(@Float64.0);")
+    assert [o for o in binds if o.line == let_line] == [], _statuses(binds)
+    assert _statuses(binds) == [("tier3", "")], _statuses(binds)

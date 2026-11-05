@@ -500,7 +500,10 @@ def test_a_reference_of_the_return_type_checks_and_verifies(
 # =====================================================================
 # Chapter 3's examples, each completed into a program where the spec gives
 # a fragment: every one checks clean, and its postcondition verifies as it
-# did before the reference was held to the return type.
+# did before the reference was held to the return type.  An `ensures` over a
+# `String` or `Array` result is not lowered, so since #1695 its row is
+# unguarded and the record discloses it (`tier3_unguarded`, E543) where it
+# claimed a runtime check no module holds (`tier3`, E541 at the join).
 # =====================================================================
 
 SPEC_EXAMPLES: dict[str, tuple[str, str]] = {
@@ -524,7 +527,7 @@ SPEC_EXAMPLES: dict[str, tuple[str, str]] = {
 }
 """),
     # §3.5, Example 2.
-    "mixed_types": ("tier3", """public fn f(@Int, @String, @Int -> @String)
+    "mixed_types": ("tier3_unguarded", """public fn f(@Int, @String, @Int -> @String)
   requires(@Int.0 > @Int.1)
   ensures(string_length(@String.result) > 0)
   effects(pure)
@@ -587,7 +590,7 @@ SPEC_EXAMPLES: dict[str, tuple[str, str]] = {
 }
 """),
     # §3.5, Example 8.
-    "higher_order": ("tier3", """private forall<A, B> fn map_array(@Array<A>, @fn(A -> B) effects(pure) -> @Array<B>)
+    "higher_order": ("tier3_unguarded", """private forall<A, B> fn map_array(@Array<A>, @fn(A -> B) effects(pure) -> @Array<B>)
   requires(true)
   ensures(array_length(@Array<B>.result) == array_length(@Array<A>.0))
   effects(pure)
@@ -631,7 +634,7 @@ SPEC_EXAMPLES: dict[str, tuple[str, str]] = {
 }
 """),
     # §3.7, a function type through an alias.
-    "function_type_alias": ("tier3", """type IntTransform = fn(Int -> Int) effects(pure);
+    "function_type_alias": ("tier3_unguarded", """type IntTransform = fn(Int -> Int) effects(pure);
 
 private fn apply_to_array(@Array<Int>, @IntTransform -> @Array<Int>)
   requires(array_length(@Array<Int>.0) > 0)

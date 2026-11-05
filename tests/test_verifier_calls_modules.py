@@ -1391,12 +1391,12 @@ public fn main(@Unit -> @Int)
         assert exc.value.kind == "contract_violation", exc.value.kind
 
     def test_the_satisfied_generic_call_proves(self) -> None:
-        """The mirror: `42 > 10` holds at the clone, and the call proves: no
-        record, as a monomorphic callee's proved precondition makes none,
-        where it demoted (E532) before #1468."""
+        """The mirror: `42 > 10` holds at the clone, and the call proves: one
+        `verified` record, as a monomorphic callee's proved precondition makes
+        since #1695, where it demoted (E532) before #1468."""
         src = self._GENERIC % 42
         result = _verify(src)
-        assert _call_pre(result) == [], _call_pre(result)
+        assert _call_pre(result) == [("verified", "", 12)], _call_pre(result)
         assert [d for d in result.diagnostics if d.severity == "error"] == []
         assert _run(src) == 42
 

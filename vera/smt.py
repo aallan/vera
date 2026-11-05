@@ -2112,7 +2112,21 @@ class SmtContext:
         if element_sort is None:
             return None
         index_fn = self._get_index_fn(coll_sort, element_sort)
-        return index_fn(coll, idx)
+        element = index_fn(coll, idx)
+        # #1695, the post-fact rule: the index's `index_bounds` row is
+        # guarded wherever the access runs (the bounds trap), so the element
+        # exists only for an index in range, and a query that reads the
+        # element reads it there (#1696 m04).  The row's own obligation is
+        # over the index and the length, never the element, so the fact
+        # never proves the check it stands behind.  It holds only where the
+        # read runs: under the branch conditions it is translated in, never
+        # on a path the read is not on.
+        if idx.sort() == z3.IntSort():
+            length_fn = self._get_length_fn(coll_sort)
+            self.assume_of_value(
+                element, self._guard_fact(
+                    z3.And(idx >= 0, idx < length_fn(coll))))
+        return element
 
     def _get_element_sort_for_array(
         self, array_sort: z3.SortRef,
@@ -3132,6 +3146,15 @@ class SmtContext:
                         counterexample=result.counterexample,
                     ))
                 return False
+            # #1695: a discharged precondition is a record too, so the
+            # call's `call_pre` row has its record (Tier 1).
+            if not any(ok.precondition is recorded
+                       and _same_call_site(ok.call_node, call_node)
+                       for ok in self._call_discharges):
+                self._call_discharges.append(CallDischarge(
+                    callee_name=callee_name, call_node=call_node,
+                    precondition=recorded,
+                ))
         return True
 
     def _translate_call_with_info(
@@ -3652,6 +3675,10 @@ class SmtContext:
         reach = self.reach_conditions()
         if hook is None or reach is None:
             return term
+        # The bind's fact holds where the bind runs: under the path to it
+        # and the bindings of the calls being modelled (`_guard_fact`'s
+        # rule), never on a path the bind is not on.
+        reach = [*reach, *self._call_bindings]
         pattern = ast.BindingPattern(type_expr=te, span=te.span)
         guarded = hook(value, term, pattern, self, reach)
         return cast("z3.ExprRef", guarded.get(term.get_id(), term))
@@ -3915,10 +3942,13 @@ class SmtContext:
                         # sort at all — a closure, a `Unit` — which keeps
                         # the pre-#1199 bail.
                         return None
-                    if self._mentions_stand_in(val):
-                        # A refined binder of a stand-in reads the value the
-                        # guard at the bind establishes (#1696).
-                        val = self.guarded_binding(stmt.value, val, stmt.type_expr)
+                    # A refined binder reads the value the guard at the bind
+                    # establishes (#1696), whatever its value: the post-fact
+                    # rule (#1695), so a refused or guarded bind's predicate
+                    # holds for the rest of its scope, and an unguarded one's
+                    # (no guard: `ContractVerifier._table_guards_refinement`)
+                    # does not.
+                    val = self.guarded_binding(stmt.value, val, stmt.type_expr)
                     # Extract slot type name from the let binding
                     type_name = self._type_expr_to_slot_name(stmt.type_expr)
                     if type_name is None:  # pragma: no cover

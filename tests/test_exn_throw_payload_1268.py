@@ -607,19 +607,18 @@ public fn main(@Float64 -> @Int)
         _run_trap(self._payload(base, "throw"), "main", [-5.0])
         _run_trap(self._payload(base, "Exn.throw"), "main", [-5.0])
 
-    def test_the_unguarded_disclosure_no_longer_names_the_throw_payload(
+    def test_the_clause_binder_a_payload_flows_into_is_guarded(
         self,
     ) -> None:
-        """E504's rationale listed the `Exn` `throw` payload among the sites
-        with no runtime guard.  That is false since the guard landed, and it
-        contradicts the spec sentences this change amended — a reader taking
-        the diagnostic at its word would add a defensive check the compiler
-        already emits.  Reached through a site that is still unguarded, the
-        call argument a clause's narrowed `throw(@Nat)` binder flows into
-        (#1362's shape), so the sentence is read from a real diagnostic
-        rather than from the source.
+        """#1362's shape: a clause's narrowed `throw(@Nat)` binder over an
+        `Int` payload.  Before #1695 it was disclosed (E504), its rationale
+        listing the sites with no runtime guard; the binder's row is guarded
+        (the clause's sign check, which traps `-5` at base and here), so the
+        record is the guarded Tier 3 it is and nothing is disclosed.  The
+        E504 rationale is the row's reason since, so no list of sites exists
+        to name the `throw` payload in.
         """
-        result = _verify("""
+        source = """
 public fn main(@Int -> @Int)
   requires(true)
   ensures(true)
@@ -631,14 +630,12 @@ public fn main(@Int -> @Int)
     throw(@Int.0)
   }
 }
-""")
-        binds = [o for o in result.obligations if o.kind == "nat_bind"]
-        assert "tier3_unguarded" in [o.status for o in binds], binds
-        rationales = [d.rationale for d in result.diagnostics
-                      if d.error_code == "E504"]
-        assert len(rationales) == 1, [d.error_code for d in result.diagnostics]
-        assert "throw` payload ARE" in rationales[0], rationales[0]
-        assert "or an Exn `throw` payload)" not in rationales[0], rationales[0]
+"""
+        result = _verify(source)
+        binds = [o.status for o in result.obligations if o.kind == "nat_bind"]
+        assert binds == ["tier3"], binds
+        assert "E504" not in [d.error_code for d in result.diagnostics]
+        _run_trap(source, "main", [-5])
 
 
 class TestTheQualifiedArmAgreesWithTheBareOne:

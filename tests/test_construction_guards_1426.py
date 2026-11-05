@@ -29,7 +29,6 @@ from pathlib import Path
 import pytest
 
 import vera
-from vera import narrowing
 
 from tests import pipeline
 
@@ -879,15 +878,17 @@ public fn f(@Int -> @Int)
 def test_the_state_entry_moves_all_three_write_legs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Dropping the shared table's `State` entry moves init, update and put.
+    """Moving the obligation table's guard rule moves init, update and put.
 
     The three positions keep their own diagnostic-facing site names, because
     those tell a reader WHICH write to fix, and answer the guardedness
-    question through one key (`_STATE_WRITE_SITE`).  That is only worth
-    anything if the three actually follow the table together, and they did
-    not always: at `74db7ba1` this same mutation moved `put`'s status alone
-    while zeroing all three guards — a table the statuses only partly obeyed
-    (R-1412's F1).
+    question through one rule: since #1695 each write is a row of the
+    obligation table, whose guard is the table's refinement rule, and the
+    verifier and code generation both read the row.  That is only worth
+    anything if the three actually follow the rule together, and they did
+    not always: at `74db7ba1` dropping the site roster's `State` entry moved
+    `put`'s status alone while zeroing all three guards — a table the
+    statuses only partly obeyed (R-1412's F1).
 
     So the cell asserts the SET of three, not a count and not one leg.  A
     future tidy-up that reroutes any single position back to a literal
@@ -902,15 +903,17 @@ def test_the_state_entry_moves_all_three_write_legs(
     )
     guarded_lines = sorted(o.line for o in sites)
 
+    from vera.obligations import table as obligation_table
+
     monkeypatch.setattr(
-        narrowing, "REFINED_BIND_GUARDED_SITES",
-        frozenset(narrowing.REFINED_BIND_GUARDED_SITES
-                  - {"State write boundary"}),
+        obligation_table._Builder, "_refinement_guardable",
+        lambda self, ty, construction=False: obligation_table.unguarded(
+            "the rule moved by the test"),
     )
     dropped = [o for o in _verify_in_process(_STATE_THREE_LEGS)
                if o.kind == "refine_bind" and o.error_code == "E506"]
     assert [o.status for o in dropped] == ["tier3_unguarded"] * 3, (
-        f"dropping the one table entry must move ALL THREE legs together — "
+        f"moving the one rule must move ALL THREE legs together — "
         f"a leg still reporting `tier3` is following something other than "
         f"the shared table: {[(o.line, o.status) for o in dropped]}"
     )
@@ -1369,7 +1372,9 @@ def test_a_call_pre_is_reported_once_per_call_site(tmp_path: Path) -> None:
     """
     obs, envelope = _obligations(
         tmp_path, _1459_GENERIC_CALLEE, name="dupe1459.vera")
-    assert len(_call_pre_lines(obs)) == 1, (
+    # `f`'s call `build(…)` at line 24 is a precondition discharged at Tier 1,
+    # recorded since #1695; the call this cell is about is `head`'s, at 14.
+    assert _call_pre_lines(obs).count(14) == 1, (
         f"the precondition of one call site is recorded more than once: "
         f"{_call_pre_lines(obs)}"
     )

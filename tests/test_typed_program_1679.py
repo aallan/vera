@@ -399,7 +399,8 @@ _PRECONDITIONS: dict[str, tuple[str, str, list[tuple[str, str]]]] = {
     "satisfiable_unprovable": (
         "array_length(array_range(0, @Int.0)) > 3", "5",
         [("tier3", "E532")]),
-    "provable": ("@Int.0 > 0", "5", []),
+    # A discharged precondition is its row's record since #1695.
+    "provable": ("@Int.0 > 0", "5", [("verified", "")]),
 }
 
 

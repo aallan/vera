@@ -318,11 +318,11 @@ public fn main(@Unit -> @Int)
         assert not _codes(result), (
             f"correct cross-module call spuriously rejected: {_codes(result)}"
         )
-        # A DISCHARGED call precondition is reified as nothing at all (only
-        # violations and Tier-3 demotions become `call_pre` obligations), so
-        # "clean" has to be read two ways: nothing failed, and nothing was
-        # quietly demoted to a runtime check either.
-        assert not _call_pre(result), _call_pre(result)
+        # A DISCHARGED call precondition is its row's record since #1695,
+        # `verified`, so "clean" is read two ways: nothing failed, and
+        # nothing was quietly demoted to a runtime check either.
+        assert [o.status for o in _call_pre(result)] == ["verified"], (
+            _call_pre(result))
         # And the obligation is still LIVE on this call — swap the arguments
         # so the parameter the callee constrains is the wrong one, and the
         # same program must be rejected.  Without this, a verifier that had

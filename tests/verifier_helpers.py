@@ -107,3 +107,19 @@ private fn mk(@Nat -> @Tuple<Nat, Nat>)
   effects(pure)
 { Tuple(@Nat.0, @Nat.0) }
 """
+
+
+def entry_only(result: object, o: object) -> bool:
+    """Whether *o* is a refined formal's ENTRY record, which the verifier
+    records since #1695 (`verified`: the callee's assumption, which each
+    call's argument row discharges, a class the obligation table's
+    instrument pins), and not a narrowing at a site."""
+    from vera.obligations import table as obligation_table
+
+    table = getattr(result, "table", None)
+    rows = getattr(o, "rows", ())
+    if table is None or not rows:
+        return False
+    entry = {r.id for r in table.rows
+             if r.evaluation == obligation_table.ENTRY}
+    return set(rows) <= entry

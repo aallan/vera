@@ -233,9 +233,10 @@ def test_the_refinement_roster_is_what_it_was() -> None:
 
 
 def test_the_nat_construction_roster_is_what_it_was() -> None:
-    from vera import verifier
-
-    assert (verifier._NAT_CONSTRUCTION_GUARDED_SITES
+    """The verifier's copy of this roster went with #1695 (the obligation
+    table lists each construction row with its guard); the registry's
+    answer is what it was."""
+    assert (binders.guarded_sites("nat_sign_at_construction")
             == _NAT_CONSTRUCTION_GUARDED_SITES_AS_MEASURED)
 
 
@@ -247,12 +248,8 @@ def test_the_rosters_come_from_the_table_rather_than_a_literal() -> None:
     replaced.  (A third roster, the widening's at construction, went with
     the u64 `Nat`: a widening checks nothing.)
     """
-    from vera import verifier
-
     assert (narrowing.REFINED_BIND_GUARDED_SITES
             == binders.guarded_sites("refinement_predicate"))
-    assert (verifier._NAT_CONSTRUCTION_GUARDED_SITES
-            == binders.guarded_sites("nat_sign_at_construction"))
 
 
 # =====================================================================

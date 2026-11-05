@@ -246,31 +246,26 @@ class TestEphemerisVerification:
             (o.fn_name, o.status) for o in story
         ]
 
-    def test_element_arguments_prove_at_the_call_boundary(
+    def test_element_arguments_are_no_obligation_at_the_call_boundary(
         self, obligations: list,
     ) -> None:
-        """`helio(earth_elements(...))` establishes `Elements`' refined fields.
+        """`helio(earth_elements(...))` passes an `Elements` where an
+        `Elements` is wanted.
 
-        Since #1410 an argument whose parameter type writes a refinement on a
-        component carries the obligation the construction position already
-        had; `main` makes two such calls.  `Elements` has ONE refined field,
-        `Ecc` — the other five are plain `Float64` aliases — so these two
-        obligations carry that bound and nothing else.  Both PROVE, because the producing
-        function's declared return type carries exactly those refinements and
-        its own construction discharged them at Tier 1 -- the modular rule the
-        callee's single proof leans on, now recorded rather than assumed.
-        A demotion here would mean the element functions stopped establishing
-        their own fields.
+        `Elements` has ONE refined field, `Ecc`, which the producing
+        function's own construction discharges at Tier 1 against its
+        declared return type.  Handing that value on at its own type narrows
+        nothing, so since #1695 the two calls in `main` are no row and carry
+        no record (R110's finding 2 on PR #1834; before it, two `verified`
+        records restated the producer's proof at each call).  A record here
+        would mean a same-type argument is listed as a narrowing again.
         """
         arg_binds = [
             o for o in obligations
             if o.kind == "refine_bind" and o.fn_name == "main"
         ]
-        assert len(arg_binds) == 2, [
+        assert arg_binds == [], [
             (o.fn_name, o.status, o.line) for o in arg_binds
-        ]
-        assert all(o.status == "verified" for o in arg_binds), [
-            (o.fn_name, o.status) for o in arg_binds
         ]
 
     def test_wrap_deg_proves_at_tier_1(self, obligations: list) -> None:

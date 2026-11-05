@@ -1094,7 +1094,17 @@ def test_the_destructure_is_held_to_its_constructor_pattern(
         return
     assert not list(checked.diagnostics), [
         (d.error_code, d.description) for d in checked.diagnostics]
-    kinds = [o.kind for o in pipeline.verify(program).obligations]
+    from vera.obligations import table as obligation_table
+
+    result = pipeline.verify(program).result
+    # The boundary rows are recorded since #1695 (base: their checks'
+    # W004s): a `@PosInt` formal's ENTRY row (`verified`, the callee's
+    # assumption) and a producer's refined RETURN component, which its
+    # store establishes.  The cell reads the binding's record.
+    entry = {r.id for r in result.table.rows
+             if r.evaluation in (obligation_table.ENTRY, obligation_table.RETURN)}
+    kinds = [o.kind for o in result.obligations
+             if not (o.rows and set(o.rows) <= entry)]
     recorded = {k for k in kinds if k in ("nat_bind", "refine_bind")}
     assert recorded == ({_RECORD[cell.relation]} if cell.relation in _RECORD
                         else set()), kinds

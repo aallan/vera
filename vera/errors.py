@@ -1151,6 +1151,8 @@ ERROR_CODES: dict[str, str] = {
     "E539": "Premise set contradictory beyond the author's premises",
     "E540": "Premise satisfiability not established (Tier 1 withheld)",
     "E541": "Runtime-check claim not matched by an emitted check",
+    "E542": "Narrower effect row at a binder: not verified, no runtime check",
+    "E543": "Obligation not statically verified and no runtime check can guard it",
     # E6xx — Codegen
     "E600": "Unsupported parameter type",
     "E601": "Unsupported return type",

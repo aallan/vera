@@ -256,7 +256,10 @@ class TestNatReturnNarrowingDifferential758:
         statuses = _return_nat_bind_statuses(source)
         # The verifier obligates the return slot (exactly one narrowing site)...
         assert statuses, f"{label}: no return nat_bind obligation emitted"
-        assert all(s != "verified" for s in statuses), (
+        # Each leaf is discharged under its own branch (PR #1835 review): a
+        # leaf its branch proves is `verified` (`nested_if_join`'s
+        # `@Int.0 > 5` arm), and the leaf that can be negative is not.
+        assert any(s != "verified" for s in statuses), (
             f"{label}: an unprovable narrowing must not verify Tier-1: {statuses}"
         )
         # ...and codegen makes good on it: a negative input traps rather than
@@ -278,8 +281,10 @@ class TestNatReturnNarrowingDifferential758:
         self, label: str, source: str, fn: str, neg: int, expect: int,
     ) -> None:
         statuses = _return_nat_bind_statuses(source)
-        # The verifier proves the return narrowing at Tier 1...
-        assert statuses == ["verified"], f"{label}: {statuses}"
+        # The verifier proves the return narrowing at Tier 1, one record per
+        # value-yielding leaf since #1695 (`abs_if` has two)...
+        leaves = 2 if label == "abs_if" else 1
+        assert statuses == ["verified"] * leaves, f"{label}: {statuses}"
         # ...and codegen's guard is dead — run returns the value, never traps.
         assert _run(source, fn, neg) == expect, (
             f"{label}: verifier proved Tier-1 but run({neg}) trapped or gave "
@@ -449,8 +454,8 @@ class TestClosureReturnNarrowingDifferential984:
         self, label: str, source: str, neg: int, expect: int,
     ) -> None:
         # The closure is opaque, so even a provably-abs body is tier3 (over-
-        # guarded, never proven Tier-1)...
-        assert _return_nat_bind_statuses(source) == ["tier3"], label
+        # guarded, never proven Tier-1), one record per leaf since #1695...
+        assert _return_nat_bind_statuses(source) == ["tier3", "tier3"], label
         # ...but every returned value stays non-negative, so the live guard
         # never trips — over-guarding is sound, not a false-positive trap.
         assert _run(source, "go", neg) == expect, (
@@ -813,10 +818,21 @@ def _refine_bind_statuses(source: str) -> list[str]:
     (the 48cbc1f fidelity principle).  The corpus shapes below apply a closure
     whose formal is a refinement, so the only ``refine_bind`` site is the
     apply_fn argument under test (the closure body returns a constant, and a
-    closure-param declaration raises no narrowing obligation of its own)."""
+    closure-param declaration raises no narrowing obligation of its own).
+
+    A refined formal's ENTRY row (the closure's or the function's own
+    parameter) is recorded since #1695, `verified`: the callee's assumption,
+    a class the obligation table's instrument pins.  The cells here read the
+    argument's narrowing, so it is left out."""
+    from vera.obligations import table as obligation_table
+
+    result = _verified(source)
+    assert result.table is not None
+    entry = {r.id for r in result.table.rows
+             if r.evaluation == obligation_table.ENTRY}
     return [
-        o.status for o in _verified(source).obligations
-        if o.kind == _REFINE_KIND
+        o.status for o in result.obligations
+        if o.kind == _REFINE_KIND and not (o.rows and set(o.rows) <= entry)
     ]
 
 
@@ -1382,8 +1398,8 @@ class TestRefinedOverIntWidenIntersection:
 
 
 class TestRefinedBoundaryGuardableHelper:
-    """Direct pins on `_refined_boundary_codegen_guardable` — the semantic
-    mirror of codegen's `_refinement_guard_parts` bail set (#1036).  The
+    """Direct pins on the obligation table's `refinement_guard` — the rule
+    code generation's `_refinement_guard_parts` bail set follows (#1036).  The
     erased-base arm must key on REPRESENTATION (`erases_to_unit`), not the
     bare `Unit` name: a `Future<Unit>` base erases identically (#841), so
     claiming it guardable would be the same unfulfilled-promise class
@@ -1393,10 +1409,16 @@ class TestRefinedBoundaryGuardableHelper:
         from vera.types import (
             INT, UNIT, AdtType, PrimitiveType, RefinedType,
         )
-        from vera.verifier import ContractVerifier
 
+        # Since #1695 the rule is the obligation table's, which every
+        # narrowing row into a refinement carries (the verifier's mirror of
+        # it is deleted): the same pins, read from a built table.
+        table = _verified(_CLOSURE_REFINED).table
+        assert table is not None
         pred = object()  # predicate payload is irrelevant to the keying
-        g = ContractVerifier._refined_boundary_codegen_guardable
+
+        def g(ty: RefinedType) -> bool:
+            return table.refinement_guard(ty).check
         assert not g(RefinedType(UNIT, pred))
         assert not g(RefinedType(AdtType("Future", (UNIT,)), pred))
         # A refinement OVER a refinement is codegen's other bail (E618).

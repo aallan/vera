@@ -847,7 +847,9 @@ class TestUnattributedTraps:
             "unattributed", "overflow", {"@Int.0": -1})
         assert trial.attribution.startswith(
             "trap not attributable to an obligation: overflow at ")
-        assert "6:3 (no obligation recorded)" in trial.attribution
+        # #1598: the quotient's `INT_MIN / -1` row is discharged (Tier 3,
+        # its check), so the check is one of the candidates a trap names.
+        assert "6:3 (not proved)" in trial.attribution
         assert "(proved)" in trial.attribution
         assert "(1 unattributed)" in f.reason
         s = result.summary
@@ -1781,7 +1783,8 @@ class TestAttributionThroughTheJoin:
         assert _refuted(SRC_JOIN_BINDER) == {("nat_bind", 6)}
 
     def test_a_match_binder_guard_answers_the_scrutinee(self) -> None:
-        assert _refuted(SRC_JOIN_PATTERN) == {("nat_bind", 6)}
+        # The record stands at its row, the binder the check guards (#1695).
+        assert _refuted(SRC_JOIN_PATTERN) == {("nat_bind", 7)}
 
     def test_a_refined_return_guard_answers_the_body(self) -> None:
         refuted = _refuted(SRC_JOIN_RETURN)
@@ -1793,15 +1796,16 @@ class TestAttributionThroughTheJoin:
     def test_a_measure_check_answers_its_clause_and_the_tail_call(
         self,
     ) -> None:
-        """One check, two evaluations: entry, whose record is at the
-        clause, and the tail call's arguments, whose record is at the call.
-        A trap at it stands for both, so it can refute neither alone."""
+        """One check, two evaluations: entry and the tail call's arguments,
+        each discharged in its own context, share the one record of the
+        written site (#1695), whose status is the worse of the two; a trap at
+        the check stands for it."""
         index = _index(SRC_JOIN_MEASURE)
         check = _check_at(index, "wasm/operators.py:_emit_overflow_guard",
                           (4, 13, 4, 23))
         state, records = index._read(check)
         assert state == "not proved"
-        assert sorted((r.line, r.column) for r in records) == [(4, 13), (7, 40)]
+        assert sorted((r.line, r.column) for r in records) == [(4, 13)]
 
     def test_a_callees_precondition_answers_the_demoted_call(self) -> None:
         """The `call_pre` the verifier demoted at the call is what the
@@ -1823,17 +1827,15 @@ class TestAttributionThroughTheJoin:
             "the runtime check of an obligation the verifier did not prove: "
             "the call_pre obligation"), trial.attribution
 
-    def test_a_proved_call_into_a_user_function_is_still_unattributed(
+    def test_a_proved_call_into_a_user_function_is_refuted_by_its_record(
         self,
     ) -> None:
-        """What the relation cannot reach: a check whose record does not
-        exist.  A discharged call-site precondition is recorded nowhere, so
-        the trap at the callee's `requires` stays unattributed."""
+        """A discharged call-site precondition is a record (#1695), the
+        row the callee's `requires` check answers, so the trap there refutes
+        the proof (it was unattributed while the record did not exist)."""
         f = _fn(_run(SRC_JOIN_PROVED_CALL, distrust=True, trials=3), "f")
-        assert f.category == "tested", (f.category, f.reason)
-        assert {t.status for t in f.failures} == {"unattributed"}
-        assert all("(no obligation recorded)" in t.attribution
-                   for t in f.failures), [t.attribution for t in f.failures]
+        assert f.category == "refuted", (f.category, f.reason)
+        assert {t.status for t in f.failures} == {"refuted"}
 
 
 class TestAnEntryCheckReadsTheCallsTheTrialMakes:
@@ -1851,21 +1853,22 @@ class TestAnEntryCheckReadsTheCallsTheTrialMakes:
         planted proof, read as not exercised and its run exited 0."""
         result = _run(SRC_JOIN_UNREACHED_TIER3_CALLER, distrust=True, trials=3)
         f = _fn(result, "f")
-        assert f.category == "tested", (f.category, f.reason)
+        # `f`'s proved call precondition is a record (#1695), so its trials
+        # refute it.
+        assert f.category == "refuted", (f.category, f.reason)
         assert f.trials_run == f.trials_failed > 0
-        assert {t.status for t in f.failures} == {"unattributed"}
-        assert result.summary.unattributed >= 1
+        assert {t.status for t in f.failures} == {"refuted"}
 
     def test_an_unreached_tier3_caller_is_no_guard_for_this_trial(
         self,
     ) -> None:
         f = _fn(_run(SRC_JOIN_PROVED_CALL_BESIDE_A_TIER3_CALLER, distrust=True,
                      trials=3), "f")
-        assert f.category == "tested", (f.category, f.reason)
+        # The Tier 3 caller guards nothing for `f`: `f`'s own proved call
+        # precondition is the record its trials refute (#1695).
+        assert f.category == "refuted", (f.category, f.reason)
         assert f.trials_failed > 0
-        assert {t.status for t in f.failures} == {"unattributed"}
-        assert all("(no obligation recorded)" in t.attribution
-                   for t in f.failures), [t.attribution for t in f.failures]
+        assert {t.status for t in f.failures} == {"refuted"}
 
     def test_another_callers_proof_is_not_refuted(self) -> None:
         """`h`'s proved argument (line 25) is no proof a trial of `f`
