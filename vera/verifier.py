@@ -304,9 +304,9 @@ class _FnFrame:
     decl: ast.FnDecl
     rows: list[obligation_table.Row] | None
     made: list[ProofObligation] = field(default_factory=list)
-    #: The refined value rows the binding walk reached and no step
-    #: discharged, each with its node: left to their check once every
-    #: position of the function is done (`_leave_hand_down_rows`).
+    #: The value rows the binding walk reached and no step discharged,
+    #: each with its node: left to their check once every position of the
+    #: function is done (`_leave_hand_down_rows`).
     hand_down: list[tuple[ast.Expr, list[obligation_table.Row]]] = field(
         default_factory=list)
 
@@ -4887,7 +4887,7 @@ class ContractVerifier:
         #     Each leaf the table lists a row at was discharged by the body
         #     walk (5.7) in its own branch's context, one record per leaf
         #     row; the whole body is discharged here where it has one such
-        #     leaf, or the table lists no rows of the function.
+        #     leaf, and nowhere where the table lists none.
         if nat_return_leaves is None:
             self._check_nat_binding_obligation(
                 decl, decl.body, smt, slot_env, list(assumptions),
@@ -8232,13 +8232,11 @@ class ContractVerifier:
         """
         start = _Path(assumptions, slot_env)
         frame = self._fn_frames[-1] if self._fn_frames else None
-        # The value rows each node holds, with the context the traversal
-        # reaches it in: a row no step discharges where its value is bound
-        # (a value the requirement reaches only by the hand-down, through a
-        # join or a container's insert) is discharged in that context once
-        # the walk is done (#1836).
-        reached: list[tuple[ast.Expr, _Path, list[object],
-                            list[obligation_table.Row]]] = []
+        # The value rows each node holds: a row no step discharges where its
+        # value is bound (a value the requirement reaches only by the
+        # hand-down, through a join or a container's insert) is left to its
+        # check once the function is done (#1836).
+        reached: list[tuple[ast.Expr, list[obligation_table.Row]]] = []
         for node, path in fold.contexts(
                 expr, self._binding_step(decl, smt), start):
             if self._evaluated_at is None:
@@ -8247,7 +8245,7 @@ class ContractVerifier:
                         and isinstance(node, ast.Expr)):
                     held = self._value_rows(node, frame.rows)
                     if held:
-                        reached.append((node, path, list(smt._path_conditions), held))
+                        reached.append((node, held))
             if (return_leaves and isinstance(node, ast.Expr)
                     and obligation_table.ObligationTable._key(node)
                     in return_leaves):
@@ -8259,7 +8257,7 @@ class ContractVerifier:
                     site="return type",
                 )
         if reached and frame is not None:
-            self._discharge_unbound_values(decl, smt, frame, reached)
+            self._discharge_unbound_values(frame, reached)
 
     def _value_rows(
         self, node: ast.Expr, rows: list[obligation_table.Row],
@@ -8273,47 +8271,37 @@ class ContractVerifier:
                 and obligation_table.ObligationTable._key(r.node) == key]
 
     def _discharge_unbound_values(
-        self, decl: ast.FnDecl, smt: SmtContext, frame: _FnFrame,
-        reached: list[tuple[ast.Expr, _Path, list[object],
-                            list[obligation_table.Row]]],
+        self, frame: _FnFrame,
+        reached: list[tuple[ast.Expr, list[obligation_table.Row]]],
     ) -> None:
-        """Discharge each value row no step of the walk discharged, in the
-        context the walk reached its node in: its path facts, bindings and
-        branch conditions (#1836)."""
+        """Hand each value row no step of the walk discharged to
+        `_leave_hand_down_rows`: no position the walk reached holds the
+        value to the row's target, so the requirement is the table's
+        hand-down alone (#1836)."""
         done = {i for rec in frame.made for i in rec.rows}
-        saved = smt._path_conditions[:]
-        try:
-            for node, path, conditions, rows in reached:
-                left = [r for r in rows if r.id not in done]
-                if not left:
-                    continue
-                smt._path_conditions[:] = conditions
-                refined = [r for r in left if r.kind == "refine_bind"]
-                if refined:
-                    frame.hand_down.append((node, refined))
-                if any(r.kind == "nat_bind" for r in left):
-                    self._check_nat_binding_obligation(
-                        decl, node, smt, path.env, list(path.facts),
-                        site="value")
-                done |= {i for rec in frame.made for i in rec.rows}
-        finally:
-            smt._path_conditions[:] = saved
+        for node, rows in reached:
+            left = [r for r in rows if r.id not in done]
+            if left:
+                frame.hand_down.append((node, left))
+                done |= {r.id for r in left}
 
     def _leave_hand_down_rows(self, frame: _FnFrame) -> None:
-        """Record ``tier3`` each refined value row the binding walk reached
-        that no position discharged once the function is done: no position
+        """Record ``tier3`` each value row (refined or `@Nat`) the binding
+        walk reached that no position discharged once the function is done:
+        no position
         holds the value to a refinement of its own (the return's container
         descent does, for a value it reaches), so the requirement is the
         table's hand-down alone (a container's insert, a join), and the row
         is left to the check that reads it (#1836)."""
         done = {i for rec in frame.made for i in rec.rows}
         for node, rows in frame.hand_down:
-            left = [r for r in rows if r.id not in done]
-            if left:
-                self._record_obligation(
-                    frame.decl.name, "refine_bind", node, "tier3",
-                    rows=tuple(r.id for r in left))
-                done |= {r.id for r in left}
+            for kind in ("refine_bind", "nat_bind"):
+                left = [r for r in rows if r.kind == kind and r.id not in done]
+                if left:
+                    self._record_obligation(
+                        frame.decl.name, kind, node, "tier3",
+                        rows=tuple(r.id for r in left))
+                    done |= {r.id for r in left}
 
     def _binding_step(
         self, decl: ast.FnDecl, smt: SmtContext,
@@ -13755,10 +13743,10 @@ class ContractVerifier:
         """The value leaves of *decl*'s ``@Nat`` return the table lists a
         row at, by node key, each discharged where the body walk reaches it
         (R111's finding 1 on PR #1835: one discharge of the whole body gave
-        every leaf the body's status).  Empty where the return does not
-        narrow; ``None`` where the body is discharged whole: a function the
-        table lists no rows of, or a body with one such leaf, whose record
-        is that leaf's (the whole body's translation, a destructure read
+        every leaf the body's status).  Empty where the table lists no such
+        leaf row, a function it lists no rows of included (#1836: no row, no
+        discharge); ``None`` where the body is discharged whole: a body with
+        one such leaf, whose record is that leaf's (the whole body's translation, a destructure read
         through its producer's contract, is the more precise there).  A
         refinement over ``@Nat`` is 7b's, discharged whole."""
         rows = self._table.rows_of_function(decl)

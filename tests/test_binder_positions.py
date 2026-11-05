@@ -228,7 +228,10 @@ def test_the_guard_keys_are_what_they_were() -> None:
 @pytest.mark.parametrize("key", sorted(_REFINEMENT_GUARD_KEYS_AS_MEASURED))
 def test_each_guard_key_lists_a_guarded_refinement_row(key: str) -> None:
     """The table decides each key's guard: its template program lists a
-    `refine_bind` row there that a check answers."""
+    `refine_bind` row there that a check answers.  A refined formal's entry
+    row is the callee's, not the key's position, so it is not counted: a
+    key whose template declares a refined callee parameter is answered only
+    by the row at its own position (CodeRabbit on PR #1843)."""
     from tests import pipeline
     from tests.test_boundary_guard_correctness_1466 import _REPRS, _TEMPLATES
     from vera.obligations import table as obligation_table
@@ -236,6 +239,7 @@ def test_each_guard_key_lists_a_guarded_refinement_row(key: str) -> None:
     source = _TEMPLATES[key][0].build(_REPRS["int"].instance("good"))
     table = obligation_table.build(pipeline.typed(source))
     guarded = [r for r in table.rows if r.kind == "refine_bind"
+               and r.evaluation != obligation_table.ENTRY
                and (r.guard.check or (r.answered_by is not None
                                       and (r.answered_by < 0
                                            or table.by_id(r.answered_by).guard.check)))]

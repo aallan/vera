@@ -2287,6 +2287,97 @@ def test_a_refuted_value_inside_a_handle_keeps_its_record(form: str) -> None:
     assert _envelope_inconsistencies(v) == []
 
 
+_HAND_DOWN_NAT = """\
+private fn h(@Map<String, Tuple<Nat, Int>> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  7
+}
+
+public fn g(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Int = h(map_insert(map_new(), "k", if @Int.0 > 0 then { Tuple(@Int.0, 2) } else { Tuple(@Int.0, 2) }));
+  assert(@Int.1 >= 0);
+  0
+}
+"""
+
+
+def test_repro_a_hand_down_nat_value_is_left_to_its_check(tmp_path: Path) -> None:
+    """A `Nat` component that only the table's hand-down reaches (a
+    `map_insert` value at a call argument, through a join) is held to `Nat`
+    by no position the walk reaches: its rows are left to the check that
+    reads them, `tier3`, as at base, and never discharged later in a
+    context that an `assert` after it has added to (CodeRabbit on PR
+    #1843).  The check traps the negative payload."""
+    v = _verified(_HAND_DOWN_NAT)
+    nat = [(o.status, o.error_code) for o in v.result.obligations
+           if o.kind == "nat_bind"]
+    assert nat == [("tier3", ""), ("tier3", "")], nat
+    assert "E503" not in _codes(v)
+    out = _run(tmp_path, _HAND_DOWN_NAT, "g", "-5")
+    assert "Negative value bound into a @Nat slot" in out.stdout + out.stderr
+
+
+_HAND_DOWN_MAP_ARG = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+private fn consume(@Map<String, Pos> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  map_size(@Map<String, Pos>.0)
+}
+
+public fn main(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  consume(map_insert(map_new(), "a", @Int.0))
+}
+"""
+
+_HAND_DOWN_SET_LET = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+public fn main(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Set<Pos> = set_add(set_new(), @Int.0);
+  set_size(@Set<Pos>.0)
+}
+"""
+
+
+def test_repro_a_hand_down_value_record_is_never_verified() -> None:
+    """A value that only the table's hand-down holds to a refinement (a
+    `map_insert` value at a call argument, a `set_add` element at a `let`)
+    is left to its check, `tier3` at its site, and never proved: no position
+    states the refinement for the solver, and `-5` is a value either
+    program admits (R112 on PR #1843: a mutant that recorded these
+    `verified` passed every matrix).  The `Set` element's record keeps base's
+    E541, the claim with no check that answers it."""
+    v = _verified(_HAND_DOWN_MAP_ARG)
+    at = next(i for i, line in enumerate(_HAND_DOWN_MAP_ARG.splitlines(), 1)
+              if "map_insert" in line)
+    site = [(o.status, o.line) for o in v.result.obligations
+            if o.kind == "refine_bind" and o.line == at]
+    assert site == [("tier3", at)], site
+    v = _verified(_HAND_DOWN_SET_LET)
+    recs = [o.status for o in v.result.obligations if o.kind == "refine_bind"]
+    assert recs == ["tier3"], recs
+    assert "E541" in _codes(v)
+
+
 def test_the_handle_values_fix_is_a_guarded_construction(tmp_path: Path) -> None:
     """The fix text applied: the payload bound outside the handle and the
     value constructed from it is a checked store (`tier3`, no disclosure),

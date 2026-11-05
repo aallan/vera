@@ -2000,9 +2000,8 @@ class OperatorsMixin:
 
     def _collect_narrowing_return_leaves(self, body: ast.Expr) -> set[int]:
         """The ``id()`` of every tail-position return leaf that narrows into a
-        @Nat return — the codegen mirror of the verifier's
-        ``_return_narrows_into_nat`` leaf descent (#758), but collecting leaf
-        identities so ``CodeGenerator._compile_fn`` can guard EACH narrowing
+        @Nat return, the leaves the obligation table lists a ``@Nat`` return
+        row at (#758, #1836), collecting leaf identities so ``CodeGenerator._compile_fn`` can guard EACH narrowing
         leaf inline instead of wrapping the whole body (#983 review).
 
         The whole-body ``_emit_nat_bind_guard(body_instrs)`` wrap appended the
