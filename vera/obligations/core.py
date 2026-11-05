@@ -158,6 +158,13 @@ class ProofObligation:
     #: record built outside a verifier run.
     end_line: int = 0
     end_column: int = 0
+    #: The obligation table's rows this record discharges (#1695): one
+    #: record per written site, so a site's copies (a measure re-evaluated
+    #: at each self tail call, a handler clause inlined at each operation
+    #: call, a predicate lowered by each guard) and a generic's instances
+    #: share the record, which names every row.  Outside `content_key`, like
+    #: `owner`.  Empty for a record built outside a verifier run.
+    rows: tuple[int, ...] = ()
 
     def content_key(self) -> str:
         """Stable identity digest for this obligation.

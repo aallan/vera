@@ -13,9 +13,7 @@ span the other side does not use.
 The pins below are the issue's open lines, the seven #1542 positions, the
 #1598 rows, #1642, #1641, #1782, #1602, #1567, #1563, #1725's disclosure and
 #1696's m04, each asserting the verdict the table gives; the regression
-cells hold the nine lines that do not reproduce where they are.  Every red
-cell carries the strict `_RED` marker until the verifier discharges the
-table's rows, and the commit that turns a cell green removes its marker.
+cells hold the nine lines that do not reproduce where they are.
 """
 
 from __future__ import annotations
@@ -41,12 +39,6 @@ pytestmark = pytest.mark.matrix(
         "vera/codegen/contracts.py",
     ],
 )
-
-#: Red until the verifier discharges the table's rows (the second half of
-#: #1695): strict, so a cell that turns green fails loudly and the commit that
-#: turns it green removes its marker.
-_RED = pytest.mark.xfail(
-    strict=True, reason="red until the verifier discharges the table's rows (67b, #1695)")
 
 _BUDGET_S = 300
 
@@ -106,7 +98,6 @@ def _guard_claims(path: Path) -> list[str]:
     return out
 
 
-@_RED
 def test_the_verifier_claims_no_guard() -> None:
     """No `*guarded=` argument in `vera/verifier.py`: the verifier reads
     whether a row is guarded from the row and never predicts it."""
@@ -114,7 +105,6 @@ def test_the_verifier_claims_no_guard() -> None:
     assert claims == [], claims
 
 
-@_RED
 def test_the_verifier_defines_no_mirror_of_code_generation() -> None:
     text = (ROOT / "vera" / "verifier.py").read_text(encoding="utf-8")
     defined = [name for name in _MIRRORS
@@ -168,16 +158,19 @@ public fn f(@Int, @Array<Int>, @Float64, @Nat, @Nat -> @Nat)
                      "nat_bind", "nat_sub", "refine_bind", "call_pre"}, kinds
 
 
-@_RED
 def test_the_gates_carry_no_known_mismatch() -> None:
     """`scripts/check_reconciliation.py`'s `KNOWN` and the generator's
     `KNOWN_CLASSES` are both empty: no mismatch is allowlisted."""
     import importlib.util
 
+    import sys
+
     spec = importlib.util.spec_from_file_location(
         "_gate_1695", ROOT / "scripts" / "check_reconciliation.py")
     assert spec is not None and spec.loader is not None
     gate = importlib.util.module_from_spec(spec)
+    # Registered first, so the script's dataclasses resolve their annotations.
+    sys.modules["_gate_1695"] = gate
     spec.loader.exec_module(gate)
     from tests.test_program_generator import KNOWN_CLASSES
 
@@ -201,17 +194,15 @@ public fn safe_divide(@Int, @Int -> @Int)
 """
 
 
-@_RED
 def test_repro_1598_the_int_min_division_is_a_row() -> None:
     """`INT_MIN / -1` is an `int_overflow` row of the division, `tier3` under
     `requires(@Int.1 != 0)`, and the module's check answers it."""
     v = _verified(_SAFE_DIVIDE)
     rows = _records(v, "int_overflow")
-    assert [r for r in rows if r[1] == 7] == [("tier3", 7, 3)], rows
+    assert [r for r in rows if r[1] == 6] == [("tier3", 6, 3)], rows
     assert not [c for c in _codes(v) if c in ("E541", "W004")], _codes(v)
 
 
-@_RED
 def test_repro_1629_a_literal_divisor_is_a_verified_row() -> None:
     source = """\
 public fn f(@Int -> @Int)
@@ -227,7 +218,6 @@ public fn f(@Int -> @Int)
     assert "W004" not in _codes(v)
 
 
-@_RED
 def test_repro_1629_a_refined_parameters_entry_check_is_a_row_of_the_callee() -> None:
     source = """\
 type PosInt = { @Int | @Int.0 > 0 };
@@ -271,7 +261,6 @@ public fn main(@Unit -> @Nat)
 """
 
 
-@_RED
 def test_repro_1530_a_decreases_on_an_exn_row_is_disclosed_unguarded() -> None:
     v = _verified(_EXN_DECREASES)
     assert _records(v, "decreases") == [("tier3_unguarded", 4, 3)], _records(v, "decreases")
@@ -298,7 +287,6 @@ public fn main(@Unit -> @Int)
 """
 
 
-@_RED
 def test_repro_1607_an_ensures_over_an_array_result_is_disclosed_unguarded() -> None:
     v = _verified(_QUANTIFIED_ENSURES)
     rows = [r for r in _records(v, "ensures") if r[1] == 3]
@@ -306,7 +294,6 @@ def test_repro_1607_an_ensures_over_an_array_result_is_disclosed_unguarded() -> 
     assert "E541" not in _codes(v)
 
 
-@_RED
 def test_repro_1607_an_ensures_over_a_string_result_is_disclosed_unguarded() -> None:
     source = """\
 public fn f(@Int -> @String)
@@ -334,7 +321,6 @@ public fn g(@Float64 -> @Int)
 """
 
 
-@_RED
 def test_repro_1613_a_payload_nested_in_a_container_literal_is_a_row(tmp_path: Path) -> None:
     v = _verified(_NESTED_PAYLOAD)
     assert _records(v, "nat_bind") == [("tier3", 6, 45)], _records(v, "nat_bind")
@@ -373,13 +359,12 @@ public fn g(@Int, @Int -> @Int)
 """
 
 
-@_RED
 def test_repro_1642_one_row_per_guarded_component() -> None:
     """The opaque argument of a tuple-typed parameter: one `refine_bind` row
     per component, each answered by the callee's component guard."""
     v = _verified(_PARTIAL_COMPONENTS)
-    rows = [r for r in _records(v, "refine_bind") if r[1] == 25]
-    assert rows == [("tier3", 25, 5), ("tier3", 25, 5)], _records(v, "refine_bind")
+    rows = [r for r in _records(v, "refine_bind") if r[1] == 24]
+    assert rows == [("tier3", 24, 5), ("tier3", 24, 5)], _records(v, "refine_bind")
     assert not [c for c in _codes(v) if c in ("E541", "W004")], _codes(v)
 
 
@@ -396,10 +381,9 @@ public fn f(@Int -> @Int)
 """
 
 
-@_RED
 def test_repro_1782_a_guarded_clause_binder_is_one_row() -> None:
     v = _verified(_CLAUSE_BINDER)
-    assert _records(v, "nat_bind") == [("tier3", 5, 11)], _records(v, "nat_bind")
+    assert _records(v, "nat_bind") == [("tier3", 5, 12)], _records(v, "nat_bind")
     assert not [c for c in _codes(v) if c in ("E504", "E541", "W004")], _codes(v)
 
 
@@ -430,7 +414,6 @@ public fn main(@Int -> @Int)
 """
 
 
-@_RED
 def test_repro_1567_a_call_in_a_callees_ensures_is_the_callees() -> None:
     v = _verified(_CALLEES_ENSURES)
     e501 = [d for d in v.diagnostics if d.error_code == "E501"]
@@ -461,7 +444,6 @@ public fn f(@Int -> @Int)
 """
 
 
-@_RED
 def test_repro_1563_a_refused_binder_draws_no_second_error() -> None:
     v = _verified(_REFUSED_BINDER)
     errors = [d.error_code for d in v.errors]
@@ -494,15 +476,13 @@ public fn main(-> @Int)
 """
 
 
-@_RED
 def test_repro_1725_an_arm_binder_narrowing_an_effect_row_is_disclosed() -> None:
     v = _verified(_EFFECT_ROW)
-    assert _records(v, "refine_bind") == [("tier3_unguarded", 12, 9)], _records(v, "refine_bind")
-    e506 = [d for d in v.warnings if d.error_code == "E506"]
-    assert e506 and "effect row" in e506[0].rationale, [d.rationale[:200] for d in e506]
+    assert _records(v, "effect_bind") == [("tier3_unguarded", 12, 9)], _records(v, "effect_bind")
+    e542 = [d for d in v.warnings if d.error_code == "E542"]
+    assert e542 and "effect row" in e542[0].rationale, [d.rationale[:200] for d in e542]
 
 
-@_RED
 def test_repro_1582_nothing_inside_an_assume_is_a_row() -> None:
     source = """\
 public fn f(@Array<Int> -> @Int)
@@ -539,7 +519,6 @@ public fn g(@Float64 -> @Int)
 """
 
 
-@_RED
 def test_repro_1608_a_map_insert_value_outside_a_let_is_a_row() -> None:
     v = _verified(_MAP_VALUE)
     assert _records(v, "nat_bind") == [("tier3", 14, 32)], _records(v, "nat_bind")
@@ -560,7 +539,6 @@ public fn mk(@Float64 -> @Option<Small>)
 """
 
 
-@_RED
 def test_repro_1602_the_e506_rationale_names_the_rows_reason() -> None:
     v = _verified(_NESTED_REFINEMENT)
     e506 = [d for d in v.warnings if d.error_code == "E506"]
@@ -582,7 +560,6 @@ public fn f(@Nat -> @Int)
 """
 
 
-@_RED
 def test_repro_1696_m04_the_index_rows_post_fact_bounds_the_element() -> None:
     """After the guarded `index_bounds` row the index is in range, so the
     element is one of the literal's and the narrowing is no E503."""
@@ -904,24 +881,104 @@ def test_no_two_rows_share_a_node_and_an_evaluation(source: str) -> None:
         k for k in set(keys) if keys.count(k) > 1)
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "a closure inside a position lowered at several sites is lifted once per "
-    "site, each copy with its own check, and one row answers both; 67b makes "
-    "rows and checks one-to-one, either rows keyed per rendering site with "
-    "closures.py passing the site's evaluation to the copy, or one lifted copy "
-    "per closure node"))
 @pytest.mark.parametrize("site", sorted(_CLOSURE_AT_SEVERAL_SITES))
 def test_a_closure_lowered_at_several_sites_has_one_check_per_row(
     site: str, tmp_path: Path,
 ) -> None:
-    """Each lifted copy (`anon_0`, `anon_1`) carries its own check of the
-    closure's one row, so the identity reads two checks for it."""
+    """A closure node is lifted once per function context, whatever the
+    number of sites that lower it (amendment 2 to the design note): one
+    copy, one check, one row."""
     source = _CLOSURE_AT_SEVERAL_SITES[site]
     _identity({"p.vera": source}, "p.vera", tmp_path)
 
 
+_ANON_FN = re.compile(r"^\s*\(func \$anon_\d+", re.MULTILINE)
+
+
+def _closure_sources_lowered_twice() -> list[object]:
+    """The two shapes, and the #1480 matrix's closure-body cells in a measure
+    (the cells whose measure lowers at entry and at a self tail call)."""
+    from tests import test_evaluated_position_obligations_1480 as m1480
+
+    out: list[object] = [pytest.param(src, id=name)
+                         for name, src in sorted(_CLOSURE_AT_SEVERAL_SITES.items())]
+    for param in m1480._sub_position_cells():
+        sub, op, position, status = param.values  # type: ignore[attr-defined]
+        if sub.name == "closure body" and position.startswith("measure"):
+            out.append(pytest.param(
+                m1480._sub_position_cell(sub, op, position, status).source,
+                id=f"1480-{position}-{op.name}"))
+    return out
+
+
+@pytest.mark.parametrize("source", _closure_sources_lowered_twice())
+def test_one_lifted_function_per_closure_node(source: str) -> None:
+    """The module holds as many lifted `anon_` functions as the closure
+    nodes the program writes, every site of one node reusing its copy (the
+    memo's killer: a module that lifts per site holds two)."""
+    from vera import ast as vera_ast
+
+    written: set[object] = set()
+
+    def visit(node: object) -> None:
+        if isinstance(node, vera_ast.AnonFn):
+            written.add(node.node_id)
+        if isinstance(node, vera_ast.Node):
+            for name in node.__dataclass_fields__:
+                visit(getattr(node, name))
+        elif isinstance(node, (tuple, list)):
+            for item in node:
+                visit(item)
+
+    # Each shape lowers its closure in one function, so a node is one copy.
+    visit(pipeline.check(source, file="p.vera").typed.program)
+    compiled = pipeline.compile(source, file="p.vera")
+    assert compiled.ok, compiled
+    assert len(_ANON_FN.findall(compiled.wat)) == len(written), compiled.wat[:400]
+
+
+def test_a_rolled_back_lifting_leaves_no_memo_entry() -> None:
+    """A translation of a closure that rolls back (a capture with no local
+    at the site) takes its registration back, so the node's next
+    translation lifts it once, under the id the rollback returned."""
+    from vera.wasm.closures import ClosuresMixin
+
+    class _Env:
+        def __init__(self, resolves: bool) -> None:
+            self.resolves = resolves
+
+        def resolve(self, name: str, index: int) -> int | None:
+            return 3 if self.resolves else None
+
+    class _Ctx(ClosuresMixin):
+        def __init__(self) -> None:
+            self._pending_closures: list[object] = []
+            self._next_closure_id = 7
+            self._lifted_closure_ids: dict[object, int] = {}
+            self.needs_alloc = False
+
+        def _collect_free_vars(self, anon: object) -> list[tuple[str, int, str]]:
+            return [("Int", 0, "i64")]
+
+        def alloc_local(self, wt: str) -> int:
+            return 9
+
+    from vera import ast as vera_ast
+
+    anon = vera_ast.AnonFn(params=(), return_type=None, effect=None, body=None)  # type: ignore[arg-type]
+    ctx = _Ctx()
+    assert ctx._translate_anon_fn(anon, _Env(False)) is None  # type: ignore[arg-type]
+    assert ctx._pending_closures == [] and ctx._next_closure_id == 7
+    assert ctx._lifted_closure_ids == {}
+    assert ctx._translate_anon_fn(anon, _Env(True)) is not None  # type: ignore[arg-type]
+    assert ctx._translate_anon_fn(anon, _Env(True)) is not None  # type: ignore[arg-type]
+    assert [cid for _, _, cid in ctx._pending_closures] == [7]  # type: ignore[misc]
+    assert ctx._next_closure_id == 8
+
+
 _CORPUS = sorted((ROOT / "examples").rglob("*.vera")) + sorted(
     (ROOT / "tests" / "conformance").rglob("*.vera"))
+_CORPUS_FILES = _CORPUS
 
 
 @pytest.mark.parametrize(
@@ -964,6 +1021,128 @@ def test_identity_over_the_generator(seed: int, tmp_path: Path) -> None:
     from tests import program_generator as gen
 
     _identity(gen.generate(seed).files(), gen.ENTRY, tmp_path)
+
+
+# ---------------------------------------------------------------------
+# The identity differential, the verifier's half: every row of a function
+# the verifier discharged has exactly one record, which names it, and every
+# record of a table kind names its rows.
+# ---------------------------------------------------------------------
+
+
+def _verifier_identity(files: dict[str, str], entry: str, tmp_path: Path) -> None:
+    from collections import Counter
+
+    from vera import ast as vera_ast
+
+    entry_path = pipeline.write_tree(tmp_path, files, entry=entry)
+    v = pipeline.verify(entry_path, file=entry, budget_s=_BUDGET_S, reconcile=True)
+    if not v.ran:
+        pytest.skip("the program is refused before verification")
+    table = v.result.table
+    assert table is not None
+    named = Counter(r for o in v.result.obligations for r in o.rows)
+    twice = [(table.rows[r].kind, table.rows[r].content_key[3:]) for r, n in named.items()
+             if n != 1]
+    assert twice == [], twice
+    no_row = [(o.kind, o.line, o.column) for o in v.result.obligations
+              if not o.rows and o.kind != "state_decl"]
+    assert no_row == [], no_row
+    prelude = {tld.decl.name for tld in v.checked.typed.linked.prelude
+               if isinstance(tld.decl, vera_ast.FnDecl)}
+    # A generic's template is verified through its clones, whose records
+    # carry the clones' rows; the template's own rows (its helpers' too)
+    # have none.
+    template_rows: set[int] = set()
+
+    def template(decl: vera_ast.FnDecl, generic: bool) -> None:
+        generic = generic or bool(decl.forall_vars)
+        if generic and decl.body is not None:
+            template_rows.update(table.by_body.get(id(decl.body), ()))
+        for helper in decl.where_fns or ():
+            template(helper, generic)
+
+    for tld in v.checked.typed.linked.program.declarations:
+        if isinstance(tld.decl, vera_ast.FnDecl):
+            template(tld.decl, False)
+    verified = {table.rows[r].fn for r in named}
+    unrecorded = [
+        (row.kind, row.content_key[3:], row.evaluation[0], row.fn)
+        for row in table.rows
+        if row.fn in verified and row.id not in named
+        and row.fn.split("$")[0] not in prelude and row.id not in template_rows]
+    assert unrecorded == [], unrecorded
+    assert not [c for c in _codes(v) if c in ("E541", "W004")], _codes(v)
+
+
+@pytest.mark.parametrize(
+    "path", _CORPUS_FILES, ids=[p.relative_to(ROOT).as_posix() for p in _CORPUS_FILES])
+def test_verifier_identity_over_the_corpus(path: Path, tmp_path: Path) -> None:
+    files = {sib.relative_to(path.parent).as_posix(): sib.read_text(encoding="utf-8")
+             for sib in path.parent.rglob("*.vera")}
+    _verifier_identity(files, path.name, tmp_path)
+
+
+@pytest.mark.parametrize(
+    "source", [b[1] for b in _DOC_BLOCKS], ids=[b[0] for b in _DOC_BLOCKS])
+def test_verifier_identity_over_the_doc_blocks(source: str, tmp_path: Path) -> None:
+    _verifier_identity({"doc.vera": source}, "doc.vera", tmp_path)
+
+
+@pytest.mark.parametrize("seed", range(1000), ids=[f"seed{s}" for s in range(1000)])
+def test_verifier_identity_over_the_generator(seed: int, tmp_path: Path) -> None:
+    from tests import program_generator as gen
+
+    _verifier_identity(gen.generate(seed).files(), gen.ENTRY, tmp_path)
+
+
+#: A measure whose operation proves at the function's entry (`@Nat.0 >= 1`)
+#: and is left undecided at the self tail call, whose argument the verifier
+#: cannot see into: the copies share one record, which takes the tail
+#: call's status and names it (amendment 3 to the design note).
+_MEASURE_DECIDED_AT_THE_TAIL_CALL = """\
+public fn down(@Nat, @Bool -> @Nat)
+  requires(@Nat.0 >= 1)
+  ensures(true)
+  decreases(@Nat.0 - 1)
+  effects(pure)
+{
+  if @Nat.0 <= 2 then { 0 } else { down(apply_fn(fn(@Nat -> @Nat) effects(pure) { @Nat.0 }, @Nat.0 - 1), @Bool.0) }
+}
+"""
+
+
+def test_a_measures_copies_share_one_record_with_the_worst_status() -> None:
+    v = _verified(_MEASURE_DECIDED_AT_THE_TAIL_CALL)
+    (record,) = [o for o in v.result.obligations
+                 if o.kind == "int_overflow" and (o.line, o.column) == (4, 13)]
+    assert record.status == "tier3", record
+    assert "self tail call at 7:36" in record.expr_text, record.expr_text
+    assert len(record.rows) == 2, record.rows
+
+
+#: A measure whose `@Nat` subtraction proves at the entry (`requires` gives
+#: `a >= b`) and is refuted at the self tail call, whose second argument is
+#: `b + 5`: one record, violated, naming the tail call (E502 there).
+_MEASURE_REFUTED_AT_THE_TAIL_CALL = """\
+public fn down(@Nat, @Nat -> @Nat)
+  requires(@Nat.1 >= @Nat.0)
+  ensures(true)
+  decreases(@Nat.1 - @Nat.0)
+  effects(pure)
+{
+  if @Nat.1 == @Nat.0 then { 0 } else { down(@Nat.1, @Nat.0 + 5) }
+}
+"""
+
+
+def test_a_measure_refuted_at_the_tail_call_is_one_violated_record() -> None:
+    v = _verified(_MEASURE_REFUTED_AT_THE_TAIL_CALL)
+    (record,) = [o for o in v.result.obligations if o.kind == "nat_sub"]
+    assert (record.status, record.line, record.column) == ("violated", 4, 13), record
+    assert "self tail call at 7:41" in record.expr_text, record.expr_text
+    assert len(record.rows) == 2, record.rows
+    assert "E502" in _codes(v), _codes(v)
 
 
 # ---------------------------------------------------------------------
@@ -1117,29 +1296,29 @@ def test_repro_a_never_leaf_of_a_join_is_no_narrowing_into_nat(join: str, leaf: 
 
 
 @pytest.mark.parametrize("join", ["if", "match"])
-def test_a_join_whose_every_leaf_is_never_narrows_as_base(join: str) -> None:
-    """A join whose every leaf is `Never` is itself of type `Never`, which
-    is no `Nat`: the verifier records its `nat_bind` (Tier 3) and base guards
-    it, so the table keeps the row and its check (no E541)."""
+def test_a_join_whose_every_leaf_is_never_is_no_row(join: str) -> None:
+    """A join whose every leaf is `Never` yields no value: nothing to prove
+    a fact of, nothing to guard, so the table lists no row at the `let`
+    (amendment 1 to the design note: a `Never` leaf is no row), code
+    generation emits no guard after the throws, and the verifier records
+    nothing there."""
     value = {"if": "if @Bool.0 then { throw(4) } else { throw(5) }",
              "match": ("match @Option<Nat>.0 {\n    Some(@Nat) -> throw(4),\n"
                        "    None -> throw(5)\n  }")}[join]
     source = _never_join_program(value)
-    assert _let_value_rows(source, "nat_bind") == [(6, 14)], source
-    assert _f_checks(source, "wasm/operators.py:_emit_nat_bind_guard") == [(6, 14)], source
+    assert _let_value_rows(source, "nat_bind") == [], source
+    assert _f_checks(source, "wasm/operators.py:_emit_nat_bind_guard") == [], source
     verified = _verified(source)
     assert verified.ran and not verified.errors, verified
+    assert _records(verified, "nat_bind") == [], _records(verified, "nat_bind")
 
 
-def test_the_sibling_never_leaf_readers_stand_as_base() -> None:
+def test_the_sibling_never_leaf_readers_list_no_row_at_a_throw() -> None:
     """The two other readers that list a guarded row from a join's leaves
-    keep base's rows, since the verifier reads them the same way: a `@Nat`
-    return's per-leaf rows list a `throw` leaf (recorded, Tier 3), and a
-    refined `let` of a join with a `throw` arm keeps its head row (base's
-    W004, the KNOWN class of a refined join).  Each moves with the
-    verifier's discharge in the second half, not here.  The refined `let`'s
-    sign row is the fixed reader's: a refinement over `Nat` read its `throw`
-    leaf as a narrowing too (a W004 at the join, none at base)."""
+    read a `throw` leaf as the fixed reader does, as no value (amendment 1):
+    a `@Nat` return's per-leaf rows skip the `throw` arm, so no dead guard
+    follows it, and a refined `let` of a join whose value leaf already has
+    the refinement takes no head row and no sign row."""
     ret = """\
 private fn h(@Nat, @Bool -> @Nat)
   requires(true)
@@ -1160,11 +1339,17 @@ public fn main(@Unit -> @Unit)
     compiled = pipeline.compile(ret, file="ret.vera")
     assert [(g.line, g.column) for g in pipeline.checks(
         compiled.result, emitter="wasm/operators.py:_emit_nat_bind_guard",
-        function="h")] == [(6, 27)]
+        function="h")] == []
+    assert _records(_verified(ret), "nat_bind") == []
     refined = "type Cap = { @Nat | @Nat.0 <= 30 };\n\n" + _never_join_program(
         "if @Bool.0 then { throw(4) } else { @Cap.0 }", let="Cap")
-    assert _let_value_rows(refined, "refine_bind") == [(8, 14)], refined
+    assert _let_value_rows(refined, "refine_bind") == [], refined
     assert _let_value_rows(refined, "nat_bind") == [], refined
+    # The value leaf that narrows keeps its row: a `Never` beside an `@Int`
+    # arm takes the `@Int` arm's sign row and check.
+    keeps = _never_join_program("if @Bool.0 then { throw(4) } else { 0 - @Nat.0 }")
+    assert _let_value_rows(keeps, "nat_bind") == [(6, 14)], keeps
+    assert _f_checks(keeps, "wasm/operators.py:_emit_nat_bind_guard") == [(6, 14)], keeps
 
 
 def test_mover_a_clause_binder_over_a_container_payload_is_walked(
@@ -1172,9 +1357,9 @@ def test_mover_a_clause_binder_over_a_container_payload_is_walked(
 ) -> None:
     """The one exclusion beside #1818's rule goes: a handler clause binder
     over an `Array` payload declared narrower than it is a `nat_bind` row
-    with a tree, so the payload is walked and a negative element traps.
-    The verifier still discloses the binder (E506) until 67b records the
-    row, so the walk is a W004 by design in 67a."""
+    with a tree, so the payload is walked and a negative element traps; the
+    verifier records the row Tier 3 (no E506 disclosure, no W004: the
+    designed W004 of the first half retires with the verifier's discharge)."""
     from tests.test_composite_coercion_guards import SHAPES, program
 
     source = program("clause binder", SHAPES["Array"], "opaque")
@@ -1187,7 +1372,8 @@ def test_mover_a_clause_binder_over_a_container_payload_is_walked(
     assert ran.returncode != 0 and "Negative value bound into a @Nat slot" in (
         ran.stdout + ran.stderr), ran.stdout + ran.stderr[-300:]
     v = _verified(source, "c.vera")
-    assert "E506" in _codes(v) and "W004" in _codes(v), _codes(v)
+    assert _records(v, "nat_bind") == [("tier3", 26, 12)], _records(v, "nat_bind")
+    assert not [c for c in _codes(v) if c in ("E506", "W004", "E541")], _codes(v)
 
 
 _LATER_ELEMENT = """\

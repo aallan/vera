@@ -447,6 +447,13 @@ class WasmContext(
         self._pending_closures: list[
             tuple[ast.AnonFn, list[tuple[str, int, str]], int]
         ] = []
+        # The closure id each AnonFn node of this context was lifted under
+        # (#1695, 67b): a node translated at several lowering sites (a
+        # measure at entry and at each self tail call, a refinement
+        # predicate at each guard) is lifted once, so its rows have one
+        # check each.  Its captures are a function of the node alone
+        # (`_collect_free_vars`), so the one copy serves every site.
+        self._lifted_closure_ids: dict[object, int] = {}
         # #1208: the naming environment — alias name -> body TypeExpr (for
         # FnType resolution) and alias name -> declared parameter names (for
         # generic aliases), as ONE value instead of two maps that could be

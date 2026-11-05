@@ -29,10 +29,17 @@ class ClosuresMixin:
         # Collect free variables (captures from enclosing scope)
         captures = self._collect_free_vars(expr)
 
-        # Assign closure ID and register for later lifting
-        closure_id = self._next_closure_id
-        self._next_closure_id += 1
-        self._pending_closures.append((expr, captures, closure_id))
+        # Assign closure ID and register for later lifting, once per node:
+        # a node this context already lifted reuses that copy (#1695).
+        key = (expr.node_id if expr.node_id is not None
+               else ("object", id(expr)))
+        reused = self._lifted_closure_ids.get(key)
+        if reused is not None:
+            closure_id = reused
+        else:
+            closure_id = self._next_closure_id
+            self._next_closure_id += 1
+            self._pending_closures.append((expr, captures, closure_id))
 
         # Compute closure struct layout
         # offset 0: func_table_idx (i32, 4 bytes)
@@ -73,7 +80,13 @@ class ClosuresMixin:
             cap_offset, _wt = field_offsets[i]
             local_idx = env.resolve(tname, cap_idx)
             if local_idx is None:
-                return None  # capture reference unresolvable
+                # Capture reference unresolvable: the translation rolls
+                # back, and a copy this call registered goes with it, so
+                # the node's next translation lifts it once.
+                if reused is None:
+                    self._pending_closures.pop()
+                    self._next_closure_id -= 1
+                return None
             if cap_wt == "i32_pair":
                 # Store ptr at cap_offset
                 instructions.append(f"local.get {tmp}")
@@ -95,6 +108,7 @@ class ClosuresMixin:
 
         # Leave closure pointer on stack
         instructions.append(f"local.get {tmp}")
+        self._lifted_closure_ids[key] = closure_id
         return instructions
 
     def _translate_apply_fn(

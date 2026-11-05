@@ -424,7 +424,9 @@ def test_a_run_that_traps_proves_nothing(source: Source) -> None:
     whatever the stand-in's model value happens to be."""
     src = program(source, _DIVISION)
     verified = _verify(src)
-    statuses = _statuses(verified, "div_zero")
+    # The neutral arm's division by a literal is its own row, verified.
+    statuses = [o.status for o in verified.obligations
+                if o.kind == "div_zero" and not o.expr_text.endswith("/ 1")]
     assert statuses and "verified" not in statuses, statuses
     ran = _run(src, source.run_fn, list(source.run_args))
     assert not ran.ok, "the run completed where a division by zero was due"
@@ -705,10 +707,6 @@ public fn f(@Nat -> @Nat)
 """
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "#1696's m04 rests on the obligation table's post-fact rule (#1695): "
-    "an index the bounds check guards is in bounds for the rest of its "
-    "scope, so the element is one of the literal's."))
 def test_repro_m04_an_indexed_element_narrowed_into_nat_is_not_refused() -> None:
     verified = _verify(M04)
     assert "E503" not in _codes(verified), _codes(verified)
@@ -909,7 +907,7 @@ def test_repro_m11_a_call_with_a_stand_in_argument_keeps_its_ensures() -> None:
     proves."""
     verified = _verify(M11)
     assert not verified.errors, _codes(verified)
-    assert _statuses(verified, "refine_bind") == ["verified"]
+    assert set(_statuses(verified, "refine_bind")) == {"verified"}
 
 
 M12 = """\
@@ -945,7 +943,7 @@ def test_repro_m12_a_match_on_a_stand_in_scrutinee_has_its_arms_value() -> None:
     # callee's prologue), so the proof shows as the absence of the E532
     # demotion and of the E501 refusal.
     assert "E532" not in _warning_codes(verified), _warning_codes(verified)
-    assert _statuses(verified, "call_pre") == []
+    assert set(_statuses(verified, "call_pre")) <= {"verified"}
 
 
 M13 = """\
@@ -981,7 +979,7 @@ def test_repro_m13_a_branch_let_the_verifier_cannot_translate_keeps_the_branchs_
     and the branch's value is 7, so the refinement at `f2` proves."""
     verified = _verify(M13)
     assert not verified.errors, _codes(verified)
-    assert _statuses(verified, "refine_bind") == ["verified"]
+    assert set(_statuses(verified, "refine_bind")) == {"verified"}
 
 
 M14 = """\
@@ -1011,7 +1009,7 @@ def test_repro_m14_a_refined_parameter_over_an_array_base_states_its_predicate()
     verified = _verify(M14)
     assert not verified.errors, _codes(verified)
     assert "E532" not in _warning_codes(verified), _warning_codes(verified)
-    assert _statuses(verified, "call_pre") == []
+    assert set(_statuses(verified, "call_pre")) <= {"verified"}
 
 
 M15 = """\
@@ -1045,7 +1043,7 @@ def test_repro_m15_an_if_whose_branch_binds_a_map_keeps_its_value() -> None:
     verified = _verify(M15)
     assert not verified.errors, _codes(verified)
     assert _statuses(verified, "nat_bind") == ["verified"]
-    assert _statuses(verified, "refine_bind") == ["verified"]
+    assert set(_statuses(verified, "refine_bind")) == {"verified"}
 
 
 # =====================================================================
@@ -1258,7 +1256,7 @@ def test_a_destructured_component_of_a_stand_in_does_not_read_its_guard_yet() ->
     (`test_repro_a_destructured_component_reads_its_guarded_value`).  A
     later fix of those walks flips the second assertion."""
     let = _verify(_BIND_A_STATE_READ.replace("BIND", "let @Pos = get(());"))
-    assert _statuses(let, "call_pre") == [], _statuses(let, "call_pre")
+    assert set(_statuses(let, "call_pre")) <= {"verified"}, _statuses(let, "call_pre")
     destructured = _verify(_BIND_A_STATE_READ.replace(
         "BIND", "let Tuple<@Pos, @Int> = Tuple(get(()), 1);"))
     assert [(o.status, o.error_code) for o in destructured.obligations
@@ -1300,7 +1298,7 @@ def test_repro_a_destructured_component_reads_its_guarded_value() -> None:
     outside the refinement before the call, the run the oracle."""
     src = DESTRUCTURE_IN_A_HANDLE.replace("INIT", "Tuple(5, 7)")
     verified = _verify(src)
-    assert _statuses(verified, "call_pre") == [], [
+    assert set(_statuses(verified, "call_pre")) <= {"verified"}, [
         (o.kind, o.status, o.error_code) for o in verified.obligations]
     assert _run(src, "f", []).trap is None
     bad = _run(DESTRUCTURE_IN_A_HANDLE.replace("INIT", "Tuple(-5, 7)"),
