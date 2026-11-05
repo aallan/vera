@@ -943,23 +943,6 @@ def is_unknown_like(ty: Type | None) -> bool:
     return isinstance(base_type(ty), (UnknownType, UnresolvedAdtType))
 
 
-def unresolved_as(ty: Type, by: Type) -> Type:
-    """*ty* with every placeholder of a name nothing declares replaced by
-    *by*: a judgement that must not rest on what the name would have been
-    asks its question of a stand-in type instead (#1563)."""
-    if isinstance(ty, UnresolvedAdtType):
-        return by
-    if isinstance(ty, AdtType):
-        return ty.with_args(tuple(unresolved_as(a, by) for a in ty.type_args))
-    if isinstance(ty, FunctionType):
-        return FunctionType(
-            tuple(unresolved_as(p, by) for p in ty.params),
-            unresolved_as(ty.return_type, by), ty.effect)
-    if isinstance(ty, RefinedType):
-        return dataclasses.replace(ty, base=unresolved_as(ty.base, by))
-    return ty
-
-
 def _is_fresh_typevar(ty: Type) -> bool:
     """A fresh, unresolved inference placeholder (`A$1` from _fresh_typevar).
 

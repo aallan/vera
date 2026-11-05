@@ -682,6 +682,17 @@ def test_an_operator_over_a_refinement_of_the_placeholder_draws_nothing_further(
     assert _codes(source) == ["E136"]
 
 
+def test_a_field_of_an_undeclared_type_draws_no_eq_refusal() -> None:
+    """The Eq derivation reads the placeholder as derivable wherever it
+    stands, a constructor's field included: comparing two `Boxed` values of
+    `data Boxed { Wrap(Qzt) }` drew E243 beside the field's E136, at the base
+    as at the first cut of this rule."""
+    source = (f"private data Boxed {{\n  Wrap(Qzt)\n}}\n\n"
+              f"private fn f(@Boxed -> @Bool)\n{_SIG}"
+              "{\n  @Boxed.0 == @Boxed.0\n}\n")
+    assert _codes(source) == ["E136"]
+
+
 def test_a_container_no_name_makes_eq_still_draws_e243() -> None:
     """The Eq judgement asks its question with the placeholder read as an Eq
     type, so `Array<Qzt>`, no Eq type whatever `Qzt` is, still draws E243

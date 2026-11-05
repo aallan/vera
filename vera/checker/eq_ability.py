@@ -40,6 +40,7 @@ from vera.types import (
     Type,
     TypeVar,
     UnknownType,
+    UnresolvedAdtType,
     base_type,
 )
 
@@ -84,7 +85,9 @@ def is_eq_derivable(
       the concrete type arguments.  A recursive occurrence is cycle-broken via
       ``_seen`` (so ``List<Int>`` derives rather than looping).
     - ``UnknownType`` → derivable (error recovery: never pile a spurious E243
-      on top of an already-reported type error).
+      on top of an already-reported type error), and so is the placeholder of
+      a name nothing declares (``UnresolvedAdtType``, E136), wherever it
+      stands: an operand, a type argument, a constructor's field (#1563).
     - A bare ``TypeVar`` is **not** decided here — callers defer it (inside a
       ``forall<T where Eq<T>>`` body the constraint promises derivability, and
       the check holds each instance's type argument to it, E613 at the call
@@ -92,7 +95,7 @@ def is_eq_derivable(
     """
     ty = base_type(ty)  # a refinement is Eq iff its base is (predicate aside)
 
-    if isinstance(ty, UnknownType):
+    if isinstance(ty, (UnknownType, UnresolvedAdtType)):
         return True
     if isinstance(ty, PrimitiveType):
         return ty.name in EQ_PRIMITIVES
