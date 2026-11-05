@@ -2597,6 +2597,170 @@ def test_repro_lane_a_sub_pattern_binder_reads_its_fields_refinement() -> None:
     assert _narrowing_records(_SUB_PATTERN_OVER_A_REFINED_FIELD) == [('f', 'refine_bind', 'verified', 15, 14, '', '@NonNeg'), ('g', 'refine_bind', 'violated', 25, 29, 'E505', '@Int.0'), ('g', 'refine_bind', 'verified', 27, 14, '', '@NonNeg'), ('E505', "Value narrowing into a refined constructor field in 'g' may violate the refinement predicate `@Int.0 > 0`.")]
 
 
+
+
+_CLOSURE_RETURN_WITH_A_REFINED_COMPONENT = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+private fn mk(@Int -> @Tuple<Int, Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Tuple(@Int.0, @Int.0)
+}
+
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  apply_fn(fn(@Int -> @Pos) effects(pure) { @Int.0 }, @Int.0)
+}
+
+public fn b(@Int -> @Tuple<Pos, Nat>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  apply_fn(fn(@Int -> @Tuple<Pos, Nat>) effects(pure) { mk(@Int.0) }, @Int.0)
+}
+
+public fn k(@Int -> @Tuple<Pos, Nat>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  apply_fn(fn(@Int -> @Tuple<Pos, Nat>) effects(pure) { if @Int.0 > 0 then { mk(@Int.0) } else { mk(0 - @Int.0) } }, @Int.0)
+}
+"""
+
+
+def test_repro_a_closure_return_s_refined_component_keeps_its_own_record() -> None:
+    """A closure returning `Tuple<Pos, Nat>` from a `Tuple<Int, Int>` call,
+    directly and through an `if`: each value leaf's components and the
+    closure return type's components keep their own `tier3` records, with
+    no disclosure at the closure return, record for record as at base.
+    At 030734a9 the closure arm's refined branch fired on the component's
+    row: the leaf's record took an `E506` and a closure-return warning, and
+    the return type's `[Tuple.0]` row had no record (PR #1843)."""
+    assert _narrowing_records(_CLOSURE_RETURN_WITH_A_REFINED_COMPONENT) == [
+        ('f', 'refine_bind', 'tier3', 16, 45, 'E506', '<expr>'),
+        ('b', 'nat_bind', 'tier3', 24, 57, '', 'mk(@Int.0) [Tuple.1]'),
+        ('b', 'refine_bind', 'tier3', 24, 57, '', 'mk(@Int.0) [Tuple.0]'),
+        ('b', 'refine_bind', 'tier3', 24, 24, '', '@Tuple<Pos, Nat> [Tuple.0]'),
+        ('b', 'refine_bind', 'tier3', 24, 24, '', '@Tuple<Pos, Nat> [Tuple.1]'),
+        ('b', 'refine_bind', 'tier3', 19, 22, 'E506', '@Tuple<Pos, Nat> [Tuple.0]'),
+        ('b', 'refine_bind', 'tier3', 19, 22, 'E506', '@Tuple<Pos, Nat> [Tuple.1]'),
+        ('k', 'nat_bind', 'tier3', 32, 78, '', 'mk(@Int.0) [Tuple.1]'),
+        ('k', 'refine_bind', 'tier3', 32, 78, '', 'mk(@Int.0) [Tuple.0]'),
+        ('k', 'nat_bind', 'tier3', 32, 98, '', 'mk(0 - @Int.0) [Tuple.1]'),
+        ('k', 'refine_bind', 'tier3', 32, 98, '', 'mk(0 - @Int.0) [Tuple.0]'),
+        ('k', 'refine_bind', 'tier3', 32, 24, '', '@Tuple<Pos, Nat> [Tuple.0]'),
+        ('k', 'refine_bind', 'tier3', 32, 24, '', '@Tuple<Pos, Nat> [Tuple.1]'),
+        ('k', 'refine_bind', 'tier3', 27, 22, 'E506', '@Tuple<Pos, Nat> [Tuple.0]'),
+        ('k', 'refine_bind', 'tier3', 27, 22, 'E506', '@Tuple<Pos, Nat> [Tuple.1]'),
+        ('E506', "Refinement predicate at a closure return in 'f' could not be verified statically; it will be checked at run time. To prove it statically, add a `requires(...)` implying the predicate or guard the binding with an `if`."),
+        ('E506', "Refinement predicate at a return type in 'b' could not be verified statically; it will be checked at run time. To prove it statically, add a `requires(...)` implying the predicate or guard the binding with an `if`."),
+        ('E506', "Refinement predicate at a return type in 'k' could not be verified statically; it will be checked at run time. To prove it statically, add a `requires(...)` implying the predicate or guard the binding with an `if`."),
+    ]
+
+_REFINED_CLOSURE_RETURN_OVER_A_NAT_COMPONENT = """\
+type PT = { @Tuple<Int, Nat> | true };
+
+private fn mk(@Int -> @Tuple<Int, Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Tuple(@Int.0, @Int.0)
+}
+
+public fn c(@Int -> @PT)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  apply_fn(fn(@Int -> @PT) effects(pure) { mk(@Int.0) }, @Int.0)
+}
+
+public fn d(@Int -> @PT)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  apply_fn(fn(@Int -> @PT) effects(pure) { if @Int.0 > 0 then { mk(@Int.0) } else { mk(0 - @Int.0) } }, @Int.0)
+}
+"""
+
+
+def test_repro_lane_a_refined_closure_return_keeps_its_nat_components() -> None:
+    """A closure whose return type is a refinement over `Tuple<Int, Nat>`,
+    returning a `Tuple<Int, Int>` call, directly and through an `if`: the
+    body's refined record is disclosed at the closure return (E506), and the
+    `Nat` component of each value leaf and of the return type is left to the
+    boundary's check, `tier3`, as at base (the Mutation (diff) lane's
+    `_binding_closure` survivors on PR #1843: no cell held a closure's
+    boundary components beside a refined return)."""
+    assert _narrowing_records(_REFINED_CLOSURE_RETURN_OVER_A_NAT_COMPONENT) == [
+        ("c", "nat_bind", "tier3", 16, 44, "", "mk(@Int.0) [Tuple.1]"),
+        ("c", "refine_bind", "tier3", 16, 44, "E506", "<expr>"),
+        ("c", "refine_bind", "tier3", 16, 24, "", "@PT [Tuple.1]"),
+        ("c", "refine_bind", "tier3", 16, 3, "E506", "<expr>"),
+        ("c", "refine_bind", "tier3", 11, 22, "", "@PT [Tuple.1]"),
+        ("d", "nat_bind", "tier3", 24, 65, "", "mk(@Int.0) [Tuple.1]"),
+        ("d", "nat_bind", "tier3", 24, 85, "", "mk(0 - @Int.0) [Tuple.1]"),
+        ("d", "refine_bind", "tier3", 24, 44, "E506", "<expr>"),
+        ("d", "refine_bind", "tier3", 24, 24, "", "@PT [Tuple.1]"),
+        ("d", "refine_bind", "tier3", 24, 3, "E506", "<expr>"),
+        ("d", "refine_bind", "tier3", 19, 22, "", "@PT [Tuple.1]"),
+        ("E506", "Refinement predicate at a closure return in 'c' could not "
+                 "be verified statically; it will be checked at run time. To "
+                 "prove it statically, add a `requires(...)` implying the "
+                 "predicate or guard the binding with an `if`."),
+        ("E506", "Refinement predicate at a return type in 'c' could not be "
+                 "verified statically; it will be checked at run time. To "
+                 "prove it statically, add a `requires(...)` implying the "
+                 "predicate or guard the binding with an `if`."),
+        ("E506", "Refinement predicate at a closure return in 'd' could not "
+                 "be verified statically; it will be checked at run time. To "
+                 "prove it statically, add a `requires(...)` implying the "
+                 "predicate or guard the binding with an `if`."),
+        ("E506", "Refinement predicate at a return type in 'd' could not be "
+                 "verified statically; it will be checked at run time. To "
+                 "prove it statically, add a `requires(...)` implying the "
+                 "predicate or guard the binding with an `if`."),
+    ]
+
+
+_DESTRUCTURE_OF_AN_OPAQUE_SOURCE = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+type NonNeg = { @Int | @Int.0 >= 0 };
+
+type MkPair = fn(Int -> Tuple<Pos, Int>) effects(pure);
+
+public fn f(@MkPair, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let Tuple<@NonNeg, @Int> = apply_fn(@MkPair.0, @Int.0);
+  @NonNeg.0 + @Int.0
+}
+"""
+
+
+def test_repro_lane_a_destructure_binder_reads_an_opaque_sources_field_type() -> None:
+    """A non-literal destructure of a closure application's `Tuple<Pos,
+    Int>`: the source is opaque, so the component's declared `Pos` is the
+    `NonNeg` binder's premise and the bind proves, as at base (the lane's
+    `_obligate_destructure_narrowings` survivors on PR #1843: no cell
+    destructured an opaque source whose term carries no fact)."""
+    assert _narrowing_records(_DESTRUCTURE_OF_AN_OPAQUE_SOURCE) == [
+        ("f", "refine_bind", "verified", 12, 14, "", "@NonNeg"),
+    ]
+
 def test_the_handle_values_fix_is_a_guarded_construction(tmp_path: Path) -> None:
     """The fix text applied: the payload bound outside the handle and the
     value constructed from it is a checked store (`tier3`, no disclosure),

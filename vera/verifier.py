@@ -3813,10 +3813,10 @@ class ContractVerifier:
         if narrows:
             return True
         rows = self._binder_rows(binder, kind)
-        if rows and isinstance(binder, (ast.Pattern, ast.TypeExpr)):
+        if rows and isinstance(binder, (ast.Pattern, ast.TypeExpr)):  # pragma: no mutate — equivalent: every caller passes a `Pattern` or a `TypeExpr`, and none passes one with no row of *kind* (the table lists a refined binder's row always, and a `Nat` binder's by the narrowing the caller reads), so `rows` is never empty here
             self._record_obligation(
                 decl.name, kind, binder, "tier3",
-                rows=tuple(r.id for r in rows),
+                rows=tuple(r.id for r in rows),  # pragma: no mutate — equivalent: without it the record is keyed at the binder by `_rows_discharged`, which finds the same rows
                 expr_text=rows[0].content_key[2])
         return False
 
@@ -3907,14 +3907,20 @@ class ContractVerifier:
 
     def _discharge_boundary_components(
         self, decl: ast.FnDecl, value: ast.Expr | None,
-        te: ast.TypeExpr | None,
+        te: ast.TypeExpr | None, *, refinements: bool = False,
     ) -> None:
         """Record ``tier3`` the ``Nat`` components of a value at a boundary
         (#1818's composite coercion, #1836): the return type's component
         rows at *te*, and the rows at *value*'s leaves that a boundary's
         component row answers.  The boundary's check reads the component,
         and no discharge states it: a ``Nat`` component is no refinement
-        for the nested discharge to test, so the row is left to its check."""
+        for the nested discharge to test, so the row is left to its check.
+
+        With *refinements* (a closure's return, whose body is opaque, so no
+        nested discharge tests a refined component either), the refined
+        components are left to their checks the same way, each kind its own
+        record: the return type's, and every one at *value*'s leaves, a
+        payload's included, which a row with no check discloses."""
         frame = self._fn_frames[-1] if self._fn_frames else None
         if frame is None or frame.rows is None:
             return
@@ -3925,18 +3931,20 @@ class ContractVerifier:
                   if value is not None else set())
         groups: dict[object, list[obligation_table.Row]] = {}
         for r in frame.rows:
-            if r.id in done or not r.path or r.target != NAT:
+            if r.id in done or not r.path or (
+                    r.target != NAT and not refinements):
                 continue
             k = key(r.node)
+            g = (r.kind, k) if refinements else k
             if r.evaluation == obligation_table.RETURN and k in at_te:
-                groups.setdefault(k, []).append(r)
-            elif (r.kind == "nat_bind" and k in leaves
-                    and r.answered_by is not None and (
+                groups.setdefault(g, []).append(r)
+            elif k in leaves and ((refinements and r.kind == "refine_bind") or (
+                    r.kind == "nat_bind" and r.answered_by is not None and (
                         r.answered_by == obligation_table.ANSWERED_AT_CLOSURE_ENTRY
                         or (r.answered_by >= 0
                             and self._table.by_id(r.answered_by).evaluation in (
-                                obligation_table.ENTRY, obligation_table.RETURN)))):
-                groups.setdefault(k, []).append(r)
+                                obligation_table.ENTRY, obligation_table.RETURN))))):
+                groups.setdefault(g, []).append(r)
         for rows in groups.values():
             node = rows[0].node
             assert isinstance(node, (ast.Expr, ast.TypeExpr))  # noqa: S101 — a row's node
@@ -8628,7 +8636,11 @@ class ContractVerifier:
         # obligation stream exactly matched to codegen's unconditional
         # guard (the lockstep invariant), at worst one redundant tier3 on
         # an identity-shaped closure.
-        if self._rows_taking(expr.body, "refine_bind"):
+        # The arm is the return type's own refinement: a refined COMPONENT
+        # of the return is the boundary's check, left to it below with the
+        # `Nat` ones, each in its own record.
+        if (self._is_refined_type(self._written_type(expr.return_type))
+                and self._rows_taking(expr.body, "refine_bind")):
             self._record_refined_bind_tier3(
                 decl, expr.body, "closure return",
 
@@ -8650,9 +8662,10 @@ class ContractVerifier:
         # predicate, claimed by the refined-first #1032 arm above — so this
         # arm sees only the bare @Nat primitive and the two never co-fire
         # on one site.
-        elif self._rows_taking(expr.body, "nat_bind"):
+        elif (self._is_nat_type(self._written_type(expr.return_type))
+                and self._rows_taking(expr.body, "nat_bind")):
             self._record_nat_bind_tier3(
-                decl, expr.body, "closure return", "tier3")
+                decl, expr.body, "closure return", "tier3")  # pragma: no mutate — equivalent: `_record_nat_bind_tier3` reads no `site`
         # #779/#985: descend into the closure BODY under an EMPTY slot
         # environment — the fresh-scope walk.  Interior slot-dependent
         # binding sites are obligated Tier-3, while literal-only shapes
@@ -8663,8 +8676,9 @@ class ContractVerifier:
         # codegen guards back them), and a NESTED AnonFn re-enters this
         # arm so its own return narrowing obligations record —
         # the #985 residual of the shallow single-level treatment above.
-        self._discharge_boundary_components(decl, expr.body, expr.return_type)
-        yield from _path_closure(expr, path, smt)
+        self._discharge_boundary_components(
+            decl, expr.body, expr.return_type, refinements=True)
+        yield from _path_closure(expr, path, smt)  # pragma: no mutate — equivalent: `_path_closure` reads neither the path nor the context: a closure body is walked with a fresh path
 
     def _binding_constructor_call(
         self, decl: ast.FnDecl, expr: ast.ConstructorCall, path: _Path, smt: SmtContext,
@@ -12701,7 +12715,7 @@ class ContractVerifier:
                         decl, sub_pat, "nat_bind", narrowing.component_narrows(  # pragma: no mutate — equivalent: the table lists a sub-pattern `nat_bind` row by the same `component_narrows` rule, so such a binder narrows and these are not read, and a composite binder's walk row is recorded `tier3` by `_discharge_walked_rows` first
                             field_sources, i, self._narrows_into_nat,
                             leaf_is_nat)):
-                    continue
+                    continue  # pragma: no mutate — equivalent: not reached: the table lists a sub-pattern binder's head `nat_bind` row by the same `component_narrows` rule, so `_narrowing_binder` returns True here
                 self._check_nat_binding_obligation_term(
                     decl, field_term, smt, assumptions,
                     site="ADT sub-pattern bind", node=diag_node,
@@ -12954,9 +12968,9 @@ class ContractVerifier:
                         decl, sub_pat, "nat_bind", narrowing.component_narrows(  # pragma: no mutate — equivalent: as in `_obligate_subpattern_term`, and the unprojected fallback records the row `tier3` on either branch
                             field_sources, i, self._narrows_into_nat,
                             leaf_is_nat)):
-                    continue
+                    continue  # pragma: no mutate — equivalent: not reached: the table lists a sub-pattern binder's head `nat_bind` row by the same `component_narrows` rule, so `_narrowing_binder` returns True here
                 self._record_nat_bind_tier3(
-                    decl, scrutinee, "ADT sub-pattern bind", "tier3")
+                    decl, scrutinee, "ADT sub-pattern bind", "tier3")  # pragma: no mutate — equivalent: `_record_nat_bind_tier3` reads no `site`
 
     def _obligate_destructure_narrowings(
         self,
@@ -13037,15 +13051,15 @@ class ContractVerifier:
             sources = narrowing.component_sources(stmt.value, i, ctor_matches)
             if narrowing.all_sources_opaque(sources):
                 declared_source.add(i)
-            if (i < len(field_types) and (refined := self._binder_target(
-                    te, target)) is not None):
+            if (i < len(field_types) and (refined := self._binder_target(  # pragma: no mutate — equivalent: the checker refuses a destructure whose bindings outnumber its constructor's fields (E314) or whose source has no single constructor (E311), so `i` is below `len(field_types)` here
+                    te, target)) is not None):  # pragma: no mutate — equivalent: a binder row's target is its written type, which `_binder_target` returns without it
                 if self._narrowing_binder(
                         decl, te, "refine_bind",
                         self._refined_field_narrows(refined, field_types[i])):
                     refined_narrowing.append((i, refined))
             elif self._binder_rows(te, "nat_bind"):
                 if self._narrowing_binder(
-                        decl, te, "nat_bind", narrowing.component_narrows(
+                        decl, te, "nat_bind", narrowing.component_narrows(  # pragma: no mutate — equivalent: the table lists a destructure binder's `nat_bind` row by the same `component_narrows` rule, so the binder narrows and these are not read
                             sources, i, self._narrows_into_nat, leaf_is_nat)):
                     nat_narrowing.append(i)
         if not refined_narrowing and not nat_narrowing:
