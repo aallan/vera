@@ -1081,41 +1081,28 @@ def _verifier_identity(files: dict[str, str], entry: str, tmp_path: Path) -> Non
     from vera import verifier as vmod
 
     entry_path = pipeline.write_tree(tmp_path, files, entry=entry)
-    # Every record `_settle_rows` keys was anchored where it was recorded
-    # (span keying is gone, so an unanchored record could only be dropped):
-    # the population is zero, and a record made outside `_record_obligation`
-    # would show here.
+    # Every record of a table kind is keyed to its rows where it is made
+    # (#1836), and a discharge runs only where a row is: no record reaches
+    # `_settle_rows` without rows.
     unanchored: list[tuple[str, str, int, int]] = []
-    fallback: list[tuple[str, str, str]] = []
-    real_anchored = vmod.ContractVerifier._anchored_rows
-    real_row_record = vmod.ContractVerifier._row_record
+    real_settle = vmod.ContractVerifier._settle_rows
 
-    def anchored(self, rec, rows, decl):  # type: ignore[no-untyped-def]
-        entry_ = self._record_anchors.get(id(rec))
-        if entry_ is None or entry_[0]() is not rec:
-            unanchored.append((rec.fn_name, rec.kind, rec.line, rec.column))
-        return real_anchored(self, rec, rows, decl)
+    def settle(self, decl, start, made_here, *, premise=None):  # type: ignore[no-untyped-def]
+        if self._table.rows_of_function(decl) is not None:
+            unanchored.extend(
+                (rec.fn_name, rec.kind, rec.line, rec.column) for rec in made_here
+                if rec.kind in vmod._TABLE_KINDS and not rec.rows)
+        return real_settle(self, decl, start, made_here, premise=premise)
 
-    def row_record(self, decl, row):  # type: ignore[no-untyped-def]
-        rec = real_row_record(self, decl, row)
-        fallback.append(_fallback_class(row, rec.status))
-        return rec
-
-    vmod.ContractVerifier._anchored_rows = anchored  # type: ignore[method-assign]
-    vmod.ContractVerifier._row_record = row_record  # type: ignore[method-assign]
+    vmod.ContractVerifier._settle_rows = settle  # type: ignore[method-assign]
     try:
         v = pipeline.verify(entry_path, file=entry, budget_s=_BUDGET_S,
                             reconcile=True)
     finally:
-        vmod.ContractVerifier._anchored_rows = real_anchored  # type: ignore[method-assign]
-        vmod.ContractVerifier._row_record = real_row_record  # type: ignore[method-assign]
+        vmod.ContractVerifier._settle_rows = real_settle  # type: ignore[method-assign]
     if not v.ran:
         pytest.skip("the program is refused before verification")
     assert unanchored == [], unanchored
-    # The rows no record reached, by class: each class is pinned with the
-    # fact its status rests on (`_FALLBACK_CLASSES`), so a new class
-    # entering the fallback is loud.
-    assert not [c for c in fallback if c not in _FALLBACK_CLASSES], fallback
     assert _envelope_inconsistencies(v) == [], _envelope_inconsistencies(v)
     assert _leaf_omissions(v) == [], _leaf_omissions(v)
     table = v.result.table
@@ -1154,39 +1141,91 @@ def _verifier_identity(files: dict[str, str], entry: str, tmp_path: Path) -> Non
     assert not [c for c in _codes(v) if c in ("E541", "W004")], _codes(v)
 
 
-#: The classes of a row no verification record reached, and the fact each
-#: status rests on (`ContractVerifier._row_record`):
-#:
-#: * a `div_zero` row whose divisor is a non-zero literal: `verified`, the
-#:   literal is the proof;
-#: * a refined formal's ENTRY row: `verified`, the callee's assumption, which
-#:   each caller's argument row discharges as it does a `requires`;
-#: * a row with no check to plant (`TRIVIAL`): `verified`;
-#: * any other row, left to its check: `tier3` where the row is guarded (the
-#:   corpus's are base's W004 sites, the check emitted and nothing recorded),
-#:   disclosed where it is not.  None of these is ever `violated`.
-_FALLBACK_CLASSES = {
-    ("literal divisor", "verified"),
-    ("refined formal entry", "verified"),
-    ("trivial", "verified"),
-    ("left to its check", "tier3"),
+#: The four classes a fallback discharged before #1836, each a program whose
+#: row is now an ordinary discharge in its own context, and the status that
+#: discharge gives it (the status the fallback gave): a literal divisor (the
+#: `div_zero` discharge proves it), a refined formal's ENTRY row (the entry
+#: step's assumption), a trivial clause (`requires(true)`), and a binder at
+#: its value's own refined type (nothing to prove beyond the type the value
+#: carries, which an opaque component's accessor does not hold: left to the
+#: check code generation emits, `tier3`).
+_FORMER_FALLBACK_CLASSES = {
+    "literal divisor": ("""\
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0 / 5
+}
+""", "div_zero", "verified"),
+    "refined formal entry": ("""\
+type PosInt = { @Int | @Int.0 > 0 };
+
+public fn f(@PosInt -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @PosInt.0
+}
+""", "refine_bind", "verified"),
+    "trivial": ("""\
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+""", "requires", "verified"),
+    "binder at its own type": ("""\
+type PosInt = { @Int | @Int.0 > 0 };
+private data Box {
+  Boxed(PosInt, Int)
+}
+
+public fn f(@Box -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Box.0 {
+    Boxed(@PosInt, @Int) -> @PosInt.0 + @Int.0
+  }
+}
+""", "refine_bind", "tier3"),
 }
 
 
-def _fallback_class(row: object, status: str) -> tuple[str, str]:
-    from vera import ast as vera_ast
-    from vera.obligations import table as obligation_table
+@pytest.mark.parametrize("cls", list(_FORMER_FALLBACK_CLASSES))
+def test_a_former_fallback_class_is_an_ordinary_discharge(cls: str) -> None:
+    """Every row of the class is recorded where the traversal reaches it
+    (in the records made while the function is verified, never at the
+    settling), with the status the fallback gave it."""
+    from vera import verifier as vmod
 
-    node = row.node  # type: ignore[attr-defined]
-    if row.guard == obligation_table.TRIVIAL:  # type: ignore[attr-defined]
-        return ("trivial", status)
-    if (row.kind == "div_zero"  # type: ignore[attr-defined]
-            and isinstance(node, vera_ast.BinaryExpr)
-            and isinstance(node.right, vera_ast.IntLit) and node.right.value != 0):
-        return ("literal divisor", status)
-    if row.evaluation == obligation_table.ENTRY:  # type: ignore[attr-defined]
-        return ("refined formal entry", status)
-    return ("left to its check", status)
+    source, kind, status = _FORMER_FALLBACK_CLASSES[cls]
+    made: list[tuple[str, str, tuple[int, ...]]] = []
+    real = vmod.ContractVerifier._settle_rows
+
+    def settle(self, decl, start, made_here, *, premise=None):  # type: ignore[no-untyped-def]
+        made.extend((r.kind, r.status, r.rows) for r in made_here)
+        return real(self, decl, start, made_here, premise=premise)
+
+    vmod.ContractVerifier._settle_rows = settle  # type: ignore[method-assign]
+    try:
+        v = _verified(source)
+    finally:
+        vmod.ContractVerifier._settle_rows = real  # type: ignore[method-assign]
+    table = v.result.table
+    assert table is not None
+    rows = [r for r in table.rows if r.kind == kind and r.fn == "f"]
+    assert rows, (cls, kind)
+    for row in rows:
+        at = [st for k, st, ids in made if k == kind and row.id in ids]
+        assert at == [status], (cls, row.content_key, at)
+    assert not hasattr(vmod.ContractVerifier, "_row_record")
 
 
 _TAIL_NAMED = re.compile(r"\(at the self tail call at (\d+):(\d+)\)")
@@ -2210,14 +2249,14 @@ def test_repro_a_row_two_discharges_reach_reports_one_error() -> None:
 
 @pytest.mark.parametrize("form", list(_HANDLE_FORMS))
 def test_a_refuted_value_inside_a_handle_keeps_its_record(form: str) -> None:
-    """Refutable: the E505 has its `violated` record, at the row.  An `Exn`
-    clause's value is one the solver does not translate, so there the
-    verdict is base's disclosure, at the row."""
+    """Refutable: the E505 has its `violated` record, at the row, in both
+    forms.  The row at an `Exn` clause's value leaf is discharged where the
+    traversal reaches it, under the clause's context, as the body's is
+    (#1836; until then the whole value's discharge disclosed it, E506)."""
     v = _verified(_handle_program(form, "0 - 5"))
     viol = [(o.status, o.error_code, o.line) for o in v.result.obligations
             if o.kind == "refine_bind"]
-    want = ("violated", "E505") if form == "body" else ("tier3_unguarded", "E506")
-    assert [x[:2] for x in viol] == [want], viol
+    assert [x[:2] for x in viol] == [("violated", "E505")], viol
     assert _envelope_inconsistencies(v) == []
 
 
@@ -2271,29 +2310,28 @@ public fn f(@Float64 -> @Int)
 """
 
 
-def test_the_walk_decides_nothing_at_a_site_with_no_row() -> None:
-    """The binding walk still visits sites and records there (the known
-    gap: it is the verifier's context provider); at a site the table lists
-    no row, here an argument of exactly its parameter's type, what it
-    records is dropped with its warning, so it decides nothing."""
+def test_no_record_is_made_at_a_site_with_no_row() -> None:
+    """The traversal discharges a node only where the table lists a row
+    (#1836): at a site with none, here an argument of exactly its
+    parameter's type, nothing is discharged, so no record is made there to
+    be dropped, and no diagnostic stands there."""
     from vera import verifier as vmod
 
-    dropped: list[tuple[int, int]] = []
-    real = vmod.ContractVerifier._anchored_rows
+    rowless: list[tuple[int, int]] = []
+    real = vmod.ContractVerifier._settle_rows
 
-    def anchored(self, rec, rows, decl):  # type: ignore[no-untyped-def]
-        hit = real(self, rec, rows, decl)
-        if not hit and rec.fn_name == "f":
-            dropped.append((rec.line, rec.column))
-        return hit
+    def settle(self, decl, start, made, *, premise=None):  # type: ignore[no-untyped-def]
+        rowless.extend((r.line, r.column) for r in made
+                       if r.kind in vmod._TABLE_KINDS and not r.rows)
+        return real(self, decl, start, made, premise=premise)
 
-    vmod.ContractVerifier._anchored_rows = anchored  # type: ignore[method-assign]
+    vmod.ContractVerifier._settle_rows = settle  # type: ignore[method-assign]
     try:
         v = _verified(_SAME_TYPE_ARGUMENT)
     finally:
-        vmod.ContractVerifier._anchored_rows = real  # type: ignore[method-assign]
+        vmod.ContractVerifier._settle_rows = real  # type: ignore[method-assign]
     site = (27, 11)
-    assert site in dropped, dropped
+    assert rowless == [], rowless
     assert [o for o in v.result.obligations if (o.line, o.column) == site] == []
     assert [d for d in v.result.diagnostics
             if (d.location.line, d.location.column) == site] == []

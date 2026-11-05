@@ -342,11 +342,11 @@ def _effect_set(row: object) -> frozenset[tuple[str, tuple[str, ...]]] | None:
     return None
 
 
-def _pattern_nodes(pat: ast.Pattern) -> Iterator[ast.Pattern]:
+def pattern_nodes(pat: ast.Pattern) -> Iterator[ast.Pattern]:
     yield pat
     if isinstance(pat, ast.ConstructorPattern):
         for sub in pat.sub_patterns:
-            yield from _pattern_nodes(sub)
+            yield from pattern_nodes(sub)
 
 
 def _pattern_steps(
@@ -1649,7 +1649,7 @@ class _Builder:
     def _binder_of(
         pattern: ast.ConstructorPattern, te: ast.TypeExpr,
     ) -> ast.BindingPattern | None:
-        for n in _pattern_nodes(pattern):
+        for n in pattern_nodes(pattern):
             if isinstance(n, ast.BindingPattern) and n.type_expr is te:
                 return n
         return None

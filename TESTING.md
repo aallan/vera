@@ -1368,9 +1368,10 @@ defines no mirror of code generation's decisions, and the corpus gate's
 `KNOWN` and the generator's `KNOWN_CLASSES` are empty.  Its identity
 differential runs over the corpus, the doc blocks and generator seeds 0 to
 999, in both directions: every row of a verified function has exactly one
-record and every record names rows (no record is dropped without an
-anchor, and the fallback that discharges a row no record reached is pinned
-per class), every `violated` record has its error and no site carries more
+record and every record names rows (every record is keyed to its rows
+where it is made and none reaches the settling without one; the four
+classes a fallback once discharged are ordinary discharges, pinned per
+class), every `violated` record has its error and no site carries more
 errors than records, and every value leaf that narrows has a row (the
 census for a site the table does not list, which the identity alone
 cannot see).
