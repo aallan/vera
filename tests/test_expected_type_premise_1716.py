@@ -524,3 +524,59 @@ def test_a_call_stand_in_keeps_its_declared_refined_return() -> None:
     resting on it stays proved."""
     verified = _verify(_CLOSURE_RETURN)
     assert _f_ensures(verified) == "verified"
+
+
+def _exn_let(clause: str, body: str) -> str:
+    """f binds an `Exn` handler's value and returns it under
+    `ensures(@Int.result > 0)`; the handler's stand-in decides the proof."""
+    return (
+        "type PosInt = { @Int | @Int.0 > 0 };\n\n"
+        "private fn pos(@PosInt -> @PosInt)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  @PosInt.0\n}\n\n"
+        "public fn f(@Bool, @PosInt -> @Int)\n"
+        "  requires(true)\n  ensures(@Int.result > 0)\n  effects(pure)\n"
+        "{\n"
+        "  let @Int = handle[Exn<Int>] {\n"
+        f"    throw(@Int) -> {{ {clause} }}\n"
+        f"  }} in {{\n    {body}\n  }};\n"
+        "  @Int.0\n}\n")
+
+
+#: Handler bodies whose every value-yielding leaf is a `PosInt`, beside an
+#: `Exn` clause whose value is the literal `1`.
+LITERAL_CLAUSE_BODIES = {
+    "if_of_slots": "if @Bool.0 then { @PosInt.0 } else { @PosInt.0 }",
+    "block_tail": "{\n      let @Int = 2;\n      @PosInt.0\n    }",
+    "slot_beside_call": "if @Bool.0 then { @PosInt.0 } else { pos(@PosInt.0) }",
+    "throw_arm": "if @Bool.0 then { throw(1) } else { @PosInt.0 }",
+}
+
+
+@pytest.mark.parametrize("body", list(LITERAL_CLAUSE_BODIES.values()),
+                         ids=list(LITERAL_CLAUSE_BODIES))
+def test_a_literal_leaf_that_satisfies_the_refinement_shares_it(body: str) -> None:
+    """A literal's value is known: the clause value `1` satisfies `> 0`, so
+    the handler is established at `PosInt` with its `PosInt` leaves and the
+    postcondition stays proved; both arms run clean."""
+    source = _exn_let("1", body)
+    assert _f_ensures(_verify(source)) == "verified", source
+    for flag in (0, 1):
+        ran = pipeline.run(source, "f", [flag, 3], file=FILE)
+        assert ran.ok, source
+
+
+def test_a_literal_leaf_that_breaks_the_refinement_shares_nothing() -> None:
+    """The clause value `0` does not satisfy `> 0`: the postcondition is not
+    proved, and the run that throws breaks it."""
+    source = _exn_let("0", LITERAL_CLAUSE_BODIES["throw_arm"])
+    assert _f_ensures(_verify(source)) == "tier3"
+    assert pipeline.run(source, "f", [1, 3], file=FILE).trap is not None
+
+
+def test_a_never_leaf_takes_no_part_in_the_shared_type() -> None:
+    """A `throw` arm yields no value: beside a `PosInt` arm and a `PosInt`
+    clause value, the handler is established at `PosInt`."""
+    source = _exn_let("@PosInt.0", LITERAL_CLAUSE_BODIES["throw_arm"])
+    assert _f_ensures(_verify(source)) == "verified"
+    assert pipeline.run(source, "f", [1, 3], file=FILE).ok

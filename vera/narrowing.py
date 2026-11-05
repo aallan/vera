@@ -388,6 +388,7 @@ def value_leaves(expr: ast.Expr) -> tuple[ast.Expr, ...]:
 
 def established_type(
     expr: ast.Expr, type_of: Callable[[ast.Expr], "Type | None"],
+    holds: "Callable[[ast.Expr, Type], bool] | None" = None,
 ) -> "Type | None":
     """The type *expr*'s value is established at: what its own leaves
     (:func:`value_leaves`) are, never the type the checker gave the join
@@ -402,21 +403,51 @@ def established_type(
     a payload the first branch never had.  So a join is at its leaves' one
     type where every leaf that yields a value has it, and at none otherwise:
     ``None``, which a reader takes as its base alone.  A join with no value
-    (an `if` with no `else`) is at none."""
+    (an `if` with no `else`) is at none, and a leaf that yields none (a
+    `throw`, typed `Never`) takes no part.
+
+    A literal's value is known, so with *holds* (whether a type's facts are
+    true of a literal leaf, which the solver decides exactly) a literal leaf
+    is at any type whose facts it satisfies: `throw(@Int) -> { 1 }` beside
+    `@PosInt` leaves is a `PosInt`.  A join of literals alone is at the type
+    it was recorded at where every one satisfies it."""
     if flow_arms(expr) is None:
         return type_of(expr)
     shared: "Type | None" = None
+    literals: list[tuple[ast.Expr, "Type"]] = []
     for leaf in value_leaves(expr):
         ty = type_of(leaf)
         if ty is None:
             return None
         if types_equal(ty, NEVER):
             continue
+        if holds is not None and is_literal(leaf):
+            literals.append((leaf, ty))
+            continue
         if shared is None:
             shared = ty
         elif not types_equal(shared, ty):
             return None
+    if not literals:
+        return shared
+    if shared is None:
+        shared = type_of(expr)
+        if shared is None:
+            return None
+    for leaf, ty in literals:
+        if not types_equal(ty, shared) and not (
+                holds is not None and holds(leaf, shared)):
+            return None
     return shared
+
+
+def is_literal(expr: ast.Expr) -> bool:
+    """A literal: a number, a `Bool` or a `String` written out, or the
+    negation of a number."""
+    if isinstance(expr, ast.UnaryExpr) and expr.op == ast.UnaryOp.NEG:
+        expr = expr.operand
+    return isinstance(expr, (ast.IntLit, ast.FloatLit, ast.BoolLit,
+                             ast.StringLit))
 
 
 def element_sources(collection: ast.Expr) -> tuple["ComponentSource", ...]:

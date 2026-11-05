@@ -3605,7 +3605,8 @@ class SmtContext:
             if (isinstance(node, ast.Expr)
                     and narrowing.flow_arms(node) is not None
                     and not _same_type(
-                        narrowing.established_type(node, hook), ty)):
+                        narrowing.established_type(
+                            node, hook, self._literal_satisfies), ty)):
                 base_only = True
         sort = self._value_sort(ty)
         if sort is None:
@@ -3625,6 +3626,28 @@ class SmtContext:
             self.assume(stated)
         self._inherit_disclosure(node, const)
         return const
+
+    def _literal_satisfies(self, leaf: ast.Expr, ty: Type) -> bool:
+        """Whether every fact *ty* states (`_type_facts`) is true of the
+        literal *leaf*'s value (#1716): its term is a constant, so a fresh
+        solver decides it exactly.  False where a predicate of *ty* does not
+        translate whole, or rests on a stand-in."""
+        term = self.translate_expr(leaf, SlotEnv())
+        sort = self._value_sort(ty)
+        if term is None or sort is None or term.sort() != sort:
+            return False
+        facts = self._type_facts(term, ty)
+        chain = naming.refined_type_chain(ty)
+        stated = len(self._base_facts(term, ty)) + (
+            len(chain[1]) if chain is not None else 0)
+        if len(facts) != stated or any(
+                self._mentions_stand_in(f) for f in facts):
+            return False
+        if not facts:
+            return True
+        solver = z3.Solver()
+        solver.add(z3.Not(z3.And(*facts)))
+        return bool(solver.check() == z3.unsat)
 
     def fresh_stand_in(
         self, ty: Type, tag: str, *, binder: bool = False,
