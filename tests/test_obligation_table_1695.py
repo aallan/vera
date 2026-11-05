@@ -112,6 +112,31 @@ def test_the_verifier_defines_no_mirror_of_code_generation() -> None:
     assert defined == [], defined
 
 
+#: What #1836 deleted: the walk that found its own sites and the anchors
+#: that keyed its records to rows after the fact, the fallback for a row no
+#: record reached, and code generation's roster beside the row.
+_DELETED = {
+    "vera/verifier.py": ("_walk_for_nat_binding_obligations",
+                         "_walk_for_primitive_op_obligations", "_row_record",
+                         "_anchored_rows", "_record_anchors", "_value_spanning",
+                         "_return_narrows_into_nat", "_nat_return_narrows"),
+    "vera/narrowing.py": ("REFINED_BIND_GUARDED_SITES",),
+    "vera/wasm/data.py": ("REFINED_BIND_GUARDED_SITES",),
+    "vera/wasm/calls_handlers.py": ("REFINED_BIND_GUARDED_SITES",),
+}
+
+
+@pytest.mark.parametrize("module", sorted(_DELETED))
+def test_the_row_driven_discharge_keeps_no_walk_fallback_or_roster(
+    module: str,
+) -> None:
+    """Every record is made at a row, by the traversal that reaches it
+    (#1836): no name of the deleted machinery is defined or read."""
+    text = (ROOT / module).read_text(encoding="utf-8")
+    present = [n for n in _DELETED[module] if re.search(rf"\b{n}\b", text)]
+    assert present == [], present
+
+
 def test_a_check_is_recorded_by_its_row() -> None:
     """`WasmContext._record_check` takes the row the check is the runtime
     half of, so an `EmittedCheck` names it."""

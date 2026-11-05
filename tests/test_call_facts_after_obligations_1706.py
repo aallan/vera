@@ -5,7 +5,7 @@ The SMT layer models a call to a user function by checking the callee's
 its refined return's predicate, about a fresh result
 (`SmtContext._translate_call_with_info`).  Those facts went into the solver's
 base context during the body's translation, conditioned on the path only, and
-the binding-obligation walk (`_walk_for_nat_binding_obligations`) runs after
+the binding-obligation walk (`_discharge_binding_rows`) runs after
 the body is translated.  So the obligation an argument owes its parameter (the
 `>= 0` of an `@Int` passed to a `@Nat`, the predicate of a refined parameter,
 the refinements written inside one) was discharged with the call's own

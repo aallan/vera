@@ -1179,11 +1179,11 @@ def test_1413_every_reader_of_a_source_fact_consults_the_one_gate() -> None:
     # call result's: the refinements inside its return type, assumed of the
     # result at the call (#1706).
     assert readers == [
+        "verifier:_binding_block",
         "verifier:_call_result_facts",
         "verifier:_check_generic_refined_return",
         "verifier:_check_refined_binding_obligation_term",
         "verifier:_declared_type_facts",
-        "verifier:_nat_block",
         "verifier:_nested_refinement_discharge",
         "verifier:_subpattern_source_facts",
     ], (

@@ -249,7 +249,7 @@ class BlockBindingPolicy(enum.Enum):
     takes the #1460 re-ask rather than an E505 on a value the program never
     produces; the scalar var is not tracked (#1470).
 
-    For `_walk_for_nat_binding_obligations`, which needs a slot to exist for
+    For `_discharge_binding_rows`, which needs a slot to exist for
     every binding whether or not the RHS translated, so a later `@Nat`
     narrowing obligates against the binding's own type rather than a stale
     outer's value.  Deliberately NOT seeded with the resolved source type
@@ -4428,7 +4428,7 @@ class ContractVerifier:
                 pc_depth = len(smt._path_conditions)
                 smt._path_conditions.extend(assumptions)
                 try:
-                    self._walk_for_primitive_op_obligations(
+                    self._discharge_operation_rows(
                         decl, contract.expr, smt, slot_env, assumptions,
                     )
                     # #1480: and the binding-site narrowings the compiled
@@ -4437,7 +4437,7 @@ class ContractVerifier:
                     # check exactly as it would in the body.
                     self._walk_handled_effects = []
                     with self._placeholders_tracked():
-                        self._walk_for_nat_binding_obligations(
+                        self._discharge_binding_rows(
                             decl, contract.expr, smt, slot_env, assumptions,
                         )
                     z3_pre = smt.translate_expr(contract.expr, slot_env)
@@ -4549,7 +4549,7 @@ class ContractVerifier:
             # unknown, so it can be neither proven safe nor a real
             # counterexample (a stale outer's facts must NOT discharge it).
             self._opaque_shadows = []
-            self._walk_for_primitive_op_obligations(
+            self._discharge_operation_rows(
                 decl, decl.body, smt, slot_env, assumptions,
             )
 
@@ -4572,7 +4572,7 @@ class ContractVerifier:
         nat_return_leaves = self._nat_return_leaf_keys(decl, ret_type)
         if decl.body is not None:
             self._walk_handled_effects = []
-            self._walk_for_nat_binding_obligations(
+            self._discharge_binding_rows(
                 decl, decl.body, smt, slot_env, assumptions,
                 return_leaves=nat_return_leaves or frozenset(),
             )
@@ -4619,14 +4619,14 @@ class ContractVerifier:
                 smt.set_result_var(body_expr)
             else:
                 smt.set_result_var(None)
-            self._walk_for_primitive_op_obligations(
+            self._discharge_operation_rows(
                 decl, contract.expr, smt, slot_env, assumptions,
             )
             # #1480: the narrowings the compiled postcondition guards, under
             # the same premises (#801 extended only the primitive-op walk).
             self._walk_handled_effects = []
             with self._placeholders_tracked():
-                self._walk_for_nat_binding_obligations(
+                self._discharge_binding_rows(
                     decl, contract.expr, smt, slot_env, assumptions,
                 )
         smt.set_result_var(None)
@@ -6577,11 +6577,11 @@ class ContractVerifier:
         self._evaluated_at = at
         try:
             for expr in exprs:
-                self._walk_for_primitive_op_obligations(
+                self._discharge_operation_rows(
                     decl, expr, smt, env, assumptions)
                 self._walk_handled_effects = []
                 with self._placeholders_tracked():
-                    self._walk_for_nat_binding_obligations(
+                    self._discharge_binding_rows(
                         decl, expr, smt, env, assumptions)
                 smt.translate_expr(expr, env)
             self._record_call_obligations(decl, smt)
@@ -7338,7 +7338,7 @@ class ContractVerifier:
         finally:
             del smt._path_conditions[depth:]
 
-    def _walk_for_primitive_op_obligations(
+    def _discharge_operation_rows(
         self,
         decl: ast.FnDecl,
         expr: ast.Expr,
@@ -7346,7 +7346,17 @@ class ContractVerifier:
         slot_env: SlotEnv,
         assumptions: list[object],
     ) -> None:
-        """Walk *expr* emitting obligations at trapping primitive-op sites.
+        """Discharge the operation rows of *expr*: the first of the two
+        passes of the one traversal that discharges a position's rows
+        (#1836), each by `vera.fold.contexts` with the same context record
+        (`_Path`), each discharging a node only where the table lists a row.
+        The two passes stay two because they bind a block's `let` slot
+        differently: this one an untranslated value as a tracked opaque
+        shadow (`BlockBindingPolicy.OPAQUE_SHADOW`, so an operand over it is
+        never refuted on an unconstrained value), the binding pass a fresh
+        value of the declared type (`FRESH_VAR`, which keeps the `>= 0` a
+        `@Nat` binding's narrowing reads).  One pass would choose one policy
+        for both, and move a verdict either way.
 
         The verifier-side half of spec §6.4.3 "Primitive Operation
         Safety": an operation that traps for some operand values carries
@@ -7359,11 +7369,11 @@ class ContractVerifier:
 
         (Binding-site `@Int`→`@Nat` narrowing is the *other* primitive
         obligation, walked separately by
-        :py:meth:`_walk_for_nat_binding_obligations`.)
+        :py:meth:`_discharge_binding_rows`.)
 
         `vera.fold.contexts` reaches every position.  The classes whose arm
         does more than read its children on its own path are steps in
-        `_primitive_step`, each running its obligations where the
+        `_operation_step`, each running its obligations where the
         recursive walk ran them, between the children it walks.  Path
         conditions are tracked via ``smt._path_conditions`` (pushed/popped
         on if/match branches), so :py:meth:`SmtContext.check_valid` picks
@@ -7372,10 +7382,10 @@ class ContractVerifier:
         """
         start = _Path(assumptions, slot_env)
         for _node, _path in fold.contexts(
-                expr, self._primitive_step(decl, smt), start):
+                expr, self._operation_step(decl, smt), start):
             pass
 
-    def _primitive_step(
+    def _operation_step(
         self, decl: ast.FnDecl, smt: SmtContext,
     ) -> fold.Step[_Path]:
         """The §6.4.3 walk's arms, by class.
@@ -7415,15 +7425,15 @@ class ContractVerifier:
         arms: dict[type[ast.Node], Callable[
             [ast.FnDecl, Any, _Path, SmtContext],
             Iterator[tuple[ast.Node, _Path]]]] = {
-            ast.FnCall: self._primitive_fn_call,
-            ast.IfExpr: self._primitive_if,
-            ast.Block: self._primitive_block,
-            ast.BinaryExpr: self._primitive_binary,
-            ast.MatchExpr: self._primitive_match,
-            ast.IndexExpr: self._primitive_index,
-            ast.AssertExpr: self._primitive_assert,
-            ast.AssumeExpr: self._primitive_assume,
-            ast.InterpolatedString: self._primitive_interpolation,
+            ast.FnCall: self._operation_fn_call,
+            ast.IfExpr: self._operation_if,
+            ast.Block: self._operation_block,
+            ast.BinaryExpr: self._operation_binary,
+            ast.MatchExpr: self._operation_match,
+            ast.IndexExpr: self._operation_index,
+            ast.AssertExpr: self._operation_assert,
+            ast.AssumeExpr: self._operation_assume,
+            ast.InterpolatedString: self._operation_interpolation,
             ast.HandleExpr: lambda decl, e, path, smt: _path_handle(e, path, smt),
             ast.AnonFn: lambda decl, e, path, smt: _path_closure(e, path, smt),
         }
@@ -7434,7 +7444,7 @@ class ContractVerifier:
 
         return step
 
-    def _primitive_fn_call(
+    def _operation_fn_call(
         self, decl: ast.FnDecl, expr: ast.FnCall, path: _Path, smt: SmtContext,
     ) -> Iterator[tuple[ast.Node, _Path]]:
         for arg in expr.args:
@@ -7471,7 +7481,7 @@ class ContractVerifier:
                     decl, expr, smt, path.env, path.facts,
                 )
 
-    def _primitive_if(
+    def _operation_if(
         self, decl: ast.FnDecl, expr: ast.IfExpr, path: _Path, smt: SmtContext,
     ) -> Iterator[tuple[ast.Node, _Path]]:
         # Walk the condition first (before pushing path-cond) — any
@@ -7497,7 +7507,7 @@ class ContractVerifier:
             if expr.else_branch is not None:
                 yield expr.else_branch, path
 
-    def _primitive_block(
+    def _operation_block(
         self, decl: ast.FnDecl, expr: ast.Block, path: _Path, smt: SmtContext,
     ) -> Iterator[tuple[ast.Node, _Path]]:
         cur_env = path.env
@@ -7601,7 +7611,7 @@ class ContractVerifier:
         # reset _path_conditions, so no try/finally is needed.
         del smt._path_conditions[pc_depth:]
 
-    def _primitive_binary(
+    def _operation_binary(
         self, decl: ast.FnDecl, expr: ast.BinaryExpr, path: _Path, smt: SmtContext,
     ) -> Iterator[tuple[ast.Node, _Path]]:
         # Recurse first so nested subtractions are checked even
@@ -7658,7 +7668,7 @@ class ContractVerifier:
                     decl, expr, smt, path.env, path.facts,
                 )
 
-    def _primitive_match(
+    def _operation_match(
         self, decl: ast.FnDecl, expr: ast.MatchExpr, path: _Path, smt: SmtContext,
     ) -> Iterator[tuple[ast.Node, _Path]]:
         yield expr.scrutinee, path
@@ -7693,7 +7703,7 @@ class ContractVerifier:
             with self._under_arm(smt, arm):
                 yield match_arm, _Path(arm.assuming(path.facts), arm.env)
 
-    def _primitive_index(
+    def _operation_index(
         self, decl: ast.FnDecl, expr: ast.IndexExpr, path: _Path, smt: SmtContext,
     ) -> Iterator[tuple[ast.Node, _Path]]:
         # #680: `arr[i]` carries a `0 <= i < array_length(arr)` bounds
@@ -7711,7 +7721,7 @@ class ContractVerifier:
                 decl, expr, smt, path.env, path.facts,
             )
 
-    def _primitive_assert(
+    def _operation_assert(
         self, decl: ast.FnDecl, expr: ast.AssertExpr, path: _Path, smt: SmtContext,
     ) -> Iterator[tuple[ast.Node, _Path]]:
         # #800: the asserted predicate is itself a Tier-1 proof obligation
@@ -7723,7 +7733,7 @@ class ContractVerifier:
             )
         yield expr.expr, path
 
-    def _primitive_assume(
+    def _operation_assume(
         self, decl: ast.FnDecl, expr: ast.AssumeExpr, path: _Path, smt: SmtContext,
     ) -> Iterator[tuple[ast.Node, _Path]]:
         # An assumed condition is taken on trust (no proof obligation);
@@ -7750,7 +7760,7 @@ class ContractVerifier:
         )
         yield expr.expr, path
 
-    def _primitive_interpolation(
+    def _operation_interpolation(
         self, decl: ast.FnDecl, expr: ast.InterpolatedString, path: _Path, smt: SmtContext,
     ) -> Iterator[tuple[ast.Node, _Path]]:
         # An interpolated expression can host a trapping op
@@ -8108,7 +8118,7 @@ class ContractVerifier:
     #: descent.
     _tail_resume_value = staticmethod(tail_resume_arg)
 
-    def _walk_for_nat_binding_obligations(
+    def _discharge_binding_rows(
         self,
         decl: ast.FnDecl,
         expr: ast.Expr,
@@ -8118,10 +8128,14 @@ class ContractVerifier:
         *,
         return_leaves: frozenset[object] = frozenset(),
     ) -> None:
-        """Walk *expr* emitting ``value >= 0`` at @Int→@Nat narrowing sites.
+        """Discharge the binding rows of *expr*: the second pass of the one
+        traversal (:meth:`_discharge_operation_rows` states the two passes and
+        why they bind a `let` differently), ``value >= 0`` at @Int→@Nat
+        narrowing sites and a refinement's predicate at a refined one, each
+        where the table lists a row.
 
         The binding-site generalisation of #520
-        (:py:meth:`_walk_for_primitive_op_obligations`).  Fires wherever
+        (:py:meth:`_discharge_operation_rows`).  Fires wherever
         an @Int-typed value flows into a freshly-declared @Nat slot:
 
         * ``let @Nat = <Int>``                  — let bindings;
@@ -8174,7 +8188,7 @@ class ContractVerifier:
 
         `vera.fold.contexts` reaches every position.  The classes whose arm
         does more than read its children on its own path are steps in
-        `_nat_step`, each obligating its sites where the recursive walk
+        `_binding_step`, each obligating its sites where the recursive walk
         obligated them, between the children it walks.
         """
         start = _Path(assumptions, slot_env)
@@ -8187,7 +8201,7 @@ class ContractVerifier:
         reached: list[tuple[ast.Expr, _Path, list[object],
                             list[obligation_table.Row]]] = []
         for node, path in fold.contexts(
-                expr, self._nat_step(decl, smt), start):
+                expr, self._binding_step(decl, smt), start):
             if self._evaluated_at is None:
                 self._discharge_walked_rows(decl, node)
                 if (frame is not None and frame.rows is not None
@@ -8262,10 +8276,10 @@ class ContractVerifier:
                     rows=tuple(r.id for r in left))
                 done |= {r.id for r in left}
 
-    def _nat_step(
+    def _binding_step(
         self, decl: ast.FnDecl, smt: SmtContext,
     ) -> fold.Step[_Path]:
-        """The `@Nat`-binding walk's arms, by class.
+        """The binding pass's arms, by class.
 
         Every other class reads its children on its own path: a unary
         operand, an index expression's collection and index, an
@@ -8302,29 +8316,29 @@ class ContractVerifier:
         arms: dict[type[ast.Node], Callable[
             [ast.FnDecl, Any, _Path, SmtContext],
             Iterator[tuple[ast.Node, _Path]]]] = {
-            ast.FnCall: self._nat_fn_call,
-            ast.ConstructorCall: self._nat_constructor_call,
-            ast.QualifiedCall: self._nat_qualified_call,
-            ast.AnonFn: self._nat_closure,
-            ast.IfExpr: self._nat_if,
-            ast.Block: self._nat_block,
-            ast.BinaryExpr: self._nat_binary,
-            ast.MatchExpr: self._nat_match,
-            ast.ArrayLit: self._nat_array,
+            ast.FnCall: self._binding_fn_call,
+            ast.ConstructorCall: self._binding_constructor_call,
+            ast.QualifiedCall: self._binding_qualified_call,
+            ast.AnonFn: self._binding_closure,
+            ast.IfExpr: self._binding_if,
+            ast.Block: self._binding_block,
+            ast.BinaryExpr: self._binding_binary,
+            ast.MatchExpr: self._binding_match,
+            ast.ArrayLit: self._binding_array,
             ast.HandleExpr: (
                 lambda decl, e, path, smt:
-                self._nat_handle(decl, e, path, smt, cells)),
+                self._binding_handle(decl, e, path, smt, cells)),
         }
 
         def step(node: ast.Node, path: _Path) -> Iterator[tuple[ast.Node, _Path]] | None:
             if type(node) is ast.HandlerClause:
-                return self._nat_clause(decl, node, path, smt, cells[-1])
+                return self._binding_clause(decl, node, path, smt, cells[-1])
             arm = arms.get(type(node))
             return None if arm is None else arm(decl, node, path, smt)
 
         return step
 
-    def _nat_fn_call(
+    def _binding_fn_call(
         self, decl: ast.FnDecl, expr: ast.FnCall, path: _Path, smt: SmtContext,
     ) -> Iterator[tuple[ast.Node, _Path]]:
         if expr.name == "apply_fn" and expr.args:
@@ -8389,9 +8403,9 @@ class ContractVerifier:
             for arg in expr.args:
                 yield arg, path
         else:
-            yield from self._nat_call(decl, expr, path, smt, bare=True)
+            yield from self._binding_call(decl, expr, path, smt, bare=True)
 
-    def _nat_call(
+    def _binding_call(
         self, decl: ast.FnDecl, expr: ast.FnCall | ast.ModuleCall, path: _Path, smt: SmtContext,
         bare: bool = False,
     ) -> Iterator[tuple[ast.Node, _Path]]:
@@ -8527,7 +8541,7 @@ class ContractVerifier:
         for arg in expr.args:
             yield arg, path
 
-    def _nat_closure(
+    def _binding_closure(
         self, decl: ast.FnDecl, expr: ast.AnonFn, path: _Path, smt: SmtContext,
     ) -> Iterator[tuple[ast.Node, _Path]]:
         # The closure body is opaque to the SMT layer (its params/captures
@@ -8598,7 +8612,7 @@ class ContractVerifier:
         self._discharge_boundary_components(decl, expr.body, expr.return_type)
         yield from _path_closure(expr, path, smt)
 
-    def _nat_constructor_call(
+    def _binding_constructor_call(
         self, decl: ast.FnDecl, expr: ast.ConstructorCall, path: _Path, smt: SmtContext,
     ) -> Iterator[tuple[ast.Node, _Path]]:
         # @Nat constructor fields narrowing an @Int argument.  A
@@ -8712,7 +8726,7 @@ class ContractVerifier:
         for arg in expr.args:
             yield arg, path
 
-    def _nat_qualified_call(
+    def _binding_qualified_call(
         self, decl: ast.FnDecl, expr: ast.QualifiedCall, path: _Path, smt: SmtContext,
     ) -> Iterator[tuple[ast.Node, _Path]]:
         # Effect operations (e.g. `IO.sleep : Nat -> Unit`) narrow an
@@ -8779,7 +8793,7 @@ class ContractVerifier:
         for arg in expr.args:
             yield arg, path
 
-    def _nat_if(
+    def _binding_if(
         self, decl: ast.FnDecl, expr: ast.IfExpr, path: _Path, smt: SmtContext,
     ) -> Iterator[tuple[ast.Node, _Path]]:
         # Each arm is walked under its own path condition, so an
@@ -8805,7 +8819,7 @@ class ContractVerifier:
             if expr.else_branch is not None:
                 yield expr.else_branch, path
 
-    def _nat_block(
+    def _binding_block(
         self, decl: ast.FnDecl, expr: ast.Block, path: _Path, smt: SmtContext,
     ) -> Iterator[tuple[ast.Node, _Path]]:
         cur_env = path.env
@@ -9073,7 +9087,7 @@ class ContractVerifier:
                 block_assumptions.append(fact)
         yield expr.expr, _Path(block_assumptions, cur_env)
 
-    def _nat_binary(
+    def _binding_binary(
         self, decl: ast.FnDecl, expr: ast.BinaryExpr, path: _Path, smt: SmtContext,
     ) -> Iterator[tuple[ast.Node, _Path]]:
         # #1501: the right operand of `&&`, `||` and `==>` is walked
@@ -9082,7 +9096,7 @@ class ContractVerifier:
         with smt.premise(smt.short_circuit_premise(expr, path.env)):
             yield expr.right, path
 
-    def _nat_match(
+    def _binding_match(
         self, decl: ast.FnDecl, expr: ast.MatchExpr, path: _Path, smt: SmtContext,
     ) -> Iterator[tuple[ast.Node, _Path]]:
         yield expr.scrutinee, path
@@ -9160,7 +9174,7 @@ class ContractVerifier:
                 arm_assumptions = arm.assuming(arm_assumptions)
                 yield match_arm, _Path(arm_assumptions, arm_env)
 
-    def _nat_array(
+    def _binding_array(
         self, decl: ast.FnDecl, expr: ast.ArrayLit, path: _Path, smt: SmtContext,
     ) -> Iterator[tuple[ast.Node, _Path]]:
         # Every element obligation at this construction position —
@@ -9188,7 +9202,7 @@ class ContractVerifier:
         for elem in expr.elements:
             yield elem, path
 
-    def _nat_handle(
+    def _binding_handle(
         self, decl: ast.FnDecl, expr: ast.HandleExpr, path: _Path, smt: SmtContext,
         cells: list[Type | None],
     ) -> Iterator[tuple[ast.Node, _Path]]:
@@ -9276,7 +9290,7 @@ class ContractVerifier:
             finally:
                 cells.pop()
 
-    def _nat_clause(
+    def _binding_clause(
         self, decl: ast.FnDecl, clause: ast.HandlerClause, path: _Path,
         smt: SmtContext, cell_ty: Type | None,
     ) -> Iterator[tuple[ast.Node, _Path]]:
@@ -11900,8 +11914,8 @@ class ContractVerifier:
         obligation side effects (CR PR-review).
 
         Two consumers seed these into an arm's assumptions: the narrowing walk
-        (``_obligate_subpattern_narrowings`` → ``_walk_for_nat_binding_
-        obligations``) so a downstream ``@Nat`` narrowing of a bound payload
+        (``_obligate_subpattern_narrowings`` → ``_discharge_binding_rows``)
+        so a downstream ``@Nat`` narrowing of a bound payload
         discharges, AND ``_walk_for_calls`` so a call **precondition** in the
         arm body discharges — preconditions are collected in the earlier main
         pass, not the narrowing walk, so without this a valid

@@ -90,7 +90,7 @@ def _binary_sites(program: ast.Program) -> list[ast.BinaryExpr]:
 
 def _verifier_gated_type(verifier: ContractVerifier, site: ast.BinaryExpr):
     """The type the verifier *obligates* this site at, mirroring the gate in
-    ``_walk_for_primitive_op_obligations``: classification is on the operands'
+    ``_discharge_operation_rows``: classification is on the operands'
     common (coerced) type (#798 — not one operand's self-type, which a literal
     skews, nor the narrowed result), and ``@Nat`` SUB is excluded (nat_sub)."""
     ovf = verifier._overflow_arith_type(site)

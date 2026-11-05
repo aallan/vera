@@ -1,7 +1,7 @@
 """Tests for vera.verifier — fresh-scope obligation walking (#779, #985).
 
-The primitive-op walker (`_walk_for_primitive_op_obligations`) and the
-@Nat-binding walker (`_walk_for_nat_binding_obligations`) recurse into
+The primitive-op walker (`_discharge_operation_rows`) and the
+@Nat-binding walker (`_discharge_binding_rows`) recurse into
 closure bodies (`AnonFn`), quantifier domains and predicates (`ForallExpr`
 / `ExistsExpr`), and handler state/body/clauses (`HandleExpr`), so a
 trapping primitive op or a narrowing/widening binding inside one carries
