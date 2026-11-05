@@ -280,13 +280,30 @@ class RegistrationMixin:
         # #1489: what this namespace declares, known before any of it is
         # registered, so a signature naming a declaration further down the
         # file is a forward reference rather than an unknown name.
+        # A `data` declaration taking a built-in type's name is refused and
+        # never registered (E158, #1563), so its name is the built-in's
+        # everywhere, never a forward reference to a declaration that does
+        # not exist.
+        refused_builtin = (frozenset() if self._prelude_namespace
+                           else frozenset(BUILTIN_TYPE_NAMES))
         self._forward_type_names = frozenset(
             tld.decl.name for tld in program.declarations
             if isinstance(tld.decl, (ast.DataDecl, ast.TypeAliasDecl))
+            and not (isinstance(tld.decl, ast.DataDecl)
+                     and tld.decl.name in refused_builtin)
         )
         self._forward_data_names = frozenset(
             tld.decl.name for tld in program.declarations
             if isinstance(tld.decl, ast.DataDecl)
+            and tld.decl.name not in refused_builtin
+        )
+        # And the names those declarations take are refused before any of
+        # this namespace resolves (`_refused_type_names`), so an alias or a
+        # signature ABOVE the declaration reads them as one below it does.
+        self._refused_type_names.update(
+            tld.decl.name for tld in program.declarations
+            if isinstance(tld.decl, ast.DataDecl)
+            and tld.decl.name in refused_builtin
         )
         self._forward_effect_names = frozenset(
             tld.decl.name for tld in program.declarations
@@ -1411,16 +1428,19 @@ class RegistrationMixin:
         ``data Int { I(Bool) }`` was accepted and could never be named — every
         ``@Int`` still meant the primitive.
 
-        Returns ``True`` for that primitive case, so the caller does not
-        register the declaration: registered, it drew secondary errors that
-        named the same type on both sides ("has type Int, expected Int").
+        Returns ``True`` for every refusal, so the caller does not register
+        the declaration: registered, a primitive's drew secondary errors
+        that named the same type on both sides ("has type Int, expected
+        Int"), and a built-in type's typed its constructors' values as the
+        built-in and took the built-in's own type arguments from it, so
+        `Wrap(1)` read as a `Map` and `@Map<String, Int>` was refused as a
+        type with no parameters (#1563).
         """
         if self._prelude_namespace:
             # #1679: the prelude's own names are not reserved in it.
             return False
         from vera.prelude import prelude_adt_names, reserved_type_names
 
-        reserved = False
         primitive = name in PRIMITIVES and kind in ("data type", "type alias")
         if primitive:
             subject = f"declared as a {kind}"
@@ -1471,7 +1491,6 @@ class RegistrationMixin:
             # so are the built-in types', at every binder that declares a
             # type name.  Refused, and not registered, so every use of the
             # name keeps meaning the prelude's or the built-in's type.
-            reserved = True
             subject = f"declared as a {kind}"
             owner = ("the prelude declares it"
                      if name in prelude_adt_names()
@@ -1502,7 +1521,7 @@ class RegistrationMixin:
             spec_ref='Chapter 8, Section 8.4.1 "Visibility Rules"',
             error_code="E158",
         )
-        return primitive or reserved
+        return True
 
     def _check_sibling_ctor_collision(
         self, ctor: ast.Constructor, owner: str,
@@ -1564,12 +1583,15 @@ class RegistrationMixin:
     ) -> None:
         """Register an ADT and its constructors."""
         if self._check_special_cased_builtin_adt(decl, decl.name, "data type"):
-            # #1497: refused, and not registered: every `@Int` means the
-            # primitive, so a registered `data Int` could only draw errors
-            # naming one type twice.  Its constructors are remembered, so a
+            # #1497, #1563: refused, and not registered: every `@Int` means
+            # the primitive and every `@Map<K, V>` the built-in, so a
+            # registered `data Int` or `data Map` could only draw errors at
+            # code that is not wrong.  Its constructors are remembered, so a
             # use of one reports nothing further (the E151 posture).
             self._refused_decl_ids.add(id(decl))
             self._refused_ctor_names.update(c.name for c in decl.constructors)
+            if decl.name in BUILTIN_TYPE_NAMES:
+                self._refused_type_names.add(decl.name)
             return
         self._check_reserved_type_name(decl)
         self._check_reserved_type_params(decl)

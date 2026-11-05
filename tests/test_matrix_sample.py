@@ -713,6 +713,8 @@ MARKED_FILES = (
     "test_composite_coercion_guards.py",
     "test_function_type_instance_1783.py",
     "test_expected_type_premise_1716.py",
+    "test_one_error_per_refusal_1563.py",
+    "test_counterexample_result_1707.py",
 )
 UNMARKED_FILES = (
     "test_obligations.py",

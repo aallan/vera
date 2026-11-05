@@ -7,6 +7,7 @@ types suitable for comparison, subtyping, and substitution.
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -76,6 +77,29 @@ class AdtType(Type):
     """A parameterised algebraic data type (Array<T>, Option<Int>, user ADTs)."""
     name: str
     type_args: tuple[Type, ...]  # () for non-parameterised
+
+    def with_args(self, type_args: tuple[Type, ...]) -> AdtType:
+        """This type over *type_args*, of its own class, so a rebuild keeps
+        an `UnresolvedAdtType` the placeholder it is (#1563)."""
+        return dataclasses.replace(self, type_args=type_args)
+
+
+@dataclass(frozen=True, eq=False)
+class UnresolvedAdtType(AdtType):
+    """The placeholder a type name nothing declares resolves to (E136).
+
+    Rendered, named and compared as the name was written, so the checker
+    and the slot renderer (`vera.naming`, which builds the plain `AdtType`)
+    agree on `@Optio<Int>.0`; compatible with every type, as `UnknownType`
+    is (`is_subtype`), since the name's own E136 is the one error a value
+    judged against it owes (#1563)."""
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, AdtType):
+            return NotImplemented
+        return (self.name, self.type_args) == (other.name, other.type_args)
+
+    __hash__ = AdtType.__hash__
 
 
 @dataclass(frozen=True)
@@ -268,8 +292,7 @@ def _leaked_placeholders_to_unknown(ty: Type) -> Type:
     if _is_leaked_placeholder_var(ty):
         return UnknownType()
     if isinstance(ty, AdtType):
-        return AdtType(
-            ty.name,
+        return ty.with_args(
             tuple(_leaked_placeholders_to_unknown(a) for a in ty.type_args),
         )
     if isinstance(ty, FunctionType):
@@ -673,7 +696,8 @@ def is_subtype(sub: Type, sup: Type) -> bool:
     5. RefinedType(base, _) <: base
     6. RefinedType(base, _) <: T if base <: T
     7. T <: RefinedType(base, _) if T <: base (predicate enforced by verifier)
-    8. UnknownType is compatible with everything (error recovery)
+    8. UnknownType is compatible with everything (error recovery), and so
+       is the placeholder of a name nothing declares (UnresolvedAdtType)
     9. FunctionType: params contravariant, return covariant, effects covariant
 
     TypeVar is NOT compatible with concrete types.  TypeVar equality is
@@ -681,8 +705,9 @@ def is_subtype(sub: Type, sup: Type) -> bool:
     substitutes TypeVars before subtype checks; unresolved TypeVars are
     skipped by the caller.
     """
-    # Unknown propagates silently
-    if isinstance(sub, UnknownType) or isinstance(sup, UnknownType):
+    # Unknown propagates silently, as does a name nothing declares (#1563)
+    if isinstance(sub, (UnknownType, UnresolvedAdtType)) or isinstance(
+            sup, (UnknownType, UnresolvedAdtType)):
         return True
 
     # Reflexivity (structural equality)
@@ -907,6 +932,17 @@ def contains_typevar(ty: Type) -> bool:
     return False
 
 
+def is_unknown_like(ty: Type | None) -> bool:
+    """Whether *ty* is a type no judgement holds a value to: the `Unknown`
+    error recovery leaves, or the placeholder of a name nothing declares
+    (`UnresolvedAdtType`, E136), whose own error is the one a judgement over
+    it owes (#1563).  The early guard of every operator's check reads it,
+    through any refinement over it (`{ @Qzt | P }`)."""
+    if ty is None:
+        return False
+    return isinstance(base_type(ty), (UnknownType, UnresolvedAdtType))
+
+
 def _is_fresh_typevar(ty: Type) -> bool:
     """A fresh, unresolved inference placeholder (`A$1` from _fresh_typevar).
 
@@ -957,16 +993,18 @@ def is_literal_hole(ty: Type) -> bool:
 
 
 def default_literal_holes(ty: Type) -> Type:
-    """*ty* with every hole given the literals' own type, `Int`."""
+    """*ty* with every hole given the literals' own type, `Int`.
+
+    A hole stands for a literal, so it occurs where a literal's type does:
+    at the top, or inside a data type's arguments (an array, a tuple, an
+    `Option` built around literals).  A function type is always written, a
+    closure's parameters and result included, so none holds a hole, and it
+    is returned as it is."""
     if is_literal_hole(ty):
         return INT
     if isinstance(ty, AdtType):
-        return AdtType(ty.name, tuple(default_literal_holes(a)
-                                      for a in ty.type_args))
-    if isinstance(ty, FunctionType):
-        return FunctionType(tuple(default_literal_holes(p)
-                                  for p in ty.params),
-                            default_literal_holes(ty.return_type), ty.effect)
+        return ty.with_args(tuple(default_literal_holes(a)
+                                  for a in ty.type_args))
     return ty
 
 
@@ -1038,16 +1076,11 @@ def fill_literal_holes(ty: Type, source: Type | None) -> Type:
     if (isinstance(ty, AdtType) and isinstance(source, AdtType)
             and ty.name == source.name
             and len(ty.type_args) == len(source.type_args)):
-        return AdtType(ty.name, tuple(
+        return ty.with_args(tuple(
             fill_literal_holes(a, b)
             for a, b in zip(ty.type_args, source.type_args)))
-    if (isinstance(ty, FunctionType) and isinstance(source, FunctionType)
-            and len(ty.params) == len(source.params)):
-        return FunctionType(
-            tuple(fill_literal_holes(a, b)
-                  for a, b in zip(ty.params, source.params)),
-            fill_literal_holes(ty.return_type, source.return_type),
-            ty.effect)
+    # A function type holds no hole (`default_literal_holes`), so it is
+    # returned as it is.
     return ty
 
 
@@ -1171,7 +1204,7 @@ def substitute(ty: Type, mapping: dict[str, Type]) -> Type:
         return mapping.get(ty.name, ty)
     if isinstance(ty, AdtType):
         new_args = tuple(substitute(a, mapping) for a in ty.type_args)
-        return AdtType(ty.name, new_args)
+        return ty.with_args(new_args)
     if isinstance(ty, FunctionType):
         new_params = tuple(substitute(p, mapping) for p in ty.params)
         new_ret = substitute(ty.return_type, mapping)

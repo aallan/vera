@@ -38,6 +38,7 @@ from vera.types import (
     Type,
     TypeVar,
     UnknownType,
+    UnresolvedAdtType,
     base_type,
     contains_literal_hole,
     default_literal_holes,
@@ -370,7 +371,11 @@ class ResolutionMixin:
 
         # Decimal is a non-parameterised built-in opaque type
         if name == "Decimal":
-            if te.type_args:
+            # #1563: written with arguments under a refused `data Decimal`,
+            # the name was written against the declaration, whose E158 is
+            # the one error it owes; it resolves as the built-in, as
+            # `vera.naming` renders it.
+            if te.type_args and name not in self._refused_type_names:
                 self._error(
                     te, "Decimal does not accept type arguments.",
                     rationale=(
@@ -570,14 +575,18 @@ class ResolutionMixin:
         # byte-identical (`tests/test_slot_naming_differential.py`).
         # A forward `data` name is typed by the identity its declaration
         # registers under (#1694), its own constructors' fields included.
-        placeholder = AdtType(
-            self._type_identity(name)
-            if name in self._forward_data_names else name,
-            tuple(self._resolve_type(a) for a in te.type_args)
-            if te.type_args else ())
-        if name not in self._forward_type_names:
-            self._report_unknown_type(te)
-        return placeholder
+        args = (tuple(self._resolve_type(a) for a in te.type_args)
+                if te.type_args else ())
+        if name in self._forward_type_names:
+            return AdtType(
+                self._type_identity(name)
+                if name in self._forward_data_names else name, args)
+        # #1563: a name nothing declares is a placeholder every judgement
+        # admits, so its E136 is the one error a value judged against it
+        # owes; held to it as a type, a `let`, a return and an argument
+        # each drew a second error at code that is not wrong.
+        self._report_unknown_type(te)
+        return UnresolvedAdtType(name, args)
 
     def _report_unknown_type(self, te: ast.NamedType) -> None:
         """E136: a type name that resolves to no declaration in scope."""
@@ -1307,8 +1316,8 @@ class ResolutionMixin:
         if isinstance(ty, UnknownType):
             return self._fresh_typevar("?")
         if isinstance(ty, AdtType):
-            return AdtType(ty.name, tuple(self._as_holes(a)
-                                          for a in ty.type_args))
+            return ty.with_args(tuple(self._as_holes(a)
+                                      for a in ty.type_args))
         if isinstance(ty, FunctionType):
             return FunctionType(
                 tuple(self._as_holes(p) for p in ty.params),
@@ -1441,11 +1450,12 @@ def _meet_literal_holes(parts: tuple[Type | None, ...], ty: Type) -> Type:
         return ty
     if known and all(is_literal_hole(p) for p in known):
         return LITERAL_HOLE
-    adts = [p for p in known if isinstance(p, AdtType)
+    adts = [p for p in known if isinstance(p, AdtType)  # pragma: no mutate — equivalent: the meet is asked of a join's parts, and a part that is a data type has the join's name and arity wherever the join is accepted; a join of two names or arities is refused (E301, E302, E162) with the same codes whether or not the filter reads them (probed)
             and isinstance(ty, AdtType) and p.name == ty.name
             and len(p.type_args) == len(ty.type_args)]
-    if isinstance(ty, AdtType) and len(adts) == len(known):
-        return AdtType(ty.name, tuple(
+    if (isinstance(ty, AdtType)  # pragma: no mutate — equivalent: `parts` is never empty (an `if`'s two branches, a `match`'s arms, a literal's elements, `[]` returning before), so for a `ty` that is no data type `adts` is empty and shorter than `known`
+            and len(adts) == len(known)):
+        return ty.with_args(tuple(
             _meet_literal_holes(tuple(p.type_args[i] for p in adts), arg)
             for i, arg in enumerate(ty.type_args)))
     return ty
@@ -1458,10 +1468,10 @@ def _overlay_literal_holes(soft: Type, ty: Type) -> Type:
         if isinstance(ty, PrimitiveType) and ty.name in ("Int", "Nat"):
             return soft
         return ty
-    if (isinstance(soft, AdtType) and isinstance(ty, AdtType)
+    if (isinstance(soft, AdtType) and isinstance(ty, AdtType)  # pragma: no mutate — equivalent: a call's recorded soft result is its synthesized type with holes, so where it is a data type `ty` is that data type, and the name and arity tests below decide the rest
             and soft.name == ty.name
             and len(soft.type_args) == len(ty.type_args)):
-        return AdtType(ty.name, tuple(
+        return ty.with_args(tuple(
             _overlay_literal_holes(a, b)
             for a, b in zip(soft.type_args, ty.type_args)))
     return ty

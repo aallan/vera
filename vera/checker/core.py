@@ -67,7 +67,7 @@ from vera.types import (
 
 from vera.checker.resolution import ResolutionMixin
 from vera.checker.modules import ModuleRegistration, ModulesMixin
-from vera.checker.registration import RegistrationMixin
+from vera.checker.registration import RegistrationMixin, _builtin_reject_names
 from vera.checker.expressions import ExpressionsMixin
 from vera.checker.calls import CallsMixin
 from vera.checker.control import ControlFlowMixin
@@ -621,6 +621,12 @@ class TypeChecker(
         # constructor name two imports supply is refused the same way, at
         # the import (E157, #1513).
         self._refused_ctor_names: set[str] = set()
+        # #1563: the built-in type names a refused `data` declaration took
+        # (E158).  A use of the name at an arity the built-in does not take
+        # was written against the declaration, so it reports nothing beyond
+        # the declaration's own error; at the built-in's arity it is the
+        # built-in.
+        self._refused_type_names: set[str] = set()
         # #1697: the patterns the check refused (E314, an unknown
         # constructor), by `id`, which a coverage judgement reads as
         # catch-alls below the scrutinee (`_coverage_pattern`).  Each is
@@ -758,6 +764,12 @@ class TypeChecker(
         # included, so a qualified call to a refused one adds no error to
         # the one its declaration drew.
         self._own_fn_names: frozenset[str] = frozenset()
+        # #1563: the names a top-level function refused for redefining a
+        # built-in (E151) took.  The name is the declaration's to the
+        # program, which the refusal leaves with no function of its own, so
+        # a bare call to it is `Unknown`, as the qualified call is, and is
+        # never held to the built-in's signature.
+        self._refused_builtin_fn_names: frozenset[str] = frozenset()
         # #1559: the built-in data types this checker's environment starts
         # with, by identity, so a type the file declares or imports can be
         # told from the prelude's own type of the same name.
@@ -998,6 +1010,11 @@ class TypeChecker(
         self._own_fn_names = frozenset(
             tld.decl.name for tld in program.declarations
             if isinstance(tld.decl, ast.FnDecl))
+        self._refused_builtin_fn_names = frozenset(
+            tld.decl.name for tld in program.declarations
+            if isinstance(tld.decl, ast.FnDecl)
+            and id(tld.decl) in self._refused_decl_ids
+            and tld.decl.name in _builtin_reject_names())
         # #991 checker leg: pin each LOCAL top-level function's own info so
         # the scoped lookup prefers it over a nested helper of the same name
         # that clobbered the flat registry (helpers register last) — the

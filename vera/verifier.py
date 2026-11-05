@@ -6173,6 +6173,25 @@ class ContractVerifier:
             if pushed:
                 smt._path_conditions.pop()
 
+    def _literal_component(
+        self, smt: SmtContext, arg: ast.Expr, te: ast.TypeExpr, env: SlotEnv,
+    ) -> z3.ExprRef | None:
+        """The term a destructure's binder declared *te* reads for *arg*, its
+        component of a literal constructor source, in every walk that
+        projects one (#1696, #1563).
+
+        The value its bind's guard establishes, as a `let`'s binder reads
+        (`SmtContext.guarded_binding`, through `_apply_let_binding`): a
+        refined or `@Nat` component's predicate holds for the rest of its
+        scope whether the bind is guarded or refused, so a later call whose
+        precondition it states is discharged rather than drawn as a second
+        error beside the bind's own, or left at Tier 3 over a stand-in.
+        None where the component does not translate."""
+        term = smt.translate_expr(arg, env)
+        if term is None:
+            return None
+        return smt.guarded_binding(arg, term, te)
+
     def _shadow_destructured_slots(
         self, stmt: ast.LetDestruct, smt: SmtContext, env: SlotEnv,
     ) -> SlotEnv:
@@ -6217,7 +6236,7 @@ class ContractVerifier:
                 continue
             slot_val: object | None = None
             if i < len(lit_args):
-                slot_val = smt.translate_expr(lit_args[i], env)
+                slot_val = self._literal_component(smt, lit_args[i], te, env)
             if slot_val is not None:
                 pushed.append((type_name, slot_val))
                 continue
@@ -7595,7 +7614,8 @@ class ContractVerifier:
                         continue
                     slot_val: z3.ExprRef | None = None
                     if i < len(lit_args):
-                        slot_val = smt.translate_expr(lit_args[i], cur_env)
+                        slot_val = self._literal_component(
+                            smt, lit_args[i], te, cur_env)
                     if slot_val is None:
                         # Non-literal / untranslatable component: push a
                         # *tracked* opaque placeholder so a later op falls
@@ -9070,7 +9090,8 @@ class ContractVerifier:
                     slot_val: object | None = None
                     if i < len(lit_args):
                         # Literal component: exact value; no seed needed.
-                        slot_val = smt.translate_expr(lit_args[i], cur_env)
+                        slot_val = self._literal_component(
+                            smt, lit_args[i], te, cur_env)
                     if slot_val is None:
                         # Non-literal / untranslatable component: a fresh var
                         # invalidates the stale outer binding (PR #748).
@@ -10082,19 +10103,33 @@ class ContractVerifier:
         there because a fresh value can outlive the arm inside the `match`'s
         own translated value, where a query about the result reads it on
         paths the arm was not taken.  Only where the guard exists (the
-        table's, `_table_guards_refinement`); a `@Nat` binder is not a
-        refinement and is left as it is.
+        table's, `_table_guards_refinement`).  A bare `@Nat` binder that
+        narrows an `Int` takes the same reading with `>= 0` for its
+        predicate, where its `nat_bind` row is guarded
+        (`_nat_bind_guarded`, #1563).
         """
         out: dict[int, object] = {}
         if scrutinee_z3 is None:
             return out
-        guard = z3.And(*taken) if taken else z3.BoolVal(True)
+        guard = z3.And(*taken)  # an empty conjunction is true
 
-        def bind_fresh(term: z3.ExprRef, target: Type) -> None:
-            if not self._table_guards_refinement(target):
-                return
-            fresh = z3.FreshConst(term.sort(), "guarded")
-            pred = self._translate_refined_predicate(smt, target, fresh)
+        def bind_fresh(term: z3.ExprRef, target: Type,
+                       binder: ast.BindingPattern | None = None,
+                       value: ast.Expr | None = None) -> None:
+            fresh = z3.FreshConst(term.sort(), "guarded")  # pragma: no mutate — equivalent: the prefix only names the constant; every reader keys it by its id, and no diagnostic or model walk matches a name but `_opaque_`
+            pred: object | None
+            if target == NAT:
+                # #1563: a `@Nat` binder narrowing an `Int` is guarded by the
+                # sign check its `nat_bind` row carries, so its `>= 0` holds
+                # for the rest of its scope, guarded or refused, as a refined
+                # binder's predicate does.
+                if binder is None or not self._nat_bind_guarded(binder, value):
+                    return
+                pred = fresh >= 0
+            else:
+                if not self._table_guards_refinement(target):
+                    return
+                pred = self._translate_refined_predicate(smt, target, fresh)
             if pred is None:
                 return
             facts = self._established_facts(
@@ -10103,6 +10138,11 @@ class ContractVerifier:
                 return
             smt.assume_of_value(
                 fresh, z3.Implies(guard, z3.And(fresh == term, *facts)))
+            if smt._mentions_stand_in(term):
+                # The fresh value IS a stand-in's value, so no refutation may
+                # rest on it either (#1696, R4): its guard says its predicate
+                # and nothing else, as the stand-in's type did.
+                smt._taint(fresh)
             # An assumption that reads the fresh value is stated over the
             # projection instead (`SmtContext.assume`).
             smt.record_guarded_value(fresh, term)
@@ -10121,14 +10161,35 @@ class ContractVerifier:
 
         if isinstance(pattern, ast.BindingPattern):
             target = self._written_type(pattern.type_expr)
-            if (self._is_refined_type(target)
-                    and self._narrows_into_refined(scrutinee, target)):
+            # `_narrows_into_refined` is False for a target that is no
+            # refinement, so it alone decides the refined reading.
+            if self._narrows_into_refined(scrutinee, target):
                 bind_fresh(scrutinee_z3, target)
+            elif target == NAT:
+                bind_fresh(scrutinee_z3, target, pattern, scrutinee)
         elif isinstance(pattern, ast.ConstructorPattern):
             self._guarded_subpattern_values(
                 self._resolved_type_of(scrutinee), scrutinee_z3, pattern,
                 smt, bind_fresh)
         return out
+
+    def _nat_bind_guarded(
+        self, binder: ast.BindingPattern, value: ast.Expr | None = None,
+    ) -> bool:
+        """Whether the table lists a guarded `nat_bind` row for *binder*: a
+        `match` binder's row stands at the pattern, a destructure's at its
+        type expression, and a `let`'s, whose binder `guarded_binding` reads
+        as a binding pattern, at its *value*."""
+        nodes: tuple[ast.Node, ...] = (binder, binder.type_expr)
+        if value is not None:
+            nodes = (*nodes, value)
+        return any(
+            row.guard.check
+            for node in nodes
+            for row in self._table.rows_of(
+                node, "nat_bind",
+                path=None,  # pragma: no mutate — equivalent: a binder's `nat_bind` row is its node's head row, at the empty path the default asks for (`pattern_rows`, `destructure_rows`, `narrowing_rows`' head), and no row at a binder, its type expression or a scalar `let` value has a path
+                evaluation=None))
 
     def _guarded_subpattern_values(
         self,
@@ -10136,7 +10197,7 @@ class ContractVerifier:
         scrut_term: z3.ExprRef,
         pattern: ast.ConstructorPattern,
         smt: SmtContext,
-        bind_fresh: Callable[[z3.ExprRef, Type], None],
+        bind_fresh: Callable[..., None],
     ) -> None:
         """Visit each refined sub-pattern binder that narrows its field, at
         any depth, with its projected field — exactly the binders
@@ -10163,6 +10224,8 @@ class ContractVerifier:
                 if (self._is_refined_type(target)
                         and self._refined_field_narrows(target, field_ty)):
                     bind_fresh(term, target)
+                elif target == NAT:
+                    bind_fresh(term, target, sub)
 
     def _fresh_slot_var(
         self, smt: SmtContext, te: ast.TypeExpr,
@@ -13813,7 +13876,7 @@ class ContractVerifier:
         unchanged; the assumption now carries every level.
         """
         target_parts = self._refined_parts(target_ty)
-        if target_parts is None:  # pragma: no cover — caller gates on refined
+        if target_parts is None:
             return False
         source_ty = self._resolved_type_of(value)
         if source_ty is not None:
