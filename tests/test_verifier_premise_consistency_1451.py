@@ -1564,6 +1564,14 @@ def _render(route_name: str, kind_name: str, *, sat: bool) -> str:
     )
 
 
+def _at_signature(obligation: dict, source: str, marker: str) -> bool:
+    """Whether *obligation* stands on the signature line of the function
+    whose declaration starts at *marker* (a refined formal's entry row)."""
+    line = next(i for i, text in enumerate(source.splitlines(), start=1)
+                if text.lstrip().startswith(marker))
+    return obligation["location"]["line"] == line
+
+
 def _slice_from(result: dict, source: str, marker: str) -> list[dict]:
     """The obligations of the function whose declaration starts at *marker*.
 
@@ -1616,13 +1624,16 @@ def test_1451_vacuity_matrix(
     assert "E538" not in _codes(sat), (route_name, kind_name, _codes(sat))
     assert "E539" not in _codes(sat), (route_name, kind_name, _codes(sat))
     if kind_name == "call_pre":
-        # A PROVABLE call precondition records no obligation at all (only the
-        # `violated` and `tier3` recorders exist), so the premise here is the
-        # refusal itself: with satisfiable premises this program is rejected.
+        # The premise here is the refusal itself: with satisfiable premises
+        # this program is rejected.
         assert ("call_pre", "violated", "E501") in _triples(sat), _triples(sat)
         assert sat["ok"] is False, sat["verification"]
     else:
-        target = [o for o in sat_slice if o["kind"] == kind_name]
+        # A refined formal's entry row is the callee's assumption, recorded
+        # `verified` at the signature (#1695); the cell's obligation is the
+        # body's.
+        target = [o for o in sat_slice if o["kind"] == kind_name
+                  and not _at_signature(o, sat_src, marker)]
         assert target, (
             f"{route_name}/{kind_name}: the fixture produced no {kind_name} "
             f"obligation, so the cell would hold vacuously — "
@@ -1657,12 +1668,14 @@ def test_1451_vacuity_matrix(
         if kind_name == "call_pre":
             # Say what the contradiction actually bought, rather than only
             # that E538 fired: the call whose precondition the satisfiable
-            # side REFUSES is here proved from the contradiction, so it
-            # records no obligation IN THIS FUNCTION and the disclosure is the
-            # only thing standing between that and a silent false Tier 1.
-            assert not [
-                o for o in unsat_slice if o["kind"] == "call_pre"
-            ], _triples(unsat)
+            # side REFUSES is here "proved" from the contradiction, and its
+            # record IN THIS FUNCTION is withheld with the refusal (#1695:
+            # a discharged call precondition is a record), so the disclosure
+            # is what stands between it and a silent false Tier 1.
+            assert [
+                (o["status"], o.get("error_code"))
+                for o in unsat_slice if o["kind"] == "call_pre"
+            ] == [("tier3_unguarded", "E538")], _triples(unsat)
             # The `where` shape refuses TWICE over, and the second refusal is
             # load-bearing: the contradiction is the HELPER's, so the PARENT's
             # call to it is a genuine E501 beside the helper's own E538.  The
@@ -1689,12 +1702,12 @@ def test_1451_vacuity_matrix(
             assert [o["status"] for o in dead] == ["violated"], dead
         elif kind_name == "call_pre":
             # The satisfiable side refuses this program (asserted above); the
-            # dead arm's call precondition is proved from the arm fact, so it
-            # records nothing and the program is accepted.  Assert BOTH, or
-            # the cell says only that no E538 fired — which a check that had
-            # stopped running entirely would also satisfy.
+            # dead arm's call precondition is proved from the arm fact, a
+            # `verified` record (#1695), and the program is accepted.  Assert
+            # BOTH, or the cell says only that no E538 fired — which a check
+            # that had stopped running entirely would also satisfy.
             assert unsat["ok"] is True, _triples(unsat)
-            assert dead == [], _triples(unsat)
+            assert [o["status"] for o in dead] == ["verified"], _triples(unsat)
         else:
             assert [o["status"] for o in dead] == ["verified"], dead
             assert all(o["status"] != "verified" for o in live), live

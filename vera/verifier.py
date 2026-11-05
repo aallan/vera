@@ -1079,6 +1079,12 @@ _RUNTIME_CLAIM_CODES = frozenset({
 })
 _DISCLOSURE_WARNINGS = frozenset({"E504", "E506"})
 
+#: The refusals of a function's premises (#1451): a record withheld from
+#: both tiers because no call can reach the body, or none is known to.  Its
+#: status is the premise's verdict, not a guard's, so the row's guard
+#: neither confirms nor replaces it.
+_PREMISE_CODES = frozenset({"E538", "E539", "E540"})
+
 
 def _site_span(node: ast.Node) -> ast.Span | None:
     """Where an obligation about *node*, and a diagnostic about it, stands:
@@ -1088,14 +1094,18 @@ def _site_span(node: ast.Node) -> ast.Span | None:
     return stage if stage is not None else node.span
 
 
-def _span_within(span: ast.Span | None, record: ProofObligation) -> bool:
-    """Whether *span* starts inside the span *record* is located at."""
-    if span is None or not record.line:
-        return False
-    start = (record.line, record.column)
-    end = (record.end_line, record.end_column)
-    return start <= (span.line, span.column) and (
-        not record.end_line or (span.line, span.column) < end)
+def _source_component(source: obligation_table.Source) -> ast.Node | None:
+    """The written expression a binder row's *source* names: its value,
+    taken apart along the steps through constructor applications written
+    in place (``let Tuple<@Nat, @Int> = Tuple(@Int.0, 2)`` binds
+    ``@Int.0``); ``None`` where a step takes apart a value not built there."""
+    node: ast.Node = source.value
+    for _ctor, i in source.steps:
+        if isinstance(node, ast.ConstructorCall) and i < len(node.args):
+            node = node.args[i]
+        else:
+            return None
+    return node
 
 
 class ContractVerifier:
@@ -1243,9 +1253,27 @@ class ContractVerifier:
         # entry cannot answer for a later record that reuses a discarded
         # one's `id` (its reference is dead, or is to a record that is not
         # the one asked about), and it keeps no discarded record alive.
+        #: The premise refusal (#1451) of the function being verified, set
+        #: by :meth:`_demote_function_obligations`: a record its rows'
+        #: discharge makes after the demotion takes the refusal too.
+        self._premise_code: str | None = None
         self._call_pre_contracts: dict[
             int, tuple[weakref.ref[ProofObligation], ast.Node]
         ] = {}
+        #: #1695: the node each record was made at (the expression it
+        #: discharges, the node it is located at, and the tail call of a
+        #: measure's evaluation), by which :meth:`_settle_rows` keys it to
+        #: the row at that node.
+        #: #1695: the record of each refinement predicate's operation at its
+        #: declaration (#1480), by the operation's node: the one record of
+        #: that written site, which every guard's copy of the predicate in a
+        #: function shares, the declaration's discharge (under the base
+        #: type's facts alone) holding at every guard.
+        self._predicate_records: dict[object, ProofObligation] = {}
+        self._record_anchors: dict[int, tuple[
+            weakref.ref[ProofObligation], ast.Node, ast.Node | None,
+            ast.FnCall | ast.ModuleCall | None,
+        ]] = {}
         # Warm-session hook: when provided (by
         # obligations.session.VerificationSession), _verify_fn calls
         # shared_smt.reset() per function instead of constructing a
@@ -1852,10 +1880,17 @@ class ContractVerifier:
             end_line=end_line,
             end_column=end_column,
         ))
+        record = self.obligations[-1]
+        at = self._evaluated_at
+        if at is not None and at.position == "predicate":
+            self._predicate_records.setdefault(
+                obligation_table.ObligationTable._key(node), record)
+        self._record_anchors[id(record)] = (
+            weakref.ref(record), node, span_node,
+            at.call if at is not None else None)
         if kind == "call_pre":
             # #1480: which precondition this record is about, by identity —
             # see `_call_pre_recorded` and `_call_pre_contract_of`.
-            record = self.obligations[-1]
             self._call_pre_contracts[id(record)] = (weakref.ref(record), node)
 
     def _call_pre_contract_of(self, record: ProofObligation) -> ast.Node | None:
@@ -3473,19 +3508,23 @@ class ContractVerifier:
     # #1695: the rows a verified function lists, discharged
     # -----------------------------------------------------------------
 
-    def _settle_rows(self, decl: ast.FnDecl, start: int) -> None:
+    def _settle_rows(
+        self, decl: ast.FnDecl, start: int, *, premise: str | None = None,
+    ) -> None:
         """Key the records verifying *decl* made to the table's rows, and
         discharge every row of *decl* exactly once.
 
         The table lists the obligations; a record this verification made at
         a site the table lists no row at is no obligation and is dropped,
         and a row no record reached is discharged here (:meth:`_row_record`).
-        A record answers the rows at its site of its kind, and two aliases
-        name the site the table lists for a record written elsewhere: a
-        measure's operation re-evaluated at a self tail call is recorded at
-        the call and is the measure's row in that call's evaluation, and a
-        ``@Nat`` or refined return recorded at the body (a closure's at the
-        closure) is the row of each value leaf it narrows at.
+        A record answers the rows of its kind at the node it was recorded
+        at (:meth:`_anchored_rows`): a measure's operation re-evaluated at a
+        self tail call is the measure's row in that call's evaluation, a
+        binder's narrowing recorded at the value its pattern takes apart is
+        the binder's row, and a ``@Nat`` or refined return recorded at the
+        body is the row of each value leaf it narrows at and of each
+        component the return type checks.  No record is keyed by where it
+        is located.
 
         One record per written site (the row's ``content_key``): a site's
         copies, each discharged in its own evaluation's context, share it,
@@ -3504,33 +3543,19 @@ class ContractVerifier:
         own = [o for o in self.obligations[start:] if not o.rows]
         if not own and generic:
             return
-        at: dict[tuple[str, int, int], list[obligation_table.Row]] = {}
         calls: dict[object, tuple[int, int]] = {}
         if decl.body is not None:
             for n in fold.walk(decl.body):
                 site = _site_span(n)
                 if isinstance(n, ast.FnCall) and n.node_id is not None and site:
                     calls[n.node_id] = (site.line, site.column)
-        for row in rows:
-            span = _site_span(row.node)
-            if span is None:
-                continue
-            at.setdefault((row.kind, span.line, span.column), []).append(row)
-            if row.evaluation and row.evaluation[0] == "measure_call":
-                call_at = calls.get(row.evaluation[1])
-                if call_at is not None:
-                    at.setdefault((row.kind, *call_at), []).append(row)
         status: dict[int, list[ProofObligation]] = {}
         kept: list[ProofObligation] = []
         for rec in own:
             if rec.kind not in _TABLE_KINDS:
                 kept.append(rec)
                 continue
-            hit = at.get((rec.kind, rec.line, rec.column))
-            if not hit and rec.kind in ("nat_bind", "refine_bind"):
-                hit = [r for r in rows if r.kind == rec.kind
-                       and r.evaluation == obligation_table.RETURN
-                       and _span_within(r.node.span, rec)]
+            hit = self._anchored_rows(rec, rows, decl)
             if not hit:
                 # No obligation: its disclosure, if it made one, goes too.
                 self._retract_disclosure(rec)
@@ -3543,6 +3568,15 @@ class ContractVerifier:
         settled: list[ProofObligation] = []
         for site_rows in by_site.values():
             recs = [r for row in site_rows for r in status.get(row.id, ())]
+            if not recs and site_rows[0].evaluation[:1] == ("predicate",):
+                shared = self._predicate_records.get(
+                    obligation_table.ObligationTable._key(site_rows[0].node))
+                if shared is not None:
+                    # A guard's copy of a predicate: the declaration's
+                    # record is the site's, and names this copy's rows.
+                    shared.rows = tuple(dict.fromkeys(
+                        (*shared.rows, *(row.id for row in site_rows))))
+                    continue
             if not recs:
                 if generic:
                     continue
@@ -3579,10 +3613,95 @@ class ContractVerifier:
                     f"{record.expr_text} [{'.'.join(site_rows[0].path)}]"))
             record = self._guarded_by_row(record, site_rows)
             settled.append(record)
+        if premise is not None:
+            # Under a refused premise set nothing is proved (#1451): a row
+            # this settling discharged `verified` is withheld as the
+            # function's other records were.
+            settled = [replace(r, status="tier3_unguarded", error_code=premise)
+                       if r.status == "verified" else r for r in settled]
+            kept = [replace(r, status="tier3_unguarded", error_code=premise)
+                    if r.status == "verified" else r for r in kept]
         own_ids = {id(o) for o in own}
         self.obligations[start:] = [
             o for o in self.obligations[start:] if id(o) not in own_ids
         ] + kept + settled
+
+    def _anchored_rows(
+        self, rec: ProofObligation, rows: list[obligation_table.Row],
+        decl: ast.FnDecl,
+    ) -> list[obligation_table.Row] | None:
+        """The rows *rec* discharges, by the node it was recorded at: the
+        rows of its kind at that node (or at the node it is located at), in
+        the evaluation it was made in (a measure's copy at its tail call),
+        a call precondition's the row its contract answers; else the rows
+        whose binder takes apart that node (a destructure's or a pattern's
+        component), or the value leaves of the body it narrows (a return).
+        ``None`` for a record whose anchor no row of *rows* stands at or
+        takes apart: a record at a site that is no obligation."""
+        entry = self._record_anchors.get(id(rec))
+        if entry is None or entry[0]() is not rec:
+            return None
+        _, node, span_node, call = entry
+        keys = {obligation_table.ObligationTable._key(n)
+                for n in (node, span_node) if n is not None}
+        mine = [r for r in rows if r.kind == rec.kind]
+        hit = [r for r in mine
+               if obligation_table.ObligationTable._key(r.node) in keys]
+        if hit:
+            if call is not None:
+                copy = [r for r in hit if r.evaluation
+                        and r.evaluation[0] == "measure_call"
+                        and r.evaluation[1] == call.node_id]
+                hit = copy or hit
+            else:
+                hit = [r for r in hit if not (
+                    r.evaluation and r.evaluation[0] == "measure_call")] or hit
+            if rec.kind == "call_pre":
+                contract = self._call_pre_contract_of(rec)
+                own = [r for r in hit if r.answered_by is not None
+                       and r.answered_by >= 0 and contract is not None
+                       and obligation_table.ObligationTable._key(
+                           self._table.by_id(r.answered_by).node)
+                       == obligation_table.ObligationTable._key(contract)]
+                hit = own or hit
+            return hit
+        component = [r for r in mine if r.source is not None
+                     and _source_component(r.source) is node]
+        if component:
+            return component
+        # A handler clause's binder, recorded at the clause's body (no
+        # operation site pins the payload): the binder's rows.
+        if decl.body is not None:
+            binders_of = {
+                obligation_table.ObligationTable._key(c.params[0])
+                for h in fold.walk(decl.body) if isinstance(h, ast.HandleExpr)
+                for c in h.clauses if c.params and c.body is node}
+            clause = [r for r in mine if obligation_table.ObligationTable._key(
+                r.node) in binders_of]
+            if clause:
+                return clause
+        # A binder's narrowing recorded at the value its pattern takes
+        # apart (a sub-pattern of a `match` over a slot): the binder rows
+        # of that value.
+        taken = [r for r in mine if r.source is not None
+                 and obligation_table.ObligationTable._key(r.source.value)
+                 in keys]
+        if taken:
+            return taken
+        if rec.kind in ("nat_bind", "refine_bind"):
+            leaves = {obligation_table.ObligationTable._key(n)
+                      for n in fold.walk(node)}
+            if node is decl.body:
+                # The body's value held to the return type: its component
+                # rows stand at the return type, where code generation
+                # checks them.
+                leaves |= {obligation_table.ObligationTable._key(n)
+                           for n in fold.walk(decl.return_type)}
+            ret = [r for r in mine if r.evaluation == obligation_table.RETURN
+                   and obligation_table.ObligationTable._key(r.node) in leaves]
+            if ret:
+                return ret
+        return None
 
     def _row_record(
         self, decl: ast.FnDecl, row: obligation_table.Row,
@@ -3619,6 +3738,8 @@ class ContractVerifier:
     ) -> ProofObligation:
         """*record* with the status its rows' guard gives an undecided
         site: ``tier3`` where a check guards it, disclosed where none can."""
+        if record.error_code in _PREMISE_CODES:
+            return record
         guarded = any(r.guard.check for r in rows)
         if record.status in ("tier3", "timeout", "tier3_unguarded") and not guarded:
             self._disclose_row(record, rows[0])
@@ -3695,8 +3816,12 @@ class ContractVerifier:
         """Verify *decl*, then discharge its rows from the records the
         verification made (:meth:`_settle_rows`)."""
         start = len(self.obligations)
-        self._verify_fn_contracts(decl, parent_where_group, enclosing)
-        self._settle_rows(decl, start)
+        outer, self._premise_code = self._premise_code, None
+        try:
+            self._verify_fn_contracts(decl, parent_where_group, enclosing)
+            self._settle_rows(decl, start, premise=self._premise_code)
+        finally:
+            self._premise_code = outer
 
     def _verify_fn_contracts(
         self,
@@ -5019,6 +5144,7 @@ class ContractVerifier:
         would be relabelled "neither proved nor guarded" (§6.8) while codegen,
         which consults no verdict, still emits its guard.
         """
+        self._premise_code = error_code
         for obligation in self.obligations[obl_start:]:
             if obligation.status != "verified":
                 continue
@@ -10456,6 +10582,23 @@ class ContractVerifier:
         if not self._has_nested_refinement(formal_ty):
             return
         if self._all_leaves_construct(value_node, smt, slot_env):
+            if site == "return type" and value_node is decl.body:
+                # #1695: the return type's component rows, which code
+                # generation checks at the return, hold by the body's
+                # constructions, each of whose fields is its own row: proved
+                # where every one of those holds (verified or guarded), and
+                # left to the return's check where one does not.
+                inside = {id(n) for n in fold.walk(value_node)}
+                spans = {(n.span.line, n.span.column) for n in fold.walk(value_node)
+                         if n.span is not None and id(n) in inside}
+                fields = [o for o in self.obligations
+                          if o.fn_name == decl.name and o.kind == "refine_bind"
+                          and (o.line, o.column) in spans]
+                held = all(o.status in ("verified", "tier3", "timeout")
+                           for o in fields)
+                self._record_obligation(
+                    decl.name, "refine_bind", value_node,
+                    "verified" if held else "tier3")
             return
         # #1430 stage 1b: a carrier boundary that carries an element-wise
         # runtime guard makes an undecided element obligation GUARDED —
