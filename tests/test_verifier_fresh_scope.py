@@ -350,6 +350,36 @@ public fn f(@Unit -> @Int)
         assert ran.trap is None and ran.value == 0, ran
 
 
+def test_repro_a_call_inside_an_assume_condition_is_no_obligation() -> None:
+    """The call twin of the narrowing above: a call in an `assume` condition
+    never runs, the table lists no `call_pre` row there, and its refuted
+    precondition is no obligation: no record and no E501 (CodeRabbit on PR
+    #1843; base reported the E501 with no record beside it).  The run
+    returns 0."""
+    src = """
+private fn pos(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(pure)
+{ @Int.0 }
+
+public fn f(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  assume(pos(0 - 1) > 0);
+  0
+}
+"""
+    result = _verify(src)
+    assert not [d for d in result.diagnostics if d.severity == "error"], [
+        d.error_code for d in result.diagnostics]
+    assert not [o for o in result.obligations if o.kind == "call_pre"]
+    ran = vera_pipeline.run(src, "f", [])
+    assert ran.trap is None and ran.value == 0, ran
+
+
 # =====================================================================
 # Mutation-derived battery (PR #1202 test-coverage review): each test
 # below kills a specific mutant that survived the original 12 — the

@@ -6684,6 +6684,12 @@ class ContractVerifier:
             if self._call_pre_recorded(
                     decl, v.precondition, v.call_node, failures_only=True):
                 continue
+            if self._call_pre_rows(v.precondition, v.call_node) == []:
+                # #1836: a refuted precondition at a call the table lists no
+                # row of this function at is no obligation here either (a
+                # call in an `assume` condition, which is never compiled):
+                # no record, and no E501 with no record beside it.
+                continue
             self._record_obligation(
                 decl.name, "call_pre", v.precondition, "violated",
                 error_code="E501",
