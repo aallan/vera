@@ -3633,7 +3633,7 @@ class SmtContext:
         translate whole, or rests on a stand-in."""
         term = self.translate_expr(leaf, SlotEnv())  # pragma: no mutate — equivalent: a literal's translation reads no environment
         sort = self._value_sort(ty)
-        if term is None or sort is None or term.sort() != sort:  # pragma: no mutate — equivalent: every literal translates, so its term is never None
+        if term is None or sort is None or term.sort() != sort:  # pragma: no mutate — equivalent: a literal's term is never None: one that does not translate gets its stand-in
             return False
         facts = self._type_facts(term, ty)
         chain = naming.refined_type_chain(ty)
