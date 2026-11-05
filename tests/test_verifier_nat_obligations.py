@@ -978,20 +978,26 @@ public fn f(@Unit -> @Unit)
         and no solver call was made, let alone timed out; a reader following
         that sentence would go looking for a timeout to raise.
 
-        Read off a site that is still unguarded, the call argument a
-        clause's narrowed `throw(@Nat)` binder flows into (#1362's shape),
-        whose value does not translate.
+        Since #1695 the rationale is the unguarded row's reason, the one
+        cause that applies.  Read off a site that is still unguarded: a
+        `@Nat` binding in a `State` clause no operation call inlines.  (The
+        clause binder `throw(@Nat)` over an `Int` payload stood here before;
+        its row is guarded, the clause's sign check, which traps at base and
+        since.)
         """
+        from vera.obligations import table as obligation_table
+
         result = _verify('''
 public fn f(@Int -> @Int)
   requires(true)
   ensures(true)
-  effects(pure)
+  effects(<State<Int>>)
 {
-  handle[Exn<Int>] {
-    throw(@Nat) -> { nat_to_int(@Nat.0) }
+  handle[State<Int>](@Int = 0) {
+    get(@Unit) -> { resume(1) },
+    put(@Int) -> { let @Nat = @Int.0; resume(()) }
   } in {
-    throw(@Int.0)
+    1
   }
 }
 ''')
@@ -1000,7 +1006,7 @@ public fn f(@Int -> @Int)
             (d.error_code, d.description[:70]) for d in result.diagnostics
         ]
         rationale = warns[0].rationale
-        assert "no term to test" in rationale, rationale
+        assert obligation_table.REASON_CLAUSE_NOT_INLINED in rationale, rationale
         assert "timed out" not in rationale, rationale
         assert "outside Z3's decidable fragment" not in rationale, rationale
 
@@ -1542,8 +1548,9 @@ public fn f(@Int -> @Nat)
 { if @Int.0 >= 0 then { @Int.0 } else { 0 - @Int.0 } }
 """)
         assert [d for d in result.diagnostics if d.severity == "error"] == []
+        # One record per value leaf since #1695, each proved under its arm.
         assert [o.status for o in result.obligations
-                if o.kind == "nat_bind"] == ["verified"]
+                if o.kind == "nat_bind"] == ["verified", "verified"]
 
     def test_nat_return_of_nat_body_not_flagged(self) -> None:
         """`@Nat -> @Nat` returning a `@Nat` slot is not a narrowing — no

@@ -799,9 +799,30 @@ private fn sum(@List<Int> -> @Int)
         # E532 beside an untranslatable argument, is discharged, and a
         # discharged user precondition leaves no record: +9 T1, -10 T3,
         # -1 total: 450/112/562 -> 459/102/561.
-        assert t1 == 459, f"Expected 459 T1, got {t1}"
-        assert t3 == 102, f"Expected 102 T3, got {t3}"
-        assert total == 561, f"Expected 561 total, got {total}"
+        #
+        # #1695: the verifier discharges the obligation table's rows, one
+        # record per row.  A discharged call precondition is its row's record
+        # (+9 T1: `fizzbuzz.vera` 29 and 40, `gc_pressure.vera` 60,
+        # `life.vera` 280 and 295, `quantifiers.vera` 38, `safe_divide.vera`
+        # 21, `scoreboard.vera` 51 and 64).  A quotient's `INT_MIN / -1` row
+        # is discharged (#1598): `safe_divide.vera` 4 and 7 and
+        # `refinement_types.vera` 30 prove (+3 T1), `effect_handler.vera` 73
+        # and `maximum_syntax.vera` 255 are Tier 3 (+2 T3).  A literal
+        # divisor's row is recorded proved (`ephemeris.vera` 448 twice,
+        # `fizzbuzz.vera` 6, 9 and 12: +5 T1), and so are a refined formal's
+        # ENTRY row and a producer's refined return component
+        # (`ephemeris.vera` 211 and 223, `maximum_syntax.vera` 172,
+        # `refinement_types.vera` 25 and 54: +5 T1).  A `@Nat` return is one
+        # record per value leaf (`absolute_value.vera` 8 -> 9 and 11: +1 T1).
+        # A same-type argument is no row (`ephemeris.vera` 488 and 489: -2
+        # T1), and a measure's copy at a self tail call shares the measure's
+        # record (`fizzbuzz.vera` 29, `life.vera` 295: -2 T1).  A sub-pattern
+        # binder at its component's own type is the guarded row the module
+        # checks (`ephemeris.vera` 340: +1 T3, a W004 before).  +19 T1, +3
+        # T3, +22 total: 459/102/561 -> 478/105/583.
+        assert t1 == 478, f"Expected 478 T1, got {t1}"
+        assert t3 == 105, f"Expected 105 T3, got {t3}"
+        assert total == 583, f"Expected 583 total, got {total}"
         # Zero is the load-bearing value, not a vacuous one: every corpus
         # narrowing is now covered by an emitted guard, so any reappearance
         # is a REGRESSION in guard coverage rather than a new example.  The

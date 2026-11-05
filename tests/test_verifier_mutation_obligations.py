@@ -330,7 +330,11 @@ private fn sdiv_387(@Int, @Int -> @Int)
 { @Int.0 / @Int.1 }
 """)
         s = result.summary
-        assert (s.tier1_verified, s.tier3_runtime, s.total) == (3, 0, 3), (
+        # Since #1695 the quotient's `INT_MIN / -1` row is discharged (#1598):
+        # `requires(@Int.1 != 0)` leaves `-1` open, so it is a Tier 3.
+        ov = [o.status for o in result.obligations if o.kind == "int_overflow"]
+        assert ov == ["tier3"], ov
+        assert (s.tier1_verified, s.tier3_runtime, s.total) == (3, 1, 4), (
             s.tier1_verified, s.tier3_runtime, s.total)
 
     def test_div_two_tier3_summary_counts(self) -> None:
@@ -346,7 +350,11 @@ private fn d2_387(@Int -> @Int)
         divs = [o for o in result.obligations if o.kind == "div_zero"]
         assert [o.status for o in divs] == ["tier3", "tier3"], [
             (o.kind, o.status) for o in result.obligations]
-        assert (s.tier1_verified, s.tier3_runtime, s.total) == (4, 2, 6), (
+        # Each quotient's `INT_MIN / -1` row is discharged since #1695
+        # (#1598): a dividend of `1` is no `INT_MIN`, so both prove.
+        ov = [o.status for o in result.obligations if o.kind == "int_overflow"]
+        assert ov == ["verified", "verified"], ov
+        assert (s.tier1_verified, s.tier3_runtime, s.total) == (6, 2, 8), (
             s.tier1_verified, s.tier3_runtime, s.total)
 
     def test_sub_verified_summary_counts(self) -> None:

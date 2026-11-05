@@ -392,7 +392,11 @@ def test_refined_component_narrowing_is_also_obligated(tmp_path: Path) -> None:
         }}
         """)
     result = _verify(tmp_path, source, name="ref.vera")
-    binds = [o for o in result["obligations"] if o["kind"] == "refine_bind"]
+    # The construction's narrowing: the `match` binder `@PosInt` is at its
+    # component's own type, a row code generation checks, recorded guarded
+    # Tier 3 since #1695 (base: a W004 at it).
+    binds = [o for o in result["obligations"]
+             if o["kind"] == "refine_bind" and o["description"] != "@PosInt"]
     assert len(binds) == 1, f"expected one refine_bind, got {binds}"
     assert binds[0]["status"] == "violated", (
         f"refined construction narrowing reported {binds[0]['status']!r}"
@@ -416,7 +420,11 @@ def test_refined_component_still_proves_under_its_precondition(
         }}
         """)
     result = _verify(tmp_path, source, name="ref.vera")
-    binds = [o for o in result["obligations"] if o["kind"] == "refine_bind"]
+    # The construction's narrowing: the `match` binder `@PosInt` is at its
+    # component's own type, a row code generation checks, recorded guarded
+    # Tier 3 since #1695 (base: a W004 at it).
+    binds = [o for o in result["obligations"]
+             if o["kind"] == "refine_bind" and o["description"] != "@PosInt"]
     assert binds and all(b["status"] == "verified" for b in binds), (
         f"a precondition-discharged refined narrowing was refused: {binds}"
     )

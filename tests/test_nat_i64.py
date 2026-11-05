@@ -106,8 +106,19 @@ def _kinds(verified: pipeline.Verified) -> list[tuple[str, str]]:
     """Every obligation's (kind, status), in the order the verifier recorded
     them, contracts left out (each program's `requires`/`ensures` are
     `true`)."""
+    from vera.obligations import table as obligation_table
+
+    entry: set[int] = set()
+    table = verified.result.table
+    if table is not None:
+        entry = {r.id for r in table.rows
+                 if r.evaluation == obligation_table.ENTRY}
+    # A refined formal's ENTRY row is recorded since #1695 (`verified`, the
+    # callee's assumption, a class the obligation table's instrument pins);
+    # the rule below is about the literal, so it is left out.
     return [(o.kind, o.status) for o in verified.obligations
-            if o.kind not in ("requires", "ensures")]
+            if o.kind not in ("requires", "ensures")
+            and not (o.rows and set(o.rows) <= entry)]
 
 
 def _run(source: str, fn: str, *args: int | str) -> pipeline.Ran:
@@ -500,8 +511,8 @@ def test_rule_an_arithmetic_operand_is_given_no_expected_type() -> None:
     and its narrowing into the `@Nat` binding is obligated, Tier 3 through
     the opaque `id`, and guarded: the run traps.  The literal subtraction
     `0 - 3` is an `@Int` one whose overflow obligation is proved."""
-    assert _kinds(pipeline.verify(_GENERIC_OPERAND)) == [
-        ("int_overflow", "verified"), ("int_overflow", "tier3"),
+    assert sorted(_kinds(pipeline.verify(_GENERIC_OPERAND))) == [
+        ("int_overflow", "tier3"), ("int_overflow", "verified"),
         ("nat_bind", "tier3")]
     assert _trap_kind(_GENERIC_OPERAND, "f", 0) == "nat_guard"
 
@@ -783,8 +794,8 @@ class _Verdict:
 #: parameter and that subtraction's overflow, both proved, and the measure,
 #: which the verifier does not prove of a constant.
 _MEASURE_BODY = _Verdict(
-    obligations=(("int_overflow", "verified"), ("nat_bind", "verified"),
-                 ("decreases", "tier3")),
+    obligations=(("decreases", "tier3"), ("int_overflow", "verified"),
+                 ("nat_bind", "verified")),
     checks=frozenset({"contract_violation", "nat_guard", "overflow"}),
 )
 
@@ -840,7 +851,8 @@ def _measure(source: str) -> _Verdict:
     ran = pipeline.run(compiled, fn="f", raw_args=["0"])
     return _Verdict(
         verify=tuple(_codes(verified)),
-        obligations=tuple(_kinds(verified)),
+        # Sorted: the verdict is the multiset, not the recording order.
+        obligations=tuple(sorted(_kinds(verified))),
         checks=frozenset(c.kind for c in compiled.checks()),
         run=f"!{ran.trap.kind}" if ran.trap is not None else ran.value,
     )
@@ -955,8 +967,6 @@ class _Instantiation:
     source: str
     #: What `f(0)` returns for an argument of value v >= 0.
     run: Callable[[int], object] = lambda v: v
-    #: The records the verifier keeps at the argument when it narrows.
-    records: int = 1
 
 
 _MAP_NAT_KEY = 'let @Map<Nat, String> = map_insert(map_new(), 2, "v");\n  '
@@ -984,13 +994,14 @@ _BUILTIN_AT_NAT: dict[tuple[str, int], _Instantiation] = {
         'let @Map<Nat, String> = map_insert(map_new(), ARG, "v");\n'
         "  let @Array<Nat> = map_keys(@Map<Nat, String>.0);\n"
         "  let @Int = @Array<Nat>.0[0];\n  @Int.0")),
-    # A map value is recorded twice, as the call's argument and as the value
-    # the map stores (#1440), and checked once.
+    # A map value is one row since #1695, recorded once and checked once
+    # (before it, recorded twice: as the call's argument and as the value the
+    # map stores, #1440).
     ("map_insert", 2): _Instantiation(_fn(
         "@Int -> @Int",
         'let @Map<String, Nat> = map_insert(map_new(), "k", ARG);\n'
         '  match map_get(@Map<String, Nat>.0, "k") {\n'
-        "    Some(@Int) -> @Int.0,\n    None -> 7\n  }"), records=2),
+        "    Some(@Int) -> @Int.0,\n    None -> 7\n  }")),
     ("map_get", 1): _Instantiation(_fn(
         "@Int -> @Int",
         _MAP_NAT_KEY + "match map_get(@Map<Nat, String>.0, ARG) {\n"
@@ -1117,29 +1128,18 @@ def test_an_argument_at_a_nat_instantiation_is_a_narrowing(
     else:
         status = ("tier3" if not arg.decided
                   else "violated" if arg.value < 0 else "verified")
-        assert statuses == [status] * inst.records
-        assert codes == (["E503"] * inst.records
-                         if status == "violated" else [])
+        assert statuses == [status]
+        assert codes == (["E503"] if status == "violated" else [])
         assert guards
     assert got == ("!nat_guard" if arg.value < 0 else inst.run(arg.value))
 
 
 def _agreement_cells() -> list[object]:
-    """Every (site, argument) cell; the map value's undecided ones are the
-    #1695 instance it carries: two `tier3` records, one check."""
-    cells: list[object] = []
-    for site in _INSTANTIATIONS:
-        for argument, arg in _INSTANTIATED_ARGUMENTS.items():
-            marks = ()
-            if (_INSTANTIATIONS[site].records > 1 and arg.narrows
-                    and not arg.decided):
-                marks = (pytest.mark.xfail(
-                    strict=True, reason="#1695: the verifier records a map "
-                    "value twice, as the call's argument and as the value "
-                    "the map stores, and code generation checks it once"),)
-            cells.append(pytest.param(site, argument, marks=marks,
-                                      id=f"{site}-{argument}"))
-    return cells
+    """Every (site, argument) cell; the map value's undecided ones were the
+    #1695 instance (two `tier3` records, one check), one row since."""
+    return [pytest.param(site, argument, id=f"{site}-{argument}")
+            for site in _INSTANTIATIONS
+            for argument in _INSTANTIATED_ARGUMENTS]
 
 
 @pytest.mark.parametrize(("site", "argument"), _agreement_cells())

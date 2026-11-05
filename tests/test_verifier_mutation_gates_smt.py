@@ -41,7 +41,17 @@ class TestVerifierGates387:
 
     @staticmethod
     def _refbinds(result: VerifyResult) -> list:
-        return [o for o in result.obligations if o.kind == "refine_bind"]
+        """The `refine_bind` records, a refined formal's ENTRY row left out:
+        recorded since #1695 (`verified`, the callee's assumption, a class
+        the obligation table's instrument pins), it is no narrowing."""
+        from vera.obligations import table as obligation_table
+
+        entry: set[int] = set()
+        if result.table is not None:
+            entry = {r.id for r in result.table.rows
+                     if r.evaluation == obligation_table.ENTRY}
+        return [o for o in result.obligations if o.kind == "refine_bind"
+                and not (o.rows and set(o.rows) <= entry)]
 
     # =================================================================
     # _is_nat_typed / _is_guarded_nat_subtraction

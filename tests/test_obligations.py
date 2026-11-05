@@ -557,9 +557,16 @@ class TestObligationKinds:
         ]
         assert len(tier3) == 1
         assert tier3[0].error_code == "E506"
-        # Counted as a runtime check, never a silent pass or a Tier-1.
+        # Counted as a runtime check, never a silent pass or a Tier-1.  The
+        # one `verified` record is `head`'s own formal, an ENTRY row (the
+        # callee's assumption, recorded since #1695).
+        from vera.obligations import table as obligation_table
+
+        entry = {r.id for r in result.table.rows
+                 if r.evaluation == obligation_table.ENTRY}
         assert not any(
             o.kind == "refine_bind" and o.status == "verified"
+            and not (o.rows and set(o.rows) <= entry)
             for o in result.obligations
         )
         assert result.summary.tier3_runtime >= 1
@@ -1751,50 +1758,53 @@ class TestLazyExports:
 # whose whole value is running the warm and cold paths over the SAME programs.
 # These shapes put the disclosed path back under it.
 _DISCLOSED_SHAPE = """\
-public fn mk(@Int -> @Option<Nat>)
+type NonNeg = { @Int | @Int.0 >= 0 };
+
+public fn mk(@Float64 -> @Option<NonNeg>)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  int_to_nat(handle[Exn<Int>] {
-    throw(@Nat) -> { nat_to_int(@Nat.0) }
-  } in {
-    throw(@Int.0)
-  })
+  let @Option<Int> = Some(float_to_int(@Float64.0));
+  @Option<Int>.0
 }
 
-public fn use_it(@Int -> @Int)
+public fn use_it(@Float64 -> @Int)
   requires(true)
   ensures(@Int.result >= 0)
   effects(pure)
 {
-  match mk(@Int.0) {
-    Some(@Nat) -> nat_to_int(@Nat.0),
+  match mk(@Float64.0) {
+    Some(@NonNeg) -> @NonNeg.0,
     None -> 0
   }
 }
 """
 
-# The same program with nothing disclosed: `mk` takes a `@Nat` directly, so no
-# narrowing is unguarded, and `use_it`'s postcondition is a plain Tier-1 proof.
-# Paired with the shape above it separates "warm agrees with cold" from "warm
-# agrees with cold because neither reached the path".
+# The same program with nothing disclosed: `mk` takes a `@NonNeg` directly, so
+# no narrowing is unguarded, and `use_it`'s postcondition is a plain Tier-1
+# proof.  Paired with the shape above it separates "warm agrees with cold"
+# from "warm agrees with cold because neither reached the path".  (The shape
+# returned an `Exn` clause's `@Nat` payload before #1695, a binder the table
+# guards: its disclosure was spurious, and the run traps at base and since.)
 _UNDISCLOSED_CONTROL = """\
-public fn mk(@Nat -> @Option<Nat>)
+type NonNeg = { @Int | @Int.0 >= 0 };
+
+public fn mk(@NonNeg -> @Option<NonNeg>)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  Some(@Nat.0)
+  Some(@NonNeg.0)
 }
 
-public fn use_it(@Nat -> @Int)
+public fn use_it(@NonNeg -> @Int)
   requires(true)
   ensures(@Int.result >= 0)
   effects(pure)
 {
-  match mk(@Nat.0) {
-    Some(@Nat) -> nat_to_int(@Nat.0),
+  match mk(@NonNeg.0) {
+    Some(@NonNeg) -> @NonNeg.0,
     None -> 0
   }
 }
@@ -1820,7 +1830,7 @@ class TestDisclosedDifferential:
         """
         cold = _cold_verify_source(_DISCLOSED_SHAPE, tmp_path)
         statuses = [(o.kind, o.status, o.error_code) for o in cold.obligations]
-        assert ("nat_bind", "tier3_unguarded", "E504") in statuses, statuses
+        assert ("refine_bind", "tier3_unguarded", "E506") in statuses, statuses
         assert ("ensures", "tier3", "E534") in statuses, statuses
 
         control = _cold_verify_source(_UNDISCLOSED_CONTROL, tmp_path)

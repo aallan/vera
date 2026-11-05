@@ -195,18 +195,22 @@ _POS_INT = "type PosInt = { @Int | @Int.0 > 0 };\n\n"
 
 #: A disclosed callee: `mk`'s narrowing to `@Nat` is neither proved nor
 #: guarded, so its caller's precondition holds only from a disclosed fact.
-_DISCLOSED_CALLEE = (
-    "public fn mk(@Int -> @Option<Nat>)\n" + _PURE
-    + "{\n  int_to_nat(handle[Exn<Int>] {\n"
-    "    throw(@Nat) -> { nat_to_int(@Nat.0) }\n  } in {\n"
-    "    throw(@Int.0)\n  })\n}\n\n"
-    "public fn needs_nonneg(@Int -> @Int)\n"
-    "  requires(@Int.0 >= 0)\n  ensures(true)\n  effects(pure)\n"
-    "{\n  @Int.0\n}\n\n"
-    "public fn use_it(@Int -> @Int)\n" + _PURE
-    + "{\n  match mk(@Int.0) {\n"
-    "    Some(@Nat) -> needs_nonneg(nat_to_int(@Nat.0)),\n"
-    "    None -> 0\n  }\n}\n")
+#: A `@Nat` binding in a `State` clause no operation call inlines: the
+#: clause runs nowhere, so no check can evaluate its row (E504).  (Before
+#: #1695 an `Exn` clause's `@Nat` binder stood here; its row is guarded.)
+_UNINLINED_CLAUSE = (
+    "public fn f(@Int -> @Int)\n  requires(true)\n  ensures(true)\n"
+    "  effects(<State<Int>>)\n{\n"
+    "  handle[State<Int>](@Int = 0) {\n    get(@Unit) -> { resume(1) },\n"
+    "    put(@Int) -> { let @Nat = @Int.0; resume(()) }\n"
+    "  } in {\n    1\n  }\n}\n")
+
+#: A call whose callee's precondition is outside the decidable fragment.
+_UNDECIDED_CALL_PRE = (
+    "private fn c(@Int -> @Int)\n"
+    "  requires(array_length(array_range(0, @Int.0)) > 3)\n"
+    "  ensures(true)\n  effects(pure)\n{\n  @Int.0\n}\n\n"
+    "public fn main(@Unit -> @Int)\n" + _PURE + "{\n  c(5)\n}\n")
 
 #: For each status, and for each (status, code) pair a test that reads the
 #: verifier's obligations asserts on, a program whose verification records
@@ -246,6 +250,14 @@ _STATUS_PROGRAMS: dict[tuple[str, str | None], str] = {
         "  effects(<State<Int>>)\n"
         "{\n  let @Int = get(());\n  put(@Int.0 + 1);\n  ()\n}\n"),
     ("tier3", "E525"): (
+        "public fn f(@Nat -> @Nat)\n  requires(true)\n  ensures(true)\n"
+        "  decreases(@Nat.0)\n  effects(pure)\n{\n"
+        "  if @Nat.0 == 0 then { 0 } else {\n"
+        "    f(array_length(array_range(0, nat_to_int(@Nat.0) - 1)))\n"
+        "  }\n}\n"),
+    # A measure component that is no slot of a concrete data type: no chain
+    # guard (#1530), disclosed since #1695 (an E541 before it).
+    ("tier3_unguarded", "E543"): (
         "private data Chain {\n  Tip,\n  Link(Tuple<Chain, Int>)\n}\n\n"
         "public fn length(@Chain -> @Nat)\n  requires(true)\n"
         "  ensures(true)\n  decreases(@Chain.0)\n  effects(pure)\n"
@@ -253,7 +265,7 @@ _STATUS_PROGRAMS: dict[tuple[str, str | None], str] = {
         "    Link(@Tuple<Chain, Int>) -> match @Tuple<Chain, Int>.0 {\n"
         "      Tuple(@Chain, @Int) -> 1 + length(@Chain.0)\n    }\n"
         "  }\n}\n"),
-    ("tier3", "E532"): _DISCLOSED_CALLEE,
+    ("tier3", "E532"): _UNDECIDED_CALL_PRE,
     ("tier3", "E534"): (
         _POS_INT + "private fn mk(@Int -> @Option<PosInt>)\n" + _PURE
         + "{\n  Some(@Int.0)\n}\n\n"
@@ -263,7 +275,7 @@ _STATUS_PROGRAMS: dict[tuple[str, str | None], str] = {
     ("tier3", "E535"): (
         "public fn f(@Int, @Array<Int> -> @Int)\n" + _PURE
         + "{\n  assert(array_length(@Array<Int>.0) > @Int.0);\n  @Int.0\n}\n"),
-    ("tier3_unguarded", "E504"): _DISCLOSED_CALLEE,
+    ("tier3_unguarded", "E504"): _UNINLINED_CLAUSE,
     ("tier3_unguarded", "E506"): (
         "type PosInt = { @Int | @Int.0 > 0 };\n\n"
         "type Tiny = { @PosInt | @PosInt.0 < 10 };\n\n"

@@ -1065,20 +1065,25 @@ def test_class_1694_a_clone_at_a_module_type_is_named_as_written(
             assert "_U24_" not in text and "mod$" not in text, text
 
 
-#: A producer whose `@Nat` payload is disclosed in shipping code: the
-#: handler-clause bind `throw(@Nat)` narrows an `@Int` payload that no guard
-#: covers (`nat_bind`, `tier3_unguarded`, E504).  `f`'s `where` helper `h`
-#: hands the value on, a forwarder (#1407), so its disclosure is recorded in
-#: `VerifyResult.result_disclosed` and not in the obligation stream.
+_NONNEG = "type NonNeg = { @Int | @Int.0 >= 0 };\n\n"
+
+#: A producer whose refined payload is disclosed in shipping code: `mk`
+#: returns an `Option<Int>` it bound as a value as an `Option<NonNeg>`, a
+#: narrowing inside a payload no check reaches (`refine_bind`,
+#: `tier3_unguarded`, E506).  `f`'s `where` helper `h` hands the value on, a
+#: forwarder (#1407), so its disclosure is recorded in
+#: `VerifyResult.result_disclosed` and not in the obligation stream.  (Before
+#: #1695 the producer was an `Exn` clause's `@Nat` binder, a row the table
+#: guards: its disclosure was spurious, and the run traps at base and since.)
 _FORWARDED_DISCLOSURE = (
-    "public fn mk(@Int -> @Option<Nat>)\n" + _CONTRACT
-    + "{\n  int_to_nat(handle[Exn<Int>] {\n"
-    "    throw(@Nat) -> { nat_to_int(@Nat.0) }\n"
-    "  } in {\n    throw(@Int.0)\n  })\n}\n\n"
-    "public fn f(@Int -> @Option<Nat>)\n" + _CONTRACT
-    + "{\n  h(@Int.0)\n}\nwhere {\n  fn h(@Int -> @Option<Nat>)\n"
+    _NONNEG + "public fn mk(@Float64 -> @Option<NonNeg>)\n" + _CONTRACT
+    + "{\n  let @Option<Int> = Some(float_to_int(@Float64.0));\n"
+    "  @Option<Int>.0\n}\n\n"
+    "public fn f(@Float64 -> @Option<NonNeg>)\n" + _CONTRACT
+    + "{\n  h(@Float64.0)\n}\nwhere {\n"
+    "  fn h(@Float64 -> @Option<NonNeg>)\n"
     "    requires(true)\n    ensures(true)\n    effects(pure)\n"
-    "  {\n    mk(@Int.0)\n  }\n}\n")
+    "  {\n    mk(@Float64.0)\n  }\n}\n")
 
 
 @pytest.mark.parametrize("shape", ["one_file", "across_an_import"])
@@ -1098,9 +1103,9 @@ def test_repro_1694_a_forwarding_helpers_disclosure_is_keyed_as_written(
     else:
         entry = _tree(tmp_path, {
             "lib.vera": "module lib;\n\n" + _FORWARDED_DISCLOSURE,
-            "main.vera": "import lib;\n\n" + _fn(
-                "use_it(@Int -> @Int)",
-                "match lib::f(@Int.0) {\n    Some(@Nat) -> nat_to_int(@Nat.0),"
+            "main.vera": "import lib;\n\n" + _NONNEG + _fn(
+                "use_it(@Float64 -> @Int)",
+                "match lib::f(@Float64.0) {\n    Some(@NonNeg) -> @NonNeg.0,"
                 "\n    None -> 0\n  }",
                 visibility="public"),
         })

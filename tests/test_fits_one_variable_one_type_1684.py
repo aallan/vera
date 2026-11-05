@@ -1378,8 +1378,15 @@ def test_a_false_predicate_still_traps_at_the_binding(source: str) -> None:
     assert _instances(checked, "head_of") == {("String",)}
     verified = pipeline.verify(source)
     assert verified.ok, [e.format() for e in verified.errors]
+    # `head_of`'s own refined formal is an ENTRY row, recorded `verified`
+    # since #1695 (the callee's assumption); the call's row is the one here.
+    from vera.obligations import table as obligation_table
+
+    entry = {r.id for r in verified.result.table.rows
+             if r.evaluation == obligation_table.ENTRY}
     assert [o.status for o in verified.obligations
-            if o.kind == "refine_bind"] == ["tier3"]
+            if o.kind == "refine_bind"
+            and not (o.rows and set(o.rows) <= entry)] == ["tier3"]
     ran = pipeline.run(source)
     assert ran.trap is not None, ran.value
     assert "Refinement violation" in str(ran.trap), str(ran.trap)
