@@ -105,9 +105,8 @@ _MAIN = _fn("main", "", "Unit", "<IO>", 'IO.print("ok\\n")')
 
 #: A statement code generation refuses (E602) under the `skip_map_inserts`
 #: injection, so the function holding it is dropped before the code after it
-#: is emitted: no shape the check accepts is dropped at E602 (the one
-#: check-green drop left, #1783's, is a caller's E620).  It uses no cell and
-#: no tag.
+#: is emitted: no shape the check accepts is dropped at E602.  It uses no
+#: cell and no tag.
 _DROPPER = 'let @Map<String, Int> = map_insert(map_new(), "a", 1);'
 
 

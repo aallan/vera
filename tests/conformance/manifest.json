@@ -3356,6 +3356,24 @@
     ]
   },
   {
+    "id": "ch02_generic_function_type_argument",
+    "file": "ch02_generic_function_type_argument.vera",
+    "chapter": 2,
+    "title": "A generic instantiated at a function type",
+    "level": "run",
+    "spec_ref": "Section 2.5",
+    "expected_stdout": "42\n",
+    "expected_exit": 0,
+    "features": [
+      "generics",
+      "forall",
+      "monomorphization",
+      "function_types",
+      "closures",
+      "adt"
+    ]
+  },
+  {
     "id": "ch02_nonregular_data_rejected",
     "file": "ch02_nonregular_data_rejected.vera",
     "chapter": 2,

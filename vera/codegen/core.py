@@ -53,7 +53,7 @@ from vera.trap_registry import (
     strip_check_markers,
 )
 from vera.wasm import StringPool
-from vera.types import BOOL, AdtType
+from vera.types import BOOL, AdtType, FunctionType
 from vera.wasm.helpers import CellNames
 from vera.wasm.inference import _N
 from vera.codegen.modules import CrossModuleMixin
@@ -2829,7 +2829,15 @@ class CodeGenerator(
         the checker puts them: ``type Bool = Int;`` leaves ``@Bool`` a Bool on
         both sides.  ``Never`` is the one primitive with no representation —
         no value of it exists — so it is ``"unsupported"`` rather than a width.
+
+        A type expression the check typed as a function type is the closure
+        pointer, i32, whatever it is written as (#1783).  A clone spells its
+        type arguments by name, so a generic's ``@T`` at a function type is
+        written ``fn(Int -> Int)`` in the clone, a name no branch below
+        answers; the typed program's type is the one that says what it is.
         """
+        if isinstance(self._typed.semantic_type(te), FunctionType):
+            return "i32"
         if isinstance(te, ast.NamedType):
             name = te.name
             sort = naming.classify_named(te, self._alias_env)
