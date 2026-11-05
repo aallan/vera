@@ -192,7 +192,7 @@ class DataMixin:
         # `REFINED_BIND_GUARDED_SITES` drops these checks while the table
         # still lists the rows guarded, which the guard matrices and the
         # identity cells catch.  Its removal, the row the one decision, is a
-        # checklist line of the follow-up that deletes the verifier's walk.
+        # line of #1836, which deletes the verifier's walk.
         if site not in narrowing.REFINED_BIND_GUARDED_SITES:
             return value
         # Precedence by GUARDABILITY, not by source.  The declared field
