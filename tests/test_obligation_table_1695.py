@@ -2249,14 +2249,16 @@ def test_repro_a_row_two_discharges_reach_reports_one_error() -> None:
 
 @pytest.mark.parametrize("form", list(_HANDLE_FORMS))
 def test_a_refuted_value_inside_a_handle_keeps_its_record(form: str) -> None:
-    """Refutable: the E505 has its `violated` record, at the row, in both
-    forms.  The row at an `Exn` clause's value leaf is discharged where the
-    traversal reaches it, under the clause's context, as the body's is
-    (#1836; until then the whole value's discharge disclosed it, E506)."""
+    """Refutable: the E505 has its `violated` record, at the row.  An `Exn`
+    clause's value is one the requirement reaches by the table's hand-down
+    alone, with no refined target at the position, so there the row is
+    left to its check, which it has none of: base's disclosure, at the row
+    (#1836)."""
     v = _verified(_handle_program(form, "0 - 5"))
     viol = [(o.status, o.error_code, o.line) for o in v.result.obligations
             if o.kind == "refine_bind"]
-    assert [x[:2] for x in viol] == [("violated", "E505")], viol
+    want = ("violated", "E505") if form == "body" else ("tier3_unguarded", "E506")
+    assert [x[:2] for x in viol] == [want], viol
     assert _envelope_inconsistencies(v) == []
 
 

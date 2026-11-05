@@ -319,10 +319,14 @@ public fn f(@Unit -> @Int)
 """, "narrowing")
         assert any(e.error_code == "E503" for e in errs)
 
-    def test_narrowing_call_arg_inside_assume_condition_obligated(self) -> None:
-        """The assume twin: the condition is taken on trust, but a
-        narrowing op nested inside it still executes and is obligated."""
-        errs = _verify_err("""
+    def test_a_narrowing_inside_an_assume_condition_is_no_obligation(self) -> None:
+        """The assume twin, the other way round: an `assume` is a no-op at
+        run time (`_translate_assume`), so a narrowing nested in its
+        condition never executes, and the table lists no row there (PR
+        #1834).  No E503 is reported, the `assume` is disclosed (W003), and
+        the run returns without a trap (#1836; base reported the E503 of a
+        record it then dropped for having no row)."""
+        src = """
 private fn takes_nat(@Nat -> @Int)
   requires(true)
   ensures(true)
@@ -337,8 +341,13 @@ public fn f(@Unit -> @Int)
   assume(takes_nat(0 - 5) > 0);
   0
 }
-""", "narrowing")
-        assert any(e.error_code == "E503" for e in errs)
+"""
+        result = _verify(src)
+        assert not [d for d in result.diagnostics if d.severity == "error"]
+        assert "W003" in {d.error_code for d in result.diagnostics}
+        assert not [o for o in result.obligations if o.kind == "nat_bind"]
+        ran = vera_pipeline.run(src, "f", [])
+        assert ran.trap is None and ran.value == 0, ran
 
 
 # =====================================================================

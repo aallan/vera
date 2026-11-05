@@ -3737,7 +3737,7 @@ _VIOLATED_SITES = {
     "_check_nat_binding_obligation": "gate",
     "_check_nat_binding_obligation_term": "gate",
     "_check_refined_binding_obligation": "gate",
-    "_check_nested_refinement_obligation": "gate",
+    "_nested_refinement_discharge": "gate",
     "_reject_or_excuse_concrete_violation": "no placeholder: a literal",
     "_check_generic_refined_return": "no placeholder: a generic's return",
     "_check_refined_binding_obligation_term": "gate",

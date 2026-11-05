@@ -1181,10 +1181,10 @@ def test_1413_every_reader_of_a_source_fact_consults_the_one_gate() -> None:
     assert readers == [
         "verifier:_call_result_facts",
         "verifier:_check_generic_refined_return",
-        "verifier:_check_nested_refinement_obligation",
         "verifier:_check_refined_binding_obligation_term",
         "verifier:_declared_type_facts",
         "verifier:_nat_block",
+        "verifier:_nested_refinement_discharge",
         "verifier:_subpattern_source_facts",
     ], (
         f"the set of functions reading a declared-type source fact changed: "

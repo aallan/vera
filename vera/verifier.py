@@ -304,6 +304,11 @@ class _FnFrame:
     decl: ast.FnDecl
     rows: list[obligation_table.Row] | None
     made: list[ProofObligation] = field(default_factory=list)
+    #: The refined value rows the binding walk reached and no step
+    #: discharged, each with its node: left to their check once every
+    #: position of the function is done (`_leave_hand_down_rows`).
+    hand_down: list[tuple[ast.Expr, list[obligation_table.Row]]] = field(
+        default_factory=list)
 
 
 class _Path(NamedTuple):
@@ -3750,28 +3755,50 @@ class ContractVerifier:
                     d, location=loc, source_line=self._get_source_line(head.line))
                 return
 
-    def _rows_taking(
-        self, node: ast.Node, kind: ObligationKind,
-    ) -> list[obligation_table.Row]:
-        """The rows of *kind* of the function under verification that a
-        discharge of *node* answers, in the evaluation in progress
+    def _rows_taking(self, node: ast.Node, kind: ObligationKind) -> bool:
+        """Whether a discharge of *node* answers a row of *kind* of the
+        function under verification, in the evaluation in progress
         (:meth:`_rows_discharged`): the traversal discharges a node only
-        where the table lists such a row (#1836).  Outside a function (a
-        refinement predicate verified at its declaration, #1480) the rows are
-        its guards' copies, wherever they stand."""
+        where the table lists such a row (#1836).  Outside a function a
+        refinement predicate is verified at its declaration (#1480), once
+        for every guard's copy and for a type no guard reads, which the
+        table lists no copy of: the declaration is its own obligation
+        (:meth:`_declaration_takes`)."""
         frame = self._fn_frames[-1] if self._fn_frames else None
         if frame is None:
-            return self._table.rows_of(node, kind, path=None, evaluation=None)
+            return self._declaration_takes(node, kind)
         if frame.rows is None:
-            return []
+            return False
         at = self._evaluated_at
         saved = self._leaf_rows_branch
         try:
-            return self._rows_discharged(
+            return bool(self._rows_discharged(
                 kind, node, None, at.call if at is not None else None,
-                frame.rows, frame.decl) or []
+                frame.rows, frame.decl))
         finally:
             self._leaf_rows_branch = saved
+
+    def _declaration_takes(self, node: ast.Node, kind: ObligationKind) -> bool:
+        """Whether a refinement predicate verified at its declaration
+        discharges *node*'s *kind*: every operation that can trap, by the
+        operation's own rule, since a declaration no guard reads has no copy
+        the table lists (a non-zero literal divisor and a `@Nat` subtraction
+        the sign check covers hold; an `Int` sum overflows where its width
+        does).  A quotient's ``INT_MIN / -1`` is the table's rule alone
+        (#1598): discharged where it lists the row at a guard's copy."""
+        if kind == "div_zero" and isinstance(node, ast.BinaryExpr):
+            return not (isinstance(node.right, ast.IntLit) and node.right.value != 0)
+        if kind == "nat_sub" and isinstance(node, ast.Expr):
+            return self._is_guarded_nat_subtraction(node)
+        if (kind == "int_overflow" and isinstance(node, ast.BinaryExpr)
+                and node.op in (ast.BinOp.ADD, ast.BinOp.SUB, ast.BinOp.MUL)):
+            ovf_type = self._overflow_arith_fail_closed(node)
+            return ovf_type is not None and not (
+                node.op == ast.BinOp.SUB and ovf_type == "Nat")
+        if kind in ("float_to_int_domain", "index_bounds", "assert") or (
+                kind == "int_overflow" and isinstance(node, ast.FnCall)):
+            return True
+        return bool(self._table.rows_of(node, kind, path=None, evaluation=None))
 
     def _narrowing_binder(
         self, decl: ast.FnDecl, binder: ast.Node, kind: ObligationKind,
@@ -3810,8 +3837,13 @@ class ContractVerifier:
 
     def _walked(self, row: obligation_table.Row) -> bool:
         """Whether *row* is a position of a composite walk (#1542's shape):
-        the first row of an opaque value's walk, or one it answers."""
-        if row.tree is not None:
+        the first row of an opaque value's walk, or one it answers, or a
+        construction's component the requirement reached by the hand-down
+        alone (``Row.handed``).  The composite-coercion check answers such a
+        row, and the solver holds no independent term for it: a literal's
+        translation states its elements at the type it is recorded at, so a
+        query over the component would assume what it proves."""
+        if row.tree is not None or row.handed:
             return True
         return (row.answered_by is not None and row.answered_by >= 0
                 and self._table.by_id(row.answered_by).tree is not None)
@@ -3833,6 +3865,47 @@ class ContractVerifier:
                 rows=tuple(r.id for r in rows),
                 expr_text=rows[0].content_key[2] if not isinstance(
                     node, ast.Expr) else None)
+
+    def _discharge_boundary_components(
+        self, decl: ast.FnDecl, value: ast.Expr | None,
+        te: ast.TypeExpr | None,
+    ) -> None:
+        """Record ``tier3`` the ``Nat`` components of a value at a boundary
+        (#1818's composite coercion, #1836): the return type's component
+        rows at *te*, and the rows at *value*'s leaves that a boundary's
+        component row answers.  The boundary's check reads the component,
+        and no discharge states it: a ``Nat`` component is no refinement
+        for the nested discharge to test, so the row is left to its check."""
+        frame = self._fn_frames[-1] if self._fn_frames else None
+        if frame is None or frame.rows is None:
+            return
+        key = obligation_table.ObligationTable._key
+        done = {i for rec in frame.made for i in rec.rows}
+        at_te = ({key(n) for n in fold.walk(te)} if te is not None else set())
+        leaves = ({key(n) for n in narrowing.value_leaves(value)}
+                  if value is not None else set())
+        groups: dict[object, list[obligation_table.Row]] = {}
+        for r in frame.rows:
+            if r.id in done or not r.path or r.target != NAT:
+                continue
+            k = key(r.node)
+            if r.evaluation == obligation_table.RETURN and k in at_te:
+                groups.setdefault(k, []).append(r)
+            elif (r.kind == "nat_bind" and k in leaves
+                    and r.answered_by is not None and (
+                        r.answered_by == obligation_table.ANSWERED_AT_CLOSURE_ENTRY
+                        or (r.answered_by >= 0
+                            and self._table.by_id(r.answered_by).evaluation in (
+                                obligation_table.ENTRY, obligation_table.RETURN)))):
+                groups.setdefault(k, []).append(r)
+        for rows in groups.values():
+            node = rows[0].node
+            assert isinstance(node, (ast.Expr, ast.TypeExpr))  # noqa: S101 — a row's node
+            self._record_obligation(
+                decl.name, rows[0].kind, node, "tier3",
+                rows=tuple(r.id for r in rows),
+                expr_text=(rows[0].content_key[2]
+                           if isinstance(node, ast.TypeExpr) else None))
 
     def _discharge_entry_rows(self, decl: ast.FnDecl) -> None:
         """Record each ENTRY row of *decl* ``verified``: a refined
@@ -3884,7 +3957,8 @@ class ContractVerifier:
             rows = [r for r in frame.rows if r.kind == kind and not r.path
                     and obligation_table.ObligationTable._key(r.node) == key]
         return [r for r in rows if r.evaluation not in (
-            obligation_table.RETURN, obligation_table.ENTRY)]
+            obligation_table.RETURN, obligation_table.ENTRY)
+            and not (kind == "nat_bind" and self._walked(r))]
 
     def _refined_site(
         self, value: ast.Expr, target: Type | None,
@@ -3897,7 +3971,14 @@ class ContractVerifier:
             return None
         if target is not None and self._is_refined_type(target):
             return target
-        return rows[0].target
+        # The requirement reached the value by the table's hand-down alone (a
+        # container's insert, a join below a refined position): the position
+        # holds no refined target of its own.  A position that does (the
+        # return's container descent) discharges it; else the row is left
+        # to its check once the walk is done (`_discharge_unbound_values`).
+        if not self._fn_frames:
+            return rows[0].target
+        return None
 
     def _binder_rows(
         self, binder: ast.Node, kind: ObligationKind, *, any_path: bool = False,
@@ -4128,6 +4209,7 @@ class ContractVerifier:
             self._fn_frames.append(frame)
             try:
                 self._verify_fn_contracts(decl, parent_where_group, enclosing)
+                self._leave_hand_down_rows(frame)
             finally:
                 self._fn_frames.pop()
             self._settle_rows(decl, start, frame.made, premise=self._premise_code)
@@ -8154,10 +8236,8 @@ class ContractVerifier:
                     continue
                 smt._path_conditions[:] = conditions
                 refined = [r for r in left if r.kind == "refine_bind"]
-                if refined and refined[0].target is not None:
-                    self._check_refined_binding_obligation(
-                        decl, node, refined[0].target, smt, path.env,
-                        list(path.facts), site="value")
+                if refined:
+                    frame.hand_down.append((node, refined))
                 if any(r.kind == "nat_bind" for r in left):
                     self._check_nat_binding_obligation(
                         decl, node, smt, path.env, list(path.facts),
@@ -8165,6 +8245,22 @@ class ContractVerifier:
                 done |= {i for rec in frame.made for i in rec.rows}
         finally:
             smt._path_conditions[:] = saved
+
+    def _leave_hand_down_rows(self, frame: _FnFrame) -> None:
+        """Record ``tier3`` each refined value row the binding walk reached
+        that no position discharged once the function is done: no position
+        holds the value to a refinement of its own (the return's container
+        descent does, for a value it reaches), so the requirement is the
+        table's hand-down alone (a container's insert, a join), and the row
+        is left to the check that reads it (#1836)."""
+        done = {i for rec in frame.made for i in rec.rows}
+        for node, rows in frame.hand_down:
+            left = [r for r in rows if r.id not in done]
+            if left:
+                self._record_obligation(
+                    frame.decl.name, "refine_bind", node, "tier3",
+                    rows=tuple(r.id for r in left))
+                done |= {r.id for r in left}
 
     def _nat_step(
         self, decl: ast.FnDecl, smt: SmtContext,
@@ -8499,6 +8595,7 @@ class ContractVerifier:
         # codegen guards back them), and a NESTED AnonFn re-enters this
         # arm so its own return narrowing obligations record —
         # the #985 residual of the shallow single-level treatment above.
+        self._discharge_boundary_components(decl, expr.body, expr.return_type)
         yield from _path_closure(expr, path, smt)
 
     def _nat_constructor_call(
@@ -10919,6 +11016,29 @@ class ContractVerifier:
         return f"{stem}${self._quantifier_seq}"
 
     def _check_nested_refinement_obligation(
+        self,
+        decl: ast.FnDecl,
+        value_node: ast.Expr,
+        formal_ty: Type | None,
+        smt: SmtContext,
+        slot_env: SlotEnv,
+        assumptions: list[object],
+        *,
+        site: str,
+        callee: str | None = None,
+    ) -> None:
+        """The nested refinements of a value at its target
+        (:meth:`_nested_refinement_discharge`), then the ``Nat`` components
+        no refinement states (:meth:`_discharge_boundary_components`)."""
+        self._nested_refinement_discharge(
+            decl, value_node, formal_ty, smt, slot_env, assumptions,
+            site=site, callee=callee)
+        self._discharge_boundary_components(
+            decl, value_node,
+            decl.return_type if (site == "return type"
+                                 and value_node is decl.body) else None)
+
+    def _nested_refinement_discharge(
         self,
         decl: ast.FnDecl,
         value_node: ast.Expr,
