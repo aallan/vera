@@ -1115,7 +1115,7 @@ class ExpressionsMixin:
         # Read before the bindings are resolved, as a `match` reads it
         # before its arms: an error in a binding's type says nothing about
         # the value (#1671).
-        after_error = self._unknown_is_reported()
+        after_error = self._unknown_is_reported(stmt.value)
 
         resolved_types: list[Type] = []
         for te in stmt.type_bindings:

@@ -499,3 +499,88 @@ def test_an_operator_over_the_placeholder_draws_nothing_further(op: str) -> None
     source = (f"private fn f(@Qzt -> @Int)\n{_SIG}{{\n  let @Int = 0;\n"
               f"  {_OPERATORS[op]};\n  0\n}}\n")
     assert _codes(source) == ["E136"]
+
+
+_UNGUARDED_NAT_BINDER = """\
+private fn need_nn(@Int -> @Int)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+
+private fn mk(@Int -> @Option<Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Some(@Int.0)
+}
+
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[State<Int>](@Int = @Int.0) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> {
+      let @Int = match mk(@Int.0) {
+        Some(@Nat) -> need_nn(@Nat.0),
+        None -> 0
+      };
+      resume(())
+    }
+  } in {
+    get(())
+  }
+}
+"""
+
+
+def test_an_unguarded_at_nat_binder_holds_no_post_fact() -> None:
+    """The post-fact is the guard's: a `@Nat` binder in a `put` clause no
+    operation inlines has a `nat_bind` row no check evaluates
+    (`tier3_unguarded`/E504), so its sign is no fact and the call reading it
+    stays undecided (`tier3`/E532), never `verified` from a guard that does
+    not run (`ContractVerifier._nat_bind_guarded`)."""
+    verified = pipeline.verify(_UNGUARDED_NAT_BINDER)
+    rows = [(o.kind, o.status, o.error_code) for o in verified.obligations
+            if o.kind in ("nat_bind", "call_pre")]
+    assert rows == [("nat_bind", "tier3_unguarded", "E504"),
+                    ("call_pre", "tier3", "E532")], rows
+
+
+_APPLY_FN_SITES = {
+    "match": "  match apply_fn(@T.0, 1) {\n    1 -> 1\n  }\n",
+    "destructure": ("  let Tuple<@Int, @Int> = apply_fn(@T.0, 1);\n"
+                    "  @Int.0\n"),
+}
+
+
+@pytest.mark.parametrize("site", sorted(_APPLY_FN_SITES))
+@pytest.mark.parametrize("hole_first", (True, False))
+def test_a_hole_elsewhere_stands_behind_no_other_unknown(
+        hole_first: bool, site: str) -> None:
+    """A hole's W001 stands behind the hole alone: a hole in another
+    function, before or after it, leaves `apply_fn(@T.0, 1)`'s `Unknown`
+    judged, so its E313 still refuses the program (the review of PR #1842:
+    a hole declared first suppressed it)."""
+    hole = f"public fn h(@Int -> @Int)\n{_SIG}{{\n  ?\n}}\n"
+    g = (f"private forall<T> fn g(@T -> @Int)\n{_SIG}{{\n"
+         + _APPLY_FN_SITES[site] + "}\n")
+    source = hole + "\n" + g if hole_first else g + "\n" + hole
+    codes = _all_codes(source)
+    assert "W001" in codes and "E313" in codes, codes
+
+
+@pytest.mark.parametrize("site", ("return", "let"))
+def test_a_value_of_an_undeclared_type_is_judged_against_nothing(
+        site: str) -> None:
+    """The undeclared type on the value side: `@Qzt.0` returned as `@Int`
+    or bound by `let @Int` is compatible as an unknown is, so its E136 is
+    the one error (`is_subtype`'s rule reads both sides)."""
+    body = "@Qzt.0" if site == "return" else "let @Int = @Qzt.0;\n  @Int.0"
+    source = f"private fn f(@Qzt -> @Int)\n{_SIG}{{\n  {body}\n}}\n"
+    assert _codes(source) == ["E136"]

@@ -9697,8 +9697,10 @@ class ContractVerifier:
         there because a fresh value can outlive the arm inside the `match`'s
         own translated value, where a query about the result reads it on
         paths the arm was not taken.  Only where the guard exists (the
-        table's, `_table_guards_refinement`); a `@Nat` binder is not a
-        refinement and is left as it is.
+        table's, `_table_guards_refinement`).  A bare `@Nat` binder that
+        narrows an `Int` takes the same reading with `>= 0` for its
+        predicate, where its `nat_bind` row is guarded
+        (`_nat_bind_guarded`, #1563).
         """
         out: dict[int, object] = {}
         if scrutinee_z3 is None:
