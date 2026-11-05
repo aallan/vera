@@ -211,6 +211,10 @@ _UNKNOWN_SITES = {
     "comparison": (
         "private fn eqs(@Optio<Int>, @Optio<Int> -> @Bool)\n  requires(true)\n"
         "  ensures(true)\n  effects(pure)\n{\n  @Optio<Int>.0 == @Optio<Int>.1\n}\n"),
+    "nested_comparison": (
+        "private fn eqs(@Option<Optio<Int>>, @Option<Optio<Int>> -> @Bool)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n{\n"
+        "  @Option<Optio<Int>>.0 == @Option<Optio<Int>>.1\n}\n"),
     "nested_argument": (
         "private fn take(@Array<Optio<Int>> -> @Int)\n  requires(true)\n"
         "  ensures(true)\n  effects(pure)\n{\n  0\n}\n\n"
