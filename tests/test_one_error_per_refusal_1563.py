@@ -584,3 +584,87 @@ def test_a_value_of_an_undeclared_type_is_judged_against_nothing(
     body = "@Qzt.0" if site == "return" else "let @Int = @Qzt.0;\n  @Int.0"
     source = f"private fn f(@Qzt -> @Int)\n{_SIG}{{\n  {body}\n}}\n"
     assert _codes(source) == ["E136"]
+
+
+_LITERAL_DESTRUCTURE_MEASURE = """\
+public fn f(@Nat -> @Int)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then {
+    0
+  } else {
+    let Tuple<@Nat, @Int> = Tuple(@Nat.0 - 1, 0);
+    f(@Nat.0)
+  }
+}
+"""
+
+
+def test_a_literal_destructure_component_reaches_the_measure() -> None:
+    """The call walk projects a literal destructure's component
+    (`_shadow_destructured_slots` through `_literal_component`), so the
+    recursive call over it decreases at Tier 1; a fresh shadow in its
+    place left `decreases` at Tier 3 (E525)."""
+    verified = pipeline.verify(_LITERAL_DESTRUCTURE_MEASURE)
+    assert [(o.kind, o.status) for o in verified.obligations
+            if o.kind == "decreases"] == [("decreases", "verified")]
+
+
+_INLINED_CLAUSE_NAT_BINDER = """\
+private fn need_nn(@Int -> @Int)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+
+private fn mk(@Int -> @Option<Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Some(@Int.0)
+}
+
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[State<Int>](@Int = @Int.0) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> {
+      let @Int = match mk(@Int.0) {
+        Some(@Nat) -> need_nn(@Nat.0),
+        None -> 0
+      };
+      resume(())
+    }
+  } in {
+    put(5);
+    get(())
+  }
+}
+"""
+
+
+def test_a_guarded_at_nat_binder_in_an_inlined_clause_holds_its_sign() -> None:
+    """A `put` clause an operation inlines lists its rows under that site's
+    evaluation, not the body's: the `@Nat` binder's guarded `nat_bind` row
+    is read there too (`_nat_bind_guarded` asks every evaluation), so the
+    call reading it is discharged."""
+    verified = pipeline.verify(_INLINED_CLAUSE_NAT_BINDER)
+    assert [(o.kind, o.status) for o in verified.obligations
+            if o.kind == "call_pre"] == [("call_pre", "verified")]
+
+
+def test_an_at_nat_binders_post_fact_is_its_sign_and_no_more() -> None:
+    """The `@Nat` post-fact is `>= 0` exactly: a precondition of `> 0` on
+    the binder is still refused, so a stronger fact (`> 0`, `>= 1`) would
+    show as a discharged call."""
+    codes = _verified_codes(_binder_program("arm", "Nat", req="> 0"))
+    assert "E501" in codes, codes

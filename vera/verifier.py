@@ -9705,12 +9705,12 @@ class ContractVerifier:
         out: dict[int, object] = {}
         if scrutinee_z3 is None:
             return out
-        guard = z3.And(*taken) if taken else z3.BoolVal(True)
+        guard = z3.And(*taken)  # an empty conjunction is true
 
         def bind_fresh(term: z3.ExprRef, target: Type,
                        binder: ast.BindingPattern | None = None,
                        value: ast.Expr | None = None) -> None:
-            fresh = z3.FreshConst(term.sort(), "guarded")
+            fresh = z3.FreshConst(term.sort(), "guarded")  # pragma: no mutate — equivalent: the prefix only names the constant; every reader keys it by its id, and no diagnostic or model walk matches a name but `_opaque_`
             pred: object | None
             if target == NAT:
                 # #1563: a `@Nat` binder narrowing an `Int` is guarded by the
@@ -9719,7 +9719,7 @@ class ContractVerifier:
                 # binder's predicate does.
                 if binder is None or not self._nat_bind_guarded(binder, value):
                     return
-                pred = cast("z3.ArithRef", fresh) >= 0
+                pred = fresh >= 0
             else:
                 if not self._table_guards_refinement(target):
                     return
@@ -9780,7 +9780,9 @@ class ContractVerifier:
             row.guard.check
             for node in nodes
             for row in self._table.rows_of(
-                node, "nat_bind", path=None, evaluation=None))
+                node, "nat_bind",
+                path=None,  # pragma: no mutate — equivalent: a binder's `nat_bind` row is its node's head row, at the empty path the default asks for (`pattern_rows`, `destructure_rows`, `narrowing_rows`' head), and no row at a binder, its type expression or a scalar `let` value has a path
+                evaluation=None))
 
     def _guarded_subpattern_values(
         self,
