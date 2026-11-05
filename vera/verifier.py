@@ -1072,6 +1072,16 @@ _DISCLOSURE_FIXES: dict[str, str] = {
              "declare those effects on the function that applies it."),
 }
 
+#: The fix of a disclosure whose reason has a repair of its own, by reason.
+_REASON_FIXES: dict[str, str] = {
+    obligation_table.REASON_HANDLE_VALUE: (
+        "Produce the payload inside the handle and build the value outside "
+        "it: bind the handle's result with a `let` at the payload's type "
+        "and construct from that slot (`let @Int = handle[...] {...} in "
+        "{...}; Some(@Int.0)`), where the construction's store is checked "
+        "at run time."),
+}
+
 #: The warnings a disclosure replaces (each claims a runtime check), and the
 #: disclosures a guarded row's record replaces.
 _RUNTIME_CLAIM_CODES = frozenset({
@@ -3724,6 +3734,25 @@ class ContractVerifier:
                            for n in fold.walk(decl.return_type)}
             ret = [r for r in mine if r.evaluation == obligation_table.RETURN
                    and obligation_table.ObligationTable._key(r.node) in leaves]
+            if isinstance(node, ast.Expr):
+                # A component of a value narrowed at a boundary (the return,
+                # a call's argument) is a row at each of the value's leaves,
+                # by its path (a payload the target refines and the value's
+                # type does not): the value's record is those rows'.
+                tails = {obligation_table.ObligationTable._key(n)
+                         for n in narrowing.value_leaves(node)}
+                ret += [r for r in mine if r.path and r not in ret
+                        and r.evaluation != obligation_table.RETURN
+                        and obligation_table.ObligationTable._key(r.node) in tails]
+                # A value produced inside a `handle` body is held to the
+                # requirement by the hand-down's rows, at the leaves and the
+                # constructions below them: the value's record is theirs.
+                inner = {obligation_table.ObligationTable._key(n)
+                         for leaf in narrowing.value_leaves(node)
+                         for n in fold.walk(leaf)}
+                ret += [r for r in mine if r not in ret
+                        and r.guard.reason == obligation_table.REASON_HANDLE_VALUE
+                        and obligation_table.ObligationTable._key(r.node) in inner]
             if ret:
                 return ret
         return None
@@ -3796,7 +3825,7 @@ class ContractVerifier:
                 f"No runtime check guards this site because {row.guard.reason}, "
                 "so a value that violates it is not caught at run time; the "
                 "verifier discloses it rather than claim a runtime check."),
-            fix=_DISCLOSURE_FIXES.get(code, (
+            fix=_REASON_FIXES.get(row.guard.reason) or _DISCLOSURE_FIXES.get(code, (
                 "Restate the obligation so the solver can prove it, or move "
                 "the fact to a site a runtime check guards.")),
             spec_ref='Chapter 6, Section 6.8.1 "Obligation Vocabulary"',

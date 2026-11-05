@@ -1034,11 +1034,46 @@ def _verifier_identity(files: dict[str, str], entry: str, tmp_path: Path) -> Non
     from collections import Counter
 
     from vera import ast as vera_ast
+    from vera import verifier as vmod
 
     entry_path = pipeline.write_tree(tmp_path, files, entry=entry)
-    v = pipeline.verify(entry_path, file=entry, budget_s=_BUDGET_S, reconcile=True)
+    # Every record `_settle_rows` keys was anchored where it was recorded
+    # (span keying is gone, so an unanchored record could only be dropped):
+    # the population is zero, and a record made outside `_record_obligation`
+    # would show here.
+    unanchored: list[tuple[str, str, int, int]] = []
+    fallback: list[tuple[str, str, str]] = []
+    real_anchored = vmod.ContractVerifier._anchored_rows
+    real_row_record = vmod.ContractVerifier._row_record
+
+    def anchored(self, rec, rows, decl):  # type: ignore[no-untyped-def]
+        entry_ = self._record_anchors.get(id(rec))
+        if entry_ is None or entry_[0]() is not rec:
+            unanchored.append((rec.fn_name, rec.kind, rec.line, rec.column))
+        return real_anchored(self, rec, rows, decl)
+
+    def row_record(self, decl, row):  # type: ignore[no-untyped-def]
+        rec = real_row_record(self, decl, row)
+        fallback.append(_fallback_class(row, rec.status))
+        return rec
+
+    vmod.ContractVerifier._anchored_rows = anchored  # type: ignore[method-assign]
+    vmod.ContractVerifier._row_record = row_record  # type: ignore[method-assign]
+    try:
+        v = pipeline.verify(entry_path, file=entry, budget_s=_BUDGET_S,
+                            reconcile=True)
+    finally:
+        vmod.ContractVerifier._anchored_rows = real_anchored  # type: ignore[method-assign]
+        vmod.ContractVerifier._row_record = real_row_record  # type: ignore[method-assign]
     if not v.ran:
         pytest.skip("the program is refused before verification")
+    assert unanchored == [], unanchored
+    # The rows no record reached, by class: each class is pinned with the
+    # fact its status rests on (`_FALLBACK_CLASSES`), so a new class
+    # entering the fallback is loud.
+    assert not [c for c in fallback if c not in _FALLBACK_CLASSES], fallback
+    assert _envelope_inconsistencies(v) == [], _envelope_inconsistencies(v)
+    assert _leaf_omissions(v) == [], _leaf_omissions(v)
     table = v.result.table
     assert table is not None
     named = Counter(r for o in v.result.obligations for r in o.rows)
@@ -1073,6 +1108,133 @@ def _verifier_identity(files: dict[str, str], entry: str, tmp_path: Path) -> Non
         and row.fn.split("$")[0] not in prelude and row.id not in template_rows]
     assert unrecorded == [], unrecorded
     assert not [c for c in _codes(v) if c in ("E541", "W004")], _codes(v)
+
+
+#: The classes of a row no verification record reached, and the fact each
+#: status rests on (`ContractVerifier._row_record`):
+#:
+#: * a `div_zero` row whose divisor is a non-zero literal: `verified`, the
+#:   literal is the proof;
+#: * a refined formal's ENTRY row: `verified`, the callee's assumption, which
+#:   each caller's argument row discharges as it does a `requires`;
+#: * a row with no check to plant (`TRIVIAL`): `verified`;
+#: * any other row, left to its check: `tier3` where the row is guarded (the
+#:   corpus's are base's W004 sites, the check emitted and nothing recorded),
+#:   disclosed where it is not.  None of these is ever `violated`.
+_FALLBACK_CLASSES = {
+    ("literal divisor", "verified"),
+    ("refined formal entry", "verified"),
+    ("trivial", "verified"),
+    ("left to its check", "tier3"),
+}
+
+
+def _fallback_class(row: object, status: str) -> tuple[str, str]:
+    from vera import ast as vera_ast
+    from vera.obligations import table as obligation_table
+
+    node = row.node  # type: ignore[attr-defined]
+    if row.guard == obligation_table.TRIVIAL:  # type: ignore[attr-defined]
+        return ("trivial", status)
+    if (row.kind == "div_zero"  # type: ignore[attr-defined]
+            and isinstance(node, vera_ast.BinaryExpr)
+            and isinstance(node.right, vera_ast.IntLit) and node.right.value != 0):
+        return ("literal divisor", status)
+    if row.evaluation == obligation_table.ENTRY:  # type: ignore[attr-defined]
+        return ("refined formal entry", status)
+    return ("left to its check", status)
+
+
+_TAIL_NAMED = re.compile(r"\(at the self tail call at (\d+):(\d+)\)")
+#: Verification errors that stand at no record of their own: a premise
+#: refusal, the reconciliation's E541, and the disclosures.
+_NO_RECORD_CODES = {"E538", "E539", "E540", "E541", "E542", "E543"}
+
+
+def _envelope_inconsistencies(v: pipeline.Verified) -> list[object]:
+    """Every `violated` record has an error at its site (or at a self tail
+    call one of its rows is evaluated at, which a measure's copy names);
+    every verification error stands at such a site: no E50x beside a record
+    that is not `violated`, and none with no record at all."""
+    from vera import ast as vera_ast
+    from vera import fold
+
+    res = v.result
+    table = res.table
+    calls: dict[object, tuple[int, int]] = {}
+    for n in fold.walk(v.checked.typed.linked.program):
+        if isinstance(n, vera_ast.FnCall) and n.node_id is not None and n.span:
+            calls[n.node_id] = (n.span.line, n.span.column)
+    sites: list[set[tuple[int, int]]] = []
+    bad: list[object] = []
+    for o in res.obligations:
+        if o.status != "violated":
+            continue
+        at = {(o.line, o.column)}
+        named = _TAIL_NAMED.search(o.expr_text)
+        if named:
+            at.add((int(named.group(1)), int(named.group(2))))
+        for r in o.rows:
+            ev = table.rows[r].evaluation
+            if ev and ev[0] == "measure_call" and ev[1] in calls:
+                at.add(calls[ev[1]])
+        sites.append(at)
+    errors = {(d.location.line, d.location.column): d.error_code
+              for d in res.diagnostics if d.severity == "error"
+              and d.error_code.startswith("E5")
+              and d.error_code not in _NO_RECORD_CODES}
+    for at in sites:
+        if not at & errors.keys():
+            bad.append(("violated record with no error", sorted(at)))
+    every = set().union(*sites) if sites else set()
+    bad += [("error with no violated record", code, at)
+            for at, code in errors.items() if at not in every]
+    return bad
+
+
+def _leaf_omissions(v: pipeline.Verified) -> list[object]:
+    """Every value leaf a function's body yields into a return type that
+    writes a refinement the leaf's type does not equal has a row: in the
+    leaf (a construction's field, the leaf itself) or at the return.  A
+    narrowing leaf with no row is an omission, the direction the identity
+    cells cannot see (a site the table does not list is a site nothing
+    records)."""
+    from vera import ast as vera_ast
+    from vera import fold, narrowing
+    from vera.obligations.table import ObligationTable
+    from vera.types import NEVER, AdtType, RefinedType
+
+    def refined(t: object, depth: int = 0) -> bool:
+        if isinstance(t, RefinedType):
+            return True
+        return (depth < 6 and isinstance(t, AdtType)
+                and any(refined(a, depth + 1) for a in t.type_args))
+
+    typed = v.checked.typed
+    table = v.result.table
+    key = ObligationTable._key
+    narrowing_rows = [r for r in table.rows if r.kind in ("refine_bind", "nat_bind")]
+    out: list[object] = []
+    for tld in typed.linked.program.declarations:
+        decl = tld.decl
+        if (not isinstance(decl, vera_ast.FnDecl) or decl.body is None
+                or decl.forall_vars):
+            continue
+        req = typed.semantic_type(decl.return_type)
+        if req is None or not refined(req):
+            continue
+        at_return = {key(n) for n in fold.walk(decl.return_type)} | {key(decl.body)}
+        if any(key(r.node) in at_return for r in narrowing_rows):
+            continue
+        for leaf in narrowing.value_leaves(decl.body):
+            sem = typed.semantic_type(leaf)
+            if sem is None or sem == req or sem == NEVER:
+                continue
+            inside = {key(n) for n in fold.walk(leaf)}
+            if not any(key(r.node) in inside for r in narrowing_rows):
+                out.append((decl.name, leaf.span.line if leaf.span else 0,
+                            str(sem), str(req)))
+    return out
 
 
 @pytest.mark.parametrize(
@@ -1682,3 +1844,155 @@ public fn f(@Int -> @Int)
     assert ran.returncode != 0 and "Refinement violation" in (ran.stdout + ran.stderr), (
         ran.stdout + ran.stderr[-300:])
     assert _run(tmp_path, source, "f", "3").returncode == 0
+
+
+# ---------------------------------------------------------------------
+# The fourth join: a value produced inside a `handle` body (#1695).  The
+# table hands the requirement there as it does through a block, an `if` and
+# a `match`, and lists the rows the hand-down alone produces unguarded: code
+# generation hands no requirement into a handle (its coercion walk stops at
+# it), so no store check is emitted there, at base or head (the follow-up
+# closes it).  The verdicts are base's: a disclosure where the solver cannot
+# decide, a refutation where it can.
+# ---------------------------------------------------------------------
+
+_HANDLE_VALUE = """\
+type PosInt = {{ @Int | @Int.0 > 0 }};
+
+public fn f(@Float64 -> @Option<PosInt>)
+  requires(true)
+  ensures(true)
+  effects({eff})
+{{
+  {handle}
+}}
+"""
+
+#: form -> (the handle, the effects row, the leaf the row stands at).
+_HANDLE_FORMS = {
+    "body": ("handle[State<Int>](@Int = 1) {\n"
+             "    get(@Unit) -> { resume(@Int.0) },\n"
+             "    put(@Int) -> { resume(()) }\n"
+             "  } in {\n    Some(VALUE)\n  }", "pure"),
+    "clause": ("handle[Exn<Int>] {\n"
+               "    throw(@Int) -> { Some(VALUE) }\n"
+               "  } in {\n    throw(1)\n  }", "pure"),
+}
+
+
+def _handle_program(form: str, value: str) -> str:
+    handle, eff = _HANDLE_FORMS[form]
+    return _HANDLE_VALUE.format(eff=eff, handle=handle.replace("VALUE", value))
+
+
+@pytest.mark.parametrize("form", list(_HANDLE_FORMS))
+def test_a_value_inside_a_handle_is_disclosed_as_at_base(
+    form: str, tmp_path: Path,
+) -> None:
+    """Undecided: `tier3_unguarded`/E506 with the row's reason and the fix
+    the user applies today; the module holds no check, as at base, and the
+    run lets the payload through (the follow-up's subject)."""
+    from vera.obligations import table as obligation_table
+
+    src = _handle_program(form, "float_to_int(@Float64.0)")
+    v = _verified(src)
+    binds = [(o.status, o.error_code) for o in v.result.obligations
+             if o.kind == "refine_bind"]
+    assert binds == [("tier3_unguarded", "E506")], binds
+    e506 = [d for d in v.result.diagnostics if d.error_code == "E506"]
+    assert len(e506) == 1, e506
+    assert obligation_table.REASON_HANDLE_VALUE in e506[0].rationale
+    assert "outside" in e506[0].fix
+    module = pipeline.compile(src).result
+    assert pipeline.checks(module, obligation="refine_bind", function="f") == ()
+
+
+@pytest.mark.parametrize("form", list(_HANDLE_FORMS))
+def test_a_refuted_value_inside_a_handle_keeps_its_record(form: str) -> None:
+    """Refutable: the E505 has its `violated` record, at the row.  An `Exn`
+    clause's value is one the solver does not translate, so there the
+    verdict is base's disclosure, at the row."""
+    v = _verified(_handle_program(form, "0 - 5"))
+    viol = [(o.status, o.error_code, o.line) for o in v.result.obligations
+            if o.kind == "refine_bind"]
+    want = ("violated", "E505") if form == "body" else ("tier3_unguarded", "E506")
+    assert [x[:2] for x in viol] == [want], viol
+    assert _envelope_inconsistencies(v) == []
+
+
+def test_the_handle_values_fix_is_a_guarded_construction(tmp_path: Path) -> None:
+    """The fix text applied: the payload bound outside the handle and the
+    value constructed from it is a checked store (`tier3`, no disclosure),
+    and the run is refused there."""
+    src = _HANDLE_VALUE.format(eff="pure", handle=(
+        "let @Int = handle[State<Int>](@Int = 1) {\n"
+        "    get(@Unit) -> { resume(@Int.0) },\n"
+        "    put(@Int) -> { resume(()) }\n"
+        "  } in {\n    float_to_int(@Float64.0)\n  };\n  Some(@Int.0)"))
+    v = _verified(src)
+    assert [(o.status, o.error_code) for o in v.result.obligations
+            if o.kind == "refine_bind"] == [("tier3", "E506")]
+    assert "E506" not in [d.error_code for d in v.result.diagnostics
+                          if "no runtime check" in d.description]
+    out = _run(tmp_path, src, "f", "-5.0")
+    assert "Refinement violation" in out.stdout + out.stderr
+
+
+_SAME_TYPE_ARGUMENT = """\
+type PosInt = { @Int | @Int.0 > 0 };
+
+private fn mk(@Float64 -> @Option<PosInt>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Some(float_to_int(@Float64.0))
+}
+
+private fn consume(@Option<PosInt> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Option<PosInt>.0 {
+    Some(@PosInt) -> @PosInt.0,
+    None -> 1
+  }
+}
+
+public fn f(@Float64 -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  consume(mk(@Float64.0))
+}
+"""
+
+
+def test_the_walk_decides_nothing_at_a_site_with_no_row() -> None:
+    """The binding walk still visits sites and records there (the known
+    gap: it is the verifier's context provider); at a site the table lists
+    no row, here an argument of exactly its parameter's type, what it
+    records is dropped with its warning, so it decides nothing."""
+    from vera import verifier as vmod
+
+    dropped: list[tuple[int, int]] = []
+    real = vmod.ContractVerifier._anchored_rows
+
+    def anchored(self, rec, rows, decl):  # type: ignore[no-untyped-def]
+        hit = real(self, rec, rows, decl)
+        if not hit and rec.fn_name == "f":
+            dropped.append((rec.line, rec.column))
+        return hit
+
+    vmod.ContractVerifier._anchored_rows = anchored  # type: ignore[method-assign]
+    try:
+        v = _verified(_SAME_TYPE_ARGUMENT)
+    finally:
+        vmod.ContractVerifier._anchored_rows = real  # type: ignore[method-assign]
+    site = (27, 11)
+    assert site in dropped, dropped
+    assert [o for o in v.result.obligations if (o.line, o.column) == site] == []
+    assert [d for d in v.result.diagnostics
+            if (d.location.line, d.location.column) == site] == []

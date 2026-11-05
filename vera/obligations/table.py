@@ -50,7 +50,7 @@ first — names that row in ``answered_by`` and emits no check of its own.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 from vera import ast, carriers, fold, naming, narrowing
 from vera.builtin_domains import BUILTIN_DOMAIN_NAMES
@@ -131,6 +131,9 @@ REASON_STRING_SLICE = "string_slice clamps its @Nat argument"
 REASON_UNEVALUATED = "inside a clause no check evaluates"
 REASON_CLAUSE_NOT_INLINED = (
     "the handler clause is inlined at no operation call, so it never runs")
+REASON_HANDLE_VALUE = (
+    "code generation emits no store check for a value produced inside a "
+    "handle body")
 
 #: The built-ins whose call is a float conversion with a domain (one
 #: ``float_to_int_domain`` row at the call).
@@ -451,6 +454,12 @@ class _Builder:
         #: clauses are inlined at.
         self._handled: dict[int, list[tuple[ast.Expr, Evaluation]]] = {}
         self._unevaluated: list[str] = []
+        #: The reason a requirement handed into a `handle`'s value carries:
+        #: code generation hands no requirement there (its coercion walk
+        #: stops at the handle), so a row the hand-down alone lists has no
+        #: check (one entry per `expr_rows` call; `None` where the
+        #: requirement is the node's own).
+        self._via: list[str | None] = []
         self._evaluation: list[Evaluation] = [BODY]
         #: ``id`` of a written refinement's predicate to its base type
         #: expression, built on first need (:meth:`_inline_base`).
@@ -567,6 +576,9 @@ class _Builder:
         listed); *answer_row* names the row itself."""
         if guard.check and self._unevaluated:
             guard = unguarded(self._unevaluated[-1])
+        if (guard.check and kind in ("refine_bind", "nat_bind")
+                and self._via and self._via[-1] is not None):
+            guard = unguarded(self._via[-1])
         # A piped call's row stands at its stage, where it is written (#1641).
         stage = getattr(node, "stage_span", None)
         span = stage if stage is not None else node.span
@@ -1000,7 +1012,7 @@ class _Builder:
         in_contract: bool = False, in_closure: bool = False,
         under_join: bool = False, store: bool = False,
         inplace: Type | None = None, fallback: bool = False,
-        nat_handed: Type | None = None,
+        nat_handed: Type | None = None, via: str | None = None,
     ) -> None:
         """List the rows under *expr*.
 
@@ -1019,7 +1031,9 @@ class _Builder:
         value hands through the joins to the `Tuple`, literal or
         ``map_insert`` it reaches (code generation's hand-down, #1606); a
         component the requirement makes a `Nat` that its store does not
-        read as one is a composite coercion's (`Row.handed`)."""
+        read as one is a composite coercion's (`Row.handed`).  *via* is the
+        reason a requirement handed into a `handle`'s value carries
+        (`REASON_HANDLE_VALUE`): the rows it alone lists are unguarded."""
         if not isinstance(expr, ast.Node):
             return
         if isinstance(expr, (ast.AssumeExpr, ast.TypeExpr, ast.Pattern)):
@@ -1027,9 +1041,15 @@ class _Builder:
         if (fallback and isinstance(expr, ast.Expr)
                 and self.target(expr) is not None):
             handed, fallback = None, False
+        if handed is None:
+            via = None
         if isinstance(expr, ast.Expr):
-            self.expr_rows(expr, handed, nat_handed, in_closure, under_join,
-                           store, store and not _is_nat(inplace))
+            self._via.append(via)
+            try:
+                self.expr_rows(expr, handed, nat_handed, in_closure, under_join,
+                               store, store and not _is_nat(inplace))
+            finally:
+                self._via.pop()
         if isinstance(expr, ast.LetStmt):
             let_ty = self.sem(expr.type_expr)
             self.walk(expr.value, d, handed=self.target(expr.value) or let_ty,
@@ -1039,7 +1059,8 @@ class _Builder:
             self.walk(expr.value, d, in_closure=in_closure)
             self.destructure_rows(expr)
             return
-        if isinstance(expr, (ast.MatchExpr, ast.IfExpr, ast.Block)) and handed is None:
+        if (isinstance(expr, (ast.MatchExpr, ast.IfExpr, ast.Block, ast.HandleExpr))
+                and handed is None):
             handed = self.target(expr)
         # A join hands the requirement, and the store's own component type,
         # to its value leaves; the `Nat` requirement only where a position
@@ -1056,18 +1077,18 @@ class _Builder:
                 self.pattern_rows(expr.scrutinee, arm.pattern)
                 self.walk(arm.body, d, handed=handed, in_closure=in_closure,
                           under_join=joined, store=store, inplace=inplace,
-                          fallback=fallback, nat_handed=nat_join)
+                          fallback=fallback, nat_handed=nat_join, via=via)
             return
         if isinstance(expr, ast.IfExpr):
             self.walk(expr.condition, d, in_closure=in_closure)
             self.walk(expr.then_branch, d, handed=handed, in_closure=in_closure,
                       under_join=joined, store=store, inplace=inplace,
-                      fallback=fallback, nat_handed=nat_join)
+                      fallback=fallback, nat_handed=nat_join, via=via)
             if expr.else_branch is not None:
                 self.walk(expr.else_branch, d, handed=handed,
                           in_closure=in_closure, under_join=joined,
                           store=store, inplace=inplace, fallback=fallback,
-                          nat_handed=nat_join)
+                          nat_handed=nat_join, via=via)
             return
         if isinstance(expr, ast.Block):
             for s in expr.statements:
@@ -1075,10 +1096,18 @@ class _Builder:
             if expr.expr is not None:
                 self.walk(expr.expr, d, handed=handed, in_closure=in_closure,
                           under_join=joined, store=store, inplace=inplace,
-                          fallback=fallback, nat_handed=nat_join)
+                          fallback=fallback, nat_handed=nat_join, via=via)
             return
         if isinstance(expr, ast.HandleExpr):
-            self.handle_rows(expr, d, in_closure)
+            # A `handle` yields its body's value, or a non-resuming clause's
+            # (`narrowing.handle_value_exprs`), the fourth join: the
+            # requirement is handed there as through the other three, and
+            # the rows it alone lists are unguarded, since code generation
+            # hands no requirement into a handle (the follow-up closes it).
+            self.handle_rows(expr, d, in_closure,
+                             handed=handed if joined else None,
+                             under_join=joined, store=store, inplace=inplace,
+                             fallback=fallback)
             return
         if isinstance(expr, ast.AnonFn):
             # A closure is lifted and compiled once, as a function of its
@@ -1145,6 +1174,7 @@ class _Builder:
                         if own is not None else None)
         for child in fold.children(expr):
             h = comps.get(id(child)) if comps is not None else None
+            child_via = via if h is not None and handed is not None else None
             if h is None:
                 h = self._handed_override.get(id(child))
             child_store = (comps is not None and h is not None
@@ -1158,7 +1188,8 @@ class _Builder:
                 fallback=from_own_type and h is not None
                 and id(child) not in self._handed_override,
                 nat_handed=(nat_comps.get(id(child)) if nat_comps is not None
-                            else self._handed_override.get(id(child))))
+                            else self._handed_override.get(id(child))),
+                via=child_via)
 
     def _coerces_nothing(self, expr: ast.Expr, req: Type) -> bool:
         """Whether holding *expr* to *req* coerces no component below it: the
@@ -1273,7 +1304,11 @@ class _Builder:
             if (_is_nat(req_nat) and self.narrows_nat_join(e)
                     and not (isinstance(req, RefinedType)
                              and id(e) in self._predicate_only)):
-                self.add("nat_bind", e, target=NAT, handed=handed_only)
+                # A join passed where no check is planted (`string_slice`
+                # clamps, #475) is unguarded as a single value there is.
+                reason = self._arg_reason.get(id(e))
+                self.add("nat_bind", e, target=NAT, handed=handed_only,
+                         guard=CHECK if reason is None else unguarded(reason))
             return
         if self._construction_components(e, req) is not None:
             # a construction: its components carry the requirement; the
@@ -1671,7 +1706,10 @@ class _Builder:
         return stmt.constructor
 
     def handle_rows(self, expr: ast.HandleExpr, d: ast.FnDecl | None,
-                    in_closure: bool) -> None:
+                    in_closure: bool, *, handed: Type | None = None,
+                    under_join: bool = False, store: bool = False,
+                    inplace: Type | None = None, fallback: bool = False,
+                    ) -> None:
         eff = expr.effect
         cell: Type | None = None
         if isinstance(eff, ast.EffectRef) and eff.type_args:
@@ -1684,8 +1722,12 @@ class _Builder:
                       in_closure=in_closure)
         if is_state:
             self._handler_stack.append(expr)
+        via = REASON_HANDLE_VALUE if handed is not None else None
+        value: dict[str, Any] = dict(
+            handed=handed, under_join=under_join, store=store,
+            inplace=inplace, fallback=fallback, via=via)
         try:
-            self.walk(expr.body, d, in_closure=in_closure)
+            self.walk(expr.body, d, in_closure=in_closure, **value)
         finally:
             if is_state:
                 self._handler_stack.pop()
@@ -1693,7 +1735,13 @@ class _Builder:
         for clause in expr.clauses:
             if not is_state:
                 # An `Exn` clause compiles once, where the handler stands.
-                self._clause_rows(clause, cell, eff, d, in_closure)
+                # One that resumes nowhere yields the handle's value, and is
+                # handed its requirement as the body is.
+                yields = handed is not None and not any(
+                    narrowing.is_resume(n) for n in fold.walk(clause.body)
+                    if isinstance(n, ast.Expr))
+                self._clause_rows(clause, cell, eff, d, in_closure,
+                                  value=value if yields else None)
                 continue
             # A `State` clause is inlined at each operation call of its
             # handler's body (`vera.wasm.calls_handlers`): its rows are
@@ -1723,9 +1771,11 @@ class _Builder:
     def _clause_rows(
         self, clause: ast.HandlerClause, cell: Type | None,
         eff: ast.EffectRefNode, d: ast.FnDecl | None, in_closure: bool,
+        value: dict[str, Any] | None = None,
     ) -> None:
         """One copy of a handler clause: its binder's rows, its body's, and
-        its `with` update's."""
+        its `with` update's; *value* is the handle's requirement where the
+        clause's body is the handle's value."""
         if (clause.params and isinstance(eff, ast.EffectRef) and eff.type_args
                 and (eff.name, clause.op_name) in (("Exn", "throw"), ("State", "put"))):
             self._clause_binder_rows(clause, cell)
@@ -1736,7 +1786,8 @@ class _Builder:
             r = tail_resume_arg(clause.body)
             if r is not None:
                 self._handed_override.setdefault(id(r), cell)
-        self.walk(clause.body, d, in_closure=in_closure)
+        self.walk(clause.body, d, in_closure=in_closure,
+                  **(value or {}))
         if clause.state_update is not None:
             self.walk(clause.state_update[1], d,
                       handed=cell or self.sem(clause.state_update[0]),

@@ -121,20 +121,21 @@ def _asserts(result: dict) -> list[tuple[str, str | None]]:
 # Fixtures
 # ---------------------------------------------------------------------------
 
-#: `mk`'s `@Nat` handler-clause binder is unguarded, so this module's own run
+#: `mk` passes an opaque `@Int` to `string_slice`'s `@Nat` index, which the
+#: builtin clamps and no check guards (#475), so this module's own run
 #: reports `nat_bind` / `tier3_unguarded` / E504 — the disclosure the two
-#: control quadrants rest on.
+#: control quadrants rest on (the disclosed set is per function).  Until
+#: #1695 the carrier was a handler clause's `@Nat` binder, which the module
+#: checked at base and head alike; since #1695 that row is guarded and its
+#: record `tier3`, so it discloses nothing.
 _DISCLOSING_MK = """\
 {vis} fn mk(@Int -> @Option<Nat>)
   requires(true)
   ensures(true)
   effects(pure)
 {{
-  int_to_nat(handle[Exn<Int>] {{
-    throw(@Nat) -> {{ nat_to_int(@Nat.0) }}
-  }} in {{
-    throw(@Int.0)
-  }})
+  let @String = string_slice("ab", apply_fn(fn(@Int -> @Int) effects(pure) {{ @Int.0 }}, @Int.0), 1);
+  int_to_nat(@Int.0)
 }}
 """
 
@@ -412,11 +413,9 @@ public fn via_call(@Int -> @Int)
 """
 
 _DISCLOSING_BODY = (
-    "int_to_nat(handle[Exn<Int>] {\n"
-    "    throw(@Nat) -> { nat_to_int(@Nat.0) }\n"
-    "  } in {\n"
-    "    throw(@Int.0)\n"
-    "  })"
+    'let @String = string_slice("ab", '
+    "apply_fn(fn(@Int -> @Int) effects(pure) { @Int.0 }, @Int.0), 1);\n"
+    "  int_to_nat(@Int.0)"
 )
 
 
@@ -447,9 +446,9 @@ def test_1403_the_assert_and_the_call_precondition_now_agree(
         "p": _TWO_CONSUMERS.format(vis="private", body="int_to_nat(@Int.0)"),
     })["p"])
     assert _asserts(clean) == [("verified", None)], _triples(clean)
-    assert not [
-        o for o in clean["obligations"] if o["kind"] == "call_pre"
-    ], _triples(clean)
+    # Discharged: the call's row's record (#1695).
+    assert [o["status"] for o in clean["obligations"]
+            if o["kind"] == "call_pre"] == ["verified"], _triples(clean)
 
     disclosed = _verify(_tree(tmp_path / "d", {
         "p": _TWO_CONSUMERS.format(vis="private", body=_DISCLOSING_BODY),
@@ -565,12 +564,13 @@ _CLEAN_PRODUCER = "Some(@{slot}.0)"
 #: and a guard makes the declared type true at run time — which is exactly
 #: what a consumer may lean on, so it must NOT withhold.  A refined payload
 #: built through a handler clause binder used to disclose and no longer
-#: does; the root disclosure left is an unguarded `@Nat` narrowing into a
-#: builtin that plants no check (#1362), which is `nat_bind` /
-#: `tier3_unguarded` / **E504**.
+#: does, nor (since #1695) does the clause's `@Nat` binder; the root
+#: disclosure left is an unguarded `@Nat` narrowing into a builtin that
+#: plants no check (`string_slice`'s clamped index, #475), which is
+#: `nat_bind` / `tier3_unguarded` / **E504**.
 _DISCLOSING_STMT = (
-    "let @Option<Nat> = int_to_nat(handle[Exn<Int>] "
-    "{{ throw(@Nat) -> {{ nat_to_int(@Nat.0) }} }} in {{ throw({int_expr}) }});"
+    'let @String = string_slice("ab", '
+    "apply_fn(fn(@Int -> @Int) effects(pure) {{ @Int.0 }}, {int_expr}), 1);"
 )
 
 
@@ -815,11 +815,8 @@ private fn mk(@Int -> @Option<Nat>)
   ensures(true)
   effects(pure)
 {
-  int_to_nat(handle[Exn<Int>] {
-    throw(@Nat) -> { nat_to_int(@Nat.0) }
-  } in {
-    throw(@Int.0)
-  })
+  let @String = string_slice("ab", apply_fn(fn(@Int -> @Int) effects(pure) { @Int.0 }, @Int.0), 1);
+  int_to_nat(@Int.0)
 }
 """
 
@@ -1427,10 +1424,16 @@ def _matrix_cell(tmp_path: Path, shape: str, consumer: str, *,
 
 #: The whole map, and the reason each entry is what it is.
 #:
-#: A `call_pre` entry of `[]` is the ABSENCE of an unproved precondition: a
-#: discharged one records no obligation, so the row that makes this
-#: non-vacuous is `disclosed` (`tier3`/E532) — the same cell, same consumer,
-#: showing what a failure looks like.
+#: A `call_pre` entry lists both calls' records, `mk`'s and `needs_pos`'s:
+#: since #1695 a discharged precondition is its call's row's record
+#: (`verified`), and `disclosed` (`tier3`/E532 at `needs_pos`) is the same
+#: cell, same consumer, showing what a failure looks like.
+#:
+#: A `store` entry carries the arm's binder too: a `Some(@Pos)` binder over
+#: an `Option<Pos>` payload is the row code generation checks (base held the
+#: check and recorded nothing, W004); since #1695 it is recorded, `tier3`,
+#: or `tier3_unguarded`/E506 where the binder's refinement is over a
+#: refinement (`chain`'s `Small`), which no guard checks.
 #:
 #: `ensures` carries one entry per function in the program (`needs_pos`,
 #: `mk`, `use_it`), so the list is read whole rather than filtered; the last
@@ -1439,20 +1442,24 @@ _MATRIX_EXPECTED: dict[tuple[str, str], tuple[bool, list]] = {
     # --- the arm ESTABLISHES the payload's fact: every consumer proves ----
     ("direct", "assert"): (True, [("verified", None)]),
     ("direct", "ensures"): (True, [("verified", None)] * 3),
-    ("direct", "store"): (True, [("verified", None)] * 2),
-    ("direct", "call_pre"): (True, []),
+    ("direct", "store"): (
+        True, [("verified", None), ("tier3", None), ("verified", None)]),
+    ("direct", "call_pre"): (True, [("verified", None)] * 2),
     ("nested", "assert"): (True, [("verified", None)]),
     ("nested", "ensures"): (True, [("verified", None)] * 3),
-    ("nested", "store"): (True, [("verified", None)] * 2),
-    ("nested", "call_pre"): (True, []),
+    ("nested", "store"): (
+        True, [("verified", None), ("tier3", None), ("verified", None)]),
+    ("nested", "call_pre"): (True, [("verified", None)] * 2),
     ("tuple", "assert"): (True, [("verified", None)]),
     ("tuple", "ensures"): (True, [("verified", None)] * 3),
-    ("tuple", "store"): (True, [("verified", None)] * 2),
-    ("tuple", "call_pre"): (True, []),
+    ("tuple", "store"): (
+        True, [("verified", None), ("tier3", None), ("verified", None)]),
+    ("tuple", "call_pre"): (True, [("verified", None)] * 2),
     ("chain", "assert"): (True, [("verified", None)]),
     ("chain", "ensures"): (True, [("verified", None)] * 3),
-    ("chain", "store"): (True, [("verified", None)] * 2),
-    ("chain", "call_pre"): (True, []),
+    ("chain", "store"): (
+        True, [("verified", None), ("tier3_unguarded", "E506"), ("verified", None)]),
+    ("chain", "call_pre"): (True, [("verified", None)] * 2),
     # --- a genuine NARROWING: the payload's declared type is `Int`, so the
     #     scrutinee establishes nothing and the bind stays obligated, refuted
     #     (E505) because `mk`'s contract does not say its payload is
@@ -1466,7 +1473,7 @@ _MATRIX_EXPECTED: dict[tuple[str, str], tuple[bool, list]] = {
     ("narrowing", "ensures"): (False, [("verified", None)] * 3),
     ("narrowing", "store"): (
         False, [("violated", "E505"), ("verified", None)]),
-    ("narrowing", "call_pre"): (False, []),
+    ("narrowing", "call_pre"): (False, [("verified", None)] * 2),
     # --- a DISCLOSED producer: the fact exists but the run has no word for
     #     it, so every consumer demotes, and says so.  Each says so in its
     #     OWN code, which is deliberate and worth reading off the table
@@ -1485,8 +1492,8 @@ _MATRIX_EXPECTED: dict[tuple[str, str], tuple[bool, list]] = {
     ("disclosed", "ensures"): (
         True, [("verified", None), ("verified", None), ("tier3", "E534")]),
     ("disclosed", "store"): (
-        True, [("verified", None), ("tier3", "E506")]),
-    ("disclosed", "call_pre"): (True, [("tier3", "E532")]),
+        True, [("verified", None), ("tier3", None), ("tier3", "E506")]),
+    ("disclosed", "call_pre"): (True, [("verified", None), ("tier3", "E532")]),
 }
 
 
@@ -1551,10 +1558,15 @@ _MATRIX_EXPECTED_UNTRANSLATABLE: dict[tuple[str, str], tuple[bool, list]] = {
         for consumer, verdict in (
             ("assert", (True, [("verified", None)])),
             ("ensures", (True, [("verified", None), ("verified", None)])),
+            # The init's store, the arm's binder (recorded since #1695, as
+            # in the twin; base's `tier3_unguarded` at the `get` clause's
+            # `resume` was of a same-typed value, which is no row), and the
+            # arm's store into the return type.
             ("store", (True, [("verified", None),
-                              ("tier3_unguarded", "E506"),
+                              ("tier3", None) if shape != "chain"
+                              else ("tier3_unguarded", "E506"),
                               ("verified", None)])),
-            ("call_pre", (True, [])),
+            ("call_pre", (True, [("verified", None)])),
         )
     },
     # A genuine narrowing: the bind is the `refine_bind` Tier 3 a violating
@@ -1565,7 +1577,7 @@ _MATRIX_EXPECTED_UNTRANSLATABLE: dict[tuple[str, str], tuple[bool, list]] = {
         True, [("verified", None), ("verified", None)]),
     ("narrowing", "store"): (
         True, [("tier3", "E506"), ("verified", None)]),
-    ("narrowing", "call_pre"): (True, []),
+    ("narrowing", "call_pre"): (True, [("verified", None)]),
 }
 
 
@@ -2243,8 +2255,12 @@ _UNSTATABLE_CASES = {
                  ("tier3", "E532")),
     # Two records here, and both are the tip's: the PRODUCER's own
     # construction (unguarded, E506) and the arm's store.
+    # Since #1695 the arm's `Some(@L2)` binder is recorded too: its
+    # refinement is over a refinement, which no guard checks, so it is
+    # disclosed (base recorded nothing there and the module checked nothing).
     "store": ("@Option<L1>", "true", "Some(@L2.0)", "None", "refine_bind",
-              [("tier3_unguarded", "E506"), ("tier3", "E506")]),
+              [("tier3_unguarded", "E506"), ("tier3_unguarded", "E506"),
+               ("tier3", "E506")]),
 }
 
 
@@ -2593,7 +2609,11 @@ def test_1403_the_order_of_the_program_does_not_decide_the_verdict(
          if o["kind"] == "refine_bind" and o["status"] != "verified"]
         for r in (plain, letfirst)
     ]
-    assert binds == [[("violated", "E505")], [("violated", "E505")]], (
+    # Since #1695 the arm's `Some(@C2)` binder is recorded too: `C2` is a
+    # refinement over a refinement, which no guard checks, so it is
+    # disclosed in both variants alike.
+    both = [("violated", "E505"), ("tier3_unguarded", "E506")]
+    assert binds == [both, both], (
         f"an unrelated earlier `let` changed the verdict: {binds}"
     )
 
