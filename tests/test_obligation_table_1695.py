@@ -2378,6 +2378,225 @@ def test_repro_a_hand_down_value_record_is_never_verified() -> None:
     assert "E541" in _codes(v)
 
 
+_SUBPATTERN_AFTER_A_WILDCARD = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+private data P {
+  MkP(Int, Int, Int)
+}
+
+public fn f(@Option<P> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Option<P>.0 {
+    Some(MkP(_, @Nat, @Pos)) -> nat_to_int(@Nat.0) + @Pos.0,
+    None -> 0
+  }
+}
+"""
+
+_UNPROJECTED_SUBPATTERN_AFTER_A_WILDCARD = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+private data P {
+  MkP(Int, Int, Int)
+}
+
+private data Wrap {
+  MkWrap(P)
+}
+
+public fn go(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match MkWrap(MkP(@Int.0, @Int.0, @Int.0)) {
+    MkWrap(MkP(_, @Nat, @Pos)) -> nat_to_int(@Nat.0) + @Pos.0
+  }
+}
+"""
+
+_LITERAL_DESTRUCTURE_BINDER = """\
+type R = { @Option<Int> | @Option<Int>.0 == Some(1) };
+
+public fn f(@Unit -> @Option<Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let Tuple<@Int, @R> = Tuple(1, Some(1));
+  @R.0
+}
+"""
+
+
+def _narrowing_records(source: str) -> list[tuple[object, ...]]:
+    """Each narrowing record whole (its function, kind, status, site, code
+    and text), then each diagnostic's code and first line."""
+    v = _verified(source)
+    return [(o.fn_name, o.kind, o.status, o.line, o.column, o.error_code,
+             o.expr_text)
+            for o in v.result.obligations
+            if o.kind in ("nat_bind", "refine_bind")] + [
+        (d.error_code, d.description.splitlines()[0])
+        for d in v.result.diagnostics]
+
+
+def test_repro_lane_a_binder_after_a_wildcard_sub_pattern_is_discharged() -> None:
+    """A nested constructor sub-pattern whose first field is a wildcard and
+    whose later fields bind at `Nat` and at a refinement: each binder is
+    discharged at its own row over its projected field, as at base (the
+    Mutation (diff) lane's `_obligate_subpattern_term` survivors on PR
+    #1843: no cell entered a binder after a non-binding sub-pattern)."""
+    assert _narrowing_records(_SUBPATTERN_AFTER_A_WILDCARD) == [
+        ("f", "nat_bind", "violated", 13, 17, "E503", "@Nat"),
+        ("f", "refine_bind", "violated", 13, 23, "E505", "@Pos"),
+        ("E503", "@Int value narrowing into a @Nat ADT sub-pattern bind in "
+                 "'f' may be negative."),
+        ("E505", "Value narrowing into a refined ADT sub-pattern bind in 'f' "
+                 "may violate the refinement predicate `@Int.0 > 0`."),
+    ]
+
+
+def test_repro_lane_an_unprojected_binder_after_a_wildcard_is_left_to_its_check() -> None:
+    """The same pattern nested under a literal construction, whose fields
+    the walk does not project (`_record_nested_subpattern_fallbacks`): each
+    binder's row is left to its check, the `Nat` one `tier3`, the refined
+    one disclosed (E506), as at base (the lane's survivors in that function
+    on PR #1843)."""
+    records = _narrowing_records(_UNPROJECTED_SUBPATTERN_AFTER_A_WILDCARD)
+    assert records[:2] == [
+        ("go", "nat_bind", "tier3", 17, 19, "", "@Nat"),
+        ("go", "refine_bind", "tier3", 17, 25, "E506", "@Pos"),
+    ], records
+    assert [r[0] for r in records[2:]] == ["E506"], records
+    assert records[2][1].startswith(
+        "Refinement predicate at a ADT sub-pattern bind in 'go'"), records
+
+
+def test_repro_lane_a_literal_destructure_binder_is_left_to_its_check() -> None:
+    """A literal `Tuple` destructure's refined binder: the component's
+    record is the component's row (disclosed, E506), and the binder's row is
+    left to the destructure's check, `tier3`, as at base (the lane's
+    `_leave_binder_rows` survivors on PR #1843; the `_1466` cells that pin it
+    run at `--matrix=full` only)."""
+    records = _narrowing_records(_LITERAL_DESTRUCTURE_BINDER)
+    assert records[:2] == [
+        ("f", "refine_bind", "tier3_unguarded", 8, 34, "E506", "<expr>"),
+        ("f", "refine_bind", "tier3", 8, 20, "", "@R"),
+    ], records
+
+
+_OWN_TYPE_SUB_PATTERN_BINDERS = """\
+type Fpos = { @Float64 | @Float64.0 >= 0.0 };
+
+type Pos = { @Int | @Int.0 > 0 };
+
+private data Q {
+  MkQ(Int, Fpos, Pos, Tuple<Int, Int>, Nat, Int)
+}
+
+public fn f(@Option<Q> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Option<Q>.0 {
+    Some(MkQ(_, @Fpos, @Pos, @Tuple<Int, Nat>, @Nat, @Int)) -> @Pos.0 + nat_to_int(@Nat.0) + @Int.0,
+    None -> 0
+  }
+}
+"""
+
+_UNPROJECTED_OWN_TYPE_SUB_PATTERN_BINDERS = """\
+type Fpos = { @Float64 | @Float64.0 >= 0.0 };
+
+type Pos = { @Int | @Int.0 > 0 };
+
+private data Q {
+  MkQ(Int, Fpos, Pos, Tuple<Int, Int>, Nat, Int)
+}
+
+private data W {
+  MkW(Q)
+}
+
+public fn g(@Fpos, @Pos, @Nat, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match MkW(MkQ(@Int.0, @Fpos.0, @Pos.0, Tuple(@Int.0, @Int.0), @Nat.0, @Int.0)) {
+    MkW(MkQ(_, @Fpos, @Pos, @Tuple<Int, Nat>, @Nat, @Int)) -> @Pos.0 + nat_to_int(@Nat.0) + @Int.0
+  }
+}
+"""
+
+
+def test_repro_lane_sub_pattern_binders_at_their_fields_own_types() -> None:
+    """Sub-pattern binders after a wildcard at a refined field's own type
+    (a `Float64` and an `Int` base), at a composite coercion (`Tuple<Int,
+    Nat>` over `Tuple<Int, Int>`) and at `Nat` and `Int` fields: the own-type
+    and composite binders' rows are left to their checks, `tier3`, the rest
+    take no record, as at base, over a projected scrutinee (the lane's
+    `_obligate_subpattern_term` survivors on PR #1843: no cell entered a
+    binder that does not narrow)."""
+    assert _narrowing_records(_OWN_TYPE_SUB_PATTERN_BINDERS) == [('f', 'refine_bind', 'tier3', 15, 17, '', '@Fpos'), ('f', 'refine_bind', 'tier3', 15, 24, '', '@Pos'), ('f', 'nat_bind', 'tier3', 15, 30, '', '@Tuple<Int, Nat> [Tuple.1]')]
+
+
+def test_repro_lane_unprojected_binders_at_their_fields_own_types() -> None:
+    """The same binders nested under a literal construction
+    (`_record_nested_subpattern_fallbacks`), as at base."""
+    assert _narrowing_records(_UNPROJECTED_OWN_TYPE_SUB_PATTERN_BINDERS) == [('g', 'refine_bind', 'verified', 13, 14, '', '@Fpos'), ('g', 'refine_bind', 'verified', 13, 21, '', '@Pos'), ('g', 'nat_bind', 'violated', 18, 56, 'E503', '@Int.0'), ('g', 'refine_bind', 'tier3', 19, 16, '', '@Fpos'), ('g', 'refine_bind', 'tier3', 19, 23, '', '@Pos'), ('g', 'nat_bind', 'tier3', 19, 29, '', '@Tuple<Int, Nat> [Tuple.1]'), ('E503', "@Int value narrowing into a @Nat tuple component in 'g' may be negative.")]
+
+
+_SUB_PATTERN_OVER_A_REFINED_FIELD = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+type NonNeg = { @Int | @Int.0 >= 0 };
+
+private data R {
+  MkR(Pos)
+}
+
+public fn f(@Option<R> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Option<R>.0 {
+    Some(MkR(@NonNeg)) -> @NonNeg.0,
+    None -> 0
+  }
+}
+
+public fn g(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Option<R> = Some(MkR(@Int.0));
+  match @Option<R>.0 {
+    Some(MkR(@NonNeg)) -> @NonNeg.0,
+    None -> 0
+  }
+}
+"""
+
+
+def test_repro_lane_a_sub_pattern_binder_reads_its_fields_refinement() -> None:
+    """A `NonNeg` binder over a `Pos` field: over an opaque source (a
+    parameter) the field's own refinement is the binder's premise and the
+    bind proves; over a source the walk follows to its construction, the
+    construction's argument is, and the construction's own row is refuted
+    (E505), as at base (the lane's `source_ty` survivors in
+    `_obligate_subpattern_term` on PR #1843)."""
+    assert _narrowing_records(_SUB_PATTERN_OVER_A_REFINED_FIELD) == [('f', 'refine_bind', 'verified', 15, 14, '', '@NonNeg'), ('g', 'refine_bind', 'violated', 25, 29, 'E505', '@Int.0'), ('g', 'refine_bind', 'verified', 27, 14, '', '@NonNeg'), ('E505', "Value narrowing into a refined constructor field in 'g' may violate the refinement predicate `@Int.0 > 0`.")]
+
+
 def test_the_handle_values_fix_is_a_guarded_construction(tmp_path: Path) -> None:
     """The fix text applied: the payload bound outside the handle and the
     value constructed from it is a checked store (`tier3`, no disclosure),

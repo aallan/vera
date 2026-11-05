@@ -3848,7 +3848,7 @@ class ContractVerifier:
         discharge of its component value did not key: the value's record is
         the component's row, and the binder's row is the destructure's
         check over the same value, left to it (#1836)."""
-        frame = self._fn_frames[-1] if self._fn_frames else None
+        frame = self._fn_frames[-1] if self._fn_frames else None  # pragma: no mutate — equivalent: called only from the binding pass, inside `_verify_fn`'s frame
         if frame is None:
             return
         done = {i for rec in frame.made for i in rec.rows}
@@ -3856,7 +3856,7 @@ class ContractVerifier:
         if left:
             self._record_obligation(
                 decl.name, kind, binder, "tier3",
-                rows=tuple(r.id for r in left),
+                rows=tuple(r.id for r in left),  # pragma: no mutate — equivalent: without it the record is keyed at the binder by `_rows_discharged`, which finds the same rows
                 expr_text=left[0].content_key[2])
 
     def _discharge_effect_rows(
@@ -12614,8 +12614,8 @@ class ContractVerifier:
                 continue
             if not isinstance(sub_pat, ast.BindingPattern):
                 continue
-            target = self._written_type(sub_pat.type_expr)
-            if (refined := self._binder_target(sub_pat, target)) is not None:
+            target = self._written_type(sub_pat.type_expr)  # pragma: no mutate — equivalent: a binder row's target is its written type, which `_binder_target` returns without it
+            if (refined := self._binder_target(sub_pat, target)) is not None:  # pragma: no mutate — equivalent: as above, the row's target is the written refinement
                 if not self._narrowing_binder(
                         decl, sub_pat, "refine_bind",
                         self._refined_field_narrows(refined, field_ty)):
@@ -12624,12 +12624,12 @@ class ContractVerifier:
                     decl, field_term, refined, smt, assumptions,
                     site="ADT sub-pattern bind", node=diag_node,
                     source_ty=(field_ty
-                               if narrowing.all_sources_opaque(field_sources)
+                               if narrowing.all_sources_opaque(field_sources)  # pragma: no mutate — equivalent: a constructed source's term carries its fields' declared refinements already (the construction's translation states them), so the field type's facts add nothing there
                                else None),
                 )
             elif self._binder_rows(sub_pat, "nat_bind"):
                 if not self._narrowing_binder(
-                        decl, sub_pat, "nat_bind", narrowing.component_narrows(
+                        decl, sub_pat, "nat_bind", narrowing.component_narrows(  # pragma: no mutate — equivalent: the table lists a sub-pattern `nat_bind` row by the same `component_narrows` rule, so such a binder narrows and these are not read, and a composite binder's walk row is recorded `tier3` by `_discharge_walked_rows` first
                             field_sources, i, self._narrows_into_nat,
                             leaf_is_nat)):
                     continue
@@ -12871,8 +12871,8 @@ class ContractVerifier:
                 continue
             if not isinstance(sub_pat, ast.BindingPattern):
                 continue
-            target = self._written_type(sub_pat.type_expr)
-            if (refined := self._binder_target(sub_pat, target)) is not None:
+            target = self._written_type(sub_pat.type_expr)  # pragma: no mutate — equivalent: a binder row's target is its written type, which `_binder_target` returns without it
+            if (refined := self._binder_target(sub_pat, target)) is not None:  # pragma: no mutate — equivalent: as above, the row's target is the written refinement
                 if not self._narrowing_binder(
                         decl, sub_pat, "refine_bind",
                         self._refined_field_narrows(refined, field_ty)):
@@ -12882,7 +12882,7 @@ class ContractVerifier:
                     reason=_OPAQUE_SCRUTINEE_REASON)
             elif self._binder_rows(sub_pat, "nat_bind"):
                 if not self._narrowing_binder(
-                        decl, sub_pat, "nat_bind", narrowing.component_narrows(
+                        decl, sub_pat, "nat_bind", narrowing.component_narrows(  # pragma: no mutate — equivalent: as in `_obligate_subpattern_term`, and the unprojected fallback records the row `tier3` on either branch
                             field_sources, i, self._narrows_into_nat,
                             leaf_is_nat)):
                     continue
