@@ -191,21 +191,16 @@ def _substitute(ty: Type, mapping: dict[str, Type]) -> Type:
     """Substitute type parameters by concrete arguments (checker-local).
 
     A thin structural walk — mirrors ``vera.types.substitute`` but is inlined
-    here to avoid importing checker orchestration into this leaf module, and to
-    substitute inside ``AdtType`` / ``FunctionType`` / ``RefinedType`` exactly
-    as codegen's field-type substitution does.
+    here to avoid importing checker orchestration into this leaf module.  Its
+    one reader is ``is_eq_derivable``, so it substitutes inside ``AdtType`` and
+    ``RefinedType`` only: a ``FunctionType`` is not derivable whatever its
+    parts, so it is returned as it is.
     """
     if isinstance(ty, TypeVar):
-        return mapping.get(ty.name, ty)
+        return mapping.get(ty.name, ty)  # pragma: no mutate — equivalent: every type variable in a constructor's field is a parameter of its data type, and the mapping binds every parameter (an application at another arity is E133, an unknown, before it reaches here)
     if isinstance(ty, AdtType):
         return ty.with_args(tuple(_substitute(a, mapping)
                                   for a in ty.type_args))
-    if isinstance(ty, FunctionType):
-        return FunctionType(
-            tuple(_substitute(p, mapping) for p in ty.params),
-            _substitute(ty.return_type, mapping),
-            ty.effect,
-        )
     if isinstance(ty, RefinedType):
         return RefinedType(_substitute(ty.base, mapping), ty.predicate)
     return ty

@@ -1450,10 +1450,11 @@ def _meet_literal_holes(parts: tuple[Type | None, ...], ty: Type) -> Type:
         return ty
     if known and all(is_literal_hole(p) for p in known):
         return LITERAL_HOLE
-    adts = [p for p in known if isinstance(p, AdtType)
+    adts = [p for p in known if isinstance(p, AdtType)  # pragma: no mutate — equivalent: the meet is asked of a join's parts, and a part that is a data type has the join's name and arity wherever the join is accepted; a join of two names or arities is refused (E301, E302, E162) with the same codes whether or not the filter reads them (probed)
             and isinstance(ty, AdtType) and p.name == ty.name
             and len(p.type_args) == len(ty.type_args)]
-    if isinstance(ty, AdtType) and len(adts) == len(known):
+    if (isinstance(ty, AdtType)  # pragma: no mutate — equivalent: `parts` is never empty (an `if`'s two branches, a `match`'s arms, a literal's elements, `[]` returning before), so for a `ty` that is no data type `adts` is empty and shorter than `known`
+            and len(adts) == len(known)):
         return ty.with_args(tuple(
             _meet_literal_holes(tuple(p.type_args[i] for p in adts), arg)
             for i, arg in enumerate(ty.type_args)))

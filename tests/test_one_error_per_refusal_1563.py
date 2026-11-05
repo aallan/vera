@@ -776,3 +776,14 @@ def test_a_value_of_an_undeclared_type_in_a_contract_or_operation_draws_nothing_
     E204 and the tuple E170."""
     codes = _codes(_PLACEHOLDER_PROGRAMS[site])
     assert codes and set(codes) == {"E136"}, codes
+
+
+def test_a_generic_function_field_is_no_eq_type() -> None:
+    """The Eq derivation's substitution keeps a function-typed field a
+    function type, which is not derivable whatever its parts, so comparing
+    two `Fn1<Int>` values is E243 (the substitution's `FunctionType` branch
+    decided nothing and is gone)."""
+    source = (f"private data Fn1<T> {{\n  Fn1(fn(T -> T) effects(pure))\n}}\n\n"
+              f"private fn f(@Fn1<Int> -> @Bool)\n{_SIG}"
+              "{\n  @Fn1<Int>.0 == @Fn1<Int>.0\n}\n")
+    assert _codes(source) == ["E243"]
