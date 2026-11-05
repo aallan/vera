@@ -2118,11 +2118,14 @@ class SmtContext:
         # exists only for an index in range, and a query that reads the
         # element reads it there (#1696 m04).  The row's own obligation is
         # over the index and the length, never the element, so the fact
-        # never proves the check it stands behind.
+        # never proves the check it stands behind.  It holds only where the
+        # read runs: under the branch conditions it is translated in, never
+        # on a path the read is not on.
         if idx.sort() == z3.IntSort():
             length_fn = self._get_length_fn(coll_sort)
             self.assume_of_value(
-                element, z3.And(idx >= 0, idx < length_fn(coll)))
+                element, self._guard_fact(
+                    z3.And(idx >= 0, idx < length_fn(coll))))
         return element
 
     def _get_element_sort_for_array(
@@ -3672,6 +3675,10 @@ class SmtContext:
         reach = self.reach_conditions()
         if hook is None or reach is None:
             return term
+        # The bind's fact holds where the bind runs: under the path to it
+        # and the bindings of the calls being modelled (`_guard_fact`'s
+        # rule), never on a path the bind is not on.
+        reach = [*reach, *self._call_bindings]
         pattern = ast.BindingPattern(type_expr=te, span=te.span)
         guarded = hook(value, term, pattern, self, reach)
         return cast("z3.ExprRef", guarded.get(term.get_id(), term))

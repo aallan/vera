@@ -9639,7 +9639,9 @@ class ContractVerifier:
             return value
         for fact in self._established_facts(
                 [pred], source=None, term=value, smt=smt):
-            smt.assume_of_value(value, fact)
+            # Where the bind runs: under the path to it and the bindings of
+            # the calls being modelled, never on a path it is not on.
+            smt.assume_of_value(value, smt._guard_fact(fact))
         return value
 
     def _guarded_binder_values(

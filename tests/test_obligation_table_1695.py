@@ -2140,6 +2140,57 @@ def test_repro_a_value_record_is_not_copied_to_its_leaves() -> None:
         "a-holding-and-a-violating-leaf")
 
 
+_UNTAKEN_READS = {
+    # A literal index out of range in a branch that never runs.
+    "literal-dead-branch": "if false then { @Array<Int>.0[0 - 1] } else { 0 - 1 }",
+    # An index in range only where its branch runs: read unguarded, its
+    # fact would confine the parameter on the other branch too.
+    "parameter-branch": (
+        "if @Int.0 > 100 then { @Array<Int>.0[@Int.0 - 50] } else { @Int.0 }"),
+    # A refined `let` (#1563's post-fact) whose bind is refused, in a branch
+    # that never runs.
+    "refused-let-dead-branch": (
+        "if false then { let @Pos = 0 - 1; @Pos.0 } else { 0 - 1 }"),
+    # A refined `let` of a value the solver does not translate (the
+    # refinement guard's post-fact over a fresh value), in a branch that
+    # never runs, whose refinement no value satisfies.
+    "opaque-let-dead-branch": (
+        "if false then { let @Empty = float_to_int(1.5); @Empty.0 } "
+        "else { 0 - 1 }"),
+    # A `match` arm binder at a refinement (the guarded fresh value) in a
+    # branch that never runs.
+    "arm-binder-dead-branch": (
+        "if false then { match Some(0 - 1) { Some(@Pos) -> @Pos.0, "
+        "None -> 1 } } else { 0 - 1 }"),
+}
+
+
+@pytest.mark.parametrize("shape", list(_UNTAKEN_READS))
+def test_an_element_reads_fact_holds_only_on_its_branch(shape: str) -> None:
+    """A post-fact (an element read's index in range, #1696 m04; a
+    refined bind's predicate, guarded or refused, #1563; a guarded binder's
+    fresh value) holds where its read or bind runs, under its branch's
+    conditions, never on a path it is not on (CodeRabbit on 3332cdfd): the
+    argument the other branch yields is refuted at the callee's
+    `requires`."""
+    v = _verified(
+        "type Pos = { @Int | @Int.0 > 0 };\n"
+        "type Empty = { @Int | @Int.0 > 0 && @Int.0 < 0 };\n"
+        "private fn g(@Int -> @Int)\n  requires(@Int.0 >= 0)\n  ensures(true)\n"
+        "  effects(pure)\n{\n  @Int.0\n}\n"
+        "public fn f(@Array<Int>, @Int -> @Int)\n  requires(true)\n"
+        "  ensures(true)\n  effects(pure)\n{\n"
+        f"  g({_UNTAKEN_READS[shape]})\n}}\n")
+    pre = [o.status for o in v.result.obligations if o.kind == "call_pre"]
+    assert pre == ["violated"], pre
+    assert "E501" in _codes(v)
+
+
+def test_repro_an_untaken_element_read_proves_no_precondition() -> None:
+    """The reported instance, unsampled."""
+    test_an_element_reads_fact_holds_only_on_its_branch("literal-dead-branch")
+
+
 def test_repro_a_row_two_discharges_reach_reports_one_error() -> None:
     """A `map_insert` value is one row (#1608): the call-argument walk and
     the stored-value walk both refute `-3`, and the site's one record keeps
