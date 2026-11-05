@@ -2125,7 +2125,7 @@ class TestTheRepositoryConfig:
             "tests/test_verifier_refinements.py::TestANonVerdictIsAttributedToTheRightOutcome::"
             "test_no_demotion_site_hardcodes_a_solver_reason",
             "tests/test_verifier_refinements.py::TestANonVerdictIsAttributedToTheRightOutcome::"
-            "test_every_possibly_unguarded_demotion_supplies_a_reason",
+            "test_every_disclosure_states_its_rows_reason",
             "tests/test_checker_errors.py::TestErrorCodes::test_error_code_collision_gate_is_clean",
             "tests/test_diagnostic_codes_1490.py::"
             "test_the_live_tree_carries_a_code_everywhere_and_builds_none_by_hand",

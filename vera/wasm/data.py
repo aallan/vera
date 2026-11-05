@@ -188,6 +188,11 @@ class DataMixin:
         whose declared type is a variable and whose argument carries no
         recorded target, so it stays obligated and disclosed.
         """
+        # The roster gate decides a guard beside the row: emptying
+        # `REFINED_BIND_GUARDED_SITES` drops these checks while the table
+        # still lists the rows guarded, which the guard matrices and the
+        # identity cells catch.  Its removal, the row the one decision, is a
+        # checklist line of the follow-up that deletes the verifier's walk.
         if site not in narrowing.REFINED_BIND_GUARDED_SITES:
             return value
         # Precedence by GUARDABILITY, not by source.  The declared field

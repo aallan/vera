@@ -184,7 +184,9 @@ class TestMeasureIsObligated:
         tail_call = _at(COUNT_TO, "loop(@Nat.1, @Nat.0 + 1)")
         # The evaluation at the tail call is a copy of the measure's written
         # operation, discharged under the call's facts, and shares its one
-        # record (#1695, A3); each copy's refutation is its own error.
+        # record (#1695, A3), and the record its one error: the entry's
+        # copy is refuted, so it decides the status and the error stands at
+        # the written site.
         assert _records(v, "nat_sub", measure) == ["violated/E502"]
         assert _records(v, "nat_sub", tail_call) == []
         # The measure's own `+ 1` is a checked add in the WAT at both points.
@@ -194,7 +196,7 @@ class TestMeasureIsObligated:
         assert _records(v, "int_overflow", measure) == ["tier3"]
         assert _records(v, "int_overflow", tail_call) == []
         assert ("E502", *measure) in v.errors
-        assert ("E502", *tail_call) in v.errors
+        assert ("E502", *tail_call) not in v.errors
         assert not v.ok
 
     def test_the_run_traps_where_the_record_says(self) -> None:
@@ -257,11 +259,11 @@ class TestMeasureOperations:
         measure = _at(DEC_DIV, "@Nat.1 / @Nat.0")
         tail_call = _at(DEC_DIV, "loop(@Nat.1 - 1, @Nat.0)")
         # One record for the written division, its copy at the tail call
-        # sharing it (#1695, A3); both refutations are errors.
+        # sharing it (#1695, A3), and the record its one error, at the
+        # written site the entry's refuted copy decides.
         assert _records(v, "div_zero", measure) == ["violated/E526"]
         assert _records(v, "div_zero", tail_call) == []
-        assert ("E526", *measure) in v.errors
-        assert ("E526", *_at(DEC_DIV, "loop(@Nat.1 - 1, @Nat.0)")) in v.errors
+        assert [e for e in v.errors if e[0] == "E526"] == [("E526", *measure)]
         assert not v.ok
         assert _run(DEC_DIV, "loop", [3, 0]).trap_kind == "divide_by_zero"
 
@@ -270,10 +272,11 @@ class TestMeasureOperations:
         in_measure = _at(DEC_CALL_PRE, "pred(@Nat.0))")
         tail_call = _at(DEC_CALL_PRE, "loop(@Nat.0 - 1)")
         # One record for the written call, its copy at the tail call sharing
-        # it (#1695, A3); both refutations are errors.
+        # it (#1695, A3), and the record its one error, at the written call
+        # the entry's refuted copy decides.
         assert _records(v, "call_pre", in_measure) == ["violated/E501"]
         assert _records(v, "call_pre", tail_call) == []
-        assert ("E501", *tail_call) in v.errors
+        assert [e for e in v.errors if e[0] == "E501"] == [("E501", *in_measure)]
         assert not v.ok
         ran = _run(DEC_CALL_PRE, "loop", [3])
         assert ran.trap_kind == "contract_violation"

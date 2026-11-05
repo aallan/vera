@@ -2063,6 +2063,11 @@ class CallsHandlersMixin:
         base, so a binder no narrower than what it receives is left alone.
         """
         site = binders.site_of(ast.HandlerClause, "params")
+        # The roster gate decides a guard beside the row: emptying
+        # `REFINED_BIND_GUARDED_SITES` drops these checks while the table
+        # still lists the rows guarded, which the guard matrices and the
+        # identity cells catch.  Its removal, the row the one decision, is a
+        # checklist line of the follow-up that deletes the verifier's walk.
         if site not in narrowing.REFINED_BIND_GUARDED_SITES:
             return []
         if not isinstance(te, ast.TypeExpr):
