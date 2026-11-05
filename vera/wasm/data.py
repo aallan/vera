@@ -167,10 +167,10 @@ class DataMixin:
         matters for an argument with an effect.
 
         Gated on ``site`` being in
-        :py:data:`vera.narrowing.REFINED_BIND_GUARDED_SITES`, the same table
-        the verifier's classification reads.  That is the whole point of the
-        gate: a site added to the table turns on the guard AND the guarded
-        status together, and a site absent from it can be neither.  Codegen
+        :py:data:`vera.narrowing.REFINED_BIND_GUARDED_SITES`, the sites this
+        lowering exists at, and decided by the component's row in the
+        obligation table (#1695), whose guard the verifier's record reads
+        too, so the guard and the guarded status move together.  Codegen
         used to emit at a hard-coded set that happened to agree with the
         verifier's, and "happened to agree" is not a property anything
         checks.

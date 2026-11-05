@@ -1155,7 +1155,9 @@ def _envelope_inconsistencies(v: pipeline.Verified) -> list[object]:
     """Every `violated` record has an error at its site (or at a self tail
     call one of its rows is evaluated at, which a measure's copy names);
     every verification error stands at such a site: no E50x beside a record
-    that is not `violated`, and none with no record at all."""
+    that is not `violated`, none with no record at all, and no more errors
+    at a site than `violated` records stand there (one diagnostic per
+    record, whichever copies discharged it)."""
     from vera import ast as vera_ast
     from vera import fold
 
@@ -1179,16 +1181,22 @@ def _envelope_inconsistencies(v: pipeline.Verified) -> list[object]:
             if ev and ev[0] == "measure_call" and ev[1] in calls:
                 at.add(calls[ev[1]])
         sites.append(at)
-    errors = {(d.location.line, d.location.column): d.error_code
+    listed = [((d.location.line, d.location.column), d.error_code)
               for d in res.diagnostics if d.severity == "error"
               and d.error_code.startswith("E5")
-              and d.error_code not in _NO_RECORD_CODES}
+              and d.error_code not in _NO_RECORD_CODES]
+    errors = dict(listed)
     for at in sites:
         if not at & errors.keys():
             bad.append(("violated record with no error", sorted(at)))
     every = set().union(*sites) if sites else set()
     bad += [("error with no violated record", code, at)
             for at, code in errors.items() if at not in every]
+    for at in errors:
+        n = sum(1 for where, _ in listed if where == at)
+        held = sum(1 for s in sites if at in s)
+        if n > held:
+            bad.append(("more errors than violated records", at, n, held))
     return bad
 
 
@@ -1905,6 +1913,23 @@ def test_a_value_inside_a_handle_is_disclosed_as_at_base(
     assert "outside" in e506[0].fix
     module = pipeline.compile(src).result
     assert pipeline.checks(module, obligation="refine_bind", function="f") == ()
+
+
+def test_repro_a_row_two_discharges_reach_reports_one_error() -> None:
+    """A `map_insert` value is one row (#1608): the call-argument walk and
+    the stored-value walk both refute `-3`, and the site's one record keeps
+    one E503; the other discharge's error goes with its record."""
+    v = _verified(
+        "public fn f(@Int -> @Int)\n  requires(true)\n  ensures(true)\n"
+        "  effects(pure)\n{\n"
+        '  let @Map<String, Nat> = map_insert(map_new(), "k", -3);\n'
+        '  match map_get(@Map<String, Nat>.0, "k") {\n'
+        "    Some(@Int) -> @Int.0,\n    None -> 7\n  }\n}\n")
+    recs = [o.status for o in v.result.obligations if o.kind == "nat_bind"]
+    assert recs == ["violated"], recs
+    e503 = [d for d in v.result.diagnostics if d.error_code == "E503"]
+    assert len(e503) == 1, [d.description for d in e503]
+    assert _envelope_inconsistencies(v) == []
 
 
 @pytest.mark.parametrize("form", list(_HANDLE_FORMS))

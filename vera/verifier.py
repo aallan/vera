@@ -1284,6 +1284,11 @@ class ContractVerifier:
             weakref.ref[ProofObligation], ast.Node, ast.Node | None,
             ast.FnCall | ast.ModuleCall | None,
         ]] = {}
+        #: Why a Tier 3 record was not discharged statically (#1251), by the
+        #: record: a disclosure of its row states it beside the row's reason
+        #: for having no check, so the two causes are both named.
+        self._static_reasons: dict[int, tuple[
+            weakref.ref[ProofObligation], str]] = {}
         # Warm-session hook: when provided (by
         # obligations.session.VerificationSession), _verify_fn calls
         # shared_smt.reset() per function instead of constructing a
@@ -3567,6 +3572,7 @@ class ContractVerifier:
                 if isinstance(n, ast.FnCall) and n.node_id is not None and site:
                     calls[n.node_id] = (site.line, site.column)
         status: dict[int, list[ProofObligation]] = {}
+        anchored: dict[int, set[int]] = {}
         kept: list[ProofObligation] = []
         for rec in own:
             if rec.kind not in _TABLE_KINDS:
@@ -3576,6 +3582,7 @@ class ContractVerifier:
             if not hit:
                 # No obligation: its disclosure, if it made one, goes too.
                 self._retract_disclosure(rec)
+            anchored[id(rec)] = {row.id for row in hit or ()}
             for row in hit or ():
                 status.setdefault(row.id, []).append(rec)
         # One record per written site, in the order the rows are listed.
@@ -3608,6 +3615,13 @@ class ContractVerifier:
             # the record says so, and is located at the written site.
             decided = next((r for r in recs if r.status == met),
                            next((r for r in recs if r.status != "verified"), recs[0]))
+            # One diagnostic per record: a discharge of this site alone that
+            # the site's record does not take its status from takes its
+            # diagnostic with it.
+            site_ids = {row.id for row in site_rows}
+            for other in recs:
+                if other is not decided and anchored.get(id(other), {-1}) <= site_ids:
+                    self._retract_diagnostic(other, keep=decided)
             head = _site_span(site_rows[0].node)
             base = next((r for r in recs if head is not None
                          and (r.line, r.column) == (head.line, head.column)), None)
@@ -3635,6 +3649,9 @@ class ContractVerifier:
                 # path names it, in the text the record's identity hashes.
                 record = replace(record, expr_text=(
                     f"{record.expr_text} [{'.'.join(site_rows[0].path)}]"))
+            static = self._static_reason(decided)
+            if static is not None:
+                self._note_static_reason(record, static)
             record = self._guarded_by_row(record, site_rows)
             settled.append(record)
         if premise is not None:
@@ -3649,6 +3666,35 @@ class ContractVerifier:
         self.obligations[start:] = [
             o for o in self.obligations[start:] if id(o) not in own_ids
         ] + kept + settled
+
+    def _note_static_reason(self, rec: ProofObligation, reason: str) -> None:
+        """Keep *reason*, why *rec* was not discharged statically, for the
+        disclosure its row may make (:meth:`_disclose_row`)."""
+        self._static_reasons[id(rec)] = (weakref.ref(rec), reason)
+
+    def _static_reason(self, rec: ProofObligation) -> str | None:
+        entry = self._static_reasons.get(id(rec))
+        if entry is None or entry[0]() is not rec:
+            return None
+        return entry[1]
+
+    def _retract_diagnostic(
+        self, rec: ProofObligation, *, keep: ProofObligation,
+    ) -> None:
+        """Remove the one diagnostic reporting *rec* (its code, at its
+        location), a discharge of a row whose record is *keep*'s; a
+        diagnostic *keep* reports at the same place is left standing."""
+        if not rec.error_code:
+            return
+        at = [i for i, d in enumerate(self.errors)
+              if d.error_code == rec.error_code
+              and d.location.line == rec.line
+              and d.location.column == rec.column]
+        if (keep.error_code, keep.line, keep.column) == (
+                rec.error_code, rec.line, rec.column) and len(at) < 2:
+            return
+        if at:
+            del self.errors[at[-1]]
 
     def _relocate_diagnostic(
         self, rec: ProofObligation, head: ast.Span,
@@ -3837,7 +3883,9 @@ class ContractVerifier:
             location=loc,
             source_line=self._get_source_line(loc.line),
             rationale=(
-                f"No runtime check guards this site because {row.guard.reason}, "
+                (f"It was not discharged statically: {static}.  "
+                 if (static := self._static_reason(record)) else "")
+                + f"No runtime check guards this site because {row.guard.reason}, "
                 "so a value that violates it is not caught at run time; the "
                 "verifier discloses it rather than claim a runtime check."),
             fix=_REASON_FIXES.get(row.guard.reason) or _DISCLOSURE_FIXES.get(code, (
@@ -11130,6 +11178,7 @@ class ContractVerifier:
             decl.name, "refine_bind", value_node, "tier3",
             error_code="E506",
         )
+        self._note_static_reason(self.obligations[-1], reason)
         self._report_refined_runtime(decl, value_node, site, reason)
 
     def _check_generic_refined_return(
@@ -12653,6 +12702,8 @@ class ContractVerifier:
         # is `tier3` (or `timeout`), and `_settle_rows` discloses it where
         # the row has none.
         self._record_obligation(decl.name, "nat_bind", value_node, status)
+        if reason:
+            self._note_static_reason(self.obligations[-1], reason)
 
 
     def _report_underflow(
