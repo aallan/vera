@@ -806,25 +806,24 @@ class ExpressionsMixin:
         likewise deferred (error recovery — no cascading E243).
         """
         from vera.checker.eq_ability import is_eq_derivable
-        from vera.types import contains_unresolved
+        from vera.types import INT, unresolved_as
 
         # Defer any operand still carrying a type variable — a constrained
         # generic (`Eq<T>`) is decided per-instantiation downstream, exactly as
         # #921 defers a bare-TypeVar Ord operand.  `contains_typevar` catches
         # nested forms (`Box<T>`, `Option<T>`) too, so a generic body's `==`
         # over a partially-generic type is never spuriously rejected here.
-        # A name nothing declares (E136) is deferred as `UnknownType` is: its
-        # own E136 is the one error the comparison owes (#1563).
         if (contains_typevar(left_ty) or contains_typevar(right_ty)
                 or isinstance(left_ty, UnknownType)
-                or isinstance(right_ty, UnknownType)
-                or contains_unresolved(left_ty)
-                or contains_unresolved(right_ty)):
+                or isinstance(right_ty, UnknownType)):
             return
+        # A name nothing declares (E136) is judged as an Eq type would be: its
+        # own E136 is the error its part owes (#1563), and a part that is no
+        # Eq type whatever the name is (`Array<Qzt>`) still draws E243.
         # The compatibility check (E142) already ran; judge the more specific
         # (subtype) operand — they share a type up to Nat<:Int, and Eq-ness is
         # invariant across that pair (both Nat and Int are Eq primitives).
-        if is_eq_derivable(left_ty, self.env):
+        if is_eq_derivable(unresolved_as(left_ty, INT), self.env):
             return
         self._error(
             node,

@@ -672,3 +672,21 @@ def test_an_at_nat_binders_post_fact_is_its_sign_and_no_more() -> None:
     show as a discharged call."""
     codes = _verified_codes(_binder_program("arm", "Nat", req="> 0"))
     assert "E501" in codes, codes
+
+
+def test_an_operator_over_a_refinement_of_the_placeholder_draws_nothing_further() -> None:
+    """The guard reads through a refinement over the placeholder
+    (`{ @Qzt | true }`), as `is_subtype` does: `@Q.0 + 1` drew E140."""
+    source = (f"type Q = {{ @Qzt | true }};\n\nprivate fn f(@Q -> @Int)\n{_SIG}"
+              "{\n  @Q.0 + 1\n}\n")
+    assert _codes(source) == ["E136"]
+
+
+def test_a_container_no_name_makes_eq_still_draws_e243() -> None:
+    """The Eq judgement asks its question with the placeholder read as an Eq
+    type, so `Array<Qzt>`, no Eq type whatever `Qzt` is, still draws E243
+    beside its E136s, as the base did."""
+    source = (f"private fn f(@Array<Qzt> -> @Bool)\n{_SIG}"
+              "{\n  @Array<Qzt>.0 == @Array<Qzt>.0\n}\n")
+    codes = _codes(source)
+    assert "E243" in codes and set(codes) == {"E136", "E243"}, codes

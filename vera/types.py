@@ -936,23 +936,28 @@ def is_unknown_like(ty: Type | None) -> bool:
     """Whether *ty* is a type no judgement holds a value to: the `Unknown`
     error recovery leaves, or the placeholder of a name nothing declares
     (`UnresolvedAdtType`, E136), whose own error is the one a judgement over
-    it owes (#1563).  The early guard of every operator's check reads it."""
-    return isinstance(ty, (UnknownType, UnresolvedAdtType))
+    it owes (#1563).  The early guard of every operator's check reads it,
+    through any refinement over it (`{ @Qzt | P }`)."""
+    if ty is None:
+        return False
+    return isinstance(base_type(ty), (UnknownType, UnresolvedAdtType))
 
 
-def contains_unresolved(ty: Type) -> bool:
-    """True if *ty* holds the placeholder of a name nothing declares
-    (`UnresolvedAdtType`, E136) anywhere in its structure (#1563)."""
+def unresolved_as(ty: Type, by: Type) -> Type:
+    """*ty* with every placeholder of a name nothing declares replaced by
+    *by*: a judgement that must not rest on what the name would have been
+    asks its question of a stand-in type instead (#1563)."""
     if isinstance(ty, UnresolvedAdtType):
-        return True
+        return by
     if isinstance(ty, AdtType):
-        return any(contains_unresolved(a) for a in ty.type_args)
+        return ty.with_args(tuple(unresolved_as(a, by) for a in ty.type_args))
     if isinstance(ty, FunctionType):
-        return (any(contains_unresolved(p) for p in ty.params)
-                or contains_unresolved(ty.return_type))
+        return FunctionType(
+            tuple(unresolved_as(p, by) for p in ty.params),
+            unresolved_as(ty.return_type, by), ty.effect)
     if isinstance(ty, RefinedType):
-        return contains_unresolved(ty.base)
-    return False
+        return dataclasses.replace(ty, base=unresolved_as(ty.base, by))
+    return ty
 
 
 def _is_fresh_typevar(ty: Type) -> bool:
