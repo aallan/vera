@@ -927,6 +927,21 @@ def contains_typevar(ty: Type) -> bool:
     return False
 
 
+def contains_unresolved(ty: Type) -> bool:
+    """True if *ty* holds the placeholder of a name nothing declares
+    (`UnresolvedAdtType`, E136) anywhere in its structure (#1563)."""
+    if isinstance(ty, UnresolvedAdtType):
+        return True
+    if isinstance(ty, AdtType):
+        return any(contains_unresolved(a) for a in ty.type_args)
+    if isinstance(ty, FunctionType):
+        return (any(contains_unresolved(p) for p in ty.params)
+                or contains_unresolved(ty.return_type))
+    if isinstance(ty, RefinedType):
+        return contains_unresolved(ty.base)
+    return False
+
+
 def _is_fresh_typevar(ty: Type) -> bool:
     """A fresh, unresolved inference placeholder (`A$1` from _fresh_typevar).
 

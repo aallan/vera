@@ -805,15 +805,20 @@ class ExpressionsMixin:
         likewise deferred (error recovery — no cascading E243).
         """
         from vera.checker.eq_ability import is_eq_derivable
+        from vera.types import contains_unresolved
 
         # Defer any operand still carrying a type variable — a constrained
         # generic (`Eq<T>`) is decided per-instantiation downstream, exactly as
         # #921 defers a bare-TypeVar Ord operand.  `contains_typevar` catches
         # nested forms (`Box<T>`, `Option<T>`) too, so a generic body's `==`
         # over a partially-generic type is never spuriously rejected here.
+        # A name nothing declares (E136) is deferred as `UnknownType` is: its
+        # own E136 is the one error the comparison owes (#1563).
         if (contains_typevar(left_ty) or contains_typevar(right_ty)
                 or isinstance(left_ty, UnknownType)
-                or isinstance(right_ty, UnknownType)):
+                or isinstance(right_ty, UnknownType)
+                or contains_unresolved(left_ty)
+                or contains_unresolved(right_ty)):
             return
         # The compatibility check (E142) already ran; judge the more specific
         # (subtype) operand — they share a type up to Nat<:Int, and Eq-ness is

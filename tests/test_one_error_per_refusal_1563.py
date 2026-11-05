@@ -208,6 +208,9 @@ _UNKNOWN_SITES = {
         body="let Tuple<@Optio<Int>, @Int> = Tuple(Some(1), 2);\n  @Int.0"),
     "array_element": _FN.format(
         body="let @Array<Optio<Int>> = [Some(1)];\n  0"),
+    "comparison": (
+        "private fn eqs(@Optio<Int>, @Optio<Int> -> @Bool)\n  requires(true)\n"
+        "  ensures(true)\n  effects(pure)\n{\n  @Optio<Int>.0 == @Optio<Int>.1\n}\n"),
     "nested_argument": (
         "private fn take(@Array<Optio<Int>> -> @Int)\n  requires(true)\n"
         "  ensures(true)\n  effects(pure)\n{\n  0\n}\n\n"
