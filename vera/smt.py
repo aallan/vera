@@ -3893,6 +3893,32 @@ class SmtContext:
                 stack.extend(cur)
         return found, sites
 
+    def _mentions_float_stand_in(self, term: z3.ExprRef) -> bool:
+        """Whether *term* holds a `Float64` stand-in itself, an
+        ``_opaque_``-named constant of the floating-point sort.
+
+        The stand-in, not a value built on one: a call's result over a
+        stand-in argument carries its callee's `ensures`, which can decide
+        the goal whatever the argument (`examples/ephemeris.vera`'s
+        `right_ascension`, whose range comes back through `wrap_deg`), so a
+        goal over such a result is still asked."""
+        if not self._opaque_tainted:
+            return False
+        seen: set[int] = set()
+        stack: list[z3.ExprRef] = [term]
+        while stack:
+            t = stack.pop()
+            tid = t.get_id()
+            if tid in seen:
+                continue
+            seen.add(tid)
+            if (z3.is_app(t) and t.num_args() == 0
+                    and isinstance(t.sort(), z3.FPSortRef)
+                    and t.decl().name().startswith("_opaque_")):
+                return True
+            stack.extend(t.children())
+        return False
+
     def _mentions_stand_in(self, term: z3.ExprRef) -> bool:
         """Whether *term* holds a term no refutation may rest on (#1696,
         R4): a stand-in or a value built on one, by `_taint`'s ids, or any
@@ -4714,6 +4740,15 @@ class SmtContext:
         a genuine violation elsewhere in a function that also holds a
         stand-in stays loud.
         """
+        if self._mentions_float_stand_in(goal):
+            # A goal over a `Float64` stand-in is undecided without the
+            # query (#1696): the stand-in carries no fact a refutation may
+            # rest on, so the only verdicts a query could give are a proof
+            # true for every float value (none in the corpus) or `opaque`,
+            # and Z3's floating-point search took 1 to 4 s to give the
+            # second.  The `float_to_int_domain` precedent: a symbolic
+            # floating-point argument is Tier 3 without asking.
+            return SmtResult(status="opaque")
         with self._premises(goal, assumptions, tainted):
             self.solver.add(z3.Not(goal))
             result = self.solver.check()

@@ -1344,3 +1344,138 @@ def test_repro_a_destructured_components_guard_holds_only_where_it_runs() -> Non
     assert _statuses(verified, "ensures") == ["tier3"]
     ran = pipeline.run(GUARD_UNDER_ITS_BRANCH, "f", [False], file=FILE)
     assert ran.trap is not None and "Postcondition" in str(ran.trap), ran
+
+
+# =====================================================================
+# A goal over a `Float64` stand-in is undecided without the query
+# (#1696's line from PR #1833's review)
+# =====================================================================
+
+_FLOAT_STAND_IN = """\
+type Unit01 = { @Float64 | @Float64.0 >= 0.0 && @Float64.0 <= 1.0 };
+
+public fn pct(@Int -> @Unit01)
+  requires(@Int.0 > 0)
+  ensures(@Int.0 > 100 ==> @Unit01.result == 1.0)
+  effects(pure)
+{
+  let @Int = if @Int.0 > 100 then { 100 } else { @Int.0 };
+  int_to_float(@Int.0) / 100.0
+}
+"""
+
+_FLOAT_PARAMETER = """\
+public fn half(@Float64 -> @Float64)
+  requires(@Float64.0 >= 0.0 && @Float64.0 <= 1.0)
+  ensures(@Float64.result <= 1.0)
+  effects(pure)
+{
+  @Float64.0 / 2.0
+}
+"""
+
+
+def _holds_a_float_stand_in(ctx: object, goal: object) -> bool:
+    """Whether *goal* holds a `Float64`-sorted term no refutation may rest
+    on, by the context's taint and the stand-ins' names, read here rather
+    than through the rule under test."""
+    import z3
+
+    seen: set[int] = set()
+    stack = [goal]
+    while stack:
+        t = stack.pop()
+        if t.get_id() in seen:  # type: ignore[attr-defined]
+            continue
+        seen.add(t.get_id())  # type: ignore[attr-defined]
+        if (isinstance(t.sort(), z3.FPSortRef)  # type: ignore[attr-defined]
+                and (t.get_id() in ctx._tainted_ids  # type: ignore[attr-defined]
+                     or (z3.is_app(t) and t.num_args() == 0  # type: ignore[attr-defined]
+                         and t.decl().name().startswith("_opaque_")))):  # type: ignore[attr-defined]
+            return True
+        stack.extend(t.children())  # type: ignore[attr-defined]
+    return False
+
+
+class _CountedChecks:
+    """Counts the solver queries a verification asks whose goal holds a
+    `Float64` stand-in, by wrapping `SmtContext._premises` (the one scope
+    every refutation's query is asked in)."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from vera import smt as smt_mod
+
+        self.float_goals = 0
+        original = smt_mod.SmtContext._premises
+        counter = self
+
+        def counted(ctx, goal, assumptions, tainted):  # type: ignore[no-untyped-def]
+            if _holds_a_float_stand_in(ctx, goal):
+                counter.float_goals += 1
+            return original(ctx, goal, assumptions, tainted)
+
+        monkeypatch.setattr(smt_mod.SmtContext, "_premises", counted)
+
+
+def test_repro_a_goal_over_a_float_stand_in_asks_no_query(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """`int_to_float` has no term, so its value is a `Float64` stand-in, and
+    a goal over it was asked of Z3 as a floating-point query (1 to 4 s
+    each on `examples/maximum_syntax.vera`'s `to_percentage`), every one
+    `sat` and so `opaque` (R4).  The goal is undecided without the query:
+    the postcondition and the refined return are Tier 3 behind their
+    checks, as before, and nothing is asked."""
+    counted = _CountedChecks(monkeypatch)
+    verified = _verify(_FLOAT_STAND_IN)
+    assert not verified.errors, _codes(verified)
+    assert _ensures_status(verified, "pct") == "tier3"
+    assert counted.float_goals == 0
+
+
+def test_a_goal_over_a_float_parameter_is_still_asked() -> None:
+    """The negative space: a `Float64` parameter is no stand-in, so a goal
+    over it is decided as before (here proved)."""
+    verified = _verify(_FLOAT_PARAMETER)
+    assert not verified.errors, _codes(verified)
+    assert _ensures_status(verified, "half") == "verified"
+
+
+def test_a_goal_false_for_every_float_is_still_refuted_over_a_parameter() -> None:
+    """And refuted as before, with no stand-in in it."""
+    verified = _verify(_FLOAT_PARAMETER.replace(
+        "@Float64.result <= 1.0", "@Float64.result > 1.0"))
+    assert "E500" in _codes(verified)
+
+
+_FLOAT_CALL_OVER_A_STAND_IN = """\
+private fn clamp01(@Float64 -> @Float64)
+  requires(true)
+  ensures(@Float64.result >= 0.0 && @Float64.result <= 1.0)
+  effects(pure)
+{
+  if @Float64.0 >= 0.0 && @Float64.0 <= 1.0 then {
+    @Float64.0
+  } else {
+    0.0
+  }
+}
+
+public fn unit_of(@Int -> @Float64)
+  requires(true)
+  ensures(@Float64.result >= 0.0 && @Float64.result <= 1.0)
+  effects(pure)
+{
+  clamp01(int_to_float(@Int.0) / 100.0)
+}
+"""
+
+
+def test_a_call_over_a_float_stand_in_keeps_its_callees_proof() -> None:
+    """The rule's bound: the stand-in itself, not a value built on one.  A
+    call's result over a stand-in argument carries its callee's `ensures`,
+    which decides the goal whatever the argument, so the goal is asked and
+    proves (`examples/ephemeris.vera`'s `right_ascension` through
+    `wrap_deg`)."""
+    verified = _verify(_FLOAT_CALL_OVER_A_STAND_IN)
+    assert not verified.errors, _codes(verified)
+    assert _ensures_status(verified, "unit_of") == "verified"
