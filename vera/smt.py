@@ -4676,6 +4676,17 @@ class SmtContext:
         wanted = {value.get_id() for value, _ in self._value_facts}
         read = self._ids_in(
             [goal, *assumptions, *self._path_conditions], wanted)
+        # Closed over the facts themselves: a placeholder's fact that reads
+        # another placeholder (`let @Nat = if c then { @Nat.0 - 7 } else
+        # { @Nat.0 }` over an earlier guarded `@Nat.0`) is read by the query
+        # through it, so that one's fact holds there too (#1563).
+        while True:
+            more = self._ids_in(
+                [fact for value, fact in self._value_facts
+                 if value.get_id() in read], wanted) - read
+            if not more:
+                break
+            read |= more
         return [fact for value, fact in self._value_facts
                 if value.get_id() in read]
 

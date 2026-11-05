@@ -392,3 +392,31 @@ def test_repro_1563_a_refused_destructured_binder_draws_no_second_error() -> Non
     walk that decides the call."""
     assert _verified_codes(
         _binder_program("destructure_literal", "Pos")) == ["E505"]
+
+
+_CHAINED_NAT = """\
+public fn f(@Nat, @Bool -> @Int)
+  requires(@Nat.0 >= 20 && @Nat.0 <= 39)
+  ensures(true)
+  effects(pure)
+{
+  let @Array<Int> = [1, 2, 3, 4];
+  let @Nat = array_length(@Array<Int>.0);
+  let @Nat = if @Bool.0 then { @Nat.1 - 7 } else { @Nat.0 };
+  @Nat.0 - -2
+}
+"""
+
+
+def test_repro_a_guarded_binder_read_through_another_keeps_its_fact() -> None:
+    """A guarded binder's value whose fact reads an earlier guarded binder's
+    value: the query reads the second, and through its fact the first, so
+    the first's fact holds there too (`SmtContext._facts_of_values_read`,
+    closed over the facts).  Generator seed 177's `f2` lost its overflow
+    proof to Tier 3 without the closure once a `@Nat` binder read its guard."""
+    verified = pipeline.verify(_CHAINED_NAT)
+    assert not verified.errors, [d.error_code for d in verified.errors]
+    overflow = [o.status for o in verified.obligations
+                if o.kind == "int_overflow"]
+    assert overflow and set(overflow) == {"verified"}, [
+        (o.kind, o.status) for o in verified.obligations]
