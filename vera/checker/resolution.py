@@ -1468,7 +1468,7 @@ def _overlay_literal_holes(soft: Type, ty: Type) -> Type:
         if isinstance(ty, PrimitiveType) and ty.name in ("Int", "Nat"):
             return soft
         return ty
-    if (isinstance(soft, AdtType) and isinstance(ty, AdtType)
+    if (isinstance(soft, AdtType) and isinstance(ty, AdtType)  # pragma: no mutate — equivalent: a call's recorded soft result is its synthesized type with holes, so where it is a data type `ty` is that data type, and the name and arity tests below decide the rest
             and soft.name == ty.name
             and len(soft.type_args) == len(ty.type_args)):
         return ty.with_args(tuple(

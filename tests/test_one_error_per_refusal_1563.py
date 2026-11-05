@@ -787,3 +787,59 @@ def test_a_generic_function_field_is_no_eq_type() -> None:
               f"private fn f(@Fn1<Int> -> @Bool)\n{_SIG}"
               "{\n  @Fn1<Int>.0 == @Fn1<Int>.0\n}\n")
     assert _codes(source) == ["E243"]
+
+
+# ---------------------------------------------------------------------------
+# The rebuild sites this PR changed (`AdtType.with_args`): the literal-hole
+# meet and overlay, and the Eq derivation's substitution, each pinned where
+# its own branches decide a verdict (the Mutation (diff) lane's survivors)
+# ---------------------------------------------------------------------------
+
+_ID_FN = f"private forall<T> fn id(@T -> @T)\n{_SIG}{{\n  @T.0\n}}\n\n"
+
+_LITERAL_ROUTES = {
+    # an array literal of tuples: the meet over the elements' tuple types
+    "array_of_tuples": ("let @Array<Tuple<Nat, Nat>> = id([Tuple(1, L)]);\n"
+                        "  nat_to_int(array_length(@Array<Tuple<Nat, Nat>>.0))"),
+    # an `if` of two literals: every part a literal, the meet a hole
+    "if_of_literals": ("let @Nat = id(if @Bool.0 then { L } else { L });\n"
+                       "  nat_to_int(@Nat.0)"),
+    # an `if` of two tuples: the meet over the branches' tuple types
+    "if_of_tuples": ("let Tuple<@Nat, @Nat> = id(if @Bool.0 then { Tuple(1, L) }"
+                     " else { Tuple(2, L) });\n  nat_to_int(@Nat.0)"),
+    # a generic call's recorded soft result, overlaid on its type
+    "nested_generic": ("let Tuple<@Nat, @Nat> = id(id(Tuple(1, L)));\n"
+                       "  nat_to_int(@Nat.0)"),
+    "constructor_of_generic": "let @Option<Nat> = id(Some(id(L)));\n  0",
+}
+
+
+def _literal_route(route: str, literal: str) -> str:
+    return (_ID_FN + f"private fn f(@Bool -> @Int)\n{_SIG}{{\n  "
+            + _LITERAL_ROUTES[route].replace("L", literal) + "\n}\n")
+
+
+def test_repro_a_negative_literal_meets_its_nat_context_through_every_route() -> None:
+    """The literal-hole meet and overlay carry a literal's softness through
+    an array literal, an `if`, a tuple and a generic call's recorded result,
+    so a `Nat` context fixes `id` at `Nat` and `0 - 3` there is refused
+    (E503) on every route, while `2` is clean."""
+    for route in _LITERAL_ROUTES:
+        verified = pipeline.verify(_literal_route(route, "0 - 3"))
+        assert "E503" in [d.error_code for d in verified.errors], route
+        clean = pipeline.verify(_literal_route(route, "2"))
+        assert not clean.errors, (route, [d.error_code for d in clean.errors])
+
+
+def test_repro_the_eq_derivation_substitutes_through_a_refined_field() -> None:
+    """The substitution descends a refinement to its base, a type parameter
+    included: a refined field (`PosInt`) and a refinement over a parameter
+    (`{ @T | true }` at `Int`) are Eq types, so both comparisons are clean."""
+    sources = [
+        ("type PosInt = { @Int | @Int.0 > 0 };\n\nprivate data PB {\n  P(PosInt)\n}\n\n"
+         f"private fn g(@PB -> @Bool)\n{_SIG}{{\n  @PB.0 == @PB.0\n}}\n"),
+        ("private data RB<T> {\n  RB({ @T | true })\n}\n\n"
+         f"private fn g(@RB<Int> -> @Bool)\n{_SIG}{{\n  @RB<Int>.0 == @RB<Int>.0\n}}\n"),
+    ]
+    for source in sources:
+        assert _codes(source) == [], source
