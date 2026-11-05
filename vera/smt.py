@@ -3631,9 +3631,9 @@ class SmtContext:
         literal *leaf*'s value (#1716): its term is a constant, so a fresh
         solver decides it exactly.  False where a predicate of *ty* does not
         translate whole, or rests on a stand-in."""
-        term = self.translate_expr(leaf, SlotEnv())
+        term = self.translate_expr(leaf, SlotEnv())  # pragma: no mutate — equivalent: a literal's translation reads no environment
         sort = self._value_sort(ty)
-        if term is None or sort is None or term.sort() != sort:
+        if term is None or sort is None or term.sort() != sort:  # pragma: no mutate — equivalent: every literal translates, so its term is never None
             return False
         facts = self._type_facts(term, ty)
         chain = naming.refined_type_chain(ty)
