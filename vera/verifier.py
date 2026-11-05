@@ -9755,8 +9755,9 @@ class ContractVerifier:
 
         if isinstance(pattern, ast.BindingPattern):
             target = self._written_type(pattern.type_expr)
-            if (self._is_refined_type(target)
-                    and self._narrows_into_refined(scrutinee, target)):
+            # `_narrows_into_refined` is False for a target that is no
+            # refinement, so it alone decides the refined reading.
+            if self._narrows_into_refined(scrutinee, target):
                 bind_fresh(scrutinee_z3, target)
             elif target == NAT:
                 bind_fresh(scrutinee_z3, target, pattern, scrutinee)
@@ -13456,7 +13457,7 @@ class ContractVerifier:
         unchanged; the assumption now carries every level.
         """
         target_parts = self._refined_parts(target_ty)
-        if target_parts is None:  # pragma: no cover — caller gates on refined
+        if target_parts is None:
             return False
         source_ty = self._resolved_type_of(value)
         if source_ty is not None:
