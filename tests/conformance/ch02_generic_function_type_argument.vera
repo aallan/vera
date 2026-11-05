@@ -1,0 +1,52 @@
+-- Conformance: a generic instantiated at a function type (Chapter 2)
+-- Tests: a closure passed for a generic's type parameter, directly, as an
+-- array element and as a data type's field; the clone at the function type
+-- is compiled, and the closure it hands back is applied.  Code generation
+-- read a clone's parameter width from the type argument's name, which no
+-- branch answered, and dropped the clone and its callers (#1783).
+type IntToInt = fn(Int -> Int) effects(pure);
+
+private data Box<T> {
+  MkBox(T)
+}
+
+private forall<T> fn idg(@T -> @T)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @T.0
+}
+
+private forall<T> fn first_or(@Array<T>, @T -> @T)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if array_length(@Array<T>.0) > 0 then {
+    @Array<T>.0[0]
+  } else {
+    @T.0
+  }
+}
+
+private forall<T> fn unbox(@Box<T> -> @T)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Box<T>.0 {
+    MkBox(@T) -> @T.0
+  }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @IntToInt = idg(fn(@Int -> @Int) effects(pure) { @Int.0 + 1 });
+  let @IntToInt = first_or(array_append([], @IntToInt.0), @IntToInt.0);
+  let @IntToInt = unbox(MkBox(@IntToInt.0));
+  apply_fn(@IntToInt.0, 41)
+}
