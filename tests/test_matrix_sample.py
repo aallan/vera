@@ -711,6 +711,7 @@ MARKED_FILES = (
     "test_untranslatable_rule_1696.py",
     "test_verifier_reads_the_typed_program_1525.py",
     "test_composite_coercion_guards.py",
+    "test_expected_type_premise_1716.py",
 )
 UNMARKED_FILES = (
     "test_obligations.py",

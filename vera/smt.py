@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any, Callable, cast
 
 import z3
 
-from vera import ast, fold, naming, patterns
+from vera import ast, fold, naming, narrowing, patterns
 from vera.monomorphize import mangle_type_name, unmangle_type_name
 from vera import carriers
 from vera.regularity import RegularityIndex, adt_names_in
@@ -36,6 +36,7 @@ from vera.types import (
     TypeVar,
     base_type,
     erases_to_unit,
+    types_equal,
     BOOL,
     FLOAT64,
     INT,
@@ -3596,6 +3597,16 @@ class SmtContext:
             ty = hook(node)
             if ty is None:
                 return None
+            # #1716: a join's stand-in carries the type it was recorded at
+            # only where that is what its leaves establish
+            # (`narrowing.established_type`), and its base alone otherwise:
+            # the checker records a join at the side its branches share the
+            # most of, which states facts a branch never had.
+            if (isinstance(node, ast.Expr)
+                    and narrowing.flow_arms(node) is not None
+                    and not _same_type(
+                        narrowing.established_type(node, hook), ty)):
+                base_only = True
         sort = self._value_sort(ty)
         if sort is None:
             return None
@@ -5007,6 +5018,11 @@ def _resumes_in_tail_position(clause: ast.HandlerClause) -> bool:
     return (isinstance(body, ast.Block) and not body.statements
             and isinstance(body.expr, ast.FnCall)
             and body.expr.name == "resume" and len(body.expr.args) == 1)
+
+
+def _same_type(a: Type | None, b: Type) -> bool:
+    """Whether *a* is the type *b* (``None`` is no type)."""
+    return a is not None and types_equal(a, b)
 
 
 def _identity(node: ast.Node) -> Any:

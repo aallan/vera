@@ -25,7 +25,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from vera import ast, binders
-from vera.types import INT, NAT, AdtType, RefinedType, base_type
+from vera.types import (INT, NAT, NEVER, AdtType, RefinedType, base_type,
+                        types_equal)
 
 if TYPE_CHECKING:
     from vera.types import Type
@@ -383,6 +384,39 @@ def value_leaves(expr: ast.Expr) -> tuple[ast.Expr, ...]:
     for arm in arms:
         out += value_leaves(arm)
     return out
+
+
+def established_type(
+    expr: ast.Expr, type_of: Callable[[ast.Expr], "Type | None"],
+) -> "Type | None":
+    """The type *expr*'s value is established at: what its own leaves
+    (:func:`value_leaves`) are, never the type the checker gave the join
+    over them (#1716).
+
+    A leaf's recorded type is its own: a slot's binder, a call's declared
+    return, a construction's at the type its fields are checked against, a
+    literal's.  A join's is not: the checker types an `if`, a `match`, a
+    block or a `handle` as the side its branches share the most of, so
+    `if c then { @Option<Int>.0 } else { None }` passed at `Option<PosInt>`
+    is recorded at `Option<PosInt>` (its `None` checked there), which states
+    a payload the first branch never had.  So a join is at its leaves' one
+    type where every leaf that yields a value has it, and at none otherwise:
+    ``None``, which a reader takes as its base alone.  A join with no value
+    (an `if` with no `else`) is at none."""
+    if flow_arms(expr) is None:
+        return type_of(expr)
+    shared: "Type | None" = None
+    for leaf in value_leaves(expr):
+        ty = type_of(leaf)
+        if ty is None:
+            return None
+        if types_equal(ty, NEVER):
+            continue
+        if shared is None:
+            shared = ty
+        elif not types_equal(shared, ty):
+            return None
+    return shared
 
 
 def element_sources(collection: ast.Expr) -> tuple["ComponentSource", ...]:
