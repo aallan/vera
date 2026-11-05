@@ -290,5 +290,8 @@ def test_repro_a_run_that_prints_and_then_traps_is_not_clean() -> None:
     body = ('IO.print("42");\n  let @Array<Int> = [1];\n'
             "  IO.print(int_to_string(@Array<Int>.0[5]))")
     source = _fn("public fn main(@Unit -> @Unit)", body, "<IO>")
-    with pytest.raises(AssertionError):
+    ran = pipeline.run(source)
+    assert ran.trap is not None
+    assert ran.stdout == "42"
+    with pytest.raises(AssertionError, match="out of bounds"):
         _runs_clean(source, "42")
