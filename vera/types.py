@@ -993,16 +993,18 @@ def is_literal_hole(ty: Type) -> bool:
 
 
 def default_literal_holes(ty: Type) -> Type:
-    """*ty* with every hole given the literals' own type, `Int`."""
+    """*ty* with every hole given the literals' own type, `Int`.
+
+    A hole stands for a literal, so it occurs where a literal's type does:
+    at the top, or inside a data type's arguments (an array, a tuple, an
+    `Option` built around literals).  A function type is always written, a
+    closure's parameters and result included, so none holds a hole, and it
+    is returned as it is."""
     if is_literal_hole(ty):
         return INT
     if isinstance(ty, AdtType):
         return ty.with_args(tuple(default_literal_holes(a)
                                   for a in ty.type_args))
-    if isinstance(ty, FunctionType):
-        return FunctionType(tuple(default_literal_holes(p)
-                                  for p in ty.params),
-                            default_literal_holes(ty.return_type), ty.effect)
     return ty
 
 
@@ -1077,13 +1079,8 @@ def fill_literal_holes(ty: Type, source: Type | None) -> Type:
         return ty.with_args(tuple(
             fill_literal_holes(a, b)
             for a, b in zip(ty.type_args, source.type_args)))
-    if (isinstance(ty, FunctionType) and isinstance(source, FunctionType)
-            and len(ty.params) == len(source.params)):
-        return FunctionType(
-            tuple(fill_literal_holes(a, b)
-                  for a, b in zip(ty.params, source.params)),
-            fill_literal_holes(ty.return_type, source.return_type),
-            ty.effect)
+    # A function type holds no hole (`default_literal_holes`), so it is
+    # returned as it is.
     return ty
 
 
