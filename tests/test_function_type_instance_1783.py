@@ -281,3 +281,14 @@ def test_an_eq_constraint_at_a_function_type_is_still_refused() -> None:
               + _fn("public fn main(@Unit -> @Bool)", body))
     checked = pipeline.check(source)
     assert [d.error_code for d in checked.errors] == ["E613"]
+
+
+def test_repro_a_run_that_prints_and_then_traps_is_not_clean() -> None:
+    """The matrix's run assertion is not satisfied by output alone: a
+    program that prints the expected text and then traps fails it, since
+    `Ran.stdout` returns what a trapped run printed."""
+    body = ('IO.print("42");\n  let @Array<Int> = [1];\n'
+            "  IO.print(int_to_string(@Array<Int>.0[5]))")
+    source = _fn("public fn main(@Unit -> @Unit)", body, "<IO>")
+    with pytest.raises(AssertionError):
+        _runs_clean(source, "42")
