@@ -1827,7 +1827,7 @@ class TestAttributionThroughTheJoin:
             "the runtime check of an obligation the verifier did not prove: "
             "the call_pre obligation"), trial.attribution
 
-    def test_a_proved_call_into_a_user_function_is_still_unattributed(
+    def test_a_proved_call_into_a_user_function_is_refuted_by_its_record(
         self,
     ) -> None:
         """A discharged call-site precondition is a record (#1695), the

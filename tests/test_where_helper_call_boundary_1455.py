@@ -39,7 +39,7 @@ import pytest
 
 from tests import pipeline
 from tests.codegen_helpers import _run_refine_trap
-from tests.verifier_helpers import _verify
+from tests.verifier_helpers import _verify, entry_only
 
 #: The bound each call below that this file makes to the pipeline had as a
 #: `vera` process; in process it is the call's budget (tests/pipeline.py).
@@ -123,23 +123,8 @@ def _binds(source: str) -> list[tuple[str, str, str | None]]:
         (o.kind, o.status, o.error_code or None)
         for o in result.obligations
         if o.kind in ("refine_bind", "nat_bind")
-        and not _entry_only(result, o)
+        and not entry_only(result, o)
     )
-
-
-def _entry_only(result: object, o: object) -> bool:
-    """Whether *o* is a refined formal's ENTRY record, which #1695 records
-    (`verified`, the callee's assumption, a class the obligation table's
-    instrument pins); these cells read the call's narrowing."""
-    from vera.obligations import table as obligation_table
-
-    table = getattr(result, "table", None)
-    rows = getattr(o, "rows", ())
-    if table is None or not rows:
-        return False
-    entry = {r.id for r in table.rows
-             if r.evaluation == obligation_table.ENTRY}
-    return set(rows) <= entry
 
 
 def _error_codes(source: str) -> list[str]:
@@ -477,7 +462,7 @@ class TestTheCalleeIsResolvedWhereTheCallIsWritten:
         lines = sorted(
             o.line
             for o in result.obligations
-            if o.kind == "refine_bind" and not _entry_only(result, o)
+            if o.kind == "refine_bind" and not entry_only(result, o)
         )
         assert lines == [24], lines
 

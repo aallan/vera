@@ -1458,3 +1458,23 @@ def test_reconcile_is_refused_by_other_commands(
     assert exc.value.code == 1
     assert "--reconcile is only accepted by `vera verify`" in (
         capsys.readouterr().err)
+
+
+def test_a_file_key_survives_an_unresolvable_path(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """`Path.resolve()` raises `RuntimeError` for a symlink loop on Python
+    3.11 and 3.12 (`OSError` from 3.13): either way the join keys the file
+    by its unresolved POSIX spelling rather than raising out of the
+    reconciliation, and an empty name keys nothing."""
+    from pathlib import Path
+
+    from vera import reconcile
+
+    for exc in (RuntimeError, OSError):
+        def refuse(self: Path, strict: bool = False, _e: type = exc) -> Path:
+            raise _e("symlink loop")
+        monkeypatch.setattr(Path, "resolve", refuse)
+        assert reconcile._file_key("a/b.vera") == "a/b.vera"
+    monkeypatch.undo()
+    assert reconcile._file_key("") is None
+    assert reconcile._file_key(None) is None

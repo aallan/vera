@@ -270,12 +270,15 @@ def _written_in(
 
 
 def _file_key(file: str | None) -> str | None:
-    """*file* as the regions key it: its resolved path's POSIX spelling."""
-    if file is None:
+    """*file* as the regions key it: its resolved path's POSIX spelling,
+    or its own where it does not resolve (a symlink loop raises
+    `RuntimeError` on Python 3.11 and 3.12, `OSError` from 3.13); an empty
+    name keys nothing."""
+    if not file:
         return None
     try:
         return Path(file).resolve().as_posix()
-    except OSError:
+    except (OSError, RuntimeError):
         return Path(file).as_posix()
 
 

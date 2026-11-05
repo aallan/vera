@@ -256,7 +256,10 @@ class TestNatReturnNarrowingDifferential758:
         statuses = _return_nat_bind_statuses(source)
         # The verifier obligates the return slot (exactly one narrowing site)...
         assert statuses, f"{label}: no return nat_bind obligation emitted"
-        assert all(s != "verified" for s in statuses), (
+        # Each leaf is discharged under its own branch (PR #1835 review): a
+        # leaf its branch proves is `verified` (`nested_if_join`'s
+        # `@Int.0 > 5` arm), and the leaf that can be negative is not.
+        assert any(s != "verified" for s in statuses), (
             f"{label}: an unprovable narrowing must not verify Tier-1: {statuses}"
         )
         # ...and codegen makes good on it: a negative input traps rather than

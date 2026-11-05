@@ -1959,6 +1959,180 @@ def test_a_value_inside_a_handle_is_disclosed_as_at_base(
     assert pipeline.checks(module, obligation="refine_bind", function="f") == ()
 
 
+# A `@Nat` return's value leaves, each discharged in its own branch's
+# context (R111's finding 1 on PR #1835): two and three leaves, an `if` and
+# a `match`, the violating leaf at each position.  The statuses are the
+# leaves' own, in source order.
+_NAT_RETURN_LEAVES = {
+    "if2-violating-last": (
+        "if @Int.0 > 0 then { @Int.0 } else { @Int.0 - 1 }",
+        ["verified", "violated"]),
+    "if2-violating-first": (
+        "if @Int.0 > 0 then { @Int.0 - 5 } else { 0 - @Int.0 }",
+        ["violated", "verified"]),
+    "if2-both-violating": (
+        "if @Int.0 > 0 then { @Int.0 - 5 } else { @Int.0 - 1 }",
+        ["violated", "violated"]),
+    "if3-violating-first": (
+        "if @Int.0 > 10 then { @Int.0 - 20 } else "
+        "{ if @Int.0 > 0 then { @Int.0 } else { 0 - @Int.0 } }",
+        ["violated", "verified", "verified"]),
+    "if3-violating-middle": (
+        "if @Int.0 > 10 then { @Int.0 } else "
+        "{ if @Int.0 > 0 then { @Int.0 - 5 } else { 0 - @Int.0 } }",
+        ["verified", "violated", "verified"]),
+    "if3-violating-last": (
+        "if @Int.0 > 10 then { @Int.0 } else "
+        "{ if @Int.0 > 0 then { @Int.0 } else { @Int.0 - 1 } }",
+        ["verified", "verified", "violated"]),
+    "match2-violating-last": (
+        "match @Int.0 > 0 { true -> @Int.0, false -> @Int.0 - 1 }",
+        ["verified", "violated"]),
+    "match2-violating-first": (
+        "match @Int.0 > 0 { true -> @Int.0 - 5, false -> 0 - @Int.0 }",
+        ["violated", "verified"]),
+    "match3-violating-first": (
+        "match @Int.0 { 0 -> @Int.0 - 1, 1 -> @Int.0, _ -> @Int.0 - @Int.0 }",
+        ["violated", "verified", "verified"]),
+    "match3-violating-middle": (
+        "match @Int.0 { 0 -> @Int.0, 1 -> @Int.0 - 2, _ -> @Int.0 - @Int.0 }",
+        ["verified", "violated", "verified"]),
+    "match3-violating-last": (
+        "match @Int.0 { 0 -> @Int.0, 1 -> @Int.0, _ -> @Int.0 - 1 }",
+        ["verified", "verified", "violated"]),
+}
+
+
+def _nat_return_program(body: str) -> str:
+    return ("public fn pick(@Int -> @Nat)\n  requires(true)\n  ensures(true)\n"
+            f"  effects(pure)\n{{\n  {body}\n}}\n")
+
+
+@pytest.mark.parametrize("shape", list(_NAT_RETURN_LEAVES))
+def test_a_nat_return_leaf_is_discharged_in_its_own_context(shape: str) -> None:
+    """Each value leaf of a `@Nat` return is its own record, discharged
+    under its branch's path condition: a leaf that holds is `verified`, a
+    leaf that can be negative is `violated` with its own E503 at the leaf,
+    and no status is copied from another leaf or from the body."""
+    body, want = _NAT_RETURN_LEAVES[shape]
+    v = _verified(_nat_return_program(body))
+    recs = sorted((o.line, o.column, o.status) for o in v.result.obligations
+                  if o.kind == "nat_bind")
+    assert [s for _, _, s in recs] == want, recs
+    e503 = sorted((d.location.line, d.location.column)
+                  for d in v.result.diagnostics if d.error_code == "E503")
+    assert e503 == [(ln, col) for ln, col, s in recs if s == "violated"], e503
+    assert _envelope_inconsistencies(v) == [], _envelope_inconsistencies(v)
+
+
+def test_repro_r111_a_holding_nat_return_leaf_carries_no_error() -> None:
+    """R111's program: the leaf under `@Int.0 > 0` holds and the `else`
+    leaf does not; the E503 stands at the `else` leaf (6:40), and the leaf
+    at 6:24 is `verified`."""
+    v = _verified(_nat_return_program(
+        "if @Int.0 > 0 then { @Int.0 } else { @Int.0 - 1 }"))
+    assert _envelope_inconsistencies(v) == []
+    recs = {(o.line, o.column): o.status for o in v.result.obligations
+            if o.kind == "nat_bind"}
+    assert recs == {(6, 24): "verified", (6, 40): "violated"}, recs
+    e503 = [(d.location.line, d.location.column)
+            for d in v.result.diagnostics if d.error_code == "E503"]
+    assert e503 == [(6, 40)], e503
+
+
+_SPANNING_VALUES = {
+    "two-slot-leaves": (
+        "if @Int.0 > 0 then { @Option<Int>.0 } else { @Option<Int>.0 }",
+        "violated"),
+    "a-holding-and-a-violating-leaf": (
+        "match @Option<Int>.0 { Some(@Int) -> if @Int.0 > 0 then "
+        "{ @Option<Int>.0 } else { @Option<Int>.0 }, None -> None }",
+        "violated"),
+    "both-leaves-holding": (
+        "match @Option<Int>.0 { Some(@Int) -> if @Int.0 > 0 then "
+        "{ @Option<Int>.0 } else { None }, None -> @Option<Int>.0 }",
+        "verified"),
+}
+
+
+@pytest.mark.parametrize("shape", list(_SPANNING_VALUES))
+def test_a_value_discharged_once_is_one_record_naming_its_leaf_rows(
+        shape: str) -> None:
+    """A value's nested refinement, discharged once for the whole value,
+    whose component rows stand at several leaves, is one record at the
+    value naming every one of those rows, never a copy of its status at
+    each leaf; its one diagnostic stands where the record does."""
+    body, want = _SPANNING_VALUES[shape]
+    v = _verified(
+        "type PosInt = { @Int | @Int.0 > 0 };\n"
+        "public fn f(@Int, @Option<Int> -> @Option<PosInt>)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n{\n"
+        f"  {body}\n}}\n")
+    recs = [o for o in v.result.obligations if o.kind == "refine_bind"]
+    assert [(o.status, len(o.rows)) for o in recs] == [(want, 2)], recs
+    e505 = [(d.location.line, d.location.column)
+            for d in v.result.diagnostics if d.error_code == "E505"]
+    assert e505 == ([(recs[0].line, recs[0].column)] if want == "violated"
+                    else []), e505
+    assert _envelope_inconsistencies(v) == [], _envelope_inconsistencies(v)
+
+
+_HELD_BY_FIELDS = {
+    # A field the solver does not decide (`float_to_int`): its row is
+    # guarded, which proves nothing about the return's component.
+    "undecided-field": (
+        "public fn f(@Float64 -> @Tuple<PosInt, Int>)\n  requires(true)\n"
+        "  ensures(true)\n  effects(pure)\n{\n"
+        "  Tuple(float_to_int(@Float64.0), 1)\n}\n"),
+    # A field written as a piped stage: its record stands at the stage.
+    "piped-field": (
+        "public fn f(@Int -> @Tuple<PosInt, Int>)\n  requires(@Int.0 > 0)\n"
+        "  ensures(true)\n  effects(pure)\n{\n  Tuple(@Int.0 |> id(), 1)\n}\n"
+        "private fn id(@Int -> @Int)\n  requires(true)\n  ensures(true)\n"
+        "  effects(pure)\n{\n  @Int.0\n}\n"),
+    # A piped field that is proved: found at its stage, it proves the
+    # component.
+    "piped-proved-field": (
+        "public fn f(@Int -> @Tuple<PosInt, Int>)\n  requires(@Int.0 > 0)\n"
+        "  ensures(true)\n  effects(pure)\n{\n  Tuple(@Int.0 |> keep(), 1)\n}\n"
+        "private fn keep(@Int -> @Int)\n  requires(@Int.0 > 0)\n"
+        "  ensures(@Int.result > 0)\n  effects(pure)\n{\n  @Int.0\n}\n"),
+}
+
+
+@pytest.mark.parametrize("shape", list(_HELD_BY_FIELDS))
+def test_a_constructed_returns_component_is_proved_only_by_proved_fields(
+        shape: str) -> None:
+    """The return type's component row of a constructed body is `verified`
+    only where every field record of the construction is `verified`
+    (CodeRabbit's finding on PR #1835 at `_check_nested_refinement_obligation`):
+    a field left to its check or refuted proves nothing, and the component
+    row is left to the return's check; a proved field written as a piped
+    stage is found where its record stands, at the stage."""
+    v = _verified("type PosInt = { @Int | @Int.0 > 0 };\n"
+                  + _HELD_BY_FIELDS[shape])
+    table = v.result.table
+    assert table is not None
+    ret = [o.status for o in v.result.obligations if o.kind == "refine_bind"
+           and any(table.rows[r].evaluation == ("return",) for r in o.rows)]
+    assert ret == (["verified"] if shape == "piped-proved-field"
+                   else ["tier3"]), ret
+
+
+def test_repro_a_guarded_field_proves_no_return_component() -> None:
+    """The reported instance, unsampled: a field left to its check leaves
+    the constructed return's component row `tier3`, not `verified`."""
+    test_a_constructed_returns_component_is_proved_only_by_proved_fields(
+        "undecided-field")
+
+
+def test_repro_a_value_record_is_not_copied_to_its_leaves() -> None:
+    """The reported shape, unsampled: one record at the value naming both
+    leaf rows, with its one E505 where it stands."""
+    test_a_value_discharged_once_is_one_record_naming_its_leaf_rows(
+        "a-holding-and-a-violating-leaf")
+
+
 def test_repro_a_row_two_discharges_reach_reports_one_error() -> None:
     """A `map_insert` value is one row (#1608): the call-argument walk and
     the stored-value walk both refute `-3`, and the site's one record keeps

@@ -399,7 +399,9 @@ def test_nat_arg_guard_parity(tmp_path: Path, name: str) -> None:
 #: `Option<Int>` it did not build, a refinement inside a constructor payload
 #: no boundary decomposes, so its row is disclosed (`refine_bind` /
 #: `tier3_unguarded` / E506).  The closure's result is opaque to the solver
-#: and non-negative at run time, so every trial of a consumer completes.
+#: and non-negative at run time.  The cells below assert only that the
+#: consumer's trials run, not that each completes (`0 - @Int.0` traps on
+#: `INT_MIN`).
 #: (The carrier was a handler clause's `@Nat` binder until #1695, whose
 #: module checked the binder all along.)
 _DISCLOSING_MK = """\

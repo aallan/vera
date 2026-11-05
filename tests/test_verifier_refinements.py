@@ -200,13 +200,10 @@ def _site_binds(result: object) -> list[object]:
     formal's ENTRY row is recorded too (`verified`, the callee's assumption,
     discharged by each call's argument row), which these cells do not
     count; the obligation table's instrument pins that class."""
-    from vera.obligations import table as obligation_table
+    from tests.verifier_helpers import entry_only
 
-    table = getattr(result, "table", None)
-    entry = ({r.id for r in table.rows if r.evaluation == obligation_table.ENTRY}
-             if table is not None else set())
     return [o for o in result.obligations  # type: ignore[attr-defined]
-            if o.kind == "refine_bind" and not (o.rows and set(o.rows) <= entry)]
+            if o.kind == "refine_bind" and not entry_only(result, o)]
 
 
 class TestRefinementPredicateVerification:
@@ -228,13 +225,10 @@ class TestRefinementPredicateVerification:
         # discharges.  These cells count the narrowings at the sites, so
         # the assumption's record is left out (the obligation table's
         # instrument pins that class).
-        from vera.obligations import table as obligation_table
+        from tests.verifier_helpers import entry_only
 
-        entry = ({r.id for r in result.table.rows
-                  if r.evaluation == obligation_table.ENTRY}
-                 if getattr(result, "table", None) is not None else set())
         obs = [o for o in result.obligations if o.kind == "refine_bind"
-               and not (o.rows and set(o.rows) <= entry)]
+               and not entry_only(result, o)]
         if status is not None:
             obs = [o for o in obs if o.status == status]
         return obs
@@ -1228,10 +1222,11 @@ private fn use_it(@PosInt -> @Int)
         assert [d for d in exempt.diagnostics if d.severity == "error"] == []
         # The binder takes the component at its own type: since #1695 the
         # row code generation checks is recorded, `tier3` (base: W004), and
-        # `mk`'s return component row, which its store establishes, is
-        # `verified`.  Neither can fail.
+        # so is `mk`'s return component row: its field is already `PosInt`,
+        # so no field record proves it, and the return's check guards it
+        # (PR #1835 review).  Neither can fail.
         assert sorted(o.status for o in self._refine_obligations(exempt)) == [
-            "tier3", "verified"]
+            "tier3", "tier3"]
 
     def test_destructure_bound_slot_refinement_retained(self) -> None:
         """#746: a destructured slot's *source* component refinement is retained

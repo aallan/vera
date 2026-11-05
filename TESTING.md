@@ -1595,8 +1595,9 @@ the seed ran alone in a new process, so the mechanism is not established and
 the class has no pin.
 A find inside a known class is counted under its issue, with its class and the
 evidence in its record, and fails nothing; the night's report gives each class
-its count, its programs and its first seeds.  Each class but #1785's is pinned
-by a repro cell that fails the day its issue is fixed, and the entry comes out.
+its count, its programs and its first seeds.  The one class left is #1785's, a
+warm counterexample, which has no pin; the reconciliation classes are retired,
+and each one's repro cell reports nothing.
 Version one's first scheduled night (2026-10-22, 5,010 programs, #1781) counted
 8 mismatches under #1525, 182 under #1598, 3,889 under #1695 for #1557 and 7,426
 under #1695 for #1629.
@@ -1608,9 +1609,9 @@ module included, byte for byte, in the test's process and under two string hash
 seeds; a hundred seeds reach every construct and keep the generator's
 invariants; each differential reports a hand-written program that breaks it,
 or a session built to break it, and passes its nearest neighbour that does not;
-the known-class pins and their members; the fold, handler, `Nat` field binder
-and construction shapes that make no find, and the classification's cells
-over a class they inject; and the minimiser's cells.  A pull request that
+the retired classes' cells and the warm-model classification; the fold,
+handler, `Nat` field binder and construction shapes that make no find, and
+the classification's cells over a class they inject; and the minimiser's cells.  A pull request that
 changes the generator, its instrument or the workflow also runs the short
 night below; no other generator work runs on a pull request.
 [`nightly-generator.yml`](.github/workflows/nightly-generator.yml)

@@ -155,44 +155,6 @@ _OPAQUE_SCRUTINEE_REASON = (
     "projected and the predicate was never given a value to reason about"
 )
 
-#: The default closing sentence of an unguarded E506 (#746) — what codegen does
-#: and does not check here.
-#:
-#: It names TWO possibilities rather than asserting one, because since #765 the
-#: SITE is no longer the reliable cause.  The sentence this replaced said the
-#: guard lives only at a function boundary "not at this internal narrowing
-#: site", which was true when every pattern bind was unguarded and is false
-#: now: `let binding`, `match binding`, `tuple destructure` and `ADT
-#: sub-pattern bind` are all in `narrowing.REFINED_BIND_GUARDED_SITES`, so a
-#: `let @Tiny = mk(...)` that lands here was told to move a binding it has no
-#: reason to move.  What is actually missing at such a site is the BASE — a
-#: refinement over a refinement, which `_emit_bind_refine_guard` will not lower
-#: — and a reader sent to the wrong half of the question changes the wrong
-#: thing.  The nested-refinement family passes its own note instead, because
-#: its site is a boundary and the gap there is a third thing (see
-#: `_NESTED_SITE_GUARD_NOTE`).
-_UNGUARDED_TWO_CAUSE_NOTE = (
-    "No runtime guard covers it either, for one of two reasons: the SITE is "
-    "one codegen does not guard (a constructor field, a tuple component, an "
-    "array element or a `Map` value at construction, or a user effect "
-    "operation's argument), or the refinement's own BASE is one no guard can "
-    "be emitted for — a base that is itself a refinement, or one that erases "
-    "to nothing at run time.  So the predicate is neither statically proven "
-    "nor runtime-checked."
-)
-
-#: The closing sentence for a refinement written INSIDE a boundary type (#1410).
-#: The site IS a boundary; what it lacks is that codegen's decomposition
-#: (`_tuple_component_guard_sites`) reaches a parameter's own refinement and its
-#: TUPLE components and stops there.
-_NESTED_SITE_GUARD_NOTE = (
-    "Codegen's boundary guard decomposes a parameter's own refinement and its "
-    "TUPLE components and no further, so a refinement written on an ADT "
-    "payload or an array element is checked at no boundary: this one is "
-    "neither statically proven nor runtime-checked."
-)
-
-
 class _FloatConversion(NamedTuple):
     """How one built-in reaches `i64.trunc_f64_s` (#807, #1480)."""
 
@@ -1280,6 +1242,9 @@ class ContractVerifier:
         #: function shares, the declaration's discharge (under the base
         #: type's facts alone) holding at every guard.
         self._predicate_records: dict[object, ProofObligation] = {}
+        #: The records `_anchored_rows` keyed to the rows at several of a
+        #: value's leaves, in the settling in progress (one record each).
+        self._value_spanning: set[int] = set()
         self._record_anchors: dict[int, tuple[
             weakref.ref[ProofObligation], ast.Node, ast.Node | None,
             ast.FnCall | ast.ModuleCall | None,
@@ -3543,10 +3508,12 @@ class ContractVerifier:
         at (:meth:`_anchored_rows`): a measure's operation re-evaluated at a
         self tail call is the measure's row in that call's evaluation, a
         binder's narrowing recorded at the value its pattern takes apart is
-        the binder's row, and a ``@Nat`` or refined return recorded at the
-        body is the row of each value leaf it narrows at and of each
-        component the return type checks.  No record is keyed by where it
-        is located.
+        the binder's row, and a refined return recorded at the body is the
+        row of each component the return type checks (a ``@Nat`` return is
+        discharged at each value leaf, in the body walk).  A record keyed to
+        the rows of several sites, discharged once for a whole value, is one
+        record naming all of them, never a copy at each.  No record is
+        keyed by where it is located.
 
         One record per written site (the row's ``content_key``): a site's
         copies, each discharged in its own evaluation's context, share it,
@@ -3573,6 +3540,7 @@ class ContractVerifier:
                     calls[n.node_id] = (site.line, site.column)
         status: dict[int, list[ProofObligation]] = {}
         anchored: dict[int, set[int]] = {}
+        self._value_spanning = set()
         kept: list[ProofObligation] = []
         for rec in own:
             if rec.kind not in _TABLE_KINDS:
@@ -3589,8 +3557,36 @@ class ContractVerifier:
         by_site: dict[tuple[object, ...], list[obligation_table.Row]] = {}
         for row in rows:
             by_site.setdefault((row.content_key, row.path), []).append(row)
+        # A record keyed to the rows of several sites (a value's, at each
+        # leaf its rows stand at) was discharged once, for the whole value:
+        # it is one record, where it was made, naming every one of those
+        # rows, and its status is copied to no leaf it was not discharged
+        # at (A3).  The sites it spans settle together.
+        site_of = {row.id: (row.content_key, row.path) for row in rows}
+        joined: dict[tuple[object, ...], tuple[object, ...]] = {
+            k: k for k in by_site}
+
+        def _root(k: tuple[object, ...]) -> tuple[object, ...]:
+            while joined[k] != k:
+                k = joined[k]
+            return k
+
+        spanning: set[tuple[object, ...]] = set()
+        for rec_id, ids in anchored.items():
+            if rec_id not in self._value_spanning:
+                continue
+            keys = list(dict.fromkeys(site_of[i] for i in ids if i in site_of))
+            for other_site in keys[1:]:
+                joined[_root(other_site)] = _root(keys[0])
+            if len(keys) > 1:
+                spanning.add(keys[0])
+        spans = {_root(spanned) for spanned in spanning}
+        groups: dict[tuple[object, ...], list[obligation_table.Row]] = {}
+        for site_key, site_rows_ in by_site.items():
+            groups.setdefault(_root(site_key), []).extend(site_rows_)
         settled: list[ProofObligation] = []
-        for site_rows in by_site.values():
+        for root, site_rows in groups.items():
+            whole = root in spans
             recs = [r for row in site_rows for r in status.get(row.id, ())]
             if not recs and site_rows[0].evaluation[:1] == ("predicate",):
                 shared = self._predicate_records.get(
@@ -3622,12 +3618,13 @@ class ContractVerifier:
             for other in recs:
                 if other is not decided and anchored.get(id(other), {-1}) <= site_ids:
                     self._retract_diagnostic(other, keep=decided)
-            head = _site_span(site_rows[0].node)
+            head = None if whole else _site_span(site_rows[0].node)
             base = next((r for r in recs if head is not None
                          and (r.line, r.column) == (head.line, head.column)), None)
             record = replace(decided, status=met,
                              rows=tuple(row.id for row in site_rows),
                              expr_text=(base.expr_text if base is not None
+                                        else decided.expr_text if whole
                                         else site_rows[0].content_key[2]))
             if head is not None:
                 record = replace(record, line=head.line, column=head.column,
@@ -3644,7 +3641,7 @@ class ContractVerifier:
                 # it stands there too (a tail call's copy keeps its error at
                 # the call, which the record names).
                 self._relocate_diagnostic(decided, head)
-            if site_rows[0].path:
+            if site_rows[0].path and not whole:
                 # A component of the site's value is its own obligation: the
                 # path names it, in the text the record's identity hashes.
                 record = replace(record, expr_text=(
@@ -3803,6 +3800,14 @@ class ContractVerifier:
                         and r.guard.reason == obligation_table.REASON_HANDLE_VALUE
                         and obligation_table.ObligationTable._key(r.node) in inner]
             if ret:
+                if rec.status in ("verified", "violated") and len(
+                        {(r.content_key, r.path) for r in ret}) > 1:
+                    # Discharged once for the whole value, whose rows stand
+                    # at several of its leaves: one record names them all.
+                    # A record left undecided (a closure body's opaque
+                    # return) is each leaf's own status, the one the row's
+                    # fallback gives it.
+                    self._value_spanning.add(id(rec))
                 return ret
         return None
 
@@ -4285,10 +4290,15 @@ class ContractVerifier:
         #      side-tables in, so the scrutinee/instantiated type is known
         #      here.  Emits `value >= 0` at each, discharged from
         #      preconditions and path conditions exactly like #520.
+        # 7d's leaves (below): a `@Nat` return's value leaves the table lists
+        # a row at are each discharged in this walk, at the leaf, under the
+        # branch conditions and the bindings the walk holds there.
+        nat_return_leaves = self._nat_return_leaf_keys(decl, ret_type)
         if decl.body is not None:
             self._walk_handled_effects = []
             self._walk_for_nat_binding_obligations(
                 decl, decl.body, smt, slot_env, assumptions,
+                return_leaves=nat_return_leaves or frozenset(),
             )
 
         # 5.75. #804: a top-level (unconditional) assert/assume holds whenever
@@ -4558,10 +4568,11 @@ class ContractVerifier:
         #     one site.  Codegen backs the undischarged/Tier-3 case with the
         #     return nat-bind guard so the function traps before returning a
         #     negative.
-        if (decl.body is not None
-                and self._is_nat_type(ret_type)
-                and not self._is_refined_type(ret_type)
-                and self._return_narrows_into_nat(decl.body)):
+        #     Each leaf the table lists a row at was discharged by the body
+        #     walk (5.7) in its own branch's context, one record per leaf
+        #     row; the whole body is discharged here where it has one such
+        #     leaf, or the table lists no rows of the function.
+        if nat_return_leaves is None and self._nat_return_narrows(decl, ret_type):
             self._check_nat_binding_obligation(
                 decl, decl.body, smt, slot_env, list(assumptions),
                 site="return type",
@@ -7507,14 +7518,11 @@ class ContractVerifier:
         `throw`-payload sites; the older call-argument and constructor-field
         copies carry site-specific side-table subtleties and stay inline).
 
-        *refined_guarded* defaults to False because most of those sites emit
-        sign guards only — a handler write boundary lowers no refinement
-        predicate, so its refined arm discloses E506 honestly.  The `throw`
-        payload is the exception (#1268): codegen lowers the predicate there,
-        so that site passes True and the arm records a guarded Tier-3.  The
-        flag is only ever an upper bound — `_check_refined_binding_obligation`
-        intersects it with `_refined_boundary_codegen_guardable`, so a shape
-        codegen emits no guard for stays unguarded whatever a caller claims.
+        Whether a check guards each site is its row's, in the obligation
+        table (#1695): an undecided record here is ``tier3``, and
+        :meth:`_settle_rows` discloses it where the row has no check (a
+        handler write boundary lowers no refinement predicate; the `throw`
+        payload's row, #1268, has one).
         """
         refined = self._refined_binding_target(value, formal)
         if (refined is not None
@@ -7768,7 +7776,7 @@ class ContractVerifier:
                     # unclassifiable to it, and that gate exists so a
                     # SOLVER-outcome reason cannot be fixed at a call site.
                     self._record_refined_bind_tier3(
-                        decl, clause.body, site, refined_ty=binder,
+                        decl, clause.body, site,
 
                         reason=(
                             "the bound value is the payload the operation "
@@ -7779,7 +7787,7 @@ class ContractVerifier:
                     )
                 else:
                     self._record_refined_bind_tier3(
-                        decl, clause.body, site, refined_ty=binder,
+                        decl, clause.body, site,
                         reason=(
                             "the bound value is the payload the operation "
                             "delivers, which no throw or put site pins, so "
@@ -7808,7 +7816,7 @@ class ContractVerifier:
                 # same question one level in, so it is asked of the same
                 # registry the element fact and the element guard read.
                 self._record_refined_bind_tier3(
-                    decl, clause.body, site, refined_ty=binder,
+                    decl, clause.body, site,
                     reason=(
                         "the bound value is the payload the operation "
                         "delivers, which no throw or put site pins, so "
@@ -7829,6 +7837,8 @@ class ContractVerifier:
         smt: SmtContext,
         slot_env: SlotEnv,
         assumptions: list[object],
+        *,
+        return_leaves: frozenset[object] = frozenset(),
     ) -> None:
         """Walk *expr* emitting ``value >= 0`` at @Int→@Nat narrowing sites.
 
@@ -7890,9 +7900,18 @@ class ContractVerifier:
         obligated them, between the children it walks.
         """
         start = _Path(assumptions, slot_env)
-        for _node, _path in fold.contexts(
+        for node, path in fold.contexts(
                 expr, self._nat_step(decl, smt), start):
-            pass
+            if (return_leaves and isinstance(node, ast.Expr)
+                    and obligation_table.ObligationTable._key(node)
+                    in return_leaves):
+                # A `@Nat` return's value leaf: `leaf >= 0` under the path
+                # conditions of the branches that reach it and the bindings
+                # in scope there, its own record at its row.
+                self._check_nat_binding_obligation(
+                    decl, node, smt, path.env, list(path.facts),
+                    site="return type",
+                )
 
     def _nat_step(
         self, decl: ast.FnDecl, smt: SmtContext,
@@ -9601,9 +9620,9 @@ class ContractVerifier:
         `match get(()) { Some(@Pos) -> … }` was refused E501 on a program
         whose call cannot fail.
 
-        Only where the guard exists: `_refined_boundary_codegen_guardable`
-        is codegen's own bail (an erased base, a refinement over a
-        refinement), mirrored.  The predicate is read through
+        Only where the guard exists: the obligation table's refinement guard
+        (`_table_guards_refinement`), which code generation reads too (an
+        erased base, a refinement over a refinement, has none).  The predicate is read through
         `_established_facts`, the one gate for a declared-type fact, and
         recorded on the value (`SmtContext.assume_of_value`), so a query
         reads it exactly when it reads the value.  The bind's own
@@ -9654,8 +9673,8 @@ class ContractVerifier:
         earlier arm's failing, in the translation's If-chain).  The guard is
         there because a fresh value can outlive the arm inside the `match`'s
         own translated value, where a query about the result reads it on
-        paths the arm was not taken.  Only where the guard exists
-        (`_refined_boundary_codegen_guardable`); a `@Nat` binder is not a
+        paths the arm was not taken.  Only where the guard exists (the
+        table's, `_table_guards_refinement`); a `@Nat` binder is not a
         refinement and is left as it is.
         """
         out: dict[int, object] = {}
@@ -9883,13 +9902,10 @@ class ContractVerifier:
         Mirrors :py:meth:`_check_subtraction_obligation`: on success
         records a ``verified`` obligation (Tier 1); on a Z3 counterexample a
         ``violated`` obligation plus an E503 error.  When the value is
-        untranslatable or the solver times
-        out the outcome depends on the caller-supplied ``guarded`` flag —
-        codegen-guarded sites (``guarded=True``) record a ``tier3`` obligation
-        (``tier3_runtime``), while the unguarded ones (effect-operation
-        argument and generic-instantiated constructor field —
-        ``guarded=False``) are surfaced as an E504 warning and excluded
-        from the totals
+        untranslatable or the solver times out it records ``tier3``, and
+        whether a check guards the site is its row's (#1695):
+        :meth:`_settle_rows` keeps it ``tier3`` where the row has a check and
+        discloses it (E504, excluded from the totals) where it has none
         (#747; see :py:meth:`_record_nat_bind_tier3`).  Path conditions in
         ``smt._path_conditions`` are folded in automatically by
         :py:meth:`SmtContext.check_valid`.
@@ -10048,14 +10064,10 @@ class ContractVerifier:
           ``opaque`` countermodel, distinguished by
           :py:meth:`_undecided_reason`.
 
-        *guarded* says whether codegen runtime-guards this site.  ``None`` —
-        the default — reads it from :py:data:`narrowing.REFINED_BIND_GUARDED_SITES`,
-        which is where the answer belongs: the site string is already a
-        parameter here, so a caller restating the same fact as a literal is a
-        second copy that can disagree with the first.  A caller passes an
-        explicit flag only where the site alone does not settle it — an
-        effect-operation argument, whose guard depends on the parent EFFECT
-        rather than on the syntactic position.
+        Whether codegen runtime-guards the site is its row's, in the
+        obligation table (#1695), never this method's: an undecided record is
+        ``tier3``, and :meth:`_settle_rows` discloses it where the row has no
+        check.
         """
         val = smt.translate_expr(value_node, slot_env)
         if val is None:
@@ -10703,16 +10715,19 @@ class ContractVerifier:
                 # #1695: the return type's component rows, which code
                 # generation checks at the return, hold by the body's
                 # constructions, each of whose fields is its own row: proved
-                # where every one of those holds (verified or guarded), and
-                # left to the return's check where one does not.
-                inside = {id(n) for n in fold.walk(value_node)}
-                spans = {(n.span.line, n.span.column) for n in fold.walk(value_node)
-                         if n.span is not None and id(n) in inside}
+                # where every one of those is proved, and left to the
+                # return's check (`tier3`, settled by its row) where one is
+                # not.  A field's record stands where it is located (a piped
+                # stage's at the stage); a guarded or undecided field proves
+                # nothing here, since its row is settled later, and a body
+                # with no field record proves nothing.
+                spans = {(sp.line, sp.column) for n in fold.walk(value_node)
+                         if (sp := _site_span(n)) is not None}
                 fields = [o for o in self.obligations
                           if o.fn_name == decl.name and o.kind == "refine_bind"
                           and (o.line, o.column) in spans]
-                held = all(o.status in ("verified", "tier3", "timeout")
-                           for o in fields)
+                held = bool(fields) and all(
+                    o.status == "verified" for o in fields)
                 self._record_obligation(
                     decl.name, "refine_bind", value_node,
                     "verified" if held else "tier3")
@@ -10744,7 +10759,6 @@ class ContractVerifier:
                     "decidable fragment, so there is no term to test the "
                     "target type's nested refinements against"
                 ),
-                guard_note=_NESTED_SITE_GUARD_NOTE,
             )
             return
         goal_facts, complete = self._nested_refinement_facts(
@@ -10753,7 +10767,6 @@ class ContractVerifier:
             self._record_refined_bind_tier3(
                 decl, value_node, site,
                 reason=self._nested_unstatable_reason(formal_ty),
-                guard_note=_NESTED_SITE_GUARD_NOTE,
             )
             return
         source_facts, _ = self._nested_refinement_facts(smt, source_ty, val)
@@ -10789,7 +10802,6 @@ class ContractVerifier:
             self._record_refined_bind_tier3(
                 decl, value_node, site,
                 reason=_PLACEHOLDER_REFINEMENT_REASON,
-                guard_note=_NESTED_SITE_GUARD_NOTE,
             )
             return
         if result.status == "verified" and complete:
@@ -10799,7 +10811,6 @@ class ContractVerifier:
             self._record_refined_bind_tier3(
                 decl, value_node, site,
                 reason=self._nested_unstatable_reason(formal_ty),
-                guard_note=_NESTED_SITE_GUARD_NOTE,
             )
         elif result.status == "violated":
             self._record_obligation(
@@ -10812,7 +10823,6 @@ class ContractVerifier:
             self._record_refined_bind_tier3(
                 decl, value_node, site,
                 reason=self._undecided_reason(result.status),
-                guard_note=_NESTED_SITE_GUARD_NOTE,
             )
 
     @staticmethod
@@ -11116,8 +11126,6 @@ class ContractVerifier:
         site: str,
         *,
         reason: str,
-        guard_note: str = _UNGUARDED_TWO_CAUSE_NOTE,
-        refined_ty: Type | None = None,
     ) -> None:
         """Record a Tier-3 ``refine_bind`` outcome — the predicate was not
         discharged statically — distinguishing codegen-guarded boundary sites
@@ -11136,37 +11144,15 @@ class ContractVerifier:
         :py:meth:`_undecided_reason` wherever the answer depends on
         state, and pass a literal only where the site itself is the cause.
 
-        Codegen emits a runtime guard at the function boundary — a refined
-        parameter at entry, a refined return at exit — and, since #765, at
-        every narrowing PATTERN BIND (``let`` / match-bind / tuple-destructure
-        / ADT-sub-pattern, at any nesting depth).  Those are
-        ``tier3_runtime`` with an informational E506, like any other Tier-3
-        contract Vera checks at run time.  What is left unguarded is a
-        constructor field or tuple component AT CONSTRUCTION and a user
-        effect operation's argument (#754): E506 warnings excluded from the
-        totals rather than overstating a runtime check they never get (R7).
+        Whether a runtime check guards the site is its row's, in the
+        obligation table (#1695): the record is ``tier3`` here, and
+        :meth:`_settle_rows` keeps it ``tier3`` where the row has a check and
+        discloses it (``tier3_unguarded``, with the row's reason) where it has
+        none.
 
         Required and non-EMPTY: an empty string is a caller that has not
         decided wearing the shape of one that has, and it renders the same
-        broken sentence a missing reason would.
-
-        *guarded* defaults to ``None`` — read the site from
-        :py:data:`narrowing.REFINED_BIND_GUARDED_SITES` rather than restating it — and
-        is intersected with :py:meth:`_refined_boundary_codegen_guardable`
-        when *refined_ty* is supplied, since a guarded site still emits
-        nothing for a base codegen cannot check.
-
-        *guard_note* is the UNGUARDED report's closing sentence — what codegen
-        does and does not check at this site.  The default names the two
-        causes a reader has to choose between (an unguarded SITE, or a BASE no
-        guard can be emitted for), because since #765 the site alone no longer
-        settles it.  The nested-refinement family passes its own: its site IS
-        a function boundary, and what is missing there is a third thing —
-        codegen's boundary decomposition reaches a parameter's own refinement
-        and its TUPLE components and nothing else — so the default's two
-        causes would send a reader looking at a call argument to neither of
-        the halves that apply, in the one field written to say exactly
-        where the guard is."""
+        broken sentence a missing reason would."""
         if not reason:
             raise ValueError(
                 "a refinement Tier-3 demotion emits an E506 that must say "
@@ -11381,7 +11367,7 @@ class ContractVerifier:
         goal = self._translate_refined_predicate(smt, refined_ty, term)
         if goal is None:
             self._record_refined_bind_tier3(
-                decl, node, site, refined_ty=refined_ty,
+                decl, node, site,
                 reason=self._refined_untranslatable_reason(refined_ty))
             return
         local_assumptions = list(assumptions)
@@ -11405,7 +11391,7 @@ class ContractVerifier:
             # in a `requires` on a program that runs, where its guard traps
             # on a violating payload.
             self._record_refined_bind_tier3(
-                decl, node, site, refined_ty=refined_ty,
+                decl, node, site,
                 reason=_PLACEHOLDER_REFINEMENT_REASON)
             return
         if result.status == "verified":
@@ -11419,7 +11405,7 @@ class ContractVerifier:
                 decl, node, refined_ty, site, result.counterexample)
         else:  # pragma: no cover — no solver verdict (unknown / #1199 opaque)
             self._record_refined_bind_tier3(
-                decl, node, site, refined_ty=refined_ty,
+                decl, node, site,
                 reason=self._undecided_reason(result.status))
 
     def _term_source_fact(
@@ -12358,7 +12344,7 @@ class ContractVerifier:
                     # (excluded from totals), not a silent pass (R7).
                     self._record_refined_bind_tier3(
                         decl, scrutinee, "ADT sub-pattern bind",
-                        refined_ty=target, reason=_OPAQUE_SCRUTINEE_REASON)
+                        reason=_OPAQUE_SCRUTINEE_REASON)
                 continue
             if (self._is_nat_type(target)
                     and narrowing.component_narrows(
@@ -12440,7 +12426,7 @@ class ContractVerifier:
                     and self._refined_field_narrows(target, field_ty)):
                 self._record_refined_bind_tier3(
                     decl, scrutinee, "ADT sub-pattern bind",
-                    refined_ty=target, reason=_OPAQUE_SCRUTINEE_REASON)
+                    reason=_OPAQUE_SCRUTINEE_REASON)
             elif (self._is_nat_type(target)
                     and narrowing.component_narrows(
                         field_sources, i, self._narrows_into_nat,
@@ -12570,7 +12556,6 @@ class ContractVerifier:
             for _, refined_target in refined_narrowing:
                 self._record_refined_bind_tier3(
                     decl, stmt.value, "tuple destructure",
-                    refined_ty=refined_target,
                     reason=(
                         "the destructured value cannot be projected into its "
                         "components (an effect-op result, or another term the "
@@ -13313,6 +13298,38 @@ class ContractVerifier:
         if self._is_nat_type(resolved):
             return "Nat"
         return getattr(resolved, "name", None)
+
+    def _nat_return_narrows(self, decl: ast.FnDecl, ret_type: Type) -> bool:
+        """Whether *decl*'s body narrows into its bare ``@Nat`` return (7d's
+        gate; a refinement over ``@Nat`` is 7b's)."""
+        return (decl.body is not None
+                and self._is_nat_type(ret_type)
+                and not self._is_refined_type(ret_type)
+                and self._return_narrows_into_nat(decl.body))
+
+    def _nat_return_leaf_keys(
+        self, decl: ast.FnDecl, ret_type: Type,
+    ) -> frozenset[object] | None:
+        """The value leaves of *decl*'s ``@Nat`` return the table lists a
+        row at, by node key, each discharged where the body walk reaches it
+        (R111's finding 1 on PR #1835: one discharge of the whole body gave
+        every leaf the body's status).  Empty where the return does not
+        narrow; ``None`` where the body is discharged whole: a function the
+        table lists no rows of, or a body with one such leaf, whose record
+        is that leaf's (the whole body's translation, a destructure read
+        through its producer's contract, is the more precise there)."""
+        if decl.body is None or not self._nat_return_narrows(decl, ret_type):
+            return frozenset()
+        rows = self._table.rows_of_function(decl)
+        if rows is None:
+            return None
+        key = obligation_table.ObligationTable._key
+        leaves = {key(n) for n in narrowing.value_leaves(decl.body)}
+        keys = frozenset(
+            key(r.node) for r in rows
+            if r.kind == "nat_bind" and r.evaluation == obligation_table.RETURN
+            and key(r.node) in leaves)
+        return keys if len(keys) > 1 else None
 
     def _return_narrows_into_nat(self, body: ast.Expr) -> bool:
         """Whether a @Nat function-return slot receives a value that can be
