@@ -1364,7 +1364,9 @@ entry rows answer the argument's, each keeping the one guard it had.
 (#1695, Stage 27).  Its architectural cells hold the shape: every emitted
 check names its row, every row a held function lists has one check or a
 reason it has none, the verifier makes no guard claim of its own and
-defines no mirror of code generation's decisions, and the corpus gate's
+defines no mirror of code generation's decisions, it keeps no walk that
+finds its own sites, no fallback for a row no discharge reaches and no
+roster of guarded positions beside the row (#1836), and the corpus gate's
 `KNOWN` and the generator's `KNOWN_CLASSES` are empty.  Its identity
 differential runs over the corpus, the doc blocks and generator seeds 0 to
 999, in both directions: every row of a verified function has exactly one
