@@ -130,11 +130,14 @@ def _program(kind: str, arg: str, position: str) -> str:
 
 
 def _runs_clean(source: str, expected: str) -> None:
-    """*source* compiles with no diagnostic and prints *expected*."""
+    """*source* compiles with no diagnostic, runs to completion without a
+    trap, and prints *expected*."""
     compiled = pipeline.compile(source)
     codes = [d.error_code for d in compiled.result.diagnostics]
     assert not codes, codes
-    assert pipeline.run(compiled).stdout == expected
+    ran = pipeline.run(compiled)
+    assert ran.ok, ran.trap
+    assert ran.stdout == expected
 
 
 @pytest.mark.parametrize("position", sorted(_POSITIONS))
