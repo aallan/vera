@@ -42,6 +42,7 @@ import pytest
 from vera.codegen.core import CodeGenerator
 
 from tests import pipeline
+from tests.codegen_helpers import skip_map_inserts  # noqa: F401  (the fixture)
 from tests.module_fixture_helpers import (
     build_multi_module,
     compile_multi_module,
@@ -1937,16 +1938,18 @@ public fn helper(@Int -> @Int)
         assert "liba.Shape" in text and "libb.Shape" in text, text
 
 
-#: A function of `liba`'s that code generation skips on a program the check
-#: accepts: a `let` of a parameterised alias has no WASM representation
-#: (E602).  The `let` is the argument.
+#: A function of `liba`'s that code generation skips, under the
+#: `skip_map_inserts` injection, on a program the check accepts: a generic
+#: whose body holds a `map_insert`, so its clone at `Shape` is dropped
+#: (E602) and so is its caller (E620).  The `let` is the argument.
 _SKIPPED = """
-private forall<T> fn idg(@T -> @T)
+private forall<T> fn keep(@T -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  @T.0
+  let @Map<String, Int> = map_insert(map_new(), "a", 1);
+  0
 }
 
 public fn broken(@Int -> @Int)
@@ -1959,14 +1962,14 @@ public fn broken(@Int -> @Int)
 }
 """
 
-#: A generic instantiated at a function type over `Shape`, whose clone code
-#: generation refuses (E600) and whose caller it drops (E620), each naming
-#: the clone by `Shape` (#1783): a check-green program the stream reports
-#: on, beside the rename.
-_AT_SHAPE_FN = ("let @fn(Shape -> Int) effects(pure) = "
-                "idg(fn(@Shape -> @Int) effects(pure) { 1 });")
+#: A generic instantiated at `Shape`, whose clone code generation drops
+#: (E602, injected) and whose caller it drops (E620), each naming the clone
+#: by `Shape`: a check-green program the stream reports on, beside the
+#: rename.
+_AT_SHAPE = "let @Int = keep(Sq(1));"
 
 
+@pytest.mark.usefixtures("skip_map_inserts")
 class TestADiagnosticStreamThatIsNotEmpty:
     """The display sweep, driven over a program that actually reports.
 
@@ -1989,9 +1992,9 @@ class TestADiagnosticStreamThatIsNotEmpty:
     ) -> None:
         # Two contending `Shape`s (renamed), beside a function code
         # generation skips, which makes the stream non-empty: a generic
-        # instantiated at a function type (#1783), on a program the check
-        # accepts.
-        liba = _LIBA + _SKIPPED % _AT_SHAPE_FN
+        # clone at `Shape` dropped by the injected skip, on a program the
+        # check accepts.
+        liba = _LIBA + _SKIPPED % _AT_SHAPE
         entry = _ENTRY.replace(
             "import liba(aone);", "import liba(aone, broken);")
         result = compile_multi_module(
@@ -2016,13 +2019,12 @@ class TestADiagnosticStreamThatIsNotEmpty:
         against every other cell here: the sweeps run over
         programs whose diagnostics never mention an ADT, so nothing read
         the one thing the strip exists to change.  This drives a diagnostic
-        that DOES name the type — a generic instantiated at a function type
-        over ``Shape``, whose clone code generation refuses (E600) and whose
-        caller it drops (E620), each naming the clone by the type (#1783) —
-        on a program the check accepts, where ``Shape`` carries its link
-        name.
+        that DOES name the type — a generic instantiated at ``Shape``, whose
+        clone code generation drops (E602, injected) and whose caller it
+        drops (E620), each naming the clone by the type — on a program the
+        check accepts, where ``Shape`` carries its link name.
         """
-        liba = _LIBA + _SKIPPED % _AT_SHAPE_FN
+        liba = _LIBA + _SKIPPED % _AT_SHAPE
         entry = _ENTRY.replace(
             "import liba(aone);", "import liba(aone, broken);")
         result = compile_multi_module(
@@ -2030,7 +2032,7 @@ class TestADiagnosticStreamThatIsNotEmpty:
             {"liba.vera": liba, "libb.vera": _LIBB, "main.vera": entry},
         )
         e602 = [d for d in result.diagnostics
-                if d.error_code in ("E600", "E620")]
+                if d.error_code in ("E602", "E620")]
         assert e602, [d.error_code for d in result.diagnostics]
         described = " ".join(
             (getattr(d, a, None) or "")
