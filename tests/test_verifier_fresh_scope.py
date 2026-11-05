@@ -380,6 +380,40 @@ public fn f(@Unit -> @Int)
     assert ran.trap is None and ran.value == 0, ran
 
 
+def test_repro_a_demoted_call_inside_an_assume_condition_is_no_obligation() -> None:
+    """The demotion twin: a call in an `assume` condition whose precondition
+    the solver cannot state (a `Map` argument; a generic callee) is no
+    obligation either: no record and no E532, only the assumption's W003
+    (CodeRabbit on PR #1843; at 24451e60 the E532 stood with no record)."""
+    src = """
+private forall<T> fn g(@T, @Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(pure)
+{ @Int.0 }
+
+private fn h(@Map<String, Int> -> @Int)
+  requires(map_size(@Map<String, Int>.0) > 0)
+  ensures(true)
+  effects(pure)
+{ 1 }
+
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  assume(h(map_insert(map_new(), "k", @Int.0)) > 0);
+  assume(g(true, @Int.0) > 0);
+  0
+}
+"""
+    result = _verify(src)
+    assert [d.error_code for d in result.diagnostics] == ["W003", "W003"], [
+        (d.error_code, d.description) for d in result.diagnostics]
+    assert not [o for o in result.obligations if o.kind == "call_pre"]
+
+
 # =====================================================================
 # Mutation-derived battery (PR #1202 test-coverage review): each test
 # below kills a specific mutant that survived the original 12 — the

@@ -155,6 +155,12 @@ _OPAQUE_SCRUTINEE_REASON = (
     "projected and the predicate was never given a value to reason about"
 )
 
+#: The site names of two `nat_bind` fallbacks.  `_record_nat_bind_tier3`
+#: reads no site, so the names are kept out of the methods that pass them:
+#: a mutation of the text inside one is equivalent by construction.
+_CLOSURE_RETURN_SITE = "closure return"
+_SUBPATTERN_BIND_SITE = "ADT sub-pattern bind"
+
 class _FloatConversion(NamedTuple):
     """How one built-in reaches `i64.trunc_f64_s` (#807, #1480)."""
 
@@ -8665,7 +8671,7 @@ class ContractVerifier:
         elif (self._is_nat_type(self._written_type(expr.return_type))
                 and self._rows_taking(expr.body, "nat_bind")):
             self._record_nat_bind_tier3(
-                decl, expr.body, "closure return", "tier3")  # pragma: no mutate — equivalent: `_record_nat_bind_tier3` reads no `site`
+                decl, expr.body, _CLOSURE_RETURN_SITE, "tier3")  # pragma: no mutate — equivalent: `_record_nat_bind_tier3` reads no `site`
         # #779/#985: descend into the closure BODY under an EMPTY slot
         # environment — the fresh-scope walk.  Interior slot-dependent
         # binding sites are obligated Tier-3, while literal-only shapes
@@ -12970,7 +12976,7 @@ class ContractVerifier:
                             leaf_is_nat)):
                     continue  # pragma: no mutate — equivalent: not reached: the table lists a sub-pattern binder's head `nat_bind` row by the same `component_narrows` rule, so `_narrowing_binder` returns True here
                 self._record_nat_bind_tier3(
-                    decl, scrutinee, "ADT sub-pattern bind", "tier3")  # pragma: no mutate — equivalent: `_record_nat_bind_tier3` reads no `site`
+                    decl, scrutinee, _SUBPATTERN_BIND_SITE, "tier3")  # pragma: no mutate — equivalent: `_record_nat_bind_tier3` reads no `site`
 
     def _obligate_destructure_narrowings(
         self,
@@ -14173,6 +14179,11 @@ class ContractVerifier:
                 continue
             if self._call_pre_recorded(
                     decl, d.precondition, d.call_node, failures_only=True):
+                continue
+            if self._call_pre_rows(d.precondition, d.call_node) == []:
+                # #1836: as a refuted precondition, a demoted one at a call
+                # the table lists no row of this function at (a call in an
+                # `assume` condition) is no obligation: no record, no E532.
                 continue
             self._record_obligation(
                 decl.name, "call_pre", d.precondition, "tier3",
