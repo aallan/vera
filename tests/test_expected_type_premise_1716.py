@@ -787,6 +787,10 @@ def test_a_negated_number_is_a_literal_and_a_negated_bool_is_not() -> None:
     assert not is_literal(ast.UnaryExpr(
         op=ast.UnaryOp.NEG, operand=ast.SlotRef(
             type_name="Int", type_args=None, index=0)))
+    assert not is_literal(ast.UnaryExpr(
+        op=ast.UnaryOp.NEG, operand=ast.StringLit(value="a")))
+    assert is_literal(ast.UnaryExpr(
+        op=ast.UnaryOp.NEG, operand=ast.FloatLit(value=1.5)))
 
 
 def test_a_literal_satisfies_a_type_only_by_every_fact_it_states() -> None:
@@ -805,6 +809,7 @@ def test_a_literal_satisfies_a_type_only_by_every_fact_it_states() -> None:
     assert not smt._literal_satisfies(
         ast.UnaryExpr(op=ast.UnaryOp.NEG, operand=three), NAT)
     assert not smt._literal_satisfies(ast.BoolLit(value=True), ty["pos"])
+    assert not smt._literal_satisfies(ast.BoolLit(value=True), INT)
     assert not smt._literal_satisfies(ast.FloatLit(value=3.0), ty["pos"])
     no_term = RefinedType(INT, ast.SlotRef(
         type_name="Bool", type_args=None, index=0))

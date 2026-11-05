@@ -496,7 +496,7 @@ def is_literal(expr: ast.Expr) -> bool:
     """A literal: a number, a `Bool` or a `String` written out, or the
     negation of a number."""
     if isinstance(expr, ast.UnaryExpr) and expr.op == ast.UnaryOp.NEG:
-        expr = expr.operand
+        return isinstance(expr.operand, (ast.IntLit, ast.FloatLit))
     return isinstance(expr, (ast.IntLit, ast.FloatLit, ast.BoolLit,
                              ast.StringLit))
 
