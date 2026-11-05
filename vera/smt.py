@@ -3645,6 +3645,9 @@ class SmtContext:
         if not facts:
             return True
         solver = z3.Solver()
+        # The query runs under the budget every query of this context does
+        # (`--timeout-ms`); an `unknown` is no proof, so it answers False.
+        solver.set("timeout", self._timeout_ms)
         solver.add(z3.Not(z3.And(*facts)))
         return bool(solver.check() == z3.unsat)
 

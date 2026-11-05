@@ -814,3 +814,28 @@ def test_a_literal_satisfies_a_type_only_by_every_fact_it_states() -> None:
     no_term = RefinedType(INT, ast.SlotRef(
         type_name="Bool", type_args=None, index=0))
     assert not smt._literal_satisfies(three, no_term)
+
+
+def test_a_literal_probe_runs_under_the_per_query_budget(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """The probe's own solver takes the context's `--timeout-ms` budget, as
+    every query of the context's solver does: a spy on the solvers the probe
+    builds records the timeout each is given."""
+    import z3
+
+    from vera import ast
+    from vera import smt as smt_mod
+
+    budgets: list[object] = []
+    real = z3.Solver
+
+    class Spy(real):  # type: ignore[misc, valid-type]
+        def set(self, *args: object, **kwargs: object) -> None:
+            if args and args[0] == "timeout":
+                budgets.append(args[1])
+            super().set(*args, **kwargs)
+
+    ctx = smt_mod.SmtContext(timeout_ms=1234)
+    monkeypatch.setattr(smt_mod.z3, "Solver", Spy)
+    assert ctx._literal_satisfies(ast.IntLit(value=3), _types()["pos"])
+    assert budgets == [1234]
