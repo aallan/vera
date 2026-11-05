@@ -1111,7 +1111,7 @@ Each stage call and each `pipeline.cli()` call runs under a budget, as a process
 
 ### A function code generation drops is dropped by injection
 
-The constructs code generation cannot lower are refused at check, at the written type, the operation or the call that instantiates a generic (#1679, #1680), so a test of the drop machinery, the `[E602]` skip, its `[E620]` propagation to every caller (#1100) and the refusal of a dropped entry (#1183, #1186), injects the skip: the `skip_map_inserts` fixture (`tests/codegen_helpers.py`) makes `map_insert`'s translator raise the skip an `Array`-valued map raised, and the fixture program writes a map the check accepts.  One check-green shape code generation still drops a function of is a bug, and not a fixture: an array literal of closures, whose element type code generation's array-literal inference does not read from the check (`[E602]`, "could not infer array literal element type"; #1525's class).
+The constructs code generation cannot lower are refused at check, at the written type, the operation or the call that instantiates a generic (#1679, #1680), so a test of the drop machinery, the `[E602]` skip, its `[E620]` propagation to every caller (#1100) and the refusal of a dropped entry (#1183, #1186), injects the skip: the `skip_map_inserts` fixture (`tests/codegen_helpers.py`) makes `map_insert`'s translator raise the skip an `Array`-valued map raised, and the fixture program writes a map the check accepts.  No check-green shape is known to be dropped there, which is why the skip is injected.
 
 ### A parametrised test takes a list, never a generator
 
