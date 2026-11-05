@@ -744,10 +744,35 @@ def test_a_value_of_an_undeclared_type_draws_nothing_further_at_any_site(
     """The census's sweep: a value of an undeclared type (`@Qzt.0`) at every
     expression site a judgement reads, each early guard reading the shared
     predicate (`is_unknown_like`, `is_subtype`'s rule, `is_eq_derivable`), so
-    its E136 is the one error.  At the base 22 of these 25 sites drew a
+    its E136 is the one error.  At the base 21 of these 25 sites drew a
     second error; `apply_fn`'s E202 was the last, its guard reading
     `UnknownType` alone."""
     source = (_SITE_HELPERS + "private fn f(@Qzt -> @Int)\n" + _SIG + "{\n  "
               + _PLACEHOLDER_SITES[site] + "\n}\n")
     codes = _codes(source)
+    assert codes and set(codes) == {"E136"}, codes
+
+
+
+_PLACEHOLDER_PROGRAMS = {
+    "requires": "private fn f(@Qzt -> @Int)\n  requires(@Qzt.0)\n  ensures(true)\n  effects(pure)\n{\n  0\n}\n",
+    "ensures_cmp": "private fn f(@Qzt -> @Int)\n  requires(true)\n  ensures(@Qzt.0 == @Int.result)\n  effects(pure)\n{\n  0\n}\n",
+    "put": "private fn f(@Qzt -> @Int)\n" + _SIG + "{\n  handle[State<Int>](@Int = 0) {\n    get(@Unit) -> { resume(@Int.0) },\n    put(@Int) -> { resume(()) }\n  } in {\n    put(@Qzt.0);\n    get(())\n  }\n}\n",
+    "tuple_ctor": "private fn f(@Qzt -> @Int)\n" + _SIG + "{\n  let Tuple<@Int, @Int> = Tuple(@Qzt.0, 1);\n  @Int.0\n}\n",
+    "quantifier": "private fn f(@Qzt -> @Bool)\n" + _SIG + "{\n  forall(@Qzt, 3, fn(@Qzt -> @Bool) effects(pure) { true })\n}\n",
+    "eq_ctor": "private fn f(@Qzt -> @Bool)\n" + _SIG + "{\n  @Qzt.0 == None\n}\n",
+    "match_ctor_pattern": "private fn f(@Qzt -> @Int)\n" + _SIG + "{\n  match @Qzt.0 {\n    Some(@Int) -> @Int.0,\n    _ -> 0\n  }\n}\n",
+}
+
+
+
+@pytest.mark.parametrize("site", sorted(_PLACEHOLDER_PROGRAMS))
+def test_a_value_of_an_undeclared_type_in_a_contract_or_operation_draws_nothing_further(
+        site: str) -> None:
+    """The sweep's other positions: a contract, an effect operation's
+    argument, a tuple construction, a quantifier's binder, a comparison with
+    a constructor and a constructor pattern.  At the base the `requires`
+    drew E123, the `ensures` and the constructor comparison E142, `put`
+    E204 and the tuple E170."""
+    codes = _codes(_PLACEHOLDER_PROGRAMS[site])
     assert codes and set(codes) == {"E136"}, codes
