@@ -539,6 +539,50 @@ public fn mk(@Float64 -> @Option<Small>)
 """
 
 
+def test_a_predicate_copy_shares_its_own_kinds_record_in_every_pass() -> None:
+    """A guard's copy of a refinement predicate shares the declaration's
+    record of its own kind: a division's `div_zero` and its quotient's
+    `int_overflow` stand at one node, and each keeps its record.  `mk`'s
+    disclosure makes the verifier run a second pass, whose records the
+    copies share, not the discarded first pass's (no W004)."""
+    v = _verified(
+        "type NonNeg = { @Int | @Int.0 >= 0 };\n"
+        "type Q = { @Int | @Int.0 / @Int.0 == 1 };\n\n"
+        "private fn mk(@Float64 -> @Option<NonNeg>)\n  requires(true)\n"
+        "  ensures(true)\n  effects(pure)\n{\n"
+        "  let @Option<Int> = Some(float_to_int(@Float64.0));\n"
+        "  @Option<Int>.0\n}\n\n"
+        "public fn f(@Int -> @Int)\n  requires(@Int.0 > 0)\n  ensures(true)\n"
+        "  effects(pure)\n{\n  let @Q = @Int.0;\n  @Q.0\n}\n")
+    at = sorted(o.kind for o in v.result.obligations
+                if (o.line, o.column) == (2, 19))
+    assert at == ["div_zero", "int_overflow"], at
+    recon = v.envelope()["reconciliation"]
+    assert recon["guarded_unrecorded"] == recon["recorded_unguarded"] == 0, recon
+    assert "W004" not in [w["error_code"] for w in v.envelope()["warnings"]]
+
+
+def test_an_unguarded_binder_holds_no_post_fact() -> None:
+    """The post-fact rule's negative space: a binder whose row no check can
+    guard (a refinement over a refinement) and whose value the solver
+    cannot decide holds nothing for the rest of its scope, so a call that
+    needs its predicate is not proved from it (a Tier 3, `E532`)."""
+    v = _verified(
+        "type Pos = { @Int | @Int.0 > 0 };\n"
+        "type Small = { @Pos | @Pos.0 < 10 };\n\n"
+        "private fn need(@Int -> @Int)\n  requires(@Int.0 < 10)\n"
+        "  ensures(true)\n  effects(pure)\n{\n  @Int.0\n}\n\n"
+        "public fn f(@Float64 -> @Int)\n  requires(true)\n  ensures(true)\n"
+        "  effects(pure)\n{\n  let @Small = float_to_int(@Float64.0);\n"
+        "  need(@Small.0)\n}\n")
+    binds = [(o.status, o.error_code) for o in v.result.obligations
+             if o.kind == "refine_bind"]
+    assert binds == [("tier3_unguarded", "E506")], binds
+    pre = [(o.status, o.error_code) for o in v.result.obligations
+           if o.kind == "call_pre"]
+    assert pre == [("tier3", "E532")], pre
+
+
 def test_repro_1602_the_e506_rationale_names_the_rows_reason() -> None:
     v = _verified(_NESTED_REFINEMENT)
     e506 = [d for d in v.warnings if d.error_code == "E506"]

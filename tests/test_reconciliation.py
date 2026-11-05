@@ -460,6 +460,35 @@ def test_taking_the_check_away_leaves_the_record_unguarded(
 
 
 @pytest.mark.parametrize(("path", "kind", "line"), [
+    ("tests/conformance/ch05_decreases_guard.vera", "decreases", 8),
+    ("examples/maximum_syntax.vera", "int_overflow", 235),
+])
+def test_every_copy_of_a_site_needs_its_own_check(
+    path: str, kind: str, line: int,
+) -> None:
+    """A site evaluated at several places (a measure at the entry and at
+    each self tail call, a `State` clause at each operation call) is one
+    record naming a row per place, and each row needs its own check (#1695,
+    A3): the check of one copy answers that copy alone.  With one copy's
+    checks taken away and the others' kept, the record is
+    `recorded_unguarded`."""
+    run = _run(ROOT / path)
+    assert run.verify_result is not None and run.compile_result is not None
+    record = next(r for r in run.verify_result.obligations
+                  if r.kind == kind and r.line == line)
+    assert len(record.rows) >= 2, record.rows
+    by_row = {rid: [c for c in run.compile_result.emitted_checks if c.row == rid]
+              for rid in record.rows}
+    assert all(by_row.values()), by_row
+    gone = {id(c) for c in by_row[record.rows[-1]]}
+    checks = [c for c in run.compile_result.emitted_checks if id(c) not in gone]
+    result = _rejoin(run, checks=checks)
+    assert any(m.kind == "recorded_unguarded" and m.obligation == kind
+               and (m.line, m.column) == (record.line, record.column)
+               for m in result.mismatches), result.mismatches
+
+
+@pytest.mark.parametrize(("path", "kind", "line"), [
     case for case in _RULE_CASES if case[1] != "call_pre"])
 def test_taking_the_record_away_leaves_the_check_unrecorded(
     path: str, kind: str, line: int, tmp_path: Path,
