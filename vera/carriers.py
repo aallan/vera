@@ -129,11 +129,11 @@ def projected_carrier_name(ty: Type | None) -> str | None:
 #: The binder positions where code generation plants an ELEMENT guard, and
 #: the emitter that plants it (#1430).
 #:
-#: A SEPARATE roster from `narrowing.REFINED_BIND_GUARDED_SITES`, which
-#: answers the question for the slot's own §2.6.5 predicate.  The element
+#: A SEPARATE question from the slot's own §2.6.5 predicate, which the
+#: obligation table's rows answer.  The element
 #: guard is a different lowering with a different reach — it walks a sequence
-#: — so a site in that roster is not automatically in this one, and reading
-#: the scalar roster for this question is what let a `tier3` be recorded at a
+#: — so a position the scalar predicate is guarded at is not automatically
+#: one here, and reading the scalar answer for this question let a `tier3` be recorded at a
 #: closure boundary whose module carried no element loop at all.
 #:
 #: Each value names the FUNCTION that emits for that position, and

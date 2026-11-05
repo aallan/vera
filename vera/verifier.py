@@ -10741,8 +10741,8 @@ class ContractVerifier:
         # `_element_guard_emitted`, which mirrors the emitter's base and
         # projection tables, and the SITE half is
         # `carriers.ELEMENT_GUARD_SITES`, the roster of positions the element
-        # emitter is WIRED at.  That roster is deliberately not
-        # `narrowing.REFINED_BIND_GUARDED_SITES`: the scalar predicate and the
+        # emitter is WIRED at.  That roster is deliberately not the scalar
+        # predicate's positions: the scalar predicate and the
         # element walk are different lowerings with different reach, and
         # reading the scalar one for this question recorded `tier3` at a
         # closure boundary whose module carried no element loop at all — a
@@ -11361,9 +11361,8 @@ class ContractVerifier:
         predicate outside the fragment, via
         :py:meth:`_refined_untranslatable_reason`, and either non-verdict via
         :py:meth:`_undecided_reason`.  Whether these projection sites are
-        codegen-guarded is read from :py:data:`narrowing.REFINED_BIND_GUARDED_SITES`
-        (they are, since #765) intersected with the refinement's own
-        guardability, never restated here.  *node* gives the diagnostic
+        codegen-guarded is the row's guard in the obligation table (#1695),
+        never restated here.  *node* gives the diagnostic
         location.
         """
         goal = self._translate_refined_predicate(smt, refined_ty, term)

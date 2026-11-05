@@ -7,11 +7,10 @@ CHECK them — the §2.6.5 predicate lowering ran at pattern-bind sites only,
 so each of those obligations disclosed `tier3_unguarded` / E506 and the
 value went in unexamined.
 
-This closes that half.  The site table both components read
-(`vera.narrowing.REFINED_BIND_GUARDED_SITES`) gains the four construction
-sites, and the same `_emit_bind_refine_guard` lowering runs at each store,
-so a site cannot be classified guarded without being guarded or guarded
-without being counted.
+This closes that half.  The four construction sites take the guard (each
+store's row in the obligation table decides it, #1695), and the same
+`_emit_bind_refine_guard` lowering runs at each store, so a site cannot be
+classified guarded without being guarded or guarded without being counted.
 
 Every cell here is STORE-ONLY: it builds the container and never reads it
 back.  A fixture that reads the component out is answered by the read-side

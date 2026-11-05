@@ -166,11 +166,9 @@ class DataMixin:
         where the store expects it — the value is not recomputed, which
         matters for an argument with an effect.
 
-        Gated on ``site`` being in
-        :py:data:`vera.narrowing.REFINED_BIND_GUARDED_SITES`, the sites this
-        lowering exists at, and decided by the component's row in the
-        obligation table (#1695), whose guard the verifier's record reads
-        too, so the guard and the guarded status move together.  Codegen
+        Decided by the component's row in the obligation table (#1695),
+        whose guard the verifier's record reads too, so the guard and the
+        guarded status move together.  Codegen
         used to emit at a hard-coded set that happened to agree with the
         verifier's, and "happened to agree" is not a property anything
         checks.
@@ -188,13 +186,6 @@ class DataMixin:
         whose declared type is a variable and whose argument carries no
         recorded target, so it stays obligated and disclosed.
         """
-        # The roster gate decides a guard beside the row: emptying
-        # `REFINED_BIND_GUARDED_SITES` drops these checks while the table
-        # still lists the rows guarded, which the guard matrices and the
-        # identity cells catch.  Its removal, the row the one decision, is a
-        # line of #1836, which deletes the verifier's walk.
-        if site not in narrowing.REFINED_BIND_GUARDED_SITES:
-            return value
         # Precedence by GUARDABILITY, not by source.  The declared field
         # expression is preferred where it names a refinement this lowering
         # can emit for, because it is the syntax the guard is written
