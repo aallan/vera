@@ -15,6 +15,7 @@ from vera.environment import AdtInfo, ConstructorInfo, FunctionInfo, TypeEnv
 from vera.errors import Diagnostic
 from vera.module_view import modules_visible_to
 from vera.monomorphize import namespace_adt_names, namespace_fn_names
+from vera.prelude import BUILTIN_TYPE_NAMES
 from vera.registration import where_helper_parents
 from vera.resolver import (
     ResolvedModule,
@@ -290,6 +291,11 @@ class ModulesMixin:
                 for type_name, ctor_names in reg.refused_ctors.items():
                     if admitted is None or type_name in admitted:
                         self._refused_ctor_names.update(ctor_names)
+                        # #1563: and the name, where it is a built-in
+                        # type's, as for a refused declaration of this
+                        # namespace's own (`_refused_type_names`).
+                        if type_name in BUILTIN_TYPE_NAMES:
+                            self._refused_type_names.add(type_name)
 
             # 4. C7c: check selective imports for private names
             name_filter = self._import_names.get(mod.path)

@@ -40,6 +40,7 @@ from vera.types import (
     Type,
     TypeVar,
     UnknownType,
+    UnresolvedAdtType,
     base_type,
 )
 
@@ -84,7 +85,9 @@ def is_eq_derivable(
       the concrete type arguments.  A recursive occurrence is cycle-broken via
       ``_seen`` (so ``List<Int>`` derives rather than looping).
     - ``UnknownType`` → derivable (error recovery: never pile a spurious E243
-      on top of an already-reported type error).
+      on top of an already-reported type error), and so is the placeholder of
+      a name nothing declares (``UnresolvedAdtType``, E136), wherever it
+      stands: an operand, a type argument, a constructor's field (#1563).
     - A bare ``TypeVar`` is **not** decided here — callers defer it (inside a
       ``forall<T where Eq<T>>`` body the constraint promises derivability, and
       the check holds each instance's type argument to it, E613 at the call
@@ -92,7 +95,7 @@ def is_eq_derivable(
     """
     ty = base_type(ty)  # a refinement is Eq iff its base is (predicate aside)
 
-    if isinstance(ty, UnknownType):
+    if isinstance(ty, (UnknownType, UnresolvedAdtType)):
         return True
     if isinstance(ty, PrimitiveType):
         return ty.name in EQ_PRIMITIVES
@@ -188,23 +191,20 @@ def _substitute(ty: Type, mapping: dict[str, Type]) -> Type:
     """Substitute type parameters by concrete arguments (checker-local).
 
     A thin structural walk — mirrors ``vera.types.substitute`` but is inlined
-    here to avoid importing checker orchestration into this leaf module, and to
-    substitute inside ``AdtType`` / ``FunctionType`` / ``RefinedType`` exactly
-    as codegen's field-type substitution does.
+    here to avoid importing checker orchestration into this leaf module.  Its
+    one reader is ``is_eq_derivable``, so it substitutes inside ``AdtType`` and
+    ``RefinedType`` only: a ``FunctionType`` is not derivable whatever its
+    parts, so it is returned as it is.
     """
     if isinstance(ty, TypeVar):
-        return mapping.get(ty.name, ty)
+        return mapping.get(ty.name, ty)  # pragma: no mutate — equivalent: every type variable in a constructor's field is a parameter of its data type, and the mapping binds every parameter (an application at another arity is E133, an unknown, before it reaches here)
     if isinstance(ty, AdtType):
-        return AdtType(ty.name, tuple(_substitute(a, mapping)
-                                      for a in ty.type_args))
-    if isinstance(ty, FunctionType):
-        return FunctionType(
-            tuple(_substitute(p, mapping) for p in ty.params),
-            _substitute(ty.return_type, mapping),
-            ty.effect,
-        )
+        return ty.with_args(tuple(_substitute(a, mapping)
+                                  for a in ty.type_args))
     if isinstance(ty, RefinedType):
-        return RefinedType(_substitute(ty.base, mapping), ty.predicate)
+        return RefinedType(
+            _substitute(ty.base, mapping),
+            ty.predicate)  # pragma: no mutate — equivalent: `is_eq_derivable` reads a refinement's base and never its predicate
     return ty
 
 

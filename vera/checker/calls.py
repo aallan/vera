@@ -36,6 +36,7 @@ from vera.environment import (
     OpInfo,
 )
 from vera.types import (
+    is_unknown_like,
     BUILTIN_TYPEVAR_MARKER,
     FREE_BUILTIN_TYPEVAR_MARKER,
     ORDERABLE_TYPES,
@@ -236,8 +237,8 @@ def _map_holes(ty: Type, to: typing.Callable[[str], Type]) -> Type:
     if isinstance(ty, TypeVar):
         return to(ty.name) if "$" in ty.name else ty
     if isinstance(ty, AdtType):
-        return AdtType(ty.name,
-                       tuple(_map_holes(arg, to) for arg in ty.type_args))
+        return ty.with_args(
+            tuple(_map_holes(arg, to) for arg in ty.type_args))
     if isinstance(ty, FunctionType):
         effect = ty.effect
         if isinstance(effect, ConcreteEffectRow):
@@ -691,6 +692,16 @@ class CallsMixin:
         # `handle[State<T>]` once lowered to the host cell intrinsic — a
         # silently wrong value, a module WASM validation rejected, or a
         # spurious [E602] naming a State operation the user never wrote.
+        if name in self._refused_builtin_fn_names:
+            # #1563: the name a refused redefinition of a built-in took
+            # (E151).  The program wrote the call against its own
+            # declaration, so the declaration's E151 is the one error the
+            # call owes, as for the module-qualified call to it
+            # (`_check_own_module_call`): held to the built-in's signature,
+            # it drew errors at code that is not wrong.
+            for arg in args:
+                self._synth_expr(arg)
+            return UnknownType()
         fn_info = self._bound_function(node)
         if fn_info is not None:
             return self._check_fn_call_with_info(fn_info, args, node,
@@ -1295,7 +1306,8 @@ class CallsMixin:
         # the remaining arguments (to surface errors inside them) and
         # give up on structural checking.
         fn_ty = base_type(fn_ty_raw) if fn_ty_raw is not None else None
-        if fn_ty is None or isinstance(fn_ty, (UnknownType, TypeVar)):
+        if (fn_ty is None or isinstance(fn_ty, TypeVar)
+                or is_unknown_like(fn_ty)):
             for arg in rest:
                 self._synth_expr(arg)
             return UnknownType()

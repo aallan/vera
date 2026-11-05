@@ -3633,7 +3633,7 @@ class SmtContext:
         translate whole, or rests on a stand-in."""
         term = self.translate_expr(leaf, SlotEnv())  # pragma: no mutate — equivalent: a literal's translation reads no environment
         sort = self._value_sort(ty)
-        if term is None or sort is None or term.sort() != sort:  # pragma: no mutate — equivalent: every literal translates, so its term is never None
+        if term is None or sort is None or term.sort() != sort:  # pragma: no mutate — equivalent: a literal's term is never None: one that does not translate gets its stand-in
             return False
         facts = self._type_facts(term, ty)
         chain = naming.refined_type_chain(ty)
@@ -3929,6 +3929,32 @@ class SmtContext:
                 stack.extend(cur)
         return found, sites
 
+    def _mentions_float_stand_in(self, term: z3.ExprRef) -> bool:
+        """Whether *term* holds a `Float64` stand-in itself, an
+        ``_opaque_``-named constant of the floating-point sort.
+
+        The stand-in, not a value built on one: a call's result over a
+        stand-in argument carries its callee's `ensures`, which can decide
+        the goal whatever the argument (`examples/ephemeris.vera`'s
+        `right_ascension`, whose range comes back through `wrap_deg`), so a
+        goal over such a result is still asked."""
+        if not self._opaque_tainted:
+            return False
+        seen: set[int] = set()
+        stack: list[z3.ExprRef] = [term]
+        while stack:
+            t = stack.pop()
+            tid = t.get_id()
+            if tid in seen:
+                continue
+            seen.add(tid)
+            if (z3.is_app(t) and t.num_args() == 0
+                    and isinstance(t.sort(), z3.FPSortRef)
+                    and t.decl().name().startswith("_opaque_")):
+                return True
+            stack.extend(t.children())
+        return False
+
     def _mentions_stand_in(self, term: z3.ExprRef) -> bool:
         """Whether *term* holds a term no refutation may rest on (#1696,
         R4): a stand-in or a value built on one, by `_taint`'s ids, or any
@@ -4043,10 +4069,12 @@ class SmtContext:
                             val.sort().accessor(idx, i)(val)
                             for i in range(len(stmt.type_bindings))
                         ]
-                        if self._mentions_stand_in(val):
-                            # A refined component of a stand-in reads the
-                            # value its bind's guard establishes (#1696).
-                            comps = self.guarded_components(stmt, val, comps)
+                        # A refined or `@Nat` component reads the value its
+                        # bind's guard establishes, whatever its value, as a
+                        # `let`'s binder does (#1696, #1563): the post-fact
+                        # rule, so a refused or guarded bind's predicate
+                        # holds for the rest of its scope.
+                        comps = self.guarded_components(stmt, val, comps)
                     else:
                         # The opaque fallback derives component sorts from
                         # the source type's arguments, which equal the
@@ -4684,6 +4712,17 @@ class SmtContext:
         wanted = {value.get_id() for value, _ in self._value_facts}
         read = self._ids_in(
             [goal, *assumptions, *self._path_conditions], wanted)
+        # Closed over the facts themselves: a placeholder's fact that reads
+        # another placeholder (`let @Nat = if c then { @Nat.0 - 7 } else
+        # { @Nat.0 }` over an earlier guarded `@Nat.0`) is read by the query
+        # through it, so that one's fact holds there too (#1563).
+        while True:
+            more = self._ids_in(
+                [fact for value, fact in self._value_facts
+                 if value.get_id() in read], wanted) - read
+            if not more:
+                break
+            read |= more
         return [fact for value, fact in self._value_facts
                 if value.get_id() in read]
 
@@ -4748,6 +4787,15 @@ class SmtContext:
         a genuine violation elsewhere in a function that also holds a
         stand-in stays loud.
         """
+        if self._mentions_float_stand_in(goal):
+            # A goal over a `Float64` stand-in is undecided without the
+            # query (#1696): the stand-in carries no fact a refutation may
+            # rest on, so the only verdicts a query could give are a proof
+            # true for every float value (none in the corpus) or `opaque`,
+            # and Z3's floating-point search took 1 to 4 s to give the
+            # second.  The `float_to_int_domain` precedent: a symbolic
+            # floating-point argument is Tier 3 without asking.
+            return SmtResult(status="opaque")
         with self._premises(goal, assumptions, tainted):
             self.solver.add(z3.Not(goal))
             result = self.solver.check()
@@ -4887,11 +4935,21 @@ class SmtContext:
     def _extract_counterexample(
         self, model: z3.ModelRef
     ) -> dict[str, str]:
-        """Extract variable values from a Z3 model."""
+        """Extract variable values from a Z3 model.
+
+        ``@result`` is the model's value of the term `@T.result` stands for
+        when one is set (#1707): an `ensures` is asked with the body's term
+        in its place (`set_result_var`), so the declared ``@result``
+        constant is in no query, and its model value, 0 whatever the body
+        returned, named no value the body produces at the printed input.
+        """
         ce: dict[str, str] = {}
         for name, var in self._vars.items():
             val = model.evaluate(var, model_completion=True)
             ce[name] = str(val)
+        if "@result" in ce and self._result_var is not None:
+            ce["@result"] = str(
+                model.evaluate(self._result_var, model_completion=True))
         return ce
 
     def reset(self) -> None:

@@ -730,8 +730,11 @@ def test_repro_an_undeclared_argument_of_the_return_type_is_not_judged() -> None
 _REFUSED_RETURNS: dict[str, tuple[str, str, str, str, list[str]]] = {
     "arity": ("@Int", "@Box", "None", "@Option<Int>.result == None",
               ["E133"]),
+    # #1563: a name nothing declares is a placeholder every judgement
+    # admits, so the comparison over it draws no E142 (nor E243) beside its
+    # two E136s; `main` at da406983 reported E142 here.
     "undeclared": ("@Qzt", "@Qzt", "@Qzt.0", "@Int.result == 1",
-                   ["E136", "E136", "E142"]),
+                   ["E136", "E136"]),
     "zero_size_argument": ("@Int", "@Array<Unit>", "[]",
                            "array_length(@Array<Int>.result) == 0", ["E135"]),
     "removed_alias_argument": ("@Float", "@Option<Float>", "None",

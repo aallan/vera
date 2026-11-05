@@ -712,7 +712,9 @@ public fn b25(
 # or a removed alias (`Float`) is the only shape whose rendering a
 # declaration-order bound would change, and each is swept in BOTH orders,
 # which render alike (#1552) — a bound left in one direction agrees with the
-# checker on one ordering only.
+# checker on one ordering only.  A `data Decimal` is refused and not
+# registered (E158, #1563), so its leg pins the built-in reading in both
+# orders.
 _ORDERING_FN = """\
 public fn ord(@Option<{alias}>, @{adt}<Int> -> @Int)
   requires(true)
@@ -925,8 +927,15 @@ def test_inline_battery_reaches_the_alias_corners(sweep: Sweep) -> None:
         second = by_program[f"<battery:decl_order_{adt}_adt_first>"]
         assert first == second, (adt, first, second)
     ordering = set().union(*by_program.values())
-    assert {"Option<Decimal<Int>>", "Option<Float<Int>>"} <= ordering, ordering
-    assert not {"Option<Decimal>", "Option<?>"} & ordering, ordering
+    assert "Option<Float<Int>>" in ordering, ordering
+    assert "Option<?>" not in ordering, ordering
+    # A `data Decimal` is refused and not registered (E158, #1563), so
+    # `Decimal<Int>` is the built-in in either order, its arguments dropped
+    # as every other battery entry's built-in `Decimal` drops them.
+    decimal = (by_program["<battery:decl_order_decimal_alias_first>"]
+               | by_program["<battery:decl_order_decimal_adt_first>"])
+    assert "Option<Decimal>" in decimal, decimal
+    assert "Option<Decimal<Int>>" not in decimal, decimal
 
 
 def test_differential_gate_detects_divergence() -> None:
