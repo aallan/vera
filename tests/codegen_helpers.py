@@ -198,8 +198,7 @@ def skip_map_inserts(monkeypatch: pytest.MonkeyPatch) -> None:
     every caller as E620 (#1100) and the refusal of a dropped entry (#1183,
     #1186), is reached by injection: `map_insert`'s translator raises the
     skip it raised for an Array-valued map, and a fixture writes a map the
-    check accepts.  The one check-green drop left is a bug, no fixture: a
-    function type at a generic's type argument (#1783)."""
+    check accepts."""
     from vera.skip import CodegenSkip
     from vera.wasm.calls_containers import CallsContainersMixin
 
