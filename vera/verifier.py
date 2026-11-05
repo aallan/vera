@@ -3820,6 +3820,45 @@ class ContractVerifier:
                 expr_text=rows[0].content_key[2])
         return False
 
+    def _nat_value_site(
+        self, decl: ast.FnDecl, value: ast.Expr, targeted: bool,
+    ) -> bool:
+        """Whether a value with a head ``nat_bind`` row is discharged by the
+        solver: where the position holds it to `Nat` (*targeted*: the
+        formal's or field's type, or the checker's recorded target there)
+        and it narrows.  Elsewhere the requirement reached the value by a
+        coercion of an enclosing value (a later element of an array
+        literal whose first fixed the element type, spec §4.12.1), whose
+        check the row's guard is, so the row is left to it: ``tier3``
+        (#1836)."""
+        rows = self._head_rows(value, "nat_bind")
+        if not rows:
+            return False
+        if targeted and self._narrows_into_nat(value):
+            return True
+        self._record_obligation(
+            decl.name, "nat_bind", value, "tier3",
+            rows=tuple(r.id for r in rows))
+        return False
+
+    def _leave_binder_rows(
+        self, decl: ast.FnDecl, binder: ast.TypeExpr, kind: ObligationKind,
+    ) -> None:
+        """Record ``tier3`` a literal destructure's binder rows that the
+        discharge of its component value did not key: the value's record is
+        the component's row, and the binder's row is the destructure's
+        check over the same value, left to it (#1836)."""
+        frame = self._fn_frames[-1] if self._fn_frames else None
+        if frame is None:
+            return
+        done = {i for rec in frame.made for i in rec.rows}
+        left = [r for r in self._binder_rows(binder, kind) if r.id not in done]
+        if left:
+            self._record_obligation(
+                decl.name, kind, binder, "tier3",
+                rows=tuple(r.id for r in left),
+                expr_text=left[0].content_key[2])
+
     def _discharge_effect_rows(
         self, decl: ast.FnDecl, pattern: ast.Pattern,
     ) -> None:
@@ -8378,7 +8417,8 @@ class ContractVerifier:
                     # narrowing (Site 2 below): obligate the argument against its
                     # recovered @Nat formal.  Codegen guards the call_indirect
                     # argument (`_translate_apply_fn`), so `guarded=True`.
-                    elif self._head_rows(arg, "nat_bind"):
+                    elif self._nat_value_site(
+                            decl, arg, self._nat_binding_target(arg, resolved_formal)):
                         self._check_nat_binding_obligation(
                             decl, arg, smt, path.env, path.facts,
                             site="closure argument",
@@ -8508,7 +8548,7 @@ class ContractVerifier:
                         path.facts, site="call argument",
 
                     )
-                elif self._head_rows(arg, "nat_bind"):
+                elif self._nat_value_site(decl, arg, owed.nat):
                     self._check_nat_binding_obligation(
                         decl, arg, smt, path.env, path.facts,
                         site="call argument",
@@ -8633,7 +8673,8 @@ class ContractVerifier:
                         path.facts, site="constructor field",
 
                     )
-                elif self._head_rows(arg, "nat_bind"):
+                elif self._nat_value_site(
+                        decl, arg, self._nat_binding_target(arg, field_ty)):
                     self._check_nat_binding_obligation(
                         decl, arg, smt, path.env, path.facts,
                         site="constructor field",
@@ -8943,6 +8984,7 @@ class ContractVerifier:
                                     block_assumptions,
                                     site="tuple destructure",
                                 )
+                                self._leave_binder_rows(decl, te, "refine_bind")
                         elif ((self._binder_rows(te, "nat_bind")
                                or self._head_rows(sub, "nat_bind"))
                               and self._narrowing_binder(
