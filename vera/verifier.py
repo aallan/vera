@@ -10752,7 +10752,6 @@ class ContractVerifier:
         # opaque producer reach a Tier-1-clean callee and refute its
         # postcondition at run time.
         val = smt.translate_expr(value_node, slot_env)
-        source_ty = self._resolved_type_of(value_node)
         if val is None:
             self._record_refined_bind_tier3(
                 decl, value_node, site,
@@ -10771,7 +10770,12 @@ class ContractVerifier:
                 reason=self._nested_unstatable_reason(formal_ty),
             )
             return
-        source_facts, _ = self._nested_refinement_facts(smt, source_ty, val)
+        # #1716: the facts the value's own leaves establish, never the type
+        # the checker recorded a join over them at.
+        established = narrowing.established_type(
+            value_node, self._resolved_type_of)
+        source_facts = ([] if established is None else
+                        self._nested_refinement_facts(smt, established, val)[0])
         premises = list(assumptions)
         # THE GATE, not a fourth hand-rolled copy of it (#1418 review).  This
         # site had a local test of its own instead — since deleted with its

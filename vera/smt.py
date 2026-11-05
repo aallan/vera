@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any, Callable, cast
 
 import z3
 
-from vera import ast, fold, naming, patterns
+from vera import ast, fold, naming, narrowing, patterns
 from vera.monomorphize import mangle_type_name, unmangle_type_name
 from vera import carriers
 from vera.regularity import RegularityIndex, adt_names_in
@@ -3596,6 +3596,17 @@ class SmtContext:
             ty = hook(node)
             if ty is None:
                 return None
+            # #1716: a join's stand-in carries the type it was recorded at
+            # only where that is what its leaves establish
+            # (`narrowing.established_type`), and its base alone otherwise:
+            # the checker records a join at the side its branches share the
+            # most of, which states facts a branch never had.
+            if (isinstance(node, ast.Expr)
+                    and narrowing.flow_arms(node) is not None
+                    and not _same_type(
+                        narrowing.established_type(
+                            node, hook, self._literal_satisfies), ty)):
+                base_only = True
         sort = self._value_sort(ty)
         if sort is None:
             return None
@@ -3614,6 +3625,31 @@ class SmtContext:
             self.assume(stated)
         self._inherit_disclosure(node, const)
         return const
+
+    def _literal_satisfies(self, leaf: ast.Expr, ty: Type) -> bool:
+        """Whether every fact *ty* states (`_type_facts`) is true of the
+        literal *leaf*'s value (#1716): its term is a constant, so a fresh
+        solver decides it exactly.  False where a predicate of *ty* does not
+        translate whole, or rests on a stand-in."""
+        term = self.translate_expr(leaf, SlotEnv())  # pragma: no mutate — equivalent: a literal's translation reads no environment
+        sort = self._value_sort(ty)
+        if term is None or sort is None or term.sort() != sort:  # pragma: no mutate — equivalent: every literal translates, so its term is never None
+            return False
+        facts = self._type_facts(term, ty)
+        chain = naming.refined_type_chain(ty)
+        stated = len(self._base_facts(term, ty)) + (
+            len(chain[1]) if chain is not None else 0)
+        if len(facts) != stated or any(
+                self._mentions_stand_in(f) for f in facts):
+            return False
+        if not facts:
+            return True
+        solver = z3.Solver()
+        # The query runs under the budget every query of this context does
+        # (`--timeout-ms`); an `unknown` is no proof, so it answers False.
+        solver.set("timeout", self._timeout_ms)
+        solver.add(z3.Not(z3.And(*facts)))
+        return bool(solver.check() == z3.unsat)
 
     def fresh_stand_in(
         self, ty: Type, tag: str, *, binder: bool = False,
@@ -5007,6 +5043,11 @@ def _resumes_in_tail_position(clause: ast.HandlerClause) -> bool:
     return (isinstance(body, ast.Block) and not body.statements
             and isinstance(body.expr, ast.FnCall)
             and body.expr.name == "resume" and len(body.expr.args) == 1)
+
+
+def _same_type(a: Type | None, b: Type) -> bool:
+    """Whether *a* is the type *b* (``None`` is no type)."""
+    return narrowing.same_established(a, b)
 
 
 def _identity(node: ast.Node) -> Any:

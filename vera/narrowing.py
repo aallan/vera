@@ -25,7 +25,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from vera import ast, binders
-from vera.types import INT, NAT, AdtType, RefinedType, base_type
+from vera.types import (INT, NAT, NEVER, AdtType, FunctionType,
+                        PrimitiveType, RefinedType, TypeVar, UnknownType,
+                        base_type, effects_equal)
 
 if TYPE_CHECKING:
     from vera.types import Type
@@ -383,6 +385,120 @@ def value_leaves(expr: ast.Expr) -> tuple[ast.Expr, ...]:
     for arm in arms:
         out += value_leaves(arm)
     return out
+
+
+def established_type(
+    expr: ast.Expr, type_of: Callable[[ast.Expr], "Type | None"],
+    holds: "Callable[[ast.Expr, Type], bool] | None" = None,
+) -> "Type | None":
+    """The type *expr*'s value is established at: what its own leaves
+    (:func:`value_leaves`) are, never the type the checker gave the join
+    over them (#1716).
+
+    A leaf's recorded type is its own: a slot's binder, a call's declared
+    return, a construction's at the type its fields are checked against, a
+    literal's.  A join's is not: the checker types an `if`, a `match`, a
+    block or a `handle` as the side its branches share the most of, so
+    `if c then { @Option<Int>.0 } else { None }` passed at `Option<PosInt>`
+    is recorded at `Option<PosInt>` (its `None` checked there), which states
+    a payload the first branch never had.  So a join is at its leaves' one
+    type where every leaf that yields a value has it, and at none otherwise:
+    ``None``, which a reader takes as its base alone.  A join with no value
+    (an `if` with no `else`) is at none, and a leaf that yields none (a
+    `throw`, typed `Never`) takes no part.
+
+    A literal's value is known, so with *holds* (whether a type's facts are
+    true of a literal leaf, which the solver decides exactly) a literal leaf
+    is at any type whose facts it satisfies: `throw(@Int) -> { 1 }` beside
+    `@PosInt` leaves is a `PosInt`.  A join of literals alone is at the type
+    it was recorded at where every one satisfies it.
+
+    Two leaves share a type only where they state the same facts
+    (:func:`same_established`), refinements compared by their predicates."""
+    if flow_arms(expr) is None:
+        return type_of(expr)
+    shared: "Type | None" = None
+    literals: list[tuple[ast.Expr, "Type"]] = []
+    for leaf in value_leaves(expr):
+        ty = type_of(leaf)
+        if ty is None or _holds_unknown(ty):
+            return None
+        if ty == NEVER:
+            continue
+        if holds is not None and is_literal(leaf):
+            literals.append((leaf, ty))
+            continue
+        if shared is None:
+            shared = ty
+        elif not same_established(shared, ty):
+            return None
+    if not literals:
+        return shared
+    if shared is None:
+        shared = type_of(expr)
+        if shared is None:
+            return None
+    for leaf, ty in literals:
+        if not same_established(ty, shared) and not (
+                holds is not None and holds(leaf, shared)):
+            return None
+    return shared
+
+
+def _holds_unknown(ty: "Type") -> bool:
+    """Whether a part of *ty* is unknown."""
+    if isinstance(ty, UnknownType):
+        return True
+    if isinstance(ty, RefinedType):
+        return _holds_unknown(ty.base)
+    if isinstance(ty, AdtType):
+        return any(_holds_unknown(a) for a in ty.type_args)
+    if isinstance(ty, FunctionType):
+        return (any(_holds_unknown(p) for p in ty.params)
+                or _holds_unknown(ty.return_type))
+    return False
+
+
+def same_established(a: "Type | None", b: "Type | None") -> bool:
+    """Whether *a* and *b* state the same facts of a value (#1716): one
+    structure all the way down, each refinement with the same predicate (a
+    named refinement and another name for it, or the same predicate written
+    again, share one; `PosInt` and `NegInt` over one base do not), and no
+    part unknown.  Not `types_equal`, which compares a refinement by its base
+    alone and an unknown part as equal to anything: a type equal by that
+    test can state a fact the other does not."""
+    if isinstance(a, RefinedType):
+        return (isinstance(b, RefinedType)
+                and a.predicate == b.predicate
+                and same_established(a.base, b.base))
+    if isinstance(a, AdtType):
+        return (isinstance(b, AdtType)
+                and a.name == b.name
+                and len(a.type_args) == len(b.type_args)
+                and all(same_established(x, y)
+                        for x, y in zip(a.type_args, b.type_args)))
+    if isinstance(a, FunctionType):
+        return (isinstance(b, FunctionType)
+                and len(a.params) == len(b.params)
+                and all(same_established(x, y)
+                        for x, y in zip(a.params, b.params))
+                and same_established(a.return_type, b.return_type)
+                and effects_equal(a.effect, b.effect))
+    if isinstance(a, PrimitiveType):
+        return isinstance(b, PrimitiveType) and a.name == b.name
+    if isinstance(a, TypeVar):
+        return isinstance(b, TypeVar) and a.name == b.name
+    # An unknown type, or no type: nothing is established.
+    return False
+
+
+def is_literal(expr: ast.Expr) -> bool:
+    """A literal: a number, a `Bool` or a `String` written out, or the
+    negation of a number."""
+    if isinstance(expr, ast.UnaryExpr) and expr.op == ast.UnaryOp.NEG:
+        return isinstance(expr.operand, (ast.IntLit, ast.FloatLit))
+    return isinstance(expr, (ast.IntLit, ast.FloatLit, ast.BoolLit,
+                             ast.StringLit))
 
 
 def element_sources(collection: ast.Expr) -> tuple["ComponentSource", ...]:
