@@ -4888,11 +4888,21 @@ class SmtContext:
     def _extract_counterexample(
         self, model: z3.ModelRef
     ) -> dict[str, str]:
-        """Extract variable values from a Z3 model."""
+        """Extract variable values from a Z3 model.
+
+        ``@result`` is the model's value of the term `@T.result` stands for
+        when one is set (#1707): an `ensures` is asked with the body's term
+        in its place (`set_result_var`), so the declared ``@result``
+        constant is in no query, and its model value, 0 whatever the body
+        returned, named no value the body produces at the printed input.
+        """
         ce: dict[str, str] = {}
         for name, var in self._vars.items():
             val = model.evaluate(var, model_completion=True)
             ce[name] = str(val)
+        if "@result" in ce and self._result_var is not None:
+            ce["@result"] = str(
+                model.evaluate(self._result_var, model_completion=True))
         return ce
 
     def reset(self) -> None:
