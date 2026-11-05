@@ -2000,6 +2000,13 @@ _NAT_RETURN_LEAVES = {
     "match3-violating-last": (
         "match @Int.0 { 0 -> @Int.0, 1 -> @Int.0, _ -> @Int.0 - 1 }",
         ["verified", "verified", "violated"]),
+    # A `handle` is one leaf, as the table lists it (CodeRabbit on
+    # cfc78e6a): the leaf beside it is discharged on its own.
+    "if2-handle-leaf": (
+        "if @Int.0 > 0 then { @Int.0 } else { handle[State<Int>](@Int = 0) "
+        "{ get(@Unit) -> { resume(@Int.0) }, put(@Int) -> { resume(()) } } "
+        "in { @Int.0 - 1 } }",
+        ["verified", "violated"]),
 }
 
 

@@ -12654,34 +12654,18 @@ class ContractVerifier:
         reason: str | None = None,
     ) -> None:
         """Record a Tier-3 nat_bind outcome (untranslatable value or solver
-        timeout), distinguishing codegen-guarded narrowings from unguarded
-        ones via the caller-supplied *guarded* flag.
+        timeout), *status* ``tier3`` or ``timeout``.
 
-        Codegen guards the `let`, tuple-destructure, top-level match-bind,
-        and ADT-sub-pattern sites, the *concrete* @Nat constructor-field, and
-        *all* call-arguments — concrete directly, generic on the
-        monomorphised callee (#747), so a Tier-3 narrowing there genuinely
-        falls to a runtime check (``tier3_runtime``).  The unguarded cases —
-        the operation argument of a user-declared effect or of the builtin
-        ``Exn`` ``throw`` (#1268; the builtin State-op sites are guarded
-        since #1203) and the generic-instantiated
-        constructor field (constructors carry no per-field @Nat mono
-        metadata) — may be neither statically proven nor runtime-checked, so
-        surface an E504 warning and exclude them from the discharged totals
-        (like a violation) rather than silently counting a runtime check they
-        never
-        get.  The caller knows which case applies (it has the formal /
-        field type), so it passes *guarded* rather than inferring it from
-        the broad *site* string.
+        Whether a runtime check guards the site is its row's, in the
+        obligation table (#1695): :meth:`_settle_rows` keeps the record where
+        the row has a check (``tier3_runtime``) and discloses it, E504,
+        excluded from the totals, where it has none (a user effect
+        operation's argument, a generic-instantiated constructor field).
 
-        *reason* is WHY the obligation was not discharged, spliced into the
-        E504 rationale (#1251).  It is required on the UNGUARDED leg and
-        refused-by-raise if missing, because that leg emits a disclosure that
-        has to state a cause and there is no honest default: the value may not
-        have translated, or the solver may have returned no verdict, and those
-        ask the reader to change different things.  The GUARDED leg emits no
-        disclosure at all, so it neither needs the text nor should carry dead
-        text for the sake of a uniform signature.
+        *reason*, optional, is WHY the obligation was not discharged (the
+        value did not translate, or the solver returned no verdict); it is
+        kept for that disclosure's rationale (#1251), beside the row's
+        reason for having no check.
         """
         # Whether a check guards the site is its row's (#1695): the record
         # is `tier3` (or `timeout`), and `_settle_rows` discloses it where
@@ -13324,7 +13308,9 @@ class ContractVerifier:
         if rows is None:
             return None
         key = obligation_table.ObligationTable._key
-        leaves = {key(n) for n in narrowing.value_leaves(decl.body)}
+        # The table's own leaf rule (a `handle` is one leaf), so every leaf
+        # row is reached.
+        leaves = {key(n) for n in obligation_table.return_leaves(decl.body)}
         keys = frozenset(
             key(r.node) for r in rows
             if r.kind == "nat_bind" and r.evaluation == obligation_table.RETURN
