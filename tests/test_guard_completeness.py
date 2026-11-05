@@ -836,9 +836,11 @@ class TestANatMeasureIsAnI64_1222:
     def test_the_termination_proof_stands_alone(self, tmp_path: Path) -> None:
         obs, envelope = _obligations(
             tmp_path, _1222_UNBOUNDED, name="d1222v.vera")
-        assert [(o["kind"], o["status"]) for o in obs] == [
-            ("requires", "verified"), ("ensures", "verified"),
-            ("decreases", "verified")], obs
+        # `@Nat.0 / 2`'s divisor is a literal, a row recorded `verified`
+        # since #1695 (a class the obligation table's instrument pins).
+        assert sorted((o["kind"], o["status"]) for o in obs) == [
+            ("decreases", "verified"), ("div_zero", "verified"),
+            ("ensures", "verified"), ("requires", "verified")], obs
         _assert_partition(envelope)
 
 
@@ -1226,9 +1228,12 @@ class TestConstructionPositionReachesNestedContainers:
         reached until the descent decomposed the `Tuple`."""
         obs, envelope = _obligations(
             tmp_path, _P1_ARRAY_OF_REFINED_TUPLES, name="p1i.vera")
-        binds = [(o["status"], o.get("error_code"))
-                 for o in obs if o["kind"] == "refine_bind"]
-        assert binds == [("violated", "E505")], obs
+        binds = sorted((o["status"], o.get("error_code") or "")
+                       for o in obs if o["kind"] == "refine_bind")
+        # The destructure's `@Pos` binder is at its component's own type, a
+        # row code generation checks, recorded guarded Tier 3 since #1695
+        # (base: a W004 at it).
+        assert binds == [("tier3", ""), ("violated", "E505")], obs
         assert envelope["ok"] is False
         _assert_partition(envelope)
 
@@ -1610,9 +1615,9 @@ class TestArrayElementNarrowingIsObligated:
         and its obligation counted.)
         """
         obs, _ = _obligations(tmp_path, _N4_WIDEN_CONTROL, name="n4f.vera")
-        assert [(o["kind"], o["status"]) for o in obs] == [
-            ("requires", "verified"), ("index_bounds", "verified"),
-            ("ensures", "verified")], obs
+        assert sorted((o["kind"], o["status"]) for o in obs) == [
+            ("ensures", "verified"), ("index_bounds", "verified"),
+            ("requires", "verified")], obs
         compiled = _compiled(tmp_path, _N4_WIDEN_CONTROL, "n4g.vera")
         assert [c.kind for c in compiled.checks()] == [
             "index_out_of_bounds"], compiled.checks()
@@ -1742,9 +1747,12 @@ class TestClosureArgumentNestedGuardednessIsTypeDerived:
         """
         obs, envelope = _obligations(
             tmp_path, _A1_CLOSURE_TUPLE, name="a1c.vera")
-        binds = [(o["status"], o.get("error_code"))
-                 for o in obs if o["kind"] == "refine_bind"]
-        assert binds == [("tier3", "E506")], obs
+        # The `Taker` closure's own formal is an ENTRY row, recorded
+        # `verified` since #1695 (the closure's assumption); the argument is
+        # the row the check answers (base: E541 at it, W004 at the check).
+        binds = sorted((o["status"], o.get("error_code") or "")
+                       for o in obs if o["kind"] == "refine_bind")
+        assert binds == [("tier3", "E506"), ("verified", "")], obs
         assert envelope["verification"]["tier3_runtime"] == 1, envelope
         _assert_partition(envelope)
 
@@ -1886,9 +1894,9 @@ class TestARefinedIntElementCountsItsPredicateAlone:
     ) -> None:
         obs, envelope = _obligations(
             tmp_path, _CR_REFINED_INT_ELEMENT, name="cr4a.vera")
-        assert [(o["kind"], o["status"]) for o in obs] == [
-            ("requires", "verified"), ("index_bounds", "verified"),
-            ("refine_bind", "verified"), ("ensures", "verified")], obs
+        assert sorted((o["kind"], o["status"]) for o in obs) == [
+            ("ensures", "verified"), ("index_bounds", "verified"),
+            ("refine_bind", "verified"), ("requires", "verified")], obs
         _assert_partition(envelope)
 
     def test_and_the_module_checks_the_predicate_alone(
@@ -1952,17 +1960,20 @@ class TestTheUnguardedRationaleNamesTheCauseThatApplies:
     rather than waiting for the next reviewer to re-read the paragraph.
     """
 
-    def test_the_rationale_offers_both_causes(self, tmp_path: Path) -> None:
+    def test_the_rationale_names_the_rows_reason(self, tmp_path: Path) -> None:
+        """Since #1695 (#1602) the rationale is the row's reason, the one
+        cause that applies: the base is a refinement, never a site class."""
         envelope = pipeline.verify(_write(
             tmp_path, _Q1_REFINED_OVER_REFINED_LET, "q1a.vera"), budget_s=_BUDGET_S).envelope()
         e506 = [w for w in envelope["warnings"]
                 if w.get("error_code") == "E506"]
         assert len(e506) == 1, envelope["warnings"]
         rationale = e506[0]["rationale"]
-        assert "SITE is" in rationale and "BASE is" in rationale, (
-            f"the closing sentence names one cause where two apply, so a "
-            f"reader cannot tell which half to change:\n{rationale}"
+        assert "a refinement over a refinement" in rationale, (
+            f"the rationale does not name the cause that applies, so a "
+            f"reader cannot tell what to change:\n{rationale}"
         )
+        assert "SITE is" not in rationale, rationale
 
     def test_and_does_not_blame_a_site_that_is_guarded(
         self, tmp_path: Path,

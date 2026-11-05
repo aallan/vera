@@ -34,6 +34,7 @@ from __future__ import annotations
 
 from vera.typed import build as build_typed
 
+import re
 from pathlib import Path
 
 import pytest
@@ -74,9 +75,10 @@ def _clause_binds(envelope: dict) -> list[tuple[str, str, str | None]]:
     A handler program carries other narrowing records at the same effect —
     the `throw` op ARGUMENT against the declared payload, most of all — and a
     cell that counted every `refine_bind` would read one of those as the
-    binder's.  The binder's node is the clause BODY, which has no renderable
-    source text and so renders `<expr>`; every other record here names the
-    expression it is about.  The same distinction
+    binder's.  The binder's record stands at the binder and names its
+    declared type (`<expr>` before #1695, when it stood at the clause body);
+    every other record here names the expression it is about.  The same
+    distinction
     `test_verifier_truth_consult_status.py` draws between the binder and the
     call in its clause body.
     """
@@ -84,8 +86,16 @@ def _clause_binds(envelope: dict) -> list[tuple[str, str, str | None]]:
         (o["kind"], o["status"], o.get("error_code"))
         for o in envelope["obligations"]
         if o["kind"] in ("refine_bind", "nat_bind")
-        and o["description"] == "<expr>"
+        and _is_binder_description(o["description"])
     )
+
+
+def _is_binder_description(description: str) -> bool:
+    """Since #1695 a binder's record stands at its binder row and names the
+    binder's declared type (`@Neg`), a slot with no index; every other
+    record here names an expression (`@Int.0`, a literal)."""
+    return description == "<expr>" or re.fullmatch(
+        r"@[A-Za-z_][\w<>, ]*", description) is not None
 
 
 def _assert_partition(envelope: dict) -> None:
@@ -249,20 +259,20 @@ def test_the_site_table_moves_both_halves_together(
 ) -> None:
     """The coupling the shared table exists for, exercised in-process.
 
-    The classification and the emitter both read
-    `vera.narrowing.REFINED_BIND_GUARDED_SITES`, so a site cannot be
-    reported as guarded without being guarded, or guarded without being
-    counted.  That is a claim about the WIRING, and the only way to test it
-    is to move the table and watch both answers move — a cell that asserts
-    the current status and the current WAT separately would pass just as
-    well if each side had its own hard-coded copy, which is the arrangement
-    this table replaced.
+    Since #1695 the classification and the emitter both read the clause
+    binder's row in the obligation table, whose guard is the table's
+    refinement rule, so a site cannot be reported as guarded without being
+    guarded, or guarded without being counted.  That is a claim about the
+    WIRING, and the only way to test it is to move the rule and watch both
+    answers move — a cell that asserts the current status and the current
+    WAT separately would pass just as well if each side had its own
+    hard-coded copy, which is the arrangement the table replaced.
 
-    Run in-process, as every cell here is: a monkeypatched frozenset reaches
-    the classification and the emitter only in the process that patched it.
+    Run in-process, as every cell here is: a monkeypatched rule reaches the
+    classification and the emitter only in the process that patched it.
     """
-    from vera import narrowing
     from vera.checker import typecheck_with_artifacts
+    from vera.obligations import table as obligation_table
     from vera.codegen import CompileResult
     from vera.codegen import compile as codegen_compile
     from vera.parser import parse_to_ast
@@ -284,17 +294,18 @@ def test_the_site_table_moves_both_halves_together(
     assert checks(on_module, kind="contract_violation")
 
     monkeypatch.setattr(
-        narrowing, "REFINED_BIND_GUARDED_SITES",
-        narrowing.REFINED_BIND_GUARDED_SITES - {"handler clause binder"},
+        obligation_table._Builder, "_refinement_guardable",
+        lambda self, ty, construction=False: obligation_table.unguarded(
+            "the rule moved by the test"),
     )
     off_statuses, off_module = statuses_and_module()
     assert "tier3_unguarded" in off_statuses, (
-        f"the classification still claims a guard after the site left the "
-        f"table, so it is not reading the table: {off_statuses}"
+        f"the classification still claims a guard after the row lost its "
+        f"guard, so it is not reading the row: {off_statuses}"
     )
     assert checks(off_module, kind="contract_violation") == (), (
-        "the emitter still plants the guard after the site left the table, "
-        "so it is not reading the table either"
+        "the emitter still plants the guard after the row lost its guard, "
+        "so it is not reading the row either"
     )
 
 

@@ -702,9 +702,13 @@ def test_kills_a_result_without_its_nested_facts() -> None:
     carries its head refinement: `mk`'s return slot established the payload,
     so the guard over `consume`'s argument holds and `f`'s postcondition still
     proves from `consume`'s.  Without the result's facts the solver held none
-    for the term, and a sound Tier 1 became an E500."""
+    for the term, and a sound Tier 1 became an E500.
+
+    `mk` returns `Option<Big>` so the argument narrows (`Big` to `PosInt`) and
+    is a row: since #1695 an argument at its formal's own type narrows
+    nothing and has no record, which would leave the cell nothing to read."""
     source = TYPES + "\n" + textwrap.dedent("""\
-        private fn mk(@Int -> @Option<PosInt>)
+        private fn mk(@Int -> @Option<Big>)
           requires(true)
           ensures(true)
           effects(pure)
@@ -984,7 +988,8 @@ def test_a_requires_match_never_discharges_its_argument(
     `ensures` is: a `match` there assumes nothing about the argument, so an
     argument the program does not prove fits is refuted twice over (its
     payload, E505, and the precondition the payload decides, E501) and its
-    negative traps; one it proves verifies with no record at the call."""
+    negative traps; one it proves verifies, its precondition recorded at the
+    call as verified."""
     nested = next(f for f in FORMALS if f.name == "nested")
     source, arg, fn = _program(nested, "requires_match", argument, position)
     verified = _verify(source)
@@ -993,7 +998,8 @@ def test_a_requires_match_never_discharges_its_argument(
     value = (call[0], call[1] + offset)
     if argument in ("requires", "guarded"):
         assert _records(verified, value, "refine_bind") == ["verified"]
-        assert _records(verified, call, "call_pre") == []
+        # Since #1695 a discharged precondition is recorded at its call.
+        assert _records(verified, call, "call_pre") == ["verified"]
         assert verified.ok, [(d.error_code, d.description[:80])
                              for d in verified.errors]
         ran = _run(source, fn, [1, 5])
