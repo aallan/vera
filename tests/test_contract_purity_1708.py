@@ -185,10 +185,20 @@ def _placed(checked: pipeline.Checked) -> list[tuple[str, int, int]]:
 
 
 def _statuses(source: str) -> tuple[bool, tuple[tuple[str, str], ...]]:
-    """The verify verdict and every obligation's kind and status."""
+    """The verify verdict and every obligation's kind and status.
+
+    A refined formal's ENTRY row is recorded since #1695 (`verified`, the
+    callee's assumption, a class the obligation table's instrument pins);
+    the base verdicts these cells hold to did not record it, so it is left
+    out here."""
+    from vera.obligations import table as obligation_table
+
     verified = pipeline.verify(source)
+    entry = {r.id for r in verified.result.table.rows
+             if r.evaluation == obligation_table.ENTRY}
     return verified.ok, tuple(sorted(
-        (o.kind, o.status) for o in verified.obligations))
+        (o.kind, o.status) for o in verified.obligations
+        if not (o.rows and set(o.rows) <= entry)))
 
 
 def _codes(checked: pipeline.Checked) -> tuple[str, ...]:

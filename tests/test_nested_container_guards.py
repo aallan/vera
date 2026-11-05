@@ -215,12 +215,12 @@ def _record_gap(label: str) -> bool:
     """A chain whose OUTERMOST container is a `map_insert` standing where no
     `let` or return names its type (#1608).
 
-    The verifier enters its construction descent for a `map_insert` only
+    The verifier entered its construction descent for a `map_insert` only
     from a `let`'s or a return's declared type, while codegen guards the
-    value from the call's own recorded target wherever it stands — so these
-    cells are guarded with nothing on the record.  The safe direction (the
-    store is checked; the account omits it), pinned in that state below
-    until #1608 gives the walk its `map_insert` entry.
+    value from the call's own recorded target wherever it stands, so these
+    cells were guarded with nothing on the record.  Since #1695 the verifier
+    discharges the table's rows, which list the value at the call, so the
+    record holds here as everywhere (the label stays, as a stratum).
     """
     context, shape = label.split("|")[:2]
     return shape.startswith(("map/", "chain/")) and context != "let"
@@ -303,9 +303,8 @@ def test_every_recorded_guard_is_emitted_and_every_emitted_guard_recorded(
             f"{label}: {tier3} tier3 record(s), but the forbidden input ran: "
             f"{forbidden!r}")
     assert allowed == "ran:7", f"{label}: allowed run gave {allowed!r}"
-    if _record_gap(label):
-        return
-    # Outside #1608's positions, the converse: every guard is on the record
+    # The converse, in every position (#1608's included since #1695): every
+    # guard is on the record
     # (a guard the solver also PROVED is over-checking, never unsound), and
     # every stored leaf is.  `tier3_unguarded` is an honest disclosure — a
     # position whose guard the backend does not emit — so it counts as
@@ -320,17 +319,16 @@ def test_every_recorded_guard_is_emitted_and_every_emitted_guard_recorded(
     "label,source",
     [(c[0], c[2]) for c in _GAP_CELLS if c[1] == "nat"],
     ids=[c[0] for c in _GAP_CELLS if c[1] == "nat"])
-def test_a_map_value_outside_a_let_is_guarded_but_not_yet_recorded(
+def test_a_map_value_outside_a_let_is_guarded_and_recorded(
     label: str, source: str,
 ) -> None:
-    """#1608's shape, pinned: every `@Nat` leaf GUARDED, none recorded.
-
-    When #1608 lands the record half, this cell goes red and the converse
-    assertions above stop exempting the label.
-    """
+    """#1608's shape: every `@Nat` leaf GUARDED and, since #1695, recorded:
+    one guarded record per guard, the record half the verifier's row
+    discharge supplies."""
     leaf = _LEAVES["nat"]
     statuses, guards, forbidden, allowed = _measure(source, leaf)
-    assert statuses == [], (label, statuses)
     assert guards == source.count(leaf.value), (label, guards)
+    assert statuses.count("tier3") + statuses.count("verified") >= guards, (
+        label, statuses)
     assert leaf.trap in forbidden, f"{label}: forbidden run gave {forbidden!r}"
     assert allowed == "ran:7", f"{label}: allowed run gave {allowed!r}"

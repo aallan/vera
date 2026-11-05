@@ -1899,7 +1899,7 @@ class ContractVerifier:
             for n in (node, span_node):
                 if n is not None:
                     self._predicate_records.setdefault(
-                        obligation_table.ObligationTable._key(n), record)
+                        (obligation_table.ObligationTable._key(n), kind), record)
         self._record_anchors[id(record)] = (
             weakref.ref(record), node, span_node,
             at.call if at is not None else None)
@@ -2958,6 +2958,8 @@ class ContractVerifier:
             # pass's proofs were made against a context this one no longer
             # offers.
             self.errors, self.obligations = [], []
+            # The records a guard's predicate copy shares are this pass's.
+            self._predicate_records = {}
             # The construction-position memo is a property of the buffer it
             # was built against: keeping it here would let the discarded
             # pass's entries suppress this pass's recordings, and the
@@ -3585,7 +3587,8 @@ class ContractVerifier:
             recs = [r for row in site_rows for r in status.get(row.id, ())]
             if not recs and site_rows[0].evaluation[:1] == ("predicate",):
                 shared = self._predicate_records.get(
-                    obligation_table.ObligationTable._key(site_rows[0].node))
+                    (obligation_table.ObligationTable._key(site_rows[0].node),
+                     site_rows[0].kind))
                 if shared is not None:
                     # A guard's copy of a predicate: the declaration's
                     # record is the site's, and names this copy's rows.
@@ -3794,7 +3797,7 @@ class ContractVerifier:
         site: ``tier3`` where a check guards it, disclosed where none can."""
         if record.error_code in _PREMISE_CODES:
             return record
-        guarded = any(r.guard.check for r in rows)
+        guarded = any(self._row_checked(r) for r in rows)
         if record.status in ("tier3", "timeout", "tier3_unguarded") and not guarded:
             self._disclose_row(record, rows[0])
             return replace(record, status="tier3_unguarded",
@@ -3803,6 +3806,18 @@ class ContractVerifier:
             self._retract_disclosure(record)
             return replace(record, status="tier3", error_code="")
         return record
+
+    def _row_checked(self, row: obligation_table.Row) -> bool:
+        """Whether a check answers *row*: its own, or the check of the row
+        that answers it (a value's component at a boundary is checked by
+        the boundary's entry or return row), or a closure's entry."""
+        if row.guard.check:
+            return True
+        if row.answered_by == obligation_table.ANSWERED_AT_CLOSURE_ENTRY:
+            return True
+        if row.answered_by is not None and row.answered_by >= 0:
+            return self._table.by_id(row.answered_by).guard.check
+        return False
 
     def _disclose_row(
         self, record: ProofObligation, row: obligation_table.Row,

@@ -292,13 +292,6 @@ _EXCLUDED = frozenset(
     ("clause binder", shape)
     for shape in ("Array", "Array<Option>", "Map.value", "Map.key", "Set")
 )
-_EXCLUDED_REASON = (
-    "67b (#1695): the verifier discharges the clause binder's row over an "
-    "Array, Map or Set payload, which the obligation table lists guarded "
-    "and code generation walks (67a); until then it discloses E506 beside "
-    "the guard, a designed W004")
-
-
 def _programs() -> Iterator[tuple[str, str, str]]:
     for site in SITES:
         for shape in SHAPES:
@@ -390,6 +383,20 @@ def _coercion_w004(verified: pipeline.Verified) -> list[str]:
             and "'component_coercion'" in w.description]
 
 
+def _coercion_answered(verified: pipeline.Verified) -> list[object]:
+    """The coercion checks the join pairs with a record: since #1695 the
+    record of the row each check answers (67a's designed W004 classes
+    retire here, so a check with no record would be a W004 again)."""
+    rec = verified.reconciled
+    assert rec is not None and rec.reconciliation is not None
+    seen: dict[int, object] = {}
+    for _o, c in rec.reconciliation.pairs:
+        if c.emitter.startswith(_EMITTER_FILE):
+            # One check answers every row of its walk: count it once.
+            seen.setdefault(id(c), c)
+    return list(seen.values())
+
+
 def _coercion_checks(compiled: pipeline.Compiled) -> list[object]:
     return [c for c in compiled.result.emitted_checks
             if c.emitter.startswith(_EMITTER_FILE)]
@@ -462,21 +469,22 @@ class TestTheRecord:
         guard: never none (a lost guard), never two (a double one).  An
         opaque value's is the coercion's walk; a construction's is the
         store guard code generation already placed, where it placed one.
-        `vera verify` passes with no warning but W004, one W004 naming
-        `component_coercion` per such check."""
+        `vera verify` passes with no warning: since #1695 each such check is
+        answered by its row's record (base: one W004 naming
+        `component_coercion` per check)."""
         src = program(site, SHAPES[shape], form)
         verified = _verified(src)
         assert verified.ok, [(d.error_code, d.description[:120])
                              for d in verified.errors]
         codes = {w.error_code for w in verified.warnings}
-        assert codes <= {"W004"}, sorted(codes)
+        assert "W004" not in codes, sorted(codes)
         compiled = _compiled(src)
         guards = pipeline.checks(compiled.result, kind="nat_guard")
         assert len(guards) == 1, guards
         coercion = _coercion_checks(compiled)
         if form == "opaque":
             assert len(coercion) == 1, guards
-        assert len(_coercion_w004(verified)) == len(coercion)
+        assert len(_coercion_answered(verified)) == len(coercion)
 
     @pytest.mark.parametrize(("site", "shape", "form"), _RECORDED,
                              ids=_RECORDED_IDS)
@@ -499,7 +507,8 @@ class TestTheRecord:
     def test_a_boundary_guard_is_deferred_to(self, site: str) -> None:
         """An opaque `Tuple<Int, Int>` at a `Tuple<Int, Nat>` formal or
         result keeps the one guard it had at base, the callee's (#746): one
-        refinement check, its one W004, and no coercion check beside it."""
+        refinement check, answered by its row's record since #1695 (base:
+        its one W004), and no coercion check beside it."""
         src = program(site, SHAPES["Tuple"], "opaque")
         verified = _verified(src)
         assert verified.ok
@@ -510,13 +519,16 @@ class TestTheRecord:
             compiled.result,
             emitter="codegen/contracts.py:_emit_refinement_check")
         assert len(boundary) == 1, boundary
-        w004 = [w.description for w in verified.warnings]
-        assert len(w004) == 1 and "'refine_bind'" in w004[0], w004
-        assert {w.error_code for w in verified.warnings} == {"W004"}
+        # The value's row is the guarded `tier3` the boundary's check
+        # answers (the argument's at the callee's entry, the result's at
+        # the return).
+        assert "W004" not in {w.error_code for w in verified.warnings}
+        assert ("nat_bind", "tier3") in [
+            (o.kind, o.status) for o in verified.result.obligations
+        ], verified.result.obligations
 
     @pytest.mark.parametrize(("site", "shape", "form"), sorted(
         (s, sh, f) for s, sh, f in _PROGRAMS if (s, sh) in _EXCLUDED))
-    @pytest.mark.xfail(strict=True, reason=_EXCLUDED_REASON)
     def test_the_excluded_position_is_recorded_and_guarded(
         self, site: str, shape: str, form: str,
     ) -> None:
@@ -687,13 +699,14 @@ private fn peekn(@Option<Nat> -> @Nat)
 
 
 def _assert_one_guard(src: str) -> None:
-    """`vera verify` passes with one W004 naming the coercion and no other
-    warning; -5 traps as a narrowing does; 5 runs to 5."""
+    """`vera verify` passes with no warning and the coercion's check answered
+    by its row's record (#1695; base: one W004 naming it); -5 traps as a
+    narrowing does; 5 runs to 5."""
     verified = _verified(src)
     assert verified.ok, [(d.error_code, d.description[:120])
                          for d in verified.errors]
-    assert {w.error_code for w in verified.warnings} <= {"W004"}
-    assert len(_coercion_w004(verified)) == 1, verified.warnings
+    assert "W004" not in {w.error_code for w in verified.warnings}
+    assert len(_coercion_answered(verified)) == 1, verified.warnings
     _assert_traps(_ran(src, "f", -5))
     _assert_returns(_ran(src, "f", 5), 5)
 
@@ -1115,8 +1128,8 @@ def _assert_one_guard_count(src: str, count: int) -> None:
     verified = _verified(src)
     assert verified.ok, [(d.error_code, d.description[:120])
                          for d in verified.errors]
-    assert {w.error_code for w in verified.warnings} <= {"W004"}
-    assert len(_coercion_w004(verified)) == count, verified.warnings
+    assert "W004" not in {w.error_code for w in verified.warnings}
+    assert len(_coercion_answered(verified)) == count, verified.warnings
 
 
 # =====================================================================

@@ -195,6 +195,20 @@ class TestRefinementPredicateTranslation:
         assert z3.is_false(z3.simplify(z3.substitute(result, (v, z3.IntVal(-2)))))
 
 
+def _site_binds(result: object) -> list[object]:
+    """The `refine_bind` records at narrowing sites: since #1695 a refined
+    formal's ENTRY row is recorded too (`verified`, the callee's assumption,
+    discharged by each call's argument row), which these cells do not
+    count; the obligation table's instrument pins that class."""
+    from vera.obligations import table as obligation_table
+
+    table = getattr(result, "table", None)
+    entry = ({r.id for r in table.rows if r.evaluation == obligation_table.ENTRY}
+             if table is not None else set())
+    return [o for o in result.obligations  # type: ignore[attr-defined]
+            if o.kind == "refine_bind" and not (o.rows and set(o.rows) <= entry)]
+
+
 class TestRefinementPredicateVerification:
     """#746 — refinement-type predicates are statically discharged at binding
     sites and return positions, generalising the @Nat ``>= 0`` machinery to an
@@ -209,7 +223,18 @@ class TestRefinementPredicateVerification:
 
     @staticmethod
     def _refine_obligations(result, status=None):
-        obs = [o for o in result.obligations if o.kind == "refine_bind"]
+        # A refined formal's ENTRY row is recorded since #1695, `verified`:
+        # the callee's assumption, which each call's argument row
+        # discharges.  These cells count the narrowings at the sites, so
+        # the assumption's record is left out (the obligation table's
+        # instrument pins that class).
+        from vera.obligations import table as obligation_table
+
+        entry = ({r.id for r in result.table.rows
+                  if r.evaluation == obligation_table.ENTRY}
+                 if getattr(result, "table", None) is not None else set())
+        obs = [o for o in result.obligations if o.kind == "refine_bind"
+               and not (o.rows and set(o.rows) <= entry)]
         if status is not None:
             obs = [o for o in obs if o.status == status]
         return obs
@@ -982,7 +1007,10 @@ private fn build(@Unit -> @Tuple<PosInt, Int>)
 { Tuple(7, 3) }
 """)
         assert [d for d in ok.diagnostics if d.severity == "error"] == []
-        assert len(self._refine_obligations(ok, "verified")) == 1
+        # The component store, and since #1695 the return type's component
+        # row, which code generation checks at the return and the store
+        # establishes.
+        assert len(self._refine_obligations(ok, "verified")) == 2
 
         bad = _verify("""
 type PosInt = { @Int | @Int.0 > 0 };
@@ -1163,7 +1191,10 @@ private fn use_opt(@Option<PosInt> -> @Int)
 { match @Option<PosInt>.0 { Some(@PosInt) -> @PosInt.0, None -> 1 } }
 """)
         assert [d for d in exempt.diagnostics if d.severity == "error"] == []
-        assert self._refine_obligations(exempt) == []
+        # The binder takes the payload at its own type: since #1695 the row
+        # code generation checks is recorded, `tier3` (base: W004), and it
+        # obligates nothing that can fail.
+        assert [o.status for o in self._refine_obligations(exempt)] == ["tier3"]
 
     def test_nonliteral_destructure_obligates_and_exempts(self) -> None:
         """A refined component of a non-literal tuple destructure obligates the
@@ -1195,7 +1226,12 @@ private fn use_it(@PosInt -> @Int)
 { let Tuple<@PosInt, @Int> = mk(@PosInt.0); @PosInt.0 }
 """)
         assert [d for d in exempt.diagnostics if d.severity == "error"] == []
-        assert self._refine_obligations(exempt) == []
+        # The binder takes the component at its own type: since #1695 the
+        # row code generation checks is recorded, `tier3` (base: W004), and
+        # `mk`'s return component row, which its store establishes, is
+        # `verified`.  Neither can fail.
+        assert sorted(o.status for o in self._refine_obligations(exempt)) == [
+            "tier3", "verified"]
 
     def test_destructure_bound_slot_refinement_retained(self) -> None:
         """#746: a destructured slot's *source* component refinement is retained
@@ -1361,9 +1397,10 @@ public fn f(@Tuple<PosInt, Int>, @Int -> @Int)
         # narrows the unconstrained destructured @Int into @PosInt and stays
         # undecided — the first slot's seeded `> 0` fact does not bleed onto
         # the second, which would have recorded it `verified`.
-        binds = [(o.status, o.error_code) for o in result.obligations
-                 if o.kind == "refine_bind"]
-        assert binds == [("tier3", "E506")], (
+        binds = [(o.status, o.error_code) for o in _site_binds(result)]
+        # Since #1695 the destructure's binder of the component's own type
+        # is the row code generation checks, recorded `tier3` (base: W004).
+        assert binds == [("tier3", ""), ("tier3", "E506")], (
             "the second, independent @PosInt narrowing must still obligate",
             binds)
 
@@ -2086,10 +2123,15 @@ public fn f(@Int -> @Int)
         assert not [
             d for d in result.diagnostics if d.severity == "error"
         ], [d.description[:90] for d in result.diagnostics]
-        binds = [o for o in result.obligations if o.kind == "refine_bind"]
+        binds = _site_binds(result)
         assert [o.status for o in binds] == ["tier3"] * 4, binds
         assert {o.error_code for o in binds} == {"E506"}, binds
-        assert result.summary.tier1_verified == 10, result.summary
+        # Ten as at base, and the two refined formals' ENTRY rows, recorded
+        # `verified` since #1695 (the callees' assumptions).
+        entries = [o for o in result.obligations
+                   if o.kind == "refine_bind" and o not in binds]
+        assert [o.status for o in entries] == ["verified"] * 2, entries
+        assert result.summary.tier1_verified == 12, result.summary
         assert result.summary.tier3_runtime == 4, result.summary
 
 
@@ -2311,7 +2353,7 @@ public fn f(@Int -> @Int)
         monkeypatch.setattr(SmtContext, "check_valid",
                             _no_verdict_on_reachability)
         result = _verify(self._UNREACHABLE_QUESTION.format(body=body))
-        binds = [o for o in result.obligations if o.kind == "refine_bind"]
+        binds = _site_binds(result)
         assert [o.status for o in binds] == [status], binds
         assert not [
             d for d in result.diagnostics if d.error_code == "E505"
@@ -2379,59 +2421,27 @@ public fn f(@Int -> @Int)
             f"derived from `result.status`: {offenders}"
         )
 
-    def test_every_possibly_unguarded_demotion_supplies_a_reason(self) -> None:
-        """Structural: the leg that emits a disclosure must state a cause.
+    def test_every_disclosure_states_its_rows_reason(self) -> None:
+        """Structural: the leg that emits a disclosure states a cause, and
+        since #1695 the cause is the row's.
 
-        The E504 and E506 families take ``reason`` as an optional keyword —
-        the GUARDED leg records an obligation and emits nothing, so text there
-        would be dead — and the recorders raise when an unguarded demotion
-        arrives without one.  That raise only fires on the paths a test
-        happens to walk, so the same invariant is pinned over the source: any
-        call that is not literally ``guarded=True`` can reach the disclosure
-        and must carry a reason.
-
-        Without it the two families drift straight back to where #1251 found
-        them — a disclosure whose stated cause was chosen once, by whoever
-        wrote the reporter, for every branch that reaches it.
+        The E504 and E506 recorders used to take a ``reason`` beside a
+        ``guarded=`` claim, and this cell held every call that could reach
+        the disclosure to pass one.  The claim is gone: whether a row is
+        guarded is the obligation table's, and the one disclosure,
+        ``_disclose_row``, states the row's reason, which the table reads
+        off the lowering.  So the recorders take no ``guarded`` at all, and
+        the disclosure text is built from ``row.guard.reason``.
         """
-        import ast as py_ast
+        import inspect
 
-        tree, _ = _verifier_ast()
-        offenders: list[tuple[int, str]] = []
-        seen: set[str] = set()
-        for node in py_ast.walk(tree):
-            if not isinstance(node, py_ast.Call):
-                continue
-            fn = node.func
-            if not (isinstance(fn, py_ast.Attribute)
-                    and fn.attr in self._RECORDERS):
-                continue
-            seen.add(fn.attr)
-            kwargs = {kw.arg: kw.value for kw in node.keywords}
-            guarded = kwargs.get("guarded")
-            always_guarded = (
-                isinstance(guarded, py_ast.Constant) and guarded.value is True
-            )
-            if always_guarded:
-                continue
-            reason = kwargs.get("reason")
-            if reason is None:
-                offenders.append((node.lineno, f"{fn.attr}: no reason"))
-            elif _string_constant(reason) == "":
-                # An EMPTY literal satisfies "a reason was passed" while
-                # saying nothing — the same defect one spelling over, and it
-                # renders a broken sentence rather than a wrong one.
-                offenders.append((node.lineno, f"{fn.attr}: empty reason"))
-        # A renamed recorder would make both structural pins vacuous — they
-        # would walk the file, match nothing and pass — so the roster is
-        # checked against the source it claims to be about.
-        assert seen == set(self._RECORDERS), sorted(set(self._RECORDERS) - seen)
-        assert not offenders, (
-            "a demotion that can reach the unguarded disclosure passes no "
-            f"`reason`, so the disclosure would state a cause it does not "
-            f"know: {offenders}"
-        )
+        from vera.verifier import ContractVerifier
 
+        for name in self._RECORDERS:
+            params = inspect.signature(getattr(ContractVerifier, name)).parameters
+            assert "guarded" not in params, name
+        source = inspect.getsource(ContractVerifier._disclose_row)
+        assert "row.guard.reason" in source, source
 
 def _verifier_ast() -> tuple[object, dict[str, str]]:
     """``vera.verifier``'s parsed source, plus its module-level string consts.

@@ -160,9 +160,10 @@ def _runs(source: str | pipeline.Compiled, fn: str,
     return outcomes
 
 
-#: The one mismatch a division has wherever it stands, under an `if` as in a
-#: right operand, and at the commit this file was written against: its
-#: `INT_MIN / -1` check has no obligation (#1598).
+#: The mismatch a division had wherever it stood, its `INT_MIN / -1` check
+#: with no obligation (#1598).  Since #1695 that check's row is discharged
+#: (`int_overflow`, proved where the facts exclude the pair), so a division
+#: has none.
 QUOTIENT = (
     "guarded_unrecorded:int_overflow:wasm/operators.py:_note_quotient_overflow")
 
@@ -251,7 +252,9 @@ def test_repro_an_effect_in_a_decided_right_operand_does_not_run() -> None:
 
 def test_repro_the_guards_verify() -> None:
     v = _verify(SC)
-    assert _records_at(v, _at(SC, "10 / @Int.0")) == ["div_zero:verified"]
+    # The divisor's row and, since #1695, the quotient's range row (#1598).
+    assert _records_at(v, _at(SC, "10 / @Int.0")) == [
+        "div_zero:verified", "int_overflow:verified"]
     assert _records_at(v, _at(SC, "@Array<Int>.0[@Int.0]")) == [
         "index_bounds:verified"]
     assert v.ok, [(d.error_code, d.description[:80]) for d in v.errors]
@@ -290,7 +293,9 @@ public fn one(@Int -> @Int)
 
 def test_repro_one_requires_joined_by_and_verifies_as_two_do() -> None:
     v = _verify(TWO_AND_ONE)
-    assert [o for o in v.obligations if o.kind == "call_pre"] == []
+    # Discharged in both, each the call's row's record (#1695).
+    assert [o.status for o in v.obligations if o.kind == "call_pre"] == [
+        "verified", "verified"]
     assert v.ok, [(d.error_code, d.description[:80]) for d in v.errors]
 
 
@@ -561,11 +566,11 @@ def test_the_operator_means_its_if(position: str, kind: Kind, op: str) -> None:
     assert _signature(v) == _signature(w)
 
     # The checks: every check the module holds in the right operand has its
-    # record and every record its check, as under the `if`.  A division's
-    # `INT_MIN / -1` check has none in either (#1598), and nothing else does.
+    # record and every record its check, as under the `if`; since #1695 a
+    # division's `INT_MIN / -1` check has its row's record too (#1598).
     reconciled = _mismatches(v, module)
     assert reconciled == _mismatches(w, its_if)
-    assert reconciled == ([QUOTIENT] if kind is DIVISION else []), reconciled
+    assert reconciled == [], reconciled
     if kind.obligation is None:
         return
     mine = _right_records(v, source, kind)
@@ -576,8 +581,8 @@ def test_the_operator_means_its_if(position: str, kind: Kind, op: str) -> None:
         assert mine and all(
             r.split(":", 1)[1].startswith("tier3") for r in mine), mine
     elif kind is CALL:
-        # A discharged precondition leaves no record; a refused one is E501.
-        assert mine == [], mine
+        # A discharged precondition is its call's row's record (#1695).
+        assert mine and set(mine) == {"call_pre:verified"}, mine
     else:
         assert mine and set(mine) == {f"{kind.obligation}:verified"}, mine
 
@@ -716,7 +721,9 @@ ASSERTED_LEFT = NEED_POS + "\n" + NARROWING.helpers + "\n" + _fn(
 def test_a_premise_is_stated_without_obligating_its_calls_again() -> None:
     """Kills the premise's translation keeping its call-site outcomes."""
     v = _verify(ASSERTED_LEFT)
-    assert [o for o in v.obligations if o.kind == "call_pre"] == []
+    # The call's row is discharged once, its one record (#1695).
+    assert [o.status for o in v.obligations if o.kind == "call_pre"] == [
+        "verified"]
     assert _records_at(v, _at(ASSERTED_LEFT, "@Int.0 - 1")) == [
         "int_overflow:tier3", "nat_bind:verified"]
     assert v.ok, [(d.error_code, d.description[:80]) for d in v.errors]
@@ -749,7 +756,10 @@ def test_repro_a_recursive_call_in_a_right_operand_terminates() -> None:
     v = _verify(ALL_POS)
     assert _records_at(v, _at(ALL_POS, "decreases(")) == [
         "decreases:verified"]
-    assert [o for o in v.obligations if o.kind == "call_pre"] == []
+    # The recursive call's precondition and `main`'s call's, each discharged:
+    # its row's record (#1695).
+    assert [o.status for o in v.obligations if o.kind == "call_pre"] == [
+        "verified", "verified"]
     compiled = pipeline.compile(ALL_POS)
     assert compiled.ok
     assert pipeline.run(compiled, "main").value == 1
