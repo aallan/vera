@@ -7,6 +7,7 @@ types suitable for comparison, subtyping, and substitution.
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -76,6 +77,11 @@ class AdtType(Type):
     """A parameterised algebraic data type (Array<T>, Option<Int>, user ADTs)."""
     name: str
     type_args: tuple[Type, ...]  # () for non-parameterised
+
+    def with_args(self, type_args: tuple[Type, ...]) -> AdtType:
+        """This type over *type_args*, of its own class, so a rebuild keeps
+        an `UnresolvedAdtType` the placeholder it is (#1563)."""
+        return dataclasses.replace(self, type_args=type_args)
 
 
 @dataclass(frozen=True, eq=False)
@@ -286,8 +292,7 @@ def _leaked_placeholders_to_unknown(ty: Type) -> Type:
     if _is_leaked_placeholder_var(ty):
         return UnknownType()
     if isinstance(ty, AdtType):
-        return AdtType(
-            ty.name,
+        return ty.with_args(
             tuple(_leaked_placeholders_to_unknown(a) for a in ty.type_args),
         )
     if isinstance(ty, FunctionType):
@@ -927,6 +932,14 @@ def contains_typevar(ty: Type) -> bool:
     return False
 
 
+def is_unknown_like(ty: Type | None) -> bool:
+    """Whether *ty* is a type no judgement holds a value to: the `Unknown`
+    error recovery leaves, or the placeholder of a name nothing declares
+    (`UnresolvedAdtType`, E136), whose own error is the one a judgement over
+    it owes (#1563).  The early guard of every operator's check reads it."""
+    return isinstance(ty, (UnknownType, UnresolvedAdtType))
+
+
 def contains_unresolved(ty: Type) -> bool:
     """True if *ty* holds the placeholder of a name nothing declares
     (`UnresolvedAdtType`, E136) anywhere in its structure (#1563)."""
@@ -996,8 +1009,8 @@ def default_literal_holes(ty: Type) -> Type:
     if is_literal_hole(ty):
         return INT
     if isinstance(ty, AdtType):
-        return AdtType(ty.name, tuple(default_literal_holes(a)
-                                      for a in ty.type_args))
+        return ty.with_args(tuple(default_literal_holes(a)
+                                  for a in ty.type_args))
     if isinstance(ty, FunctionType):
         return FunctionType(tuple(default_literal_holes(p)
                                   for p in ty.params),
@@ -1073,7 +1086,7 @@ def fill_literal_holes(ty: Type, source: Type | None) -> Type:
     if (isinstance(ty, AdtType) and isinstance(source, AdtType)
             and ty.name == source.name
             and len(ty.type_args) == len(source.type_args)):
-        return AdtType(ty.name, tuple(
+        return ty.with_args(tuple(
             fill_literal_holes(a, b)
             for a, b in zip(ty.type_args, source.type_args)))
     if (isinstance(ty, FunctionType) and isinstance(source, FunctionType)
@@ -1206,7 +1219,7 @@ def substitute(ty: Type, mapping: dict[str, Type]) -> Type:
         return mapping.get(ty.name, ty)
     if isinstance(ty, AdtType):
         new_args = tuple(substitute(a, mapping) for a in ty.type_args)
-        return AdtType(ty.name, new_args)
+        return ty.with_args(new_args)
     if isinstance(ty, FunctionType):
         new_params = tuple(substitute(p, mapping) for p in ty.params)
         new_ret = substitute(ty.return_type, mapping)

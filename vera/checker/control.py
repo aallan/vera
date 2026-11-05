@@ -354,11 +354,7 @@ class ControlFlowMixin:
         # is judged as before, and its E313 is the error that refuses the
         # program.  A position inside the scrutinee whose type the check did
         # not settle is read by the same rule (`_pattern_domain`, #1697).
-        # A typed hole's W001 is the diagnostic behind its `Unknown` (#1563):
-        # the hole has no type for the arms to cover until it is filled, so
-        # a `match ?` draws the hole's warning alone.
-        after_error = any(d.severity == "error" or d.error_code == "W001"
-                          for d in self.errors)
+        after_error = self._unknown_is_reported()
         in_error = (isinstance(base_type(scrutinee_ty), UnknownType)
                     and after_error)
 
@@ -442,6 +438,15 @@ class ControlFlowMixin:
             self._check_exhaustiveness(expr, scrutinee_ty, in_error=in_error,
                                        after_error=after_error)
         return _signed_join(result_type, arm_types) or UnknownType()
+
+    def _unknown_is_reported(self) -> bool:
+        """Whether a diagnostic already stands behind an `Unknown` the check
+        meets now: an error (#1671), or a typed hole's W001, which is the
+        hole's own diagnostic (#1563).  The `match` and the destructuring
+        `let` read it before their arms and bindings, so `match ?` and
+        `let Tuple<@Int, @Int> = ?;` draw the hole's warning alone."""
+        return any(d.severity == "error" or d.error_code == "W001"
+                   for d in self.errors)
 
     def _names_refused_ctor(self, pat: ast.Pattern) -> bool:
         """Whether *pat* names a constructor of a refused declaration.

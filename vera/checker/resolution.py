@@ -1316,8 +1316,8 @@ class ResolutionMixin:
         if isinstance(ty, UnknownType):
             return self._fresh_typevar("?")
         if isinstance(ty, AdtType):
-            return AdtType(ty.name, tuple(self._as_holes(a)
-                                          for a in ty.type_args))
+            return ty.with_args(tuple(self._as_holes(a)
+                                      for a in ty.type_args))
         if isinstance(ty, FunctionType):
             return FunctionType(
                 tuple(self._as_holes(p) for p in ty.params),
@@ -1454,7 +1454,7 @@ def _meet_literal_holes(parts: tuple[Type | None, ...], ty: Type) -> Type:
             and isinstance(ty, AdtType) and p.name == ty.name
             and len(p.type_args) == len(ty.type_args)]
     if isinstance(ty, AdtType) and len(adts) == len(known):
-        return AdtType(ty.name, tuple(
+        return ty.with_args(tuple(
             _meet_literal_holes(tuple(p.type_args[i] for p in adts), arg)
             for i, arg in enumerate(ty.type_args)))
     return ty
@@ -1470,7 +1470,7 @@ def _overlay_literal_holes(soft: Type, ty: Type) -> Type:
     if (isinstance(soft, AdtType) and isinstance(ty, AdtType)
             and soft.name == ty.name
             and len(soft.type_args) == len(ty.type_args)):
-        return AdtType(ty.name, tuple(
+        return ty.with_args(tuple(
             _overlay_literal_holes(a, b)
             for a, b in zip(soft.type_args, ty.type_args)))
     return ty

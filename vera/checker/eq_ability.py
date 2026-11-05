@@ -195,8 +195,8 @@ def _substitute(ty: Type, mapping: dict[str, Type]) -> Type:
     if isinstance(ty, TypeVar):
         return mapping.get(ty.name, ty)
     if isinstance(ty, AdtType):
-        return AdtType(ty.name, tuple(_substitute(a, mapping)
-                                      for a in ty.type_args))
+        return ty.with_args(tuple(_substitute(a, mapping)
+                                  for a in ty.type_args))
     if isinstance(ty, FunctionType):
         return FunctionType(
             tuple(_substitute(p, mapping) for p in ty.params),

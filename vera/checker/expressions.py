@@ -21,6 +21,7 @@ from vera.lowering import (
     quantifier_predicate_refusals,
 )
 from vera.types import (
+    is_unknown_like,
     AdtType,
     base_type,
     BOOL,
@@ -546,7 +547,7 @@ class ExpressionsMixin:
                 left_ty = self._synth_expr(expr.left, expected=BYTE)
             if left_ty is None or right_ty is None:
                 return None
-        if isinstance(left_ty, UnknownType) or isinstance(right_ty, UnknownType):
+        if is_unknown_like(left_ty) or is_unknown_like(right_ty):
             return UnknownType()
 
         op = expr.op
@@ -864,7 +865,7 @@ class ExpressionsMixin:
             self._negated_literal = negated
         if operand_ty is None:
             return None
-        if isinstance(operand_ty, UnknownType):
+        if is_unknown_like(operand_ty):
             return UnknownType()
 
         operand_base = base_type(operand_ty)
@@ -961,7 +962,7 @@ class ExpressionsMixin:
         idx_ty = self._synth_expr(expr.index)
         if coll_ty is None or idx_ty is None:
             return None
-        if isinstance(coll_ty, UnknownType):
+        if is_unknown_like(coll_ty):
             return UnknownType()
 
         coll_base = base_type(coll_ty)
@@ -974,7 +975,7 @@ class ExpressionsMixin:
                 elem_type = UnknownType()
 
             # Index must be Int or Nat
-            if idx_ty and not isinstance(idx_ty, UnknownType):
+            if idx_ty and not is_unknown_like(idx_ty):
                 idx_base = base_type(idx_ty)
                 if not is_subtype(idx_base, INT):
                     self._error(
@@ -1114,7 +1115,7 @@ class ExpressionsMixin:
         # Read before the bindings are resolved, as a `match` reads it
         # before its arms: an error in a binding's type says nothing about
         # the value (#1671).
-        after_error = any(d.severity == "error" for d in self.errors)
+        after_error = self._unknown_is_reported()
 
         resolved_types: list[Type] = []
         for te in stmt.type_bindings:

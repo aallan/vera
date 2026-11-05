@@ -423,3 +423,79 @@ def test_repro_a_guarded_binder_read_through_another_keeps_its_fact() -> None:
                 if o.kind == "int_overflow"]
     assert overflow and set(overflow) == {"verified"}, [
         (o.kind, o.status) for o in verified.obligations]
+
+
+# ---------------------------------------------------------------------------
+# The class's further members (PR #1842 review): the hole at a destructure,
+# a refused name read above its declaration, the placeholder through a
+# generic's substitution, and every operator over the placeholder
+# ---------------------------------------------------------------------------
+
+_SIG = "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+
+
+def test_a_destructure_of_a_hole_draws_only_the_hole() -> None:
+    """The destructuring `let` reads the reported-`Unknown` rule the `match`
+    reads (`_unknown_is_reported`): `let Tuple<@Int, @Int> = ?;` drew E313
+    beside the hole's W001."""
+    source = f"public fn f(@Int -> @Int)\n{_SIG}{{\n  let Tuple<@Int, @Int> = ?;\n  @Int.0\n}}\n"
+    assert _all_codes(source) == ["W001"]
+
+
+_ABOVE = {
+    "alias_first": ("type M = Decimal<Int>;\nprivate data Decimal {\n  MkDecimal(Int)\n}\n\n"
+                    f"public fn f(@Int -> @Int)\n{_SIG}{{\n  0\n}}\n"),
+    "signature_first": (f"private fn g(@Decimal<Int> -> @Int)\n{_SIG}{{\n  0\n}}\n\n"
+                        "private data Decimal {\n  MkDecimal(Int)\n}\n"),
+}
+
+
+@pytest.mark.parametrize("order", sorted(_ABOVE))
+def test_a_refused_name_above_its_declaration_reports_nothing_further(
+        order: str) -> None:
+    """The refused built-in names are known before the namespace resolves
+    anything, so an alias or a signature above `data Decimal` reads the name
+    as one below it does: E158 alone (the base drew E158 alone above, and
+    E135 beside it for the signature; filled at the declaration, E134)."""
+    assert _codes(_ABOVE[order]) == ["E158"]
+
+
+_GENERIC = {
+    "return": (f"private forall<T> fn mk(@T -> @Optio<T>)\n{_SIG}{{\n  ?\n}}\n\n"
+               + _FN.format(body="let @Option<Int> = mk(1);\n  0")),
+    "parameter": (f"private forall<T> fn tk(@Optio<T> -> @Int)\n{_SIG}{{\n  0\n}}\n\n"
+                  + _FN.format(body="tk(Some(1))")),
+}
+
+
+@pytest.mark.parametrize("site", sorted(_GENERIC))
+def test_the_placeholder_survives_a_generics_substitution(site: str) -> None:
+    """A rebuild of a data type over new arguments keeps its class
+    (`AdtType.with_args`), so `Optio<T>` instantiated is still the
+    placeholder: no E170 at the `let`, no E202 at the argument."""
+    codes = _codes(_GENERIC[site])
+    assert codes and set(codes) == {"E136"}, codes
+
+
+_OPERATORS = {
+    "add": "@Qzt.0 + 1",
+    "negate": "-@Qzt.0",
+    "not": "!@Qzt.0",
+    "compare": "@Qzt.0 < 1",
+    "and": "@Qzt.0 && true",
+    "index": "@Qzt.0[0]",
+    "interpolate": '"\\(@Qzt.0)"',
+    "condition": "if @Qzt.0 then { 1 } else { 0 }",
+}
+
+
+@pytest.mark.parametrize("op", sorted(_OPERATORS))
+def test_an_operator_over_the_placeholder_draws_nothing_further(op: str) -> None:
+    """Every operator's early guard admits the placeholder as it admits
+    `Unknown` (`types.is_unknown_like`): `@Qzt.0 + 1` drew E140, `-` E147,
+    `<` E143 and an index E161 beside the E136 (the base drew those, and
+    E146, E144, E148 and E300 for the other four, which the compatible
+    placeholder already removes)."""
+    source = (f"private fn f(@Qzt -> @Int)\n{_SIG}{{\n  let @Int = 0;\n"
+              f"  {_OPERATORS[op]};\n  0\n}}\n")
+    assert _codes(source) == ["E136"]

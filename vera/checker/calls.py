@@ -236,8 +236,8 @@ def _map_holes(ty: Type, to: typing.Callable[[str], Type]) -> Type:
     if isinstance(ty, TypeVar):
         return to(ty.name) if "$" in ty.name else ty
     if isinstance(ty, AdtType):
-        return AdtType(ty.name,
-                       tuple(_map_holes(arg, to) for arg in ty.type_args))
+        return ty.with_args(
+            tuple(_map_holes(arg, to) for arg in ty.type_args))
     if isinstance(ty, FunctionType):
         effect = ty.effect
         if isinstance(effect, ConcreteEffectRow):

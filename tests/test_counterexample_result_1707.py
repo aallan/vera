@@ -132,11 +132,16 @@ def test_the_printed_result_is_the_bodys_value_at_the_printed_input(
 
 def test_repro_1707_a_match_prints_the_arm_it_took() -> None:
     """The issue's program: `Some(2)` printed beside `@Int.result = 0`, where
-    the body returns 2."""
+    the body returns 2; whatever `Some(n)` the model picks, the printed
+    result is `n`."""
     decls, name, sig, ensures, body, _ = _SHAPES["issue_match"]
     ce = _counterexample(decls + _fn(name, sig, ensures, body))
-    assert ce["@Option<Int>.0"] == "Some(2)"
-    assert ce["@Int.result"] == "2"
+    # The relation, not the model's choice: the arm taken returns the
+    # payload, so the printed result is the printed `Some`'s payload (and
+    # not 0, which the refutation rules out).
+    payload = re.fullmatch(r"Some\((-?\d+)\)", ce["@Option<Int>.0"])
+    assert payload is not None, ce
+    assert ce["@Int.result"] == payload.group(1) != "0", ce
 
 
 def test_repro_1707_a_body_with_no_match_prints_its_value() -> None:

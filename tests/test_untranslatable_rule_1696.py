@@ -1256,10 +1256,10 @@ def test_repro_a_destructured_component_of_a_stand_in_reads_its_guard() -> None:
     Under a handler whose body translates the translation decides the call
     (`test_repro_a_destructured_component_reads_its_guarded_value`)."""
     let = _verify(_BIND_A_STATE_READ.replace("BIND", "let @Pos = get(());"))
-    assert set(_statuses(let, "call_pre")) <= {"verified"}, _statuses(let, "call_pre")
+    assert _statuses(let, "call_pre") == ["verified"], _statuses(let, "call_pre")
     destructured = _verify(_BIND_A_STATE_READ.replace(
         "BIND", "let Tuple<@Pos, @Int> = Tuple(get(()), 1);"))
-    assert set(_statuses(destructured, "call_pre")) <= {"verified"}, [
+    assert _statuses(destructured, "call_pre") == ["verified"], [
         (o.status, o.error_code) for o in destructured.obligations
         if o.kind == "call_pre"]
     assert not destructured.errors, _codes(destructured)

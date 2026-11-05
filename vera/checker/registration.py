@@ -297,6 +297,14 @@ class RegistrationMixin:
             if isinstance(tld.decl, ast.DataDecl)
             and tld.decl.name not in refused_builtin
         )
+        # And the names those declarations take are refused before any of
+        # this namespace resolves (`_refused_type_names`), so an alias or a
+        # signature ABOVE the declaration reads them as one below it does.
+        self._refused_type_names.update(
+            tld.decl.name for tld in program.declarations
+            if isinstance(tld.decl, ast.DataDecl)
+            and tld.decl.name in refused_builtin
+        )
         self._forward_effect_names = frozenset(
             tld.decl.name for tld in program.declarations
             if isinstance(tld.decl, ast.EffectDecl)
