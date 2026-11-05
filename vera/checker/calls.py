@@ -691,6 +691,16 @@ class CallsMixin:
         # `handle[State<T>]` once lowered to the host cell intrinsic — a
         # silently wrong value, a module WASM validation rejected, or a
         # spurious [E602] naming a State operation the user never wrote.
+        if name in self._refused_builtin_fn_names:
+            # #1563: the name a refused redefinition of a built-in took
+            # (E151).  The program wrote the call against its own
+            # declaration, so the declaration's E151 is the one error the
+            # call owes, as for the module-qualified call to it
+            # (`_check_own_module_call`): held to the built-in's signature,
+            # it drew errors at code that is not wrong.
+            for arg in args:
+                self._synth_expr(arg)
+            return UnknownType()
         fn_info = self._bound_function(node)
         if fn_info is not None:
             return self._check_fn_call_with_info(fn_info, args, node,

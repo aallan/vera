@@ -38,6 +38,7 @@ from vera.types import (
     Type,
     TypeVar,
     UnknownType,
+    UnresolvedAdtType,
     base_type,
     contains_literal_hole,
     default_literal_holes,
@@ -370,7 +371,11 @@ class ResolutionMixin:
 
         # Decimal is a non-parameterised built-in opaque type
         if name == "Decimal":
-            if te.type_args:
+            # #1563: written with arguments under a refused `data Decimal`,
+            # the name was written against the declaration, whose E158 is
+            # the one error it owes; it resolves as the built-in, as
+            # `vera.naming` renders it.
+            if te.type_args and name not in self._refused_type_names:
                 self._error(
                     te, "Decimal does not accept type arguments.",
                     rationale=(
@@ -570,14 +575,18 @@ class ResolutionMixin:
         # byte-identical (`tests/test_slot_naming_differential.py`).
         # A forward `data` name is typed by the identity its declaration
         # registers under (#1694), its own constructors' fields included.
-        placeholder = AdtType(
-            self._type_identity(name)
-            if name in self._forward_data_names else name,
-            tuple(self._resolve_type(a) for a in te.type_args)
-            if te.type_args else ())
-        if name not in self._forward_type_names:
-            self._report_unknown_type(te)
-        return placeholder
+        args = (tuple(self._resolve_type(a) for a in te.type_args)
+                if te.type_args else ())
+        if name in self._forward_type_names:
+            return AdtType(
+                self._type_identity(name)
+                if name in self._forward_data_names else name, args)
+        # #1563: a name nothing declares is a placeholder every judgement
+        # admits, so its E136 is the one error a value judged against it
+        # owes; held to it as a type, a `let`, a return and an argument
+        # each drew a second error at code that is not wrong.
+        self._report_unknown_type(te)
+        return UnresolvedAdtType(name, args)
 
     def _report_unknown_type(self, te: ast.NamedType) -> None:
         """E136: a type name that resolves to no declaration in scope."""

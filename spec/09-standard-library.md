@@ -138,7 +138,7 @@ See §9.6.18 for the `url_parse` and `url_join` function specifications.
 
 ### 9.3.4 Future\<T\>
 
-<!-- vera:skip-check category="ILLUSTRATIVE" code="E158 E158 E188" reason="prelude-injected Future<T> declaration shown without visibility" -->
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E158 E188" reason="prelude-injected Future<T> declaration shown without visibility" -->
 ```
 data Future<T> { Future(T) }
 ```

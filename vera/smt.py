@@ -4007,10 +4007,12 @@ class SmtContext:
                             val.sort().accessor(idx, i)(val)
                             for i in range(len(stmt.type_bindings))
                         ]
-                        if self._mentions_stand_in(val):
-                            # A refined component of a stand-in reads the
-                            # value its bind's guard establishes (#1696).
-                            comps = self.guarded_components(stmt, val, comps)
+                        # A refined or `@Nat` component reads the value its
+                        # bind's guard establishes, whatever its value, as a
+                        # `let`'s binder does (#1696, #1563): the post-fact
+                        # rule, so a refused or guarded bind's predicate
+                        # holds for the rest of its scope.
+                        comps = self.guarded_components(stmt, val, comps)
                     else:
                         # The opaque fallback derives component sorts from
                         # the source type's arguments, which equal the

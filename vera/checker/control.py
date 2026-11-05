@@ -354,7 +354,11 @@ class ControlFlowMixin:
         # is judged as before, and its E313 is the error that refuses the
         # program.  A position inside the scrutinee whose type the check did
         # not settle is read by the same rule (`_pattern_domain`, #1697).
-        after_error = any(d.severity == "error" for d in self.errors)
+        # A typed hole's W001 is the diagnostic behind its `Unknown` (#1563):
+        # the hole has no type for the arms to cover until it is filled, so
+        # a `match ?` draws the hole's warning alone.
+        after_error = any(d.severity == "error" or d.error_code == "W001"
+                          for d in self.errors)
         in_error = (isinstance(base_type(scrutinee_ty), UnknownType)
                     and after_error)
 

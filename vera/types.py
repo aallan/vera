@@ -78,6 +78,24 @@ class AdtType(Type):
     type_args: tuple[Type, ...]  # () for non-parameterised
 
 
+@dataclass(frozen=True, eq=False)
+class UnresolvedAdtType(AdtType):
+    """The placeholder a type name nothing declares resolves to (E136).
+
+    Rendered, named and compared as the name was written, so the checker
+    and the slot renderer (`vera.naming`, which builds the plain `AdtType`)
+    agree on `@Optio<Int>.0`; compatible with every type, as `UnknownType`
+    is (`is_subtype`), since the name's own E136 is the one error a value
+    judged against it owes (#1563)."""
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, AdtType):
+            return NotImplemented
+        return (self.name, self.type_args) == (other.name, other.type_args)
+
+    __hash__ = AdtType.__hash__
+
+
 @dataclass(frozen=True)
 class FunctionType(Type):
     """A function type: params -> return with effect row."""
@@ -673,7 +691,8 @@ def is_subtype(sub: Type, sup: Type) -> bool:
     5. RefinedType(base, _) <: base
     6. RefinedType(base, _) <: T if base <: T
     7. T <: RefinedType(base, _) if T <: base (predicate enforced by verifier)
-    8. UnknownType is compatible with everything (error recovery)
+    8. UnknownType is compatible with everything (error recovery), and so
+       is the placeholder of a name nothing declares (UnresolvedAdtType)
     9. FunctionType: params contravariant, return covariant, effects covariant
 
     TypeVar is NOT compatible with concrete types.  TypeVar equality is
@@ -681,8 +700,9 @@ def is_subtype(sub: Type, sup: Type) -> bool:
     substitutes TypeVars before subtype checks; unresolved TypeVars are
     skipped by the caller.
     """
-    # Unknown propagates silently
-    if isinstance(sub, UnknownType) or isinstance(sup, UnknownType):
+    # Unknown propagates silently, as does a name nothing declares (#1563)
+    if isinstance(sub, (UnknownType, UnresolvedAdtType)) or isinstance(
+            sup, (UnknownType, UnresolvedAdtType)):
         return True
 
     # Reflexivity (structural equality)

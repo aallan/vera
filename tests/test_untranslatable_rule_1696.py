@@ -1242,25 +1242,28 @@ public fn f(@Unit -> @Int)
 """
 
 
-def test_a_destructured_component_of_a_stand_in_does_not_read_its_guard_yet() -> None:
-    """The two spellings of one guarded bind, pinned where they stand.
+def test_repro_a_destructured_component_of_a_stand_in_reads_its_guard() -> None:
+    """The two spellings of one guarded bind give one verdict.
 
     `let @Pos = get(())` gives the binder the value the bind's guard
     establishes (`SmtContext.guarded_binding`, through the verifier's
     `_apply_let_binding`), so `need(@Pos.0)`'s `> 0` is discharged.  A
-    destructure's component in a function body, `let Tuple<@Pos, @Int> =
-    Tuple(get(()), 1)`, does not reach those guarded facts: the verifier's
-    destructure walks decide the call without them, so it is `tier3`/E532
-    where Tier 1 holds.  Under a handler whose body translates the
-    translation decides the call and reads them
-    (`test_repro_a_destructured_component_reads_its_guarded_value`).  A
-    later fix of those walks flips the second assertion."""
+    destructure's literal component in a function body, `let Tuple<@Pos,
+    @Int> = Tuple(get(()), 1)`, reads the same guarded value in every walk
+    that projects one (`ContractVerifier._literal_component`); at base the
+    walk that decides the call read the bare stand-in and left the call
+    `tier3`/E532 where Tier 1 holds (#1696's line from PR #1833's review).
+    Under a handler whose body translates the translation decides the call
+    (`test_repro_a_destructured_component_reads_its_guarded_value`)."""
     let = _verify(_BIND_A_STATE_READ.replace("BIND", "let @Pos = get(());"))
     assert set(_statuses(let, "call_pre")) <= {"verified"}, _statuses(let, "call_pre")
     destructured = _verify(_BIND_A_STATE_READ.replace(
         "BIND", "let Tuple<@Pos, @Int> = Tuple(get(()), 1);"))
-    assert [(o.status, o.error_code) for o in destructured.obligations
-            if o.kind == "call_pre"] == [("tier3", "E532")]
+    assert set(_statuses(destructured, "call_pre")) <= {"verified"}, [
+        (o.status, o.error_code) for o in destructured.obligations
+        if o.kind == "call_pre"]
+    assert not destructured.errors, _codes(destructured)
+    assert "E532" not in _codes(destructured)
 
 
 DESTRUCTURE_IN_A_HANDLE = """
