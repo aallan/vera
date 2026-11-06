@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Callable, ClassVar
 
-from vera import ast, binders, naming, narrowing
+from vera import ast, naming, narrowing
 from vera.lowering import (
     CLAUSE_NOT_SINGLE_SHOT,
     CLAUSE_RESUME_IN_WITH,
@@ -2053,23 +2053,13 @@ class CallsHandlersMixin:
         Emitted over the local the binder is about to be pushed under, so the
         check runs before any of the body does, for the binder's rows in the
         obligation table (#1695), whose guard the verifier's record reads
-        too, so the guard and the guarded status cannot disagree; the site's
-        lowering exists where `vera.narrowing.REFINED_BIND_GUARDED_SITES`
-        lists it.
+        too, so the guard and the guarded status cannot disagree.
 
         Both directions, because the two spellings fail differently: the sign
         guard for a `@Nat` binder over a plain payload, and the §2.6.5
         predicate for a refined one.  `family_base` is the payload's own
         base, so a binder no narrower than what it receives is left alone.
         """
-        site = binders.site_of(ast.HandlerClause, "params")
-        # The roster gate decides a guard beside the row: emptying
-        # `REFINED_BIND_GUARDED_SITES` drops these checks while the table
-        # still lists the rows guarded, which the guard matrices and the
-        # identity cells catch.  Its removal, the row the one decision, is a
-        # line of #1836, which deletes the verifier's walk.
-        if site not in narrowing.REFINED_BIND_GUARDED_SITES:
-            return []
         if not isinstance(te, ast.TypeExpr):
             return []
         # #1542: a binder declared narrower than the composite payload the

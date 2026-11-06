@@ -52,7 +52,7 @@ class TestVerifierGates387:
     # =================================================================
     # _is_nat_typed / _is_guarded_nat_subtraction
     # Gate the #520 `@Nat - @Nat` underflow obligation (kind nat_sub,
-    # E502) in _walk_for_primitive_op_obligations.  The obligation fires
+    # E502) in _discharge_operation_rows.  The obligation fires
     # iff op==SUB AND both operands _is_nat_typed
     # (`vera.narrowing.is_guarded_nat_subtraction`).  A literal operand is an
     # `Int` (spec §4.2), so it makes the subtraction an `@Int` one.  A wrong

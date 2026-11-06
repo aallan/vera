@@ -581,14 +581,14 @@ _CALL_ORACLES = (
 def _oracle_readings(source: str) -> tuple[object, ...]:
     """The four readings, taken at the `h(())` node during the real walk.
 
-    The `@Nat`-binding walk's step for a call, `_nat_fn_call`, is entered
+    The `@Nat`-binding walk's step for a call, `_binding_fn_call`, is entered
     once for each call node, where the walk reaches it."""
     from vera import ast as vast
     from vera import narrowing
     from vera import verifier as verifier_module
 
     seen: dict[str, tuple[object, ...]] = {}
-    original = verifier_module.ContractVerifier._nat_fn_call
+    original = verifier_module.ContractVerifier._binding_fn_call
 
     def spy(self, decl, expr, path, smt):  # type: ignore[no-untyped-def]
         # The helper by its own name: the linked program the verifier walks
@@ -608,11 +608,11 @@ def _oracle_readings(source: str) -> tuple[object, ...]:
             )
         return original(self, decl, expr, path, smt)
 
-    verifier_module.ContractVerifier._nat_fn_call = spy
+    verifier_module.ContractVerifier._binding_fn_call = spy
     try:
         verified = pipeline.verify(source)
     finally:
-        verifier_module.ContractVerifier._nat_fn_call = original
+        verifier_module.ContractVerifier._binding_fn_call = original
     _ = verified.checked.program  # raises the parse or transform error
     diags = list(verified.checked.checker_diagnostics)
     assert not [d for d in diags if d.severity == "error"], diags

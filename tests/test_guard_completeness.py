@@ -1672,7 +1672,7 @@ _A1_TUPLE_TRAP_WHAT = "parameter (tuple component): @Int.0 > 0 failed"
 class TestClosureArgumentNestedGuardednessIsTypeDerived:
     """A closure argument's guardedness is the SITE half AND the TYPE half.
 
-    "closure argument" is in `_REFINED_BIND_GUARDED_SITES`, so the site half
+    A refinement is lowered at a "closure argument", so the site half
     answers True for both cells below.  That alone is not the answer: codegen
     decomposes a refined formal at a boundary through TUPLES and nothing else
     (`_emit_component_refinement_guards`), so where the refinement sits INSIDE
@@ -1946,8 +1946,8 @@ class TestTheUnguardedRationaleNamesTheCauseThatApplies:
 
     A `let @Tiny = mk(...)` whose base is itself a refinement lands here for
     a TYPE reason: `_emit_bind_refine_guard` will not lower a guard for a
-    refinement-over-refinement base.  The site is fine — `"let binding"` is
-    in `_REFINED_BIND_GUARDED_SITES`.  The sentence that used to close this
+    refinement-over-refinement base.  The site is fine — a refinement is
+    lowered at a `"let binding"`.  The sentence that used to close this
     warning said the guard lives only at a function boundary "not at this
     internal narrowing site", which was true before #765 and false after,
     and it sent a reader to move a binding that has no reason to move.

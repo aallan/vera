@@ -7,10 +7,9 @@ a destructuring `let`, a match arm's pattern and its sub-patterns, a handler
 clause's payload binder and its state writes, a constructor's fields, an effect
 operation's formals, a quantifier's variable.  Two components have to answer a
 question about each: the verifier asks "is there a narrowing to obligate here?"
-and code generation asks "do I plant a guard here?", and #1412 made their answer
-to the second one shared (:data:`GUARD_SITES` below, read through
-``vera.narrowing``) so a status cannot promise a check the backend does not
-emit.
+and code generation asks "do I plant a guard here?".  Both answers are the
+obligation table's (:mod:`vera.obligations.table`, #1695): a row at the
+position, and the row's guard.
 
 What was never shared is the LIST.  Each position was added to the guard table
 and to the two emitters as review DISCOVERED it, so the set of positions existed
@@ -29,7 +28,7 @@ nothing.  A node class added later with a binder field fails that test rather
 than being quietly unvisited.
 
 The module deliberately holds no analysis.  It says WHICH positions exist, what
-each is called in a diagnostic, and which guard key each asks the table with;
+each is called in a diagnostic, and which guard key names it;
 whether a particular value narrows, and whether a particular refinement's base
 can be lowered, stay with the components that can answer them.
 """
@@ -42,108 +41,75 @@ from dataclasses import dataclass
 from vera import ast
 
 # =====================================================================
-# Guard sites: what code generation plants, per key
+# Guard sites: the positions a guard is lowered at, per key
 # =====================================================================
 
 
 @dataclass(frozen=True)
 class SiteGuards:
-    """Which runtime guards code generation emits at one guard key.
+    """One guard key: a position at which code generation lowers a guard.
 
-    A guard key is what the two components ASK the table with, which is not
-    always the diagnostic site name: the three `State` writes each keep their
-    own name in the message — "handler state init" tells a reader which of the
-    three to go and look at — while asking one key, because what must not
-    differ between them is the answer about codegen (#1439).
+    A guard key is not always the diagnostic site name: the three `State`
+    writes each keep their own name in the message — "handler state init"
+    tells a reader which of the three to go and look at — while sharing one
+    key, because what must not differ between them is the lowering (#1439).
+    Whether a guard is emitted at a given node is its row's (#1695): the
+    obligation table decides it once, and this registry decides nothing.
     """
 
-    #: The §2.6.5 refinement predicate is lowered here (#765, #1426).
-    refinement_predicate: bool = False
-    #: The `@Nat >= 0` sign check is planted at this CONSTRUCTION position
-    #: (#747/#757 for the constructor field, #1416 for the tuple component,
-    #: #1440 for the array element and the `Map` value).  Boundary and
-    #: pattern-bind sites take their sign guard from the boundary/bind
-    #: emitters instead and are not construction positions, so they are False
-    #: here and the verifier never asks them this question.
-    nat_sign_at_construction: bool = False
-    #: Why the answers above are what they are — measured, not remembered.
+    #: What is lowered at the position, and since when — measured, not
+    #: remembered.
     note: str = ""
 
 
-#: THE table both components read, keyed by guard key.
-#:
-#: Membership is necessary and not sufficient: the TYPE half — whether a guard
-#: can be emitted for this particular refinement's BASE — is
-#: ``ContractVerifier._refined_boundary_codegen_guardable`` and
-#: ``_emit_bind_refine_guard``'s own bail, intersected wherever a type is in
-#: hand (``vera.narrowing.REFINED_CONSTRUCTION_SCALAR_BASES`` is the
-#: construction-position half of that).
-#:
-#: A key absent from this table is a position whose guard answer is not a
-#: property of the position: an effect operation's argument is guarded for a
-#: built-in effect and not for a user-declared one, so the verifier computes it
-#: from the operation's parent effect and there is nothing here to read.
+#: The guard keys, each with the guard lowered there.  A key absent from
+#: this registry is a position whose guard is not a property of the position:
+#: an effect operation's argument is guarded for a built-in effect and not for
+#: a user-declared one, which the table reads from the operation's effect.
 GUARD_SITES: dict[str, SiteGuards] = {
     "return type": SiteGuards(
-        refinement_predicate=True,
         note="the function boundary guards its return predicate (#746), "
              "and the `@Nat` return position since #758",
     ),
     "call argument": SiteGuards(
-        refinement_predicate=True,
         note="the callee's boundary guards each parameter; a generic formal "
              "is guarded on the monomorphised callee (#746, CR #756)",
     ),
     "closure argument": SiteGuards(
-        refinement_predicate=True,
         note="`_compile_lifted_closure` guards the lifted body's parameters",
     ),
     "closure return": SiteGuards(
-        refinement_predicate=True,
         note="the same lifted body guards its per-narrowing-leaf return "
              "(#984, #1032)",
     ),
     "let binding": SiteGuards(
-        refinement_predicate=True,
         note="`_emit_bind_refine_guard` at the narrowing bind (#765)",
     ),
     "match binding": SiteGuards(
-        refinement_predicate=True,
         note="as `let binding` — the arm's top-level pattern binder (#765)",
     ),
     "tuple destructure": SiteGuards(
-        refinement_predicate=True,
         note="as `let binding`, once per component the destructure names "
              "(#765)",
     ),
     "ADT sub-pattern bind": SiteGuards(
-        refinement_predicate=True,
         note="as `let binding`, at the projected field (#765)",
     ),
     "constructor field": SiteGuards(
-        refinement_predicate=True,
-        nat_sign_at_construction=True,
         note="the store is guarded in both directions: the sign since "
              "#747/#757, the predicate since #1426",
     ),
     "tuple component": SiteGuards(
-        refinement_predicate=True,
-        nat_sign_at_construction=True,
         note="the built-in `Tuple` carrier reads its target from the "
              "threaded table (#1416); predicate since #1426",
     ),
     "array element": SiteGuards(
-        refinement_predicate=True,
-        nat_sign_at_construction=True,
         note="predicate since #1426, sign since #1440",
     ),
     "map value": SiteGuards(
-        refinement_predicate=True,
-        nat_sign_at_construction=True,
         note="predicate since #1426, sign since #1440",
     ),
     "State write boundary": SiteGuards(
-        refinement_predicate=True,
         note="the ONE key the three `State` writes ask with — the `handle` "
              "init, `put`'s argument and a clause's `with @T = …` override.  "
              "Their sign direction has been guarded since #1203 by the write "
@@ -152,7 +118,6 @@ GUARD_SITES: dict[str, SiteGuards] = {
              "other half (#1439)",
     ),
     "handler clause binder": SiteGuards(
-        refinement_predicate=True,
         note="a clause binder declared narrower than the payload it receives "
              "— `throw(@Nat)` on an `Exn<Int>` handler, `put(@Pos)` on a "
              "`State<Int>` one.  A pattern-bind site like the others, and the "
@@ -398,7 +363,7 @@ CONSTRUCTION_SITES: dict[type[ast.Node], tuple[str, ...]] = {
 
 
 # =====================================================================
-# Derived rosters
+# Site names
 # =====================================================================
 
 def site_of(node_class: type[ast.Node], field_name: str) -> str:
@@ -430,20 +395,6 @@ def site_of(node_class: type[ast.Node], field_name: str) -> str:
     raise KeyError(
         f"{node_class.__name__}.{field_name} is not a registered binder "
         f"position"
-    )
-
-
-def guarded_sites(guard: str) -> frozenset[str]:
-    """The guard keys at which code generation plants *guard*.
-
-    The three rosters the verifier and code generation read are derived from
-    :data:`GUARD_SITES` through this, so a position added to the table with
-    its guard answers reaches every consumer at once — which is the coupling
-    the table exists for.  *guard* names a field of :class:`SiteGuards`.
-    """
-    return frozenset(
-        key for key, guards in GUARD_SITES.items()
-        if getattr(guards, guard)
     )
 
 

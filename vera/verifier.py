@@ -155,6 +155,12 @@ _OPAQUE_SCRUTINEE_REASON = (
     "projected and the predicate was never given a value to reason about"
 )
 
+#: The site names of two `nat_bind` fallbacks.  `_record_nat_bind_tier3`
+#: reads no site, so the names are kept out of the methods that pass them:
+#: a mutation of the text inside one is equivalent by construction.
+_CLOSURE_RETURN_SITE = "closure return"
+_SUBPATTERN_BIND_SITE = "ADT sub-pattern bind"
+
 class _FloatConversion(NamedTuple):
     """How one built-in reaches `i64.trunc_f64_s` (#807, #1480)."""
 
@@ -249,7 +255,7 @@ class BlockBindingPolicy(enum.Enum):
     takes the #1460 re-ask rather than an E505 on a value the program never
     produces; the scalar var is not tracked (#1470).
 
-    For `_walk_for_nat_binding_obligations`, which needs a slot to exist for
+    For `_discharge_binding_rows`, which needs a slot to exist for
     every binding whether or not the RHS translated, so a later `@Nat`
     narrowing obligates against the binding's own type rather than a stale
     outer's value.  Deliberately NOT seeded with the resolved source type
@@ -294,6 +300,21 @@ class ArmContext:
     def assuming(self, base: Sequence[object]) -> list[object]:
         """*base* plus what this arm establishes."""
         return [*base, *self.facts]
+
+
+@dataclass
+class _FnFrame:
+    """One function under `_verify_fn`: its declaration, the rows the table
+    lists for it, and the records made for it (#1836)."""
+
+    decl: ast.FnDecl
+    rows: list[obligation_table.Row] | None
+    made: list[ProofObligation] = field(default_factory=list)
+    #: The value rows the binding walk reached and no step discharged,
+    #: each with its node: left to their check once every position of the
+    #: function is done (`_leave_hand_down_rows`).
+    hand_down: list[tuple[ast.Expr, list[obligation_table.Row]]] = field(
+        default_factory=list)
 
 
 class _Path(NamedTuple):
@@ -1242,13 +1263,16 @@ class ContractVerifier:
         #: function shares, the declaration's discharge (under the base
         #: type's facts alone) holding at every guard.
         self._predicate_records: dict[object, ProofObligation] = {}
-        #: The records `_anchored_rows` keyed to the rows at several of a
-        #: value's leaves, in the settling in progress (one record each).
-        self._value_spanning: set[int] = set()
-        self._record_anchors: dict[int, tuple[
-            weakref.ref[ProofObligation], ast.Node, ast.Node | None,
-            ast.FnCall | ast.ModuleCall | None,
-        ]] = {}
+        #: The records keyed, where they were made, to the rows at several
+        #: of a value's leaves (one record each, A3), by the record.
+        self._value_leaf_records: dict[int, weakref.ref[ProofObligation]] = {}
+        #: The function each `_verify_fn` in progress verifies, innermost
+        #: last: its declaration, its rows (`None` for a function the table
+        #: lists nothing of) and the records made for it, each keyed to the
+        #: rows it discharges where it is made (#1836).
+        self._fn_frames: list[_FnFrame] = []
+        #: Whether the last `_rows_discharged` keyed a value's leaf rows.
+        self._leaf_rows_branch = False
         #: Why a Tier 3 record was not discharged statically (#1251), by the
         #: record: a disclosure of its row states it beside the row's reason
         #: for having no check, so the two causes are both named.
@@ -1802,12 +1826,14 @@ class ContractVerifier:
         self,
         fn_name: str,
         kind: ObligationKind,
-        node: ast.Expr | ast.Contract,
+        node: ast.Expr | ast.Contract | ast.TypeExpr | ast.Pattern,
         status: ObligationStatus,
         *,
         error_code: str = "",
         counterexample: dict[str, str] | None = None,
         span_node: ast.Node | None = None,
+        rows: tuple[int, ...] | None = None,
+        expr_text: str | None = None,
     ) -> None:
         """Reify one obligation at its discharge site.
 
@@ -1842,7 +1868,9 @@ class ContractVerifier:
         self.obligations.append(ProofObligation(
             fn_name=fn_name,
             kind=kind,
-            expr_text=expr_text_for(self._as_written(node)),
+            expr_text=(expr_text if expr_text is not None or isinstance(
+                node, (ast.TypeExpr, ast.Pattern))
+                else expr_text_for(self._as_written(node))) or "",
             status=status,
             line=line,
             column=column,
@@ -1870,13 +1898,29 @@ class ContractVerifier:
                 if n is not None:
                     self._predicate_records.setdefault(
                         (obligation_table.ObligationTable._key(n), kind), record)
-        self._record_anchors[id(record)] = (
-            weakref.ref(record), node, span_node,
-            at.call if at is not None else None)
         if kind == "call_pre":
             # #1480: which precondition this record is about, by identity —
             # see `_call_pre_recorded` and `_call_pre_contract_of`.
             self._call_pre_contracts[id(record)] = (weakref.ref(record), node)
+        frame = self._fn_frames[-1] if self._fn_frames else None
+        if frame is not None:
+            frame.made.append(record)
+            if rows is not None:
+                record.rows = rows
+            elif kind in _TABLE_KINDS and frame.rows is not None:
+                # #1836: the record is keyed to the rows it discharges where
+                # it is made, never afterwards.
+                hit = self._rows_discharged(
+                    kind, node, span_node, at.call if at is not None else None,
+                    frame.rows, frame.decl,
+                    contract=node if kind == "call_pre" else None)
+                record.rows = tuple(row.id for row in hit or ())
+                if hit and len({(r.content_key, r.path) for r in hit}) > 1 and (
+                        self._leaf_rows_branch):
+                    # Discharged once for the whole value, whose rows stand
+                    # at several of its leaves: one record names them all
+                    # where it is decided (`_settle_rows`).
+                    self._value_leaf_records[id(record)] = weakref.ref(record)
 
     def _call_pre_contract_of(self, record: ProofObligation) -> ast.Node | None:
         """The precondition a `call_pre` *record* is about, or None when
@@ -3496,16 +3540,17 @@ class ContractVerifier:
     # -----------------------------------------------------------------
 
     def _settle_rows(
-        self, decl: ast.FnDecl, start: int, *, premise: str | None = None,
+        self, decl: ast.FnDecl, start: int, made_here: list[ProofObligation],
+        *, premise: str | None = None,
     ) -> None:
         """Key the records verifying *decl* made to the table's rows, and
         discharge every row of *decl* exactly once.
 
-        The table lists the obligations; a record this verification made at
-        a site the table lists no row at is no obligation and is dropped,
-        and a row no record reached is discharged here (:meth:`_row_record`).
+        The table lists the obligations, and every record is made at a row
+        and keyed to it where it is made (#1836): a node is discharged only
+        where the table lists a row, so no record reaches here without one.
         A record answers the rows of its kind at the node it was recorded
-        at (:meth:`_anchored_rows`): a measure's operation re-evaluated at a
+        at (:meth:`_rows_discharged`, where it is made): a measure's operation re-evaluated at a
         self tail call is the measure's row in that call's evaluation, a
         binder's narrowing recorded at the value its pattern takes apart is
         the binder's row, and a refined return recorded at the body is the
@@ -3526,10 +3571,12 @@ class ContractVerifier:
         if rows is None:
             return
         generic = bool(decl.forall_vars)
-        # A record already keyed (a `where` helper's, verified inside this
-        # function's verification; a generic's clones' aggregate) names its
-        # rows; every record of a table kind is keyed or dropped here.
-        own = [o for o in self.obligations[start:] if not o.rows]
+        # The records made for this function, each keyed to its rows where it
+        # was made; a `where` helper's (verified inside this function's
+        # verification) and a generic's clones' aggregate are settled where
+        # they were made.
+        made = {id(o) for o in made_here}
+        own = [o for o in self.obligations[start:] if id(o) in made]
         if not own and generic:
             return
         calls: dict[object, tuple[int, int]] = {}
@@ -3540,19 +3587,26 @@ class ContractVerifier:
                     calls[n.node_id] = (site.line, site.column)
         status: dict[int, list[ProofObligation]] = {}
         anchored: dict[int, set[int]] = {}
-        self._value_spanning = set()
+        spanning_recs: set[int] = set()
         kept: list[ProofObligation] = []
         for rec in own:
             if rec.kind not in _TABLE_KINDS:
                 kept.append(rec)
                 continue
-            hit = self._anchored_rows(rec, rows, decl)
-            if not hit:
+            if not rec.rows:
                 # No obligation: its disclosure, if it made one, goes too.
                 self._retract_disclosure(rec)
-            anchored[id(rec)] = {row.id for row in hit or ()}
-            for row in hit or ():
-                status.setdefault(row.id, []).append(rec)
+            anchored[id(rec)] = set(rec.rows)
+            for row_id in rec.rows:
+                status.setdefault(row_id, []).append(rec)
+            leaf = self._value_leaf_records.get(id(rec))
+            if (leaf is not None and leaf() is rec
+                    and rec.status in ("verified", "violated")):
+                # Discharged once for the whole value, whose rows stand at
+                # several of its leaves: one record names them all.  A
+                # record left undecided (a closure body's opaque return) is
+                # each leaf's own status, the one the row's fallback gives it.
+                spanning_recs.add(id(rec))
         # One record per written site, in the order the rows are listed.
         by_site: dict[tuple[object, ...], list[obligation_table.Row]] = {}
         for row in rows:
@@ -3573,7 +3627,7 @@ class ContractVerifier:
 
         spanning: set[tuple[object, ...]] = set()
         for rec_id, ids in anchored.items():
-            if rec_id not in self._value_spanning:
+            if rec_id not in spanning_recs:
                 continue
             keys = list(dict.fromkeys(site_of[i] for i in ids if i in site_of))
             for other_site in keys[1:]:
@@ -3599,9 +3653,9 @@ class ContractVerifier:
                         (*shared.rows, *(row.id for row in site_rows))))
                     continue
             if not recs:
-                if generic:
-                    continue
-                recs = [self._row_record(decl, row) for row in site_rows[:1]]
+                # A row no discharge reached has no record: the identity
+                # cells name it, and the join reports its check (W004).
+                continue
             met = self._meet_status([r.status for r in recs])
             if met == "tier3" and any(r.status == "timeout" for r in recs) and all(
                     r.status in ("timeout", "verified") for r in recs):
@@ -3707,9 +3761,313 @@ class ContractVerifier:
                     d, location=loc, source_line=self._get_source_line(head.line))
                 return
 
-    def _anchored_rows(
-        self, rec: ProofObligation, rows: list[obligation_table.Row],
-        decl: ast.FnDecl,
+    def _rows_taking(self, node: ast.Node, kind: ObligationKind) -> bool:
+        """Whether a discharge of *node* answers a row of *kind* of the
+        function under verification, in the evaluation in progress
+        (:meth:`_rows_discharged`): the traversal discharges a node only
+        where the table lists such a row (#1836).  Outside a function a
+        refinement predicate is verified at its declaration (#1480), once
+        for every guard's copy and for a type no guard reads, which the
+        table lists no copy of: the declaration is its own obligation
+        (:meth:`_declaration_takes`)."""
+        frame = self._fn_frames[-1] if self._fn_frames else None
+        if frame is None:
+            return self._declaration_takes(node, kind)
+        if frame.rows is None:
+            return False
+        at = self._evaluated_at
+        saved = self._leaf_rows_branch
+        try:
+            return bool(self._rows_discharged(
+                kind, node, None, at.call if at is not None else None,
+                frame.rows, frame.decl))
+        finally:
+            self._leaf_rows_branch = saved
+
+    def _declaration_takes(self, node: ast.Node, kind: ObligationKind) -> bool:
+        """Whether a refinement predicate verified at its declaration
+        discharges *node*'s *kind*: every operation that can trap, by the
+        operation's own rule, since a declaration no guard reads has no copy
+        the table lists (a non-zero literal divisor and a `@Nat` subtraction
+        the sign check covers hold; an `Int` sum overflows where its width
+        does).  A quotient's ``INT_MIN / -1`` is the table's rule alone
+        (#1598): discharged where it lists the row at a guard's copy."""
+        if kind == "div_zero" and isinstance(node, ast.BinaryExpr):
+            return not (isinstance(node.right, ast.IntLit) and node.right.value != 0)
+        if kind == "nat_sub" and isinstance(node, ast.Expr):
+            return self._is_guarded_nat_subtraction(node)
+        if (kind == "int_overflow" and isinstance(node, ast.BinaryExpr)
+                and node.op in (ast.BinOp.ADD, ast.BinOp.SUB, ast.BinOp.MUL)):
+            ovf_type = self._overflow_arith_fail_closed(node)
+            return ovf_type is not None and not (
+                node.op == ast.BinOp.SUB and ovf_type == "Nat")
+        if kind in ("float_to_int_domain", "index_bounds", "assert") or (
+                kind == "int_overflow" and isinstance(node, ast.FnCall)):
+            return True
+        return bool(self._table.rows_of(node, kind, path=None, evaluation=None))
+
+    def _narrowing_binder(
+        self, decl: ast.FnDecl, binder: ast.Node, kind: ObligationKind,
+        narrows: bool,
+    ) -> bool:
+        """Whether a binder with a row is discharged by the solver: where
+        its value narrows into it.  A binder at its value's own type has
+        nothing to prove beyond the type the value carries, which the
+        solver cannot read off an opaque component (its accessor holds no
+        fact), so its row is left to the check that guards it: ``tier3``,
+        recorded here (#1836)."""
+        if narrows:
+            return True
+        rows = self._binder_rows(binder, kind)
+        if rows and isinstance(binder, (ast.Pattern, ast.TypeExpr)):  # pragma: no mutate — equivalent: every caller passes a `Pattern` or a `TypeExpr`, and none passes one with no row of *kind* (the table lists a refined binder's row always, and a `Nat` binder's by the narrowing the caller reads), so `rows` is never empty here
+            self._record_obligation(
+                decl.name, kind, binder, "tier3",
+                rows=tuple(r.id for r in rows),  # pragma: no mutate — equivalent: without it the record is keyed at the binder by `_rows_discharged`, which finds the same rows
+                expr_text=rows[0].content_key[2])
+        return False
+
+    def _nat_value_site(
+        self, decl: ast.FnDecl, value: ast.Expr, targeted: bool,
+    ) -> bool:
+        """Whether a value with a head ``nat_bind`` row is discharged by the
+        solver: where the position holds it to `Nat` (*targeted*: the
+        formal's or field's type, or the checker's recorded target there)
+        and it narrows.  Elsewhere the requirement reached the value by a
+        coercion of an enclosing value (a later element of an array
+        literal whose first fixed the element type, spec §4.12.1), whose
+        check the row's guard is, so the row is left to it: ``tier3``
+        (#1836)."""
+        rows = self._head_rows(value, "nat_bind")
+        if not rows:
+            return False
+        if targeted and self._narrows_into_nat(value):
+            return True
+        self._record_obligation(
+            decl.name, "nat_bind", value, "tier3",
+            rows=tuple(r.id for r in rows))
+        return False
+
+    def _leave_binder_rows(
+        self, decl: ast.FnDecl, binder: ast.TypeExpr, kind: ObligationKind,
+    ) -> None:
+        """Record ``tier3`` a literal destructure's binder rows that the
+        discharge of its component value did not key: the value's record is
+        the component's row, and the binder's row is the destructure's
+        check over the same value, left to it (#1836)."""
+        frame = self._fn_frames[-1] if self._fn_frames else None  # pragma: no mutate — equivalent: called only from the binding pass, inside `_verify_fn`'s frame
+        if frame is None:
+            return
+        done = {i for rec in frame.made for i in rec.rows}
+        left = [r for r in self._binder_rows(binder, kind) if r.id not in done]
+        if left:
+            self._record_obligation(
+                decl.name, kind, binder, "tier3",
+                rows=tuple(r.id for r in left),  # pragma: no mutate — equivalent: without it the record is keyed at the binder by `_rows_discharged`, which finds the same rows
+                expr_text=left[0].content_key[2])
+
+    def _discharge_effect_rows(
+        self, decl: ast.FnDecl, pattern: ast.Pattern,
+    ) -> None:
+        """Record each ``effect_bind`` row at a binder of *pattern*
+        (#1725): a binder at a narrower effect row is left to a check no
+        code can make, so its record is undecided and its row discloses it."""
+        for node in obligation_table.pattern_nodes(pattern):
+            rows = self._binder_rows(node, "effect_bind")
+            if rows:
+                self._record_obligation(
+                    decl.name, "effect_bind", node, "tier3",
+                    rows=tuple(r.id for r in rows),
+                    expr_text=rows[0].content_key[2])
+            self._discharge_walked_rows(decl, node)
+
+    def _walked(self, row: obligation_table.Row) -> bool:
+        """Whether *row* is a position of a composite walk (#1542's shape):
+        the first row of an opaque value's walk, or one it answers, or a
+        construction's component the requirement reached by the hand-down
+        alone (``Row.handed``).  The composite-coercion check answers such a
+        row, and the solver holds no independent term for it: a literal's
+        translation states its elements at the type it is recorded at, so a
+        query over the component would assume what it proves."""
+        if row.tree is not None or row.handed:
+            return True
+        return (row.answered_by is not None and row.answered_by >= 0
+                and self._table.by_id(row.answered_by).tree is not None)
+
+    def _discharge_walked_rows(self, decl: ast.FnDecl, node: ast.Node) -> None:
+        """Record the composite-walk rows at *node* ``tier3``: an opaque
+        value's components are read by the walk code generation plants, and
+        the solver sees no term for them (#1542, #1836)."""
+        frame = self._fn_frames[-1] if self._fn_frames else None
+        if frame is None or frame.rows is None or not isinstance(
+                node, (ast.Expr, ast.Pattern, ast.TypeExpr)):
+            return
+        key = obligation_table.ObligationTable._key(node)
+        rows = [r for r in frame.rows if r.kind == "nat_bind" and self._walked(r)
+                and obligation_table.ObligationTable._key(r.node) == key]
+        if rows:
+            self._record_obligation(
+                decl.name, "nat_bind", node, "tier3",
+                rows=tuple(r.id for r in rows),
+                expr_text=rows[0].content_key[2] if not isinstance(
+                    node, ast.Expr) else None)
+
+    def _discharge_boundary_components(
+        self, decl: ast.FnDecl, value: ast.Expr | None,
+        te: ast.TypeExpr | None, *, refinements: bool = False,
+    ) -> None:
+        """Record ``tier3`` the ``Nat`` components of a value at a boundary
+        (#1818's composite coercion, #1836): the return type's component
+        rows at *te*, and the rows at *value*'s leaves that a boundary's
+        component row answers.  The boundary's check reads the component,
+        and no discharge states it: a ``Nat`` component is no refinement
+        for the nested discharge to test, so the row is left to its check.
+
+        With *refinements* (a closure's return, whose body is opaque, so no
+        nested discharge tests a refined component either), the refined
+        components are left to their checks the same way, each kind its own
+        record: the return type's, and every one at *value*'s leaves, a
+        payload's included, which a row with no check discloses."""
+        frame = self._fn_frames[-1] if self._fn_frames else None
+        if frame is None or frame.rows is None:
+            return
+        key = obligation_table.ObligationTable._key
+        done = {i for rec in frame.made for i in rec.rows}
+        at_te = ({key(n) for n in fold.walk(te)} if te is not None else set())
+        leaves = ({key(n) for n in narrowing.value_leaves(value)}
+                  if value is not None else set())
+        groups: dict[object, list[obligation_table.Row]] = {}
+        for r in frame.rows:
+            if r.id in done or not r.path or (
+                    r.target != NAT and not refinements):
+                continue
+            k = key(r.node)
+            g = (r.kind, k) if refinements else k
+            if r.evaluation == obligation_table.RETURN and k in at_te:
+                groups.setdefault(g, []).append(r)
+            elif k in leaves and ((refinements and r.kind == "refine_bind") or (
+                    r.kind == "nat_bind" and r.answered_by is not None and (
+                        r.answered_by == obligation_table.ANSWERED_AT_CLOSURE_ENTRY
+                        or (r.answered_by >= 0
+                            and self._table.by_id(r.answered_by).evaluation in (
+                                obligation_table.ENTRY, obligation_table.RETURN))))):
+                groups.setdefault(g, []).append(r)
+        for rows in groups.values():
+            node = rows[0].node
+            assert isinstance(node, (ast.Expr, ast.TypeExpr))  # noqa: S101 — a row's node
+            self._record_obligation(
+                decl.name, rows[0].kind, node, "tier3",
+                rows=tuple(r.id for r in rows),
+                expr_text=(rows[0].content_key[2]
+                           if isinstance(node, ast.TypeExpr) else None))
+
+    def _discharge_entry_rows(self, decl: ast.FnDecl) -> None:
+        """Record each ENTRY row of *decl* ``verified``: a refined
+        parameter's check is the callee's assumption, which every call's
+        argument row discharges (#1836)."""
+        frame = self._fn_frames[-1] if self._fn_frames else None
+        if frame is None or frame.rows is None:
+            return
+        for row in frame.rows:
+            if row.evaluation != obligation_table.ENTRY:
+                continue
+            assert isinstance(row.node, ast.TypeExpr)  # noqa: S101 — the table's rule
+            self._record_obligation(
+                decl.name, row.kind, row.node, "verified", rows=(row.id,),
+                expr_text=row.content_key[2])
+
+    def _call_pre_rows(
+        self, precondition: ast.Node, call: ast.Node,
+    ) -> list[obligation_table.Row] | None:
+        """The ``call_pre`` rows of the function under verification at
+        *call* that *precondition*'s record would discharge; ``None`` for a
+        function the table lists nothing of."""
+        frame = self._fn_frames[-1] if self._fn_frames else None
+        if frame is None or frame.rows is None:
+            return None
+        at = self._evaluated_at
+        saved = self._leaf_rows_branch
+        try:
+            return self._rows_discharged(
+                "call_pre", precondition, call,
+                at.call if at is not None else None,
+                frame.rows, frame.decl, contract=precondition) or []
+        finally:
+            self._leaf_rows_branch = saved
+
+    def _head_rows(
+        self, node: ast.Node, kind: ObligationKind,
+    ) -> list[obligation_table.Row]:
+        """The rows of *kind* the table lists at the value *node*'s head (no
+        component path), in a body evaluation: where a step discharges the
+        value it binds."""
+        frame = self._fn_frames[-1] if self._fn_frames else None
+        if frame is None:
+            rows = self._table.rows_of(node, kind, path=(), evaluation=None)
+        elif frame.rows is None:
+            return []
+        else:
+            key = obligation_table.ObligationTable._key(node)
+            rows = [r for r in frame.rows if r.kind == kind and not r.path
+                    and obligation_table.ObligationTable._key(r.node) == key]
+        return [r for r in rows if r.evaluation not in (
+            obligation_table.RETURN, obligation_table.ENTRY)
+            and not (kind == "nat_bind" and self._walked(r))]
+
+    def _refined_site(
+        self, value: ast.Expr, target: Type | None,
+    ) -> Type | None:
+        """The refinement a discharge of *value* holds it to, where the
+        table lists a ``refine_bind`` row at its head: the position's own
+        refined target, else the row's."""
+        rows = self._head_rows(value, "refine_bind")
+        if not rows:
+            return None
+        if target is not None and self._is_refined_type(target):
+            return target
+        # The requirement reached the value by the table's hand-down alone (a
+        # container's insert, a join below a refined position): the position
+        # holds no refined target of its own.  A position that does (the
+        # return's container descent) discharges it; else the row is left
+        # to its check once the walk is done (`_discharge_unbound_values`).
+        if not self._fn_frames:
+            return rows[0].target
+        return None
+
+    def _binder_rows(
+        self, binder: ast.Node, kind: ObligationKind, *, any_path: bool = False,
+    ) -> list[obligation_table.Row]:
+        """The rows of *kind* the table lists at a binder's head (a
+        pattern, a destructure's component type) in the function under
+        verification: a binder is discharged only where it has one."""
+        frame = self._fn_frames[-1] if self._fn_frames else None
+        if frame is None:
+            return [r for r in self._table.rows_of(
+                binder, kind, path=None, evaluation=None)
+                if any_path or not r.path]
+        if frame.rows is None:
+            return []
+        key = obligation_table.ObligationTable._key(binder)
+        return [r for r in frame.rows if r.kind == kind
+                and (any_path or not r.path)
+                and obligation_table.ObligationTable._key(r.node) == key]
+
+    def _binder_target(
+        self, binder: ast.Node, written: Type | None,
+    ) -> Type | None:
+        """The refinement a binder with a ``refine_bind`` row holds its
+        component to: its written type, else the row's."""
+        rows = self._binder_rows(binder, "refine_bind")
+        if not rows:
+            return None
+        if written is not None and self._is_refined_type(written):
+            return written
+        return rows[0].target
+
+    def _rows_discharged(
+        self, kind: ObligationKind, node: ast.Node, span_node: ast.Node | None,
+        call: ast.FnCall | ast.ModuleCall | None,
+        rows: list[obligation_table.Row], decl: ast.FnDecl,
+        *, contract: ast.Node | None = None,
     ) -> list[obligation_table.Row] | None:
         """The rows *rec* discharges, by the node it was recorded at: the
         rows of its kind at that node (or at the node it is located at), in
@@ -3717,15 +4075,13 @@ class ContractVerifier:
         a call precondition's the row its contract answers; else the rows
         whose binder takes apart that node (a destructure's or a pattern's
         component), or the value leaves of the body it narrows (a return).
-        ``None`` for a record whose anchor no row of *rows* stands at or
+        ``None`` for a record at a node no row of *rows* stands at or
         takes apart: a record at a site that is no obligation."""
-        entry = self._record_anchors.get(id(rec))
-        if entry is None or entry[0]() is not rec:
-            return None
-        _, node, span_node, call = entry
+        self._leaf_rows_branch = False
         keys = {obligation_table.ObligationTable._key(n)
                 for n in (node, span_node) if n is not None}
-        mine = [r for r in rows if r.kind == rec.kind]
+        mine = [r for r in rows if r.kind == kind
+                and not (kind == "nat_bind" and self._walked(r))]
         hit = [r for r in mine
                if obligation_table.ObligationTable._key(r.node) in keys]
         if hit:
@@ -3737,8 +4093,7 @@ class ContractVerifier:
             else:
                 hit = [r for r in hit if not (
                     r.evaluation and r.evaluation[0] == "measure_call")] or hit
-            if rec.kind == "call_pre":
-                contract = self._call_pre_contract_of(rec)
+            if kind == "call_pre":
                 own = [r for r in hit if r.answered_by is not None
                        and r.answered_by >= 0 and contract is not None
                        and obligation_table.ObligationTable._key(
@@ -3769,7 +4124,7 @@ class ContractVerifier:
                  in keys]
         if taken:
             return taken
-        if rec.kind in ("nat_bind", "refine_bind"):
+        if kind in ("nat_bind", "refine_bind"):
             leaves = {obligation_table.ObligationTable._key(n)
                       for n in fold.walk(node)}
             if node is decl.body:
@@ -3800,46 +4155,9 @@ class ContractVerifier:
                         and r.guard.reason == obligation_table.REASON_HANDLE_VALUE
                         and obligation_table.ObligationTable._key(r.node) in inner]
             if ret:
-                if rec.status in ("verified", "violated") and len(
-                        {(r.content_key, r.path) for r in ret}) > 1:
-                    # Discharged once for the whole value, whose rows stand
-                    # at several of its leaves: one record names them all.
-                    # A record left undecided (a closure body's opaque
-                    # return) is each leaf's own status, the one the row's
-                    # fallback gives it.
-                    self._value_spanning.add(id(rec))
+                self._leaf_rows_branch = True
                 return ret
         return None
-
-    def _row_record(
-        self, decl: ast.FnDecl, row: obligation_table.Row,
-    ) -> ProofObligation:
-        """The record of a row no verification record reached: a trivial
-        or a literal-divisor row holds, a refined parameter's entry row is
-        the callee's assumption (each call's argument row discharges it, as
-        a ``requires``), and any other row is left to its runtime check
-        (``tier3``), or, where it has none, disclosed."""
-        node = row.node
-        status: ObligationStatus = "tier3"
-        if row.guard == obligation_table.TRIVIAL:
-            status = "verified"
-        elif (row.kind == "div_zero" and isinstance(node, ast.BinaryExpr)
-                and isinstance(node.right, ast.IntLit) and node.right.value != 0):
-            status = "verified"
-        elif row.evaluation == obligation_table.ENTRY:
-            status = "verified"
-        span = node.span
-        return ProofObligation(
-            fn_name=decl.name, kind=row.kind,
-            expr_text=expr_text_for(self._as_written(node))
-            if isinstance(node, (ast.Expr, ast.Contract)) else row.content_key[2],
-            status=status,
-            line=span.line if span else 0, column=span.column if span else 0,
-            file=self._current_file,
-            owner=self._scope_owner if self._scope_is_helper else "",
-            end_line=span.end_line if span else 0,
-            end_column=span.end_column if span else 0,
-        )
 
     def _guarded_by_row(
         self, record: ProofObligation, rows: list[obligation_table.Row],
@@ -3939,9 +4257,15 @@ class ContractVerifier:
         verification made (:meth:`_settle_rows`)."""
         start = len(self.obligations)
         outer, self._premise_code = self._premise_code, None
+        frame = _FnFrame(decl, self._table.rows_of_function(decl))
         try:
-            self._verify_fn_contracts(decl, parent_where_group, enclosing)
-            self._settle_rows(decl, start, premise=self._premise_code)
+            self._fn_frames.append(frame)
+            try:
+                self._verify_fn_contracts(decl, parent_where_group, enclosing)
+                self._leave_hand_down_rows(frame)
+            finally:
+                self._fn_frames.pop()
+            self._settle_rows(decl, start, frame.made, premise=self._premise_code)
         finally:
             self._premise_code = outer
 
@@ -4082,6 +4406,11 @@ class ContractVerifier:
             slot_env = slot_env.push(type_name, var)
             refined_param_assumptions.extend(
                 self._declared_type_facts(smt, param_ty, var))
+        # 1b. #1836: a refined parameter's entry rows (its own and its
+        # closures'), each discharged here as the callee's assumption: the
+        # predicate holds in the body, and each caller's argument row is the
+        # obligation that establishes it, as for a `requires`.
+        self._discharge_entry_rows(decl)
 
         # 2. Declare result variable
         ret_type = self._written_type(decl.return_type)
@@ -4152,7 +4481,7 @@ class ContractVerifier:
                 pc_depth = len(smt._path_conditions)
                 smt._path_conditions.extend(assumptions)
                 try:
-                    self._walk_for_primitive_op_obligations(
+                    self._discharge_operation_rows(
                         decl, contract.expr, smt, slot_env, assumptions,
                     )
                     # #1480: and the binding-site narrowings the compiled
@@ -4161,7 +4490,7 @@ class ContractVerifier:
                     # check exactly as it would in the body.
                     self._walk_handled_effects = []
                     with self._placeholders_tracked():
-                        self._walk_for_nat_binding_obligations(
+                        self._discharge_binding_rows(
                             decl, contract.expr, smt, slot_env, assumptions,
                         )
                     z3_pre = smt.translate_expr(contract.expr, slot_env)
@@ -4273,7 +4602,7 @@ class ContractVerifier:
             # unknown, so it can be neither proven safe nor a real
             # counterexample (a stale outer's facts must NOT discharge it).
             self._opaque_shadows = []
-            self._walk_for_primitive_op_obligations(
+            self._discharge_operation_rows(
                 decl, decl.body, smt, slot_env, assumptions,
             )
 
@@ -4296,7 +4625,7 @@ class ContractVerifier:
         nat_return_leaves = self._nat_return_leaf_keys(decl, ret_type)
         if decl.body is not None:
             self._walk_handled_effects = []
-            self._walk_for_nat_binding_obligations(
+            self._discharge_binding_rows(
                 decl, decl.body, smt, slot_env, assumptions,
                 return_leaves=nat_return_leaves or frozenset(),
             )
@@ -4343,14 +4672,14 @@ class ContractVerifier:
                 smt.set_result_var(body_expr)
             else:
                 smt.set_result_var(None)
-            self._walk_for_primitive_op_obligations(
+            self._discharge_operation_rows(
                 decl, contract.expr, smt, slot_env, assumptions,
             )
             # #1480: the narrowings the compiled postcondition guards, under
             # the same premises (#801 extended only the primitive-op walk).
             self._walk_handled_effects = []
             with self._placeholders_tracked():
-                self._walk_for_nat_binding_obligations(
+                self._discharge_binding_rows(
                     decl, contract.expr, smt, slot_env, assumptions,
                 )
         smt.set_result_var(None)
@@ -4510,7 +4839,8 @@ class ContractVerifier:
         #     @Nat returns stay on their own (unobligated) path — #758 — so
         #     only true RefinedTypes are discharged here; a refinement *over*
         #     @Nat is a RefinedType and IS checked (`>= 0 && P`).
-        if decl.body is not None and self._is_refined_type(ret_type):
+        if (decl.body is not None and self._is_refined_type(ret_type)
+                and self._rows_taking(decl.body, "refine_bind")):
             ret_node: ast.Expr = decl.body
             goal = (
                 self._translate_refined_predicate(smt, ret_type, body_expr)
@@ -4571,8 +4901,8 @@ class ContractVerifier:
         #     Each leaf the table lists a row at was discharged by the body
         #     walk (5.7) in its own branch's context, one record per leaf
         #     row; the whole body is discharged here where it has one such
-        #     leaf, or the table lists no rows of the function.
-        if nat_return_leaves is None and self._nat_return_narrows(decl, ret_type):
+        #     leaf, and nowhere where the table lists none.
+        if nat_return_leaves is None:
             self._check_nat_binding_obligation(
                 decl, decl.body, smt, slot_env, list(assumptions),
                 site="return type",
@@ -5625,8 +5955,7 @@ class ContractVerifier:
             return
         refined_target = self._refined_binding_target(expr, expected)
         before = len(self.obligations)
-        if (refined_target is not None
-                and self._narrows_into_refined(expr, refined_target)):
+        if (refined_target := self._refined_site(expr, refined_target)) is not None:
             # A construction store tees the value into ONE SCALAR LOCAL and
             # compares it there, so a base with no scalar representation —
             # a `{ @String | … }`, an ADT, an array — takes no guard here
@@ -5640,8 +5969,7 @@ class ContractVerifier:
                 site=site,
 
             )
-        elif (self._nat_binding_target(expr, expected)
-                and self._narrows_into_nat(expr)):
+        elif self._head_rows(expr, "nat_bind"):
             self._check_nat_binding_obligation(
                 decl, expr, smt, slot_env, assumptions, site=site,
 
@@ -6321,11 +6649,11 @@ class ContractVerifier:
         self._evaluated_at = at
         try:
             for expr in exprs:
-                self._walk_for_primitive_op_obligations(
+                self._discharge_operation_rows(
                     decl, expr, smt, env, assumptions)
                 self._walk_handled_effects = []
                 with self._placeholders_tracked():
-                    self._walk_for_nat_binding_obligations(
+                    self._discharge_binding_rows(
                         decl, expr, smt, env, assumptions)
                 smt.translate_expr(expr, env)
             self._record_call_obligations(decl, smt)
@@ -6370,6 +6698,12 @@ class ContractVerifier:
             if self._call_pre_recorded(
                     decl, v.precondition, v.call_node, failures_only=True):
                 continue
+            if self._call_pre_rows(v.precondition, v.call_node) == []:
+                # #1836: a refuted precondition at a call the table lists no
+                # row of this function at is no obligation here either (a
+                # call in an `assume` condition, which is never compiled):
+                # no record, and no E501 with no record beside it.
+                continue
             self._record_obligation(
                 decl.name, "call_pre", v.precondition, "violated",
                 error_code="E501",
@@ -6384,6 +6718,11 @@ class ContractVerifier:
             if self._repeats_predicate_call(ok.call_node):
                 continue
             if self._call_pre_recorded(decl, ok.precondition, ok.call_node):
+                continue
+            if self._call_pre_rows(ok.precondition, ok.call_node) == []:
+                # #1836: a discharged precondition at a call the table lists
+                # no row of this function at is no obligation here (a call
+                # in a callee's contract, translated at this call site).
                 continue
             self._record_obligation(
                 decl.name, "call_pre", ok.precondition, "verified",
@@ -7077,7 +7416,7 @@ class ContractVerifier:
         finally:
             del smt._path_conditions[depth:]
 
-    def _walk_for_primitive_op_obligations(
+    def _discharge_operation_rows(
         self,
         decl: ast.FnDecl,
         expr: ast.Expr,
@@ -7085,7 +7424,17 @@ class ContractVerifier:
         slot_env: SlotEnv,
         assumptions: list[object],
     ) -> None:
-        """Walk *expr* emitting obligations at trapping primitive-op sites.
+        """Discharge the operation rows of *expr*: the first of the two
+        passes of the one traversal that discharges a position's rows
+        (#1836), each by `vera.fold.contexts` with the same context record
+        (`_Path`), each discharging a node only where the table lists a row.
+        The two passes stay two because they bind a block's `let` slot
+        differently: this one an untranslated value as a tracked opaque
+        shadow (`BlockBindingPolicy.OPAQUE_SHADOW`, so an operand over it is
+        never refuted on an unconstrained value), the binding pass a fresh
+        value of the declared type (`FRESH_VAR`, which keeps the `>= 0` a
+        `@Nat` binding's narrowing reads).  One pass would choose one policy
+        for both, and move a verdict either way.
 
         The verifier-side half of spec §6.4.3 "Primitive Operation
         Safety": an operation that traps for some operand values carries
@@ -7098,11 +7447,11 @@ class ContractVerifier:
 
         (Binding-site `@Int`→`@Nat` narrowing is the *other* primitive
         obligation, walked separately by
-        :py:meth:`_walk_for_nat_binding_obligations`.)
+        :py:meth:`_discharge_binding_rows`.)
 
         `vera.fold.contexts` reaches every position.  The classes whose arm
         does more than read its children on its own path are steps in
-        `_primitive_step`, each running its obligations where the
+        `_operation_step`, each running its obligations where the
         recursive walk ran them, between the children it walks.  Path
         conditions are tracked via ``smt._path_conditions`` (pushed/popped
         on if/match branches), so :py:meth:`SmtContext.check_valid` picks
@@ -7111,10 +7460,10 @@ class ContractVerifier:
         """
         start = _Path(assumptions, slot_env)
         for _node, _path in fold.contexts(
-                expr, self._primitive_step(decl, smt), start):
+                expr, self._operation_step(decl, smt), start):
             pass
 
-    def _primitive_step(
+    def _operation_step(
         self, decl: ast.FnDecl, smt: SmtContext,
     ) -> fold.Step[_Path]:
         """The §6.4.3 walk's arms, by class.
@@ -7154,15 +7503,15 @@ class ContractVerifier:
         arms: dict[type[ast.Node], Callable[
             [ast.FnDecl, Any, _Path, SmtContext],
             Iterator[tuple[ast.Node, _Path]]]] = {
-            ast.FnCall: self._primitive_fn_call,
-            ast.IfExpr: self._primitive_if,
-            ast.Block: self._primitive_block,
-            ast.BinaryExpr: self._primitive_binary,
-            ast.MatchExpr: self._primitive_match,
-            ast.IndexExpr: self._primitive_index,
-            ast.AssertExpr: self._primitive_assert,
-            ast.AssumeExpr: self._primitive_assume,
-            ast.InterpolatedString: self._primitive_interpolation,
+            ast.FnCall: self._operation_fn_call,
+            ast.IfExpr: self._operation_if,
+            ast.Block: self._operation_block,
+            ast.BinaryExpr: self._operation_binary,
+            ast.MatchExpr: self._operation_match,
+            ast.IndexExpr: self._operation_index,
+            ast.AssertExpr: self._operation_assert,
+            ast.AssumeExpr: self._operation_assume,
+            ast.InterpolatedString: self._operation_interpolation,
             ast.HandleExpr: lambda decl, e, path, smt: _path_handle(e, path, smt),
             ast.AnonFn: lambda decl, e, path, smt: _path_closure(e, path, smt),
         }
@@ -7173,7 +7522,7 @@ class ContractVerifier:
 
         return step
 
-    def _primitive_fn_call(
+    def _operation_fn_call(
         self, decl: ast.FnDecl, expr: ast.FnCall, path: _Path, smt: SmtContext,
     ) -> Iterator[tuple[ast.Node, _Path]]:
         for arg in expr.args:
@@ -7190,15 +7539,18 @@ class ContractVerifier:
         # rounding step, and `float_to_string` truncates the integer
         # part it prints with an `i64.trunc_f64_s` that traps the same
         # way (#1482); none of them carried anything.
+        # #1836: each discharged where the table lists its row.
         if len(expr.args) == 1 and self._is_builtin_call(expr.name):
             if expr.name in _FLOAT_CONVERSIONS:
-                self._check_float_to_int_domain_obligation(
-                    decl, expr, expr.args[0], expr.name, smt, path.env,
-                )
+                if self._rows_taking(expr, "float_to_int_domain"):
+                    self._check_float_to_int_domain_obligation(
+                        decl, expr, expr.args[0], expr.name, smt, path.env,
+                    )
             elif expr.name == "show":
-                self._check_float_rendering(
-                    decl, expr, expr.args[0], smt, path.env)
-            elif expr.name == "abs":
+                if self._rows_taking(expr, "float_to_int_domain"):
+                    self._check_float_rendering(
+                        decl, expr, expr.args[0], smt, path.env)
+            elif expr.name == "abs" and self._rows_taking(expr, "int_overflow"):
                 # `abs(-2^63)` is 2^63, which no `@Nat` holds (spec
                 # §2.2): the result's range is the overflow obligation
                 # every `+`/`-`/`*` carries, and codegen's `abs` traps
@@ -7207,7 +7559,7 @@ class ContractVerifier:
                     decl, expr, smt, path.env, path.facts,
                 )
 
-    def _primitive_if(
+    def _operation_if(
         self, decl: ast.FnDecl, expr: ast.IfExpr, path: _Path, smt: SmtContext,
     ) -> Iterator[tuple[ast.Node, _Path]]:
         # Walk the condition first (before pushing path-cond) — any
@@ -7233,7 +7585,7 @@ class ContractVerifier:
             if expr.else_branch is not None:
                 yield expr.else_branch, path
 
-    def _primitive_block(
+    def _operation_block(
         self, decl: ast.FnDecl, expr: ast.Block, path: _Path, smt: SmtContext,
     ) -> Iterator[tuple[ast.Node, _Path]]:
         cur_env = path.env
@@ -7338,7 +7690,7 @@ class ContractVerifier:
         # reset _path_conditions, so no try/finally is needed.
         del smt._path_conditions[pc_depth:]
 
-    def _primitive_binary(
+    def _operation_binary(
         self, decl: ast.FnDecl, expr: ast.BinaryExpr, path: _Path, smt: SmtContext,
     ) -> Iterator[tuple[ast.Node, _Path]]:
         # Recurse first so nested subtractions are checked even
@@ -7348,7 +7700,7 @@ class ContractVerifier:
         yield expr.left, path
         with smt.premise(smt.short_circuit_premise(expr, path.env)):
             yield expr.right, path
-        if self._is_guarded_nat_subtraction(expr):
+        if self._rows_taking(expr, "nat_sub"):
             # Both operands are @Nat-typed (#520).  A literal operand
             # is an `Int`, so `@Nat.0 - 1` and `0 - 1` are `@Int`
             # subtractions, with the overflow obligation below, and
@@ -7365,13 +7717,12 @@ class ContractVerifier:
             # pure-literal subtractions).  `_check_div_zero_obligation`
             # itself skips a Real-sorted (float) divisor, since
             # `f64.div` by zero yields inf/NaN rather than trapping.
-            if not (isinstance(expr.right, ast.IntLit)
-                    and expr.right.value != 0):
+            if self._rows_taking(expr, "div_zero"):
                 self._check_div_zero_obligation(
                     decl, expr, smt, path.env, path.facts,
                 )
             if (expr.op == ast.BinOp.DIV
-                    and self._table.rows_of(expr, "int_overflow")):
+                    and self._rows_taking(expr, "int_overflow")):
                 # #1598: a signed quotient whose divisor can be -1 leaves
                 # the range at INT_MIN / -1; the table lists that row.
                 self._check_quotient_obligation(
@@ -7391,15 +7742,12 @@ class ContractVerifier:
             # desync one component over.  An unknown width reads as
             # `Int`, which is the wider signed interpretation and the
             # safe reading of the pair (R-1412 F5).
-            ovf_type = self._overflow_arith_fail_closed(expr)
-            if ovf_type is not None and not (
-                expr.op == ast.BinOp.SUB and ovf_type == "Nat"
-            ):
+            if self._rows_taking(expr, "int_overflow"):
                 self._check_overflow_obligation(
                     decl, expr, smt, path.env, path.facts,
                 )
 
-    def _primitive_match(
+    def _operation_match(
         self, decl: ast.FnDecl, expr: ast.MatchExpr, path: _Path, smt: SmtContext,
     ) -> Iterator[tuple[ast.Node, _Path]]:
         yield expr.scrutinee, path
@@ -7434,7 +7782,7 @@ class ContractVerifier:
             with self._under_arm(smt, arm):
                 yield match_arm, _Path(arm.assuming(path.facts), arm.env)
 
-    def _primitive_index(
+    def _operation_index(
         self, decl: ast.FnDecl, expr: ast.IndexExpr, path: _Path, smt: SmtContext,
     ) -> Iterator[tuple[ast.Node, _Path]]:
         # #680: `arr[i]` carries a `0 <= i < array_length(arr)` bounds
@@ -7447,22 +7795,24 @@ class ContractVerifier:
         # backs them) while literal-only shapes classify exactly.
         yield expr.collection, path
         yield expr.index, path
-        self._check_index_bounds_obligation(
-            decl, expr, smt, path.env, path.facts,
-        )
+        if self._rows_taking(expr, "index_bounds"):
+            self._check_index_bounds_obligation(
+                decl, expr, smt, path.env, path.facts,
+            )
 
-    def _primitive_assert(
+    def _operation_assert(
         self, decl: ast.FnDecl, expr: ast.AssertExpr, path: _Path, smt: SmtContext,
     ) -> Iterator[tuple[ast.Node, _Path]]:
         # #800: the asserted predicate is itself a Tier-1 proof obligation
         # (spec §6.2.5) — prove it here.  Also recurse into it for any
         # trapping op it hosts (`assert(@Int.0 / @Int.1 > 0)`).
-        self._check_assert_obligation(
-            decl, expr, smt, path.env, path.facts,
-        )
+        if self._rows_taking(expr, "assert"):
+            self._check_assert_obligation(
+                decl, expr, smt, path.env, path.facts,
+            )
         yield expr.expr, path
 
-    def _primitive_assume(
+    def _operation_assume(
         self, decl: ast.FnDecl, expr: ast.AssumeExpr, path: _Path, smt: SmtContext,
     ) -> Iterator[tuple[ast.Node, _Path]]:
         # An assumed condition is taken on trust (no proof obligation);
@@ -7489,7 +7839,7 @@ class ContractVerifier:
         )
         yield expr.expr, path
 
-    def _primitive_interpolation(
+    def _operation_interpolation(
         self, decl: ast.FnDecl, expr: ast.InterpolatedString, path: _Path, smt: SmtContext,
     ) -> Iterator[tuple[ast.Node, _Path]]:
         # An interpolated expression can host a trapping op
@@ -7500,8 +7850,9 @@ class ContractVerifier:
                 yield part, path
                 # #1480: a `@Float64` part is rendered by
                 # `float_to_string`'s lowering, truncation included.
-                self._check_float_rendering(
-                    decl, part, part, smt, path.env)
+                if self._rows_taking(part, "float_to_int_domain"):
+                    self._check_float_rendering(
+                        decl, part, part, smt, path.env)
 
     def _lookup_constructor_info(self, name: str) -> ConstructorInfo | None:
         """Find a constructor's info from either registry.
@@ -7545,14 +7896,12 @@ class ContractVerifier:
         payload's row, #1268, has one).
         """
         refined = self._refined_binding_target(value, formal)
-        if (refined is not None
-                and self._narrows_into_refined(value, refined)):
+        if (refined := self._refined_site(value, refined)) is not None:
             self._check_refined_binding_obligation(
                 decl, value, refined, smt, slot_env, assumptions,
                 site=site,
             )
-        elif (self._nat_binding_target(value, formal)
-                and self._narrows_into_nat(value)):
+        elif self._head_rows(value, "nat_bind"):
             self._check_nat_binding_obligation(
                 decl, value, smt, slot_env, assumptions,
                 site=site,
@@ -7773,10 +8122,9 @@ class ContractVerifier:
             # itself is the shared one either way; this selects which of the
             # two records answers it, exactly as the emitter's sign leg and
             # predicate leg are separate.
-            if (self._is_refined_type(binder)
-                    and narrowing.narrows_into_refinement(
-                        self._refinement_chain_of(payload),
-                        self._refinement_chain_of(binder))):
+            refined_rows = self._binder_rows(
+                clause.params[0], "refine_bind", any_path=True)
+            if refined_rows and self._is_refined_type(binder):
                 # #1430: a binder can narrow BOTH ways at once —
                 # `{ @Array<Pos> | array_length(…) > 0 }` adds a predicate of
                 # its own AND element refinements one level in — and the
@@ -7814,8 +8162,7 @@ class ContractVerifier:
                             "there is no term to test it against"
                         ),
                     )
-            elif (self._is_nat_type(binder)
-                    and not self._is_nat_type(payload)):
+            elif self._binder_rows(clause.params[0], "nat_bind", any_path=True):
                 self._record_nat_bind_tier3(
                     decl, clause.body, site, "tier3",
 
@@ -7825,7 +8172,7 @@ class ContractVerifier:
                         "there is no term to test it against"
                     ),
                 )
-            elif self._element_narrows(payload, binder):
+            elif refined_rows:
                 # #1430: the refinement may be written one level IN — on an
                 # array element, a map value — and then the binder's own
                 # chain is EMPTY, so neither arm above sees anything to
@@ -7850,7 +8197,7 @@ class ContractVerifier:
     #: descent.
     _tail_resume_value = staticmethod(tail_resume_arg)
 
-    def _walk_for_nat_binding_obligations(
+    def _discharge_binding_rows(
         self,
         decl: ast.FnDecl,
         expr: ast.Expr,
@@ -7860,10 +8207,14 @@ class ContractVerifier:
         *,
         return_leaves: frozenset[object] = frozenset(),
     ) -> None:
-        """Walk *expr* emitting ``value >= 0`` at @Int→@Nat narrowing sites.
+        """Discharge the binding rows of *expr*: the second pass of the one
+        traversal (:meth:`_discharge_operation_rows` states the two passes and
+        why they bind a `let` differently), ``value >= 0`` at @Int→@Nat
+        narrowing sites and a refinement's predicate at a refined one, each
+        where the table lists a row.
 
         The binding-site generalisation of #520
-        (:py:meth:`_walk_for_primitive_op_obligations`).  Fires wherever
+        (:py:meth:`_discharge_operation_rows`).  Fires wherever
         an @Int-typed value flows into a freshly-declared @Nat slot:
 
         * ``let @Nat = <Int>``                  — let bindings;
@@ -7916,12 +8267,25 @@ class ContractVerifier:
 
         `vera.fold.contexts` reaches every position.  The classes whose arm
         does more than read its children on its own path are steps in
-        `_nat_step`, each obligating its sites where the recursive walk
+        `_binding_step`, each obligating its sites where the recursive walk
         obligated them, between the children it walks.
         """
         start = _Path(assumptions, slot_env)
+        frame = self._fn_frames[-1] if self._fn_frames else None
+        # The value rows each node holds: a row no step discharges where its
+        # value is bound (a value the requirement reaches only by the
+        # hand-down, through a join or a container's insert) is left to its
+        # check once the function is done (#1836).
+        reached: list[tuple[ast.Expr, list[obligation_table.Row]]] = []
         for node, path in fold.contexts(
-                expr, self._nat_step(decl, smt), start):
+                expr, self._binding_step(decl, smt), start):
+            if self._evaluated_at is None:
+                self._discharge_walked_rows(decl, node)
+                if (frame is not None and frame.rows is not None
+                        and isinstance(node, ast.Expr)):
+                    held = self._value_rows(node, frame.rows)
+                    if held:
+                        reached.append((node, held))
             if (return_leaves and isinstance(node, ast.Expr)
                     and obligation_table.ObligationTable._key(node)
                     in return_leaves):
@@ -7932,11 +8296,57 @@ class ContractVerifier:
                     decl, node, smt, path.env, list(path.facts),
                     site="return type",
                 )
+        if reached and frame is not None:
+            self._discharge_unbound_values(frame, reached)
 
-    def _nat_step(
+    def _value_rows(
+        self, node: ast.Expr, rows: list[obligation_table.Row],
+    ) -> list[obligation_table.Row]:
+        """The head narrowing rows standing at the value *node* in the
+        body's evaluation, bar a composite walk's and a return's."""
+        key = obligation_table.ObligationTable._key(node)
+        return [r for r in rows if r.kind in ("refine_bind", "nat_bind")
+                and not r.path and r.evaluation == obligation_table.BODY
+                and r.source is None and not self._walked(r)
+                and obligation_table.ObligationTable._key(r.node) == key]
+
+    def _discharge_unbound_values(
+        self, frame: _FnFrame,
+        reached: list[tuple[ast.Expr, list[obligation_table.Row]]],
+    ) -> None:
+        """Hand each value row no step of the walk discharged to
+        `_leave_hand_down_rows`: no position the walk reached holds the
+        value to the row's target, so the requirement is the table's
+        hand-down alone (#1836)."""
+        done = {i for rec in frame.made for i in rec.rows}
+        for node, rows in reached:
+            left = [r for r in rows if r.id not in done]
+            if left:
+                frame.hand_down.append((node, left))
+                done |= {r.id for r in left}
+
+    def _leave_hand_down_rows(self, frame: _FnFrame) -> None:
+        """Record ``tier3`` each value row (refined or `@Nat`) the binding
+        walk reached that no position discharged once the function is done:
+        no position
+        holds the value to a refinement of its own (the return's container
+        descent does, for a value it reaches), so the requirement is the
+        table's hand-down alone (a container's insert, a join), and the row
+        is left to the check that reads it (#1836)."""
+        done = {i for rec in frame.made for i in rec.rows}
+        for node, rows in frame.hand_down:
+            for kind in ("refine_bind", "nat_bind"):
+                left = [r for r in rows if r.kind == kind and r.id not in done]
+                if left:
+                    self._record_obligation(
+                        frame.decl.name, kind, node, "tier3",
+                        rows=tuple(r.id for r in left))
+                    done |= {r.id for r in left}
+
+    def _binding_step(
         self, decl: ast.FnDecl, smt: SmtContext,
     ) -> fold.Step[_Path]:
-        """The `@Nat`-binding walk's arms, by class.
+        """The binding pass's arms, by class.
 
         Every other class reads its children on its own path: a unary
         operand, an index expression's collection and index, an
@@ -7973,29 +8383,29 @@ class ContractVerifier:
         arms: dict[type[ast.Node], Callable[
             [ast.FnDecl, Any, _Path, SmtContext],
             Iterator[tuple[ast.Node, _Path]]]] = {
-            ast.FnCall: self._nat_fn_call,
-            ast.ConstructorCall: self._nat_constructor_call,
-            ast.QualifiedCall: self._nat_qualified_call,
-            ast.AnonFn: self._nat_closure,
-            ast.IfExpr: self._nat_if,
-            ast.Block: self._nat_block,
-            ast.BinaryExpr: self._nat_binary,
-            ast.MatchExpr: self._nat_match,
-            ast.ArrayLit: self._nat_array,
+            ast.FnCall: self._binding_fn_call,
+            ast.ConstructorCall: self._binding_constructor_call,
+            ast.QualifiedCall: self._binding_qualified_call,
+            ast.AnonFn: self._binding_closure,
+            ast.IfExpr: self._binding_if,
+            ast.Block: self._binding_block,
+            ast.BinaryExpr: self._binding_binary,
+            ast.MatchExpr: self._binding_match,
+            ast.ArrayLit: self._binding_array,
             ast.HandleExpr: (
                 lambda decl, e, path, smt:
-                self._nat_handle(decl, e, path, smt, cells)),
+                self._binding_handle(decl, e, path, smt, cells)),
         }
 
         def step(node: ast.Node, path: _Path) -> Iterator[tuple[ast.Node, _Path]] | None:
             if type(node) is ast.HandlerClause:
-                return self._nat_clause(decl, node, path, smt, cells[-1])
+                return self._binding_clause(decl, node, path, smt, cells[-1])
             arm = arms.get(type(node))
             return None if arm is None else arm(decl, node, path, smt)
 
         return step
 
-    def _nat_fn_call(
+    def _binding_fn_call(
         self, decl: ast.FnDecl, expr: ast.FnCall, path: _Path, smt: SmtContext,
     ) -> Iterator[tuple[ast.Node, _Path]]:
         if expr.name == "apply_fn" and expr.args:
@@ -8022,8 +8432,7 @@ class ContractVerifier:
                     # (`_compile_lifted_closure`, fix site 2), so `guarded=True`.
                     refined_target = self._refined_binding_target(
                         arg, resolved_formal)
-                    if (refined_target is not None
-                            and self._narrows_into_refined(arg, refined_target)):
+                    if (refined_target := self._refined_site(arg, refined_target)) is not None:
                         self._check_refined_binding_obligation(
                             decl, arg, refined_target, smt, path.env,
                             path.facts, site="closure argument",
@@ -8036,8 +8445,8 @@ class ContractVerifier:
                     # narrowing (Site 2 below): obligate the argument against its
                     # recovered @Nat formal.  Codegen guards the call_indirect
                     # argument (`_translate_apply_fn`), so `guarded=True`.
-                    elif (self._nat_binding_target(arg, resolved_formal)
-                            and self._narrows_into_nat(arg)):
+                    elif self._nat_value_site(
+                            decl, arg, self._nat_binding_target(arg, resolved_formal)):
                         self._check_nat_binding_obligation(
                             decl, arg, smt, path.env, path.facts,
                             site="closure argument",
@@ -8062,9 +8471,9 @@ class ContractVerifier:
             for arg in expr.args:
                 yield arg, path
         else:
-            yield from self._nat_call(decl, expr, path, smt, bare=True)
+            yield from self._binding_call(decl, expr, path, smt, bare=True)
 
-    def _nat_call(
+    def _binding_call(
         self, decl: ast.FnDecl, expr: ast.FnCall | ast.ModuleCall, path: _Path, smt: SmtContext,
         bare: bool = False,
     ) -> Iterator[tuple[ast.Node, _Path]]:
@@ -8161,14 +8570,13 @@ class ContractVerifier:
                 # Refined-first so a refinement-over-@Nat formal discharges
                 # its full predicate rather than only `>= 0` (R9).
                 refined_target = owed.refined
-                if (refined_target is not None
-                        and self._narrows_into_refined(arg, refined_target)):
+                if (refined_target := self._refined_site(arg, refined_target)) is not None:
                     self._check_refined_binding_obligation(
                         decl, arg, refined_target, smt, path.env,
                         path.facts, site="call argument",
 
                     )
-                elif owed.nat and self._narrows_into_nat(arg):
+                elif self._nat_value_site(decl, arg, owed.nat):
                     self._check_nat_binding_obligation(
                         decl, arg, smt, path.env, path.facts,
                         site="call argument",
@@ -8201,7 +8609,7 @@ class ContractVerifier:
         for arg in expr.args:
             yield arg, path
 
-    def _nat_closure(
+    def _binding_closure(
         self, decl: ast.FnDecl, expr: ast.AnonFn, path: _Path, smt: SmtContext,
     ) -> Iterator[tuple[ast.Node, _Path]]:
         # The closure body is opaque to the SMT layer (its params/captures
@@ -8210,8 +8618,7 @@ class ContractVerifier:
         # could prove a FALSE Tier-1), so its RETURN obligations are
         # SHALLOW-syntactic (opacity-forced, never Tier-1), while the body
         # ITSELF is walked separately below under the #779 fresh-scope
-        # empty env.
-        resolved_ret = self._written_type(expr.return_type)
+        # empty env.  The closure's return rows decide (#1836).
         # #1032: a REFINED closure return — the return-side dual of the
         # #1024 formal narrowing at the apply_fn branch above.  Pre-fix
         # `fn(@Int -> @Pos) { @Int.0 }` returned -5 (or 0, which clears the
@@ -8235,7 +8642,11 @@ class ContractVerifier:
         # obligation stream exactly matched to codegen's unconditional
         # guard (the lockstep invariant), at worst one redundant tier3 on
         # an identity-shaped closure.
-        if self._is_refined_type(resolved_ret):
+        # The arm is the return type's own refinement: a refined COMPONENT
+        # of the return is the boundary's check, left to it below with the
+        # `Nat` ones, each in its own record.
+        if (self._is_refined_type(self._written_type(expr.return_type))
+                and self._rows_taking(expr.body, "refine_bind")):
             self._record_refined_bind_tier3(
                 decl, expr.body, "closure return",
 
@@ -8257,10 +8668,10 @@ class ContractVerifier:
         # predicate, claimed by the refined-first #1032 arm above — so this
         # arm sees only the bare @Nat primitive and the two never co-fire
         # on one site.
-        elif (self._is_nat_type(resolved_ret)
-                and self._return_narrows_into_nat(expr.body)):
+        elif (self._is_nat_type(self._written_type(expr.return_type))
+                and self._rows_taking(expr.body, "nat_bind")):
             self._record_nat_bind_tier3(
-                decl, expr.body, "closure return", "tier3")
+                decl, expr.body, _CLOSURE_RETURN_SITE, "tier3")  # pragma: no mutate — equivalent: `_record_nat_bind_tier3` reads no `site`
         # #779/#985: descend into the closure BODY under an EMPTY slot
         # environment — the fresh-scope walk.  Interior slot-dependent
         # binding sites are obligated Tier-3, while literal-only shapes
@@ -8271,9 +8682,11 @@ class ContractVerifier:
         # codegen guards back them), and a NESTED AnonFn re-enters this
         # arm so its own return narrowing obligations record —
         # the #985 residual of the shallow single-level treatment above.
-        yield from _path_closure(expr, path, smt)
+        self._discharge_boundary_components(
+            decl, expr.body, expr.return_type, refinements=True)
+        yield from _path_closure(expr, path, smt)  # pragma: no mutate — equivalent: `_path_closure` reads neither the path nor the context: a closure body is walked with a fresh path
 
-    def _nat_constructor_call(
+    def _binding_constructor_call(
         self, decl: ast.FnDecl, expr: ast.ConstructorCall, path: _Path, smt: SmtContext,
     ) -> Iterator[tuple[ast.Node, _Path]]:
         # @Nat constructor fields narrowing an @Int argument.  A
@@ -8288,15 +8701,14 @@ class ContractVerifier:
                 # predicate (refined-first); `_refined_binding_target` also
                 # recovers a generic field instantiated to a RefinedType.
                 refined_target = self._refined_binding_target(arg, field_ty)
-                if (refined_target is not None
-                        and self._narrows_into_refined(arg, refined_target)):
+                if (refined_target := self._refined_site(arg, refined_target)) is not None:
                     self._check_refined_binding_obligation(
                         decl, arg, refined_target, smt, path.env,
                         path.facts, site="constructor field",
 
                     )
-                elif (self._nat_binding_target(arg, field_ty)
-                        and self._narrows_into_nat(arg)):
+                elif self._nat_value_site(
+                        decl, arg, self._nat_binding_target(arg, field_ty)):
                     self._check_nat_binding_obligation(
                         decl, arg, smt, path.env, path.facts,
                         site="constructor field",
@@ -8389,7 +8801,7 @@ class ContractVerifier:
         for arg in expr.args:
             yield arg, path
 
-    def _nat_qualified_call(
+    def _binding_qualified_call(
         self, decl: ast.FnDecl, expr: ast.QualifiedCall, path: _Path, smt: SmtContext,
     ) -> Iterator[tuple[ast.Node, _Path]]:
         # Effect operations (e.g. `IO.sleep : Nat -> Unit`) narrow an
@@ -8456,7 +8868,7 @@ class ContractVerifier:
         for arg in expr.args:
             yield arg, path
 
-    def _nat_if(
+    def _binding_if(
         self, decl: ast.FnDecl, expr: ast.IfExpr, path: _Path, smt: SmtContext,
     ) -> Iterator[tuple[ast.Node, _Path]]:
         # Each arm is walked under its own path condition, so an
@@ -8482,7 +8894,7 @@ class ContractVerifier:
             if expr.else_branch is not None:
                 yield expr.else_branch, path
 
-    def _nat_block(
+    def _binding_block(
         self, decl: ast.FnDecl, expr: ast.Block, path: _Path, smt: SmtContext,
     ) -> Iterator[tuple[ast.Node, _Path]]:
         cur_env = path.env
@@ -8509,15 +8921,14 @@ class ContractVerifier:
                 # Refined-first: a refinement-over-@Nat let discharges its
                 # full predicate (`>= 0 && P`) rather than only `>= 0` via
                 # the nat path; a bare @Nat let stays on the nat path (R9).
-                if (self._is_refined_type(let_ty)
-                        and self._narrows_into_refined(stmt.value, let_ty)):
+                if (let_target := self._refined_site(
+                        stmt.value, let_ty)) is not None:
                     self._check_refined_binding_obligation(
-                        decl, stmt.value, let_ty, smt, cur_env,
+                        decl, stmt.value, let_target, smt, cur_env,
                         block_assumptions,
                         site="let binding",
                     )
-                elif (self._is_nat_type(let_ty)
-                        and self._narrows_into_nat(stmt.value)):
+                elif self._head_rows(stmt.value, "nat_bind"):
                     self._check_nat_binding_obligation(
                         decl, stmt.value, smt, cur_env, block_assumptions,
                         site="let binding",
@@ -8579,6 +8990,8 @@ class ContractVerifier:
                 if bound is not None:  # FRESH_VAR never halts
                     cur_env = bound
             elif isinstance(stmt, ast.LetDestruct):
+                for te in stmt.type_bindings:
+                    self._discharge_walked_rows(decl, te)
                 # `let Tuple<@Nat, ...> = <source>`.  A literal-constructor
                 # source (`Tuple(<Int>, ...)`) pairs each binding with a
                 # translatable sub-expression, obligated directly; a
@@ -8594,15 +9007,23 @@ class ContractVerifier:
                         # #746: a refined tuple component obligates its
                         # sub-expression against the predicate (refined-
                         # first, mirroring the let site).
-                        if (self._is_refined_type(comp_ty)
-                                and self._narrows_into_refined(sub, comp_ty)):
-                            self._check_refined_binding_obligation(
-                                decl, sub, comp_ty, smt, cur_env,
-                                block_assumptions,
-                                site="tuple destructure",
-                            )
-                        elif (self._is_nat_type(comp_ty)
-                                and self._narrows_into_nat(sub)):
+                        comp_target = (self._binder_target(te, comp_ty)
+                                       or self._refined_site(sub, comp_ty))
+                        if comp_target is not None:
+                            if self._narrowing_binder(
+                                    decl, te, "refine_bind",
+                                    self._narrows_into_refined(sub, comp_target)):
+                                self._check_refined_binding_obligation(
+                                    decl, sub, comp_target, smt, cur_env,
+                                    block_assumptions,
+                                    site="tuple destructure",
+                                )
+                                self._leave_binder_rows(decl, te, "refine_bind")
+                        elif ((self._binder_rows(te, "nat_bind")
+                               or self._head_rows(sub, "nat_bind"))
+                              and self._narrowing_binder(
+                                  decl, te, "nat_bind",
+                                  self._narrows_into_nat(sub))):
                             self._check_nat_binding_obligation(
                                 decl, sub, smt, cur_env, block_assumptions,
                                 site="tuple destructure",
@@ -8743,7 +9164,7 @@ class ContractVerifier:
                 block_assumptions.append(fact)
         yield expr.expr, _Path(block_assumptions, cur_env)
 
-    def _nat_binary(
+    def _binding_binary(
         self, decl: ast.FnDecl, expr: ast.BinaryExpr, path: _Path, smt: SmtContext,
     ) -> Iterator[tuple[ast.Node, _Path]]:
         # #1501: the right operand of `&&`, `||` and `==>` is walked
@@ -8752,7 +9173,7 @@ class ContractVerifier:
         with smt.premise(smt.short_circuit_premise(expr, path.env)):
             yield expr.right, path
 
-    def _nat_match(
+    def _binding_match(
         self, decl: ast.FnDecl, expr: ast.MatchExpr, path: _Path, smt: SmtContext,
     ) -> Iterator[tuple[ast.Node, _Path]]:
         yield expr.scrutinee, path
@@ -8787,15 +9208,22 @@ class ContractVerifier:
                     pat_ty = self._written_type(match_arm.pattern.type_expr)
                     # Refined-first (R9): a refinement-over-@Nat bind
                     # discharges its full predicate, not only `>= 0`.
-                    if (self._is_refined_type(pat_ty)
-                            and self._narrows_into_refined(
-                                expr.scrutinee, pat_ty)):
+                    narrows = False
+                    if (pat_target := self._binder_target(
+                            match_arm.pattern, pat_ty)) is not None:
+                        narrows = self._narrows_into_refined(
+                            expr.scrutinee, pat_target)
+                    if pat_target is not None and self._narrowing_binder(
+                            decl, match_arm.pattern, "refine_bind", narrows):
                         self._check_refined_binding_obligation(
-                            decl, expr.scrutinee, pat_ty, smt, path.env,
+                            decl, expr.scrutinee, pat_target, smt, path.env,
                             path.facts, site="match binding",
                         )
-                    elif (self._is_nat_type(pat_ty)
-                            and self._narrows_into_nat(expr.scrutinee)):
+                    elif (pat_target is None
+                            and self._binder_rows(match_arm.pattern, "nat_bind")
+                            and self._narrowing_binder(
+                                decl, match_arm.pattern, "nat_bind",
+                                self._narrows_into_nat(expr.scrutinee))):
                         self._check_nat_binding_obligation(
                             decl, expr.scrutinee, smt, path.env,
                             path.facts, site="match binding",
@@ -8819,10 +9247,11 @@ class ContractVerifier:
                 # A downstream narrowing that depends on a binding's own
                 # invariant discharges from the arm's facts instead of
                 # reporting a false E503 (CR).
+                self._discharge_effect_rows(decl, match_arm.pattern)
                 arm_assumptions = arm.assuming(arm_assumptions)
                 yield match_arm, _Path(arm_assumptions, arm_env)
 
-    def _nat_array(
+    def _binding_array(
         self, decl: ast.FnDecl, expr: ast.ArrayLit, path: _Path, smt: SmtContext,
     ) -> Iterator[tuple[ast.Node, _Path]]:
         # Every element obligation at this construction position —
@@ -8850,7 +9279,7 @@ class ContractVerifier:
         for elem in expr.elements:
             yield elem, path
 
-    def _nat_handle(
+    def _binding_handle(
         self, decl: ast.FnDecl, expr: ast.HandleExpr, path: _Path, smt: SmtContext,
         cells: list[Type | None],
     ) -> Iterator[tuple[ast.Node, _Path]]:
@@ -8858,6 +9287,9 @@ class ContractVerifier:
         # this arm — they are obligated whether or not the handler
         # declares state, and an `Exn` handler declares none.
         self._obligate_clause_binder(decl, expr, smt)
+        for clause in expr.clauses:
+            if clause.params:
+                self._discharge_walked_rows(decl, clause.params[0])
         # #779: state-init and BODY are enclosing-scope code; clause
         # bodies and state updates bind the operation's fresh
         # parameters (and the handler state slot), so they walk under
@@ -8935,7 +9367,7 @@ class ContractVerifier:
             finally:
                 cells.pop()
 
-    def _nat_clause(
+    def _binding_clause(
         self, decl: ast.FnDecl, clause: ast.HandlerClause, path: _Path,
         smt: SmtContext, cell_ty: Type | None,
     ) -> Iterator[tuple[ast.Node, _Path]]:
@@ -10728,6 +11160,29 @@ class ContractVerifier:
         site: str,
         callee: str | None = None,
     ) -> None:
+        """The nested refinements of a value at its target
+        (:meth:`_nested_refinement_discharge`), then the ``Nat`` components
+        no refinement states (:meth:`_discharge_boundary_components`)."""
+        self._nested_refinement_discharge(
+            decl, value_node, formal_ty, smt, slot_env, assumptions,
+            site=site, callee=callee)
+        self._discharge_boundary_components(
+            decl, value_node,
+            decl.return_type if (site == "return type"
+                                 and value_node is decl.body) else None)
+
+    def _nested_refinement_discharge(
+        self,
+        decl: ast.FnDecl,
+        value_node: ast.Expr,
+        formal_ty: Type | None,
+        smt: SmtContext,
+        slot_env: SlotEnv,
+        assumptions: list[object],
+        *,
+        site: str,
+        callee: str | None = None,
+    ) -> None:
         """Obligate a value against the refinements written INSIDE its target
         type — the argument-position twin of the construction-site rule (#1410).
 
@@ -10773,7 +11228,8 @@ class ContractVerifier:
         F3/F4 findings were missing, and it is why the premise is a fact
         rather than the claim it certifies.
         """
-        if not self._has_nested_refinement(formal_ty):
+        if (not self._has_nested_refinement(formal_ty)
+                or not self._rows_taking(value_node, "refine_bind")):
             return
         if self._all_leaves_construct(value_node, smt, slot_env):
             if site == "return type" and value_node is decl.body:
@@ -10804,8 +11260,8 @@ class ContractVerifier:
         # `_element_guard_emitted`, which mirrors the emitter's base and
         # projection tables, and the SITE half is
         # `carriers.ELEMENT_GUARD_SITES`, the roster of positions the element
-        # emitter is WIRED at.  That roster is deliberately not
-        # `narrowing.REFINED_BIND_GUARDED_SITES`: the scalar predicate and the
+        # emitter is WIRED at.  That roster is deliberately not the scalar
+        # predicate's positions: the scalar predicate and the
         # element walk are different lowerings with different reach, and
         # reading the scalar one for this question recorded `tier3` at a
         # closure boundary whose module carried no element loop at all — a
@@ -11428,9 +11884,8 @@ class ContractVerifier:
         predicate outside the fragment, via
         :py:meth:`_refined_untranslatable_reason`, and either non-verdict via
         :py:meth:`_undecided_reason`.  Whether these projection sites are
-        codegen-guarded is read from :py:data:`narrowing.REFINED_BIND_GUARDED_SITES`
-        (they are, since #765) intersected with the refinement's own
-        guardability, never restated here.  *node* gives the diagnostic
+        codegen-guarded is the row's guard in the obligation table (#1695),
+        never restated here.  *node* gives the diagnostic
         location.
         """
         goal = self._translate_refined_predicate(smt, refined_ty, term)
@@ -11582,8 +12037,8 @@ class ContractVerifier:
         obligation side effects (CR PR-review).
 
         Two consumers seed these into an arm's assumptions: the narrowing walk
-        (``_obligate_subpattern_narrowings`` → ``_walk_for_nat_binding_
-        obligations``) so a downstream ``@Nat`` narrowing of a bound payload
+        (``_obligate_subpattern_narrowings`` → ``_discharge_binding_rows``)
+        so a downstream ``@Nat`` narrowing of a bound payload
         discharges, AND ``_walk_for_calls`` so a call **precondition** in the
         arm body discharges — preconditions are collected in the earlier main
         pass, not the narrowing walk, so without this a valid
@@ -12248,20 +12703,25 @@ class ContractVerifier:
                 continue
             if not isinstance(sub_pat, ast.BindingPattern):
                 continue
-            target = self._written_type(sub_pat.type_expr)
-            if (self._is_refined_type(target)
-                    and self._refined_field_narrows(target, field_ty)):
+            target = self._written_type(sub_pat.type_expr)  # pragma: no mutate — equivalent: a binder row's target is its written type, which `_binder_target` returns without it
+            if (refined := self._binder_target(sub_pat, target)) is not None:  # pragma: no mutate — equivalent: as above, the row's target is the written refinement
+                if not self._narrowing_binder(
+                        decl, sub_pat, "refine_bind",
+                        self._refined_field_narrows(refined, field_ty)):
+                    continue
                 self._check_refined_binding_obligation_term(
-                    decl, field_term, target, smt, assumptions,
+                    decl, field_term, refined, smt, assumptions,
                     site="ADT sub-pattern bind", node=diag_node,
                     source_ty=(field_ty
-                               if narrowing.all_sources_opaque(field_sources)
+                               if narrowing.all_sources_opaque(field_sources)  # pragma: no mutate — equivalent: a constructed source's term carries its fields' declared refinements already (the construction's translation states them), so the field type's facts add nothing there
                                else None),
                 )
-            elif (self._is_nat_type(target)
-                    and narrowing.component_narrows(
-                        field_sources, i, self._narrows_into_nat,
-                        leaf_is_nat)):
+            elif self._binder_rows(sub_pat, "nat_bind"):
+                if not self._narrowing_binder(
+                        decl, sub_pat, "nat_bind", narrowing.component_narrows(  # pragma: no mutate — equivalent: the table lists a sub-pattern `nat_bind` row by the same `component_narrows` rule, so such a binder narrows and these are not read, and a composite binder's walk row is recorded `tier3` by `_discharge_walked_rows` first
+                            field_sources, i, self._narrows_into_nat,
+                            leaf_is_nat)):
+                    continue  # pragma: no mutate — equivalent: not reached: the table lists a sub-pattern binder's head `nat_bind` row by the same `component_narrows` rule, so `_narrowing_binder` returns True here
                 self._check_nat_binding_obligation_term(
                     decl, field_term, smt, assumptions,
                     site="ADT sub-pattern bind", node=diag_node,
@@ -12385,11 +12845,16 @@ class ContractVerifier:
             # Refined-first (#746, R9): a refined sub-pattern (incl. a
             # refinement over @Nat) discharges its full predicate against the
             # projected field, rather than only `>= 0` via the nat path.
-            if (self._is_refined_type(target)
-                    and self._refined_field_narrows(target, field_ty)):
+            if (refined := self._binder_target(sub_pat, target)) is not None:
+                target = refined
+                if not self._narrowing_binder(
+                        decl, sub_pat, "refine_bind",
+                        self._refined_field_narrows(target, field_ty) and (
+                            lit_args is None or (i < len(lit_args)
+                            and self._narrows_into_refined(lit_args[i], target)))):
+                    continue
                 if lit_args is not None:
-                    if (i < len(lit_args)
-                            and self._narrows_into_refined(lit_args[i], target)):
+                    if i < len(lit_args):
                         self._check_refined_binding_obligation(
                             decl, lit_args[i], target, smt, slot_env,
                             assumptions, site="ADT sub-pattern bind",
@@ -12415,11 +12880,16 @@ class ContractVerifier:
                         decl, scrutinee, "ADT sub-pattern bind",
                         reason=_OPAQUE_SCRUTINEE_REASON)
                 continue
-            if (self._is_nat_type(target)
-                    and narrowing.component_narrows(
-                        sources, i, self._narrows_into_nat, leaf_is_nat)):
+            if self._binder_rows(sub_pat, "nat_bind"):
+                if not self._narrowing_binder(
+                        decl, sub_pat, "nat_bind",
+                        narrowing.component_narrows(
+                            sources, i, self._narrows_into_nat, leaf_is_nat)
+                        and (lit_args is None or (i < len(lit_args)
+                             and self._narrows_into_nat(lit_args[i])))):
+                    continue
                 if lit_args is not None:
-                    if i < len(lit_args) and self._narrows_into_nat(lit_args[i]):
+                    if i < len(lit_args):
                         self._check_nat_binding_obligation(
                             decl, lit_args[i], smt, slot_env, assumptions,
                             site="ADT sub-pattern bind",
@@ -12490,18 +12960,23 @@ class ContractVerifier:
                 continue
             if not isinstance(sub_pat, ast.BindingPattern):
                 continue
-            target = self._written_type(sub_pat.type_expr)
-            if (self._is_refined_type(target)
-                    and self._refined_field_narrows(target, field_ty)):
+            target = self._written_type(sub_pat.type_expr)  # pragma: no mutate — equivalent: a binder row's target is its written type, which `_binder_target` returns without it
+            if (refined := self._binder_target(sub_pat, target)) is not None:  # pragma: no mutate — equivalent: as above, the row's target is the written refinement
+                if not self._narrowing_binder(
+                        decl, sub_pat, "refine_bind",
+                        self._refined_field_narrows(refined, field_ty)):
+                    continue
                 self._record_refined_bind_tier3(
                     decl, scrutinee, "ADT sub-pattern bind",
                     reason=_OPAQUE_SCRUTINEE_REASON)
-            elif (self._is_nat_type(target)
-                    and narrowing.component_narrows(
-                        field_sources, i, self._narrows_into_nat,
-                        leaf_is_nat)):
+            elif self._binder_rows(sub_pat, "nat_bind"):
+                if not self._narrowing_binder(
+                        decl, sub_pat, "nat_bind", narrowing.component_narrows(  # pragma: no mutate — equivalent: as in `_obligate_subpattern_term`, and the unprojected fallback records the row `tier3` on either branch
+                            field_sources, i, self._narrows_into_nat,
+                            leaf_is_nat)):
+                    continue  # pragma: no mutate — equivalent: not reached: the table lists a sub-pattern binder's head `nat_bind` row by the same `component_narrows` rule, so `_narrowing_binder` returns True here
                 self._record_nat_bind_tier3(
-                    decl, scrutinee, "ADT sub-pattern bind", "tier3")
+                    decl, scrutinee, _SUBPATTERN_BIND_SITE, "tier3")  # pragma: no mutate — equivalent: `_record_nat_bind_tier3` reads no `site`
 
     def _obligate_destructure_narrowings(
         self,
@@ -12582,14 +13057,17 @@ class ContractVerifier:
             sources = narrowing.component_sources(stmt.value, i, ctor_matches)
             if narrowing.all_sources_opaque(sources):
                 declared_source.add(i)
-            if (self._is_refined_type(target)
-                    and i < len(field_types)
-                    and self._refined_field_narrows(target, field_types[i])):
-                refined_narrowing.append((i, target))
-            elif (self._is_nat_type(target)
-                    and narrowing.component_narrows(
-                        sources, i, self._narrows_into_nat, leaf_is_nat)):
-                nat_narrowing.append(i)
+            if (i < len(field_types) and (refined := self._binder_target(  # pragma: no mutate — equivalent: the checker refuses a destructure whose bindings outnumber its constructor's fields (E314) or whose source has no single constructor (E311), so `i` is below `len(field_types)` here
+                    te, target)) is not None):  # pragma: no mutate — equivalent: a binder row's target is its written type, which `_binder_target` returns without it
+                if self._narrowing_binder(
+                        decl, te, "refine_bind",
+                        self._refined_field_narrows(refined, field_types[i])):
+                    refined_narrowing.append((i, refined))
+            elif self._binder_rows(te, "nat_bind"):
+                if self._narrowing_binder(
+                        decl, te, "nat_bind", narrowing.component_narrows(  # pragma: no mutate — equivalent: the table lists a destructure binder's `nat_bind` row by the same `component_narrows` rule, so the binder narrows and these are not read
+                            sources, i, self._narrows_into_nat, leaf_is_nat)):
+                    nat_narrowing.append(i)
         if not refined_narrowing and not nat_narrowing:
             return
         rhs_z3 = smt.translate_expr(stmt.value, slot_env)
@@ -13352,30 +13830,21 @@ class ContractVerifier:
             return "Nat"
         return getattr(resolved, "name", None)
 
-    def _nat_return_narrows(self, decl: ast.FnDecl, ret_type: Type) -> bool:
-        """Whether *decl*'s body narrows into its bare ``@Nat`` return (7d's
-        gate; a refinement over ``@Nat`` is 7b's)."""
-        return (decl.body is not None
-                and self._is_nat_type(ret_type)
-                and not self._is_refined_type(ret_type)
-                and self._return_narrows_into_nat(decl.body))
-
     def _nat_return_leaf_keys(
         self, decl: ast.FnDecl, ret_type: Type,
     ) -> frozenset[object] | None:
         """The value leaves of *decl*'s ``@Nat`` return the table lists a
         row at, by node key, each discharged where the body walk reaches it
         (R111's finding 1 on PR #1835: one discharge of the whole body gave
-        every leaf the body's status).  Empty where the return does not
-        narrow; ``None`` where the body is discharged whole: a function the
-        table lists no rows of, or a body with one such leaf, whose record
-        is that leaf's (the whole body's translation, a destructure read
-        through its producer's contract, is the more precise there)."""
-        if decl.body is None or not self._nat_return_narrows(decl, ret_type):
-            return frozenset()
+        every leaf the body's status).  Empty where the table lists no such
+        leaf row, a function it lists no rows of included (#1836: no row, no
+        discharge); ``None`` where the body is discharged whole: a body with
+        one such leaf, whose record is that leaf's (the whole body's translation, a destructure read
+        through its producer's contract, is the more precise there).  A
+        refinement over ``@Nat`` is 7b's, discharged whole."""
         rows = self._table.rows_of_function(decl)
-        if rows is None:
-            return None
+        if decl.body is None or rows is None or self._is_refined_type(ret_type):
+            return frozenset()
         key = obligation_table.ObligationTable._key
         # The table's own leaf rule (a `handle` is one leaf), so every leaf
         # row is reached.
@@ -13384,37 +13853,9 @@ class ContractVerifier:
             key(r.node) for r in rows
             if r.kind == "nat_bind" and r.evaluation == obligation_table.RETURN
             and key(r.node) in leaves)
+        if not keys:
+            return frozenset()
         return keys if len(keys) > 1 else None
-
-    def _return_narrows_into_nat(self, body: ast.Expr) -> bool:
-        """Whether a @Nat function-return slot receives a value that can be
-        negative — the return-boundary narrowing check for #758.
-
-        Mirrors codegen's ``_narrows_into_nat(decl.body)`` at the return
-        boundary.  The top-level body is *target-typed* to the @Nat return, so
-        the checker's side-table reports the whole expression as @Nat even when
-        a join arm narrows (``match @Int.0 { 0 -> 0, _ -> @Int.0 }`` records
-        @Nat for the match, masking the raw-@Int ``_`` arm); consulting
-        :py:meth:`_narrows_into_nat` on the whole body would then miss it.
-        Descend the ``Block`` / ``IfExpr`` / ``MatchExpr`` join to each leaf
-        return expression and apply the per-value ``_narrows_into_nat`` there —
-        the value narrows iff ANY leaf narrows, exactly the set codegen's
-        per-leaf descent (``_collect_narrowing_return_leaves``) guards.  The whole-body
-        ``>= 0`` obligation (translated in :py:meth:`_check_nat_binding_obligation`)
-        still folds in each arm's path condition, so a provable join proves.
-        """
-        if isinstance(body, ast.Block):
-            return (body.expr is not None
-                    and self._return_narrows_into_nat(body.expr))
-        if isinstance(body, ast.IfExpr):
-            if body.else_branch is None:
-                return False
-            return (self._return_narrows_into_nat(body.then_branch)
-                    or self._return_narrows_into_nat(body.else_branch))
-        if isinstance(body, ast.MatchExpr):
-            return any(self._return_narrows_into_nat(arm.body)
-                       for arm in body.arms)
-        return self._narrows_into_nat(body)
 
     def _has_underflow_leaf(self, value: ast.Expr) -> bool:
         """True iff a statically-@Nat *value* holds a subtraction that can go
@@ -13738,6 +14179,11 @@ class ContractVerifier:
                 continue
             if self._call_pre_recorded(
                     decl, d.precondition, d.call_node, failures_only=True):
+                continue
+            if self._call_pre_rows(d.precondition, d.call_node) == []:
+                # #1836: as a refuted precondition, a demoted one at a call
+                # the table lists no row of this function at (a call in an
+                # `assume` condition) is no obligation: no record, no E532.
                 continue
             self._record_obligation(
                 decl.name, "call_pre", d.precondition, "tier3",

@@ -1,7 +1,7 @@
 """Tests for vera.verifier — fresh-scope obligation walking (#779, #985).
 
-The primitive-op walker (`_walk_for_primitive_op_obligations`) and the
-@Nat-binding walker (`_walk_for_nat_binding_obligations`) recurse into
+The primitive-op walker (`_discharge_operation_rows`) and the
+@Nat-binding walker (`_discharge_binding_rows`) recurse into
 closure bodies (`AnonFn`), quantifier domains and predicates (`ForallExpr`
 / `ExistsExpr`), and handler state/body/clauses (`HandleExpr`), so a
 trapping primitive op or a narrowing/widening binding inside one carries
@@ -319,10 +319,14 @@ public fn f(@Unit -> @Int)
 """, "narrowing")
         assert any(e.error_code == "E503" for e in errs)
 
-    def test_narrowing_call_arg_inside_assume_condition_obligated(self) -> None:
-        """The assume twin: the condition is taken on trust, but a
-        narrowing op nested inside it still executes and is obligated."""
-        errs = _verify_err("""
+    def test_a_narrowing_inside_an_assume_condition_is_no_obligation(self) -> None:
+        """The assume twin, the other way round: an `assume` is a no-op at
+        run time (`_translate_assume`), so a narrowing nested in its
+        condition never executes, and the table lists no row there (PR
+        #1834).  No E503 is reported, the `assume` is disclosed (W003), and
+        the run returns without a trap (#1836; base reported the E503 of a
+        record it then dropped for having no row)."""
+        src = """
 private fn takes_nat(@Nat -> @Int)
   requires(true)
   ensures(true)
@@ -337,8 +341,77 @@ public fn f(@Unit -> @Int)
   assume(takes_nat(0 - 5) > 0);
   0
 }
-""", "narrowing")
-        assert any(e.error_code == "E503" for e in errs)
+"""
+        result = _verify(src)
+        assert not [d for d in result.diagnostics if d.severity == "error"]
+        assert "W003" in {d.error_code for d in result.diagnostics}
+        assert not [o for o in result.obligations if o.kind == "nat_bind"]
+        ran = vera_pipeline.run(src, "f", [])
+        assert ran.trap is None and ran.value == 0, ran
+
+
+def test_repro_a_call_inside_an_assume_condition_is_no_obligation() -> None:
+    """The call twin of the narrowing above: a call in an `assume` condition
+    never runs, the table lists no `call_pre` row there, and its refuted
+    precondition is no obligation: no record and no E501 (CodeRabbit on PR
+    #1843; base reported the E501 with no record beside it).  The run
+    returns 0."""
+    src = """
+private fn pos(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(pure)
+{ @Int.0 }
+
+public fn f(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  assume(pos(0 - 1) > 0);
+  0
+}
+"""
+    result = _verify(src)
+    assert not [d for d in result.diagnostics if d.severity == "error"], [
+        d.error_code for d in result.diagnostics]
+    assert not [o for o in result.obligations if o.kind == "call_pre"]
+    ran = vera_pipeline.run(src, "f", [])
+    assert ran.trap is None and ran.value == 0, ran
+
+
+def test_repro_a_demoted_call_inside_an_assume_condition_is_no_obligation() -> None:
+    """The demotion twin: a call in an `assume` condition whose precondition
+    the solver cannot state (a `Map` argument; a generic callee) is no
+    obligation either: no record and no E532, only the assumption's W003
+    (CodeRabbit on PR #1843; at 24451e60 the E532 stood with no record)."""
+    src = """
+private forall<T> fn g(@T, @Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(pure)
+{ @Int.0 }
+
+private fn h(@Map<String, Int> -> @Int)
+  requires(map_size(@Map<String, Int>.0) > 0)
+  ensures(true)
+  effects(pure)
+{ 1 }
+
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  assume(h(map_insert(map_new(), "k", @Int.0)) > 0);
+  assume(g(true, @Int.0) > 0);
+  0
+}
+"""
+    result = _verify(src)
+    assert [d.error_code for d in result.diagnostics] == ["W003", "W003"], [
+        (d.error_code, d.description) for d in result.diagnostics]
+    assert not [o for o in result.obligations if o.kind == "call_pre"]
 
 
 # =====================================================================

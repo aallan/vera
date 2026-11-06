@@ -1364,13 +1364,16 @@ entry rows answer the argument's, each keeping the one guard it had.
 (#1695, Stage 27).  Its architectural cells hold the shape: every emitted
 check names its row, every row a held function lists has one check or a
 reason it has none, the verifier makes no guard claim of its own and
-defines no mirror of code generation's decisions, and the corpus gate's
+defines no mirror of code generation's decisions, it keeps no walk that
+finds its own sites, no fallback for a row no discharge reaches and no
+roster of guarded positions beside the row (#1836), and the corpus gate's
 `KNOWN` and the generator's `KNOWN_CLASSES` are empty.  Its identity
 differential runs over the corpus, the doc blocks and generator seeds 0 to
 999, in both directions: every row of a verified function has exactly one
-record and every record names rows (no record is dropped without an
-anchor, and the fallback that discharges a row no record reached is pinned
-per class), every `violated` record has its error and no site carries more
+record and every record names rows (every record is keyed to its rows
+where it is made and none reaches the settling without one; the four
+classes a fallback once discharged are ordinary discharges, pinned per
+class), every `violated` record has its error and no site carries more
 errors than records, and every value leaf that narrows has a row (the
 census for a site the table does not list, which the identity alone
 cannot see).

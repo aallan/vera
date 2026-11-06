@@ -1293,7 +1293,7 @@ public fn use_it(@Int -> @Int)
 #
 # * the CONSUMERS are the places an obligation inside an arm is discharged,
 #   one per caller of the seam plus the translation route — an `assert` and
-#   the §6.4.3 safety obligations (`_walk_for_primitive_op_obligations`), a
+#   the §6.4.3 safety obligations (`_discharge_operation_rows`), a
 #   postcondition reached through the arm (`_translate_match`), a refined
 #   construction store (`_descend_construction_container`), and a call
 #   precondition;

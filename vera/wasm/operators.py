@@ -1999,27 +1999,25 @@ class OperatorsMixin:
         return self._guard_nat_narrowing(instrs, arg)
 
     def _collect_narrowing_return_leaves(self, body: ast.Expr) -> set[int]:
-        """The ``id()`` of every tail-position return leaf that narrows into a
-        @Nat return — the codegen mirror of the verifier's
-        ``_return_narrows_into_nat`` leaf descent (#758), but collecting leaf
-        identities so ``CodeGenerator._compile_fn`` can guard EACH narrowing
-        leaf inline instead of wrapping the whole body (#983 review).
+        """The ``id()`` of every tail-position return leaf of a ``@Nat``
+        return that the obligation table lists a checked ``@Nat`` return row
+        at (#758, #1836).  ``CodeGenerator._compile_fn`` guards each such leaf
+        inline instead of wrapping the whole body (#983 review).
 
         The whole-body ``_emit_nat_bind_guard(body_instrs)`` wrap appended the
         sign check after the entire body, which forced EVERY ``return_call`` to
         revert to ``call`` — losing TCO for a non-narrowing @Nat->@Nat recursive
         tail call (`drain(@Int.0 - 1)`, itself @Nat->@Nat) that then
-        stack-exhausted at depth.  Descending to each leaf and guarding only the
-        genuine narrowings (`@Int.0`, `0 - x`, an @Int-returning tail call)
-        leaves the non-narrowing recursive tail call structurally untouched, so
-        its ``return_call`` survives and the chain runs constant-stack.
+        stack-exhausted at depth.  Guarding only the leaves that narrow
+        (`@Int.0`, `0 - x`, an @Int-returning tail call) leaves the
+        non-narrowing recursive tail call structurally untouched, so its
+        ``return_call`` survives and the chain runs constant-stack.
 
-        A leaf narrows exactly when ``_narrows_into_nat`` says binding it into a
-        @Nat slot needs a ``>= 0`` guard, reading the checker's type of each
-        node (:func:`vera.narrowing.nat_narrowing` — a genuine @Nat->@Nat
-        tail call is a @Nat there and so is NOT collected), the per-leaf form
-        of the whole-body ``narrow_guarded`` gate.  Descends ``Block`` /
-        ``IfExpr`` / ``MatchExpr`` joins exactly as the verifier does.
+        Which leaves narrow is the table's: it lists a row at a leaf by the
+        shared rule (:func:`vera.narrowing.nat_narrowing`, a genuine
+        @Nat->@Nat tail call is a @Nat there and has no row), over the leaves
+        :func:`vera.obligations.table.return_leaves` names, which the
+        verifier's per-leaf discharge reads too.
         """
         leaves: set[int] = set()
         #: The leaves this descent decided need no guard, for the record a

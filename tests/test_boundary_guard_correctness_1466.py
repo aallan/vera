@@ -998,7 +998,7 @@ def test_every_guarded_position_is_templated() -> None:
     noticed was missing — the hole the registry closes one level down,
     closed again one level up.
     """
-    registered = binders.guarded_sites("refinement_predicate")
+    registered = set(binders.GUARD_SITES)
     missing = sorted(registered - set(_TEMPLATES))
     assert not missing, (
         f"{missing} take a refinement-predicate guard per "

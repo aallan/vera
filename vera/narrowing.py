@@ -24,7 +24,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from vera import ast, binders
+from vera import ast
 from vera.types import (INT, NAT, NEVER, AdtType, FunctionType,
                         PrimitiveType, RefinedType, TypeVar, UnknownType,
                         base_type, effects_equal)
@@ -112,16 +112,6 @@ REFINED_CONSTRUCTION_SCALAR_BASES = frozenset({
     "Int", "Nat", "Float64", "Bool", "Byte",
 })
 
-
-#: Since #1455/#1445 the membership is DERIVED from
-#: :data:`vera.binders.GUARD_SITES`, where each binder position's guard
-#: answers are declared beside the position itself.  Keeping the roster
-#: as a literal here made it possible to register a position and forget
-#: its guard answer, which is one level up from the drift this module
-#: exists to prevent — a position nothing answered for was SILENT.
-#: The name stays, because every consumer reads it through this module
-#: and a test may monkeypatch it to prove the coupling is load-bearing.
-REFINED_BIND_GUARDED_SITES = binders.guarded_sites("refinement_predicate")
 
 #: A declared type's refinement chain, comparable across the two components:
 #: the name the chain bottoms out in, and the set of predicates conjoined on

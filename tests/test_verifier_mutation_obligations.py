@@ -871,9 +871,9 @@ private fn sp_opaque_nat_387(@Unit -> @Nat)
         statement about the SMT layer, not about codegen: the sub-pattern
         bind carries its predicate guard since #765 whether or not the
         scrutinee could be projected, so the honest disclosure is the guarded
-        leg.  A mutation dropping the site from
-        ``_REFINED_BIND_GUARDED_SITES`` puts it back on the unguarded one and
-        under-counts a runtime check that does fire."""
+        leg.  A mutation dropping the row's guard
+        puts it back on the unguarded one and under-counts a runtime check
+        that does fire."""
         result = _verify("""
 type Pos387 = { @Int | @Int.0 > 0 };
 private fn sp_opaque_ref_387(@Unit -> @Int)

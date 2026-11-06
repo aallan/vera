@@ -28,7 +28,7 @@ import inspect
 
 import pytest
 
-from vera import ast, binders, narrowing
+from vera import ast, binders
 from vera.parser import parse_to_ast
 
 
@@ -195,14 +195,15 @@ def test_the_construction_sites_are_guard_sites() -> None:
 
 
 # =====================================================================
-# 3. The derived rosters are the rosters
+# 3. The guard keys' guards are the table's rows
 # =====================================================================
 
-#: What the three rosters held as literals before they were derived, measured
-#: at `origin/release/v0.2.0` 8eca11c0 plus the `handler clause binder` this
-#: release adds.  Pinning them is the verdict-signature half of moving where
-#: a decision lives: the derivation may not quietly change a membership.
-_REFINED_BIND_GUARDED_SITES_AS_MEASURED = frozenset({
+#: The guard keys at which a refinement predicate is lowered, measured at
+#: `origin/release/v0.2.0` 8eca11c0 plus the `handler clause binder`.  The
+#: roster that once stated this beside the table is gone (#1836): each key's
+#: program, from the boundary matrix's templates, lists a guarded
+#: `refine_bind` row, read off the obligation table.
+_REFINEMENT_GUARD_KEYS_AS_MEASURED = frozenset({
     "return type",
     "call argument",
     "closure argument",
@@ -219,37 +220,30 @@ _REFINED_BIND_GUARDED_SITES_AS_MEASURED = frozenset({
     "handler clause binder",
 })
 
-_NAT_CONSTRUCTION_GUARDED_SITES_AS_MEASURED = frozenset({
-    "constructor field",
-    "tuple component",
-    "array element",
-    "map value",
-})
+
+def test_the_guard_keys_are_what_they_were() -> None:
+    assert set(binders.GUARD_SITES) == _REFINEMENT_GUARD_KEYS_AS_MEASURED
 
 
-def test_the_refinement_roster_is_what_it_was() -> None:
-    assert (narrowing.REFINED_BIND_GUARDED_SITES
-            == _REFINED_BIND_GUARDED_SITES_AS_MEASURED)
+@pytest.mark.parametrize("key", sorted(_REFINEMENT_GUARD_KEYS_AS_MEASURED))
+def test_each_guard_key_lists_a_guarded_refinement_row(key: str) -> None:
+    """The table decides each key's guard: its template program lists a
+    `refine_bind` row there that a check answers.  A refined formal's entry
+    row is the callee's, not the key's position, so it is not counted: a
+    key whose template declares a refined callee parameter is answered only
+    by the row at its own position (CodeRabbit on PR #1843)."""
+    from tests import pipeline
+    from tests.test_boundary_guard_correctness_1466 import _REPRS, _TEMPLATES
+    from vera.obligations import table as obligation_table
 
-
-def test_the_nat_construction_roster_is_what_it_was() -> None:
-    """The verifier's copy of this roster went with #1695 (the obligation
-    table lists each construction row with its guard); the registry's
-    answer is what it was."""
-    assert (binders.guarded_sites("nat_sign_at_construction")
-            == _NAT_CONSTRUCTION_GUARDED_SITES_AS_MEASURED)
-
-
-def test_the_rosters_come_from_the_table_rather_than_a_literal() -> None:
-    """Dropping a table entry moves the roster that reads it.
-
-    Without this the two assertions above are satisfied by two literals
-    that happen to agree with the table, which is the arrangement #1412
-    replaced.  (A third roster, the widening's at construction, went with
-    the u64 `Nat`: a widening checks nothing.)
-    """
-    assert (narrowing.REFINED_BIND_GUARDED_SITES
-            == binders.guarded_sites("refinement_predicate"))
+    source = _TEMPLATES[key][0].build(_REPRS["int"].instance("good"))
+    table = obligation_table.build(pipeline.typed(source))
+    guarded = [r for r in table.rows if r.kind == "refine_bind"
+               and r.evaluation != obligation_table.ENTRY
+               and (r.guard.check or (r.answered_by is not None
+                                      and (r.answered_by < 0
+                                           or table.by_id(r.answered_by).guard.check)))]
+    assert guarded, (key, [(r.kind, r.guard) for r in table.rows])
 
 
 # =====================================================================

@@ -112,6 +112,31 @@ def test_the_verifier_defines_no_mirror_of_code_generation() -> None:
     assert defined == [], defined
 
 
+#: What #1836 deleted: the walk that found its own sites and the anchors
+#: that keyed its records to rows after the fact, the fallback for a row no
+#: record reached, and code generation's roster beside the row.
+_DELETED = {
+    "vera/verifier.py": ("_walk_for_nat_binding_obligations",
+                         "_walk_for_primitive_op_obligations", "_row_record",
+                         "_anchored_rows", "_record_anchors", "_value_spanning",
+                         "_return_narrows_into_nat", "_nat_return_narrows"),
+    "vera/narrowing.py": ("REFINED_BIND_GUARDED_SITES",),
+    "vera/wasm/data.py": ("REFINED_BIND_GUARDED_SITES",),
+    "vera/wasm/calls_handlers.py": ("REFINED_BIND_GUARDED_SITES",),
+}
+
+
+@pytest.mark.parametrize("module", sorted(_DELETED))
+def test_the_row_driven_discharge_keeps_no_walk_fallback_or_roster(
+    module: str,
+) -> None:
+    """Every record is made at a row, by the traversal that reaches it
+    (#1836): no name of the deleted machinery is defined or read."""
+    text = (ROOT / module).read_text(encoding="utf-8")
+    present = [n for n in _DELETED[module] if re.search(rf"\b{n}\b", text)]
+    assert present == [], present
+
+
 def test_a_check_is_recorded_by_its_row() -> None:
     """`WasmContext._record_check` takes the row the check is the runtime
     half of, so an `EmittedCheck` names it."""
@@ -1081,41 +1106,28 @@ def _verifier_identity(files: dict[str, str], entry: str, tmp_path: Path) -> Non
     from vera import verifier as vmod
 
     entry_path = pipeline.write_tree(tmp_path, files, entry=entry)
-    # Every record `_settle_rows` keys was anchored where it was recorded
-    # (span keying is gone, so an unanchored record could only be dropped):
-    # the population is zero, and a record made outside `_record_obligation`
-    # would show here.
+    # Every record of a table kind is keyed to its rows where it is made
+    # (#1836), and a discharge runs only where a row is: no record reaches
+    # `_settle_rows` without rows.
     unanchored: list[tuple[str, str, int, int]] = []
-    fallback: list[tuple[str, str, str]] = []
-    real_anchored = vmod.ContractVerifier._anchored_rows
-    real_row_record = vmod.ContractVerifier._row_record
+    real_settle = vmod.ContractVerifier._settle_rows
 
-    def anchored(self, rec, rows, decl):  # type: ignore[no-untyped-def]
-        entry_ = self._record_anchors.get(id(rec))
-        if entry_ is None or entry_[0]() is not rec:
-            unanchored.append((rec.fn_name, rec.kind, rec.line, rec.column))
-        return real_anchored(self, rec, rows, decl)
+    def settle(self, decl, start, made_here, *, premise=None):  # type: ignore[no-untyped-def]
+        if self._table.rows_of_function(decl) is not None:
+            unanchored.extend(
+                (rec.fn_name, rec.kind, rec.line, rec.column) for rec in made_here
+                if rec.kind in vmod._TABLE_KINDS and not rec.rows)
+        return real_settle(self, decl, start, made_here, premise=premise)
 
-    def row_record(self, decl, row):  # type: ignore[no-untyped-def]
-        rec = real_row_record(self, decl, row)
-        fallback.append(_fallback_class(row, rec.status))
-        return rec
-
-    vmod.ContractVerifier._anchored_rows = anchored  # type: ignore[method-assign]
-    vmod.ContractVerifier._row_record = row_record  # type: ignore[method-assign]
+    vmod.ContractVerifier._settle_rows = settle  # type: ignore[method-assign]
     try:
         v = pipeline.verify(entry_path, file=entry, budget_s=_BUDGET_S,
                             reconcile=True)
     finally:
-        vmod.ContractVerifier._anchored_rows = real_anchored  # type: ignore[method-assign]
-        vmod.ContractVerifier._row_record = real_row_record  # type: ignore[method-assign]
+        vmod.ContractVerifier._settle_rows = real_settle  # type: ignore[method-assign]
     if not v.ran:
         pytest.skip("the program is refused before verification")
     assert unanchored == [], unanchored
-    # The rows no record reached, by class: each class is pinned with the
-    # fact its status rests on (`_FALLBACK_CLASSES`), so a new class
-    # entering the fallback is loud.
-    assert not [c for c in fallback if c not in _FALLBACK_CLASSES], fallback
     assert _envelope_inconsistencies(v) == [], _envelope_inconsistencies(v)
     assert _leaf_omissions(v) == [], _leaf_omissions(v)
     table = v.result.table
@@ -1154,39 +1166,91 @@ def _verifier_identity(files: dict[str, str], entry: str, tmp_path: Path) -> Non
     assert not [c for c in _codes(v) if c in ("E541", "W004")], _codes(v)
 
 
-#: The classes of a row no verification record reached, and the fact each
-#: status rests on (`ContractVerifier._row_record`):
-#:
-#: * a `div_zero` row whose divisor is a non-zero literal: `verified`, the
-#:   literal is the proof;
-#: * a refined formal's ENTRY row: `verified`, the callee's assumption, which
-#:   each caller's argument row discharges as it does a `requires`;
-#: * a row with no check to plant (`TRIVIAL`): `verified`;
-#: * any other row, left to its check: `tier3` where the row is guarded (the
-#:   corpus's are base's W004 sites, the check emitted and nothing recorded),
-#:   disclosed where it is not.  None of these is ever `violated`.
-_FALLBACK_CLASSES = {
-    ("literal divisor", "verified"),
-    ("refined formal entry", "verified"),
-    ("trivial", "verified"),
-    ("left to its check", "tier3"),
+#: The four classes a fallback discharged before #1836, each a program whose
+#: row is now an ordinary discharge in its own context, and the status that
+#: discharge gives it (the status the fallback gave): a literal divisor (the
+#: `div_zero` discharge proves it), a refined formal's ENTRY row (the entry
+#: step's assumption), a trivial clause (`requires(true)`), and a binder at
+#: its value's own refined type (nothing to prove beyond the type the value
+#: carries, which an opaque component's accessor does not hold: left to the
+#: check code generation emits, `tier3`).
+_FORMER_FALLBACK_CLASSES = {
+    "literal divisor": ("""\
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0 / 5
+}
+""", "div_zero", "verified"),
+    "refined formal entry": ("""\
+type PosInt = { @Int | @Int.0 > 0 };
+
+public fn f(@PosInt -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @PosInt.0
+}
+""", "refine_bind", "verified"),
+    "trivial": ("""\
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+""", "requires", "verified"),
+    "binder at its own type": ("""\
+type PosInt = { @Int | @Int.0 > 0 };
+private data Box {
+  Boxed(PosInt, Int)
+}
+
+public fn f(@Box -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Box.0 {
+    Boxed(@PosInt, @Int) -> @PosInt.0 + @Int.0
+  }
+}
+""", "refine_bind", "tier3"),
 }
 
 
-def _fallback_class(row: object, status: str) -> tuple[str, str]:
-    from vera import ast as vera_ast
-    from vera.obligations import table as obligation_table
+@pytest.mark.parametrize("cls", list(_FORMER_FALLBACK_CLASSES))
+def test_a_former_fallback_class_is_an_ordinary_discharge(cls: str) -> None:
+    """Every row of the class is recorded where the traversal reaches it
+    (in the records made while the function is verified, never at the
+    settling), with the status the fallback gave it."""
+    from vera import verifier as vmod
 
-    node = row.node  # type: ignore[attr-defined]
-    if row.guard == obligation_table.TRIVIAL:  # type: ignore[attr-defined]
-        return ("trivial", status)
-    if (row.kind == "div_zero"  # type: ignore[attr-defined]
-            and isinstance(node, vera_ast.BinaryExpr)
-            and isinstance(node.right, vera_ast.IntLit) and node.right.value != 0):
-        return ("literal divisor", status)
-    if row.evaluation == obligation_table.ENTRY:  # type: ignore[attr-defined]
-        return ("refined formal entry", status)
-    return ("left to its check", status)
+    source, kind, status = _FORMER_FALLBACK_CLASSES[cls]
+    made: list[tuple[str, str, tuple[int, ...]]] = []
+    real = vmod.ContractVerifier._settle_rows
+
+    def settle(self, decl, start, made_here, *, premise=None):  # type: ignore[no-untyped-def]
+        made.extend((r.kind, r.status, r.rows) for r in made_here)
+        return real(self, decl, start, made_here, premise=premise)
+
+    vmod.ContractVerifier._settle_rows = settle  # type: ignore[method-assign]
+    try:
+        v = _verified(source)
+    finally:
+        vmod.ContractVerifier._settle_rows = real  # type: ignore[method-assign]
+    table = v.result.table
+    assert table is not None
+    rows = [r for r in table.rows if r.kind == kind and r.fn == "f"]
+    assert rows, (cls, kind)
+    for row in rows:
+        at = [st for k, st, ids in made if k == kind and row.id in ids]
+        assert at == [status], (cls, row.content_key, at)
+    assert not hasattr(vmod.ContractVerifier, "_row_record")
 
 
 _TAIL_NAMED = re.compile(r"\(at the self tail call at (\d+):(\d+)\)")
@@ -2211,8 +2275,10 @@ def test_repro_a_row_two_discharges_reach_reports_one_error() -> None:
 @pytest.mark.parametrize("form", list(_HANDLE_FORMS))
 def test_a_refuted_value_inside_a_handle_keeps_its_record(form: str) -> None:
     """Refutable: the E505 has its `violated` record, at the row.  An `Exn`
-    clause's value is one the solver does not translate, so there the
-    verdict is base's disclosure, at the row."""
+    clause's value is one the requirement reaches by the table's hand-down
+    alone, with no refined target at the position, so there the row is
+    left to its check, which it has none of: base's disclosure, at the row
+    (#1836)."""
     v = _verified(_handle_program(form, "0 - 5"))
     viol = [(o.status, o.error_code, o.line) for o in v.result.obligations
             if o.kind == "refine_bind"]
@@ -2220,6 +2286,480 @@ def test_a_refuted_value_inside_a_handle_keeps_its_record(form: str) -> None:
     assert [x[:2] for x in viol] == [want], viol
     assert _envelope_inconsistencies(v) == []
 
+
+_HAND_DOWN_NAT = """\
+private fn h(@Map<String, Tuple<Nat, Int>> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  7
+}
+
+public fn g(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Int = h(map_insert(map_new(), "k", if @Int.0 > 0 then { Tuple(@Int.0, 2) } else { Tuple(@Int.0, 2) }));
+  assert(@Int.1 >= 0);
+  0
+}
+"""
+
+
+def test_repro_a_hand_down_nat_value_is_left_to_its_check(tmp_path: Path) -> None:
+    """A `Nat` component that only the table's hand-down reaches (a
+    `map_insert` value at a call argument, through a join) is held to `Nat`
+    by no position the walk reaches: its rows are left to the check that
+    reads them, `tier3`, as at base, and never discharged later in a
+    context that an `assert` after it has added to (CodeRabbit on PR
+    #1843).  The check traps the negative payload."""
+    v = _verified(_HAND_DOWN_NAT)
+    nat = [(o.status, o.error_code) for o in v.result.obligations
+           if o.kind == "nat_bind"]
+    assert nat == [("tier3", ""), ("tier3", "")], nat
+    assert "E503" not in _codes(v)
+    out = _run(tmp_path, _HAND_DOWN_NAT, "g", "-5")
+    assert "Negative value bound into a @Nat slot" in out.stdout + out.stderr
+
+
+_HAND_DOWN_MAP_ARG = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+private fn consume(@Map<String, Pos> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  map_size(@Map<String, Pos>.0)
+}
+
+public fn main(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  consume(map_insert(map_new(), "a", @Int.0))
+}
+"""
+
+_HAND_DOWN_SET_LET = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+public fn main(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Set<Pos> = set_add(set_new(), @Int.0);
+  set_size(@Set<Pos>.0)
+}
+"""
+
+
+def test_repro_a_hand_down_value_record_is_never_verified() -> None:
+    """A value that only the table's hand-down holds to a refinement (a
+    `map_insert` value at a call argument, a `set_add` element at a `let`)
+    is left to its check, `tier3` at its site, and never proved: no position
+    states the refinement for the solver, and `-5` is a value either
+    program admits (R112 on PR #1843: a mutant that recorded these
+    `verified` passed every matrix).  The `Set` element's record keeps base's
+    E541, the claim with no check that answers it."""
+    v = _verified(_HAND_DOWN_MAP_ARG)
+    at = next(i for i, line in enumerate(_HAND_DOWN_MAP_ARG.splitlines(), 1)
+              if "map_insert" in line)
+    site = [(o.status, o.line) for o in v.result.obligations
+            if o.kind == "refine_bind" and o.line == at]
+    assert site == [("tier3", at)], site
+    v = _verified(_HAND_DOWN_SET_LET)
+    recs = [o.status for o in v.result.obligations if o.kind == "refine_bind"]
+    assert recs == ["tier3"], recs
+    assert "E541" in _codes(v)
+
+
+_SUBPATTERN_AFTER_A_WILDCARD = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+private data P {
+  MkP(Int, Int, Int)
+}
+
+public fn f(@Option<P> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Option<P>.0 {
+    Some(MkP(_, @Nat, @Pos)) -> nat_to_int(@Nat.0) + @Pos.0,
+    None -> 0
+  }
+}
+"""
+
+_UNPROJECTED_SUBPATTERN_AFTER_A_WILDCARD = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+private data P {
+  MkP(Int, Int, Int)
+}
+
+private data Wrap {
+  MkWrap(P)
+}
+
+public fn go(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match MkWrap(MkP(@Int.0, @Int.0, @Int.0)) {
+    MkWrap(MkP(_, @Nat, @Pos)) -> nat_to_int(@Nat.0) + @Pos.0
+  }
+}
+"""
+
+_LITERAL_DESTRUCTURE_BINDER = """\
+type R = { @Option<Int> | @Option<Int>.0 == Some(1) };
+
+public fn f(@Unit -> @Option<Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let Tuple<@Int, @R> = Tuple(1, Some(1));
+  @R.0
+}
+"""
+
+
+def _narrowing_records(source: str) -> list[tuple[object, ...]]:
+    """Each narrowing record whole (its function, kind, status, site, code
+    and text), then each diagnostic's code and first line."""
+    v = _verified(source)
+    return [(o.fn_name, o.kind, o.status, o.line, o.column, o.error_code,
+             o.expr_text)
+            for o in v.result.obligations
+            if o.kind in ("nat_bind", "refine_bind")] + [
+        (d.error_code, d.description.splitlines()[0])
+        for d in v.result.diagnostics]
+
+
+def test_repro_lane_a_binder_after_a_wildcard_sub_pattern_is_discharged() -> None:
+    """A nested constructor sub-pattern whose first field is a wildcard and
+    whose later fields bind at `Nat` and at a refinement: each binder is
+    discharged at its own row over its projected field, as at base (the
+    Mutation (diff) lane's `_obligate_subpattern_term` survivors on PR
+    #1843: no cell entered a binder after a non-binding sub-pattern)."""
+    assert _narrowing_records(_SUBPATTERN_AFTER_A_WILDCARD) == [
+        ("f", "nat_bind", "violated", 13, 17, "E503", "@Nat"),
+        ("f", "refine_bind", "violated", 13, 23, "E505", "@Pos"),
+        ("E503", "@Int value narrowing into a @Nat ADT sub-pattern bind in "
+                 "'f' may be negative."),
+        ("E505", "Value narrowing into a refined ADT sub-pattern bind in 'f' "
+                 "may violate the refinement predicate `@Int.0 > 0`."),
+    ]
+
+
+def test_repro_lane_an_unprojected_binder_after_a_wildcard_is_left_to_its_check() -> None:
+    """The same pattern nested under a literal construction, whose fields
+    the walk does not project (`_record_nested_subpattern_fallbacks`): each
+    binder's row is left to its check, the `Nat` one `tier3`, the refined
+    one disclosed (E506), as at base (the lane's survivors in that function
+    on PR #1843)."""
+    records = _narrowing_records(_UNPROJECTED_SUBPATTERN_AFTER_A_WILDCARD)
+    assert records[:2] == [
+        ("go", "nat_bind", "tier3", 17, 19, "", "@Nat"),
+        ("go", "refine_bind", "tier3", 17, 25, "E506", "@Pos"),
+    ], records
+    assert [r[0] for r in records[2:]] == ["E506"], records
+    assert records[2][1].startswith(
+        "Refinement predicate at a ADT sub-pattern bind in 'go'"), records
+
+
+def test_repro_lane_a_literal_destructure_binder_is_left_to_its_check() -> None:
+    """A literal `Tuple` destructure's refined binder: the component's
+    record is the component's row (disclosed, E506), and the binder's row is
+    left to the destructure's check, `tier3`, as at base (the lane's
+    `_leave_binder_rows` survivors on PR #1843; the `_1466` cells that pin it
+    run at `--matrix=full` only)."""
+    records = _narrowing_records(_LITERAL_DESTRUCTURE_BINDER)
+    assert records[:2] == [
+        ("f", "refine_bind", "tier3_unguarded", 8, 34, "E506", "<expr>"),
+        ("f", "refine_bind", "tier3", 8, 20, "", "@R"),
+    ], records
+
+
+_OWN_TYPE_SUB_PATTERN_BINDERS = """\
+type Fpos = { @Float64 | @Float64.0 >= 0.0 };
+
+type Pos = { @Int | @Int.0 > 0 };
+
+private data Q {
+  MkQ(Int, Fpos, Pos, Tuple<Int, Int>, Nat, Int)
+}
+
+public fn f(@Option<Q> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Option<Q>.0 {
+    Some(MkQ(_, @Fpos, @Pos, @Tuple<Int, Nat>, @Nat, @Int)) -> @Pos.0 + nat_to_int(@Nat.0) + @Int.0,
+    None -> 0
+  }
+}
+"""
+
+_UNPROJECTED_OWN_TYPE_SUB_PATTERN_BINDERS = """\
+type Fpos = { @Float64 | @Float64.0 >= 0.0 };
+
+type Pos = { @Int | @Int.0 > 0 };
+
+private data Q {
+  MkQ(Int, Fpos, Pos, Tuple<Int, Int>, Nat, Int)
+}
+
+private data W {
+  MkW(Q)
+}
+
+public fn g(@Fpos, @Pos, @Nat, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match MkW(MkQ(@Int.0, @Fpos.0, @Pos.0, Tuple(@Int.0, @Int.0), @Nat.0, @Int.0)) {
+    MkW(MkQ(_, @Fpos, @Pos, @Tuple<Int, Nat>, @Nat, @Int)) -> @Pos.0 + nat_to_int(@Nat.0) + @Int.0
+  }
+}
+"""
+
+
+def test_repro_lane_sub_pattern_binders_at_their_fields_own_types() -> None:
+    """Sub-pattern binders after a wildcard at a refined field's own type
+    (a `Float64` and an `Int` base), at a composite coercion (`Tuple<Int,
+    Nat>` over `Tuple<Int, Int>`) and at `Nat` and `Int` fields: the own-type
+    and composite binders' rows are left to their checks, `tier3`, the rest
+    take no record, as at base, over a projected scrutinee (the lane's
+    `_obligate_subpattern_term` survivors on PR #1843: no cell entered a
+    binder that does not narrow)."""
+    assert _narrowing_records(_OWN_TYPE_SUB_PATTERN_BINDERS) == [('f', 'refine_bind', 'tier3', 15, 17, '', '@Fpos'), ('f', 'refine_bind', 'tier3', 15, 24, '', '@Pos'), ('f', 'nat_bind', 'tier3', 15, 30, '', '@Tuple<Int, Nat> [Tuple.1]')]
+
+
+def test_repro_lane_unprojected_binders_at_their_fields_own_types() -> None:
+    """The same binders nested under a literal construction
+    (`_record_nested_subpattern_fallbacks`), as at base."""
+    assert _narrowing_records(_UNPROJECTED_OWN_TYPE_SUB_PATTERN_BINDERS) == [('g', 'refine_bind', 'verified', 13, 14, '', '@Fpos'), ('g', 'refine_bind', 'verified', 13, 21, '', '@Pos'), ('g', 'nat_bind', 'violated', 18, 56, 'E503', '@Int.0'), ('g', 'refine_bind', 'tier3', 19, 16, '', '@Fpos'), ('g', 'refine_bind', 'tier3', 19, 23, '', '@Pos'), ('g', 'nat_bind', 'tier3', 19, 29, '', '@Tuple<Int, Nat> [Tuple.1]'), ('E503', "@Int value narrowing into a @Nat tuple component in 'g' may be negative.")]
+
+
+_SUB_PATTERN_OVER_A_REFINED_FIELD = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+type NonNeg = { @Int | @Int.0 >= 0 };
+
+private data R {
+  MkR(Pos)
+}
+
+public fn f(@Option<R> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Option<R>.0 {
+    Some(MkR(@NonNeg)) -> @NonNeg.0,
+    None -> 0
+  }
+}
+
+public fn g(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Option<R> = Some(MkR(@Int.0));
+  match @Option<R>.0 {
+    Some(MkR(@NonNeg)) -> @NonNeg.0,
+    None -> 0
+  }
+}
+"""
+
+
+def test_repro_lane_a_sub_pattern_binder_reads_its_fields_refinement() -> None:
+    """A `NonNeg` binder over a `Pos` field: over an opaque source (a
+    parameter) the field's own refinement is the binder's premise and the
+    bind proves; over a source the walk follows to its construction, the
+    construction's argument is, and the construction's own row is refuted
+    (E505), as at base (the lane's `source_ty` survivors in
+    `_obligate_subpattern_term` on PR #1843)."""
+    assert _narrowing_records(_SUB_PATTERN_OVER_A_REFINED_FIELD) == [('f', 'refine_bind', 'verified', 15, 14, '', '@NonNeg'), ('g', 'refine_bind', 'violated', 25, 29, 'E505', '@Int.0'), ('g', 'refine_bind', 'verified', 27, 14, '', '@NonNeg'), ('E505', "Value narrowing into a refined constructor field in 'g' may violate the refinement predicate `@Int.0 > 0`.")]
+
+
+
+
+_CLOSURE_RETURN_WITH_A_REFINED_COMPONENT = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+private fn mk(@Int -> @Tuple<Int, Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Tuple(@Int.0, @Int.0)
+}
+
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  apply_fn(fn(@Int -> @Pos) effects(pure) { @Int.0 }, @Int.0)
+}
+
+public fn b(@Int -> @Tuple<Pos, Nat>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  apply_fn(fn(@Int -> @Tuple<Pos, Nat>) effects(pure) { mk(@Int.0) }, @Int.0)
+}
+
+public fn k(@Int -> @Tuple<Pos, Nat>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  apply_fn(fn(@Int -> @Tuple<Pos, Nat>) effects(pure) { if @Int.0 > 0 then { mk(@Int.0) } else { mk(0 - @Int.0) } }, @Int.0)
+}
+"""
+
+
+def test_repro_a_closure_return_s_refined_component_keeps_its_own_record() -> None:
+    """A closure returning `Tuple<Pos, Nat>` from a `Tuple<Int, Int>` call,
+    directly and through an `if`: each value leaf's components and the
+    closure return type's components keep their own `tier3` records, with
+    no disclosure at the closure return, record for record as at base.
+    At 030734a9 the closure arm's refined branch fired on the component's
+    row: the leaf's record took an `E506` and a closure-return warning, and
+    the return type's `[Tuple.0]` row had no record (PR #1843)."""
+    assert _narrowing_records(_CLOSURE_RETURN_WITH_A_REFINED_COMPONENT) == [
+        ('f', 'refine_bind', 'tier3', 16, 45, 'E506', '<expr>'),
+        ('b', 'nat_bind', 'tier3', 24, 57, '', 'mk(@Int.0) [Tuple.1]'),
+        ('b', 'refine_bind', 'tier3', 24, 57, '', 'mk(@Int.0) [Tuple.0]'),
+        ('b', 'refine_bind', 'tier3', 24, 24, '', '@Tuple<Pos, Nat> [Tuple.0]'),
+        ('b', 'refine_bind', 'tier3', 24, 24, '', '@Tuple<Pos, Nat> [Tuple.1]'),
+        ('b', 'refine_bind', 'tier3', 19, 22, 'E506', '@Tuple<Pos, Nat> [Tuple.0]'),
+        ('b', 'refine_bind', 'tier3', 19, 22, 'E506', '@Tuple<Pos, Nat> [Tuple.1]'),
+        ('k', 'nat_bind', 'tier3', 32, 78, '', 'mk(@Int.0) [Tuple.1]'),
+        ('k', 'refine_bind', 'tier3', 32, 78, '', 'mk(@Int.0) [Tuple.0]'),
+        ('k', 'nat_bind', 'tier3', 32, 98, '', 'mk(0 - @Int.0) [Tuple.1]'),
+        ('k', 'refine_bind', 'tier3', 32, 98, '', 'mk(0 - @Int.0) [Tuple.0]'),
+        ('k', 'refine_bind', 'tier3', 32, 24, '', '@Tuple<Pos, Nat> [Tuple.0]'),
+        ('k', 'refine_bind', 'tier3', 32, 24, '', '@Tuple<Pos, Nat> [Tuple.1]'),
+        ('k', 'refine_bind', 'tier3', 27, 22, 'E506', '@Tuple<Pos, Nat> [Tuple.0]'),
+        ('k', 'refine_bind', 'tier3', 27, 22, 'E506', '@Tuple<Pos, Nat> [Tuple.1]'),
+        ('E506', "Refinement predicate at a closure return in 'f' could not be verified statically; it will be checked at run time. To prove it statically, add a `requires(...)` implying the predicate or guard the binding with an `if`."),
+        ('E506', "Refinement predicate at a return type in 'b' could not be verified statically; it will be checked at run time. To prove it statically, add a `requires(...)` implying the predicate or guard the binding with an `if`."),
+        ('E506', "Refinement predicate at a return type in 'k' could not be verified statically; it will be checked at run time. To prove it statically, add a `requires(...)` implying the predicate or guard the binding with an `if`."),
+    ]
+
+_REFINED_CLOSURE_RETURN_OVER_A_NAT_COMPONENT = """\
+type PT = { @Tuple<Int, Nat> | true };
+
+private fn mk(@Int -> @Tuple<Int, Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Tuple(@Int.0, @Int.0)
+}
+
+public fn c(@Int -> @PT)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  apply_fn(fn(@Int -> @PT) effects(pure) { mk(@Int.0) }, @Int.0)
+}
+
+public fn d(@Int -> @PT)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  apply_fn(fn(@Int -> @PT) effects(pure) { if @Int.0 > 0 then { mk(@Int.0) } else { mk(0 - @Int.0) } }, @Int.0)
+}
+"""
+
+
+def test_repro_lane_a_refined_closure_return_keeps_its_nat_components() -> None:
+    """A closure whose return type is a refinement over `Tuple<Int, Nat>`,
+    returning a `Tuple<Int, Int>` call, directly and through an `if`: the
+    body's refined record is disclosed at the closure return (E506), and the
+    `Nat` component of each value leaf and of the return type is left to the
+    boundary's check, `tier3`, as at base (the Mutation (diff) lane's
+    `_binding_closure` survivors on PR #1843: no cell held a closure's
+    boundary components beside a refined return)."""
+    assert _narrowing_records(_REFINED_CLOSURE_RETURN_OVER_A_NAT_COMPONENT) == [
+        ("c", "nat_bind", "tier3", 16, 44, "", "mk(@Int.0) [Tuple.1]"),
+        ("c", "refine_bind", "tier3", 16, 44, "E506", "<expr>"),
+        ("c", "refine_bind", "tier3", 16, 24, "", "@PT [Tuple.1]"),
+        ("c", "refine_bind", "tier3", 16, 3, "E506", "<expr>"),
+        ("c", "refine_bind", "tier3", 11, 22, "", "@PT [Tuple.1]"),
+        ("d", "nat_bind", "tier3", 24, 65, "", "mk(@Int.0) [Tuple.1]"),
+        ("d", "nat_bind", "tier3", 24, 85, "", "mk(0 - @Int.0) [Tuple.1]"),
+        ("d", "refine_bind", "tier3", 24, 44, "E506", "<expr>"),
+        ("d", "refine_bind", "tier3", 24, 24, "", "@PT [Tuple.1]"),
+        ("d", "refine_bind", "tier3", 24, 3, "E506", "<expr>"),
+        ("d", "refine_bind", "tier3", 19, 22, "", "@PT [Tuple.1]"),
+        ("E506", "Refinement predicate at a closure return in 'c' could not "
+                 "be verified statically; it will be checked at run time. To "
+                 "prove it statically, add a `requires(...)` implying the "
+                 "predicate or guard the binding with an `if`."),
+        ("E506", "Refinement predicate at a return type in 'c' could not be "
+                 "verified statically; it will be checked at run time. To "
+                 "prove it statically, add a `requires(...)` implying the "
+                 "predicate or guard the binding with an `if`."),
+        ("E506", "Refinement predicate at a closure return in 'd' could not "
+                 "be verified statically; it will be checked at run time. To "
+                 "prove it statically, add a `requires(...)` implying the "
+                 "predicate or guard the binding with an `if`."),
+        ("E506", "Refinement predicate at a return type in 'd' could not be "
+                 "verified statically; it will be checked at run time. To "
+                 "prove it statically, add a `requires(...)` implying the "
+                 "predicate or guard the binding with an `if`."),
+    ]
+
+
+_DESTRUCTURE_OF_AN_OPAQUE_SOURCE = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+type NonNeg = { @Int | @Int.0 >= 0 };
+
+type MkPair = fn(Int -> Tuple<Pos, Int>) effects(pure);
+
+public fn f(@MkPair, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let Tuple<@NonNeg, @Int> = apply_fn(@MkPair.0, @Int.0);
+  @NonNeg.0 + @Int.0
+}
+"""
+
+
+def test_repro_lane_a_destructure_binder_reads_an_opaque_sources_field_type() -> None:
+    """A non-literal destructure of a closure application's `Tuple<Pos,
+    Int>`: the source is opaque, so the component's declared `Pos` is the
+    `NonNeg` binder's premise and the bind proves, as at base (the lane's
+    `_obligate_destructure_narrowings` survivors on PR #1843: no cell
+    destructured an opaque source whose term carries no fact)."""
+    assert _narrowing_records(_DESTRUCTURE_OF_AN_OPAQUE_SOURCE) == [
+        ("f", "refine_bind", "verified", 12, 14, "", "@NonNeg"),
+    ]
 
 def test_the_handle_values_fix_is_a_guarded_construction(tmp_path: Path) -> None:
     """The fix text applied: the payload bound outside the handle and the
@@ -2271,29 +2811,28 @@ public fn f(@Float64 -> @Int)
 """
 
 
-def test_the_walk_decides_nothing_at_a_site_with_no_row() -> None:
-    """The binding walk still visits sites and records there (the known
-    gap: it is the verifier's context provider); at a site the table lists
-    no row, here an argument of exactly its parameter's type, what it
-    records is dropped with its warning, so it decides nothing."""
+def test_no_record_is_made_at_a_site_with_no_row() -> None:
+    """The traversal discharges a node only where the table lists a row
+    (#1836): at a site with none, here an argument of exactly its
+    parameter's type, nothing is discharged, so no record is made there to
+    be dropped, and no diagnostic stands there."""
     from vera import verifier as vmod
 
-    dropped: list[tuple[int, int]] = []
-    real = vmod.ContractVerifier._anchored_rows
+    rowless: list[tuple[int, int]] = []
+    real = vmod.ContractVerifier._settle_rows
 
-    def anchored(self, rec, rows, decl):  # type: ignore[no-untyped-def]
-        hit = real(self, rec, rows, decl)
-        if not hit and rec.fn_name == "f":
-            dropped.append((rec.line, rec.column))
-        return hit
+    def settle(self, decl, start, made, *, premise=None):  # type: ignore[no-untyped-def]
+        rowless.extend((r.line, r.column) for r in made
+                       if r.kind in vmod._TABLE_KINDS and not r.rows)
+        return real(self, decl, start, made, premise=premise)
 
-    vmod.ContractVerifier._anchored_rows = anchored  # type: ignore[method-assign]
+    vmod.ContractVerifier._settle_rows = settle  # type: ignore[method-assign]
     try:
         v = _verified(_SAME_TYPE_ARGUMENT)
     finally:
-        vmod.ContractVerifier._anchored_rows = real  # type: ignore[method-assign]
+        vmod.ContractVerifier._settle_rows = real  # type: ignore[method-assign]
     site = (27, 11)
-    assert site in dropped, dropped
+    assert rowless == [], rowless
     assert [o for o in v.result.obligations if (o.line, o.column) == site] == []
     assert [d for d in v.result.diagnostics
             if (d.location.line, d.location.column) == site] == []
