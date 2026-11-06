@@ -59,7 +59,7 @@ Exit criterion: each listed drift class has a generator or a gate, and a release
 
 *Readable parts, and a spec that states the language.*
 
-The large classes split once Stages 25 to 27 have deleted what they duplicate, and the spec hands its implementation status to the documents that track it.  The stage closes what remains of the [debt track](https://github.com/aallan/vera/milestone/10).  Code generation's seventeen remaining readers of a written type, `_type_expr_to_wasm_type` among them, are lines of [#1525](https://github.com/aallan/vera/issues/1525) that close in v0.2.8.
+The large classes split once Stages 25 to 27 have deleted what they duplicate, and the spec hands its implementation status to the documents that track it.  The stage closes what remains of the [debt track](https://github.com/aallan/vera/milestone/10).  Code generation's seventeen remaining readers of a written type, `_type_expr_to_wasm_type` among them, are lines of [#1525](https://github.com/aallan/vera/issues/1525) that close in v0.2.8.  Two pieces of Stage 27's table carry over: §6.4.2's taint rules go, and `test_nested_container_guards` moves wholly to the nightly lane.
 
 Exit criterion: no function is over 500 lines, and the spec carries no implementation status.
 
