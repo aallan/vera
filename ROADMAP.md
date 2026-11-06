@@ -14,7 +14,7 @@ Ordering derives from the design principles ([DESIGN.md](DESIGN.md)): verificati
 
 [TESTING.md](TESTING.md#overview) counts the tests, the conformance programs and the examples.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs, plus the *limitations* the stages below retire.
 
-v0.3.0 is the sound base (Stage 29), reached through v0.2.7 and v0.2.8 (Stages 27 and 28) after v0.2.6's typed program (Stage 26, in [HISTORY.md](HISTORY.md)).  The feature release follows it in Stage 30: the `Decision` effect ([#1467](https://github.com/aallan/vera/issues/1467)) and its blockers, [#351](https://github.com/aallan/vera/issues/351) and [#370](https://github.com/aallan/vera/issues/370).
+v0.3.0 is the sound base (Stage 29), reached through v0.2.8 (Stage 28) after v0.2.7's obligation table (Stage 27, in [HISTORY.md](HISTORY.md)).  The feature release follows it in Stage 30: the `Decision` effect ([#1467](https://github.com/aallan/vera/issues/1467)) and its blockers, [#351](https://github.com/aallan/vera/issues/351) and [#370](https://github.com/aallan/vera/issues/370).
 
 ## The bug queue
 
@@ -55,21 +55,11 @@ Exit criterion: each listed drift class has a generator or a gate, and a release
 | [#1611](https://github.com/aallan/vera/issues/1611) | Five test cells that can pass without exercising what they assert — each shown by a mutation or a direct run. |
 | [#1612](https://github.com/aallan/vera/issues/1612) | Stale comments and docstrings in tests and two compiler helpers, a test cache that never hits, and a mis-positioned constructor call. |
 
-## Stage 27 — One obligation table (v0.2.7)
-
-*Every obligation listed once.*
-
-Stage 27 finishes the shared representation [#1525](https://github.com/aallan/vera/issues/1525) asks for, after v0.2.5's names and v0.2.6's types: obligations, derived once and read by every later phase.
-
-One pass lists every obligation site; the verifier discharges what it can and code generation guards the rest, so whether an obligation is `tier3` or `tier3_unguarded` is read from its record rather than predicted.  Code generation and the verifier both read the table's rows, the reconciliation join keys on row identity, the verifier's `guarded=` claims and the mirror predicates are gone, and the corpus gate's and the generator's allowlists are empty.  The verifier discharges a node only where the table lists a row there, each record keyed to its rows where it is made, with no fallback for a row no discharge reaches, and code generation decides a guard by its row alone: every obligation record and every emitted guard come from one row, which is the stage's exit criterion.  Once coverage is complete, `tier3_unguarded` becomes an error, §6.4.2's taint rules go, and `test_nested_container_guards` moves wholly to the nightly lane.  The table reads the node types v0.2.6's typed program carries.  It closes the guard-agreement cluster ([milestone v0.2.7](https://github.com/aallan/vera/milestone/7)).  Code generation's seventeen remaining readers of a written type, `_type_expr_to_wasm_type` among them, are lines of [#1525](https://github.com/aallan/vera/issues/1525) that close in v0.2.7, with Stage 27's table.
-
-Exit criterion: every obligation record and every emitted guard come from one table entry, by construction.
-
 ## Stage 28 — Decomposition and the spec (v0.2.8)
 
 *Readable parts, and a spec that states the language.*
 
-The large classes split once Stages 25 to 27 have deleted what they duplicate, and the spec hands its implementation status to the documents that track it.  The stage closes what remains of the [debt track](https://github.com/aallan/vera/milestone/10).
+The large classes split once Stages 25 to 27 have deleted what they duplicate, and the spec hands its implementation status to the documents that track it.  The stage closes what remains of the [debt track](https://github.com/aallan/vera/milestone/10).  Code generation's seventeen remaining readers of a written type, `_type_expr_to_wasm_type` among them, are lines of [#1525](https://github.com/aallan/vera/issues/1525) that close in v0.2.8.  Two pieces of Stage 27's table carry over: §6.4.2's taint rules go, and `test_nested_container_guards` moves wholly to the nightly lane.
 
 Exit criterion: no function is over 500 lines, and the spec carries no implementation status.
 
