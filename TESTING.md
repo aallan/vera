@@ -87,7 +87,7 @@ What each row counts, as the v0.2.0 column counted it:
 - **Spec words**: the whitespace-separated words of `spec/*.md`.
 - **Issue links in the spec**: the `https://github.com/aallan/vera/issues/N` links in `spec/*.md`.
 
-Measured for v0.2.6 by `scripts/render_status.py`.  The v0.2.0 column is the audit's measurement of 6508cc32, taken on 2026-10-06 and held in `scripts/scorecard.py`.  `scripts/check_doc_counts.py --release` measures the tree's rows again; the others change from one moment to the next, so it asks of each only that it states the window it was measured over.
+Measured for v0.2.7 by `scripts/render_status.py`.  The v0.2.0 column is the audit's measurement of 6508cc32, taken on 2026-10-06 and held in `scripts/scorecard.py`.  `scripts/check_doc_counts.py --release` measures the tree's rows again; the others change from one moment to the next, so it asks of each only that it states the window it was measured over.
 <!-- render_status:end scorecard -->
 
 ## Running Tests
