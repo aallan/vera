@@ -1,6 +1,6 @@
 # History
 
-How the Vera compiler was built, from initial commit through the one typed program of Stage 26, across 166 active development days.
+How the Vera compiler was built, from initial commit through the one obligation table of Stage 27, across 173 active development days.
 
 Vera was developed in an interleaved spiral — each phase added a complete compiler layer with tests, documentation, and working examples before moving to the next. The compiler was built by a single developer working with Claude Code, with CodeRabbit providing AI code review on pull requests from v0.0.80 onwards. The entire project — language design, specification, compiler, test suite, documentation, website — was built from scratch starting 22 February 2026.
 
@@ -34,6 +34,7 @@ Version rows follow one rule: one sentence, at most one issue link.  [CHANGELOG.
 | 24 | 15–16 Oct | Hosts and the fold | v0.2.4 |
 | 25 | 21–22 Oct | One resolver | v0.2.5 |
 | 26 | 22–28 Oct | One typed program | v0.2.6 |
+| 27 | 29 Oct – 9 Nov | One obligation table | v0.2.7 |
 
 ---
 
@@ -537,6 +538,16 @@ v0.2.6 gave types one owner.  The checker records each generic call's type argum
 |---------|------|-------------|
 | v0.2.6 | 28 Oct | **One typed program** — every generic's instances derived once from the check and judged at the call that chooses them, code generation and the verifier each reading every type from the typed program, save seventeen code-generation functions that read a written type, a call argument's open type variable bound to one type and a function-typed argument's by the polarity of its position, every diagnostic with a registered code, every source decoded by one reader with a file that is not UTF-8 refused, a collector that never marks a free block, a module declaring only the cells and tags its code uses, the program generator's second version with a warm-session differential, the mutation lanes installing the lock with an engine-failure classifier and its class matrix, and the lock on z3-solver 5.3.2.0 with the hold on 5.x ended. |
 
+## Stage 27: One obligation table (29 October – 9 November)
+
+*Every obligation listed once.*
+
+v0.2.7 gave obligations one owner.  One pass over the typed program, `vera/obligations/table.py`, lists every obligation site once as a row; code generation emits a runtime check for every row the table holds guardable and for no other node, and `vera verify` discharges every row in the context its traversal reaches it in, each record naming the rows it discharges, so whether a site has a runtime check is read from its row rather than predicted.  The verifier's 49 `guarded=` predictions, its six mirrors of code generation's decisions, its narrowing walk, its fallback discharge and the roster of guarded positions are gone; the reconciliation join keys on row identity, and the corpus gate and the program generator allowlist nothing where both listed 30 entries in 7 classes.  A row no check can guard is disclosed, never counted, and a signed division whose divisor only a zero check excludes is Tier 3, its `INT_MIN / -1` row left to the check.  Around the table: a refinement the checker recorded at a join is no longer a premise of the value; a generic instantiated at a function type compiles; an expression the verifier cannot translate is one stand-in of its checked type's sort under one rule; a refused binder draws no second error and a refuted postcondition's counterexample prints the body's result; a composite coercion into a `Nat` component is guarded by one rule over the typed program; the nightly matrix is a workflow of its own on pinned images; and the nightly mutation sweep measures a sample drawn by line, each session in a process of its own.
+
+| Version | Date | What shipped |
+|---------|------|-------------|
+| v0.2.7 | 9 Nov | **One obligation table** — every obligation site listed once as a row that code generation guards and the verifier discharges, the `guarded=` predictions, the mirrors and the fallback discharge gone, the reconciliation join keyed on row identity with no allowlist, a join's recorded refinement no longer a premise, a generic at a function type compiled, one rule for an expression the verifier cannot translate, no second error at a refused binder and the body's result in a counterexample, composite `Nat` coercions guarded, the nightly matrix on pinned images, and the mutation sweep sampled by line. |
+
 ---
 
 ## By the numbers
@@ -556,4 +567,4 @@ Ten releases, chosen for the capability each one unlocked rather than even spaci
 | Spec chapters | 7 | 10 | 12 | 13 | 13 | 13 | 13 | 14 | 14 | 14 |
 | Python coverage | — | — | 90% | 96% | 95% | 95% | 95% | 95% | 95% | 95% |
 
-Total: **3,200+ commits, 218 tagged releases, 166 active development days.**
+Total: **3,200+ commits, 219 tagged releases, 173 active development days.**
