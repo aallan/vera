@@ -647,6 +647,12 @@ class CallsMixin:
             return ty.name
         return None
 
+    def _open_variable(self, ty: Type) -> bool:
+        """Whether *ty* is a bare type variable that is not the enclosing
+        function's own: one a call left open (`T$3`), or a built-in's, for
+        the context that fixes it to judge."""
+        return isinstance(ty, TypeVar) and self._rigid_variable(ty) is None
+
     def _rigid_fix(self, name: str, given: Type) -> str:
         """The fix for a value of type *given* where the enclosing
         function's own type parameter *name* is required (#1684): a value
@@ -1721,19 +1727,20 @@ class CallsMixin:
                 self._effect_ops_used.add(op_info.parent_effect)
             return return_type
 
-        # #1684: each argument is held to its parameter by the fit, as a
-        # call's is.  A parameter the effect's own type variable types,
-        # which no handler or row instance gave a type, is not judged here
-        # (the row judgement below refuses the call); the enclosing
-        # function's own type variable is a type, which only a value of
-        # that type fits.
+        # #1684: the enclosing function's own type variable is a type, which
+        # only a value of that type fits: subtyping matches it by name.  A
+        # parameter the effect's own type variable types, which no handler
+        # or row instance gave a type, is not judged here (the row
+        # judgement below refuses the call).  A handler or a row names the
+        # instance in types a program writes, so no other variable reaches
+        # a parameter here.
         for i, (arg_ty, param_ty) in enumerate(zip(arg_types, param_types)):
             if arg_ty is None or isinstance(arg_ty, UnknownType):
                 continue
             if (isinstance(param_ty, UnknownType)
                     or _unmapped(op_info.param_types[i], mapping)):
                 continue
-            if not self._fits(arg_ty, param_ty):
+            if not is_subtype(arg_ty, param_ty):
                 rigid = self._rigid_variable(param_ty)
                 self._error(
                     args[i],
@@ -2145,10 +2152,13 @@ class CallsMixin:
             if arg_ty is None or isinstance(arg_ty, UnknownType):
                 continue
             # #1684: the enclosing function's own type variable is a type,
-            # which only a value of that type fits.  The ability's own
-            # variable is never left without a type here: an argument that
-            # reaches this check is typed, and fixes it.
-            if isinstance(param_ty, UnknownType):
+            # which only a value of that type fits: subtyping matches it by
+            # name.  A variable a call left open is judged by the context
+            # that fixes it.  The ability's own variable is never left
+            # without a type here: an argument that reaches this check is
+            # typed, and fixes it.
+            if (isinstance(param_ty, UnknownType)
+                    or self._open_variable(param_ty)):
                 continue
             if not is_subtype(arg_ty, param_ty):
                 # #993: the args were synthesized with no expected type, so
@@ -2173,10 +2183,6 @@ class CallsMixin:
                         arg_types[i] = resynth
                         if is_subtype(arg_ty, param_ty):
                             continue
-                # A type variable the call left open in either type is
-                # bound once, as at a call's argument (`_fits`).
-                if self._fits(arg_ty, param_ty):
-                    continue
                 rigid = self._rigid_variable(param_ty)
                 self._error(
                     args[i],

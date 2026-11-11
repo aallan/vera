@@ -388,6 +388,90 @@ def test_an_operation_no_instance_types_is_refused_by_the_row_alone(
     assert _codes(_UNMAPPED) == ["E122"]
 
 
+_HEAD_PLAIN = """\
+private forall<T> fn head_plain(@Array<T> -> @T)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Array<T>.0[0]
+}
+
+private forall<T> fn nothing(@Unit -> @Option<T>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  None
+}
+
+"""
+
+_OPERATION_HOLE = _HEAD_PLAIN + """\
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[State<Int>](@Int = 0) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) }
+  } in {
+    put(head_plain([]));
+    get(())
+  }
+}
+"""
+
+_ABILITY_HOLE = _HEAD_PLAIN + """\
+public fn main(@Unit -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  eq(nothing(()), Some(5))
+}
+"""
+
+
+@pytest.mark.parametrize(("source", "code"), [
+    (_OPERATION_HOLE, "E204"), (_ABILITY_HOLE, "E241")],
+    ids=["operation", "ability"])
+def test_a_variable_a_call_left_open_stays_refused_where_it_was(
+        source: str, code: str) -> None:
+    """A value whose type holds a variable its call left open (an empty
+    literal's element type, a `None` no argument types) is refused at an
+    operation's and an ability operation's argument, as at bf6d5003.  The
+    fit would bind the variable there and drop the binding, so the call's
+    instance would stay open: `put(head_plain([]))` then checks and its
+    module does not load.  Fixing such a variable from its context is the
+    next change of #1684, not this one."""
+    assert _codes(source) == [code]
+
+
+_ABILITY_TWO_HOLES = _HEAD_PLAIN + """\
+public fn main(@Unit -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  eq(head_plain([]), head_plain([]))
+}
+"""
+
+
+def test_an_ability_parameter_a_call_left_open_is_not_judged() -> None:
+    """`eq`'s `A` taken from the first argument's open variable: the second
+    argument's own open variable is not held to it by name, as at
+    bf6d5003, where the program checks, verifies and stops at the empty
+    array's index; the context that fixes the two is #1684's next change.
+    """
+    assert _codes(_ABILITY_TWO_HOLES) == []
+    ran = pipeline.run(_ABILITY_TWO_HOLES)
+    assert ran.trap is not None and "Array index out of bounds" in str(
+        ran.trap)
+
+
 @pytest.mark.parametrize("source", list(_NEIGHBOURS.values()),
                          ids=list(_NEIGHBOURS))
 def test_an_accepted_neighbour_still_checks_and_runs(source: str) -> None:
