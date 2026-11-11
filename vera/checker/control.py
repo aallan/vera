@@ -202,6 +202,12 @@ def _no_call(_call: ast.Expr) -> str | None:
     return None
 
 
+def _always_throws(ty: Type) -> bool:
+    """Whether a handler's body of type *ty* always throws (`Never`), so
+    the handler's value is its clause's."""
+    return isinstance(ty, PrimitiveType) and ty.name == "Never"
+
+
 def _no_guarded_subtraction(_sub: ast.Expr) -> bool:
     """A subtraction-guard oracle that guards none: in an `@Int` arm every
     subtraction can go below zero as far as the join knows (a `@Nat`
@@ -2013,47 +2019,42 @@ class ControlFlowMixin:
         reconciles is refused at the clause (E341): read at the body's type,
         a clause's `Some(5)` became a `Result`'s `Err(5)`."""
         joined = body_type
-        # The arms the handler's value is one of so far, each at its own
-        # type: the judgement of what they share reads them all.
+        # The arms the handler's value is one of, each at its own type: the
+        # judgement of what they share reads them all.
         arms: list[tuple[ast.Expr | None, Type]] = []
         if body_type is not None:
             arms.append((expr.body, body_type))
         for clause, clause_type in clause_types:
-            if joined is None or isinstance(joined, UnknownType):  # pragma: no mutate — equivalent: an unknown body falls to the Never test below, which types_equal answers True for the unknown, and does the same
+            arms.append((clause.body, clause_type))
+            # The structure (each open position's filling) is the join's;
+            # the facts are what the arms share (`_value_join`).  A clause
+            # that re-throws (`Never`) or that the check refused states
+            # nothing, and the join leaves the body's type; a body that
+            # always throws gives the clause's.
+            if joined is None or _always_throws(joined):
                 joined = clause_type
-                arms.append((clause.body, clause_type))  # pragma: no mutate — equivalent: an Exn handler has one operation, so one clause, and no later join reads arms
-                continue  # pragma: no mutate — equivalent: an Exn handler has one operation, so the loop has no later clause
-            if isinstance(clause_type, UnknownType):
-                continue
-            if types_equal(joined, NEVER):
-                joined = clause_type
-                arms.append((clause.body, clause_type))
-                continue
-            if types_equal(clause_type, NEVER):
-                continue
-            if is_subtype(clause_type, joined):
-                merged = self._join(clause_type, joined) or joined
-            elif is_subtype(joined, clause_type):
-                merged = self._join(joined, clause_type) or clause_type
-            else:
-                merged = self._join(clause_type, joined)
-            if merged is not None:
-                arms.append((clause.body, clause_type))
+            # `_join` answers None under a subtype only on a binding
+            # conflict (`_join_parts` returns the onto side for a subtype
+            # the walk refuses), and `is_subtype` admits a type variable only
+            # where the other side has the same variable or the unknown,
+            # which binds no two types to one variable: so a clause that is
+            # a subtype of the body always joins, as it was always kept.
+            elif (merged := self._join(clause_type, joined)) is not None:
                 joined = self._value_join(merged, arms)
-                continue
-            self._error(
-                clause.body,
-                f"The '{clause.op_name}' clause's value has type "
-                f"{pretty_inferred_type(clause_type)}, but the handler's "
-                f"value is {pretty_inferred_type(joined)}.",
-                rationale=("An Exn handler's value is its handled body's, "
-                           "or, when the body throws, the clause's: the two "
-                           "are one value, so they have one type, as the "
-                           "branches of an if do."),
-                fix=self._exn_clause_fix(clause, joined),
-                spec_ref='Chapter 7, Section 7.5.2 "Handler Semantics"',
-                error_code="E341",
-            )
+            else:
+                self._error(
+                    clause.body,
+                    f"The '{clause.op_name}' clause's value has type "
+                    f"{pretty_inferred_type(clause_type)}, but the handler's "
+                    f"value is {pretty_inferred_type(joined)}.",
+                    rationale=("An Exn handler's value is its handled body's, "
+                               "or, when the body throws, the clause's: the two "
+                               "are one value, so they have one type, as the "
+                               "branches of an if do."),
+                    fix=self._exn_clause_fix(clause, joined),
+                    spec_ref='Chapter 7, Section 7.5.2 "Handler Semantics"',
+                    error_code="E341",
+                )
         return joined
 
     def _exn_clause_fix(self, clause: ast.HandlerClause, ty: Type) -> str:

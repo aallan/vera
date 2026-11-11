@@ -1226,3 +1226,60 @@ def test_a_handler_whose_body_is_refused_has_its_clauses_type() -> None:
     checked = pipeline.check(source, file=FILE)
     assert [d.error_code for d in checked.errors] == ["E130", "E170"]
     assert "value has type String" in checked.errors[1].description
+
+
+#: Each branch of the `Exn` handler's join, unparametrised so every pull
+#: request runs it: (the function's parameters and return, the clause's
+#: value, the handled body, the handler's record).
+HANDLER_BRANCHES = [
+    # the clause a subtype of the body: the facts both state
+    ("@Int, @PosInt -> @Int", "@PosInt.0", "@Int.0", "Int"),
+    ("@PosInt -> @Int", "@PosInt.0", "@PosInt.0", "{Int|PosInt}"),
+    # the body always throws: the clause's type
+    ("@PosInt -> @Int", "@PosInt.0", 'throw("x")', "{Int|PosInt}"),
+    # the clause throws again: the body's type
+    ("@PosInt -> @Int", 'throw("y")', "@PosInt.0", "{Int|PosInt}"),
+    # an open position on either side, filled from the other
+    ("@PosInt -> @Option<PosInt>", "None", "Some(@PosInt.0)",
+     "Option<{Int|PosInt}>"),
+    ("@PosInt -> @Option<PosInt>", "Some(@PosInt.0)", "None",
+     "Option<{Int|PosInt}>"),
+]
+
+
+def test_repro_1716_every_branch_of_the_handler_join() -> None:
+    for signature, clause, body, expected in HANDLER_BRANCHES:
+        params, ret = signature.split(" -> ")
+        source = (_HEAD + f"private fn j({params} -> {ret})\n"
+                  "  requires(true)\n  ensures(true)\n"
+                  "  effects(<Exn<String>>)\n{\n"
+                  f"  handle[Exn<String>] {{\n    throw(@String) -> {{ {clause} }}\n"
+                  f"  }} in {{\n    {body}\n  }}\n}}\n")
+        assert _recorded(source, ast.HandleExpr) == [expected], (
+            signature, clause, body)
+
+
+def test_repro_1716_a_handler_clause_the_check_refused_takes_no_part() -> None:
+    """A clause whose value the check refused (`Unknown`) leaves the
+    handler at its body's type, so a `let` of another type reports the
+    mismatch against the body (E170 naming `String`)."""
+    source = ("public fn f(@Int -> @Int)\n  requires(true)\n  ensures(true)\n"
+              "  effects(pure)\n{\n  let @Int = handle[Exn<Int>] {\n"
+              "    throw(@Int) -> { @Bool.0 }\n  } in {\n"
+              '    "s"\n  };\n  @Int.0\n}\n')
+    checked = pipeline.check(source, file=FILE)
+    assert [d.error_code for d in checked.errors] == ["E130", "E170"]
+    assert "value has type String" in checked.errors[1].description
+
+
+def test_a_refused_clause_beside_a_throwing_body_reports_what_it_did() -> None:
+    """A clause the check refused beside a body that always throws makes
+    the handler the checker's unknown (at f71c401c it stayed `Never`):
+    either silences what follows, so the program reports the clause's own
+    error and nothing more, as it did there."""
+    source = ("public fn f(@Int -> @Int)\n  requires(true)\n  ensures(true)\n"
+              "  effects(pure)\n{\n  let @String = handle[Exn<Int>] {\n"
+              "    throw(@Int) -> { @Bool.0 }\n  } in {\n    throw(1)\n  };\n"
+              "  @Int.0\n}\n")
+    checked = pipeline.check(source, file=FILE)
+    assert [d.error_code for d in checked.errors] == ["E130"]
