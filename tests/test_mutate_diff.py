@@ -1890,6 +1890,37 @@ class TestMutantNames:
         assert fnmatch.fnmatch("vera.smt.x_translate__mutmut_7", glob)
         assert not fnmatch.fnmatch("vera.smt.x_translate_call__mutmut_7", glob)
 
+    def test_the_clean_run_is_the_changed_units_covering_tests(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """mutmut reads its clean run's tests off the targets it is handed
+        (``tests_for_mutant_names``): a glob is matched against the
+        functions' names, which hold no ``__mutmut_``, and adds no test, so a
+        run of globs alone ran the whole selection clean (#1838).  The lane's
+        targets add each changed unit's covering tests, and no prefix twin's."""
+        pytest.importorskip("mutmut")
+        import mutmut.__main__ as engine
+        from mutmut.state import state
+
+        record = state().tests_by_mangled_function_name
+        monkeypatch.setattr(state(), "tests_by_mangled_function_name", type(record)(set))
+        state().tests_by_mangled_function_name.update({
+            "vera.smt.x_translate": {"tests/test_smt.py::test_a"},
+            "vera.smt.x_translate_call": {"tests/test_smt.py::test_twin"},
+            f"vera.smt.x{SEP}SmtContext{SEP}reset": {"tests/test_smt.py::test_b"},
+            "vera.smt.x_other": {"tests/test_smt.py::test_c"}})
+        targets = [target for key in ("x_translate", f"x{SEP}SmtContext{SEP}reset")
+                   for target in md.mutant_targets("vera/smt.py", key)]
+        assert engine.tests_for_mutant_names(targets) == {"tests/test_smt.py::test_a", "tests/test_smt.py::test_b"}
+        globs = [md.mutant_glob("vera/smt.py", key) for key in ("x_translate", f"x{SEP}SmtContext{SEP}reset")]
+        assert engine.tests_for_mutant_names(globs) == set()  # the run before #1838: the whole selection
+
+    def test_the_targets_select_the_units_mutants_and_no_twins(self) -> None:
+        import fnmatch
+
+        targets = md.mutant_targets("vera/smt.py", "x_translate")
+        keys = ["vera.smt.x_translate__mutmut_1", "vera.smt.x_translate__mutmut_12",
+                "vera.smt.x_translate_call__mutmut_1"]
+        assert [k for k in keys if k in targets or any(fnmatch.fnmatch(k, t) for t in targets)] == keys[:2]
+
     def test_method_glob(self) -> None:
         glob = md.mutant_glob("vera/smt.py", f"x{SEP}SmtContext{SEP}reset")
         assert glob == f"vera.smt.x{SEP}SmtContext{SEP}reset__mutmut_*"
@@ -2437,6 +2468,66 @@ class TestBudget:
 class TestOraclePlugin:
     """`tests/mutation_oracle.py`, the pytest plugin `[tool.mutmut]` loads."""
 
+    @staticmethod
+    def _capped(tmp_path: Path, mutant: str, sleep: float, cap: str | None = "1") -> tuple[Any, Path, float]:
+        """pytest over one test sleeping ``sleep`` s, as mutmut's worker runs
+        a mutant (``MUTANT_UNDER_TEST``), under the cap's variables."""
+        import time
+
+        (tmp_path / "test_planted.py").write_text(
+            f"import time\n\n\ndef test_sleeps():\n    time.sleep({sleep})\n", encoding="utf-8")
+        slow = tmp_path / "slow.txt"
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE", "PYTEST_ADDOPTS")}
+        env.update(PYTHONPATH=str(ROOT), MUTANT_UNDER_TEST=mutant, MUTATION_ORACLE_SLOW=str(slow))
+        if cap is not None:
+            env["MUTATION_ORACLE_CAP_S"] = cap
+        started = time.monotonic()
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", "-p", "tests.mutation_oracle", "-p", "no:cacheprovider",
+             "-o", "addopts=", "test_planted.py"],
+            cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8", check=False, timeout=60)
+        return result, slow, time.monotonic() - started
+
+    def test_a_mutants_run_past_the_cap_ends_with_exit_two_and_is_named(self, tmp_path: Path) -> None:
+        """The cap (#1838): a timer the plugin starts with a mutant's session
+        names the mutant in the file and ends the run with exit 2, which
+        mutmut reads as `check was interrupted by user`, undecided to any
+        reader that does not read the file."""
+        result, slow, elapsed = self._capped(tmp_path, "vera.m.x_f__mutmut_3", sleep=30)
+        assert result.returncode == 2, result.stdout + result.stderr
+        assert elapsed < 20, elapsed
+        (line,) = slow.read_text(encoding="utf-8").splitlines()
+        name, seconds = line.split("\t")
+        assert name == "vera.m.x_f__mutmut_3" and 1.0 <= float(seconds) < 20
+
+    def test_the_cap_is_armed_only_in_a_mutants_run_with_its_variables_set(self, tmp_path: Path) -> None:
+        """mutmut's stats pass and clean run (`stats`, the empty name) and
+        the diff lane, which sets no cap, run as before; a mutant whose run
+        ends inside the cap is not named."""
+        for mutant, cap in (("stats", "1"), ("", "1"), ("vera.m.x_f__mutmut_3", None)):
+            result, slow, _ = self._capped(tmp_path, mutant, sleep=2, cap=cap)
+            assert result.returncode == 0 and "1 passed" in result.stdout, (mutant, cap, result.stdout)
+            assert not slow.exists()
+        result, slow, _ = self._capped(tmp_path, "vera.m.x_f__mutmut_3", sleep=0, cap="30")
+        assert result.returncode == 0 and not slow.exists()
+
+    def test_the_slow_line_is_one_append(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Each line is one ``os.write`` on an ``O_APPEND`` descriptor, so two
+        workers ending at once write whole lines."""
+        from tests import mutation_oracle
+
+        writes: list[tuple[int, bytes]] = []
+        flags: list[int] = []
+        real_open = os.open
+        monkeypatch.setattr(mutation_oracle.os, "open", lambda p, f, m=0o777: flags.append(f) or real_open(p, f, m))
+        monkeypatch.setattr(mutation_oracle.os, "write", lambda fd, b: writes.append((fd, b)) or len(b))
+        monkeypatch.setattr(mutation_oracle.os, "_exit", lambda code: (_ for _ in ()).throw(SystemExit(code)))
+        with pytest.raises(SystemExit) as ended:
+            mutation_oracle._end_slow("vera.m.x_f__mutmut_3", str(tmp_path / "slow.txt"), 0.0)
+        assert ended.value.code == 2 and len(writes) == 1 and writes[0][1].startswith(b"vera.m.x_f__mutmut_3\t")
+        assert flags[0] & os.O_APPEND
+
     def test_a_test_that_starts_a_python_process_is_skipped_and_recorded(self, tmp_path: Path) -> None:
         (tmp_path / "test_planted.py").write_text(
             "import subprocess, sys\n\n\n"
@@ -2918,7 +3009,7 @@ class TestEndToEnd:
         code, record, calls = _main(repo, tmp_path, "    vera.m.x_kept__mutmut_1: killed\n")
         assert code == 0
         run = next(c for c in calls if c["args"][0] == "run")
-        assert run["args"][-1] == "vera.m.x_kept__mutmut_*"
+        assert run["args"][-2:] == ["vera.m.x_kept__mutmut_*", "vera.m.x_kept__mutmut_1"]
         tree = Path(run["cwd"]).resolve()
         assert tree.is_relative_to((tmp_path / "work").resolve())
         cfg = tomllib.loads((tree / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["mutmut"]
