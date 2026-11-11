@@ -31,6 +31,8 @@ from typing import Any
 import pytest
 import yaml
 
+from tests.mutation_engine import starts_the_engine
+
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW = ROOT / ".github" / "workflows" / "mutation-nightly.yml"
 DIFF_WORKFLOW = ROOT / ".github" / "workflows" / "mutation-diff.yml"
@@ -848,6 +850,34 @@ class TestTheRealTail:
             "decided windows carry over, and from tonight each mutant is kept as it is decided" in night["notes"]
         assert sw.load_state(sw.save_state(written, tmp_path / "out"), "x") == written
 
+    def test_the_first_schema_three_night_that_decides_nothing_is_not_the_second(self, tmp_path: Path) -> None:
+        """The live state's last night line, 10 November 2026, reads `moved 0`
+        under schema 2's whole-window count though its engines decided
+        mutants, so it cannot be the first of two empty nights: the first
+        schema 3 night that decides nothing is weather, and only the next
+        one, after a line schema 3 wrote, is red."""
+        raw = _real_state()
+        assert raw["nights"][-1]["moved"] == 0 and "schema" not in raw["nights"][-1]
+        path = tmp_path / sw.STATE_FILE
+        path.write_text(json.dumps(raw), encoding="utf-8")
+        state = sw.load_state(path, "2026-11-11")
+        units = _units_of(state)
+        bins = sw.plan(state, units, jobs=sw.JOBS, budget_s=sw.DEFAULT_BUDGET_S)
+        digest = sw.state_digest(path)
+
+        def stopped(n: int) -> dict[str, Any]:
+            return {**_record(n, sw.JOBS, {}, digest=digest, stopped="budget", counts={}),
+                    "planned": [{"unit": p.unit.ident} for p in bins[n]]}
+
+        first, night = sw.stitch(state, digest, [stopped(n) for n in range(sw.JOBS)], jobs=sw.JOBS, head=HEAD,
+                                 units=units, today="2026-11-11")
+        assert night["problems"] == [] and night["moved"] == 0 and night["schema"] == 3
+        path.write_text(json.dumps(first), encoding="utf-8")
+        digest = sw.state_digest(path)
+        _, night = sw.stitch(sw.load_state(path, "x"), digest, [stopped(n) for n in range(sw.JOBS)], jobs=sw.JOBS,
+                             head=HEAD, units=units, today="2026-11-12")
+        assert night["problems"] == ["the night decided no mutant, and neither did the night before it"]
+
 
 # ---------------------------------------------------------------------------
 # The sample, and the counts it is drawn over
@@ -1053,18 +1083,25 @@ class TestSliceResults:
 
     def test_a_mutant_the_cap_ended_is_slow_and_one_interrupted_otherwise_waits(self) -> None:
         """The oracle plugin's file names each mutant it ended at the cap:
-        that mutant is `slow` whatever the engine recorded (mutmut reads the
-        plugin's exit 2 as interrupted).  One the engine marks interrupted
-        that the file does not name is undecided: never slow, never caught."""
+        a mutant the engine left undecided that the file names is `slow`
+        (mutmut reads the plugin's exit 2 as interrupted).  One the engine
+        marks interrupted that the file does not name is undecided: never
+        slow, never caught.  The timer cannot be withdrawn once its wait has
+        returned, so a run can end with its own verdict after the plugin
+        named it: that verdict stands."""
         listing = {"vera.a.x_f__mutmut_1": "check was interrupted by user",
                    "vera.a.x_f__mutmut_2": "check was interrupted by user", "vera.a.x_f__mutmut_3": "killed"}
         out = sw.slice_results([PICK_A], listing, GENERATED, cut_short=False, finished=True,
-                               slow={"vera.a.x_f__mutmut_1"})
-        assert out[A.ident]["decided"] == {"1": "slow", "3": "killed"}
+                               slow={"vera.a.x_f__mutmut_1", "vera.a.x_f__mutmut_3"})
+        assert out[A.ident]["decided"] == {"1": "slow", "3": "killed"}  # killed and named stays killed
         assert out[A.ident]["survivors"] == [_survivor(3, 3, "slow")]
-        named = sw.slice_results([PICK_A], {**listing, "vera.a.x_f__mutmut_1": "killed"}, GENERATED,
-                                 cut_short=False, finished=True, slow={"vera.a.x_f__mutmut_1"})
-        assert named[A.ident]["decided"]["1"] == "slow"  # the file decides, whatever the engine recorded
+        for engine in ("survived", "timeout", "no tests"):
+            done = sw.slice_results([PICK_A], {**listing, "vera.a.x_f__mutmut_1": engine}, GENERATED,
+                                    cut_short=False, finished=True, slow={"vera.a.x_f__mutmut_1"})
+            assert done[A.ident]["decided"]["1"] == engine
+        stopped = sw.slice_results([PICK_A], {**listing, "vera.a.x_f__mutmut_1": "not checked"}, GENERATED,
+                                   cut_short=True, finished=False, slow={"vera.a.x_f__mutmut_1"})
+        assert stopped[A.ident]["decided"] == {"1": "slow", "3": "killed"}  # the cap ended it before the stop
 
     def test_the_slow_file_is_read_by_its_first_field(self, tmp_path: Path) -> None:
         path = tmp_path / "slow.txt"
@@ -1254,7 +1291,7 @@ class TestStitch:
         _, night = _stitch([_record(0, 1, {})], json.loads(json.dumps(decided)), jobs=1)
         assert night["problems"] == []  # the night before decided a mutant
         lost = json.loads(json.dumps(state))
-        lost["nights"] = [{**_night_line("2026-11-09", [0]), "moved": 0}]
+        lost["nights"] = [{**_night_line("2026-11-09", [0]), "moved": 0, "schema": 3}]
         _, night = _stitch([_record(0, 1, {})], lost, jobs=1)
         assert night["problems"] == ["the night decided no mutant, and neither did the night before it"]
         # Counting a function with no mutant decides it: a night whose plan
@@ -1883,11 +1920,13 @@ HELD_MODULE = ("def f(x):\n    if x > 0:\n        return x + 1\n    return x - 2
                "def g(x):\n    return x * 2\n")
 
 #: Its tests: each sleeps while the mutant under test is one that
-#: ``SWEEP_FIXTURE_HOLD`` names, for ``SWEEP_FIXTURE_HOLD_S`` seconds.
+#: ``SWEEP_FIXTURE_HOLD`` names, for ``SWEEP_FIXTURE_HOLD_S`` seconds.  An
+#: empty name is none: the clean run's ``MUTANT_UNDER_TEST`` is empty, and a
+#: hold read as ``[""]`` once held the clean run for its whole hour.
 HELD_TESTS = (
     "import os\nimport time\n\nfrom vera.m import f, g\n\n\n"
     "def _hold():\n"
-    "    held = os.environ.get('SWEEP_FIXTURE_HOLD', '').split(',')\n"
+    "    held = [n for n in os.environ.get('SWEEP_FIXTURE_HOLD', '').split(',') if n]\n"
     "    if os.environ.get('MUTANT_UNDER_TEST', '') in held:\n"
     "        time.sleep(float(os.environ.get('SWEEP_FIXTURE_HOLD_S', '0')))\n\n\n"
     "def test_f():\n    _hold()\n    assert (f(1), f(-1), f(0)) == (2, -3, -2)\n\n\n"
@@ -1958,6 +1997,20 @@ def _stitch_cli(repo: Path, tmp_path: Path, n: int, state: Path | None) -> tuple
     code = sw.main(["stitch", "--of", "1", "--repo", str(repo), "--slices", str(tmp_path / f"slice{n}"),
                     "--out", str(out), *(["--state", str(state)] if state else [])])
     return code, json.loads((out / sw.STATE_FILE).read_text(encoding="utf-8"))
+
+
+def _engine_said(tmp_path: Path, n: int, record: dict[str, Any] | None = None) -> str:
+    """What a real night's engine printed (its logs' last rows, spinner
+    frames dropped) and its record's stop and phases: a failure's message,
+    so the job log says where the engine stopped."""
+    rows: list[str] = []
+    for log in sorted((tmp_path / f"work{n}").glob("mutmut-run-*.log")):
+        text = log.read_text(encoding="utf-8", errors="replace").replace("\r", "\n")
+        rows += [f"{log.name}: {r.strip()}" for r in text.splitlines() if r.strip()][-25:]
+    if record is not None:
+        rows.append(json.dumps({k: record.get(k) for k in (
+            "stopped", "engine_exit", "engine_error", "engine_tail", "phases", "engine_status", "slow")}))
+    return "\n".join(rows)
 
 
 _REAL_RUN_ENGINE = sw.md.run_engine
@@ -2258,6 +2311,7 @@ class TestEndToEnd:
         assert code == 2 and record["stopped"] == "lane"
         assert "version" in record["engine_tail"][0]
 
+    @starts_the_engine(900)
     def test_mutmut_itself_keeps_a_stopped_nights_mutants_and_runs_only_the_rest_the_next(
         self, held_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -2267,19 +2321,20 @@ class TestEndToEnd:
         whole window, and no mutant is decided twice."""
         pytest.importorskip("mutmut")
         monkeypatch.setenv("SWEEP_FIXTURE_HOLD", "vera.m.x_g__mutmut_1")
-        monkeypatch.setenv("SWEEP_FIXTURE_HOLD_S", "3600")
+        monkeypatch.setenv("SWEEP_FIXTURE_HOLD_S", "900")
         monkeypatch.setattr(sw.md, "run_engine", lambda *a, **k: _quick_stop(*a, **k))
-        code, first, _ = _night(held_repo, tmp_path, 1, "", real=True, budget=240)
-        assert code == 0 and first["stopped"] == "budget", first
+        code, first, _ = _night(held_repo, tmp_path, 1, "", real=True, budget=180)
+        assert code == 0 and first["stopped"] == "budget", _engine_said(tmp_path, 1, first)
         window = {p["unit"]: p["mutants"] for p in first["planned"]}
         decided = {ident: set(r["decided"]) for ident, r in first["results"].items()}
         assert "1" not in decided.get("vera/m.py::x_g", set())  # held past the budget: undecided
-        assert sum(map(len, decided.values())) == sum(window.values()) - 1, (window, decided)
+        assert sum(map(len, decided.values())) == sum(window.values()) - 1, (window, decided,
+                                                                              _engine_said(tmp_path, 1, first))
         code, state = _stitch_cli(held_repo, tmp_path, 1, None)
         assert code == 0 and state["units"]["vera/m.py::x_g"]["window"] is None
         monkeypatch.delenv("SWEEP_FIXTURE_HOLD")
-        code, second, calls = _night(held_repo, tmp_path, 2, "", real=True, state=tmp_path / "state1")
-        assert code == 0 and second["stopped"] is None, second
+        code, second, calls = _night(held_repo, tmp_path, 2, "", real=True, state=tmp_path / "state1", budget=300)
+        assert code == 0 and second["stopped"] is None, _engine_said(tmp_path, 2, second)
         assert [(p["unit"], p["todo"]) for p in second["planned"]] == [("vera/m.py::x_g", [1])]
         assert {i: set(r["decided"]) for i, r in second["results"].items()} == {"vera/m.py::x_g": {"1"}}
         code, state = _stitch_cli(held_repo, tmp_path, 2, tmp_path / "state1")
@@ -2287,6 +2342,7 @@ class TestEndToEnd:
         assert state["last_complete"]["sampled"] == sum(window.values())
         assert state["nights"][-1]["moved"] == 1
 
+    @starts_the_engine(600)
     def test_mutmut_itself_ends_a_mutant_at_the_cap_as_slow_and_goes_on(
         self, held_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -2296,9 +2352,9 @@ class TestEndToEnd:
         pytest.importorskip("mutmut")
         monkeypatch.setenv("SWEEP_FIXTURE_HOLD", "vera.m.x_g__mutmut_1")
         monkeypatch.setenv("SWEEP_FIXTURE_HOLD_S", "60")
-        code, record, _ = _night(held_repo, tmp_path, 1, "", real=True, extra=["--mutant-cap", "2"])
-        assert code == 0 and record["stopped"] is None, record
-        assert record["slow"] == ["vera.m.x_g__mutmut_1"]
+        code, record, _ = _night(held_repo, tmp_path, 1, "", real=True, extra=["--mutant-cap", "2"], budget=300)
+        assert code == 0 and record["stopped"] is None, _engine_said(tmp_path, 1, record)
+        assert record["slow"] == ["vera.m.x_g__mutmut_1"], _engine_said(tmp_path, 1, record)
         assert record["results"]["vera/m.py::x_g"]["decided"]["1"] == "slow"
         window = {p["unit"]: p["mutants"] for p in record["planned"]}
         assert {i: len(r["decided"]) for i, r in record["results"].items()} == window  # it went on
@@ -2307,6 +2363,7 @@ class TestEndToEnd:
         assert code == 0 and state["last_complete"]["modules"]["vera/m.py"]["slow"] == 1
         assert any(s.endswith(":slow") for s in state["last_complete"]["survivors"])
 
+    @starts_the_engine(600)
     def test_mutmut_itself_generates_exactly_the_names_a_windowed_night_hands_it(
         self, held_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -2316,8 +2373,8 @@ class TestEndToEnd:
         pytest.importorskip("mutmut")
         monkeypatch.setattr(sw, "in_sample", lambda cycle, ident, line: line != 3)  # f's `return x + 1` out
         assert HELD_MODULE.splitlines()[2].strip() == "return x + 1"
-        code, record, _ = _night(held_repo, tmp_path, 1, "", real=True)
-        assert code == 0 and record["stopped"] is None, record
+        code, record, _ = _night(held_repo, tmp_path, 1, "", real=True, budget=300)
+        assert code == 0 and record["stopped"] is None, _engine_said(tmp_path, 1, record)
         picks = [sw.Pick(unit=sw.SweepUnit(path=p["unit"].split("::")[0], key=p["unit"].split("::")[1], start=1,
                                            hash=p["hash"]), lines=tuple(p["lines"]), counts=(), before=(),
                          todo=tuple(p["todo"])) for p in record["planned"]]
@@ -2328,13 +2385,14 @@ class TestEndToEnd:
         assert set(sw.md.parse_results(listed.stdout)) == handed
         assert all(len(r["decided"]) == r["window"] for r in record["results"].values())
 
+    @starts_the_engine(600)
     def test_mutmut_itself_decides_a_night(self, repo: Path, tmp_path: Path) -> None:
         """Against the engine, under the fork server: its ``count`` is what
         mutmut generates for each function, mutmut runs the planned mutants
         by name in the narrowed tree, and the stitch closes the cycle."""
         pytest.importorskip("mutmut")
-        code, record, _ = _night(repo, tmp_path, 1, "", real=True)
-        assert code == 0 and record["stopped"] is None, record
+        code, record, _ = _night(repo, tmp_path, 1, "", real=True, budget=300)
+        assert code == 0 and record["stopped"] is None, _engine_said(tmp_path, 1, record)
         results = record["results"]
         assert set(results) == {"vera/m.py::x_f", "vera/m.py::x_g"}
         for ident, r in results.items():

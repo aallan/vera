@@ -48,6 +48,8 @@ from typing import Any
 import pytest
 import yaml
 
+from tests.mutation_engine import starts_the_engine
+
 ROOT = Path(__file__).resolve().parent.parent
 _SCRIPT = ROOT / "scripts" / "mutate_diff.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "mutation-diff.yml"
@@ -2737,6 +2739,7 @@ class TestOraclePlugin:
         with pytest.raises(pytest.exit.Exception):
             mutation_oracle._forget("tests/test_m.py::test_a")
 
+    @starts_the_engine(900)
     def test_a_skipped_test_is_no_oracle_for_the_functions_it_reached_first(self, tmp_path: Path) -> None:
         """mutmut's stats pass records, at each test's teardown and whatever
         its outcome, the functions the test reached.  A test the plugin skips

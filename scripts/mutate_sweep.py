@@ -477,10 +477,12 @@ def check_unit(ident: Any, record: Any) -> None:
 
 def _check_night(night: Any) -> None:
     keys = {"date", "head", "jobs", "moved", "slices", "problems", "notes", "closed"}
-    # The lost slices entered the line on 2026-10-21 (#1751); the lines the
-    # workflow's artifacts hold from before have none, and still load.
-    if isinstance(night, dict) and "lost" in night:
-        keys.add("lost")
+    # The lost slices entered the line on 2026-10-21 (#1751), the schema
+    # that wrote it with schema 3 (#1838); the lines the workflow's
+    # artifacts hold from before have neither, and still load.
+    for optional in ("lost", "schema"):
+        if isinstance(night, dict) and optional in night:
+            keys.add(optional)
     rec = _keys(night, keys, "a night")
     lost = rec.get("lost", [])
     _check(isinstance(lost, list) and len(lost) == len(set(lost)) <= MAX_JOBS
@@ -488,6 +490,8 @@ def _check_night(night: Any) -> None:
     _text(rec["date"], _DATE, "a night's date")
     _text(rec["head"], _HEX40, "a night's head")
     _int(rec["jobs"], 1, MAX_JOBS, "a night's jobs")
+    if "schema" in rec:
+        _int(rec["schema"], 3, SCHEMA, "the schema a night's line was written under")
     _int(rec["moved"], 0, MAX_MUTANTS * 10_000, "a night's progress")
     _check(isinstance(rec["closed"], bool), "a night's close is not a flag")
     for key in ("problems", "notes"):
@@ -1049,11 +1053,12 @@ def slice_results(picks: Sequence[Pick], results: Mapping[str, str],
     ``mutmut results`` printed and the engine's count of what it generated
     against the window (``scripts/mutate_diff.py``'s window record), each
     by its window number: of the numbers the night handed the engine, every
-    one listed with a decided status the budget did not cut short.  A name
-    in ``slow`` (the oracle plugin's file) is ``slow`` whatever the engine
-    recorded; one the engine marks interrupted that the file does not name
-    waits for another night.  A survivor, a timeout and a slow mutant are
-    each listed with the hash of their line's text (``line_text``, the
+    one listed with a decided status the budget did not cut short.  A
+    mutant the engine left undecided that ``slow`` names (the oracle
+    plugin's file) is ``slow``; one the engine marks interrupted that the
+    file does not name waits for another night, and a verdict the engine
+    completed stands whether the file names the mutant or not.  A survivor,
+    a timeout and a slow mutant are each listed with the hash of their line's text (``line_text``, the
     unit's line from its first), the test files mutmut ran them against
     (``files``, by unit), and each decided mutant with its duration and
     mutmut's estimate (``seconds``, by name).  The engine generating more or
@@ -1093,7 +1098,10 @@ def slice_results(picks: Sequence[Pick], results: Mapping[str, str],
                              f"holds {inside}, or numbered them with gaps")
         for number in pick.numbers:
             name = mutant_name(pick, number)
-            status = SLOW if name in slow else statuses[number]
+            # The cap's timer cannot be cancelled once its wait has returned,
+            # so a run can finish with its own verdict after the plugin named
+            # it: the file decides only a mutant the engine left undecided.
+            status = SLOW if name in slow and statuses[number] in UNDECIDED else statuses[number]
             if status in UNDECIDED or (cut_short and status in CUT_SHORT):
                 continue  # the mutant waits for another night
             entry["decided"][str(number)] = status
@@ -1633,11 +1641,13 @@ def _listed(numbers: Sequence[int]) -> str:
 def empty_night(nights: Sequence[Mapping[str, Any]]) -> bool:
     """Whether the last night the state holds decided no mutant while its
     cycle was open: its line moved nothing, closed nothing, and had work
-    planned or a slice lost."""
+    planned or a slice lost.  Only a line schema 3 wrote says so: under
+    schema 2 a line's ``moved`` counted whole windows alone, and the nights
+    of 9 and 10 November 2026 read 0 though their engines decided mutants."""
     if not nights:
         return False
     last = nights[-1]
-    return (last.get("moved") == 0 and not last.get("closed")
+    return (last.get("schema", 2) >= 3 and last.get("moved") == 0 and not last.get("closed")
             and (any(s.get("planned") for s in last.get("slices", [])) or bool(last.get("lost"))))
 
 
@@ -1734,7 +1744,7 @@ def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[s
     # Only validated records merge, so a lost or failed slice cannot close
     # a cycle wrongly: the cycle closes when its sample is decided.
     closed = close_cycle(state, units, head=head, today=today)
-    night = {"date": today, "head": head, "jobs": jobs, "moved": added, "lost": lost,
+    night = {"date": today, "head": head, "jobs": jobs, "moved": added, "lost": lost, "schema": SCHEMA,
              "slices": [{"slice": r["slice"], "planned": len(r.get("planned", [])),
                          "decided": decided_count(r), "stopped": r.get("stopped"),
                          "engine_s": r.get("engine_s"), "dropped_tests": r.get("dropped_tests", []),
