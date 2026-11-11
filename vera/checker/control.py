@@ -202,6 +202,13 @@ def _no_call(_call: ast.Expr) -> str | None:
     return None
 
 
+def _no_guarded_subtraction(_sub: ast.Expr) -> bool:
+    """A subtraction-guard oracle that guards none: in an `@Int` arm every
+    subtraction can go below zero as far as the join knows (a `@Nat`
+    subtraction of two `@Nat` values is itself a `@Nat` arm)."""
+    return False
+
+
 def _refinement_chain(ty: Type) -> tuple[Type, tuple[ast.Expr, ...]]:
     """*ty*'s base under its refinements, and their predicates, innermost
     first: `{ { @Int | P } | Q }` is `Int` and `(P, Q)`."""
@@ -258,9 +265,12 @@ def _shared_facts(
     * a `@Nat` beside an `@Int` is an `@Int`, spec §4.4's meet of the two,
       at every position; at the head an `@Int` arm that is statically
       non-negative (`narrowing.is_static_nat_typed`, the rule code
-      generation's guard reads: a non-negative literal, `@Nat.0 + 1`) is
-      read as a `@Nat`, spec §4.8's exception (#1756), so a join of `@Nat`
-      arms and such `@Int` arms is a `@Nat` in either order;
+      generation's guard reads: a non-negative literal, `@Nat.0 + 1`) and
+      holds no subtraction (`narrowing.has_underflow_leaf`: `@Nat.0 - 1`
+      can be negative, and an `Exn` handler's stand-in would take the
+      `@Nat` as a fact of it) is read as a `@Nat`, spec §4.8's exception
+      (#1756), so a join of `@Nat` arms and such `@Int` arms is a `@Nat` in
+      either order;
     * an arm open at a position (a type variable the join filled from
       another arm, the checker's unknown) or one that yields no value
       (`Never`) states nothing there.
@@ -304,7 +314,9 @@ def _shared_at(
             elif arm_base.name == "Int":
                 int_arm = True
                 if not (expr is not None
-                        and narrowing.is_static_nat_typed(expr, _no_call)):
+                        and narrowing.is_static_nat_typed(expr, _no_call)
+                        and not narrowing.has_underflow_leaf(
+                            expr, _no_guarded_subtraction)):
                     every_int_static = False
         if nat_arm and int_arm:
             shared_base = NAT if every_int_static else INT

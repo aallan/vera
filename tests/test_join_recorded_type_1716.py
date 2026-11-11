@@ -800,7 +800,9 @@ def violations(checked: pipeline.Checked) -> list[str]:
                 continue
             for leaf in narrowing.value_leaves(node):
                 found = _unstated(record, types.get(leaf.node_id))
-                if narrowing.is_static_nat_typed(leaf, _no_call):
+                if (narrowing.is_static_nat_typed(leaf, _no_call)
+                        and not narrowing.has_underflow_leaf(
+                            leaf, lambda _sub: False)):
                     found = [f for f in found if f != ("Nat",)]
                 if found:
                     out.append(f"{node.span.line}:{node.span.column}")
@@ -815,8 +817,12 @@ ROOT = Path(__file__).resolve().parent.parent
 #: share.
 BASE_VIOLATORS = {
     "examples/maximum_syntax.vera": ["182:14"],
+    # a `0 - 1` arm beside a `Nat` arm, read as a `Nat` (review round 1)
+    "tests/conformance/ch09_base64.vera": ["24:3", "46:3"],
+    "tests/conformance/ch09_html.vera": ["13:3", "74:3"],
+    "tests/conformance/ch09_url_encoding.vera": ["32:3", "54:3"],
     "spec/09-standard-library.md:109": ["6:3"],
-    "seed104": ["89:14"], "seed183": ["27:14"], "seed191": ["52:14"],
+    "seed104": ["89:14"], "seed177": ["28:14"], "seed551": ["72:14"], "seed183": ["27:14"], "seed191": ["52:14"],
     "seed197": ["106:3"], "seed266": ["24:3", "27:5"],
     "seed277": ["39:15", "40:5"], "seed363": ["52:15", "57:5"],
     "seed369": ["25:3", "28:5"], "seed418": ["27:14", "34:5"],
@@ -1022,3 +1028,189 @@ def test_an_open_arm_states_nothing_where_it_is_open(
               "  ensures(true)\n  effects(pure)\n{\n  @T.0\n}\n")
     kind = ast.IfExpr if form == "if" else ast.MatchExpr
     assert _recorded(source, kind) == [expected]
+
+
+#: A subtraction among non-negative values beside a `@Nat` (spec §4.8): it
+#: can be negative, so the join is an `@Int`, in either order.
+SUBTRACTIONS = [
+    "@Nat.0 - 1", "0 - 1",
+    # a subtraction in a nested join's arm, and behind a `let` in a block
+    "if @Nat.0 == 0 then { @Nat.0 - 1 } else { 2 }",
+    "let @Int = @Nat.0 - 1;\n    @Int.0",
+]
+
+
+@pytest.mark.parametrize("swap", [False, True], ids=["ab", "ba"])
+@pytest.mark.parametrize("form", SUBTRACTIONS)
+def test_a_subtraction_beside_a_nat_is_an_int(form: str, swap: bool) -> None:
+    first, second = ("@Nat.0", form) if swap else (form, "@Nat.0")
+    source = _join_program(
+        "@Nat", "@Int", f"if @Bool.0 then {{ {first} }} else {{ {second} }}")
+    assert _recorded(source, ast.IfExpr)[0] == "Int"
+
+
+_SUBTRACTING_HANDLER = """\
+public fn f(@Bool, @Nat -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{{
+  handle[Exn<Int>] {{
+    throw(@Int) -> {{ {clause} }}
+  }} in {{
+    if @Bool.0 then {{ {body} }} else {{ throw(0) }}
+  }}
+}}
+"""
+
+
+@pytest.mark.parametrize("swap", [False, True], ids=["body", "clause"])
+@pytest.mark.parametrize("form", SUBTRACTIONS)
+def test_repro_1716_a_handler_over_a_subtraction_proves_no_nat(
+        form: str, swap: bool) -> None:
+    """An `Exn` handler joining `@Nat.0` and a subtraction among
+    non-negative values, in the body or the clause: its stand-in carries
+    no `>= 0`, so `ensures(@Int.result >= 0)` is not proved, and the run at
+    the subtraction's arm with `@Nat.0 = 0` breaks it.  At f71c401c the
+    clause-subtraction order was recorded `Nat` and proved the `ensures`."""
+    body, clause = ("@Nat.0", form) if swap else (form, "@Nat.0")
+    source = _SUBTRACTING_HANDLER.format(body=body, clause=clause)
+    verified = pipeline.verify(source, file=FILE)
+    statuses = [o.status for o in verified.obligations
+                if o.fn_name == "f" and o.kind == "ensures"]
+    assert statuses and "verified" not in statuses, statuses
+    ran = pipeline.run(source, "f", [0 if swap else 1, 0], file=FILE)
+    assert ran.trap is not None
+    assert "Postcondition violation" in str(ran.trap)
+
+
+# =====================================================================
+# Silent members measured in review at f71c401c: each proved its
+# `ensures` at Tier 1 there, and the run at the arm that lacks the
+# refinement breaks it
+# =====================================================================
+
+_IDG = ("private forall<T> fn idg(@T -> @T)\n  requires(true)\n"
+        "  ensures(true)\n  effects(pure)\n{\n  @T.0\n}\n\n")
+_REFS = ("type PosInt = { @Int | @Int.0 > 0 };\n"
+         "type NegInt = { @Int | @Int.0 < 0 };\n\n")
+
+#: name -> (source, the function whose `ensures` is at stake, the call
+#: that breaks it).
+SILENT = {
+    "a data type's argument through a generic": (
+        _REFS + "private data Box<T> { MkBox(T) }\n\n" + _IDG
+        + "public fn f(@Bool, @Int, @PosInt -> @Int)\n  requires(true)\n"
+        "  ensures(@Int.result > 0)\n  effects(pure)\n{\n"
+        "  let @Box<Int> = MkBox(@Int.0);\n"
+        "  let @Box<PosInt> = MkBox(@PosInt.0);\n"
+        "  match idg(if @Bool.0 then { @Box<Int>.0 } else { @Box<PosInt>.0 }) {\n"
+        "    MkBox(@Int) -> @Int.0\n  }\n}\n",
+        "f", ["f", [1, -5, 3]]),
+    "a join of joins with a NegInt arm": (
+        _REFS + _IDG
+        + "public fn f(@Int, @PosInt, @NegInt -> @Int)\n  requires(true)\n"
+        "  ensures(@Int.result > 0)\n  effects(pure)\n{\n"
+        "  idg(if @Int.0 > 5 then { if @Int.0 > 2 then { @NegInt.0 } else "
+        "{ @PosInt.0 } } else { @PosInt.0 })\n}\n",
+        "f", ["f", [9, 5, -3]]),
+    "a State handler inside an Exn handler": (
+        _REFS + _IDG
+        + "private fn risky(@Int -> @PosInt)\n  requires(true)\n"
+        "  ensures(true)\n  effects(<Exn<Int>>)\n{\n"
+        "  if @Int.0 > 0 then { @Int.0 } else { Exn.throw(@Int.0) }\n}\n\n"
+        "public fn f(@Int, @PosInt -> @Int)\n  requires(true)\n"
+        "  ensures(@Int.result > 0)\n  effects(pure)\n{\n"
+        "  idg(handle[Exn<Int>] {\n    throw(@Int) -> { @Int.0 }\n  } in {\n"
+        "    handle[State<Int>](@Int = 0) {\n"
+        "      get(@Unit) -> { resume(@Int.0) },\n"
+        "      put(@Int) -> { resume(()) }\n"
+        "    } in {\n      risky(@Int.0)\n    }\n  })\n}\n",
+        "f", ["f", [-4, 3]]),
+    "Result<PosInt, NegInt> beside Result<Int, Int>": (
+        _REFS + _IDG
+        + "public fn f(@Bool, @Result<PosInt, NegInt>, @Result<Int, Int> -> @Int)\n"
+        "  requires(true)\n  ensures(@Int.result != 0)\n  effects(pure)\n{\n"
+        "  match idg(if @Bool.0 then { @Result<Int, Int>.0 } else "
+        "{ @Result<PosInt, NegInt>.0 }) {\n"
+        "    Ok(@Int) -> @Int.0,\n    Err(@Int) -> @Int.0\n  }\n}\n\n"
+        "public fn t(@Bool, @Int -> @Int)\n  requires(true)\n  ensures(true)\n"
+        "  effects(pure)\n{\n  f(@Bool.0, Ok(5), Ok(@Int.0))\n}\n",
+        "f", ["t", [1, 0]]),
+    "Err(@Int.0) beside a Result<PosInt, NegInt>": (
+        _REFS + _IDG
+        + "public fn f(@Bool, @Result<PosInt, NegInt>, @Int -> @Int)\n"
+        "  requires(true)\n  ensures(@Int.result != 0)\n  effects(pure)\n{\n"
+        "  match idg(if @Bool.0 then { Err(@Int.0) } else "
+        "{ @Result<PosInt, NegInt>.0 }) {\n"
+        "    Ok(@Int) -> @Int.0,\n    Err(@Int) -> @Int.0\n  }\n}\n\n"
+        "public fn t(@Bool, @Int -> @Int)\n  requires(true)\n  ensures(true)\n"
+        "  effects(pure)\n{\n  f(@Bool.0, Ok(5), @Int.0)\n}\n",
+        "f", ["t", [1, 0]]),
+    "Tuple<Int, Option<PosInt>> two levels down": (
+        _REFS + _IDG
+        + "public fn f(@Bool, @Tuple<Int, Option<PosInt>>, "
+        "@Tuple<Int, Option<Int>> -> @Int)\n"
+        "  requires(true)\n  ensures(@Int.result > 0)\n  effects(pure)\n{\n"
+        "  match idg(if @Bool.0 then { @Tuple<Int, Option<Int>>.0 } else "
+        "{ @Tuple<Int, Option<PosInt>>.0 }) {\n"
+        "    Tuple(@Int, Some(@Int)) -> @Int.0,\n"
+        "    Tuple(@Int, None) -> 1\n  }\n}\n\n"
+        "public fn t(@Bool, @Int -> @Int)\n  requires(true)\n  ensures(true)\n"
+        "  effects(pure)\n{\n  f(@Bool.0, Tuple(1, Some(5)), Tuple(1, Some(@Int.0)))\n}\n",
+        "f", ["t", [1, -5]]),
+}
+
+
+@pytest.mark.parametrize("name", list(SILENT))
+def test_repro_1716_a_join_proves_no_refinement_one_arm_lacks(name: str) -> None:
+    source, fn, (entry, args) = SILENT[name]
+    verified = pipeline.verify(source, file=FILE)
+    assert verified.checked.ok, [(d.error_code, d.description[:90])
+                                 for d in verified.checked.errors]
+    statuses = [o.status for o in verified.obligations
+                if o.fn_name == fn and o.kind == "ensures"]
+    assert statuses and "verified" not in statuses, statuses
+    ran = pipeline.run(source, entry, args, file=FILE)
+    assert ran.trap is not None, source
+    assert "Postcondition violation" in str(ran.trap), str(ran.trap)
+
+
+_LITERAL_COST = _REFS + _IDG + """\
+public fn f(@Option<PosInt> -> @Int)
+  requires(true)
+  ensures(@Int.result > 0)
+  effects(pure)
+{
+  BODY
+}
+"""
+
+
+def test_repro_1716_the_cost_a_literal_arm_through_a_generic() -> None:
+    """The rule's cost: a literal arm beside a refined arm, handed to a
+    generic with no expected type, is instantiated at the base, so a
+    `let @PosInt` of the call is a run-time check (`tier3`, E506) where at
+    f71c401c it read `verified`; bound at the refined type first and then
+    passed, the join keeps its proof."""
+    through = _LITERAL_COST.replace("BODY", (
+        "let @PosInt = idg(match @Option<PosInt>.0 {\n"
+        "    Some(@PosInt) -> @PosInt.0,\n    None -> 1\n  });\n  @PosInt.0"))
+    verified = pipeline.verify(through, file=FILE)
+    rows = sorted((o.kind, o.status, o.error_code) for o in verified.obligations
+                  if o.fn_name == "f" and o.kind in ("refine_bind", "ensures"))
+    assert ("refine_bind", "tier3", "E506") in rows, rows
+    assert ("ensures", "verified", "") in rows, rows
+    bound_first = _LITERAL_COST.replace("BODY", (
+        "let @PosInt = match @Option<PosInt>.0 {\n"
+        "    Some(@PosInt) -> @PosInt.0,\n    None -> 1\n  };\n"
+        "  idg(@PosInt.0)"))
+    verified = pipeline.verify(bound_first, file=FILE)
+    assert verified.ok, [(d.error_code, d.description[:90])
+                         for d in verified.errors]
+    rows = sorted((o.kind, o.status, o.expr_text) for o in verified.obligations
+                  if o.fn_name == "f" and o.kind in ("refine_bind", "ensures"))
+    # the binder's own row is the sub-pattern's guard, as at f71c401c
+    assert rows == [("ensures", "verified", "@Int.result > 0"),
+                    ("refine_bind", "tier3", "@PosInt"),
+                    ("refine_bind", "verified", "<expr>")], rows
