@@ -72,8 +72,8 @@ def checks_after(lines: list[str], at: int) -> bool:
         elif word == "end":
             if depth > 0:
                 depth -= 1
-        elif word in ("return", "return_call", "return_call_indirect",
-                      "unreachable") and depth == 0:
+        elif word in ("return", "return_call", "return_call_indirect") \
+                and depth == 0:
             return False
         if CHECK_MARKER_RE.search(line):
             return True
