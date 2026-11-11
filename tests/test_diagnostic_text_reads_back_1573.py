@@ -497,6 +497,24 @@ def test_nat_subtraction_trap_reads_back(p: str, q: str) -> None:
     _read_back_equal(match.group(2), f"@Nat.2 >= {right}")
 
 
+def test_nat_subtraction_trap_parenthesises_a_piped_operand() -> None:
+    """A pipe binds more loosely than `>=`: the suggested `requires` built
+    as a node keeps the right operand's parentheses, where joining the two
+    rendered operands with `>=` named `(@Nat.1 >= @Nat.0) |> dbl()`."""
+    source = (
+        "private fn dbl(@Nat -> @Nat)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  @Nat.0 + @Nat.0\n}\n\n"
+        "public fn entry(@Nat, @Nat -> @Nat)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  @Nat.1 - (@Nat.0 |> dbl())\n}\n")
+    ran = pipeline.run(source, fn="entry", args=[1, 5])
+    assert not ran.ok
+    text = _trap(ran)
+    assert "`@Nat.1 - (@Nat.0 |> dbl())` would be negative" in text, text
+    assert "`requires(@Nat.1 >= (@Nat.0 |> dbl()))`" in text, text
+
+
 @pytest.mark.parametrize("index", [
     "@Int.0 + 1", "(@Int.0 + 1) * 2", "@Int.0 |> abs()",
     "-(@Int.0 - 9)"])
