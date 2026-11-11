@@ -994,3 +994,31 @@ def test_a_never_arm_takes_no_part_in_a_match() -> None:
                   f"{{\n  match @Bool.0 {{\n    true -> {arms[0]},\n"
                   f"    false -> {arms[1]}\n  }}\n}}\n")
         assert _recorded(source, ast.MatchExpr) == ["{Int|PosInt}"]
+
+
+#: An arm open at a position, beside a refined arm, where no expected type
+#: reaches the join: an empty array literal (its element unknown), and a
+#: `None` inside a generic call's argument (its payload a type variable).
+OPEN_ARMS = [
+    ("@Array<PosInt>", "@Array<PosInt>", "[]", "@Array<PosInt>.0",
+     "Array<{Int|PosInt}>"),
+    ("@Option<PosInt>", "@Option<PosInt>", "None", "@Option<PosInt>.0",
+     "Option<{Int|PosInt}>"),
+]
+
+
+@pytest.mark.parametrize("params,ret,a,b,expected", OPEN_ARMS)
+@pytest.mark.parametrize("swap", [False, True], ids=["ab", "ba"])
+@pytest.mark.parametrize("form", ["if", "match"])
+def test_an_open_arm_states_nothing_where_it_is_open(
+        params: str, ret: str, a: str, b: str, expected: str, swap: bool,
+        form: str) -> None:
+    first, second = (b, a) if swap else (a, b)
+    join = (f"if @Bool.0 then {{ {first} }} else {{ {second} }}"
+            if form == "if" else
+            f"match @Bool.0 {{\n    true -> {first},\n    false -> {second}\n  }}")
+    source = (_join_program(params, ret, f"idg({join})")
+              + "\nprivate forall<T> fn idg(@T -> @T)\n  requires(true)\n"
+              "  ensures(true)\n  effects(pure)\n{\n  @T.0\n}\n")
+    kind = ast.IfExpr if form == "if" else ast.MatchExpr
+    assert _recorded(source, kind) == [expected]

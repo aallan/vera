@@ -233,7 +233,7 @@ def _constrains(ty: Type) -> bool:
     base = _refinement_chain(ty)[0]
     if isinstance(base, (TypeVar, UnknownType)):
         return False
-    return not types_equal(base, NEVER)
+    return not (isinstance(base, PrimitiveType) and base.name == "Never")
 
 
 def _shared_facts(
