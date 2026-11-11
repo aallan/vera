@@ -1283,3 +1283,28 @@ def test_a_refused_clause_beside_a_throwing_body_reports_what_it_did() -> None:
               "  @Int.0\n}\n")
     checked = pipeline.check(source, file=FILE)
     assert [d.error_code for d in checked.errors] == ["E130"]
+
+
+def test_repro_1716_a_clause_no_position_reconciles_is_refused_whole() -> None:
+    """A clause whose value no position of the body's type reconciles is
+    refused at the clause (E341), every field of the diagnostic as at
+    f71c401c."""
+    source = ("public fn f(@Int -> @Result<Int, Int>)\n  requires(true)\n"
+              "  ensures(true)\n  effects(pure)\n{\n  handle[Exn<Int>] {\n"
+              "    throw(@Int) -> { Some(5) }\n  } in {\n    Ok(@Int.0)\n"
+              "  }\n}\n")
+    checked = pipeline.check(source, file=FILE)
+    (found,) = [d for d in checked.errors if d.error_code == "E341"]
+    assert (found.location.line, found.location.column) == (7, 22)
+    assert found.description == (
+        "The 'throw' clause's value has type Option<Int>, but the "
+        "handler's value is Result<Int, ?>.")
+    assert found.rationale == (
+        "An Exn handler's value is its handled body's, or, when the body "
+        "throws, the clause's: the two are one value, so they have one "
+        "type, as the branches of an if do.")
+    assert found.fix == (
+        "Make the clause's value the handled body's type, Result<Int, ?>: "
+        "replace 'Some(5)' with 'Ok(0)', or give the handled body the "
+        "clause's type.")
+    assert found.spec_ref == 'Chapter 7, Section 7.5.2 "Handler Semantics"'
