@@ -1191,9 +1191,16 @@ def test_1413_every_reader_of_a_source_fact_consults_the_one_gate() -> None:
         f"{readers}.  A new one must call `_established_facts` (the check "
         f"below); a removed one must be removed from this list, deliberately"
     )
+    # `_nested_refinement_discharge` states the TARGET type's nested facts as
+    # its goal and assumes no fact of the value's own type (#1716: the
+    # premises it took from the value's type moved no status over every leaf
+    # kind measured, and taken from a join's recorded type they proved the
+    # payload the obligation asks), so it asks the gate nothing.
+    goal_only = {"verifier:_nested_refinement_discharge"}
     ungated = [
         r for r in readers
-        if "_established_facts" not in calls[(r.split(":", 1)[0],
+        if r not in goal_only
+        and "_established_facts" not in calls[(r.split(":", 1)[0],
                                               r.split(":", 1)[1])]
     ]
     assert not ungated, (

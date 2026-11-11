@@ -23,8 +23,8 @@ THE RULE.  The checker records a join at the facts its arms share,
 position by position (the checker's `_shared_facts`), so the recorded type
 is a fact of whichever arm the value is; a leaf's recorded type is its own
 (a slot's binder, a call's declared return, a construction's fields, a
-literal).  Carrier 1 takes its premises from the recorded type; carrier 2's
-stand-in carries the recorded type's facts, strengthened where every
+literal).  Carrier 1 takes no premise from the value's type at all; carrier
+2's stand-in carries the recorded type's facts, strengthened where every
 non-literal leaf states a refinement and every literal leaf satisfies it
 (`narrowing.established_type`, the literal strengthening).  The obligation
 is then discharged from the leaves' own facts under each branch's path
