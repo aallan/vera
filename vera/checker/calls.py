@@ -1203,7 +1203,8 @@ class CallsMixin:
                     rationale="Each argument's type must be a subtype of the "
                               "corresponding declared parameter type.",
                     fix=(self._cross_owner_fix(fn_info.name, arg_ty, param_ty)
-                         or self._pass_value_fix(param_ty, f"argument {i}")),
+                         or self._pass_value_fix(param_ty, f"argument {i}",
+                                                 conversions=True)),
                     spec_ref='Chapter 5, Section 5.2 "Function Declaration Syntax"',
                     error_code="E202",
                 )
@@ -1422,7 +1423,8 @@ class CallsMixin:
                     rationale="Each argument after the function value must "
                               "be a subtype of the corresponding parameter "
                               "of the applied function type.",
-                    fix=self._pass_value_fix(param_ty, f"argument {i + 1}"),
+                    fix=self._pass_value_fix(param_ty, f"argument {i + 1}",
+                                             conversions=True),
                     spec_ref='Chapter 11, Section 11.10.5 "Closure Invocation (apply_fn)"',
                     error_code="E202",
                 )
@@ -2330,17 +2332,22 @@ class CallsMixin:
 
     def _pass_value_fix(
         self, want: Type, what: str, *, convert: bool = True,
+        conversions: bool = False,
     ) -> str:
         """The fix for a value of the wrong type at *what* (an argument, a
         field): the type it takes as the program writes it
-        (:meth:`_writes_as`), or no type named where it cannot be written."""
+        (:meth:`_writes_as`), or no type named where it cannot be written.
+        *conversions* names the numeric conversions, as a call's E202
+        always has."""
+        how = (" (e.g. int_to_nat(...), int_to_float(...))" if conversions
+               else "")
         shown = self._writes_as(want)
         if shown is None:
             return (f"Pass a value of the type {what} takes"
-                    + (", or convert the current value to it." if convert
-                       else "."))
+                    + (f", or convert the current value{how} to it."
+                       if convert else "."))
         return (f"Pass a value of type `{shown}` for {what}"
-                + (f", or convert the current value to `{shown}`."
+                + (f", or convert the current value{how} to `{shown}`."
                    if convert else "."))
 
     def _cross_owner_fix(
