@@ -868,6 +868,10 @@ def source_not_utf8(
             errors="replace")
         encoding = "ISO-8859-1"
     convert = f"iconv -f {encoding} -t UTF-8"
+    # A UTF-8 byte-order mark is three bytes the conversion would read as
+    # Latin-1 and write as `ï»¿`, which the copy then holds as text: the
+    # command for a marked file drops them first (#1763).
+    strip = "tail -c +4" if skip else ""
     note = "" if mark is not None else (
         " That command reads the source as Latin-1 (ISO-8859-1); a source in "
         "another encoding names its own after `-f`. In a string literal, a "
@@ -875,17 +879,23 @@ def source_not_utf8(
         "as `\\u{E9}` for é."
     )
     if file is None or file in _STDIN_LABELS:
+        through = f"{strip} | {convert}" if strip else convert
         fix = (
             f"Convert the source to UTF-8 before `vera` reads it: pipe it "
-            f"through `{convert}`.{note}"
+            f"through `{through}`.{note}"
         )
     else:
         name = Path(file).name
         copy = f"{Path(file).stem}.utf8{Path(file).suffix}"
+        command = (f"{strip} {shlex.quote(name)} | {convert}" if strip
+                   else f"{convert} {shlex.quote(name)}")
         fix = (
-            f"Save the file as UTF-8: in its directory, `{convert} "
-            f"{shlex.quote(name)} > {shlex.quote(copy)}` writes a UTF-8 copy, "
-            f"which then replaces {name}.{note}"
+            f"Save the file as UTF-8: in its directory, `{command} > "
+            f"{shlex.quote(copy)}` writes a UTF-8 copy, "
+            f"which then replaces {name}."
+            + (" The command drops the file's UTF-8 byte-order mark before "
+               "converting the rest." if strip else "")
+            + note
         )
     return Diagnostic(
         description=description,

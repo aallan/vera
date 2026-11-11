@@ -15,6 +15,7 @@ from __future__ import annotations
 import contextlib
 import enum
 import math
+import re
 import weakref
 
 import z3
@@ -634,6 +635,54 @@ _NAT_ARG_UNGUARDED_BUILTINS: frozenset[str] = frozenset({"string_slice"})
 #: guard asks too, and `apply_fn` does not.  This names where the guard
 #: actually is for the positions whose emitter follows the closure.
 _ARG_GUARDED_BY_LIFTED_CLOSURE: frozenset[str] = frozenset({"apply_fn"})
+
+
+def _entry_expressible(expr: ast.Expr) -> bool:
+    """Whether *expr* is built only of slot references, literals and
+    operators, so that reading it at a function's entry has no effect on
+    the solver context and :func:`vera.ast.format_expr` writes it back
+    (#1763).  Whether its slots mean the same there is the caller's test."""
+    if isinstance(expr, (ast.SlotRef, ast.IntLit, ast.BoolLit)):
+        return True
+    if isinstance(expr, ast.UnaryExpr):
+        return _entry_expressible(expr.operand)
+    if isinstance(expr, ast.BinaryExpr):
+        return (_entry_expressible(expr.left)
+                and _entry_expressible(expr.right))
+    return False
+
+
+def _block_value(expr: ast.Expr) -> ast.Expr:
+    """*expr*, or the value of a block that is only a value (a function's
+    body ``{ @Nat.0 - 1 }``), which is the expression it stands for."""
+    while isinstance(expr, ast.Block) and not expr.statements:
+        expr = expr.expr
+    return expr
+
+
+def _mentions_a_slot(expr: ast.Expr) -> bool:
+    """Whether *expr* reads a slot: a clause over constants alone says
+    nothing about the inputs a precondition is for (#1763)."""
+    if isinstance(expr, ast.SlotRef):
+        return True
+    if isinstance(expr, ast.UnaryExpr):
+        return _mentions_a_slot(expr.operand)
+    if isinstance(expr, ast.BinaryExpr):
+        return _mentions_a_slot(expr.left) or _mentions_a_slot(expr.right)
+    return False
+
+
+_PARAM_SLOT = re.compile(r"@([A-Z][A-Za-z0-9_]*)\.(\d+)")
+
+
+def _param_slot_ref(name: str) -> ast.SlotRef | None:
+    """The slot reference a parameter's constant is named by (``@Bool.0``),
+    or ``None`` for a name with type arguments or a refinement, which a fix
+    does not write from the name (#1763)."""
+    match = _PARAM_SLOT.fullmatch(name)
+    if match is None:
+        return None
+    return ast.SlotRef(match.group(1), None, int(match.group(2)))
 
 
 @lru_cache(maxsize=1)
@@ -1285,6 +1334,11 @@ class ContractVerifier:
         # program.  None (the default) preserves the historical
         # fresh-context-per-function cold path exactly.
         self._shared_smt = shared_smt
+        # #1763: each solver context's function-entry scope — the slot
+        # environment its parameters make and their (name, constant)
+        # pairs — keyed by the context, which `_verify_fn` records.
+        self._entry_scopes: dict[
+            int, tuple[SlotEnv, tuple[tuple[str, object], ...]]] = {}
         # #1208: the naming environment for THIS verifier's module — alias
         # bodies, alias parameters, and declared-ADT names, as
         # :mod:`vera.naming` renders against.  Built from `self.env` once
@@ -4399,6 +4453,7 @@ class ContractVerifier:
         # #1767: each constant is named by the slot reference the source
         # binds the parameter to, which a counterexample shows.
         slot_refs = self._parameter_slots(decl, fn_env)
+        entry_params: list[tuple[str, object]] = []
         for param_te, param_ty, z3_name in zip(
                 decl.params, param_types, slot_refs, strict=True):
             type_name = self._type_expr_to_slot_name(param_te, fn_env)
@@ -4406,6 +4461,11 @@ class ContractVerifier:
             slot_env = slot_env.push(type_name, var)
             refined_param_assumptions.extend(
                 self._declared_type_facts(smt, param_ty, var))
+            entry_params.append((z3_name, var))
+        # #1763: the scope a `requires` clause is read in, so a fix can
+        # offer a clause only where it means at entry what it means at
+        # the site it is computed from.
+        self._entry_scopes[id(smt)] = (slot_env, tuple(entry_params))
         # 1b. #1836: a refined parameter's entry rows (its own and its
         # closures'), each discharged here as the callee's assumption: the
         # predicate holds in the body, and each caller's argument row is the
@@ -9492,7 +9552,13 @@ class ContractVerifier:
                 error_code="E502",
                 counterexample=result.counterexample,
             )
-            self._report_underflow(decl, expr, result.counterexample)
+            self._report_underflow(
+                decl, expr, result.counterexample,
+                clause=self._discharging_clause(
+                    smt, obligation, assumptions, result.counterexample,
+                    site_env=slot_env,
+                    exprs=(ast.BinaryExpr(
+                        ast.BinOp.GE, expr.left, expr.right),)))
         else:
             # Solver timeout — or #1199's "opaque" (the goal mentions an
             # effect-op stand-in), which is plain Tier-3, not a timeout.
@@ -10434,7 +10500,14 @@ class ContractVerifier:
                 error_code="E503",
                 counterexample=result.counterexample,
             )
-            self._report_nat_binding(decl, value_node, site, result.counterexample)
+            self._report_nat_binding(
+                decl, value_node, site, result.counterexample,
+                clause=self._discharging_clause(
+                    smt, obligation, assumptions, result.counterexample,
+                    site_env=slot_env,
+                    exprs=(ast.BinaryExpr(
+                        ast.BinOp.GE, _block_value(value_node),
+                        ast.IntLit(0)),)))
         else:  # pragma: no cover — defensive; see comment
             # Solver timeout — or #1199's "opaque" (the goal mentions an
             # effect-op stand-in), which is plain Tier-3, not a timeout.
@@ -10488,7 +10561,10 @@ class ContractVerifier:
                 decl.name, "nat_bind", node, "violated",
                 error_code="E503", counterexample=result.counterexample,
             )
-            self._report_nat_binding(decl, node, site, result.counterexample)
+            self._report_nat_binding(
+                decl, node, site, result.counterexample,
+                clause=self._discharging_clause(
+                    smt, obligation, assumptions, result.counterexample))
         else:  # pragma: no cover — defensive; see comment
             # Solver timeout — or #1199's "opaque" (the term mentions an
             # effect-op stand-in), which is plain Tier-3, not a timeout.
@@ -13222,13 +13298,85 @@ class ContractVerifier:
             self._note_static_reason(self.obligations[-1], reason)
 
 
+    def _discharging_clause(
+        self,
+        smt: SmtContext,
+        obligation: object,
+        assumptions: list[object],
+        counterexample: dict[str, str] | None,
+        *,
+        site_env: SlotEnv | None = None,
+        exprs: tuple[ast.Expr, ...] = (),
+    ) -> str | None:
+        """A precondition, as written, that discharges *obligation*, for an
+        E502 / E503 fix computed from the site (#1763); ``None`` where no
+        candidate does.
+
+        The candidates are each of *exprs*, a predicate over the site's own
+        operands, where it reads at the function's entry as the term it is
+        at the site (its slots are the parameters, unshadowed), and then a
+        clause on one parameter the counterexample names: a ``Bool`` at
+        its other value, an ``Int`` it shows negative at ``>= 0``.  A
+        candidate is offered only when the solver, within the run's
+        per-query budget, proves the obligation with it assumed, so the
+        clause the fix writes is one that clears the diagnostic."""
+        entry = self._entry_scopes.get(id(smt))
+        if entry is None:
+            return None
+        entry_env, params = entry
+        candidates: list[tuple[ast.Expr, object]] = []
+        for pred in exprs:
+            if site_env is None or not _entry_expressible(pred):
+                continue
+            at_entry = smt.translate_expr(pred, entry_env)
+            at_site = smt.translate_expr(pred, site_env)
+            if (at_entry is None or at_site is None
+                    or not z3.is_expr(at_entry) or not z3.is_expr(at_site)
+                    or not at_entry.eq(at_site)):
+                continue
+            candidates.append((self._as_written(pred), at_entry))
+        for name, var in params:
+            ref = _param_slot_ref(name)
+            value = (counterexample or {}).get(name)
+            if ref is None or value is None or not z3.is_expr(var):
+                continue
+            if z3.is_bool(var):
+                if value == "False":
+                    candidates.append((ref, var))
+                elif value == "True":
+                    candidates.append(
+                        (ast.UnaryExpr(ast.UnaryOp.NOT, ref), z3.Not(var)))
+            elif z3.is_int(var) and value.startswith("-"):
+                candidates.append(
+                    (ast.BinaryExpr(ast.BinOp.GE, ref, ast.IntLit(0)),
+                     cast(z3.ArithRef, var) >= 0))
+        for pred, term in candidates:
+            text = ast.format_expr(pred)
+            if "<expr>" in text or not _mentions_a_slot(pred):
+                continue
+            # A clause the premises already refute discharges anything
+            # (`requires(0 - 1 >= 0)`) and admits no call: not offered.
+            if smt.check_valid(
+                    z3.Not(cast(z3.BoolRef, term)),
+                    list(assumptions)).status != "violated":
+                continue
+            verdict = smt.check_valid(obligation, [*assumptions, term])
+            if verdict.status == "verified":
+                return text
+        return None
+
     def _report_underflow(
         self,
         decl: ast.FnDecl,
         expr: ast.BinaryExpr,
         counterexample: dict[str, str] | None,
+        *,
+        clause: str | None = None,
     ) -> None:
-        """Emit an E502 diagnostic for an undischarged underflow obligation."""
+        """Emit an E502 diagnostic for an undischarged underflow obligation.
+
+        *clause*, where :meth:`_discharging_clause` found one, is a
+        precondition the solver confirmed discharges it (#1763)."""
         ce_lines: list[str] = []
         if counterexample:
             ce_lines.append("Counterexample:")
@@ -13261,9 +13409,7 @@ class ContractVerifier:
                 # and its two remedies are different edits.
                 f"Either state the precondition that bounds the "
                 f"subtraction — `requires({self._written(expr.right)} <= "
-                f"{self._written(expr.left)})`; for the count-up loop "
-                f"`decreases(@Nat.1 + 1 - @Nat.0)` that is "
-                f"`requires(@Nat.0 <= @Nat.1 + 1)` — which the measure can "
+                f"{self._written(expr.left)})` — which the measure can "
                 f"rely on because the compiled function checks every "
                 f"`requires` before it evaluates it, and which each "
                 f"recursive call must then establish for its own "
@@ -13271,11 +13417,14 @@ class ContractVerifier:
                 f"subtraction, for example a parameter that counts down "
                 f"to zero."
                 if in_measure else
-                "Add a precondition that rules out the bad inputs, "
-                "e.g. `requires(@Nat.0 >= @Nat.1)`.  Alternatively, "
-                "guard the subtraction: `if @Nat.0 >= @Nat.1 then "
-                "@Nat.0 - @Nat.1 else 0` — the path condition "
-                "discharges the obligation in the then-branch."
+                (f"Add a precondition that rules out the bad inputs: "
+                 f"`requires({clause})`.  " if clause is not None else
+                 "Add a precondition that rules out the inputs the "
+                 "counterexample shows.  ")
+                + "Alternatively, guard the subtraction with an `if` "
+                "whose condition holds its left operand at least its "
+                "right — the path condition discharges the obligation "
+                "in the then-branch."
             ),
             spec_ref=(
                 'Chapter 4, Section 4.4 "Arithmetic Expressions" '
@@ -13526,8 +13675,13 @@ class ContractVerifier:
         node: ast.Expr,
         site: str,
         counterexample: dict[str, str] | None,
+        *,
+        clause: str | None = None,
     ) -> None:
-        """Emit an E503 diagnostic for an undischarged @Nat narrowing."""
+        """Emit an E503 diagnostic for an undischarged @Nat narrowing.
+
+        *clause*, where :meth:`_discharging_clause` found one, is a
+        precondition the solver confirmed discharges it (#1763)."""
         ce_lines: list[str] = []
         if counterexample:
             ce_lines.append("Counterexample:")
@@ -13555,9 +13709,12 @@ class ContractVerifier:
                 "invariant."
             ),
             fix=(
-                "Add a precondition ruling out the bad inputs, e.g. "
-                "`requires(@Int.0 >= 0)`.  Alternatively, guard the "
-                "binding: `if @Int.0 >= 0 then ... else ...` — the path "
+                (f"Add a precondition ruling out the bad inputs: "
+                 f"`requires({clause})`.  " if clause is not None else
+                 "Add a precondition ruling out the inputs the "
+                 "counterexample shows.  ")
+                + "Alternatively, guard the binding with an `if` whose "
+                "condition holds the value non-negative — the path "
                 "condition discharges the obligation in the then-branch."
             ),
             spec_ref=(

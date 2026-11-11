@@ -50,7 +50,6 @@ from vera.types import (
     TypeVar,
     UnknownType,
     base_type,
-    canonical_type_name,
     contains_fresh_typevar,
     contains_literal_hole,
     contains_typevar,
@@ -64,6 +63,9 @@ from vera.types import (
     substitute,
     substitute_effect,
     types_equal,
+    written_effect,
+    written_effect_instance,
+    written_type,
 )
 
 
@@ -71,9 +73,31 @@ def _op_signature_text(op: OpInfo) -> str:
     """An operation's REGISTERED signature as a function type's inside, for
     E340's fix: ``T -> Int``, the resolved types' message form.  Only for an
     effect or ability the program does not declare
-    (:meth:`CallsMixin._operation_signature_text` reads a declared one)."""
-    params = ", ".join(pretty_type(p) for p in op.param_types)
-    return f"{params} -> {pretty_type(op.return_type)}"
+    (:meth:`CallsMixin._operation_signature_text` reads a declared one).
+    Each type is written as the program writes it (#1778), the signature's
+    own type variables by the names the fix declares them under."""
+    def shown(ty: Type) -> str:
+        names = _typevar_names(ty)
+        plain = substitute(ty, {n: TypeVar(strip_builtin_typevar_marker(n))
+                                for n in names})
+        return written_type(
+            plain, {strip_builtin_typevar_marker(n) for n in names}) or "?"
+    params = ", ".join(shown(p) for p in op.param_types)
+    return f"{params} -> {shown(op.return_type)}"
+
+
+def _typevar_names(ty: Type) -> set[str]:
+    """The names of the type variables in *ty*, at any depth."""
+    if isinstance(ty, TypeVar):
+        return {ty.name}
+    if isinstance(ty, AdtType):
+        return set().union(*(_typevar_names(a) for a in ty.type_args))
+    if isinstance(ty, FunctionType):
+        return set().union(_typevar_names(ty.return_type),
+                           *(_typevar_names(p) for p in ty.params))
+    if isinstance(ty, RefinedType):
+        return _typevar_names(ty.base)
+    return set()
 
 
 def _compatible_modulo_typevars(
@@ -1179,10 +1203,7 @@ class CallsMixin:
                     rationale="Each argument's type must be a subtype of the "
                               "corresponding declared parameter type.",
                     fix=(self._cross_owner_fix(fn_info.name, arg_ty, param_ty)
-                         or f"Pass a value of type {pretty_type(param_ty)} "
-                            f"for argument {i}, or convert the current value "
-                            f"(e.g. int_to_nat(...), int_to_float(...)) to "
-                            f"{pretty_type(param_ty)}."),
+                         or self._pass_value_fix(param_ty, f"argument {i}")),
                     spec_ref='Chapter 5, Section 5.2 "Function Declaration Syntax"',
                     error_code="E202",
                 )
@@ -1292,8 +1313,11 @@ class CallsMixin:
                           "first argument is the function to apply and the "
                           "remaining arguments are passed to it, so a bare "
                           "apply_fn() has nothing to apply.",
-                fix="Pass a function value first, then its arguments, "
-                    "e.g. apply_fn(@IntToInt.0, 5).",
+                fix="Pass a function value first, then its arguments"
+                    + (f": `apply_fn({fv[0]}{', ?' * fv[1]})`, with each "
+                       f"? one of its arguments."
+                       if (fv := self._fn_value_in_scope()) is not None
+                       else "."),
                 spec_ref='Chapter 11, Section 11.10.5 "Closure Invocation (apply_fn)"',
                 error_code="E201",
             )
@@ -1321,9 +1345,11 @@ class CallsMixin:
                 rationale="apply_fn invokes a stored function value via "
                           "call_indirect; a non-function first argument "
                           "has no signature to call.",
-                fix="Pass a value of a fn type — a parameter or let "
-                    "binding declared with a fn(...) effects(...) type, "
-                    "e.g. apply_fn(@IntToInt.0, 5).",
+                fix="Pass a value of a fn type first: a parameter or let "
+                    "binding declared with a fn(...) effects(...) type"
+                    + (f", such as `{fv[0]}`."
+                       if (fv := self._fn_value_in_scope()) is not None
+                       else "."),
                 spec_ref='Chapter 11, Section 11.10.5 "Closure Invocation (apply_fn)"',
                 error_code="E202",
             )
@@ -1355,8 +1381,10 @@ class CallsMixin:
                           "function value to it; the count must match the "
                           "applied function type's parameters.",
                 fix=f"Call apply_fn with the function value plus exactly "
-                    f"{len(fn_ty.params)} argument(s) matching "
-                    f"{pretty_type(fn_ty)}.",
+                    f"{len(fn_ty.params)} argument(s), one per parameter "
+                    f"of its type"
+                    + (f", `{shown}`." if (shown := self._writes_as(fn_ty))
+                       else "."),
                 spec_ref='Chapter 11, Section 11.10.5 "Closure Invocation (apply_fn)"',
                 error_code="E201",
             )
@@ -1394,10 +1422,7 @@ class CallsMixin:
                     rationale="Each argument after the function value must "
                               "be a subtype of the corresponding parameter "
                               "of the applied function type.",
-                    fix=f"Pass a value of type {pretty_type(param_ty)}, "
-                        f"or convert the current value (e.g. "
-                        f"int_to_nat(...), int_to_float(...)) to "
-                        f"{pretty_type(param_ty)}.",
+                    fix=self._pass_value_fix(param_ty, f"argument {i + 1}"),
                     spec_ref='Chapter 11, Section 11.10.5 "Closure Invocation (apply_fn)"',
                     error_code="E202",
                 )
@@ -1598,9 +1623,8 @@ class CallsMixin:
                     rationale="Each argument to an effect operation must be a "
                               "subtype of the parameter type declared in its "
                               "'op' signature.",
-                    fix=f"Pass a value of type {pretty_type(param_ty)} for "
-                        f"argument {i} of '{op_info.name}', or convert the "
-                        f"current value to {pretty_type(param_ty)}.",
+                    fix=self._pass_value_fix(
+                        param_ty, f"argument {i} of '{op_info.name}'"),
                     spec_ref='Chapter 7, Section 7.4 "Performing Effects"',
                     error_code="E204",
                 )
@@ -1691,8 +1715,16 @@ class CallsMixin:
                    if isinstance(node, ast.QualifiedCall) else op_info.name)
         eff_info = self.env.lookup_effect(effect)
         param = (eff_info.type_params or ("T",))[0] if eff_info else "T"
-        arg = pretty_type(mapping.get(param, TypeVar(param)))
+        cell = mapping.get(param, TypeVar(param))
+        # A handler's type argument is a type NAME (`vera.lowering` rule 2):
+        # a refinement or a function type is written under an alias first,
+        # so the handler is written out only for a type with a name.
+        arg = (self._writes_as(cell)
+               if not isinstance(cell, (RefinedType, FunctionType)) else None)
         handler = (
+            f"a handle[{effect}<...>] around the operation, its type "
+            f"argument a type alias for the operation's type"
+            if arg is None else
             f"handle[State<{arg}>](@{arg} = <its initial value>) {{ "
             f"get(@Unit) -> {{ resume(@{arg}.0) }}, put(@{arg}) -> "
             f"{{ resume(()) }} }} in {{ ... }}"
@@ -1781,17 +1813,20 @@ class CallsMixin:
         written = (f"{node.qualifier}.{node.name}"
                    if isinstance(node, ast.QualifiedCall) else op_info.name)
         inst = self._operation_instance(op_info, arg_types)
-        shown = canonical_type_name(inst.name, inst.type_args or None)
         target, declared = self._row_owner or (
             "the enclosing function's effects clause", row)
         entries = (declared.effects if isinstance(declared, ConcreteEffectRow)
                    else frozenset())
         row_var = (declared.row_var
                    if isinstance(declared, ConcreteEffectRow) else None)
-        wanted = pretty_effect(ConcreteEffectRow(entries | {inst}, row_var))
-        handler = (f"  Or perform it inside a handle[{shown}] block, whose "
-                   f"body permits it."
-                   if handler_lowerable(effect) else "")
+        # The row and the instance as the program writes them (#1778).
+        written_row = written_effect(
+            ConcreteEffectRow(entries | {inst}, row_var),
+            self.env.type_params)
+        written_inst = written_effect_instance(inst, self.env.type_params)
+        handler = (f"  Or perform it inside a handle[{written_inst}] block, "
+                   f"whose body permits it."
+                   if handler_lowerable(effect) and written_inst else "")
         self._error(
             node,
             f"Effect operation '{written}' requires "
@@ -1807,7 +1842,9 @@ class CallsMixin:
                 "inside the handler's body.  A row variable names no effect, "
                 "so it permits no operation the row does not name."
             ),
-            fix=f"Add {shown} to {target}: {wanted}.{handler}",
+            fix=(f"Add {written_inst} to {target}: `{written_row}`.{handler}"
+                 if written_inst and written_row else
+                 f"Add the operation's effect to {target}.{handler}"),
             spec_ref='Chapter 7, Section 7.4 "Performing Effects"',
             error_code="E125",
         )
@@ -2031,10 +2068,14 @@ class CallsMixin:
                               "subtype of the parameter type declared in its "
                               "'op' signature, after the ability's type "
                               "variable is instantiated.",
-                    fix=f"Pass a value of type {pretty_type(param_ty)} for "
-                        f"argument {i} of '{op_info.name}', or ensure the "
-                        f"ability's type variable resolves to a type that "
-                        f"accepts {pretty_inferred_type(arg_ty)}.",
+                    fix=self._pass_value_fix(
+                        param_ty, f"argument {i} of '{op_info.name}'",
+                        convert=False)
+                        + (f" Or make the ability's type variable resolve "
+                           f"to a type that accepts `{got}`."
+                           if (got := self._writes_as(arg_ty)) else
+                           " Or make the ability's type variable resolve "
+                           "to a type that accepts the current value."),
                     spec_ref='Chapter 9, Section 9.8 "Abilities"',
                     error_code="E241",
                 )
@@ -2256,6 +2297,51 @@ class CallsMixin:
             f"Build the value at the parameter's type, writing any function "
             f"it holds at that type, in place of `{written}`.",
         )
+
+    @staticmethod
+    def _empty_tuple_fix(expected: Type | None) -> str:
+        """E216's fix: one element per component of the tuple type the
+        site expects, each a hole to fill (#1763), or one element where
+        nothing is expected."""
+        base = base_type(expected) if expected is not None else None
+        n = (len(base.type_args) if isinstance(base, AdtType)
+             and base.name == "Tuple" and base.type_args else 0)
+        example = (f"Tuple({', '.join('?' for _ in range(n))})" if n
+                   else "Tuple(0)")
+        hole = ", with each ? one of its components" if n else ""
+        return (f"Provide at least one element: `{example}`{hole}; or use "
+                f"the unit value () if no payload is needed.")
+
+    def _fn_value_in_scope(self) -> tuple[str, int] | None:
+        """A function value the enclosing function holds, for a fix whose
+        example is computed from the site (#1763): the slot reference of
+        its most recent parameter whose type is an alias of a function
+        type, and that type's parameter count; ``None`` where it has none."""
+        if not self._fn_scope_stack:
+            return None
+        for te in reversed(self._fn_scope_stack[-1].params):
+            if not isinstance(te, ast.NamedType) or te.type_args:
+                continue
+            alias = self.env.type_aliases.get(te.name)
+            fn = base_type(alias.resolved_type) if alias else None
+            if isinstance(fn, FunctionType):
+                return f"@{te.name}.0", len(fn.params)
+        return None
+
+    def _pass_value_fix(
+        self, want: Type, what: str, *, convert: bool = True,
+    ) -> str:
+        """The fix for a value of the wrong type at *what* (an argument, a
+        field): the type it takes as the program writes it
+        (:meth:`_writes_as`), or no type named where it cannot be written."""
+        shown = self._writes_as(want)
+        if shown is None:
+            return (f"Pass a value of the type {what} takes"
+                    + (", or convert the current value to it." if convert
+                       else "."))
+        return (f"Pass a value of type `{shown}` for {what}"
+                + (f", or convert the current value to `{shown}`."
+                   if convert else "."))
 
     def _cross_owner_fix(
         self, fn_name: str, arg_ty: Type, param_ty: Type,
@@ -2692,9 +2778,7 @@ class CallsMixin:
                     rationale="Each constructor argument's type must be a "
                               "subtype of the corresponding field type in the "
                               "'data' declaration.",
-                    fix=f"Pass a value of type {pretty_type(field_ty)} for "
-                        f"field {i}, or convert the current value to "
-                        f"{pretty_type(field_ty)}.",
+                    fix=self._pass_value_fix(field_ty, f"field {i}"),
                     spec_ref=(
                         'Chapter 2, Section 2.4 "Algebraic Data Types (ADTs)"'
                     ),
@@ -2857,8 +2941,7 @@ class CallsMixin:
                 rationale="A tuple is a heterogeneous product of one or more "
                           "components; the empty tuple is not a valid tuple "
                           "type.",
-                fix="Provide at least one element, e.g. Tuple(@Int.0), or use "
-                    "the unit value () if no payload is needed.",
+                fix=self._empty_tuple_fix(expected),
                 spec_ref='Chapter 2, Section 2.3.1 "Tuple Types"',
                 error_code="E216",
             )

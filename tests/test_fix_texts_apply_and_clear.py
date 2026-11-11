@@ -1,0 +1,660 @@
+"""A diagnostic's fix, applied as written, clears it (#1778, #1763).
+
+A fix is an instruction (DESIGN.md principle 1), so the text it gives the
+reader to write has to be text the program can hold, and writing it where
+the fix says has to clear the diagnostic.  Two mechanisms broke that:
+
+- #1778: a fix that tells the reader to write a type rendered it in the
+  message form, which elides a refinement's predicate (`{@Int | ...}` is
+  not Vera).  A fix now writes a type as the program writes it
+  (`vera.types.written_type`, through `ast.format_type`), and names no
+  type where the type has a part no program writes (`fn(? -> ?)`).
+- #1763: a fix written as a literal example named a slot or a shape the
+  site may not have (`requires(@Int.0 >= 0)` in a function with no
+  `@Int`).  The example is now computed from the site — the operand, the
+  counterexample's binding, the function's own parameter, the site's type
+  argument — and dropped where nothing can be computed.
+
+The instrument applies each fix from its text alone: the clause, type or
+command between backticks is extracted and inserted where the fix says (a
+per-code place, `_Case.apply`), and the result is checked again.  No
+hand-written corrected program stands in for the fix.  Each cell asserts
+the code fires at the program, that the text parses where it is inserted
+(no E005, no E130), and that the code no longer fires.  Each code also has
+a cell applying its base text the same way, which stays red, so the gate
+is one that can fail.
+"""
+
+from __future__ import annotations
+
+import ast as pyast
+import json
+import os
+import re
+import shlex
+import subprocess
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
+
+import pytest
+
+import vera
+from tests import pipeline
+
+# A class instrument (tests/matrix_sample.py): a pull request runs a sample
+# of the parametrised cells, and all of them when it changes this file or a
+# module that writes one of the fix texts it applies.
+pytestmark = pytest.mark.matrix(decides=[
+    "vera/types.py",
+    "vera/checker/core.py",
+    "vera/checker/calls.py",
+    "vera/checker/control.py",
+    "vera/checker/expressions.py",
+    "vera/checker/resolution.py",
+    "vera/typed.py",
+    "vera/verifier.py",
+    "vera/errors.py",
+])
+
+ROOT = Path(__file__).resolve().parent.parent
+
+POS = "type Pos = { @Int | @Int.0 > 0 };\n\n"
+FN_TYPE = "type IntToInt = fn(Int -> Int) effects(pure);\n\n"
+ENDO = """type Endo<T> = fn(T -> T) effects(pure);
+
+private forall<T> fn mk(@Unit -> @Endo<T>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  fn(@T -> @T) effects(pure) { @T.0 }
+}
+
+"""
+
+
+def _fn(params: str, ret: str, body: str, *, req: str = "true",
+        ens: str = "true", eff: str = "pure", forall: str = "",
+        dec: str = "") -> str:
+    """The function `f` every case's site is in."""
+    head = f"forall<{forall}> " if forall else ""
+    measure = f"  decreases({dec})\n" if dec else ""
+    return (f"public {head}fn f({params} -> {ret})\n  requires({req})\n"
+            f"  ensures({ens})\n{measure}  effects({eff})\n{{\n  {body}\n}}\n")
+
+
+def _helper(name: str, sig: str, body: str, forall: str = "") -> str:
+    head = f"forall<{forall}> " if forall else ""
+    return (f"private {head}fn {name}({sig})\n  requires(true)\n"
+            f"  ensures(true)\n  effects(pure)\n{{\n  {body}\n}}\n\n")
+
+
+# =====================================================================
+# Applying a fix from its text
+# =====================================================================
+
+_SPAN = re.compile(r"`([^`]+)`")
+
+
+def spans(fix: str) -> list[str]:
+    """The text a fix gives the reader to write: each backticked span."""
+    return _SPAN.findall(fix)
+
+
+def _once(source: str, site: str, text: str) -> str:
+    assert source.count(site) == 1, (site, source)
+    return source.replace(site, text)
+
+
+def replace(site: str, pattern: str = "{0}") -> Callable[[str, list[str]], str]:
+    """Write the fix's spans, through *pattern*, in place of *site*."""
+    def apply(source: str, given: list[str]) -> str:
+        return _once(source, site, pattern.format(*given))
+    return apply
+
+
+def as_value(site: str, value: str | None = None, *,
+             span: int = 0) -> Callable[[str, list[str]], str]:
+    """"Pass a value of type T": `f` takes a parameter of the type the fix
+    names, declared under an alias so its slot reference is that alias's
+    alone, and *value* (all of *site* by default) is that parameter."""
+    def apply(source: str, given: list[str]) -> str:
+        source = _once(source, site,
+                       site.replace(value or site, "@Probe.0", 1))
+        head = re.search(r"public (?:forall<[^>]*> )?fn f\(([^)]*?) ->",
+                         source)
+        assert head is not None
+        params = head.group(1)
+        joined = f"{params}, @Probe" if params else "@Probe"
+        source = (source[:head.start(1)] + joined + source[head.end(1):])
+        return f"type Probe = {given[span]};\n\n" + source
+    return apply
+
+
+def prepend_then(site: str, pattern: str) -> Callable[[str, list[str]], str]:
+    """A declaration the fix gives (its first span) written before the
+    program, and its other spans, through *pattern*, in place of *site*."""
+    def apply(source: str, given: list[str]) -> str:
+        return given[0] + "\n\n" + _once(source, site,
+                                         pattern.format(*given[1:]))
+    return apply
+
+
+@dataclass(frozen=True)
+class _Case:
+    code: str
+    stage: str              # "check" or "verify"
+    source: str
+    apply: Callable[[str, list[str]], str]
+    #: The span(s) the base text gave the reader, applied by `apply` in the
+    #: honesty cell; `None` where the base text gave nothing to apply.
+    base: tuple[str, ...] | None = None
+
+
+def _run(stage: str, source: str) -> pipeline.Checked | pipeline.Verified:
+    return (pipeline.verify(source) if stage == "verify"
+            else pipeline.check(source))
+
+
+def _codes(stage: str, source: str) -> set[str]:
+    return {d.error_code for d in _run(stage, source).diagnostics}
+
+
+def _errors(stage: str, source: str) -> set[str]:
+    return {d.error_code for d in _run(stage, source).errors}
+
+
+def _the(code: str, stage: str, source: str):  # type: ignore[no-untyped-def]
+    found = [d for d in _run(stage, source).diagnostics
+             if d.error_code == code]
+    assert found, f"{code} does not fire: {sorted(_codes(stage, source))}"
+    return found[0]
+
+
+def _applied_clears(case: _Case, given: list[str]) -> set[str]:
+    """The codes the program draws with *given* applied; asserts the text
+    parsed where it went and names no slot the site lacks."""
+    fixed = case.apply(case.source, given)
+    codes = _codes(case.stage, fixed)
+    assert "E005" not in codes and "E006" not in codes, (given, fixed)
+    assert "E130" not in codes, (given, fixed)
+    return codes
+
+
+# =====================================================================
+# The cases: code x binding set x site form
+# =====================================================================
+
+CASES: dict[str, _Case] = {
+    # --- #1763: an example computed from the site -----------------------
+    # E503: the narrowed value at entry, or the counterexample's binding.
+    "E503-issue-bool-nat": _Case(
+        "E503", "verify", _fn("@Bool, @Nat", "@Int",
+            "let @Nat = if @Bool.0 then { @Nat.0 } else { -1 };\n  0"),
+        replace("requires(true)", "{0}"), base=("requires(@Int.0 >= 0)",)),
+    "E503-one-int": _Case(
+        "E503", "verify", _fn("@Int", "@Int", "let @Nat = @Int.0;\n  0"),
+        replace("requires(true)", "{0}")),
+    "E503-two-int": _Case(
+        "E503", "verify", _fn("@Int, @Int", "@Int",
+                              "let @Nat = @Int.1 - @Int.0;\n  0"),
+        replace("requires(true)", "{0}"), base=("requires(@Int.0 >= 0)",)),
+    "E503-refined": _Case(
+        "E503", "verify", POS + _fn("@Pos, @Int", "@Int",
+                                    "let @Nat = @Int.0;\n  0"),
+        replace("requires(true)", "{0}")),
+    "E503-generic": _Case(
+        "E503", "verify",
+        _helper("g", "@T, @Int -> @Int", "let @Nat = @Int.0;\n  0", "T")
+        + _fn("@Int", "@Int", "g(true, @Int.0)"),
+        replace("private forall<T> fn g(@T, @Int -> @Int)\n  requires(true)",
+                "private forall<T> fn g(@T, @Int -> @Int)\n  {0}")),
+    "E503-return": _Case(
+        "E503", "verify", _fn("@Nat", "@Nat", "@Nat.0 - 1"),
+        replace("requires(true)", "{0}"), base=("requires(@Int.0 >= 0)",)),
+    # E502: the subtraction's own operands.
+    "E502-two-nat": _Case(
+        "E502", "verify", _fn("@Nat, @Nat", "@Nat", "@Nat.1 - @Nat.0"),
+        replace("requires(true)", "{0}"),
+        base=("requires(@Nat.0 >= @Nat.1)",)),
+    "E502-nat-and-int": _Case(
+        "E502", "verify", _fn("@Int, @Nat, @Nat", "@Nat", "@Nat.1 - @Nat.0"),
+        replace("requires(true)", "{0}"),
+        base=("requires(@Nat.0 >= @Nat.1)",)),
+    # E123 / E124: the clause's own operand, compared with zero.
+    "E123-int": _Case(
+        "E123", "check", _fn("@Int", "@Int", "0", req="@Int.0"),
+        replace("requires(@Int.0)")),
+    "E123-two-int": _Case(
+        "E123", "check", _fn("@Int, @Int", "@Int", "0", req="@Int.1"),
+        replace("requires(@Int.1)")),
+    "E123-nat-only": _Case(
+        "E123", "check", _fn("@Nat", "@Int", "0", req="@Nat.0"),
+        replace("requires(@Nat.0)"), base=("requires(@Int.0 > 0)",)),
+    "E123-float": _Case(
+        "E123", "check", _fn("@Float64", "@Int", "0", req="@Float64.0"),
+        replace("requires(@Float64.0)"), base=("requires(@Int.0 > 0)",)),
+    "E124-int": _Case(
+        "E124", "check", _fn("@Int", "@Int", "0", ens="@Int.result"),
+        replace("ensures(@Int.result)")),
+    "E124-nat-result": _Case(
+        "E124", "check", _fn("@Int", "@Nat", "0", ens="@Nat.result"),
+        replace("ensures(@Nat.result)"), base=("ensures(@Int.result > 0)",)),
+    # E126: the site's own refinement.
+    "E126-int": _Case(
+        "E126", "check", "type P = { @Int | @Int.0 };\n\n"
+        + _fn("@P", "@Int", "0"),
+        replace("{ @Int | @Int.0 }")),
+    "E126-nat": _Case(
+        "E126", "check", "type P = { @Nat | @Nat.0 };\n\n"
+        + _fn("@P", "@Int", "0"),
+        replace("{ @Nat | @Nat.0 }")),
+    # E300: the condition's own operand.
+    "E300-int": _Case(
+        "E300", "check", _fn("@Int", "@Int",
+                             "if @Int.0 then { 1 } else { 0 }"),
+        replace("if @Int.0 then", "if {0} then")),
+    "E300-nat-only": _Case(
+        "E300", "check", _fn("@Nat", "@Int",
+                             "if @Nat.0 then { 1 } else { 0 }"),
+        replace("if @Nat.0 then", "if {0} then"), base=("@Int.0 > 0",)),
+    # E127 / E137: the function's own parameter of a fitting type.
+    "E127-nat": _Case(
+        "E127", "check", _fn("@Nat, @Float64", "@Int", "0",
+                             dec="@Float64.0"),
+        replace("decreases(@Float64.0)")),
+    "E127-int-only": _Case(
+        "E127", "check", _fn("@Int, @Float64", "@Int", "0",
+                             dec="@Float64.0"),
+        replace("decreases(@Float64.0)"), base=("decreases(@List.0)",)),
+    "E127-array-only": _Case(
+        "E127", "check", _fn("@Array<Int>, @Float64", "@Int", "0",
+                             dec="@Float64.0"),
+        replace("decreases(@Float64.0)"), base=("decreases(@Nat.0)",)),
+    "E137-nat": _Case(
+        "E137", "check", _fn("@Nat", "@Int", "f(@Nat.0)"),
+        replace("  effects(pure)\n{\n  f(",
+                "  {0}\n  effects(pure)\n{{\n  f(")),
+    "E137-int-only": _Case(
+        "E137", "check", _fn("@Int", "@Int", "f(@Int.0)"),
+        replace("  effects(pure)\n{\n  f(",
+                "  {0}\n  effects(pure)\n{{\n  f("),
+        base=("decreases(@Nat.1 - @Nat.0)",)),
+    # E128: the array domain's own length.
+    "E128-array": _Case(
+        "E128", "check", _fn("@Array<Int>", "@Bool",
+            "forall(@Int, @Array<Int>.0, fn(@Int -> @Bool) effects(pure) "
+            "{ true })"),
+        replace("forall(@Int, @Array<Int>.0,", "forall(@Int, {0},")),
+    "E128-array-of-bool": _Case(
+        "E128", "check", _fn("@Array<Bool>", "@Bool",
+            "forall(@Int, @Array<Bool>.0, fn(@Int -> @Bool) effects(pure) "
+            "{ true })"),
+        replace("forall(@Int, @Array<Bool>.0,", "forall(@Int, {0},"),
+        base=("array_length(@Array<T>.0)",)),
+    # E201 / E202 (apply_fn): the function's own function value.
+    "E201-apply-fn": _Case(
+        "E201", "check", "type Twice = fn(Int -> Int) effects(pure);\n\n"
+        + _fn("@Twice", "@Int", "apply_fn()"),
+        replace("apply_fn()"), base=("apply_fn(@IntToInt.0, 5)",)),
+    "E202-apply-fn-not-a-function": _Case(
+        "E202", "check", FN_TYPE + "type Twice = fn(Int -> Int) "
+        "effects(pure);\n\n" + _fn("@Twice", "@Int", "apply_fn(5, 1)"),
+        replace("apply_fn(5, 1)", "apply_fn({0}, 1)"),
+        base=("@IntToInt.0",)),
+    # E216: the expected tuple's arity, or one element.
+    "E216-expected": _Case(
+        "E216", "check", _fn("@Int", "@Int",
+                             "let @Tuple<Int, Bool> = Tuple();\n  0"),
+        replace("Tuple();", "{0};"), base=("Tuple(@Int.0)",)),
+    "E216-no-int": _Case(
+        "E216", "check", _fn("@Bool", "@Int", "Tuple();\n  0"),
+        replace("Tuple();", "{0};"), base=("Tuple(@Int.0)",)),
+    # E321: one binding per field, at its type.
+    "E321-pattern": _Case(
+        "E321", "check", _fn("@Option<Bool>", "@Int",
+            "match @Option<Bool>.0 {\n    Some(@Bool, @Bool) -> 1,\n"
+            "    None -> 0\n  }"),
+        replace("Some(@Bool, @Bool)"), base=("Some(@T)",)),
+    # E340: the site's own type argument, aliased.
+    "E340-fn-type": _Case(
+        "E340", "check", FN_TYPE + _fn("@Unit", "@Int",
+            "handle[Exn<fn(Int -> Int) effects(pure)>] {\n"
+            "    throw(@IntToInt) -> { apply_fn(@IntToInt.0, 1) }\n"
+            "  } in {\n    1\n  }"),
+        prepend_then("handle[Exn<fn(Int -> Int) effects(pure)>]", "{0}"),
+        base=("type Small = { @Nat | @Nat.0 < 10 };",
+              "handle[Exn<Small>]")),
+    "E340-refinement": _Case(
+        "E340", "check", _fn("@Unit", "@Int",
+            "handle[State<{ @Nat | @Nat.0 < 10 }>](@Nat = 1) {\n"
+            "    get(@Unit) -> { resume(1) },\n"
+            "    put(@Nat) -> { resume(()) }\n  } in {\n    1\n  }"),
+        prepend_then("handle[State<{ @Nat | @Nat.0 < 10 }>](@Nat = 1)",
+                     "{0}({1} = 1)")),
+    # E337: the handler's own first type argument.
+    "E337-two-arguments": _Case(
+        "E337", "check", _fn("@Unit", "@Int",
+            "handle[State<Bool, Int>](@Bool = true) {\n"
+            "    get(@Unit) -> { resume(@Bool.0) },\n"
+            "    put(@Bool) -> { resume(()) }\n  } in {\n    1\n  }"),
+        replace("handle[State<Bool, Int>]"), base=("handle[State<Int>]",)),
+
+    # --- #1778: a type written as the program writes it ----------------
+    "E336-alias": _Case(
+        "E336", "check", POS + _fn("@Unit", "@Int",
+            "handle[State<Pos>](@Int = 1) {\n"
+            "    get(@Unit) -> { resume(1) },\n"
+            "    put(@Int) -> { resume(()) }\n  } in {\n    1\n  }"),
+        replace("(@Int = 1)", "({0} = 1)"), base=("@{@Int | ...}",)),
+    "E202-refined-param": _Case(
+        "E202", "check", POS + _helper("take", "@Pos -> @Int", "0")
+        + _fn("@Bool", "@Int", "take(@Bool.0)"),
+        as_value("take(@Bool.0)", "@Bool.0"), base=("{@Int | ...}",)),
+    "E202-array-of-refined": _Case(
+        "E202", "check", POS + _helper("take", "@Array<Pos> -> @Int", "0")
+        + _fn("@Bool", "@Int", "take(@Bool.0)"),
+        as_value("take(@Bool.0)", "@Bool.0"),
+        base=("Array<{@Int | ...}>",)),
+    "E202-plain": _Case(
+        "E202", "check", _helper("take", "@Int -> @Int", "0")
+        + _fn("@Bool", "@Int", "take(@Bool.0)"),
+        as_value("take(@Bool.0)", "@Bool.0")),
+    "E213-refined-field": _Case(
+        "E213", "check", POS + "private data Box {\n  Box(Pos)\n}\n\n"
+        + _fn("@Bool", "@Int", "let @Box = Box(@Bool.0);\n  0"),
+        as_value("Box(@Bool.0)", "@Bool.0"), base=("{@Int | ...}",)),
+    "E170-let-refined": _Case(
+        "E170", "check", POS + _fn("@Bool", "@Int",
+                                   "let @Pos = @Bool.0;\n  0"),
+        as_value("= @Bool.0;", "@Bool.0"), base=("{@Int | ...}",)),
+    "E171-closure-refined": _Case(
+        "E171", "check", POS + _fn("@Bool", "@Int",
+            "let @fn(Int -> Int) effects(pure) = fn(@Int -> @Pos) "
+            "effects(pure) { @Bool.0 };\n  0"),
+        as_value("{ @Bool.0 }", "@Bool.0"), base=("{@Int | ...}",)),
+    "E162-element": _Case(
+        "E162", "check", _fn("@Bool", "@Int",
+                             "let @Array<Int> = [1, @Bool.0];\n  0"),
+        as_value("[1, @Bool.0]", "@Bool.0")),
+    "E162-open-variable": _Case(
+        "E162", "check", ENDO + _fn("@Bool", "@Int",
+            "let @Array<Endo<Int>> = [fn(@Int -> @Int) effects(pure) "
+            "{ @Int.0 }, mk(())];\n  0"),
+        as_value(" mk(())]", "mk(())")),
+    "E301-branch": _Case(
+        "E301", "check", POS + _helper("pos", "@Unit -> @Pos", "1")
+        + _fn("@Bool", "@Int",
+              "let @Pos = if @Bool.0 then { true } else { pos(()) };\n  0"),
+        as_value("{ true }", "true"), base=("{@Int | ...}",)),
+    "E301-open-variable": _Case(
+        "E301", "check", ENDO + _fn("@Bool", "@Int",
+            "let @Int = if @Bool.0 then { 1 } else { mk(()) };\n  0"),
+        as_value("{ mk(()) }", "mk(())")),
+    "E302-arm": _Case(
+        "E302", "check", POS + _helper("pos", "@Unit -> @Pos", "1")
+        + _fn("@Option<Int>", "@Int",
+              "let @Pos = match @Option<Int>.0 {\n    Some(@Int) -> pos(()),"
+              "\n    None -> true\n  };\n  0"),
+        as_value("None -> true", "true"), base=("{@Int | ...}",)),
+    "E331-state-init": _Case(
+        "E331", "check", POS + _fn("@Unit", "@Int",
+            "handle[State<Pos>](@Pos = true) {\n"
+            "    get(@Unit) -> { resume(@Pos.0) },\n"
+            "    put(@Pos) -> { resume(()) }\n  } in {\n    1\n  }"),
+        as_value("(@Pos = true)", "true"), base=("{@Int | ...}",)),
+    "E335-state-update": _Case(
+        "E335", "check", POS + _fn("@Unit", "@Int",
+            "handle[State<Pos>](@Pos = 1) {\n"
+            "    get(@Unit) -> { resume(@Pos.0) },\n"
+            "    put(@Pos) -> { resume(()) } with @Pos = true\n"
+            "  } in {\n    1\n  }"),
+        as_value("with @Pos = true", "true"), base=("{@Int | ...}",)),
+    "E334-state-update-type": _Case(
+        "E334", "check", POS + _fn("@Unit", "@Int",
+            "handle[State<Pos>](@Pos = 1) {\n"
+            "    get(@Unit) -> { resume(@Pos.0) },\n"
+            "    put(@Pos) -> { resume(()) } with @Int = 2\n"
+            "  } in {\n    1\n  }"),
+        replace("with @Int = 2", "with {0} = 2")),
+    "E170-destructure-refined": _Case(
+        "E170", "check", POS + _helper("pair", "@Unit -> @Tuple<Pos, Int>",
+                                       "Tuple(1, 2)")
+        + _fn("@Unit", "@Int", "let Tuple<@Bool, @Int> = pair(());\n  0"),
+        replace("Tuple<@Bool, @Int>", "Tuple<{0}, @Int>"),
+        base=("@{@Int | ...}",)),
+    "E321-destructure-refined": _Case(
+        "E321", "check", POS + "private data Box {\n  Box(Pos)\n}\n\n"
+        + _helper("box", "@Unit -> @Box", "Box(1)")
+        + _fn("@Unit", "@Int", "let Box<@Int, @Int> = box(());\n  0"),
+        replace("Box<@Int, @Int>"), base=("Box<@{@Int | ...}>",)),
+    "E125-row-with-refined-cell": _Case(
+        "E125", "check", POS + _fn("@Unit", "@Unit", 'IO.print("x")',
+                                   eff="<State<Pos>>"),
+        replace("effects(<State<Pos>>)"),
+        base=("effects(<IO, State<{@Int | ...}>>)",)),
+}
+
+
+@pytest.mark.parametrize("name", sorted(CASES))
+def test_the_fix_applied_as_written_clears_the_code(name: str) -> None:
+    case = CASES[name]
+    fix = _the(case.code, case.stage, case.source).fix
+    given = spans(fix)
+    assert given, f"{name}: the fix gives nothing to write: {fix!r}"
+    codes = _applied_clears(case, given)
+    assert case.code not in codes, (name, fix, sorted(codes))
+
+
+@pytest.mark.parametrize(
+    "name", sorted(n for n, c in CASES.items() if c.base is not None))
+def test_the_base_text_applied_as_written_does_not_clear(name: str) -> None:
+    """The gate can fail: the text the code gave at base, applied the same
+    way, leaves the code firing, or draws an error the fix applied now does
+    not (it does not parse, or names a slot or a type the site lacks)."""
+    case = CASES[name]
+    assert case.base is not None
+    before = _errors(case.stage, case.apply(case.source, list(case.base)))
+    given = spans(_the(case.code, case.stage, case.source).fix)
+    after = _errors(case.stage, case.apply(case.source, given))
+    assert case.code in before or before - after, (name, sorted(before))
+
+
+# =====================================================================
+# Where no example can be computed, the fix names none
+# =====================================================================
+
+DROPPED: dict[str, tuple[str, str, str]] = {
+    # code, stage, program: nothing the site holds makes an example.
+    "E503-constant": ("E503", "verify", _fn("@Bool", "@Int",
+                                            "let @Nat = 0 - 1;\n  0")),
+    "E503-shadowed-operand": ("E503", "verify", _fn("@Int", "@Int",
+        "let @Int = 0 - @Int.0;\n  let @Nat = @Int.0;\n  0")),
+    "E502-let-operand": ("E502", "verify", _fn("@Nat", "@Nat",
+        "let @Nat = 1;\n  @Nat.1 - @Nat.0")),
+    "E123-string": ("E123", "check", _fn("@String", "@Int", "0",
+                                         req="@String.0")),
+    "E300-string": ("E300", "check", _fn("@String", "@Int",
+        "if @String.0 then { 1 } else { 0 }")),
+    "E127-no-fitting-parameter": ("E127", "check", _fn(
+        "@Float64", "@Int", "0", dec="@Float64.0")),
+    "E137-no-fitting-parameter": ("E137", "check", _fn(
+        "@Bool", "@Int", "f(@Bool.0)")),
+    "E201-no-function-value": ("E201", "check", _fn("@Int", "@Int",
+                                                    "apply_fn()")),
+}
+
+#: E301 with an open else branch: the then branch's type is named instead.
+E301_OPEN_ELSE = ENDO + _fn("@Bool", "@Int",
+    "let @Endo<Int> = if @Bool.0 then { fn(@Int -> @Int) effects(pure) "
+    "{ @Int.0 } } else { mk(()) };\n  0")
+
+
+@pytest.mark.parametrize("name", sorted(DROPPED))
+def test_a_fix_with_nothing_to_compute_names_no_example(name: str) -> None:
+    """The sentence stands without an example: no backticked slot, clause
+    or type the site does not hold, and no `?` type."""
+    code, stage, source = DROPPED[name]
+    fix = _the(code, stage, source).fix
+    for span in spans(fix):
+        assert not re.search(r"@[A-Z]\w*(<[^>]*>)?\.\d", span), (name, fix)
+        assert "?" not in span, (name, fix)
+    assert "e.g." not in fix, (name, fix)
+
+
+def test_the_base_e503_example_leaves_a_shadowed_operand_firing() -> None:
+    """The shadowed operand: the value at the site is a `let`, so the
+    base's `requires(@Int.0 >= 0)` (the parameter) leaves E503 firing; the
+    fix offers no clause there rather than that one."""
+    _code, stage, source = DROPPED["E503-shadowed-operand"]
+    fixed = _once(source, "requires(true)", "requires(@Int.0 >= 0)")
+    assert "E503" in _codes(stage, fixed)
+
+
+# =====================================================================
+# The reported instances (red at base)
+# =====================================================================
+
+def test_repro_1778_e336_names_the_cell_type_as_written() -> None:
+    source = CASES["E336-alias"].source
+    fix = _the("E336", "check", source).fix
+    assert "`@Pos`" in fix and "..." not in fix, fix
+
+
+def test_repro_1763_e503_sentinel_takes_the_counterexample_binding() -> None:
+    source = CASES["E503-issue-bool-nat"].source
+    fix = _the("E503", "verify", source).fix
+    assert "`requires(@Bool.0)`" in fix, fix
+    assert "@Int" not in fix, fix
+
+
+def test_repro_1763_e340_aliases_a_function_type_argument() -> None:
+    diag = _the("E340", "check", CASES["E340-fn-type"].source)
+    assert "inline function type" in diag.description, diag.description
+    assert "`type Thrown = fn(Int -> Int) effects(pure);`" in diag.fix
+
+
+def test_repro_1763_open_variable_types_are_not_named() -> None:
+    for name in ("E162-open-variable", "E301-open-variable"):
+        case = CASES[name]
+        fix = _the(case.code, case.stage, case.source).fix
+        assert "?" not in fix, (name, fix)
+    fix = _the("E301", "check", E301_OPEN_ELSE).fix
+    assert "?" not in fix, fix
+    assert spans(fix) == ["fn(Int -> Int) effects(pure)"], fix
+
+
+# =====================================================================
+# E024: the conversion command, run for real
+# =====================================================================
+
+def _run_pipeline(command: str, cwd: Path) -> None:
+    """Run a fix's shell pipeline, `a | b > out`, without a shell."""
+    body, _, out = command.partition(" > ")
+    stages = [shlex.split(stage) for stage in body.split(" | ")]
+    data = b""
+    for i, argv in enumerate(stages):
+        done = subprocess.run(argv, cwd=cwd, input=data if i else None,
+                              capture_output=True, check=True)
+        data = done.stdout
+    (cwd / out.strip()).write_bytes(data)
+
+
+@pytest.mark.skipif(os.name != "posix",
+                    reason="the fix's command is a POSIX pipeline "
+                           "(tail and iconv)")
+@pytest.mark.parametrize("marked", [True, False], ids=["marked", "unmarked"])
+def test_repro_1763_e024_command_converts_a_latin1_file(
+        tmp_path: Path, marked: bool) -> None:
+    """A Latin-1 file, with and without a UTF-8 byte-order mark: the copy
+    the fix's command writes passes `vera check`."""
+    program = _fn("@Unit", "@String", '"caf\xe9"').encode("latin-1")
+    path = tmp_path / "latin.vera"
+    path.write_bytes((b"\xef\xbb\xbf" if marked else b"") + program)
+    done = pipeline.cli("check", "--json", path)
+    (diag,) = json.loads(done.stdout)["diagnostics"]
+    assert diag["error_code"] == "E024", diag
+    (command,) = [s for s in spans(diag["fix"]) if "iconv" in s]
+    assert ("tail -c +4" in command) is marked, command
+    _run_pipeline(command, tmp_path)
+    copy = tmp_path / "latin.utf8.vera"
+    assert copy.read_bytes().startswith(b"public fn f(")
+    assert pipeline.check(copy).ok, pipeline.check(copy).diagnostics
+
+
+# =====================================================================
+# No fix reaches a message renderer
+# =====================================================================
+
+_RENDERERS = frozenset({"pretty_type", "pretty_inferred_type",
+                        "pretty_effect", "canonical_type_name"})
+
+
+def _reaches_a_renderer(path: Path, root: Path) -> list[str]:
+    """Each `fix=` in *path* whose expression, the locals it reads, or a
+    `*_fix` / `*_form` / `*_text` helper it calls, renders a type in the
+    message form."""
+    source = path.read_text(encoding="utf-8")
+    tree = pyast.parse(source)
+    funcs = {n.name: n for n in pyast.walk(tree)
+             if isinstance(n, pyast.FunctionDef)}
+
+    def called(node: pyast.AST) -> set[str]:
+        out = set()
+        for sub in pyast.walk(node):
+            if isinstance(sub, pyast.Call):
+                f = sub.func
+                if isinstance(f, pyast.Name):
+                    out.add(f.id)
+                elif isinstance(f, pyast.Attribute):
+                    out.add(f.attr)
+        return out
+
+    def reaches(expr: pyast.AST, fn: pyast.FunctionDef | None,
+                seen: set[str]) -> bool:
+        names = called(expr)
+        if names & _RENDERERS:
+            return True
+        for name in names:
+            if (name in funcs and name not in seen
+                    and name.endswith(("_fix", "_form", "_text"))):
+                seen.add(name)
+                body = funcs[name]
+                for stmt in pyast.walk(body):
+                    if (isinstance(stmt, (pyast.Return, pyast.Assign))
+                            and stmt.value is not None
+                            and reaches(stmt.value, body, seen)):
+                        return True
+        if fn is not None:
+            local = {n.id for n in pyast.walk(expr)
+                     if isinstance(n, pyast.Name)}
+            for stmt in pyast.walk(fn):
+                if isinstance(stmt, pyast.Assign):
+                    targets = {t.id for t in stmt.targets
+                               if isinstance(t, pyast.Name)}
+                    if targets & local and not targets & seen:
+                        seen |= targets
+                        if reaches(stmt.value, fn, seen):
+                            return True
+        return False
+
+    found = []
+    for fn in funcs.values():
+        for node in pyast.walk(fn):
+            if not isinstance(node, pyast.Call):
+                continue
+            for kw in node.keywords:
+                if kw.arg == "fix" and reaches(kw.value, fn, set()):
+                    found.append(f"{path.relative_to(root).as_posix()}:"
+                                 f"{kw.value.lineno}")
+    return found
+
+
+def test_no_fix_renders_a_type_in_the_message_form() -> None:
+    """#1778's class gate: a type a fix names is the program's spelling.
+    At base it listed 31 sites."""
+    package = Path(vera.__file__).resolve().parent
+    found = [site for path in sorted(package.rglob("*.py"))
+             for site in _reaches_a_renderer(path, package.parent)]
+    assert found == [], found

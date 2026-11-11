@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Collection
+
     from vera import ast as _ast
 
 
@@ -354,6 +356,117 @@ def pretty_effect(eff: EffectRowType) -> str:
             parts.append(eff.row_var)
         return f"effects(<{', '.join(parts)}>)"
     return "effects(?)"
+
+
+# =====================================================================
+# A type as the program writes it (for a fix to paste)
+# =====================================================================
+
+def type_expr_of(ty: Type,
+                 declared: Collection[str] = ()) -> _ast.TypeExpr | None:
+    """*ty* as a type expression the program can write, or ``None`` where a
+    part of it is in no program as written: ``Unknown`` (``?``), and a type
+    variable or an effect row variable outside *declared*, the type
+    parameters in scope where the reader writes it (an inference variable,
+    ``T$1``, a built-in's, another function's).
+
+    A refinement keeps its predicate, the node the checker holds, so the
+    rendering is the type itself and not :func:`pretty_type`'s
+    ``{@Int | ...}`` (#1778).  An alias the checker resolved is written as
+    what it stands for, which names the same type."""
+    from vera import ast as a
+    if isinstance(ty, PrimitiveType):
+        return a.NamedType(ty.name, None)
+    if isinstance(ty, AdtType):
+        args = [type_expr_of(t, declared) for t in ty.type_args]
+        if any(arg is None for arg in args):
+            return None
+        return a.NamedType(
+            ty.name, tuple(t for t in args if t is not None) or None)
+    if isinstance(ty, RefinedType):
+        base = type_expr_of(ty.base, declared)
+        return None if base is None else a.RefinementType(base, ty.predicate)
+    if isinstance(ty, TypeVar):
+        return a.NamedType(ty.name, None) if ty.name in declared else None
+    if isinstance(ty, FunctionType):
+        params = [type_expr_of(p, declared) for p in ty.params]
+        ret = type_expr_of(ty.return_type, declared)
+        row = effect_row_expr_of(ty.effect, declared)
+        if ret is None or row is None or any(p is None for p in params):
+            return None
+        return a.FnType(tuple(p for p in params if p is not None), ret, row)
+    return None
+
+
+def effect_row_expr_of(eff: EffectRowType,
+                       declared: Collection[str] = ()) -> _ast.EffectRow | None:
+    """*eff* as an effect row the program can write, members in
+    :func:`effect_sort_key` order; ``None`` as :func:`type_expr_of` says."""
+    from vera import ast as a
+    if isinstance(eff, PureEffectRow):
+        return a.PureEffect()
+    if not isinstance(eff, ConcreteEffectRow):
+        return None
+    refs: list[a.EffectRefNode] = []
+    for inst in sorted(eff.effects, key=effect_sort_key):
+        args = [type_expr_of(t, declared) for t in inst.type_args]
+        if any(arg is None for arg in args):
+            return None
+        refs.append(a.EffectRef(
+            inst.name, tuple(t for t in args if t is not None) or None))
+    if eff.row_var is not None:
+        if eff.row_var not in declared:
+            return None
+        refs.append(a.EffectRef(eff.row_var, None))
+    if not refs:
+        return a.PureEffect()
+    return a.EffectSet(tuple(refs))
+
+
+def written_type(ty: Type, declared: Collection[str] = ()) -> str | None:
+    """*ty* as a type argument is written (``Array<{ @Int | @Int.0 > 0 }>``),
+    by :func:`vera.ast.format_type`, for a fix that tells the reader to
+    write it; ``None`` where :func:`type_expr_of` finds a part no program
+    writes, and the fix then names no type.  :func:`pretty_type` stays the
+    renderer of a type a message only shows."""
+    te = type_expr_of(ty, declared)
+    if te is None:
+        return None
+    from vera import ast as a
+    return a.format_type(te)
+
+
+def written_effect(eff: EffectRowType,
+                   declared: Collection[str] = ()) -> str | None:
+    """*eff* as an ``effects(...)`` clause is written, or ``None``."""
+    row = effect_row_expr_of(eff, declared)
+    if row is None:
+        return None
+    from vera import ast as a
+    if not isinstance(row, a.EffectSet):
+        return "effects(pure)"
+    return f"effects(<{', '.join(written_effect_ref(r) for r in row.effects)}>)"
+
+
+def written_effect_ref(ref: _ast.EffectRefNode) -> str:
+    """One member of an effect row as it is written: ``State<Pos>``.
+    :func:`effect_row_expr_of` builds only :class:`~vera.ast.EffectRef`."""
+    from vera import ast as a
+    name: str = getattr(ref, "name")
+    args = getattr(ref, "type_args", None)
+    if not args:
+        return name
+    return f"{name}<{', '.join(a.format_type(t) for t in args)}>"
+
+
+def written_effect_instance(inst: EffectInstance,
+                            declared: Collection[str] = ()) -> str | None:
+    """One effect instance as a row member is written, or ``None``."""
+    row = effect_row_expr_of(ConcreteEffectRow(frozenset({inst})), declared)
+    from vera import ast as a
+    if not isinstance(row, a.EffectSet):
+        return None
+    return written_effect_ref(row.effects[0])
 
 
 # =====================================================================

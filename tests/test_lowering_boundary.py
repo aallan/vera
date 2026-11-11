@@ -1803,11 +1803,11 @@ class TestTheFixCompilesClean:
     def test_an_inline_refinement_cell(self) -> None:
         source, _ = _SPELLINGS["State inline refinement"]
         fix = _only_fix(source, "E340")
-        alias = _between(fix, "type Small", ";") + ";\n\n"
-        assert "handle[State<Small>]" in fix, fix
+        alias = _between(fix, "type Cell", ";") + ";\n\n"
+        assert "handle[State<Cell>]" in fix, fix
         fixed = alias + source.replace(
-            "{ @Nat | @Nat.0 < 10 }", "Small").replace(
-            "put(@Nat)", "put(@Small)")
+            "{ @Nat | @Nat.0 < 10 }", "Cell").replace(
+            "put(@Nat)", "put(@Cell)")
         _holds(fixed, None, 1)
 
     def test_an_exn_payload_with_no_representation(self) -> None:

@@ -718,6 +718,7 @@ MARKED_FILES = (
     "test_expected_type_premise_1716.py",
     "test_one_error_per_refusal_1563.py",
     "test_counterexample_result_1707.py",
+    "test_fix_texts_apply_and_clear.py",
 )
 UNMARKED_FILES = (
     "test_obligations.py",
