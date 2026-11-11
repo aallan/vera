@@ -876,8 +876,9 @@ class FunctionCompilationMixin:
         # leaf's sign guard, a composite coercion's walk) and the function
         # runs none after its body (a postcondition, a refined return).
         # `_translate_call` (`vera/wasm/calls.py`) emits the `return_call`
-        # where the callee's WASM return type is the caller's, and
-        # `_check_tail_calls` below refuses a check found after one.
+        # where the callee's WASM return type is the caller's, and the
+        # tripwire below (`dead_check_tail_call`) refuses a check found
+        # after one.
         ctx.set_tail_call_context(
             ctx.obligations.tail_calls(decl),
             self_ret_wt=ret_wt if ret_wt != "unsupported" else None,
@@ -1328,9 +1329,9 @@ class FunctionCompilationMixin:
         self._collection_exports |= ctx._collection_exports
 
         # #517: the work a surviving `return_call` must not skip.  No check
-        # follows one (the table's rule chose the tail calls, and
-        # `_check_tail_calls` below refuses a check found after one), so
-        # what is left is the function's own bookkeeping:
+        # follows one (the table's rule chose the tail calls, and the
+        # tripwire below, `dead_check_tail_call`, refuses a check found
+        # after one), so what is left is the function's own bookkeeping:
         #
         # - the GC epilogue (restore ``$gc_sp``, push the result) runs only
         #   for an allocating function; ``return_call`` would leak this

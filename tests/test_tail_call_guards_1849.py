@@ -49,6 +49,7 @@ from pathlib import Path
 import pytest
 
 from tests import pipeline
+from vera import ast
 from vera.trap_registry import CHECK_MARKER_RE
 
 pytestmark = pytest.mark.matrix(decides=[
@@ -566,42 +567,102 @@ def test_repro_the_rule_keeps_the_unguarded_tail_call() -> None:
 # =====================================================================
 
 
+@dataclass
+class _Lowered:
+    """One function as `_compile_fn` lowered it: the table's tail calls,
+    the set the translator was handed, the `return_call`s the translator
+    emitted for calls of that set, and whether the function carries a
+    `decreases` clause."""
+
+    table: set[int]
+    handed: set[int]
+    decreases: bool
+    emitted: int = 0
+    assembled: int | None = None
+
+
+def _watch_lowering(monkeypatch: pytest.MonkeyPatch) -> list[_Lowered]:
+    """Record, per function `_compile_fn` lowers, the table's decision, the
+    set handed to the translator, each `return_call` the translator emits
+    (asserting its call is in that set), and the `return_call` lines of the
+    function as assembled."""
+    from vera.codegen import functions
+    from vera.obligations.table import ObligationTable
+    from vera.wasm.context import WasmContext
+    lowered: list[_Lowered] = []
+    pending: list[tuple[set[int], bool]] = []
+    tail_calls = ObligationTable.tail_calls
+    set_context = WasmContext.set_tail_call_context
+    translate = WasmContext._translate_call
+    dead_check = functions.dead_check_tail_call
+
+    def table_rule(self, decl):  # type: ignore[no-untyped-def]
+        result = tail_calls(self, decl)
+        pending.append((set(result), any(
+            isinstance(c, ast.Decreases) for c in decl.contracts)))
+        return result
+
+    def context(self, sites, self_ret_wt):  # type: ignore[no-untyped-def]
+        assert pending, "a tail-call set handed over before the table decided"
+        table, decreases = pending.pop()
+        lowered.append(_Lowered(table, set(sites), decreases))
+        return set_context(self, sites, self_ret_wt)
+
+    def translated(self, call, env, **kwargs):  # type: ignore[no-untyped-def]
+        out = translate(self, call, env, **kwargs)
+        if out and out[-1].startswith("return_call "):
+            assert id(call) in self._tail_call_sites, out[-1]
+            lowered[-1].emitted += 1
+        return out
+
+    def assembled(lines: list[str]) -> str | None:
+        lowered[-1].assembled = sum(
+            1 for ln in lines if ln.lstrip().startswith("return_call "))
+        return dead_check(lines)
+
+    monkeypatch.setattr(ObligationTable, "tail_calls", table_rule)
+    monkeypatch.setattr(WasmContext, "set_tail_call_context", context)
+    monkeypatch.setattr(WasmContext, "_translate_call", translated)
+    monkeypatch.setattr(functions, "dead_check_tail_call", assembled)
+    return lowered
+
+
 def test_the_tail_call_set_is_the_tables_alone(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Over the corpus, each function's set of tail-call sites handed to
-    the translator is exactly `ObligationTable.tail_calls` of it, and is
-    still that set when the function is lowered: nothing in `_compile_fn`
-    subtracts from it or adds to it."""
-    from vera.obligations.table import ObligationTable
-    from vera.wasm.context import WasmContext
-    decided: list[set[int]] = []
-    handed: list[tuple[object, set[int], set[int]]] = []
-    tail_calls = ObligationTable.tail_calls
-    set_context = WasmContext.set_tail_call_context
-
-    def table_rule(self, decl):  # type: ignore[no-untyped-def]
-        result = tail_calls(self, decl)
-        decided.append(set(result))
-        return result
-
-    def context(self, sites, self_ret_wt):  # type: ignore[no-untyped-def]
-        assert decided, "a tail-call set handed over before the table decided"
-        handed.append((self, set(sites), decided.pop()))
-        return set_context(self, sites, self_ret_wt)
-
-    monkeypatch.setattr(ObligationTable, "tail_calls", table_rule)
-    monkeypatch.setattr(WasmContext, "set_tail_call_context", context)
-    nonempty = 0
+    the translator is exactly `ObligationTable.tail_calls` of it, every
+    `return_call` the translator emits is a call of that set, and the
+    function as assembled holds exactly the `return_call`s emitted: the
+    post-pass adds none and takes none back.  The one exception is the
+    `decreases` guard's chain discipline (#1172), which may demote a tail
+    call of a function carrying a `decreases` to a plain `call`; such a
+    function holds at most the `return_call`s emitted."""
+    lowered = _watch_lowering(monkeypatch)
     for path in _corpus():
         pipeline.compile(path, file=str(path))
-        for ctx, sites, table in handed:
-            assert sites == table, path.name
-            assert ctx._tail_call_sites == table, path.name
-            nonempty += bool(table)
-        handed.clear()
-        assert decided == [], path.name
-    assert nonempty > 50
+    assert lowered
+    for fn in lowered:
+        assert fn.handed == fn.table
+        if fn.assembled is None:
+            continue  # the function was dropped before assembly
+        if fn.decreases:
+            assert fn.assembled <= fn.emitted
+        else:
+            assert fn.assembled == fn.emitted
+    assert sum(fn.emitted for fn in lowered if not fn.decreases) > 20
+    assert sum(fn.assembled or 0 for fn in lowered) > 100
+
+
+def test_repro_the_record_counts_the_unguarded_tail_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The record reads the lowering it claims to: `f`'s one tail call is
+    emitted once and assembled once."""
+    lowered = _watch_lowering(monkeypatch)
+    pipeline.compile(_UNGUARDED, file=FILE)
+    (f,) = [fn for fn in lowered if fn.emitted]
+    assert (f.emitted, f.assembled, f.decreases) == (1, 1, False)
 
 
 # =====================================================================
