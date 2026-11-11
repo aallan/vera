@@ -239,6 +239,9 @@ INVISIBLE = [
     "\u2060",  # Cf, word joiner
     "\u00ad",  # Cf, soft hyphen
     "\u0600",  # Cf, arabic number sign
+    "\u034f",  # Mn, combining grapheme joiner (default-ignorable)
+    "\ufe0f",  # Mn, variation selector-16
+    "\u3164",  # Lo, hangul filler
     "\x00",    # Cc, no name
     "\x01",    # Cc, no name
     "\x7f",    # Cc, no name
@@ -284,16 +287,32 @@ def test_e006_names_a_character_with_no_glyph(
     assert f'"{char}"' not in d.description, d.description
 
 
-@pytest.mark.parametrize("char", ["@", "$", "`", "\\", "é", "€", "😀", "∀"])
+@pytest.mark.parametrize("char", ["$", "`", "\\", "é", "€", "😀", "∀", "#"])
 def test_e006_still_quotes_a_character_with_a_glyph(char: str) -> None:
-    """Negative space: a visible character is quoted as at base."""
+    """Negative space: a visible character the lexer refuses is E006 and is
+    quoted as at base."""
     source = _FN.replace("  0\n", "  0 " + char + " 1\n", 1)
     with pytest.raises(VeraError) as info:
         parse(source, file="x.vera")
     d = info.value.diagnostic
-    if d.error_code == "E006":
-        assert f'"{char}"' in d.description, d.description
-        assert "U+" not in d.description, d.description
+    assert d.error_code == "E006", d
+    assert f'"{char}"' in d.description, d.description
+    assert "U+" not in d.description, d.description
+
+
+def test_a_marked_file_s_first_line_import_error_quotes_the_line_without_it(
+    tmp_path: Path,
+) -> None:
+    """The resolver reads the importing file again for the quoted line: it
+    reads what the parser saw, so a column on line 1 indexes the line."""
+    path = tmp_path / "main.vera"
+    path.write_bytes(
+        BOM + b"import nowhere(f);\n" + _MAIN.encode("utf-8"))
+    run = _vera("check", "--json", str(path))
+    diags = json.loads(run.stdout)["diagnostics"]
+    found = [d for d in diags if d["location"]["line"] == 1]
+    assert found, diags
+    assert found[0]["source_line"] == "import nowhere(f);", found[0]
 
 
 @pytest.mark.parametrize("where", ["string", "comment"])
@@ -352,7 +371,7 @@ def test_e024_places_a_marked_file_as_the_unmarked_one(
     assert marked["location"]["line"] == plain["location"]["line"]
     assert marked["location"]["column"] == plain["location"]["column"]
     assert marked["source_line"] == plain["source_line"]
-    assert "﻿" not in marked["source_line"]
+    assert "\ufeff" not in marked["source_line"]
     where = (plain["location"]["line"], plain["location"]["column"])
     assert "(line %d, column %d)" % where in marked["description"]
 

@@ -226,17 +226,29 @@ def partial_diagnostics(exc: BaseException) -> list[Diagnostic]:
     return [d for d in found if isinstance(d, Diagnostic)]
 
 
+#: Default-ignorable code points (Unicode's DerivedCoreProperties) outside
+#: the categories above: they display as nothing.
+_INVISIBLE_OTHER = frozenset({
+    0x034F, 0x115F, 0x1160, 0x17B4, 0x17B5, 0x3164, 0xFFA0,
+    *range(0x180B, 0x180E), *range(0xFE00, 0xFE10),
+    *range(0xE0100, 0xE01F0),
+})
+
+
 def _name_character(char: str) -> str:
     """*char* as E006 quotes it: itself in quotes when it has a glyph, else
     its code point and name, so a diagnostic never points at nothing.
 
     No glyph: the Unicode categories ``Cc`` (control), ``Cf`` (format, the
     byte-order mark and the zero-width characters among them), ``Zs`` other
-    than the space, ``Zl`` and ``Zp`` (#1790).
+    than the space, ``Zl`` and ``Zp``, and the default-ignorable characters
+    of other categories (the combining grapheme joiner, the variation
+    selectors, the Hangul fillers) (#1790).
     """
     category = unicodedata.category(char) if len(char) == 1 else ""
     if category in ("Cc", "Cf", "Zl", "Zp") or (
-            category == "Zs" and char != " "):
+            category == "Zs" and char != " ") or (
+            len(char) == 1 and ord(char) in _INVISIBLE_OTHER):
         name = unicodedata.name(char, "").lower() or "control character"
         return f"U+{ord(char):04X} ({name})"
     return f'"{char}"'
