@@ -827,11 +827,14 @@ class TestLeakedTypevarSiblingSites1069:
         assert bad not in desc, desc
 
     def test_e301_fix_text_renders_unknown(self) -> None:
-        """E301's fix field interpolates the else-branch's inferred type; a
-        leaked var there masquerades the same way the description did."""
+        """E301's fix field names the else-branch's type; a leaked var there
+        masquerades the same way the description did.  The fix writes a type
+        the program can write (#1763): with the else branch's type open, the
+        then branch's, `Int`, and neither `?` nor the bare `V`."""
         errs = _errors(_fn_lost(
             "Int", f"if true then {{ 2 }} else {{ {_LOST} }}"))
         fixes = [e.fix for e in errs if e.error_code == "E301"]
         assert fixes and fixes[0] is not None, errs
-        assert "convert one branch to ?" in fixes[0], fixes[0]
+        assert "convert one branch to `Int`" in fixes[0], fixes[0]
+        assert "?" not in fixes[0], fixes[0]
         assert "branch to V" not in fixes[0], fixes[0]
