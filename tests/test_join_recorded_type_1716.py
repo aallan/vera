@@ -49,7 +49,8 @@ import pytest
 
 from tests import pipeline
 from vera import ast, fold, narrowing
-from vera.types import (AdtType, FunctionType, PrimitiveType, RefinedType,
+from vera.types import (AdtType, ConcreteEffectRow, FunctionType,
+                        PrimitiveType, RefinedType,
                         Type, TypeVar, UnknownType)
 
 pytestmark = pytest.mark.matrix(decides=[
@@ -758,7 +759,10 @@ def _unstated(record: Type, arm: Type | None,
         return []
     rb, rp = _chain(record)
     ab, ap = _chain(arm)
-    if isinstance(ab, (TypeVar, UnknownType)) or (
+    if isinstance(ab, TypeVar) and not (
+            isinstance(rb, TypeVar) and rb.name == ab.name):
+        return []  # open: filled from another arm
+    if isinstance(ab, UnknownType) or (
             isinstance(ab, PrimitiveType) and ab.name == "Never"):
         return []
     out: list[tuple[object, ...]] = []
@@ -1308,3 +1312,172 @@ def test_repro_1716_a_clause_no_position_reconciles_is_refused_whole() -> None:
         "replace 'Some(5)' with 'Ok(0)', or give the handled body the "
         "clause's type.")
     assert found.spec_ref == 'Chapter 7, Section 7.5.2 "Handler Semantics"'
+
+
+_RIGID = """\
+type Kept<T> = {{ @T | true }};
+
+private forall<T> fn j(@Bool, @T, @Kept<T> -> @T)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  if @Bool.0 then {{ {first} }} else {{ {second} }}
+}}
+"""
+
+
+@pytest.mark.parametrize("swap", [False, True], ids=["bare first", "refined first"])
+def test_repro_1716_a_rigid_type_variable_states_its_own_refinements(
+        swap: bool) -> None:
+    """The enclosing function's own type variable is no open position: a
+    bare `@T` arm beside a refined `@Kept<T>` arm states no refinement, so
+    the join is a bare `T` in either order (at review round 4's head the
+    refined arm second kept its refinement)."""
+    first, second = (("@Kept<T>.0", "@T.0") if swap
+                     else ("@T.0", "@Kept<T>.0"))
+    source = _RIGID.format(first=first, second=second)
+    assert _recorded(source, ast.IfExpr) == ["'T"]
+
+
+_EFFECT_FORMS = {
+    "if": "if @Bool.0 then {{\n    {first}\n  }} else {{\n    {second}\n  }}",
+    "match": ("match @Bool.0 {{\n    true -> {first},\n"
+              "    false -> {second}\n  }}"),
+    "handler": ("handle[Exn<String>] {{\n    throw(@String) -> {{ {second} }}\n"
+                "  }} in {{\n    if @Bool.0 then {{ {first} }} else "
+                "{{ throw(\"x\") }}\n  }}"),
+}
+
+_CLOSURE = "fn(@Int -> @Int) effects({row}) {{ @Int.0 }}"
+
+
+def _recorded_type(source: str, kind: type[ast.Expr]) -> Type | None:
+    checked = pipeline.check(source, file=FILE)
+    assert checked.ok, [(d.error_code, d.description[:90])
+                        for d in checked.errors]
+    types = checked.artifacts.node_semantic_types
+    for tl in checked.program.declarations:
+        decl = getattr(tl, "decl", tl)
+        if isinstance(decl, ast.FnDecl):
+            for node in fold.walk(decl.body):
+                if isinstance(node, kind):
+                    return types.get(node.node_id)
+    return None
+
+
+@pytest.mark.parametrize("form", list(_EFFECT_FORMS))
+@pytest.mark.parametrize("rows", [("pure", "<IO>"), ("<IO>", "pure")],
+                         ids=["pure first", "io first"])
+def test_repro_1716_function_arms_of_two_effect_rows_join_at_the_wider(
+        form: str, rows: tuple[str, str]) -> None:
+    """Function-typed arms whose effect rows differ: the walk joins in the
+    direction a row widens, so the join is accepted with the `<IO>` row in
+    either order (`_join_either`).  At review round 3's head the handler
+    refused the wider clause (E341); at f71c401c a `match` with the pure
+    arm first was recorded pure."""
+    first, second = (_CLOSURE.format(row=r) for r in rows)
+    body = _EFFECT_FORMS[form].format(first=first, second=second)
+    source = ("type IOF = fn(Int -> Int) effects(<IO>);\n\n"
+              "private fn j(@Bool -> @IOF)\n  requires(true)\n"
+              "  ensures(true)\n  effects(pure)\n{\n  " + body + "\n}\n")
+    kind = {"if": ast.IfExpr, "match": ast.MatchExpr,
+            "handler": ast.HandleExpr}[form]
+    recorded = _recorded_type(source, kind)
+    assert isinstance(recorded, FunctionType), recorded
+    assert isinstance(recorded.effect, ConcreteEffectRow), recorded
+    assert {e.name for e in recorded.effect.effects} == {"IO"}, recorded
+
+
+_HIGHER = """\
+type PF = fn(Int -> Int) effects(pure);
+type IOF = fn(Int -> Int) effects(<IO>);
+type Wide = fn(PF -> IOF) effects(pure);
+type Narrow = fn(IOF -> PF) effects(pure);
+
+private fn j(@Bool, @Wide, @Narrow -> @Wide)
+  requires(true)
+  ensures(true)
+  effects(<Exn<String>>)
+{{
+  {body}
+}}
+"""
+
+_HIGHER_FORMS = {
+    "if": "if @Bool.0 then {{ {first} }} else {{ {second} }}",
+    "match": "match @Bool.0 {{\n    true -> {first},\n    false -> {second}\n  }}",
+    "handler": ("handle[Exn<String>] {{\n    throw(@String) -> {{ {second} }}\n"
+                "  }} in {{\n    if @Bool.0 then {{ {first} }} else "
+                "{{ throw(\"x\") }}\n  }}"),
+}
+
+
+def _row_names(row: object) -> set[str]:
+    if isinstance(row, ConcreteEffectRow):
+        return {e.name for e in row.effects}
+    return set()
+
+
+@pytest.mark.parametrize("form", list(_HIGHER_FORMS))
+@pytest.mark.parametrize("swap", [False, True], ids=["wide first", "narrow first"])
+def test_repro_1716_a_join_the_walk_takes_neither_way_is_the_supertype(
+        form: str, swap: bool) -> None:
+    """`fn(PF -> IOF)` beside `fn(IOF -> PF)`: the second is a subtype of
+    the first, and the walk joins neither way (a parameter's row is read
+    contravariantly), so the join is the supertype, `fn(PF -> IOF)`, in
+    either order.  At f71c401c a `match` with the subtype first was
+    recorded at the subtype, whose result claims a pure function."""
+    first, second = (("@Narrow.0", "@Wide.0") if swap
+                     else ("@Wide.0", "@Narrow.0"))
+    body = _HIGHER_FORMS[form].format(first=first, second=second)
+    kind = {"if": ast.IfExpr, "match": ast.MatchExpr,
+            "handler": ast.HandleExpr}[form]
+    recorded = _recorded_type(_HIGHER.format(body=body), kind)
+    assert isinstance(recorded, FunctionType), recorded
+    (param,) = recorded.params
+    assert isinstance(param, FunctionType) and isinstance(
+        recorded.return_type, FunctionType), recorded
+    assert _row_names(param.effect) == set(), recorded
+    assert _row_names(recorded.return_type.effect) == {"IO"}, recorded
+
+
+_EFFECT_LEAK = """\
+type IOF = fn(Int -> Int) effects(<IO>);
+
+private fn f(@Bool, @IOF, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  apply_fn(match @Bool.0 {
+    true -> fn(@Int -> @Int) effects(pure) {
+      @Int.0
+    },
+    false -> @IOF.0
+  }, @Int.0)
+}
+
+public fn main(-> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  let @Int = f(false, fn(@Int -> @Int) effects(<IO>) {
+    IO.print("leaked\\n");
+    @Int.0
+  }, 7);
+  ()
+}
+"""
+
+
+def test_repro_1716_a_pure_function_applies_no_io_arm_of_a_match() -> None:
+    """A `match` whose pure-function arm comes first and whose other arm is
+    an `<IO>` function has the `<IO>` row, so applying it in a function
+    declared `effects(pure)` is refused (E125).  At f71c401c the `match`
+    was recorded pure, `vera check` accepted the program, and `vera run`
+    printed `leaked` from a pure function."""
+    checked = pipeline.check(_EFFECT_LEAK, file=FILE)
+    assert "E125" in [d.error_code for d in checked.errors], [
+        (d.error_code, d.description[:80]) for d in checked.errors]

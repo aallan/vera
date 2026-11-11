@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 from collections.abc import Collection, Mapping, Sequence
+from typing import cast
 from dataclasses import dataclass
 
 from vera import ast, naming, narrowing, patterns
@@ -239,12 +240,17 @@ def _shared_prefix(
     return a[:shared]
 
 
-def _constrains(ty: Type) -> bool:
-    """Whether an arm of type *ty* states anything at a position: not where
-    it is open (a type variable the join filled from another arm, or the
-    checker's unknown), and not where it yields no value (`Never`)."""
+def _constrains(ty: Type, joined_base: Type) -> bool:
+    """Whether an arm of type *ty* states anything at a position the join
+    holds *joined_base* at: not where it is open (a type variable the join
+    filled from another arm, or the checker's unknown), and not where it
+    yields no value (`Never`).  A type variable the join kept (the
+    enclosing function's own, the same on both sides) is no open position:
+    the arm states its refinements there."""
     base = _refinement_chain(ty)[0]
-    if isinstance(base, (TypeVar, UnknownType)):
+    if isinstance(base, TypeVar):
+        return isinstance(joined_base, TypeVar) and base.name == joined_base.name
+    if isinstance(base, UnknownType):
         return False
     return not (isinstance(base, PrimitiveType) and base.name == "Never")
 
@@ -301,9 +307,9 @@ def _shared_at(
     each with its expression at the head (where the static-literal exception
     reads it) and ``None`` below."""
     base, predicates = _refinement_chain(joined)
-    if isinstance(base, (TypeVar, UnknownType)):
+    if isinstance(base, UnknownType):
         return joined
-    stating = [(expr, ty) for expr, ty in arms if _constrains(ty)]
+    stating = [(expr, ty) for expr, ty in arms if _constrains(ty, base)]
     kept = predicates
     for _, ty in stating:
         kept = _shared_prefix(kept, _refinement_chain(ty)[1])
@@ -387,6 +393,21 @@ class ControlFlowMixin:
         (:func:`_shared_facts`, #1716)."""
         return _shared_facts(joined, arms)
 
+    def _join_either(self, ty: Type, onto: Type) -> Type | None:
+        """The structure of a value join of an arm of *ty* with what the
+        arms before it give, *onto*, as the `match` and the `Exn` handler
+        take it (#1716): *ty* joined onto *onto* (`_join`), or *ty* itself
+        where *onto* is a subtype of it.  The walk is directional over a
+        function type's effect row (the first side's row a subtype of the
+        second's), so a pure function beside an `<IO>` one is the `<IO>`
+        one in either order, the wider row; and under a subtype it answers
+        the onto side where it refuses (`_join_parts`), so *onto* joined
+        onto *ty* is *ty*."""
+        merged = self._join(ty, onto)
+        if merged is None and is_subtype(onto, ty):
+            merged = ty
+        return merged
+
     def _check_if(self, expr: ast.IfExpr, *,
                   expected: Type | None = None) -> Type | None:
         """Type-check if-then-else."""
@@ -428,11 +449,12 @@ class ControlFlowMixin:
         # either order.
         branches = [(expr.then_branch, then_ty), (expr.else_branch, else_ty)]
         if is_subtype(then_ty, else_ty):
+            # Under a subtype the join answers: `_join_parts` gives the
+            # onto side where the walk refuses.  The other order (the else
+            # branch a subtype of the then branch alone: a function type
+            # whose effect row widens) is the general path's below.
             return self._value_join(
-                self._join(then_ty, else_ty) or else_ty, branches)
-        if is_subtype(else_ty, then_ty):  # pragma: no cover — subtyping is symmetric for current rules
-            return self._value_join(
-                self._join(else_ty, then_ty) or then_ty, branches)
+                cast(Type, self._join(then_ty, else_ty)), branches)
 
         # Re-synthesis: a branch with an unresolved type variable is
         # synthesized again with the other branch's type expected, so a
@@ -550,9 +572,7 @@ class ControlFlowMixin:
                         # gave.
                         joined = arm_ty
                 else:
-                    joined = self._join(arm_ty, result_type)
-                    if joined is None and is_subtype(result_type, arm_ty):
-                        joined = result_type
+                    joined = self._join_either(arm_ty, result_type)
                 if joined is not None:
                     result_type = joined
                 else:
@@ -2033,13 +2053,7 @@ class ControlFlowMixin:
             # always throws gives the clause's.
             if joined is None or _always_throws(joined):
                 joined = clause_type
-            # `_join` answers None under a subtype only on a binding
-            # conflict (`_join_parts` returns the onto side for a subtype
-            # the walk refuses), and `is_subtype` admits a type variable only
-            # where the other side has the same variable or the unknown,
-            # which binds no two types to one variable: so a clause that is
-            # a subtype of the body always joins, as it was always kept.
-            elif (merged := self._join(clause_type, joined)) is not None:
+            elif (merged := self._join_either(clause_type, joined)) is not None:
                 joined = self._value_join(merged, arms)
             else:
                 self._error(
