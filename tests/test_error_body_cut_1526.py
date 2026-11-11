@@ -72,6 +72,31 @@ def test_a_body_exactly_at_the_cap_is_whole() -> None:
     assert detail == "xyzé", detail
 
 
+@pytest.mark.parametrize("cell", CELLS, ids=lambda c: f"{c[0]}byte-{c[1]}before")
+def test_a_configured_key_before_the_cut_stays_redacted(
+    cell: tuple[int, int],
+) -> None:
+    """The text the back-up leaves is still redacted: with `xyz` the
+    configured key and sitting just before the straddling character, the
+    quoted detail holds no `xyz`."""
+    width, before = cell
+    body = _body(CHARACTERS[width], before, b"tail" * 4)
+    detail = _read_error_body(_error(body), "xyz")
+    assert "xyz" not in detail, detail
+    assert detail.endswith(MARKER), detail
+
+
+def test_an_unreadable_body_is_stated() -> None:
+    class Unreadable(io.BytesIO):
+        def read(self, size: int | None = -1) -> bytes:
+            raise OSError("closed")
+
+    err = urllib.error.HTTPError(
+        url="https://example.invalid", code=500, msg="x",
+        hdrs=email.message.Message(), fp=Unreadable(b""))
+    assert _read_error_body(err) == "(unreadable response body)"
+
+
 def test_a_byte_that_is_not_utf_8_is_still_replaced() -> None:
     """Negative space: the back-up moves the cut, it does not change what
     the decoder does with bytes that are not UTF-8."""

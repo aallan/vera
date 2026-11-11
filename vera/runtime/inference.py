@@ -500,7 +500,7 @@ def _read_error_body(http_err: HTTPError, api_key: str = "") -> str:
         for _ in range(3):
             if raw[cut] & 0xC0 == 0x80:
                 cut -= 1
-        head = raw[:cut].decode("utf-8", errors="replace").strip()
+        head = raw[:cut].decode("utf-8", errors="replace").strip()  # pragma: no mutate — equivalent: utf-8 is the default codec, and codec names are case-insensitive
         # Marked unconditionally, because the marker states a fact about
         # the READ — we stopped at the cap — and not about the length of
         # whatever survived stripping.  `_truncate` marks on length alone,

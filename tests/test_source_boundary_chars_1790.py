@@ -411,6 +411,7 @@ E024_CELLS = {
     "after LF, ends at CR": (b"a\nbc\xffd\r\nzz", 4, 2, 3, "bc" + R + "d"),
     "after CR only": (b"a\rbc\xffd\rz", 4, 2, 3, "bc" + R + "d"),
     "after CRLF": (b"a\r\nbc\xff", 5, 2, 3, "bc" + R),
+    "after two CRs, no LF": (b"a\rb\rc\xffd", 5, 3, 2, "c" + R + "d"),
     "ends at the first LF": (b"x\xffab\ncd\nef", 1, 1, 2, "x" + R + "ab"),
     "ends at the first CR": (b"x\xffab\rcd\ref", 1, 1, 2, "x" + R + "ab"),
     "ends at EOF": (b"p\nq\xff", 3, 2, 2, "q" + R),
@@ -494,6 +495,15 @@ def test_fmt_normalises_line_ends(ending: str, tmp_path: Path) -> None:
     assert printed.returncode == 0 and printed.stdout == _canonical(), printed
     assert _vera("fmt", "--write", str(path)).returncode == 0
     assert path.read_bytes() == _canonical().encode("utf-8")
+
+
+def test_fmt_reads_a_lone_cr_as_a_line_end(tmp_path: Path) -> None:
+    """`-- a<CR>b` is a comment and then a stray `b`: the CR ends the
+    line, as universal newlines read it, and the file does not parse."""
+    path = tmp_path / "main.vera"
+    path.write_bytes(b"-- a\rb\n" + _canonical().encode("utf-8"))
+    run = _vera("fmt", str(path))
+    assert run.returncode == 1 and "[E0" in run.stderr, run
 
 
 def test_fmt_check_says_ok_for_a_canonical_file(tmp_path: Path) -> None:
