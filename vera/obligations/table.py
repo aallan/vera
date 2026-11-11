@@ -225,6 +225,12 @@ class ObligationTable:
     #: generic, which keeps the body): what the verifier discharges when it
     #: has verified that function.
     by_body: dict[int, list[int]] = field(default_factory=dict)
+    #: The bodies, by the key the rows are indexed by (a node's id in the
+    #: program, which the copy of a function code generation lowers keeps),
+    #: of the functions whose return runs a check after the body: a
+    #: non-trivial ``ensures``, a guarded refined return, a guarded tuple
+    #: component or carrier element of the return.
+    epilogue: set[object] = field(default_factory=set)
     _at: dict[object, list[Row]] = field(default_factory=dict, repr=False)
     _refinement_guard: Callable[[RefinedType], Guard] | None = field(
         default=None, repr=False)
@@ -282,6 +288,32 @@ class ObligationTable:
         ids = self.by_body.get(id(decl.body))
         return None if ids is None else [self.rows[i] for i in ids]
 
+    def tail_calls(self, decl: ast.FnDecl) -> set[int]:
+        """The ``id()`` of each call of *decl*'s body that may leave by
+        ``return_call`` (#517, #1849): a call in tail position
+        (:func:`vera.tail_position.compute_tail_call_sites`) after which no
+        check runs.  A ``return_call`` hands the callee's result straight
+        to the caller, so a check of that result emitted after the call
+        never runs.  Two things put one there, both read from the rows: a
+        row with a check of its own standing at the call (any kind, at any
+        path: a ``@Nat`` return leaf's sign guard, a composite coercion's
+        walk), and a function whose return runs a check after the body
+        (:attr:`epilogue`), where no call transfers.  Every other tail
+        call keeps its ``return_call``, a non-narrowing recursive one
+        (`drain`) included, which is what lets the iteration idiom run at
+        constant stack depth."""
+        body = decl.body
+        if body is None or self._key(body) in self.epilogue:
+            return set()
+        sites = compute_tail_call_sites(decl, None)
+        if not sites:
+            return set()
+        return {
+            id(node) for node in fold.walk(body)
+            if id(node) in sites and not any(
+                row.guard.check and row.answered_by is None
+                for row in self.rows_at(node))}
+
     def answered(self, row: Row) -> Row | None:
         """The row whose check answers *row*: *row* itself when it has its
         own, else the end of its ``answered_by`` chain; ``None`` for a row
@@ -300,6 +332,7 @@ def build(typed: TypedProgram) -> ObligationTable:
     builder = _Builder(typed)
     builder.build()
     table = ObligationTable(builder.finished(), by_body=builder.by_body,
+                            epilogue=builder.epilogue,
                             _refinement_guard=builder._refinement_guardable)
     table.index()
     return table
@@ -416,6 +449,11 @@ class _Builder:
         self.typed = typed
         self.rows: list[Row] = []
         self.by_body: dict[int, list[int]] = {}
+        #: The bodies of the functions that run a check after the body.
+        self.epilogue: set[object] = set()
+        #: The nodes (by key) a checked ``refine_bind`` row of a return
+        #: stands at, which `_has_epilogue` reads.
+        self._return_refinements: set[object] = set()
         self._body: list[int] = []
         self.fn_decls: dict[str, ast.FnDecl] = {}
         self.fn_requires: dict[str, list[ast.Requires]] = {}
@@ -592,6 +630,9 @@ class _Builder:
                          span.column if span is not None else 0),
         )
         self.rows.append(row)
+        if (row.evaluation == RETURN and guard.check
+                and kind == "refine_bind"):
+            self._return_refinements.add(ObligationTable._key(node))
         if self._body:
             self.by_body[self._body[-1]].append(row.id)
         if answer is not None:
@@ -730,8 +771,11 @@ class _Builder:
             self._boundary_rows(d.body, d.return_type)
             self.walk(d.body, d, handed=ret_ty, under_join=True)
             self._return_rows(d.return_type, ret_ty, d.body)
+        epilogue = self._has_epilogue(d, ret_ty)
+        if epilogue and d.body is not None:
+            self.epilogue.add(ObligationTable._key(d.body))
         if measure is not None:
-            self._measure_rows(d, *measure, epilogue=self._has_epilogue(d, ret_ty))
+            self._measure_rows(d, *measure, epilogue=epilogue)
         # A generic helper's template compiles too, as a top-level
         # generic's does (its clones are the instances'), so it has rows.
         for h in d.where_fns or ():
@@ -749,10 +793,7 @@ class _Builder:
         own = {ObligationTable._key(d.return_type)}
         if d.body is not None:
             own.add(ObligationTable._key(d.body))
-        boundary = any(
-            row.evaluation == RETURN and row.guard.check
-            and row.kind == "refine_bind" and ObligationTable._key(row.node) in own
-            for row in self.rows)
+        boundary = not own.isdisjoint(self._return_refinements)
         if self._pair(ret_ty):
             return boundary
         ensures = any(isinstance(c, ast.Ensures) and not self._trivial(c)

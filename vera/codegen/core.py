@@ -786,6 +786,8 @@ class CodeGenerator(
         *,
         rationale: str = "",
         error_code: str = "",
+        fix: str = "",
+        spec_ref: str = "",
     ) -> None:
         """Record a compilation error (compiler bug / fatal).
 
@@ -805,6 +807,8 @@ class CodeGenerator(
             location=loc,
             source_line=source_line,
             rationale=rationale,
+            fix=fix,
+            spec_ref=spec_ref,
             severity="error",
             error_code=error_code,
         ))
