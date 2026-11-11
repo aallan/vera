@@ -45,7 +45,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal, get_args
 
 from vera import ast
-from vera.errors import Diagnostic, SourceLocation, VeraError
+from vera.errors import (
+    Diagnostic, SourceLocation, VeraError, source_lines,
+)
 from vera.obligations.core import ObligationKind, ProofObligation
 from vera.trap_registry import TRAP_EMITTERS, EmittedCheck
 
@@ -508,7 +510,8 @@ def mismatch_diagnostics(
     confirm, a check it cannot place one it could not account for — and
     says so in its description.  *sources* maps each file to its text, for
     the source line."""
-    texts = {_file_key(f): text.splitlines() for f, text in sources.items()}
+    texts = {_file_key(f): source_lines(text)
+             for f, text in sources.items()}
     out: list[Diagnostic] = []
     for m in mismatches:
         lines = texts.get(_file_key(m.file), [])
@@ -687,7 +690,7 @@ def _holes_skip(holes: list[Diagnostic], source: str) -> Diagnostic:
     """The W005 warning for a join skipped because the program holds typed
     holes, located at the first."""
     first = holes[0]
-    lines = source.splitlines()
+    lines = source_lines(source)
     line = first.location.line
     count = (f"{len(holes)} typed holes" if len(holes) > 1
              else "a typed hole")

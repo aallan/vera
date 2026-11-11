@@ -308,13 +308,14 @@ TRAP_KINDS: dict[str, TrapKind] = _kinds(
         "an accumulator parameter so the recursive call is the LAST "
         "thing the function does (no work after it, no `let`-binding "
         "of its result, no enclosing arithmetic).  One remaining "
-        "exception: functions with a non-trivial runtime "
-        "postcondition (`ensures` that emits a Tier-3 check) revert "
-        "to plain `call` so the post-check runs after each call — "
-        "either simplify the postcondition to one the verifier can "
-        "discharge statically (Tier 1), or iterate via `array_fold` / "
-        "`array_map` (which compile to WASM loops rather than "
-        "recursion).",
+        "exception: a function whose postcondition is anything other "
+        "than `ensures(true)` compiles its tail calls to plain `call`, "
+        "so the postcondition is checked after each one, and this holds "
+        "whether `vera verify` proves the postcondition or not.  Where "
+        "the iteration walks a collection, use `array_fold` / "
+        "`array_map`, which compile to WASM loops rather than "
+        "recursion; otherwise keep the recursion's depth inside the "
+        "engine's call stack, a few tens of thousands of steps.",
     ),
     TrapKind(
         "unreachable", 0, "Reached `unreachable` WASM instruction",

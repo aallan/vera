@@ -1870,15 +1870,19 @@ class OperatorsMixin:
 
     def _nat_sub_message(self, at: ast.Node | None) -> str:
         """The `nat_underflow` message: the two operands, and the clause that
-        discharges the subtraction."""
+        discharges the subtraction.  Each is a node rendered whole by
+        :func:`ast.format_expr`, so an operand keeps the parentheses its
+        precedence needs (#1573): `@Nat.1 - (@Nat.0 - @Nat.2)`."""
         if isinstance(at, ast.BinaryExpr):
-            lhs, rhs = ast.format_expr(at.left), ast.format_expr(at.right)
+            site = ast.format_expr(at)
+            bound = ast.format_expr(
+                ast.BinaryExpr(op=ast.BinOp.GE, left=at.left, right=at.right))
         else:  # pragma: no cover — every caller passes the subtraction
-            lhs, rhs = "lhs", "rhs"
+            site, bound = "lhs - rhs", "lhs >= rhs"
         return (
-            f"@Nat subtraction `{lhs} - {rhs}` would be negative"
+            f"@Nat subtraction `{site}` would be negative"
             f"{self._at_line(at)}: its right operand is larger than its "
-            f"left.  Add `requires({lhs} >= {rhs})` to the enclosing "
+            f"left.  Add `requires({bound})` to the enclosing "
             "function, or compute in @Int."
         )
 
