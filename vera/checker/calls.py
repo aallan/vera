@@ -668,14 +668,15 @@ class CallsMixin:
         return (f"Pass a value of type {name}, taking one as a parameter "
                 f"`@{name}` of the enclosing function: {why}")
 
-    def _rigid_apply_fix(self, fn_arg: ast.Expr,
-                         arg_types: typing.Sequence[Type | None],
-                         expected: Type | None) -> str:
-        """The fix for `apply_fn` of a value whose type is the enclosing
-        function's own type parameter (#1684): hold the function at a
-        function type, written out from the arguments applied and the type
-        the result is expected at where both can be written, named by a
-        type alias the program does not have yet."""
+    def _variable_apply_fix(self, fn_arg: ast.Expr,
+                            arg_types: typing.Sequence[Type | None],
+                            expected: Type | None) -> str:
+        """The fix for `apply_fn` of a value whose type is a bare type
+        variable, the enclosing function's own or one a call left open
+        (#1684): give the value a function type the application can see,
+        written out from the arguments applied and the type the result is
+        expected at where both can be written, named by a type alias the
+        program does not have yet."""
         written = _span_text(self.source, fn_arg.span) or "the value"
         row = self.env.current_effect_row or PureEffectRow()
         signature = None
@@ -694,6 +695,13 @@ class CallsMixin:
         while self.env.is_type_name(alias):
             n += 1
             alias = f"Applied{n}"
+        # A type alias binds the type variables it names, so a signature
+        # over the enclosing function's own variables names them as its
+        # parameters (`type Applied<T> = fn(T -> T) effects(pure);`).
+        seen: Counter[str] = Counter()
+        _type_var_occurrences(fn, seen)
+        if seen:
+            alias = f"{alias}<{', '.join(sorted(seen))}>"
         return (f"Hold the function to apply at the type `{signature}`: "
                 f"declare `type {alias} = {signature};`, take the function "
                 f"as a parameter or binding of type `@{alias}`, and apply "
@@ -1207,7 +1215,13 @@ class CallsMixin:
                 break
             if arg_ty is None or isinstance(arg_ty, UnknownType):
                 continue
-            if isinstance(param_ty, (TypeVar, UnknownType)):
+            # #1684: a parameter that is a variable the call left open is
+            # one no argument fixed; the enclosing function's own variable
+            # (a `where` helper's parameter, `resume`'s under a
+            # `handle[State<T>]`) is a type, which the fit below holds
+            # the argument to.
+            if (isinstance(param_ty, UnknownType)
+                    or self._open_variable(param_ty)):
                 continue
             # Re-synth if arg still has unresolved TypeVars (bidirectional)
             if contains_typevar(arg_ty) and not contains_typevar(param_ty):
@@ -1287,6 +1301,9 @@ class CallsMixin:
                     rationale="Each argument's type must be a subtype of the "
                               "corresponding declared parameter type.",
                     fix=(self._cross_owner_fix(fn_info.name, arg_ty, param_ty)
+                         or (self._rigid_fix(rigid, arg_ty)
+                             if (rigid := self._rigid_variable(param_ty))
+                             is not None else None)
                          or f"Pass a value of type {pretty_type(param_ty)} "
                             f"for argument {i}, or convert the current value "
                             f"(e.g. int_to_nat(...), int_to_float(...)) to "
@@ -1415,31 +1432,41 @@ class CallsMixin:
         # the remaining arguments (to surface errors inside them) and
         # give up on structural checking.
         fn_ty = base_type(fn_ty_raw) if fn_ty_raw is not None else None
-        # #1684: the enclosing function's own type variable is a type of
-        # its own, which may be no function; only a variable a call left
-        # open is recovered from here.
-        rigid = self._rigid_variable(fn_ty) if fn_ty is not None else None
-        if rigid is not None:
+        # #1684: a value typed by a bare type variable is no function type
+        # this application can check, whichever kind the variable is.  The
+        # enclosing function's own stands for whatever type each call gives
+        # it, most of which are no function; one a call left open has a
+        # type nothing fixes, and code generation has no signature to call
+        # it by.
+        if isinstance(fn_ty, TypeVar):
             rest_types = [self._synth_expr(arg) for arg in rest]
+            rigid = self._rigid_variable(fn_ty)
+            if rigid is not None:
+                shown = (f"{rigid}, a type parameter of the enclosing "
+                         f"function")
+                why = (f"{rigid} stands for whatever type each call of the "
+                       f"enclosing function gives it, and the body must "
+                       f"hold at every type, most of which are no function, "
+                       f"so a value of type {rigid} has no signature to "
+                       f"call.")
+            else:
+                shown = ("a type variable no argument of the call that made "
+                         "it fixes")
+                why = ("The call that made the value left its type open, so "
+                       "nothing gives it a function type, and the value has "
+                       "no signature to call.")
             self._error(
                 fn_arg,
-                f"Argument 0 of 'apply_fn' has type {rigid}, a type "
-                f"parameter of the enclosing function, expected a function "
+                f"Argument 0 of 'apply_fn' has {shown}, expected a function "
                 f"value (a fn(...) type).",
-                rationale=(
-                    f"apply_fn invokes a stored function value via "
-                    f"call_indirect.  {rigid} stands for whatever type each "
-                    f"call of the enclosing function gives it, and the body "
-                    f"must hold at every type, most of which are no "
-                    f"function, so a value of type {rigid} has no signature "
-                    f"to call."),
-                fix=self._rigid_apply_fix(fn_arg, rest_types, expected),
+                rationale=(f"apply_fn invokes a stored function value via "
+                           f"call_indirect.  {why}"),
+                fix=self._variable_apply_fix(fn_arg, rest_types, expected),
                 spec_ref='Chapter 11, Section 11.10.5 "Closure Invocation (apply_fn)"',
                 error_code="E202",
             )
             return UnknownType()
-        if (fn_ty is None or isinstance(fn_ty, TypeVar)
-                or is_unknown_like(fn_ty)):
+        if fn_ty is None or is_unknown_like(fn_ty):
             for arg in rest:
                 self._synth_expr(arg)
             return UnknownType()

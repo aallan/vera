@@ -207,6 +207,75 @@ def test_repro_a_destructured_value_s_variable_takes_one_type(
     assert _codes(source) == ["E170"]
 
 
+_RESUME_ARGUMENT = """\
+private forall<T> fn g(@T -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[State<T>](@T = @T.0) {
+    get(@Unit) -> { resume(9) },
+    put(@T) -> { resume(()) }
+  } in {
+    0
+  }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  g(true)
+}
+"""
+
+_HELPER_ARGUMENT = """\
+private forall<T> fn g(@T -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  helper(9)
+}
+where {
+  fn helper(@T -> @Int)
+    requires(true)
+    ensures(true)
+    effects(pure)
+  {
+    1
+  }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  g(true)
+}
+"""
+
+
+@pytest.mark.parametrize("source", [_RESUME_ARGUMENT, _HELPER_ARGUMENT],
+                         ids=["resume", "where_helper"])
+def test_repro_a_call_s_argument_meets_the_outer_rigid_variable(
+        source: str) -> None:
+    """A callee with no `forall` of its own whose parameter is the
+    enclosing function's `T` (`resume` under `handle[State<T>]`, a `where`
+    helper over the outer `T`) skipped that parameter as unresolved.  At
+    bf6d5003 both check and verify, and `g(true)` fails to compile at run
+    (`E800`; PR #1855 review).  The fix names a value of type `T`."""
+    error, = pipeline.check(source).errors
+    assert error.error_code == "E202", error.format()
+    assert error.fix.startswith("Pass `@T.0`, or another value of type T: ")
+    fixed = source.replace("resume(9)", "resume(@T.0)").replace(
+        "helper(9)", "helper(@T.0)")
+    _clears(fixed, "E202")
+    assert pipeline.run(fixed).value in (0, 1)
+
+
 _APPLY_UNFIXED = """\
 type Endo<T> = fn(T -> T) effects(pure);
 
@@ -315,6 +384,90 @@ def test_the_applied_value_fix_clears_e202() -> None:
                        "g(5, fn(@Int -> @Int) effects(pure) { @Int.0 })"))
     _clears(source, "E202")
     assert pipeline.run(source).value == 1
+
+
+_APPLIED_VALUES = {
+    # The enclosing function's own variable.
+    "own_variable": "@T.0",
+    # A variable the call that made the value left open: an empty
+    # literal's element type, and a `None` no argument types.
+    "empty_literal_element": "head_plain([])",
+    "unfixed_option_payload": "option_unwrap_or(nothing(()), head_plain([]))",
+}
+
+
+@pytest.mark.parametrize("value", list(_APPLIED_VALUES.values()),
+                         ids=list(_APPLIED_VALUES))
+@pytest.mark.parametrize("result", ["Int", "T"])
+def test_a_value_typed_by_a_bare_variable_is_no_function(
+        value: str, result: str) -> None:
+    """`apply_fn` of a value whose type is a bare type variable, whichever
+    kind, is `E202`: no function type is there to check the application
+    by.  At bf6d5003 the enclosing function's own variable and one a call
+    left open were both taken as an unknown with no error, and code
+    generation dropped the function (`E616`, `E602`).  The fix writes the
+    function type out where the arguments and the expected result can be
+    written, and applying it clears the code."""
+    body = f"apply_fn({value}, @T.0)"
+    source = (_HEAD_PLAIN
+              + _fn("g", "@T", result, body, forall="forall<T> ")
+              + "\n" + _main("Int", "g(5)"))
+    error, = pipeline.check(source).errors
+    assert error.error_code == "E202", error.format()
+    assert error.description.startswith("Argument 0 of 'apply_fn' has ")
+    alias_text = f"Applied<T> = fn(T -> {result})" if result == "T" else (
+        "Applied<T> = fn(T -> Int)")
+    assert f"declare `type {alias_text} effects(pure);`" in error.fix, (
+        error.fix)
+    head = alias_text.split(" = ", 1)[0]
+    declared = error.fix.split("declare `", 1)[1].split("`", 1)[0]
+    fixed = (declared + "\n\n" + source
+             .replace(f"fn g(@T -> @{result})",
+                      f"fn g(@T, @{head} -> @{result})")
+             .replace(body, f"apply_fn(@{head}.0, @T.0)")
+             .replace("g(5)",
+                      "g(5, fn(@Int -> @Int) effects(pure) { @Int.0 })"))
+    _clears(fixed, "E202")
+
+
+_APPLY_RIGID_VALUE_OVER_T = """\
+private forall<T> fn g(@T -> @T)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  apply_fn(@T.0, @T.0)
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  g(5)
+}
+"""
+
+
+def test_the_applied_value_fix_names_the_variables_its_alias_binds(
+        ) -> None:
+    """Where the function type the fix writes names the enclosing
+    function's own `T`, its alias takes `T` as a parameter, so the
+    declaration it says to write binds what it names (PR #1855 review)."""
+    fix = _fix(_APPLY_RIGID_VALUE_OVER_T, "E202")
+    assert fix == (
+        "Hold the function to apply at the type `fn(T -> T) "
+        "effects(pure)`: declare `type Applied<T> = fn(T -> T) "
+        "effects(pure);`, take the function as a parameter or binding of "
+        "type `@Applied<T>`, and apply it in place of `@T.0`.")
+    alias = fix.split("declare `", 1)[1].split("`", 1)[0]
+    source = (alias + "\n\n" + _APPLY_RIGID_VALUE_OVER_T
+              .replace("fn g(@T -> @T)", "fn g(@T, @Applied<T> -> @T)")
+              .replace("apply_fn(@T.0, @T.0)", "apply_fn(@Applied<T>.0, @T.0)")
+              .replace("g(5)",
+                       "g(5, fn(@Int -> @Int) effects(pure) { @Int.0 })"))
+    _clears(source, "E202")
+    assert pipeline.run(source).value == 5
 
 
 def test_the_destructuring_fix_clears_e170() -> None:
@@ -449,6 +602,17 @@ def test_a_variable_a_call_left_open_stays_refused_where_it_was(
     assert _codes(source) == [code]
 
 
+def test_a_hole_at_a_rigid_parameter_is_refused() -> None:
+    """A value whose call left its variable open, at a parameter that is
+    the enclosing function's own `T`: at bf6d5003 the parameter was skipped
+    and the program accepted, running only where the hole's default `Bool`
+    happened to be the instance; the operation's argument is now held to
+    `T` by name (`E204`), as at a concrete cell (PR #1855 review)."""
+    source = _HEAD_PLAIN + _OPERATION_ARGUMENT.replace(
+        "put(9)", "put(head_plain([]))")
+    assert _codes(source) == ["E204"]
+
+
 _ABILITY_TWO_HOLES = _HEAD_PLAIN + """\
 public fn main(@Unit -> @Bool)
   requires(true)
@@ -508,7 +672,8 @@ _PRELUDE = ("type PosInt = { @Int | @Int.0 > 0 };\n\n"
 
 #: The code each site refuses a pair with.
 _CODE = {"operation_argument": "E204", "ability_argument": "E241",
-         "applied_argument": "E202", "destructuring_let": "E170"}
+         "applied_argument": "E202", "destructuring_let": "E170",
+         "call_argument": "E202"}
 
 
 def _formals(*types: str) -> str:
@@ -560,6 +725,18 @@ def _site_program(site: str, required: str, given: str) -> str:
                 + _fn("g", formals, "Int", body, forall="forall<T> ")
                 + "\n" + _main("Int",
                                f"g({', '.join(['true', closure, *rest])})"))
+    if site == "call_argument":
+        # A `where` helper with no `forall` of its own, whose parameter
+        # may be the enclosing function's `T`.
+        helper = _fn("helper", f"@{required}", "Int", "1",
+                     visibility="").lstrip()
+        helper = "\n".join(f"  {line}" if line else line
+                           for line in helper.splitlines())
+        source = _fn("g", _formals(given), "Int", f"helper(@{given}.0)",
+                     forall="forall<T> ")
+        return (_PRELUDE + source.rstrip("\n")
+                + f"\nwhere {{\n{helper}\n}}\n"
+                + "\n" + _main("Int", _call(given)))
     assert site == "destructuring_let"
     dup = _fn("dup", "@Option<A>", "Tuple<Option<A>, Option<A>>",
               "Tuple(@Option<A>.0, @Option<A>.0)", forall="forall<A> ")

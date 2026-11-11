@@ -351,9 +351,9 @@ class ControlFlowMixin:
         # scrutinee: the error behind an `Unknown` can sit at a declaration
         # (E158) or an import (E155).  It is read here, before the arms are
         # checked: an error inside an arm says nothing about the scrutinee.
-        # `Unknown` with no error reported (`apply_fn` over a type variable)
-        # is judged as before, and its E313 is the error that refuses the
-        # program.  A position inside the scrutinee whose type the check did
+        # `Unknown` with no error reported (an index into an empty
+        # literal, `[][0]`, the one route left, #1684) is judged as before,
+        # and its E313 is the error that refuses the program.  A position inside the scrutinee whose type the check did
         # not settle is read by the same rule (`_pattern_domain`, #1697).
         after_error = self._unknown_is_reported(expr.scrutinee)
         in_error = (isinstance(base_type(scrutinee_ty), UnknownType)
@@ -445,7 +445,7 @@ class ControlFlowMixin:
         may be typed: an error (#1671), or *value* is a typed hole, whose
         W001 is its own diagnostic (#1563).  The hole's warning stands
         behind that one value and nothing else: a hole elsewhere in the file
-        says nothing about `apply_fn(@T.0, 1)`'s `Unknown`, whose E313 is
+        says nothing about `[][0]`'s `Unknown`, whose E313 is
         the error that refuses the program.  The `match` and the
         destructuring `let` read it before their arms and bindings, so
         `match ?` and `let Tuple<@Int, @Int> = ?;` draw the hole's warning
@@ -1323,8 +1323,8 @@ class ControlFlowMixin:
                          else f"a value of {ci.parent_type}, the type "
                               f"'{name}' builds" if ci is not None
                          else f"a value of '{name}'")
-                # `apply_fn` over a type variable is typed `Unknown`: no type
-                # to name.
+                # An index into an empty literal is typed `Unknown`: no
+                # type to name.
                 value = ("the value's type is not known"
                          if isinstance(base, UnknownType)
                          else f"the value has type {shown}")
