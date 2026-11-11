@@ -11289,10 +11289,10 @@ class ContractVerifier:
                 reason=self._nested_unstatable_reason(formal_ty),
             )
             return
-        # #1716: the facts the value's own leaves establish, never the type
-        # the checker recorded a join over them at.
-        established = narrowing.established_type(
-            value_node, self._resolved_type_of)
+        # #1716: the facts the value's type states.  A join's recorded type
+        # states only what every one of its arms states (the checker's
+        # `_shared_facts`), so it is a fact of whichever arm the value is.
+        established = self._resolved_type_of(value_node)
         source_facts = ([] if established is None else
                         self._nested_refinement_facts(smt, established, val)[0])
         premises = list(assumptions)

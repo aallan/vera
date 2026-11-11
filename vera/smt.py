@@ -3596,17 +3596,20 @@ class SmtContext:
             ty = hook(node)
             if ty is None:
                 return None
-            # #1716: a join's stand-in carries the type it was recorded at
-            # only where that is what its leaves establish
-            # (`narrowing.established_type`), and its base alone otherwise:
-            # the checker records a join at the side its branches share the
-            # most of, which states facts a branch never had.
+            # #1716: the checker records a join at the facts its arms share,
+            # so the recorded type is the stand-in's.  The literal
+            # strengthening: a literal leaf's value is known, so where every
+            # other leaf states a refinement and each literal satisfies it
+            # (`_literal_satisfies`, decided by the solver), the join is at
+            # that refinement (`narrowing.established_type` with *holds*):
+            # `throw(@Int) -> { 1 }` beside a `@PosInt` body is a `PosInt`,
+            # which the checker, holding no solver, records as an `Int`.
             if (isinstance(node, ast.Expr)
-                    and narrowing.flow_arms(node) is not None
-                    and not _same_type(
-                        narrowing.established_type(
-                            node, hook, self._literal_satisfies), ty)):
-                base_only = True
+                    and narrowing.flow_arms(node) is not None):
+                strengthened = narrowing.established_type(
+                    node, hook, self._literal_satisfies)
+                if strengthened is not None:
+                    ty = strengthened
         sort = self._value_sort(ty)
         if sort is None:
             return None
@@ -5101,11 +5104,6 @@ def _resumes_in_tail_position(clause: ast.HandlerClause) -> bool:
     return (isinstance(body, ast.Block) and not body.statements
             and isinstance(body.expr, ast.FnCall)
             and body.expr.name == "resume" and len(body.expr.args) == 1)
-
-
-def _same_type(a: Type | None, b: Type) -> bool:
-    """Whether *a* is the type *b* (``None`` is no type)."""
-    return narrowing.same_established(a, b)
 
 
 def _identity(node: ast.Node) -> Any:

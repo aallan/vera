@@ -202,35 +202,146 @@ def _no_call(_call: ast.Expr) -> str | None:
     return None
 
 
-def _signed_join(
-    joined: Type | None, branches: Sequence[tuple[ast.Expr, Type]],
-) -> Type | None:
-    """The type of a join whose branches meet as an `@Int` and a `@Nat`
-    (#1756).
+def _refinement_chain(ty: Type) -> tuple[Type, tuple[ast.Expr, ...]]:
+    """*ty*'s base under its refinements, and their predicates, innermost
+    first: `{ { @Int | P } | Q }` is `Int` and `(P, Q)`."""
+    predicates: list[ast.Expr] = []
+    while isinstance(ty, RefinedType):
+        predicates.append(ty.predicate)
+        ty = ty.base
+    predicates.reverse()
+    return ty, tuple(predicates)
 
-    `is_subtype` admits an `@Int` where a `@Nat` is expected, leaving the
-    narrowing to the verifier, and `_join` gives its first type to its
-    second, so an `if` whose then-branch is an `@Int` and whose else-branch is
-    a `@Nat`, or a `match` whose later arm is the `@Int`, came out a `@Nat`.
-    The verifier reads a join's type to decide whether binding it into a
-    `@Nat` position narrows, and saw no narrowing, while code generation's
-    static rule read the `@Int` branch and planted the guard.  So a join
-    *joined* as a `@Nat`, or as a refinement of `@Nat` (the subtype rule
-    hands it the refined type), is an `@Int`, spec §4.4's meet of the two,
-    when one of its *branches* is an `@Int` that is not statically
-    non-negative: `vera.narrowing.is_static_nat_typed`, the rule code
-    generation's guard reads, which takes a literal at its value and never a
-    negation.  Binding it into a `@Nat` position is then a narrowing the
-    verifier obligates.  A join whose `@Int` branches are all non-negative
-    constants keeps its type, as before.
+
+def _shared_prefix(
+    a: tuple[ast.Expr, ...], b: tuple[ast.Expr, ...],
+) -> tuple[ast.Expr, ...]:
+    """The refinements two chains share, innermost first: each compared by
+    its predicate, as `narrowing.same_established` compares them."""
+    shared = 0
+    for x, y in zip(a, b):
+        if x != y:
+            break
+        shared += 1
+    return a[:shared]
+
+
+def _constrains(ty: Type) -> bool:
+    """Whether an arm of type *ty* states anything at a position: not where
+    it is open (a type variable the join filled from another arm, or the
+    checker's unknown), and not where it yields no value (`Never`)."""
+    base = _refinement_chain(ty)[0]
+    if isinstance(base, (TypeVar, UnknownType)):
+        return False
+    return not types_equal(base, NEVER)
+
+
+def _shared_facts(
+    joined: Type, arms: Sequence[tuple[ast.Expr | None, Type]],
+) -> Type:
+    """*joined*, stating at each position only the facts every arm that
+    yields a value states there (#1716).
+
+    The join of two types (`CallsMixin._join`) answers with its second, each
+    open position filled from the first, and keeps the second's refinements
+    whatever the first states; `is_subtype` admits a base where its
+    refinement is expected, and an `@Int` where a `@Nat` is.  So an `if`
+    came out at its else branch's type, a `match` at its first value arm's
+    and an `Exn` handler at its body's, and every reader of the type took
+    one arm's refinement as a fact of a value that may be another arm's.  A
+    join's value is one of its arms', so it states what they all state:
+
+    * a refinement every arm states at a position stays; one an arm does not
+      state, or states with another predicate, is dropped to the base there
+      (the chains' shared prefix, each refinement compared by its
+      predicate);
+    * a `@Nat` beside an `@Int` is an `@Int`, spec §4.4's meet of the two,
+      at every position; at the head an `@Int` arm that is statically
+      non-negative (`narrowing.is_static_nat_typed`, the rule code
+      generation's guard reads: a non-negative literal, `@Nat.0 + 1`) is
+      read as a `@Nat`, spec §4.8's exception (#1756), so a join of `@Nat`
+      arms and such `@Int` arms is a `@Nat` in either order;
+    * an arm open at a position (a type variable the join filled from
+      another arm, the checker's unknown) or one that yields no value
+      (`Never`) states nothing there.
+
+    The structure (the data types, each open position's filling) is the
+    join's; this judgement only removes facts, so it admits nothing the join
+    did not, and its answer does not depend on the order of the arms.  A
+    function type's parameters are read by the same rule: a parameter
+    refinement the arms differ by drops to the base, which is the
+    relaxation `is_subtype` already admits at any site of that function
+    type (rule 9 with rule 7), the function's own entry check holding its
+    parameter (issue #1819 revisits it).  Binding the join where a refined
+    type is expected is then the narrowing it is, obligated by its leaves.
     """
-    if joined is None or not types_equal(base_type(joined), NAT):
+    return _shared_at(joined, list(arms), head=True)
+
+
+def _shared_at(
+    joined: Type, arms: list[tuple[ast.Expr | None, Type]], *, head: bool,
+) -> Type:
+    base, predicates = _refinement_chain(joined)
+    if isinstance(base, (TypeVar, UnknownType)):
         return joined
-    for expr, ty in branches:
-        if (types_equal(base_type(ty), INT)
-                and not narrowing.is_static_nat_typed(expr, _no_call)):
-            return INT
-    return joined
+    stating = [(expr, ty) for expr, ty in arms if _constrains(ty)]
+    kept = predicates
+    for _, ty in stating:
+        kept = _shared_prefix(kept, _refinement_chain(ty)[1])
+    shared_base = base
+    if isinstance(base, PrimitiveType) and base.name in ("Nat", "Int"):
+        nat_arm = int_arm = False
+        every_int_static = True
+        for expr, ty in stating:
+            arm_base = _refinement_chain(ty)[0]
+            if not isinstance(arm_base, PrimitiveType):
+                continue
+            if arm_base.name == "Nat":
+                nat_arm = True
+            elif arm_base.name == "Int":
+                int_arm = True
+                if not (head and expr is not None
+                        and narrowing.is_static_nat_typed(expr, _no_call)):
+                    every_int_static = False
+        if nat_arm and int_arm:
+            shared_base = NAT if every_int_static else INT
+    elif isinstance(base, AdtType) and base.type_args:
+        args = []
+        for i, arg in enumerate(base.type_args):
+            parts: list[tuple[ast.Expr | None, Type]] = []
+            for _, ty in stating:
+                arm_base = _refinement_chain(ty)[0]
+                if (isinstance(arm_base, AdtType)
+                        and arm_base.name == base.name
+                        and len(arm_base.type_args) == len(base.type_args)):
+                    parts.append((None, arm_base.type_args[i]))
+            args.append(_shared_at(arg, parts, head=False))
+        if any(a is not b for a, b in zip(args, base.type_args)):
+            shared_base = AdtType(base.name, tuple(args))
+    elif isinstance(base, FunctionType):
+        params: list[Type] = []
+        returns: list[tuple[ast.Expr | None, Type]] = []
+        per_param: list[list[tuple[ast.Expr | None, Type]]] = [
+            [] for _ in base.params]
+        for _, ty in stating:
+            arm_base = _refinement_chain(ty)[0]
+            if (isinstance(arm_base, FunctionType)
+                    and len(arm_base.params) == len(base.params)):
+                for i, param in enumerate(arm_base.params):
+                    per_param[i].append((None, param))
+                returns.append((None, arm_base.return_type))
+        for param, parts in zip(base.params, per_param):
+            params.append(_shared_at(param, parts, head=False))
+        ret = _shared_at(base.return_type, returns, head=False)
+        if (ret is not base.return_type
+                or any(p is not q for p, q in zip(params, base.params))):
+            shared_base = FunctionType(tuple(params), ret, base.effect)
+    if shared_base is base and kept == predicates:
+        return joined
+    out = shared_base
+    for predicate in kept:
+        out = RefinedType(out, predicate)
+    return out
 
 
 def _bindings_form(name: str, types: tuple[Type, ...]) -> str:
@@ -244,6 +355,16 @@ class ControlFlowMixin:
     # -----------------------------------------------------------------
     # Control flow
     # -----------------------------------------------------------------
+
+    def _value_join(
+        self, joined: Type, arms: Sequence[tuple[ast.Expr | None, Type]],
+    ) -> Type:
+        """The type a value join is recorded at: an `if` over its branches,
+        a `match` over its arms, an `Exn` handler over its body and clauses,
+        *joined* being the structure the join of their types gives
+        (`_join`), stating only the facts every arm states
+        (:func:`_shared_facts`, #1716)."""
+        return _shared_facts(joined, arms)
 
     def _check_if(self, expr: ast.IfExpr, *,
                   expected: Type | None = None) -> Type | None:
@@ -286,10 +407,10 @@ class ControlFlowMixin:
         # either order.
         branches = [(expr.then_branch, then_ty), (expr.else_branch, else_ty)]
         if is_subtype(then_ty, else_ty):
-            return _signed_join(
+            return self._value_join(
                 self._join(then_ty, else_ty) or else_ty, branches)
         if is_subtype(else_ty, then_ty):  # pragma: no cover — subtyping is symmetric for current rules
-            return _signed_join(
+            return self._value_join(
                 self._join(else_ty, then_ty) or then_ty, branches)
 
         # Re-synthesis: a branch with an unresolved type variable is
@@ -317,8 +438,8 @@ class ControlFlowMixin:
                 # then branch, as two open branches always gave.
                 joined = then_ty
         if joined is not None:
-            return _signed_join(joined, [(expr.then_branch, then_ty),
-                                         (expr.else_branch, else_ty)])
+            return self._value_join(joined, [(expr.then_branch, then_ty),
+                                             (expr.else_branch, else_ty)])
 
         self._error(
             expr,
@@ -437,7 +558,9 @@ class ControlFlowMixin:
                 self._names_refused_ctor(arm.pattern) for arm in expr.arms)):
             self._check_exhaustiveness(expr, scrutinee_ty, in_error=in_error,
                                        after_error=after_error)
-        return _signed_join(result_type, arm_types) or UnknownType()
+        if result_type is None:
+            return UnknownType()
+        return self._value_join(result_type, arm_types)
 
     def _unknown_is_reported(self, value: ast.Expr) -> bool:
         """Whether a diagnostic already stands behind the `Unknown` *value*
@@ -1875,29 +1998,33 @@ class ControlFlowMixin:
         reconciles is refused at the clause (E341): read at the body's type,
         a clause's `Some(5)` became a `Result`'s `Err(5)`."""
         joined = body_type
+        # The arms the handler's value is one of so far, each at its own
+        # type: the judgement of what they share reads them all.
+        arms: list[tuple[ast.Expr | None, Type]] = []
+        if body_type is not None:
+            arms.append((expr.body, body_type))
         for clause, clause_type in clause_types:
             if joined is None or isinstance(joined, UnknownType):
                 joined = clause_type
+                arms.append((clause.body, clause_type))
                 continue
             if isinstance(clause_type, UnknownType):
                 continue
             if types_equal(joined, NEVER):
                 joined = clause_type
+                arms.append((clause.body, clause_type))
                 continue
             if types_equal(clause_type, NEVER):
                 continue
-            branches = [(expr.body, joined), (clause.body, clause_type)]
             if is_subtype(clause_type, joined):
-                joined = _signed_join(
-                    self._join(clause_type, joined) or joined, branches)
-                continue
-            if is_subtype(joined, clause_type):
-                joined = _signed_join(
-                    self._join(joined, clause_type) or clause_type, branches)
-                continue
-            merged = self._join(clause_type, joined)
+                merged = self._join(clause_type, joined) or joined
+            elif is_subtype(joined, clause_type):
+                merged = self._join(joined, clause_type) or clause_type
+            else:
+                merged = self._join(clause_type, joined)
             if merged is not None:
-                joined = _signed_join(merged, branches)
+                arms.append((clause.body, clause_type))
+                joined = self._value_join(merged, arms)
                 continue
             self._error(
                 clause.body,
