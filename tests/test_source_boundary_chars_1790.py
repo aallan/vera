@@ -324,3 +324,45 @@ def test_whitespace_characters_stay_whitespace(char: str) -> None:
     newlines."""
     parse(char + _FN, file="x.vera")
     parse(_FN.replace("  0\n", "  0" + char + "\n", 1), file="x.vera")
+
+
+# --- E024's locator ignores the mark the reader ignores ---------------------
+
+_BAD = b"public \xffn main(-> @Int)\n  requires(true)\n"
+
+
+def _e024(raw: bytes, tmp_path: Path) -> Any:
+    path = tmp_path / "bad.vera"
+    path.write_bytes(raw)
+    run = _vera("check", "--json", str(path))
+    [diag] = json.loads(run.stdout)["diagnostics"]
+    assert diag["error_code"] == "E024", diag
+    return diag
+
+
+@pytest.mark.parametrize("prefix", [b"", b"x\n\n"], ids=["line1", "line3"])
+def test_e024_places_a_marked_file_as_the_unmarked_one(
+    prefix: bytes, tmp_path: Path,
+) -> None:
+    """The mark is not a column: an invalid byte after it is at the column
+    and on the quoted line of the unmarked file; lines after the first are
+    as they were."""
+    plain = _e024(prefix + _BAD, tmp_path)
+    marked = _e024(BOM + prefix + _BAD, tmp_path)
+    assert marked["location"]["line"] == plain["location"]["line"]
+    assert marked["location"]["column"] == plain["location"]["column"]
+    assert marked["source_line"] == plain["source_line"]
+    assert "﻿" not in marked["source_line"]
+    where = (plain["location"]["line"], plain["location"]["column"])
+    assert "(line %d, column %d)" % where in marked["description"]
+
+
+@pytest.mark.parametrize("mark", [b"\xff\xfe", b"\xfe\xff",
+                                  b"\xff\xfe\x00\x00", b"\x00\x00\xfe\xff"])
+def test_e024_for_a_utf16_or_utf32_mark_is_unchanged(
+    mark: bytes, tmp_path: Path,
+) -> None:
+    diag = _e024(mark + b"p\x00", tmp_path)
+    assert "byte-order mark" in diag["description"]
+    assert diag.get("source_line", "") == ""
+    assert diag["location"]["line"] == 1

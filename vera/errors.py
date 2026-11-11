@@ -827,9 +827,12 @@ def source_not_utf8(
 
     Located at that byte's line and column, counted as the reader counts
     them: lines with universal newlines, and characters, not bytes, along
-    the line, since every byte before *offset* decodes.
+    the line, since every byte before *offset* decodes.  A leading UTF-8
+    byte-order mark is no column and no part of the quoted line: the reader
+    drops it (#1790), so the position is the unmarked file's.
     """
-    before = raw[:offset].decode()
+    skip = 3 if raw.startswith(b"\xef\xbb\xbf") else 0
+    before = raw[skip:offset].decode()
     lines = before.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     line, column = len(lines), len(lines[-1]) + 1
     description = (
@@ -847,7 +850,7 @@ def source_not_utf8(
         source_line, encoding = "", mark
     else:
         start = max(raw[:offset].rfind(b"\n"),
-                    raw[:offset].rfind(b"\r")) + 1
+                    raw[:offset].rfind(b"\r"), skip - 1) + 1
         ends = [i for i in (raw.find(b"\n", offset), raw.find(b"\r", offset))
                 if i != -1]
         source_line = raw[start:min([*ends, len(raw)])].decode(
