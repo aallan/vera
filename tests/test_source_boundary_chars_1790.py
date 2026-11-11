@@ -31,13 +31,15 @@ import subprocess
 import sys
 import unicodedata
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from tests import pipeline
-from vera.errors import VeraError
+from vera.errors import VeraError, _name_character, source_not_utf8
 from vera.parser import decode_source, parse, parse_file
+from vera.resolver import ModuleResolver
 
 pytestmark = pytest.mark.matrix(decides=[
     "vera/parser.py", "vera/errors.py", "vera/cli.py", "vera/resolver.py",
@@ -139,8 +141,16 @@ def test_a_marked_source_runs_as_the_unmarked_one(
     assert marked.returncode == 0, marked
 
     def norm(run: pipeline.CliResult, root: Path) -> tuple[str, str]:
-        return (run.stdout.replace(str(root), "<d>"),
-                run.stderr.replace(str(root), "<d>"))
+        # The directory as a path, as a JSON string (Windows doubles its
+        # backslashes there) and in POSIX form.
+        spellings = (json.dumps(str(root))[1:-1], str(root), root.as_posix())
+
+        def scrub(text: str) -> str:
+            for spelling in spellings:
+                text = text.replace(spelling, "<d>")
+            return text
+
+        return scrub(run.stdout), scrub(run.stderr)
 
     assert norm(marked, marked_dir) == norm(plain, plain_dir)
 
@@ -385,3 +395,141 @@ def test_e024_for_a_utf16_or_utf32_mark_is_unchanged(
     assert "byte-order mark" in diag["description"]
     assert diag.get("source_line", "") == ""
     assert diag["location"]["line"] == 1
+
+
+# --- The locator and the fields, pinned exactly -----------------------------
+#
+# The mutation lane mutates every line this change touches; these cells hold
+# the position E024 reports, the line it quotes, the fields of E006 and the
+# fmt and resolver paths to their exact values.
+
+R = "�"
+
+#: (raw, offset of the bad byte) -> (line, column, quoted line)
+E024_CELLS = {
+    "first line": (b"abc\xffdef\nxyz", 3, 1, 4, "abc" + R + "def"),
+    "after LF, ends at CR": (b"a\nbc\xffd\r\nzz", 4, 2, 3, "bc" + R + "d"),
+    "after CR only": (b"a\rbc\xffd\rz", 4, 2, 3, "bc" + R + "d"),
+    "after CRLF": (b"a\r\nbc\xff", 5, 2, 3, "bc" + R),
+    "ends at the first LF": (b"x\xffab\ncd\nef", 1, 1, 2, "x" + R + "ab"),
+    "ends at the first CR": (b"x\xffab\rcd\ref", 1, 1, 2, "x" + R + "ab"),
+    "ends at EOF": (b"p\nq\xff", 3, 2, 2, "q" + R),
+    "CR before, LF after": (b"a\rb\xffc\nd", 3, 2, 2, "b" + R + "c"),
+    "marked, first line": (BOM + b"abc\xffd\ne", 6, 1, 4, "abc" + R + "d"),
+    "marked, third line": (BOM + b"x\n\nab\xffd", 8, 3, 3, "ab" + R + "d"),
+}
+
+
+@pytest.mark.parametrize("cell", sorted(E024_CELLS))
+def test_e024_locates_the_byte_and_quotes_its_line(cell: str) -> None:
+    raw, offset, line, column, quoted = E024_CELLS[cell]
+    d = source_not_utf8(raw, offset, "f.vera")
+    assert (d.location.line, d.location.column) == (line, column), d
+    assert d.source_line == quoted, d
+    assert f"(line {line}, column {column})" in d.description, d
+
+
+def test_decode_source_reports_e024_at_the_file_and_byte() -> None:
+    with pytest.raises(VeraError) as info:
+        decode_source(BOM + b"abc\xff", "f.vera")
+    d = info.value.diagnostic
+    assert d.error_code == "E024"
+    assert d.location.file == "f.vera"
+    assert (d.location.line, d.location.column) == (1, 4)
+    assert "0xFF at offset 6" in d.description
+
+
+@pytest.mark.parametrize(("char", "shown"), [
+    ("\u2028", "U+2028 (line separator)"),
+    ("\u2029", "U+2029 (paragraph separator)"),
+    ("\u00a0", "U+00A0 (no-break space)"),
+    ("\u3000", "U+3000 (ideographic space)"),
+    ("\u200b", "U+200B (zero width space)"),
+    ("\x01", "U+0001 (control character)"),
+    ("͏", "U+034F (combining grapheme joiner)"),
+    (" ", '" "'),
+    ("$", '"$"'),
+    ("é", '"é"'),
+])
+def test_name_character_quotes_or_names(char: str, shown: str) -> None:
+    assert _name_character(char) == shown
+
+
+def test_e006_carries_every_field() -> None:
+    source = _FN.replace("  0\n", "  0 $ 1\n", 1)
+    with pytest.raises(VeraError) as info:
+        parse(source, file="x.vera")
+    d = info.value.diagnostic
+    assert d.error_code == "E006"
+    assert d.description == (
+        'Unexpected character "$". This character is not valid in Vera '
+        "source code at this position.")
+    assert d.location.file == "x.vera"
+    assert (d.location.line, d.location.column) == (6, 5)
+    assert d.source_line == "  0 $ 1"
+    assert d.rationale == (
+        "Vera's lexical grammar accepts only a fixed alphabet of "
+        "characters; this character is not part of any token.")
+    assert d.fix == (
+        "Remove the invalid character, or replace it with valid syntax "
+        "(for example, use a string literal if the character was intended "
+        "as text).")
+    assert d.spec_ref == 'Chapter 1, "Lexical Structure"'
+
+
+# --- fmt, exactly -----------------------------------------------------------
+
+
+def _canonical() -> str:
+    from vera.formatter import format_source
+    return format_source(_MAIN)
+
+
+@pytest.mark.parametrize("ending", ["\r\n", "\r"], ids=["crlf", "cr"])
+def test_fmt_normalises_line_ends(ending: str, tmp_path: Path) -> None:
+    path = tmp_path / "main.vera"
+    path.write_bytes(_canonical().replace("\n", ending).encode("utf-8"))
+    assert _vera("fmt", "--check", str(path)).returncode == 1
+    printed = _vera("fmt", str(path))
+    assert printed.returncode == 0 and printed.stdout == _canonical(), printed
+    assert _vera("fmt", "--write", str(path)).returncode == 0
+    assert path.read_bytes() == _canonical().encode("utf-8")
+
+
+def test_fmt_check_says_ok_for_a_canonical_file(tmp_path: Path) -> None:
+    path = tmp_path / "main.vera"
+    path.write_bytes(_canonical().encode("utf-8"))
+    run = _vera("fmt", "--check", str(path))
+    assert run.returncode == 0 and run.stdout == f"OK: {path}\n", run
+
+
+def test_fmt_names_the_file_when_it_is_not_utf8(tmp_path: Path) -> None:
+    path = tmp_path / "latin.vera"
+    path.write_bytes(b'-- caf\xe9\n')
+    run = _vera("fmt", str(path))
+    assert run.returncode == 1 and "[E024]" in run.stderr, run
+    assert f"{path}, line 1, column 7" in run.stderr, run.stderr
+
+
+# --- the resolver's quoted line ---------------------------------------------
+
+
+def _node(line: int | None) -> Any:
+    return SimpleNamespace(
+        span=None if line is None else SimpleNamespace(line=line))
+
+
+def test_resolver_quotes_the_importing_files_line(tmp_path: Path) -> None:
+    path = tmp_path / "m.vera"
+    path.write_bytes(BOM + b"one\r\ntwo\nthree")
+    quote = ModuleResolver._source_line
+    assert quote(path, _node(1)) == "one"
+    assert quote(path, _node(2)) == "two"
+    assert quote(path, _node(3)) == "three"
+    assert quote(path, _node(4)) == ""
+    assert quote(path, _node(0)) == ""
+    assert quote(path, _node(None)) == ""
+    assert quote(tmp_path / "missing.vera", _node(1)) == ""
+    latin = tmp_path / "latin.vera"
+    latin.write_bytes(b"caf\xe9\n")
+    assert quote(latin, _node(1)) == ""

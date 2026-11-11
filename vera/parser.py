@@ -69,7 +69,7 @@ def decode_source(raw: bytes, file: Optional[str] = None) -> str:
     it.  A U+FEFF anywhere else is a character and stays.
     """
     try:
-        text = raw.decode("utf-8")
+        text = raw.decode("utf-8")  # pragma: no mutate -- codec names are case-insensitive
     except UnicodeDecodeError as exc:
         raise SourceEncodingError(
             source_not_utf8(raw, exc.start, file)) from None

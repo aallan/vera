@@ -245,10 +245,9 @@ def _name_character(char: str) -> str:
     of other categories (the combining grapheme joiner, the variation
     selectors, the Hangul fillers) (#1790).
     """
-    category = unicodedata.category(char) if len(char) == 1 else ""
+    category = unicodedata.category(char)
     if category in ("Cc", "Cf", "Zl", "Zp") or (
-            category == "Zs" and char != " ") or (
-            len(char) == 1 and ord(char) in _INVISIBLE_OTHER):
+            category == "Zs" and char != " ") or ord(char) in _INVISIBLE_OTHER:
         name = unicodedata.name(char, "").lower() or "control character"
         return f"U+{ord(char):04X} ({name})"
     return f'"{char}"'

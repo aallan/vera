@@ -39,7 +39,7 @@ def _body(char: str, before_cap: int, tail: bytes = b"") -> bytes:
     then *tail*; the spaces strip away, so the quoted head is the
     character's."""
     raw = char.encode("utf-8")
-    return b" " * (_ERROR_BODY_CAP - before_cap) + raw + tail
+    return b" " * (_ERROR_BODY_CAP - before_cap - 3) + b"xyz" + raw + tail
 
 
 CELLS = [(w, j) for w in CHARACTERS for j in range(1, w + 1)]
@@ -55,6 +55,8 @@ def test_the_cut_never_leaves_half_a_character(cell: tuple[int, int]) -> None:
     # The character is quoted when all of its bytes fit under the cap and
     # not at all when the cut would split it.
     assert (char in detail) == (before >= width), detail
+    # Nothing before the character is lost: the back-up stops at its first byte.
+    assert detail.startswith("xyz"), detail
 
 
 def test_repro_a_two_byte_character_straddling_the_cap() -> None:
@@ -67,7 +69,7 @@ def test_a_body_exactly_at_the_cap_is_whole() -> None:
     body = _body("é", 2)
     assert len(body) == _ERROR_BODY_CAP
     detail = _read_error_body(_error(body))
-    assert detail == "é", detail
+    assert detail == "xyzé", detail
 
 
 def test_a_byte_that_is_not_utf_8_is_still_replaced() -> None:
@@ -77,3 +79,27 @@ def test_a_byte_that_is_not_utf_8_is_still_replaced() -> None:
     detail = _read_error_body(_error(body))
     assert detail.startswith("� abc"), detail
     assert detail.endswith(MARKER), detail
+
+
+@pytest.mark.parametrize(("byte", "backs_up"), [
+    (0x41, False), (0x7F, False), (0x80, True), (0xBF, True), (0xC0, False),
+    (0xE2, False),
+], ids=lambda v: hex(v) if isinstance(v, int) else str(v))
+def test_only_a_continuation_byte_moves_the_cut(
+    byte: int, backs_up: bool,
+) -> None:
+    """The byte at the cut decides: 0x80 to 0xBF backs the cut up one byte
+    (dropping the `z` before it), any other byte leaves it."""
+    body = b" " * (_ERROR_BODY_CAP - 3) + b"xyz" + bytes([byte]) + b"tail"
+    detail = _read_error_body(_error(body))
+    assert detail == ("xy" if backs_up else "xyz") + MARKER, detail
+
+
+def test_the_cut_backs_up_three_bytes_and_no_further() -> None:
+    """A run of stray continuation bytes (not UTF-8 at all) across the cap:
+    the back-up is bounded by the longest character, so it stops three
+    bytes up and the text before the run is kept."""
+    body = (b" " * (_ERROR_BODY_CAP - 6) + b"xyz" + b"\x80" * 6 + b"tail")
+    assert body[_ERROR_BODY_CAP - 3] == 0x80
+    detail = _read_error_body(_error(body))
+    assert detail == "xyz" + MARKER, detail
