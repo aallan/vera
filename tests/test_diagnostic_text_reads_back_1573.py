@@ -715,12 +715,17 @@ def _stack_fix() -> str:
     return TRAP_KINDS["stack_exhausted"].fix
 
 
-def test_the_stack_fix_says_a_proved_postcondition_costs_the_tail_call() -> None:
+def test_the_stack_fix_names_the_check_at_the_exit() -> None:
+    """The condition is a check when the function returns, from either of
+    its two sources, whatever the verdict; the cells below pin each."""
     fix = " ".join(_stack_fix().split())
-    assert "anything other than `ensures(true)`" in fix
-    assert "whether `vera verify` proves the postcondition or not" in fix
+    assert "a function that checks something when it returns" in fix
+    assert "a postcondition the compiled code checks at run time" in fix
+    assert "the guard of a refined return type" in fix
+    assert "does not by itself remove it" in fix
     assert "`array_fold` / `array_map`" in fix
     assert "Tier 1" not in fix and "Tier-3" not in fix
+    assert "ensures(true)" not in fix
 
 
 _COUNT = """\
@@ -764,3 +769,52 @@ def test_repro_1851_a_proved_postcondition_exhausts_the_stack() -> None:
     ran = pipeline.run(_COUNT, fn="count_proved", args=[0, 1000000])
     assert not ran.ok
     assert ran.trap is not None and ran.trap.kind == "stack_exhausted"
+
+
+_EXIT_CHECKS = """\
+type Pos = { @Nat | @Nat.0 > 0 };
+
+public fn cp(@Pos, @Nat -> @Pos)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then {
+    @Pos.0
+  } else {
+    cp(@Pos.0, @Nat.0 - 1)
+  }
+}
+
+public fn cs(@String, @Nat -> @String)
+  requires(true)
+  ensures(string_length(@String.result) >= 0)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then {
+    @String.0
+  } else {
+    cs(@String.0, @Nat.0 - 1)
+  }
+}
+"""
+
+
+def test_repro_1851_a_refined_return_s_guard_costs_the_tail_call() -> None:
+    """`cp` says `ensures(true)`, and its refined return's guard, a check
+    at the exit, still costs its tail calls: the text's second source."""
+    verified = pipeline.verify(_EXIT_CHECKS)
+    assert verified.ok
+    ran = pipeline.run(_EXIT_CHECKS, fn="cp", args=[1, 1000000])
+    assert ran.trap is not None and ran.trap.kind == "stack_exhausted"
+
+
+def test_a_postcondition_with_no_check_at_the_exit_keeps_the_tail_call() -> None:
+    """`cs`'s postcondition is not `true`, and no check is emitted for it,
+    so its tail calls are kept: the condition is the check, not the
+    clause's spelling."""
+    ran = pipeline.run(_EXIT_CHECKS, fn="cs", raw_args=["abc", "1000000"])
+    assert ran.ok
+    assert ran.value == "abc"
