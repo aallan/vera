@@ -2411,6 +2411,9 @@ class ContractVerifier:
         # it calls, at its instantiation.  Stateless (reads the typed
         # program), so safe on the warm (shared) smt too.
         smt._generic_callee_hook = self._generic_callee_info
+        # #1858: and let a refuted call ask for E501's clause in the entry's
+        # terms where it is refuted, under the call's own premises.
+        smt._violation_clause_hook = self._call_violation_clause
         # #1525: a construction is a term of the sort of the type the checker
         # gave it, and an opaque stand-in of its recorded type's.  Stateless
         # (reads the live `_instance_subst` per clone), so safe on the warm
@@ -2773,6 +2776,16 @@ class ContractVerifier:
     def _written(self, expr: ast.Expr) -> str:
         """*expr* as a message quotes it (:meth:`_as_written`)."""
         return ast.format_expr(self._as_written(expr))
+
+    @staticmethod
+    def _pasted(expr: ast.Expr) -> str:
+        """*expr* as a fix gives it to be written into the program: by the
+        canonical formatter, which parenthesises an operand as the parser
+        groups it (`10 / (@Int.0 - @Int.1)` stays grouped, #1858), so the
+        code pasted is the code the obligation was about.  *expr* is built
+        of nodes already :meth:`_as_written`."""
+        from vera.formatter import format_expr_canonical
+        return format_expr_canonical(expr)
 
     def result(self) -> VerifyResult:
         """This run's result, every name in it spelled as the program
@@ -4936,6 +4949,9 @@ class ContractVerifier:
                     self._report_refined_binding(
                         decl, ret_node, ret_type, "return type",
                         ret_result.counterexample,
+                        clause=self._refined_clause(
+                            smt, ret_type, ret_node, goal, assumptions,
+                            ret_result.counterexample, slot_env),
                     )
                 else:
                     # No verdict: the solver declined to decide, or — #1199 —
@@ -6777,7 +6793,7 @@ class ContractVerifier:
             )
             self._report_call_violation(
                 decl, v.callee_name, v.call_node,
-                v.precondition, v.counterexample,
+                v.precondition, v.counterexample, clause=v.clause,
             )
         for ok in discharges:
             if self._repeats_predicate_call(ok.call_node):
@@ -9646,7 +9662,13 @@ class ContractVerifier:
                 error_code="E526",
                 counterexample=result.counterexample,
             )
-            self._report_div_by_zero(decl, expr, result.counterexample)
+            self._report_div_by_zero(
+                decl, expr, result.counterexample,
+                clause=self._discharging_clause(
+                    smt, obligation, assumptions, result.counterexample,
+                    site_env=slot_env,
+                    exprs=(ast.BinaryExpr(
+                        ast.BinOp.NEQ, expr.right, ast.IntLit(0)),)))
         else:
             # Solver timeout — or #1199's "opaque" (the goal mentions an
             # effect-op stand-in), which is plain Tier-3, not a timeout.
@@ -10747,7 +10769,10 @@ class ContractVerifier:
                 counterexample=result.counterexample,
             )
             self._report_refined_binding(
-                decl, value_node, refined_ty, site, result.counterexample)
+                decl, value_node, refined_ty, site, result.counterexample,
+                clause=self._refined_clause(
+                    smt, refined_ty, value_node, goal, assumptions,
+                    result.counterexample, slot_env))
         else:  # pragma: no cover — no solver verdict (unknown / #1199 opaque)
             self._record_refined_bind_tier3(
                 decl, value_node, site,
@@ -11830,6 +11855,7 @@ class ContractVerifier:
         smt._call_binding_hook = self._call_binding_facts
         smt._call_result_facts_hook = self._call_result_facts
         smt._generic_callee_hook = self._generic_callee_info
+        smt._violation_clause_hook = self._call_violation_clause
         # #1525: the same types as the main path, a construction's and an
         # opaque stand-in's.
         smt._recorded_type_hook = self._resolved_type_of  # pragma: no mutate — equivalent: a generic function's refined return is decided by its clones' verification, so this fast path's record is never the one read
@@ -12007,7 +12033,10 @@ class ContractVerifier:
                 error_code="E505", counterexample=result.counterexample,
             )
             self._report_refined_binding(
-                decl, node, refined_ty, site, result.counterexample)
+                decl, node, refined_ty, site, result.counterexample,
+                clause=self._refined_clause(
+                    smt, refined_ty, None, goal, local_assumptions,
+                    result.counterexample, None))
         else:  # pragma: no cover — no solver verdict (unknown / #1199 opaque)
             self._record_refined_bind_tier3(
                 decl, node, site,
@@ -13314,8 +13343,8 @@ class ContractVerifier:
         exprs: tuple[ast.Expr, ...] = (),
     ) -> str | None:
         """A precondition, as written, that discharges *obligation*, for an
-        E502 / E503 fix computed from the site (#1763); ``None`` where no
-        candidate does.
+        E502 / E503 fix computed from the site (#1763), and for E526, E505
+        and E501's (#1858); ``None`` where no candidate does.
 
         The candidates are each of *exprs*, a predicate over the site's own
         operands, where it reads at the function's entry as the term it is
@@ -13378,6 +13407,60 @@ class ContractVerifier:
             if verdict.status == "verified":
                 return text
         return None
+
+    def _membership_at(
+        self, smt: SmtContext, refined_ty: Type, value: ast.Expr,
+    ) -> ast.Expr | None:
+        """*refined_ty*'s membership predicate with *value* in place of each
+        level's binder, as :meth:`_translate_refined_predicate` binds it,
+        for an E505 fix computed from the site (#1858); ``None`` where a
+        level reads anything but its own binder.
+
+        A refinement's predicate is written over its binder (`@Int.0 > 0`),
+        so a clause that copies it constrains whatever `@Int.0` names at
+        the entry, not the value narrowed."""
+        parts = self._refined_chain(refined_ty)
+        if parts is None:
+            return None
+        base, predicates = parts
+        value = _block_value(value)
+        conjuncts: list[ast.Expr] = []
+        if base == NAT:
+            conjuncts.append(ast.BinaryExpr(ast.BinOp.GE, value, ast.IntLit(0)))
+        for predicate in predicates:
+            binder = next((node for node in fold.walk(predicate)
+                           if isinstance(node, ast.SlotRef)), None)
+            if binder is None:
+                conjuncts.append(predicate)
+                continue
+            at_value = substitute_parameters(
+                predicate,
+                (ast.NamedType(binder.type_name, binder.type_args),),
+                (value,), smt._alias_env, None)
+            if at_value is None:
+                return None
+            conjuncts.append(at_value)
+        if not conjuncts:
+            return None
+        clause = conjuncts[0]
+        for conjunct in conjuncts[1:]:
+            clause = ast.BinaryExpr(ast.BinOp.AND, clause, conjunct)
+        return clause
+
+    def _refined_clause(
+        self, smt: SmtContext, refined_ty: Type, value: ast.Expr | None,
+        goal: object, assumptions: list[object],
+        counterexample: dict[str, str] | None, site_env: SlotEnv | None,
+    ) -> str | None:
+        """E505's clause (#1858): the membership predicate at the narrowed
+        *value*, where it reads at entry as at the site, or a counterexample
+        parameter's, each offered only where the solver confirms it
+        discharges *goal* (:meth:`_discharging_clause`)."""
+        at_value = (self._membership_at(smt, refined_ty, value)
+                    if value is not None else None)
+        return self._discharging_clause(
+            smt, goal, assumptions, counterexample, site_env=site_env,
+            exprs=(at_value,) if at_value is not None else ())
 
     def _report_underflow(
         self,
@@ -13452,8 +13535,17 @@ class ContractVerifier:
         decl: ast.FnDecl,
         expr: ast.BinaryExpr,
         counterexample: dict[str, str] | None,
+        *,
+        clause: str | None = None,
     ) -> None:
-        """Emit an E526 diagnostic for an undischarged divide-by-zero obligation."""
+        """Emit an E526 diagnostic for an undischarged divide-by-zero obligation.
+
+        *clause*, where :meth:`_discharging_clause` found one, is a
+        precondition the solver confirmed discharges it, stated in the
+        entry's terms (#1858): the divisor as written names, at the entry,
+        whatever binding is nearest there, which for a `let`-bound divisor
+        is a parameter.  The guard is written where it is applied, around
+        the operation, so the divisor as written is the divisor there."""
         ce_lines: list[str] = []
         if counterexample:
             ce_lines.append("Counterexample:")
@@ -13463,7 +13555,8 @@ class ContractVerifier:
         ce_text = "\n  ".join(ce_lines) if ce_lines else ""
 
         op_word = "modulo" if expr.op == ast.BinOp.MOD else "division"
-        divisor = self._written(expr.right)
+        zero = ast.BinaryExpr(
+            ast.BinOp.EQ, self._as_written(expr.right), ast.IntLit(0))
         description = (
             f"Integer {op_word} in '{decl.name}' may divide by zero."
         )
@@ -13480,12 +13573,14 @@ class ContractVerifier:
                 "`i64.rem_s` trap at runtime on a zero divisor."
             ),
             fix=(
-                f"Add a precondition ruling out a zero divisor, e.g. "
-                f"`requires({divisor} != 0)`.  Alternatively guard the "
-                f"operation with `if {divisor} == 0 then <default> else ...` "
-                f"(the path condition discharges the obligation in the "
-                f"else-branch), or give the divisor a refinement type that "
-                f"excludes zero."
+                (f"Add a precondition ruling out a zero divisor: "
+                 f"`requires({clause})`.  " if clause is not None else
+                 "Add a precondition ruling out a zero divisor.  ")
+                + f"Alternatively guard the operation with "
+                f"`if {self._pasted(zero)} then {{ <default> }} else "
+                f"{{ {self._pasted(self._as_written(expr))} }}` (the path "
+                f"condition discharges the obligation in the else-branch), "
+                f"or give the divisor a refinement type that excludes zero."
             ),
             spec_ref=(
                 'Chapter 6, Section 6.4.3 "Primitive Operation Safety"'
@@ -13644,7 +13739,15 @@ class ContractVerifier:
         expr: ast.IndexExpr,
         counterexample: dict[str, str] | None,
     ) -> None:
-        """Emit an E527 diagnostic for a provably out-of-bounds array index."""
+        """Emit an E527 diagnostic for a provably out-of-bounds array index.
+
+        The fix names no `requires` (#1858).  E527 fires only where the
+        premises prove the index out of bounds, so a clause added beside
+        them that discharges the access contradicts them: no such clause
+        passes :meth:`_discharging_clause`'s refutation test, and the one
+        written from the site's operands named, for a `let`-bound index,
+        a parameter.  The guard is written where it is applied, around the
+        access, so its operands are the access's own."""
         ce_lines: list[str] = []
         if counterexample:
             ce_lines.append("Counterexample:")
@@ -13653,8 +13756,14 @@ class ContractVerifier:
                     ce_lines.append(f"    {name} = {value}")
         ce_text = "\n  ".join(ce_lines) if ce_lines else ""
 
-        coll = self._written(expr.collection)
-        idx = self._written(expr.index)
+        idx = self._as_written(expr.index)
+        in_bounds = ast.BinaryExpr(
+            ast.BinOp.AND,
+            ast.BinaryExpr(ast.BinOp.LE, ast.IntLit(0), idx),
+            ast.BinaryExpr(
+                ast.BinOp.LT, idx,
+                ast.FnCall("array_length",
+                           (self._as_written(expr.collection),))))
         description = f"Array index in '{decl.name}' is out of bounds."
         if ce_text:
             description += f"\n  {ce_text}"
@@ -13670,12 +13779,11 @@ class ContractVerifier:
             ),
             fix=(
                 f"Index within bounds, or constrain the index with a "
-                f"precondition covering both bounds, e.g. "
-                f"`requires(0 <= {idx} && {idx} < array_length({coll}))`.  "
-                f"Alternatively guard the access with "
-                f"`if 0 <= {idx} && {idx} < array_length({coll}) then "
-                f"{coll}[{idx}] else <default>` — the path condition discharges "
-                f"the obligation in the then-branch."
+                f"precondition covering both bounds.  Alternatively guard "
+                f"the access with `if {self._pasted(in_bounds)} then "
+                f"{{ {self._pasted(self._as_written(expr))} }} else "
+                f"{{ <default> }}` — the path condition discharges the "
+                f"obligation in the then-branch."
             ),
             spec_ref=(
                 'Chapter 6, Section 6.4.3 "Primitive Operation Safety"'
@@ -13747,8 +13855,15 @@ class ContractVerifier:
         counterexample: dict[str, str] | None,
         *,
         concrete_value: str | None = None,
+        clause: str | None = None,
     ) -> None:
         """Emit an E505 diagnostic for an undischarged refinement narrowing.
+
+        *clause*, where :meth:`_discharging_clause` found one, is a
+        precondition the solver confirmed discharges it, stated in the
+        entry's terms (#1858).  The predicate as declared is written over
+        its binder, so pasting it names whatever binding is nearest at the
+        entry, not the value narrowed.
 
         Renders the refinement's actual predicate source (via
         :py:func:`ast.format_expr`) plus the counterexample, mirroring
@@ -13836,10 +13951,14 @@ class ContractVerifier:
                 f"Narrow a value the predicate admits — {concrete_value} does "
                 "not satisfy it — or widen the refinement so it does."
                 if concrete_value is not None else
-                "Add a precondition implying the predicate, e.g. "
-                f"`requires({pred_src})`.  Alternatively, guard the binding "
-                "with an `if` whose condition is the predicate — the path "
-                "condition discharges the obligation in the then-branch."
+                (f"Add a precondition under which the narrowed value "
+                 f"satisfies the predicate: `requires({clause})`.  "
+                 if clause is not None else
+                 "Add a precondition under which the narrowed value "
+                 "satisfies the predicate.  ")
+                + "Alternatively, guard the binding with an `if` whose "
+                "condition is the predicate — the path condition "
+                "discharges the obligation in the then-branch."
             ),
             spec_ref=(
                 'Chapter 2, Section 2.6 "Refinement Types" and Chapter 6, '
@@ -14182,13 +14301,14 @@ class ContractVerifier:
         call_node: ast.FnCall | ast.ModuleCall,
         precondition: ast.Requires,
         callee_env: AliasEnv | None = None,
-    ) -> str | None:
-        """The precondition rendered in CALL-SITE terms, or None.
+    ) -> ast.Expr | None:
+        """The precondition in CALL-SITE terms, or None.
 
         Callee-parameter slot references are replaced by the actual
         argument expressions of *call_node* (De Bruijn resolution via
-        :func:`vera.slots.slot_table`), and the result is rendered
-        with ``format_expr`` — turning, e.g.,
+        :func:`vera.slots.slot_table`), which the message renders with
+        ``format_expr`` and the fix's guard with the canonical formatter
+        (:meth:`_pasted`) — turning, e.g.,
         ``requires(string_length(@String.0) > 0)`` at the call
         ``f("")`` into ``string_length("") > 0``.  Returns None when
         any slot cannot be mapped (unknown type in the table, index
@@ -14214,7 +14334,35 @@ class ContractVerifier:
             precondition.expr, callee_params, call_node.args, env,
             callee_forall,
         )
-        return None if rebuilt is None else ast.format_expr(rebuilt)
+        return rebuilt
+
+    def _call_violation_clause(
+        self,
+        smt: SmtContext,
+        callee_info: Any,
+        precondition: ast.Expr,
+        call_node: ast.FnCall | ast.ModuleCall,
+        goal: object,
+        env: SlotEnv,
+        counterexample: dict[str, str] | None,
+    ) -> str | None:
+        """E501's clause (#1858), asked by the SMT layer where it refutes
+        the call: the callee's precondition at the call's arguments, where
+        it reads at the caller's entry as at the call, or a counterexample
+        parameter's, each offered only where the solver confirms it
+        discharges *goal* (:meth:`_discharging_clause`).  *callee_info* is
+        ``None`` for a built-in's domain, whose *precondition* the SMT layer
+        has already written at the arguments."""
+        if callee_info is None:
+            at_call: ast.Expr | None = precondition
+        else:
+            at_call = substitute_parameters(
+                precondition, tuple(callee_info.param_type_exprs),
+                call_node.args, self._callee_alias_env(callee_info),
+                callee_info.forall_vars)
+        return self._discharging_clause(
+            smt, goal, [], counterexample, site_env=env,
+            exprs=(at_call,) if at_call is not None else ())
 
     def _report_call_violation(
         self,
@@ -14223,8 +14371,16 @@ class ContractVerifier:
         call_node: ast.FnCall | ast.ModuleCall,
         precondition: ast.Requires,
         counterexample: dict[str, str] | None,
+        *,
+        clause: str | None = None,
     ) -> None:
-        """Report a call site where the callee's precondition may not hold."""
+        """Report a call site where the callee's precondition may not hold.
+
+        The guard is written where it is applied, around the call, so the
+        precondition at the call's arguments is the right condition there.
+        *clause* is the `requires` the SMT layer found in the caller's
+        entry terms (#1858): the same text at the entry names whatever
+        binding is nearest there, a parameter for a `let`-bound argument."""
         pre_text = self._contract_source_text(precondition)
 
         # Render the precondition in call-site terms (callee slots
@@ -14233,7 +14389,7 @@ class ContractVerifier:
         # concrete code instead of generic advice.  Falls back to the
         # generic wording when the callee or a slot cannot be
         # resolved (e.g. module-qualified callees).
-        site_pre: str | None = None
+        at_call: ast.Expr | None = None
         callee_info = self.env.lookup_function(callee_name)
         builtin = (
             domain_contract(callee_name)
@@ -14243,14 +14399,14 @@ class ContractVerifier:
         if builtin is not None and builtin.requires is precondition:
             # #1480: a built-in's declared domain — its parameters are the
             # domain's, not the registry entry's (which has none).
-            site_pre = self._pre_at_call_site(
+            at_call = self._pre_at_call_site(
                 builtin.params, None, call_node, precondition,
                 EMPTY_ALIAS_ENV,
             )
         elif callee_info is not None and callee_info.param_type_exprs:
             from typing import cast
 
-            site_pre = self._pre_at_call_site(
+            at_call = self._pre_at_call_site(
                 cast(
                     "tuple[ast.TypeExpr, ...]",
                     callee_info.param_type_exprs,
@@ -14264,6 +14420,7 @@ class ContractVerifier:
                 # message falls back to its generic wording.
                 self._callee_alias_env(callee_info),
             )
+        site_pre = None if at_call is None else ast.format_expr(at_call)
 
         # Build counterexample description
         ce_lines: list[str] = []
@@ -14303,13 +14460,17 @@ class ContractVerifier:
             ),
             fix=(
                 (
-                    f"Guard the call so the precondition holds, e.g. "
-                    f"if {site_pre} then {{ "
-                    f"{self._written(call_node)} }} else {{ ... }} "
-                    f"— or strengthen '{caller.name}' with "
-                    f"requires({site_pre})."
+                    f"Guard the call so the precondition holds: "
+                    f"`if {self._pasted(at_call)} then {{ "
+                    f"{self._pasted(self._as_written(call_node))} }} "
+                    f"else {{ <default> }}`"
+                    + (f" — or strengthen '{caller.name}' with "
+                       f"`requires({clause})`."
+                       if clause is not None else
+                       f" — or add a precondition to '{caller.name}' that "
+                       f"implies it.")
                 )
-                if site_pre
+                if at_call is not None
                 else (
                     f"Add a precondition to '{caller.name}' or guard "
                     f"the call with an if-expression that ensures the "

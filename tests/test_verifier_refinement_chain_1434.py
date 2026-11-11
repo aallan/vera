@@ -509,17 +509,13 @@ def test_1434_the_violation_message_names_every_level(tmp_path: Path) -> None:
             f"the E505 message does not name `{fragment}`, so it does not "
             f"state the membership it refuted:\n{text}"
         )
-    # The `fix` field renders the same conjunction into the `requires(...)` it
-    # suggests, so a partial render sends the reader to write a precondition
-    # that does not discharge the obligation.  Asserted separately because it
-    # is a separate string: the description could be right while the repair
-    # advice stayed one-level (CodeRabbit review of PR #1453).
+    # The `fix` offers a `requires` only as the conjunction at the narrowed
+    # value, in the entry's terms (#1858); the value here is the literal
+    # `50`, so a clause would be over constants alone and none is offered.
+    # The chain at a parameter is `tests/test_fix_texts_apply_and_clear.py`'s
+    # E505-chain and E505-nat-base cells.
     fix_text = "\n".join(d.get("fix", "") for d in e505)
-    for fragment in ("@Nat.0 >= 0", "@Nat.0 > 0", "@NZ.0 < 10"):
-        assert fragment in fix_text, (
-            f"the E505 `fix` does not name `{fragment}`, so the suggested "
-            f"`requires(...)` would not discharge the obligation:\n{fix_text}"
-        )
+    assert "requires(" not in fix_text, fix_text
 
 
 def test_1434_a_concrete_value_is_decided_over_a_chain(tmp_path: Path) -> None:

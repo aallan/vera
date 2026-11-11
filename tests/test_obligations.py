@@ -1215,10 +1215,12 @@ class TestObligationKinds:
         assert 'At this call site: string_starts_with("", "x")' in d.description
         assert d.fix is not None
         assert (
-            'if string_starts_with("", "x") then { need_pos("") } else { ... }'
-            in d.fix
+            '`if string_starts_with("", "x") then { need_pos("") } '
+            'else { <default> }`' in d.fix
         )
-        assert 'requires(string_starts_with("", "x"))' in d.fix
+        # A clause over constants alone says nothing of the caller's inputs
+        # and does not discharge the call: no `requires` is offered (#1858).
+        assert "requires(" not in d.fix, d.fix
 
     def test_e501_substitution_resolves_de_bruijn_order(self) -> None:
         """Slot substitution must honour De Bruijn most-recent-first:
@@ -1288,7 +1290,7 @@ class TestObligationKinds:
         d = e501[0]
         assert "At this call site: 0 > 0" in d.description
         assert d.fix is not None
-        assert "if 0 > 0 then { need_pos(0) } else { ... }" in d.fix
+        assert "`if 0 > 0 then { need_pos(0) } else { <default> }`" in d.fix
 
     def test_e501_unmappable_slot_keeps_generic_fix(self) -> None:
         """When a precondition slot cannot be mapped to an argument,

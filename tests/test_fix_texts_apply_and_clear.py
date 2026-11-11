@@ -14,6 +14,11 @@ the fix says has to clear the diagnostic.  Two mechanisms broke that:
   `@Int`).  The example is now computed from the site — the operand, the
   counterexample's binding, the function's own parameter, the site's type
   argument — and dropped where nothing can be computed.
+- #1858: a `requires` computed from the site's operands was written at the
+  entry, where an operand a `let`, a pattern or a destructure binds names a
+  parameter or nothing (E526, E527, E505, E501).  The clause is offered
+  only in the entry's terms, solver-confirmed; the guard is written at the
+  site, where its operands are the site's own.
 
 The instrument applies each fix from its text alone: the clause, type or
 command between backticks is extracted and inserted where the fix says (a
@@ -54,6 +59,7 @@ pytestmark = pytest.mark.matrix(decides=[
     "vera/checker/resolution.py",
     "vera/typed.py",
     "vera/verifier.py",
+    "vera/smt.py",
     "vera/errors.py",
 ])
 
@@ -646,6 +652,251 @@ def test_repro_1763_open_variable_types_are_not_named() -> None:
     fix = _the("E301", "check", E301_OPEN_ELSE).fix
     assert "?" not in fix, fix
     assert spans(fix) == ["fn(Int -> Int) effects(pure)"], fix
+
+
+# =====================================================================
+# #1858: a clause in the entry's terms, a guard in the site's
+# =====================================================================
+#
+# E526, E527, E505 and E501 wrote `requires(<the operand at the site>)`.
+# A slot reference names the nearest binding of its type, so an operand a
+# `let`, a pattern or a destructure binds names a parameter (or nothing)
+# at the entry.  The `requires` is now offered only where it reads at the
+# entry as at the site and the solver confirms it discharges the
+# obligation; the guard each fix names is written around the site, where
+# its operands are the site's own.  Each cell is a code x the operand's
+# binding: a parameter, a `let` of a parameter's type, a `let` of another
+# type, a pattern binder, a destructured component.
+
+NEED = ("private fn need(@Int -> @Int)\n  requires(@Int.0 != 0)\n"
+        "  ensures(true)\n  effects(pure)\n{\n  @Int.0\n}\n\n")
+SMALL_NAT = "type Small = { @Nat | @Nat.0 < 10 };\n\n"
+SMALL_POS = POS + "type Small = { @Pos | @Pos.0 < 10 };\n\n"
+_ARM = ("match @Option<Int>.0 {{\n    Some(@Int) -> {0},\n"
+        "    None -> 0\n  }}")
+_DESTRUCTURE = "let Tuple<@Int, @Int> = Tuple(@Int.0 - 1, 1);\n  "
+
+
+@dataclass(frozen=True)
+class _Entry:
+    code: str
+    source: str
+    #: The expression the guard is written around, as the source has it.
+    site: str
+    #: The `requires` the fix offers, or `None` where it offers none.
+    clause: str | None
+    #: The `requires` the base text offered, applied in the honesty cell.
+    base: str | None = None
+
+
+ENTRY: dict[str, _Entry] = {
+    # --- E526: the divisor ---------------------------------------------
+    "E526-param": _Entry(
+        "E526", _fn("@Int", "@Int", "10 / @Int.0"), "10 / @Int.0",
+        "requires(@Int.0 != 0)"),
+    "E526-two-params": _Entry(
+        "E526", _fn("@Int, @Int", "@Int", "@Int.0 / @Int.1"),
+        "@Int.0 / @Int.1", "requires(@Int.1 != 0)"),
+    "E526-grouped": _Entry(
+        "E526", _fn("@Int, @Int", "@Int", "10 / (@Int.0 - @Int.1)"),
+        "10 / (@Int.0 - @Int.1)", "requires(@Int.0 - @Int.1 != 0)"),
+    "E526-let-same-type": _Entry(
+        "E526", _fn("@Int", "@Int", "let @Int = @Int.0 - 1;\n  10 / @Int.0"),
+        "10 / @Int.0", None, base="requires(@Int.0 != 0)"),
+    "E526-let-other-type": _Entry(
+        "E526", _fn("@Nat", "@Int", "let @Int = 0 - @Nat.0;\n  10 / @Int.0"),
+        "10 / @Int.0", None, base="requires(@Int.0 != 0)"),
+    "E526-let-other-type-flag": _Entry(
+        "E526", _fn("@Bool", "@Int",
+                    "let @Int = if @Bool.0 then { 1 } else { 0 };\n"
+                    "  10 / @Int.0"),
+        "10 / @Int.0", "requires(@Bool.0)", base="requires(@Int.0 != 0)"),
+    "E526-pattern": _Entry(
+        "E526", _fn("@Int, @Option<Int>", "@Int", _ARM.format("10 / @Int.0")),
+        "10 / @Int.0", None, base="requires(@Int.0 != 0)"),
+    "E526-destructure": _Entry(
+        "E526", _fn("@Int, @Int", "@Int", _DESTRUCTURE + "10 / @Int.1"),
+        "10 / @Int.1", None, base="requires(@Int.1 != 0)"),
+    # --- E527: never a `requires`; the guard around the access ----------
+    "E527-param": _Entry(
+        "E527", _fn("@Array<Int>, @Int", "@Int", "@Array<Int>.0[@Int.0]",
+                    req="@Int.0 < 0"),
+        "@Array<Int>.0[@Int.0]", None),
+    "E527-let-same-type": _Entry(
+        "E527", _fn("@Array<Int>, @Int", "@Int",
+                    "let @Int = 0 - 1;\n  @Array<Int>.0[@Int.0]"),
+        "@Array<Int>.0[@Int.0]", None,
+        base="requires(0 <= @Int.0 && @Int.0 < array_length(@Array<Int>.0))"),
+    "E527-let-other-type": _Entry(
+        "E527", _fn("@Array<Int>, @Nat", "@Int",
+                    "let @Int = 0 - 1 - @Nat.0;\n  @Array<Int>.0[@Int.0]"),
+        "@Array<Int>.0[@Int.0]", None,
+        base="requires(0 <= @Int.0 && @Int.0 < array_length(@Array<Int>.0))"),
+    "E527-pattern": _Entry(
+        "E527", _fn("@Array<Int>, @Int", "@Int",
+                    "match Some(0 - 1) {\n    Some(@Int) -> "
+                    "@Array<Int>.0[@Int.0],\n    None -> 0\n  }"),
+        "@Array<Int>.0[@Int.0]", None,
+        base="requires(0 <= @Int.0 && @Int.0 < array_length(@Array<Int>.0))"),
+    "E527-destructure": _Entry(
+        "E527", _fn("@Array<Int>, @Int", "@Int",
+                    "let Tuple<@Int, @Int> = Tuple(0 - 1, 1);\n"
+                    "  @Array<Int>.0[@Int.1]"),
+        "@Array<Int>.0[@Int.1]", None,
+        base="requires(0 <= @Int.1 && @Int.1 < array_length(@Array<Int>.0))"),
+    # --- E505: the predicate at the narrowed value ----------------------
+    "E505-param": _Entry(
+        "E505", POS + _fn("@Int", "@Int", "let @Pos = @Int.0;\n  0"),
+        "@Int.0", "requires(@Int.0 > 0)"),
+    "E505-param-expression": _Entry(
+        "E505", POS + _fn("@Int", "@Int", "let @Pos = @Int.0 - 1;\n  0"),
+        "@Int.0 - 1", "requires(@Int.0 - 1 > 0)",
+        base="requires(@Int.0 > 0)"),
+    "E505-return": _Entry(
+        "E505", POS + _fn("@Int", "@Pos", "@Int.0 - 1"),
+        "@Int.0 - 1", "requires(@Int.0 - 1 > 0)",
+        base="requires(@Int.0 > 0)"),
+    "E505-nat-base": _Entry(
+        "E505", SMALL_NAT + _fn("@Int", "@Int", "let @Small = @Int.0;\n  0"),
+        "@Int.0", "requires(@Int.0 >= 0 && @Int.0 < 10)",
+        base="requires(@Nat.0 >= 0 && @Nat.0 < 10)"),
+    "E505-chain": _Entry(
+        "E505", SMALL_POS + _fn("@Int", "@Int", "let @Small = @Int.0;\n  0"),
+        "@Int.0", "requires(@Int.0 > 0 && @Int.0 < 10)",
+        base="requires((@Int.0 > 0) && (@Pos.0 < 10))"),
+    "E505-nat-chain": _Entry(
+        "E505", "type NZ = { @Nat | @Nat.0 > 0 };\n\n"
+        "type NSmall = { @NZ | @NZ.0 < 10 };\n\n"
+        + _fn("@Int", "@Int", "let @NSmall = @Int.0;\n  0"),
+        "@Int.0", "requires(@Int.0 >= 0 && @Int.0 > 0 && @Int.0 < 10)",
+        base="requires(@Nat.0 >= 0 && (@Nat.0 > 0) && (@NZ.0 < 10))"),
+    "E505-let-same-type": _Entry(
+        "E505", POS + _fn("@Int", "@Int",
+                          "let @Int = @Int.0 - 1;\n  let @Pos = @Int.0;\n  0"),
+        "@Int.0", None, base="requires(@Int.0 > 0)"),
+    "E505-let-other-type": _Entry(
+        "E505", POS + _fn("@Nat", "@Int",
+                          "let @Int = 0 - @Nat.0;\n  let @Pos = @Int.0;\n  0"),
+        "@Int.0", None, base="requires(@Int.0 > 0)"),
+    "E505-pattern": _Entry(
+        "E505", POS + _fn("@Int, @Option<Int>", "@Int", _ARM.format(
+            "{\n      let @Pos = @Int.0;\n      0\n    }")),
+        "@Int.0", None, base="requires(@Int.0 > 0)"),
+    "E505-destructure": _Entry(
+        "E505", POS + _fn("@Int, @Int", "@Int",
+                          _DESTRUCTURE + "let @Pos = @Int.1;\n  0"),
+        "@Int.1", None, base="requires(@Int.0 > 0)"),
+    "E505-sub-pattern": _Entry(
+        "E505", POS + _fn("@Int, @Option<Int>", "@Int",
+                          "match @Option<Int>.0 {\n    Some(@Pos) -> 0,\n"
+                          "    None -> 0\n  }"),
+        "Some(@Pos)", None, base="requires(@Int.0 > 0)"),
+    # --- E501: the callee's precondition at the arguments ---------------
+    "E501-param": _Entry(
+        "E501", NEED + _fn("@Int", "@Int", "need(@Int.0)"), "need(@Int.0)",
+        "requires(@Int.0 != 0)"),
+    "E501-param-expression": _Entry(
+        "E501", NEED + _fn("@Int", "@Int", "need(@Int.0 - 1)"),
+        "need(@Int.0 - 1)", "requires(@Int.0 - 1 != 0)"),
+    "E501-let-same-type": _Entry(
+        "E501", NEED + _fn("@Int", "@Int",
+                           "let @Int = @Int.0 - 1;\n  need(@Int.0)"),
+        "need(@Int.0)", None, base="requires(@Int.0 != 0)"),
+    "E501-let-other-type": _Entry(
+        "E501", NEED + _fn("@Nat", "@Int",
+                           "let @Int = 0 - @Nat.0;\n  need(@Int.0)"),
+        "need(@Int.0)", None, base="requires(@Int.0 != 0)"),
+    "E501-pattern": _Entry(
+        "E501", NEED + _fn("@Int, @Option<Int>", "@Int",
+                           _ARM.format("need(@Int.0)")),
+        "need(@Int.0)", None, base="requires(@Int.0 != 0)"),
+    "E501-destructure": _Entry(
+        "E501", NEED + _fn("@Int, @Int", "@Int",
+                           _DESTRUCTURE + "need(@Int.1)"),
+        "need(@Int.1)", None, base="requires(@Int.1 != 0)"),
+    "E501-builtin-domain": _Entry(
+        "E501", _fn("@Int", "@Int", 'string_char_code("abc", @Int.0)'),
+        'string_char_code("abc", @Int.0)', None),
+}
+
+#: The codes whose fix writes a guard as code: E505's names its condition
+#: in prose.
+_GUARDED = frozenset({"E526", "E527", "E501"})
+
+
+def _entry_fix(name: str) -> str:
+    cell = ENTRY[name]
+    return _the(cell.code, "verify", cell.source).fix
+
+
+def _requires_spans(fix: str) -> list[str]:
+    return [s for s in spans(fix) if s.startswith("requires(")]
+
+
+@pytest.mark.parametrize("name", sorted(ENTRY))
+def test_a_requires_is_offered_only_in_the_entrys_terms(name: str) -> None:
+    """The clause offered is exactly the cell's, and none where the
+    operand is not the entry's: a `let`, a pattern binder or a destructured
+    component names a parameter, or nothing, at the entry."""
+    cell = ENTRY[name]
+    fix = _entry_fix(name)
+    assert _requires_spans(fix) == (
+        [cell.clause] if cell.clause is not None else []), (name, fix)
+    if cell.clause is None:
+        assert "e.g." not in fix, (name, fix)
+
+
+@pytest.mark.parametrize(
+    "name", sorted(n for n, c in ENTRY.items() if c.clause is not None))
+def test_the_entry_clause_applied_clears_the_code(name: str) -> None:
+    cell = ENTRY[name]
+    [clause] = _requires_spans(_entry_fix(name))
+    fixed = _once(cell.source, "requires(true)", clause)
+    codes = _codes("verify", fixed)
+    assert not codes & {"E005", "E006", "E130"}, (name, fixed, codes)
+    assert cell.code not in codes, (name, fixed, sorted(codes))
+
+
+@pytest.mark.parametrize(
+    "name", sorted(n for n, c in ENTRY.items() if c.code in _GUARDED))
+def test_the_site_guard_applied_clears_the_code(name: str) -> None:
+    """The guard, from the fix's text with `<default>` given a value,
+    written around the site: its operands are the site's, so it clears
+    whatever binds them."""
+    cell = ENTRY[name]
+    fix = _entry_fix(name)
+    guards = [s for s in spans(fix) if s.startswith("if ")]
+    assert len(guards) == 1, (name, fix)
+    fixed = _once(cell.source, cell.site,
+                  guards[0].replace("<default>", "0"))
+    codes = _codes("verify", fixed)
+    assert not codes & {"E005", "E006", "E130"}, (name, fixed, codes)
+    assert cell.code not in codes, (name, fixed, sorted(codes))
+
+
+@pytest.mark.parametrize(
+    "name", sorted(n for n, c in ENTRY.items() if c.base is not None))
+def test_the_base_entry_clause_does_not_clear(name: str) -> None:
+    """The gate can fail: the base text's `requires`, written at the entry
+    the same way, leaves the code firing or names a slot the entry lacks."""
+    cell = ENTRY[name]
+    assert cell.base is not None
+    codes = _codes("verify", _once(cell.source, "requires(true)", cell.base))
+    assert cell.code in codes or "E130" in codes, (name, sorted(codes))
+
+
+def test_repro_1858_e526_shadowed_divisor() -> None:
+    """The issue's program: the divisor is the `let`, so base's
+    `requires(@Int.0 != 0)` (the parameter) left E526 firing.  No clause
+    is offered, and the guard, written at the division, clears it."""
+    source = _fn("@Int", "@Int", "let @Int = @Int.0 - 1;\n  10 / @Int.0")
+    fix = _the("E526", "verify", source).fix
+    assert "requires(@Int.0 != 0)" not in fix, fix
+    assert "E526" in _codes(
+        "verify", _once(source, "requires(true)", "requires(@Int.0 != 0)"))
+    guard = next(s for s in spans(fix) if s.startswith("if "))
+    assert "E526" not in _codes("verify", _once(
+        source, "10 / @Int.0", guard.replace("<default>", "0")))
 
 
 # =====================================================================
