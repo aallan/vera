@@ -1214,3 +1214,15 @@ def test_repro_1716_the_cost_a_literal_arm_through_a_generic() -> None:
     assert rows == [("ensures", "verified", "@Int.result > 0"),
                     ("refine_bind", "tier3", "@PosInt"),
                     ("refine_bind", "verified", "<expr>")], rows
+
+
+def test_a_handler_whose_body_is_refused_has_its_clauses_type() -> None:
+    """A handler whose body the check refused (`Unknown`) has its clause's
+    type, so a `let` of another type still reports the mismatch (E170)."""
+    source = ("public fn f(@Int -> @Int)\n  requires(true)\n  ensures(true)\n"
+              "  effects(pure)\n{\n  let @Int = handle[Exn<Int>] {\n"
+              '    throw(@Int) -> { "s" }\n  } in {\n    @Bool.0\n  };\n'
+              "  @Int.0\n}\n")
+    checked = pipeline.check(source, file=FILE)
+    assert [d.error_code for d in checked.errors] == ["E130", "E170"]
+    assert "value has type String" in checked.errors[1].description

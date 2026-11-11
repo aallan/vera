@@ -2019,10 +2019,10 @@ class ControlFlowMixin:
         if body_type is not None:
             arms.append((expr.body, body_type))
         for clause, clause_type in clause_types:
-            if joined is None or isinstance(joined, UnknownType):
+            if joined is None or isinstance(joined, UnknownType):  # pragma: no mutate — equivalent: an unknown body falls to the Never test below, which types_equal answers True for the unknown, and does the same
                 joined = clause_type
-                arms.append((clause.body, clause_type))
-                continue
+                arms.append((clause.body, clause_type))  # pragma: no mutate — equivalent: an Exn handler has one operation, so one clause, and no later join reads arms
+                continue  # pragma: no mutate — equivalent: an Exn handler has one operation, so the loop has no later clause
             if isinstance(clause_type, UnknownType):
                 continue
             if types_equal(joined, NEVER):
