@@ -2323,9 +2323,12 @@ class TestEndToEnd:
         monkeypatch.setenv("SWEEP_FIXTURE_HOLD", "vera.m.x_g__mutmut_1")
         monkeypatch.setenv("SWEEP_FIXTURE_HOLD_S", "900")
         monkeypatch.setattr(sw.md, "run_engine", lambda *a, **k: _quick_stop(*a, **k))
+        monkeypatch.setattr(sw, "FIXED_S", 0)
+        monkeypatch.setattr(sw, "OTHER_RATE_S", 0.01)  # both functions fit the 45 s budget's one job
         code, first, _ = _night(held_repo, tmp_path, 1, "", real=True, budget=45)
         assert code == 0 and first["stopped"] == "budget", _engine_said(tmp_path, 1, first)
         window = {p["unit"]: p["mutants"] for p in first["planned"]}
+        assert set(window) == {"vera/m.py::x_f", "vera/m.py::x_g"}
         decided = {ident: set(r["decided"]) for ident, r in first["results"].items()}
         assert "1" not in decided.get("vera/m.py::x_g", set())  # held past the budget: undecided
         assert sum(map(len, decided.values())) == sum(window.values()) - 1, (window, decided,
