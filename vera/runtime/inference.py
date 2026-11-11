@@ -492,7 +492,15 @@ def _read_error_body(http_err: HTTPError, api_key: str = "") -> str:
     except Exception:  # noqa: BLE001 — the detail is optional; the provider and status code are not
         return "(unreadable response body)"
     if len(raw) > _ERROR_BODY_CAP:
-        head = raw[:_ERROR_BODY_CAP].decode("utf-8", errors="replace").strip()
+        # Back the cut up to a character boundary (#1526): while the byte
+        # at the cut is a UTF-8 continuation byte, cut one earlier, at most
+        # three times (a character is at most four bytes).  `raw` holds a
+        # byte past the cap, so the index is always inside it.
+        cut = _ERROR_BODY_CAP
+        for _ in range(3):
+            if raw[cut] & 0xC0 == 0x80:
+                cut -= 1
+        head = raw[:cut].decode("utf-8", errors="replace").strip()
         # Marked unconditionally, because the marker states a fact about
         # the READ — we stopped at the cap — and not about the length of
         # whatever survived stripping.  `_truncate` marks on length alone,

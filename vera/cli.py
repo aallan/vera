@@ -1991,7 +1991,10 @@ def cmd_fmt(
         # rule 10). Normalise for formatting, but a file that HELD a CR
         # was not already canonical.
         raw = p.read_bytes()
-        had_cr = b"\r" in raw
+        # The same holds for a byte-order mark, which the reader drops
+        # (#1790): canonical Vera has none, so a marked file is not
+        # canonical and --write leaves it unmarked.
+        had_cr = b"\r" in raw or raw.startswith(b"\xef\xbb\xbf")
         source = decode_source(raw, str(p)).replace(
             "\r\n", "\n").replace("\r", "\n")
         formatted = format_source(source, file=str(p))

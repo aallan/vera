@@ -7,6 +7,7 @@ See spec/00-introduction.md, Section 0.5 "Diagnostics as Instructions".
 from __future__ import annotations
 
 import shlex
+import unicodedata
 from dataclasses import dataclass
 from collections.abc import Sequence
 from pathlib import Path
@@ -223,6 +224,22 @@ def partial_diagnostics(exc: BaseException) -> list[Diagnostic]:
     if not isinstance(found, list):
         return []
     return [d for d in found if isinstance(d, Diagnostic)]
+
+
+def _name_character(char: str) -> str:
+    """*char* as E006 quotes it: itself in quotes when it has a glyph, else
+    its code point and name, so a diagnostic never points at nothing.
+
+    No glyph: the Unicode categories ``Cc`` (control), ``Cf`` (format, the
+    byte-order mark and the zero-width characters among them), ``Zs`` other
+    than the space, ``Zl`` and ``Zp`` (#1790).
+    """
+    category = unicodedata.category(char) if len(char) == 1 else ""
+    if category in ("Cc", "Cf", "Zl", "Zp") or (
+            category == "Zs" and char != " "):
+        name = unicodedata.name(char, "").lower() or "control character"
+        return f"U+{ord(char):04X} ({name})"
+    return f'"{char}"'
 
 
 def _get_source_line(source: str, line: int) -> str:
@@ -944,8 +961,8 @@ def diagnose_lark_error(
 
         return Diagnostic(
             description=(
-                f'Unexpected character "{char}". This character is not valid '
-                "in Vera source code at this position."
+                f"Unexpected character {_name_character(char)}. This "
+                "character is not valid in Vera source code at this position."
             ),
             location=SourceLocation(file=file, line=line, column=column),
             source_line=_get_source_line(source, line),
