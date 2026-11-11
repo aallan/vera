@@ -474,7 +474,7 @@ def _character_cut(raw: bytes, cap: int) -> int:
     if raw[cap] & 0xC0 != 0x80:
         return cap
     lead = cap - 1
-    for _ in range(2):
+    for _ in range(2):  # pragma: no mutate — equivalent: a fourth byte back is the start of a sequence that ends at or before the cap
         if raw[lead] & 0xC0 == 0x80:
             lead -= 1
     first = raw[lead]
@@ -483,7 +483,7 @@ def _character_cut(raw: bytes, cap: int) -> int:
     elif 0xE0 <= first <= 0xEF:
         length = 3
     elif 0xF0 <= first <= 0xF7:
-        length = 4
+        length = 4  # pragma: no mutate — equivalent: a four-byte lead within three bytes of the cap is always cut by it
     else:
         return cap
     return lead if lead + length > cap else cap

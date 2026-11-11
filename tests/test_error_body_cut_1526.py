@@ -90,6 +90,14 @@ def test_a_configured_key_before_the_cut_stays_redacted(
     assert detail.endswith(MARKER), detail
 
 
+def test_no_key_configured_redacts_nothing() -> None:
+    """The default `api_key` is empty: a capped body that holds `XXXX` is
+    quoted as it is."""
+    body = b"XXXX abc" + b" " * _ERROR_BODY_CAP + b"tail"
+    detail = _read_error_body(_error(body))
+    assert detail == "XXXX abc" + MARKER, detail
+
+
 def test_an_unreadable_body_is_stated() -> None:
     class Unreadable(io.BytesIO):
         def read(self, size: int | None = -1) -> bytes:
