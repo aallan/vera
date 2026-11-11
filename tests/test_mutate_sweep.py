@@ -2378,15 +2378,15 @@ class TestEndToEnd:
         assert HELD_MODULE.splitlines()[2].strip() == "return x + 1"
         code, record, _ = _night(held_repo, tmp_path, 1, "", real=True, budget=300)
         assert code == 0 and record["stopped"] is None, _engine_said(tmp_path, 1, record)
-        picks = [sw.Pick(unit=sw.SweepUnit(path=p["unit"].split("::")[0], key=p["unit"].split("::")[1], start=1,
-                                           hash=p["hash"]), lines=tuple(p["lines"]), counts=(), before=(),
-                         todo=tuple(p["todo"])) for p in record["planned"]]
-        handed = set(sw.engine_targets(picks))
+        assert {p["unit"]: p["todo"] for p in record["planned"]} == {
+            u: list(range(1, n + 1)) for u, n in {p["unit"]: p["mutants"] for p in record["planned"]}.items()}
+        generated = {f"vera.m.{p['unit'].split('::')[1]}__mutmut_{n}" for p in record["planned"] for n in p["todo"]}
         listed = sw.md._engine_call(sw.md._default_engine(), ["results", "--all", "true"],
                                     cwd=tmp_path / "work1" / "tree", env=sw.md._git_env())
         assert listed is not None and listed.returncode == 0, listed
-        assert set(sw.md.parse_results(listed.stdout)) == handed
-        assert all(len(r["decided"]) == r["window"] for r in record["results"].values())
+        assert set(sw.md.parse_results(listed.stdout)) == generated  # the window, numbered from one
+        assert all(len(r["decided"]) == r["window"] for r in record["results"].values()), (
+            record["results"], _engine_said(tmp_path, 1, record))  # every name handed was one generated
 
     @starts_the_engine(600)
     def test_mutmut_itself_decides_a_night(self, repo: Path, tmp_path: Path) -> None:
