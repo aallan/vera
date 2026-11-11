@@ -36,7 +36,9 @@ tested by a double of a guard kind added later (a check planted after a
 call, with no row the rule could read); the one-decision test (the set
 the translator is handed is `ObligationTable.tail_calls`, untouched); and
 the universal form, no check after a `return_call` on its value's exit
-path, over the corpus and the program generator's seeds 0 to 999.
+path, in each function as it is assembled (the module's WAT has its check
+markers stripped), over the corpus and the program generator's seeds 0 to
+999.
 """
 
 from __future__ import annotations
@@ -623,24 +625,78 @@ def checks_after_tail_calls(wat: str) -> list[str]:
             and checks_after(lines, i)]
 
 
+@dataclass
+class _Scan:
+    """What the universal form saw: each function's WAT as code generation
+    assembled it, check markers still in place (the module's WAT has them
+    stripped, so a scan of it would see no check at all)."""
+
+    functions: int = 0
+    #: Functions holding both a `return_call` and a recorded check: the
+    #: ones the scan could have found something in.
+    candidates: int = 0
+    found: list[str] | None = None
+
+
+def _scanning(monkeypatch: pytest.MonkeyPatch) -> _Scan:
+    """Scan each function `_compile_fn` assembles, before its markers are
+    stripped: every `return_call` with a recorded check on its exit path is
+    a find.  The compile itself is unchanged."""
+    from vera.codegen import functions
+    from vera.codegen.functions import checks_after
+    scan = _Scan(found=[])
+    original = functions.dead_check_tail_call
+
+    def scanned(lines: list[str]) -> str | None:
+        scan.functions += 1
+        tails = [i for i, ln in enumerate(lines)
+                 if ln.lstrip().startswith("return_call ")]
+        if tails and any(CHECK_MARKER_RE.search(ln) for ln in lines):
+            scan.candidates += 1
+        assert scan.found is not None
+        scan.found.extend(lines[i].strip() for i in tails
+                          if checks_after(lines, i))
+        return original(lines)
+
+    monkeypatch.setattr(functions, "dead_check_tail_call", scanned)
+    return scan
+
+
+def _internal_errors(compiled: pipeline.Compiled) -> list[str]:
+    return [d.description for d in compiled.diagnostics
+            if d.error_code == "E699"]
+
+
+def test_the_assembled_module_carries_no_marker() -> None:
+    """Why the universal form scans each function before assembly: the
+    module's WAT has its check markers stripped."""
+    wat = pipeline.compile(_ISSUE, file=FILE).wat
+    assert "call $:wrap" in wat
+    assert CHECK_MARKER_RE.search(wat) is None
+
+
 def _corpus() -> list[Path]:
     return (sorted((ROOT / "examples").glob("*.vera"))
             + sorted((ROOT / "tests" / "conformance").glob("*.vera")))
 
 
-def test_no_check_follows_a_return_call_in_the_corpus() -> None:
-    """Every example and conformance program that compiles (the sweep is
-    one test, so every pull request runs it whole)."""
-    found, tail_calls = [], 0
+def test_no_check_follows_a_return_call_in_the_corpus(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every example and conformance program, each function scanned as it
+    is assembled (the sweep is one test, so every pull request runs it
+    whole), and no program refused for a check after a tail call."""
+    scan = _scanning(monkeypatch)
+    errors, tail_calls = [], 0
     for path in _corpus():
         compiled = pipeline.compile(path, file=str(path))
-        if not compiled.ok:
-            continue
-        tail_calls += compiled.wat.count("return_call ")
-        found.extend((path.name, hit)
-                     for hit in checks_after_tail_calls(compiled.wat))
-    assert found == []
+        errors.extend((path.name, e) for e in _internal_errors(compiled))
+        if compiled.ok:
+            tail_calls += compiled.wat.count("return_call ")
+    assert scan.found == []
+    assert errors == []
     assert tail_calls > 100, "the corpus lost its tail calls"
+    assert scan.candidates >= 10, "no function held a tail call and a check"
 
 
 def test_the_universal_form_sees_a_check_after_a_return_call() -> None:
@@ -684,12 +740,13 @@ _SEED_CHUNK = 50
 @pytest.mark.parametrize(
     "first", range(0, 1000, _SEED_CHUNK), ids=lambda s: f"seeds{s}")
 def test_generator_programs_carry_no_check_after_a_return_call(
-    first: int, tmp_path: Path,
+    first: int, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The universal form over the program generator's seeds 0 to 999,
     fifty to a cell; a program with a module has it written beside it."""
     from tests import program_generator as gen
-    found, compiled_any = [], False
+    scan = _scanning(monkeypatch)
+    errors, compiled_any = [], False
     for seed in range(first, first + _SEED_CHUNK):
         prog = gen.generate(seed)
         if prog.module is not None:
@@ -698,9 +755,21 @@ def test_generator_programs_carry_no_check_after_a_return_call(
         entry = tmp_path / f"gen{seed}.vera"
         entry.write_text(prog.render(), encoding="utf-8")
         compiled = pipeline.compile(entry, file=str(entry))
-        if compiled.ok:
-            compiled_any = True
-            found.extend((seed, hit)
-                         for hit in checks_after_tail_calls(compiled.wat))
+        errors.extend((seed, e) for e in _internal_errors(compiled))
+        compiled_any = compiled_any or compiled.ok
     assert compiled_any
-    assert found == []
+    assert scan.functions > 0
+    assert scan.found == []
+    assert errors == []
+
+
+def test_the_universal_form_finds_a_planted_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The sweeps' scan is not blind: the tripwire's double (a check planted
+    after the tail call) is what it reports, in the function as assembled."""
+    _plant(monkeypatch, after=True)
+    scan = _scanning(monkeypatch)
+    compiled = pipeline.compile(_UNGUARDED, file=FILE)
+    assert scan.found == ["return_call $:wrap"]
+    assert len(_internal_errors(compiled)) == 1
