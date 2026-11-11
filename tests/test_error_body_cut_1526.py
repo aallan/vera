@@ -20,7 +20,11 @@ import urllib.error
 
 import pytest
 
-from vera.runtime.inference import _ERROR_BODY_CAP, _read_error_body
+from vera.runtime.inference import (
+    _ERROR_BODY_CAP,
+    _character_cut,
+    _read_error_body,
+)
 
 pytestmark = pytest.mark.matrix(decides=["vera/runtime/inference.py"])
 
@@ -106,25 +110,124 @@ def test_a_byte_that_is_not_utf_8_is_still_replaced() -> None:
     assert detail.endswith(MARKER), detail
 
 
-@pytest.mark.parametrize(("byte", "backs_up"), [
-    (0x41, False), (0x7F, False), (0x80, True), (0xBF, True), (0xC0, False),
-    (0xE2, False),
-], ids=lambda v: hex(v) if isinstance(v, int) else str(v))
-def test_only_a_continuation_byte_moves_the_cut(
-    byte: int, backs_up: bool,
+
+# --- The rule: only a character the cap leaves incomplete moves the cut ----
+
+CAP = _ERROR_BODY_CAP
+
+
+def _at_cap(before: bytes, after: bytes) -> bytes:
+    """Spaces, then *before*, ending at the cap, then *after* (from the cap
+    on)."""
+    return b" " * (CAP - len(before)) + before + after
+
+
+def _kept(body: bytes) -> bytes:
+    """The bytes of *body* the cut keeps."""
+    return body[:_character_cut(body, CAP)]
+
+
+@pytest.mark.parametrize(("lead", "length"), [
+    (0xC0, 2), (0xDF, 2), (0xE0, 3), (0xEF, 3), (0xF0, 4), (0xF7, 4),
+], ids=hex)
+def test_a_sequence_the_cap_leaves_incomplete_is_cut_at_its_lead(
+    lead: int, length: int,
 ) -> None:
-    """The byte at the cut decides: 0x80 to 0xBF backs the cut up one byte
-    (dropping the `z` before it), any other byte leaves it."""
-    body = b" " * (_ERROR_BODY_CAP - 3) + b"xyz" + bytes([byte]) + b"tail"
-    detail = _read_error_body(_error(body))
-    assert detail == ("xy" if backs_up else "xyz") + MARKER, detail
+    """The lead sits `length - 1` bytes before the cap: the sequence ends
+    one byte past it, so the cut moves to the lead."""
+    start = CAP - (length - 1)
+    body = (b" " * start + bytes([lead]) + b"\x80" * (length - 1)
+            + b"tail")
+    assert _character_cut(body, CAP) == start
 
 
-def test_the_cut_backs_up_three_bytes_and_no_further() -> None:
-    """A run of stray continuation bytes (not UTF-8 at all) across the cap:
-    the back-up is bounded by the longest character, so it stops three
-    bytes up and the text before the run is kept."""
-    body = (b" " * (_ERROR_BODY_CAP - 6) + b"xyz" + b"\x80" * 6 + b"tail")
-    assert body[_ERROR_BODY_CAP - 3] == 0x80
+@pytest.mark.parametrize(("lead", "length"), [
+    (0xC0, 2), (0xDF, 2), (0xE0, 3), (0xEF, 3), (0xF0, 4), (0xF7, 4),
+], ids=hex)
+def test_a_sequence_that_ends_at_the_cap_stays_whole(
+    lead: int, length: int,
+) -> None:
+    """The lead sits `length` bytes before the cap, so the sequence is
+    complete at the cap and a stray continuation byte after it moves
+    nothing."""
+    body = (b" " * (CAP - length) + bytes([lead]) + b"\x80" * (length - 1)
+            + b"\x80tail")
+    assert _character_cut(body, CAP) == CAP
+
+
+@pytest.mark.parametrize("byte", [0x00, 0x41, 0x7F, 0xC0, 0xE2, 0xFF],
+                         ids=hex)
+def test_a_cap_that_falls_on_a_non_continuation_byte_stays(byte: int) -> None:
+    body = b" " * (CAP - 1) + b"\xc3" + bytes([byte]) + b"tail"
+    assert _character_cut(body, CAP) == CAP
+
+
+@pytest.mark.parametrize("byte", [0x7F, 0xF8, 0xFF, 0x41], ids=hex)
+def test_a_byte_that_begins_no_sequence_is_not_a_lead(byte: int) -> None:
+    body = b" " * (CAP - 1) + bytes([byte]) + b"\x80tail"
+    assert _character_cut(body, CAP) == CAP
+
+
+def test_a_stray_run_of_continuation_bytes_stays_at_the_cap() -> None:
+    body = _at_cap(b"xyz" + b"\x80" * 4, b"\x80\x80tail")
+    assert _character_cut(body, CAP) == CAP
     detail = _read_error_body(_error(body))
-    assert detail == "xyz" + MARKER, detail
+    assert detail.startswith("xyz�"), detail
+
+
+def test_a_lead_four_bytes_back_is_out_of_reach() -> None:
+    """A four-byte sequence's last continuation byte is at lead + 3, so a
+    lead four bytes before the cap has ended: it is not looked for."""
+    body = (b" " * (CAP - 4) + b"\xf0\x80\x80\x80" + b"\x80tail")
+    assert _character_cut(body, CAP) == CAP
+
+
+KEY = "A" * 40
+
+
+def test_a_key_before_a_stray_continuation_byte_is_redacted_whole() -> None:
+    """CodeRabbit's case: the key ends at the cap and a stray `0x80`
+    follows.  The cut stays, the key is redacted, and no fragment of it
+    reaches the message (the cut dropped its last character before)."""
+    body = _at_cap(KEY.encode("utf-8"), b"\x80tail")
+    assert _kept(body).endswith(KEY.encode("utf-8"))
+    detail = _read_error_body(_error(body), KEY)
+    assert "AAAA" not in detail, detail
+
+
+def test_a_complete_character_before_a_stray_byte_is_kept() -> None:
+    body = _at_cap("xyzé".encode("utf-8"), b"\x80tail")
+    assert _kept(body).endswith("é".encode("utf-8"))
+    assert _read_error_body(_error(body)) == "xyzé" + MARKER
+
+
+def test_a_key_ending_in_a_character_at_the_cap_is_redacted_whole() -> None:
+    key = "kéy-é"
+    body = _at_cap(("xyz" + key).encode("utf-8"), b"\x80tail")
+    detail = _read_error_body(_error(body), key)
+    assert key not in detail and "é" not in detail, detail
+    assert detail.startswith("xyz"), detail
+
+
+def test_the_cut_keeps_what_base_keeps_less_one_incomplete_character() -> None:
+    """The property over the matrix's cells: the bytes kept are the first
+    `cap` bytes, or those before the lead of a sequence the cap cuts."""
+    for char in CHARACTERS.values():
+        raw = char.encode("utf-8")
+        for before in range(0, len(raw) + 1):
+            body = (b" " * (CAP - 3 - before) + b"xyz" + raw + b"tail")
+            lead = CAP - before
+            kept = _kept(body)
+            incomplete = 0 < before < len(raw)
+            assert kept == (body[:lead] if incomplete else body[:CAP]), (
+                char, before)
+
+
+def test_find_a_key_straddling_the_cap_leaves_its_first_half() -> None:
+    """A FIND, not a fix: at base a configured key whose first half sits
+    before the cap and whose second half is past it is cut in two, and the
+    first half is quoted.  Exact-key redaction cannot match half a key."""
+    key = "K" * 40
+    body = _at_cap(b"K" * 20, b"K" * 20 + b"tail")
+    detail = _read_error_body(_error(body), key)
+    assert "K" * 20 in detail, detail

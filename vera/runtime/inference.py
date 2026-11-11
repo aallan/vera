@@ -458,6 +458,37 @@ def _error_body_detail(raw: bytes, api_key: str = "") -> str:
     return _safe(text, api_key)
 
 
+def _character_cut(raw: bytes, cap: int) -> int:
+    """Where to cut *raw*, which holds a byte past *cap*, so that the cap
+    does not split a UTF-8 character (#1526).
+
+    The cut moves only for a character the cap leaves incomplete: walk back
+    from the cap over at most two continuation bytes to the byte that
+    begins the sequence, read the length it declares (``C0``-``DF`` two,
+    ``E0``-``EF`` three, ``F0``-``F7`` four), and cut at that byte when the
+    sequence ends past the cap.  Every other case stays at the cap, as it
+    was: a character that ends at the cap, a stray continuation byte (a
+    configured key that ends just before it stays whole), no beginning
+    within three bytes, a byte that begins no sequence.
+    """
+    if raw[cap] & 0xC0 != 0x80:
+        return cap
+    lead = cap - 1
+    for _ in range(2):
+        if raw[lead] & 0xC0 == 0x80:
+            lead -= 1
+    first = raw[lead]
+    if 0xC0 <= first <= 0xDF:
+        length = 2
+    elif 0xE0 <= first <= 0xEF:
+        length = 3
+    elif 0xF0 <= first <= 0xF7:
+        length = 4
+    else:
+        return cap
+    return lead if lead + length > cap else cap
+
+
 def _read_error_body(http_err: HTTPError, api_key: str = "") -> str:
     """The provider's error detail, read under a cap and never fatally.
 
@@ -492,15 +523,8 @@ def _read_error_body(http_err: HTTPError, api_key: str = "") -> str:
     except Exception:  # noqa: BLE001 — the detail is optional; the provider and status code are not
         return "(unreadable response body)"
     if len(raw) > _ERROR_BODY_CAP:
-        # Back the cut up to a character boundary (#1526): while the byte
-        # at the cut is a UTF-8 continuation byte, cut one earlier, at most
-        # three times (a character is at most four bytes).  `raw` holds a
-        # byte past the cap, so the index is always inside it.
-        cut = _ERROR_BODY_CAP
-        for _ in range(3):
-            if raw[cut] & 0xC0 == 0x80:
-                cut -= 1
-        head = raw[:cut].decode("utf-8", errors="replace").strip()  # pragma: no mutate — equivalent: utf-8 is the default codec, and codec names are case-insensitive
+        cut = _character_cut(raw, _ERROR_BODY_CAP)
+        head =raw[:cut].decode("utf-8", errors="replace").strip()  # pragma: no mutate — equivalent: utf-8 is the default codec, and codec names are case-insensitive
         # Marked unconditionally, because the marker states a fact about
         # the READ — we stopped at the cap — and not about the length of
         # whatever survived stripping.  `_truncate` marks on length alone,
