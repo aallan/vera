@@ -1066,6 +1066,8 @@ KNOWN_MULTI_SITE_ERROR_CODES: dict[str, frozenset[tuple[str, str]]] = {
     # for it.
     "E170": frozenset({
         ("vera/checker/control.py", "ControlFlowMixin._check_destructure"),
+        ("vera/checker/control.py",
+         "ControlFlowMixin._fit_destructured_whole"),
         ("vera/checker/expressions.py", "ExpressionsMixin._check_let"),
     }),
     "E311": frozenset({
@@ -1104,10 +1106,14 @@ KNOWN_MULTI_SITE_ERROR_CODES: dict[str, frozenset[tuple[str, str]]] = {
     }),
     # Argument type mismatch: named call vs. apply_fn, same rule; and a
     # function-typed argument that fixes one type variable at `Int` and at
-    # `Nat` (spec §4.2's polarity rule), an argument no instance admits.
+    # `Nat` (spec §4.2's polarity rule), an argument no instance admits;
+    # and an argument applied to a function value whose call left its type
+    # variable without a type (#1684), an argument that value takes no
+    # instance of.
     "E202": frozenset({
         ("vera/checker/calls.py", "CallsMixin._check_apply_fn"),
         ("vera/checker/calls.py", "CallsMixin._check_fn_call_with_info"),
+        ("vera/checker/calls.py", "CallsMixin._refuse_unfixed_application"),
         ("vera/checker/resolution.py",
          "ResolutionMixin._refuse_polarity_conflict"),
     }),

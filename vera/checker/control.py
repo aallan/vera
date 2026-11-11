@@ -7,6 +7,7 @@ from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 
 from vera import ast, naming, narrowing, patterns
+from vera.checker.calls import TypePath, _variable_name, describe_position
 from vera.checker.registration import builtin_effect_names
 from vera.checker.resolution import _span_text
 from vera.environment import AdtInfo, Binding, ConstructorInfo, FunctionInfo
@@ -1381,10 +1382,12 @@ class ControlFlowMixin:
             return
         if components is None:
             return
+        refused = False
         for index, (te, binding, component) in enumerate(
                 zip(stmt.type_bindings, bindings, components)):
             if self._fits(component, binding):
                 continue
+            refused = True
             position = index + 1
             self._error(
                 te,
@@ -1407,6 +1410,79 @@ class ControlFlowMixin:
                 spec_ref='Chapter 4, Section 4.7.1 "Tuple Destructuring"',
                 error_code="E170",
             )
+        if not refused:
+            self._fit_destructured_whole(stmt, bindings, components)
+
+    def _fit_destructured_whole(self, stmt: ast.LetDestruct,
+                                bindings: Sequence[Type],
+                                components: Sequence[Type]) -> None:
+        """Hold the destructured value to its bindings once, whole (#1684).
+
+        Each component fits its binding on its own (`_check_destructure`),
+        but a type variable the value's type leaves open in two components
+        takes one type, as at a call's argument: the bindings are fitted
+        together, as the tuple of them, so `let Tuple<@Option<Int>,
+        @Option<String>> = dup(None)` is refused where `dup`'s one `T`
+        would be read as `Int` in one component and `String` in the other.
+        The refusal is E170 at the binding where the variable meets its
+        second type."""
+        value = AdtType("Tuple", tuple(components))
+        target = AdtType("Tuple", tuple(bindings))
+        if self._fits(value, target):
+            return
+        failure = self._join_parts(value, target).failure
+        if failure is None or failure.first is None or not failure.conflict:
+            index = len(bindings) - 1
+            self._error(
+                stmt.type_bindings[index],
+                f"Let binding expects {pretty_type(bindings[index])}, and "
+                f"the destructured value does not have the bindings' types "
+                f"together.",
+                rationale=(
+                    "A destructuring let binds every component of one value, "
+                    "so the value's type must give the bindings their types "
+                    "at once, each of its type variables one type."),
+                fix="Write the bindings at the types the value's components "
+                    "have together.",
+                spec_ref='Chapter 4, Section 4.7.1 "Tuple Destructuring"',
+                error_code="E170",
+            )
+            return
+        first_path, first_given = failure.first
+        path, given = failure.second
+        first_at, at = first_path[0][2], path[0][2]
+        name = _variable_name(failure.variable)
+        literal = name == "?"
+        subject = ("the element type of an empty literal" if literal
+                   else f"the type variable {name}")
+        def where(p: TypePath, component: int) -> str:
+            inside = (f"{describe_position(p[1:])} in " if p[1:] else "")
+            return f"{inside}component {component + 1}"
+
+        wanted = substitute(components[at], {failure.variable: first_given})
+        writes = not contains_typevar(wanted) and self._fix_writes(wanted)
+        self._error(
+            stmt.type_bindings[at],
+            f"Let binding expects {pretty_type(bindings[at])}, component "
+            f"{at + 1} of the destructured value has type "
+            f"{pretty_inferred_type(components[at])}: {subject} stands at "
+            f"{where(first_path, first_at)} and at {where(path, at)}, where "
+            f"the bindings give it {pretty_type(first_given)} and "
+            f"{pretty_type(given)}, and a type variable takes one type.",
+            rationale=(
+                "A destructuring let binds every component of one value, and "
+                "a type variable the value's type leaves open stands for one "
+                "type, so the bindings must give it the same type at every "
+                "position it holds."),
+            fix=(f"Write binding {at + 1} as `@{pretty_type(wanted)}`, the "
+                 f"type binding {first_at + 1} gives {name}."
+                 if writes
+                 else f"Write binding {at + 1} so that it gives {name} "
+                      f"{pretty_type(first_given)}, the type binding "
+                      f"{first_at + 1} gives it, at {where(path, at)}."),
+            spec_ref='Chapter 4, Section 4.7.1 "Tuple Destructuring"',
+            error_code="E170",
+        )
 
     def _fix_writes(self, *types: Type) -> bool:
         """Whether a fix may write each of *types* as code: `pretty_type`

@@ -557,6 +557,23 @@ def _effect_type_var_occurrences(row: object, out: Counter[str]) -> None:
                 _type_var_occurrences(arg, out)
 
 
+def _fresh_names(ty: Type) -> list[str]:
+    """The type variables a call left open (`T$3`) in *ty*, at any depth."""
+    seen: Counter[str] = Counter()
+    _type_var_occurrences(ty, seen)
+    return [name for name in seen if "$" in name]
+
+
+def _unmapped(raw: Type, mapping: typing.Mapping[str, Type]) -> bool:
+    """Whether the declared parameter type *raw* of an operation names a
+    type variable of its effect or ability that *mapping*, the instance
+    the call is judged at, gives no type: no handler, row entry or argument
+    fixed it, so the parameter has no type to hold an argument to (#1684)."""
+    seen: Counter[str] = Counter()
+    _type_var_occurrences(raw, seen)
+    return any(name not in mapping for name in seen)
+
+
 def _names(name: str) -> Callable[[str], bool]:
     """The constructor-name test a pattern of constructor *name* makes."""
     def matches(ctor_name: str) -> bool:
@@ -621,6 +638,91 @@ class CallsMixin:
         return outcome.builtin and _compatible_modulo_typevars(
             ty, target, frozenset(self.env.type_params))
 
+    def _rigid_variable(self, ty: Type) -> str | None:
+        """The name of the enclosing function's own type parameter *ty* is,
+        or None: a type of its own inside the body, which no other type
+        fits (#1684)."""
+        if (isinstance(ty, TypeVar) and "$" not in ty.name
+                and ty.name in self.env.type_params):
+            return ty.name
+        return None
+
+    def _rigid_fix(self, name: str, given: Type) -> str:
+        """The fix for a value of type *given* where the enclosing
+        function's own type parameter *name* is required (#1684): a value
+        of that type in scope where there is one, else one taken as a
+        parameter."""
+        why = (f"{name} is a type parameter of the enclosing function, "
+               f"which stands for whatever type each call gives it, so a "
+               f"value of type {pretty_inferred_type(given)} has type "
+               f"{name} only where a call makes {name} that type, and the "
+               f"body must hold at every type.")
+        if self.env.count_bindings(name):
+            return f"Pass `@{name}.0`, or another value of type {name}: {why}"
+        return (f"Pass a value of type {name}, taking one as a parameter "
+                f"`@{name}` of the enclosing function: {why}")
+
+    def _rigid_apply_fix(self, fn_arg: ast.Expr,
+                         arg_types: typing.Sequence[Type | None],
+                         expected: Type | None) -> str:
+        """The fix for `apply_fn` of a value whose type is the enclosing
+        function's own type parameter (#1684): hold the function at a
+        function type, written out from the arguments applied and the type
+        the result is expected at where both can be written, named by a
+        type alias the program does not have yet."""
+        written = _span_text(self.source, fn_arg.span) or "the value"
+        row = self.env.current_effect_row or PureEffectRow()
+        signature = None
+        if (expected is not None and all(
+                t is not None and not isinstance(t, UnknownType)
+                for t in arg_types)):
+            fn = FunctionType(tuple(typing.cast(Type, t) for t in arg_types),
+                              expected, row)
+            if closure_signature(fn, frozenset(self.env.type_params)):
+                signature = pretty_type(fn)
+        if signature is None:
+            return (f"Hold the function to apply at a function type, "
+                    f"declared through a type alias, and apply a value of "
+                    f"that type in place of `{written}`.")
+        alias, n = "Applied", 1
+        while self.env.is_type_name(alias):
+            n += 1
+            alias = f"Applied{n}"
+        return (f"Hold the function to apply at the type `{signature}`: "
+                f"declare `type {alias} = {signature};`, take the function "
+                f"as a parameter or binding of type `@{alias}`, and apply "
+                f"it in place of `{written}`.")
+
+    def _refuse_unfixed_application(
+            self, arg: ast.Expr, index: int, arg_ty: Type, param_ty: Type,
+            fn_arg: ast.Expr) -> None:
+        """E202 at an argument applied to a function value whose parameter
+        holds a type variable the call that made the value gave no type
+        (#1684): the function was compiled at a type of its own, as a
+        closure that fits no parameter (`_open_variable_refusal`)."""
+        shown = pretty_type(_named_open(param_ty))
+        names = sorted({_variable_name(n) for n in _fresh_names(param_ty)})
+        which = " and ".join(names)
+        made = _span_text(self.source, fn_arg.span) or "the function value"
+        self._error(
+            arg,
+            f"Argument {index + 1} of 'apply_fn' has type "
+            f"{pretty_inferred_type(arg_ty)}, expected {shown}: no argument "
+            f"of the call that made the function value gives {which} a "
+            f"type, so its code was compiled at a type of its own.",
+            rationale=(
+                "A function a generic call returns is compiled at the types "
+                "its call's arguments give its type variables; one they give "
+                "no type is compiled at a type of its own, so the function "
+                "takes no argument of another type there."),
+            fix=(f"Make the function value at the type it is applied at: "
+                 f"give the call `{made}` an argument that fixes {which}, or "
+                 f"apply a function written to take "
+                 f"{pretty_inferred_type(arg_ty)} there instead."),
+            spec_ref='Chapter 5, Section 5.9 "Generic Functions"',
+            error_code="E202",
+        )
+
     def _join(self, ty: Type, onto: Type) -> Type | None:
         """The type a value of *ty* and a value of *onto* have together:
         *onto*, with each position it leaves open given *ty*'s type there;
@@ -676,7 +778,7 @@ class CallsMixin:
         # to call_indirect (vera/wasm/calls.py), and E151 rejects user
         # redefinitions, so this is the name's single canonical meaning.
         if name == "apply_fn":
-            return self._check_apply_fn(args, node)
+            return self._check_apply_fn(args, node, expected=expected)
 
         # The function the resolver pass bound the call to (#1694): the
         # nearest same-named where-helper in the enclosing functions first
@@ -1265,7 +1367,8 @@ class CallsMixin:
         return substitute(result, free) if free else result
 
     def _check_apply_fn(self, args: tuple[ast.Expr, ...],
-                        node: ast.Node) -> Type | None:
+                        node: ast.Node, *,
+                        expected: Type | None = None) -> Type | None:
         """Check the apply_fn special form: apply_fn(f, a0, ..., an) (#854).
 
         Types the call structurally against ``f``'s ``FunctionType`` —
@@ -1306,6 +1409,29 @@ class CallsMixin:
         # the remaining arguments (to surface errors inside them) and
         # give up on structural checking.
         fn_ty = base_type(fn_ty_raw) if fn_ty_raw is not None else None
+        # #1684: the enclosing function's own type variable is a type of
+        # its own, which may be no function; only a variable a call left
+        # open is recovered from here.
+        rigid = self._rigid_variable(fn_ty) if fn_ty is not None else None
+        if rigid is not None:
+            rest_types = [self._synth_expr(arg) for arg in rest]
+            self._error(
+                fn_arg,
+                f"Argument 0 of 'apply_fn' has type {rigid}, a type "
+                f"parameter of the enclosing function, expected a function "
+                f"value (a fn(...) type).",
+                rationale=(
+                    f"apply_fn invokes a stored function value via "
+                    f"call_indirect.  {rigid} stands for whatever type each "
+                    f"call of the enclosing function gives it, and the body "
+                    f"must hold at every type, most of which are no "
+                    f"function, so a value of type {rigid} has no signature "
+                    f"to call."),
+                fix=self._rigid_apply_fix(fn_arg, rest_types, expected),
+                spec_ref='Chapter 11, Section 11.10.5 "Closure Invocation (apply_fn)"',
+                error_code="E202",
+            )
+            return UnknownType()
         if (fn_ty is None or isinstance(fn_ty, TypeVar)
                 or is_unknown_like(fn_ty)):
             for arg in rest:
@@ -1363,12 +1489,17 @@ class CallsMixin:
             return fn_ty.return_type
 
         # Check each applied argument (same discipline as named calls:
-        # skip unresolved, re-synth for bidirectional coercion).
+        # re-synth for bidirectional coercion).  A type variable in the
+        # applied value's parameter is not one this application fixes
+        # (#1684): the function was compiled at a type of its own, the
+        # enclosing function's own variable or one its call left without a
+        # type, so it takes only a value of that very type, as subtyping
+        # matches a variable, by name.
         for i, (arg_ty, param_ty) in enumerate(zip(arg_types,
                                                    fn_ty.params)):
             if arg_ty is None or isinstance(arg_ty, UnknownType):
                 continue
-            if isinstance(param_ty, (TypeVar, UnknownType)):
+            if isinstance(param_ty, UnknownType):
                 continue
             # Re-synth if arg still has unresolved TypeVars (bidirectional)
             if contains_typevar(arg_ty) and not contains_typevar(param_ty):
@@ -1385,7 +1516,12 @@ class CallsMixin:
                     if is_subtype(re, param_ty):
                         arg_ty = re
                         arg_types[i] = re
-            if not is_subtype(arg_ty, param_ty):
+            if not is_subtype(arg_ty, param_ty) and contains_fresh_typevar(
+                    param_ty):
+                self._refuse_unfixed_application(
+                    rest[i], i, arg_ty, param_ty, args[0])
+            elif not is_subtype(arg_ty, param_ty):
+                rigid = self._rigid_variable(param_ty)
                 self._error(
                     rest[i],
                     f"Argument {i + 1} of 'apply_fn' has type "
@@ -1394,10 +1530,11 @@ class CallsMixin:
                     rationale="Each argument after the function value must "
                               "be a subtype of the corresponding parameter "
                               "of the applied function type.",
-                    fix=f"Pass a value of type {pretty_type(param_ty)}, "
-                        f"or convert the current value (e.g. "
-                        f"int_to_nat(...), int_to_float(...)) to "
-                        f"{pretty_type(param_ty)}.",
+                    fix=(self._rigid_fix(rigid, arg_ty) if rigid is not None
+                         else f"Pass a value of type {pretty_type(param_ty)}, "
+                              f"or convert the current value (e.g. "
+                              f"int_to_nat(...), int_to_float(...)) to "
+                              f"{pretty_type(param_ty)}."),
                     spec_ref='Chapter 11, Section 11.10.5 "Closure Invocation (apply_fn)"',
                     error_code="E202",
                 )
@@ -1584,12 +1721,20 @@ class CallsMixin:
                 self._effect_ops_used.add(op_info.parent_effect)
             return return_type
 
+        # #1684: each argument is held to its parameter by the fit, as a
+        # call's is.  A parameter the effect's own type variable types,
+        # which no handler or row instance gave a type, is not judged here
+        # (the row judgement below refuses the call); the enclosing
+        # function's own type variable is a type, which only a value of
+        # that type fits.
         for i, (arg_ty, param_ty) in enumerate(zip(arg_types, param_types)):
             if arg_ty is None or isinstance(arg_ty, UnknownType):
                 continue
-            if isinstance(param_ty, (TypeVar, UnknownType)):
+            if (isinstance(param_ty, UnknownType)
+                    or _unmapped(op_info.param_types[i], mapping)):
                 continue
-            if not is_subtype(arg_ty, param_ty):
+            if not self._fits(arg_ty, param_ty):
+                rigid = self._rigid_variable(param_ty)
                 self._error(
                     args[i],
                     f"Argument {i} of '{op_info.name}' has type "
@@ -1598,9 +1743,11 @@ class CallsMixin:
                     rationale="Each argument to an effect operation must be a "
                               "subtype of the parameter type declared in its "
                               "'op' signature.",
-                    fix=f"Pass a value of type {pretty_type(param_ty)} for "
-                        f"argument {i} of '{op_info.name}', or convert the "
-                        f"current value to {pretty_type(param_ty)}.",
+                    fix=(self._rigid_fix(rigid, arg_ty) if rigid is not None
+                         else f"Pass a value of type {pretty_type(param_ty)} "
+                              f"for argument {i} of '{op_info.name}', or "
+                              f"convert the current value to "
+                              f"{pretty_type(param_ty)}."),
                     spec_ref='Chapter 7, Section 7.4 "Performing Effects"',
                     error_code="E204",
                 )
@@ -1997,7 +2144,11 @@ class CallsMixin:
                 zip(arg_types, param_types)):
             if arg_ty is None or isinstance(arg_ty, UnknownType):
                 continue
-            if isinstance(param_ty, (TypeVar, UnknownType)):
+            # #1684: the enclosing function's own type variable is a type,
+            # which only a value of that type fits.  The ability's own
+            # variable is never left without a type here: an argument that
+            # reaches this check is typed, and fixes it.
+            if isinstance(param_ty, UnknownType):
                 continue
             if not is_subtype(arg_ty, param_ty):
                 # #993: the args were synthesized with no expected type, so
@@ -2022,6 +2173,11 @@ class CallsMixin:
                         arg_types[i] = resynth
                         if is_subtype(arg_ty, param_ty):
                             continue
+                # A type variable the call left open in either type is
+                # bound once, as at a call's argument (`_fits`).
+                if self._fits(arg_ty, param_ty):
+                    continue
+                rigid = self._rigid_variable(param_ty)
                 self._error(
                     args[i],
                     f"Argument {i} of '{op_info.name}' has type "
@@ -2031,10 +2187,12 @@ class CallsMixin:
                               "subtype of the parameter type declared in its "
                               "'op' signature, after the ability's type "
                               "variable is instantiated.",
-                    fix=f"Pass a value of type {pretty_type(param_ty)} for "
-                        f"argument {i} of '{op_info.name}', or ensure the "
-                        f"ability's type variable resolves to a type that "
-                        f"accepts {pretty_inferred_type(arg_ty)}.",
+                    fix=(self._rigid_fix(rigid, arg_ty) if rigid is not None
+                         else f"Pass a value of type {pretty_type(param_ty)} "
+                              f"for argument {i} of '{op_info.name}', or "
+                              f"ensure the ability's type variable resolves "
+                              f"to a type that accepts "
+                              f"{pretty_inferred_type(arg_ty)}."),
                     spec_ref='Chapter 9, Section 9.8 "Abilities"',
                     error_code="E241",
                 )
