@@ -2323,7 +2323,7 @@ class TestEndToEnd:
         monkeypatch.setenv("SWEEP_FIXTURE_HOLD", "vera.m.x_g__mutmut_1")
         monkeypatch.setenv("SWEEP_FIXTURE_HOLD_S", "900")
         monkeypatch.setattr(sw.md, "run_engine", lambda *a, **k: _quick_stop(*a, **k))
-        code, first, _ = _night(held_repo, tmp_path, 1, "", real=True, budget=180)
+        code, first, _ = _night(held_repo, tmp_path, 1, "", real=True, budget=45)
         assert code == 0 and first["stopped"] == "budget", _engine_said(tmp_path, 1, first)
         window = {p["unit"]: p["mutants"] for p in first["planned"]}
         decided = {ident: set(r["decided"]) for ident, r in first["results"].items()}
@@ -2399,7 +2399,8 @@ class TestEndToEnd:
             counted = record["counts"][ident]
             assert r["window"] == counted["mutants"] == sum(counted["lines"].values()) >= 1
             assert r["lines"] == sorted(int(line) for line in counted["lines"])  # every line sampled
-            assert r["statuses"]["killed"] == r["window"] and r["survivors"] == []
+            assert set(r["decided"].values()) == {"killed"} and len(r["decided"]) == r["window"]
+            assert r["survivors"] == [] and set(r["durations"]) == set(r["decided"])
         code, state = _stitch_cli(repo, tmp_path, 1, None)
         assert code == 0 and state["cycle"] == 2 and state["last_complete"]["modules"]["vera/m.py"]["survived"] == 0
         assert state["last_complete"]["sampled"] == state["last_complete"]["population"] == sum(
