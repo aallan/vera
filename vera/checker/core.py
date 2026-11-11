@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from vera.resolver import ResolvedModule
 
 from vera import ast, naming
+from vera.formatter import format_expr_canonical
 from vera.binding import Binding, DeclId, display_type_names
 from vera.callgraph import CallGraph
 from vera.errors import (
@@ -898,8 +899,8 @@ class TypeChecker(
         """A Bool predicate over the site's own numeric operand *expr*, of
         type *ty*: ``expr > 0`` (``> 0.0`` for a ``Float64``), for a fix
         whose example is computed from the site (#1763); ``None`` where
-        *expr* is not numeric, or is a shape :func:`vera.ast.format_expr`
-        does not write back (a pipe binds looser than ``>``)."""
+        *expr* is not numeric.  The example is written by the canonical
+        formatter, which groups each operand as the parser does."""
         base = base_type(ty) if ty is not None else None
         zero: ast.Expr
         if base in (INT, NAT):
@@ -907,8 +908,6 @@ class TypeChecker(
         elif base == FLOAT64:
             zero = ast.FloatLit(0.0)
         else:
-            return None
-        if getattr(expr, "piped", False) or "<expr>" in ast.format_expr(expr):
             return None
         return ast.BinaryExpr(ast.BinOp.GT, expr, zero)
 
@@ -922,7 +921,8 @@ class TypeChecker(
             return (f"Turn {what} into a Bool-valued predicate, such as a "
                     f"comparison of the value with a bound.")
         return (f"Turn {what} into a Bool-valued predicate, such as a "
-                f"comparison with zero: `{clause}({ast.format_expr(test)})`.")
+                f"comparison with zero: "
+                f"`{clause}({format_expr_canonical(test)})`.")
 
     def _refinement_predicate_fix(self, te: ast.RefinementType,
                                   ty: Type) -> str:

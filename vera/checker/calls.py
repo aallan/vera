@@ -1826,9 +1826,15 @@ class CallsMixin:
             ConcreteEffectRow(entries | {inst}, row_var),
             self.env.type_params)
         written_inst = written_effect_instance(inst, self.env.type_params)
+        # A handler's type argument is a type name (`vera.lowering` rule 2):
+        # an inline refinement or function type there is E340, so the
+        # handler is offered only over a type with a name.
         handler = (f"  Or perform it inside a handle[{written_inst}] block, "
                    f"whose body permits it."
-                   if handler_lowerable(effect) and written_inst else "")
+                   if handler_lowerable(effect) and written_inst
+                   and not any(isinstance(base, (RefinedType, FunctionType))
+                               for base in inst.type_args)
+                   else "")
         self._error(
             node,
             f"Effect operation '{written}' requires "
@@ -2315,19 +2321,17 @@ class CallsMixin:
                 f"the unit value () if no payload is needed.")
 
     def _fn_value_in_scope(self) -> tuple[str, int] | None:
-        """A function value the enclosing function holds, for a fix whose
-        example is computed from the site (#1763): the slot reference of
-        its most recent parameter whose type is an alias of a function
-        type, and that type's parameter count; ``None`` where it has none."""
-        if not self._fn_scope_stack:
-            return None
-        for te in reversed(self._fn_scope_stack[-1].params):
-            if not isinstance(te, ast.NamedType) or te.type_args:
-                continue
-            alias = self.env.type_aliases.get(te.name)
-            fn = base_type(alias.resolved_type) if alias else None
-            if isinstance(fn, FunctionType):
-                return f"@{te.name}.0", len(fn.params)
+        """A function value in scope at the site, for a fix whose example
+        is computed from the site (#1763): the slot reference of the most
+        recent binding the site can read whose type is named by an alias of
+        a function type, and that type's parameter count; ``None`` where
+        there is none (a refinement predicate reads its binder alone)."""
+        for scope in reversed(self.env._scopes):
+            for binding in reversed(scope):
+                alias = self.env.type_aliases.get(binding.type_name)
+                fn = base_type(alias.resolved_type) if alias else None
+                if isinstance(fn, FunctionType):
+                    return f"@{binding.type_name}.0", len(fn.params)
         return None
 
     def _pass_value_fix(

@@ -12,6 +12,7 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Any, ClassVar
 
 from vera import ast, fold, naming
+from vera.formatter import format_expr_canonical
 from vera.checker.sql import resolve_array_len, resolve_literal_string
 from vera.lowering import (
     PREDICATE_ARITY,
@@ -153,10 +154,9 @@ class ExpressionsMixin:
     def _bound_fix(domain: ast.Expr, base: Type | None) -> str:
         """E128's fix: an array domain's own length as the bound, computed
         from the site (#1763), or the instruction with no example."""
-        if (isinstance(base, AdtType) and base.name == "Array"
-                and not getattr(domain, "piped", False)
-                and "<expr>" not in ast.format_expr(domain)):
-            length = ast.format_expr(ast.FnCall("array_length", (domain,)))
+        if isinstance(base, AdtType) and base.name == "Array":
+            length = format_expr_canonical(
+                ast.FnCall("array_length", (domain,)))
             return (f"Pass an integer bound, the array's length: "
                     f"`{length}`, and index the array inside the predicate.")
         return ("Pass an integer bound, such as an array's length, and "

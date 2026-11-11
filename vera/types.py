@@ -373,7 +373,10 @@ def type_expr_of(ty: Type,
     A refinement keeps its predicate, the node the checker holds, so the
     rendering is the type itself and not :func:`pretty_type`'s
     ``{@Int | ...}`` (#1778).  An alias the checker resolved is written as
-    what it stands for, which names the same type."""
+    what it stands for, which names the same type, except as a refinement's
+    base where the predicate names its binder by the alias: there the base
+    is that name, the one the predicate binds; a predicate naming its
+    binder two ways is written by no spelling, and gives ``None``."""
     from vera import ast as a
     if isinstance(ty, PrimitiveType):
         return a.NamedType(ty.name, None)
@@ -385,7 +388,20 @@ def type_expr_of(ty: Type,
             ty.name, tuple(t for t in args if t is not None) or None)
     if isinstance(ty, RefinedType):
         base = type_expr_of(ty.base, declared)
-        return None if base is None else a.RefinementType(base, ty.predicate)
+        if base is None:
+            return None
+        bound = _predicate_binder_spellings(ty.predicate)
+        if len(bound) > 1:
+            return None
+        if bound:
+            ((spelled, (head, head_args)),) = bound.items()
+            if a.format_type(base) != spelled:
+                # The predicate names its binder by an alias the checker
+                # resolved (`{ @Count | @Count.0 > 0 }` over `Count = Nat`):
+                # the base is written as that name, which the predicate
+                # binds, so the type is the one the program declared.
+                base = a.NamedType(head, head_args)
+        return a.RefinementType(base, ty.predicate)
     if isinstance(ty, TypeVar):
         return a.NamedType(ty.name, None) if ty.name in declared else None
     if isinstance(ty, FunctionType):
@@ -396,6 +412,34 @@ def type_expr_of(ty: Type,
             return None
         return a.FnType(tuple(p for p in params if p is not None), ret, row)
     return None
+
+
+def _predicate_binder_spellings(
+    predicate: _ast.Expr,
+) -> dict[str, tuple[str, tuple[_ast.TypeExpr, ...] | None]]:
+    """Each spelling a refinement predicate names its binder by, keyed by
+    the spelling as a type is written, outside the closures in it (whose
+    own binders a quantifier introduces).  A predicate sees its binder
+    alone, so every slot reference outside a closure is that binder."""
+    from vera import ast as a
+    found: dict[str, tuple[str, tuple[a.TypeExpr, ...] | None]] = {}
+    stack: list[object] = [predicate]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, a.AnonFn):
+            continue
+        if isinstance(node, a.SlotRef):
+            spelled = a.format_type(a.NamedType(node.type_name, node.type_args))
+            found[spelled] = (node.type_name, node.type_args)
+            continue
+        if isinstance(node, a.Node) and dataclasses.is_dataclass(node):
+            for fld in dataclasses.fields(node):
+                val = getattr(node, fld.name)
+                if isinstance(val, a.Node):
+                    stack.append(val)
+                elif isinstance(val, (list, tuple)):
+                    stack.extend(v for v in val if isinstance(v, a.Node))
+    return found
 
 
 def effect_row_expr_of(eff: EffectRowType,

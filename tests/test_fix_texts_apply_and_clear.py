@@ -437,6 +437,104 @@ CASES: dict[str, _Case] = {
 }
 
 
+#: Refinements over an alias (R121 review): the predicate names its binder
+#: by the alias, so the written type's base is that name.
+_ALIASED = {
+    "count": ("type Count = Nat;\n\ntype Pos = { @Count | @Count.0 > 0 };\n\n",
+              "Pos", "{ @Count | @Count.0 > 0 }"),
+    "chain": ("type Pos = { @Int | @Int.0 > 0 };\n\n"
+              "type Small = { @Pos | @Pos.0 < 10 };\n\n",
+              "Small", "{ @Pos | @Pos.0 < 10 }"),
+    "alias-of-alias": ("type C1 = Int;\n\ntype C2 = C1;\n\n"
+                       "type Pos = { @C2 | @C2.0 > 0 };\n\n",
+                       "Pos", "{ @C2 | @C2.0 > 0 }"),
+}
+
+#: The exact span each renderer path writes, which a predicate replaced or
+#: dropped would change (a refinement keeps its predicate).
+EXACT: dict[str, str] = {
+    "E202-refined-param": "{ @Int | @Int.0 > 0 }",
+    "E202-array-of-refined": "Array<{ @Int | @Int.0 > 0 }>",
+    "E213-refined-field": "{ @Int | @Int.0 > 0 }",
+    "E170-let-refined": "{ @Int | @Int.0 > 0 }",
+    "E171-closure-refined": "{ @Int | @Int.0 > 0 }",
+    "E162-element": "Int",
+    "E301-branch": "{ @Int | @Int.0 > 0 }",
+    "E302-arm": "{ @Int | @Int.0 > 0 }",
+    "E331-state-init": "Pos",
+    "E335-state-update": "Pos",
+    "E334-state-update-type": "@Pos",
+    "E336-alias": "@Pos",
+    "E170-destructure-refined": "@{ @Int | @Int.0 > 0 }",
+    "E321-destructure-refined": "Box<@{ @Int | @Int.0 > 0 }>",
+    "E125-row-with-refined-cell":
+        "effects(<IO, State<{ @Int | @Int.0 > 0 }>>)",
+    "E503-numeric-before-flag": "requires(@Int.0 >= 0)",
+    "E503-flag-after-numeric": "requires(@Int.0 >= 0)",
+    "E123-grouped-operand": "requires(@Int.2 - (@Int.1 - @Int.0) > 0)",
+}
+
+for _shape, (_pre, _name, _written) in _ALIASED.items():
+    CASES[f"E202-{_shape}"] = _Case(
+        "E202", "check", _pre + _helper("take", f"@{_name} -> @Int", "0")
+        + _fn("@Bool", "@Int", "take(@Bool.0)"),
+        as_value("take(@Bool.0)", "@Bool.0"))
+    CASES[f"E170-{_shape}"] = _Case(
+        "E170", "check", _pre + _fn("@Bool", "@Int",
+                                    f"let @{_name} = @Bool.0;\n  0"),
+        as_value("= @Bool.0;", "@Bool.0"))
+    EXACT[f"E202-{_shape}"] = _written
+    EXACT[f"E170-{_shape}"] = _written
+
+CASES.update({
+    # A Bool counterexample's clause can make the narrowing branch dead:
+    # the numeric clause is offered first, in either parameter order.
+    "E503-numeric-before-flag": _Case(
+        "E503", "verify", _fn("@Bool, @Int", "@Int",
+            "let @Nat = if @Bool.0 then { @Int.0 } else { 0 };\n  0"),
+        replace("requires(true)", "{0}")),
+    "E503-flag-after-numeric": _Case(
+        "E503", "verify", _fn("@Int, @Bool", "@Int",
+            "let @Nat = if @Bool.0 then { @Int.0 } else { 0 };\n  0"),
+        replace("requires(true)", "{0}")),
+    "E503-literal-divisor": _Case(
+        "E503", "verify", _fn("@Int", "@Int", "let @Nat = @Int.0 / 2;\n  0"),
+        replace("requires(true)", "{0}")),
+    # The operand keeps its grouping where the example compares it.
+    "E123-grouped-operand": _Case(
+        "E123", "check", _fn("@Int, @Int, @Int", "@Int", "0",
+                             req="@Int.2 - (@Int.1 - @Int.0)"),
+        replace("requires(@Int.2 - (@Int.1 - @Int.0))")),
+})
+
+#: The cases whose applied program verifies with no error: the type the fix
+#: wrote is the one the site needs, predicate and all.
+VERIFIES = frozenset({
+    "E202-refined-param", "E202-array-of-refined", "E213-refined-field",
+    "E170-let-refined", "E301-branch", "E302-arm", "E331-state-init",
+    "E335-state-update", *(f"{code}-{shape}" for shape in _ALIASED
+                           for code in ("E202", "E170")),
+})
+
+
+@pytest.mark.parametrize("name", sorted(EXACT))
+def test_the_fix_writes_the_exact_span(name: str) -> None:
+    case = CASES[name]
+    fix = _the(case.code, case.stage, case.source).fix
+    assert spans(fix)[0] == EXACT[name], fix
+
+
+@pytest.mark.parametrize("name", sorted(VERIFIES))
+def test_the_applied_program_verifies_clean(name: str) -> None:
+    """The refined cells stop at no check: the program the fix makes
+    verifies, so a refinement written with another predicate (or none)
+    would be refuted where the declared one is needed."""
+    case = CASES[name]
+    given = spans(_the(case.code, case.stage, case.source).fix)
+    verified = pipeline.verify(case.apply(case.source, given))
+    assert verified.ok, (name, verified.errors)
+
+
 @pytest.mark.parametrize("name", sorted(CASES))
 def test_the_fix_applied_as_written_clears_the_code(name: str) -> None:
     case = CASES[name]
@@ -467,6 +565,12 @@ def test_the_base_text_applied_as_written_does_not_clear(name: str) -> None:
 
 DROPPED: dict[str, tuple[str, str, str]] = {
     # code, stage, program: nothing the site holds makes an example.
+    "E503-variable-divisor": ("E503", "verify", _fn("@Int, @Int", "@Int",
+        "let @Nat = @Int.1 / @Int.0;\n  0")),
+    "E340-generic-type-argument": ("E340", "check", _fn(
+        "@Unit", "@Int",
+        "handle[Exn<fn(T -> T) effects(pure)>] {\n"
+        "    throw(@Int) -> { 0 }\n  } in {\n    1\n  }", forall="T")),
     "E503-constant": ("E503", "verify", _fn("@Bool", "@Int",
                                             "let @Nat = 0 - 1;\n  0")),
     "E503-shadowed-operand": ("E503", "verify", _fn("@Int", "@Int",
@@ -493,13 +597,12 @@ E301_OPEN_ELSE = ENDO + _fn("@Bool", "@Int",
 
 @pytest.mark.parametrize("name", sorted(DROPPED))
 def test_a_fix_with_nothing_to_compute_names_no_example(name: str) -> None:
-    """The sentence stands without an example: no backticked slot, clause
-    or type the site does not hold, and no `?` type."""
+    """The sentence stands without an example: nothing backticked to
+    write, and no slot reference."""
     code, stage, source = DROPPED[name]
     fix = _the(code, stage, source).fix
-    for span in spans(fix):
-        assert not re.search(r"@[A-Z]\w*(<[^>]*>)?\.\d", span), (name, fix)
-        assert "?" not in span, (name, fix)
+    assert [s for s in spans(fix) if s != "if"] == [], (name, fix)
+    assert not re.search(r"@[A-Z]\w*(<[^>]*>)?\.\d", fix), (name, fix)
     assert "e.g." not in fix, (name, fix)
 
 

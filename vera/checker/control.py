@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 
 from vera import ast, naming, narrowing, patterns
 from vera.checker.registration import builtin_effect_names
 from vera.checker.resolution import _span_text
 from vera.environment import AdtInfo, Binding, ConstructorInfo, FunctionInfo
-from vera.formatter import format_type_canonical
+from vera.formatter import format_expr_canonical, format_type_canonical
 from vera.lowering import (
     CLAUSE_RESUME_IN_WITH,
     STATE_CLAUSE_INLINE_DEPTH_CAP,
@@ -166,6 +166,26 @@ def _render_literal_pattern(pat: ast.Pattern) -> str:
     if isinstance(pat, ast.IntPattern):
         return str(pat.value)
     return "<literal>"  # pragma: no cover — only literal forms reach here
+
+
+def _names_any(te: ast.TypeExpr, names: Collection[str]) -> bool:
+    """Whether the type expression *te* names one of *names* anywhere in
+    it, a refinement's predicate aside."""
+    if isinstance(te, ast.NamedType):
+        return te.name in names or any(
+            _names_any(a, names) for a in te.type_args or ())
+    if isinstance(te, ast.RefinementType):
+        return _names_any(te.base_type, names)
+    if isinstance(te, ast.FnType):
+        row = te.effect
+        refs = row.effects if isinstance(row, ast.EffectSet) else ()
+        return (any(_names_any(p, names) for p in te.params)
+                or _names_any(te.return_type, names)
+                or any(getattr(r, "name", None) in names
+                       or any(_names_any(a, names)
+                              for a in getattr(r, "type_args", None) or ())
+                       for r in refs))
+    return False
 
 
 def _no_call(_call: ast.Expr) -> str | None:
@@ -1422,7 +1442,7 @@ class ControlFlowMixin:
             return ("Replace the condition with a Bool-typed expression, "
                     "such as a comparison of the value with a bound.")
         return (f"Replace the condition with a Bool-typed expression, such "
-                f"as a comparison with zero: `{ast.format_expr(test)}`.")
+                f"as a comparison with zero: `{format_expr_canonical(test)}`.")
 
     def _branch_fix(self, then_ty: Type, else_ty: Type) -> str:
         """E301's fix: one branch converted to the other's type, the else
@@ -2111,10 +2131,17 @@ class ControlFlowMixin:
                     "written inline names none.  The same type under a "
                     "type alias is a name, and is lowered."
                 ),
+                # An alias is declared at the top of the file, where the
+                # enclosing function's type parameters are not in scope: a
+                # type argument that names one gets the sentence alone.
                 fix=(
                     f"Name the type with an alias and handle that: "
                     f"`type {alias} = {shown};`, then "
                     f"`handle[{effect}<{alias}>]`{state}."
+                    if not _names_any(te, self.env.type_params) else
+                    "Name the type with a type alias and handle that; the "
+                    "alias is declared at the top of the file, so a type "
+                    "parameter of this function is not in scope there."
                 ),
                 spec_ref='Chapter 7, Section 7.5.1 "Handler Syntax"',
                 error_code="E340",

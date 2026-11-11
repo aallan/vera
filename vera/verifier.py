@@ -640,13 +640,18 @@ _ARG_GUARDED_BY_LIFTED_CLOSURE: frozenset[str] = frozenset({"apply_fn"})
 def _entry_expressible(expr: ast.Expr) -> bool:
     """Whether *expr* is built only of slot references, literals and
     operators, so that reading it at a function's entry has no effect on
-    the solver context and :func:`vera.ast.format_expr` writes it back
-    (#1763).  Whether its slots mean the same there is the caller's test."""
+    the solver context (#1763).  Whether its slots mean the same there is
+    the caller's test.  A division or a modulo is admitted only by a
+    non-zero literal: a clause over another divisor carries an obligation
+    of its own at entry (E526), which the site's path may have ruled out."""
     if isinstance(expr, (ast.SlotRef, ast.IntLit, ast.BoolLit)):
         return True
     if isinstance(expr, ast.UnaryExpr):
         return _entry_expressible(expr.operand)
     if isinstance(expr, ast.BinaryExpr):
+        if expr.op in (ast.BinOp.DIV, ast.BinOp.MOD) and not (
+                isinstance(expr.right, ast.IntLit) and expr.right.value != 0):
+            return False
         return (_entry_expressible(expr.left)
                 and _entry_expressible(expr.right))
     return False
@@ -13320,6 +13325,7 @@ class ContractVerifier:
         candidate is offered only when the solver, within the run's
         per-query budget, proves the obligation with it assumed, so the
         clause the fix writes is one that clears the diagnostic."""
+        from vera.formatter import format_expr_canonical as _canonical
         entry = self._entry_scopes.get(id(smt))
         if entry is None:
             return None
@@ -13335,6 +13341,10 @@ class ContractVerifier:
                     or not at_entry.eq(at_site)):
                 continue
             candidates.append((self._as_written(pred), at_entry))
+        # A numeric parameter's clause before a Bool's, whatever the order
+        # of the parameters: a Bool's can discharge the obligation by making
+        # the branch that narrows dead (`if @Bool.0 then { @Int.0 } ...`).
+        flags: list[tuple[ast.Expr, object]] = []
         for name, var in params:
             ref = _param_slot_ref(name)
             value = (counterexample or {}).get(name)
@@ -13342,16 +13352,20 @@ class ContractVerifier:
                 continue
             if z3.is_bool(var):
                 if value == "False":
-                    candidates.append((ref, var))
+                    flags.append((ref, var))
                 elif value == "True":
-                    candidates.append(
+                    flags.append(
                         (ast.UnaryExpr(ast.UnaryOp.NOT, ref), z3.Not(var)))
             elif z3.is_int(var) and value.startswith("-"):
                 candidates.append(
                     (ast.BinaryExpr(ast.BinOp.GE, ref, ast.IntLit(0)),
                      cast(z3.ArithRef, var) >= 0))
+        candidates.extend(flags)
         for pred, term in candidates:
-            text = ast.format_expr(pred)
+            # Written by the canonical formatter, which parenthesises an
+            # operand as the parser groups it, so the clause written is the
+            # one the solver was asked about (`a - (b - c)` stays grouped).
+            text = _canonical(pred)
             if "<expr>" in text or not _mentions_a_slot(pred):
                 continue
             # A clause the premises already refute discharges anything
