@@ -1445,10 +1445,9 @@ class FunctionCompilationMixin:
             # WASM operand stack at the return_call site; the
             # restore touches only the ``$gc_sp`` global, not the
             # operand stack, so args transfer atomically to the
-            # callee.  Pre-#549 this revert-to-plain-call path also
-            # fired for allocating fns; closing #549 lets allocating
-            # tail-recursive fns iterate indefinitely without
-            # unbounded shadow-stack growth.
+            # callee, and an allocating tail-recursive function
+            # iterates indefinitely without unbounded shadow-stack
+            # growth.
             assert gc_sp_save is not None  # noqa: S101 - narrows int | None for mypy
             patched: list[str] = []
             for instr in body_instrs:

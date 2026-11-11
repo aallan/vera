@@ -2033,13 +2033,14 @@ class OperatorsMixin:
         self, expr: ast.Expr, instrs: list[str],
     ) -> list[str]:
         """Wrap a tail-position leaf's WAT with the #758 @Int->@Nat narrowing
-        guard when *expr* is a designated narrowing return leaf (per-leaf
-        emission — #983 review; replaces the whole-body wrap that broke TCO).
+        guard when the obligation table lists a checked ``nat_bind`` row of
+        the return at *expr* (per-leaf emission, #983 review).
 
-        A no-op unless ``id(expr)`` was collected into ``_nat_return_leaf_ids``
-        for the function currently being compiled, so only the genuine
-        narrowing leaves pay the guard; a non-narrowing @Nat->@Nat recursive
-        tail leaf keeps its ``return_call`` untouched.
+        A no-op at any other leaf, so only the genuine narrowing leaves pay
+        the guard; a non-narrowing @Nat->@Nat recursive tail leaf has no row
+        and keeps its ``return_call``.  A narrowing leaf that is a call has
+        its row at the call, so ``ObligationTable.tail_calls`` lowers it to a
+        plain ``call`` and this guard runs after it (#1849).
         """
         return self._guard_nat_narrowing(instrs, expr, evaluation=("return",))
 
