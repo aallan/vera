@@ -2,7 +2,7 @@
 
 ## 1.1 Source Encoding
 
-Vera source files MUST be encoded in UTF-8. The file extension is `.vera`. A file whose bytes are not UTF-8 is refused before it is parsed, at the first byte that does not decode: the program's own file and every module it imports alike.
+Vera source files MUST be encoded in UTF-8. The file extension is `.vera`. A file whose bytes are not UTF-8 is refused before it is parsed, at the first byte that does not decode: the program's own file and every module it imports alike. A UTF-8 byte-order mark (`EF BB BF`) at the very start of a file is ignored, and canonical form (§1.8) has none; U+FEFF anywhere else, outside a string literal or a comment, is a character that no token accepts. The diagnostic for a character no token accepts quotes it, or, where it has no glyph (a control or format character), names its code point and Unicode name.
 
 Source text is a sequence of Unicode code points. The lexer processes these into a sequence of tokens.
 

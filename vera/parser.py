@@ -53,20 +53,27 @@ def _get_parser() -> Lark:
     return _parser
 
 
+#: U+FEFF, the byte-order mark an editor writes at the start of a UTF-8 file.
+_BYTE_ORDER_MARK = "\N{ZERO WIDTH NO-BREAK SPACE}"
+
+
 def decode_source(raw: bytes, file: Optional[str] = None) -> str:
     """*raw*, the bytes of a source file, as its text: UTF-8 (spec 1.1).
 
     The one place a source's bytes become text, for every command, the
     module resolver and so the language server's imports (#1666): bytes
     that are not UTF-8 raise :class:`SourceEncodingError`, E024, located at
-    the first byte that does not decode.  A UTF-8 byte-order mark is kept,
-    as the codec keeps it; what a mark means is decided here (#1790).
+    the first byte that does not decode.  A UTF-8 byte-order mark at the
+    very start is dropped (#1790): editors write it and the language has
+    no use for it, so every route that reads a file sees the text without
+    it.  A U+FEFF anywhere else is a character and stays.
     """
     try:
-        return raw.decode("utf-8")
+        text = raw.decode("utf-8")  # pragma: no mutate — equivalent: the codec name is case-insensitive
     except UnicodeDecodeError as exc:
         raise SourceEncodingError(
             source_not_utf8(raw, exc.start, file)) from None
+    return text[1:] if text.startswith(_BYTE_ORDER_MARK) else text
 
 
 def read_source(path: str | Path, file: Optional[str] = None) -> str:
