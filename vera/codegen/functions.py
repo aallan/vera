@@ -39,6 +39,27 @@ _EXN_BOUNDARY_LOCALS = (
 )
 
 
+#: How many bytes the cut may back up: a UTF-8 character is at most four
+#: bytes, so a cut inside one is at most three bytes past its first.
+_EXN_BOUNDARY_BACK_UPS = 3
+
+
+def _exn_boundary_back_up() -> list[str]:
+    """One step of the cut's back-up, run only when the payload is longer
+    than the cut (so ``$xb_k`` is inside it): ``$xb_k`` drops by one when
+    it is above zero and the byte there is a UTF-8 continuation byte
+    (``0x80`` to ``0xBF``)."""
+    return [
+        "local.get $xb_k", "i32.const 0", "i32.gt_u",
+        "local.get $xb_ptr", "local.get $xb_k", "i32.add", "i32.load8_u",
+        "i32.const 192", "i32.and", "i32.const 128", "i32.eq", "i32.and",
+        "if",
+        "  local.get $xb_k", "  i32.const 1", "  i32.sub",
+        "  local.set $xb_k",
+        "end",
+    ]
+
+
 def _exn_boundary_digits(dst: int) -> list[str]:
     """Write the decimal digits of the u64 in ``$xb_mag`` at ``dst + $xb_n``
     and add their count to ``$xb_n`` — the formatter the exception boundary
@@ -224,6 +245,15 @@ class FunctionCompilationMixin:
                 "local.get $xb_len", f"i32.const {cut}", "i32.gt_u",
                 "if (result i32)", f"  i32.const {cut}", "else",
                 "  local.get $xb_len", "end", "local.set $xb_k",
+                # Back the cut up to a character boundary (#1526): while
+                # the byte at the cut is a continuation byte (10xxxxxx),
+                # cut one earlier.  A UTF-8 character is at most four
+                # bytes, so at most three steps: three unrolled
+                # conditionals, with no loop to bound.  Reads and writes
+                # stay inside the payload and the reserved scratch, and
+                # nothing allocates.
+                "local.get $xb_len", f"i32.const {cut}", "i32.gt_u", "if",
+                *(_exn_boundary_back_up() * _EXN_BOUNDARY_BACK_UPS), "end",
                 f"i32.const {dst + 1}", "local.get $xb_ptr",
                 "local.get $xb_k", "memory.copy",
                 "local.get $xb_k", "i32.const 1", "i32.add",
