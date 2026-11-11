@@ -275,12 +275,15 @@ def _shared_facts(
     parameter (issue #1819 revisits it).  Binding the join where a refined
     type is expected is then the narrowing it is, obligated by its leaves.
     """
-    return _shared_at(joined, list(arms), head=True)
+    return _shared_at(joined, list(arms))
 
 
 def _shared_at(
-    joined: Type, arms: list[tuple[ast.Expr | None, Type]], *, head: bool,
+    joined: Type, arms: list[tuple[ast.Expr | None, Type]],
 ) -> Type:
+    """:func:`_shared_facts` at one position, *arms* the arms' types there,
+    each with its expression at the head (where the static-literal exception
+    reads it) and ``None`` below."""
     base, predicates = _refinement_chain(joined)
     if isinstance(base, (TypeVar, UnknownType)):
         return joined
@@ -300,7 +303,7 @@ def _shared_at(
                 nat_arm = True
             elif arm_base.name == "Int":
                 int_arm = True
-                if not (head and expr is not None
+                if not (expr is not None
                         and narrowing.is_static_nat_typed(expr, _no_call)):
                     every_int_static = False
         if nat_arm and int_arm:
@@ -315,7 +318,7 @@ def _shared_at(
                         and arm_base.name == base.name
                         and len(arm_base.type_args) == len(base.type_args)):
                     parts.append((None, arm_base.type_args[i]))
-            args.append(_shared_at(arg, parts, head=False))
+            args.append(_shared_at(arg, parts))
         if any(a is not b for a, b in zip(args, base.type_args)):
             shared_base = AdtType(base.name, tuple(args))
     elif isinstance(base, FunctionType):
@@ -331,8 +334,8 @@ def _shared_at(
                     per_param[i].append((None, param))
                 returns.append((None, arm_base.return_type))
         for param, parts in zip(base.params, per_param):
-            params.append(_shared_at(param, parts, head=False))
-        ret = _shared_at(base.return_type, returns, head=False)
+            params.append(_shared_at(param, parts))
+        ret = _shared_at(base.return_type, returns)
         if (ret is not base.return_type
                 or any(p is not q for p, q in zip(params, base.params))):
             shared_base = FunctionType(tuple(params), ret, base.effect)

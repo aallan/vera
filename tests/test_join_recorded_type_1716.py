@@ -18,6 +18,24 @@ other, or two different predicates, dropped to the base there; a `Nat`
 beside an `Int` an `Int` (at the head under spec §4.8's static-literal
 exception); a `Never` arm takes no part, and an open position is filled from
 the other side.  The result does not depend on the order of the arms.
+
+THE INSTRUMENT.
+* The two open lines of the issue against `vera run`, in both orders.
+* The record: an `if`, a `match` and an `Exn` handler over each mix of arm
+  types (a base and a refinement, two predicates, a refinement beside an
+  open `None`, `Nat` beside `Int`, a literal beside a refinement, function
+  types differing by a parameter or a result) at the head, a type argument,
+  a tuple component and two levels down, in both orders; three arms in all
+  six orders.
+* The matrix: join form x position x mix x reader (a return, an argument
+  into a refined formal, a `let` at the refined type under an `ensures`, a
+  generic's type argument), each cell a differential: the breaking arm's run
+  traps and the verification is not all `verified`, the holding variant
+  verifies clean and runs, and the two orders give one verdict.
+* One row per narrowing: a join under a target lists its arms' rows, once,
+  as at base, with its guards and a clean reconciliation.
+* The invariant over every join of the corpus, the documented blocks and the
+  generator's seeds 0 to 999, with the joins that broke it at base named.
 """
 
 from __future__ import annotations
@@ -34,7 +52,9 @@ from vera import ast, fold, narrowing
 from vera.types import (AdtType, FunctionType, PrimitiveType, RefinedType,
                         Type, TypeVar, UnknownType)
 
-pytestmark = pytest.mark.matrix(decides=["vera/checker/control.py"])
+pytestmark = pytest.mark.matrix(decides=[
+    "vera/checker/control.py", "vera/narrowing.py", "vera/smt.py",
+    "vera/verifier.py"])
 
 FILE = "join_recorded_type.vera"
 
@@ -866,3 +886,111 @@ def test_repro_1716_the_generated_joins_that_stated_an_arms_fact(
     """The generator's joins whose record stated, at f71c401c, a
     refinement one of their arms does not (`BASE_VIOLATORS`)."""
     test_every_generated_join_records_only_what_its_arms_share(seed, tmp_path)
+
+
+# =====================================================================
+# One row per narrowing: a join under a target lists its arms' rows
+# =====================================================================
+#
+# A join whose arms are each checked against the type it is bound at is
+# the ordinary shape (`if .. then { Ok(@Int.0) } else { Err(..) }` returned
+# at `Result<Nat, String>`).  Its record is now the arms' shared type, not
+# the target, where at base it was the target: the table lists the rows of
+# the join's value by its leaves, so nothing is obligated or guarded twice.
+# Each cell pins the rows (bar `requires` and `ensures`), the compiled
+# module's trap count and a clean reconciliation, as measured at f71c401c,
+# in both orders of the arms and at a return, a `let` and an argument.
+
+#: shape -> (parameters, target, arm a, arm b, the rows at base by position)
+ROW_SHAPES: dict[str, tuple[str, str, str, str, dict[str, list[tuple[str, str, str]]]]] = {
+    "a construction checked at the target": (
+        "@Bool, @Int", "Result<Nat, String>", "Ok(@Int.0)", 'Err("no")',
+        dict.fromkeys(("return", "let", "argument"),
+                      [("nat_bind", "violated", "@Int.0")])),
+    "a slot beside an open arm": (
+        "@Bool, @Option<Int>", "Option<Nat>", "@Option<Int>.0", "None",
+        dict.fromkeys(("return", "let", "argument"),
+                      [("nat_bind", "tier3", "@Option<Int>.0 [Some.0]")])),
+    "a slot beside a slot": (
+        "@Bool, @Option<Int>, @Option<Nat>", "Option<Nat>", "@Option<Int>.0",
+        "@Option<Nat>.0",
+        dict.fromkeys(("return", "let", "argument"),
+                      [("nat_bind", "tier3", "@Option<Int>.0 [Some.0]")])),
+    "a literal construction": (
+        "@Bool, @Option<Int>", "Option<Nat>", "Some(3)", "@Option<Int>.0",
+        dict.fromkeys(("return", "let", "argument"),
+                      [("nat_bind", "tier3", "@Option<Int>.0 [Some.0]")])),
+    "a literal beside a refined slot": (
+        "@Bool, @PosInt", "PosInt", "1", "@PosInt.0",
+        {"return": [("refine_bind", "verified", "<expr>"),
+                    ("refine_bind", "verified", "@PosInt")],
+         "let": [("refine_bind", "verified", "<expr>"),
+                 ("refine_bind", "verified", "@PosInt")],
+         "argument": [("refine_bind", "verified", "<expr>"),
+                      ("refine_bind", "verified", "@PosInt"),
+                      ("refine_bind", "verified", "@PosInt")]}),
+    "a join inside a join": (
+        "@Bool, @Option<Int>, @Option<Nat>", "Option<Nat>",
+        "if @Bool.0 then { @Option<Int>.0 } else { None }", "@Option<Nat>.0",
+        dict.fromkeys(("return", "let", "argument"),
+                      [("nat_bind", "tier3", "@Option<Int>.0 [Some.0]")])),
+}
+
+#: The compiled module's `unreachable` count at base, by shape and position.
+ROW_TRAPS = {
+    "a construction checked at the target": {"return": 12, "let": 12, "argument": 11},
+    "a slot beside an open arm": {"return": 11, "let": 11, "argument": 10},
+    "a slot beside a slot": {"return": 1, "let": 9, "argument": 1},
+    "a literal construction": {"return": 11, "let": 11, "argument": 10},
+    "a literal beside a refined slot": {"return": 2, "let": 2, "argument": 2},
+    "a join inside a join": {"return": 13, "let": 13, "argument": 12},
+}
+
+
+def _row_program(params: str, target: str, first: str, second: str,
+                 position: str) -> str:
+    join = f"if @Bool.0 then {{ {first} }} else {{ {second} }}"
+    extra = ""
+    if position == "return":
+        body, ret = join, f"@{target}"
+    elif position == "let":
+        body, ret = f"let @{target} = {join};\n  0", "@Int"
+    else:
+        body, ret = f"g({join})", "@Int"
+        extra = (f"\nprivate fn g(@{target} -> @Int)\n  requires(true)\n"
+                 "  ensures(true)\n  effects(pure)\n{\n  0\n}\n")
+    return ("type PosInt = { @Int | @Int.0 > 0 };\n\n"
+            f"public fn f({params} -> {ret})\n  requires(true)\n"
+            f"  ensures(true)\n  effects(pure)\n{{\n  {body}\n}}\n" + extra)
+
+
+@pytest.mark.parametrize("swap", [False, True], ids=["ab", "ba"])
+@pytest.mark.parametrize("position", ["return", "let", "argument"])
+@pytest.mark.parametrize("shape", list(ROW_SHAPES))
+def test_a_join_under_a_target_lists_its_arms_rows_once(
+        shape: str, position: str, swap: bool) -> None:
+    params, target, a, b, rows = ROW_SHAPES[shape]
+    first, second = (b, a) if swap else (a, b)
+    source = _row_program(params, target, first, second, position)
+    verified = pipeline.verify(source, file=FILE, reconcile=True)
+    got = sorted((o.kind, o.status, o.expr_text) for o in verified.obligations
+                 if o.kind not in ("requires", "ensures"))
+    assert got == sorted(rows[position]), source
+    assert verified.reconciled is not None
+    report = verified.reconciled.report()
+    assert not report.get("mismatches"), report
+    assert {d.error_code for d in verified.diagnostics} & {
+        "W004", "E541"} == set()
+    compiled = pipeline.compile(source, file=FILE)
+    assert compiled.wat.count("unreachable") == ROW_TRAPS[shape][position]
+
+
+def test_a_never_arm_takes_no_part_in_a_match() -> None:
+    """A `match` arm that throws (`Never`) states nothing, so a `PosInt`
+    arm beside it keeps its refinement, in either order."""
+    for arms in (("throw(0)", "@PosInt.0"), ("@PosInt.0", "throw(0)")):
+        source = (_HEAD + "private fn j(@Bool, @PosInt -> @Int)\n"
+                  "  requires(true)\n  ensures(true)\n  effects(<Exn<Int>>)\n"
+                  f"{{\n  match @Bool.0 {{\n    true -> {arms[0]},\n"
+                  f"    false -> {arms[1]}\n  }}\n}}\n")
+        assert _recorded(source, ast.MatchExpr) == ["{Int|PosInt}"]
