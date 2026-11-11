@@ -669,6 +669,15 @@ class SmtContext:
         # (`ContractVerifier._call_violation_clause`).  Asked where the
         # violation is found, so the solver holds the call's premises.
         self._violation_clause_hook: Callable[..., str | None] | None = None
+        #: #1763 / #1858: the function entry this context verifies — the
+        #: slot environment its parameters make and their (name, constant)
+        #: pairs — in which a fix's `requires` is read.  Recorded by the
+        #: verifier for a function's context and cleared by :meth:`reset`,
+        #: so it lives and ends with the context it describes: a context no
+        #: function entry was recorded on (a declaration check, a reset
+        #: warm context) has none, and a fix offers no clause there.
+        self.entry_scope: tuple[
+            SlotEnv, tuple[tuple[str, object], ...]] | None = None
         self._call_violations: list[CallViolation] = []
         # #1696: the stand-ins this function's model holds, one per node the
         # translation has no term for (`_stand_in`), keyed by the node's
@@ -5049,6 +5058,7 @@ class SmtContext:
         self._reach_extras.clear()
         self._disclosed_terms.clear()  # #1406: ditto — see the docstring
         self._disclosed_term_sites.clear()  # and the citations riding on them
+        self.entry_scope = None  # #1858: the previous function's entry
         self._length_fns = {
             "Int": z3.Function("length", z3.IntSort(), z3.IntSort()),
         }

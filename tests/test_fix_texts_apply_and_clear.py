@@ -885,6 +885,67 @@ def test_the_base_entry_clause_does_not_clear(name: str) -> None:
     assert cell.code in codes or "E130" in codes, (name, sorted(codes))
 
 
+_ONE_INT = _fn("@Int", "@Int", "@Int.0")
+
+
+def test_repro_1858_a_reset_context_reads_no_entry_scope() -> None:
+    """A context's entry scope ends with the function it was recorded for
+    (corrects PR 1857's table, keyed by `id(smt)` and never cleared).  On
+    the warm context a verifier shares, the next declaration's context is
+    the same object, reset: a clause asked there must find no entry, where
+    the table still held the last function's and offered a `requires` in
+    its terms."""
+    import z3
+
+    from vera.smt import SlotEnv, SmtContext
+    from vera.verifier import ContractVerifier
+
+    checked = pipeline.check(_ONE_INT)
+    smt = SmtContext()
+    verifier = ContractVerifier(checked.typed, source=checked.source,
+                                shared_smt=smt)
+    verifier.verify_program(checked.typed.program)
+    smt.reset()
+    var = smt.declare_int("@Int.0")
+    site = SlotEnv().push("Int", var)
+    pred = vera.ast.BinaryExpr(
+        vera.ast.BinOp.NEQ, vera.ast.SlotRef("Int", None, 0),
+        vera.ast.IntLit(0))
+    assert verifier._discharging_clause(
+        smt, var != z3.IntVal(0), [], None, site_env=site,
+        exprs=(pred,)) is None
+
+
+def test_a_warm_sessions_entry_scope_is_its_own_and_one() -> None:
+    """Two verifications through one warm session: each reads its own
+    function's entry, held on the one context the session keeps, so
+    nothing accumulates across the documents a language server verifies."""
+    from vera.obligations.session import VerificationSession
+    from vera.verifier import ContractVerifier
+
+    session = VerificationSession()
+    session.verify_source(_ONE_INT)
+    assert session._smt is not None
+    scope = session._smt.entry_scope
+    assert scope is not None and [n for n, _ in scope[1]] == ["@Int.0"]
+    session.verify_source(_fn("@Bool, @Nat", "@Int", "0"))
+    scope = session._smt.entry_scope
+    assert scope is not None
+    assert [n for n, _ in scope[1]] == ["@Bool.0", "@Nat.0"], scope
+    # A cold run keeps no table of entry scopes beside the contexts, one
+    # entry per function verified.
+    from vera.smt import SlotEnv
+    checked = pipeline.check(_ONE_INT + "\n" + _fn(
+        "@Bool", "@Int", "0").replace("fn f(", "fn g("))
+    verifier = ContractVerifier(checked.typed, source=checked.source)
+    verifier.verify_program(checked.typed.program)
+    held = [name for name, value in vars(verifier).items()
+            if isinstance(value, dict) and any(
+                isinstance(v, tuple) and v and isinstance(v[0], SlotEnv)
+                for v in value.values())]
+    assert held == [], held
+
+
 def test_repro_1858_e526_shadowed_divisor() -> None:
     """The issue's program: the divisor is the `let`, so base's
     `requires(@Int.0 != 0)` (the parameter) left E526 firing.  No clause

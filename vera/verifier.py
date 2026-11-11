@@ -1339,11 +1339,6 @@ class ContractVerifier:
         # program.  None (the default) preserves the historical
         # fresh-context-per-function cold path exactly.
         self._shared_smt = shared_smt
-        # #1763: each solver context's function-entry scope — the slot
-        # environment its parameters make and their (name, constant)
-        # pairs — keyed by the context, which `_verify_fn` records.
-        self._entry_scopes: dict[
-            int, tuple[SlotEnv, tuple[tuple[str, object], ...]]] = {}
         # #1208: the naming environment for THIS verifier's module — alias
         # bodies, alias parameters, and declared-ADT names, as
         # :mod:`vera.naming` renders against.  Built from `self.env` once
@@ -4482,8 +4477,9 @@ class ContractVerifier:
             entry_params.append((z3_name, var))
         # #1763: the scope a `requires` clause is read in, so a fix can
         # offer a clause only where it means at entry what it means at
-        # the site it is computed from.
-        self._entry_scopes[id(smt)] = (slot_env, tuple(entry_params))
+        # the site it is computed from.  Held on the context, which a reset
+        # clears, so it ends with this function (#1858).
+        smt.entry_scope = (slot_env, tuple(entry_params))
         # 1b. #1836: a refined parameter's entry rows (its own and its
         # closures'), each discharged here as the callee's assumption: the
         # predicate holds in the body, and each caller's argument row is the
@@ -13355,7 +13351,7 @@ class ContractVerifier:
         per-query budget, proves the obligation with it assumed, so the
         clause the fix writes is one that clears the diagnostic."""
         from vera.formatter import format_expr_canonical as _canonical
-        entry = self._entry_scopes.get(id(smt))
+        entry = smt.entry_scope
         if entry is None:
             return None
         entry_env, params = entry
