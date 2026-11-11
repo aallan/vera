@@ -745,6 +745,9 @@ class _Builder:
     def _function(self, d: ast.FnDecl) -> None:
         ret_ty = self.sem(d.return_type)
         measure: tuple[ast.Decreases, Guard] | None = None
+        #: Whether an `ensures` of *d* has a check of its own, which runs
+        #: after the body.
+        ensures_checked = False
         for c in d.contracts:
             if isinstance(c, ast.Requires):
                 guard = TRIVIAL if self._trivial(c) else CHECK
@@ -759,6 +762,7 @@ class _Builder:
                     guard = unguarded(REASON_PAIR_ENSURES)
                 elif self._has_quantifier(c.expr) and self._quantifier_refused(c.expr):
                     guard = unguarded(REASON_QUANTIFIER)
+                ensures_checked = ensures_checked or guard.check
                 self.add("ensures", c, guard=guard)
                 self._walk_clause(c.expr, d, guard)
             elif isinstance(c, ast.Decreases) and c.exprs:
@@ -771,7 +775,7 @@ class _Builder:
             self._boundary_rows(d.body, d.return_type)
             self.walk(d.body, d, handed=ret_ty, under_join=True)
             self._return_rows(d.return_type, ret_ty, d.body)
-        epilogue = self._has_epilogue(d, ret_ty)
+        epilogue = self._has_epilogue(d, ensures_checked)
         if epilogue and d.body is not None:
             self.epilogue.add(ObligationTable._key(d.body))
         if measure is not None:
@@ -781,24 +785,20 @@ class _Builder:
         for h in d.where_fns or ():
             self.function(h)
 
-    def _has_epilogue(self, d: ast.FnDecl, ret_ty: Type | None) -> bool:
-        """Whether *d*'s return runs a check after the body (a non-trivial
-        ``ensures``, a refined return, a guarded tuple component or carrier
-        element of the return): then no self tail call transfers, every
-        hop re-enters through the entry check, and the measure is
-        re-evaluated at no call."""
+    def _has_epilogue(self, d: ast.FnDecl, ensures_checked: bool) -> bool:
+        """Whether *d*'s return runs a check after the body: an ``ensures``
+        row with a check of its own (*ensures_checked*; one over a
+        ``String`` or ``Array`` result, or a quantifier the lowering
+        refuses, has none), or a guarded refinement of the return: then no
+        self tail call transfers, every hop re-enters through the entry
+        check, and the measure is re-evaluated at no call (#1849)."""
         # The function's own return boundary: its head row at the body, its
         # component and element rows at the return type; a closure's
         # return rows inside the body are the closure's epilogue.
         own = {ObligationTable._key(d.return_type)}
         if d.body is not None:
             own.add(ObligationTable._key(d.body))
-        boundary = not own.isdisjoint(self._return_refinements)
-        if self._pair(ret_ty):
-            return boundary
-        ensures = any(isinstance(c, ast.Ensures) and not self._trivial(c)
-                      for c in d.contracts)
-        return ensures or boundary
+        return ensures_checked or not own.isdisjoint(self._return_refinements)
 
     def _walk_clause(self, expr: ast.Expr, d: ast.FnDecl, guard: Guard) -> None:
         """The operations inside a clause: rows evaluated where the clause

@@ -468,6 +468,43 @@ def test_repro_deep_tail_recursion_runs_a_million_steps() -> None:
     assert pipeline.run(_DEEP, "drain", [1_000_000], file=FILE).value == 0
 
 
+_CS = """\
+public fn cs(@String, @Nat -> @String)
+  requires(true)
+  ensures(string_length(@String.result) >= 0)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then {
+    @String.0
+  } else {
+    cs(@String.0, @Nat.0 - 1)
+  }
+}
+
+public fn cs_len(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  string_length(cs("ab", @Nat.0))
+}
+"""
+
+
+def test_repro_a_postcondition_with_no_check_keeps_the_tail_call() -> None:
+    """Only a row with a check of its own makes an epilogue: an `ensures`
+    over a `String` result is lowered to no check (its row is unguarded),
+    so nothing runs after `cs`'s body, its self call keeps `return_call`,
+    and a million steps run."""
+    compiled = pipeline.compile(_CS, file=FILE)
+    assert "return_call $:cs" in _func(compiled.wat, "cs")
+    (ensures,) = [row for row in compiled.generator._obligations.rows
+                  if row.kind == "ensures" and row.fn == "cs"]
+    assert not ensures.guard.check
+    assert pipeline.run(_CS, "cs_len", [1_000_000], file=FILE).value == 2
+
+
 def test_repro_a_guarded_leaf_beside_a_self_tail_call_keeps_it() -> None:
     """The guarded leaf lowers to a `call`; the self tail call beside it
     keeps its `return_call`, so the loop runs a million steps and the
