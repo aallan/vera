@@ -1215,13 +1215,12 @@ class CallsMixin:
                 break
             if arg_ty is None or isinstance(arg_ty, UnknownType):
                 continue
-            # #1684: a parameter that is a variable the call left open is
-            # one no argument fixed; the enclosing function's own variable
-            # (a `where` helper's parameter, `resume`'s under a
-            # `handle[State<T>]`) is a type, which the fit below holds
-            # the argument to.
-            if (isinstance(param_ty, UnknownType)
-                    or self._open_variable(param_ty)):
+            # #1684: a parameter that is a type variable meets the fit below
+            # like any other: one the call left open is bound there, and the
+            # enclosing function's own (a `where` helper's parameter,
+            # `resume`'s under a `handle[State<T>]`) is a type, which only a
+            # value of that type fits.
+            if isinstance(param_ty, UnknownType):
                 continue
             # Re-synth if arg still has unresolved TypeVars (bidirectional)
             if contains_typevar(arg_ty) and not contains_typevar(param_ty):
