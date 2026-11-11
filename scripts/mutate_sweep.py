@@ -453,7 +453,7 @@ def check_partial(partial: Any, size: int, what: str) -> None:
            f"{what}'s partial survivors are not its listed mutants")
 
 
-def check_unit(ident: Any, record: Any) -> None:
+def check_unit(ident: Any, record: Any, cycle: int | None = None) -> None:
     """One function's record: its ident, its code hash, its mutants in all
     and by line (both unknown until the engine counted it), its sampled
     window's verdicts once decided, and the mutants of it decided so far
@@ -472,7 +472,11 @@ def check_unit(ident: Any, record: Any) -> None:
         check_window(rec["window"], ident)
     if rec["partial"] is not None:
         _check(rec["lines"] is not None, f"{ident} has a partial window and no lines")
-        check_partial(rec["partial"], int(count or 0), ident)
+        # The window is the cycle's sampled lines' mutants, which the state's
+        # cycle and lines give; without the cycle, the unit's count bounds it.
+        size = int(count or 0) if cycle is None else sum(
+            int(n) for line, n in rec["lines"].items() if in_sample(cycle, ident, int(line)))
+        check_partial(rec["partial"], size, ident)
 
 
 def _check_night(night: Any) -> None:
@@ -543,7 +547,7 @@ def check_state(data: Any) -> dict[str, Any]:
            f"the calibration is not a number from {low} to {high}")
     _check(isinstance(state["units"], dict), "the units are not a mapping")
     for ident, record in state["units"].items():
-        check_unit(ident, record)
+        check_unit(ident, record, int(state["cycle"]))
     last = state["last_complete"]
     if last is not None:
         last_keys = {"cycle", "started", "finished", "head", "engine", "modules", "survivors"}
@@ -1446,7 +1450,7 @@ def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: li
                 files={p.unit.ident: ran.get(f"{p.unit.module}.{p.unit.key}", []) for p in picks},
                 seconds=mutant_seconds(tree, files))
         except StateError as exc:
-            stopped = stopped or "unmapped"
+            stopped = md.failed(stopped, "unmapped")  # it outranks a budget stop, as in the diff lane
             record["engine_tail"] = [str(exc)]
     record["stopped"] = stopped
     if stopped not in (None, "budget") and not record["engine_tail"]:
@@ -1732,7 +1736,8 @@ def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[s
             # mutant by mutant, and the rest is planned again.
             notes.append(f"slice {record['slice']}: stopped by the budget with {decided_count(record)} "
                          f"mutant(s) decided; the rest of its bin waits for the next night")
-    if added == 0 and any(r.get("planned") for r in valid) and empty_night(state_in.get("nights", [])):
+    if (added == 0 and (any(r.get("planned") for r in valid) or lost) and not complete(state, units)
+            and empty_night(state_in.get("nights", []))):
         # One night that decides nothing is weather (a bin of slow
         # mutants, a lost runner); a second in a row measures nothing.
         problems.append("the night decided no mutant, and neither did the night before it")

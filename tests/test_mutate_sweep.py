@@ -497,6 +497,22 @@ class TestStateChecks:
         with pytest.raises(sw.StateError, match="not a schema 3 state"):
             sw.load_state(path, "2026-11-05")
 
+    def test_a_partial_window_is_bounded_by_the_cycles_sample(self, tmp_path: Path,
+                                                             monkeypatch: pytest.MonkeyPatch) -> None:
+        """A partial window holding every sampled mutant is a decided window
+        recorded in the wrong place: the cycle would read it complete while
+        the tally reads nothing of it, so the state refuses it."""
+        monkeypatch.setattr(sw, "in_sample", lambda cycle, ident, line: line <= 2)
+        state = _written_state()
+        state["units"][B.ident]["partial"] = {"decided": {"1": "killed", "2": "killed"}, "survivors": []}
+        with pytest.raises(sw.StateError, match="partial window is whole"):
+            sw.load_state(sw.save_state(state, tmp_path), "x")
+        state["units"][B.ident]["partial"] = {"decided": {"3": "killed"}, "survivors": []}
+        with pytest.raises(sw.StateError, match="mutant '3' is outside its window"):
+            sw.load_state(sw.save_state(state, tmp_path), "x")
+        state["units"][B.ident]["partial"] = {"decided": {"2": "killed"}, "survivors": []}
+        assert sw.load_state(sw.save_state(state, tmp_path), "x")["units"][B.ident]["partial"]
+
     def test_an_engine_error_is_one_line_beside_an_engine_stop_and_nowhere_else(self) -> None:
         """The stitch and the reports read ``engine_error`` only beside
         ``stopped == "engine"``, so a record carrying it beside another stop
@@ -1324,6 +1340,16 @@ class TestStitch:
         assert night["problems"] == [f"slice 1 counted 3 mutants of {B.ident} where the state holds 3, "
                                      "or on other lines",
                                      "slice 1 counted vera/z.py::x_q, which the tree does not hold"]
+
+    def test_nights_whose_only_planned_slice_was_lost_are_empty_nights_too(self) -> None:
+        """A night whose every planned slice sent no record decided nothing
+        as surely as one whose slices did: the second such night in a row is
+        red, so losing the one working slice cannot stay green for ever."""
+        state = _state(f=4)
+        first, night = _stitch([_record(1, 2, {}, planned=0)], state)
+        assert night["lost"] == [0] and night["problems"] == []
+        _, night = _stitch([_record(1, 2, {}, planned=0)], json.loads(json.dumps(first)))
+        assert night["problems"] == ["the night decided no mutant, and neither did the night before it"]
 
     def test_a_budget_stop_is_a_normal_stop_and_its_partial_work_is_kept(self) -> None:
         """The rule "its budget ran out before its first mutant" fired on
@@ -2215,6 +2241,18 @@ class TestEndToEnd:
         assert code == 0 and state["nights"][-1]["problems"] == []
         assert state["nights"][-1]["notes"] == ["slice 0: stopped by the budget with 0 mutant(s) decided; the rest "
                                                 "of its bin waits for the next night"]
+
+    def test_a_listing_that_maps_to_no_planned_window_is_red_after_a_budget_stop_too(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A mutant of a function the night did not plan means the narrowing
+        or the window went wrong: that outranks the budget, which leaves a
+        slice only incomplete, as the diff lane's ``failed`` has it."""
+        monkeypatch.setenv("FAKE_RUN_SLEEP", "30")
+        monkeypatch.setattr(sw.md, "run_engine", lambda *a, **k: _quick_stop(*a, **k))
+        code, record, _ = _night(repo, tmp_path, 1, "    vera.m.x_h__mutmut_1: killed\n", budget=2)
+        assert record["stopped"] == "unmapped" and code == 2
+        assert "did not plan" in record["engine_tail"][0]
 
     def test_an_engine_that_failed_before_generating_decides_nothing(
         self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
