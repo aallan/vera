@@ -2676,9 +2676,10 @@ def render_slice(record: Mapping[str, Any]) -> str:
         out.append("")
     charged = charged_in_flight(record)
     if charged:
-        out.append("In flight when it stopped, each having run a heartbeat interval: each takes a loss "
-                   "unless the night's run was cancelled, and a second decides it `lost`: "
-                   + ", ".join(f"`{name}`" for name in charged) + ".")
+        out.append("In flight at the slice's last record, each for at least a heartbeat interval: each "
+                   "is charged a loss when the night is stitched, unless the run was cancelled, the "
+                   "mutant is already decided or its window no longer matches the state, and a second "
+                   "loss decides it `lost`: " + ", ".join(f"`{name}`" for name in charged) + ".")
         out.append("")
     if record.get("stopped"):
         error = record.get("engine_error") if record["stopped"] == "engine" else None

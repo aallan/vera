@@ -3611,7 +3611,7 @@ class TestAfterTheBudgetsStop:
                       budget_stopped=True)
         state, _ = _legs([record], [], jobs=1)
         assert "losses" not in state["units"][A.ident]
-        assert "takes a loss" not in sw.render_slice(record)
+        assert "charged a loss" not in sw.render_slice(record)
         leg = {**_leg(0, 1, {}, in_flight=[F3], planned=[_planned(A, 4)]), "budget_stopped": True}
         state, _ = _legs([], [leg], jobs=1)  # a leg written in the stop's grace
         assert "losses" not in state["units"][A.ident]
@@ -3655,7 +3655,7 @@ class TestOneLossPredicate:
             record.update(in_flight=[F3], in_flight_s={F3: age}, planned=planned, budget_stopped=budget)
             state, _ = _legs([record], [], jobs=1)
             assert ("losses" in state["units"][A.ident]) is charged, (stopped, budget, age)
-            assert ("takes a loss" in sw.render_slice(record)) is charged, (stopped, budget, age)
+            assert ("charged a loss" in sw.render_slice(record)) is charged, (stopped, budget, age)
             records.append((record, charged))
         for record, charged in records:
             assert sw.charged_in_flight(record) == ([F3] if charged else [])
@@ -3714,4 +3714,5 @@ class TestTheStopsEdges:
     def test_the_report_says_a_cancelled_run_charges_no_loss(self) -> None:
         record = _record(0, 1, {}, stopped="engine", counts={})
         record.update(in_flight=[F3], in_flight_s={F3: sw.HEARTBEAT_S}, planned=[_planned(A, 4)])
-        assert "each takes a loss unless the night's run was cancelled" in sw.render_slice(record)
+        assert ("each is charged a loss when the night is stitched, unless the run was cancelled, the "
+                "mutant is already decided or its window no longer matches the state") in sw.render_slice(record)
