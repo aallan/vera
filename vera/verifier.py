@@ -13501,7 +13501,7 @@ class ContractVerifier:
             for name, value in sorted(counterexample.items()):
                 if name != "@result":
                     ce_lines.append(f"    {name} = {value}")
-        ce_text = "\n  ".join(ce_lines) if ce_lines else ""
+        ce_text = "\n  ".join(ce_lines) if ce_lines else ""  # pragma: no mutate — equivalent: joining an empty list is the empty string, so the condition chooses nothing
 
         # The bound and the access as nodes rendered whole (#1573).
         lower, upper = ast.index_bounds(

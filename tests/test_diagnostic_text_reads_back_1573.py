@@ -818,3 +818,323 @@ def test_a_postcondition_with_no_check_at_the_exit_keeps_the_tail_call() -> None
     ran = pipeline.run(_EXIT_CHECKS, fn="cs", raw_args=["abc", "1000000"])
     assert ran.ok
     assert ran.value == "abc"
+
+
+# ---------------------------------------------------------------------------
+# Exact values: every reader moved to the one splitter, at line 1, at the
+# last line, past the end and with no span; the exact text a span covers;
+# the exact texts the verifier's reports and the traps compose
+# ---------------------------------------------------------------------------
+
+#: Three lines as the location counts them; the second holds a vertical tab
+#: (`splitlines` would make it two) and ends in the `\r` of a `\r\n`.
+_TEXT = "first line\nsecond\x0bstill second\r\nthird"
+_LINES = {0: "", 1: "first line", 2: "second\x0bstill second", 3: "third",
+          4: ""}
+
+
+def _span(line: int, column: int = 1, end_line: int | None = None,
+          end_column: int = 2) -> vast.Span:
+    return vast.Span(line=line, column=column,
+                     end_line=line if end_line is None else end_line,
+                     end_column=end_column)
+
+
+@pytest.mark.parametrize("line", sorted(_LINES))
+def test_errors_quotes_the_counted_line(line: int) -> None:
+    from vera.errors import _get_source_line
+    assert _get_source_line(_TEXT, line) == _LINES[line]
+
+
+@pytest.mark.parametrize("line", sorted(_LINES))
+def test_the_checker_quotes_the_counted_line(line: int) -> None:
+    from vera.checker.core import TypeChecker
+    assert TypeChecker(source=_TEXT)._source_line(_span(line)) == _LINES[line]
+
+
+def test_the_checker_quotes_nothing_without_a_span_or_a_source() -> None:
+    from vera.checker.core import TypeChecker
+    assert TypeChecker(source=_TEXT)._source_line(None) == ""
+    assert TypeChecker(source="")._source_line(_span(1)) == ""
+
+
+@pytest.mark.parametrize("line", sorted(_LINES))
+def test_the_resolver_quotes_the_counted_line(line: int, tmp_path: Path) -> None:
+    from vera.resolver import ModuleResolver
+    path = tmp_path / "m.vera"
+    path.write_bytes(_TEXT.encode("utf-8"))
+    node = vast.IntLit(value=0, span=_span(line))
+    assert ModuleResolver._source_line(path, node) == _LINES[line]
+    assert ModuleResolver._source_line(path, vast.IntLit(value=0)) == ""
+
+
+@pytest.mark.parametrize("line", sorted(_LINES))
+def test_the_tester_quotes_the_counted_line(line: int) -> None:
+    from types import SimpleNamespace
+
+    from vera.tester import _get_source_line
+    decl = SimpleNamespace(span=_span(line, column=3))
+    assert _get_source_line(_TEXT, decl) == _LINES[line]  # type: ignore[arg-type]
+    assert _get_source_line(_TEXT, SimpleNamespace(span=None)) == ""  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("line", sorted(_LINES))
+@pytest.mark.parametrize("same_file", [True, False])
+def test_an_e703_quotes_the_counted_line(line: int, same_file: bool) -> None:
+    """The refuted clause's line when it lies in the file under test and
+    the line exists; the declaration's (line 3) otherwise."""
+    from types import SimpleNamespace
+
+    from vera.tester import _TestEngine
+    engine = SimpleNamespace(source=_TEXT, file="f.vera")
+    trial = SimpleNamespace(refutes=[SimpleNamespace(
+        file="f.vera" if same_file else "g.vera", line=line, column=4)])
+    decl = SimpleNamespace(span=_span(3, column=2))
+    loc, quoted = _TestEngine._refuted_location(
+        engine, trial, decl)  # type: ignore[arg-type]
+    if same_file and 1 <= line <= 3:
+        assert (loc.line, loc.column, quoted) == (line, 4, _LINES[line])
+    else:
+        assert (loc.line, loc.column, quoted) == (3, 2, "third")
+
+
+@pytest.mark.parametrize("line", sorted(_LINES))
+def test_the_typed_program_quotes_the_counted_line(line: int) -> None:
+    from vera.typed import _diagnostic
+    diag = _diagnostic("E613", "f.vera", _TEXT,
+                       vast.IntLit(value=0, span=_span(line, column=5)),
+                       "description", "fix")
+    assert (diag.location.file, diag.location.line, diag.location.column,
+            diag.source_line) == ("f.vera", line, 5, _LINES[line])
+    unspanned = _diagnostic("E613", "f.vera", _TEXT, vast.IntLit(value=0),
+                            "description", "fix")
+    assert (unspanned.location.line, unspanned.source_line) == (0, "")
+
+
+@pytest.mark.parametrize("line", sorted(_LINES))
+def test_reconciliation_quotes_the_counted_line(line: int) -> None:
+    from vera.reconcile import Mismatch, mismatch_diagnostics
+    m = Mismatch(kind="guarded_unrecorded", obligation="nat_sub",
+                 file="f.vera", line=line, column=1, function="f",
+                 emitter="wasm/operators.py:_emit_nat_sub_guard")
+    (diag,) = mismatch_diagnostics([m], {"f.vera": _TEXT})
+    assert diag.source_line == _LINES[line]
+
+
+#: Spans and the exact text each covers, by the location's own count: a
+#: span on line 1, one across the vertical tab's line into the last, one
+#: on the last line, and spans the text does not hold.
+_COVERS = [
+    (_span(1, 1, 1, 6), "first"),
+    (_span(2, 8, 3, 3), "still second\r\nth"),
+    (_span(3, 1, 3, 6), "third"),
+    (_span(4, 1, 4, 2), None),
+    (_span(0, 1, 1, 2), None),
+    (_span(1, 1, 4, 2), None),
+    (_span(4, 1, 3, 2), None),  # starts past the last line, ends before it
+    (None, None),
+]
+
+
+@pytest.mark.parametrize(("span", "covered"), _COVERS)
+def test_the_span_bounds_cover_the_counted_text(
+        span: vast.Span | None, covered: str | None) -> None:
+    from vera.checker.resolution import _span_bounds
+    from vera.typed import _source_text
+    bounds = _span_bounds(_TEXT, span)
+    assert (None if bounds is None else _TEXT[bounds[0]:bounds[1]]) == covered
+    assert _source_text(_TEXT, span) == covered
+    assert _span_bounds("", span) is None and _source_text("", span) is None
+
+
+@pytest.mark.parametrize(("span", "start", "end"), [
+    (_span(2, 8, 2, 13), 6, 11),     # within the base's first line
+    (_span(3, 1, 3, 4), 20, 23),     # on the base's second, last line
+    (_span(5, 1, 5, 2), None, None),  # past the text's last line
+    (_span(1, 1, 1, 2), None, None),  # before the base
+])
+def test_an_offset_counts_lines_by_the_newline(
+        span: vast.Span, start: int | None, end: int | None) -> None:
+    """`_offset` within the text a base span covers (it starts at line 2,
+    column 2): the vertical tab is inside the base's first line."""
+    from vera.typed import _offset
+    text = "second\x0bstill second\r\nthird"[1:]
+    base = _span(2, 2, 3, 6)
+    assert _offset(text, base, span, start=True) == start
+    assert _offset(text, base, span, start=False) == end
+    assert _offset(text, base, None, start=True) is None
+
+
+# The verifier's reports, whole.
+
+_H = "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+
+
+def _only_error(source: str, code: str) -> tuple[str, str]:
+    errors = [d for d in pipeline.verify(source).errors if d.error_code == code]
+    assert len(errors) == 1, errors
+    return errors[0].description, errors[0].fix
+
+
+def test_e502_in_a_measure_says_the_bounding_requires_whole() -> None:
+    description, fix = _only_error(
+        "public fn count_to(@Nat -> @Nat)\n" + _H
+        + "{\n  loop(@Nat.0, 1)\n}\nwhere {\n  fn loop(@Nat, @Nat -> @Nat)\n"
+        "    requires(true)\n    ensures(true)\n"
+        "    decreases(@Nat.1 - @Nat.0 + 1)\n    effects(pure)\n  {\n"
+        "    if @Nat.0 > @Nat.1 then { @Nat.0 } else "
+        "{ loop(@Nat.1, @Nat.0 + 1) }\n  }\n}\n", "E502")
+    assert description == (
+        "@Nat subtraction in 'loop' may underflow.\n  Counterexample:\n"
+        "      @Nat.0 = 1\n      @Nat.1 = 0\n  In the `decreases` measure, "
+        "which the compiled function evaluates on entry, after its "
+        "`requires` are checked.")
+    assert fix == (
+        "Either state the precondition that bounds the subtraction — "
+        "`requires(@Nat.0 <= @Nat.1)`; for the count-up loop "
+        "`decreases(@Nat.1 + 1 - @Nat.0)` that is "
+        "`requires(@Nat.0 <= @Nat.1 + 1)` — which the measure can rely "
+        "on because the compiled function checks every `requires` before it "
+        "evaluates it, and which each recursive call must then establish for "
+        "its own arguments; or write the measure without a `@Nat` "
+        "subtraction, for example a parameter that counts down to zero.")
+
+
+def test_e502_in_a_body_says_the_generic_remedy() -> None:
+    _, fix = _only_error(
+        "public fn f(@Nat, @Nat -> @Nat)\n" + _H + "{\n  @Nat.1 - @Nat.0\n}\n",
+        "E502")
+    assert fix == (
+        "Add a precondition that rules out the bad inputs, e.g. "
+        "`requires(@Nat.0 >= @Nat.1)`.  Alternatively, guard the "
+        "subtraction: `if @Nat.0 >= @Nat.1 then @Nat.0 - @Nat.1 else 0` "
+        "— the path condition discharges the obligation in the "
+        "then-branch.")
+
+
+@pytest.mark.parametrize(("op", "word"), [("/", "division"), ("%", "modulo")])
+def test_e526_says_the_operation_and_the_divisor_whole(op: str, word: str) -> None:
+    description, fix = _only_error(
+        "public fn f(@Int, @Int -> @Int)\n" + _H
+        + f"{{\n  @Int.1 {op} (@Int.0 - 1)\n}}\n", "E526")
+    assert description == (
+        f"Integer {word} in 'f' may divide by zero.\n  Counterexample:\n"
+        "      @Int.0 = 1\n      @Int.1 = 0")
+    assert fix == (
+        "Add a precondition ruling out a zero divisor, e.g. "
+        "`requires(@Int.0 - 1 != 0)`.  Alternatively guard the operation "
+        "with `if @Int.0 - 1 == 0 then <default> else ...` (the path "
+        "condition discharges the obligation in the else-branch), or give "
+        "the divisor a refinement type that excludes zero.")
+
+
+def test_e527_says_the_bounds_and_the_access_whole() -> None:
+    description, fix = _only_error(
+        "public fn f(@Int -> @Int)\n  requires(@Int.0 < 0 - 1)\n"
+        "  ensures(true)\n  effects(pure)\n"
+        "{\n  let @Array<Int> = [1, 2, 3];\n  @Array<Int>.0[@Int.0 + 1]\n}\n",
+        "E527")
+    assert description.startswith(
+        "Array index in 'f' is out of bounds.\n  Counterexample:\n"
+        "      @Int.0 = "), description
+    bounds = "0 <= @Int.0 + 1 && @Int.0 + 1 < array_length(@Array<Int>.0)"
+    assert fix == (
+        "Index within bounds, or constrain the index with a precondition "
+        f"covering both bounds, e.g. `requires({bounds})`.  Alternatively "
+        f"guard the access with `if {bounds} then @Array<Int>.0[@Int.0 + 1] "
+        "else <default>` — the path condition discharges the obligation "
+        "in the then-branch.")
+
+
+@pytest.mark.parametrize("body", ["4", "@Nat.0"])
+def test_e505_says_the_whole_chain_with_its_parentheses(body: str) -> None:
+    description, fix = _only_error(
+        "type Small = { @Nat | @Nat.0 > 5 || @Nat.0 == 3 };\n\n"
+        "public fn f(@Nat -> @Small)\n" + _H + f"{{\n  {body}\n}}\n", "E505")
+    pred = "@Nat.0 >= 0 && (@Nat.0 > 5 || @Nat.0 == 3)"
+    head, value = description.rsplit(" = ", 1)
+    assert head == (
+        "Value narrowing into a refined return type in 'f' may violate the "
+        f"refinement predicate `{pred}`.\n  Counterexample:\n"
+        "      @Nat.0")
+    assert value.isdigit(), value
+    assert fix == (
+        f"Add a precondition implying the predicate, e.g. `requires({pred})`."
+        "  Alternatively, guard the binding with an `if` whose condition is "
+        "the predicate — the path condition discharges the obligation in "
+        "the then-branch.")
+
+
+def test_e501_quotes_a_clause_across_lines_whole() -> None:
+    description, _ = _only_error(
+        "private fn h(@Int -> @Int)\n  requires(\n    (@Int.0 + 1) * 2 > 4 -- c\n"
+        "  )\n  ensures(true)\n  effects(pure)\n{\n  @Int.0\n}\n\n"
+        "public fn caller(@Int -> @Int)\n" + _H + "{\n  h(0)\n}\n", "E501")
+    assert description.splitlines()[1:3] == [
+        "  Precondition: requires( (@Int.0 + 1) * 2 > 4 )",
+        "  At this call site: (0 + 1) * 2 > 4"]
+
+
+def test_e501_quotes_a_clause_on_the_first_line() -> None:
+    """The clause's lines are counted from line 1: a callee written on the
+    file's first line still has its precondition quoted."""
+    description, _ = _only_error(
+        "private fn h(@Int -> @Int) requires(@Int.0 > 0) ensures(true) "
+        "effects(pure) { @Int.0 }\n\n"
+        "public fn caller(@Int -> @Int)\n" + _H + "{\n  h(0)\n}\n", "E501")
+    precondition = description.splitlines()[1]
+    assert precondition.startswith("  Precondition: "), description
+    assert "requires(@Int.0 > 0)" in precondition
+
+
+def test_e527_without_a_counterexample_says_the_access_alone() -> None:
+    """The report with no model to show: the description is its first
+    sentence and nothing after it."""
+    from types import SimpleNamespace
+
+    from vera.verifier import ContractVerifier
+    reported: list[tuple[str, str]] = []
+    verifier = SimpleNamespace(
+        _as_written=lambda node: node,
+        _written=vast.format_expr,
+        _error=lambda node, description, **kw: reported.append(
+            (description, kw["fix"])))
+    access = vast.IndexExpr(
+        collection=vast.SlotRef(type_name="Array", type_args=None, index=0),
+        index=_A)
+    ContractVerifier._report_index_oob(
+        verifier, SimpleNamespace(name="f"), access, None)  # type: ignore[arg-type]
+    assert reported[0][0] == "Array index in 'f' is out of bounds."
+
+
+# The traps' messages, whole.
+
+def test_the_nat_subtraction_trap_message_whole() -> None:
+    ran = pipeline.run(_NAT_SUB, fn="f", args=[1, 5, 0])
+    assert _trap(ran) == (
+        "@Nat subtraction `@Nat.2 - (@Nat.1 - @Nat.0)` would be negative "
+        "(line 6): its right operand is larger than its left.  Add "
+        "`requires(@Nat.2 >= @Nat.1 - @Nat.0)` to the enclosing function, "
+        "or compute in @Int.")
+
+
+def test_the_index_trap_message_whole() -> None:
+    ran = pipeline.run(
+        "public fn entry(@Int -> @Int)\n" + _H
+        + "{\n  let @Array<Int> = [1, 2, 3];\n  @Array<Int>.0[@Int.0 + 1]\n}\n",
+        fn="entry", args=[50])
+    assert _trap(ran) == (
+        "Array index out of bounds (line 7): `@Array<Int>.0[@Int.0 + 1]` "
+        "needs `0 <= @Int.0 + 1` and "
+        "`@Int.0 + 1 < array_length(@Array<Int>.0)`.")
+
+
+def test_the_string_index_trap_message_whole() -> None:
+    ran = pipeline.run(
+        "public fn entry(@Int -> @Nat)\n" + _H
+        + '{\n  string_char_code("abc", @Int.0 + 1)\n}\n',
+        fn="entry", args=[50])
+    assert _trap(ran) == (
+        'String index out of bounds (line 6): `string_char_code("abc", '
+        '@Int.0 + 1)` needs `0 <= @Int.0 + 1` and '
+        '`@Int.0 + 1 < string_length("abc")`, the string\'s length in bytes.')
