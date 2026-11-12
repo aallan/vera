@@ -2070,6 +2070,10 @@ def test_repro_1716_an_open_row_keeps_its_variable_only_where_every_row_does() -
     assert _accepted_row([io_e, io_f], io_e) == io
     # no rows: the join's own
     assert _accepted_row([], io_e) is io_e
+    # a join that is already the pure row comes back itself, not a copy:
+    # `_shared_at` reads an unchanged row by identity and rebuilds no type
+    pure = PureEffectRow()
+    assert _accepted_row([PureEffectRow(), io], pure) is pure
 
 
 _ROW_VARIABLE = """\
