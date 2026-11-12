@@ -39,6 +39,18 @@ replaces ``sys.stdout`` in Python, so the child's writes die with it;
 two passes to the file ``MUTATION_ORACLE_FAILURES`` names, where the lane
 reads the first.
 
+The nightly sweep caps each mutant's run at the seconds ``MUTATION_ORACLE_CAP_S``
+names: in a mutant's run (``MUTANT_UNDER_TEST`` a mutant's name), a timer
+started with the session writes ``<mutant>\t<seconds>`` to the file
+``MUTATION_ORACLE_SLOW`` names, one ``os.write`` on an ``O_APPEND``
+descriptor, and ends the process with exit 2 when the cap is reached.  mutmut
+reads exit 2 as ``check was interrupted by user``, which no reader counts as
+caught, and the sweep records each mutant the file names as ``slow``.  A
+thread, not ``SIGALRM``, which pytest-timeout's signal method owns; the
+plugin, since it already runs in mutmut's worker for each mutant, where a
+watchdog outside could only kill the worker, which mutmut reads as a
+``segfault``.  With neither variable set (the diff lane) there is no cap.
+
 The skipped test is out of the oracle entirely.  mutmut's stats pass records,
 at each test's teardown and whatever its outcome, the functions the test
 reached, and runs a mutant against the tests recorded for its function; a
@@ -58,6 +70,8 @@ import io
 import os
 import subprocess
 import sys
+import threading
+import time
 import tomllib
 from collections.abc import Generator
 from pathlib import Path
@@ -74,6 +88,16 @@ SOURCE_SKIPS_ENV = "MUTATION_ORACLE_SOURCE_SKIPS"
 #: The variable naming the file each test that fails in mutmut's stats pass
 #: or its clean run is appended to.
 FAILURES_ENV = "MUTATION_ORACLE_FAILURES"
+
+#: The variables naming the cap on a mutant's run, seconds, and the file
+#: each mutant the cap ends is named in.
+CAP_ENV = "MUTATION_ORACLE_CAP_S"
+SLOW_ENV = "MUTATION_ORACLE_SLOW"
+
+#: The exit status of a mutant's run the cap ends: mutmut's "check was
+#: interrupted by user", which leaves the mutant undecided to any reader that
+#: does not read the file.
+SLOW_EXIT = 2
 
 #: mutmut's marker for the passes with no mutant active: the stats pass,
 #: and the clean run of the covering tests (the forced-fail run is ``fail``,
@@ -173,6 +197,45 @@ def _skipping_getsourcelines(obj: Any) -> Any:
     if _current is not None and _reads_a_source(_source_file_of(obj)):
         pytest.skip(SOURCE_REASON)
     return _original_getsourcelines(obj)
+
+
+_timer: threading.Timer | None = None
+
+
+def _end_slow(mutant: str, path: str, started: float) -> None:
+    """The cap reached: name the mutant in the file, then end its run."""
+    line = f"{mutant}\t{time.monotonic() - started:.1f}\n".encode("utf-8")
+    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+    try:
+        os.write(fd, line)
+    finally:
+        os.close(fd)
+    os._exit(SLOW_EXIT)
+
+
+def arm_cap(environ: Any = os.environ) -> threading.Timer | None:
+    """The cap's timer for this process, started, when it runs a mutant
+    (``MUTANT_UNDER_TEST`` names one) and both variables are set."""
+    mutant = environ.get("MUTANT_UNDER_TEST", "")
+    cap, path = environ.get(CAP_ENV), environ.get(SLOW_ENV)
+    if "__mutmut_" not in mutant or not cap or not path:
+        return None
+    timer = threading.Timer(float(cap), _end_slow, args=(mutant, path, time.monotonic()))
+    timer.daemon = True
+    timer.start()
+    return timer
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    global _timer
+    _timer = arm_cap()
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    global _timer
+    if _timer is not None:
+        _timer.cancel()
+        _timer = None
 
 
 def _record(nodeid: str, reason: str) -> None:
