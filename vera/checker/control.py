@@ -1688,6 +1688,9 @@ class ControlFlowMixin:
         # its predicate, never the message form's `{@Int | ...}`.
         shown = (self._writes_as(wanted) if not contains_typevar(wanted)
                  else None)
+        # An empty literal's element type is no variable a reader can name
+        # (`?`): the fix says what it is in words.
+        named = "the empty literal's element type" if literal else name
         self._error(
             stmt.type_bindings[at],
             f"Let binding expects {pretty_type(bindings[at])}, component "
@@ -1702,9 +1705,9 @@ class ControlFlowMixin:
                 "type, so the bindings must give it the same type at every "
                 "position it holds."),
             fix=(f"Write binding {at + 1} as `@{shown}`, the "
-                 f"type binding {first_at + 1} gives {name}."
+                 f"type binding {first_at + 1} gives {named}."
                  if shown is not None
-                 else f"Write binding {at + 1} so that it gives {name} "
+                 else f"Write binding {at + 1} so that it gives {named} "
                       + (f"`{given_shown}`, the type"
                          if (given_shown := self._writes_as(first_given))
                          else "the type")
@@ -2297,18 +2300,20 @@ class ControlFlowMixin:
         """E341's fix: the clause's value replaced by a value of the
         handler's type *ty*, where one can be written without context."""
         shown = self._writes_as(ty)
-        wanted = f"`{shown}`" if shown is not None else "its type"
+        # The type as written, in apposition; none where it is not one a
+        # program writes (an open `?`).
+        wanted = f", `{shown}`" if shown is not None else ""
         written = _span_text(self.source, clause.body.span)
         example = self._example_value(ty)
         if written is None or example is None:
-            return (f"Make the clause's value the handled body's type, "
-                    f"{wanted}, or give the handled body the clause's "
+            return (f"Make the clause's value the handled body's "
+                    f"type{wanted}, or give the handled body the clause's "
                     f"type.")
         if written.lstrip().startswith("{"):
             example = "{ " + example + " }"
-        return (f"Make the clause's value the handled body's type, "
-                f"{wanted}: replace '{written}' with '{example}', or give "
-                f"the handled body the clause's type.")
+        return (f"Make the clause's value the handled body's type{wanted}: "
+                f"replace '{written}' with '{example}', or give the handled "
+                f"body the clause's type.")
 
     def _example_value(self, ty: Type) -> str | None:
         """A value of *ty* written with no context, or None: a primitive's

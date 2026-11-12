@@ -1316,11 +1316,11 @@ def test_repro_1716_a_clause_no_position_reconciles_is_refused_whole() -> None:
         "throws, the clause's: the two are one value, so they have one "
         "type, as the branches of an if do.")
     # The fix names no type with an open part (`?`), which no program
-    # writes (#1778): "its type", where the message shows Result<Int, ?>.
+    # writes (#1778), where the message shows Result<Int, ?>.
     assert found.fix == (
-        "Make the clause's value the handled body's type, its type: "
-        "replace 'Some(5)' with 'Ok(0)', or give the handled body the "
-        "clause's type.")
+        "Make the clause's value the handled body's type: replace "
+        "'Some(5)' with 'Ok(0)', or give the handled body the clause's "
+        "type.")
     assert found.spec_ref == 'Chapter 7, Section 7.5.2 "Handler Semantics"'
 
 

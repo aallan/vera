@@ -777,8 +777,8 @@ WHOLE: dict[str, tuple[str, str, str, str]] = {
     "E341-body-type-not-written": ("E341", "check", _fn("@Unit", "@Int",
         "let @Array<Int> = handle[Exn<Int>] {\n    throw(@Int) -> { 0 }\n"
         "  } in {\n    []\n  };\n  0"),
-        "Make the clause's value the handled body's type, its type: "
-        "replace '0' with '[]', or give the handled body the clause's type."),
+        "Make the clause's value the handled body's type: replace '0' with "
+        "'[]', or give the handled body the clause's type."),
     "E126-int": ("E126", "check", CASES["E126-int"].source,
         "Turn the predicate into a Bool-valued expression over the binder, "
         "such as a comparison with zero: `{ @Int | @Int.0 > 0 }`."),
@@ -1507,6 +1507,21 @@ def test_e170_at_a_type_parameter_writes_no_binding() -> None:
     assert _the("E170", "check", source).fix == (
         "Write binding 2 so that it gives T `U`, the type binding 1 gives "
         "it, at the type argument of Option in component 2.")
+
+
+def test_e170_at_an_empty_literal_names_its_element_type_in_words() -> None:
+    """An empty literal's element type is no type variable a reader can
+    name (`?`): the fix says what it is, and the binding it writes,
+    applied, clears the code."""
+    source = _DUP + _fn(
+        "@Unit", "@Int",
+        "let Tuple<@Array<Int>, @Array<String>> = dup([]);\n  0")
+    fix = _the("E170", "check", source).fix
+    assert fix == ("Write binding 2 as `@Array<Int>`, the type binding 1 "
+                   "gives the empty literal's element type."), fix
+    (binding,) = spans(fix)
+    fixed = source.replace("@Array<String>", binding)
+    assert _codes("check", fixed) == set(), fixed
 
 
 def test_the_applied_value_fix_applied_clears_e202() -> None:
