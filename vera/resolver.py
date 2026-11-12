@@ -18,6 +18,7 @@ from vera.errors import (
     SourceEncodingError,
     SourceLocation,
     TransformError,
+    source_lines,
 )
 from vera.parser import parse, read_source
 from vera.transform import transform
@@ -332,7 +333,7 @@ class ModuleResolver:
         try:
             # The text the parser saw: a leading byte-order mark is no
             # part of line 1, as the node's column counts it (#1790).
-            lines = read_source(importing_file).splitlines()
+            lines = source_lines(read_source(importing_file))
         except (OSError, SourceEncodingError):
             return ""
         idx = node.span.line - 1

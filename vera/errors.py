@@ -253,9 +253,36 @@ def _name_character(char: str) -> str:
     return f'"{char}"'
 
 
+def source_lines(source: str, *, keepends: bool = False) -> list[str]:
+    """*source*'s lines as a location counts them: cut at ``\\n`` and
+    nowhere else, as the lexer counts a line (#1853).
+
+    ``str.splitlines`` also cuts at U+000B, U+000C, U+001C to U+001E,
+    U+0085, U+2028 and U+2029, which the lexer reads as whitespace inside a
+    line, so after one of them the line it returned was not the line the
+    location named.  A file is read with universal newlines
+    (:func:`vera.parser.read_source`), so its text holds no carriage
+    return; a text handed in whole (the language server's, a test's) keeps
+    the ``\\r`` of a ``\\r\\n``, which is dropped from each line here as
+    ``splitlines`` drops it, and only there.  *keepends* keeps each line's
+    ``\\n`` (and that ``\\r``), so the lengths sum to the text's, for a
+    caller that turns a line and column into an offset.  A final empty
+    piece after a last ``\\n`` is no line, as ``splitlines`` has it."""
+    pieces = source.split("\n")
+    if keepends:
+        lines = [piece + "\n" for piece in pieces[:-1]]
+        if pieces[-1]:
+            lines.append(pieces[-1])
+        return lines
+    if pieces[-1] == "":
+        pieces.pop()
+    return [piece[:-1] if piece.endswith("\r") else piece
+            for piece in pieces]
+
+
 def _get_source_line(source: str, line: int) -> str:
-    """Extract a specific line from source text."""
-    lines = source.splitlines()
+    """Extract a specific line from source text (:func:`source_lines`)."""
+    lines = source_lines(source)
     if 1 <= line <= len(lines):
         return lines[line - 1]
     return ""

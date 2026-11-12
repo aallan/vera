@@ -1924,7 +1924,8 @@ def test_1418_g2_a_generic_refined_return_reads_its_own_scope(
     assert result["ok"] is True, result.get("diagnostics")
     generic = [(o["status"], o.get("error_code")) for o in result["obligations"]
                if o["kind"] == "refine_bind"
-               and o.get("description") == "<expr>"]
+               and o.get("description", "").startswith(
+                   "{ match mk(@Float64.0)")]
     assert generic == [("tier3", "E506")], (
         f"the generic's refined return proved from an imported disclosure "
         f"the previous function's scope hid — got {generic}"

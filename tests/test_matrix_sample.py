@@ -720,6 +720,7 @@ MARKED_FILES = (
     "test_counterexample_result_1707.py",
     "test_join_recorded_type_1716.py",
     "test_tail_call_guards_1849.py",
+    "test_diagnostic_text_reads_back_1573.py",
 )
 UNMARKED_FILES = (
     "test_obligations.py",
