@@ -41,16 +41,20 @@ from vera.types import (
     UnknownType,
     UnresolvedAdtType,
     base_type,
+    contains_fresh_typevar,
     contains_literal_hole,
+    contains_unknown,
     default_literal_holes,
     erases_to_unit,
     fill_literal_holes,
+    is_unknown_like,
     is_literal_hole,
     merge_inferred_types,
     written_effect,
     pretty_type,
     strip_builtin_typevar_marker,
     substitute,
+    types_equal,
 )
 
 def _span_bounds(source: str, span: ast.Span | None) -> tuple[int, int] | None:
@@ -71,6 +75,72 @@ def _span_text(source: str, span: ast.Span | None) -> str | None:
     """The text of *source* that *span* covers (1-based, end exclusive)."""
     bounds = _span_bounds(source, span)
     return None if bounds is None else source[bounds[0]:bounds[1]]
+
+
+def same_type_and_facts(a: Type, b: Type) -> bool:
+    """Whether *a* and *b* are one type stating the same facts: equal as
+    types (`types_equal`, which reads a refinement as its base) and as
+    values, so two refinements of one base with different predicates are
+    two types (PR 1864 review).  Where it says no for two types that are
+    the same, the join of the two is that type; where it says yes, they
+    agree."""
+    return types_equal(a, b) and a == b
+
+
+def _part_of(ty: Type, whole: Type) -> bool:
+    """Whether *ty* is *whole* or one of its type arguments' parts, the same
+    object: the type a constructor's field, a tuple's component or an
+    array's element is synthesized against is that part of the type its
+    branch is expected at.  No synthesis hands a part of a function type
+    down as an expected type (a closure's body meets its own written
+    return type), so a function type's parameters are not searched."""
+    if ty is whole:
+        return True
+    whole = base_type(whole)
+    if isinstance(whole, AdtType):
+        return any(_part_of(ty, a) for a in whole.type_args)
+    return False
+
+
+def _bound_parts(pattern: Type, concrete: Type, expr: ast.Expr | None,
+                 met: dict[str, list[tuple[ast.Expr | None, Type]]],
+                 *, into_functions: bool = False) -> None:
+    """Each type a type variable of *pattern* meets in *concrete*, with
+    *expr*, the expression whose type *concrete* is, where the variable is
+    the whole of *pattern* (the head, where the join reads an `Int`
+    expression's static sign) and ``None`` below it (#1684).  A position
+    *concrete* leaves open (a variable, a literal's hole, the unknown)
+    gives the variable nothing.
+
+    A function type in *pattern* is passed by unless *into_functions*: a
+    variable at a function-typed argument's positions is fixed by their
+    polarity (spec §4.2, `_apply_polarity_pins`), not by the join of the
+    arguments' types, so `apply2(@Int.0, fn(@Int -> @Nat) { .. })` is at
+    `Int`.  A variable bound to a whole function type (`second(f, g)`)
+    meets it at the head, where the join reads it."""
+    pattern = base_type(pattern)
+    if isinstance(pattern, TypeVar):
+        if (contains_literal_hole(concrete)
+                or contains_fresh_typevar(concrete)
+                or contains_unknown(concrete)
+                or isinstance(base_type(concrete), TypeVar)):
+            return
+        met.setdefault(pattern.name, []).append((expr, concrete))
+        return
+    concrete = base_type(concrete)
+    if (isinstance(pattern, AdtType) and isinstance(concrete, AdtType)
+            and pattern.name == concrete.name
+            and len(pattern.type_args) == len(concrete.type_args)):
+        for p, c in zip(pattern.type_args, concrete.type_args):
+            _bound_parts(p, c, None, met, into_functions=into_functions)
+    elif (into_functions
+            and isinstance(pattern, FunctionType)
+            and isinstance(concrete, FunctionType)
+            and len(pattern.params) == len(concrete.params)):
+        for p, c in zip(pattern.params, concrete.params):
+            _bound_parts(p, c, None, met, into_functions=True)
+        _bound_parts(pattern.return_type, concrete.return_type, None, met,
+                     into_functions=True)
 
 
 @dataclass(frozen=True)
@@ -1165,6 +1235,7 @@ class ResolutionMixin:
         """
         mapping: dict[str, Type] = {}
         pinned: list[tuple[int, _Pin]] = []
+        given: dict[str, list[tuple[ast.Expr | None, Type]]] = {}
         for index, (param_ty, arg, arg_ty) in enumerate(
                 zip(param_types, args, arg_types)):
             if arg_ty is None or isinstance(arg_ty, UnknownType):
@@ -1176,6 +1247,26 @@ class ResolutionMixin:
             self._unify_for_inference(param_ty, self._as_holes(soft_ty),
                                       mapping, conflicts, pins=pins)
             pinned.extend((index, pin) for pin in pins.found)
+            _bound_parts(param_ty, soft_ty, arg, given)
+        self._settle_disagreement(given, mapping)
+        from_context = self._expected_bindings(result_type, expected)
+        # #1684 (rule C): a variable no argument gives a type, or one an
+        # argument gives a type holding a variable a nested call left open
+        # (`head_plain([])`'s `?`, `wrap(None)`'s `Option<?>`), takes it
+        # from the type the result is expected at, joined onto what the
+        # arguments gave, so nothing an argument fixed is overridden.
+        for tv in forall_vars:
+            ctx_ty = from_context.get(tv)
+            if ctx_ty is None:
+                continue
+            bound = mapping.get(tv)
+            if bound is None:
+                mapping[tv] = ctx_ty
+            elif (contains_fresh_typevar(bound)
+                    and not contains_literal_hole(bound)):
+                filled = self._join(ctx_ty, bound)
+                if filled is not None and not contains_fresh_typevar(filled):
+                    mapping[tv] = filled
         holed = [tv for tv, b in mapping.items() if contains_literal_hole(b)]
         if holed:
             if (expected is not None and result_type is not None
@@ -1193,6 +1284,64 @@ class ResolutionMixin:
         if pinned:
             self._apply_polarity_pins(pinned, mapping, soft, args)
         return mapping, soft
+
+    def _settle_disagreement(
+        self,
+        given: dict[str, list[tuple[ast.Expr | None, Type]]],
+        mapping: dict[str, Type],
+    ) -> None:
+        """Rule B of #1684 (spec §5.9): a variable two or more arguments
+        give different types takes the type they share, `_value_join` (spec
+        §4.8's join, at a function type's parameter what each of them
+        accepts), whatever the result is expected at.  A narrowing into a
+        stronger type the result is bound at is then the binding's, of the
+        call's result, where a run-time check stands: an argument held to
+        the stronger type where it is passed has none for a refinement.
+
+        Two types no position reconciles keep the first binding, and the
+        argument check refuses the other.  A variable the arguments agree
+        on, or one argument fixes, is left as they give it."""
+        for tv, parts in given.items():
+            if len(parts) < 2 or tv not in mapping:
+                continue
+            first = parts[0][1]
+            if all(same_type_and_facts(t, first) for _, t in parts[1:]):
+                continue
+            structure: Type = first
+            for _, t in parts[1:]:
+                step = self._join_either(t, structure)
+                if step is None:
+                    break
+                structure = step
+            else:
+                mapping[tv] = self._value_join(structure, parts)
+
+    def _expected_bindings(self, result_type: Type | None,
+                           expected: Type | None) -> dict[str, Type]:
+        """Each type variable of a call's *result_type* the type the result
+        is expected at gives a type with no open part (#1684): no variable
+        a call left open, no literal's hole and no unknown."""
+        if (expected is None or result_type is None
+                or is_unknown_like(expected)
+                or contains_fresh_typevar(expected)
+                or any(_part_of(expected, s) for s in self._sibling_types)):
+            return {}
+        taken: dict[str, Type] = {}
+        self._unify_for_inference(result_type, expected, taken)
+        # A variable the expected type gives two types at two positions
+        # (`twice(None)` at `Tuple<Option<Int>, Option<String>>`) takes
+        # neither: the argument check names both positions.
+        met: dict[str, list[tuple[ast.Expr | None, Type]]] = {}
+        _bound_parts(result_type, expected, None, met,
+                     into_functions=True)
+        conflicted = {tv for tv, parts in met.items()
+                      if any(not same_type_and_facts(t, parts[0][1])
+                             for _, t in parts[1:])}
+        return {tv: ty for tv, ty in taken.items()
+                if tv not in conflicted
+                and not contains_fresh_typevar(ty)
+                and not contains_literal_hole(ty)
+                and not contains_unknown(ty)}
 
     def _apply_polarity_pins(
         self,

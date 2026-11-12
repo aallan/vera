@@ -27,7 +27,6 @@ carries.
 from __future__ import annotations
 
 import ast
-import os
 import re
 from pathlib import Path
 
@@ -53,9 +52,10 @@ ROLE_PATTERN = r'"(parameter|return value)"'
 _DEF = re.compile(r"    def (\w+)\(")
 
 
-def codegen_sources() -> list[Path]:
-    """Every module of the code-generation layer, enumerated."""
-    root = Path(vera.__file__).resolve().parent
+def codegen_sources(root: Path | None = None) -> list[Path]:
+    """Every module of the code-generation layer, enumerated, under the
+    `vera` package at *root* (the imported one by default)."""
+    root = root or Path(vera.__file__).resolve().parent
     found: list[Path] = []
     for package in EMITTER_PACKAGES:
         found.extend(sorted((root / package).glob("*.py")))
@@ -105,7 +105,7 @@ def _is_layout_table(node: ast.AST) -> bool:
     )
 
 
-def local_layout_tables() -> dict[str, list[str]]:
+def local_layout_tables(root: Path | None = None) -> dict[str, list[str]]:
     """Every module of the code-generation layer that declares a heap-field
     size or alignment table of its own, as ``{module: ["line N: …"]}``.
 
@@ -125,8 +125,11 @@ def local_layout_tables() -> dict[str, list[str]]:
     one module the tables belong to.
     """
     found: dict[str, list[str]] = {}
-    for path in codegen_sources():
-        rel = str(path).split(f"{os.sep}vera{os.sep}")[-1].replace(os.sep, "/")
+    package = root or Path(vera.__file__).resolve().parent
+    for path in codegen_sources(package):
+        # Named relative to the package, never by splitting the path on a
+        # directory name the checkout can carry too (`/Code/vera/vera/`).
+        rel = path.resolve().relative_to(package.resolve()).as_posix()
         if rel == LAYOUT_OWNER:
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -390,8 +393,9 @@ def slot_binding_provenance() -> dict[str, str]:
     `helpers.slot_value_locals`.
     """
     out: dict[str, str] = {}
-    for path in codegen_sources():
-        rel = str(path).split(f"{os.sep}vera{os.sep}")[-1].replace(os.sep, "/")
+    package = Path(vera.__file__).resolve().parent
+    for path in codegen_sources(package):
+        rel = path.resolve().relative_to(package).as_posix()
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         out.update(slot_binding_provenance_for_tree(tree, rel))
     return out

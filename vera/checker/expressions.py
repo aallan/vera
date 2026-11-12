@@ -14,6 +14,7 @@ from typing import Any, ClassVar
 from vera import ast, fold, naming
 from vera.formatter import format_expr_canonical
 from vera.checker.sql import resolve_array_len, resolve_literal_string
+from vera.checker.resolution import same_type_and_facts
 from vera.lowering import (
     PREDICATE_ARITY,
     PREDICATE_PARAMETER,
@@ -29,7 +30,9 @@ from vera.types import (
     BYTE,
     ConcreteEffectRow,
     contains_fresh_typevar,
+    contains_literal_hole,
     contains_typevar,
+    contains_unknown,
     EffectInstance,
     erases_to_unit,
     FLOAT64,
@@ -994,6 +997,20 @@ class ExpressionsMixin:
         `let @Nat = array_reverse([0 - 3, 5])[0]` is refused (E503) as
         `let @Nat = id(0 - 3)` is."""
         coll_ty = self._synth_expr(expr.collection)
+        # An element expected at a type is read from an array of that
+        # type: a collection whose element type nothing fixed (an empty
+        # literal, `[[]][0]`) or a call left open (`empty(())[0]`) is
+        # synthesized again against it (#1684).
+        coll_base = base_type(coll_ty) if coll_ty is not None else None
+        if (expected is not None
+                and isinstance(coll_base, AdtType)
+                and coll_base.name == "Array" and coll_base.type_args
+                and (contains_unknown(coll_base.type_args[0])
+                     or contains_fresh_typevar(coll_base.type_args[0]))):
+            again = self._synth_expr(
+                expr.collection, expected=AdtType("Array", (expected,)))
+            if again is not None:
+                coll_ty = again
         if expected is not None:
             coll_ty = self._check_in_literal_context(
                 expr.collection, coll_ty, AdtType("Array", (expected,)))
@@ -1181,7 +1198,8 @@ class ExpressionsMixin:
             self.env.bind(tname, resolved, "destruct")
 
     def _check_in_literal_context(self, expr: ast.Expr, ty: Type | None,
-                                  context: Type) -> Type | None:
+                                  context: Type, *,
+                                  component: bool = False) -> Type | None:
         """*expr*, synthesized as *ty* without an expected type, checked
         again against *context* where a generic call it reaches let its
         literals fix a position that *context* makes a `Nat`
@@ -1192,11 +1210,38 @@ class ExpressionsMixin:
         at the type *context* gives it, where it is a narrowing the verifier
         obligates — refuted where the literal is negative (E503).  A literal
         the source builds directly is not re-checked: the destructure's or
-        the binding's own narrowing reads it where it is.  Returns the type
-        the check settled on."""
-        if (ty is None or isinstance(ty, UnknownType)
-                or contains_typevar(context)
-                or not self._call_literal_meets_nat(expr, context)):
+        the binding's own narrowing reads it where it is.
+
+        So is a call whose type holds a variable it left open (`T$n`,
+        `none_ord(())`'s `Option<T>`): *context* is the type it is expected
+        at, which fixes that variable (rule C, spec §5.9), as a constructor's
+        argument takes its field's type (#1684, PR 1864 review), and an
+        index whose collection leaves its element type open
+        (`empty_ord(())[0]`), which rule I then reads at *context*.  A
+        `Tuple`'s *component* holds a constructor whose type leaves a
+        variable open (`None`, `Nil`, `Some(None)`) the same way, as a
+        user constructor's field does (`P(None, 1)`); an array literal's
+        element takes the context's part through the element rule instead
+        (spec §4.12.1).  Returns the type the check settled on."""
+        if ty is None or isinstance(ty, UnknownType):
+            return ty
+        # The open call's re-check is blocked only by what cannot fix its
+        # variable: an unknown, a literal's hole, a variable some call left
+        # open.  The enclosing function's own type parameter is a type like
+        # any other (`let @Array<Option<T>> = [none_ord(())]` inside a
+        # `forall<T>` fixes `none_ord`'s variable at that `T`).
+        open_kinds: tuple[type, ...] = (ast.FnCall, ast.ModuleCall,
+                                        ast.IndexExpr)
+        if component:
+            open_kinds += (ast.ConstructorCall, ast.NullaryConstructor)
+        left_open = (isinstance(expr, open_kinds)
+                     and contains_fresh_typevar(ty)
+                     and not contains_fresh_typevar(context)
+                     and not contains_unknown(context)
+                     and not contains_literal_hole(context))
+        if not left_open and (contains_typevar(context)
+                              or not self._call_literal_meets_nat(
+                                  expr, context)):
             return ty
         rechecked = self._synth_expr(expr, expected=context)
         if rechecked is None or isinstance(rechecked, UnknownType):
@@ -1399,6 +1444,15 @@ class ExpressionsMixin:
                          expected: Type | None = None) -> Type | None:
         """Type-check an array literal."""
         if not expr.elements:
+            # An empty literal takes its element type from its context
+            # (spec §4.12.1, #1684); with none it is unknown.
+            ctx = base_type(expected) if expected is not None else None
+            if (isinstance(ctx, AdtType) and ctx.name == "Array"
+                    and len(ctx.type_args) == 1
+                    and not contains_unknown(ctx.type_args[0])
+                    and not contains_fresh_typevar(ctx.type_args[0])
+                    and not contains_literal_hole(ctx.type_args[0])):
+                return AdtType("Array", (ctx.type_args[0],))
             return AdtType("Array", (UnknownType(),))
         self._clear_element_targets(expr)
 
@@ -1477,11 +1531,95 @@ class ExpressionsMixin:
         if not erases_to_unit(first):
             element_type, completed_by, conflicting = self._join_elements(
                 elem_types, first, first_at)
+            structure = held = element_type
+            if not conflicting:
+                held, element_type = self._element_type_by_rule(
+                    expr, elem_types, element_type, element_ctx)
+            # Where the rule chose a type other than the first element's
+            # (the context's, or the elements' join), the first element is
+            # judged like the others: a literal or an open element there
+            # took no part in the choice (#1684, PR 1864 review).
             self._check_array_elements(
-                expr, elem_types, element_type, first_at, completed_by,
-                conflicting)
+                expr, elem_types, held, first_at, completed_by,
+                conflicting, judge_first=held is not structure)
 
         return AdtType("Array", (element_type,))
+
+    def _element_type_by_rule(
+        self, expr: ast.ArrayLit, elem_types: Sequence[Type | None],
+        structure: Type, element_ctx: Type | None,
+    ) -> tuple[Type, Type]:
+        """The literal's element type by spec §4.12.1's rule (#1684):
+        where the elements' types differ, the element type the literal's
+        own context expects where each of them fits it, each element then
+        held to it, as before #1684; otherwise the type they share
+        (`_value_join`, the join of spec §4.8, which a generic call's
+        disagreeing arguments give its variable, spec §5.9), whichever
+        comes first.  The context's element type then fills what the elements
+        leave open (`None`'s payload, an empty literal's element type).
+
+        Returns the type each element is held to (before the context's
+        filling, so a refused element is named against what the elements
+        gave) and the literal's element type.
+
+        Only the literal's own context decides: a literal with none (an
+        argument of a generic call, an indexed literal) is the elements'
+        join, and a narrowing of it is where it is bound, as a generic
+        call's join is (spec §5.9)."""
+        # An element a literal typed takes its type from the others and the
+        # context (#1541), as a literal argument does: it gives the element
+        # type nothing to disagree with.
+        typed = [(e, t) for e, t in zip(expr.elements, elem_types)
+                 if t is not None and not isinstance(t, UnknownType)
+                 and not contains_literal_hole(
+                     self._literal_soft_type(e, t) or t)
+                 and not self._leaves_open(t)]
+        ctx = (element_ctx if element_ctx is not None
+               and not contains_fresh_typevar(element_ctx)
+               and not contains_unknown(element_ctx)
+               and not contains_literal_hole(element_ctx) else None)
+        element_type = structure
+        if typed and any(not same_type_and_facts(t, typed[0][1])
+                         for _, t in typed[1:]):
+            if ctx is not None and all(self._fits(t, ctx) for _, t in typed):
+                element_type = ctx
+            else:
+                joined: Type = typed[0][1]
+                for _, t in typed[1:]:
+                    step = self._join_either(t, joined)
+                    if step is None:
+                        break
+                    joined = step
+                else:
+                    element_type = self._value_join(joined, typed)
+        elif typed and any(t is not None and not isinstance(t, UnknownType)
+                           and self._leaves_open(t) for t in elem_types):
+            # The structure may hold a fact only an element a call left open
+            # states (its refinement, `NeArr<..>` beside a plain array): the
+            # elements do not share it, so the element type states only the
+            # facts the elements that took part state (#1684, rule J).
+            element_type = self._value_join(structure, typed)
+        held = element_type
+        if ctx is not None and (contains_fresh_typevar(element_type)
+                                or contains_unknown(element_type)):
+            filled = self._join(ctx, element_type)
+            if filled is not None:
+                element_type = filled
+        return held, element_type
+
+    def _leaves_open(self, ty: Type) -> bool:
+        """Whether *ty* holds a type variable that is not the enclosing
+        function's own: one a call left open (`T$3`), or a built-in's a
+        failed substitution lost (`T#b`), a position no value fixes."""
+        ty = base_type(ty)
+        if isinstance(ty, TypeVar):
+            return ty.name not in self.env.type_params
+        if isinstance(ty, AdtType):
+            return any(self._leaves_open(a) for a in ty.type_args)
+        if isinstance(ty, FunctionType):
+            return (any(self._leaves_open(p) for p in ty.params)
+                    or self._leaves_open(ty.return_type))
+        return False
 
     def _join_elements(self, elem_types: Sequence[Type | None],
                        first: Type, first_at: int,
@@ -1520,6 +1658,7 @@ class ExpressionsMixin:
                               element_type: Type, first_at: int,
                               completed_by: Sequence[int] = (),
                               conflicting: frozenset[int] = frozenset(),
+                              *, judge_first: bool = False,
                               ) -> None:
         """Hold each element of *expr* after its first typed one, at
         *first_at*, to the literal's *element_type* (#1584).
@@ -1535,7 +1674,10 @@ class ExpressionsMixin:
         element; so is one in *conflicting*, whose type gives one type
         variable two types, which that judgement, one position at a time,
         does not see.  An element whose type is already an error was
-        reported by its own check and is not judged again.
+        reported by its own check and is not judged again.  With
+        *judge_first* the element type is not the first element's (spec
+        §4.12.1's rule chose the context's type or the elements' join,
+        #1684), so the first element is judged like every other.
 
         Each element it admits whose own type is not the element type, the
         first typed one among them where the join completed it, has the
@@ -1547,7 +1689,7 @@ class ExpressionsMixin:
         for i, (elem, ty) in enumerate(zip(expr.elements, elem_types)):
             if i < first_at or ty is None or isinstance(ty, UnknownType):
                 continue
-            if i == first_at or (
+            if (i == first_at and not judge_first) or (
                     i not in conflicting and self._fits(ty, element_type)):
                 self._record_element_target(elem, ty, element_type)
                 continue

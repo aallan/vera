@@ -1037,12 +1037,15 @@ def test_the_ordering_holds_the_differential() -> None:
 
 
 # ---------------------------------------------------------------------
-# A variable determined by NOTHING: the family's last shape
+# A variable no argument determines: the family's last shape
 # ---------------------------------------------------------------------
 
-# The remaining way a type variable can go unbound is for no ARGUMENT to
-# mention it at all — `T` reachable only from the return type.  The question
-# this closes is whether the default can be observed there.
+# The remaining way a type variable can go unbound by the arguments is for
+# no ARGUMENT to mention it at all — `T` reachable only from the return
+# type.  Where the result is expected at a type, that type fixes `T` (spec
+# §5.9, #1684): `let @Option<Int> = mk(())` is `mk` at `Int`.  The question
+# this closes is whether the default, where nothing fixes `T`, can be
+# observed.
 #
 # It cannot, and the reason is the checker rather than luck.  A bare `@T`
 # return is uninhabitable: a concrete body is [E121] ("body has type Nat,
@@ -1053,8 +1056,8 @@ def test_the_ordering_holds_the_differential() -> None:
 # representation is a pointer whatever `T` is, and whose clone body (`None`,
 # `[]`) never reads it.
 #
-# Both shapes are therefore check-green, verify-clean, emit the `$Bool`
-# default, and run correctly.  Pinned rather than fixed: if a future change
+# Both shapes are therefore check-green, verify-clean, emit the clone at the
+# type the binding gives them (`Int`), and run correctly.  Pinned rather than fixed: if a future change
 # makes a bare `@T` return inhabitable, or gives a parameterised return a
 # `T`-dependent representation, these cells are what notices.
 _RETURN_ONLY_OPTION = """\
@@ -1107,17 +1110,17 @@ public fn main(@Unit -> @Int)
 def test_a_return_only_type_var_defaults_harmlessly(
     source: str, base: str, expected: int,
 ) -> None:
-    """No argument mentions `T`, so the default stands — and is unobservable.
+    """No argument mentions `T`, so the binding's `Int` fixes it (#1684).
 
-    Asserted on all three: the emitted clone IS the default, the differential
-    holds, and the program runs correctly.  Naming the default explicitly is
-    the point — a cell that only checked the value would pass just as well if
-    the variable were inferred, and would not record that this shape is the
-    one place a default still survives.
+    Asserted on all three: the emitted clone is at `Int` (before #1684 it
+    was the `Bool` default, unobservable), the differential holds, and the
+    program runs correctly.  Naming the clone explicitly is the point — a
+    cell that only checked the value would pass just as well at the
+    default.
     """
     result = _compile_checked(source)
     assert _errors(result) == [], _errors(result)
-    assert _clone_names(result.wat, base) == [f"{base}$Bool"], result.wat
+    assert _clone_names(result.wat, base) == [f"{base}$Int"], result.wat
     assert _run_checked(source) == expected
     codegen_set, verifier_set = _discovery_differential(source)
     assert codegen_set == verifier_set, (

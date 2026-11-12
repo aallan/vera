@@ -1170,6 +1170,21 @@ def contains_fresh_typevar(ty: Type) -> bool:
     return False
 
 
+def contains_unknown(ty: Type) -> bool:
+    """True if a type no judgement holds a value to (:func:`is_unknown_like`:
+    an empty literal's element type, an error's `Unknown`) stands anywhere
+    in *ty* (#1684)."""
+    if is_unknown_like(ty):
+        return True
+    ty = base_type(ty)
+    if isinstance(ty, AdtType):
+        return any(contains_unknown(a) for a in ty.type_args)
+    if isinstance(ty, FunctionType):
+        return (any(contains_unknown(p) for p in ty.params)
+                or contains_unknown(ty.return_type))
+    return False
+
+
 #: The hole a LITERAL leaves in an argument's type while a call's type
 #: arguments are inferred (#1541, #1565).
 #:

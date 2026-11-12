@@ -448,6 +448,20 @@ class ControlFlowMixin:
         (:func:`_shared_facts`, #1716)."""
         return _shared_facts(joined, arms)
 
+    def _synth_against(self, expr: ast.Expr, sibling: Type) -> Type | None:
+        """*expr*, an `if` branch or a `match` arm, synthesized again with
+        a sibling's type *sibling* expected, so a constructor takes from it
+        the type arguments it cannot fix itself.  A sibling's type is not
+        the type the value is expected at: it fixes no type variable a call
+        in *expr* leaves open (`_expected_bindings`, #1684), which the join
+        settles as it settles a literal's element (the order of the
+        branches or arms never decides it)."""
+        self._sibling_types.append(sibling)
+        try:
+            return self._synth_expr(expr, expected=sibling)
+        finally:
+            self._sibling_types.pop()
+
     def _join_either(self, ty: Type, onto: Type) -> Type | None:
         """The structure of a value join of an arm of *ty* with what the
         arms before it give, *onto*, as the `match` and the `Exn` handler
@@ -520,12 +534,12 @@ class ControlFlowMixin:
         # two types no position reconciles are refused.
         joined: Type | None
         if contains_typevar(then_ty) and not contains_typevar(else_ty):
-            then_ty = self._synth_expr(
-                expr.then_branch, expected=else_ty) or then_ty
+            then_ty = self._synth_against(
+                expr.then_branch, else_ty) or then_ty
             joined = self._join(then_ty, else_ty)
         elif contains_typevar(else_ty) and not contains_typevar(then_ty):
-            else_ty = self._synth_expr(
-                expr.else_branch, expected=then_ty) or else_ty
+            else_ty = self._synth_against(
+                expr.else_branch, then_ty) or else_ty
             joined = self._join(else_ty, then_ty)
         else:
             outcome = self._join_parts(else_ty, then_ty)
@@ -601,8 +615,7 @@ class ControlFlowMixin:
             elif not types_equal(arm_ty, NEVER):
                 # Re-synthesis fallback for unresolved TypeVars
                 if contains_typevar(arm_ty) and not contains_typevar(result_type):
-                    arm_ty = self._synth_expr(
-                        arm.body, expected=result_type)
+                    arm_ty = self._synth_against(arm.body, result_type)
                     if arm_ty is None or isinstance(arm_ty, UnknownType):
                         continue
 

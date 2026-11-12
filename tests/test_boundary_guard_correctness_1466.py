@@ -1090,6 +1090,31 @@ def test_no_module_states_the_heap_field_layout_twice() -> None:
     )
 
 
+def test_the_layout_scan_names_a_module_whatever_the_checkout_is_called(
+        tmp_path: Path) -> None:
+    """The scan names each module relative to the `vera` package, so a
+    checkout whose own directory is called `vera` (`.../vera/vera/wasm/`)
+    still reads `wasm/helpers.py` as the layout's owner.  Splitting the
+    path on `/vera/` took the checkout's directory for the package's, and
+    the owner's own tables were reported (the maintainer's checkout)."""
+    import shutil
+
+    package = tmp_path / "vera" / "vera"
+    shutil.copytree(Path(vera.__file__).resolve().parent, package,
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    # The scan reads the copy: its emitter modules are found there.
+    sources = guard_emitter_scan.codegen_sources(package)
+    assert sources and all(
+        p.resolve().is_relative_to(package.resolve()) for p in sources)
+    assert guard_emitter_scan.local_layout_tables(package) == {}
+    # A table planted in a module other than the owner is the one row, named
+    # relative to the copy's package; the owner's own tables are not rows.
+    planted = package / "wasm" / "planted_layout.py"
+    planted.write_text('_sizes = {"i32": 4, "i64": 8}\n', encoding="utf-8")
+    copies = guard_emitter_scan.local_layout_tables(package)
+    assert set(copies) == {"wasm/planted_layout.py"}, copies
+
+
 def test_the_layout_scan_would_see_a_hand_copy() -> None:
     """And the scan can FAIL, in every spelling of the same table.
 

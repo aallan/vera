@@ -1268,13 +1268,16 @@ class _Builder:
             return None
         if isinstance(expr, ast.FnCall) and expr.name == "map_insert" and len(expr.args) == 3:
             if isinstance(b, AdtType) and b.name == "Map" and len(b.type_args) == 2:
-                out[id(expr.args[0])] = req
+                # The receiver holds the type's components and not its
+                # head predicate: a non-empty map is built from an empty
+                # one.
+                out[id(expr.args[0])] = b
                 out[id(expr.args[1])] = b.type_args[0]
                 out[id(expr.args[2])] = b.type_args[1]
                 return out
         if isinstance(expr, ast.FnCall) and expr.name == "set_add" and len(expr.args) == 2:
             if isinstance(b, AdtType) and b.name == "Set" and b.type_args:
-                out[id(expr.args[0])] = req
+                out[id(expr.args[0])] = b
                 out[id(expr.args[1])] = b.type_args[0]
                 return out
         return None
@@ -1360,6 +1363,15 @@ class _Builder:
                          answer=self._boundary.get(id(e)))
             return
         if narrowing.holds_no_component(e):
+            # A value with no component (`set_new()`, `map_new()`) meets
+            # every requirement on a component, and not the head's own
+            # predicate: binding it at a refinement is the narrowing it is
+            # (#1684, where a context first types such a call).
+            if isinstance(req, RefinedType) and not _same_refinement(sem, req):
+                self.add("refine_bind", e, target=req,
+                         guard=self._refinement_guardable(
+                             req, construction=store),
+                         answer=self._boundary.get(id(e)))
             return
         assert req_nat is not None  # noqa: S101 — `req` stands in above
         self.narrowing_rows(e, sem, req, req_nat, head=not under_join,

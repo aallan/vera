@@ -401,8 +401,8 @@ CASES: dict[str, _Case] = {
         as_value("[1, @Bool.0]", "@Bool.0")),
     "E162-open-variable": _Case(
         "E162", "check", ENDO + _fn("@Bool", "@Int",
-            "let @Array<Endo<Int>> = [fn(@Int -> @Int) effects(pure) "
-            "{ @Int.0 }, mk(())];\n  0"),
+            "let @Nat = array_length([fn(@Int -> @Int) effects(pure) "
+            "{ @Int.0 }, mk(())]);\n  0"),
         as_value(" mk(())]", "mk(())")),
     "E301-branch": _Case(
         "E301", "check", POS + _helper("pos", "@Unit -> @Pos", "1")
@@ -616,9 +616,11 @@ DROPPED: dict[str, tuple[str, str, str]] = {
 }
 
 #: E301 with an open else branch: the then branch's type is named instead.
+# The `if` with no type expected of it: an expected `Endo<Int>` would fix
+# `mk`'s variable (spec §5.9, #1684), and a sibling branch's type does not.
 E301_OPEN_ELSE = ENDO + _fn("@Bool", "@Int",
-    "let @Endo<Int> = if @Bool.0 then { fn(@Int -> @Int) effects(pure) "
-    "{ @Int.0 } } else { mk(()) };\n  0")
+    "apply_fn(if @Bool.0 then { fn(@Int -> @Int) effects(pure) "
+    "{ @Int.0 } } else { mk(()) }, 1)")
 
 
 @pytest.mark.parametrize("name", sorted(DROPPED))
@@ -1741,3 +1743,192 @@ def test_repro_an_e501_clause_adds_no_trap_at_the_entry() -> None:
         fixed = _once(source, "requires(true)", clause)
         codes = _passed_codes("verify", fixed)
         assert not codes & {"E501", "E502"}, (clause, sorted(codes))
+
+
+# =====================================================================
+# #1684: E613's fix names binding the result at a type
+# =====================================================================
+
+_NONE_ORD = """\
+private forall<T where Ord<T>> fn none_ord(@Unit -> @Option<T>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  None
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match none_ord(()) {
+    None -> 7,
+    Some(@Int) -> @Int.0
+  }
+}
+"""
+
+
+def test_e613_s_binding_fix_applied_clears_the_code() -> None:
+    """E613 at a variable no argument fixes and nothing gives a type (a
+    `match` scrutinee) offers binding the result at a type, which fixes
+    the variable (spec §5.9): the scrutinee bound by a `let` of such a
+    type, as the fix says, passes the check with no E613."""
+    fix = _the("E613", "check", _NONE_ORD).fix
+    assert "bind its result at a type" in fix, fix
+    fixed = _NONE_ORD.replace(
+        "  match none_ord(()) {",
+        "  let @Option<Int> = none_ord(());\n  match @Option<Int>.0 {")
+    assert "E613" not in _passed_codes("check", fixed)
+
+
+_WHERE_ONLY = """\
+private forall<T where Ord<T>> fn where_only(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  7
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Int = where_only(());
+  @Int.0
+}
+"""
+
+
+def test_e613_offers_no_binding_where_the_result_holds_no_variable() -> None:
+    """A variable only a `where` constraint names (`forall<T where Ord<T>>
+    fn where_only(@Unit -> @Int)`): the result's type holds no `T`, so no
+    binding of it fixes `T` (the program already binds it at `Int`, and
+    E613 stands).  The fix offers only the parameter that carries `T`,
+    and that remedy, applied as written, passes the check (PR 1864
+    review: the binding remedy was offered here too, and could not
+    clear)."""
+    fix = _the("E613", "check", _WHERE_ONLY).fix
+    assert "bind its result" not in fix, fix
+    assert "give 'where_only' a parameter that carries T" in fix, fix
+    fixed = (_WHERE_ONLY
+             .replace("fn where_only(@Unit -> @Int)",
+                      "fn where_only(@Unit, @T -> @Int)")
+             .replace("where_only(())", "where_only((), 1)"))
+    assert "E613" not in _passed_codes("check", fixed)
+
+
+# The fix texts of E613 at a call, each pinned whole, each applied (PR 1864
+# mutation lane: the variable list, the phantom type's name and the
+# advice were each mutated with every cell green).
+_E613_SHAPES = """\
+private data Box { MkBox(Int) }
+
+private forall<A where Ord<A>> fn ordered(@A -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  0
+}
+
+private forall<A, B where Ord<A>, Ord<B>> fn pair_ord(@Unit -> @Option<Tuple<A, B>>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  None
+}
+
+"""
+
+_E613_ARGUMENT = _E613_SHAPES + """\
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Int = ordered(MkBox(1));
+  @Int.0
+}
+"""
+
+_E613_TWO_VARIABLES = _E613_SHAPES + """\
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match pair_ord(()) {
+    _ -> 0
+  }
+}
+"""
+
+
+def test_repro_e613_s_argument_fix_is_whole_and_clears() -> None:
+    """An argument fixes `A` at a type that does not support `Ord`: the fix
+    replaces the argument with an `Int` value, written whole, and applied
+    it passes the check."""
+    fix = _the("E613", "check", _E613_ARGUMENT).fix
+    assert fix == ("Instantiate 'ordered' at a type that supports 'Ord', "
+                   "Int for example: replace 'ordered(MkBox(1))' with "
+                   "'ordered(0)'."), fix
+    fixed = _E613_ARGUMENT.replace("ordered(MkBox(1))", "ordered(0)")
+    assert "E613" not in _passed_codes("check", fixed)
+
+
+def test_repro_e613_names_every_variable_no_argument_fixes() -> None:
+    """Two variables no argument fixes, `A` and `B`, both in the result's
+    type: the fix names both, the phantom type, the binding remedy and a
+    parameter for each, whole; each alternative, applied as it says,
+    passes the check (a parameter for `A` alone left `B` at the phantom
+    type and did not clear, PR 1864 review)."""
+    fix = _the("E613", "check", _E613_TWO_VARIABLES).fix
+    assert fix == (
+        "No argument of 'pair_ord(())' fixes A, B, so the call "
+        "instantiates 'pair_ord' at Bool, nothing giving its result a "
+        "type: bind its result at a type that supports 'Ord' (a `let` of "
+        "that type), or give 'pair_ord' a parameter for each of A, B "
+        "('@A', '@B') and pass each a value at a type that supports "
+        "'Ord', Int for example."), fix
+    bound = _E613_TWO_VARIABLES.replace(
+        "  match pair_ord(()) {",
+        "  let @Option<Tuple<Int, Int>> = pair_ord(());\n"
+        "  match @Option<Tuple<Int, Int>>.0 {")
+    assert "E613" not in _passed_codes("check", bound)
+    carried = (_E613_TWO_VARIABLES
+               .replace("fn pair_ord(@Unit -> ", "fn pair_ord(@Unit, @A, @B -> ")
+               .replace("pair_ord(())", "pair_ord((), 1, 2)"))
+    assert "E613" not in _passed_codes("check", carried)
+
+
+_E613_HALF = _E613_SHAPES.replace(
+    "fn pair_ord(@Unit -> @Option<Tuple<A, B>>)",
+    "fn pair_ord(@Unit -> @Option<A>)") + """\
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Option<Int> = pair_ord(());
+  0
+}
+"""
+
+
+def test_e613_offers_no_binding_where_the_result_holds_some_variables() -> None:
+    """`pair_ord(@Unit -> @Option<A>)`: the result's type holds `A` and not
+    `B`, so no binding fixes both; the fix offers only a parameter for
+    each, which, applied, passes the check."""
+    fix = _the("E613", "check", _E613_HALF).fix
+    assert "bind its result" not in fix, fix
+    assert "a parameter for each of A, B" in fix, fix
+    carried = (_E613_HALF
+               .replace("fn pair_ord(@Unit -> ", "fn pair_ord(@Unit, @A, @B -> ")
+               .replace("pair_ord(())", "pair_ord((), 1, 2)"))
+    assert "E613" not in _passed_codes("check", carried)

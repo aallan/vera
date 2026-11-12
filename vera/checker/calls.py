@@ -1050,14 +1050,18 @@ class CallsMixin:
         """Check a call against a known function signature."""
         # Synth arg types.  For non-generic functions pass the declared
         # param type as *expected* so that nested constructors can resolve
-        # TypeVars from context (fixes #243).
+        # TypeVars from context (fixes #243).  A type variable in it is the
+        # enclosing function's own (a `where` helper's parameter over the
+        # outer `T`), a type like any other, which fixes a variable the
+        # argument's call leaves open as an operation's parameter does
+        # (#1684 rule C).
         arg_types: list[Type | None] = []
         for i, arg in enumerate(args):
             exp: Type | None = None
             if (not fn_info.forall_vars
                     and i < len(fn_info.param_types)):
                 pt = fn_info.param_types[i]
-                if not contains_typevar(pt):
+                if not contains_fresh_typevar(pt):
                     exp = pt
             arg_types.append(self._synth_expr(arg, expected=exp))
 
@@ -3169,7 +3173,8 @@ class CallsMixin:
         for i, arg in enumerate(expr.args):
             t = self._synth_expr(arg)
             if components is not None:
-                t = self._check_in_literal_context(arg, t, components[i])
+                t = self._check_in_literal_context(
+                    arg, t, components[i], component=True)
             if t is not None and not isinstance(t, UnknownType):
                 arg_types.append(t)
             else:

@@ -932,13 +932,22 @@ def test_repro_a_rechecked_literal_walks_its_later_element() -> None:
     _assert_one_guard(_LATE_RECHECKED)
 
 
-def test_a_narrower_first_element_checks_a_wider_later_one() -> None:
-    """`[@Tuple<Nat, Nat>.0, @Tuple<Int, Nat>.0]` is an
-    `Array<Tuple<Nat, Nat>>` (spec §4.12.1), so the second element's first
-    component is coerced to `Nat` and checked, though the binding's element
-    type holds an `Int` there."""
-    _assert_one_guard(_NARROWER_FIRST)
-    assert len(_coercion_checks(_compiled(_NARROWER_FIRST))) == 1
+def test_a_narrower_first_element_takes_the_binding_s_element_type() -> None:
+    """`[@Tuple<Nat, Nat>.0, @Tuple<Int, Nat>.0]` bound at
+    `Array<Tuple<Int, Nat>>` is an `Array<Tuple<Int, Nat>>`, the binding's
+    element type, which each element fits (spec §4.12.1, #1684), in this
+    order as in the other: no component is coerced, and a negative first
+    component runs to its value.  Before #1684 the first element decided,
+    and the second's `Int` component was coerced to `Nat` and checked."""
+    verified = _verified(_NARROWER_FIRST)
+    assert verified.ok, [(d.error_code, d.description[:120])
+                         for d in verified.errors]
+    assert "W004" not in {w.error_code for w in verified.warnings}
+    compiled = _compiled(_NARROWER_FIRST)
+    assert _coercion_checks(compiled) == []
+    assert pipeline.checks(compiled.result, kind="nat_guard") == ()
+    _assert_returns(_ran(_NARROWER_FIRST, "f", -5), -5)
+    _assert_returns(_ran(_NARROWER_FIRST, "f", 5), 5)
 
 
 def test_a_wider_first_element_checks_nothing() -> None:

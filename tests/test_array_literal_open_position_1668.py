@@ -308,9 +308,14 @@ def test_repro_rigid_type_variable_fills_the_position() -> None:
 
 
 def test_repro_if_branch_fills_the_empty_branch() -> None:
+    # The empty literal takes the `Array<Nat>` the argument expects of
+    # each branch (spec §4.12.1, #1684 rule E), as a `None` branch takes
+    # `Option<Nat>`: the branches then disagree (E301) and the `if` meets
+    # the parameter (E202), both at the `if`, as `Some("abc")` beside
+    # `None` is reported at 6e272f19.
     checked = _checked(_IF_FIRST)
-    assert _where(checked) == [
-        ("E202", *_place(_IF_FIRST, 'if true then { ["abc"] } else { [] }'))]
+    at = _place(_IF_FIRST, 'if true then { ["abc"] } else { [] }')
+    assert _where(checked) == [("E301", *at), ("E202", *at)]
 
 
 def test_repro_match_arm_of_another_type_after_an_open_arm() -> None:
@@ -544,14 +549,7 @@ def _cells() -> list[_Cell]:
 
 
 def _params() -> list[object]:
-    return [
-        pytest.param(cell, id=_cell_id(cell), marks=pytest.mark.xfail(
-            strict=True,
-            reason="#1684: a `let` or a return refuses an open type "
-                   "variable"))
-        if _refused_open_var(cell) else pytest.param(cell, id=_cell_id(cell))
-        for cell in _cells()
-    ]
+    return [pytest.param(cell, id=_cell_id(cell)) for cell in _cells()]
 
 
 def _cell_id(cell: _Cell) -> str:
@@ -587,8 +585,16 @@ def _build(cell: _Cell) -> _Built:
     # The rule.  The parts' join is the first part's type, with the position
     # it leaves open given by the first later part that fills it; a part of
     # another type fills nothing and is refused.
-    if filler.joined is None:
+    if filler.joined is None and (cell.context == "bare" or (
+            cell.head == "array" and cell.context == "generic")):
+        # No context, or an empty literal's element type at a generic
+        # call's argument: a generic's arguments are given no expected
+        # type, so nothing fixes it.
         element = wrap_type.format(t=head.open_recorded)
+    elif filler.joined is None:
+        # A position the parts leave open takes the type the context
+        # expects of the element (spec §4.12.1, #1684 rule J).
+        element = wrap_type.format(t=head.type.format(x=filler.context))
     else:
         element = wrap_type.format(t=head.type.format(x=filler.joined))
     expected: list[tuple[str, int, int]] = []
@@ -1113,8 +1119,20 @@ public fn main(@Unit -> @Nat)
 """
 
 
-@pytest.mark.parametrize("program", [_CONV_PROGRAM, _AGREEING_PROGRAM],
-                         ids=["conv", "agreeing"])
+def test_run_closure_the_binding_s_type_fixes_runs() -> None:
+    """The agreeing closure where the `let` expects `NatToNat`: that type
+    reaches both branches and fixes `mk`'s `T` at `Nat` (spec §5.9, #1684
+    rule C), so the closure is compiled at the type it is applied at and
+    the program runs.  Before, the branch kept `T` open and the `if` was
+    refused (E301, E170)."""
+    checked = pipeline.check(_AGREEING_PROGRAM)
+    assert checked.ok, [e.format() for e in checked.errors]
+    assert {i.args for i in checked.typed.instances if i.key == "mk"} == {
+        ("Nat",)}
+    assert pipeline.run(_AGREEING_PROGRAM).value == 5
+
+
+@pytest.mark.parametrize("program", [_CONV_PROGRAM], ids=["conv"])
 def test_run_closure_the_join_cannot_type_is_refused_before_it_runs(
         program: str) -> None:
     ran = pipeline.run(program)

@@ -1,0 +1,2162 @@
+"""An expected type fixes what a value's arguments or elements leave open,
+and a type variable two arguments give different types takes one type
+whichever comes first (#1684, lines 1 and 5, find (a)).
+
+The rules, spec §5.9 and §4.12.1:
+
+* C: a call's type variable no argument gives a type (unbound, or bound to
+  a type holding a variable a nested call left open) takes it from the type
+  the call's result is expected at, joined onto what the arguments gave, so
+  nothing an argument fixed is overridden
+  (`ResolutionMixin._infer_type_args_in_context`);
+* B: a variable two or more arguments give different types takes the type
+  they share (`_value_join`, the join of spec §4.8, its polarity at a
+  function type's parameter included), whatever the result is expected
+  at; a narrowing into a stronger type the result is bound at is the
+  binding's, of the call's result, where a run-time check stands.  A
+  variable at a function-typed argument's positions is fixed by their
+  polarity (spec §4.2), not by the join;
+* J: an array literal's element type: where its elements' types differ,
+  the element type the literal's own context expects where each element
+  fits it, each held to it at the element (as before #1684); otherwise
+  the elements' join.  The context's element type fills what the
+  elements leave open;
+* E and I: an empty literal takes its type from the context, and an index
+  expected at a type reads an array of that type.
+
+Before them the first argument (or element) to bind a variable decided its
+type, so a variable bound by `fn(@Int -> @Int)` and then by
+`fn(@Nat -> @Int)` was `fn(Int -> Int)` and the `Nat` closure ran on `-5`;
+an expected type fixed only a literal's hole, so `[None, None]` met
+`Array<Option<Nat>>` as `Array<Option<?>>` (E170), and
+`string_length(head_plain([]))` compiled `head_plain` at the default
+`Bool` and its module did not load.
+"""
+
+from __future__ import annotations
+
+import typing
+
+import pytest
+
+from tests import pipeline
+
+pytestmark = pytest.mark.matrix(decides=[
+    "vera/checker/calls.py",
+    "vera/checker/control.py",
+    "vera/checker/expressions.py",
+    "vera/checker/resolution.py",
+    "vera/obligations/table.py",
+])
+
+
+def _fn(name: str, formals: str, ret: str, body: str, *,
+        forall: str = "", effect: str = "pure",
+        visibility: str = "private") -> str:
+    indented = "\n".join(f"  {line}" if line else line
+                         for line in body.splitlines())
+    return (f"{visibility} {forall}fn {name}({formals} -> @{ret})\n"
+            f"  requires(true)\n  ensures(true)\n"
+            f"  effects({effect})\n{{\n{indented}\n}}\n")
+
+
+def _codes(source: str) -> list[str]:
+    return [e.error_code for e in pipeline.check(source).errors]
+
+
+def _instances(source: str, key: str) -> set[tuple[str, ...]]:
+    checked = pipeline.check(source)
+    assert checked.ok, [e.format() for e in checked.errors]
+    return {inst.args for inst in checked.typed.instances if inst.key == key}
+
+
+def _trap(source: str) -> str:
+    ran = pipeline.run(source)
+    assert ran.trap is not None, ran.value
+    return str(ran.trap)
+
+
+_HEAD_PLAIN = _fn("head_plain", "@Array<T>", "T", "@Array<T>.0[0]",
+                  forall="forall<T> ")
+
+
+# ---------------------------------------------------------------------
+# C: the expected type fixes a variable no argument gives a type
+# ---------------------------------------------------------------------
+
+def test_repro_line_5_an_empty_literal_s_variable_takes_the_expected_type(
+) -> None:
+    """Line 5: `head_plain([])` at a `String` parameter is `head_plain` at
+    `String`.  At 6e272f19 the call kept the default `Bool`, the module
+    did not load (`nothing on stack`); now it stops at the empty array's
+    index, the trap the program owes."""
+    source = _HEAD_PLAIN + "\n" + _fn(
+        "main", "@Unit", "Int",
+        "nat_to_int(string_length(head_plain([])))",
+        visibility="public")
+    assert _instances(source, "head_plain") == {("String",)}
+    assert "Array index out of bounds" in _trap(source)
+
+
+def test_repro_line_5_the_let_form_takes_the_binding_s_type() -> None:
+    """`let @String = head_plain([]);` was E170 ("value has type ?")."""
+    source = _HEAD_PLAIN + "\n" + _fn(
+        "main", "@Unit", "Int",
+        "let @String = head_plain([]);\n"
+        "nat_to_int(string_length(@String.0))",
+        visibility="public")
+    assert _instances(source, "head_plain") == {("String",)}
+    assert "Array index out of bounds" in _trap(source)
+
+
+def test_repro_line_5_the_state_form_is_refused_once() -> None:
+    """`let @Nat = rd(())` under a `State<Int>` handler: `rd` is at `Nat`,
+    so its row asks `State<Nat>`, which the handler does not give (E125);
+    the E170 "value has type ?" beside it at 6e272f19 is gone."""
+    source = _fn("rd", "@Unit", "T", "get(())", forall="forall<T> ",
+                 effect="<State<T>>") + "\n" + _fn(
+        "main", "@Unit", "Int",
+        "handle[State<Int>](@Int = 0 - 5) {\n"
+        "  get(@Unit) -> { resume(@Int.0) },\n"
+        "  put(@Int) -> { resume(()) }\n"
+        "} in {\n"
+        "  let @Nat = rd(());\n"
+        "  nat_to_int(@Nat.0)\n"
+        "}",
+        visibility="public")
+    assert _codes(source) == ["E125"]
+
+
+_WRAP = _fn("wrap", "@T", "Option<T>", "Some(@T.0)", forall="forall<T> ")
+
+
+def test_a_partly_open_binding_is_completed_by_the_expected_type() -> None:
+    """`wrap(None)` binds `T` to `Option<?>`; the binding's `Option<Int>`
+    completes it, so `wrap` is at `Option<Int>`."""
+    source = _WRAP + "\n" + _fn(
+        "main", "@Unit", "Int",
+        "let @Option<Option<Int>> = wrap(None);\n"
+        "match @Option<Option<Int>>.0 {\n"
+        "  Some(@Option<Int>) -> option_unwrap_or(@Option<Int>.0, 7),\n"
+        "  None -> 0\n"
+        "}",
+        visibility="public")
+    assert _instances(source, "wrap") == {("Option<Int>",)}
+    assert pipeline.run(source).value == 7
+
+
+_ID = _fn("id", "@T", "T", "@T.0", forall="forall<T> ")
+
+
+def test_the_expected_type_overrides_nothing_an_argument_fixed() -> None:
+    """`let @Nat = id(@Int.0)`: the argument fixes `T` at `Int`, so `id`
+    is at `Int`, and the narrowing is the binding's, of the call's result
+    (not the argument's, which an expected `Nat` overriding `T` would make
+    it)."""
+    source = _ID + "\n" + _fn(
+        "f", "@Int", "Nat", "let @Nat = id(@Int.0);\n@Nat.0") + "\n" + _fn(
+        "main", "@Unit", "Nat", "f(4)", visibility="public")
+    assert _instances(source, "id") == {("Int",)}
+    rows = [(o.kind, o.expr_text) for o in pipeline.verify(source).obligations
+            if o.kind == "nat_bind"]
+    assert rows == [("nat_bind", "id(@Int.0)")], rows
+
+
+_CELL = """\
+private data Cell<T> { MkCell(fn(Unit -> Unit) effects(<State<T>>)) }
+
+private forall<T> fn mkcell(@Unit -> @Cell<T>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  MkCell(fn(@Unit -> @Unit) effects(<State<T>>) { () })
+}
+
+"""
+
+#: A value whose call leaves `T` open beside one that fixes it, at each
+#: site that joins two values; the code a refusal there carries.
+_SIBLING_SITES = {
+    "if": ("if @Bool.0 then {{ {a} }} else {{ {b} }}", "E301"),
+    "match": ("match @Bool.0 {{ true -> {a}, false -> {b} }}", "E302"),
+}
+
+
+@pytest.mark.parametrize("order", ["open_first", "open_second"])
+@pytest.mark.parametrize("site", list(_SIBLING_SITES))
+def test_a_sibling_s_type_is_no_expected_type(site: str, order: str) -> None:
+    """An `if` branch or a `match` arm that leaves `mkcell`'s `T` open is
+    synthesized again against its sibling's `Cell<Nat>`, for a
+    constructor's sake; that type is not the one the value is expected at,
+    so it fixes nothing, and the cell's behaviour-held `T` is refused in
+    both orders, as at 6e272f19 (the `match` re-synthesizes only a later
+    arm, so a sibling taken as expected would accept one order alone)."""
+    shape, code = _SIBLING_SITES[site]
+    a, b = "mkcell(())", "@Cell<Nat>.0"
+    if order == "open_second":
+        a, b = b, a
+    source = _CELL + _fn("g", "@Cell<Nat>, @Bool", "Nat",
+                         f"array_length([{shape.format(a=a, b=b)}])")
+    assert _codes(source) == [code]
+
+
+@pytest.mark.parametrize("order", ["open_first", "open_second"])
+@pytest.mark.parametrize("site", list(_SIBLING_SITES))
+def test_the_expected_type_reaches_every_branch(site: str, order: str) -> None:
+    """The same join bound by a `let` at `Cell<Nat>`: that type is expected
+    of each branch and arm, and fixes `mkcell`'s `T` at `Nat` in both
+    orders."""
+    shape, _ = _SIBLING_SITES[site]
+    a, b = "mkcell(())", "@Cell<Nat>.0"
+    if order == "open_second":
+        a, b = b, a
+    source = _CELL + _fn(
+        "g", "@Cell<Nat>, @Bool", "Nat",
+        f"let @Cell<Nat> = {shape.format(a=a, b=b)};\n0")
+    assert _instances(source, "mkcell") == {("Nat",)}
+
+
+# ---------------------------------------------------------------------
+# B: a variable two arguments give different types takes one type,
+# whichever comes first
+# ---------------------------------------------------------------------
+
+_SECOND = _fn("second", "@T, @T", "T", "@T.0", forall="forall<T> ")
+
+_FN_PAIR = """\
+type NatFn = fn(Nat -> Int) effects(pure);
+
+type IntFn = fn(Int -> Int) effects(pure);
+
+"""
+
+
+@pytest.mark.parametrize("order", ["int_first", "nat_first"])
+def test_repro_a_nat_closure_is_never_handed_a_negative_int(
+        order: str) -> None:
+    """`second(int_fn, nat_fn)` applied to -5.  At 6e272f19 the first
+    argument fixed `T` at `fn(Int -> Int)`, the second fitted it, and the
+    `Nat` closure ran on -5 and returned -5, every gate green; in the other
+    order `T` was `fn(Nat -> Int)` and the -5 was refused.  `T` is now what
+    both accept, `fn(Nat -> Int)`, in both orders, and the -5 bound into
+    its parameter is refuted (E503)."""
+    int_fn = "fn(@Int -> @Int) effects(pure) { @Int.0 }"
+    nat_fn = "fn(@Nat -> @Int) effects(pure) { nat_to_int(@Nat.0) }"
+    a, b = (int_fn, nat_fn) if order == "int_first" else (nat_fn, int_fn)
+    source = _FN_PAIR + _SECOND + "\n" + _fn(
+        "main", "@Unit", "Int", f"apply_fn(second({a}, {b}), 0 - 5)",
+        visibility="public")
+    assert _instances(source, "second") == {("fn(Nat -> Int)",)}
+    verified = pipeline.verify(source, reconcile=True)
+    assert [e.error_code for e in verified.errors] == ["E503"], [
+        e.format() for e in verified.errors]
+
+
+# ---------------------------------------------------------------------
+# B: the join stands whatever is expected, and a narrowing into the
+# stronger type is the binding's, where a run-time check stands
+# ---------------------------------------------------------------------
+
+_RS_TYPE = "type RS = { @Set<Int> | set_size(@Set<Int>.0) > 0 };\n\n"
+
+_POS_TYPE = "type Pos = { @Int | @Int.0 > 0 };\n\n"
+
+_PICK = _fn("pick", "@Bool, @T, @T", "T",
+            "if @Bool.0 then {\n  @T.1\n} else {\n  @T.0\n}",
+            forall="forall<T> ")
+
+_OPQ = _fn("opq", "@Int", "Int", "@Int.0 - 10")
+
+
+def _main_printing(call: str) -> str:
+    return _fn("main", "@Unit", "Unit", f"IO.print(int_to_string({call}))",
+               effect="<IO>", visibility="public")
+
+
+def _guarded_at_binding(source: str, kind: str, bound: str) -> None:
+    """`vera verify` passes, the narrowing into the refinement (or `Nat`)
+    is one `tier3` row at *bound*, the expression the `let` binds, whose
+    check the compiled module holds, and the run traps on the violating
+    value the program passes."""
+    verified = pipeline.verify(source, reconcile=True)
+    assert verified.errors == (), [e.format() for e in verified.errors]
+    rows = [(o.status, o.expr_text) for o in verified.obligations
+            if o.kind == kind and o.fn_name == "g"
+            and o.status != "verified"]
+    assert rows == [("tier3", bound)], rows
+    _trap(source)
+
+
+#: The reviewer's programs at a refinement the solver leaves to run time
+#: (a `set_size` predicate): the `let`'s binding of the call.
+_RS_CALLS = {
+    "unwrap": ("@Option<Set<Int>>, @RS",
+               "option_unwrap_or(@Option<Set<Int>>.0, @RS.0)",
+               "g(Some(set_new()), set_add(set_new(), 1))"),
+    "pick_refined_first": ("@RS, @Set<Int>",
+                           "pick(false, @RS.0, @Set<Int>.0)",
+                           "g(set_add(set_new(), 1), set_new())"),
+    "pick_base_first": ("@RS, @Set<Int>",
+                        "pick(true, @Set<Int>.0, @RS.0)",
+                        "g(set_add(set_new(), 1), set_new())"),
+    "pick_nested": ("@RS, @Set<Int>",
+                    "pick(false, @RS.0, pick(true, @Set<Int>.0, @RS.0))",
+                    "g(set_add(set_new(), 1), set_new())"),
+    "pick_nested_inner_first": (
+        "@RS, @Set<Int>",
+        "pick(true, pick(false, @RS.0, @Set<Int>.0), @RS.0)",
+        "g(set_add(set_new(), 1), set_new())"),
+}
+
+
+@pytest.mark.parametrize("form", list(_RS_CALLS))
+def test_repro_a_refined_binding_of_a_disagreeing_call_is_guarded(
+        form: str) -> None:
+    """`let @RS = option_unwrap_or(@Option<Set<Int>>.0, @RS.0)`, and `pick`
+    of an `@RS` beside a `@Set<Int>` in both orders and nested: the
+    arguments give `T` `RS` and `Set<Int>`, which join at `Set<Int>`, and
+    the narrowing into `RS` is the `let`'s, checked at run time, so an
+    empty set never stands as an `@RS`.  Under the expected-type clause
+    (taking the binding's `RS` for `T` and holding each argument to it)
+    the narrowing moved onto the argument, where no check stands: the
+    `unwrap` form verified with the row `tier3_unguarded` and printed 0,
+    the `pick` forms were refused (E541) and printed 0."""
+    formals, call, actuals = _RS_CALLS[form]
+    source = (_RS_TYPE + _PICK + "\n"
+              + _fn("g", f"{formals}", "Int",
+                    f"let @RS = {call};\nset_size(@RS.0)") + "\n"
+              + _main_printing(actuals))
+    _guarded_at_binding(source, "refine_bind", call)
+
+
+#: The same at `Pos`, whose predicate the solver reads: `g`'s argument is
+#: any `Int`, so the binding stays a run-time check, and `-5` traps.
+_POS_CALLS = {
+    "unwrap": ("@Option<Int>, @Pos",
+               "option_unwrap_or(@Option<Int>.0, @Pos.0)",
+               "g(Some(0 - 5), 1)"),
+    "pick_refined_first": ("@Pos, @Int", "pick(false, @Pos.0, @Int.0)",
+                           "g(3, 0 - 5)"),
+    "pick_base_first": ("@Pos, @Int", "pick(true, @Int.0, @Pos.0)",
+                        "g(3, 0 - 5)"),
+    "opaque_refined_first": ("@Pos, @Int",
+                             "pick(false, @Pos.0, opq(@Int.0))",
+                             "g(3, 5)"),
+    "opaque_base_first": ("@Pos, @Int",
+                          "pick(true, opq(@Int.0), @Pos.0)",
+                          "g(3, 5)"),
+}
+
+
+@pytest.mark.parametrize("form", list(_POS_CALLS))
+def test_repro_a_negative_int_never_stands_as_a_pos(form: str) -> None:
+    """`let @Pos = pick(false, @Pos.0, opq(@Int.0))` with `opq(5)` = -5:
+    the join is `Int`, the narrowing is the `let`'s, and the run traps.
+    Under the expected-type clause the row moved onto the argument, was
+    refuted there (E505), and `vera run`, which no refutation stops,
+    printed -5 for a `@Pos`."""
+    formals, call, actuals = _POS_CALLS[form]
+    source = (_POS_TYPE + _PICK + "\n" + _OPQ + "\n"
+              + _fn("g", formals, "Int", f"let @Pos = {call};\n@Pos.0")
+              + "\n" + _main_printing(actuals))
+    _guarded_at_binding(source, "refine_bind", call)
+    assert "-5" not in (pipeline.run(source).stdout or "")
+
+
+_APPLY2 = {
+    "value_first": (
+        "type Endo<T> = fn(T -> T) effects(pure);\n\n"
+        + _fn("apply2", "@T, @Endo<T>", "T", "apply_fn(@Endo<T>.0, @T.0)",
+              forall="forall<T> "),
+        "apply2(@Int.0, fn(@Int -> @Nat) effects(pure) { abs(@Int.0) })"),
+    "closure_first": (
+        "type Endo<T> = fn(T -> T) effects(pure);\n\n"
+        + _fn("apply2", "@Endo<T>, @T", "T", "apply_fn(@Endo<T>.0, @T.0)",
+              forall="forall<T> "),
+        "apply2(fn(@Int -> @Nat) effects(pure) { abs(@Int.0) }, @Int.0)"),
+}
+
+
+@pytest.mark.parametrize("order", list(_APPLY2))
+def test_repro_a_closure_s_positions_fix_the_variable_by_polarity(
+        order: str) -> None:
+    """`let @Nat = apply2(@Int.0, fn(@Int -> @Nat) { abs(@Int.0) })`, the
+    closure before or after the value: the closure's `Int` parameter fixes
+    `T` at `Int` (spec §4.2's polarity), the call is `apply2` at `Int`,
+    and the narrowing into `Nat` is the `let`'s, guarded; the program
+    prints 5.  Under the expected-type clause `T` took the `let`'s `Nat`,
+    the `Int` value was held to it and refuted (E503): a correct program
+    refused."""
+    decl, call = _APPLY2[order]
+    source = (decl + "\n"
+              + _fn("g", "@Int", "Int",
+                    f"let @Nat = {call};\nnat_to_int(@Nat.0)") + "\n"
+              + _main_printing("g(0 - 5)"))
+    assert _instances(source, "apply2") == {("Int",)}
+    verified = pipeline.verify(source, reconcile=True)
+    assert verified.errors == (), [e.format() for e in verified.errors]
+    rows = [(o.status, o.expr_text) for o in verified.obligations
+            if o.kind == "nat_bind" and o.fn_name == "g"]
+    assert rows == [("tier3", call)], rows
+    ran = pipeline.run(source)
+    assert ran.trap is None and ran.stdout == "5", (ran.trap, ran.stdout)
+
+
+@pytest.mark.parametrize("order", ["nat_first", "int_first"])
+def test_repro_a_nat_binding_of_second_is_the_binding_s_narrowing(
+        order: str) -> None:
+    """`let @Nat = second(@Nat.0, @Int.0)`: `T` is `Int` in both orders,
+    and the narrowing is the `let`'s, guarded: the run traps where the
+    call returns the `Int` (-5) and prints 3 where it returns the
+    `Nat`."""
+    a, b = ("@Nat.0", "@Int.0") if order == "nat_first" else (
+        "@Int.0", "@Nat.0")
+    call = f"second({a}, {b})"
+    source = (_SECOND + "\n"
+              + _fn("g", "@Int, @Nat", "Int",
+                    f"let @Nat = {call};\nnat_to_int(@Nat.0)") + "\n"
+              + _main_printing("g(0 - 5, 3)"))
+    assert _instances(source, "second") == {("Int",)}
+    verified = pipeline.verify(source, reconcile=True)
+    assert verified.errors == (), [e.format() for e in verified.errors]
+    rows = [(o.status, o.expr_text) for o in verified.obligations
+            if o.kind == "nat_bind" and o.fn_name == "g"]
+    assert rows == [("tier3", call)], rows
+    ran = pipeline.run(source)
+    if order == "nat_first":
+        assert ran.trap is not None, ran.stdout
+    else:
+        assert ran.trap is None and ran.stdout == "3", (ran.trap, ran.stdout)
+
+
+# ---------------------------------------------------------------------
+# The matrix: site x pair x order x expected
+# ---------------------------------------------------------------------
+
+_MATRIX_PRE = """\
+type PosInt = { @Int | @Int.0 > 0 };
+
+type Small = { @Int | @Int.0 < 10 };
+
+type NatFn = fn(Nat -> Int) effects(pure);
+
+type IntFn = fn(Int -> Int) effects(pure);
+
+type SmallFn = fn(Small -> Int) effects(pure);
+
+type PureCb = fn(Int -> Int) effects(pure);
+
+type IOCb = fn(Int -> Int) effects(<IO>);
+
+type TakesPure = fn(PureCb -> Int) effects(pure);
+
+type TakesIO = fn(IOCb -> Int) effects(pure);
+
+type RS = { @Set<Int> | set_size(@Set<Int>.0) > 0 };
+
+"""
+
+_IO_CB = 'fn(@Int -> @Int) effects(<IO>) { IO.print("cb"); @Int.0 }'
+
+
+class _Pair(typing.NamedTuple):
+    """Two values of two types, *strong* the one a value of which is also
+    one of *weak* (a subtype), the formals and arguments of `f` that make
+    them, the type both accept (the join, None where there is none), and
+    how a value of each type is read into an `Int`."""
+
+    strong: str
+    weak: str
+    a: str           # the value of type `strong`
+    b: str           # the value of type `weak`
+    formals: str
+    actuals: str
+    join: str | None
+    unrelated: str   # an expected type neither fits
+    #: Whether a `weak` value fits a `strong` parameter: a narrowing
+    #: (`Nat`, a refinement), or the relaxation a function type's
+    #: parameter has at any parameter (issue #1819); an effect row has none.
+    weak_fits: bool = True
+
+
+#: How `f` reads an `Int` out of a value of each type, *v* the value.
+_READ = {
+    "Nat": "nat_to_int({v})", "Int": "{v}", "PosInt": "{v}",
+    "String": "nat_to_int(string_length({v}))", "Bool": "0",
+    "IntFn": "apply_fn({v}, 0 - 5)", "NatFn": "apply_fn({v}, 0 - 5)",
+    "SmallFn": "apply_fn({v}, 50)",
+    "TakesPure": "apply_fn({v}, " + _IO_CB + ")",
+    "TakesIO": "apply_fn({v}, " + _IO_CB + ")",
+    "RS": "set_size({v})", "Set<Int>": "set_size({v})",
+    "Small": "{v}",
+}
+
+PAIRS = {
+    "nat_int": _Pair("Nat", "Int", "@Nat.0", "@Int.0", "@Nat, @Int",
+                     "1, 0 - 5", "Int", "String"),
+    "refined_base": _Pair("PosInt", "Int", "@PosInt.0", "@Int.0",
+                          "@PosInt, @Int", "1, 0 - 5", "Int", "String"),
+    # A refinement the solver leaves to run time: a narrowing into it is
+    # `tier3`, so the program verifies and its run says whether a check
+    # stands where the narrowing is.
+    # Two refinements of one base whose predicates differ: neither is the
+    # other's subtype, they join at the base (PR 1864 review).
+    "two_predicates": _Pair("PosInt", "Small", "@PosInt.0", "@Small.0",
+                            "@PosInt, @Small", "20, 0 - 3", "Int", "String"),
+    "refined_set": _Pair("RS", "Set<Int>", "@RS.0", "@Set<Int>.0",
+                         "@RS, @Set<Int>", "set_add(set_new(), 1), set_new()",
+                         "Set<Int>", "String"),
+    "fn_param": _Pair(
+        "IntFn", "NatFn", "fn(@Int -> @Int) effects(pure) { @Int.0 }",
+        "fn(@Nat -> @Int) effects(pure) { nat_to_int(@Nat.0) }",
+        "@Unit", "()", "NatFn", "String"),
+    "refined_param": _Pair(
+        "IntFn", "SmallFn", "fn(@Int -> @Int) effects(pure) { @Int.0 }",
+        "fn(@Small -> @Int) effects(pure) { @Small.0 }",
+        "@Unit", "()", "SmallFn", "String"),
+    "effect_row": _Pair(
+        "TakesIO", "TakesPure",
+        "fn(@IOCb -> @Int) effects(pure) { 0 }",
+        "fn(@PureCb -> @Int) effects(pure) { apply_fn(@PureCb.0, 1) }",
+        "@Unit", "()", "TakesPure", "String", weak_fits=False),
+    "unrelated": _Pair("Int", "String", "@Int.0", "@String.0",
+                       "@Int, @String", '1, "s"', None, "Bool"),
+}
+
+#: The generic each call site calls, `T` its variable.
+_SITE_DECLS = {
+    "two_parameter": _SECOND,
+    "pick": _fn("pick", "@Bool, @T, @T", "T",
+                "if @Bool.0 then { @T.1 } else { @T.0 }",
+                forall="forall<T> "),
+}
+_SITE_CALL = {"two_parameter": "second({x}, {y})",
+              "pick": "pick(false, {x}, {y})"}
+
+#: Every site: the two calls, and the array literal of the two values,
+#: whose element type the same rule gives (spec §4.12.1).
+SITES = [*_SITE_DECLS, "array"]
+
+EXPECTED = ["none", "stronger", "weaker", "unrelated"]
+
+
+def _expected_type(pair: _Pair, expected: str) -> str | None:
+    return {"none": None, "stronger": pair.strong, "weaker": pair.weak,
+            "unrelated": pair.unrelated}[expected]
+
+
+def _instance(site: str, pair: _Pair, expected: str) -> str | None:
+    """The type the rule gives `T`.  At a call, the type both accept,
+    whatever is expected.  At the array literal, the expected element type
+    where both values fit it (a `strong` value fits `weak`; neither fits
+    `unrelated`), otherwise the type both accept."""
+    if site != "array":
+        return pair.join
+    want = _expected_type(pair, expected)
+    if pair.join is not None and (
+            want == pair.weak or (want == pair.strong and pair.weak_fits)):
+        return want
+    return pair.join
+
+
+def _read(pair: _Pair, want: str | None, value: str) -> str:
+    """`f`'s body reading *value*: at *want* where a type is expected, and
+    where none is, as an operand or an applied function."""
+    if want is None:
+        return (f"{value} + 0" if pair.join in ("Int", None)
+                else _READ[pair.join].replace("{v}", value))
+    return f"let @{want} = {value};\n" + _READ[want].replace(
+        "{v}", f"@{want}.0")
+
+
+def _program(site: str, pair: _Pair, order: str, expected: str,
+             decl: str, element: str | None = None) -> str:
+    """The cell's program.  At the array site *element*, where given, is
+    the twin's element type: the literal is bound at it, and its second
+    element read where the cell's expected type (or none) reads it."""
+    x, y = (pair.a, pair.b) if order == "strong_first" else (pair.b, pair.a)
+    want = _expected_type(pair, expected)
+    if site == "array":
+        literal = f"[{x}, {y}]"
+        held = element or want
+        if held is None:
+            read = _read(pair, None, f"{literal}[1]")
+        else:
+            read = (f"let @Array<{held}> = {literal};\n"
+                    + _read(pair, want, f"@Array<{held}>.0[1]"))
+    else:
+        read = _read(pair, want, _SITE_CALL[site].format(x=x, y=y))
+    return (_MATRIX_PRE + decl + "\n"
+            + _fn("f", pair.formals, "Int", read, effect="<IO>") + "\n"
+            + _fn("main", "@Unit", "Int", f"f({pair.actuals})",
+                  effect="<IO>", visibility="public"))
+
+
+def _twin(site: str, instance: str) -> str:
+    """The site's generic written at *instance*: the program the rule
+    makes the call, its arguments held to *instance* where they are
+    passed."""
+    return _SITE_DECLS[site].replace("forall<T> ", "").replace("T", instance)
+
+
+def _outcome(source: str) -> tuple[object, ...]:
+    """What the program does: its check codes, and for one that checks,
+    its verify codes, its narrowing rows (kind, status, the expression
+    narrowed, which says whether an argument or the call's result is),
+    and its run (the value, or the trap's first line), whatever `vera
+    verify` said, so a program that verifies traps where its twin does
+    and one `vera verify` refuses still runs as its twin runs.  The
+    narrowing rows are `f`'s, so the twin's own entry checks are not
+    counted."""
+    checked = pipeline.check(source)
+    codes = tuple(e.error_code for e in checked.errors)
+    if codes:
+        return (codes,)
+    verified = pipeline.verify(source, reconcile=True)
+    rows = tuple(sorted((o.kind, o.status, o.expr_text)
+                        for o in verified.obligations
+                        if o.kind in ("nat_bind", "refine_bind")
+                        and o.fn_name == "f"))
+    refused = tuple(e.error_code for e in verified.errors)
+    ran = pipeline.run(source)
+    run = (("trap", str(ran.trap).splitlines()[0]) if ran.trap is not None
+           else ("value", ran.value, ran.stdout))
+    return ((), refused, rows, run)
+
+
+#: A narrowing the solver leaves to run time or refutes: at a call's
+#: result the two are the same claim (the narrowing is unproved there).
+_UNPROVED = {"tier3": "unproved", "violated": "unproved"}
+
+
+def _unproved(outcome: tuple[object, ...]) -> tuple[object, ...]:
+    """*outcome* with a narrowing's `tier3` and `violated` read alike, and
+    the refutation's own codes (E503, E505) dropped.  The solver refutes a
+    narrowing of the twin's result, an `Int` its `ensures(true)` says
+    nothing of, and leaves the generic instance's result to run time; the
+    narrowing is unproved at the same expression in both, and the run, the
+    rest of the verdict (an E541 among it) and the rows' places decide."""
+    if len(outcome) == 1:
+        return outcome
+    codes, refused, rows, run = outcome
+    assert isinstance(refused, tuple) and isinstance(rows, tuple)
+    return (codes,
+            tuple(c for c in refused if c not in ("E503", "E505")),
+            tuple(sorted((k, _UNPROVED.get(st, st), x) for k, st, x in rows)),
+            run)
+
+
+@pytest.mark.parametrize("expected", EXPECTED)
+@pytest.mark.parametrize("order", ["strong_first", "weak_first"])
+@pytest.mark.parametrize("pair", list(PAIRS))
+@pytest.mark.parametrize("site", SITES)
+def test_a_call_s_variable_takes_one_type_whichever_comes_first(
+        site: str, pair: str, order: str, expected: str) -> None:
+    """The call records `T` at the rule's type, and the program does what
+    the same call to the generic written at that type does, in both
+    orders: the same verdict, the same narrowing at the same expression
+    (at a call the result's binding, the join being the instance; at the
+    literal an element where the expected element type was taken), and
+    the same run."""
+    p = PAIRS[pair]
+    source = _program(site, p, order, expected, _SITE_DECLS.get(site, ""))
+    instance = _instance(site, p, expected)
+    if instance is None:
+        # Two types no position reconciles: refused, in both orders.
+        assert _outcome(source)[0], _outcome(source)
+        return
+    if site == "array":
+        # The literal bound at the element type the rule gives it.
+        twin = _program(site, p, order, expected, "", element=instance)
+        assert _outcome(source) == _outcome(twin), instance
+        return
+    key = "second" if site == "two_parameter" else "pick"
+    checked = pipeline.check(source)
+    recorded = ({i.args for i in checked.typed.instances if i.key == key}
+                if checked.ok else None)
+    twin = _program(site, p, order, expected, _twin(site, instance))
+    assert _unproved(_outcome(source)) == _unproved(_outcome(twin)), (
+        recorded, instance)
+    if checked.ok:
+        # An instance is built at its type with every refinement stripped.
+        names = {"IntFn": "fn(Int -> Int)", "NatFn": "fn(Nat -> Int)",
+                 "SmallFn": "fn(Int -> Int)", "PosInt": "Int",
+                 "RS": "Set<Int>",
+                 "TakesPure": "fn(PureCb -> Int)",
+                 "TakesIO": "fn(IOCb -> Int)"}
+        assert recorded is not None
+        (args,) = recorded
+        assert args[0] in (instance, names.get(instance)), (args, instance)
+
+
+# ---------------------------------------------------------------------
+# B, nested: each level is the join, and the narrowing is the binding's
+# ---------------------------------------------------------------------
+
+_INT_FN = "fn(@Int -> @Int) effects(pure) { @Int.0 }"
+_NAT_FN = "fn(@Nat -> @Int) effects(pure) { nat_to_int(@Nat.0) }"
+
+
+def _chain(depth: int, inner: str, fill: str = "{n}",
+           outer: str = "second") -> str:
+    """*outer* nested *depth* deep around *inner* (a call that holds the
+    disagreement): `second`, each level adding the literal or value
+    *fill* beside it (the seeds' shape, where a literal's hole meets the
+    join), or `id`, which gives each level nothing but the call below."""
+    call = inner
+    for n in range(1, depth):
+        call = (f"id({call})" if outer == "id"
+                else f"second({call}, {fill.replace('{n}', str(n))})")
+    return call
+
+
+def _nested(depth: int, order: str, expected: str | None,
+            outer: str = "second") -> str:
+    x, y = ("@Nat.0", "@Int.0") if order == "nat_first" else (
+        "@Int.0", "@Nat.0")
+    call = _chain(depth, f"second({x}, {y})", outer=outer)
+    if expected is None:
+        body = f"{call} + 0"
+    elif expected == "Nat":
+        body = f"let @Nat = {call};\nnat_to_int(@Nat.0)"
+    elif expected == "Int":
+        body = f"let @Int = {call};\n@Int.0"
+    else:
+        body = f'let @{expected} = {call};\n0'
+    return (_SECOND + "\n" + _ID + "\n"
+            + _fn("f", "@Nat, @Int", "Int", body) + "\n"
+            + _fn("main", "@Unit", "Int", "f(1, 0 - 5)", visibility="public"))
+
+
+def _narrowed(source: str) -> list[tuple[str, str]]:
+    return sorted((o.status, o.expr_text)
+                  for o in pipeline.verify(source).obligations
+                  if o.kind == "nat_bind" and o.fn_name == "f")
+
+
+@pytest.mark.parametrize("order", ["nat_first", "int_first"])
+@pytest.mark.parametrize("depth", [2, 3])
+@pytest.mark.parametrize("outer", ["second", "id"])
+def test_seed317_s_shape_narrows_at_the_binding(
+        depth: int, order: str, outer: str) -> None:
+    """The shape of generator seeds 317 and 335 reduced: the outer call
+    bound at `@Nat`, the inner holding a `Nat` beside an `Int`.  Every
+    level is the join, `Int`, and the narrowing into `Nat` is the
+    binding's, of the outermost call's result, checked at run time (the
+    cost the rule names: at 6e272f19 the first argument fixed the inner
+    call at `Nat` and the narrowing was the `Int` argument's, proved where
+    the caller's facts prove it; binding that argument at `Nat` first
+    keeps the proof)."""
+    source = _nested(depth, order, "Nat", outer)
+    assert _instances(source, "second") == {("Int",)}
+    if outer == "id":
+        assert _instances(source, "id") == {("Int",)}
+    narrowed = _narrowed(source)
+    assert len(narrowed) == 1 and narrowed[0][0] == "tier3", narrowed
+    assert narrowed[0][1].startswith(f"{outer}("), narrowed
+    # The check stands: reconciliation finds it emitted (no E541).
+    assert pipeline.verify(source, reconcile=True).errors == ()
+
+
+@pytest.mark.parametrize("order", ["nat_first", "int_first"])
+@pytest.mark.parametrize("expected", [None, "Int"])
+@pytest.mark.parametrize("depth", [2, 3])
+@pytest.mark.parametrize("outer", ["second", "id"])
+def test_a_nested_join_with_no_stronger_context_stands(
+        depth: int, expected: str | None, order: str, outer: str) -> None:
+    """Nothing expected outside, or an `Int` (the join itself): every
+    level is the join, `Int`, and nothing narrows."""
+    source = _nested(depth, order, expected, outer)
+    assert _instances(source, "second") == {("Int",)}
+    if outer == "id":
+        assert _instances(source, "id") == {("Int",)}
+    assert _narrowed(source) == []
+
+
+@pytest.mark.parametrize("order", ["nat_first", "int_first"])
+@pytest.mark.parametrize("depth", [2, 3])
+@pytest.mark.parametrize("outer", ["second", "id"])
+def test_a_nested_join_an_unrelated_binding_meets_is_refused_once(
+        depth: int, order: str, outer: str) -> None:
+    """A `String` binding: every level is the join, and the mismatch is
+    reported once, at the binding."""
+    errors = pipeline.check(_nested(depth, order, "String", outer)).errors
+    assert [e.error_code for e in errors] == ["E170"], [
+        e.format() for e in errors]
+
+
+@pytest.mark.parametrize("order", ["int_fn_first", "nat_fn_first"])
+@pytest.mark.parametrize("depth", [2, 3])
+def test_a_nested_function_pair_joins_by_polarity_at_every_level(
+        depth: int, order: str) -> None:
+    """The function-type pair nested the same way: every level is what
+    both accept, `fn(Nat -> Int)`, nothing expected or bound at `IntFn`
+    alike, so the -5 is refuted (E503) when it is applied unbound."""
+    x, y = (_INT_FN, _NAT_FN) if order == "int_fn_first" else (
+        _NAT_FN, _INT_FN)
+    call = _chain(depth, f"second({x}, {y})", fill=_INT_FN)
+    joined = _FN_PAIR + _SECOND + "\n" + _fn(
+        "main", "@Unit", "Int", f"apply_fn({call}, 0 - 5)",
+        visibility="public")
+    assert _instances(joined, "second") == {("fn(Nat -> Int)",)}
+    assert [e.error_code for e in pipeline.verify(joined).errors] == ["E503"]
+    bound = _FN_PAIR + _SECOND + "\n" + _fn(
+        "main", "@Unit", "Int",
+        f"let @IntFn = {call};\napply_fn(@IntFn.0, 0 - 5)",
+        visibility="public")
+    assert _instances(bound, "second") == {("fn(Nat -> Int)",)}
+
+
+# ---------------------------------------------------------------------
+# J: an array literal's element type by the same rule
+# ---------------------------------------------------------------------
+
+@pytest.mark.parametrize("form", ["let", "return", "closure"])
+def test_repro_line_1_elements_left_open_take_the_context_s_type(
+        form: str) -> None:
+    """Line 1: `[None, None]` where an `Array<Option<Nat>>` is expected.
+    At 6e272f19 the elements left the element type `Option<?>`, which the
+    holding site met by name: E170, E121, E171.  The context's element
+    type fills what the elements leave open."""
+    if form == "let":
+        body = ("let @Array<Option<Nat>> = [None, None];\n"
+                "array_length(@Array<Option<Nat>>.0)")
+        source = _fn("main", "@Unit", "Nat", body, visibility="public")
+    elif form == "return":
+        source = (_fn("nones", "@Unit", "Array<Option<Nat>>",
+                      "[None, None]") + "\n"
+                  + _fn("main", "@Unit", "Nat",
+                        "array_length(nones(()))", visibility="public"))
+    else:
+        source = ("type Mk = fn(Unit -> Array<Option<Nat>>) effects(pure);\n\n"
+                  + _fn("main", "@Unit", "Nat",
+                        "let @Mk = fn(@Unit -> @Array<Option<Nat>>) "
+                        "effects(pure) { [None, None] };\n"
+                        "array_length(apply_fn(@Mk.0, ()))",
+                        visibility="public"))
+    checked = pipeline.check(source)
+    assert checked.ok, [e.format() for e in checked.errors]
+    assert pipeline.run(source).value == 2
+
+
+_IDG = _fn("idg", "@T", "T", "@T.0", forall="forall<T> ")
+
+
+@pytest.mark.parametrize("order", ["refined_first", "base_first"])
+def test_repro_find_a_the_literal_s_type_does_not_depend_on_order(
+        order: str) -> None:
+    """Find (a): `idg([@PosInt.0, @Int.0])`.  At 6e272f19 the first element
+    decided the element type: refined first, the `Int` element was held
+    to `PosInt` and refuted (E505); base first, the literal was
+    `Array<Int>`.  The elements' join is `Int` in both orders, and the
+    program verifies and prints 2."""
+    a, b = ("@PosInt.0", "@Int.0") if order == "refined_first" else (
+        "@Int.0", "@PosInt.0")
+    source = ("type PosInt = { @Int | @Int.0 > 0 };\n\n" + _IDG + "\n"
+              + _fn("f", "@PosInt, @Int", "Nat",
+                    f"array_length(idg([{a}, {b}]))") + "\n"
+              + _fn("main", "@Unit", "Nat", "f(1, 0 - 5)",
+                    visibility="public"))
+    assert pipeline.verify(source).errors == ()
+    assert _instances(source, "idg") == {("Array<Int>",)}
+    assert pipeline.run(source).value == 2
+
+
+@pytest.mark.parametrize("order", ["nat_first", "int_first"])
+def test_an_expected_element_type_holds_each_element(order: str) -> None:
+    """`let @Array<Nat> = [@Nat.0, @Int.0]`: both fit `Nat`, so the
+    element type is `Nat` and the `Int` element is the narrowing, refuted
+    at the element in both orders (as at 6e272f19).  The literal is
+    recorded at `Array<Nat>` alone in both orders; at c35763d6 the
+    `Int`-first order also recorded it at `Array<Int>`, the first
+    element's type, as the elements' join with no expected type would."""
+    a, b = ("@Nat.0", "@Int.0") if order == "nat_first" else (
+        "@Int.0", "@Nat.0")
+    source = _fn("f", "@Nat, @Int", "Int",
+                 f"let @Array<Nat> = [{a}, {b}];\n"
+                 "nat_to_int(array_length(@Array<Nat>.0))")
+    assert [row for row in _narrowed(source)
+            if row[1] == "@Int.0" or row[1].startswith("[")] == [
+        ("violated", "@Int.0")]
+    checked = pipeline.check(source)
+    arrays = {t for t in checked.artifacts.expr_types.values()
+              if t.startswith("Array<")}
+    assert arrays == {"Array<Nat>"}, arrays
+
+
+# ---------------------------------------------------------------------
+# Every element is judged against the element type the literal ends with
+# (PR 1864 review): a literal or an open element first took no part in
+# choosing it
+# ---------------------------------------------------------------------
+
+_ELEMENT_PRE = """\
+type NonEmpty = { @String | string_length(@String.0) > 0 };
+
+type PosB = { @Bool | @Bool.0 };
+
+private data Box { MkBox(Int) }
+
+type BoxR = { @Box | true };
+
+type NeArr = { @Array<Int> | array_length(@Array<Int>.0) > 0 };
+
+"""
+
+#: An element type, two values of it that disagree (a refinement beside
+#: its base), and `f`'s formals that give them.
+_ELEMENT_TYPES = {
+    "String": ("@NonEmpty.0", "@String.0", "@NonEmpty, @String"),
+    "Bool": ("@PosB.0", "@Bool.0", "@PosB, @Bool"),
+    "Box": ("@BoxR.0", "@Box.0", "@BoxR, @Box"),
+    "Array<Int>": ("@NeArr.0", "@Array<Int>.0", "@NeArr, @Array<Int>"),
+}
+
+_FOREIGN = {"int": "1", "negative": "-1", "float": "1.5", "none": "None"}
+
+
+@pytest.mark.parametrize("expected", ["let", "none"])
+@pytest.mark.parametrize("at", [0, 1, 2])
+@pytest.mark.parametrize("foreign", list(_FOREIGN))
+@pytest.mark.parametrize("element", list(_ELEMENT_TYPES))
+def test_repro_an_element_of_another_type_is_refused_wherever_it_stands(
+        element: str, foreign: str, at: int, expected: str) -> None:
+    """`[1, @NonEmpty.0, @String.0]`: the typed elements disagree, so the
+    element type is the binding's `String` (or, with nothing expected,
+    their join, `String`), and the `1`, a literal, took no part in that
+    choice.  At 17186873 the first element was taken as the element
+    type's source and not judged, so an `Int` (or a `None`) first was
+    accepted as a `String` element, stored at the wrong layout.  Every
+    element is judged: E162, wherever the foreign element stands, whatever
+    its kind, with or without an expected type (c35763d6 refused each
+    too)."""
+    strong, weak, formals = _ELEMENT_TYPES[element]
+    elements = [strong, weak]
+    elements.insert(at, _FOREIGN[foreign])
+    literal = "[" + ", ".join(elements) + "]"
+    body = (f"let @Array<{element}> = {literal};\n0" if expected == "let"
+            else f"nat_to_int(array_length({literal}))")
+    codes = _codes(_ELEMENT_PRE + _fn("f", formals, "Int", body))
+    assert "E162" in codes, codes
+
+
+# ---------------------------------------------------------------------
+# Two refinements of one base with different predicates disagree (PR 1864
+# review): they join at the base, in either order
+# ---------------------------------------------------------------------
+
+_TWO_PREDICATES = """\
+type PosInt = { @Int | @Int.0 > 0 };
+
+type Small = { @Int | @Int.0 < 10 };
+
+"""
+
+
+@pytest.mark.parametrize("site", ["second", "pick", "array_index"])
+@pytest.mark.parametrize("order", ["pos_first", "small_first"])
+def test_repro_two_predicates_over_one_base_join_at_the_base(
+        site: str, order: str) -> None:
+    """`second(@PosInt.0, @Small.0)` with `f(20, 0 - 3)`: the arguments
+    give `T` two refinements of `Int`.  At c35763d6 and 17186873 the two
+    compared equal (`types_equal` reads a refinement as its base), so `T`
+    kept the first and the second argument was held to its predicate: E505
+    at whichever came second, and an indexed literal trapped at run time
+    on a valid `Small`.  They join at `Int` in both orders: nothing
+    narrows, `vera verify` passes, and the program runs to the value it
+    picks."""
+    x, y = (("@PosInt.0", "@Small.0") if order == "pos_first"
+            else ("@Small.0", "@PosInt.0"))
+    call = {"second": f"second({x}, {y})",
+            "pick": f"pick(false, {x}, {y})",
+            "array_index": f"[{x}, {y}][1]"}[site]
+    source = (_TWO_PREDICATES + _SECOND + "\n" + _PICK + "\n"
+              + _fn("f", "@PosInt, @Small", "Int", f"{call} + 0") + "\n"
+              + _fn("main", "@Unit", "Int", "f(20, 0 - 3)",
+                    visibility="public"))
+    if site != "array_index":
+        assert _instances(source, site) == {("Int",)}
+    verified = pipeline.verify(source, reconcile=True)
+    assert verified.errors == (), [e.format() for e in verified.errors]
+    narrowed = [(o.status, o.expr_text) for o in verified.obligations
+                if o.kind == "refine_bind" and o.fn_name == "f"
+                and o.status != "verified"]
+    assert narrowed == [], narrowed
+    ran = pipeline.run(source)
+    assert ran.trap is None, ran.trap
+    assert ran.value == (-3 if order == "pos_first" else 20), ran.value
+
+
+# ---------------------------------------------------------------------
+# E and I: an empty literal takes its type from the context, and an index
+# expected at a type reads an array of that type
+# ---------------------------------------------------------------------
+
+#: Forms where `[][0]` (or a deeper empty) meets a type: the body of a
+#: `main` returning `Int`.
+_TYPED_EMPTY_INDEX = {
+    "let": "let @Int = [][0];\n@Int.0",
+    "return": "[][0]",
+    "argument": 'string_length([][0]) + 0',
+    "nested": "let @Int = [[]][0][0];\n@Int.0",
+}
+
+
+@pytest.mark.parametrize("form", list(_TYPED_EMPTY_INDEX))
+def test_an_index_the_context_types_reads_an_array_of_that_type(
+        form: str) -> None:
+    """At 6e272f19 each form checked with the index's element type
+    unknown, `vera verify` warned that code generation skipped `main`
+    (E602), and `vera run` refused it (E907, function dropped).  The type
+    the index is expected at types the empty literal (`Array<Int>`, or
+    `Array<String>` for `string_length`'s argument), and the program
+    compiles and stops at the index, the trap it owes."""
+    source = _fn("main", "@Unit", "Int", _TYPED_EMPTY_INDEX[form],
+                 visibility="public")
+    if form == "argument":
+        source = source.replace("string_length([][0]) + 0",
+                                "nat_to_int(string_length([][0]))")
+    checked = pipeline.check(source)
+    assert checked.ok, [e.format() for e in checked.errors]
+    assert "Array index out of bounds" in _trap(source)
+
+
+def test_an_empty_literal_takes_the_binding_s_element_type() -> None:
+    """`let @Array<Int> = [];` records the literal at `Array<Int>`."""
+    source = _fn("main", "@Unit", "Nat",
+                 "let @Array<Int> = [];\narray_length(@Array<Int>.0)",
+                 visibility="public")
+    checked = pipeline.check(source)
+    assert checked.ok
+    recorded = checked.artifacts.expr_types
+    assert "Array<Int>" in recorded.values(), recorded
+    assert pipeline.run(source).value == 0
+
+
+@pytest.mark.parametrize("form", [
+    "match [][0] {\n  _ -> 1\n}",
+    'nat_to_int(string_length("\\([][0])"))',
+    "[][0] + 1",
+])
+def test_an_index_no_context_types_is_left_to_1862(form: str) -> None:
+    """With no type around it the index's element type stays unknown, with
+    no diagnostic: the check accepts, `vera verify` warns that `main` is
+    skipped (E602) and `vera run` refuses it (E907).  Issue #1862 refuses
+    such an index at check; this pins where it stands until then."""
+    source = _fn("main", "@Unit", "Int", form, visibility="public")
+    assert pipeline.check(source).ok
+    warnings = {w.error_code
+                for w in pipeline.verify(source, reconcile=True).warnings}
+    assert "E602" in warnings, warnings
+
+
+# ---------------------------------------------------------------------
+# Spec §4.8, as the checker reads it (fold-in)
+# ---------------------------------------------------------------------
+
+_N = _fn("n", "@Unit", "Nat", "3")
+
+
+@pytest.mark.parametrize("order", ["call_first", "nat_first"])
+def test_a_call_s_result_is_no_static_nat_in_an_if(order: str) -> None:
+    """§4.8: an `Int` branch made only of non-negative literals and `@Nat`
+    slot references is read as a `Nat`; a call's result does not count
+    (`_no_call`), so `nat_to_int(n(())) + 1` beside a `@Nat` makes the `if`
+    an `Int`, obligated where it is bound into a `Nat`, in both arm
+    orders; the literal `3` in its place makes it a `Nat`, with nothing to
+    obligate."""
+    def program(arm: str) -> str:
+        a, b = (arm, "@Nat.0") if order == "call_first" else ("@Nat.0", arm)
+        return _N + "\n" + _fn(
+            "f", "@Bool, @Nat", "Nat",
+            f"let @Nat = if @Bool.0 then {{ {a} }} else {{ {b} }};\n@Nat.0")
+    with_call = [(o.kind, o.expr_text.split(" ")[0])
+                 for o in pipeline.verify(program("nat_to_int(n(())) + 1"))
+                 .obligations if o.kind == "nat_bind" and o.fn_name == "f"]
+    assert with_call == [("nat_bind", "if")], with_call
+    assert not [o for o in pipeline.verify(program("3")).obligations
+                if o.kind == "nat_bind" and o.fn_name == "f"]
+
+
+# ---------------------------------------------------------------------
+# An empty collection a context types meets that context's refinement
+# ---------------------------------------------------------------------
+
+_RS = """\
+type RS = { @Set<Int> | set_size(@Set<Int>.0) > 0 };
+
+type RM = { @Map<Int, Int> | map_size(@Map<Int, Int>.0) > 0 };
+
+"""
+
+#: Where an empty `set_new()` or `map_new()` meets a refined type the
+#: context gives it: a `let`, a join of a `let`, a `State` cell's initial
+#: value and a `throw`'s payload.
+_EMPTY_SITES = {
+    "let": ("Set<Int>", "let @RS = set_new();\n0"),
+    "let_map": ("Map<Int, Int>", "let @RM = map_new();\n0"),
+    "join": ("Set<Int>",
+             "let @RS = if @Bool.0 then { set_new() } else { "
+             "set_add(set_new(), 1) };\n0"),
+    "state": ("Set<Int>",
+              "handle[State<RS>](@RS = set_new()) {\n"
+              "  put(@RS) -> { resume(()) }\n} in {\n  0\n}"),
+    "throw": ("Set<Int>",
+              "handle[Exn<RS>] {\n  throw(@RS) -> { 1 }\n} in {\n"
+              "  throw(set_new())\n}"),
+}
+
+
+@pytest.mark.parametrize("site", list(_EMPTY_SITES))
+def test_an_empty_collection_meets_the_refinement_it_is_typed_at(
+        site: str) -> None:
+    """`set_new()` and `map_new()` take their type from the context (rule
+    C), so a refined context types them at its base, and the binding is a
+    narrowing into the refinement, obligated and guarded where it is bound
+    (a run-time check, which reconciliation finds emitted).  The
+    obligation table had skipped every value that holds
+    no component, as one that "conforms to any requirement of its shape",
+    which holds of a component's requirement and not of the head's
+    predicate; at 6e272f19 no such value reached a refined position,
+    the open variable being refused (E170, E204)."""
+    _, body = _EMPTY_SITES[site]
+    source = _RS + _fn("f", "@Bool", "Int", body,
+                       effect="<State<RS>>" if site == "state" else "pure")
+    if site == "state":
+        source = source.replace("effects(<State<RS>>)", "effects(pure)")
+    verified = pipeline.verify(source, reconcile=True)
+    rows = [(o.kind, o.status) for o in verified.obligations
+            if o.kind == "refine_bind" and o.fn_name == "f"
+            and ("set_new()" in o.expr_text or "map_new()" in o.expr_text)]
+    assert rows and all(status in ("tier3", "violated")
+                        for _, status in rows), rows
+    if site != "join":
+        assert not [e for e in verified.errors if e.error_code == "E541"]
+    # At a join no check is planted at a call's leaf (E541), as for
+    # `set_add(..)` leaves at 6e272f19: refused by `vera verify`, not
+    # silent (out of this change's class; reported with it).
+
+
+@pytest.mark.parametrize("order", ["nat_first", "int_first"])
+def test_an_indexed_literal_is_its_elements_join(order: str) -> None:
+    """`[@Nat.0, @Int.0][1]` returned as `@Nat`: nothing is expected of the
+    literal itself, so its elements join at `Int` in both orders, and the
+    narrowing into `Nat` is the returned result's (as a generic call's
+    join is narrowed at its binding): refuted where it reads the `Int`
+    element, proved where it reads the `Nat` one."""
+    a, b = ("@Nat.0", "@Int.0") if order == "nat_first" else (
+        "@Int.0", "@Nat.0")
+    source = _fn("f", "@Nat, @Int", "Nat", f"[{a}, {b}][1]",
+                 visibility="public")
+    verified = pipeline.verify(source, reconcile=True)
+    refuted = order == "nat_first"
+    assert [e.error_code for e in verified.errors] == (
+        ["E503"] if refuted else []), [e.format() for e in verified.errors]
+    rows = [(o.status, o.expr_text) for o in verified.obligations
+            if o.kind == "nat_bind" and o.fn_name == "f"]
+    assert rows == [("violated" if refuted else "verified",
+                     f"{{ [{a}, {b}][1] }}")], rows
+
+
+def test_an_expected_type_giving_two_predicates_fixes_neither() -> None:
+    """`let @Tuple<Option<PosInt>, Option<Small>> = nones(None)`, with
+    `nones(@Option<T> -> @Tuple<Option<T>, Option<T>>)`: the expected type
+    gives `T` two refinements of `Int`, which are two types (PR 1864
+    review), so it fixes neither, and `T`, which no argument fixes either,
+    keeps the instance c35763d6 gave it.  At 17186873 the two compared
+    equal and `T` took the first, `PosInt`."""
+    source = _TWO_PREDICATES + _fn(
+        "nones", "@Option<T>", "Tuple<Option<T>, Option<T>>",
+        "Tuple(@Option<T>.0, @Option<T>.0)", forall="forall<T> ") + "\n" + _fn(
+        "main", "@Unit", "Int",
+        "let @Tuple<Option<PosInt>, Option<Small>> = nones(None);\n0",
+        visibility="public")
+    assert _instances(source, "nones") == {("Bool",)}
+
+
+#: A value no argument types (a literal, `None`, `[]`) beside one that
+#: gives `T` another type, the formal of `f` that holds it, and the type.
+_CALL_FOREIGN = {
+    "int_string": ("1", "@String.0", "String"),
+    "negative_bool": ("-1", "@Bool.0", "Bool"),
+    "float_string": ("1.5", "@String.0", "String"),
+    "float_int": ("1.5", "@Int.0", "Int"),
+    "int_data": ("1", "@Box.0", "Box"),
+    "int_array": ("1", "@Array<Int>.0", "Array<Int>"),
+    "none_int": ("None", "@Int.0", "Int"),
+    "none_string": ("None", "@String.0", "String"),
+    "empty_int": ("[]", "@Int.0", "Int"),
+    "empty_string": ("[]", "@String.0", "String"),
+}
+
+
+@pytest.mark.parametrize("expected", ["let", "none"])
+@pytest.mark.parametrize("order", ["foreign_first", "foreign_second"])
+@pytest.mark.parametrize("site", ["second", "pick"])
+@pytest.mark.parametrize("pair", list(_CALL_FOREIGN))
+def test_an_argument_of_another_type_is_refused_at_a_call(
+        pair: str, site: str, order: str, expected: str) -> None:
+    """The call's side of the element check: `second(1, @String.0)`, a
+    literal, `None` or `[]` beside an argument that gives `T` a type it
+    is not, in both orders, bound at that type or not.  The argument the
+    others do not type is held to the parameter at the instance, and
+    refused (E202), as at c35763d6."""
+    foreign, typed, ty = _CALL_FOREIGN[pair]
+    a, b = (foreign, typed) if order == "foreign_first" else (typed, foreign)
+    call = (f"second({a}, {b})" if site == "second"
+            else f"pick(@Bool.0, {a}, {b})")
+    body = (f"let @{ty} = {call};\n0" if expected == "let"
+            else f"match {call} {{\n  _ -> 0\n}}")
+    source = ("private data Box { MkBox(Int) }\n\n" + _SECOND + "\n" + _PICK
+              + "\n" + _fn("f", "@String, @Bool, @Box, @Array<Int>, @Int",
+                           "Int", body))
+    assert "E202" in _codes(source), _codes(source)
+
+
+# ---------------------------------------------------------------------
+# C at every site a value meets a type (PR 1864 review): a generic call
+# that leaves a variable open takes the type its site expects, observed
+# by an ability constraint (`Ord<T>`), so the default instance (E613) and
+# the right one differ
+# ---------------------------------------------------------------------
+
+_ORD_PRE = (
+    _fn("none_ord", "@Unit", "Option<T>", "None",
+        forall="forall<T where Ord<T>> ")
+    + "\n" + _fn("empty_ord", "@Unit", "Array<T>", "[]",
+                 forall="forall<T where Ord<T>> ")
+    + "\n" + _IDG + "\n"
+    + _fn("keep", "@Option<Int>", "Option<Int>", "@Option<Int>.0") + "\n"
+    + "type Mk = fn(Unit -> Option<Int>) effects(pure);\n\n")
+
+#: Each site an open call meets a type, the value, and the type it meets.
+_ORD_SITES = {
+    "direct": ("none_ord(())", "Option<Int>"),
+    "array_element": ("[none_ord(())]", "Array<Option<Int>>"),
+    "array_element_after_a_fixing_one": (
+        "[@Option<Int>.0, none_ord(())]", "Array<Option<Int>>"),
+    "array_element_before_a_fixing_one": (
+        "[none_ord(()), @Option<Int>.0]", "Array<Option<Int>>"),
+    "array_element_beside_none": (
+        "[None, none_ord(())]", "Array<Option<Int>>"),
+    "tuple_component": ("Tuple(none_ord(()), 1)", "Tuple<Option<Int>, Int>"),
+    "constructor_field": ("Some(none_ord(()))", "Option<Option<Int>>"),
+    "if_branch": ("if @Bool.0 then { none_ord(()) } else { None }",
+                  "Option<Int>"),
+    "if_branch_beside_a_fixing_one": (
+        "if @Bool.0 then { none_ord(()) } else { @Option<Int>.0 }",
+        "Option<Int>"),
+    "match_arm": ("match @Bool.0 {\n  true -> none_ord(()),\n"
+                  "  false -> None\n}", "Option<Int>"),
+    "block": ("{ none_ord(()) }", "Option<Int>"),
+    "generic_argument": ("idg(none_ord(()))", "Option<Int>"),
+    "argument": ("keep(none_ord(()))", "Option<Int>"),
+    "closure_body": (
+        "fn(@Unit -> @Option<Int>) effects(pure) { none_ord(()) }", "Mk"),
+    "index_of_a_literal": ("[none_ord(())][0]", "Option<Int>"),
+    "index_of_a_call": ("empty_ord(())[0]", "Int"),
+    "array_element_indexed_call": ("[empty_ord(())[0]]", "Array<Int>"),
+    "array_element_indexed_call_later": (
+        "[1, empty_ord(())[0]]", "Array<Int>"),
+    "tuple_component_indexed_call": (
+        "Tuple(empty_ord(())[0], 1)", "Tuple<Int, Int>"),
+}
+
+
+@pytest.mark.parametrize("meets", ["let", "return", "argument"])
+@pytest.mark.parametrize("site", list(_ORD_SITES))
+def test_repro_an_open_call_takes_the_type_its_site_expects(
+        site: str, meets: str) -> None:
+    """`let @Array<Option<Int>> = [none_ord(())]`, with `forall<T where
+    Ord<T>> fn none_ord(@Unit -> @Option<T>)`: the element is expected at
+    the binding's element type, which fixes `T`, so `none_ord` is at `Int`
+    (no E613), as `let @Option<Int> = none_ord(())` is.  At b11cf1fd an
+    array element, a `Tuple` component and an index's collection kept the
+    default instance (E613, E170, E121; c35763d6 refused every site); the
+    other sites were right and are pinned beside them."""
+    value, ty = _ORD_SITES[site]
+    formals = "@Bool, @Option<Int>"
+    if meets == "let":
+        body = _fn("f", formals, "Int", f"let @{ty} = {value};\n0")
+    elif meets == "return":
+        body = _fn("f", formals, ty, value)
+    else:
+        body = (_fn("use", f"@{ty}", "Int", "0") + "\n"
+                + _fn("f", formals, "Int", f"use({value})"))
+    source = _ORD_PRE + body
+    checked = pipeline.check(source)
+    assert checked.ok, [e.format() for e in checked.errors]
+    built = {i.args for i in checked.typed.instances
+             if i.key in ("none_ord", "empty_ord")}
+    assert built == {("Int",)}, built
+
+
+def test_an_open_call_takes_the_state_type_as_its_initial_value() -> None:
+    """A handler's initial state: `none_ord` at the `State`'s `Int`."""
+    source = _ORD_PRE + _fn(
+        "f", "@Bool", "Int",
+        "handle[State<Option<Int>>](@Option<Int> = none_ord(())) {\n"
+        "  get(@Unit) -> { resume(@Option<Int>.0) },\n"
+        "  put(@Option<Int>) -> { resume(()) }\n} in {\n  0\n}")
+    assert _instances(source, "none_ord") == {("Int",)}
+
+
+_ENDO = """\
+type Endo<T> = fn(T -> T) effects(pure);
+
+private forall<T> fn mk(@Unit -> @Endo<T>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  fn(@T -> @T) effects(pure) { @T.0 }
+}
+
+"""
+
+
+@pytest.mark.parametrize("order", ["closure_first", "call_first"])
+def test_an_open_function_call_as_an_element_takes_the_element_type(
+        order: str) -> None:
+    """`let @Array<Endo<Int>> = [fn(@Int -> @Int) { .. }, mk(())]`: the
+    element `mk(())` is expected at `Endo<Int>`, which fixes `T` (§5.9), so
+    `mk` is at `Int` and the program runs, as `let @Endo<Int> = mk(())`
+    does.  At c35763d6 and b11cf1fd the call kept its variable open and the
+    element was refused (E162); with nothing expected of the literal it
+    still is (the fix-text fixture `E162-open-variable`)."""
+    closure = "fn(@Int -> @Int) effects(pure) { @Int.0 }"
+    a, b = (closure, "mk(())") if order == "closure_first" else (
+        "mk(())", closure)
+    source = _ENDO + _fn(
+        "main", "@Unit", "Int",
+        f"let @Array<Endo<Int>> = [{a}, {b}];\n"
+        "apply_fn(@Array<Endo<Int>>.0[1], 5)", visibility="public")
+    assert _instances(source, "mk") == {("Int",)}
+    assert pipeline.run(source).value == 5
+
+
+#: A sibling's type reaching an open call through a constructor's field or
+#: a tuple's component: a part of the sibling's type, which is no expected
+#: type either (`_part_of`; PR 1864 mutation lane).
+_SIBLING_PARTS = {
+    "some": ("Some(mkcell(()))", "Some(@Cell<Nat>.0)"),
+    "tuple": ("Tuple(mkcell(()), 1)", "Tuple(@Cell<Nat>.0, 1)"),
+}
+
+
+@pytest.mark.parametrize("order", ["open_first", "open_second"])
+@pytest.mark.parametrize("part", list(_SIBLING_PARTS))
+@pytest.mark.parametrize("site", list(_SIBLING_SITES))
+def test_repro_a_part_of_a_sibling_s_type_is_no_expected_type(
+        site: str, part: str, order: str) -> None:
+    """`if c then { Some(mkcell(())) } else { Some(@Cell<Nat>.0) }`: the
+    branch is synthesized again against its sibling's `Option<Cell<Nat>>`,
+    and `Some` hands `mkcell` the part `Cell<Nat>`; that part fixes no
+    variable, so the cell's behaviour-held `T` is refused in both orders.
+    With the guard reading only the sibling's whole type the part fixed
+    `T` and the `if` was accepted (the `match` in one order alone)."""
+    shape, code = _SIBLING_SITES[site]
+    a, b = _SIBLING_PARTS[part]
+    if order == "open_second":
+        a, b = b, a
+    source = _CELL + _fn("g", "@Cell<Nat>, @Bool", "Nat",
+                         f"array_length([{shape.format(a=a, b=b)}])")
+    assert _codes(source) == [code]
+
+
+_REBUILT = {
+    "if_open_first": "if @Bool.0 then { Some(None) } else { Some(Some(3)) }",
+    "if_open_second": "if @Bool.0 then { Some(Some(3)) } else { Some(None) }",
+    "match_open_second": (
+        "match @Bool.0 { true -> Some(Some(3)), false -> Some(None) }"),
+}
+
+
+@pytest.mark.parametrize("shape", list(_REBUILT))
+def test_repro_a_branch_takes_its_sibling_s_type_for_its_constructors(
+        shape: str) -> None:
+    """`idg(if c then { Some(None) } else { Some(Some(3)) })`: the `None`
+    branch is synthesized again against its sibling's `Option<Option<Int>>`
+    (`_synth_against`), so no type the check records holds the variable
+    `None` left open.  Synthesized again with nothing expected, the
+    branch's constructors were recorded at `Option<Option<T$n>>`."""
+    source = _IDG + "\n" + _fn(
+        "f", "@Bool", "Int",
+        f"match idg({_REBUILT[shape]}) {{\n  Some(Some(@Int)) -> @Int.0,\n"
+        "  Some(None) -> 7,\n  None -> 9\n}")
+    checked = pipeline.check(source)
+    assert checked.ok, [e.format() for e in checked.errors]
+    open_ = sorted({t for t in checked.artifacts.expr_types.values()
+                    if "$" in t})
+    assert open_ == [], open_
+
+
+@pytest.mark.parametrize("order", ["open_first", "open_second"])
+@pytest.mark.parametrize("site", list(_SIBLING_SITES))
+def test_repro_a_sibling_with_no_type_arguments_fixes_nothing(
+        site: str, order: str) -> None:
+    """`if c then { head_plain([]) } else { @Int.0 }` with nothing expected
+    of the `if`: the branch is synthesized again against its sibling's
+    `Int`, a type with no type arguments, which fixes no variable either,
+    so `head_plain` keeps the instance c35763d6 gave it (`Bool`, as an
+    operand gives it nothing), in both orders.  Pins the guard's own
+    identity test (`_part_of`): read as a search of the sibling's
+    arguments alone, `Int` was taken as expected and fixed `T`."""
+    shape, _ = _SIBLING_SITES[site]
+    a, b = "head_plain([])", "@Int.0"
+    if order == "open_second":
+        a, b = b, a
+    source = _HEAD_PLAIN + "\n" + _fn(
+        "g", "@Int, @Bool", "Int", f"({shape.format(a=a, b=b)}) + 0")
+    assert _instances(source, "head_plain") == {("Bool",)}
+
+
+@pytest.mark.parametrize("order", ["open_first", "open_second"])
+def test_repro_a_call_s_own_expected_type_holds_inside_a_resynthesized_branch(
+        order: str) -> None:
+    """`if c then { snd(keep(none_ord(())), head_plain([])) } else {
+    @Int.0 }`: the branch is synthesized again against its sibling's `Int`,
+    and inside it `keep`'s parameter is the type `none_ord(())` is
+    expected at, which is no part of the sibling, so it fixes `T` there
+    too: `none_ord` at `Int`, no E613, in both orders.  A guard that took
+    every expected type for the sibling's under a non-data sibling
+    refused it (E613)."""
+    a, b = "snd(keep(none_ord(())), head_plain([]))", "@Int.0"
+    if order == "open_second":
+        a, b = b, a
+    source = (_ORD_PRE + _HEAD_PLAIN + "\n"
+              + _fn("snd", "@Option<Int>, @U", "U", "@U.0",
+                    forall="forall<U> ") + "\n"
+              + _fn("g", "@Int, @Bool", "Int",
+                    f"(if @Bool.0 then {{ {a} }} else {{ {b} }}) + 0"))
+    assert _instances(source, "none_ord") == {("Int",)}
+
+
+#: An open call meeting a type that names the enclosing function's own
+#: `T` (PR 1864 review): the body of `g<T where Ord<T>>(@T)`, called as
+#: `g(3)`.
+_RIGID_SITES = {
+    "array_element": "let @Array<Option<T>> = [none_ord(())];\n0",
+    "array_element_later": (
+        "let @Option<T> = Some(@T.0);\n"
+        "let @Array<Option<T>> = [@Option<T>.0, none_ord(())];\n0"),
+    "array_element_beside_none":
+        "let @Array<Option<T>> = [None, none_ord(())];\n0",
+    "tuple_component":
+        "let @Tuple<Option<T>, Option<T>> = Tuple(none_ord(()), none_ord(()));\n0",
+    "tuple_component_mixed":
+        "let @Tuple<Option<T>, Int> = Tuple(none_ord(()), 1);\n0",
+    "index_of_a_literal": "let @Option<T> = [none_ord(())][0];\n0",
+    "index_of_a_call": "let @T = empty_ord(())[0];\n0",
+    "array_element_indexed_call": "let @Array<T> = [empty_ord(())[0]];\n0",
+    "array_element_indexed_call_later":
+        "let @Array<T> = [@T.0, empty_ord(())[0]];\n0",
+    "tuple_component_indexed_call":
+        "let @Tuple<T, Int> = Tuple(empty_ord(())[0], 1);\n0",
+}
+
+
+def _in_rigid_g(body: str) -> str:
+    return (_ORD_PRE + _fn("g", "@T", "Int", body,
+                           forall="forall<T where Ord<T>> ") + "\n"
+            + _fn("main", "@Unit", "Int", "g(3)", visibility="public"))
+
+
+@pytest.mark.parametrize("site", list(_RIGID_SITES))
+def test_repro_an_open_call_takes_the_enclosing_function_s_own_type(
+        site: str) -> None:
+    """`let @Array<Option<T>> = [none_ord(())]` inside `forall<T where
+    Ord<T>> fn g(@T)`: the element is expected at `Option<T>`, the
+    enclosing function's own `T`, a type like any other, which fixes
+    `none_ord`'s variable, so `g$Int` builds `none_ord$Int`, as `let
+    @Option<T> = none_ord(())` does.  At 8dbc5543 the re-check stopped at
+    any type variable in the context, so the element kept the default
+    (E613, reported at `g(3)`, c35763d6 E170 at the binding)."""
+    checked = pipeline.check(_in_rigid_g(_RIGID_SITES[site]))
+    assert checked.ok, [e.format() for e in checked.errors]
+    built = {i.args for i in checked.typed.instances
+             if i.key in ("none_ord", "empty_ord")}
+    assert built == {("Int",)}, built
+
+
+@pytest.mark.parametrize("body", [
+    "let @Array<T> = [1];\n0",
+    "let @Tuple<T, Int> = Tuple(1, 2);\n0",
+])
+def test_a_literal_meets_the_enclosing_function_s_own_type_as_before(
+        body: str) -> None:
+    """The literal half of the same check keeps its guard: `[1]` at
+    `Array<T>` and `Tuple(1, 2)` at a `T` component are refused (E170),
+    as at c35763d6."""
+    assert _codes(_in_rigid_g(body)) == ["E170"]
+
+
+# ---------------------------------------------------------------------
+# The class's `Tuple` form (PR 1864 review): a component whose type leaves
+# a variable open takes the component type the context gives
+# ---------------------------------------------------------------------
+
+_LIST = "private data List<A> { Nil, Cons(A, List<A>) }\n\n"
+
+#: A tuple holding a constructor whose type leaves a variable open, and the
+#: type it meets.
+_OPEN_COMPONENTS = {
+    "none_first": ("Tuple(None, 1)", "Tuple<Option<Int>, Int>"),
+    "none_second": ("Tuple(1, None)", "Tuple<Int, Option<Int>>"),
+    "nested_tuple": ("Tuple(Tuple(None, 1), 2)",
+                     "Tuple<Tuple<Option<Int>, Int>, Int>"),
+    "in_some": ("Some(Tuple(None, 1))", "Option<Tuple<Option<Int>, Int>>"),
+    "in_array": ("[Tuple(None, 1)]", "Array<Tuple<Option<Int>, Int>>"),
+    "user_nullary": ("Tuple(Nil, 1)", "Tuple<List<Int>, Int>"),
+    "constructor": ("Tuple(Some(None), 1)",
+                    "Tuple<Option<Option<Int>>, Int>"),
+}
+
+
+def _meeting(value: str, ty: str, meets: str) -> str:
+    if meets == "let":
+        return _fn("f", "@Unit", "Int", f"let @{ty} = {value};\n0")
+    if meets == "return":
+        return _fn("f", "@Unit", ty, value)
+    return (_fn("use", f"@{ty}", "Int", "0") + "\n"
+            + _fn("f", "@Unit", "Int", f"use({value})"))
+
+
+@pytest.mark.parametrize("meets", ["let", "return", "argument"])
+@pytest.mark.parametrize("form", list(_OPEN_COMPONENTS))
+def test_repro_a_tuple_component_left_open_takes_the_component_type(
+        form: str, meets: str) -> None:
+    """`let @Tuple<Option<Int>, Int> = Tuple(None, 1);`: the `None`
+    component is held to the component type the binding gives, as `P(None,
+    1)` is at a user `@Pair<Option<Int>, Int>`.  At c35763d6 and 476dbe06 a
+    `let` and a return refused it (E170, E121; an argument's fit
+    accepted it)."""
+    value, ty = _OPEN_COMPONENTS[form]
+    checked = pipeline.check(_LIST + _meeting(value, ty, meets))
+    assert checked.ok, [e.format() for e in checked.errors]
+
+
+def test_repro_a_tuple_component_left_open_runs() -> None:
+    """The `let` form runs and reads the component back."""
+    source = _fn("main", "@Unit", "Int",
+                 "let @Tuple<Option<Int>, Int> = Tuple(None, 4);\n"
+                 "match @Tuple<Option<Int>, Int>.0 {\n"
+                 "  Tuple(@Option<Int>, @Int) -> "
+                 "option_unwrap_or(@Option<Int>.0, 3) + @Int.0\n}",
+                 visibility="public")
+    assert pipeline.run(source).value == 7
+
+
+def test_repro_a_tuple_component_takes_the_enclosing_function_s_own_type(
+) -> None:
+    """Under a context naming the enclosing function's own `T`."""
+    source = _fn("g", "@T", "Int",
+                 "let @Tuple<Option<T>, Int> = Tuple(None, 1);\n0",
+                 forall="forall<T> ")
+    checked = pipeline.check(source)
+    assert checked.ok, [e.format() for e in checked.errors]
+
+
+def test_a_tuple_component_left_open_with_nothing_expected_stays_open(
+) -> None:
+    """`match Tuple(None, 1) { .. }`: nothing is expected of the tuple, and
+    the check accepts it as before, its `None` open."""
+    source = _fn("f", "@Unit", "Int",
+                 "match Tuple(None, 1) {\n"
+                 "  Tuple(@Option<Int>, @Int) -> @Int.0\n}")
+    assert pipeline.check(source).ok
+
+
+@pytest.mark.parametrize("meets,code", [
+    ("let", "E170"), ("return", "E121"), ("argument", "E202")])
+def test_a_tuple_component_meeting_another_type_is_refused_as_before(
+        meets: str, code: str) -> None:
+    """`Tuple(None, 1)` at `Tuple<Int, Int>`: `None` is no `Int`, refused
+    with the code c35763d6 gives."""
+    assert _codes(_meeting("Tuple(None, 1)", "Tuple<Int, Int>", meets)) == [
+        code]
+
+
+# ---------------------------------------------------------------------
+# Issue #1866 (not this PR): the sibling guard tells a sibling's type from
+# another expected type by the identity of the type object.  These pin
+# where it stands, so the change that fixes it moves them.
+# ---------------------------------------------------------------------
+
+_EMPTY_ORD_MATCH = {
+    "open_second": "match @Bool.0 { false -> @Int.0, true -> empty_ord(())[0] }",
+    "open_first": "match @Bool.0 { true -> empty_ord(())[0], false -> @Int.0 }",
+}
+
+
+@pytest.mark.parametrize("order", list(_EMPTY_ORD_MATCH))
+def test_issue_1866_a_match_s_arm_order_decides_an_indexed_open_call(
+        order: str) -> None:
+    """`idg(match c { false -> @Int.0, true -> empty_ord(())[0] })`: an
+    index wraps the sibling arm's `Int` in a fresh `Array`, which the
+    guard does not recognise as the sibling's, so the later arm's call
+    takes `Int` from its sibling and is accepted; first, the arm is not
+    synthesized again and keeps the default (E613).  #1866 makes the two
+    orders agree; until then this pins both."""
+    source = _ORD_PRE + _fn(
+        "g", "@Bool, @Int", "Int", f"idg({_EMPTY_ORD_MATCH[order]})")
+    if order == "open_second":
+        assert _instances(source, "empty_ord") == {("Int",)}
+    else:
+        assert _codes(source) == ["E613"]
+
+
+_HEAD_ORD = _fn("head_ord", "@Array<T>", "T", "@Array<T>.0[0]",
+                forall="forall<T where Ord<T>> ")
+_TAKE = _fn("take", "@Int", "Int", "@Int.0 + 1")
+
+
+@pytest.mark.parametrize("inside", [True, False])
+def test_issue_1866_an_open_argument_inside_a_branch(inside: bool) -> None:
+    """`take(head_ord([]))`: outside a branch `take`'s `Int` parameter
+    fixes `head_ord`'s variable (`head_ord$Int`); inside an `if` branch
+    synthesized again against its sibling, that parameter is the very
+    object the sibling's type holds, the guard takes it for the sibling's,
+    and the call keeps the default (E613), as at c35763d6.  #1866."""
+    if inside:
+        body = ("match if @Bool.0 then { Tuple(None, take(head_ord([]))) } "
+                "else { @Tuple<Option<Int>, Int>.0 } {\n"
+                "  Tuple(@Option<Int>, @Int) -> @Int.0\n}")
+    else:
+        body = "take(head_ord([]))"
+    source = (_HEAD_ORD + "\n" + _TAKE + "\n"
+              + _fn("g", "@Bool, @Tuple<Option<Int>, Int>", "Int", body))
+    if inside:
+        assert _codes(source) == ["E613"]
+    else:
+        assert _instances(source, "head_ord") == {("Int",)}
+
+
+# ---------------------------------------------------------------------
+# What `_leaves_open` decides (PR 1864 mutation lane): an element whose
+# type holds a type variable that is not the enclosing function's own takes
+# no part in choosing the literal's element type, wherever in its type the
+# variable stands; one that holds the enclosing function's own `T` takes
+# part like any other
+# ---------------------------------------------------------------------
+
+_OPEN_FN_PRE = """\
+type Sink<T> = fn(T -> Int) effects(pure);
+
+type Src<T> = fn(Unit -> Option<T>) effects(pure);
+
+private forall<T> fn sink(@Unit -> @Sink<T>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  fn(@T -> @Int) effects(pure) { 7 }
+}
+
+private forall<T> fn src(@Unit -> @Src<T>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  fn(@Unit -> @Option<T>) effects(pure) { None }
+}
+
+private forall<T> fn sp(@Unit -> @Tuple<Sink<T>, Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Tuple(fn(@T -> @Int) effects(pure) { 7 }, 1)
+}
+
+type NeF<T> = { @Array<Sink<T>> | array_length(@Array<Sink<T>>.0) > 0 };
+
+private forall<T> fn nef(@Unit -> @NeF<T>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  [fn(@T -> @Int) effects(pure) { 7 }]
+}
+
+"""
+
+
+def _only_the_open_element_refused(literal: str, open_call: str,
+                                   formals: str, element_type: str) -> None:
+    """`[open, a, b]` with nothing expected: the element type is the join of
+    `a` and `b` (*element_type*), and the one refusal is the open element's
+    own E162, at its column, naming that join.  Counted among the typed
+    elements, the open one breaks the join and the first element's type
+    stands, so `a` and `b` are each refused against the open type."""
+    body = f"array_length({literal})"
+    source = _OPEN_FN_PRE + _fn("f", formals, "Nat", body)
+    errors = pipeline.check(source).errors
+    column = body.index(open_call) + 3
+    assert [(e.error_code, e.location.column) for e in errors] == [
+        ("E162", column)], [e.format() for e in errors]
+    assert f"the literal's element type is {element_type}" in (
+        errors[0].description), errors[0].description
+
+
+def test_repro_an_element_open_in_a_function_parameter_takes_no_part(
+) -> None:
+    """`[sink(()), fn(@Int -> @Int), fn(@Nat -> @Int)]`: `sink`'s `T` stands
+    only at its function type's parameter, and the join of the two
+    closures is `fn(Nat -> Int)` (a parameter's polarity)."""
+    is_, ns = ("fn(@Int -> @Int) effects(pure) { 2 }",
+               "fn(@Nat -> @Int) effects(pure) { 1 }")
+    _only_the_open_element_refused(
+        f"[sink(()), {is_}, {ns}]", "sink(())", "@Unit",
+        "fn(Nat -> Int) effects(pure)")
+
+
+def test_repro_an_element_open_in_a_function_result_takes_no_part() -> None:
+    """`[src(()), .. -> Option<Nat>, .. -> Option<Int>]`: `src`'s `T` stands
+    only in its function type's result; the closures join at
+    `fn(Unit -> Option<Int>)`."""
+    nat, int_ = ("fn(@Unit -> @Option<Nat>) effects(pure) { Some(1) }",
+                 "fn(@Unit -> @Option<Int>) effects(pure) { None }")
+    _only_the_open_element_refused(
+        f"[src(()), {nat}, {int_}]", "src(())", "@Unit",
+        "fn(Unit -> Option<Int>) effects(pure)")
+
+
+def test_repro_an_element_open_in_one_component_takes_no_part() -> None:
+    """`[sp(()), @Tuple<Sink<Int>, Int>.0, @Tuple<Sink<Nat>, Int>.0]`: `sp`'s
+    type leaves one component of its `Tuple` open and fixes the other; one
+    open component makes the element open."""
+    _only_the_open_element_refused(
+        "[sp(()), @Tuple<Sink<Int>, Int>.0, @Tuple<Sink<Nat>, Int>.0]",
+        "sp(())", "@Tuple<Sink<Int>, Int>, @Tuple<Sink<Nat>, Int>",
+        "Tuple<fn(Nat -> Int) effects(pure), Int>")
+
+
+def test_repro_an_element_open_under_a_refinement_takes_no_part() -> None:
+    """`[nef(()), @Array<Sink<Int>>.0, @Array<Sink<Nat>>.0]`: `nef`'s type
+    is a refinement whose base leaves `T` open; the open part is read
+    through the refinement."""
+    _only_the_open_element_refused(
+        "[nef(()), @Array<Sink<Int>>.0, @Array<Sink<Nat>>.0]", "nef(())",
+        "@Array<Sink<Int>>, @Array<Sink<Nat>>",
+        "Array<fn(Nat -> Int) effects(pure)>")
+
+
+def test_repro_an_element_holding_the_enclosing_function_s_type_takes_part(
+) -> None:
+    """`[Tuple(@T.0, @Nat.0), Tuple(@T.0, @Int.0)][1]` inside `forall<T> fn
+    g`: `T` is the enclosing function's own, a type like any other, so both
+    elements take part and the literal is their join, `Tuple<T, Int>`; `g(true,
+    3, 0 - 5)` reads back -5.  Taken for open, both elements dropped out of
+    the choice, the first element's `Tuple<T, Nat>` stood, and the run
+    trapped binding -5 into the `Nat` component."""
+    source = _fn("g", "@T, @Nat, @Int", "Int",
+                 "match [Tuple(@T.0, @Nat.0), Tuple(@T.0, @Int.0)][1] {\n"
+                 "  Tuple(@T, @Int) -> @Int.0\n}",
+                 forall="forall<T> ") + "\n" + _fn(
+        "main", "@Unit", "Int", "g(true, 3, 0 - 5)", visibility="public")
+    checked = pipeline.check(source)
+    assert checked.ok, [e.format() for e in checked.errors]
+    arrays = {t for t in checked.artifacts.expr_types.values()
+              if t.startswith("Array<Tuple")}
+    assert arrays == {"Array<Tuple<T, Int>>"}, arrays
+    ran = pipeline.run(source)
+    assert ran.trap is None, ran.trap
+    assert ran.value == -5
+
+
+# ---------------------------------------------------------------------
+# A refinement an element a call left open carries is no type the other
+# elements share (rule J, PR 1864 mutation lane)
+# ---------------------------------------------------------------------
+
+_NE = """\
+type NeArr<T> = { @Array<T> | array_length(@Array<T>.0) > 0 };
+
+private forall<T> fn ne(@Unit -> @NeArr<Option<T>>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  [None]
+}
+
+private fn ne_int(@Unit -> @NeArr<Option<Int>>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  [None]
+}
+
+"""
+
+
+def _literal_types(body: str, formals: str) -> set[str]:
+    checked = pipeline.check(_NE + _fn("f", formals, "Nat", body))
+    assert checked.ok, [e.format() for e in checked.errors]
+    return {t for t in checked.artifacts.expr_types.values()
+            if t.startswith(("Array<Array", "Array<{"))}
+
+
+def test_repro_an_open_element_s_refinement_is_not_shared() -> None:
+    """`[ne(()), @Array<Option<Int>>.0]` with nothing expected: `ne`'s call
+    leaves `T` open, so it takes no part in the choice, and the only element
+    that does is a plain `Array<Option<Int>>`: the literal is
+    `Array<Array<Option<Int>>>` in both orders.  At de925bcc the open
+    element first gave the literal its own refinement, `NeArr`, which the
+    plain element does not state (the narrowing unguarded, E506)."""
+    plain = "@Array<Option<Int>>.0"
+    for literal in (f"[ne(()), {plain}]", f"[{plain}, ne(())]"):
+        assert _literal_types(f"array_length({literal})",
+                              "@Array<Option<Int>>") == {
+            "Array<Array<Option<Int>>>"}, literal
+
+
+def test_repro_an_open_element_s_refinement_another_states_is_kept() -> None:
+    """`[ne(()), ne_int(())]`: the element that takes part states the same
+    refinement, so the literal keeps it, in both orders."""
+    for literal in ("[ne(()), ne_int(())]", "[ne_int(()), ne(())]"):
+        assert _literal_types(f"array_length({literal})", "@Unit") == {
+            "Array<{@Array<Option<Int>> | ...}>"}, literal
+
+
+# ---------------------------------------------------------------------
+# What `_check_index`'s re-synthesis decides (PR 1864 mutation lane): an
+# index expected at a type reads an array of that type where the
+# collection's element type is unknown or a variable a call left open
+# ---------------------------------------------------------------------
+
+def test_repro_an_empty_literal_indexed_at_a_type_is_an_array_of_it(
+) -> None:
+    """`let @Int = [][0];`: the literal is synthesized again against
+    `Array<Int>`, recorded there, and the program compiles and stops at the
+    index (the trap it owes)."""
+    source = _fn("main", "@Unit", "Int", "let @Int = [][0];\n@Int.0",
+                 visibility="public")
+    checked = pipeline.check(source)
+    assert checked.ok, [e.format() for e in checked.errors]
+    assert "Array<Int>" in checked.artifacts.expr_types.values()
+    assert "Array index out of bounds" in _trap(source)
+
+
+def test_repro_an_open_call_s_element_indexed_at_a_type_takes_it() -> None:
+    """`let @Option<Int> = [none_ord(())][0];`: the element type the call
+    left open (`Option<T$n>`) is read at the index's `Option<Int>`."""
+    source = _ORD_PRE + _fn("f", "@Unit", "Int",
+                            "let @Option<Int> = [none_ord(())][0];\n0")
+    assert _instances(source, "none_ord") == {("Int",)}
+
+
+def test_repro_an_index_nothing_types_reads_its_collection_as_it_is(
+) -> None:
+    """`[][0] + 1`: no type is expected of the index, so the literal is not
+    synthesized again and keeps its unknown element type (#1862)."""
+    checked = pipeline.check(_fn("main", "@Unit", "Int", "[][0] + 1",
+                                 visibility="public"))
+    arrays = {t for t in checked.artifacts.expr_types.values()
+              if t.startswith("Array<")}
+    assert arrays == {"Array<?>"}, arrays
+
+
+def test_repro_indexing_a_function_value_is_refused() -> None:
+    """`@Endo<Int>.0[0]` expected at `Int`: a function value is no array;
+    E161, as before the re-synthesis."""
+    source = ("type Endo<T> = fn(T -> T) effects(pure);\n\n"
+              + _fn("f", "@Endo<Int>", "Int",
+                    "let @Int = @Endo<Int>.0[0];\n@Int.0"))
+    assert _codes(source) == ["E161"]
+
+
+def test_repro_an_array_with_no_element_type_is_indexed() -> None:
+    """`@Array.0[0]` expected at `Int`: an `Array` type written with no type
+    argument holds no element type to read, so the index is not read again;
+    the check accepts the program with no diagnostic, as c35763d6 does."""
+    assert _codes(_fn("f", "@Array", "Int", "let @Int = @Array.0[0];\n0")) == []
+
+
+def test_repro_an_unresolved_binding_type_is_reported_once() -> None:
+    """`let @Option<Nope> = empty_ord(())[0];`: the unknown type is E136,
+    one diagnostic for one defect.  At de925bcc the index was not read at
+    the type the binding names, and a second, E170 ("value has type ?"),
+    stood beside it."""
+    source = _ORD_PRE + _fn("f", "@Unit", "Int",
+                            "let @Option<Nope> = empty_ord(())[0];\n0")
+    assert _codes(source) == ["E136"]
+
+
+# ---------------------------------------------------------------------
+# An indexed open call as an array element or a `Tuple` component (PR 1864
+# review): the element is held to the type its context gives, as an open
+# call there is
+# ---------------------------------------------------------------------
+
+_INDEXED_OPEN = {
+    "element": "let @Array<{t}> = [empty_ord(())[0]];\n0",
+    "later_element": "let @Array<{t}> = [{v}, empty_ord(())[0]];\n0",
+    "component": "let @Tuple<{t}, Int> = Tuple(empty_ord(())[0], 1);\n0",
+}
+
+
+def test_repro_an_indexed_open_call_takes_the_element_type() -> None:
+    """`let @Array<Int> = [empty_ord(())[0]]`, later in the literal and as a
+    `Tuple` component, at `Int` and at the enclosing function's own `T`:
+    the index is checked against the element (or component) type, which
+    reads `empty_ord(())` at an array of it (rule I), so `empty_ord` is at
+    `Int` (through `g(3)` for `T`).  At c35763d6 and de925bcc each kept the
+    default instance (E613) or left the type open (E170)."""
+    for form, shape in _INDEXED_OPEN.items():
+        concrete = _ORD_PRE + _fn(
+            "f", "@Int", "Int", shape.format(t="Int", v="@Int.0"))
+        assert _instances(concrete, "empty_ord") == {("Int",)}, form
+        rigid = _in_rigid_g(shape.format(t="T", v="@T.0"))
+        assert _instances(rigid, "empty_ord") == {("Int",)}, form
+
+
+def test_an_index_of_a_typed_collection_is_synthesized_once(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """`[@Array<Nat>.0[0]]` and `Tuple(@Array<Nat>.0[0], 1)` at a typed
+    binding: the collection fixes the element type, so the index is not
+    checked a second time against the context."""
+    from vera.checker.expressions import ExpressionsMixin
+
+    calls: list[str] = []
+    original = ExpressionsMixin._check_index
+
+    def counting(self: ExpressionsMixin, expr: typing.Any,
+                 **kwargs: typing.Any) -> typing.Any:
+        calls.append("index")
+        return original(self, expr, **kwargs)
+
+    monkeypatch.setattr(ExpressionsMixin, "_check_index", counting)
+    for body in ("let @Array<Int> = [@Array<Nat>.0[0]];\n0",
+                 "let @Tuple<Int, Int> = Tuple(@Array<Nat>.0[0], 1);\n0"):
+        calls.clear()
+        assert pipeline.check(_fn("f", "@Array<Nat>", "Int", body)).ok
+        assert calls == ["index"], (body, calls)
+
+
+def test_issue_1866_the_workaround_binds_at_its_type_inside_the_arm() -> None:
+    """KNOWN_ISSUES.md's workaround for #1866: bind the value that leaves
+    the variable open at its type with a `let` inside the arm or branch,
+    which runs only when that arm does.  `empty_ord(())` bound at
+    `Array<Int>` (or its element at `Int`) in either arm order, and the
+    empty argument of `head_ord` bound at `Array<Int>` inside either
+    branch, each build their call at `Int`."""
+    for open_arm in ("{ let @Int = empty_ord(())[0]; @Int.0 }",
+                     "{ let @Array<Int> = empty_ord(()); @Array<Int>.0[0] }"):
+        for match in (f"match @Bool.0 {{ true -> {open_arm}, false -> @Int.0 }}",
+                      f"match @Bool.0 {{ false -> @Int.0, true -> {open_arm} }}"):
+            source = _ORD_PRE + _fn("g", "@Bool, @Int", "Int", f"idg({match})")
+            assert _instances(source, "empty_ord") == {("Int",)}, match
+    bound = ("{ let @Array<Int> = []; "
+             "Tuple(None, take(head_ord(@Array<Int>.0))) }")
+    other = "{ @Tuple<Option<Int>, Int>.0 }"
+    for a, b in ((bound, other), (other, bound)):
+        source = (_HEAD_ORD + "\n" + _TAKE + "\n" + _fn(
+            "g", "@Bool, @Tuple<Option<Int>, Int>", "Int",
+            f"match if @Bool.0 then {a} else {b} {{\n"
+            "  Tuple(@Option<Int>, @Int) -> @Int.0\n}"))
+        assert _instances(source, "head_ord") == {("Int",)}, a
+
+
+# ---------------------------------------------------------------------
+# PR 1864 mutation lane, round 2 (at 98f69a64): what the element rule, the
+# literal context check and the argument join decide, one cell each
+# ---------------------------------------------------------------------
+
+_PICK3 = _fn("pick3", "@T, @T, @T", "T", "@T.0", forall="forall<T> ")
+_ARR2 = _fn("arr2", "@Array<T>, @Array<T>", "Array<T>", "@Array<T>.0",
+            forall="forall<T> ")
+_TUP2 = _fn("tup2", "@Tuple<T, Int>, @Tuple<T, Int>", "Int", "0",
+            forall="forall<T> ")
+_NE_PAIR = """\
+type NeArr<T> = { @Array<T> | array_length(@Array<T>.0) > 0 };
+
+type IntNe = { @Array<Int> | array_length(@Array<Int>.0) > 0 };
+
+type NatNe = { @Array<Nat> | array_length(@Array<Nat>.0) > 0 };
+
+""" + _fn("ne2", "@NeArr<T>, @NeArr<T>", "Array<T>", "@NeArr<T>.0",
+          forall="forall<T> ")
+
+
+def _recorded_arrays(source: str) -> set[str]:
+    checked = pipeline.check(source)
+    return {t for t in checked.artifacts.expr_types.values()
+            if t.startswith("Array<")}
+
+
+def test_repro_an_unknown_element_context_decides_nothing() -> None:
+    """`let @Array<Nope> = [@Nat.0, @Int.0]`: the binding's type is unknown
+    (E136), so it is no context: the literal is its elements' join,
+    `Array<Int>`, and no recorded type takes the unknown name."""
+    source = _fn("f", "@Nat, @Int", "Int",
+                 "let @Array<Nope> = [@Nat.0, @Int.0];\n0")
+    assert _codes(source) == ["E136"]
+    arrays = _recorded_arrays(source)
+    assert "Array<Int>" in arrays and not any("Nope" in t for t in arrays), (
+        arrays)
+
+
+def test_repro_an_unknown_context_fixes_no_open_call() -> None:
+    """`let @Array<Option<Nope>> = [none_ord(()), @Option<Int>.0]`: the
+    open call is not synthesized again against the unknown type, and the
+    literal is `Array<Option<Int>>`, its typed element's."""
+    source = _ORD_PRE + _fn(
+        "f", "@Option<Int>", "Int",
+        "let @Array<Option<Nope>> = [none_ord(()), @Option<Int>.0];\n0")
+    assert _codes(source) == ["E136"]
+    arrays = _recorded_arrays(source)
+    assert "Array<Option<Int>>" in arrays and not any(
+        "Nope" in t for t in arrays), arrays
+
+
+def test_repro_an_unjoinable_element_stops_the_join() -> None:
+    """`[@Nat.0, "s", @Int.0]`: the `String` joins with nothing, so the
+    element type stays the first element's, `Nat`, and the one refusal is
+    the `String`'s E162 naming it."""
+    errors = pipeline.check(_fn("f", "@Nat, @Int", "Nat",
+                                'array_length([@Nat.0, "s", @Int.0])')).errors
+    assert [e.error_code for e in errors] == ["E162"]
+    assert "element type is Nat, the type of element 0" in (
+        errors[0].description), errors[0].description
+
+
+def test_repro_the_context_fills_only_what_the_element_leaves_open() -> None:
+    """`let @Array<Tuple<Int, Option<Int>>> = [Tuple(@PosInt.0, None)]`: the
+    context fills the `None`'s open payload and keeps the element's own
+    `PosInt` component: the literal is `Array<Tuple<PosInt, Option<Int>>>`.
+    Read the other way, the context's `Int` replaced the component's
+    refinement."""
+    source = ("type PosInt = { @Int | @Int.0 > 0 };\n\n"
+              + _fn("f", "@PosInt", "Int",
+                    "let @Array<Tuple<Int, Option<Int>>> = "
+                    "[Tuple(@PosInt.0, None)];\n0"))
+    assert _codes(source) == []
+    assert "Array<Tuple<{@Int | ...}, Option<Int>>>" in _recorded_arrays(
+        source)
+
+
+def test_repro_a_module_qualified_open_call_takes_the_element_type() -> None:
+    """`[ma::none_ord(())]` and `Tuple(ma::none_ord(()), 1)` in `module
+    ma;` at a typed binding: a module-qualified call is held to its context
+    as a bare one is (`none_ord` at `Int`)."""
+    for body in ("let @Array<Option<Int>> = [ma::none_ord(())];\n0",
+                 "let @Tuple<Option<Int>, Int> = Tuple(ma::none_ord(()), 1);"
+                 "\n0"):
+        source = "module ma;\n\n" + _ORD_PRE + _fn("f", "@Unit", "Int", body)
+        assert _instances(source, "none_ord") == {("Int",)}, body
+
+
+def test_repro_an_index_read_into_a_nat_meets_its_literals() -> None:
+    """`let @Nat = array_reverse([0 - 3, 5])[0]`: the index is checked
+    against `Array<Nat>`, so the `0 - 3` element is a narrowing into `Nat`,
+    refuted at `vera verify` (E503), as `let @Nat = id(0 - 3)` is (PR
+    #1583); `[3, 5]` in its place verifies."""
+    def program(literal: str) -> str:
+        return _fn("f", "@Unit", "Nat",
+                   f"let @Nat = array_reverse({literal})[0];\n@Nat.0")
+    refuted = pipeline.verify(program("[0 - 3, 5]"))
+    assert [e.error_code for e in refuted.errors] == ["E503"], [
+        e.format() for e in refuted.errors]
+    assert pipeline.verify(program("[3, 5]")).errors == ()
+
+
+def test_repro_three_arguments_two_of_which_agree_still_join() -> None:
+    """`pick3(@Nat.0, @Nat.0, @Int.0)`: two arguments agree and a third
+    does not, so `T` is their join, `Int`; read as agreement wherever any
+    two agree, it was `Nat` and the `Int` argument was refuted (E503)."""
+    source = _PICK3 + "\n" + _fn(
+        "f", "@Nat, @Int", "Int", "let @Int = pick3(@Nat.0, @Nat.0, @Int.0);\n0")
+    assert _instances(source, "pick3") == {("Int",)}
+    assert pipeline.verify(source).errors == ()
+
+
+def test_repro_an_unjoinable_argument_stops_the_argument_join() -> None:
+    """`pick3(@Nat.0, "s", @Int.0)`: the `String` joins with nothing, so
+    `T` keeps the first argument's `Nat` and the `String` is refused against
+    it (E202)."""
+    errors = pipeline.check(_PICK3 + "\n" + _fn(
+        "f", "@Nat, @Int", "Int",
+        'let @Int = pick3(@Nat.0, "s", @Int.0);\n0')).errors
+    assert [e.error_code for e in errors] == ["E202"]
+    assert "expected Nat" in errors[0].description, errors[0].description
+
+
+def test_repro_a_statically_non_negative_argument_joins_as_a_nat() -> None:
+    """`second(@Nat.0, @Nat.0 + 1)`, both orders: the `Int` argument is
+    statically non-negative (spec §4.8), read at the head where it is
+    passed, so the join is `Nat`."""
+    for call in ("second(@Nat.0, @Nat.0 + 1)", "second(@Nat.0 + 1, @Nat.0)"):
+        source = _SECOND + "\n" + _fn("f", "@Nat", "Nat", call)
+        assert _instances(source, "second") == {("Nat",)}, call
+
+
+def test_repro_an_argument_s_refinement_is_read_at_its_base() -> None:
+    """`arr2(@Array<Nat>.0, @IntNe.0)` and `ne2(@NatNe.0, @IntNe.0)`: a
+    refined argument (and a refined parameter) meets `T` through its base,
+    so `T` is the join `Int` in either order."""
+    for call in ("arr2(@Array<Nat>.0, @IntNe.0)", "arr2(@IntNe.0, @Array<Nat>.0)"):
+        source = _NE_PAIR + _ARR2 + "\n" + _fn(
+            "f", "@IntNe, @Array<Nat>", "Nat", f"array_length({call})")
+        assert _instances(source, "arr2") == {("Int",)}, call
+    for call in ("ne2(@NatNe.0, @IntNe.0)", "ne2(@IntNe.0, @NatNe.0)"):
+        source = _NE_PAIR + _fn("f", "@NatNe, @IntNe", "Nat",
+                                f"array_length({call})")
+        assert _instances(source, "ne2") == {("Int",)}, call
+
+
+def test_repro_an_argument_of_another_shape_gives_the_variable_nothing(
+) -> None:
+    """`arr2(@Option<Int>.0, @Array<Nat>.0)` and `tup2(Tuple(@Nat.0, 1),
+    Tuple(@Int.0, 1, 2))`: an argument whose type is another data type, or
+    a `Tuple` of another arity, gives `T` nothing, so the refusal (E202)
+    names the parameter at the other argument's type."""
+    errors = pipeline.check(_ARR2 + "\n" + _fn(
+        "f", "@Option<Int>, @Array<Nat>", "Nat",
+        "array_length(arr2(@Option<Int>.0, @Array<Nat>.0))")).errors
+    assert [e.error_code for e in errors] == ["E202"]
+    assert "expected Array<Nat>" in errors[0].description
+    errors = pipeline.check(_TUP2 + "\n" + _fn(
+        "f", "@Nat, @Int", "Int",
+        "tup2(Tuple(@Nat.0, 1), Tuple(@Int.0, 1, 2))")).errors
+    assert [e.error_code for e in errors] == ["E202"]
+    assert "expected Tuple<Nat, Int>" in errors[0].description
+
+
+def test_repro_a_function_of_another_arity_gives_the_variable_nothing(
+) -> None:
+    """`let @Tuple<fn(Nat, Nat -> Int), Option<Int>> = mkf(())`, with
+    `mkf(@Unit -> @Tuple<Sink<T>, Option<T>>)`: the expected function type
+    has another arity, so it gives `T` nothing and the `Option`'s payload
+    alone is read; the refusal (E170) shows `mkf`'s result with `T` fixed,
+    no open position in it."""
+    source = ("type Sink<T> = fn(T -> Int) effects(pure);\n\n"
+              + _fn("mkf", "@Unit", "Tuple<Sink<T>, Option<T>>",
+                    "Tuple(fn(@T -> @Int) effects(pure) { 7 }, None)",
+                    forall="forall<T> ") + "\n"
+              + _fn("f", "@Unit", "Int",
+                    "let @Tuple<fn(Nat, Nat -> Int) effects(pure), "
+                    "Option<Int>> = mkf(());\n0"))
+    errors = pipeline.check(source).errors
+    assert [e.error_code for e in errors] == ["E170"]
+    assert "?" not in errors[0].description.split("value has type")[1], (
+        errors[0].description)
+
+
+def test_repro_a_rigid_argument_gives_a_built_in_s_variable_nothing(
+) -> None:
+    """`map_insert(map_new(), @T.0, 1)` inside `forall<T> fn g(@T)`: the
+    enclosing function's own `T` at the key is a type variable, which gives
+    `map_insert`'s variable nothing to join; `g(5)` checks, verifies and
+    runs (the #1679 judgement's direct form)."""
+    source = (_fn("g", "@T", "Int",
+                  "nat_to_int(map_size(map_insert(map_new(), @T.0, 1)))",
+                  forall="forall<T> ", visibility="public") + "\n"
+              + _fn("main", "@Unit", "Int", "g(5)", visibility="public"))
+    assert pipeline.check(source).ok
+    assert pipeline.verify(source).ok
+    ran = pipeline.run(source)
+    assert ran.trap is None and ran.value == 1, (ran.trap, ran.value)
