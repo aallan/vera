@@ -1427,8 +1427,11 @@ class ControlFlowMixin:
 
     def _fresh_type_name(self, stem: str) -> str:
         """*stem*, or *stem* with the first number that makes it, a type
-        name nothing in scope declares: a fix's new alias (#1763)."""
-        taken = set(self.env.data_types) | set(self.env.type_aliases)
+        name nothing in scope declares: a fix's new alias (#1763).  A type
+        parameter in scope is taken too: inside its `forall` the name is
+        the parameter, not the alias (PR 1859 review)."""
+        taken = (set(self.env.data_types) | set(self.env.type_aliases)
+                 | set(self.env.type_params))
         name, n = stem, 1
         while name in taken:
             n += 1

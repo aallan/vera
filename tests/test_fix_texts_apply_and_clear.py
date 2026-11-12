@@ -593,6 +593,11 @@ DROPPED: dict[str, tuple[str, str, str]] = {
         "@Bool", "@Int", "f(@Bool.0)")),
     "E201-no-function-value": ("E201", "check", _fn("@Int", "@Int",
                                                     "apply_fn()")),
+    # A type parameter named as a data type is the parameter, no measure
+    # (PR 1859 review).
+    "E137-type-parameter-named-as-data": ("E137", "check",
+        "private data Box { Box(Int) }\n\n"
+        + _fn("@Box", "@Int", "f(@Box.0)", forall="Box")),
 }
 
 #: E301 with an open else branch: the then branch's type is named instead.
@@ -908,6 +913,16 @@ ENTRY: dict[str, _Entry] = {
     # A `@Nat` subtraction in the clause is safe only under the site's
     # path: at the entry it is an obligation of its own (E502), so no
     # clause is offered (PR 1857's rule, applied to this code).
+    # An addition the site's path keeps in range, which at the entry
+    # overflows at the largest `@Int`: `requires(@Int.0 + 1 != 0)` would
+    # add a trap the program does not have, so it is not offered, and the
+    # counterexample's clause, which holds no arithmetic, is (PR 1859
+    # review).
+    "E526-overflow-under-path": _Entry(
+        "E526", _fn("@Int", "@Int",
+                    "if @Int.0 < 9223372036854775807 then {\n"
+                    "    10 / (@Int.0 + 1)\n  } else {\n    0\n  }"),
+        "10 / (@Int.0 + 1)", "requires(@Int.0 >= 0)"),
     "E526-nat-sub-under-path": _Entry(
         "E526", _fn("@Nat, @Nat", "@Int",
                     "if @Nat.1 >= @Nat.0 then {\n    10 / (@Nat.1 - @Nat.0)\n"
@@ -1017,6 +1032,14 @@ ENTRY: dict[str, _Entry] = {
     "E501-builtin-domain": _Entry(
         "E501", _fn("@Int", "@Int", 'string_char_code("abc", @Int.0)'),
         'string_char_code("abc", @Int.0)', None),
+    # A `where` helper, which the flat registry does not hold: the report
+    # resolves it through the caller's scope, as the call was (PR 1859
+    # review), so the guard and the clause are both written.
+    "E501-where-helper": _Entry(
+        "E501", _fn("@Int", "@Int", "need(@Int.0)")
+        + "where {\n  fn need(@Int -> @Int)\n    requires(@Int.0 != 0)\n"
+        "    ensures(true)\n    effects(pure)\n  {\n    @Int.0\n  }\n}\n",
+        "need(@Int.0)", "requires(@Int.0 != 0)"),
 }
 
 #: The codes whose fix writes a guard as code: E505's names its condition
@@ -1086,6 +1109,56 @@ def test_the_base_entry_clause_does_not_clear(name: str) -> None:
     # path made safe and the entry does not.
     assert cell.code in codes or codes & {"E130", "E502"}, (
         name, sorted(codes))
+
+
+def test_a_refinement_binding_an_alias_parameter_is_not_written() -> None:
+    """`type NonEmpty<T>`'s predicate binds `@Array<T>.0`, the alias's own
+    parameter: at `NonEmpty<Int>` no fix outside the alias can write it
+    (E136), so the fix names no type (PR 1859 review)."""
+    source = (
+        "type NonEmpty<T> = { @Array<T> | array_length(@Array<T>.0) > 0 };"
+        "\n\n" + _helper("take", "@NonEmpty<Int> -> @Int", "0")
+        + _fn("@Bool", "@Int", "take(@Bool.0)"))
+    fix = _the("E202", "check", source).fix
+    assert "<T>" not in fix and "{ @" not in fix, fix
+
+
+def test_e533_names_no_cell_it_cannot_write() -> None:
+    """A cell over a type parameter the template does not declare (a
+    `where` helper's, over its parent's) is written in no scope the fix
+    names: the sentence stands without it, never `@None` (PR 1859
+    review)."""
+    from types import SimpleNamespace
+
+    from vera.typed import _state_fix
+    from vera.types import TypeVar
+    fix = _state_fix(
+        SimpleNamespace(state=None),  # type: ignore[arg-type]
+        SimpleNamespace(cell=TypeVar("U")),  # type: ignore[arg-type]
+        SimpleNamespace(decl=SimpleNamespace(  # type: ignore[arg-type]
+            forall_vars=("T",), params=())), "")
+    assert "None" not in fix and "`" not in fix, fix
+
+
+_INLINE = "fn(Int -> Int) effects(pure)"
+
+
+def test_e340_names_an_alias_no_type_parameter_shadows() -> None:
+    """Inside `forall<Cell>` the name `Cell` is the type parameter, so an
+    alias the fix calls `Cell` would not be the type `handle[State<Cell>]`
+    reads there (PR 1859 review): the fix takes the next free name, and the
+    program it makes checks clean."""
+    source = _fn("@Cell", "@Int",
+                 f"handle[State<{_INLINE}>](@{_INLINE} = "
+                 f"fn(@Int -> @Int) effects(pure) {{ @Int.0 }}) {{\n"
+                 f"    get(@Unit) -> {{ resume(fn(@Int -> @Int) "
+                 f"effects(pure) {{ @Int.0 }}) }},\n"
+                 f"    put(@{_INLINE}) -> {{ resume(()) }}\n"
+                 f"  }} in {{\n    0\n  }}", forall="Cell")
+    decl, handler, state = spans(_the("E340", "check", source).fix)
+    fixed = decl + "\n\n" + source.replace(
+        f"handle[State<{_INLINE}>]", handler).replace(f"@{_INLINE}", state)
+    assert _codes("check", fixed) == set(), (decl, fixed)
 
 
 _ONE_INT = _fn("@Int", "@Int", "@Int.0")

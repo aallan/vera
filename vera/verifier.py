@@ -6801,6 +6801,7 @@ class ContractVerifier:
             self._report_call_violation(
                 decl, v.callee_name, v.call_node,
                 v.precondition, v.counterexample, clause=v.clause,
+                lookup=smt._fn_lookup,
             )
         for ok in discharges:
             if self._repeats_predicate_call(ok.call_node):
@@ -13385,6 +13386,8 @@ class ContractVerifier:
                     or not z3.is_expr(at_entry) or not z3.is_expr(at_site)
                     or not at_entry.eq(at_site)):
                 continue
+            if not self._no_new_overflow(smt, pred, entry_env, assumptions):
+                continue
             candidates.append((self._as_written(pred), at_entry))
         # A numeric parameter's clause before a Bool's, whatever the order
         # of the parameters: a Bool's can discharge the obligation by making
@@ -13423,6 +13426,44 @@ class ContractVerifier:
             if verdict.status == "verified":
                 return text
         return None
+
+    def _no_new_overflow(
+        self, smt: SmtContext, pred: ast.Expr, entry_env: SlotEnv,
+        assumptions: list[object],
+    ) -> bool:
+        """Whether the `@Int` arithmetic in *pred*, read at the entry,
+        overflows only where the site's path holds, so a `requires` holding
+        it traps on no input the program does not already trap on (#1858,
+        PR 1859 review): `10 / (@Int.0 + 1)` under `if @Int.0 < <max>`
+        evaluates `@Int.0 + 1` only below the largest `@Int`, and a clause
+        at the entry evaluates it on every input.  Asked under the entry's
+        premises alone, the site's path conditions set aside for the
+        query."""
+        terms: list[z3.ArithRef] = []
+        for node in _subexpressions(pred):
+            if not ((isinstance(node, ast.BinaryExpr) and node.op in (
+                    ast.BinOp.ADD, ast.BinOp.SUB, ast.BinOp.MUL))
+                    or (isinstance(node, ast.UnaryExpr)
+                        and node.op == ast.UnaryOp.NEG)):
+                continue
+            term = smt.translate_expr(node, entry_env)
+            if term is None or not z3.is_expr(term):
+                return False
+            if z3.is_int(term):
+                terms.append(cast(z3.ArithRef, term))
+        if not terms:
+            return True
+        in_range = z3.And(*(z3.And(t >= -(2 ** 63), t <= 2 ** 63 - 1)
+                            for t in terms))
+        path = list(smt._path_conditions)
+        on_path = z3.And(*path) if path else z3.BoolVal(True)
+        smt._path_conditions.clear()
+        try:
+            verdict = smt.check_valid(
+                z3.Or(on_path, in_range), list(assumptions))
+        finally:
+            smt._path_conditions.extend(path)
+        return verdict.status == "verified"
 
     def _membership_at(
         self, smt: SmtContext, refined_ty: Type, value: ast.Expr,
@@ -14391,6 +14432,7 @@ class ContractVerifier:
         counterexample: dict[str, str] | None,
         *,
         clause: str | None = None,
+        lookup: Callable[[str], Any] | None = None,
     ) -> None:
         """Report a call site where the callee's precondition may not hold.
 
@@ -14398,7 +14440,10 @@ class ContractVerifier:
         precondition at the call's arguments is the right condition there.
         *clause* is the `requires` the SMT layer found in the caller's
         entry terms (#1858): the same text at the entry names whatever
-        binding is nearest there, a parameter for a `let`-bound argument."""
+        binding is nearest there, a parameter for a `let`-bound argument.
+        *lookup* is the caller's lexical scope, the one the SMT layer
+        resolved the call through, which holds a `where` helper the flat
+        registry does not."""
         pre_text = self._contract_source_text(precondition)
 
         # Render the precondition in call-site terms (callee slots
@@ -14408,7 +14453,8 @@ class ContractVerifier:
         # generic wording when the callee or a slot cannot be
         # resolved (e.g. module-qualified callees).
         at_call: ast.Expr | None = None
-        callee_info = self.env.lookup_function(callee_name)
+        callee_info = ((lookup(callee_name) if lookup is not None else None)
+                       or self.env.lookup_function(callee_name))
         builtin = (
             domain_contract(callee_name)
             if callee_info is not None and not callee_info.param_type_exprs

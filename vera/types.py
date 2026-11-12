@@ -400,6 +400,13 @@ def _written_with_binder(
         if bound:
             ((spelled, (head, head_args)),) = bound.items()
             if a.format_type(named) != spelled:
+                if head_args is not None:
+                    # A binder written with arguments the base does not
+                    # spell (`@Array<T>.0` in `type NonEmpty<T> = …`, used
+                    # at `NonEmpty<Int>`) names the alias's own parameters,
+                    # which no fix outside it can write (E136; PR 1859
+                    # review): no written type.
+                    return None, None
                 # The predicate names its binder by an alias the checker
                 # resolved (`{ @Count | @Count.0 > 0 }` over `Count = Nat`):
                 # the base is written as that name, which the predicate

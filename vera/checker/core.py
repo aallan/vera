@@ -948,9 +948,14 @@ class TypeChecker(
         for want in ("Nat", "Int"):
             if want in refs:
                 return f"@{want}.0"
+        # A type parameter named as a data type is the parameter in this
+        # signature, and a type parameter is no measure (E127; PR 1859
+        # review).
+        params = set(fn.forall_vars or ())
         for name in refs:
             head = name.split("<", 1)[0]
-            if head in self.env.data_types and head not in ("Array",):
+            if (head in self.env.data_types and head not in ("Array",)
+                    and head not in params):
                 return f"@{name}.0"
         for name in refs:
             if name.startswith("Array<"):

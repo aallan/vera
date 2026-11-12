@@ -806,6 +806,12 @@ def _state_fix(node: ast.HandleExpr, record: HandlerCell,
     # template over its own type parameters, so it is a type the program
     # writes (#1778).
     shown = written_type(cell, template.decl.forall_vars or ())
+    if shown is None:
+        # A type parameter this template does not declare (a `where`
+        # helper's cell over its parent's): written in no scope the fix
+        # names, so the sentence stands alone (PR 1859 review).
+        return ("Declare the handler's state at its cell's type, so every "
+                "instantiation's state is its cell.")
     return (f"Declare the handler's state at its cell's type, `@{shown}`, "
             f"so every instantiation's state is its cell.")
 
