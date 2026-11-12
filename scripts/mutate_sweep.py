@@ -74,11 +74,22 @@ in a row that decides no mutant exit 2, and the workflow files a tracking
 issue; survivors are the measurement, never a failure.  A step that fails
 before the sweep runs, while the runner is still there, writes a lane record
 (``lane-failed``), reported like any other.  A slice whose record is missing
-(its runner was lost before it could upload one) is noted and its work waits
-for the next night.
+(its runner was lost before it could upload one) is noted, what its legs
+uploaded is kept, and the rest of its work waits for the next night.
+
+A slice runs under a memory bound: the workflow starts it (``start``) in a
+transient systemd scope (:func:`scope_command`) and its legs (``leg``)
+upload its partial record as it runs, the last step (``finish``) its final
+one.  A mutant whose run the kernel ended under the bound is ``memory``, one
+in flight, having run a heartbeat interval, at the last record of two slices
+of runs not cancelled that ended with neither the engine finishing nor the
+budget stopping it ``lost`` (:func:`apply_losses`): each decided, counted apart, never caught.
 
 Usage:
     python scripts/mutate_sweep.py night --slice 0 --of 1 --state DIR --out DIR
+    python scripts/mutate_sweep.py start --slice 0 --live DIR -- --slice 0 --of 1 --out DIR
+    python scripts/mutate_sweep.py leg --leg 1 --live DIR --out DIR
+    python scripts/mutate_sweep.py finish --live DIR
     python scripts/mutate_sweep.py stitch --state DIR --slices DIR --of 1 --out DIR
     python scripts/mutate_sweep.py summary --state DIR --out DIR
 """
@@ -92,7 +103,10 @@ import hashlib
 import io
 import json
 import math
+import os
 import re
+import shutil
+import signal
 import subprocess
 import sys
 import tarfile
@@ -199,7 +213,8 @@ UNDECIDED = frozenset({"not checked", "check was interrupted by user"})
 
 #: Statuses a budget stop can leave on a mutant it cut short (a worker killed
 #: is ``segfault``, one ended with an unexpected code ``suspicious``), so they
-#: are taken from a run the budget did not stop, and left undecided otherwise.
+#: are taken from a run the budget did not stop, or where the engine had
+#: recorded them before the stop was sent, and left undecided otherwise.
 CUT_SHORT = frozenset({"segfault", "suspicious"})
 
 #: The nights the state keeps a line for.
@@ -214,11 +229,56 @@ KEPT_NIGHTS = 120
 #: night is an outage rather than weather, and stops the night short.
 LOST_LIMIT_NIGHT = 2
 
-#: Seconds between the heartbeat lines a slice prints while the engine runs:
-#: the elapsed time, the runner's available memory, swap and load, and the
-#: engine's last status.  A lost runner uploads no record, so what the job
-#: printed is all that survives of it, and the log outlives the runner.
+#: Seconds between the heartbeat lines a slice prints while the engine runs
+#: (the elapsed time, the runner's available memory, swap and load, and the
+#: engine's last status), and between the partial records it writes.  A
+#: lost runner's job log does not survive it: on 11 November 2026 slice 0's
+#: log was gone with its runner and the run's log archive held no file for
+#: the job (run 43087350670).  What survives is what a leg uploaded.
 HEARTBEAT_S = 300.0
+
+#: Seconds between a slice's legs: the steps that each upload the slice's
+#: partial record as an artifact of its own, so a lost runner costs at most
+#: one leg's decisions.  ``LEGS`` legs follow the plan's (leg 0).
+LEG_S = 1800.0
+LEGS = 9
+
+#: The status of a mutant whose run the kernel ended under the slice's
+#: memory bound (the bound's ``oom_kill`` count rose while its process
+#: disappeared), and of one in flight, having run a heartbeat interval, at
+#: the last record of two slices that ended with neither the engine
+#: finishing nor the budget stopping it (:func:`apply_losses`).  Both are decided,
+#: counted apart and listed, never caught and never survived.
+MEMORY = "memory"
+LOST = "lost"
+
+#: The losses that decide a mutant ``lost``.
+LOSS_LIMIT = 2
+
+#: The variable naming the file the oracle plugin names each mutant's run
+#: in as it starts (``tests/mutation_oracle.py``).
+INFLIGHT_ENV = "MUTATION_ORACLE_INFLIGHT"
+
+#: The memory the bound leaves the runner outside the engine's scope, MiB:
+#: the bound is the runner's memory less this.  The slices of 11 November
+#: 2026 that reported peaked near 10 GiB of 16 at two workers.
+MEMORY_RESERVE_MIB = 2560
+
+#: The ``oom_score_adj`` the engine runs at under the bound: above the
+#: slice's own process, below a mutant's run (1000, the oracle plugin's).
+ENGINE_OOM_SCORE = 500
+
+#: The files a running slice keeps in its ``--live`` directory: its partial
+#: record, rewritten at each heartbeat; the bound it found, once it is
+#: checked; its exit code, once it has written its record; its output.
+PARTIAL_FILE = "partial.json"
+STARTED_FILE = "started.json"
+EXIT_FILE = "exit.json"
+LOG_FILE = "slice.log"
+DRIVER_FILE = "driver.json"
+
+#: A leg's file among the night's records.
+LEG_NAME = re.compile(r"slice-[0-9]+-leg-[0-9]+\.json")
 
 #: Characters of the engine's status a heartbeat line carries.
 STATUS_WIDTH = 120
@@ -245,8 +305,8 @@ STATE_ARTIFACT = "mutation-sweep-state"
 STATE_EVENTS = frozenset({"schedule", "workflow_dispatch"})
 
 #: The statuses a state records: every one mutmut prints bar the undecided,
-#: and the cap's.
-DECIDED = (frozenset(md.STATUSES) - UNDECIDED) | {SLOW}
+#: the cap's, the bound's and the loss rule's.
+DECIDED = (frozenset(md.STATUSES) - UNDECIDED) | {SLOW, MEMORY, LOST}
 
 
 class StateError(ValueError):
@@ -350,7 +410,9 @@ _IDENT = re.compile(rf"{_PATH.pattern}::{_KEY}")
 #: 2 and 3), or without the line (a cycle closed under schema 1); ``slow``
 #: since schema 3.
 _SURVIVOR = re.compile(
-    rf"(?:{_PART}\.)*{_PART}\.{_KEY}__mutmut_[1-9][0-9]*(?:@[1-9][0-9]*)?:(?:survived|timeout|slow)")
+    rf"(?:{_PART}\.)*{_PART}\.{_KEY}__mutmut_[1-9][0-9]*(?:@[1-9][0-9]*)?:(?:survived|timeout|slow|memory|lost)")
+#: A mutant's name as the engine is handed it.
+_MUTANT = re.compile(rf"(?:{_PART}\.)*{_PART}\.{_KEY}__mutmut_[1-9][0-9]*")
 #: A schema 2 window's survivor: ``n@line:status``.
 _WINDOW_SURVIVOR = re.compile(r"([1-9][0-9]*)@([1-9][0-9]*):(survived|timeout)")
 _TESTID = re.compile(r"[^\x00-\x1f]{1,1000}")
@@ -359,8 +421,12 @@ _TESTFILE = re.compile(r"tests/[^\x00-\x1f:]{1,300}\.py")
 COLUMNS = ("killed", "survived", "timeout", "no_tests", "slow", "other")
 #: Schema 2's columns, before ``slow``.
 COLUMNS_2 = ("killed", "survived", "timeout", "no_tests", "other")
+#: The columns a decided window carries only when they count a mutant: a
+#: state with none of them is shaped as the schema 3 states before them,
+#: which an older reader loads; one with them it refuses rather than misread.
+OPTIONAL_COLUMNS = (MEMORY, LOST)
 #: The statuses a window lists its mutants of, with their records.
-LISTED = frozenset({"survived", "timeout", SLOW})
+LISTED = frozenset({"survived", "timeout", SLOW, MEMORY, LOST})
 #: The most test files a survivor's record names.
 MAX_FILES = 10_000
 
@@ -424,13 +490,16 @@ def _check_survivors(survivors: Any, size: int, what: str) -> None:
 def check_window(window: Any, what: str) -> None:
     """A decided window: the summary's columns summing to its size, and its
     survivors and slow mutants, each a record (:func:`check_survivor`)."""
-    rec = _keys(window, {*COLUMNS, "mutants", "survivors"}, f"{what}'s window")
+    optional = [c for c in OPTIONAL_COLUMNS if isinstance(window, dict) and c in window]
+    rec = _keys(window, {*COLUMNS, *optional, "mutants", "survivors"}, f"{what}'s window")
     size = _int(rec["mutants"], 0, MAX_MUTANTS, f"{what}'s window size")
-    _check(sum(_int(rec[c], 0, MAX_MUTANTS, f"{what}'s {c}") for c in COLUMNS) == size,
+    _check(sum(_int(rec[c], 0, MAX_MUTANTS, f"{what}'s {c}") for c in COLUMNS)
+           + sum(_int(rec[c], 1, MAX_MUTANTS, f"{what}'s {c}") for c in optional) == size,
            f"{what}'s window columns do not sum to its size")
     _check_survivors(rec["survivors"], size, what)
-    _check(len(rec["survivors"]) == rec["survived"] + rec["timeout"] + rec["slow"],
-           f"{what}'s survivors are not its survived, timeout and slow mutants")
+    _check(len(rec["survivors"]) == rec["survived"] + rec["timeout"] + rec["slow"]
+           + sum(rec[c] for c in optional),
+           f"{what}'s survivors are not its survived, timeout, slow, memory and lost mutants")
 
 
 def _check_decided(decided: Any, size: int, what: str) -> None:
@@ -459,7 +528,11 @@ def check_unit(ident: Any, record: Any, cycle: int | None = None) -> None:
     window's verdicts once decided, and the mutants of it decided so far
     while it is not."""
     _text(ident, _IDENT, f"function {ident!r}")
-    rec = _keys(record, {"hash", "mutants", "lines", "window", "partial"}, f"{ident}'s record")
+    # A unit's losses (#1838) are written only while it has one, so a state
+    # with none is shaped as the schema 3 states before them.
+    losses = isinstance(record, dict) and "losses" in record
+    rec = _keys(record, {"hash", "mutants", "lines", "window", "partial", *(["losses"] if losses else [])},
+                f"{ident}'s record")
     _text(rec["hash"], _HEX16, f"{ident}'s hash")
     count = rec["mutants"]
     if count is not None:
@@ -477,6 +550,16 @@ def check_unit(ident: Any, record: Any, cycle: int | None = None) -> None:
         size = int(count or 0) if cycle is None else sum(
             int(n) for line, n in rec["lines"].items() if in_sample(cycle, ident, int(line)))
         check_partial(rec["partial"], size, ident)
+    if losses:
+        _check(rec["lines"] is not None and rec["window"] is None, f"{ident} has losses outside an open window")
+        held = rec["losses"]
+        _check(isinstance(held, dict) and 0 < len(held) <= int(count or 0), f"{ident}'s losses")
+        decided = (rec["partial"] or {}).get("decided", {})
+        for number, n in held.items():
+            _check(isinstance(number, str) and _NUMBER.fullmatch(number) is not None
+                   and int(number) <= int(count or 0) and number not in decided,
+                   f"{ident}'s loss of mutant {number!r} is not of an undecided mutant of its window")
+            _int(n, 1, LOSS_LIMIT - 1, f"{ident}'s losses of mutant {number}")
 
 
 def _check_night(night: Any) -> None:
@@ -484,10 +567,18 @@ def _check_night(night: Any) -> None:
     # The lost slices entered the line on 2026-10-21 (#1751), the schema
     # that wrote it with schema 3 (#1838); the lines the workflow's
     # artifacts hold from before have neither, and still load.
-    for optional in ("lost", "schema"):
+    # The plans of the slices lost with nothing decided entered it with the
+    # legs (#1838), written only when there is one.
+    for optional in ("lost", "schema", "lost_plans"):
         if isinstance(night, dict) and optional in night:
             keys.add(optional)
     rec = _keys(night, keys, "a night")
+    if "lost_plans" in rec:
+        plans = rec["lost_plans"]
+        _check(isinstance(plans, dict) and 0 < len(plans) <= MAX_JOBS and all(
+            isinstance(k, str) and re.fullmatch(r"0|[1-9][0-9]?", k) is not None and int(k) < MAX_JOBS
+            and isinstance(v, str) and _HEX16.fullmatch(v) is not None for k, v in plans.items()),
+            "a night's lost plans")
     lost = rec.get("lost", [])
     _check(isinstance(lost, list) and len(lost) == len(set(lost)) <= MAX_JOBS
            and all(type(n) is int and 0 <= n < MAX_JOBS for n in lost), "a night's lost slices")
@@ -571,7 +662,9 @@ def check_state(data: Any) -> dict[str, Any]:
         for module, row in rec["modules"].items():
             _text(module, _PATH, f"module {module!r}")
             columns = set(COLUMNS_2)
-            for optional in ("mutants", "slow"):  # the population (#1827), the slow (#1838)
+            # The population (#1827), the slow (#1838), and the memory and
+            # lost mutants, present when the cycle counted one (#1838).
+            for optional in ("mutants", "slow", *OPTIONAL_COLUMNS):
                 if isinstance(row, dict) and optional in row:
                     columns.add(optional)
             counts = _keys(row, columns, f"{module}'s counts")
@@ -623,6 +716,20 @@ def check_record(record: Any) -> None:
         check_lines(rec["lines"], rec["mutants"], f"its count of {ident}")
     workers = record.get("workers", WORKERS)
     _int(workers, 1, 1024, "its workers")
+    # A leg's number, the mutants in flight when it was written and whether
+    # the engine was still running then (#1838): what the loss rule reads.
+    if "leg" in record:
+        _int(record["leg"], 0, LEGS, "its leg")
+    in_flight = record.get("in_flight", [])
+    _check(isinstance(in_flight, list) and len(in_flight) <= MAX_MUTANTS and all(
+        isinstance(n, str) and _MUTANT.fullmatch(n) for n in in_flight), "its mutants in flight")
+    # How long each had run when the record was written: a loss is charged
+    # only to a run that had lasted a heartbeat interval (apply_losses).
+    ages = record.get("in_flight_s", {})
+    _check(isinstance(ages, dict) and set(ages) <= set(in_flight) and all(
+        type(s) in (int, float) and 0 <= s < 1e6 for s in ages.values()), "its mutants' time in flight")
+    _check(isinstance(record.get("engine_running", False), bool), "its engine's state is not a flag")
+    _check(isinstance(record.get("budget_stopped", False), bool), "its budget's stop is not a flag")
     results = record.get("results")
     _check(isinstance(results, dict), "its results are not a mapping")
     for ident, result in results.items():
@@ -774,6 +881,8 @@ def reconcile(state: Mapping[str, Any], units: Iterable[SweepUnit],
                                    "partial": None if old.get("partial") is None else {
                                        "decided": dict(old["partial"]["decided"]),
                                        "survivors": list(old["partial"]["survivors"])}}
+            if old.get("losses"):
+                records[unit.ident]["losses"] = dict(old["losses"])
         else:
             records[unit.ident] = _fresh(unit)
     return {**state, "engine": engine if engine is not None else state.get("engine"), "units": records}
@@ -1052,6 +1161,7 @@ def slice_results(picks: Sequence[Pick], results: Mapping[str, str],
                   line_text: Callable[[SweepUnit, int], str | None] | None = None,
                   files: Mapping[str, list[str]] | None = None,
                   seconds: Mapping[str, tuple[float | None, float | None]] | None = None,
+                  memory: Iterable[str] = (), kept: Iterable[str] = (),
                   ) -> dict[str, Any]:
     """The mutants of each picked window the run decided, from a listing
     ``mutmut results`` printed and the engine's count of what it generated
@@ -1068,8 +1178,13 @@ def slice_results(picks: Sequence[Pick], results: Mapping[str, str],
     mutmut's estimate (``seconds``, by name).  The engine generating more or
     fewer mutants of a unit than its window holds, a mutant of a unit the
     bin does not hold, or a numbering with gaps means the narrowing, the
-    window or the counts went wrong."""
-    slow = set(slow)
+    window or the counts went wrong.
+
+    A ``segfault`` that ``memory`` names (:class:`Tracker`: the kernel ended
+    its run under the slice's bound) is ``memory``.  A status a budget stop
+    can leave (``CUT_SHORT``) is kept from a stopped run when ``kept`` names
+    the mutant: the engine had recorded it before the stop was sent."""
+    slow, memory, kept = set(slow), set(memory), set(kept)
     seconds = seconds or {}
     owners = {(p.unit.module, p.unit.key): p for p in picks}
     listed: dict[str, dict[int, str]] = {p.unit.ident: {} for p in picks}
@@ -1106,11 +1221,13 @@ def slice_results(picks: Sequence[Pick], results: Mapping[str, str],
             # so a run can finish with its own verdict after the plugin named
             # it: the file decides only a mutant the engine left undecided.
             status = SLOW if name in slow and statuses[number] in UNDECIDED else statuses[number]
-            if status in UNDECIDED or (cut_short and status in CUT_SHORT):
+            if status in UNDECIDED or (cut_short and status in CUT_SHORT and name not in kept):
                 continue  # the mutant waits for another night
+            if status == "segfault" and name in memory:
+                status = MEMORY
             entry["decided"][str(number)] = status
             duration, estimate = seconds.get(name, (None, None))
-            if duration is not None:
+            if duration is not None and duration > 0:  # a zero is no measure (mutant_seconds)
                 entry["durations"][str(number)] = round(float(duration), 3)
             if estimate is not None:
                 entry["estimates"][str(number)] = round(float(estimate), 3)
@@ -1245,18 +1362,332 @@ class Watch:
                 "swap_peak_mib": self.swap_peak_mib}
 
 
+# ---------------------------------------------------------------------------
+# The memory bound, and what the slice sees of it
+# ---------------------------------------------------------------------------
+
+
+def memory_max_bytes(meminfo: str, reserve_mib: int = MEMORY_RESERVE_MIB) -> int:
+    """The bound on the slice's scope: the runner's memory less
+    ``reserve_mib``, from the text of ``/proc/meminfo``."""
+    total = _meminfo_kb(meminfo).get("MemTotal")
+    if not total:
+        raise md.LaneError("/proc/meminfo gives no MemTotal, so the memory bound cannot be set")
+    limit = total * 1024 - reserve_mib * 1024 * 1024
+    if limit <= 0:
+        raise md.LaneError(f"the runner's {total // 1024} MiB leave nothing above the {reserve_mib} MiB "
+                           "the bound keeps back")
+    return int(limit)
+
+
+def scope_command(argv: Sequence[str], *, memory_max: int, unit: str, uid: int, gid: int,
+                  env: Mapping[str, str]) -> list[str]:
+    """``argv`` run in a transient systemd scope whose memory is bounded at
+    ``memory_max`` bytes with no swap, as user ``uid``/``gid``, with ``env``
+    set over what sudo keeps.  The kernel then ends a process of the scope,
+    by the memory it holds and its ``oom_score_adj`` (the oracle plugin
+    makes a mutant's run its preferred choice, not a certain one), and the
+    runner lives; ``OOMPolicy=continue`` keeps systemd from stopping the
+    whole scope at the first kill.  ``systemd-run --scope`` runs ``argv``
+    in its own process, so its parent is ours and sudo stays outside the
+    bound.  The one builder for the workflow and the self-test that runs it
+    under a real scope, so a property the runner's systemd refuses on a
+    scope fails the pull request's CI."""
+    return ["sudo", "-n", "--preserve-env", "systemd-run", "--scope", "--quiet", f"--unit={unit}",
+            f"--uid={uid}", f"--gid={gid}", f"--property=MemoryMax={memory_max}",
+            "--property=MemorySwapMax=0", "--property=OOMPolicy=continue", "--",
+            "/usr/bin/env", *(f"{k}={v}" for k, v in sorted(env.items())), *argv]
+
+
+#: The variables the scope's command is given whatever sudo keeps: sudo
+#: resets the search path and may reset the home, which git reads.
+PINNED_ENV = ("HOME", "PATH", "USER", "LOGNAME", "LANG")
+
+
+def own_cgroup(proc_cgroup: str | None, root: Path = Path("/sys/fs/cgroup")) -> Path | None:
+    """The unified (v2) cgroup a process is in, from its ``/proc/<pid>/cgroup``."""
+    for line in (proc_cgroup or "").splitlines():
+        hierarchy, _, rest = line.partition(":")
+        controllers, _, path = rest.partition(":")
+        if hierarchy == "0" and controllers == "" and path.startswith("/"):
+            return root / path.lstrip("/")
+    return None
+
+
+def _cgroup_value(path: Path) -> int | None:
+    """A cgroup file's number; none for ``max`` or a file that is not there."""
+    text = _proc_text(str(path))
+    if text is None:
+        return None
+    word = text.strip()
+    return int(word) if word.isdigit() else None
+
+
+def read_bound(cgroup: Path | None) -> dict[str, Any]:
+    """The bound a cgroup holds: its memory and swap limits in bytes (none
+    for unbounded or unknown)."""
+    if cgroup is None:
+        return {"cgroup": None, "memory_max": None, "swap_max": None}
+    return {"cgroup": str(cgroup), "memory_max": _cgroup_value(cgroup / "memory.max"),
+            "swap_max": _cgroup_value(cgroup / "memory.swap.max")}
+
+
+def bounded(bound: Mapping[str, Any]) -> bool:
+    """Whether a bound is in place: a memory limit and no swap."""
+    return bound.get("memory_max") is not None and bound.get("swap_max") == 0
+
+
+def oom_kills(cgroup: Path | None) -> int | None:
+    """The processes the kernel has ended in ``cgroup`` for want of memory
+    (``memory.events``' ``oom_kill``)."""
+    if cgroup is None:
+        return None
+    for line in (_proc_text(str(cgroup / "memory.events")) or "").splitlines():
+        name, _, value = line.partition(" ")
+        if name == "oom_kill" and value.strip().isdigit():
+            return int(value)
+    return None
+
+
+def _cgroup_procs(cgroup: Path | None) -> int | None:
+    text = _proc_text(str(cgroup / "cgroup.procs")) if cgroup is not None else None
+    return None if text is None else len([w for w in text.split() if w.isdigit()])
+
+
+def pid_alive(pid: int) -> bool:
+    """Whether process ``pid`` is there (a process of another user counts).
+    On Windows ``os.kill(pid, 0)`` would end the process, so the process
+    is asked for its exit code there instead."""
+    if sys.platform == "win32":
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        try:
+            code = ctypes.c_ulong()
+            return bool(kernel32.GetExitCodeProcess(ctypes.c_void_p(handle), ctypes.byref(code))) \
+                and code.value == 259  # STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(ctypes.c_void_p(handle))
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+#: The last field of the line the oracle plugin appends when a mutant's run
+#: ends of its own accord (``pytest_sessionfinish``).
+END_MARK = "end"
+
+
+def _plugin_lines(path: Path) -> list[list[str]]:
+    text = _proc_text(str(path)) or ""
+    # What follows the last newline is not whole yet.
+    return [parts for parts in (line.split("\t") for line in text.split("\n")[:-1]) if len(parts) == 4]
+
+
+def read_in_flight(path: Path) -> list[tuple[str, int, float, bool]]:
+    """The oracle plugin's start lines, in order: each mutant's run as it
+    started, its process, its start (epoch seconds) and whether it made
+    itself the kernel's first choice.  A line not whole yet is left out,
+    as are the end lines (:func:`read_run_ends`)."""
+    out = []
+    for parts in _plugin_lines(path):
+        if parts[3] == END_MARK:
+            continue
+        try:
+            out.append((parts[0], int(parts[1]), float(parts[2]), parts[3] == "1"))
+        except ValueError:
+            continue
+    return out
+
+
+def read_run_ends(path: Path) -> dict[tuple[str, int], float]:
+    """The oracle plugin's end lines: when each mutant's run, by name and
+    process, reached the end of its session (epoch seconds).  A run the cap
+    or a kill ended wrote none."""
+    out: dict[tuple[str, int], float] = {}
+    for parts in _plugin_lines(path):
+        if parts[3] != END_MARK:
+            continue
+        try:
+            out[(parts[0], int(parts[1]))] = float(parts[2])
+        except ValueError:
+            continue
+    return out
+
+
+def meta_exit_codes(tree: Path, paths: Iterable[str]) -> dict[str, int | None]:
+    """Each mutant's exit code as mutmut's meta file holds it (none: not
+    checked), by name; a meta file mid-write is left out."""
+    out: dict[str, int | None] = {}
+    for path in paths:
+        try:
+            meta = json.loads((tree / "mutants" / f"{path}.meta").read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        codes = meta.get("exit_code_by_key") if isinstance(meta, dict) else None
+        if isinstance(codes, dict):
+            out.update({str(k): v if isinstance(v, int) else None for k, v in codes.items()})
+    return out
+
+
+#: mutmut's exit code for a worker the kernel ended with SIGKILL, which it
+#: reports ``segfault``; RLIMIT_CPU's hard limit ends one the same way.
+KILLED = -9
+
+#: mutmut's exit code for a run it reads as interrupted.
+INTERRUPTED = 2
+
+
+class Tracker:
+    """What a slice follows of its mutants' runs, at each look: which are
+    in flight and when each started (the oracle plugin's start lines,
+    :func:`read_in_flight`), when each ended of its own accord (its end
+    line, :func:`read_run_ends`: a duration is the run's own, end less
+    start, since the fork server reports every duration as zero), and the
+    bound's ``oom_kill`` count.  A rise in the count between two looks
+    is matched with the runs whose process disappeared at that look or the
+    one before (the kernel ends the process, then the fork server reaps
+    it, and either can fall either side of a look); a run so matched whose
+    exit code is mutmut's ``-9`` is ``memory`` when the rise covers every
+    such run matched with it, and stays ``segfault`` when it does not.
+    ``alive`` says whether a process is there (:func:`pid_alive`)."""
+
+    def __init__(self, in_flight: Path, cgroup: Path | None,
+                 codes: Callable[[], Mapping[str, int | None]],
+                 alive: Callable[[int], bool] = pid_alive) -> None:
+        self.path = in_flight
+        self.cgroup = cgroup
+        self.read_codes = codes
+        self.alive = alive
+        self.runs: dict[tuple[str, int], tuple[float, bool]] = {}
+        self.ends: dict[tuple[str, int], float] = {}
+        self.gone: set[tuple[str, int]] = set()
+        self.codes: dict[str, int | None] = {}
+        self.oom: int | None = None
+        self.looks = 0
+        #: Each look at which the bound's ``oom_kill`` count rose, and only
+        #: those: ``{"look", "t", "rise", "gone"}``, ``gone`` the runs whose
+        #: process went at that look or the one before (none: the rise is
+        #: unattributed).  A run that ends of its own accord is no event.
+        self.events: list[dict[str, Any]] = []
+        #: The runs whose process went at the last look.
+        self._gone_before: list[str] = []
+
+    def look(self, elapsed_s: float) -> None:
+        self.looks += 1
+        for name, pid, start, took in read_in_flight(self.path):
+            self.runs.setdefault((name, pid), (start, took))
+        self.ends.update(read_run_ends(self.path))
+        self.codes.update(self.read_codes())
+        oom = oom_kills(self.cgroup)
+        gone = sorted(run for run in self.runs if run not in self.gone and not self.alive(run[1]))
+        self.gone.update(gone)
+        rise = oom - self.oom if oom is not None and self.oom is not None and oom > self.oom else 0
+        if oom is not None:
+            self.oom = oom
+        names = [name for name, _ in gone]
+        if rise:
+            self.events.append({"look": self.looks, "t": round(elapsed_s, 1), "rise": rise,
+                                "gone": [*self._gone_before, *names]})
+        self._gone_before = names
+
+    def memory(self) -> set[str]:
+        """The mutants whose runs the kernel ended for want of memory."""
+        found: set[str] = set()
+        for event in self.events:
+            killed = sorted({n for n in event["gone"] if self.codes.get(n) == KILLED} - found)
+            if killed and len(killed) <= event["rise"]:
+                found.update(killed)
+        return found
+
+    def in_flight(self, slow: Iterable[str] = ()) -> list[str]:
+        """The mutants started whose run has no verdict: mutmut recorded
+        none, or recorded it interrupted (exit 2) and the cap did not end it."""
+        ended = set(slow)
+        return sorted({name for name, _ in self.runs
+                       if self.codes.get(name) in (None, INTERRUPTED) and name not in ended})
+
+    def in_flight_ages(self, now: float, slow: Iterable[str] = ()) -> dict[str, float]:
+        """How long each mutant in flight (:meth:`in_flight`) had run at
+        ``now`` (epoch seconds), from its last start."""
+        names = set(self.in_flight(slow))
+        starts: dict[str, float] = {}
+        for (name, _), (start, _) in self.runs.items():
+            if name in names:
+                starts[name] = max(start, starts.get(name, start))
+        return {name: round(max(0.0, now - start), 1) for name, start in sorted(starts.items())}
+
+    def durations(self) -> dict[str, float]:
+        """Each mutant's run from its start to its end, seconds, as the run
+        itself recorded both: the last run of a mutant that has an end line.
+        A run with no end line (the cap's exit, a kill) has no duration."""
+        last: dict[str, tuple[float, float]] = {}
+        for run, (start, _) in self.runs.items():
+            end = self.ends.get(run)
+            if end is not None and end > start and (run[0] not in last or start > last[run[0]][0]):
+                last[run[0]] = (start, end)
+        return {name: round(end - start, 3) for name, (start, end) in last.items()}
+
+    def first_choice(self) -> dict[str, int]:
+        """How many runs made themselves the kernel's first choice, and how many could not."""
+        took = sum(1 for _, ok in self.runs.values() if ok)
+        return {"took": took, "not": len(self.runs) - took}
+
+
+def heartbeat_sample(elapsed_s: float, meminfo: str | None, loadavg: str | None, *,
+                     disk: Path, cgroup: Path | None) -> dict[str, Any]:
+    """One point of the record's heartbeat series: the runner's memory, swap,
+    load and free disk, and the bound's processes, memory and kills."""
+    mem = _meminfo_kb(meminfo) if meminfo else {}
+    try:
+        free = round(shutil.disk_usage(disk).free / 2**20)
+    except OSError:
+        free = None
+    current = _cgroup_value(cgroup / "memory.current") if cgroup is not None else None
+    return {"t": round(elapsed_s, 1),
+            "mem_avail_mib": round(mem["MemAvailable"] / 1024) if "MemAvailable" in mem else None,
+            "swap_used_mib": round((mem["SwapTotal"] - mem["SwapFree"]) / 1024)
+            if "SwapTotal" in mem and "SwapFree" in mem else None,
+            "load1": float(loadavg.split()[0]) if loadavg and loadavg.split() else None,
+            "disk_free_mib": free, "procs": _cgroup_procs(cgroup),
+            "bound_mib": None if current is None else round(current / 2**20), "oom_kill": oom_kills(cgroup)}
+
+
+def write_atomically(path: Path, data: Any) -> None:
+    """``data`` as JSON at ``path``, replacing it whole: a reader sees the
+    old file or the new one, never a part."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(data, indent=1, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
 class Heartbeat(threading.Thread):
-    """A line to stdout every ``every_s`` seconds until stopped: the job log
-    keeps them when the runner is lost, which uploads no record.  Between
-    lines it looks at the engine every ``POLL_S`` seconds (``watch``)."""
+    """A line to stdout every ``every_s`` seconds until stopped, and at
+    each one ``on_beat`` (the slice's partial record).  Between lines it
+    looks at the engine every ``POLL_S`` seconds (``watch``) and at its
+    mutants' runs (``tracker``)."""
 
     def __init__(self, every_s: float, workdir: Path, watch: Watch | None = None,
-                 started_at: float | None = None) -> None:
+                 started_at: float | None = None, tracker: Tracker | None = None,
+                 on_beat: Callable[[float], None] | None = None) -> None:
         super().__init__(name="sweep-heartbeat", daemon=True)
         self.every_s = every_s
         self.workdir = workdir
         self.watch = watch if watch is not None else Watch()
         self.started_at = time.monotonic() if started_at is None else started_at
+        self.tracker = tracker
+        self.on_beat = on_beat
         self._stopping = threading.Event()
 
     def run(self) -> None:
@@ -1266,10 +1697,20 @@ class Heartbeat(threading.Thread):
             now = time.monotonic()
             status, meminfo = engine_status(self.workdir), _proc_text("/proc/meminfo")
             self.watch.observe(now - self.started_at, status, meminfo)
+            try:
+                if self.tracker is not None:
+                    self.tracker.look(now - self.started_at)
+            except Exception as exc:  # noqa: BLE001 — a look that fails is retried at the next
+                print(f"heartbeat: the look at the mutants' runs failed: {exc}", flush=True)
             if now - printed >= self.every_s - 1e-3:
                 printed = now
                 print(heartbeat_line(now - self.started_at, status, meminfo, _proc_text("/proc/loadavg")),
                       flush=True)
+                if self.on_beat is not None:
+                    try:
+                        self.on_beat(now - self.started_at)
+                    except Exception as exc:  # noqa: BLE001 — the next beat writes it again
+                        print(f"heartbeat: the partial record was not written: {exc}", flush=True)
 
     def stop(self) -> None:
         self._stopping.set()
@@ -1321,9 +1762,14 @@ def mutant_seconds(tree: Path, paths: Iterable[str]) -> dict[str, tuple[float | 
 
 
 def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: list[str],
-              today: str) -> dict[str, Any]:
-    """Plan the night and run slice ``args.slice``'s bin: its record."""
+              today: str, live: Path | None = None, bound: Mapping[str, Any] | None = None,
+              ) -> dict[str, Any]:
+    """Plan the night and run slice ``args.slice``'s bin: its record.  With
+    ``live``, the record so far is written there (``PARTIAL_FILE``) once the
+    night is planned and at every heartbeat, for the workflow's legs to
+    upload; ``bound`` is the memory bound the slice runs under."""
     started = time.monotonic()
+    cgroup = Path(bound["cgroup"]) if bound and bound.get("cgroup") else None
     head = md._git(repo, "rev-parse", "--verify", "HEAD^{commit}").strip()
     env = md._git_env()
     # The copy caches bytecode (scripts/mutate_diff.py says why, #1829).
@@ -1339,6 +1785,9 @@ def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: li
     slow_file = workdir / "oracle-slow.txt"
     env[CAP_ENV] = f"{float(getattr(args, 'mutant_cap', MUTANT_CAP_S)):g}"
     env[SLOW_ENV] = str(slow_file)
+    # Each mutant's run as it starts, with its process (tests/mutation_oracle.py).
+    in_flight_file = workdir / "oracle-inflight.txt"
+    env[INFLIGHT_ENV] = str(in_flight_file)
     version = md._engine_version(engine, env)
     if not version:
         raise md.LaneError("the engine did not report its version")
@@ -1358,8 +1807,16 @@ def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: li
         "counts": counts, "results": {}, "stopped": None, "engine_exit": None, "engine_error": None,
         "engine_s": 0.0, "dropped_tests": [], "deselected_tests": [], "subprocess_tests": [],
         "source_tests": [], "selection": 0, "engine_tail": [], "workers": int(args.max_children),
-        "slow": [], **Watch().fields(),
+        "slow": [], **Watch().fields(), "memory_bound": dict(bound) if bound else None,
+        "engine_oom_score": ENGINE_OOM_SCORE if bound else None, "in_flight": [], "in_flight_s": {}, "engine_running": False, "budget_stopped": False,
+        "heartbeats": [], "oom_events": [], "memory": [], "first_choice": None,
     }
+
+    def publish(rec: Mapping[str, Any]) -> None:
+        if live is not None:
+            write_atomically(live / PARTIAL_FILE, {**rec, "elapsed_s": round(time.monotonic() - started, 1)})
+
+    publish(record)  # the plan: leg 0
     if not picks:
         record["elapsed_s"] = round(time.monotonic() - started, 1)
         return record
@@ -1389,21 +1846,149 @@ def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: li
     also_copy = _whole_tree(tree)
     every = float(getattr(args, "heartbeat", HEARTBEAT_S))
     watch = Watch()
-    beat = Heartbeat(every, workdir, watch, started) if every > 0 else None
+    tracker = Tracker(in_flight_file, cgroup, lambda: meta_exit_codes(tree, files))
+    beats: list[dict[str, Any]] = []
+    kept: set[str] = set()
+
+    def line_text(unit: SweepUnit, line: int) -> str | None:
+        rows = sources[unit.path].splitlines()
+        at = unit.start + line - 1
+        return rows[at - 1] if 1 <= at <= len(rows) else None
+
+    def seconds() -> dict[str, tuple[float | None, float | None]]:
+        """Each mutant's duration as its own run measured it, from its start
+        to its end (the fork server reports every one as zero, which is no
+        measure: a run with no end line has none), and mutmut's estimate."""
+        measured = tracker.durations()
+        meta = mutant_seconds(tree, files)
+        out: dict[str, tuple[float | None, float | None]] = {}
+        for name in set(meta) | set(measured):
+            duration, estimate = meta.get(name, (None, None))
+            out[name] = (measured.get(name, duration), estimate)
+        return out
+
+    def read(listing: Mapping[str, str], *, cut_short: bool, finished: bool) -> dict[str, Any]:
+        generated = md.read_window_counts(counts_file)
+        if generated is None:
+            return {}
+        ran = tested_files(tree / "mutants" / "mutmut-stats.json")
+        return slice_results(
+            picks, listing, generated, cut_short=cut_short, finished=finished,
+            slow=slow_mutants(slow_file), line_text=line_text,
+            files={p.unit.ident: ran.get(f"{p.unit.module}.{p.unit.key}", []) for p in picks},
+            seconds=seconds(), memory=tracker.memory(), kept=kept)
+
+    # The last results read whole, and when: a listing that fails, times out
+    # or raises keeps them, so a later record never holds less than an
+    # earlier one did (mutmut writes a meta file with a plain open and dump,
+    # so a listing can meet one mid-write).
+    last_read: dict[str, Any] = {"results": {}, "at": None}
+    # Set once the budget's stop is about to be sent (before_stop): a
+    # listing read after it takes a status a stop can leave (CUT_SHORT) only
+    # where the engine had recorded it before the stop, as the final one does.
+    stop_sent = threading.Event()
+    # The names a listing completed before the stop showed with a status a
+    # stop can leave: the engine recorded them before it, whatever a meta
+    # file mid-write hid from before_stop.  One lock orders the stop with
+    # every listing's reading and every partial record's publishing, so each
+    # is wholly before the stop or wholly after it.  It is taken only in
+    # read_partial, on_beat's publish and before_stop, never while another
+    # is held, and none of them waits on a thread that may hold it: the
+    # heartbeat's exit (Heartbeat.stop) is joined from the main thread after
+    # run_dropping returns, holding nothing.
+    pre_stop: set[str] = set()
+    stop_lock = threading.Lock()
+
+    def read_partial(elapsed_s: float) -> dict[str, Any] | None:
+        """List the engine's results while it runs: the last read whole
+        replaced by this one, or None with ``last_read`` kept and why."""
+        try:
+            listed = md._engine_call(engine, ["results", "--all", "true"], cwd=tree, env=env)
+            if listed is None:
+                return {"at": round(elapsed_s, 1), "why": "the listing did not end in time"}
+            if listed.returncode != 0:
+                return {"at": round(elapsed_s, 1), "why": f"the listing exited {listed.returncode}"}
+            if md.read_window_counts(counts_file) is None:
+                return {"at": round(elapsed_s, 1), "why": "the engine's count of its mutants was not read"}
+            parsed = md.parse_results(listed.stdout)
+            with stop_lock:
+                # A listing that ended before the stop was sent saw only what
+                # the engine recorded before it.
+                after = stop_sent.is_set()
+                if not after:
+                    pre_stop.update(n for n, status in parsed.items() if status in CUT_SHORT)
+                last_read["results"] = read(parsed, cut_short=after, finished=False)
+            last_read["at"] = round(elapsed_s, 1)
+            return None
+        except Exception as exc:  # noqa: BLE001 — a failed listing keeps the last one read whole
+            return {"at": round(elapsed_s, 1), "why": f"the listing was not read: {exc}"[:500]}
+
+    def on_beat(elapsed_s: float) -> None:
+        beats.append(heartbeat_sample(elapsed_s, _proc_text("/proc/meminfo"), _proc_text("/proc/loadavg"),
+                                      disk=workdir, cgroup=cgroup))
+        if live is None:
+            return  # no leg reads a partial record
+        slow = slow_mutants(slow_file)
+        partial = {**record, **watch.fields(), "heartbeats": list(beats), "oom_events": list(tracker.events),
+                   "in_flight": tracker.in_flight(slow), "in_flight_s": tracker.in_flight_ages(time.time(), slow),
+                   "engine_running": True, "memory": sorted(tracker.memory()),
+                   "first_choice": tracker.first_choice()}
+        failed = read_partial(elapsed_s)
+        partial.update(results=last_read["results"], results_at=last_read["at"], listing_failed=failed)
+        with stop_lock:
+            # Read where it is published: a record written once the stop
+            # was sent says so (charged_in_flight charges it nothing).
+            partial["budget_stopped"] = stop_sent.is_set()
+            publish(partial)
+            published["record"] = partial
+
+    published: dict[str, Any] = {"record": None}
+
+    def before_stop() -> None:
+        """What the engine recorded before the budget's stop is sent: a
+        status a stop can leave that is already there (in its meta files, or
+        in a listing that ended before now) is the engine's own.  The last
+        partial record is written again saying the stop was sent, so a leg
+        that copies it from now on charges no loss."""
+        with stop_lock:
+            kept.update(name for name, code in meta_exit_codes(tree, files).items() if code is not None)
+            kept.update(pre_stop)
+            stop_sent.set()
+            if published["record"] is not None:
+                published["record"] = {**published["record"], "budget_stopped": True}
+                try:
+                    publish(published["record"])
+                except Exception as exc:  # noqa: BLE001 — the stop goes ahead; the next beat writes it
+                    print(f"the partial record was not written at the stop: {exc}", flush=True)
+
+    beat = Heartbeat(every, workdir, watch, started, tracker=tracker, on_beat=on_beat) if every > 0 else None
     if beat is not None:
         beat.start()
+    # Under the bound, the engine runs at ENGINE_OOM_SCORE and every mutant's
+    # run at 1000 (the oracle plugin), so the kernel prefers a mutant's run to
+    # the engine and the engine to the slice's own process: a preference
+    # weighed with the memory each holds, not a guarantee.
+    lower = ["choom", "-n", str(ENGINE_OOM_SCORE), "--"] if bound else []
     try:
         run, log, dropped = md.run_dropping(
-            [*engine, "run", "--max-children", str(args.max_children), *engine_targets(picks)],
+            [*lower, *engine, "run", "--max-children", str(args.max_children), *engine_targets(picks)],
             tree=tree, pyproject=pyproject, budget_s=args.budget, workdir=workdir, env=env,
             config_for=lambda dropped: md.rewrite_config(
                 config, only_mutate=files, extra_tests=selection, also_copy=also_copy,
-                extra_args=[f"--deselect={test}" for test in [*deselected, *dropped]]))
+                extra_args=[f"--deselect={test}" for test in [*deselected, *dropped]]),
+            before_stop=before_stop)
     finally:
         if beat is not None:
             beat.stop()
     watch.observe(time.monotonic() - started, engine_status(workdir), _proc_text("/proc/meminfo"))
+    tracker.look(time.monotonic() - started)
     record.update(watch.fields())
+    record["heartbeats"] = beats
+    record["oom_events"] = tracker.events
+    record["memory"] = sorted(tracker.memory())
+    record["first_choice"] = tracker.first_choice()
+    record["in_flight"] = tracker.in_flight(slow_mutants(slow_file))
+    record["in_flight_s"] = tracker.in_flight_ages(time.time(), slow_mutants(slow_file))
     record["engine_s"] = round(time.monotonic() - started, 1)
     record["dropped_tests"] = dropped
     record["engine_error"] = run.error
@@ -1413,6 +1998,9 @@ def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: li
     text = log.read_text(encoding="utf-8", errors="replace")
     no_tests = run.returncode == 1 and md.NO_TESTS_SENTENCE in text
     stopped = run.stopped or (None if run.returncode == 0 or no_tests else "engine")
+    # The budget stopped it, whatever the listing below makes of the stop: a
+    # mutant the budget cut short is no loss (charged_in_flight).
+    record["budget_stopped"] = run.stopped == "budget"
     finished = stopped is None
     listed = md._engine_call(engine, ["results", "--all", "true"], cwd=tree, env=env)
     results: dict[str, str] | None = None
@@ -1436,22 +2024,17 @@ def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: li
             results = {name: "no tests" for name in results}
         slow = slow_mutants(slow_file)
         record["slow"] = sorted(slow)
-        ran = tested_files(tree / "mutants" / "mutmut-stats.json")
-
-        def line_text(unit: SweepUnit, line: int) -> str | None:
-            rows = sources[unit.path].splitlines()
-            at = unit.start + line - 1
-            return rows[at - 1] if 1 <= at <= len(rows) else None
-
         try:
-            record["results"] = slice_results(
-                picks, results, generated, cut_short=run.stopped is not None, finished=finished,
-                slow=slow, line_text=line_text,
-                files={p.unit.ident: ran.get(f"{p.unit.module}.{p.unit.key}", []) for p in picks},
-                seconds=mutant_seconds(tree, files))
+            record["results"] = read(results, cut_short=run.stopped is not None, finished=finished)
         except StateError as exc:
             stopped = md.failed(stopped, "unmapped")  # it outranks a budget stop, as in the diff lane
             record["engine_tail"] = [str(exc)]
+    if results is None and last_read["results"]:
+        # The final listing failed: the record keeps what the last listing
+        # read whole decided while the engine ran, so it never holds less
+        # than a leg did; the engine's stop stands.
+        record["results"] = last_read["results"]
+        record["results_at"] = last_read["at"]
     record["stopped"] = stopped
     if stopped not in (None, "budget") and not record["engine_tail"]:
         record["engine_tail"] = md._tail(log)
@@ -1539,19 +2122,105 @@ def merge(state: dict[str, Any], record: Mapping[str, Any], units: Mapping[str, 
                     "n": n, "line": pick.line_of(int(number)), "text_sha": None, "status": status,
                     "files": None})
         size = int(result["window"])
-        if len(partial["decided"]) == size:
-            rec["window"], rec["partial"] = fold_window(partial, size), None
-        else:
-            rec["partial"] = partial
+        _settle(rec, partial, size)
     return added
+
+
+def _settle(rec: dict[str, Any], partial: dict[str, Any], size: int) -> None:
+    """A unit's window after mutants were decided in it: a decided mutant's
+    losses dropped, and the window folded once its last mutant is decided."""
+    losses = {n: k for n, k in (rec.get("losses") or {}).items() if n not in partial["decided"]}
+    if len(partial["decided"]) == size:
+        rec["window"], rec["partial"] = fold_window(partial, size), None
+        losses = {}
+    else:
+        rec["partial"] = partial
+    if losses:
+        rec["losses"] = losses
+    else:
+        rec.pop("losses", None)
+
+
+def mutant_of(name: str) -> tuple[str, str, int] | None:
+    """A mutant's module, unit key and window number, from its name."""
+    if not _MUTANT.fullmatch(name):
+        return None
+    module, key = md.unit_of_mutant(name)
+    return module, key, md._mutant_number(name)
+
+
+def charged_in_flight(record: Mapping[str, Any]) -> list[str]:
+    """The mutants a slice's record charges a loss (:func:`apply_losses`),
+    the one rule the stitch and the slice's report read: none when the
+    budget's stop had been sent, since the budget cut them short; for a leg,
+    those in flight while the engine still ran; for a final record, those in
+    flight when the engine stopped it; each only when its run had lasted a
+    heartbeat interval when the record was written (``in_flight_s``)."""
+    if record.get("budget_stopped"):
+        return []
+    ends = record.get("engine_running") if "leg" in record else record.get("stopped") == "engine"
+    if not ends:
+        return []
+    ages = record.get("in_flight_s") or {}
+    return sorted({n for n in record.get("in_flight", []) if float(ages.get(n, 0.0)) >= HEARTBEAT_S})
+
+
+def apply_losses(state: dict[str, Any], record: Mapping[str, Any], units: Sequence[SweepUnit]) -> int:
+    """Each mutant in flight at ``record``, the last record its slice
+    uploaded (a leg's, written up to a leg before a lost runner went, or
+    the final one of a slice its engine stopped), whose run had lasted at
+    least a heartbeat interval then (``in_flight_s``), takes a loss; at
+    ``LOSS_LIMIT`` it is decided ``lost``.  What happened after the record
+    was written is not known: a run that had just started draws no loss, so
+    a mutant that takes the runner within seconds of its start is named by
+    the rule for a slice lost twice on one plan instead.  Only a mutant of a
+    unit the record planned over the cycle's own window, still undecided,
+    takes one.  Returns the mutants decided ``lost``."""
+    by_name = {(u.module, u.key): u for u in units}
+    planned = {p.get("unit"): p for p in record.get("planned", []) if isinstance(p, dict)}
+    names = charged_in_flight(record)
+    decided = 0
+    for name in sorted(set(names)):
+        found = mutant_of(name)
+        unit = by_name.get(found[:2]) if found else None
+        if found is None or unit is None:
+            continue
+        rec = state["units"].get(unit.ident)
+        piece = planned.get(unit.ident)
+        if rec is None or rec["lines"] is None or rec["window"] is not None or piece is None:
+            continue
+        lines, counts, before = window_counts(state, unit)
+        number = found[2]
+        if piece.get("hash") != rec["hash"] or list(piece.get("lines", [])) != list(lines) \
+                or not 1 <= number <= sum(counts):
+            continue
+        partial = rec["partial"] or {"decided": {}, "survivors": []}
+        key = str(number)
+        if key in partial["decided"]:
+            continue
+        losses = dict(rec.get("losses") or {})
+        losses[key] = losses.get(key, 0) + 1
+        rec["losses"] = losses
+        if losses[key] >= LOSS_LIMIT:
+            pick = Pick(unit=unit, lines=lines, counts=counts, before=before)
+            partial["decided"][key] = LOST
+            partial["survivors"].append({"n": pick.full_number(number), "line": pick.line_of(number),
+                                         "text_sha": None, "status": LOST, "files": None})
+            decided += 1
+        if partial["decided"]:
+            _settle(rec, partial, sum(counts))
+    return decided
 
 
 def fold_window(partial: Mapping[str, Any], size: int) -> dict[str, Any]:
     """A window whose every mutant is decided, as the decided window the
     summary reads: its columns, its size and its listed mutants by number."""
-    columns = dict.fromkeys(COLUMNS, 0)
+    columns = dict.fromkeys((*COLUMNS, *OPTIONAL_COLUMNS), 0)
     for status in partial["decided"].values():
         columns[_column(status)] += 1
+    for column in OPTIONAL_COLUMNS:
+        if not columns[column]:
+            del columns[column]  # written only when it counts a mutant (OPTIONAL_COLUMNS)
     return {**columns, "mutants": size, "survivors": sorted(partial["survivors"], key=lambda s: s["n"])}
 
 
@@ -1559,7 +2228,7 @@ def _column(status: str) -> str:
     """Where a decided mutant counts in the committed summary."""
     if status in ("killed", "caught by type check"):
         return "killed"
-    if status in ("timeout", "survived", SLOW):
+    if status in ("timeout", "survived", SLOW, MEMORY, LOST):
         return status
     if status == "no tests":
         return "no_tests"
@@ -1578,6 +2247,9 @@ def tally(state: Mapping[str, Any], units: Iterable[SweepUnit]) -> dict[str, dic
         if rec["window"] is not None:
             for column in COLUMNS:
                 row[column] += int(rec["window"][column])
+            for column in OPTIONAL_COLUMNS:
+                if rec["window"].get(column):
+                    row[column] = row.get(column, 0) + int(rec["window"][column])
     return modules
 
 
@@ -1611,6 +2283,7 @@ def close_cycle(state: dict[str, Any], units: Sequence[SweepUnit], *, head: str,
     state["cycle_started"] = today
     for rec in state["units"].values():
         rec["window"] = rec["partial"] = None
+        rec.pop("losses", None)  # a loss is the cycle's: the next draws another sample
     return True
 
 
@@ -1618,7 +2291,10 @@ def calibrate(state: dict[str, Any], records: Sequence[Mapping[str, Any]],
               units: Mapping[str, SweepUnit]) -> None:
     """Fold the night's measured cost into ``calibration``, the factor on
     ``rate``: each decided mutant's recorded duration over the slice's
-    workers (a job's seconds) against its estimate, moved halfway to it."""
+    workers (a job's seconds) against its estimate, moved halfway to it.  A
+    duration of zero is no measure, and is left out: mutmut's fork server
+    reports every mutant's as zero, and a night of them halved the factor
+    (#1838)."""
     spent = estimate = 0.0
     for record in records:
         workers = int(record.get("workers", WORKERS))
@@ -1627,7 +2303,7 @@ def calibrate(state: dict[str, Any], records: Sequence[Mapping[str, Any]],
             if unit is None:
                 continue
             for number, seconds in result.get("durations", {}).items():
-                if number in result["decided"]:
+                if number in result["decided"] and float(seconds) > 0:
                     spent += float(seconds) / workers
                     estimate += rate(unit)
     if estimate > 0:
@@ -1636,7 +2312,7 @@ def calibrate(state: dict[str, Any], records: Sequence[Mapping[str, Any]],
         state["calibration"] = round(min(max((old + spent / estimate) / 2, low), high), 3)
 
 
-def _listed(numbers: Sequence[int]) -> str:
+def _listed(numbers: Sequence[Any]) -> str:
     """``1``, ``1 and 2``, ``1, 2 and 3``."""
     words = [str(n) for n in numbers]
     return words[0] if len(words) == 1 else ", ".join(words[:-1]) + " and " + words[-1]
@@ -1655,16 +2331,103 @@ def empty_night(nights: Sequence[Mapping[str, Any]]) -> bool:
             and (any(s.get("planned") for s in last.get("slices", [])) or bool(last.get("lost"))))
 
 
+def _refusal(record: Any, *, jobs: int, head: str, digest: str) -> str | None:
+    """Why the night cannot take a slice's record (a final one or a leg),
+    or None."""
+    try:
+        check_record(record)
+    except StateError as exc:
+        return f"a malformed record: {exc}"
+    # A lane that failed planned nothing and holds no result, so its head
+    # (none, when the failure came before it was read) and its state digest
+    # are nothing to check: the record says what failed.
+    empty_lane = (record.get("stopped") == "lane" and not record.get("planned")
+                  and not record.get("results"))
+    if record.get("of") != jobs:
+        return f"not a record of this night's {jobs} slices"
+    if not empty_lane and record.get("head") != head:
+        return f"ran {record.get('head')}, not {head}"
+    if not empty_lane and record.get("state_in") != digest:
+        return "planned from another state"
+    return None
+
+
+def plan_digest(record: Mapping[str, Any]) -> str:
+    """A slice's plan's identity: its units, their code and the mutants
+    handed to the engine."""
+    pieces = sorted((str(p.get("unit")), str(p.get("hash")), [int(n) for n in p.get("todo", [])])
+                    for p in record.get("planned", []) if isinstance(p, dict))
+    return hashlib.sha256(json.dumps(pieces).encode("utf-8")).hexdigest()[:16]
+
+
+def union_legs(legs: Sequence[Mapping[str, Any]], problems: list[str]) -> dict[str, Any]:
+    """A lost slice's valid legs as one record: the highest leg's (its
+    plan, counts, mutants in flight and heartbeat series), with the union of
+    every leg's decisions, since a decision is final and a later leg can
+    hold fewer (a listing that failed).  Two legs that decide one mutant
+    differently are a problem, and that mutant is left undecided; a unit
+    whose result differs in its code or window between legs is a problem,
+    and the highest leg's result for it is kept."""
+    ordered = sorted(legs, key=lambda leg: int(leg["leg"]))
+    top = ordered[-1]
+    where = f"slice {top.get('slice')}"
+    results: dict[str, dict[str, Any]] = {}
+    statuses: dict[tuple[str, str], dict[str, int]] = {}
+    for leg in ordered:
+        for ident, result in leg.get("results", {}).items():
+            shape = (result["hash"], result["window"], list(result["lines"]))
+            held = results.get(ident)
+            if held is not None and (held["hash"], held["window"], list(held["lines"])) != shape:
+                problems.append(f"{where}: its legs ran {ident} over different code or windows; "
+                                f"leg {leg['leg']}'s result is kept")
+                held = None
+                statuses = {k: v for k, v in statuses.items() if k[0] != ident}
+            if held is None:
+                held = results[ident] = {"hash": result["hash"], "window": result["window"],
+                                         "lines": list(result["lines"]), "decided": {}, "survivors": [],
+                                         "durations": {}, "estimates": {}}
+            for number, status in result["decided"].items():
+                statuses.setdefault((ident, number), {}).setdefault(status, int(leg["leg"]))
+            held["survivors"] = [*[s for s in held["survivors"]
+                                   if s["n"] not in {t["n"] for t in result["survivors"]}],
+                                 *result["survivors"]]
+            held["durations"].update(result.get("durations", {}))
+            held["estimates"].update(result.get("estimates", {}))
+    for (ident, number), seen in sorted(statuses.items()):
+        if len(seen) == 1:
+            results[ident]["decided"][number] = next(iter(seen))
+            continue
+        problems.append(f"{where}: its legs disagree on mutant {number} of {ident} ("
+                        + ", ".join(f"leg {k}: {s}" for s, k in sorted(seen.items(), key=lambda kv: kv[1]))
+                        + "); it is left undecided")
+        results[ident]["durations"].pop(number, None)
+    for ident, result in results.items():
+        listed = {s for s in result["decided"].values() if s in LISTED}
+        result["survivors"] = sorted((s for s in result["survivors"] if s.get("status") in listed),
+                                     key=lambda s: s["n"])
+    return {**top, "results": {i: r for i, r in results.items() if r["decided"] or not r["window"]}}
+
+
 def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[str, Any]], *,
            jobs: int, head: str, units: Sequence[SweepUnit], today: str,
+           legs: Sequence[Mapping[str, Any]] = (), cancelled: bool = False,
            ) -> tuple[dict[str, Any], dict[str, Any]]:
     """The night's records folded into the state: the new state and the
-    night's line (what each slice did, and what the night failed at)."""
+    night's line (what each slice did, and what the night failed at).
+
+    A slice's final record is taken when it sent one.  A slice that sent
+    none lost its runner; its legs (``legs``, the partial records the
+    workflow uploaded as it ran) are taken in its place (:func:`union_legs`:
+    a mutant any valid leg decided is decided), the slice is counted lost,
+    and the mutants in flight its last leg charges take a loss, as do those
+    an engine stop's final record charges (:func:`charged_in_flight`,
+    :func:`apply_losses`).  On a run that was ``cancelled`` no
+    slice's end is a loss: its legs' decisions are kept and nothing more."""
     problems: list[str] = []
     valid: list[Mapping[str, Any]] = []
     seen: set[int] = set()
     reported: set[int] = set()  # every slice a record came from, accepted or not
-    engines = {r.get("engine") for r in records if isinstance(r, dict) and r.get("engine") is not None}
+    engines = {r.get("engine") for r in [*records, *legs] if isinstance(r, dict) and r.get("engine") is not None}
     if len(engines) > 1:
         problems.append(f"the slices ran different engines: {sorted(map(str, engines))}")
     for record in records:
@@ -1672,39 +2435,53 @@ def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[s
         number = record.get("slice") if isinstance(record, dict) else None
         if type(number) is int and 0 <= number < jobs:
             reported.add(number)
-        try:
-            check_record(record)
-        except StateError as exc:
-            problems.append(f"{where}: a malformed record: {exc}")
+        why = _refusal(record, jobs=jobs, head=head, digest=digest)
+        if why is None and record["slice"] in seen:
+            why = "two records"
+        if why is not None:
+            problems.append(f"{where}: {why}")
             continue
-        # A lane that failed planned nothing and holds no result, so its head
-        # (none, when the failure came before it was read) and its state
-        # digest are nothing to check: the record says what failed.
-        empty_lane = (record.get("stopped") == "lane" and not record.get("planned")
-                      and not record.get("results"))
-        if record.get("of") != jobs:
-            problems.append(f"{where}: not a record of this night's {jobs} slices")
-        elif not empty_lane and record.get("head") != head:
-            problems.append(f"{where}: ran {record.get('head')}, not {head}")
-        elif not empty_lane and record.get("state_in") != digest:
-            problems.append(f"{where}: planned from another state")
-        elif record["slice"] in seen:
-            problems.append(f"{where}: two records")
-        else:
-            seen.add(record["slice"])
-            valid.append(record)
-    # A slice with no record at all: its job ended before it uploaded anything
-    # (a hosted runner taken away under it, #1751).  A record the night
-    # rejected is not that: the slice reported.  A lost slice's work waits for
-    # the next night's plan and the night goes on; more than LOST_LIMIT_NIGHT
-    # in a night is a hazard the night reports.
+        seen.add(record["slice"])
+        valid.append(record)
+    # A slice with no record at all: its job ended before it uploaded its
+    # final record (a hosted runner taken away under it, #1751).  A record
+    # the night rejected is not that: the slice reported.  A lost slice's
+    # legs keep what they decided; the rest of its work waits for the next
+    # night's plan, and the night goes on; more than LOST_LIMIT_NIGHT in a
+    # night is a hazard the night reports.
     lost = sorted(set(range(jobs)) - reported)
-    notes: list[str] = [f"slice {n}: no record; its work waits for the next night" for n in lost]
+    valid_legs: dict[int, list[Mapping[str, Any]]] = {}
+    for leg in legs:
+        number = leg.get("slice") if isinstance(leg, dict) else None
+        if number not in lost:
+            continue  # a slice that reported is read from its final record
+        why = _refusal(leg, jobs=jobs, head=head, digest=digest)
+        if why is None and "leg" not in leg:
+            why = "a leg that does not say which"
+        if why is not None:
+            problems.append(f"slice {number}: a leg the night cannot take: {why}")
+            continue
+        valid_legs.setdefault(number, []).append(leg)
+    last_legs: dict[int, Mapping[str, Any]] = {
+        n: union_legs(held, problems) for n, held in valid_legs.items()}
+    notes: list[str] = []
+    if cancelled:
+        notes.append("the run was cancelled: no slice's end is a loss")
+    for n in lost:
+        kept_leg = last_legs.get(n)
+        if kept_leg is None:
+            notes.append(f"slice {n}: no record; its work waits for the next night")
+        else:
+            notes.append(f"slice {n}: no record; its legs keep {decided_count(kept_leg)} mutant(s) decided "
+                         f"(the last, leg {kept_leg['leg']}, written "
+                         f"{float(kept_leg.get('elapsed_s') or 0) / 60:.0f} minutes in), and the rest of its "
+                         "work waits for the next night")
     if len(lost) > LOST_LIMIT_NIGHT:
         problems.append(f"no record from slices {_listed(lost)}: more than {LOST_LIMIT_NIGHT} in a night")
     # A slice whose lane failed reports no engine; when none reports one,
     # the state keeps its own.
-    engine: str | None = next((str(r["engine"]) for r in valid if r.get("engine")), None)
+    taken_legs = [last_legs[n] for n in sorted(last_legs)]
+    engine: str | None = next((str(r["engine"]) for r in [*valid, *taken_legs] if r.get("engine")), None)
     state = reconcile(state_in, units, engine)
     converted = state.pop("converted_from", None)
     if converted == 1:
@@ -1718,12 +2495,33 @@ def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[s
         notes.append(f"mutmut {state_in.get('engine')} gave way to {engine}: every function "
                      "starts afresh, and so does the cycle")
         state["cycle_started"] = today
-    for record in valid:
+    for record in [*valid, *taken_legs]:
         merge_counts(state, record, problems)
     by_ident = {u.ident: u for u in units}
     added = 0
+    lost_plans: dict[str, str] = {}
+    before = (state_in.get("nights") or [{}])[-1].get("lost_plans", {})
+    for leg in taken_legs:
+        moved = merge(state, leg, by_ident, problems)
+        if not cancelled:
+            moved += apply_losses(state, leg, units)
+        added += moved
+        if moved == 0 and leg.get("planned") and not cancelled:
+            # A slice lost on a plan that decides nothing, not even a loss's
+            # second strike, cannot progress; on two nights running it is a
+            # problem, never silence.
+            digest_ = plan_digest(leg)
+            lost_plans[str(leg["slice"])] = digest_
+            if digest_ in before.values():
+                problems.append(f"slice {leg['slice']} lost its runner on the plan a slice lost the night "
+                                f"before ({_listed([str(p.get('unit')) for p in leg['planned']])}), and "
+                                "neither night decided a mutant of it")
     for record in valid:
         added += merge(state, record, by_ident, problems)
+        if not cancelled:
+            # The engine stopped with mutants in flight: each takes a loss
+            # (charged_in_flight: none on a budget's stop, or a lane's).
+            added += apply_losses(state, record, units)
         if record.get("stopped") not in (None, "budget"):
             # What stopped it: a lane's reason, or the exception the engine's
             # own code raised, when it raised one.
@@ -1745,7 +2543,7 @@ def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[s
     # from a night every slice reported.
     if not lost and not any(r.get("planned") for r in valid) and not complete(state, units):
         problems.append("the night planned nothing while the cycle is open")
-    calibrate(state, valid, {u.ident: u for u in units})
+    calibrate(state, [*valid, *taken_legs], {u.ident: u for u in units})
     # Only validated records merge, so a lost or failed slice cannot close
     # a cycle wrongly: the cycle closes when its sample is decided.
     closed = close_cycle(state, units, head=head, today=today)
@@ -1757,6 +2555,8 @@ def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[s
                          "source_tests": len(r.get("source_tests", [])), "slow": slow_count(r)}
                         for r in sorted(valid, key=lambda r: r["slice"])],
              "problems": problems, "notes": notes, "closed": closed}
+    if lost_plans:
+        night["lost_plans"] = lost_plans  # written only when there is one (_check_night)
     state["nights"] = [*state.get("nights", []), night][-KEPT_NIGHTS:]
     return state, night
 
@@ -1866,6 +2666,23 @@ def render_slice(record: Mapping[str, Any]) -> str:
         out.append("Ended at the cap of a mutant's run, `slow` (counted apart, never caught): "
                    + ", ".join(f"`{name}`" for name in record["slow"]) + ".")
         out.append("")
+    bound = record.get("memory_bound")
+    if isinstance(bound, dict) and bound.get("memory_max") is not None:
+        kills = sum(int(e.get("rise") or 0) for e in record.get("oom_events") or [])
+        out.append(f"Ran under a memory bound of {int(bound['memory_max']) / 2**20:,.0f} MiB with no swap; "
+                   f"the kernel ended {kills} process(es) under it.")
+        out.append("")
+    if record.get("memory"):
+        out.append("Ended by the kernel under the memory bound, `memory` (counted apart, never caught): "
+                   + ", ".join(f"`{name}`" for name in record["memory"]) + ".")
+        out.append("")
+    charged = charged_in_flight(record)
+    if charged:
+        out.append("In flight at the slice's last record, each for at least a heartbeat interval: each "
+                   "is charged a loss when the night is stitched, unless the run was cancelled, the "
+                   "mutant is already decided or its window no longer matches the state, and a second "
+                   "loss decides it `lost`: " + ", ".join(f"`{name}`" for name in charged) + ".")
+        out.append("")
     if record.get("stopped"):
         error = record.get("engine_error") if record["stopped"] == "engine" else None
         out.append(f"Stopped by the {record['stopped']}" + (f": `{error}`." if error else "."))
@@ -1897,9 +2714,14 @@ RULES = ("The night's rules: each mutant is kept as the engine decides it, and a
          "normal stop whose undecided mutants the next night plans.  A night is red for a slice its "
          "engine or its lane stopped, a listing that maps a mutant to no planned window, more than "
          f"{LOST_LIMIT_NIGHT} slices with no record, records that disagree (another head, state, "
-         "night or engine), a plan with nothing in it while the cycle is open, or a second night in a "
-         "row that decides no mutant.  A mutant whose run reaches the cap is `slow`: decided, counted "
-         "apart, never caught.  The cycle closes when its sample is decided.")
+         "night or engine), a plan with nothing in it while the cycle is open, a second night in a "
+         "row that decides no mutant, or a slice lost on the plan a slice lost the night before with "
+         "no mutant of it decided either night.  A slice with no record keeps what its legs "
+         "decided.  A mutant whose run reaches the cap is `slow`; one the kernel ended under the "
+         "memory bound is `memory`; one in flight, having run five minutes, at the last record of two "
+         "slices of runs not cancelled that ended with neither the engine finishing nor the budget "
+         "stopping it is `lost`: each decided, counted apart, never caught.  "
+         "The cycle closes when its sample is decided.")
 
 
 def render_night(state: Mapping[str, Any], night: Mapping[str, Any],
@@ -1972,6 +2794,21 @@ def lane_record(slice_: int, of: int, *, head: str | None, state_path: Path | No
             "dropped_tests": [], "deselected_tests": [], "subprocess_tests": [], "source_tests": []}
 
 
+def with_partial(record: dict[str, Any], live: Path | None, slice_: int, of: int) -> dict[str, Any]:
+    """A lane record, or, when the slice's ``live`` directory holds a
+    partial record of this slice, that partial record under the lane's stop
+    and reason: the slice ran, and what its last partial record decided is
+    kept.  The one check for a driver that raised (``night``) and one that
+    ended with no record (``lane-failed``)."""
+    partial = _read_json(live / PARTIAL_FILE) if live is not None else None
+    if not (isinstance(partial, dict) and partial.get("slice") == slice_ and partial.get("of") == of):
+        return record
+    kept = {**partial, "stopped": "lane", "engine_error": None, "engine_tail": record["engine_tail"],
+            "engine_running": False}
+    kept.pop("leg", None)
+    return kept
+
+
 def cmd_lane_failed(args: argparse.Namespace) -> int:
     """Write slice ``--slice``'s record as a lane that failed before the sweep
     ran (a step before it failed while the runner was still there), unless
@@ -1990,6 +2827,8 @@ def cmd_lane_failed(args: argparse.Namespace) -> int:
         head = None
     record = lane_record(args.slice, args.of, head=head, state_path=_state_file(args.state),
                          budget_s=args.budget, why=args.why)
+    record = with_partial(record, Path(args.live) if getattr(args, "live", None) else None,
+                          args.slice, args.of)
     path.write_text(json.dumps(record, indent=1, sort_keys=True, ensure_ascii=False) + "\n",
                     encoding="utf-8")
     report = render_slice(record)
@@ -1998,10 +2837,29 @@ def cmd_lane_failed(args: argparse.Namespace) -> int:
     return 0
 
 
+def _read_json(path: Path) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+class Interrupted(BaseException):
+    """The slice was told to stop (SIGTERM): the engine's process group is
+    ended on the way out (``run_engine``)."""
+
+
+def _interrupted(signum: int, frame: Any) -> None:
+    raise Interrupted(f"signal {signum}")
+
+
 def cmd_night(args: argparse.Namespace) -> int:
     repo = Path(args.repo).resolve()
     out = Path(args.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
+    live = Path(args.live).resolve() if args.live else None
+    if live is not None:
+        live.mkdir(parents=True, exist_ok=True)
     if args.workdir:
         workdir = Path(args.workdir).resolve()
         if workdir.exists() and any(workdir.iterdir()):
@@ -2011,21 +2869,189 @@ def cmd_night(args: argparse.Namespace) -> int:
         workdir = Path(tempfile.mkdtemp(prefix="vera-mutate-sweep-"))
     engine = list(args.engine) if args.engine else md._default_engine()
     args.state = str(_state_file(args.state)) if args.state else None
+    main = threading.current_thread() is threading.main_thread()
+    previous = signal.signal(signal.SIGTERM, _interrupted) if main else None
     try:
-        record = run_slice(args, repo=repo, workdir=workdir, engine=engine, today=_today())
+        return _night(args, repo=repo, out=out, live=live, workdir=workdir, engine=engine)
+    finally:
+        if main and previous is not None:
+            signal.signal(signal.SIGTERM, previous)
+
+
+def check_bound() -> dict[str, Any]:
+    """The check ``night --require-bound`` makes before it plans: the
+    memory bound this process runs under (:func:`own_cgroup`,
+    :func:`read_bound`), or a lane stop when there is none, since a night
+    never runs unbounded in silence, or when ``choom`` is missing, since the
+    engine could not then run below the mutants' runs."""
+    bound = read_bound(own_cgroup(_proc_text("/proc/self/cgroup")))
+    if not bounded(bound):
+        raise md.LaneError(f"the memory bound is not in place: {bound}")
+    if shutil.which("choom") is None:
+        raise md.LaneError("choom is not on the path, so the engine cannot run below the mutants' runs")
+    return bound
+
+
+def _night(args: argparse.Namespace, *, repo: Path, out: Path, live: Path | None, workdir: Path,
+           engine: list[str]) -> int:
+    try:
+        bound = check_bound() if args.require_bound else None
+        if live is not None:
+            write_atomically(live / STARTED_FILE, {"epoch": time.time(), "bound": bound, "pid": os.getpid()})
+        record = run_slice(args, repo=repo, workdir=workdir, engine=engine, today=_today(), live=live,
+                           bound=bound)
     except Exception as exc:  # noqa: BLE001 — a failure of the lane is exit 2, recorded
         import traceback
 
         traceback.print_exc()
-        record = lane_record(args.slice, args.of, head=None,
-                             state_path=Path(args.state) if args.state else None,
-                             budget_s=args.budget, why=f"{type(exc).__name__}: {exc}")
+        record = with_partial(lane_record(args.slice, args.of, head=None,
+                                          state_path=Path(args.state) if args.state else None,
+                                          budget_s=args.budget, why=f"{type(exc).__name__}: {exc}"),
+                              live, args.slice, args.of)
     (out / f"slice-{args.slice}.json").write_text(
         json.dumps(record, indent=1, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
     report = render_slice(record)
     print(report)
     _write(args.summary, report)
-    return slice_exit(record)
+    code = slice_exit(record)
+    if live is not None:
+        (live / "report.md").write_text(report + "\n", encoding="utf-8")
+        write_atomically(live / EXIT_FILE, {"code": code})
+    return code
+
+
+def _tail_log(live: Path) -> None:
+    """Print what the slice wrote to its log since the last step printed it
+    (the offset kept beside it), into this step's job log."""
+    log, mark = live / LOG_FILE, live / "log.offset"
+    try:
+        offset = int(mark.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        offset = 0
+    try:
+        with log.open("rb") as fh:
+            fh.seek(offset)
+            data = fh.read()
+    except OSError:
+        return
+    if data:
+        sys.stdout.write(data.decode("utf-8", errors="replace"))
+        sys.stdout.flush()
+        mark.write_text(str(offset + len(data)), encoding="utf-8")
+
+
+def _driver_alive(live: Path) -> bool:
+    driver = _read_json(live / DRIVER_FILE)
+    return isinstance(driver, dict) and isinstance(driver.get("pid"), int) and pid_alive(driver["pid"])
+
+
+#: The slices this process started, held so none is reaped or warned of
+#: while it runs.
+_STARTED: list[subprocess.Popen[bytes]] = []
+
+
+def cmd_start(args: argparse.Namespace) -> int:
+    """Start the slice (``night`` with the rest of the arguments) in the
+    background under the memory bound, its output to ``--live``'s log, and
+    return once it has checked the bound: 0, or 2 when it ended first (its
+    lane record says why).  The workflow's leg and finish steps follow it."""
+    live = Path(args.live).resolve()
+    live.mkdir(parents=True, exist_ok=True)
+    night = [sys.executable, str(Path(__file__).resolve()), "night", *args.night, "--live", str(live)]
+    if args.no_bound:
+        argv = night
+    else:
+        night.append("--require-bound")
+        env = {k: os.environ[k] for k in PINNED_ENV if k in os.environ}
+        argv = scope_command(night, memory_max=memory_max_bytes(_proc_text("/proc/meminfo") or ""),
+                             unit=f"mutation-sweep-{args.slice}-{os.getpid()}", uid=os.getuid(),
+                             gid=os.getgid(), env=env)
+    print("starting:", " ".join(argv), flush=True)
+    with (live / LOG_FILE).open("ab") as log:
+        proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                                start_new_session=True)
+    _STARTED.append(proc)  # it outlives this step; the job's end takes it
+    write_atomically(live / DRIVER_FILE, {"pid": proc.pid, "argv": argv})
+    deadline = time.monotonic() + args.wait
+    while time.monotonic() < deadline:
+        if (live / STARTED_FILE).exists():
+            _tail_log(live)
+            print(f"the slice runs under {_read_json(live / STARTED_FILE).get('bound')}", flush=True)
+            return 0
+        if proc.poll() is not None:
+            _tail_log(live)
+            print(f"the slice ended ({proc.returncode}) before it checked its bound", flush=True)
+            return 2
+        time.sleep(1.0)
+    _tail_log(live)
+    print(f"the slice did not check its bound within {args.wait:g} s", flush=True)
+    return 2
+
+
+def cmd_leg(args: argparse.Namespace) -> int:
+    """Leg ``--leg``: wait until the slice has run ``--leg`` times
+    ``--leg-s`` seconds (leg 0: until it has planned), printing its log as
+    it grows, then copy its partial record to ``--out`` as
+    ``slice-<n>-leg-<k>.json`` for the workflow to upload.  Nothing is
+    copied once the slice has written its final record.  Always 0: a leg
+    is evidence, and its own failure (a full disk, say) must not stop the
+    job, so whatever it raises goes to the job log instead."""
+    try:
+        return _leg(args)
+    except Exception as exc:  # noqa: BLE001 — a leg's failure is printed, never the slice's end
+        import traceback
+
+        traceback.print_exc()
+        print(f"leg {args.leg}: failed, and the slice goes on: {type(exc).__name__}: {exc}", flush=True)
+        return 0
+
+
+def _leg(args: argparse.Namespace) -> int:
+    live, out = Path(args.live).resolve(), Path(args.out).resolve()
+    started = _read_json(live / STARTED_FILE)
+    if not isinstance(started, dict):
+        print("the slice never started; no leg to keep", flush=True)
+        return 0
+    deadline = float(started["epoch"]) + args.leg * args.leg_s if args.leg else time.time() + args.leg_s
+    while time.time() < deadline:
+        _tail_log(live)
+        if (live / EXIT_FILE).exists() or not _driver_alive(live):
+            break
+        if args.leg == 0 and (live / PARTIAL_FILE).exists():
+            break
+        time.sleep(min(args.poll, max(0.0, deadline - time.time())))
+    _tail_log(live)
+    if (live / EXIT_FILE).exists():
+        print(f"leg {args.leg}: the slice has finished; its final record is uploaded at the end", flush=True)
+        return 0
+    partial = _read_json(live / PARTIAL_FILE)
+    if not isinstance(partial, dict):
+        print(f"leg {args.leg}: no partial record yet", flush=True)
+        return 0
+    out.mkdir(parents=True, exist_ok=True)
+    write_atomically(out / f"slice-{partial.get('slice')}-leg-{args.leg}.json", {**partial, "leg": args.leg})
+    print(f"leg {args.leg}: kept the record at +{float(partial.get('elapsed_s') or 0) / 60:.0f} min, "
+          f"{decided_count(partial)} mutant(s) decided, {len(partial.get('in_flight', []))} in flight",
+          flush=True)
+    return 0
+
+
+def cmd_finish(args: argparse.Namespace) -> int:
+    """Wait for the slice to end, printing its log; its report to
+    ``--summary`` and its exit code, or 2 when it ended with no record."""
+    live = Path(args.live).resolve()
+    while not (live / EXIT_FILE).exists() and _driver_alive(live):
+        _tail_log(live)
+        time.sleep(args.poll)
+    _tail_log(live)
+    done = _read_json(live / EXIT_FILE)
+    if not isinstance(done, dict):
+        print("the slice ended without writing its record", flush=True)
+        return 2
+    report = live / "report.md"
+    if report.exists():
+        _write(args.summary, report.read_text(encoding="utf-8"))
+    return int(done.get("code", 2))
 
 
 def cmd_stitch(args: argparse.Namespace) -> int:
@@ -2034,12 +3060,16 @@ def cmd_stitch(args: argparse.Namespace) -> int:
     state_path = _state_file(args.state)
     today = _today()
     state_in = load_state(state_path, today)
-    records = []
+    records: list[Any] = []
+    legs: list[Any] = []
     for path in sorted(Path(args.slices).glob("slice-*.json")) if args.slices else []:
-        records.append(json.loads(path.read_text(encoding="utf-8")))
+        # A leg (slice-<n>-leg-<k>.json) is read only for a slice with no
+        # final record (slice-<n>.json), whose name is unchanged.
+        (legs if LEG_NAME.fullmatch(path.name) else records).append(
+            json.loads(path.read_text(encoding="utf-8")))
     units = inventory(vera_sources(repo, head))
     state, night = stitch(state_in, state_digest(state_path), records, jobs=args.of, head=head,
-                          units=units, today=today)
+                          units=units, today=today, legs=legs, cancelled=args.sweep_result == "cancelled")
     out = Path(args.out)
     save_state(state, out)
     if night["closed"]:
@@ -2123,7 +3153,27 @@ def main(argv: Sequence[str] | None = None) -> int:
     night.add_argument("--workdir", help="an empty or absent directory for the scratch tree")
     night.add_argument("--summary", help="append the Markdown summary here")
     night.add_argument("--engine", nargs="+", help="the mutmut command")
+    night.add_argument("--live", help="a directory for the slice's partial record and its state while it runs")
+    night.add_argument("--require-bound", action="store_true",
+                       help="stop as a lane failure unless this process runs under a memory bound")
+    start = sub.add_parser("start", help="start a night's slice in the background under the memory bound")
+    start.add_argument("--slice", type=int, default=0, help="this job's slice (default 0)")
+    start.add_argument("--live", required=True, help="the slice's live directory")
+    start.add_argument("--wait", type=float, default=600.0, help="seconds to wait for it to check its bound")
+    start.add_argument("--no-bound", action="store_true", help="run it without the scope (a local run)")
+    start.add_argument("night", nargs=argparse.REMAINDER, help="-- then the night's arguments")
+    leg = sub.add_parser("leg", help="wait for a leg of a running slice and keep its partial record")
+    leg.add_argument("--live", required=True, help="the slice's live directory")
+    leg.add_argument("--leg", type=int, required=True, help=f"the leg, 0 (the plan) to {LEGS}")
+    leg.add_argument("--leg-s", type=float, default=LEG_S, help=f"seconds a leg (default {LEG_S:g})")
+    leg.add_argument("--out", required=True, help="the directory for slice-<n>-leg-<k>.json")
+    leg.add_argument("--poll", type=float, default=15.0, help="seconds between looks")
+    finish = sub.add_parser("finish", help="wait for a running slice to end; its exit code")
+    finish.add_argument("--live", required=True, help="the slice's live directory")
+    finish.add_argument("--summary", help="append the Markdown summary here")
+    finish.add_argument("--poll", type=float, default=15.0, help="seconds between looks")
     lane = sub.add_parser("lane-failed", help="record a slice whose lane failed before the sweep ran")
+    lane.add_argument("--live", help="the slice's live directory, whose partial record is kept")
     lane.add_argument("--slice", type=int, default=0, help="this job's slice (default 0)")
     lane.add_argument("--of", type=int, default=1, help="the night's slices (default 1)")
     lane.add_argument("--state", help="the directory holding the last state (none: cycle 1)")
@@ -2139,6 +3189,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     stitch_p.add_argument("--out", required=True, help="the directory for the new state")
     stitch_p.add_argument("--repo", default=str(ROOT), help="the repository (default: this one)")
     stitch_p.add_argument("--summary", help="append the Markdown summary here")
+    stitch_p.add_argument("--sweep-result", default="",
+                          help="the sweep job's result (needs.sweep.result): `cancelled` charges no loss")
     summary = sub.add_parser("summary", help="write the last closed cycle's committed files")
     summary.add_argument("--state", required=True, help="the directory holding the state")
     summary.add_argument("--out", default=str(ROOT), help="where to write them (default: the "
@@ -2153,8 +3205,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command in ("night", "stitch", "lane-failed") and not 0 <= getattr(args, "slice", 0) < args.of:
         parser.error("--slice must be at least 0 and less than --of")
+    if args.command == "start":
+        if args.night[:1] == ["--"]:
+            args.night = args.night[1:]
+        if not args.night:
+            parser.error("start needs the night's arguments after --")
     commands = {"night": cmd_night, "stitch": cmd_stitch, "summary": cmd_summary,
-                "matrix": cmd_matrix, "find-state": cmd_find_state, "lane-failed": cmd_lane_failed}
+                "matrix": cmd_matrix, "find-state": cmd_find_state, "lane-failed": cmd_lane_failed,
+                "start": cmd_start, "leg": cmd_leg, "finish": cmd_finish}
     return commands[args.command](args)
 
 
