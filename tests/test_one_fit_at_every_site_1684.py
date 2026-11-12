@@ -655,6 +655,261 @@ def test_an_accepted_neighbour_still_checks_and_runs(source: str) -> None:
 
 
 # ---------------------------------------------------------------------
+# Each refusal's whole diagnostic
+# ---------------------------------------------------------------------
+
+_RIGID_WHY = ("T is a type parameter of the enclosing function, which "
+              "stands for whatever type each call gives it, so a value of "
+              "type Int has type T only where a call makes T that type, and "
+              "the body must hold at every type.")
+
+_ABILITY_CONCRETE = """\
+public fn main(@Unit -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  eq(1, "a")
+}
+"""
+
+#: Each refusal: its program, then its code, description, rationale, fix
+#: and spec reference, as a reader sees them.
+_DIAGNOSTICS: dict[str, tuple[str, str, str, str, str, str]] = {
+    "operation_argument": (
+        _OPERATION_ARGUMENT, "E204",
+        "Argument 0 of 'put' has type Int, expected T.",
+        "Each argument to an effect operation must be a subtype of the "
+        "parameter type declared in its 'op' signature.",
+        f"Pass `@T.0`, or another value of type T: {_RIGID_WHY}",
+        'Chapter 7, Section 7.4 "Performing Effects"'),
+    "ability_argument_rigid": (
+        _ABILITY_ARGUMENT, "E241",
+        "Argument 1 of 'eq' has type Int, expected T.",
+        "Each argument to an ability operation must be a subtype of the "
+        "parameter type declared in its 'op' signature, after the "
+        "ability's type variable is instantiated.",
+        f"Pass `@T.0`, or another value of type T: {_RIGID_WHY}",
+        'Chapter 9, Section 9.8 "Abilities"'),
+    "ability_argument_concrete": (
+        _ABILITY_CONCRETE, "E241",
+        "Argument 1 of 'eq' has type String, expected Int.",
+        "Each argument to an ability operation must be a subtype of the "
+        "parameter type declared in its 'op' signature, after the "
+        "ability's type variable is instantiated.",
+        "Pass a value of type Int for argument 1 of 'eq', or ensure the "
+        "ability's type variable resolves to a type that accepts String.",
+        'Chapter 9, Section 9.8 "Abilities"'),
+    "applied_argument": (
+        _APPLY_RIGID_PARAMETER, "E202",
+        "Argument 1 of 'apply_fn' has type Int, expected T.",
+        "Each argument after the function value must be a subtype of the "
+        "corresponding parameter of the applied function type.",
+        "Pass a value of type T, taking one as a parameter `@T` of the "
+        f"enclosing function: {_RIGID_WHY}",
+        'Chapter 11, Section 11.10.5 "Closure Invocation (apply_fn)"'),
+    "applied_value": (
+        _APPLY_RIGID_VALUE, "E202",
+        "Argument 0 of 'apply_fn' has T, a type parameter of the enclosing "
+        "function, expected a function value (a fn(...) type).",
+        "apply_fn invokes a stored function value via call_indirect.  T "
+        "stands for whatever type each call of the enclosing function "
+        "gives it, and the body must hold at every type, most of which are "
+        "no function, so a value of type T has no signature to call.",
+        "Hold the function to apply at the type `fn(Int -> Int) "
+        "effects(pure)`: declare `type Applied = fn(Int -> Int) "
+        "effects(pure);`, take the function as a parameter or binding of "
+        "type `@Applied`, and apply it in place of `@T.0`.",
+        'Chapter 11, Section 11.10.5 "Closure Invocation (apply_fn)"'),
+    "applied_value_open": (
+        _HEAD_PLAIN + _APPLY_RIGID_VALUE.replace(
+            "apply_fn(@T.0, 1)", "apply_fn(head_plain([]), 1)"), "E202",
+        "Argument 0 of 'apply_fn' has a type variable no argument of the "
+        "call that made it fixes, expected a function value (a fn(...) "
+        "type).",
+        "apply_fn invokes a stored function value via call_indirect.  The "
+        "call that made the value left its type open, so nothing gives it "
+        "a function type, and the value has no signature to call.",
+        "Hold the function to apply at the type `fn(Int -> Int) "
+        "effects(pure)`: declare `type Applied = fn(Int -> Int) "
+        "effects(pure);`, take the function as a parameter or binding of "
+        "type `@Applied`, and apply it in place of `head_plain([])`.",
+        'Chapter 11, Section 11.10.5 "Closure Invocation (apply_fn)"'),
+    "unfixed_application": (
+        _APPLY_UNFIXED, "E202",
+        "Argument 1 of 'apply_fn' has type Int, expected T: no argument of "
+        "the call that made the function value gives T a type, so its code "
+        "was compiled at a type of its own.",
+        "A function a generic call returns is compiled at the types its "
+        "call's arguments give its type variables; one they give no type "
+        "is compiled at a type of its own, so the function takes no "
+        "argument of another type there.",
+        "Make the function value at the type it is applied at: give the "
+        "call `mk(())` an argument that fixes T, or apply a function "
+        "written to take Int there instead.",
+        'Chapter 5, Section 5.9 "Generic Functions"'),
+    "call_argument": (
+        _HELPER_ARGUMENT, "E202",
+        "Argument 0 of 'helper' has type Int, expected T.",
+        "Each argument's type must be a subtype of the corresponding "
+        "declared parameter type.",
+        f"Pass `@T.0`, or another value of type T: {_RIGID_WHY}",
+        'Chapter 5, Section 5.2 "Function Declaration Syntax"'),
+    "destructuring_let": (
+        _DESTRUCTURE_TUPLE, "E170",
+        "Let binding expects Option<String>, component 2 of the "
+        "destructured value has type Option<?>: the type variable T stands "
+        "at the type argument of Option in component 1 and at the type "
+        "argument of Option in component 2, where the bindings give it Int "
+        "and String, and a type variable takes one type.",
+        "A destructuring let binds every component of one value, and a "
+        "type variable the value's type leaves open stands for one type, "
+        "so the bindings must give it the same type at every position it "
+        "holds.",
+        "Write binding 2 as `@Option<Int>`, the type binding 1 gives T.",
+        'Chapter 4, Section 4.7.1 "Tuple Destructuring"'),
+}
+
+
+@pytest.mark.parametrize("name", list(_DIAGNOSTICS))
+def test_each_refusal_reads_as_written(name: str) -> None:
+    """The whole diagnostic of each refusal this change adds or reaches:
+    what a reader is told, why, what to write, and where the spec says it
+    (PR #1855's mutation lane: the text was unpinned)."""
+    source, code, description, rationale, fix, spec_ref = _DIAGNOSTICS[name]
+    error, = pipeline.check(source).errors
+    assert (error.error_code, error.description, error.rationale,
+            error.fix, error.spec_ref) == (
+        code, description, rationale, fix, spec_ref)
+
+
+def _applied_value_fix(source: str) -> str:
+    error, = pipeline.check(source).errors
+    assert error.error_code == "E202", error.format()
+    return error.fix
+
+
+def test_the_applied_value_fix_writes_the_enclosing_row() -> None:
+    """The function type the fix writes carries the enclosing function's
+    row, which the applied value must keep within."""
+    source = _APPLY_RIGID_VALUE.replace(
+        "fn g(@T -> @Int)\n  requires(true)\n  ensures(true)\n  effects(pure)",
+        "fn g(@T -> @Int)\n  requires(true)\n  ensures(true)\n"
+        "  effects(<IO>)").replace(
+        "public fn main(@Unit -> @Int)\n  requires(true)\n  ensures(true)\n"
+        "  effects(pure)",
+        "public fn main(@Unit -> @Int)\n  requires(true)\n  ensures(true)\n"
+        "  effects(<IO>)")
+    assert "declare `type Applied = fn(Int -> Int) effects(<IO>);`" in (
+        _applied_value_fix(source))
+
+
+@pytest.mark.parametrize("body", [
+    # No type the result is expected at: an operand.
+    "apply_fn(@T.0, 1) + 1",
+    # An argument with no type to write.
+    "apply_fn(@T.0, [][0])",
+], ids=["no_expected_result", "argument_with_no_type"])
+def test_the_applied_value_fix_falls_back_to_prose(body: str) -> None:
+    """Where the function type cannot be written out, the fix says what to
+    do without one."""
+    source = _APPLY_RIGID_VALUE.replace("apply_fn(@T.0, 1)", body)
+    assert _applied_value_fix(source) == (
+        "Hold the function to apply at a function type, declared through a "
+        "type alias, and apply a value of that type in place of `@T.0`.")
+
+
+@pytest.mark.parametrize(("declared", "alias"), [
+    ("type Applied = Int;\n\n", "Applied2"),
+    ("type Applied = Int;\n\ntype Applied2 = Bool;\n\n", "Applied3"),
+], ids=["one_taken", "two_taken"])
+def test_the_applied_value_fix_names_an_alias_the_program_lacks(
+        declared: str, alias: str) -> None:
+    """The alias the fix declares is one the program does not have."""
+    fix = _applied_value_fix(declared + _APPLY_RIGID_VALUE)
+    assert f"declare `type {alias} = fn(Int -> Int) effects(pure);`" in fix
+    assert f"of type `@{alias}`" in fix
+
+
+_APPLY_TWO_VARIABLES = """\
+private forall<T, U> fn g(@T, @U -> @T)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  apply_fn(@T.0, @U.0)
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  g(5, true)
+}
+"""
+
+
+def test_the_applied_value_fix_s_alias_binds_each_variable() -> None:
+    """An alias over two of the enclosing function's variables lists both,
+    in order, as its parameters."""
+    assert ("declare `type Applied<T, U> = fn(U -> T) effects(pure);`, take "
+            "the function as a parameter or binding of type "
+            "`@Applied<T, U>`") in _applied_value_fix(_APPLY_TWO_VARIABLES)
+
+
+_UNFIXED_TWO = """\
+type Pairs<A, B> = fn(Tuple<A, B> -> Int) effects(pure);
+
+private forall<A, B> fn mk2(@Unit -> @Pairs<A, B>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  fn(@Tuple<A, B> -> @Int) effects(pure) { 1 }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  apply_fn(mk2(()), Tuple(1, "a"))
+}
+"""
+
+
+def test_an_unfixed_application_names_each_variable() -> None:
+    """Where the call that made the function value left two variables
+    without a type, the refusal names both."""
+    error, = pipeline.check(_UNFIXED_TWO).errors
+    assert error.error_code == "E202", error.format()
+    assert "gives A and B a type" in error.description, error.description
+    assert "an argument that fixes A and B" in error.fix, error.fix
+
+
+def test_every_built_in_ability_operation_takes_one_variable() -> None:
+    """The ability-argument judgement reads its operation's one type
+    variable from any typed argument (`_ability_type_mapping`), so a later
+    argument cannot disagree with a mapping an earlier one failed to set,
+    and the mutation lane's continue-for-break and and-for-or mutants of
+    that loop change nothing.  That rests on this: every built-in ability
+    has one type parameter, and every parameter of every operation is that
+    variable.  An ability registered otherwise fails here first."""
+    from vera.environment import TypeEnv
+
+    env = TypeEnv()
+    assert env.abilities
+    for ability in env.abilities.values():
+        assert ability.type_params is not None
+        assert len(ability.type_params) == 1, ability.name
+        (var,) = ability.type_params
+        for op in ability.operations.values():
+            assert all(getattr(p, "name", None) == var
+                       for p in op.param_types), (ability.name, op.name)
+
+
+# ---------------------------------------------------------------------
 # The matrix: site × the two positions' types × their order
 # ---------------------------------------------------------------------
 
