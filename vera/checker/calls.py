@@ -52,7 +52,6 @@ from vera.types import (
     base_type,
     canonical_type_name,
     contains_fresh_typevar,
-    contains_literal_hole,
     contains_typevar,
     erases_to_unit,
     is_effect_subtype,
@@ -1250,9 +1249,7 @@ class CallsMixin:
             elif (fn_info.forall_vars
                     and not contains_typevar(param_ty)
                     and not types_equal(arg_ty, param_ty)
-                    and contains_literal_hole(
-                        self._literal_soft_type(args[i], arg_ty)
-                        or arg_ty)):
+                    and self._softly_decided(args[i], arg_ty)):
                 re = self._synth_expr(args[i], expected=param_ty)
                 if (re is not None and not isinstance(re, UnknownType)
                         and is_subtype(re, param_ty)):
@@ -2875,9 +2872,7 @@ class CallsMixin:
                              and not contains_typevar(
                                  field_types_for_expected[i]))
                     and not types_equal(arg_ty, field_ty)
-                    and contains_literal_hole(
-                        self._literal_soft_type(expr.args[i], arg_ty)
-                        or arg_ty)):
+                    and self._softly_decided(expr.args[i], arg_ty)):
                 re = self._synth_expr(expr.args[i], expected=field_ty)
                 if (re is not None and not isinstance(re, UnknownType)
                         and is_subtype(re, field_ty)):

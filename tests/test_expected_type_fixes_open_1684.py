@@ -437,3 +437,189 @@ def test_a_call_s_variable_takes_one_type_whichever_comes_first(
         assert recorded is not None
         (args,) = recorded
         assert args[0] in (instance, names.get(instance)), (args, instance)
+
+
+# ---------------------------------------------------------------------
+# B, nested: a position the arguments' join decided is provisional until
+# the context declines to decide it
+# ---------------------------------------------------------------------
+
+_INT_FN = "fn(@Int -> @Int) effects(pure) { @Int.0 }"
+_NAT_FN = "fn(@Nat -> @Int) effects(pure) { nat_to_int(@Nat.0) }"
+
+
+def _chain(depth: int, inner: str, fill: str = "{n}",
+           outer: str = "second") -> str:
+    """*outer* nested *depth* deep around *inner* (a call that holds the
+    disagreement): `second`, each level adding the literal or value
+    *fill* beside it (the seeds' shape, where a literal's hole meets the
+    join), or `id`, which gives each level nothing but the call below."""
+    call = inner
+    for n in range(1, depth):
+        call = (f"id({call})" if outer == "id"
+                else f"second({call}, {fill.replace('{n}', str(n))})")
+    return call
+
+
+def _nested(depth: int, order: str, expected: str | None,
+            outer: str = "second") -> str:
+    x, y = ("@Nat.0", "@Int.0") if order == "nat_first" else (
+        "@Int.0", "@Nat.0")
+    call = _chain(depth, f"second({x}, {y})", outer=outer)
+    if expected is None:
+        body = f"{call} + 0"
+    elif expected == "Nat":
+        body = f"let @Nat = {call};\nnat_to_int(@Nat.0)"
+    elif expected == "Int":
+        body = f"let @Int = {call};\n@Int.0"
+    else:
+        body = f'let @{expected} = {call};\n0'
+    return (_SECOND + "\n" + _ID + "\n"
+            + _fn("f", "@Nat, @Int", "Int", body) + "\n"
+            + _fn("main", "@Unit", "Int", "f(1, 0 - 5)", visibility="public"))
+
+
+def _narrowed(source: str) -> list[tuple[str, str]]:
+    return sorted((o.status, o.expr_text)
+                  for o in pipeline.verify(source).obligations
+                  if o.kind == "nat_bind" and o.fn_name == "f")
+
+
+@pytest.mark.parametrize("order", ["nat_first", "int_first"])
+@pytest.mark.parametrize("depth", [2, 3])
+@pytest.mark.parametrize("outer", ["second", "id"])
+def test_repro_seed317_the_binding_decides_every_level(
+        depth: int, order: str, outer: str) -> None:
+    """The shape of generator seeds 317 and 335 reduced: the outer call
+    bound at `@Nat`, the inner holding a `Nat` beside an `Int`.  The inner
+    call has no expected type (a generic's arguments are given none), so
+    it joins at `Int`; that position is provisional, the binding decides
+    the outer call's variable at `Nat`, and the inner call is synthesized
+    again against it, where `Nat` is expected and both arguments fit it.
+    Every level is at `Nat`, and the narrowing is the `Int` argument's,
+    where the caller's facts prove it (here refuted: `f(1, 0 - 5)`).  At
+    the rule-B commit the join stood: every level `Int`, the narrowing the
+    binding's."""
+    source = _nested(depth, order, "Nat", outer)
+    assert _instances(source, "second") == {("Nat",)}
+    if outer == "id":
+        assert _instances(source, "id") == {("Nat",)}
+    assert _narrowed(source) == [("violated", "@Int.0")]
+
+
+@pytest.mark.parametrize("order", ["nat_first", "int_first"])
+@pytest.mark.parametrize("expected", [None, "Int"])
+@pytest.mark.parametrize("depth", [2, 3])
+@pytest.mark.parametrize("outer", ["second", "id"])
+def test_a_nested_join_no_context_decides_stands(
+        depth: int, expected: str | None, order: str, outer: str) -> None:
+    """Nothing expected outside, or an `Int` (which both fit and which is
+    the join): every level is the join, `Int`, and nothing narrows."""
+    source = _nested(depth, order, expected, outer)
+    assert _instances(source, "second") == {("Int",)}
+    if outer == "id":
+        assert _instances(source, "id") == {("Int",)}
+    assert _narrowed(source) == []
+
+
+@pytest.mark.parametrize("order", ["nat_first", "int_first"])
+@pytest.mark.parametrize("depth", [2, 3])
+@pytest.mark.parametrize("outer", ["second", "id"])
+def test_a_nested_join_an_unrelated_binding_declines_is_refused_once(
+        depth: int, order: str, outer: str) -> None:
+    """A `String` binding fits no level: every level stays the join, and
+    the mismatch is reported once, at the binding."""
+    errors = pipeline.check(_nested(depth, order, "String", outer)).errors
+    assert [e.error_code for e in errors] == ["E170"], [
+        e.format() for e in errors]
+
+
+@pytest.mark.parametrize("order", ["int_fn_first", "nat_fn_first"])
+@pytest.mark.parametrize("depth", [2, 3])
+def test_a_nested_function_pair_joins_by_polarity_at_every_level(
+        depth: int, order: str) -> None:
+    """The function-type pair nested the same way, nothing expected: every
+    level is what both accept, `fn(Nat -> Int)`, so the -5 is refuted
+    (E503); bound at `IntFn`, which both fit (issue #1819's relaxation),
+    every level is `fn(Int -> Int)`."""
+    x, y = (_INT_FN, _NAT_FN) if order == "int_fn_first" else (
+        _NAT_FN, _INT_FN)
+    call = _chain(depth, f"second({x}, {y})", fill=_INT_FN)
+    joined = _FN_PAIR + _SECOND + "\n" + _fn(
+        "main", "@Unit", "Int", f"apply_fn({call}, 0 - 5)",
+        visibility="public")
+    assert _instances(joined, "second") == {("fn(Nat -> Int)",)}
+    assert [e.error_code for e in pipeline.verify(joined).errors] == ["E503"]
+    bound = _FN_PAIR + _SECOND + "\n" + _fn(
+        "main", "@Unit", "Int",
+        f"let @IntFn = {call};\napply_fn(@IntFn.0, 0 - 5)",
+        visibility="public")
+    assert _instances(bound, "second") == {("fn(Int -> Int)",)}
+
+
+@pytest.mark.parametrize("outer", ["second", "id"])
+def test_a_join_no_context_decides_is_recorded_as_the_join(
+        outer: str) -> None:
+    """Every later reader of a call whose join no context decided reads
+    the join: the type the check records for each level of the chain is
+    `Int`, and no record holds the provisional mark."""
+    source = _nested(3, "nat_first", None, outer)
+    checked = pipeline.check(source)
+    assert checked.ok, [e.format() for e in checked.errors]
+    recorded = checked.artifacts.expr_types
+    calls = {text for key, text in recorded.items()}
+    assert not any("join" in text for text in calls), calls
+    lines = source.splitlines()
+    body_line = next(i for i, text in enumerate(lines, 1)
+                     if f"{outer}({outer}(" in text)
+    at_body = [text for key, text in recorded.items()
+               if key[0] == body_line and text != "Nat"]
+    assert set(at_body) == {"Int"}, at_body
+
+
+def test_an_inner_argument_s_own_error_is_reported_once() -> None:
+    """A three-deep chain whose innermost argument is wrong on its own
+    (`nope(1)`, no such function), bound at `@Nat`: each level is
+    synthesized again against the binding's type, and the error is
+    reported once."""
+    call = _chain(3, "second(@Nat.0, nope(1))")
+    source = _SECOND + "\n" + _fn(
+        "f", "@Nat, @Int", "Int", f"let @Nat = {call};\nnat_to_int(@Nat.0)")
+    errors = pipeline.check(source).errors
+    assert [e.error_code for e in errors] == ["E200"], [
+        e.format() for e in errors]
+
+
+def test_an_eight_deep_chain_synthesizes_each_argument_once_per_level(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """The cost of the provisional join: bound at `@Nat`, each level of a
+    chain is synthesized again against the binding's type once, so the
+    innermost argument of an eight-deep chain is synthesized eight times
+    (the #1541 literal path: nine) and the whole chain 70 times more than
+    the same chain with nothing expected.  A re-synthesis that doubled per
+    level (each level synthesizing its argument twice) would count 2**8."""
+    from vera import ast
+    from vera.checker.core import TypeChecker
+
+    synth = TypeChecker._synth_expr
+    counts = {"all": 0, "innermost": 0}
+
+    def counted(self, expr, *, expected=None):  # type: ignore[no-untyped-def]
+        counts["all"] += 1
+        if isinstance(expr, ast.SlotRef) and expr.type_name == "Int":
+            counts["innermost"] += 1
+        return synth(self, expr, expected=expected)
+
+    monkeypatch.setattr(TypeChecker, "_synth_expr", counted)
+    call = _chain(8, "second(@Nat.0, @Int.0)")
+    totals = {}
+    for bound, body in (
+            (True, f"let @Nat = {call};\nnat_to_int(@Nat.0)"),
+            (False, f"{call} + 0")):
+        counts.update(all=0, innermost=0)
+        assert pipeline.check(_SECOND + "\n" + _fn(
+            "f", "@Nat, @Int", "Int", body)).ok
+        totals[bound] = dict(counts)
+    assert totals[True]["innermost"] == 8
+    assert totals[False]["innermost"] == 1
+    assert totals[True]["all"] - totals[False]["all"] == 70
