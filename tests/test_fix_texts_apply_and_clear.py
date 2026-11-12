@@ -616,9 +616,11 @@ DROPPED: dict[str, tuple[str, str, str]] = {
 }
 
 #: E301 with an open else branch: the then branch's type is named instead.
+# The `if` with no type expected of it: an expected `Endo<Int>` would fix
+# `mk`'s variable (spec §5.9, #1684), and a sibling branch's type does not.
 E301_OPEN_ELSE = ENDO + _fn("@Bool", "@Int",
-    "let @Endo<Int> = if @Bool.0 then { fn(@Int -> @Int) effects(pure) "
-    "{ @Int.0 } } else { mk(()) };\n  0")
+    "apply_fn(if @Bool.0 then { fn(@Int -> @Int) effects(pure) "
+    "{ @Int.0 } } else { mk(()) }, 1)")
 
 
 @pytest.mark.parametrize("name", sorted(DROPPED))
@@ -1741,3 +1743,42 @@ def test_repro_an_e501_clause_adds_no_trap_at_the_entry() -> None:
         fixed = _once(source, "requires(true)", clause)
         codes = _passed_codes("verify", fixed)
         assert not codes & {"E501", "E502"}, (clause, sorted(codes))
+
+
+# =====================================================================
+# #1684: E613's fix names binding the result at a type
+# =====================================================================
+
+_NONE_ORD = """\
+private forall<T where Ord<T>> fn none_ord(@Unit -> @Option<T>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  None
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match none_ord(()) {
+    None -> 7,
+    Some(@Int) -> @Int.0
+  }
+}
+"""
+
+
+def test_e613_s_binding_fix_applied_clears_the_code() -> None:
+    """E613 at a variable no argument fixes and nothing gives a type (a
+    `match` scrutinee) offers binding the result at a type, which fixes
+    the variable (spec §5.9): the scrutinee bound by a `let` of such a
+    type, as the fix says, passes the check with no E613."""
+    fix = _the("E613", "check", _NONE_ORD).fix
+    assert "bind its result at a type" in fix, fix
+    fixed = _NONE_ORD.replace(
+        "  match none_ord(()) {",
+        "  let @Option<Int> = none_ord(());\n  match @Option<Int>.0 {")
+    assert "E613" not in _passed_codes("check", fixed)
