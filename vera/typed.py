@@ -856,8 +856,10 @@ def _source_text(source: str, span: ast.Span | None) -> str | None:
     """The text of *source* that *span* covers (1-based, end exclusive)."""
     if span is None or not source:
         return None
+    from vera.errors import source_lines
+
     starts = [0]
-    for line in source.splitlines(keepends=True):
+    for line in source_lines(source, keepends=True):
         starts.append(starts[-1] + len(line))
     if not (1 <= span.line < len(starts) and 1 <= span.end_line < len(starts)):
         return None
@@ -932,8 +934,10 @@ def _offset(text: str, base: ast.Span, span: ast.Span | None, *,
         return None
     line, column = ((span.line, span.column) if start
                     else (span.end_line, span.end_column))
+    from vera.errors import source_lines
+
     starts = [0]
-    for piece in text.splitlines(keepends=True):
+    for piece in source_lines(text, keepends=True):
         starts.append(starts[-1] + len(piece))
     row = line - base.line
     if not 0 <= row < len(starts):
@@ -1202,13 +1206,13 @@ def _diagnostic(code: str, file: str | None, source: str, node: ast.Node,
                 description: str, fix: str) -> Diagnostic:
     """The *code* diagnostic a judgment reports at *node* in *file*."""
     from vera.binding import display_type_names
-    from vera.errors import Diagnostic, SourceLocation
+    from vera.errors import Diagnostic, SourceLocation, source_lines
 
     loc = SourceLocation(file=file)
     line = ""
     if node.span is not None:
         loc.line, loc.column = node.span.line, node.span.column
-        lines = source.splitlines()
+        lines = source_lines(source)
         if 0 <= node.span.line - 1 < len(lines):
             line = lines[node.span.line - 1]
     description, fix = display_type_names(description, fix)

@@ -244,10 +244,13 @@ def _new(t: str) -> _Rendered:
 
 
 def _binding_of(rendered: str) -> vast.TypeExpr:
-    """A quantifier's rendering, ``forall(<binding>, 3, ...)``: `format_expr`
-    writes the predicate ``...``, so its binding is what parses back."""
+    """A quantifier's rendering, ``forall(<binding>, 3, <predicate>)``: the
+    binding is what parses back, between ``forall(`` and the domain."""
     return _parsed_param(
-        rendered.removeprefix("forall(").removesuffix(", 3, ...)"))
+        rendered.removeprefix("forall(").removesuffix(_PREDICATE_TAIL))
+
+
+_PREDICATE_TAIL = ", 3, fn(@Nat -> @Bool) effects(pure) { true })"
 
 
 def _quantifier_binding(t: str) -> _Rendered:
@@ -255,7 +258,7 @@ def _quantifier_binding(t: str) -> _Rendered:
                  f"forall(@{t}, 3, fn(@Nat -> @Bool) effects(pure) {{ true }})"
                  ).body.expr
     assert isinstance(node, vast.ForallExpr)
-    return (vast.format_expr(node), f"forall(@{t}, 3, ...)", _binding_of,
+    return (vast.format_expr(node), f"forall(@{t}{_PREDICATE_TAIL}", _binding_of,
             node.binding_type)
 
 

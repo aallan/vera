@@ -43,7 +43,7 @@ if TYPE_CHECKING:
     )
     from vera.resolver import ResolvedModule
     from vera.typed import Instance, TypedProgram
-from vera.errors import Diagnostic, SourceLocation
+from vera.errors import Diagnostic, SourceLocation, source_lines
 from vera.lexical import blank_comments
 from vera.obligations import table as obligation_table
 from vera.obligations.core import (
@@ -1878,7 +1878,7 @@ class ContractVerifier:
         ran past a shorter importer — produced an empty excerpt with no
         indication anything was missing.
         """
-        lines = self._current_source.splitlines()
+        lines = source_lines(self._current_source)
         if 1 <= line <= len(lines):
             return lines[line - 1]
         return ""
@@ -2783,15 +2783,15 @@ class ContractVerifier:
         """*expr* as a message quotes it (:meth:`_as_written`)."""
         return ast.format_expr(self._as_written(expr))
 
-    @staticmethod
-    def _pasted(expr: ast.Expr) -> str:
-        """*expr* as a fix gives it to be written into the program: by the
-        canonical formatter, which parenthesises an operand as the parser
-        groups it (`10 / (@Int.0 - @Int.1)` stays grouped, #1858), so the
-        code pasted is the code the obligation was about.  *expr* is built
-        of nodes already :meth:`_as_written`."""
-        from vera.formatter import format_expr_canonical
-        return format_expr_canonical(expr)
+    def _written_binary(
+        self, op: ast.BinOp, left: ast.Expr, right: ast.Expr,
+    ) -> str:
+        """``left op right`` as a message quotes it: a node built of the two
+        operands as written and rendered whole, so each keeps the
+        parentheses its precedence needs (#1573)."""
+        return ast.format_expr(ast.BinaryExpr(
+            op=op, left=self._as_written(left),
+            right=self._as_written(right)))
 
     def result(self) -> VerifyResult:
         """This run's result, every name in it spelled as the program
@@ -13521,8 +13521,11 @@ class ContractVerifier:
                 # #1480: a measure has no branch to guard the subtraction in,
                 # and its two remedies are different edits.
                 f"Either state the precondition that bounds the "
-                f"subtraction — `requires({self._written(expr.right)} <= "
-                f"{self._written(expr.left)})` — which the measure can "
+                f"subtraction — `requires("
+                f"{self._written_binary(ast.BinOp.LE, expr.right, expr.left)}"
+                f")`; for the count-up loop "
+                f"`decreases(@Nat.1 + 1 - @Nat.0)` that is "
+                f"`requires(@Nat.0 <= @Nat.1 + 1)` — which the measure can "
                 f"rely on because the compiled function checks every "
                 f"`requires` before it evaluates it, and which each "
                 f"recursive call must then establish for its own "
@@ -13593,8 +13596,8 @@ class ContractVerifier:
                  f"`requires({clause})`.  " if clause is not None else
                  "Add a precondition ruling out a zero divisor.  ")
                 + f"Alternatively guard the operation with "
-                f"`if {self._pasted(zero)} then {{ <default> }} else "
-                f"{{ {self._pasted(self._as_written(expr))} }}` (the path "
+                f"`if {ast.format_expr(zero)} then {{ <default> }} else "
+                f"{{ {self._written(expr)} }}` (the path "
                 f"condition discharges the obligation in the else-branch), "
                 f"or give the divisor a refinement type that excludes zero."
             ),
@@ -13770,16 +13773,12 @@ class ContractVerifier:
             for name, value in sorted(counterexample.items()):
                 if name != "@result":
                     ce_lines.append(f"    {name} = {value}")
-        ce_text = "\n  ".join(ce_lines) if ce_lines else ""
+        ce_text = "\n  ".join(ce_lines)
 
-        idx = self._as_written(expr.index)
-        in_bounds = ast.BinaryExpr(
-            ast.BinOp.AND,
-            ast.BinaryExpr(ast.BinOp.LE, ast.IntLit(0), idx),
-            ast.BinaryExpr(
-                ast.BinOp.LT, idx,
-                ast.FnCall("array_length",
-                           (self._as_written(expr.collection),))))
+        # The bound as a node rendered whole (#1573).
+        lower, upper = ast.index_bounds(
+            self._as_written(expr.collection), self._as_written(expr.index))
+        in_bounds = ast.BinaryExpr(op=ast.BinOp.AND, left=lower, right=upper)
         description = f"Array index in '{decl.name}' is out of bounds."
         if ce_text:
             description += f"\n  {ce_text}"
@@ -13796,8 +13795,8 @@ class ContractVerifier:
             fix=(
                 f"Index within bounds, or constrain the index with a "
                 f"precondition covering both bounds.  Alternatively guard "
-                f"the access with `if {self._pasted(in_bounds)} then "
-                f"{{ {self._pasted(self._as_written(expr))} }} else "
+                f"the access with `if {ast.format_expr(in_bounds)} then "
+                f"{{ {self._written(expr)} }} else "
                 f"{{ <default> }}` — the path condition discharges the "
                 f"obligation in the then-branch."
             ),
@@ -13909,16 +13908,12 @@ class ContractVerifier:
         chain = self._refined_chain(refined_ty)
         if chain is not None:
             chain_base, chain_predicates = chain
-            # Parenthesised when there is more than one, so a level that is
-            # itself a disjunction does not silently re-associate under the
-            # `&&` this joins them with.
-            if len(chain_predicates) > 1:
-                pred_src = " && ".join(
-                    f"({self._written(predicate)})"
-                    for predicate in chain_predicates
-                )
-            else:
-                pred_src = self._written(chain_predicates[0])
+            # The levels joined by `&&` as NODES, folded left as `a && b && c`
+            # parses, and rendered whole: a level that is itself a
+            # disjunction keeps the parentheses it needs, and no other
+            # does (#1573).
+            conjuncts: list[ast.Expr] = [
+                self._as_written(predicate) for predicate in chain_predicates]
             # A refinement over @Nat carries an implicit `>= 0` base invariant
             # that IS part of the checked goal (`value >= 0 && P`).  Surface it
             # so the message — and the suggested `requires(...)` — reflect the
@@ -13929,7 +13924,15 @@ class ContractVerifier:
             # refinement, never `NAT`, so this prefix went missing exactly
             # where the rendered predicate was already least complete.
             if chain_base == NAT:
-                pred_src = f"@Nat.0 >= 0 && {pred_src}"
+                conjuncts.insert(0, ast.BinaryExpr(
+                    op=ast.BinOp.GE,
+                    left=ast.SlotRef(type_name="Nat", type_args=None, index=0),
+                    right=ast.IntLit(value=0)))
+            conjunction = conjuncts[0]
+            for conjunct in conjuncts[1:]:
+                conjunction = ast.BinaryExpr(
+                    op=ast.BinOp.AND, left=conjunction, right=conjunct)
+            pred_src = ast.format_expr(conjunction)
         else:
             pred_src = "the predicate"
 
@@ -14322,9 +14325,8 @@ class ContractVerifier:
 
         Callee-parameter slot references are replaced by the actual
         argument expressions of *call_node* (De Bruijn resolution via
-        :func:`vera.slots.slot_table`), which the message renders with
-        ``format_expr`` and the fix's guard with the canonical formatter
-        (:meth:`_pasted`) — turning, e.g.,
+        :func:`vera.slots.slot_table`), which the message and the fix's
+        guard render with :func:`ast.format_expr` — turning, e.g.,
         ``requires(string_length(@String.0) > 0)`` at the call
         ``f("")`` into ``string_length("") > 0``.  Returns None when
         any slot cannot be mapped (unknown type in the table, index
@@ -14477,8 +14479,8 @@ class ContractVerifier:
             fix=(
                 (
                     f"Guard the call so the precondition holds: "
-                    f"`if {self._pasted(at_call)} then {{ "
-                    f"{self._pasted(self._as_written(call_node))} }} "
+                    f"`if {ast.format_expr(at_call)} then {{ "
+                    f"{self._written(call_node)} }} "
                     f"else {{ <default> }}`"
                     + (f" — or strengthen '{caller.name}' with "
                        f"`requires({clause})`."
@@ -14590,8 +14592,8 @@ class ContractVerifier:
         unaffected.
         """
         if contract.span:
-            lines = blank_comments(
-                self._declaring_source(contract)).splitlines()
+            lines = source_lines(blank_comments(
+                self._declaring_source(contract)))
             first, last = contract.span.line, contract.span.end_line
             if 1 <= first <= len(lines):
                 last = min(max(last, first), len(lines))

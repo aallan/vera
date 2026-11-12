@@ -1706,8 +1706,8 @@ def test_mover_the_self_tail_prefix_is_rendered_only_where_it_splices() -> None:
     """A `decreases` function's self-tail prefix re-evaluates the measure
     before each `return_call`: the table lists its rows once per tail call
     the function transfers to, and none where a runtime postcondition
-    reverts every `return_call` to `call` (the entry check then covers
-    each hop).  The prefix rendered for rows that do not exist was dead
+    leaves no tail call (`ObligationTable.tail_calls`, #1849; the entry
+    check then covers each hop).  The prefix rendered for rows that do not exist was dead
     lowering: its locals go."""
     spliced = pipeline.compile(_PREFIX.replace("{ENSURES}", "true"), file="s.vera")
     reverted = pipeline.compile(_PREFIX.replace("{ENSURES}", "@Nat.result >= 0"), file="r.vera")
@@ -2485,7 +2485,7 @@ def test_repro_lane_a_literal_destructure_binder_is_left_to_its_check() -> None:
     run at `--matrix=full` only)."""
     records = _narrowing_records(_LITERAL_DESTRUCTURE_BINDER)
     assert records[:2] == [
-        ("f", "refine_bind", "tier3_unguarded", 8, 34, "E506", "<expr>"),
+        ("f", "refine_bind", "tier3_unguarded", 8, 34, "E506", "Some(1)"),
         ("f", "refine_bind", "tier3", 8, 20, "", "@R"),
     ], records
 
@@ -2645,7 +2645,7 @@ def test_repro_a_closure_return_s_refined_component_keeps_its_own_record() -> No
     row: the leaf's record took an `E506` and a closure-return warning, and
     the return type's `[Tuple.0]` row had no record (PR #1843)."""
     assert _narrowing_records(_CLOSURE_RETURN_WITH_A_REFINED_COMPONENT) == [
-        ('f', 'refine_bind', 'tier3', 16, 45, 'E506', '<expr>'),
+        ('f', 'refine_bind', 'tier3', 16, 45, 'E506', '{ @Int.0 }'),
         ('b', 'nat_bind', 'tier3', 24, 57, '', 'mk(@Int.0) [Tuple.1]'),
         ('b', 'refine_bind', 'tier3', 24, 57, '', 'mk(@Int.0) [Tuple.0]'),
         ('b', 'refine_bind', 'tier3', 24, 24, '', '@Tuple<Pos, Nat> [Tuple.0]'),
@@ -2704,15 +2704,18 @@ def test_repro_lane_a_refined_closure_return_keeps_its_nat_components() -> None:
     boundary components beside a refined return)."""
     assert _narrowing_records(_REFINED_CLOSURE_RETURN_OVER_A_NAT_COMPONENT) == [
         ("c", "nat_bind", "tier3", 16, 44, "", "mk(@Int.0) [Tuple.1]"),
-        ("c", "refine_bind", "tier3", 16, 44, "E506", "<expr>"),
+        ("c", "refine_bind", "tier3", 16, 44, "E506", "{ mk(@Int.0) }"),
         ("c", "refine_bind", "tier3", 16, 24, "", "@PT [Tuple.1]"),
-        ("c", "refine_bind", "tier3", 16, 3, "E506", "<expr>"),
+        ("c", "refine_bind", "tier3", 16, 3, "E506",
+         "{ apply_fn(fn(@Int -> @PT) effects(pure) { mk(@Int.0) }, @Int.0) }"),
         ("c", "refine_bind", "tier3", 11, 22, "", "@PT [Tuple.1]"),
         ("d", "nat_bind", "tier3", 24, 65, "", "mk(@Int.0) [Tuple.1]"),
         ("d", "nat_bind", "tier3", 24, 85, "", "mk(0 - @Int.0) [Tuple.1]"),
-        ("d", "refine_bind", "tier3", 24, 44, "E506", "<expr>"),
+        ("d", "refine_bind", "tier3", 24, 44, "E506",
+         "{ if @Int.0 > 0 then { mk(@Int.0) } else { mk(0 - @Int.0) } }"),
         ("d", "refine_bind", "tier3", 24, 24, "", "@PT [Tuple.1]"),
-        ("d", "refine_bind", "tier3", 24, 3, "E506", "<expr>"),
+        ("d", "refine_bind", "tier3", 24, 3, "E506",
+         "{ apply_fn(fn(@Int -> @PT) effects(pure) { if @Int.0 > 0 then { mk(@Int.0) } else { mk(0 - @Int.0) } }, @Int.0) }"),
         ("d", "refine_bind", "tier3", 19, 22, "", "@PT [Tuple.1]"),
         ("E506", "Refinement predicate at a closure return in 'c' could not "
                  "be verified statically; it will be checked at run time. To "

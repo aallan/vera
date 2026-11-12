@@ -915,7 +915,8 @@ _RENDERINGS: dict[str, tuple[str, str]] = {
     "float_to_string": (
         "float_to_string(@Float64.0)", "float_to_string(@Float64.0)"),
     "show": ("show(@Float64.0)", "show(@Float64.0)"),
-    "show_of_a_composite": ("show(Some(@Float64.0))", "show(<expr>)"),
+    "show_of_a_composite": (
+        "show(Some(@Float64.0))", "show(Some(@Float64.0))"),
     "interpolation": ('"x = \\(@Float64.0)"', "@Float64.0"),
 }
 

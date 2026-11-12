@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING
 import z3
 
 from vera import ast, naming
-from vera.errors import Diagnostic, SourceLocation
+from vera.errors import Diagnostic, SourceLocation, source_lines
 from vera.obligations.cache import walk_nodes
 from vera.obligations.core import ProofObligation
 from vera.naming import EMPTY_ALIAS_ENV, AliasEnv
@@ -820,7 +820,7 @@ class _TestEngine:
         """Where an E703 points: the proved clause that failed when it lies
         in the file under test, and the function's declaration otherwise."""
         first = trial.refutes[0]
-        lines = self.source.splitlines()
+        lines = source_lines(self.source)
         if first.file == self.file and 1 <= first.line <= len(lines):
             return (
                 SourceLocation(
@@ -2403,7 +2403,7 @@ def _fn_location(decl: ast.FnDecl, file: str | None) -> SourceLocation:
 def _get_source_line(source: str, decl: ast.FnDecl) -> str:
     """Extract the source line for a function declaration."""
     if decl.span:
-        lines = source.splitlines()
+        lines = source_lines(source)
         if 1 <= decl.span.line <= len(lines):
             return lines[decl.span.line - 1]
     return ""

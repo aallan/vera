@@ -1887,13 +1887,13 @@ class DataMixin:
         return instructions
 
     def _index_message(self, expr: ast.IndexExpr) -> str:
-        """The `index_out_of_bounds` message: the access, and its bound."""
-        coll = ast.format_expr(expr.collection)
-        idx = ast.format_expr(expr.index)
+        """The `index_out_of_bounds` message: the access, and its bound,
+        each a node rendered whole by :func:`ast.format_expr` (#1573)."""
+        lower, upper = ast.index_bounds(expr.collection, expr.index)
         return (
             f"Array index out of bounds{self._at_line(expr)}: "
-            f"`{coll}[{idx}]` needs `0 <= {idx}` and "
-            f"`{idx} < array_length({coll})`."
+            f"`{ast.format_expr(expr)}` needs `{ast.format_expr(lower)}` and "
+            f"`{ast.format_expr(upper)}`."
         )
 
     def _translate_index_expr(

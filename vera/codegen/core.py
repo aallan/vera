@@ -27,7 +27,7 @@ from vera import ast, naming
 from vera.binding import source_name, symbol
 from vera.codegen.api import CompileResult
 from vera.codegen.memory import ConstructorLayout
-from vera.errors import Diagnostic, SourceLocation
+from vera.errors import Diagnostic, SourceLocation, source_lines
 from vera.monomorphize import (
     Monomorphizer,
     NamespaceFnNames,
@@ -751,7 +751,7 @@ class CodeGenerator(
         if node.span:
             loc.line = node.span.line
             loc.column = node.span.column
-        lines = source.splitlines()
+        lines = source_lines(source)
         source_line = (
             lines[loc.line - 1] if 1 <= loc.line <= len(lines) else ""
         )
@@ -786,6 +786,8 @@ class CodeGenerator(
         *,
         rationale: str = "",
         error_code: str = "",
+        fix: str = "",
+        spec_ref: str = "",
     ) -> None:
         """Record a compilation error (compiler bug / fatal).
 
@@ -805,7 +807,9 @@ class CodeGenerator(
             location=loc,
             source_line=source_line,
             rationale=rationale,
-            severity="error",
+            fix=fix,
+            spec_ref=spec_ref,
+            severity="error",  # pragma: no mutate — `Diagnostic`'s default severity is "error"
             error_code=error_code,
         ))
         self._diag_fn_keys[id(self.diagnostics[-1])] = self._compiling_fn_key
@@ -913,7 +917,7 @@ class CodeGenerator(
 
     def _get_source_line(self, line: int) -> str:
         """Extract a line from the source text."""
-        lines = self.source.splitlines()
+        lines = source_lines(self.source)
         if 1 <= line <= len(lines):
             return lines[line - 1]
         return ""

@@ -36,6 +36,7 @@ from vera.errors import (
     Diagnostic,
     SourceLocation,
     attach_partial_diagnostics,
+    source_lines,
 )
 from vera.lowering import ability_lowerable
 from vera.naming import AliasEnv
@@ -1052,7 +1053,7 @@ class TypeChecker(
         """The source line a diagnostic placed at *span* quotes."""
         if not span or not self.source:
             return ""
-        lines = self.source.splitlines()
+        lines = source_lines(self.source)
         idx = span.line - 1
         if 0 <= idx < len(lines):
             return lines[idx]
