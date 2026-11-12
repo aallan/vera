@@ -31,6 +31,8 @@ from typing import Any
 import pytest
 import yaml
 
+from tests.mutation_engine import starts_the_engine
+
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW = ROOT / ".github" / "workflows" / "mutation-nightly.yml"
 DIFF_WORKFLOW = ROOT / ".github" / "workflows" / "mutation-diff.yml"
@@ -113,11 +115,47 @@ def _state(**counts: int | None) -> dict[str, Any]:
     return state
 
 
+#: The status a test's column stands for.
+STATUS_OF = {"killed": "killed", "survived": "survived", "timeout": "timeout", "no_tests": "no tests",
+             "slow": "slow", "other": "suspicious"}
+
+
+def _listed(size: int, columns: dict[str, int], survivors: tuple[str, ...]) -> tuple[dict[str, str], list[Any]]:
+    """A window's decided mutants by number and its listed ones' records:
+    each ``n@line:status`` given at its number, the rest of the columns'
+    mutants at the lowest numbers left, in the columns' order (a test unit
+    holds one mutant a line from its first, so a number is its line)."""
+    left = dict(columns)
+    decided: dict[str, str] = {}
+    records: list[Any] = []
+    for entry in survivors:
+        record = sw._survivor_2(entry)
+        if not isinstance(record, dict):
+            records.append(record)  # malformed on purpose
+            continue
+        decided[str(record["n"])] = record["status"]
+        left[record["status"]] -= 1
+        records.append(record)
+    free = iter(n for n in range(1, size + 1) if str(n) not in decided)
+    for column in sw.COLUMNS:
+        for _ in range(left.get(column, 0)):
+            n = next(free)
+            decided[str(n)] = STATUS_OF[column]
+            if STATUS_OF[column] in sw.LISTED:
+                records.append({"n": n, "line": n, "text_sha": None, "status": STATUS_OF[column], "files": None})
+    return dict(sorted(decided.items(), key=lambda kv: int(kv[0]))), sorted(
+        records, key=lambda r: r["n"] if isinstance(r, dict) else 0)
+
+
 def _window(killed: int = 0, survived: int = 0, timeout: int = 0, no_tests: int = 0, other: int = 0,
-            survivors: tuple[str, ...] = ()) -> dict[str, Any]:
-    """A decided window: its columns, summing to its size, and its survivors."""
-    return {"killed": killed, "survived": survived, "timeout": timeout, "no_tests": no_tests, "other": other,
-            "mutants": killed + survived + timeout + no_tests + other, "survivors": list(survivors)}
+            survivors: tuple[str, ...] = (), slow: int = 0) -> dict[str, Any]:
+    """A decided window: its columns, summing to its size, and its listed
+    mutants' records (``n@line:status`` where a test names them)."""
+    columns = {"killed": killed, "survived": survived, "timeout": timeout, "no_tests": no_tests, "slow": slow,
+               "other": other}
+    size = sum(columns.values())
+    _, records = _listed(size, columns, survivors)
+    return {**columns, "mutants": size, "survivors": records}
 
 
 def _decide(state: dict[str, Any], unit: Any, **window: Any) -> None:
@@ -126,13 +164,15 @@ def _decide(state: dict[str, Any], unit: Any, **window: Any) -> None:
 
 
 def _res(unit: Any, *, hash_: str = H, lines: list[int] | None = None, survivors: tuple[str, ...] = (),
-         **columns: int) -> dict[str, Any]:
-    """A slice's result for a unit's window: its columns summing to the
-    window, over lines 1 to the window unless given."""
-    statuses = {c: columns.get(c, 0) for c in sw.COLUMNS}
-    window = sum(statuses.values())
-    return {"hash": hash_, "window": window, "lines": list(range(1, window + 1)) if lines is None else lines,
-            "statuses": statuses, "survivors": list(survivors)}
+         window: int | None = None, **columns: int) -> dict[str, Any]:
+    """A slice's result for a unit's window: the columns' mutants decided,
+    the window their sum unless given, over lines 1 to the window unless
+    given."""
+    columns = {c: columns.get(c, 0) for c in sw.COLUMNS}
+    size = sum(columns.values()) if window is None else window
+    decided, records = _listed(size, columns, survivors)
+    return {"hash": hash_, "window": size, "lines": list(range(1, size + 1)) if lines is None else lines,
+            "decided": decided, "survivors": records, "durations": {}, "estimates": {}}
 
 
 def _bins(picks: list[list[Any]]) -> list[list[tuple[str, tuple[int, ...]]]]:
@@ -231,8 +271,10 @@ class TestState:
         _decide(state, A, killed=4)
         _decide(state, B, killed=3)
         state = sw.reconcile(state, [_u("vera/a.py", "x_f", 1, code="1" * 16), B, C], "3.8.0")
-        assert state["units"][A.ident] == {"hash": "1" * 16, "mutants": None, "lines": None, "window": None}
-        assert state["units"][B.ident] == {"hash": H, "mutants": 3, "lines": _lines(3), "window": _window(killed=3)}
+        assert state["units"][A.ident] == {"hash": "1" * 16, "mutants": None, "lines": None, "window": None,
+                                           "partial": None}
+        assert state["units"][B.ident] == {"hash": H, "mutants": 3, "lines": _lines(3), "window": _window(killed=3),
+                                           "partial": None}
 
     def test_a_new_engine_starts_every_function_afresh(self) -> None:
         """mutmut makes a function's mutants by its own rules, so a count,
@@ -241,7 +283,8 @@ class TestState:
         _decide(state, A, killed=4)
         state = sw.reconcile(state, UNITS, "3.9.0")
         assert state["engine"] == "3.9.0"
-        assert all(r == {"hash": H, "mutants": None, "lines": None, "window": None} for r in state["units"].values())
+        assert all(r == {"hash": H, "mutants": None, "lines": None, "window": None, "partial": None}
+                   for r in state["units"].values())
 
     def test_a_function_gone_from_the_tree_is_dropped(self) -> None:
         state = sw.reconcile(_state(), [A, B], "3.8.0")
@@ -258,6 +301,9 @@ def _written_state() -> dict[str, Any]:
                                today="2026-10-17")
     assert night["closed"]
     _decide(written, A, killed=2)
+    _decide(written, C, killed=4, survived=1, survivors=("5@5:survived",))
+    written["units"][B.ident]["partial"] = {"decided": {"1": "killed", "3": "survived"}, "survivors": [
+        {"n": 3, "line": 3, "text_sha": "0" * 16, "status": "survived", "files": ["tests/test_a.py"]}]}
     return json.loads(json.dumps(written))
 
 
@@ -272,13 +318,13 @@ def _set(*path: Any) -> Any:
 
 
 BAD_STATES: dict[str, tuple[Any, str]] = {
-    "another schema": (_set("schema", 3), "not a schema 2 state"),
+    "another schema": (_set("schema", 4), "not a schema 3 state"),
     "a field it does not have": (_set("extra", 1), "the state does not have exactly the fields"),
     "an engine that is not a version": (_set("engine", "3.8.0; touch /tmp/x"), "the engine version is malformed"),
     "a cycle of zero": (_set("cycle", 0), "the cycle is not a whole number"),
     "a cycle that is a flag": (_set("cycle", True), "the cycle is not a whole number"),
     "a start that is not a date": (_set("cycle_started", "yesterday"), "the cycle's start is malformed"),
-    "a calibration out of range": (_set("calibration", 9.0), "the calibration is not a number from 0.2 to 5.0"),
+    "a calibration out of range": (_set("calibration", 101.0), "the calibration is not a number from 0.2 to 100.0"),
     "a calibration that is not a number": (_set("calibration", float("nan")), "the calibration is not a number"),
     "a function outside vera/": (lambda s: s["units"].update({"../etc/x.py::x_f": s["units"][A.ident]}),
                                  "function '../etc/x.py::x_f' is malformed"),
@@ -298,10 +344,31 @@ BAD_STATES: dict[str, tuple[Any, str]] = {
                                                 "window columns do not sum to its size"),
     "a window with a column that is not a count": (_set("units", A.ident, "window", "killed", "many"),
                                                    "vera/a.py::x_f's killed is not a whole number"),
-    "a window's survivor that is not a mutant": (_set("units", A.ident, "window", "survivors", ["x; rm"]),
-                                                 "survivor 'x; rm' is malformed"),
+    "a window's survivor that is not a record": (_set("units", A.ident, "window", "survivors", ["x; rm"]),
+                                                 "vera/a.py::x_f's survivor does not have exactly the fields"),
+    "a window's survivor of another status": (
+        lambda s: s["units"][C.ident]["window"]["survivors"][0].update(status="killed"),
+        "vera/b.py::x_g's survivor's status is not one a window lists"),
+    "a window's survivor's test file outside tests/": (
+        lambda s: s["units"][C.ident]["window"]["survivors"][0].update(files=["../x.py"]),
+        "vera/b.py::x_g's survivor's test files"),
+    "a window whose survivors are not its survived": (
+        lambda s: s["units"][C.ident]["window"]["survivors"].clear(),
+        "vera/b.py::x_g's survivors are not its survived, timeout and slow mutants"),
+    "a partial window and a decided one": (_set("units", A.ident, "partial", {"decided": {}, "survivors": []}),
+                                           "has a decided window and a partial one"),
+    "a partial window's mutant outside the window": (
+        lambda s: s["units"][B.ident].update(partial={"decided": {"9": "killed"}, "survivors": []}),
+        "vera/a.py::xǁCǁm's mutant '9' is outside its window"),
+    "a partial window's undecided status": (
+        lambda s: s["units"][B.ident].update(partial={"decided": {"1": "not checked"}, "survivors": []}),
+        "vera/a.py::xǁCǁm's mutant 1 has no decided status"),
+    "a partial window that is whole": (
+        lambda s: s["units"][B.ident].update(
+            partial={"decided": {"1": "killed", "2": "killed", "3": "killed"}, "survivors": []}),
+        "vera/a.py::xǁCǁm's partial window is whole"),
     "a decided window and no lines": (_set("units", A.ident, "lines", None), "has a decided window and no lines"),
-    "a schema the state was not converted from": (_set("converted_from", 2), "the schema the state was converted from"),
+    "a schema the state was not converted from": (_set("converted_from", 3), "the schema the state was converted from"),
     "a closed cycle's head that is not a commit": (_set("last_complete", "head", "main"),
                                                    "the last closed cycle's head is malformed"),
     "a closed cycle's negative count": (_set("last_complete", "modules", "vera/a.py", "killed", -1),
@@ -399,7 +466,7 @@ class TestStateChecks:
         4 November 2026, #1829): each unit keeps its hash and its count, its
         lines and window unknown; the engine, the calibration and the nights
         (the drop memory) carry over; the cycle starts afresh; and the state
-        the stitch writes is a plain schema 2 state."""
+        the stitch writes is a plain schema 3 state."""
         old = {"schema": 1, "engine": "3.8.0", "cycle": 1, "cycle_started": "2026-10-28", "calibration": 1.5,
                "units": {A.ident: {"hash": H, "mutants": 4, "statuses": {"1": "killed", "3": "survived"}},
                          C.ident: {"hash": H, "mutants": None, "statuses": {}}},
@@ -412,11 +479,12 @@ class TestStateChecks:
         path = tmp_path / sw.STATE_FILE
         path.write_text(json.dumps(old), encoding="utf-8")
         state = sw.load_state(path, "2026-11-05")
-        assert state["schema"] == 2 and state["converted_from"] == 1
+        assert state["schema"] == 3 and state["converted_from"] == 1
         assert (state["cycle"], state["cycle_started"], state["engine"], state["calibration"]) == (
             2, "2026-11-05", "3.8.0", 1.5)
-        assert state["units"][A.ident] == {"hash": H, "mutants": 4, "lines": None, "window": None}
-        assert state["units"][C.ident] == {"hash": H, "mutants": None, "lines": None, "window": None}
+        assert state["units"][A.ident] == {"hash": H, "mutants": 4, "lines": None, "window": None, "partial": None}
+        assert state["units"][C.ident] == {"hash": H, "mutants": None, "lines": None, "window": None,
+                                           "partial": None}
         assert state["nights"] == old["nights"]
         written, night = sw.stitch(state, sw.state_digest(path), [_record(0, 1, {}, planned=0, digest=sw.state_digest(path))],
                                    jobs=1, head=HEAD, units=UNITS, today="2026-11-05")
@@ -426,8 +494,24 @@ class TestStateChecks:
         assert sw.load_state(sw.save_state(written, tmp_path / "out"), "x") == written
         bad = dict(old, units={A.ident: "not a record"})
         path.write_text(json.dumps(bad), encoding="utf-8")
-        with pytest.raises(sw.StateError, match="not a schema 2 state"):
+        with pytest.raises(sw.StateError, match="not a schema 3 state"):
             sw.load_state(path, "2026-11-05")
+
+    def test_a_partial_window_is_bounded_by_the_cycles_sample(self, tmp_path: Path,
+                                                             monkeypatch: pytest.MonkeyPatch) -> None:
+        """A partial window holding every sampled mutant is a decided window
+        recorded in the wrong place: the cycle would read it complete while
+        the tally reads nothing of it, so the state refuses it."""
+        monkeypatch.setattr(sw, "in_sample", lambda cycle, ident, line: line <= 2)
+        state = _written_state()
+        state["units"][B.ident]["partial"] = {"decided": {"1": "killed", "2": "killed"}, "survivors": []}
+        with pytest.raises(sw.StateError, match="partial window is whole"):
+            sw.load_state(sw.save_state(state, tmp_path), "x")
+        state["units"][B.ident]["partial"] = {"decided": {"3": "killed"}, "survivors": []}
+        with pytest.raises(sw.StateError, match="mutant '3' is outside its window"):
+            sw.load_state(sw.save_state(state, tmp_path), "x")
+        state["units"][B.ident]["partial"] = {"decided": {"2": "killed"}, "survivors": []}
+        assert sw.load_state(sw.save_state(state, tmp_path), "x")["units"][B.ident]["partial"]
 
     def test_an_engine_error_is_one_line_beside_an_engine_stop_and_nowhere_else(self) -> None:
         """The stitch and the reports read ``engine_error`` only beside
@@ -566,11 +650,15 @@ class TestPlan:
         bins = _plan(_state(f=4, m=3, g=5), mutants=7)
         assert _bins(bins) == [[("x_f", (1, 2, 3, 4)), (f"x{SEP}C{SEP}m", (1, 2, 3))]]
 
-    def test_a_window_goes_whole_into_one_job(self) -> None:
-        """A unit's sampled window is decided whole: it goes into one job,
-        the next one when it does not fit a job already holding work."""
+    def test_the_nights_units_are_spread_over_every_job_the_dearest_first(self) -> None:
+        """A unit goes whole into one job; the night's units go the dearest
+        first into the job holding least, so every job has work while the
+        units outnumber them (#1838: on four nights three of seven jobs
+        planned nothing while 362 mutants waited)."""
         bins = _plan(_state(f=4, m=3, g=5), jobs=3, mutants=5)
-        assert _bins(bins) == [[("x_f", (1, 2, 3, 4))], [(f"x{SEP}C{SEP}m", (1, 2, 3))], [("x_g", (1, 2, 3, 4, 5))]]
+        assert _bins(bins) == [[("x_g", (1, 2, 3, 4, 5))], [("x_f", (1, 2, 3, 4))], [(f"x{SEP}C{SEP}m", (1, 2, 3))]]
+        two = _plan(_state(f=4, m=3, g=5), jobs=2, mutants=10)
+        assert _bins(two) == [[("x_g", (1, 2, 3, 4, 5))], [("x_f", (1, 2, 3, 4)), (f"x{SEP}C{SEP}m", (1, 2, 3))]]
 
     def test_a_function_without_its_lines_stops_the_plan(self) -> None:
         """Every unit is counted before the plan, by mutmut's own visitor
@@ -578,13 +666,14 @@ class TestPlan:
         with pytest.raises(sw.StateError, match="has no mutants by line"):
             _plan(_state(f=4), jobs=2, mutants=6)  # m and g uncounted
 
-    def test_a_jobs_first_piece_is_taken_whatever_it_costs(self) -> None:
-        """A job with work open decides something, so a night cannot stall."""
+    def test_the_nights_first_unit_is_taken_whatever_it_costs(self) -> None:
+        """A night with work open decides something, so it cannot stall; the
+        units after one past the night's capacity wait."""
         state = sw.reconcile(sw.empty_state("d"), [CORE_UNIT, C], "3.8.0")
         state["units"][CORE_UNIT.ident].update(mutants=3, lines=_lines(3))
         state["units"][C.ident].update(mutants=1, lines=_lines(1))
         bins = sw.plan(state, [CORE_UNIT, C], jobs=2, budget_s=1)
-        assert _bins(bins) == [[("x_v", (1, 2, 3))], [("x_g", (1,))]]
+        assert _bins(bins) == [[("x_v", (1, 2, 3))], []]
 
     def test_only_the_cycles_sample_is_planned(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The plan holds each unit's sampled lines and no other, in the
@@ -609,22 +698,26 @@ class TestPlan:
     def test_every_job_of_the_night_computes_the_same_disjoint_bins(self) -> None:
         state = _state(f=4, m=3, g=5)
         first, second = _plan(state, jobs=3, mutants=4), _plan(json.loads(json.dumps(state)), jobs=3, mutants=4)
-        assert _bins(first) == _bins(second) == [[("x_f", (1, 2, 3, 4))], [(f"x{SEP}C{SEP}m", (1, 2, 3))],
-                                                 [("x_g", (1, 2, 3, 4, 5))]]
+        assert _bins(first) == _bins(second) == [[("x_g", (1, 2, 3, 4, 5))], [("x_f", (1, 2, 3, 4))],
+                                                 [(f"x{SEP}C{SEP}m", (1, 2, 3))]]
         flat = [n for b in first for n in sw.engine_targets(b)]
-        assert len(flat) == len(set(flat)) == 3
+        assert len(flat) == len(set(flat)) == 12
+        assert [sw.engine_targets(b) for b in first] == [sw.engine_targets(b) for b in second]
 
     def test_the_calibration_scales_a_jobs_share(self) -> None:
         state = _state(f=4, m=3, g=5)
         state["calibration"] = 2.0
         assert _bins(_plan(state, mutants=8)) == [[("x_f", (1, 2, 3, 4))]]
 
-    def test_the_targets_are_the_picked_units_globs_and_the_window_their_lines(self) -> None:
+    def test_the_targets_are_the_undecided_mutants_by_name_and_the_window_their_lines(self) -> None:
+        """mutmut is handed each undecided mutant by the number it gives it in
+        the windowed run (``1`` to the window's size, in the order of its
+        lines), never a glob."""
         picks = [sw.Pick(unit=A, lines=(2, 7), counts=(1, 2), before=(1, 4)),
-                 sw.Pick(unit=B, lines=(5,), counts=(3,), before=(0,)),
+                 sw.Pick(unit=B, lines=(5,), counts=(3,), before=(0,), todo=(2,)),
                  sw.Pick(unit=C, lines=(1,), counts=(1,), before=(0,))]
-        assert sw.engine_targets(picks) == ["vera.a.x_f__mutmut_*", f"vera.a.x{SEP}C{SEP}m__mutmut_*",
-                                            "vera.b.x_g__mutmut_*"]
+        assert sw.engine_targets(picks) == ["vera.a.x_f__mutmut_1", "vera.a.x_f__mutmut_2", "vera.a.x_f__mutmut_3",
+                                            f"vera.a.x{SEP}C{SEP}m__mutmut_2", "vera.b.x_g__mutmut_1"]
         assert sw.window_lines(picks) == {"vera/a.py": [2, 7, 24], "vera/b.py": [1]}  # B starts at line 20
         assert (picks[0].mutants, [picks[0].line_of(n) for n in (1, 2, 3)]) == (3, [2, 7, 7])
         assert [picks[0].full_number(n) for n in (1, 2, 3)] == [2, 5, 6]
@@ -644,11 +737,162 @@ class TestPlan:
         monkeypatch.setattr(sw, "in_sample", lambda cycle, ident, line: line in (5, 9))
         assert sw.window_counts(state, A) == ((5, 9), (2, 4), (3, 5))
         ((pick,),) = sw.plan(state, [A], jobs=1, budget_s=1e9)
-        assert pick == sw.Pick(unit=A, lines=(5, 9), counts=(2, 4), before=(3, 5))
+        assert pick == sw.Pick(unit=A, lines=(5, 9), counts=(2, 4), before=(3, 5), todo=(1, 2, 3, 4, 5, 6))
         assert [pick.line_of(n) for n in range(1, 7)] == [5, 5, 9, 9, 9, 9]
         assert [pick.full_number(n) for n in range(1, 7)] == [4, 5, 6, 7, 8, 9]
         with pytest.raises(sw.StateError, match="mutant 7 is past its window of 6"):
             pick.full_number(7)
+
+    def test_the_clean_run_is_the_bins_covering_tests(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """mutmut reads its clean run's tests off the names it is handed
+        (``tests_for_mutant_names``): a name adds its function's covering
+        tests, where a glob, matched against the functions' names, which
+        hold no ``__mutmut_``, adds none and leaves the clean run to the
+        whole selection, 40 to 80 minutes of each slice (#1838)."""
+        pytest.importorskip("mutmut")
+        import mutmut.__main__ as engine
+        from mutmut.state import state
+
+        record = state().tests_by_mangled_function_name
+        monkeypatch.setattr(state(), "tests_by_mangled_function_name", type(record)(set))
+        state().tests_by_mangled_function_name.update({
+            "vera.a.x_f": {"tests/test_a.py::test_f"}, f"vera.a.x{SEP}C{SEP}m": {"tests/test_a.py::test_m"},
+            "vera.b.x_g": {"tests/test_b.py::test_g"}, "vera.a.x_f_twin": {"tests/test_a.py::test_twin"}})
+        bins = _plan(_state(f=4, m=3, g=5), jobs=2, mutants=10)
+        assert [engine.tests_for_mutant_names(sw.engine_targets(b)) for b in bins] == [
+            {"tests/test_b.py::test_g"}, {"tests/test_a.py::test_f", "tests/test_a.py::test_m"}]
+
+    def test_after_a_partial_night_the_plan_names_only_the_undecided(self) -> None:
+        """A window partly decided keeps its decided mutants, and the next
+        night hands the engine the rest by name and no other: slice 3's
+        window of 9 November 2026, `_verify_fn_contracts`, 39 of its 48
+        decided and none recorded, planned the same 48 the next night."""
+        state = _state(f=6, m=3, g=5)
+        state["units"][A.ident]["partial"] = {"decided": {"1": "killed", "2": "killed", "5": "survived"},
+                                              "survivors": [{"n": 5, "line": 5, "text_sha": None,
+                                                             "status": "survived", "files": None}]}
+        _decide(state, B, killed=3)
+        (bin_,) = _plan(state, mutants=100)
+        assert [(p.unit.key, p.todo) for p in bin_] == [("x_f", (3, 4, 6)), ("x_g", (1, 2, 3, 4, 5))]
+        assert sw.engine_targets(bin_) == ["vera.a.x_f__mutmut_3", "vera.a.x_f__mutmut_4", "vera.a.x_f__mutmut_6",
+                                           *(f"vera.b.x_g__mutmut_{n}" for n in range(1, 6))]
+        assert bin_[0].mutants == 6  # the window mutmut generates is whole: its numbers stay put
+        assert sw.sampled_undecided(state, A) == 3 and not sw.complete(state, UNITS)
+
+    def test_the_same_window_planned_twice_gives_the_same_names(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A number names one mutant on every night of the cycle: the window
+        is the unit's sampled lines at its hash, and mutmut numbers its
+        mutants from one in the order of those lines."""
+        monkeypatch.setattr(sw, "SAMPLE_FRACTION", 0.5)
+        state = _state(f=40, m=40, g=40)
+        first = [sw.engine_targets(b) for b in _plan(state, jobs=2, mutants=200)]
+        state["units"][A.ident]["partial"] = {"decided": {"1": "killed"}, "survivors": []}
+        second = [sw.engine_targets(b) for b in _plan(json.loads(json.dumps(state)), jobs=2, mutants=200)]
+        assert sorted(n for b in second for n in b) == sorted(n for b in first for n in b if n != "vera.a.x_f__mutmut_1")
+
+
+def _real_state() -> dict[str, Any]:
+    """The committed excerpt of the live schema 2 state of run 42747253700
+    (cycle 2, the night of 10 November 2026): every unit whose sampled window
+    was still undecided, the 62 windows and 362 mutants the four stuck bins
+    held, and every unit of three modules with decided windows."""
+    return json.loads((ROOT / "tests" / "fixtures" / "mutation_sweep_state_42747253700_excerpt.json"
+                       ).read_text(encoding="utf-8"))
+
+
+def _units_of(state: dict[str, Any]) -> list[Any]:
+    """The state's units in the tree's order, each at its recorded hash."""
+    units = [sw.SweepUnit(path=i.split("::")[0], key=i.split("::")[1], start=1, hash=r["hash"])
+             for i, r in state["units"].items()]
+    return sorted(units, key=lambda u: (u.path, u.key))
+
+
+class TestTheRealTail:
+    """The plan of the night of 11 November 2026, from the live state."""
+
+    @pytest.fixture(autouse=True)
+    def _the_committed_sample(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(sw, "SAMPLE_FRACTION", 0.02)
+
+    def test_the_tail_is_spread_over_every_job_of_the_night(self, tmp_path: Path) -> None:
+        path = tmp_path / sw.STATE_FILE
+        path.write_text(json.dumps(_real_state()), encoding="utf-8")
+        state = sw.load_state(path, "2026-11-11")
+        units = _units_of(state)
+        bins = sw.plan(state, units, jobs=sw.JOBS, budget_s=sw.DEFAULT_BUDGET_S)
+        planned = [p for b in bins for p in b]
+        assert (len(planned), sum(p.mutants for p in planned)) == (62, 362)
+        assert all(bins), [len(b) for b in bins]  # every job of the night has work
+        names = [n for b in bins for n in sw.engine_targets(b)]
+        assert len(names) == len(set(names)) == 362
+        cost = [sum(len(p.numbers) * sw.rate(p.unit, state["calibration"]) for p in b) for b in bins]
+        dearest = max(len(p.numbers) * sw.rate(p.unit, state["calibration"]) for p in planned)
+        assert max(cost) - min(cost) <= dearest, cost  # balanced: within one unit of each other
+
+    def test_the_live_schema_two_state_reads_as_schema_three_with_its_totals(self, tmp_path: Path) -> None:
+        """The state of 10 November 2026 carries over: no window partly
+        decided, every decided window's columns, survivors and mutants as
+        they were, so the cycle goes on where it stood, and the stitch notes
+        the conversion once."""
+        raw = _real_state()
+        assert raw["schema"] == 2
+        path = tmp_path / sw.STATE_FILE
+        path.write_text(json.dumps(raw), encoding="utf-8")
+        state = sw.load_state(path, "2026-11-11")
+        assert state["schema"] == 3 and state["converted_from"] == 2
+        assert {k: v for k, v in state.items() if k not in ("schema", "units", "converted_from")} == {
+            k: v for k, v in raw.items() if k not in ("schema", "units")}
+        units = _units_of(state)
+        before: dict[str, dict[str, int]] = {}
+        for ident, rec in raw["units"].items():
+            row = before.setdefault(ident.split("::")[0], dict.fromkeys((*sw.COLUMNS_2, "mutants"), 0))
+            row["mutants"] += rec["mutants"] or 0
+            for column in sw.COLUMNS_2:
+                row[column] += (rec["window"] or {}).get(column, 0)
+        after = sw.tally(state, units)
+        assert {m: {k: v for k, v in row.items() if k != "slow"} for m, row in after.items()} == before
+        assert all(row["slow"] == 0 for row in after.values())
+        assert all(r["partial"] is None for r in state["units"].values())
+        for ident, rec in raw["units"].items():
+            if rec["window"] is not None:
+                assert [f"{s['n']}@{s['line']}:{s['status']}" for s in state["units"][ident]["window"]["survivors"]
+                        ] == rec["window"]["survivors"]
+        decided = sum(1 for r in state["units"].values() if r["window"] is not None)
+        raw_decided = sum(1 for r in raw["units"].values() if r["window"] is not None)
+        assert decided == raw_decided and sum(sw.sampled_undecided(state, u) or 0 for u in units) == 362
+        written, night = sw.stitch(state, sw.state_digest(path), [], jobs=sw.JOBS, head=HEAD, units=units,
+                                   today="2026-11-11")
+        assert "converted_from" not in written and "the state was schema 2, which decided a window whole: its " \
+            "decided windows carry over, and from tonight each mutant is kept as it is decided" in night["notes"]
+        assert sw.load_state(sw.save_state(written, tmp_path / "out"), "x") == written
+
+    def test_the_first_schema_three_night_that_decides_nothing_is_not_the_second(self, tmp_path: Path) -> None:
+        """The live state's last night line, 10 November 2026, reads `moved 0`
+        under schema 2's whole-window count though its engines decided
+        mutants, so it cannot be the first of two empty nights: the first
+        schema 3 night that decides nothing is weather, and only the next
+        one, after a line schema 3 wrote, is red."""
+        raw = _real_state()
+        assert raw["nights"][-1]["moved"] == 0 and "schema" not in raw["nights"][-1]
+        path = tmp_path / sw.STATE_FILE
+        path.write_text(json.dumps(raw), encoding="utf-8")
+        state = sw.load_state(path, "2026-11-11")
+        units = _units_of(state)
+        bins = sw.plan(state, units, jobs=sw.JOBS, budget_s=sw.DEFAULT_BUDGET_S)
+        digest = sw.state_digest(path)
+
+        def stopped(n: int) -> dict[str, Any]:
+            return {**_record(n, sw.JOBS, {}, digest=digest, stopped="budget", counts={}),
+                    "planned": [{"unit": p.unit.ident} for p in bins[n]]}
+
+        first, night = sw.stitch(state, digest, [stopped(n) for n in range(sw.JOBS)], jobs=sw.JOBS, head=HEAD,
+                                 units=units, today="2026-11-11")
+        assert night["problems"] == [] and night["moved"] == 0 and night["schema"] == 3
+        path.write_text(json.dumps(first), encoding="utf-8")
+        digest = sw.state_digest(path)
+        _, night = sw.stitch(sw.load_state(path, "x"), digest, [stopped(n) for n in range(sw.JOBS)], jobs=sw.JOBS,
+                             head=HEAD, units=units, today="2026-11-12")
+        assert night["problems"] == ["the night decided no mutant, and neither did the night before it"]
 
 
 # ---------------------------------------------------------------------------
@@ -747,7 +991,8 @@ class TestCounts:
             "units": {"vera/a.py": [B.key], "vera/b.py": ["x_g"]}}
         sw.apply_counts(state, counts)
         assert sw.uncounted(state, UNITS) == []
-        assert state["units"][C.ident] == {"hash": H, "mutants": 3, "lines": {"1": 2, "9": 1}, "window": None}
+        assert state["units"][C.ident] == {"hash": H, "mutants": 3, "lines": {"1": 2, "9": 1}, "window": None,
+                                           "partial": None}
         assert sw.engine_counts(self._engine(tmp_path), os.environ, sources, []) == {}
 
     def test_a_mutant_the_engine_places_above_the_units_first_line_fails_the_lane(
@@ -798,30 +1043,102 @@ PICK_C = sw.Pick(unit=C, lines=(5,), counts=(1,), before=(0,))
 GENERATED = {("vera/a.py", "x_f"): (10, 3), ("vera/b.py", "x_g"): (4, 1)}  # held in all, in the window
 
 
+def _survivor(n: int, line: int, status: str, text_sha: str | None = None,
+              files: list[str] | None = None) -> dict[str, Any]:
+    return {"n": n, "line": line, "text_sha": text_sha, "status": status, "files": files}
+
+
 class TestSliceResults:
-    def test_a_window_is_decided_whole_and_its_survivors_sit_on_their_lines(self) -> None:
+    def test_each_mutant_is_decided_and_its_survivors_sit_on_their_lines(self) -> None:
         out = sw.slice_results([PICK_A, PICK_C], {
             "vera.a.x_f__mutmut_1": "killed", "vera.a.x_f__mutmut_2": "survived", "vera.a.x_f__mutmut_3": "timeout",
-            "vera.b.x_g__mutmut_1": "no tests"}, GENERATED, cut_short=False, finished=True)
+            "vera.b.x_g__mutmut_1": "no tests"}, GENERATED, cut_short=False, finished=True,
+            line_text=lambda unit, line: f"line {line} of {unit.key}",
+            files={A.ident: ["tests/test_a.py", "tests/test_b.py"]},
+            seconds={"vera.a.x_f__mutmut_1": (1.25, 3.0), "vera.a.x_f__mutmut_2": (40.0, 3.0)})
         assert out == {
-            A.ident: {"hash": H, "window": 3, "lines": [3, 7], "survivors": ["4@7:survived", "5@7:timeout"],
-                      "statuses": {"killed": 1, "survived": 1, "timeout": 1, "no_tests": 0, "other": 0}},
-            C.ident: {"hash": H, "window": 1, "lines": [5], "survivors": [],
-                      "statuses": {"killed": 0, "survived": 0, "timeout": 0, "no_tests": 1, "other": 0}}}
+            A.ident: {"hash": H, "window": 3, "lines": [3, 7],
+                      "decided": {"1": "killed", "2": "survived", "3": "timeout"},
+                      "survivors": [_survivor(4, 7, "survived", sw.line_hash("line 7 of x_f"),
+                                              ["tests/test_a.py", "tests/test_b.py"]),
+                                    _survivor(5, 7, "timeout", sw.line_hash("line 7 of x_f"),
+                                              ["tests/test_a.py", "tests/test_b.py"])],
+                      "durations": {"1": 1.25, "2": 40.0}, "estimates": {"1": 3.0, "2": 3.0}},
+            C.ident: {"hash": H, "window": 1, "lines": [5], "decided": {"1": "no tests"}, "survivors": [],
+                      "durations": {}, "estimates": {}}}
+        for result in out.values():
+            sw.check_record(_record(0, 1, {A.ident: result}, counts={}))
 
-    def test_an_undecided_mutant_leaves_its_window_to_another_night(self) -> None:
+    def test_a_partial_windows_decided_mutants_are_kept(self) -> None:
+        """mutmut runs a bin's cheapest mutants first, across the bin, so a
+        budget stop leaves windows partly decided; each decided mutant is
+        kept, and only the undecided wait (#1838: slice 1 decided 13 to 21
+        of its mutants on three nights and recorded none)."""
         listing = {"vera.a.x_f__mutmut_1": "killed", "vera.a.x_f__mutmut_2": "not checked",
                    "vera.a.x_f__mutmut_3": "check was interrupted by user", "vera.b.x_g__mutmut_1": "killed"}
         out = sw.slice_results([PICK_A, PICK_C], listing, GENERATED, cut_short=True, finished=False)
-        assert set(out) == {C.ident}
+        assert {i: r["decided"] for i, r in out.items()} == {A.ident: {"1": "killed"}, C.ident: {"1": "killed"}}
+
+    def test_only_the_numbers_handed_to_the_engine_are_read(self) -> None:
+        """A mutant an earlier night decided is not named tonight, so mutmut
+        leaves it `not checked`, and a status for it is not read."""
+        pick = sw.Pick(unit=A, lines=(3, 7), counts=(1, 2), before=(2, 3), todo=(3,))
+        listing = {"vera.a.x_f__mutmut_1": "killed", "vera.a.x_f__mutmut_2": "not checked",
+                   "vera.a.x_f__mutmut_3": "survived"}
+        out = sw.slice_results([pick], listing, GENERATED, cut_short=False, finished=True)
+        assert out[A.ident]["decided"] == {"3": "survived"} and [s["n"] for s in out[A.ident]["survivors"]] == [5]
 
     def test_a_status_a_budget_stop_can_leave_waits_for_a_run_it_did_not_stop(self) -> None:
         listing = {"vera.a.x_f__mutmut_1": "segfault", "vera.a.x_f__mutmut_2": "suspicious",
                    "vera.a.x_f__mutmut_3": "timeout"}
-        assert sw.slice_results([PICK_A], listing, GENERATED, cut_short=True, finished=False) == {}
+        stopped = sw.slice_results([PICK_A], listing, GENERATED, cut_short=True, finished=False)
+        assert stopped[A.ident]["decided"] == {"3": "timeout"}  # the segfault and suspicious are the stop's
         decided = sw.slice_results([PICK_A], listing, GENERATED, cut_short=False, finished=True)[A.ident]
-        assert decided["statuses"] == {"killed": 0, "survived": 0, "timeout": 1, "no_tests": 0, "other": 2}
-        assert decided["survivors"] == ["5@7:timeout"]  # the window's mutant 3, the fifth of the unit
+        assert decided["decided"] == {"1": "segfault", "2": "suspicious", "3": "timeout"}
+        assert decided["survivors"] == [_survivor(5, 7, "timeout")]  # the window's mutant 3, the fifth of the unit
+
+    def test_a_mutant_the_cap_ended_is_slow_and_one_interrupted_otherwise_waits(self) -> None:
+        """The oracle plugin's file names each mutant it ended at the cap:
+        a mutant the engine left undecided that the file names is `slow`
+        (mutmut reads the plugin's exit 2 as interrupted).  One the engine
+        marks interrupted that the file does not name is undecided: never
+        slow, never caught.  The timer cannot be withdrawn once its wait has
+        returned, so a run can end with its own verdict after the plugin
+        named it: that verdict stands."""
+        listing = {"vera.a.x_f__mutmut_1": "check was interrupted by user",
+                   "vera.a.x_f__mutmut_2": "check was interrupted by user", "vera.a.x_f__mutmut_3": "killed"}
+        out = sw.slice_results([PICK_A], listing, GENERATED, cut_short=False, finished=True,
+                               slow={"vera.a.x_f__mutmut_1", "vera.a.x_f__mutmut_3"})
+        assert out[A.ident]["decided"] == {"1": "slow", "3": "killed"}  # killed and named stays killed
+        assert out[A.ident]["survivors"] == [_survivor(3, 3, "slow")]
+        for engine in ("survived", "timeout", "no tests"):
+            done = sw.slice_results([PICK_A], {**listing, "vera.a.x_f__mutmut_1": engine}, GENERATED,
+                                    cut_short=False, finished=True, slow={"vera.a.x_f__mutmut_1"})
+            assert done[A.ident]["decided"]["1"] == engine
+        stopped = sw.slice_results([PICK_A], {**listing, "vera.a.x_f__mutmut_1": "not checked"}, GENERATED,
+                                   cut_short=True, finished=False, slow={"vera.a.x_f__mutmut_1"})
+        assert stopped[A.ident]["decided"] == {"1": "slow", "3": "killed"}  # the cap ended it before the stop
+
+    def test_the_slow_file_is_read_by_its_first_field(self, tmp_path: Path) -> None:
+        path = tmp_path / "slow.txt"
+        assert sw.slow_mutants(path) == set()
+        path.write_text("vera.a.x_f__mutmut_1\t2400.3\n\nvera.b.x_g__mutmut_2\t2401.0\n", encoding="utf-8")
+        assert sw.slow_mutants(path) == {"vera.a.x_f__mutmut_1", "vera.b.x_g__mutmut_2"}
+
+    def test_the_meta_and_stats_files_give_durations_estimates_and_test_files(self, tmp_path: Path) -> None:
+        (tmp_path / "mutants" / "vera").mkdir(parents=True)
+        (tmp_path / "mutants" / "vera" / "a.py.meta").write_text(json.dumps({
+            "exit_code_by_key": {}, "durations_by_key": {"vera.a.x_f__mutmut_1": 2.5},
+            "estimated_durations_by_key": {"vera.a.x_f__mutmut_1": 1.0, "vera.a.x_f__mutmut_2": 1.0}}),
+            encoding="utf-8")
+        assert sw.mutant_seconds(tmp_path, ["vera/a.py", "vera/b.py"]) == {
+            "vera.a.x_f__mutmut_1": (2.5, 1.0), "vera.a.x_f__mutmut_2": (None, 1.0)}
+        stats = tmp_path / "mutants" / "mutmut-stats.json"
+        stats.write_text(json.dumps({"tests_by_mangled_function_name": {
+            "vera.a.x_f": ["tests/test_a.py::test_1", "mutants/tests/test_a.py::test_2", "tests/test_b.py::C::t"]}}),
+            encoding="utf-8")
+        assert sw.tested_files(stats) == {"vera.a.x_f": ["tests/test_a.py", "tests/test_b.py"]}
+        assert sw.tested_files(tmp_path / "absent.json") == {}
 
     def test_a_window_the_engine_generated_otherwise_than_counted_is_refused(self) -> None:
         listing = {"vera.a.x_f__mutmut_1": "killed", "vera.a.x_f__mutmut_2": "killed"}
@@ -883,10 +1200,10 @@ class TestStitch:
             _record(0, 2, {A.ident: _res(A, killed=2, survived=2, survivors=("3@3:survived", "4@4:survived"))}),
             _record(1, 2, {C.ident: _res(C, killed=2)}),
         ])
-        assert night["problems"] == [] and night["moved"] == 6  # the decided windows' mutants
+        assert night["problems"] == [] and night["moved"] == 6  # the decided mutants
         assert state["units"][A.ident] == {
             "hash": H, "mutants": 4, "lines": _lines(4),
-            "window": _window(killed=2, survived=2, survivors=("3@3:survived", "4@4:survived"))}
+            "window": _window(killed=2, survived=2, survivors=("3@3:survived", "4@4:survived")), "partial": None}
         assert state["units"][C.ident]["window"] == _window(killed=2) and state["units"][B.ident]["lines"] is None
         assert state["nights"][-1] is night
 
@@ -975,10 +1292,24 @@ class TestStitch:
         assert f"Stopped by the engine: `{ENGINE_ERROR}`." in sw.render_slice(failed)
         assert "Stopped by the engine.\n" in sw.render_slice(_record(1, 2, {}, stopped="engine"))
 
-    def test_a_night_that_decides_nothing_stops_short_and_survivors_never_do(self) -> None:
+    def test_two_nights_in_a_row_that_decide_nothing_stop_short_and_one_does_not(self) -> None:
+        """One night that decides nothing is weather (a bin of slow mutants,
+        a lost runner) and keeps what it has; a second in a row measures
+        nothing, and is red.  Survivors never are."""
         state = _state(f=4)
-        _, night = _stitch([_record(0, 1, {})], state, jobs=1)
-        assert night["problems"] == ["the night decided no mutant"]
+        first, night = _stitch([_record(0, 1, {})], state, jobs=1)
+        assert night["problems"] == [] and night["moved"] == 0
+        _, night = _stitch([_record(0, 1, {})], json.loads(json.dumps(first)), jobs=1)
+        assert night["problems"] == ["the night decided no mutant, and neither did the night before it"]
+        decided, night = _stitch([_record(0, 1, {A.ident: _res(A, window=4, killed=1)})],
+                                 json.loads(json.dumps(first)), jobs=1)
+        assert night["problems"] == [] and night["moved"] == 1
+        _, night = _stitch([_record(0, 1, {})], json.loads(json.dumps(decided)), jobs=1)
+        assert night["problems"] == []  # the night before decided a mutant
+        lost = json.loads(json.dumps(state))
+        lost["nights"] = [{**_night_line("2026-11-09", [0]), "moved": 0, "schema": 3}]
+        _, night = _stitch([_record(0, 1, {})], lost, jobs=1)
+        assert night["problems"] == ["the night decided no mutant, and neither did the night before it"]
         # Counting a function with no mutant decides it: a night whose plan
         # was empty because the counts left nothing to run closes the cycle.
         state = _state(f=4)
@@ -1010,18 +1341,69 @@ class TestStitch:
                                      "or on other lines",
                                      "slice 1 counted vera/z.py::x_q, which the tree does not hold"]
 
-    def test_a_budget_stop_before_the_first_mutant_stops_the_night_short(self) -> None:
-        """The four checker slices of 3 November 2026 spent their budget in
-        five stats passes each and decided nothing, and the night would have
-        been green but for a lost runner (#1827)."""
+    def test_nights_whose_only_planned_slice_was_lost_are_empty_nights_too(self) -> None:
+        """A night whose every planned slice sent no record decided nothing
+        as surely as one whose slices did: the second such night in a row is
+        red, so losing the one working slice cannot stay green for ever."""
+        state = _state(f=4)
+        first, night = _stitch([_record(1, 2, {}, planned=0)], state)
+        assert night["lost"] == [0] and night["problems"] == []
+        _, night = _stitch([_record(1, 2, {}, planned=0)], json.loads(json.dumps(first)))
+        assert night["problems"] == ["the night decided no mutant, and neither did the night before it"]
+
+    def test_a_budget_stop_is_a_normal_stop_and_its_partial_work_is_kept(self) -> None:
+        """The rule "its budget ran out before its first mutant" fired on
+        nine slice-nights of 7 to 10 November 2026 whose engines had decided
+        9 to 39 mutants each, in windows none of which was whole (#1838).  A
+        budget stop keeps each mutant it decided, the night notes it, and it
+        is no problem, decided or not."""
         good = _record(0, 2, {A.ident: _res(A, killed=4)})
+        partial = _record(1, 2, {C.ident: _res(C, window=5, killed=1, survived=1, survivors=("4@4:survived",))},
+                          stopped="budget", counts={C.ident: {"mutants": 5, "lines": _lines(5)}})
+        state, night = _stitch([good, partial])
+        assert night["problems"] == [] and night["moved"] == 6
+        assert night["notes"] == ["slice 1: stopped by the budget with 2 mutant(s) decided; the rest of its bin "
+                                  "waits for the next night"]
+        assert state["units"][C.ident]["window"] is None
+        assert state["units"][C.ident]["partial"] == {"decided": {"1": "killed", "4": "survived"},
+                                                      "survivors": [_survivor(4, 4, "survived")]}
+        assert sw.slice_exit(partial) == 0
         _, night = _stitch([good, _record(1, 2, {}, stopped="budget")])
-        assert night["problems"] == ["slice 1: its budget ran out before its first mutant"]
-        one = _record(1, 2, {C.ident: _res(C, killed=2)}, stopped="budget")
-        _, night = _stitch([good, one])
-        assert night["problems"] == []
-        _, night = _stitch([good, _record(1, 2, {}, stopped="budget", planned=0)])
-        assert night["problems"] == []  # nothing planned, nothing owed
+        assert night["problems"] == [] and sw.slice_exit(_record(1, 2, {}, stopped="budget")) == 0
+
+    def test_a_partial_window_is_completed_by_a_later_record_and_no_mutant_counts_twice(self) -> None:
+        """The window's decided mutants gather night by night, a mutant
+        decided twice counting once, and fold into a decided window with the
+        last one."""
+        state = _state(f=4)
+        first = _record(0, 1, {A.ident: _res(A, window=4, killed=1, survivors=("3@3:survived",), survived=1)},
+                        stopped="budget", counts={})
+        state, night = _stitch([first], state, jobs=1)
+        assert night["moved"] == 2 and state["units"][A.ident]["partial"]["decided"] == {"1": "killed",
+                                                                                          "3": "survived"}
+        assert sw.undecided_numbers(state, A) == (2, 4)
+        second = {"hash": H, "window": 4, "lines": [1, 2, 3, 4], "survivors": [_survivor(4, 4, "slow")],
+                  "decided": {"1": "killed", "2": "killed", "4": "slow"}, "durations": {}, "estimates": {}}
+        state, night = _stitch([_record(0, 1, {A.ident: second}, counts={})], json.loads(json.dumps(state)), jobs=1)
+        assert night["moved"] == 2  # mutant 1 again counts once
+        assert state["units"][A.ident]["partial"] is None
+        assert state["units"][A.ident]["window"] == {
+            "killed": 2, "survived": 1, "timeout": 0, "no_tests": 0, "slow": 1, "other": 0, "mutants": 4,
+            "survivors": [_survivor(3, 3, "survived"), _survivor(4, 4, "slow")]}
+
+    def test_the_cycle_closes_when_its_sample_is_decided_whatever_else_the_night_did(self) -> None:
+        """Only validated records merge, so a lost or failed slice cannot
+        close a cycle wrongly; a night with a problem that decides the last
+        mutant closes it."""
+        state = _state(f=4)
+        _, night = _stitch([_record(0, 3, {A.ident: _res(A, killed=4)}), _record(1, 3, {}, stopped="engine")],
+                           state, jobs=3)
+        assert night["problems"] == ["slice 1: stopped by the engine"] and night["lost"] == [2]
+        assert not night["closed"]  # m and g are uncounted
+        state = _state(f=4, m=0, g=0)
+        _, night = _stitch([_record(0, 3, {A.ident: _res(A, killed=4)}), _record(1, 3, {}, stopped="engine")],
+                           state, jobs=3)
+        assert night["problems"] == ["slice 1: stopped by the engine"] and night["closed"]
 
     def test_a_night_whose_every_slice_failed_keeps_the_state(self) -> None:
         """A slice whose lane failed records no engine version; a night of
@@ -1035,7 +1417,8 @@ class TestStitch:
         kept, night = _stitch([failed], json.loads(json.dumps(state)), jobs=1)
         assert night["problems"] == ["slice 0: stopped by the lane"] and night["notes"] == []
         assert kept["engine"] == "3.8.0" and kept["cycle_started"] == "2026-10-01"
-        assert kept["units"][A.ident] == {"hash": H, "mutants": 4, "lines": _lines(4), "window": _window(killed=4)}
+        assert kept["units"][A.ident] == {"hash": H, "mutants": 4, "lines": _lines(4), "window": _window(killed=4),
+                                          "partial": None}
 
     def test_a_first_night_whose_every_slice_failed_leaves_a_state_that_loads(self, tmp_path: Path) -> None:
         """No slice reported an engine and the state had none: it must stay
@@ -1082,22 +1465,29 @@ class TestStitch:
         assert night["notes"] == ["mutmut 3.8.0 gave way to 3.9.0: every function starts afresh, "
                                   "and so does the cycle"]
 
-    def test_a_slices_exit_is_two_only_when_it_failed_or_decided_nothing_it_held(self) -> None:
+    def test_a_slices_exit_is_two_only_for_an_engine_lane_or_unmapped_stop(self) -> None:
         decided = {A.ident: _res(A, survived=1, survivors=("1@1:survived",))}
         assert sw.slice_exit(_record(0, 1, decided)) == 0
         assert sw.slice_exit(_record(0, 1, decided, stopped="budget")) == 0
         assert sw.slice_exit(_record(0, 1, {}, planned=0)) == 0
-        assert sw.slice_exit(_record(0, 1, {})) == 2
-        assert sw.slice_exit(_record(0, 1, {}, stopped="budget")) == 2  # the budget ran out before the first mutant
-        assert sw.slice_exit(_record(0, 1, decided, stopped="engine")) == 2
+        assert sw.slice_exit(_record(0, 1, {})) == 0
+        assert sw.slice_exit(_record(0, 1, {}, stopped="budget")) == 0
+        for stop in ("engine", "lane", "unmapped"):
+            assert sw.slice_exit(_record(0, 1, decided, stopped=stop)) == 2
 
     def test_the_calibration_follows_what_the_mutants_cost(self) -> None:
-        """Ten mutants estimated at 2.5 s each took 100 s past the fixed passes:
-        the factor moves halfway from 1 to 4."""
-        record = _record(0, 1, {A.ident: _res(A, killed=10)})
-        record["engine_s"] = sw.FIXED_S + 100.0
+        """Ten mutants estimated at 2.5 s of a job each took 20 s on one of
+        the slice's two workers, 10 s of the job: the factor moves halfway
+        from 1 to 4.  It moves past the old ceiling of 5.0, which it sat at
+        from 4 to 10 November 2026 (#1838)."""
+        result = _res(A, killed=10)
+        result["durations"] = {str(n): 20.0 for n in range(1, 11)}
+        record = {**_record(0, 1, {A.ident: result}), "workers": 2}
         state, _ = _stitch([record], jobs=1)
         assert state["calibration"] == 2.5
+        result["durations"] = {str(n): 500.0 for n in range(1, 11)}
+        state, _ = _stitch([record], jobs=1)
+        assert state["calibration"] == 50.5
 
 
 # ---------------------------------------------------------------------------
@@ -1130,8 +1520,10 @@ class TestCycle:
         last = state["last_complete"]
         assert last["cycle"] == 1 and last["finished"] == "2026-11-30" and last["head"] == "c" * 40
         assert last["modules"] == {
-            "vera/a.py": {"killed": 6, "survived": 1, "timeout": 0, "no_tests": 0, "other": 0, "mutants": 7},
-            "vera/b.py": {"killed": 3, "survived": 1, "timeout": 0, "no_tests": 1, "other": 0, "mutants": 5}}
+            "vera/a.py": {"killed": 6, "survived": 1, "timeout": 0, "no_tests": 0, "slow": 0, "other": 0,
+                          "mutants": 7},
+            "vera/b.py": {"killed": 3, "survived": 1, "timeout": 0, "no_tests": 1, "slow": 0, "other": 0,
+                          "mutants": 5}}
         assert last["survivors"] == [f"vera.a.x{SEP}C{SEP}m__mutmut_3@21:survived", "vera.b.x_g__mutmut_4@4:survived"]
         assert (last["sampled"], last["population"], last["fraction"]) == (12, 12, 1.0)
 
@@ -1151,7 +1543,7 @@ class TestCycle:
         last = state["last_complete"]
         assert (last["sampled"], last["population"], last["fraction"]) == (sum(sizes.values()), 120, 0.5)
         assert last["modules"]["vera/a.py"] == {"killed": sizes[A] + sizes[B], "survived": 0, "timeout": 0,
-                                                "no_tests": 0, "other": 0, "mutants": 80}
+                                                "no_tests": 0, "slow": 0, "other": 0, "mutants": 80}
         assert last["survivors"] == [f"vera.b.x_g__mutmut_{sizes[C]}@{last_line}:survived"]
 
     def test_the_interval_is_wilsons(self) -> None:
@@ -1171,25 +1563,25 @@ class TestCycle:
         _complete(state, {A: 4, B: 3, C: 5})
         _decide(state, C, killed=3, survived=1, timeout=1, survivors=("4@4:survived", "5@5:timeout"))
         _decide(state, A, killed=3, no_tests=1)
-        _decide(state, B, killed=2, other=1)  # a segfault, which has no outcome to score
+        _decide(state, B, killed=1, other=1, slow=1)  # a segfault and a slow mutant: no outcome to score
         sw.close_cycle(state, UNITS, head="h", today="e")
         score = sw.write_summary(state, tmp_path)
         rows = (tmp_path / "mutation-summary.csv").read_text(encoding="utf-8").splitlines()
         assert rows == ["module,total,killed,survived,timeout,caught_pct,mutants,ci95_low,ci95_high",
-                        "vera/b.py,5,3,1,1,80.0,5,37.6,96.4", "vera/a.py,5,5,0,0,100.0,7,56.6,100.0",
-                        "TOTAL (vera),10,8,1,1,90.0,12,59.6,98.2"]
-        assert score == 90.0
+                        "vera/b.py,5,3,1,1,80.0,5,37.6,96.4", "vera/a.py,4,4,0,0,100.0,7,51.0,100.0",
+                        "TOTAL (vera),9,7,1,1,88.9,12,56.5,98.0"]
+        assert score == 88.9
         badge = json.loads((tmp_path / "mutation.json").read_text(encoding="utf-8"))
-        assert badge == {"schemaVersion": 1, "label": "mutation", "message": "90.0% ±19.3",
-                         "color": "brightgreen"}
+        assert badge == {"schemaVersion": 1, "label": "mutation", "message": "88.9% ±20.8", "color": "green"}
         assert (tmp_path / "mutation-survivors.csv").read_text(encoding="utf-8").splitlines() == [
-            "module,mutant,status", "vera.b,x_g__mutmut_4@L4,survived", "vera.b,x_g__mutmut_5@L5,timeout"]
+            "module,mutant,status", f"vera.a,x{SEP}C{SEP}m__mutmut_2@L21,slow", "vera.b,x_g__mutmut_4@L4,survived",
+            "vera.b,x_g__mutmut_5@L5,timeout"]  # a slow mutant is listed, apart from the score
 
     def test_no_summary_is_written_before_a_cycle_has_closed(self, tmp_path: Path) -> None:
         with pytest.raises(sw.StateError):
             sw.write_summary(sw.empty_state("d"), tmp_path)
 
-    def test_the_stitch_closes_a_complete_cycle_and_not_a_night_that_stopped_short(self) -> None:
+    def test_the_stitch_closes_a_complete_cycle_whatever_else_the_night_did(self) -> None:
         state = _state()
         _complete(state, {A: 4, B: 3})
         state["units"][C.ident].update(mutants=1, lines=_lines(1))
@@ -1198,7 +1590,8 @@ class TestCycle:
         assert night["closed"] and closed["cycle"] == 2
         kept, night = _stitch([_record(0, 2, done), _record(1, 2, {}, stopped="engine")],
                               json.loads(json.dumps(state)))
-        assert not night["closed"] and kept["cycle"] == 1
+        assert night["problems"] == ["slice 1: stopped by the engine"]  # red, and the sample is decided:
+        assert night["closed"] and kept["cycle"] == 2  # the cycle closes whatever else the night did
         # A slice with no record is noted, not a stop: the bins are disjoint,
         # so a state the other slices complete owed that slice nothing.
         closed, night = _stitch([_record(0, 2, done)], json.loads(json.dumps(state)))
@@ -1347,6 +1740,19 @@ class TestWorkflow:
         assert issue["if"] == "always() && github.event_name == 'schedule' && needs.stitch.result != 'success'"
         (step,) = issue["steps"]
         assert 'const LABEL = "mutation-sweep";' in step["with"]["script"]
+        # The issue says what the rules now are: no budget rule (#1838).
+        assert "budget ran out" not in step["with"]["script"]
+        assert "a second night in a row that decided no mutant" in step["with"]["script"]
+
+    def test_a_slice_runs_two_workers_under_the_mutant_cap(self) -> None:
+        """Two workers, not every CPU: four survivors at once took a runner
+        into swap (#1838); and the cap on a mutant's run is the script's."""
+        import re
+
+        job = self._wf()["jobs"]["sweep"]
+        (step,) = [s for s in job["steps"] if "scripts/mutate_sweep.py night" in s.get("run", "")]
+        assert re.search(r"--max-children (\d+)", step["run"]).group(1) == str(sw.WORKERS) == "2"  # type: ignore[union-attr]
+        assert re.search(r"--mutant-cap (\d+)", step["run"]).group(1) == str(sw.MUTANT_CAP_S) == "2400"  # type: ignore[union-attr]
 
 
 # ---------------------------------------------------------------------------
@@ -1363,6 +1769,28 @@ class TestHeartbeat:
     """A lost runner uploads no record, so what the slice printed is all that
     survives of it (#1751): a line every few minutes with the time, the
     runner's memory and load, and the engine's last status."""
+
+    def test_the_watch_keeps_the_phases_the_engines_count_and_the_memory_figures(self) -> None:
+        """The record carries what the proof night's table reads: when each
+        of the engine's phases started and its first mutant was decided, its
+        last count, and the runner's memory floor and swap peak (#1838)."""
+        watch = sw.Watch()
+        low = MEMINFO.replace("11503616", "1048576").replace("3145724", "2097148")
+        for at, status, mem in ((60, "Generating mutants", MEMINFO), (120, "Running stats", MEMINFO),
+                                (3000, "Running clean tests", low), (5000, "Running forced fail test", MEMINFO),
+                                (5100, "Running mutation testing", MEMINFO), (5200, "0/48  🎉 0", MEMINFO),
+                                (5500, "3/48  🎉 3 🫥 0", MEMINFO), (6000, "9/48  🎉 8 🙁 1", None)):
+            watch.observe(at, status, mem)
+        assert watch.fields() == {
+            "phases": {"stats_s": 120, "clean_s": 3000, "forced_s": 5000, "mutants_s": 5100,
+                       "first_mutant_s": 5500},
+            "engine_status": "9/48  🎉 8 🙁 1", "engine_decided": 9, "mem_floor_mib": 1024, "swap_peak_mib": 2048}
+
+    def test_the_nights_summary_states_its_rules(self) -> None:
+        state, night = _stitch([_record(0, 1, {A.ident: _res(A, window=4, killed=1)}, stopped="budget")], jobs=1)
+        text = sw.render_night(state, night, UNITS)
+        assert sw.RULES in text and "| 0 | 1 | 1 | 0 | budget |" in text
+        assert "budget ran out before its first mutant" not in text
 
     def test_a_line_carries_the_time_the_memory_the_load_and_the_engines_status(self) -> None:
         assert sw.HEARTBEAT_S == 300.0
@@ -1513,6 +1941,50 @@ def repo(tmp_path: Path) -> Path:
     return root
 
 
+#: The engine fixture's module: mutants on several lines of two functions.
+HELD_MODULE = ("def f(x):\n    if x > 0:\n        return x + 1\n    return x - 2\n\n\n"
+               "def g(x):\n    return x * 2\n")
+
+#: Its tests: each sleeps while the mutant under test is one that
+#: ``SWEEP_FIXTURE_HOLD`` names, for ``SWEEP_FIXTURE_HOLD_S`` seconds.  An
+#: empty name is none: the clean run's ``MUTANT_UNDER_TEST`` is empty, and a
+#: hold read as ``[""]`` once held the clean run for its whole hour.
+HELD_TESTS = (
+    "import os\nimport time\n\nfrom vera.m import f, g\n\n\n"
+    "def _hold():\n"
+    "    held = [n for n in os.environ.get('SWEEP_FIXTURE_HOLD', '').split(',') if n]\n"
+    "    if os.environ.get('MUTANT_UNDER_TEST', '') in held:\n"
+    "        time.sleep(float(os.environ.get('SWEEP_FIXTURE_HOLD_S', '0')))\n\n\n"
+    "def test_f():\n    _hold()\n    assert (f(1), f(-1), f(0)) == (2, -3, -2)\n\n\n"
+    "def test_g():\n    _hold()\n    assert g(3) == 6\n")
+
+
+@pytest.fixture
+def held_repo(tmp_path: Path) -> Path:
+    """A repository for the engine's own runs: the oracle plugin loaded, as
+    ``[tool.mutmut]`` loads it, and mutmut's wall bound (half its CPU limit,
+    ``(est + 1) × timeout_multiplier``) far past any hold, so only the
+    budget or the plugin's cap ends a held mutant."""
+    root = tmp_path / "repo"
+    (root / "vera").mkdir(parents=True)
+    (root / "tests").mkdir()
+    (root / "vera" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "vera" / "m.py").write_text(HELD_MODULE, encoding="utf-8")
+    (root / "tests" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "tests" / "test_m.py").write_text(HELD_TESTS, encoding="utf-8")
+    (root / "tests" / "mutation_oracle.py").write_text(
+        (ROOT / "tests" / "mutation_oracle.py").read_text(encoding="utf-8"), encoding="utf-8")
+    (root / "pyproject.toml").write_text(
+        '[tool.mutmut]\nsource_paths = ["vera/"]\nuse_setproctitle = false\n'
+        'process_isolation = "forkserver"\ntimeout_multiplier = 1000.0\n'
+        'pytest_add_cli_args = ["-p", "tests.mutation_oracle", "-p", "no:cacheprovider"]\n'
+        'pytest_add_cli_args_test_selection = []\n', encoding="utf-8")
+    _git(root, "init", "-q")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "base")
+    return root
+
+
 @pytest.fixture
 def no_git_locators(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"):
@@ -1553,6 +2025,20 @@ def _stitch_cli(repo: Path, tmp_path: Path, n: int, state: Path | None) -> tuple
     return code, json.loads((out / sw.STATE_FILE).read_text(encoding="utf-8"))
 
 
+def _engine_said(tmp_path: Path, n: int, record: dict[str, Any] | None = None) -> str:
+    """What a real night's engine printed (its logs' last rows, spinner
+    frames dropped) and its record's stop and phases: a failure's message,
+    so the job log says where the engine stopped."""
+    rows: list[str] = []
+    for log in sorted((tmp_path / f"work{n}").glob("mutmut-run-*.log")):
+        text = log.read_text(encoding="utf-8", errors="replace").replace("\r", "\n")
+        rows += [f"{log.name}: {r.strip()}" for r in text.splitlines() if r.strip()][-25:]
+    if record is not None:
+        rows.append(json.dumps({k: record.get(k) for k in (
+            "stopped", "engine_exit", "engine_error", "engine_tail", "phases", "engine_status", "slow")}))
+    return "\n".join(rows)
+
+
 _REAL_RUN_ENGINE = sw.md.run_engine
 
 
@@ -1573,15 +2059,20 @@ class TestEndToEnd:
         assert record["counts"] == {"vera/m.py::x_f": {"mutants": 2, "lines": lines},
                                     "vera/m.py::x_g": {"mutants": 2, "lines": lines}}  # the engine's count
         (run,) = [c for c in calls if c["args"][0] == "run"]
-        assert run["args"][-2:] == ["vera.m.x_f__mutmut_*", "vera.m.x_g__mutmut_*"]
+        assert run["args"][-4:] == ["vera.m.x_f__mutmut_1", "vera.m.x_f__mutmut_2", "vera.m.x_g__mutmut_1",
+                                    "vera.m.x_g__mutmut_2"]
+        assert run["args"][run["args"].index("--max-children") + 1] == "2"
         window = json.loads((tmp_path / "work1" / "window.json").read_text(encoding="utf-8"))
         assert window["exact"] is True and window["lines"] == {"vera/m.py": [1, 2, 5, 6]}  # f at 1, g at 5
         code, state = _stitch_cli(repo, tmp_path, 1, None)
         assert code == 0 and state["cycle"] == 1
         assert state["units"]["vera/m.py::x_g"] == {"hash": state["units"]["vera/m.py::x_g"]["hash"],
-                                                    "mutants": 2, "lines": lines, "window": None}
-        assert state["units"]["vera/m.py::x_f"]["window"] == {"killed": 1, "survived": 1, "timeout": 0, "no_tests": 0,
-                                                              "other": 0, "mutants": 2, "survivors": ["2@2:survived"]}
+                                                    "mutants": 2, "lines": lines, "window": None,
+                                                    "partial": {"decided": {"1": "killed"}, "survivors": []}}
+        assert state["units"]["vera/m.py::x_f"]["window"] == {
+            "killed": 1, "survived": 1, "timeout": 0, "no_tests": 0, "slow": 0, "other": 0, "mutants": 2,
+            "survivors": [{"n": 2, "line": 2, "text_sha": sw.line_hash("    return x + 1"), "status": "survived",
+                           "files": []}]}
 
         code, record, calls = _night(repo, tmp_path, 2, (
             "    vera.m.x_g__mutmut_1: killed\n    vera.m.x_g__mutmut_2: killed\n"),
@@ -1589,7 +2080,10 @@ class TestEndToEnd:
         assert code == 0 and record["state_in"] == sw.state_digest(tmp_path / "state1" / sw.STATE_FILE)
         assert record["counts"] == {}  # the state carried the counts
         (run,) = [c for c in calls if c["args"][0] == "run"]
-        assert run["args"][-1:] == ["vera.m.x_g__mutmut_*"]
+        assert run["args"][-1:] == ["vera.m.x_g__mutmut_2"]  # the one mutant the first night left
+        assert record["planned"] == [{"unit": "vera/m.py::x_g", "hash": record["planned"][0]["hash"],
+                                      "lines": [1, 2], "mutants": 2, "todo": [2]}]
+        assert record["results"]["vera/m.py::x_g"]["decided"] == {"2": "killed"}
         code, state = _stitch_cli(repo, tmp_path, 2, tmp_path / "state1")
         assert code == 0 and state["cycle"] == 2
         assert state["last_complete"]["modules"]["vera/m.py"]["survived"] == 1
@@ -1727,13 +2221,13 @@ class TestEndToEnd:
         assert {r["mutants"] for r in state["units"].values()} == {2}
         assert all(r["window"] is None and r["lines"] == {"1": 1, "2": 1} for r in state["units"].values())
 
-    def test_a_budget_stop_before_the_first_mutant_is_a_stop_of_its_own(
+    def test_a_budget_stop_before_the_first_mutant_is_a_normal_stop(
         self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A run the budget stopped before any mutant was decided lists at
-        most what mutmut generated and decides nothing: the slice's exit and
-        the night's problems say so (the four checker slices of 3 November
-        2026, #1827)."""
+        most what mutmut generated and decides nothing: the slice exits 0,
+        and the night notes the stop; only a second such night is red
+        (#1838)."""
         monkeypatch.setenv("FAKE_RUN_SLEEP", "30")
         monkeypatch.setenv("FAKE_COUNT", "1")
         monkeypatch.setattr(sw.md, "run_engine", lambda *a, **k: _quick_stop(*a, **k))
@@ -1741,11 +2235,24 @@ class TestEndToEnd:
         monkeypatch.setattr(sw, "OTHER_RATE_S", 0.01)  # both functions fit the two-second budget
         code, record, _ = _night(repo, tmp_path, 1, "    vera.m.x_f__mutmut_1: not checked\n", budget=2)
         assert [p["unit"] for p in record["planned"]] == ["vera/m.py::x_f", "vera/m.py::x_g"]
-        assert record["stopped"] == "budget" and code == 2
+        assert record["stopped"] == "budget" and code == 0
         assert record["results"] == {}  # x_f's window undecided, x_g's not listed: both wait
         code, state = _stitch_cli(repo, tmp_path, 1, None)
-        assert code == 2
-        assert state["nights"][-1]["problems"] == ["slice 0: its budget ran out before its first mutant"]
+        assert code == 0 and state["nights"][-1]["problems"] == []
+        assert state["nights"][-1]["notes"] == ["slice 0: stopped by the budget with 0 mutant(s) decided; the rest "
+                                                "of its bin waits for the next night"]
+
+    def test_a_listing_that_maps_to_no_planned_window_is_red_after_a_budget_stop_too(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A mutant of a function the night did not plan means the narrowing
+        or the window went wrong: that outranks the budget, which leaves a
+        slice only incomplete, as the diff lane's ``failed`` has it."""
+        monkeypatch.setenv("FAKE_RUN_SLEEP", "30")
+        monkeypatch.setattr(sw.md, "run_engine", lambda *a, **k: _quick_stop(*a, **k))
+        code, record, _ = _night(repo, tmp_path, 1, "    vera.m.x_h__mutmut_1: killed\n", budget=2)
+        assert record["stopped"] == "unmapped" and code == 2
+        assert "did not plan" in record["engine_tail"][0]
 
     def test_an_engine_that_failed_before_generating_decides_nothing(
         self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
@@ -1791,7 +2298,7 @@ class TestEndToEnd:
         _, record, _ = _night(repo, tmp_path, 1, (
             "    vera.m.x_f__mutmut_1: segfault\n    vera.m.x_f__mutmut_2: killed\n"), budget=2)
         assert record["stopped"] == "budget"
-        assert record["results"] == {}  # x_f's window waits: its segfault is the stop's, not a verdict
+        assert record["results"]["vera/m.py::x_f"]["decided"] == {"2": "killed"}  # the segfault is the stop's
 
     def test_the_slice_prints_a_heartbeat_while_the_engine_runs(
         self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
@@ -1842,20 +2349,99 @@ class TestEndToEnd:
         assert code == 2 and record["stopped"] == "lane"
         assert "version" in record["engine_tail"][0]
 
+    @starts_the_engine(900)
+    def test_mutmut_itself_keeps_a_stopped_nights_mutants_and_runs_only_the_rest_the_next(
+        self, held_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Against the engine (#1838): a night the budget stops inside a
+        window keeps each mutant it decided, the next night hands the engine
+        the undecided remainder alone, the two nights' decisions are the
+        whole window, and no mutant is decided twice."""
+        pytest.importorskip("mutmut")
+        monkeypatch.setenv("SWEEP_FIXTURE_HOLD", "vera.m.x_g__mutmut_1")
+        monkeypatch.setenv("SWEEP_FIXTURE_HOLD_S", "900")
+        monkeypatch.setattr(sw.md, "run_engine", lambda *a, **k: _quick_stop(*a, **k))
+        monkeypatch.setattr(sw, "FIXED_S", 0)
+        monkeypatch.setattr(sw, "OTHER_RATE_S", 0.01)  # both functions fit the 45 s budget's one job
+        code, first, _ = _night(held_repo, tmp_path, 1, "", real=True, budget=45)
+        assert code == 0 and first["stopped"] == "budget", _engine_said(tmp_path, 1, first)
+        window = {p["unit"]: p["mutants"] for p in first["planned"]}
+        assert set(window) == {"vera/m.py::x_f", "vera/m.py::x_g"}
+        decided = {ident: set(r["decided"]) for ident, r in first["results"].items()}
+        assert "1" not in decided.get("vera/m.py::x_g", set())  # held past the budget: undecided
+        assert sum(map(len, decided.values())) == sum(window.values()) - 1, (window, decided,
+                                                                              _engine_said(tmp_path, 1, first))
+        code, state = _stitch_cli(held_repo, tmp_path, 1, None)
+        assert code == 0 and state["units"]["vera/m.py::x_g"]["window"] is None
+        monkeypatch.delenv("SWEEP_FIXTURE_HOLD")
+        code, second, calls = _night(held_repo, tmp_path, 2, "", real=True, state=tmp_path / "state1", budget=300)
+        assert code == 0 and second["stopped"] is None, _engine_said(tmp_path, 2, second)
+        assert [(p["unit"], p["todo"]) for p in second["planned"]] == [("vera/m.py::x_g", [1])]
+        assert {i: set(r["decided"]) for i, r in second["results"].items()} == {"vera/m.py::x_g": {"1"}}
+        code, state = _stitch_cli(held_repo, tmp_path, 2, tmp_path / "state1")
+        assert code == 0 and state["cycle"] == 2  # the union is the whole sample
+        assert state["last_complete"]["sampled"] == sum(window.values())
+        assert state["nights"][-1]["moved"] == 1
+
+    @starts_the_engine(600)
+    def test_mutmut_itself_ends_a_mutant_at_the_cap_as_slow_and_goes_on(
+        self, held_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Against the engine: a mutant whose covering test sleeps past a
+        2 s cap is ended by the oracle plugin, recorded `slow`, and the run
+        goes on to decide every other mutant; the stitch counts it apart."""
+        pytest.importorskip("mutmut")
+        monkeypatch.setenv("SWEEP_FIXTURE_HOLD", "vera.m.x_g__mutmut_1")
+        monkeypatch.setenv("SWEEP_FIXTURE_HOLD_S", "60")
+        code, record, _ = _night(held_repo, tmp_path, 1, "", real=True, extra=["--mutant-cap", "2"], budget=300)
+        assert code == 0 and record["stopped"] is None, _engine_said(tmp_path, 1, record)
+        assert record["slow"] == ["vera.m.x_g__mutmut_1"], _engine_said(tmp_path, 1, record)
+        assert record["results"]["vera/m.py::x_g"]["decided"]["1"] == "slow"
+        window = {p["unit"]: p["mutants"] for p in record["planned"]}
+        assert {i: len(r["decided"]) for i, r in record["results"].items()} == window  # it went on
+        assert record["results"]["vera/m.py::x_g"]["durations"]["1"] < 30
+        code, state = _stitch_cli(held_repo, tmp_path, 1, None)
+        assert code == 0 and state["last_complete"]["modules"]["vera/m.py"]["slow"] == 1
+        assert any(s.endswith(":slow") for s in state["last_complete"]["survivors"])
+
+    @starts_the_engine(600)
+    def test_mutmut_itself_generates_exactly_the_names_a_windowed_night_hands_it(
+        self, held_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Against the engine: in a run over a window of some lines, the
+        names the night hands mutmut are the names it generates, numbered
+        from one in the order of the window's lines."""
+        pytest.importorskip("mutmut")
+        monkeypatch.setattr(sw, "in_sample", lambda cycle, ident, line: line != 3)  # f's `return x + 1` out
+        assert HELD_MODULE.splitlines()[2].strip() == "return x + 1"
+        code, record, _ = _night(held_repo, tmp_path, 1, "", real=True, budget=300)
+        assert code == 0 and record["stopped"] is None, _engine_said(tmp_path, 1, record)
+        assert {p["unit"]: p["todo"] for p in record["planned"]} == {
+            u: list(range(1, n + 1)) for u, n in {p["unit"]: p["mutants"] for p in record["planned"]}.items()}
+        generated = {f"vera.m.{p['unit'].split('::')[1]}__mutmut_{n}" for p in record["planned"] for n in p["todo"]}
+        listed = sw.md._engine_call(sw.md._default_engine(), ["results", "--all", "true"],
+                                    cwd=tmp_path / "work1" / "tree", env=sw.md._git_env())
+        assert listed is not None and listed.returncode == 0, listed
+        assert set(sw.md.parse_results(listed.stdout)) == generated  # the window, numbered from one
+        assert all(len(r["decided"]) == r["window"] for r in record["results"].values()), (
+            record["results"], _engine_said(tmp_path, 1, record))  # every name handed was one generated
+
+    @starts_the_engine(600)
     def test_mutmut_itself_decides_a_night(self, repo: Path, tmp_path: Path) -> None:
         """Against the engine, under the fork server: its ``count`` is what
         mutmut generates for each function, mutmut runs the planned mutants
         by name in the narrowed tree, and the stitch closes the cycle."""
         pytest.importorskip("mutmut")
-        code, record, _ = _night(repo, tmp_path, 1, "", real=True)
-        assert code == 0 and record["stopped"] is None, record
+        code, record, _ = _night(repo, tmp_path, 1, "", real=True, budget=300)
+        assert code == 0 and record["stopped"] is None, _engine_said(tmp_path, 1, record)
         results = record["results"]
         assert set(results) == {"vera/m.py::x_f", "vera/m.py::x_g"}
         for ident, r in results.items():
             counted = record["counts"][ident]
             assert r["window"] == counted["mutants"] == sum(counted["lines"].values()) >= 1
             assert r["lines"] == sorted(int(line) for line in counted["lines"])  # every line sampled
-            assert r["statuses"]["killed"] == r["window"] and r["survivors"] == []
+            assert set(r["decided"].values()) == {"killed"} and len(r["decided"]) == r["window"]
+            assert r["survivors"] == [] and set(r["durations"]) == set(r["decided"])
         code, state = _stitch_cli(repo, tmp_path, 1, None)
         assert code == 0 and state["cycle"] == 2 and state["last_complete"]["modules"]["vera/m.py"]["survived"] == 0
         assert state["last_complete"]["sampled"] == state["last_complete"]["population"] == sum(
