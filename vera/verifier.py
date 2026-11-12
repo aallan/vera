@@ -657,6 +657,17 @@ def _entry_expressible(expr: ast.Expr) -> bool:
     return False
 
 
+def _subexpressions(expr: ast.Expr) -> Iterator[ast.Expr]:
+    """*expr* and every operand under it, through unary and binary
+    operators: the nodes :func:`_entry_expressible` admits."""
+    yield expr
+    if isinstance(expr, ast.UnaryExpr):
+        yield from _subexpressions(expr.operand)
+    elif isinstance(expr, ast.BinaryExpr):
+        yield from _subexpressions(expr.left)
+        yield from _subexpressions(expr.right)
+
+
 def _block_value(expr: ast.Expr) -> ast.Expr:
     """*expr*, or the value of a block that is only a value (a function's
     body ``{ @Nat.0 - 1 }``), which is the expression it stands for."""
@@ -13333,6 +13344,15 @@ class ContractVerifier:
         candidates: list[tuple[ast.Expr, object]] = []
         for pred in exprs:
             if site_env is None or not _entry_expressible(pred):
+                continue
+            # A `@Nat` subtraction inside the clause carries its own
+            # obligation at entry, which the site's path may have made
+            # safe and entry need not (`@Nat.2 >= @Nat.1 - @Nat.0` under
+            # `if @Nat.1 >= @Nat.0`): not offered.
+            if any(isinstance(node, ast.BinaryExpr)
+                   and node.op == ast.BinOp.SUB
+                   and self._rows_taking(node, "nat_sub")
+                   for node in _subexpressions(pred)):
                 continue
             at_entry = smt.translate_expr(pred, entry_env)
             at_site = smt.translate_expr(pred, site_env)

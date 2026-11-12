@@ -619,6 +619,197 @@ def test_the_base_e503_example_leaves_a_shadowed_operand_firing() -> None:
 # The reported instances (red at base)
 # =====================================================================
 
+# =====================================================================
+# Each new fix helper's branches, by its whole text
+# =====================================================================
+
+_PAIR = "private data Pair {\n  Pair(Int, Bool)\n}\n\n"
+_STATE_CLAUSES = ("    get(@Unit) -> { resume(1) },\n"
+                  "    put(@Int) -> { resume(()) }\n  } in {\n    1\n  }")
+
+#: name -> (code, stage, program, the fix's whole text).
+WHOLE: dict[str, tuple[str, str, str, str]] = {
+    "E216-expected": ("E216", "check", CASES["E216-expected"].source,
+        "Provide at least one element: `Tuple(?, ?)`, with each ? one of "
+        "its components; or use the unit value () if no payload is needed."),
+    "E216-nothing-expected": ("E216", "check", CASES["E216-no-int"].source,
+        "Provide at least one element: `Tuple(0)`; or use the unit value () "
+        "if no payload is needed."),
+    "E337-an-argument": ("E337", "check", CASES["E337-two-arguments"].source,
+        "Write the handler with a single concrete type argument: "
+        "`handle[State<Bool>]`."),
+    "E337-the-state-only": ("E337", "check", _fn("@Unit", "@Int",
+        "handle[State](@Int = 1) {\n" + _STATE_CLAUSES),
+        "Write the handler with a single concrete type argument: "
+        "`handle[State<Int>]`."),
+    "E337-neither": ("E337", "check", _fn("@Unit", "@Int",
+        "handle[Exn] {\n    throw(@Int) -> { 0 }\n  } in {\n    1\n  }"),
+        "Write handle[Exn<T>] with a single concrete type argument for T."),
+    "E321-two-fields": ("E321", "check", _PAIR + _fn("@Pair", "@Int",
+        "match @Pair.0 {\n    Pair(@Int) -> 1\n  }"),
+        "Give 'Pair' exactly 2 sub-pattern(s), one per field: "
+        "`Pair(@Int, @Bool)`."),
+    "E321-no-field": ("E321", "check", _fn("@Option<Int>", "@Int",
+        "match @Option<Int>.0 {\n    Some(@Int) -> 1,\n    None(@Int) -> 0\n"
+        "  }"),
+        "Give 'None' exactly 0 sub-pattern(s), one per field."),
+    "E340-names-taken": ("E340", "check",
+        "type Cell = Int;\n\nprivate data Cell2 {\n  C2\n}\n\n"
+        + _fn("@Unit", "@Int",
+              "handle[State<{ @Nat | @Nat.0 < 10 }>](@Nat = 1) {\n"
+              + _STATE_CLAUSES),
+        "Name the type with an alias and handle that: `type Cell3 = "
+        "{ @Nat | @Nat.0 < 10 };`, then `handle[State<Cell3>]`, with the "
+        "state declared `@Cell3`."),
+    "E340-type-parameter-in-predicate": ("E340", "check", _fn(
+        "@Unit", "@Int",
+        "handle[State<{ @Int | forall(@T, 3, fn(@Nat -> @Bool) "
+        "effects(pure) { true }) }>](@Int = 1) {\n" + _STATE_CLAUSES,
+        forall="T"),
+        "Name the type with a type alias and handle that; the alias is "
+        "declared at the top of the file, so a type parameter of this "
+        "function is not in scope there."),
+    "E300-int": ("E300", "check", CASES["E300-int"].source,
+        "Replace the condition with a Bool-typed expression, such as a "
+        "comparison with zero: `@Int.0 > 0`."),
+    "E300-float": ("E300", "check", _fn("@Float64", "@Int",
+        "if @Float64.0 then { 1 } else { 0 }"),
+        "Replace the condition with a Bool-typed expression, such as a "
+        "comparison with zero: `@Float64.0 > 0.0`."),
+    "E300-string": ("E300", "check", DROPPED["E300-string"][2],
+        "Replace the condition with a Bool-typed expression, such as a "
+        "comparison of the value with a bound."),
+    "E301-else-type": ("E301", "check", CASES["E301-branch"].source,
+        "Make both branches produce the same type: convert one branch to "
+        "`{ @Int | @Int.0 > 0 }` (or both to a common type), so then and "
+        "else agree."),
+    "E301-then-type": ("E301", "check", CASES["E301-open-variable"].source,
+        "Make both branches produce the same type: convert one branch to "
+        "`Int` (or both to a common type), so then and else agree."),
+    "E301-neither": ("E301", "check", ENDO + _fn("@Bool", "@Int",
+        "let @Int = if @Bool.0 then { mk(()) } else { [] };\n  0"),
+        "Make both branches produce the same type: convert one branch to "
+        "the other branch's type (or both to a common type), so then and "
+        "else agree."),
+    "E302-written": ("E302", "check", CASES["E302-arm"].source,
+        "Make this arm produce `{ @Int | @Int.0 > 0 }` to match the other "
+        "arms (or change every arm to a common type)."),
+    "E302-open": ("E302", "check", ENDO + _fn("@Option<Int>", "@Int",
+        "let @Int = match @Option<Int>.0 {\n    Some(@Int) -> mk(()),\n"
+        "    None -> 1\n  };\n  0"),
+        "Make this arm produce the previous arms' type to match the other "
+        "arms (or change every arm to a common type)."),
+    "E128-array": ("E128", "check", CASES["E128-array"].source,
+        "Pass an integer bound, the array's length: "
+        "`array_length(@Array<Int>.0)`, and index the array inside the "
+        "predicate."),
+    "E128-not-an-array": ("E128", "check", _fn("@Bool", "@Bool",
+        "forall(@Int, @Bool.0, fn(@Int -> @Bool) effects(pure) { true })"),
+        "Pass an integer bound, such as an array's length, and index the "
+        "collection inside the predicate."),
+    "E162-both-written": ("E162", "check", CASES["E162-element"].source,
+        "Give element 1 the type `Int`, or give every element the type "
+        "`Bool` if that is what the array holds.  To keep values of "
+        "different types in one array, wrap each in a constructor of one "
+        "data type and make the array of that type."),
+    "E162-element-type-open": ("E162", "check", ENDO + _fn("@Bool", "@Int",
+        "let @Int = [mk(()), 1][0];\n  0"),
+        "Give element 1 the literal's element type, or give every element "
+        "the type `Int` if that is what the array holds.  To keep values of "
+        "different types in one array, wrap each in a constructor of one "
+        "data type and make the array of that type."),
+    "E162-element-open": ("E162", "check", CASES["E162-open-variable"].source,
+        "Give element 1 the type `fn(Int -> Int) effects(pure)`, or give "
+        "every element element 1's type if that is what the array holds.  "
+        "To keep values of different types in one array, wrap each in a "
+        "constructor of one data type and make the array of that type."),
+    "E503-projected": ("E503", "verify", _fn("@Option<Int>", "@Int",
+        "match @Option<Int>.0 {\n    Some(@Nat) -> 1,\n    None -> 0\n  }"),
+        "Add a precondition ruling out the inputs the counterexample "
+        "shows.  Alternatively, guard the binding with an `if` whose "
+        "condition holds the value non-negative — the path condition "
+        "discharges the obligation in the then-branch."),
+    "E502-path-safe-inner-subtraction": ("E502", "verify", _fn(
+        "@Nat, @Nat, @Nat", "@Nat",
+        "if @Nat.1 >= @Nat.0 then { @Nat.2 - (@Nat.1 - @Nat.0) } "
+        "else { 0 }"),
+        "Add a precondition that rules out the inputs the counterexample "
+        "shows.  Alternatively, guard the subtraction with an `if` whose "
+        "condition holds its left operand at least its right — the "
+        "path condition discharges the obligation in the then-branch."),
+    "E533-written-cell": ("E533", "check",
+        "private forall<T> fn sneak(@T -> @T)\n  requires(true)\n"
+        "  ensures(true)\n  effects(pure)\n{\n"
+        "  handle[State<Option<T>>](@Nat = 3) {\n"
+        "    put(@Option<T>) -> { resume(()) }\n  } in {\n    @T.0\n  }\n}\n\n"
+        + _fn("@Int", "@Int", "sneak(@Int.0)"),
+        "Declare the handler's state at its cell's type, `@Option<T>`, so "
+        "every instantiation's state is its cell."),
+    "E202-predicate-binds-its-own-slot": ("E202", "check",
+        "type P = { @Int | { let @Bool = true; @Bool.0 } };\n\n"
+        + _helper("take", "@P -> @Int", "0")
+        + _fn("@Bool", "@Int", "take(@Bool.0)"),
+        "Pass a value of the type argument 0 takes, or convert the current "
+        "value (e.g. int_to_nat(...), int_to_float(...)) to it."),
+}
+
+
+@pytest.mark.parametrize("name", sorted(WHOLE))
+def test_the_fix_is_the_whole_text(name: str) -> None:
+    code, stage, source, text = WHOLE[name]
+    assert _the(code, stage, source).fix == text
+
+
+def test_a_nested_refinement_keeps_its_inner_layer() -> None:
+    """A refinement of a refinement whose predicate names the inner base
+    keeps both predicates (CodeRabbit on PR #1857)."""
+    from vera import ast as a
+    from vera.types import INT, RefinedType, written_type
+    inner = a.BinaryExpr(a.BinOp.GT, a.SlotRef("Int", None, 0), a.IntLit(0))
+    outer = a.BinaryExpr(a.BinOp.LT, a.SlotRef("Int", None, 0), a.IntLit(10))
+    text = written_type(RefinedType(RefinedType(INT, inner), outer))
+    assert text == "{ @{ @Int | @Int.0 > 0 } | @Int.0 < 10 }", text
+
+
+@pytest.mark.parametrize("where", ["parameter", "result", "row", "predicate",
+                                   "none"])
+def test_a_type_parameter_is_found_anywhere_in_the_type(where: str) -> None:
+    """`_names_any` reads every part of a type expression (E340's alias
+    guard): a parameter, the result, the effect row, a predicate."""
+    from vera import ast as a
+    from vera.checker.control import _names_any
+    t, i = a.NamedType("T", None), a.NamedType("Int", None)
+    pure = a.PureEffect()
+    shapes = {
+        "parameter": a.FnType((t,), i, pure),
+        "result": a.FnType((i,), t, pure),
+        "row": a.FnType((i,), i, a.EffectSet((a.EffectRef("State", (t,)),))),
+        "predicate": a.RefinementType(i, a.BinaryExpr(
+            a.BinOp.GT, a.SlotRef("T", None, 0), a.IntLit(0))),
+        "none": a.FnType((i,), i, a.EffectSet((a.EffectRef("IO", None),))),
+    }
+    assert _names_any(shapes[where], {"T"}) is (where != "none")
+
+
+@pytest.mark.parametrize(("marked", "file", "command"), [
+    (True, "x.vera", "`tail -c +4 x.vera | iconv -f ISO-8859-1 -t UTF-8 > "
+                     "x.utf8.vera`"),
+    (False, "x.vera", "`iconv -f ISO-8859-1 -t UTF-8 x.vera > x.utf8.vera`"),
+    (True, "-", "`tail -c +4 | iconv -f ISO-8859-1 -t UTF-8`"),
+    (False, "-", "`iconv -f ISO-8859-1 -t UTF-8`"),
+])
+def test_the_e024_command_for_each_source(marked: bool, file: str,
+                                          command: str) -> None:
+    """The lines this PR changes in `source_not_utf8`: the mark dropped
+    first for a marked file, for a named file and for stdin."""
+    from vera.errors import source_not_utf8
+    raw = (b"\xef\xbb\xbf" if marked else b"") + b"x \xe9"
+    fix = source_not_utf8(raw, raw.index(b"\xe9"), file).fix
+    assert command in fix, fix
+    assert ("drops the file's UTF-8 byte-order mark" in fix) is (
+        marked and file != "-"), fix
+
+
 def test_repro_1778_e336_names_the_cell_type_as_written() -> None:
     source = CASES["E336-alias"].source
     fix = _the("E336", "check", source).fix
