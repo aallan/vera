@@ -1575,9 +1575,13 @@ class Tracker:
         self.codes: dict[str, int | None] = {}
         self.oom: int | None = None
         self.looks = 0
-        #: Each look at which the count rose or a run's process went:
-        #: ``{"look", "t", "rise", "gone"}``.
+        #: Each look at which the bound's ``oom_kill`` count rose, and only
+        #: those: ``{"look", "t", "rise", "gone"}``, ``gone`` the runs whose
+        #: process went at that look or the one before (none: the rise is
+        #: unattributed).  A run that ends of its own accord is no event.
         self.events: list[dict[str, Any]] = []
+        #: The runs whose process went at the last look.
+        self._gone_before: list[str] = []
 
     def look(self, elapsed_s: float) -> None:
         self.looks += 1
@@ -1591,19 +1595,17 @@ class Tracker:
         rise = oom - self.oom if oom is not None and self.oom is not None and oom > self.oom else 0
         if oom is not None:
             self.oom = oom
-        if rise or gone:
+        names = [name for name, _ in gone]
+        if rise:
             self.events.append({"look": self.looks, "t": round(elapsed_s, 1), "rise": rise,
-                                "gone": [name for name, _ in gone]})
+                                "gone": [*self._gone_before, *names]})
+        self._gone_before = names
 
     def memory(self) -> set[str]:
         """The mutants whose runs the kernel ended for want of memory."""
         found: set[str] = set()
-        by_look = {e["look"]: e for e in self.events}
         for event in self.events:
-            if not event["rise"]:
-                continue
-            candidates = [*by_look.get(event["look"] - 1, {}).get("gone", []), *event["gone"]]
-            killed = sorted({n for n in candidates if self.codes.get(n) == KILLED} - found)
+            killed = sorted({n for n in event["gone"] if self.codes.get(n) == KILLED} - found)
             if killed and len(killed) <= event["rise"]:
                 found.update(killed)
         return found

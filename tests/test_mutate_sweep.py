@@ -3716,3 +3716,58 @@ class TestTheStopsEdges:
         record.update(in_flight=[F3], in_flight_s={F3: sw.HEARTBEAT_S}, planned=[_planned(A, 4)])
         assert ("each is charged a loss when the night is stitched, unless the run was cancelled, the "
                 "mutant is already decided or its window no longer matches the state") in sw.render_slice(record)
+
+
+# ---------------------------------------------------------------------------
+# The proof night (run 43261600452): an event is a rise of the bound's
+# `oom_kill` count, never a run that ended of its own accord
+# ---------------------------------------------------------------------------
+
+
+class TestAnOomEventIsARise:
+    """Every record of the proof night held 11 to 45 events with a rise of
+    0: runs gone at a look, at ordinary completions.  The shape here is
+    one of them: four mutants of one function ending within a look."""
+
+    NAMES = tuple(f"vera.a.x_f__mutmut_{n}" for n in (1, 2, 3, 4))
+
+    def _tracker(self, tmp_path: Path, live: set[int], codes: dict[str, Any]) -> Any:
+        path = tmp_path / "inflight.txt"
+        path.write_text("".join(f"{name}\t{5000 + i}\t1000.0\t1\n" for i, name in enumerate(self.NAMES)),
+                        encoding="utf-8")
+        return sw.Tracker(path, _cgroup(tmp_path, 0), lambda: dict(codes), alive=lambda pid: pid in live)
+
+    def test_runs_that_end_with_no_rise_record_nothing(self, tmp_path: Path) -> None:
+        live = {5000, 5001, 5002, 5003}
+        codes: dict[str, Any] = dict.fromkeys(self.NAMES)
+        tracker = self._tracker(tmp_path, live, codes)
+        tracker.look(6869.5)
+        live.clear()
+        codes.update(dict.fromkeys(self.NAMES, 1))  # each killed by its tests
+        tracker.look(6879.5)
+        tracker.look(6889.5)
+        assert tracker.events == [] and tracker.memory() == set()
+        record = {**_record(0, 1, {}), "memory_bound": {"cgroup": "/x", "memory_max": 13424 * 2**20, "swap_max": 0},
+                  "oom_events": tracker.events, "memory": []}
+        assert "the kernel ended 0 process(es) under it" in sw.render_slice(record)
+
+    def test_a_rise_with_no_run_gone_is_listed_unattributed(self, tmp_path: Path) -> None:
+        tracker = self._tracker(tmp_path, {5000, 5001, 5002, 5003}, dict.fromkeys(self.NAMES))
+        tracker.look(10.0)
+        _cgroup(tmp_path, 1)
+        tracker.look(20.0)
+        assert tracker.events == [{"look": 2, "t": 20.0, "rise": 1, "gone": []}] and tracker.memory() == set()
+
+    def test_a_rise_with_a_run_gone_at_that_look_or_the_one_before_is_attributed(self, tmp_path: Path) -> None:
+        live = {5000, 5001, 5002, 5003}
+        codes: dict[str, Any] = dict.fromkeys(self.NAMES)
+        tracker = self._tracker(tmp_path, live, codes)
+        tracker.look(10.0)
+        live.discard(5000)
+        codes[self.NAMES[0]] = sw.KILLED
+        tracker.look(20.0)  # the process went; no rise yet
+        assert tracker.events == []
+        _cgroup(tmp_path, 1)
+        tracker.look(30.0)
+        assert tracker.events == [{"look": 3, "t": 30.0, "rise": 1, "gone": [self.NAMES[0]]}]
+        assert tracker.memory() == {self.NAMES[0]}
