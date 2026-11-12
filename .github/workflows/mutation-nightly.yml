@@ -18,7 +18,7 @@ name: Mutation (nightly)
 # under a memory bound (a systemd scope set up with sudo, the hosted
 # runner's own), so a run the kernel ends there is `memory` and the runner
 # lives; it uploads its record in legs, so a lost runner keeps what its legs
-# decided, and a mutant in flight on two lost slices is `lost`.  A slice whose
+# decided, and a mutant in flight at the last record of two lost slices is `lost`.  A slice whose
 # engine or lane fails, more than two slices with no record, or a second
 # night in a row that decides no mutant ends the run red, and on the
 # schedule the `issue` job files or updates one tracking issue (the

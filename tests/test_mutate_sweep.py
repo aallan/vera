@@ -1905,6 +1905,11 @@ if args[0] == "run":
         def _stopping(*_):
             (state / "stopping").write_text("1", encoding="utf-8")
             time.sleep(float(os.environ["FAKE_RUN_TRAP_INT"]))
+            if os.environ.get("FAKE_SNAPSHOT"):
+                # What the slice had written of its record as the engine exits.
+                source, target = os.environ["FAKE_SNAPSHOT"].split(os.pathsep)
+                if Path(source).exists():
+                    Path(target).write_bytes(Path(source).read_bytes())
             (state / "exited").write_text("1", encoding="utf-8")
             sys.exit(0)
         signal.signal(signal.SIGINT, _stopping)
@@ -1947,6 +1952,9 @@ if args[0] == "run":
                 fh.write("".join(f"{nodeid}\\n" for nodeid in skipped.split(",")))
     sys.exit(int(os.environ.get("FAKE_RUN_EXIT", "0")))
 if args[0] == "results":
+    import time
+    stopping = (state / "stopping").exists()
+    time.sleep(float(os.environ.get("FAKE_RESULTS_SLEEP_STOPPING" if stopping else "FAKE_RESULTS_SLEEP", "0")))
     calls = state / "results_calls"
     n = int(calls.read_text(encoding="utf-8")) + 1 if calls.exists() else 1
     calls.write_text(str(n), encoding="utf-8")
@@ -3535,6 +3543,8 @@ class TestAfterTheBudgetsStop:
     def test_a_status_the_stop_left_is_no_decision_in_any_record(
         self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        if os.name != "posix":
+            pytest.skip("the stand-in engine winds down on SIGINT, the budget's stop on POSIX")
         code, record, live = self._stopped_night(repo, tmp_path, monkeypatch)
         assert code == 2 and record["stopped"] == "engine" and record["budget_stopped"] is True
         assert record["results"]["vera/m.py::x_f"]["decided"] == {"1": "killed"}, record["results"]
@@ -3596,3 +3606,53 @@ class TestOneLossPredicate:
             records.append((record, charged))
         for record, charged in records:
             assert sw.charged_in_flight(record) == ([F3] if charged else [])
+
+
+# ---------------------------------------------------------------------------
+# PR 1863's third review: what a listing showed before the stop is kept; a
+# record says the stop was sent wherever it is written after it
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.usefixtures("no_git_locators")
+class TestTheStopsEdges:
+    def test_a_status_a_listing_showed_before_the_stop_is_kept_with_no_meta_file(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """mutmut's meta file can be mid-write when the stop is sent (it is
+        written with a plain write), which hides its mutants' codes from
+        ``before_stop``; here there is none at all.  The listing a heartbeat
+        read before the stop showed the `segfault`, so it is the engine's own
+        and the final record keeps it."""
+        monkeypatch.setenv("FAKE_RUN_SLEEP", "60")
+        code, record, _ = _night(repo, tmp_path, 1, (  # the budget plans x_f alone
+            "    vera.m.x_f__mutmut_1: killed\n    vera.m.x_f__mutmut_2: segfault\n"),
+            budget=1.5, extra=["--heartbeat", "0.3", "--live", str(tmp_path / "live")])
+        assert record["stopped"] == "budget" and record["budget_stopped"] is True
+        assert record["results"]["vera/m.py::x_f"]["decided"] == {"1": "killed", "2": "segfault"}
+
+    def test_a_record_published_after_the_stop_says_so_though_its_listing_began_before(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A heartbeat begins a 1 s listing before the stop and publishes
+        after it: that record says the stop was sent, as does the record on
+        disk as the engine exits, so a leg copying it charges no loss."""
+        if os.name != "posix":
+            pytest.skip("the stand-in engine winds down on SIGINT, the budget's stop on POSIX")
+        live = tmp_path / "live"
+        snapshot = tmp_path / "at-exit.json"
+        monkeypatch.setenv("FAKE_RUN_SLEEP", "60")
+        monkeypatch.setenv("FAKE_RUN_TRAP_INT", "2")
+        monkeypatch.setenv("FAKE_RESULTS_SLEEP", "1")
+        monkeypatch.setenv("FAKE_RESULTS_SLEEP_STOPPING", "5")
+        monkeypatch.setenv("FAKE_SNAPSHOT", os.pathsep.join([str(live / sw.PARTIAL_FILE), str(snapshot)]))
+        _night(repo, tmp_path, 1, "    vera.m.x_f__mutmut_1: killed\n    vera.m.x_f__mutmut_2: not checked\n",
+               budget=1.0, extra=["--heartbeat", "0.3", "--live", str(live)])
+        at_exit = json.loads(snapshot.read_text(encoding="utf-8"))
+        assert at_exit["budget_stopped"] is True, at_exit.get("elapsed_s")
+        assert sw.charged_in_flight({**at_exit, "leg": 4}) == []
+
+    def test_the_report_says_a_cancelled_run_charges_no_loss(self) -> None:
+        record = _record(0, 1, {}, stopped="engine", counts={})
+        record.update(in_flight=[F3], in_flight_s={F3: sw.HEARTBEAT_S}, planned=[_planned(A, 4)])
+        assert "each takes a loss unless the night's run was cancelled" in sw.render_slice(record)

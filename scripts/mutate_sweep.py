@@ -82,8 +82,8 @@ transient systemd scope (:func:`scope_command`) and its legs (``leg``)
 upload its partial record as it runs, the last step (``finish``) its final
 one.  A mutant whose run the kernel ended under the bound is ``memory``, one
 in flight, having run a heartbeat interval, at the last record of two slices
-that ended with neither the engine finishing nor the budget stopping it
-``lost`` (:func:`apply_losses`): each decided, counted apart, never caught.
+of runs not cancelled that ended with neither the engine finishing nor the
+budget stopping it ``lost`` (:func:`apply_losses`): each decided, counted apart, never caught.
 
 Usage:
     python scripts/mutate_sweep.py night --slice 0 --of 1 --state DIR --out DIR
@@ -1884,6 +1884,17 @@ def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: li
     # listing read after it takes a status a stop can leave (CUT_SHORT) only
     # where the engine had recorded it before the stop, as the final one does.
     stop_sent = threading.Event()
+    # The names a listing completed before the stop showed with a status a
+    # stop can leave: the engine recorded them before it, whatever a meta
+    # file mid-write hid from before_stop.  One lock orders the stop with
+    # every listing's reading and every partial record's publishing, so each
+    # is wholly before the stop or wholly after it.  It is taken only in
+    # read_partial, on_beat's publish and before_stop, never while another
+    # is held, and none of them waits on a thread that may hold it: the
+    # heartbeat's exit (Heartbeat.stop) is joined from the main thread after
+    # run_dropping returns, holding nothing.
+    pre_stop: set[str] = set()
+    stop_lock = threading.Lock()
 
     def read_partial(elapsed_s: float) -> dict[str, Any] | None:
         """List the engine's results while it runs: the last read whole
@@ -1896,8 +1907,14 @@ def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: li
                 return {"at": round(elapsed_s, 1), "why": f"the listing exited {listed.returncode}"}
             if md.read_window_counts(counts_file) is None:
                 return {"at": round(elapsed_s, 1), "why": "the engine's count of its mutants was not read"}
-            last_read["results"] = read(md.parse_results(listed.stdout), cut_short=stop_sent.is_set(),
-                                        finished=False)
+            parsed = md.parse_results(listed.stdout)
+            with stop_lock:
+                # A listing that ended before the stop was sent saw only what
+                # the engine recorded before it.
+                after = stop_sent.is_set()
+                if not after:
+                    pre_stop.update(n for n, status in parsed.items() if status in CUT_SHORT)
+                last_read["results"] = read(parsed, cut_short=after, finished=False)
             last_read["at"] = round(elapsed_s, 1)
             return None
         except Exception as exc:  # noqa: BLE001 — a failed listing keeps the last one read whole
@@ -1911,18 +1928,35 @@ def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: li
         slow = slow_mutants(slow_file)
         partial = {**record, **watch.fields(), "heartbeats": list(beats), "oom_events": list(tracker.events),
                    "in_flight": tracker.in_flight(slow), "in_flight_s": tracker.in_flight_ages(time.time(), slow),
-                   "engine_running": True, "budget_stopped": stop_sent.is_set(),
-                   "memory": sorted(tracker.memory()),
+                   "engine_running": True, "memory": sorted(tracker.memory()),
                    "first_choice": tracker.first_choice()}
         failed = read_partial(elapsed_s)
         partial.update(results=last_read["results"], results_at=last_read["at"], listing_failed=failed)
-        publish(partial)
+        with stop_lock:
+            # Read where it is published: a record written once the stop
+            # was sent says so (charged_in_flight charges it nothing).
+            partial["budget_stopped"] = stop_sent.is_set()
+            publish(partial)
+            published["record"] = partial
+
+    published: dict[str, Any] = {"record": None}
 
     def before_stop() -> None:
         """What the engine recorded before the budget's stop is sent: a
-        status a stop can leave that is already there is the engine's own."""
-        kept.update(name for name, code in meta_exit_codes(tree, files).items() if code is not None)
-        stop_sent.set()
+        status a stop can leave that is already there (in its meta files, or
+        in a listing that ended before now) is the engine's own.  The last
+        partial record is written again saying the stop was sent, so a leg
+        that copies it from now on charges no loss."""
+        with stop_lock:
+            kept.update(name for name, code in meta_exit_codes(tree, files).items() if code is not None)
+            kept.update(pre_stop)
+            stop_sent.set()
+            if published["record"] is not None:
+                published["record"] = {**published["record"], "budget_stopped": True}
+                try:
+                    publish(published["record"])
+                except Exception as exc:  # noqa: BLE001 — the stop goes ahead; the next beat writes it
+                    print(f"the partial record was not written at the stop: {exc}", flush=True)
 
     beat = Heartbeat(every, workdir, watch, started, tracker=tracker, on_beat=on_beat) if every > 0 else None
     if beat is not None:
@@ -2381,9 +2415,9 @@ def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[s
     none lost its runner; its legs (``legs``, the partial records the
     workflow uploaded as it ran) are taken in its place (:func:`union_legs`:
     a mutant any valid leg decided is decided), the slice is counted lost,
-    and each mutant in flight at its last leg, the engine still running,
-    takes a loss, as does each mutant in flight when an engine stopped a
-    slice (:func:`apply_losses`).  On a run that was ``cancelled`` no
+    and the mutants in flight its last leg charges take a loss, as do those
+    an engine stop's final record charges (:func:`charged_in_flight`,
+    :func:`apply_losses`).  On a run that was ``cancelled`` no
     slice's end is a loss: its legs' decisions are kept and nothing more."""
     problems: list[str] = []
     valid: list[Mapping[str, Any]] = []
@@ -2640,8 +2674,9 @@ def render_slice(record: Mapping[str, Any]) -> str:
         out.append("")
     charged = charged_in_flight(record)
     if charged:
-        out.append("In flight when it stopped, each having run a heartbeat interval (each takes a loss; "
-                   "a second decides it `lost`): " + ", ".join(f"`{name}`" for name in charged) + ".")
+        out.append("In flight when it stopped, each having run a heartbeat interval: each takes a loss "
+                   "unless the night's run was cancelled, and a second decides it `lost`: "
+                   + ", ".join(f"`{name}`" for name in charged) + ".")
         out.append("")
     if record.get("stopped"):
         error = record.get("engine_error") if record["stopped"] == "engine" else None
@@ -2679,7 +2714,8 @@ RULES = ("The night's rules: each mutant is kept as the engine decides it, and a
          "no mutant of it decided either night.  A slice with no record keeps what its legs "
          "decided.  A mutant whose run reaches the cap is `slow`; one the kernel ended under the "
          "memory bound is `memory`; one in flight, having run five minutes, at the last record of two "
-         "slices that ended with neither the engine finishing nor the budget stopping it is `lost`: each decided, counted apart, never caught.  "
+         "slices of runs not cancelled that ended with neither the engine finishing nor the budget "
+         "stopping it is `lost`: each decided, counted apart, never caught.  "
          "The cycle closes when its sample is decided.")
 
 
