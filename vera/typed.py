@@ -901,7 +901,8 @@ def _call_fix(call: ast.Node, source: str, root: Template, needs: str) -> str:
     holds a type parameter is instantiated at the phantom type where nothing
     gives its result a type (a `match` scrutinee, an operand; the type a
     result is expected at fixes such a variable, #1684), so its fix is that
-    type or a parameter that carries one."""
+    type, where the result's type holds the variable, or a parameter that
+    carries one."""
     generic = _bare(root.decl.name)
     advice = f"Instantiate '{generic}' at a type that {needs}, Int for example"
     text = _source_text(source, call.span)
@@ -909,14 +910,20 @@ def _call_fix(call: ast.Node, source: str, root: Template, needs: str) -> str:
     variables = frozenset(root.decl.forall_vars or ())
     if not any(_mentions(formal, variables) for formal in root.decl.params):
         var = (root.decl.forall_vars or ("T",))[0]
-        return (f"No argument of '{text or generic}' fixes "
+        head = (f"No argument of '{text or generic}' fixes "
                 f"{', '.join(root.decl.forall_vars or (var,))}, so the call "
                 f"instantiates '{generic}' at "
                 f"{type_arg_name(PHANTOM_TYPE)}, nothing giving its result a "
-                f"type: bind its result at a type that {needs} (a `let` of "
-                f"that type), or give '{generic}' a parameter that carries "
-                f"{var} ('@{var}' for example) and pass it a value at a type "
-                f"that {needs}, Int for example.")
+                f"type")
+        param = (f"give '{generic}' a parameter that carries {var} "
+                 f"('@{var}' for example) and pass it a value at a type "
+                 f"that {needs}, Int for example.")
+        if not _mentions(root.decl.return_type, variables):
+            # A variable the result's type does not hold (one only a
+            # `where` constraint names): no binding of the result fixes it.
+            return f"{head}: {param}"
+        return (f"{head}: bind its result at a type that {needs} (a `let` "
+                f"of that type), or {param}")
     if text is None or call.span is None or len(args) != len(root.decl.params):
         return advice + "."
     edits: list[tuple[int, int, str]] = []

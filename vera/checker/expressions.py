@@ -14,6 +14,7 @@ from typing import Any, ClassVar
 from vera import ast, fold, naming
 from vera.formatter import format_expr_canonical
 from vera.checker.sql import resolve_array_len, resolve_literal_string
+from vera.checker.resolution import same_type_and_facts
 from vera.lowering import (
     PREDICATE_ARITY,
     PREDICATE_PARAMETER,
@@ -1502,13 +1503,17 @@ class ExpressionsMixin:
         if not erases_to_unit(first):
             element_type, completed_by, conflicting = self._join_elements(
                 elem_types, first, first_at)
-            held = element_type
+            structure = held = element_type
             if not conflicting:
                 held, element_type = self._element_type_by_rule(
                     expr, elem_types, element_type, element_ctx)
+            # Where the rule chose a type other than the first element's
+            # (the context's, or the elements' join), the first element is
+            # judged like the others: a literal or an open element there
+            # took no part in the choice (#1684, PR 1864 review).
             self._check_array_elements(
                 expr, elem_types, held, first_at, completed_by,
-                conflicting)
+                conflicting, judge_first=held is not structure)
 
         return AdtType("Array", (element_type,))
 
@@ -1546,7 +1551,7 @@ class ExpressionsMixin:
                and not contains_unknown(element_ctx)
                and not contains_literal_hole(element_ctx) else None)
         element_type = structure
-        if typed and any(not types_equal(t, typed[0][1])
+        if typed and any(not same_type_and_facts(t, typed[0][1])
                          for _, t in typed[1:]):
             if ctx is not None and all(self._fits(t, ctx) for _, t in typed):
                 element_type = ctx
@@ -1618,6 +1623,7 @@ class ExpressionsMixin:
                               element_type: Type, first_at: int,
                               completed_by: Sequence[int] = (),
                               conflicting: frozenset[int] = frozenset(),
+                              *, judge_first: bool = False,
                               ) -> None:
         """Hold each element of *expr* after its first typed one, at
         *first_at*, to the literal's *element_type* (#1584).
@@ -1633,7 +1639,10 @@ class ExpressionsMixin:
         element; so is one in *conflicting*, whose type gives one type
         variable two types, which that judgement, one position at a time,
         does not see.  An element whose type is already an error was
-        reported by its own check and is not judged again.
+        reported by its own check and is not judged again.  With
+        *judge_first* the element type is not the first element's (spec
+        §4.12.1's rule chose the context's type or the elements' join,
+        #1684), so the first element is judged like every other.
 
         Each element it admits whose own type is not the element type, the
         first typed one among them where the join completed it, has the
@@ -1645,7 +1654,7 @@ class ExpressionsMixin:
         for i, (elem, ty) in enumerate(zip(expr.elements, elem_types)):
             if i < first_at or ty is None or isinstance(ty, UnknownType):
                 continue
-            if i == first_at or (
+            if (i == first_at and not judge_first) or (
                     i not in conflicting and self._fits(ty, element_type)):
                 self._record_element_target(elem, ty, element_type)
                 continue

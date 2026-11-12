@@ -1782,3 +1782,41 @@ def test_e613_s_binding_fix_applied_clears_the_code() -> None:
         "  match none_ord(()) {",
         "  let @Option<Int> = none_ord(());\n  match @Option<Int>.0 {")
     assert "E613" not in _passed_codes("check", fixed)
+
+
+_WHERE_ONLY = """\
+private forall<T where Ord<T>> fn where_only(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  7
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Int = where_only(());
+  @Int.0
+}
+"""
+
+
+def test_e613_offers_no_binding_where_the_result_holds_no_variable() -> None:
+    """A variable only a `where` constraint names (`forall<T where Ord<T>>
+    fn where_only(@Unit -> @Int)`): the result's type holds no `T`, so no
+    binding of it fixes `T` (the program already binds it at `Int`, and
+    E613 stands).  The fix offers only the parameter that carries `T`,
+    and that remedy, applied as written, passes the check (PR 1864
+    review: the binding remedy was offered here too, and could not
+    clear)."""
+    fix = _the("E613", "check", _WHERE_ONLY).fix
+    assert "bind its result" not in fix, fix
+    assert "give 'where_only' a parameter that carries T" in fix, fix
+    fixed = (_WHERE_ONLY
+             .replace("fn where_only(@Unit -> @Int)",
+                      "fn where_only(@Unit, @T -> @Int)")
+             .replace("where_only(())", "where_only((), 1)"))
+    assert "E613" not in _passed_codes("check", fixed)

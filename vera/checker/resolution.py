@@ -77,6 +77,16 @@ def _span_text(source: str, span: ast.Span | None) -> str | None:
     return None if bounds is None else source[bounds[0]:bounds[1]]
 
 
+def same_type_and_facts(a: Type, b: Type) -> bool:
+    """Whether *a* and *b* are one type stating the same facts: equal as
+    types (`types_equal`, which reads a refinement as its base) and as
+    values, so two refinements of one base with different predicates are
+    two types (PR 1864 review).  Where it says no for two types that are
+    the same, the join of the two is that type; where it says yes, they
+    agree."""
+    return types_equal(a, b) and a == b
+
+
 def _part_of(ty: Type, whole: Type) -> bool:
     """Whether *ty* is *whole* or one of its parts, the same object (the
     type a constructor passes its argument down is the part of the type it
@@ -1295,7 +1305,7 @@ class ResolutionMixin:
             if len(parts) < 2 or tv not in mapping:
                 continue
             first = parts[0][1]
-            if all(types_equal(t, first) for _, t in parts[1:]):
+            if all(same_type_and_facts(t, first) for _, t in parts[1:]):
                 continue
             structure: Type = first
             for _, t in parts[1:]:
@@ -1325,7 +1335,7 @@ class ResolutionMixin:
         _bound_parts(result_type, expected, None, met,
                      into_functions=True)
         conflicted = {tv for tv, parts in met.items()
-                      if any(not types_equal(t, parts[0][1])
+                      if any(not same_type_and_facts(t, parts[0][1])
                              for _, t in parts[1:])}
         return {tv: ty for tv, ty in taken.items()
                 if tv not in conflicted

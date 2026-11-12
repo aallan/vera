@@ -489,6 +489,7 @@ _READ = {
     "TakesPure": "apply_fn({v}, " + _IO_CB + ")",
     "TakesIO": "apply_fn({v}, " + _IO_CB + ")",
     "RS": "set_size({v})", "Set<Int>": "set_size({v})",
+    "Small": "{v}",
 }
 
 PAIRS = {
@@ -499,6 +500,10 @@ PAIRS = {
     # A refinement the solver leaves to run time: a narrowing into it is
     # `tier3`, so the program verifies and its run says whether a check
     # stands where the narrowing is.
+    # Two refinements of one base whose predicates differ: neither is the
+    # other's subtype, they join at the base (PR 1864 review).
+    "two_predicates": _Pair("PosInt", "Small", "@PosInt.0", "@Small.0",
+                            "@PosInt, @Small", "20, 0 - 3", "Int", "String"),
     "refined_set": _Pair("RS", "Set<Int>", "@RS.0", "@Set<Int>.0",
                          "@RS, @Set<Int>", "set_add(set_new(), 1), set_new()",
                          "Set<Int>", "String"),
@@ -881,6 +886,109 @@ def test_an_expected_element_type_holds_each_element(order: str) -> None:
 
 
 # ---------------------------------------------------------------------
+# Every element is judged against the element type the literal ends with
+# (PR 1864 review): a literal or an open element first took no part in
+# choosing it
+# ---------------------------------------------------------------------
+
+_ELEMENT_PRE = """\
+type NonEmpty = { @String | string_length(@String.0) > 0 };
+
+type PosB = { @Bool | @Bool.0 };
+
+private data Box { MkBox(Int) }
+
+type BoxR = { @Box | true };
+
+type NeArr = { @Array<Int> | array_length(@Array<Int>.0) > 0 };
+
+"""
+
+#: An element type, two values of it that disagree (a refinement beside
+#: its base), and `f`'s formals that give them.
+_ELEMENT_TYPES = {
+    "String": ("@NonEmpty.0", "@String.0", "@NonEmpty, @String"),
+    "Bool": ("@PosB.0", "@Bool.0", "@PosB, @Bool"),
+    "Box": ("@BoxR.0", "@Box.0", "@BoxR, @Box"),
+    "Array<Int>": ("@NeArr.0", "@Array<Int>.0", "@NeArr, @Array<Int>"),
+}
+
+_FOREIGN = {"int": "1", "negative": "-1", "float": "1.5", "none": "None"}
+
+
+@pytest.mark.parametrize("expected", ["let", "none"])
+@pytest.mark.parametrize("at", [0, 1, 2])
+@pytest.mark.parametrize("foreign", list(_FOREIGN))
+@pytest.mark.parametrize("element", list(_ELEMENT_TYPES))
+def test_repro_an_element_of_another_type_is_refused_wherever_it_stands(
+        element: str, foreign: str, at: int, expected: str) -> None:
+    """`[1, @NonEmpty.0, @String.0]`: the typed elements disagree, so the
+    element type is the binding's `String` (or, with nothing expected,
+    their join, `String`), and the `1`, a literal, took no part in that
+    choice.  At 17186873 the first element was taken as the element
+    type's source and not judged, so an `Int` (or a `None`) first was
+    accepted as a `String` element, stored at the wrong layout.  Every
+    element is judged: E162, wherever the foreign element stands, whatever
+    its kind, with or without an expected type (c35763d6 refused each
+    too)."""
+    strong, weak, formals = _ELEMENT_TYPES[element]
+    elements = [strong, weak]
+    elements.insert(at, _FOREIGN[foreign])
+    literal = "[" + ", ".join(elements) + "]"
+    body = (f"let @Array<{element}> = {literal};\n0" if expected == "let"
+            else f"nat_to_int(array_length({literal}))")
+    codes = _codes(_ELEMENT_PRE + _fn("f", formals, "Int", body))
+    assert "E162" in codes, codes
+
+
+# ---------------------------------------------------------------------
+# Two refinements of one base with different predicates disagree (PR 1864
+# review): they join at the base, in either order
+# ---------------------------------------------------------------------
+
+_TWO_PREDICATES = """\
+type PosInt = { @Int | @Int.0 > 0 };
+
+type Small = { @Int | @Int.0 < 10 };
+
+"""
+
+
+@pytest.mark.parametrize("site", ["second", "pick", "array_index"])
+@pytest.mark.parametrize("order", ["pos_first", "small_first"])
+def test_repro_two_predicates_over_one_base_join_at_the_base(
+        site: str, order: str) -> None:
+    """`second(@PosInt.0, @Small.0)` with `f(20, 0 - 3)`: the arguments
+    give `T` two refinements of `Int`.  At c35763d6 and 17186873 the two
+    compared equal (`types_equal` reads a refinement as its base), so `T`
+    kept the first and the second argument was held to its predicate: E505
+    at whichever came second, and an indexed literal trapped at run time
+    on a valid `Small`.  They join at `Int` in both orders: nothing
+    narrows, `vera verify` passes, and the program runs to the value it
+    picks."""
+    x, y = (("@PosInt.0", "@Small.0") if order == "pos_first"
+            else ("@Small.0", "@PosInt.0"))
+    call = {"second": f"second({x}, {y})",
+            "pick": f"pick(false, {x}, {y})",
+            "array_index": f"[{x}, {y}][1]"}[site]
+    source = (_TWO_PREDICATES + _SECOND + "\n" + _PICK + "\n"
+              + _fn("f", "@PosInt, @Small", "Int", f"{call} + 0") + "\n"
+              + _fn("main", "@Unit", "Int", "f(20, 0 - 3)",
+                    visibility="public"))
+    if site != "array_index":
+        assert _instances(source, site) == {("Int",)}
+    verified = pipeline.verify(source, reconcile=True)
+    assert verified.errors == (), [e.format() for e in verified.errors]
+    narrowed = [(o.status, o.expr_text) for o in verified.obligations
+                if o.kind == "refine_bind" and o.fn_name == "f"
+                and o.status != "verified"]
+    assert narrowed == [], narrowed
+    ran = pipeline.run(source)
+    assert ran.trap is None, ran.trap
+    assert ran.value == (-3 if order == "pos_first" else 20), ran.value
+
+
+# ---------------------------------------------------------------------
 # E and I: an empty literal takes its type from the context, and an index
 # expected at a type reads an array of that type
 # ---------------------------------------------------------------------
@@ -1049,3 +1157,19 @@ def test_an_indexed_literal_is_its_elements_join(order: str) -> None:
             if o.kind == "nat_bind" and o.fn_name == "f"]
     assert rows == [("violated" if refuted else "verified",
                      f"{{ [{a}, {b}][1] }}")], rows
+
+
+def test_an_expected_type_giving_two_predicates_fixes_neither() -> None:
+    """`let @Tuple<Option<PosInt>, Option<Small>> = nones(None)`, with
+    `nones(@Option<T> -> @Tuple<Option<T>, Option<T>>)`: the expected type
+    gives `T` two refinements of `Int`, which are two types (PR 1864
+    review), so it fixes neither, and `T`, which no argument fixes either,
+    keeps the instance c35763d6 gave it.  At 17186873 the two compared
+    equal and `T` took the first, `PosInt`."""
+    source = _TWO_PREDICATES + _fn(
+        "nones", "@Option<T>", "Tuple<Option<T>, Option<T>>",
+        "Tuple(@Option<T>.0, @Option<T>.0)", forall="forall<T> ") + "\n" + _fn(
+        "main", "@Unit", "Int",
+        "let @Tuple<Option<PosInt>, Option<Small>> = nones(None);\n0",
+        visibility="public")
+    assert _instances(source, "nones") == {("Bool",)}
