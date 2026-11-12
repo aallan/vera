@@ -1717,18 +1717,30 @@ class ControlFlowMixin:
             error_code="E170",
         )
 
-    @staticmethod
-    def _handler_arity_fix(given: Sequence[ast.TypeExpr],
+    def _handler_arity_fix(self, given: Sequence[ast.TypeExpr],
                            state: ast.HandlerState | None,
                            effect: str) -> str:
         """E337's fix: one type argument, the first one *given*, or the
         declared *state*'s type for a State handler written with none; with
-        no type to take from the site, the sentence names none (#1763)."""
+        no type to take from the site, the sentence names none (#1763).
+
+        The example is offered only for an argument E340 lowers as written
+        (a type name, `cell_type_spelling_lowerable`): a type written inline
+        draws E340 once the arity is right (PR 1859 review), so it gets the
+        sentence, with the alias that names it, unless it names one of this
+        function's type parameters, which an alias at the top of the file
+        cannot."""
         te = (given[0] if given else
               state.type_expr if effect == "State" and state else None)
+        sentence = (f"Write handle[{effect}<T>] with a single concrete type "
+                    f"argument for T")
         if te is None:
-            return (f"Write handle[{effect}<T>] with a single concrete type "
-                    f"argument for T.")
+            return sentence + "."
+        if not cell_type_spelling_lowerable(te):
+            if _names_any(te, self.env.type_params):
+                return sentence + ", a type name."
+            return (sentence + ", a type name: a type written inline is "
+                    "named by a type alias first.")
         return (f"Write the handler with a single concrete type argument: "
                 f"`handle[{effect}<{ast.format_type(te)}>]`.")
 
@@ -2318,8 +2330,12 @@ class ControlFlowMixin:
     def _example_value(self, ty: Type) -> str | None:
         """A value of *ty* written with no context, or None: a primitive's
         zero, `None`, `Ok` of an example, `[]`, a `Tuple` of examples, a
-        data type's nullary constructor."""
-        ty = base_type(ty)
+        data type's nullary constructor.  None for a refined type, at any
+        depth a `Result` or `Tuple` example reaches: its base's example need
+        not satisfy the predicate (`0` is no `{ @Int | @Int.0 > 0 }`; PR
+        1859 review)."""
+        if isinstance(ty, RefinedType):
+            return None
         if isinstance(ty, PrimitiveType):
             return {"Int": "0", "Nat": "0", "Bool": "false", "String": '""',
                     "Float64": "0.0", "Unit": "()"}.get(ty.name)

@@ -657,6 +657,26 @@ def _entry_expressible(expr: ast.Expr) -> bool:
     return False
 
 
+def _plainly_int(expr: ast.Expr) -> bool:
+    """Whether *expr* is `@Int` read off its own spelling: an integer
+    literal (an `Int`, spec §4.2), a negation, a slot of type `Int`, or
+    arithmetic with such an operand (an arithmetic result has the more
+    general operand's type).  False where it may be `@Nat` (a `@Nat` slot,
+    or a slot whose type is an alias) — the case that can trap below
+    zero (:meth:`ContractVerifier._no_new_trap`)."""
+    if isinstance(expr, ast.IntLit):
+        return True
+    if isinstance(expr, ast.UnaryExpr):
+        return expr.op == ast.UnaryOp.NEG
+    if isinstance(expr, ast.SlotRef):
+        return expr.type_name == "Int" and not expr.type_args
+    if isinstance(expr, ast.BinaryExpr) and expr.op in (
+            ast.BinOp.ADD, ast.BinOp.SUB, ast.BinOp.MUL, ast.BinOp.DIV,
+            ast.BinOp.MOD):
+        return _plainly_int(expr.left) or _plainly_int(expr.right)
+    return False
+
+
 def _subexpressions(expr: ast.Expr) -> Iterator[ast.Expr]:
     """*expr* and every operand under it, through unary and binary
     operators: the nodes :func:`_entry_expressible` admits."""
@@ -13351,22 +13371,13 @@ class ContractVerifier:
         for pred in exprs:
             if site_env is None or not _entry_expressible(pred):
                 continue
-            # A `@Nat` subtraction inside the clause carries its own
-            # obligation at entry, which the site's path may have made
-            # safe and entry need not (`@Nat.2 >= @Nat.1 - @Nat.0` under
-            # `if @Nat.1 >= @Nat.0`): not offered.
-            if any(isinstance(node, ast.BinaryExpr)
-                   and node.op == ast.BinOp.SUB
-                   and self._rows_taking(node, "nat_sub")
-                   for node in _subexpressions(pred)):
-                continue
             at_entry = smt.translate_expr(pred, entry_env)
             at_site = smt.translate_expr(pred, site_env)
             if (at_entry is None or at_site is None
                     or not z3.is_expr(at_entry) or not z3.is_expr(at_site)
                     or not at_entry.eq(at_site)):
                 continue
-            if not self._no_new_overflow(smt, pred, entry_env, assumptions):
+            if not self._no_new_trap(smt, pred, entry_env, assumptions):
                 continue
             candidates.append((self._as_written(pred), at_entry))
         # A numeric parameter's clause before a Bool's, whatever the order
@@ -13407,22 +13418,32 @@ class ContractVerifier:
                 return text
         return None
 
-    def _no_new_overflow(
+    def _no_new_trap(
         self, smt: SmtContext, pred: ast.Expr, entry_env: SlotEnv,
         assumptions: list[object],
     ) -> bool:
-        """Whether the `@Int` arithmetic in *pred*, read at the entry,
-        overflows only where the site's path holds, so a `requires` holding
-        it traps on no input the program does not already trap on (#1858,
-        PR 1859 review): `10 / (@Int.0 + 1)` under `if @Int.0 < <max>`
-        evaluates `@Int.0 + 1` only below the largest `@Int`, and a clause
-        at the entry evaluates it on every input.  Asked under the entry's
-        premises alone, the site's path conditions set aside for the
-        query."""
+        """Whether every operation in *pred* that can trap, read at the
+        entry, traps only where the site's path holds, so a `requires`
+        holding it traps on no input the program does not already trap on
+        (#1858, PR 1859 review), whatever function the clause was copied
+        from (an E501 clause is the callee's precondition).  The operations
+        :func:`_entry_expressible` admits that can trap are the integer
+        arithmetic, which can leave the `@Int` range (`10 / (@Int.0 + 1)`
+        under `if @Int.0 < <max>` evaluates `@Int.0 + 1` only below the
+        largest `@Int`), and a subtraction that may be a `@Nat` one, which
+        traps below zero (`@Nat.1 - @Nat.0` under `if @Nat.1 >= @Nat.0`).
+        A subtraction is held to `left >= right` unless an operand is
+        plainly `@Int` (:func:`_plainly_int`): the clause's types are the
+        site's or the callee's, not this function's, so one whose type is
+        not plain is taken to be the one that can trap.  Asked under the
+        entry's premises alone, the site's path conditions set aside for
+        the query."""
         terms: list[z3.ArithRef] = []
+        safe: list[object] = []
         for node in _subexpressions(pred):
             if not ((isinstance(node, ast.BinaryExpr) and node.op in (
-                    ast.BinOp.ADD, ast.BinOp.SUB, ast.BinOp.MUL))
+                    ast.BinOp.ADD, ast.BinOp.SUB, ast.BinOp.MUL,
+                    ast.BinOp.DIV, ast.BinOp.MOD))
                     or (isinstance(node, ast.UnaryExpr)
                         and node.op == ast.UnaryOp.NEG)):
                 continue
@@ -13431,10 +13452,21 @@ class ContractVerifier:
                 return False
             if z3.is_int(term):
                 terms.append(cast(z3.ArithRef, term))
-        if not terms:
+            if (isinstance(node, ast.BinaryExpr)
+                    and node.op == ast.BinOp.SUB
+                    and not (_plainly_int(node.left)
+                             or _plainly_int(node.right))):
+                left = smt.translate_expr(node.left, entry_env)
+                right = smt.translate_expr(node.right, entry_env)
+                if (left is None or right is None or not z3.is_expr(left)
+                        or not z3.is_expr(right)):
+                    return False
+                safe.append(cast(z3.ArithRef, left)
+                            >= cast(z3.ArithRef, right))
+        if not terms and not safe:
             return True
         in_range = z3.And(*(z3.And(t >= -(2 ** 63), t <= 2 ** 63 - 1)
-                            for t in terms))
+                            for t in terms), *safe)
         path = list(smt._path_conditions)
         on_path = z3.And(*path) if path else z3.BoolVal(True)
         smt._path_conditions.clear()

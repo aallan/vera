@@ -407,6 +407,13 @@ def _written_with_binder(
                     # which no fix outside it can write (E136; PR 1859
                     # review): no written type.
                     return None, None
+                if head in declared:
+                    # A type parameter in scope where the reader writes it
+                    # shadows the alias (type parameters resolve first):
+                    # `{ @Count | … }` inside `forall<Count>` refines the
+                    # parameter, not `Nat`, so no spelling writes this type
+                    # there (PR 1859 review).
+                    return None, None
                 # The predicate names its binder by an alias the checker
                 # resolved (`{ @Count | @Count.0 > 0 }` over `Count = Nat`):
                 # the base is written as that name, which the predicate

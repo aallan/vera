@@ -20,7 +20,7 @@ each handle a specific concern:
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Collection, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, NamedTuple
@@ -938,7 +938,8 @@ class TypeChecker(
         return (f"Turn the predicate into a Bool-valued expression over the "
                 f"binder, such as a comparison with zero: `{written}`.")
 
-    def _param_measure(self, fn: ast.FnDecl) -> str | None:
+    def _param_measure(self, fn: ast.FnDecl,
+                       inherited: Collection[str] = ()) -> str | None:
         """A measure over *fn*'s own parameter, for a fix whose example is
         computed from the site (#1763): its most recent ``@Nat``, else
         ``@Int``, else one of a data type, else ``array_length`` of an
@@ -950,8 +951,11 @@ class TypeChecker(
                 return f"@{want}.0"
         # A type parameter named as a data type is the parameter in this
         # signature, and a type parameter is no measure (E127; PR 1859
-        # review).
-        params = set(fn.forall_vars or ())
+        # review): the function's own and, in a `where` helper, the ones it
+        # inherits (*inherited*, for a site outside the function's scope,
+        # as the whole-program recursion pass is), every one in scope.
+        params = (set(self.env.type_params) | set(fn.forall_vars or ())
+                  | set(inherited))
         for name in refs:
             head = name.split("<", 1)[0]
             if (head in self.env.data_types and head not in ("Array",)
@@ -1209,6 +1213,20 @@ class TypeChecker(
             # #1558: a call by the file's own path is the bare call's twin.
             own_path=self._own_module_path,
         )
+        # The type parameters a `where` helper inherits from the functions
+        # it is declared in: this pass runs outside every function's scope,
+        # so `_param_measure` is told them (PR 1859 review).
+        inherited: dict[int, frozenset[str]] = {}
+
+        def inherit(fn: ast.FnDecl, outer: frozenset[str]) -> None:
+            inherited[id(fn)] = outer
+            within = outer | frozenset(fn.forall_vars or ())
+            for helper in fn.where_fns or ():
+                inherit(helper, within)
+
+        for tld in program.declarations:
+            if isinstance(tld.decl, ast.FnDecl):
+                inherit(tld.decl, frozenset())
         for fn in graph.unmeasured():
             others = [f"'{m.name}'" for m in graph.cycle(fn) if m is not fn]
             how = (f"it is on a call cycle with {', '.join(others)}"
@@ -1230,7 +1248,8 @@ class TypeChecker(
                     f"every recursive call and stays non-negative"
                     + (f", such as `decreases({measure})` where that "
                        f"parameter shrinks on every call."
-                       if (measure := self._param_measure(fn)) else
+                       if (measure := self._param_measure(
+                           fn, inherited.get(id(fn), frozenset()))) else
                        ": a decreases() clause over a parameter that "
                        "shrinks on every call.")
                     + " Every function on the "

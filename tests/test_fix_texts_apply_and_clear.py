@@ -178,11 +178,26 @@ def _the(code: str, stage: str, source: str):  # type: ignore[no-untyped-def]
     return found[0]
 
 
+def _passed_codes(stage: str, source: str) -> set[str]:
+    """The codes *source* draws at *stage*, once it has passed the stage's
+    gate: the check clean at `check`, and at `verify` the verifier run,
+    which it is not when the check refuses (PR 1859 review).  A verifier
+    code read off a program the checker refused is absent by construction,
+    so its absence proves nothing."""
+    result = _run(stage, source)
+    passed = (result.ran if isinstance(result, pipeline.Verified)
+              else result.ok)
+    codes = {d.error_code for d in result.diagnostics}
+    assert passed, (stage, sorted(codes), source)
+    return codes
+
+
 def _applied_clears(case: _Case, given: list[str]) -> set[str]:
-    """The codes the program draws with *given* applied; asserts the text
-    parsed where it went and names no slot the site lacks."""
+    """The codes the program draws with *given* applied, once it passes its
+    stage's gate; asserts the text parsed where it went and names no slot
+    the site lacks."""
     fixed = case.apply(case.source, given)
-    codes = _codes(case.stage, fixed)
+    codes = _passed_codes(case.stage, fixed)
     assert "E005" not in codes and "E006" not in codes, (given, fixed)
     assert "E130" not in codes, (given, fixed)
     return codes
@@ -635,6 +650,15 @@ def test_the_base_e503_example_leaves_a_shadowed_operand_firing() -> None:
 # =====================================================================
 
 _PAIR = "private data Pair {\n  Pair(Int, Bool)\n}\n\n"
+#: A `where` helper `g` inheriting `forall<Box>` where a data type is also
+#: named `Box`: {0} g's parameters, {1} f's body, {2} g's decreases line,
+#: {3} g's body.
+_WHERE_BOX = (
+    "private data Box {{ Box(Int) }}\n\n"
+    "public forall<Box> fn f(@Box -> @Int)\n  requires(true)\n"
+    "  ensures(true)\n  effects(pure)\n{{\n  {1}\n}}\n"
+    "where {{\n  fn g({0} -> @Int)\n    requires(true)\n    ensures(true)\n"
+    "{2}    effects(pure)\n  {{\n    {3}\n  }}\n}}\n")
 #: A non-literal destructure, so its first component is a projected term
 #: (`_check_*_binding_obligation_term`) the solver relates to `@Int.0`.
 _DESTRUCTURE_IF = ("let Tuple<@{0}, @Bool> = if @Bool.0 then "
@@ -815,6 +839,57 @@ WHOLE: dict[str, tuple[str, str, str, str]] = {
         "Add Two<Int, Bool> to the effects clause of 'f': "
         "`effects(<IO, Two<Int, Bool>>)`.  Or write a predicate whose "
         "effects the call site permits."),
+    # PR 1859 review, round 4.
+    # E337: an argument E340 does not lower as written gets no handler.
+    "E337-inline-refinement": ("E337", "check", _fn("@Unit", "@Int",
+        "handle[State<{ @Int | @Int.0 > 0 }, Int>](@Int = 1) {\n"
+        + _STATE_CLAUSES),
+        "Write handle[State<T>] with a single concrete type argument for T, "
+        "a type name: a type written inline is named by a type alias "
+        "first."),
+    "E337-inline-type-parameter": ("E337", "check", _fn("@T", "@Int",
+        "handle[State<fn(T -> T) effects(pure), Int>](@Int = 1) {\n"
+        + _STATE_CLAUSES, forall="T"),
+        "Write handle[State<T>] with a single concrete type argument for T, "
+        "a type name."),
+    # E341: no base value for a refined type, at any depth.
+    "E341-refined-body": ("E341", "check", POS + _fn("@Pos", "@Int",
+        "let @Pos = handle[Exn<Int>] {\n    throw(@Int) -> { true }\n"
+        "  } in {\n    @Pos.0\n  };\n  0"),
+        "Make the clause's value the handled body's type, "
+        "`{ @Int | @Int.0 > 0 }`, or give the handled body the clause's "
+        "type."),
+    "E341-result-of-refined": ("E341", "check", POS + _fn(
+        "@Result<Pos, Int>", "@Int",
+        "let @Result<Pos, Int> = handle[Exn<Int>] {\n    throw(@Int) -> "
+        "{ true }\n  } in {\n    @Result<Pos, Int>.0\n  };\n  0"),
+        "Make the clause's value the handled body's type, "
+        "`Result<{ @Int | @Int.0 > 0 }, Int>`, or give the handled body the "
+        "clause's type."),
+    # E137 / E127: a `where` helper's inherited type parameter is no
+    # measure, though a data type shares its name.
+    "E137-inherited-type-parameter": ("E137", "check", _WHERE_BOX.format(
+        "@Box", "g(@Box.0)", "", "g(@Box.0)"),
+        "Give 'g' a measure that strictly decreases on every recursive call "
+        "and stays non-negative: a decreases() clause over a parameter that "
+        "shrinks on every call. Every function on the cycle needs its own "
+        "measure unless it declares Diverge. If the recursion is not meant "
+        "to end, as in a server or read-eval loop, declare it: "
+        "effects(<Diverge>), or effects(<Diverge, IO>) with IO; every "
+        "function that calls it must declare Diverge too."),
+    "E127-inherited-type-parameter": ("E127", "check", _WHERE_BOX.format(
+        "@Box, @Float64", "g(@Box.0, 1.0)",
+        "    decreases(@Float64.0)\n", "g(@Box.0, @Float64.0)"),
+        "Measure something that shrinks toward a floor: a Nat or Int "
+        "counter, a value of a data type, or an array's length."),
+    # written_type: inside `forall<Count>` the name is the parameter, so
+    # `{ @Count | … }` over the alias `Count = Nat` is no spelling there.
+    "E202-alias-shadowed-by-a-type-parameter": ("E202", "check",
+        "type Count = Nat;\n\ntype Positive = { @Count | @Count.0 > 0 };"
+        "\n\n" + _helper("take", "@Positive -> @Int", "0")
+        + _fn("@Bool", "@Int", "take(@Bool.0)", forall="Count"),
+        "Pass a value of the type argument 0 takes, or convert the current "
+        "value (e.g. int_to_nat(...), int_to_float(...)) to it."),
 }
 
 
@@ -836,6 +911,11 @@ UNSAMPLED = (
     "E337-exn-two-arguments", "E337-the-state-only",
     "E341-body-type-not-written", "E503-projected-clause",
     "E505-projected-clause",
+    # PR 1859 review, round 4: each red at 3558db6d.
+    "E337-inline-refinement", "E337-inline-type-parameter",
+    "E341-refined-body", "E341-result-of-refined",
+    "E137-inherited-type-parameter", "E127-inherited-type-parameter",
+    "E202-alias-shadowed-by-a-type-parameter",
 )
 
 
@@ -1190,7 +1270,7 @@ def test_the_entry_clause_applied_clears_the_code(name: str) -> None:
     cell = ENTRY[name]
     [clause] = _requires_spans(_entry_fix(name))
     fixed = _once(cell.source, "requires(true)", clause)
-    codes = _codes("verify", fixed)
+    codes = _passed_codes("verify", fixed)
     assert not codes & {"E005", "E006", "E130"}, (name, fixed, codes)
     assert cell.code not in codes, (name, fixed, sorted(codes))
 
@@ -1207,7 +1287,7 @@ def test_the_site_guard_applied_clears_the_code(name: str) -> None:
     assert len(guards) == 1, (name, fix)
     fixed = _once(cell.source, cell.site,
                   guards[0].replace("<default>", "0"))
-    codes = _codes("verify", fixed)
+    codes = _passed_codes("verify", fixed)
     assert not codes & {"E005", "E006", "E130"}, (name, fixed, codes)
     assert cell.code not in codes, (name, fixed, sorted(codes))
 
@@ -1587,3 +1667,77 @@ def test_an_unfixed_application_names_the_site_and_no_open_type() -> None:
     source = ENDO + _fn("@Unit", "@Nat", "abs(apply_fn(mk(()), 40))")
     fix = _the("E202", "check", source).fix
     assert spans(fix) == ["mk(())", "Int"] and "?" not in fix, fix
+
+
+# =====================================================================
+# PR 1859 review, round 4: a fix applied passes its stage
+# =====================================================================
+
+_HANDLER_HEAD = re.compile(r"handle\[[^\]]*\]")
+
+
+def test_every_e337_handler_example_applied_passes_the_check() -> None:
+    """Each E337 example, pasted over the handler's head, is a handler the
+    check accepts: E340 lowers its argument as written.  An inline type
+    (E337-inline-*) gets no example, which applied drew E340."""
+    moved: dict[str, tuple[str, list[str]]] = {}
+    for name, (code, stage, source, _) in WHOLE.items():
+        if code != "E337":
+            continue
+        fix = _the(code, stage, source).fix
+        heads = [s for s in spans(fix) if s.startswith("handle[")]
+        # No example: an inline type, or no type at the site at all.
+        if name.startswith("E337-inline-") or name == "E337-neither":
+            if heads:
+                moved[name] = (fix, [])
+            continue
+        (head,) = heads
+        fixed = _HANDLER_HEAD.sub(lambda _: head, source, count=1)
+        result = _run("check", fixed)
+        if not result.ok:
+            moved[name] = (fixed, sorted(d.error_code for d in result.errors))
+    assert moved == {}, moved
+
+
+def test_every_e341_example_applied_passes_the_check() -> None:
+    """Each E341 replacement, applied, is a clause value the check accepts;
+    a refined handled body (E341-refined-*, E341-result-of-refined) gets
+    none, whose base value need not satisfy the predicate."""
+    moved: dict[str, tuple[str, list[str]]] = {}
+    for name, (code, stage, source, _) in WHOLE.items():
+        if code != "E341":
+            continue
+        fix = _the(code, stage, source).fix
+        found = re.search(r"replace '([^']*)' with '([^']*)'", fix)
+        if name in ("E341-refined-body", "E341-result-of-refined"):
+            if found:
+                moved[name] = (fix, [])
+            continue
+        assert found, (name, fix)
+        old, new = found.groups()
+        fixed = _once(source, f"-> {{ {old} }}", f"-> {{ {new} }}")
+        result = _run("check", fixed)
+        if not result.ok:
+            moved[name] = (fixed, sorted(d.error_code for d in result.errors))
+    assert moved == {}, moved
+
+
+_NEED_NATS = ("private fn need(@Nat, @Nat -> @Int)\n"
+              "  requires(@Nat.1 >= @Nat.0)\n"
+              "  requires(@Nat.1 - @Nat.0 > 0)\n"
+              "  ensures(true)\n  effects(pure)\n{\n  0\n}\n\n")
+
+
+def test_repro_an_e501_clause_adds_no_trap_at_the_entry() -> None:
+    """A clause copied from the callee's precondition holds a `@Nat`
+    subtraction its caller's path made safe (`if @Nat.1 >= @Nat.0`): at
+    the caller's entry it can underflow, so offered it drew E502 there.
+    The clause offered, applied, verifies; or none is offered."""
+    source = _NEED_NATS + _fn(
+        "@Nat, @Nat", "@Int",
+        "if @Nat.1 >= @Nat.0 then { need(@Nat.1, @Nat.0) } else { 0 }")
+    fix = _the("E501", "verify", source).fix
+    for clause in _requires_spans(fix):
+        fixed = _once(source, "requires(true)", clause)
+        codes = _passed_codes("verify", fixed)
+        assert not codes & {"E501", "E502"}, (clause, sorted(codes))
