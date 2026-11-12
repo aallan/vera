@@ -192,7 +192,11 @@ def test_repro_1573_contract_texts_keep_the_parentheses() -> None:
     e501 = [d for d in verified.errors if d.error_code == "E501"]
     assert len(e501) == 1
     assert "At this call site: (0 + 1) * 2 > 4" in e501[0].description
-    assert "requires((0 + 1) * 2 > 4)" in e501[0].fix
+    assert "`if (0 + 1) * 2 > 4 then { h(0) } else { <default> }`" in (
+        e501[0].fix)
+    # A clause over constants alone constrains no input: none is offered
+    # (#1858).
+    assert "requires(" not in e501[0].fix
     ran = pipeline.run(_PRECEDENCE, fn="entry", args=[0])
     assert not ran.ok
     assert "requires((@Int.0 + 1) * 2 > 4) failed" in str(
@@ -566,8 +570,9 @@ def test_the_refined_narrowing_fix_parenthesises_a_disjunction() -> None:
 
 
 def test_the_divisor_fix_parenthesises_a_pipe() -> None:
-    """E526's suggested clauses are nodes: a piped divisor keeps its
-    parentheses under `!=` and `==`."""
+    """E526's suggested guard is a node: a piped divisor keeps its
+    parentheses under `==`.  No `requires` is offered: a clause holding a
+    call is not one the entry-terms test reads (#1858)."""
     source = (
         "public fn entry(@Int, @Int -> @Int)\n"
         "  requires(true)\n  ensures(true)\n  effects(pure)\n"
@@ -575,8 +580,9 @@ def test_the_divisor_fix_parenthesises_a_pipe() -> None:
     verified = pipeline.verify(source)
     e526 = [d for d in verified.errors if d.error_code == "E526"]
     assert len(e526) == 1
-    assert "`requires((@Int.0 |> abs()) != 0)`" in e526[0].fix
-    assert "`if (@Int.0 |> abs()) == 0 then" in e526[0].fix
+    assert "requires(" not in e526[0].fix
+    assert ("`if (@Int.0 |> abs()) == 0 then { <default> } else "
+            "{ @Int.1 / (@Int.0 |> abs()) }`") in e526[0].fix
 
 
 # ---------------------------------------------------------------------------
@@ -1007,11 +1013,11 @@ def test_e502_in_a_body_says_the_generic_remedy() -> None:
         "public fn f(@Nat, @Nat -> @Nat)\n" + _H + "{\n  @Nat.1 - @Nat.0\n}\n",
         "E502")
     assert fix == (
-        "Add a precondition that rules out the bad inputs, e.g. "
-        "`requires(@Nat.0 >= @Nat.1)`.  Alternatively, guard the "
-        "subtraction: `if @Nat.0 >= @Nat.1 then @Nat.0 - @Nat.1 else 0` "
-        "— the path condition discharges the obligation in the "
-        "then-branch.")
+        "Add a precondition that rules out the bad inputs: "
+        "`requires(@Nat.1 >= @Nat.0)`.  Alternatively, guard the "
+        "subtraction with an `if` whose condition holds its left operand "
+        "at least its right — the path condition discharges the "
+        "obligation in the then-branch.")
 
 
 @pytest.mark.parametrize(("op", "word"), [("/", "division"), ("%", "modulo")])
@@ -1023,11 +1029,12 @@ def test_e526_says_the_operation_and_the_divisor_whole(op: str, word: str) -> No
         f"Integer {word} in 'f' may divide by zero.\n  Counterexample:\n"
         "      @Int.0 = 1\n      @Int.1 = 0")
     assert fix == (
-        "Add a precondition ruling out a zero divisor, e.g. "
+        "Add a precondition ruling out a zero divisor: "
         "`requires(@Int.0 - 1 != 0)`.  Alternatively guard the operation "
-        "with `if @Int.0 - 1 == 0 then <default> else ...` (the path "
-        "condition discharges the obligation in the else-branch), or give "
-        "the divisor a refinement type that excludes zero.")
+        f"with `if @Int.0 - 1 == 0 then {{ <default> }} else "
+        f"{{ @Int.1 {op} (@Int.0 - 1) }}` (the path condition discharges "
+        "the obligation in the else-branch), or give the divisor a "
+        "refinement type that excludes zero.")
 
 
 def test_e527_says_the_bounds_and_the_access_whole() -> None:
@@ -1042,9 +1049,9 @@ def test_e527_says_the_bounds_and_the_access_whole() -> None:
     bounds = "0 <= @Int.0 + 1 && @Int.0 + 1 < array_length(@Array<Int>.0)"
     assert fix == (
         "Index within bounds, or constrain the index with a precondition "
-        f"covering both bounds, e.g. `requires({bounds})`.  Alternatively "
-        f"guard the access with `if {bounds} then @Array<Int>.0[@Int.0 + 1] "
-        "else <default>` — the path condition discharges the obligation "
+        "covering both bounds.  Alternatively guard the access with "
+        f"`if {bounds} then {{ @Array<Int>.0[@Int.0 + 1] }} else "
+        "{ <default> }` — the path condition discharges the obligation "
         "in the then-branch.")
 
 
@@ -1060,8 +1067,12 @@ def test_e505_says_the_whole_chain_with_its_parentheses(body: str) -> None:
         f"refinement predicate `{pred}`.\n  Counterexample:\n"
         "      @Nat.0")
     assert value.isdigit(), value
+    # The clause is the predicate at the narrowed value, offered where it
+    # reads at the entry (#1858): the parameter `@Nat.0`, not the literal.
+    clause = f" `requires({pred})`" if body == "@Nat.0" else ""
     assert fix == (
-        f"Add a precondition implying the predicate, e.g. `requires({pred})`."
+        "Add a precondition under which the narrowed value satisfies the "
+        f"predicate{':' if clause else ''}{clause}."
         "  Alternatively, guard the binding with an `if` whose condition is "
         "the predicate — the path condition discharges the obligation in "
         "the then-branch.")
@@ -1200,7 +1211,8 @@ def test_e505_names_the_predicate_it_cannot_render() -> None:
         "Value narrowing into a refined return type in 'f' may violate the "
         "refinement predicate `the predicate`.\n  Counterexample:\n"
         "      @Int.2 = 0")
-    assert "`requires(the predicate)`" in fix
+    # No clause: `requires(the predicate)` is not Vera (#1858).
+    assert "requires(" not in fix
 
 
 def test_e501_quotes_an_imported_clause_from_its_own_file(

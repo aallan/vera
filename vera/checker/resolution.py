@@ -47,7 +47,7 @@ from vera.types import (
     fill_literal_holes,
     is_literal_hole,
     merge_inferred_types,
-    pretty_effect,
+    written_effect,
     pretty_type,
     strip_builtin_typevar_marker,
     substitute,
@@ -858,9 +858,12 @@ class ResolutionMixin:
         if refusal is None:
             return
         if refusal == ROW_VARIABLE:
-            named = pretty_effect(
+            # The row as the program writes it (#1778): a member's type
+            # argument keeps its refinement's predicate.
+            named = written_effect(
                 ConcreteEffectRow(frozenset(rest)) if rest
-                else PureEffectRow())
+                else PureEffectRow(), self.env.type_params) or (
+                    "the row of the effects it performs")
             self._error(
                 ref,
                 f"Code generation cannot lower a function whose own effect "

@@ -12,6 +12,7 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Any, ClassVar
 
 from vera import ast, fold, naming
+from vera.formatter import format_expr_canonical
 from vera.checker.sql import resolve_array_len, resolve_literal_string
 from vera.lowering import (
     PREDICATE_ARITY,
@@ -26,7 +27,6 @@ from vera.types import (
     base_type,
     BOOL,
     BYTE,
-    canonical_type_name,
     ConcreteEffectRow,
     contains_fresh_typevar,
     contains_typevar,
@@ -55,6 +55,8 @@ from vera.types import (
     TypeVar,
     UNIT,
     UnknownType,
+    written_effect,
+    written_effect_instance,
 )
 
 # Machine bounds for the integer types (#812): `@Int` is i64 and `@Nat` its
@@ -134,6 +136,47 @@ def _holds_unknown(ty: Type) -> bool:
 
 class ExpressionsMixin:
     """Mixin providing expression type synthesis and related methods."""
+
+    def _binding_type_fix(self, what: str, want: Type, got: Type,
+                          change: str) -> str:
+        """E170 / E171's fix: give *what* the declared type *want*, or
+        declare the type it has, *got*; each written as the program writes
+        it (#1778), and named in prose where it cannot be written."""
+        want_text = self._writes_as(want)
+        got_text = self._writes_as(got)
+        first = (f"Give {what} type `{want_text}`" if want_text
+                 else f"Give {what} the declared type")
+        second = (f"{change} `@{got_text}`, the type {what} has"
+                  if got_text else f"{change} the type {what} has")
+        return f"{first}, or {second}."
+
+    @staticmethod
+    def _bound_fix(domain: ast.Expr, base: Type | None) -> str:
+        """E128's fix: an array domain's own length as the bound, computed
+        from the site (#1763), or the instruction with no example."""
+        if isinstance(base, AdtType) and base.name == "Array":
+            length = format_expr_canonical(
+                ast.FnCall("array_length", (domain,)))
+            return (f"Pass an integer bound, the array's length: "
+                    f"`{length}`, and index the array inside the predicate.")
+        return ("Pass an integer bound, such as an array's length, and "
+                "index the collection inside the predicate.")
+
+    def _element_type_fix(self, i: int, element_type: Type, ty: Type) -> str:
+        """E162's fix: element *i* at the literal's element type, or every
+        element at *ty*; each type written as the program writes it, and a
+        type with an open position (``fn(? -> ?)``) named in prose (#1763,
+        #1778)."""
+        want = self._writes_as(element_type)
+        got = self._writes_as(ty)
+        first = (f"Give element {i} the type `{want}`" if want
+                 else f"Give element {i} the literal's element type")
+        second = (f"give every element the type `{got}`" if got
+                  else f"give every element element {i}'s type")
+        return (f"{first}, or {second} if that is what the array holds.  "
+                "To keep values of different types in one array, wrap each "
+                "in a constructor of one data type and make the array of "
+                "that type.")
 
     # -----------------------------------------------------------------
     # Expression type synthesis
@@ -1052,11 +1095,9 @@ class ExpressionsMixin:
                             "A let binding's value must be a subtype of the "
                             "binding's declared type."
                         ),
-                        fix=(
-                            f"Give the value type {pretty_type(declared_type)}, "
-                            "or change the binding's declared type to match the "
-                            f"value's type {pretty_inferred_type(val_type)}."
-                        ),
+                        fix=self._binding_type_fix(
+                            "the value", declared_type, val_type,
+                            "change the binding's declared type to"),
                         spec_ref='Chapter 4, Section 4.7 "Let Bindings"',
                         error_code="E170",
                     )
@@ -1300,11 +1341,9 @@ class ExpressionsMixin:
                         "An anonymous function's body must produce a value that "
                         "is a subtype of its declared return type."
                     ),
-                    fix=(
-                        f"Make the body yield {pretty_type(ret_type)}, or change "
-                        "the closure's declared return type to "
-                        f"{pretty_inferred_type(body_type)}."
-                    ),
+                    fix=self._binding_type_fix(
+                        "the body", ret_type, body_type,
+                        "change the closure's declared return type to"),
                     spec_ref='Chapter 5, Section 5.7 "Anonymous Functions (Closures)"',
                     error_code="E171",
                 )
@@ -1327,7 +1366,12 @@ class ExpressionsMixin:
             params = tuple(info.type_params or ()) if info else ()
             entries.append(EffectInstance(
                 name, tuple(TypeVar(p) for p in params)))
-        wanted = pretty_effect(ConcreteEffectRow(frozenset(entries)))
+        # Each effect's own type parameters stand for the arguments the
+        # reader writes, so the row is written over them (#1778).
+        wanted = written_effect(
+            ConcreteEffectRow(frozenset(entries)),
+            {a.name for e in entries for a in e.type_args
+             if isinstance(a, TypeVar)}) or "effects(<...>)"
         self._error(
             expr,
             f"Pure anonymous function performs effect operations: "
@@ -1523,13 +1567,7 @@ class ExpressionsMixin:
                     "type would be stored at the wrong width or read back "
                     "as a value it does not hold."
                 ),
-                fix=(
-                    f"Give element {i} the type {shown}, or give every "
-                    f"element the type {pretty_inferred_type(ty)} if that "
-                    "is what the array holds.  To keep values of different "
-                    "types in one array, wrap each in a constructor of one "
-                    "data type and make the array of that type."
-                ),
+                fix=self._element_type_fix(i, element_type, ty),
                 spec_ref='Chapter 4, Section 4.12.1 "Array Literals"',
                 error_code="E162",
             )
@@ -1633,14 +1671,19 @@ class ExpressionsMixin:
                 bindings=list(bindings),
             ))
 
+        # The fix names the type as the program writes it (#1778); the
+        # description and the hole's record keep the message form.
+        written = self._writes_as(expected) if expected else None
+        wanted = (f"an expression of type {written}" if written
+                  else "an expression of the type the context expects")
         if bindings:
             context = _render_scope_table(bindings)
             fix_hint = (
-                f"Replace ? with an expression of type {expected_str}. "
+                f"Replace ? with {wanted}. "
                 f"Available bindings: {context}."
             )
         else:
-            fix_hint = f"Replace ? with an expression of type {expected_str}."
+            fix_hint = f"Replace ? with {wanted}."
 
         self._error(
             expr,
@@ -1779,9 +1822,14 @@ class ExpressionsMixin:
                    else frozenset())
         row_var = (declared.row_var
                    if isinstance(declared, ConcreteEffectRow) else None)
-        wanted = pretty_effect(ConcreteEffectRow(entries | missing, row_var))
-        shown = ", ".join(sorted(
-            canonical_type_name(e.name, e.type_args or None) for e in missing))
+        # The row and its new members as the program writes them (#1778).
+        wanted = written_effect(
+            ConcreteEffectRow(entries | missing, row_var),
+            self.env.type_params)
+        members = [written_effect_instance(e, self.env.type_params)
+                   for e in missing]
+        shown = (", ".join(sorted(m for m in members if m))
+                 if all(members) else "the predicate's effects")
         self._error(
             expr,
             f"{form}: its predicate requires {pretty_effect(effect)} but call "
@@ -1792,8 +1840,10 @@ class ExpressionsMixin:
                 "written: the call site must permit all of them "
                 "(subeffecting), as for apply_fn."
             ),
-            fix=(f"Add {shown} to {target}: {wanted}.  Or write a predicate "
-                 f"whose effects the call site permits."),
+            fix=(f"Add {shown} to {target}"
+                 + (f": `{wanted}`." if wanted else ".")
+                 + "  Or write a predicate whose effects the call site "
+                   "permits."),
             spec_ref='Chapter 7, Section 7.8 "Effect Subtyping"',
             error_code="E125",
         )
@@ -1971,11 +2021,7 @@ class ExpressionsMixin:
                 "quantify over an array's indices, pass its length as the "
                 "bound and index the array inside the predicate."
             ),
-            fix=(
-                "Pass an integer bound: forall(@Int, "
-                "array_length(@Array<T>.0), fn(@Int -> @Bool) ... { "
-                "@Array<T>.0[@Int.0] ... })."
-            ),
+            fix=self._bound_fix(domain, base),
             spec_ref='Chapter 6, Section 6.3.3 "Quantified Expressions"',
             error_code="E128",
         )

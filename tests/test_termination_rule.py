@@ -265,7 +265,7 @@ def test_rule_at_check(shape: str, row: str, answer: str, flavour: str,
         assert _e137_names(errors) == set(SHAPES[shape][1]), (
             source, module_text)
         for d in errors:
-            assert "decreases(@Nat.1 - @Nat.0)" in d.fix
+            assert "a measure that strictly decreases" in d.fix
             assert "Diverge" in d.fix
     else:
         assert errors == [], (source, module_text, errors)

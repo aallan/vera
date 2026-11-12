@@ -242,7 +242,7 @@ def test_the_e341_fix_names_the_type_where_no_value_is_written(
         "Map<String, Int>", 'map_insert(map_new(), "k", 1)', "{ 7 }"))
     assert found.fix == (  # type: ignore[attr-defined]
         "Make the clause's value the handled body's type, "
-        "Map<String, Int>, or give the handled body the clause's type.")
+        "`Map<String, Int>`, or give the handled body the clause's type.")
 
 
 def test_a_body_that_always_throws_takes_the_clauses_type(

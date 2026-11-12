@@ -20,7 +20,7 @@ each handle a specific concern:
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Collection, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, NamedTuple
@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from vera.resolver import ResolvedModule
 
 from vera import ast, naming
+from vera.formatter import format_expr_canonical
 from vera.binding import Binding, DeclId, display_type_names
 from vera.callgraph import CallGraph
 from vera.errors import (
@@ -51,6 +52,7 @@ from vera.types import (
     EffectInstance,
     EffectRowType,
     BOOL,
+    FLOAT64,
     INT,
     NAT,
     AdtType,
@@ -60,10 +62,12 @@ from vera.types import (
     Type,
     TypeVar,
     UnknownType,
+    base_type,
     canonical_type_name,
     is_subtype,
     pretty_type,
     pretty_inferred_type,
+    written_type,
 )
 
 from vera.checker.resolution import ResolutionMixin
@@ -494,6 +498,29 @@ def _collect_module_artifacts(
     return result
 
 
+_PLAIN_ARGUMENTS = frozenset(
+    {"Int", "Nat", "Bool", "String", "Float64", "Byte", "Unit"})
+
+
+def _param_refs(fn: ast.FnDecl) -> list[str]:
+    """The slot names of *fn*'s parameters that a fix can write without
+    resolving a type (#1763): a type name, with type arguments only of the
+    primitive types, whose slot name is how the program writes it.  In
+    signature order, each once."""
+    names: list[str] = []
+    for te in fn.params:
+        if not isinstance(te, ast.NamedType):
+            continue
+        if not all(isinstance(a, ast.NamedType) and not a.type_args
+                   and a.name in _PLAIN_ARGUMENTS
+                   for a in te.type_args or ()):
+            continue
+        name = ast.format_type(te)
+        if name not in names:
+            names.append(name)
+    return names
+
+
 # =====================================================================
 # Type checker
 # =====================================================================
@@ -861,6 +888,84 @@ class TypeChecker(
     # Diagnostics
     # -----------------------------------------------------------------
 
+    def _writes_as(self, ty: Type) -> str | None:
+        """*ty* as the reader writes it here, for a fix to paste: a
+        refinement with its predicate, a type parameter in scope by its
+        name (:func:`vera.types.written_type`); ``None`` where a part of it
+        is in no program as written, and the fix then names no type."""
+        return written_type(ty, self.env.type_params)
+
+    @staticmethod
+    def _nonzero_test(expr: ast.Expr, ty: Type | None) -> ast.Expr | None:
+        """A Bool predicate over the site's own numeric operand *expr*, of
+        type *ty*: ``expr > 0`` (``> 0.0`` for a ``Float64``), for a fix
+        whose example is computed from the site (#1763); ``None`` where
+        *expr* is not numeric.  The example is written by the canonical
+        formatter, which groups each operand as the parser does."""
+        base = base_type(ty) if ty is not None else None
+        zero: ast.Expr
+        if base in (INT, NAT):
+            zero = ast.IntLit(0)
+        elif base == FLOAT64:
+            zero = ast.FloatLit(0.0)
+        else:
+            return None
+        return ast.BinaryExpr(ast.BinOp.GT, expr, zero)
+
+    def _predicate_fix(self, what: str, expr: ast.Expr, ty: Type,
+                       clause: str) -> str:
+        """E123 / E124's fix: *what* turned into a Bool predicate over the
+        site's own operand (:meth:`_nonzero_test`), or the instruction with
+        no example where none is computed (#1763)."""
+        test = self._nonzero_test(expr, ty)
+        if test is None:
+            return (f"Turn {what} into a Bool-valued predicate, such as a "
+                    f"comparison of the value with a bound.")
+        return (f"Turn {what} into a Bool-valued predicate, such as a "
+                f"comparison with zero: "
+                f"`{clause}({format_expr_canonical(test)})`.")
+
+    def _refinement_predicate_fix(self, te: ast.RefinementType,
+                                  ty: Type) -> str:
+        """E126's fix: the refinement with its predicate compared with zero
+        (:meth:`_nonzero_test`), written as the type it is; no example where
+        none is computed (#1763)."""
+        test = self._nonzero_test(te.predicate, ty)
+        if test is None:
+            return ("Turn the predicate into a Bool-valued expression over "
+                    "the binder, such as a comparison of it with a bound.")
+        written = ast.format_type(ast.RefinementType(te.base_type, test))
+        return (f"Turn the predicate into a Bool-valued expression over the "
+                f"binder, such as a comparison with zero: `{written}`.")
+
+    def _param_measure(self, fn: ast.FnDecl,
+                       inherited: Collection[str] = ()) -> str | None:
+        """A measure over *fn*'s own parameter, for a fix whose example is
+        computed from the site (#1763): its most recent ``@Nat``, else
+        ``@Int``, else one of a data type, else ``array_length`` of an
+        array, each by the slot reference the body uses for it; ``None``
+        where it has none of them."""
+        refs = _param_refs(fn)
+        for want in ("Nat", "Int"):
+            if want in refs:
+                return f"@{want}.0"
+        # A type parameter named as a data type is the parameter in this
+        # signature, and a type parameter is no measure (E127; PR 1859
+        # review): the function's own and, in a `where` helper, the ones it
+        # inherits (*inherited*, for a site outside the function's scope,
+        # as the whole-program recursion pass is), every one in scope.
+        params = (set(self.env.type_params) | set(fn.forall_vars or ())
+                  | set(inherited))
+        for name in refs:
+            head = name.split("<", 1)[0]
+            if (head in self.env.data_types and head not in ("Array",)
+                    and head not in params):
+                return f"@{name}.0"
+        for name in refs:
+            if name.startswith("Array<"):
+                return f"array_length(@{name}.0)"
+        return None
+
     def _error(self, node: ast.Node, description: str, *,
                rationale: str = "", fix: str = "",
                spec_ref: str = "", severity: str = "error",
@@ -1108,6 +1213,20 @@ class TypeChecker(
             # #1558: a call by the file's own path is the bare call's twin.
             own_path=self._own_module_path,
         )
+        # The type parameters a `where` helper inherits from the functions
+        # it is declared in: this pass runs outside every function's scope,
+        # so `_param_measure` is told them (PR 1859 review).
+        inherited: dict[int, frozenset[str]] = {}
+
+        def inherit(fn: ast.FnDecl, outer: frozenset[str]) -> None:
+            inherited[id(fn)] = outer
+            within = outer | frozenset(fn.forall_vars or ())
+            for helper in fn.where_fns or ():
+                inherit(helper, within)
+
+        for tld in program.declarations:
+            if isinstance(tld.decl, ast.FnDecl):
+                inherit(tld.decl, frozenset())
         for fn in graph.unmeasured():
             others = [f"'{m.name}'" for m in graph.cycle(fn) if m is not fn]
             how = (f"it is on a call cycle with {', '.join(others)}"
@@ -1126,15 +1245,19 @@ class TypeChecker(
                 ),
                 fix=(
                     f"Give '{fn.name}' a measure that strictly decreases on "
-                    f"every recursive call and stays non-negative. For a "
-                    f"loop that counts @Nat.0 up to a limit @Nat.1, "
-                    f"measure the distance left: requires(@Nat.0 <= @Nat.1) "
-                    f"and decreases(@Nat.1 - @Nat.0). Every function on the "
-                    f"cycle needs its own measure unless it declares Diverge. "
-                    f"If the recursion is not meant to end, as in a server or "
-                    f"read-eval loop, declare it: effects(<Diverge>), or "
-                    f"effects(<Diverge, IO>) with IO; every function that "
-                    f"calls it must declare Diverge too."
+                    f"every recursive call and stays non-negative"
+                    + (f", such as `decreases({measure})` where that "
+                       f"parameter shrinks on every call."
+                       if (measure := self._param_measure(
+                           fn, inherited.get(id(fn), frozenset()))) else
+                       ": a decreases() clause over a parameter that "
+                       "shrinks on every call.")
+                    + " Every function on the "
+                    "cycle needs its own measure unless it declares Diverge. "
+                    "If the recursion is not meant to end, as in a server or "
+                    "read-eval loop, declare it: effects(<Diverge>), or "
+                    "effects(<Diverge, IO>) with IO; every function that "
+                    "calls it must declare Diverge too."
                 ),
                 spec_ref='Chapter 5, Section 5.6 "Recursive Functions"',
                 error_code="E137",
@@ -1750,9 +1873,9 @@ class TypeChecker(
                     f"requires() predicate must be Bool, found "
                     f"{pretty_inferred_type(ty)}.",
                     rationale="Contract predicates must evaluate to Bool.",
-                    fix="Turn the requires() argument into a Bool-valued "
-                        "predicate, e.g. requires(@Int.0 > 0) instead of "
-                        "requires(@Int.0).",
+                    fix=self._predicate_fix(
+                        "the requires() argument", contract.expr, ty,
+                        "requires"),
                     spec_ref='Chapter 6, Section 6.2.1 "Preconditions (`requires`)"',
                     error_code="E123",
                 )
@@ -1769,10 +1892,9 @@ class TypeChecker(
                     f"ensures() predicate must be Bool, found "
                     f"{pretty_inferred_type(ty)}.",
                     rationale="Contract predicates must evaluate to Bool.",
-                    fix="Turn the ensures() argument into a Bool-valued "
-                        "predicate over the result, e.g. "
-                        "ensures(@Int.result > 0) instead of "
-                        "ensures(@Int.result).",
+                    fix=self._predicate_fix(
+                        "the ensures() argument", contract.expr, ty,
+                        "ensures"),
                     spec_ref='Chapter 6, Section 6.2.2 "Postconditions (`ensures`)"',
                     error_code="E124",
                 )
@@ -1822,11 +1944,13 @@ class TypeChecker(
                                   "strictly decreases and stays "
                                   "non-negative; a type without that "
                                   "order cannot bound recursion.",
-                        fix="Measure something that shrinks toward a "
-                            "floor: a Nat/Int counter (e.g. "
-                            "decreases(@Nat.0)), a shrinking structure "
-                            "(decreases(@List.0)), or a derived size "
-                            "(decreases(array_length(@Array<Int>.0))).",
+                        fix=(
+                            "Measure something that shrinks toward a "
+                            "floor: a Nat or Int counter, a value of a "
+                            "data type, or an array's length"
+                            + (f", such as `decreases({measure})`."
+                               if (measure := self._param_measure(fn))
+                               else ".")),
                         spec_ref='Chapter 5, Section 5.6.1 '
                                  '"Decreases Clauses"',
                         error_code="E127",
@@ -2061,9 +2185,7 @@ class TypeChecker(
                 rationale="A refinement type `{ @T | P }` constrains its base "
                           "with a logical predicate `P`, which must evaluate to "
                           "Bool — the same rule contract predicates follow.",
-                fix="Turn the predicate into a Bool-valued expression over the "
-                    "binder, e.g. `{ @Int | @Int.0 > 0 }` instead of "
-                    "`{ @Int | @Int.0 }`.",
+                fix=self._refinement_predicate_fix(te, ty),
                 spec_ref='Chapter 2, Section 2.6 "Refinement Types"',
                 error_code="E126",
             )

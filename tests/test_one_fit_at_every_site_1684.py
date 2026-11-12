@@ -660,7 +660,7 @@ def test_an_accepted_neighbour_still_checks_and_runs(source: str) -> None:
 
 _RIGID_WHY = ("T is a type parameter of the enclosing function, which "
               "stands for whatever type each call gives it, so a value of "
-              "type Int has type T only where a call makes T that type, and "
+              "type `Int` has type T only where a call makes T that type, and "
               "the body must hold at every type.")
 
 _ABILITY_CONCRETE = """\
@@ -697,8 +697,8 @@ _DIAGNOSTICS: dict[str, tuple[str, str, str, str, str, str]] = {
         "Each argument to an ability operation must be a subtype of the "
         "parameter type declared in its 'op' signature, after the "
         "ability's type variable is instantiated.",
-        "Pass a value of type Int for argument 1 of 'eq', or ensure the "
-        "ability's type variable resolves to a type that accepts String.",
+        "Pass a value of type `Int` for argument 1 of 'eq'. Or make the "
+        "ability's type variable resolve to a type that accepts `String`.",
         'Chapter 9, Section 9.8 "Abilities"'),
     "applied_argument": (
         _APPLY_RIGID_PARAMETER, "E202",
@@ -746,7 +746,7 @@ _DIAGNOSTICS: dict[str, tuple[str, str, str, str, str, str]] = {
         "argument of another type there.",
         "Make the function value at the type it is applied at: give the "
         "call `mk(())` an argument that fixes T, or apply a function "
-        "written to take Int there instead.",
+        "written to take `Int` there instead.",
         'Chapter 5, Section 5.9 "Generic Functions"'),
     "call_argument": (
         _HELPER_ARGUMENT, "E202",

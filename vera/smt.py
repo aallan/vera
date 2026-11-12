@@ -184,6 +184,10 @@ class CallViolation:
     call_node: ast.FnCall | ast.ModuleCall
     precondition: ast.Requires
     counterexample: dict[str, str] | None = None
+    #: A precondition in the caller's entry terms that the solver confirmed
+    #: discharges this one, asked where the violation was found, under its
+    #: premises (#1858; :attr:`SmtContext._violation_clause_hook`).
+    clause: str | None = None
 
 
 @dataclass
@@ -657,6 +661,23 @@ class SmtContext:
         # #1468: given a generic callee's info and its call, the info of the
         # clone the call calls (`ContractVerifier._generic_callee_info`).
         self._generic_callee_hook: Callable[[Any, Any], Any] | None = None
+        # #1858: given a refuted call's callee info (None for a built-in's
+        # domain, whose predicate comes already substituted), the
+        # precondition checked, the call, its goal, the caller's env at the
+        # call and the counterexample, a clause in the caller's entry terms
+        # that discharges it, or None
+        # (`ContractVerifier._call_violation_clause`).  Asked where the
+        # violation is found, so the solver holds the call's premises.
+        self._violation_clause_hook: Callable[..., str | None] | None = None
+        #: #1763 / #1858: the function entry this context verifies — the
+        #: slot environment its parameters make and their (name, constant)
+        #: pairs — in which a fix's `requires` is read.  Recorded by the
+        #: verifier for a function's context and cleared by :meth:`reset`,
+        #: so it lives and ends with the context it describes: a context no
+        #: function entry was recorded on (a declaration check, a reset
+        #: warm context) has none, and a fix offers no clause there.
+        self.entry_scope: tuple[
+            SlotEnv, tuple[tuple[str, object], ...]] | None = None
         self._call_violations: list[CallViolation] = []
         # #1696: the stand-ins this function's model holds, one per node the
         # translation has no term for (`_stand_in`), keyed by the node's
@@ -2810,7 +2831,7 @@ class SmtContext:
             return
         self._check_call_preconditions(
             callee_info, callee_name, z3_args, call_node, zero_size,
-            shown=shown,
+            shown=shown, env=env,
         )
 
     def _instantiated_callee(
@@ -2823,6 +2844,21 @@ class SmtContext:
         The verifier binds :attr:`_generic_callee_hook`."""
         hook = self._generic_callee_hook
         return hook(generic, call_node) if hook is not None else None
+
+    def _violation_clause(
+        self, callee_info: Any, precondition: ast.Expr | None,
+        call_node: ast.FnCall | ast.ModuleCall, goal: z3.ExprRef,
+        env: SlotEnv | None, counterexample: dict[str, str] | None,
+    ) -> str | None:
+        """The E501 fix's clause for a refuted call (#1858), asked of
+        :attr:`_violation_clause_hook` here, where the solver holds the
+        caller's premises and the path conditions hold the call's branch;
+        ``None`` with no hook, no env or no precondition."""
+        hook = self._violation_clause_hook
+        if hook is None or env is None or precondition is None:
+            return None
+        return hook(self, callee_info, precondition, call_node, goal, env,
+                    counterexample)
 
     def _check_builtin_domain(self, call: ast.FnCall, env: SlotEnv) -> None:
         """Obligate *call*'s declared domain at this call site (#1480).
@@ -2877,6 +2913,9 @@ class SmtContext:
                 callee_name=call.name, call_node=call,
                 precondition=contract.requires,
                 counterexample=result.counterexample,
+                clause=self._violation_clause(
+                    None, predicate, call, goal, env,
+                    result.counterexample),
             ))
 
     def _zero_size_params(self, callee_info: Any) -> tuple[bool, ...]:
@@ -3031,6 +3070,7 @@ class SmtContext:
         call_node: ast.FnCall | ast.ModuleCall,
         zero_size: tuple[bool, ...],
         shown: Mapping[int, ast.Requires] | None = None,
+        env: SlotEnv | None = None,
     ) -> bool:
         """Check each of the callee's preconditions at this call site.
 
@@ -3144,6 +3184,9 @@ class SmtContext:
                         call_node=call_node,
                         precondition=recorded,
                         counterexample=result.counterexample,
+                        clause=self._violation_clause(
+                            callee_info, contract.expr, call_node, z3_pre,
+                            env, result.counterexample),
                     ))
                 return False
             # #1695: a discharged precondition is a record too, so the
@@ -3282,6 +3325,7 @@ class SmtContext:
         # Tier-3, unchanged from before this refactor.
         if not self._check_call_preconditions(
             callee_info, callee_name, z3_args, call_node, zero_size,
+            env=env,
         ):
             return None
 
@@ -5016,6 +5060,7 @@ class SmtContext:
         self._reach_extras.clear()
         self._disclosed_terms.clear()  # #1406: ditto — see the docstring
         self._disclosed_term_sites.clear()  # and the citations riding on them
+        self.entry_scope = None  # #1858: the previous function's entry
         self._length_fns = {
             "Int": z3.Function("length", z3.IntSort(), z3.IntSort()),
         }

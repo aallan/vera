@@ -180,8 +180,8 @@ def _pipe_operand_error(right: Expr, meta: Any) -> TransformError:
             "module-qualified function — has an argument list for the "
             "piped value to join."),
         fix=(
-            "Write the right operand as a call, as in '@Int.0 |> abs()', or "
-            "apply the function directly: 'abs(@Int.0)'.  Every other "
+            "Write the right operand as a call, as in 'a |> abs()', or "
+            "apply the function directly: 'abs(a)'.  Every other "
             "operator binds tighter than '|>', so 'a |> f() + 1' pipes "
             "into 'f() + 1'; write '(a |> f()) + 1' to add to the call's "
             "result.  To chain calls, write the stages in order: "
