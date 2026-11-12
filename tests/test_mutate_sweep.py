@@ -1897,6 +1897,17 @@ if args[0] == "run" and os.environ.get("FAKE_RUN_LOG"):
     sys.exit(1)
 if args[0] == "run":
     import time
+    if os.environ.get("FAKE_RUN_TRAP_INT"):
+        # The budget's stop: the engine takes its interrupt, marks that it
+        # is stopping (the listing then shows what the stop leaves), winds
+        # down for a while, and exits.
+        import signal
+        def _stopping(*_):
+            (state / "stopping").write_text("1", encoding="utf-8")
+            time.sleep(float(os.environ["FAKE_RUN_TRAP_INT"]))
+            (state / "exited").write_text("1", encoding="utf-8")
+            sys.exit(0)
+        signal.signal(signal.SIGINT, _stopping)
     if os.environ.get("FAKE_INFLIGHT") and os.environ.get("MUTATION_ORACLE_INFLIGHT"):
         # As the oracle plugin writes it for each mutant's run (this
         # process standing in for the worker).
@@ -1943,7 +1954,13 @@ if args[0] == "results":
         # A listing that meets a meta file mid-write, from this call on.
         print("Traceback (most recent call last):\\njson.decoder.JSONDecodeError: Expecting value")
         sys.exit(1)
-    sys.stdout.write((state / "results.txt").read_text(encoding="utf-8"))
+    if os.environ.get("FAKE_RESULTS_FAIL_AFTER_EXIT") and (state / "exited").exists():
+        print("Traceback (most recent call last):\\njson.decoder.JSONDecodeError: Expecting value")
+        sys.exit(1)
+    listing = (state / "results.txt").read_text(encoding="utf-8")
+    if (state / "stopping").exists():
+        listing = listing.replace(": not checked", ": segfault")  # what the stop leaves
+    sys.stdout.write(listing)
     sys.exit(int(os.environ.get("FAKE_RESULTS_EXIT", "0")))
 sys.exit(9)
 '''
@@ -3492,3 +3509,90 @@ class TestNoDurationFromTheSlicesEnd:
             extra=["--heartbeat", "0"])
         assert code == 0 and record["results"]["vera/m.py::x_f"]["decided"]["1"] == "killed"
         assert record["results"]["vera/m.py::x_f"]["durations"] == {}
+
+
+# ---------------------------------------------------------------------------
+# PR 1863's second review: what a stop leaves, a budget stop's failed
+# listing, a driver that raised after the engine ran, one loss predicate
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.usefixtures("no_git_locators")
+class TestAfterTheBudgetsStop:
+    def _stopped_night(self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
+        """A budget stop the engine takes 2 s to wind down from: the
+        heartbeat lists it meanwhile, when `x_f`'s mutant 2 shows the
+        `segfault` the stop leaves; the final listing then fails."""
+        monkeypatch.setenv("FAKE_RUN_SLEEP", "60")
+        monkeypatch.setenv("FAKE_RUN_TRAP_INT", "2")
+        monkeypatch.setenv("FAKE_RESULTS_FAIL_AFTER_EXIT", "1")
+        live = tmp_path / "live"
+        code, record, _ = _night(repo, tmp_path, 1, (  # the budget plans x_f alone
+            "    vera.m.x_f__mutmut_1: killed\n    vera.m.x_f__mutmut_2: not checked\n"),
+            budget=1.5, extra=["--heartbeat", "0.3", "--live", str(live)])
+        return code, record, live
+
+    def test_a_status_the_stop_left_is_no_decision_in_any_record(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        code, record, live = self._stopped_night(repo, tmp_path, monkeypatch)
+        assert code == 2 and record["stopped"] == "engine" and record["budget_stopped"] is True
+        assert record["results"]["vera/m.py::x_f"]["decided"] == {"1": "killed"}, record["results"]
+        partial = json.loads((live / sw.PARTIAL_FILE).read_text(encoding="utf-8"))
+        assert partial["budget_stopped"] is True
+        assert partial["results"]["vera/m.py::x_f"]["decided"] == {"1": "killed"}
+
+    def test_a_budget_stop_whose_listing_failed_charges_no_loss(self) -> None:
+        record = _record(0, 1, {}, stopped="engine", counts={})
+        record.update(in_flight=[F3], in_flight_s={F3: sw.HEARTBEAT_S}, planned=[_planned(A, 4)],
+                      budget_stopped=True)
+        state, _ = _legs([record], [], jobs=1)
+        assert "losses" not in state["units"][A.ident]
+        assert "takes a loss" not in sw.render_slice(record)
+        leg = {**_leg(0, 1, {}, in_flight=[F3], planned=[_planned(A, 4)]), "budget_stopped": True}
+        state, _ = _legs([], [leg], jobs=1)  # a leg written in the stop's grace
+        assert "losses" not in state["units"][A.ident]
+
+
+@pytest.mark.usefixtures("no_git_locators")
+class TestADriverThatRaisedAfterTheEngineRan:
+    def test_its_record_keeps_the_last_partial_records_decisions(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        def late(path: Path) -> list[str]:
+            raise RuntimeError("after the engine")
+
+        monkeypatch.setattr(sw.md, "skipped_tests", late)
+        monkeypatch.setenv("FAKE_RUN_SLEEP", "1.5")
+        live = tmp_path / "live"
+        code, record, _ = _night(repo, tmp_path, 1, (
+            "    vera.m.x_f__mutmut_1: killed\n    vera.m.x_f__mutmut_2: killed\n"
+            "    vera.m.x_g__mutmut_1: killed\n    vera.m.x_g__mutmut_2: not checked\n"),
+            extra=["--heartbeat", "0.3", "--live", str(live)])
+        sw.check_record(record)
+        assert code == 2 and record["stopped"] == "lane"
+        assert record["engine_tail"] == ["RuntimeError: after the engine"]
+        assert {i: r["decided"] for i, r in record["results"].items()} == {
+            "vera/m.py::x_f": {"1": "killed", "2": "killed"}, "vera/m.py::x_g": {"1": "killed"}}
+
+
+class TestOneLossPredicate:
+    """The slice's report names a loss exactly where the stitch charges one."""
+
+    def test_the_report_and_the_stitch_agree_on_every_stop(self) -> None:
+        planned = [_planned(A, 4)]
+        records: list[tuple[dict[str, Any], bool]] = []
+        for stopped, budget, age, charged in (("engine", False, sw.HEARTBEAT_S, True),
+                                              ("engine", False, 3.0, False),
+                                              ("engine", True, sw.HEARTBEAT_S, False),
+                                              ("lane", False, sw.HEARTBEAT_S, False),
+                                              ("unmapped", False, sw.HEARTBEAT_S, False),
+                                              ("budget", True, sw.HEARTBEAT_S, False)):
+            record = _record(0, 1, {}, stopped=stopped, counts={})
+            record.update(in_flight=[F3], in_flight_s={F3: age}, planned=planned, budget_stopped=budget)
+            state, _ = _legs([record], [], jobs=1)
+            assert ("losses" in state["units"][A.ident]) is charged, (stopped, budget, age)
+            assert ("takes a loss" in sw.render_slice(record)) is charged, (stopped, budget, age)
+            records.append((record, charged))
+        for record, charged in records:
+            assert sw.charged_in_flight(record) == ([F3] if charged else [])

@@ -729,6 +729,7 @@ def check_record(record: Any) -> None:
     _check(isinstance(ages, dict) and set(ages) <= set(in_flight) and all(
         type(s) in (int, float) and 0 <= s < 1e6 for s in ages.values()), "its mutants' time in flight")
     _check(isinstance(record.get("engine_running", False), bool), "its engine's state is not a flag")
+    _check(isinstance(record.get("budget_stopped", False), bool), "its budget's stop is not a flag")
     results = record.get("results")
     _check(isinstance(results, dict), "its results are not a mapping")
     for ident, result in results.items():
@@ -1804,7 +1805,7 @@ def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: li
         "engine_s": 0.0, "dropped_tests": [], "deselected_tests": [], "subprocess_tests": [],
         "source_tests": [], "selection": 0, "engine_tail": [], "workers": int(args.max_children),
         "slow": [], **Watch().fields(), "memory_bound": dict(bound) if bound else None,
-        "engine_oom_score": ENGINE_OOM_SCORE if bound else None, "in_flight": [], "in_flight_s": {}, "engine_running": False,
+        "engine_oom_score": ENGINE_OOM_SCORE if bound else None, "in_flight": [], "in_flight_s": {}, "engine_running": False, "budget_stopped": False,
         "heartbeats": [], "oom_events": [], "memory": [], "first_choice": None,
     }
 
@@ -1879,6 +1880,10 @@ def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: li
     # earlier one did (mutmut writes a meta file with a plain open and dump,
     # so a listing can meet one mid-write).
     last_read: dict[str, Any] = {"results": {}, "at": None}
+    # Set once the budget's stop is about to be sent (before_stop): a
+    # listing read after it takes a status a stop can leave (CUT_SHORT) only
+    # where the engine had recorded it before the stop, as the final one does.
+    stop_sent = threading.Event()
 
     def read_partial(elapsed_s: float) -> dict[str, Any] | None:
         """List the engine's results while it runs: the last read whole
@@ -1891,7 +1896,8 @@ def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: li
                 return {"at": round(elapsed_s, 1), "why": f"the listing exited {listed.returncode}"}
             if md.read_window_counts(counts_file) is None:
                 return {"at": round(elapsed_s, 1), "why": "the engine's count of its mutants was not read"}
-            last_read["results"] = read(md.parse_results(listed.stdout), cut_short=False, finished=False)
+            last_read["results"] = read(md.parse_results(listed.stdout), cut_short=stop_sent.is_set(),
+                                        finished=False)
             last_read["at"] = round(elapsed_s, 1)
             return None
         except Exception as exc:  # noqa: BLE001 — a failed listing keeps the last one read whole
@@ -1905,7 +1911,8 @@ def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: li
         slow = slow_mutants(slow_file)
         partial = {**record, **watch.fields(), "heartbeats": list(beats), "oom_events": list(tracker.events),
                    "in_flight": tracker.in_flight(slow), "in_flight_s": tracker.in_flight_ages(time.time(), slow),
-                   "engine_running": True, "memory": sorted(tracker.memory()),
+                   "engine_running": True, "budget_stopped": stop_sent.is_set(),
+                   "memory": sorted(tracker.memory()),
                    "first_choice": tracker.first_choice()}
         failed = read_partial(elapsed_s)
         partial.update(results=last_read["results"], results_at=last_read["at"], listing_failed=failed)
@@ -1915,6 +1922,7 @@ def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: li
         """What the engine recorded before the budget's stop is sent: a
         status a stop can leave that is already there is the engine's own."""
         kept.update(name for name, code in meta_exit_codes(tree, files).items() if code is not None)
+        stop_sent.set()
 
     beat = Heartbeat(every, workdir, watch, started, tracker=tracker, on_beat=on_beat) if every > 0 else None
     if beat is not None:
@@ -1952,6 +1960,9 @@ def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: li
     text = log.read_text(encoding="utf-8", errors="replace")
     no_tests = run.returncode == 1 and md.NO_TESTS_SENTENCE in text
     stopped = run.stopped or (None if run.returncode == 0 or no_tests else "engine")
+    # The budget stopped it, whatever the listing below makes of the stop: a
+    # mutant the budget cut short is no loss (charged_in_flight).
+    record["budget_stopped"] = run.stopped == "budget"
     finished = stopped is None
     listed = md._engine_call(engine, ["results", "--all", "true"], cwd=tree, env=env)
     results: dict[str, str] | None = None
@@ -2100,6 +2111,22 @@ def mutant_of(name: str) -> tuple[str, str, int] | None:
     return module, key, md._mutant_number(name)
 
 
+def charged_in_flight(record: Mapping[str, Any]) -> list[str]:
+    """The mutants a slice's record charges a loss (:func:`apply_losses`),
+    the one rule the stitch and the slice's report read: none when the
+    budget's stop had been sent, since the budget cut them short; for a leg,
+    those in flight while the engine still ran; for a final record, those in
+    flight when the engine stopped it; each only when its run had lasted a
+    heartbeat interval when the record was written (``in_flight_s``)."""
+    if record.get("budget_stopped"):
+        return []
+    ends = record.get("engine_running") if "leg" in record else record.get("stopped") == "engine"
+    if not ends:
+        return []
+    ages = record.get("in_flight_s") or {}
+    return sorted({n for n in record.get("in_flight", []) if float(ages.get(n, 0.0)) >= HEARTBEAT_S})
+
+
 def apply_losses(state: dict[str, Any], record: Mapping[str, Any], units: Sequence[SweepUnit]) -> int:
     """Each mutant in flight at ``record``, the last record its slice
     uploaded (a leg's, written up to a leg before a lost runner went, or
@@ -2113,8 +2140,7 @@ def apply_losses(state: dict[str, Any], record: Mapping[str, Any], units: Sequen
     takes one.  Returns the mutants decided ``lost``."""
     by_name = {(u.module, u.key): u for u in units}
     planned = {p.get("unit"): p for p in record.get("planned", []) if isinstance(p, dict)}
-    ages = record.get("in_flight_s") or {}
-    names = [n for n in record.get("in_flight", []) if float(ages.get(n, 0.0)) >= HEARTBEAT_S]
+    names = charged_in_flight(record)
     decided = 0
     for name in sorted(set(names)):
         found = mutant_of(name)
@@ -2439,7 +2465,7 @@ def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[s
     before = (state_in.get("nights") or [{}])[-1].get("lost_plans", {})
     for leg in taken_legs:
         moved = merge(state, leg, by_ident, problems)
-        if leg.get("engine_running") and not cancelled:
+        if not cancelled:
             moved += apply_losses(state, leg, units)
         added += moved
         if moved == 0 and leg.get("planned") and not cancelled:
@@ -2454,8 +2480,9 @@ def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[s
                                 "neither night decided a mutant of it")
     for record in valid:
         added += merge(state, record, by_ident, problems)
-        if record.get("stopped") == "engine" and not cancelled:
-            # The engine stopped with mutants in flight: each takes a loss.
+        if not cancelled:
+            # The engine stopped with mutants in flight: each takes a loss
+            # (charged_in_flight: none on a budget's stop, or a lane's).
             added += apply_losses(state, record, units)
         if record.get("stopped") not in (None, "budget"):
             # What stopped it: a lane's reason, or the exception the engine's
@@ -2611,9 +2638,10 @@ def render_slice(record: Mapping[str, Any]) -> str:
         out.append("Ended by the kernel under the memory bound, `memory` (counted apart, never caught): "
                    + ", ".join(f"`{name}`" for name in record["memory"]) + ".")
         out.append("")
-    if record.get("in_flight") and record.get("stopped") not in (None, "budget"):
-        out.append("In flight when it stopped (each takes a loss; a second decides it `lost`): "
-                   + ", ".join(f"`{name}`" for name in record["in_flight"]) + ".")
+    charged = charged_in_flight(record)
+    if charged:
+        out.append("In flight when it stopped, each having run a heartbeat interval (each takes a loss; "
+                   "a second decides it `lost`): " + ", ".join(f"`{name}`" for name in charged) + ".")
         out.append("")
     if record.get("stopped"):
         error = record.get("engine_error") if record["stopped"] == "engine" else None
@@ -2725,6 +2753,21 @@ def lane_record(slice_: int, of: int, *, head: str | None, state_path: Path | No
             "dropped_tests": [], "deselected_tests": [], "subprocess_tests": [], "source_tests": []}
 
 
+def with_partial(record: dict[str, Any], live: Path | None, slice_: int, of: int) -> dict[str, Any]:
+    """A lane record, or, when the slice's ``live`` directory holds a
+    partial record of this slice, that partial record under the lane's stop
+    and reason: the slice ran, and what its last partial record decided is
+    kept.  The one check for a driver that raised (``night``) and one that
+    ended with no record (``lane-failed``)."""
+    partial = _read_json(live / PARTIAL_FILE) if live is not None else None
+    if not (isinstance(partial, dict) and partial.get("slice") == slice_ and partial.get("of") == of):
+        return record
+    kept = {**partial, "stopped": "lane", "engine_error": None, "engine_tail": record["engine_tail"],
+            "engine_running": False}
+    kept.pop("leg", None)
+    return kept
+
+
 def cmd_lane_failed(args: argparse.Namespace) -> int:
     """Write slice ``--slice``'s record as a lane that failed before the sweep
     ran (a step before it failed while the runner was still there), unless
@@ -2743,13 +2786,8 @@ def cmd_lane_failed(args: argparse.Namespace) -> int:
         head = None
     record = lane_record(args.slice, args.of, head=head, state_path=_state_file(args.state),
                          budget_s=args.budget, why=args.why)
-    partial = _read_json(Path(args.live) / PARTIAL_FILE) if getattr(args, "live", None) else None
-    if isinstance(partial, dict) and partial.get("slice") == args.slice and partial.get("of") == args.of:
-        # The slice ran and its driver ended with no record: what its last
-        # partial record decided is kept, under the lane's stop.
-        record = {**partial, "stopped": "lane", "engine_error": None, "engine_tail": [args.why],
-                  "engine_running": False}
-        record.pop("leg", None)
+    record = with_partial(record, Path(args.live) if getattr(args, "live", None) else None,
+                          args.slice, args.of)
     path.write_text(json.dumps(record, indent=1, sort_keys=True, ensure_ascii=False) + "\n",
                     encoding="utf-8")
     report = render_slice(record)
@@ -2825,9 +2863,10 @@ def _night(args: argparse.Namespace, *, repo: Path, out: Path, live: Path | None
         import traceback
 
         traceback.print_exc()
-        record = lane_record(args.slice, args.of, head=None,
-                             state_path=Path(args.state) if args.state else None,
-                             budget_s=args.budget, why=f"{type(exc).__name__}: {exc}")
+        record = with_partial(lane_record(args.slice, args.of, head=None,
+                                          state_path=Path(args.state) if args.state else None,
+                                          budget_s=args.budget, why=f"{type(exc).__name__}: {exc}"),
+                              live, args.slice, args.of)
     (out / f"slice-{args.slice}.json").write_text(
         json.dumps(record, indent=1, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
     report = render_slice(record)
