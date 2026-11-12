@@ -781,3 +781,31 @@ def test_an_index_no_context_types_is_left_to_1862(form: str) -> None:
     warnings = {w.error_code
                 for w in pipeline.verify(source, reconcile=True).warnings}
     assert "E602" in warnings, warnings
+
+
+# ---------------------------------------------------------------------
+# Spec §4.8, as the checker reads it (fold-in)
+# ---------------------------------------------------------------------
+
+_N = _fn("n", "@Unit", "Nat", "3")
+
+
+@pytest.mark.parametrize("order", ["call_first", "nat_first"])
+def test_a_call_s_result_is_no_static_nat_in_an_if(order: str) -> None:
+    """§4.8: an `Int` branch made only of non-negative literals and `@Nat`
+    slot references is read as a `Nat`; a call's result does not count
+    (`_no_call`), so `nat_to_int(n(())) + 1` beside a `@Nat` makes the `if`
+    an `Int`, obligated where it is bound into a `Nat`, in both arm
+    orders; the literal `3` in its place makes it a `Nat`, with nothing to
+    obligate."""
+    def program(arm: str) -> str:
+        a, b = (arm, "@Nat.0") if order == "call_first" else ("@Nat.0", arm)
+        return _N + "\n" + _fn(
+            "f", "@Bool, @Nat", "Nat",
+            f"let @Nat = if @Bool.0 then {{ {a} }} else {{ {b} }};\n@Nat.0")
+    with_call = [(o.kind, o.expr_text.split(" ")[0])
+                 for o in pipeline.verify(program("nat_to_int(n(())) + 1"))
+                 .obligations if o.kind == "nat_bind" and o.fn_name == "f"]
+    assert with_call == [("nat_bind", "if")], with_call
+    assert not [o for o in pipeline.verify(program("3")).obligations
+                if o.kind == "nat_bind" and o.fn_name == "f"]
