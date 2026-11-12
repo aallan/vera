@@ -1212,3 +1212,120 @@ def test_an_argument_of_another_type_is_refused_at_a_call(
               + "\n" + _fn("f", "@String, @Bool, @Box, @Array<Int>, @Int",
                            "Int", body))
     assert "E202" in _codes(source), _codes(source)
+
+
+# ---------------------------------------------------------------------
+# C at every site a value meets a type (PR 1864 review): a generic call
+# that leaves a variable open takes the type its site expects, observed
+# by an ability constraint (`Ord<T>`), so the default instance (E613) and
+# the right one differ
+# ---------------------------------------------------------------------
+
+_ORD_PRE = (
+    _fn("none_ord", "@Unit", "Option<T>", "None",
+        forall="forall<T where Ord<T>> ")
+    + "\n" + _fn("empty_ord", "@Unit", "Array<T>", "[]",
+                 forall="forall<T where Ord<T>> ")
+    + "\n" + _IDG + "\n"
+    + _fn("keep", "@Option<Int>", "Option<Int>", "@Option<Int>.0") + "\n"
+    + "type Mk = fn(Unit -> Option<Int>) effects(pure);\n\n")
+
+#: Each site an open call meets a type, the value, and the type it meets.
+_ORD_SITES = {
+    "direct": ("none_ord(())", "Option<Int>"),
+    "array_element": ("[none_ord(())]", "Array<Option<Int>>"),
+    "array_element_after_a_fixing_one": (
+        "[@Option<Int>.0, none_ord(())]", "Array<Option<Int>>"),
+    "array_element_before_a_fixing_one": (
+        "[none_ord(()), @Option<Int>.0]", "Array<Option<Int>>"),
+    "array_element_beside_none": (
+        "[None, none_ord(())]", "Array<Option<Int>>"),
+    "tuple_component": ("Tuple(none_ord(()), 1)", "Tuple<Option<Int>, Int>"),
+    "constructor_field": ("Some(none_ord(()))", "Option<Option<Int>>"),
+    "if_branch": ("if @Bool.0 then { none_ord(()) } else { None }",
+                  "Option<Int>"),
+    "if_branch_beside_a_fixing_one": (
+        "if @Bool.0 then { none_ord(()) } else { @Option<Int>.0 }",
+        "Option<Int>"),
+    "match_arm": ("match @Bool.0 {\n  true -> none_ord(()),\n"
+                  "  false -> None\n}", "Option<Int>"),
+    "block": ("{ none_ord(()) }", "Option<Int>"),
+    "generic_argument": ("idg(none_ord(()))", "Option<Int>"),
+    "argument": ("keep(none_ord(()))", "Option<Int>"),
+    "closure_body": (
+        "fn(@Unit -> @Option<Int>) effects(pure) { none_ord(()) }", "Mk"),
+    "index_of_a_literal": ("[none_ord(())][0]", "Option<Int>"),
+    "index_of_a_call": ("empty_ord(())[0]", "Int"),
+}
+
+
+@pytest.mark.parametrize("meets", ["let", "return", "argument"])
+@pytest.mark.parametrize("site", list(_ORD_SITES))
+def test_repro_an_open_call_takes_the_type_its_site_expects(
+        site: str, meets: str) -> None:
+    """`let @Array<Option<Int>> = [none_ord(())]`, with `forall<T where
+    Ord<T>> fn none_ord(@Unit -> @Option<T>)`: the element is expected at
+    the binding's element type, which fixes `T`, so `none_ord` is at `Int`
+    (no E613), as `let @Option<Int> = none_ord(())` is.  At b11cf1fd an
+    array element, a `Tuple` component and an index's collection kept the
+    default instance (E613, E170, E121; c35763d6 refused every site); the
+    other sites were right and are pinned beside them."""
+    value, ty = _ORD_SITES[site]
+    formals = "@Bool, @Option<Int>"
+    if meets == "let":
+        body = _fn("f", formals, "Int", f"let @{ty} = {value};\n0")
+    elif meets == "return":
+        body = _fn("f", formals, ty, value)
+    else:
+        body = (_fn("use", f"@{ty}", "Int", "0") + "\n"
+                + _fn("f", formals, "Int", f"use({value})"))
+    source = _ORD_PRE + body
+    checked = pipeline.check(source)
+    assert checked.ok, [e.format() for e in checked.errors]
+    built = {i.args for i in checked.typed.instances
+             if i.key in ("none_ord", "empty_ord")}
+    assert built == {("Int",)}, built
+
+
+def test_an_open_call_takes_the_state_type_as_its_initial_value() -> None:
+    """A handler's initial state: `none_ord` at the `State`'s `Int`."""
+    source = _ORD_PRE + _fn(
+        "f", "@Bool", "Int",
+        "handle[State<Option<Int>>](@Option<Int> = none_ord(())) {\n"
+        "  get(@Unit) -> { resume(@Option<Int>.0) },\n"
+        "  put(@Option<Int>) -> { resume(()) }\n} in {\n  0\n}")
+    assert _instances(source, "none_ord") == {("Int",)}
+
+
+_ENDO = """\
+type Endo<T> = fn(T -> T) effects(pure);
+
+private forall<T> fn mk(@Unit -> @Endo<T>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  fn(@T -> @T) effects(pure) { @T.0 }
+}
+
+"""
+
+
+@pytest.mark.parametrize("order", ["closure_first", "call_first"])
+def test_an_open_function_call_as_an_element_takes_the_element_type(
+        order: str) -> None:
+    """`let @Array<Endo<Int>> = [fn(@Int -> @Int) { .. }, mk(())]`: the
+    element `mk(())` is expected at `Endo<Int>`, which fixes `T` (§5.9), so
+    `mk` is at `Int` and the program runs, as `let @Endo<Int> = mk(())`
+    does.  At c35763d6 and b11cf1fd the call kept its variable open and the
+    element was refused (E162); with nothing expected of the literal it
+    still is (the fix-text fixture `E162-open-variable`)."""
+    closure = "fn(@Int -> @Int) effects(pure) { @Int.0 }"
+    a, b = (closure, "mk(())") if order == "closure_first" else (
+        "mk(())", closure)
+    source = _ENDO + _fn(
+        "main", "@Unit", "Int",
+        f"let @Array<Endo<Int>> = [{a}, {b}];\n"
+        "apply_fn(@Array<Endo<Int>>.0[1], 5)", visibility="public")
+    assert _instances(source, "mk") == {("Int",)}
+    assert pipeline.run(source).value == 5

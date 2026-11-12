@@ -401,8 +401,8 @@ CASES: dict[str, _Case] = {
         as_value("[1, @Bool.0]", "@Bool.0")),
     "E162-open-variable": _Case(
         "E162", "check", ENDO + _fn("@Bool", "@Int",
-            "let @Array<Endo<Int>> = [fn(@Int -> @Int) effects(pure) "
-            "{ @Int.0 }, mk(())];\n  0"),
+            "let @Nat = array_length([fn(@Int -> @Int) effects(pure) "
+            "{ @Int.0 }, mk(())]);\n  0"),
         as_value(" mk(())]", "mk(())")),
     "E301-branch": _Case(
         "E301", "check", POS + _helper("pos", "@Unit -> @Pos", "1")

@@ -999,14 +999,16 @@ class ExpressionsMixin:
         coll_ty = self._synth_expr(expr.collection)
         # An element expected at a type is read from an array of that
         # type: a collection whose element type nothing fixed (an empty
-        # literal, `[[]][0]`) is synthesized again against it (#1684).
+        # literal, `[[]][0]`) or a call left open (`empty(())[0]`) is
+        # synthesized again against it (#1684).
         coll_base = base_type(coll_ty) if coll_ty is not None else None
         if (expected is not None
                 and not contains_unknown(expected)
                 and not contains_fresh_typevar(expected)
                 and isinstance(coll_base, AdtType)
                 and coll_base.name == "Array" and coll_base.type_args
-                and contains_unknown(coll_base.type_args[0])):
+                and (contains_unknown(coll_base.type_args[0])
+                     or contains_fresh_typevar(coll_base.type_args[0]))):
             again = self._synth_expr(
                 expr.collection, expected=AdtType("Array", (expected,)))
             if again is not None:
@@ -1209,11 +1211,21 @@ class ExpressionsMixin:
         at the type *context* gives it, where it is a narrowing the verifier
         obligates — refuted where the literal is negative (E503).  A literal
         the source builds directly is not re-checked: the destructure's or
-        the binding's own narrowing reads it where it is.  Returns the type
-        the check settled on."""
+        the binding's own narrowing reads it where it is.
+
+        So is a call whose type holds a variable it left open (`T$n`,
+        `none_ord(())`'s `Option<T>`): *context* is the type it is expected
+        at, which fixes that variable (rule C, spec §5.9), as a constructor's
+        argument takes its field's type (#1684, PR 1864 review).  Returns
+        the type the check settled on."""
         if (ty is None or isinstance(ty, UnknownType)
-                or contains_typevar(context)
-                or not self._call_literal_meets_nat(expr, context)):
+                or contains_typevar(context)):
+            return ty
+        left_open = (isinstance(expr, (ast.FnCall, ast.ModuleCall))
+                     and contains_fresh_typevar(ty)
+                     and not contains_unknown(context)
+                     and not contains_literal_hole(context))
+        if not left_open and not self._call_literal_meets_nat(expr, context):
             return ty
         rechecked = self._synth_expr(expr, expected=context)
         if rechecked is None or isinstance(rechecked, UnknownType):
