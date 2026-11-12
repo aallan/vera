@@ -888,14 +888,32 @@ def test_an_unfixed_application_names_each_variable() -> None:
     assert "an argument that fixes A and B" in error.fix, error.fix
 
 
+@pytest.mark.parametrize(("source", "named"), [
+    (_APPLY_RIGID_VALUE, "in place of `the value`."),
+    (_APPLY_UNFIXED, "give the call `the function value` an argument"),
+], ids=["rigid_value", "unfixed_application"])
+def test_an_apply_fn_fix_without_the_program_s_text_names_the_value(
+        source: str, named: str) -> None:
+    """`typecheck` takes the program's text as an optional argument
+    (default empty); without it no argument's text can be quoted, and each
+    `apply_fn` fix names the value in words (PR #1855's mutation lane)."""
+    from vera.checker import typecheck
+
+    errors = [d for d in typecheck(pipeline.parse(source).program)
+              if d.severity == "error"]
+    assert [d.error_code for d in errors] == ["E202"], errors
+    assert named in errors[0].fix, errors[0].fix
+
+
 def test_every_built_in_ability_operation_takes_one_variable() -> None:
     """The ability-argument judgement reads its operation's one type
     variable from any typed argument (`_ability_type_mapping`), so a later
-    argument cannot disagree with a mapping an earlier one failed to set,
-    and the mutation lane's continue-for-break and and-for-or mutants of
-    that loop change nothing.  That rests on this: every built-in ability
-    has one type parameter, and every parameter of every operation is that
-    variable.  An ability registered otherwise fails here first."""
+    argument cannot disagree with a mapping an earlier one failed to set.
+    That rests on this: every built-in ability has one type parameter, and
+    every parameter of every operation is that variable.  An ability
+    registered otherwise fails here first.  A user ability need not have
+    that shape, and its arguments are judged too
+    (`test_a_skipped_ability_argument_leaves_the_later_ones_judged`)."""
     from vera.environment import TypeEnv
 
     env = TypeEnv()
@@ -907,6 +925,46 @@ def test_every_built_in_ability_operation_takes_one_variable() -> None:
         for op in ability.operations.values():
             assert all(getattr(p, "name", None) == var
                        for p in op.param_types), (ability.name, op.name)
+
+
+_TRI = """\
+ability Tri<T> {
+  op tri(SIGNATURE -> Int);
+}
+
+public fn probe(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  CALL
+}
+"""
+
+
+@pytest.mark.parametrize(("signature", "call", "column"), [
+    # The first argument has no type: skipped, and the third still judged.
+    ("T, T, T", 'tri([][0], 1, "x")', 17),
+    # The first argument is re-synthesized at the parameter and fits.
+    ("T, T, T", 'tri(None, Some(1), Some("x"))', 22),
+    # The first parameter is a variable a call left open (`head_plain([])`
+    # gives `T` no type): skipped, and the second still judged.
+    ("T, Int, T", 'tri(head_plain([]), "x", head_plain([]))', 23),
+], ids=["untyped_argument", "resynthesized_argument", "open_parameter"])
+def test_a_skipped_ability_argument_leaves_the_later_ones_judged(
+        signature: str, call: str, column: int) -> None:
+    """A user ability's operation is refused (E340) and its arguments are
+    still checked.  It may take three arguments and a parameter that is not
+    its variable, so an argument the judgement skips or passes leaves the
+    next ones to it: the refused argument here is refused whatever the
+    first one was (PR #1855's mutation lane)."""
+    source = _HEAD_PLAIN + _TRI.replace("SIGNATURE", signature).replace(
+        "CALL", call)
+    line = _HEAD_PLAIN.count("\n") + 10
+    e241 = [e for e in pipeline.check(source).errors
+            if e.error_code == "E241"]
+    assert [(e.location.line, e.location.column) for e in e241] == [
+        (line, column)], [e.format() for e in e241]
 
 
 # ---------------------------------------------------------------------

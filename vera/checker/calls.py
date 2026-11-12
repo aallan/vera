@@ -681,9 +681,9 @@ class CallsMixin:
         row = self.env.current_effect_row or PureEffectRow()
         signature = None
         if (expected is not None and all(
-                t is not None and not isinstance(t, UnknownType)
+                t is not None and not isinstance(t, UnknownType)  # pragma: no mutate — equivalent: an unknown argument let through reaches the function type, whose rendering `closure_signature` refuses, so the prose fallback is taken either way
                 for t in arg_types)):
-            fn = FunctionType(tuple(typing.cast(Type, t) for t in arg_types),
+            fn = FunctionType(tuple(typing.cast(Type, t) for t in arg_types),  # pragma: no mutate — equivalent: `typing.cast` does nothing at run time
                               expected, row)
             if closure_signature(fn, frozenset(self.env.type_params)):
                 signature = pretty_type(fn)
@@ -2181,7 +2181,7 @@ class CallsMixin:
 
         for i, (arg_ty, param_ty) in enumerate(
                 zip(arg_types, param_types)):
-            if arg_ty is None or isinstance(arg_ty, UnknownType):
+            if arg_ty is None or isinstance(arg_ty, UnknownType):  # pragma: no mutate — equivalent: an argument with no type is `UnknownType`, a subtype of every type (`is_subtype`'s error recovery), so judging it reports nothing; `None` follows only an E176
                 continue
             # #1684: the enclosing function's own type variable is a type,
             # which only a value of that type fits: subtyping matches it by
