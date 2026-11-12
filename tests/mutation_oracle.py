@@ -58,7 +58,10 @@ and first writes 1000 to its own ``oom_score_adj``, so inside the sweep's
 memory bound the kernel ends the mutant's run, and whatever it started,
 before the fork server or the engine.  A run the kernel ended is a process
 gone while the bound's ``oom_kill`` count rose, which the sweep records as
-``memory`` (``scripts/mutate_sweep.py``).
+``memory`` (``scripts/mutate_sweep.py``).  When the run's session ends of
+its own accord it appends an end line, ``<mutant>\\t<pid>\\t<end>\\tend``, to
+the same file, so a mutant's duration is its own run's, end less start; a
+run the cap or a kill ended writes none, and has no measured duration.
 
 The skipped test is out of the oracle entirely.  mutmut's stats pass records,
 at each test's teardown and whatever its outcome, the functions the test
@@ -268,13 +271,30 @@ def mark_in_flight(environ: Any = os.environ) -> bool:
     if "__mutmut_" not in mutant or not path:
         return False
     took = _first_victim()
-    line = f"{mutant}\t{os.getpid()}\t{time.time():.3f}\t{int(took)}\n".encode("utf-8")
+    _append(path, f"{mutant}\t{os.getpid()}\t{time.time():.3f}\t{int(took)}\n")
+    return True
+
+
+def mark_end(environ: Any = os.environ) -> bool:
+    """In a mutant's run with ``MUTATION_ORACLE_INFLIGHT`` set, as its
+    session ends: append ``<mutant>\\t<pid>\\t<end, epoch seconds>\\tend`` to
+    the file :func:`mark_in_flight` wrote its start to, the same way."""
+    mutant = environ.get("MUTANT_UNDER_TEST", "")
+    path = environ.get(INFLIGHT_ENV)
+    if "__mutmut_" not in mutant or not path:
+        return False
+    _append(path, f"{mutant}\t{os.getpid()}\t{time.time():.3f}\tend\n")
+    return True
+
+
+def _append(path: str, line: str) -> None:
+    """One ``os.write`` on an ``O_APPEND`` descriptor: a reader sees the
+    line whole or not at all, whatever other runs write beside it."""
     fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
     try:
-        os.write(fd, line)
+        os.write(fd, line.encode("utf-8"))
     finally:
         os.close(fd)
-    return True
 
 
 def pytest_sessionstart(session: pytest.Session) -> None:
@@ -288,6 +308,7 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     if _timer is not None:
         _timer.cancel()
         _timer = None
+    mark_end()
 
 
 def _record(nodeid: str, reason: str) -> None:

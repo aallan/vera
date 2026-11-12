@@ -17,8 +17,8 @@ name: Mutation (nightly)
 # at 2,400 s as `slow`: decided, counted apart, never caught.  A slice runs
 # under a memory bound (a systemd scope set up with sudo, the hosted
 # runner's own), so a run the kernel ends there is `memory` and the runner
-# lives; it uploads its record in legs, so a lost runner keeps what its last
-# leg decided, and a mutant in flight on two lost slices is `lost`.  A slice whose
+# lives; it uploads its record in legs, so a lost runner keeps what its legs
+# decided, and a mutant in flight on two lost slices is `lost`.  A slice whose
 # engine or lane fails, more than two slices with no record, or a second
 # night in a row that decides no mutant ends the run red, and on the
 # schedule the `issue` job files or updates one tracking issue (the
@@ -107,7 +107,8 @@ jobs:
     # The script's budget (--budget, 4.5 h) plus installing the lock, the
     # sweep's own tests, the plan, the scratch tree and the engine's grace on
     # a stop, inside a hosted job's 6 h.  The legs wait inside the budget,
-    # beside the slice.
+    # beside the slice.  A job that reached this timeout would read to the
+    # stitch as a lost runner, so it holds all of that with room to spare.
     timeout-minutes: 330
     # A hosted runner taken away under a slice (the nights of 19 and 20
     # October 2026, #1751) fails its job with nothing uploaded.  The stitch
@@ -178,13 +179,18 @@ jobs:
       # the loss, so the slice's record goes up in legs: each leg waits
       # (printing the slice's output into this job's log) until the slice has
       # run thirty minutes more, then uploads its partial record.  The stitch
-      # reads a slice's last leg only when its final record never came.
+      # reads a slice's legs only when its final record never came.  Every
+      # leg and leg upload continues on error: a leg is evidence, and one
+      # that fails never ends the slice, so the finish step and the final
+      # record's upload run whatever the legs did.
       - name: Leg 0, the plan
+        continue-on-error: true
         run: >-
           python scripts/mutate_sweep.py leg --leg 0
           --live "$RUNNER_TEMP/live" --out "$RUNNER_TEMP/legs/0"
 
       - name: Upload leg 0
+        continue-on-error: true
         if: always()
         uses: actions/upload-artifact@v7
         with:
@@ -194,11 +200,13 @@ jobs:
           if-no-files-found: ignore
 
       - name: Leg 1, 30 minutes in
+        continue-on-error: true
         run: >-
           python scripts/mutate_sweep.py leg --leg 1
           --live "$RUNNER_TEMP/live" --out "$RUNNER_TEMP/legs/1"
 
       - name: Upload leg 1
+        continue-on-error: true
         if: always()
         uses: actions/upload-artifact@v7
         with:
@@ -208,11 +216,13 @@ jobs:
           if-no-files-found: ignore
 
       - name: Leg 2, 60 minutes in
+        continue-on-error: true
         run: >-
           python scripts/mutate_sweep.py leg --leg 2
           --live "$RUNNER_TEMP/live" --out "$RUNNER_TEMP/legs/2"
 
       - name: Upload leg 2
+        continue-on-error: true
         if: always()
         uses: actions/upload-artifact@v7
         with:
@@ -222,11 +232,13 @@ jobs:
           if-no-files-found: ignore
 
       - name: Leg 3, 90 minutes in
+        continue-on-error: true
         run: >-
           python scripts/mutate_sweep.py leg --leg 3
           --live "$RUNNER_TEMP/live" --out "$RUNNER_TEMP/legs/3"
 
       - name: Upload leg 3
+        continue-on-error: true
         if: always()
         uses: actions/upload-artifact@v7
         with:
@@ -236,11 +248,13 @@ jobs:
           if-no-files-found: ignore
 
       - name: Leg 4, 120 minutes in
+        continue-on-error: true
         run: >-
           python scripts/mutate_sweep.py leg --leg 4
           --live "$RUNNER_TEMP/live" --out "$RUNNER_TEMP/legs/4"
 
       - name: Upload leg 4
+        continue-on-error: true
         if: always()
         uses: actions/upload-artifact@v7
         with:
@@ -250,11 +264,13 @@ jobs:
           if-no-files-found: ignore
 
       - name: Leg 5, 150 minutes in
+        continue-on-error: true
         run: >-
           python scripts/mutate_sweep.py leg --leg 5
           --live "$RUNNER_TEMP/live" --out "$RUNNER_TEMP/legs/5"
 
       - name: Upload leg 5
+        continue-on-error: true
         if: always()
         uses: actions/upload-artifact@v7
         with:
@@ -264,11 +280,13 @@ jobs:
           if-no-files-found: ignore
 
       - name: Leg 6, 180 minutes in
+        continue-on-error: true
         run: >-
           python scripts/mutate_sweep.py leg --leg 6
           --live "$RUNNER_TEMP/live" --out "$RUNNER_TEMP/legs/6"
 
       - name: Upload leg 6
+        continue-on-error: true
         if: always()
         uses: actions/upload-artifact@v7
         with:
@@ -278,11 +296,13 @@ jobs:
           if-no-files-found: ignore
 
       - name: Leg 7, 210 minutes in
+        continue-on-error: true
         run: >-
           python scripts/mutate_sweep.py leg --leg 7
           --live "$RUNNER_TEMP/live" --out "$RUNNER_TEMP/legs/7"
 
       - name: Upload leg 7
+        continue-on-error: true
         if: always()
         uses: actions/upload-artifact@v7
         with:
@@ -292,11 +312,13 @@ jobs:
           if-no-files-found: ignore
 
       - name: Leg 8, 240 minutes in
+        continue-on-error: true
         run: >-
           python scripts/mutate_sweep.py leg --leg 8
           --live "$RUNNER_TEMP/live" --out "$RUNNER_TEMP/legs/8"
 
       - name: Upload leg 8
+        continue-on-error: true
         if: always()
         uses: actions/upload-artifact@v7
         with:
@@ -306,11 +328,13 @@ jobs:
           if-no-files-found: ignore
 
       - name: Leg 9, 270 minutes in
+        continue-on-error: true
         run: >-
           python scripts/mutate_sweep.py leg --leg 9
           --live "$RUNNER_TEMP/live" --out "$RUNNER_TEMP/legs/9"
 
       - name: Upload leg 9
+        continue-on-error: true
         if: always()
         uses: actions/upload-artifact@v7
         with:
@@ -319,6 +343,8 @@ jobs:
           retention-days: 3
           if-no-files-found: ignore
 
+      # No `if:`: it runs when the steps up to the start succeeded, which
+      # the legs before it cannot change, and never on a cancelled run.
       - name: Mutate this slice of the night
         run: >-
           python scripts/mutate_sweep.py finish
@@ -387,11 +413,18 @@ jobs:
           path: ${{ runner.temp }}/slices
           merge-multiple: true
 
+      # A slice of a cancelled run ends with no final record, as a lost
+      # runner's does, so the stitch is told the run was cancelled and
+      # charges no loss for it.  A job's own timeout cannot be told from a
+      # lost runner; the sweep job's timeout holds the budget, the engine's
+      # grace and the legs, so it does not arise.
       - name: Fold the night into the state
         env:
           JOBS: ${{ needs.setup.outputs.jobs }}
+          SWEEP_RESULT: ${{ needs.sweep.result }}
         run: >-
           python scripts/mutate_sweep.py stitch
+          --sweep-result "$SWEEP_RESULT"
           --state "$RUNNER_TEMP/state-in"
           --slices "$RUNNER_TEMP/slices"
           --of "$JOBS"
