@@ -172,7 +172,7 @@ def _names_any(te: ast.TypeExpr, names: Collection[str]) -> bool:
     """Whether the type expression *te* names one of *names* anywhere in
     it: a type, an effect, or a slot reference's type, a refinement's
     predicate and the closures in it included."""
-    stack: list[object] = [te]
+    stack: list[ast.Node] = [te]
     while stack:
         node = stack.pop()
         if isinstance(node, (ast.NamedType, ast.EffectRef)):
@@ -180,13 +180,12 @@ def _names_any(te: ast.TypeExpr, names: Collection[str]) -> bool:
                 return True
         elif isinstance(node, ast.SlotRef) and node.type_name in names:
             return True
-        if isinstance(node, ast.Node) and dataclasses.is_dataclass(node):
-            for fld in dataclasses.fields(node):
-                val = getattr(node, fld.name)
-                if isinstance(val, ast.Node):
-                    stack.append(val)
-                elif isinstance(val, (list, tuple)):
-                    stack.extend(v for v in val if isinstance(v, ast.Node))
+        for fld in dataclasses.fields(node):
+            val = getattr(node, fld.name)
+            if isinstance(val, ast.Node):
+                stack.append(val)
+            elif isinstance(val, (list, tuple)):
+                stack.extend(v for v in val if isinstance(v, ast.Node))
     return False
 
 

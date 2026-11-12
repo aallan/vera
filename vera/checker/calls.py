@@ -2311,7 +2311,7 @@ class CallsMixin:
         """E216's fix: one element per component of the tuple type the
         site expects, each a hole to fill (#1763), or one element where
         nothing is expected."""
-        base = base_type(expected) if expected is not None else None
+        base = base_type(expected) if expected is not None else None  # pragma: no mutate — equivalent: the guard differs only at expected None, where base_type(None) is None (it unwraps a RefinedType and returns anything else as given), the else arm's value
         n = (len(base.type_args) if isinstance(base, AdtType)
              and base.name == "Tuple" and base.type_args else 0)
         example = (f"Tuple({', '.join('?' for _ in range(n))})" if n

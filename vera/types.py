@@ -527,10 +527,12 @@ def written_effect(eff: EffectRowType,
 
 def written_effect_ref(ref: _ast.EffectRefNode) -> str:
     """One member of an effect row as it is written: ``State<Pos>``.
-    :func:`effect_row_expr_of` builds only :class:`~vera.ast.EffectRef`."""
+    :func:`effect_row_expr_of` builds only :class:`~vera.ast.EffectRef`.
+    Both concrete reference classes declare ``name`` and ``type_args``; the
+    abstract base declares neither, so they are read by ``getattr``."""
     from vera import ast as a
     name: str = getattr(ref, "name")
-    args = getattr(ref, "type_args", None)
+    args = getattr(ref, "type_args")
     if not args:
         return name
     return f"{name}<{', '.join(a.format_type(t) for t in args)}>"

@@ -635,6 +635,10 @@ def test_the_base_e503_example_leaves_a_shadowed_operand_firing() -> None:
 # =====================================================================
 
 _PAIR = "private data Pair {\n  Pair(Int, Bool)\n}\n\n"
+#: A non-literal destructure, so its first component is a projected term
+#: (`_check_*_binding_obligation_term`) the solver relates to `@Int.0`.
+_DESTRUCTURE_IF = ("let Tuple<@{0}, @Bool> = if @Bool.0 then "
+                   "{{ Tuple(@Int.0, true) }} else {{ Tuple(1, false) }};\n  0")
 _STATE_CLAUSES = ("    get(@Unit) -> { resume(1) },\n"
                   "    put(@Int) -> { resume(()) }\n  } in {\n    1\n  }")
 
@@ -762,6 +766,55 @@ WHOLE: dict[str, tuple[str, str, str, str]] = {
         + _fn("@Bool", "@Int", "take(@Bool.0)"),
         "Pass a value of the type argument 0 takes, or convert the current "
         "value (e.g. int_to_nat(...), int_to_float(...)) to it."),
+    "E337-exn-two-arguments": ("E337", "check", _fn("@Unit", "@Int",
+        "handle[Exn<Int, Bool>] {\n    throw(@Int) -> { 0 }\n  } in {\n"
+        "    1\n  }"),
+        "Write the handler with a single concrete type argument: "
+        "`handle[Exn<Int>]`."),
+    "E321-field-not-written": ("E321", "check", _fn("@Int", "@Int",
+        "match None {\n    Some(@Int, @Int) -> 1,\n    None -> 0\n  }"),
+        "Give 'Some' exactly 1 sub-pattern(s), one per field."),
+    "E341-body-type-not-written": ("E341", "check", _fn("@Unit", "@Int",
+        "let @Array<Int> = handle[Exn<Int>] {\n    throw(@Int) -> { 0 }\n"
+        "  } in {\n    []\n  };\n  0"),
+        "Make the clause's value the handled body's type, its type: "
+        "replace '0' with '[]', or give the handled body the clause's type."),
+    "E126-int": ("E126", "check", CASES["E126-int"].source,
+        "Turn the predicate into a Bool-valued expression over the binder, "
+        "such as a comparison with zero: `{ @Int | @Int.0 > 0 }`."),
+    "E126-not-numeric": ("E126", "check",
+        "type P = { @String | @String.0 };\n\n" + _fn("@P", "@Int", "0"),
+        "Turn the predicate into a Bool-valued expression over the binder, "
+        "such as a comparison of it with a bound."),
+    "E128-function-bound": ("E128", "check", _fn("@Bool", "@Bool",
+        "forall(@Int, fn(@Int -> @Int) effects(pure) { @Int.0 }, "
+        "fn(@Int -> @Bool) effects(pure) { true })"),
+        "Pass an integer bound, such as an array's length, and index the "
+        "collection inside the predicate."),
+    "E503-projected-clause": ("E503", "verify", _fn("@Int, @Bool", "@Int",
+        _DESTRUCTURE_IF.format("Nat")),
+        "Add a precondition ruling out the bad inputs: "
+        "`requires(@Int.0 >= 0)`.  Alternatively, guard the binding with an "
+        "`if` whose condition holds the value non-negative — the path "
+        "condition discharges the obligation in the then-branch."),
+    "E505-projected-clause": ("E505", "verify", POS + _fn(
+        "@Int, @Bool", "@Int", _DESTRUCTURE_IF.format("Pos")),
+        "Add a precondition under which the narrowed value satisfies the "
+        "predicate: `requires(!@Bool.0)`.  Alternatively, guard the binding "
+        "with an `if` whose condition is the predicate — the path condition "
+        "discharges the obligation in the then-branch."),
+    "E125-generic-state": ("E125", "check", _fn(
+        "@T", "@Unit", "put(@T.0)", forall="T", eff="<IO>"),
+        "Add State<T> to the effects clause of 'f': `effects(<IO, State<T>>)`."
+        "  Or perform it inside a handle[State<T>] block, whose body permits "
+        "it."),
+    "E125-two-type-arguments": ("E125", "check",
+        "effect Two<A, B> {\n  op two(A -> B);\n}\n\n" + _fn("@Int", "@Bool",
+            "forall(@Int, 3, fn(@Int -> @Bool) effects(<Two<Int, Bool>>) "
+            "{ true })", eff="<IO>"),
+        "Add Two<Int, Bool> to the effects clause of 'f': "
+        "`effects(<IO, Two<Int, Bool>>)`.  Or write a predicate whose "
+        "effects the call site permits."),
 }
 
 
@@ -769,6 +822,41 @@ WHOLE: dict[str, tuple[str, str, str, str]] = {
 def test_the_fix_is_the_whole_text(name: str) -> None:
     code, stage, source, text = WHOLE[name]
     assert _the(code, stage, source).fix == text
+
+
+#: The WHOLE cells that pin a branch no other cell every pull request runs
+#: reaches.  The parametrised cells above run as a weekly sample, and the
+#: Mutation (diff) lane runs the sample: at PR 1859's f81d70b3 it reported
+#: survivors in branches whose cells the sample left out.  These run
+#: unsampled, in the one test below.
+UNSAMPLED = (
+    "E125-generic-state", "E125-two-type-arguments", "E126-int",
+    "E126-not-numeric", "E128-function-bound", "E162-element-open",
+    "E216-nothing-expected", "E321-field-not-written", "E321-two-fields",
+    "E337-exn-two-arguments", "E337-the-state-only",
+    "E341-body-type-not-written", "E503-projected-clause",
+    "E505-projected-clause",
+)
+
+
+def test_every_unsampled_branch_text_is_whole() -> None:
+    moved: dict[str, str] = {}
+    for name in UNSAMPLED:
+        code, stage, source, text = WHOLE[name]
+        fix = _the(code, stage, source).fix
+        if fix != text:
+            moved[name] = fix
+    assert moved == {}, moved
+
+
+def test_a_projected_refinement_binding_shows_its_counterexample() -> None:
+    """E505 at a projected value (a non-literal destructure's component)
+    names the counterexample the solver gave, the input its clause rules
+    out."""
+    code, stage, source, _ = WHOLE["E505-projected-clause"]
+    description = _the(code, stage, source).description
+    assert "\n  Counterexample:\n      @Bool.0 = True\n" in description, (
+        description)
 
 
 def test_a_nested_refinement_keeps_its_inner_layer() -> None:
@@ -819,6 +907,33 @@ def test_the_e024_command_for_each_source(marked: bool, file: str,
     assert command in fix, fix
     assert ("drops the file's UTF-8 byte-order mark" in fix) is (
         marked and file != "-"), fix
+
+
+_E024_NOTE = (" That command reads the source as Latin-1 (ISO-8859-1); a "
+              "source in another encoding names its own after `-f`. In a "
+              "string literal, a character can also be written as an escape "
+              "of its code point, such as `\\u{E9}` for é.")
+
+
+def test_the_e024_fix_for_a_named_file_is_whole() -> None:
+    """The named file's whole fix, with and without a UTF-8 byte-order
+    mark: the sentence the mark adds, and nothing in its place without
+    one."""
+    from vera.errors import source_not_utf8
+    fixes: dict[bool, str] = {}
+    for marked in (True, False):
+        raw = (b"\xef\xbb\xbf" if marked else b"") + b"x \xe9"
+        fixes[marked] = source_not_utf8(raw, raw.index(b"\xe9"), "x.vera").fix
+    assert fixes == {
+        True: "Save the file as UTF-8: in its directory, `tail -c +4 x.vera "
+              "| iconv -f ISO-8859-1 -t UTF-8 > x.utf8.vera` writes a UTF-8 "
+              "copy, which then replaces x.vera. The command drops the "
+              "file's UTF-8 byte-order mark before converting the rest."
+              + _E024_NOTE,
+        False: "Save the file as UTF-8: in its directory, `iconv -f "
+               "ISO-8859-1 -t UTF-8 x.vera > x.utf8.vera` writes a UTF-8 "
+               "copy, which then replaces x.vera." + _E024_NOTE,
+    }, fixes
 
 
 def test_repro_1778_e336_names_the_cell_type_as_written() -> None:
@@ -1137,7 +1252,8 @@ def test_e533_names_no_cell_it_cannot_write() -> None:
         SimpleNamespace(cell=TypeVar("U")),  # type: ignore[arg-type]
         SimpleNamespace(decl=SimpleNamespace(  # type: ignore[arg-type]
             forall_vars=("T",), params=())), "")
-    assert "None" not in fix and "`" not in fix, fix
+    assert fix == ("Declare the handler's state at its cell's type, so every "
+                   "instantiation's state is its cell."), fix
 
 
 _INLINE = "fn(Int -> Int) effects(pure)"
@@ -1156,6 +1272,8 @@ def test_e340_names_an_alias_no_type_parameter_shadows() -> None:
                  f"    put(@{_INLINE}) -> {{ resume(()) }}\n"
                  f"  }} in {{\n    0\n  }}", forall="Cell")
     decl, handler, state = spans(_the("E340", "check", source).fix)
+    # The first free name: only `Cell` is taken, so `Cell2`.
+    assert decl == f"type Cell2 = {_INLINE};", decl
     fixed = decl + "\n\n" + source.replace(
         f"handle[State<{_INLINE}>]", handler).replace(f"@{_INLINE}", state)
     assert _codes("check", fixed) == set(), (decl, fixed)

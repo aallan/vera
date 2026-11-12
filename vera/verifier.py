@@ -11863,7 +11863,6 @@ class ContractVerifier:
         smt._call_binding_hook = self._call_binding_facts
         smt._call_result_facts_hook = self._call_result_facts
         smt._generic_callee_hook = self._generic_callee_info
-        smt._violation_clause_hook = self._call_violation_clause
         # #1525: the same types as the main path, a construction's and an
         # opaque stand-in's.
         smt._recorded_type_hook = self._resolved_type_of  # pragma: no mutate — equivalent: a generic function's refined return is decided by its clones' verification, so this fast path's record is never the one read
@@ -12042,9 +12041,8 @@ class ContractVerifier:
             )
             self._report_refined_binding(
                 decl, node, refined_ty, site, result.counterexample,
-                clause=self._refined_clause(
-                    smt, refined_ty, None, goal, local_assumptions,
-                    result.counterexample, None))
+                clause=self._discharging_clause(
+                    smt, goal, local_assumptions, result.counterexample))
         else:  # pragma: no cover — no solver verdict (unknown / #1199 opaque)
             self._record_refined_bind_tier3(
                 decl, node, site,
