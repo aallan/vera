@@ -1820,3 +1820,83 @@ def test_e613_offers_no_binding_where_the_result_holds_no_variable() -> None:
                       "fn where_only(@Unit, @T -> @Int)")
              .replace("where_only(())", "where_only((), 1)"))
     assert "E613" not in _passed_codes("check", fixed)
+
+
+# The fix texts of E613 at a call, each pinned whole, each applied (PR 1864
+# mutation lane: the variable list, the phantom type's name and the
+# advice were each mutated with every cell green).
+_E613_SHAPES = """\
+private data Box { MkBox(Int) }
+
+private forall<A where Ord<A>> fn ordered(@A -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  0
+}
+
+private forall<A, B where Ord<A>, Ord<B>> fn pair_ord(@Unit -> @Option<Tuple<A, B>>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  None
+}
+
+"""
+
+_E613_ARGUMENT = _E613_SHAPES + """\
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Int = ordered(MkBox(1));
+  @Int.0
+}
+"""
+
+_E613_TWO_VARIABLES = _E613_SHAPES + """\
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match pair_ord(()) {
+    _ -> 0
+  }
+}
+"""
+
+
+def test_repro_e613_s_argument_fix_is_whole_and_clears() -> None:
+    """An argument fixes `A` at a type that does not support `Ord`: the fix
+    replaces the argument with an `Int` value, written whole, and applied
+    it passes the check."""
+    fix = _the("E613", "check", _E613_ARGUMENT).fix
+    assert fix == ("Instantiate 'ordered' at a type that supports 'Ord', "
+                   "Int for example: replace 'ordered(MkBox(1))' with "
+                   "'ordered(0)'."), fix
+    fixed = _E613_ARGUMENT.replace("ordered(MkBox(1))", "ordered(0)")
+    assert "E613" not in _passed_codes("check", fixed)
+
+
+def test_repro_e613_names_every_variable_no_argument_fixes() -> None:
+    """Two variables no argument fixes, `A` and `B`, both in the result's
+    type: the fix names both, the phantom type and the binding remedy,
+    whole; binding the result at a type that gives both one, as it says,
+    passes the check."""
+    fix = _the("E613", "check", _E613_TWO_VARIABLES).fix
+    assert fix == (
+        "No argument of 'pair_ord(())' fixes A, B, so the call "
+        "instantiates 'pair_ord' at Bool, nothing giving its result a "
+        "type: bind its result at a type that supports 'Ord' (a `let` of "
+        "that type), or give 'pair_ord' a parameter that carries A ('@A' "
+        "for example) and pass it a value at a type that supports 'Ord', "
+        "Int for example."), fix
+    fixed = _E613_TWO_VARIABLES.replace(
+        "  match pair_ord(()) {",
+        "  let @Option<Tuple<Int, Int>> = pair_ord(());\n"
+        "  match @Option<Tuple<Int, Int>>.0 {")
+    assert "E613" not in _passed_codes("check", fixed)

@@ -1329,3 +1329,100 @@ def test_an_open_function_call_as_an_element_takes_the_element_type(
         "apply_fn(@Array<Endo<Int>>.0[1], 5)", visibility="public")
     assert _instances(source, "mk") == {("Int",)}
     assert pipeline.run(source).value == 5
+
+
+#: A sibling's type reaching an open call through a constructor's field or
+#: a tuple's component: a part of the sibling's type, which is no expected
+#: type either (`_part_of`; PR 1864 mutation lane).
+_SIBLING_PARTS = {
+    "some": ("Some(mkcell(()))", "Some(@Cell<Nat>.0)"),
+    "tuple": ("Tuple(mkcell(()), 1)", "Tuple(@Cell<Nat>.0, 1)"),
+}
+
+
+@pytest.mark.parametrize("order", ["open_first", "open_second"])
+@pytest.mark.parametrize("part", list(_SIBLING_PARTS))
+@pytest.mark.parametrize("site", list(_SIBLING_SITES))
+def test_repro_a_part_of_a_sibling_s_type_is_no_expected_type(
+        site: str, part: str, order: str) -> None:
+    """`if c then { Some(mkcell(())) } else { Some(@Cell<Nat>.0) }`: the
+    branch is synthesized again against its sibling's `Option<Cell<Nat>>`,
+    and `Some` hands `mkcell` the part `Cell<Nat>`; that part fixes no
+    variable, so the cell's behaviour-held `T` is refused in both orders.
+    With the guard reading only the sibling's whole type the part fixed
+    `T` and the `if` was accepted (the `match` in one order alone)."""
+    shape, code = _SIBLING_SITES[site]
+    a, b = _SIBLING_PARTS[part]
+    if order == "open_second":
+        a, b = b, a
+    source = _CELL + _fn("g", "@Cell<Nat>, @Bool", "Nat",
+                         f"array_length([{shape.format(a=a, b=b)}])")
+    assert _codes(source) == [code]
+
+
+_REBUILT = {
+    "if_open_first": "if @Bool.0 then { Some(None) } else { Some(Some(3)) }",
+    "if_open_second": "if @Bool.0 then { Some(Some(3)) } else { Some(None) }",
+    "match_open_second": (
+        "match @Bool.0 { true -> Some(Some(3)), false -> Some(None) }"),
+}
+
+
+@pytest.mark.parametrize("shape", list(_REBUILT))
+def test_repro_a_branch_takes_its_sibling_s_type_for_its_constructors(
+        shape: str) -> None:
+    """`idg(if c then { Some(None) } else { Some(Some(3)) })`: the `None`
+    branch is synthesized again against its sibling's `Option<Option<Int>>`
+    (`_synth_against`), so no type the check records holds the variable
+    `None` left open.  Synthesized again with nothing expected, the
+    branch's constructors were recorded at `Option<Option<T$n>>`."""
+    source = _IDG + "\n" + _fn(
+        "f", "@Bool", "Int",
+        f"match idg({_REBUILT[shape]}) {{\n  Some(Some(@Int)) -> @Int.0,\n"
+        "  Some(None) -> 7,\n  None -> 9\n}")
+    checked = pipeline.check(source)
+    assert checked.ok, [e.format() for e in checked.errors]
+    open_ = sorted({t for t in checked.artifacts.expr_types.values()
+                    if "$" in t})
+    assert open_ == [], open_
+
+
+@pytest.mark.parametrize("order", ["open_first", "open_second"])
+@pytest.mark.parametrize("site", list(_SIBLING_SITES))
+def test_repro_a_sibling_with_no_type_arguments_fixes_nothing(
+        site: str, order: str) -> None:
+    """`if c then { head_plain([]) } else { @Int.0 }` with nothing expected
+    of the `if`: the branch is synthesized again against its sibling's
+    `Int`, a type with no type arguments, which fixes no variable either,
+    so `head_plain` keeps the instance c35763d6 gave it (`Bool`, as an
+    operand gives it nothing), in both orders.  Pins the guard's own
+    identity test (`_part_of`): read as a search of the sibling's
+    arguments alone, `Int` was taken as expected and fixed `T`."""
+    shape, _ = _SIBLING_SITES[site]
+    a, b = "head_plain([])", "@Int.0"
+    if order == "open_second":
+        a, b = b, a
+    source = _HEAD_PLAIN + "\n" + _fn(
+        "g", "@Int, @Bool", "Int", f"({shape.format(a=a, b=b)}) + 0")
+    assert _instances(source, "head_plain") == {("Bool",)}
+
+
+@pytest.mark.parametrize("order", ["open_first", "open_second"])
+def test_repro_a_call_s_own_expected_type_holds_inside_a_resynthesized_branch(
+        order: str) -> None:
+    """`if c then { snd(keep(none_ord(())), head_plain([])) } else {
+    @Int.0 }`: the branch is synthesized again against its sibling's `Int`,
+    and inside it `keep`'s parameter is the type `none_ord(())` is
+    expected at, which is no part of the sibling, so it fixes `T` there
+    too: `none_ord` at `Int`, no E613, in both orders.  A guard that took
+    every expected type for the sibling's under a non-data sibling
+    refused it (E613)."""
+    a, b = "snd(keep(none_ord(())), head_plain([]))", "@Int.0"
+    if order == "open_second":
+        a, b = b, a
+    source = (_ORD_PRE + _HEAD_PLAIN + "\n"
+              + _fn("snd", "@Option<Int>, @U", "U", "@U.0",
+                    forall="forall<U> ") + "\n"
+              + _fn("g", "@Int, @Bool", "Int",
+                    f"(if @Bool.0 then {{ {a} }} else {{ {b} }}) + 0"))
+    assert _instances(source, "none_ord") == {("Int",)}

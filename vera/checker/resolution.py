@@ -88,17 +88,17 @@ def same_type_and_facts(a: Type, b: Type) -> bool:
 
 
 def _part_of(ty: Type, whole: Type) -> bool:
-    """Whether *ty* is *whole* or one of its parts, the same object (the
-    type a constructor passes its argument down is the part of the type it
-    is expected at)."""
+    """Whether *ty* is *whole* or one of its type arguments' parts, the same
+    object: the type a constructor's field, a tuple's component or an
+    array's element is synthesized against is that part of the type its
+    branch is expected at.  No synthesis hands a part of a function type
+    down as an expected type (a closure's body meets its own written
+    return type), so a function type's parameters are not searched."""
     if ty is whole:
         return True
     whole = base_type(whole)
     if isinstance(whole, AdtType):
         return any(_part_of(ty, a) for a in whole.type_args)
-    if isinstance(whole, FunctionType):
-        return (any(_part_of(ty, p) for p in whole.params)
-                or _part_of(ty, whole.return_type))
     return False
 
 
