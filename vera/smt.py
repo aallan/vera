@@ -3604,8 +3604,7 @@ class SmtContext:
             # that refinement (`narrowing.established_type` with *holds*):
             # `throw(@Int) -> { 1 }` beside a `@PosInt` body is a `PosInt`,
             # which the checker, holding no solver, records as an `Int`.
-            if (isinstance(node, ast.Expr)
-                    and narrowing.flow_arms(node) is not None):
+            if isinstance(node, ast.Expr):
                 strengthened = narrowing.established_type(
                     node, hook, self._literal_satisfies)
                 if strengthened is not None:

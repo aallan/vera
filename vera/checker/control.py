@@ -454,7 +454,8 @@ class ControlFlowMixin:
             # branch a subtype of the then branch alone: a function type
             # whose effect row widens) is the general path's below.
             return self._value_join(
-                cast(Type, self._join(then_ty, else_ty)), branches)
+                cast(Type,  # pragma: no mutate — equivalent: `cast` returns its argument; the type it names is read by mypy alone
+                     self._join(then_ty, else_ty)), branches)
 
         # Re-synthesis: a branch with an unresolved type variable is
         # synthesized again with the other branch's type expected, so a

@@ -49,8 +49,8 @@ import pytest
 
 from tests import pipeline
 from vera import ast, fold, narrowing
-from vera.types import (AdtType, ConcreteEffectRow, FunctionType,
-                        PrimitiveType, RefinedType,
+from vera.types import (INT, AdtType, ConcreteEffectRow,
+                        FunctionType, PrimitiveType, RefinedType,
                         Type, TypeVar, UnknownType)
 
 pytestmark = pytest.mark.matrix(decides=[
@@ -1481,3 +1481,111 @@ def test_repro_1716_a_pure_function_applies_no_io_arm_of_a_match() -> None:
     checked = pipeline.check(_EFFECT_LEAK, file=FILE)
     assert "E125" in [d.error_code for d in checked.errors], [
         (d.error_code, d.description[:80]) for d in checked.errors]
+
+
+# =====================================================================
+# The if's own joins, and the literal strengthening, one cell each
+# =====================================================================
+
+_THROWING_PAYLOAD = """\
+private fn j(@Bool -> @Option<Int>)
+  requires(true)
+  ensures(true)
+  effects(<Exn<Int>>)
+{{
+  if @Bool.0 then {{ {first} }} else {{ {second} }}
+}}
+"""
+
+
+def test_repro_1716_a_branch_whose_payload_throws_joins_onto_the_other() -> None:
+    """`Some(throw(1))` is an `Option<Never>`, a subtype of the `None`
+    branch's `Option<Int>`: the then branch joined onto the else branch
+    gives the `if` `Option<Int>`, in either order.  The else branch joined
+    onto the then branch, the general path's first join, gives
+    `Option<Never>`, a type whose payload no value has."""
+    for first, second in (("Some(throw(1))", "None"),
+                          ("None", "Some(throw(1))")):
+        source = _THROWING_PAYLOAD.format(first=first, second=second)
+        assert _recorded(source, ast.IfExpr) == ["Option<Int>"], first
+
+
+_TWO_LOST = """\
+private forall<T> fn first(@Array<T> -> @T)
+  requires(array_length(@Array<T>.0) > 0)
+  ensures(true)
+  effects(pure)
+{{
+  @Array<T>.0[0]
+}}
+
+public fn f(@Bool -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  array_length(if @Bool.0 then {{ {first} }} else {{ {second} }})
+}}
+"""
+
+
+def test_repro_1716_two_lost_builtin_variables_take_the_then_branch() -> None:
+    """Two built-ins' variables a failed substitution lost (`array_map`'s
+    `B`, `map_values`'s `V` and `map_keys`'s `K` beside an argument nothing
+    types): the join fills neither, the branches fit with each variable a
+    wildcard, and the `if` is accepted at its then branch's type, as two
+    open branches always gave."""
+    for first, second, expected in (
+            ("array_map([1], first([]))", "map_values(first([]))",
+             "Array<'B#b>"),
+            ("map_keys(first([]))", "array_map([1], first([]))",
+             "Array<'K#b>")):
+        source = _TWO_LOST.format(first=first, second=second)
+        assert _recorded(source, ast.IfExpr) == [expected], first
+
+
+def _int_gt_zero() -> RefinedType:
+    return RefinedType(INT, ast.BinaryExpr(
+        op=ast.BinOp.GT, left=ast.SlotRef(type_name="Int", type_args=None,
+                                          index=0),
+        right=ast.IntLit(value=0)))
+
+
+def test_repro_1716_a_literal_before_a_refined_leaf_is_held_to_it() -> None:
+    """A literal leaf ahead of a refined leaf: the strengthening reads every
+    leaf, so the join is at the refined leaf's type, the literal asked of
+    it once."""
+    pos = _int_gt_zero()
+    lit = ast.IntLit(value=1)
+    slot = ast.SlotRef(type_name="PosInt", type_args=None, index=0)
+    join = ast.IfExpr(condition=ast.BoolLit(value=True), then_branch=lit,
+                      else_branch=slot)
+    types: dict[int, Type] = {id(lit): INT, id(slot): pos, id(join): INT}
+    asked: list[tuple[ast.Expr, Type]] = []
+
+    def holds(leaf: ast.Expr, ty: Type) -> bool:
+        asked.append((leaf, ty))
+        return True
+
+    got = narrowing.established_type(join, lambda e: types.get(id(e)), holds)
+    assert got is pos, got
+    assert asked == [(lit, pos)], asked
+
+
+def test_repro_1716_a_literal_at_the_shared_type_is_asked_nothing() -> None:
+    """A literal leaf whose own type is the other leaves' type shares it
+    without a probe: the join is at that type, *holds* never asked."""
+    lit = ast.IntLit(value=1)
+    slot = ast.SlotRef(type_name="Int", type_args=None, index=0)
+    join = ast.IfExpr(condition=ast.BoolLit(value=True), then_branch=lit,
+                      else_branch=slot)
+    types: dict[int, Type] = {id(lit): INT, id(slot): INT, id(join): INT}
+    asked: list[tuple[ast.Expr, Type]] = []
+
+    def holds(leaf: ast.Expr, ty: Type) -> bool:
+        asked.append((leaf, ty))
+        return False
+
+    got = narrowing.established_type(join, lambda e: types.get(id(e)), holds)
+    assert got == INT, got
+    assert asked == [], asked
