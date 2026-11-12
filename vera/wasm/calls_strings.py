@@ -372,13 +372,14 @@ class CallsStringsMixin:
         self, arg_s: ast.Expr, arg_idx: ast.Expr, at: ast.Node | None,
     ) -> str:
         """The `string_index_out_of_bounds` message: the call, and the bound
-        its index must fall under — the string's length in BYTES."""
-        s_text = ast.format_expr(arg_s)
-        i_text = ast.format_expr(arg_idx)
+        its index must fall under — the string's length in BYTES.  Each a
+        node rendered whole by :func:`ast.format_expr` (#1573)."""
+        call = ast.FnCall(name="string_char_code", args=(arg_s, arg_idx))
+        lower, upper = ast.index_bounds(arg_s, arg_idx, "string_length")
         return (
             f"String index out of bounds{self._at_line(at)}: "
-            f"`string_char_code({s_text}, {i_text})` needs `0 <= {i_text}` "
-            f"and `{i_text} < string_length({s_text})`, the string's length "
+            f"`{ast.format_expr(call)}` needs `{ast.format_expr(lower)}` "
+            f"and `{ast.format_expr(upper)}`, the string's length "
             "in bytes."
         )
 

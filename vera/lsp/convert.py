@@ -30,7 +30,7 @@ from urllib.error import URLError
 from lsprotocol import types as lsp
 
 from vera.ast import Span
-from vera.errors import SourceLocation
+from vera.errors import SourceLocation, source_lines
 
 
 def uri_to_path(uri: str) -> str:
@@ -110,14 +110,14 @@ class LineIndex:
 
     Built once per document version (the store caches it; see
     ``documents.py``) and queried per conversion.  Lines are split with
-    ``splitlines()`` so all Unicode line boundaries Lark could have
-    counted are covered; out-of-range lines degrade to identity
+    :func:`vera.errors.source_lines`, at ``\\n`` alone, which is where Lark
+    counts a line (#1853); out-of-range lines degrade to identity
     transcoding rather than raising, because diagnostics can point at
     a virtual line just past EOF (e.g. unexpected-end-of-input).
     """
 
     def __init__(self, text: str) -> None:
-        self._lines = text.splitlines()
+        self._lines = source_lines(text)
 
     def _line_text(self, line0: int) -> str:
         if 0 <= line0 < len(self._lines):
