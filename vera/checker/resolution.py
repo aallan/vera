@@ -77,35 +77,6 @@ def _span_text(source: str, span: ast.Span | None) -> str | None:
     return None if bounds is None else source[bounds[0]:bounds[1]]
 
 
-#: The prefix of a join mark's name (`ResolutionMixin._join_mark`): a fresh
-#: variable, so every judgement takes it for an open position.
-_JOIN_MARK = "join$"
-
-
-def _join_mark_names(ty: Type) -> set[str]:
-    """The names of the join marks in *ty*."""
-    ty = base_type(ty)
-    if isinstance(ty, TypeVar):
-        return {ty.name} if ty.name.startswith(_JOIN_MARK) else set()
-    out: set[str] = set()
-    if isinstance(ty, AdtType):
-        for arg in ty.type_args:
-            out |= _join_mark_names(arg)
-    elif isinstance(ty, FunctionType):
-        for param in ty.params:
-            out |= _join_mark_names(param)
-        out |= _join_mark_names(ty.return_type)
-    return out
-
-
-def has_join_mark(ty: Type) -> bool:
-    """Whether a join mark (`ResolutionMixin._join_mark`) stands in *ty*."""
-    return bool(_join_mark_names(ty))
-
-
-_has_join_mark = has_join_mark
-
-
 def _part_of(ty: Type, whole: Type) -> bool:
     """Whether *ty* is *whole* or one of its parts, the same object (the
     type a constructor passes its argument down is the part of the type it
@@ -123,13 +94,20 @@ def _part_of(ty: Type, whole: Type) -> bool:
 
 def _bound_parts(pattern: Type, concrete: Type, expr: ast.Expr | None,
                  met: dict[str, list[tuple[ast.Expr | None, Type]]],
-                 ) -> None:
+                 *, into_functions: bool = False) -> None:
     """Each type a type variable of *pattern* meets in *concrete*, with
     *expr*, the expression whose type *concrete* is, where the variable is
     the whole of *pattern* (the head, where the join reads an `Int`
     expression's static sign) and ``None`` below it (#1684).  A position
     *concrete* leaves open (a variable, a literal's hole, the unknown)
-    gives the variable nothing."""
+    gives the variable nothing.
+
+    A function type in *pattern* is passed by unless *into_functions*: a
+    variable at a function-typed argument's positions is fixed by their
+    polarity (spec §4.2, `_apply_polarity_pins`), not by the join of the
+    arguments' types, so `apply2(@Int.0, fn(@Int -> @Nat) { .. })` is at
+    `Int`.  A variable bound to a whole function type (`second(f, g)`)
+    meets it at the head, where the join reads it."""
     pattern = base_type(pattern)
     if isinstance(pattern, TypeVar):
         if (contains_literal_hole(concrete)
@@ -144,13 +122,15 @@ def _bound_parts(pattern: Type, concrete: Type, expr: ast.Expr | None,
             and pattern.name == concrete.name
             and len(pattern.type_args) == len(concrete.type_args)):
         for p, c in zip(pattern.type_args, concrete.type_args):
-            _bound_parts(p, c, None, met)
-    elif (isinstance(pattern, FunctionType)
+            _bound_parts(p, c, None, met, into_functions=into_functions)
+    elif (into_functions
+            and isinstance(pattern, FunctionType)
             and isinstance(concrete, FunctionType)
             and len(pattern.params) == len(concrete.params)):
         for p, c in zip(pattern.params, concrete.params):
-            _bound_parts(p, c, None, met)
-        _bound_parts(pattern.return_type, concrete.return_type, None, met)
+            _bound_parts(p, c, None, met, into_functions=True)
+        _bound_parts(pattern.return_type, concrete.return_type, None, met,
+                     into_functions=True)
 
 
 @dataclass(frozen=True)
@@ -1166,10 +1146,6 @@ class ResolutionMixin:
         if (isinstance(expr, ast.ArrayLit) and expr.elements
                 and isinstance(ty, AdtType) and ty.name == "Array"
                 and len(ty.type_args) == 1):
-            recorded = self._literal_soft_results.get(ast.span_key(expr))
-            if recorded is not None and _has_join_mark(recorded):
-                # The elements' join no context decided (#1684).
-                return recorded
             elem = ty.type_args[0]
             return AdtType("Array", (_meet_literal_holes(
                 tuple(self._literal_soft_type(e, elem)
@@ -1194,14 +1170,6 @@ class ResolutionMixin:
                 return _overlay_literal_holes(recorded, ty)
         return ty
 
-    def _softly_decided(self, expr: ast.Expr, ty: Type) -> bool:
-        """Whether a part of *expr*'s type *ty* was decided only
-        provisionally: by a literal's own value (#1541), or by the join of
-        a generic call's arguments (#1684), so a context that decides it
-        synthesizes *expr* again against that context."""
-        soft = self._literal_soft_type(expr, ty) or ty
-        return contains_literal_hole(soft) or _has_join_mark(soft)
-
     def _record_literal_soft_result(self, node: ast.Node, soft: Type,
                                     ) -> None:
         """Record which parts of *node*'s result its literals decided
@@ -1211,7 +1179,7 @@ class ResolutionMixin:
         key = ast.span_key(node)
         if key is None:
             return
-        if contains_literal_hole(soft) or _has_join_mark(soft):
+        if contains_literal_hole(soft):
             self._literal_soft_results[key] = soft
         else:
             self._literal_soft_results.pop(key, None)
@@ -1269,11 +1237,9 @@ class ResolutionMixin:
             self._unify_for_inference(param_ty, self._as_holes(soft_ty),
                                       mapping, conflicts, pins=pins)
             pinned.extend((index, pin) for pin in pins.found)
-            # A join mark is the type its join gave: an argument's, to set
-            # beside the others (the context alone may decide it).
-            _bound_parts(param_ty, self._unmark(soft_ty), arg, given)
+            _bound_parts(param_ty, soft_ty, arg, given)
+        self._settle_disagreement(given, mapping)
         from_context = self._expected_bindings(result_type, expected)
-        joined = self._settle_disagreement(given, from_context, mapping)
         # #1684 (rule C): a variable no argument gives a type, or one an
         # argument gives a type holding a variable a nested call left open
         # (`head_plain([])`'s `?`, `wrap(None)`'s `Option<?>`), takes it
@@ -1288,11 +1254,6 @@ class ResolutionMixin:
                 mapping[tv] = ctx_ty
             elif (contains_fresh_typevar(bound)
                     and not contains_literal_hole(bound)):
-                if _has_join_mark(bound) and not self._fits(
-                        self._unmark(bound), ctx_ty):
-                    # A join the context's type does not admit stays the
-                    # join: the mismatch is the binding's.
-                    continue
                 filled = self._join(ctx_ty, bound)
                 if filled is not None and not contains_fresh_typevar(filled):
                     mapping[tv] = filled
@@ -1310,69 +1271,31 @@ class ResolutionMixin:
                 mapping[tv] = default_literal_holes(mapping[tv])
         else:
             soft = dict(mapping)
-        # A position the arguments' join decided (rule B (b)) is provisional
-        # until the context declines to decide it, as a literal's hole is:
-        # the call's soft result marks it (`_join_mark`), so an enclosing
-        # call whose expected type decides its own variable there takes
-        # that type (rule C fills the mark like any open variable) and
-        # synthesizes this call again against it, where (a) can apply.  The
-        # mapping, the instance and every recorded type hold the join.
-        for tv, bound in list(mapping.items()):
-            if _has_join_mark(bound):
-                soft[tv] = bound
-                mapping[tv] = self._unmark(bound)
-        for tv in joined:
-            if tv in mapping and not _has_join_mark(soft.get(tv, mapping[tv])):
-                soft[tv] = self._join_mark(mapping[tv])
         if pinned:
             self._apply_polarity_pins(pinned, mapping, soft, args)
         return mapping, soft
 
-    def _join_mark(self, joined: Type) -> TypeVar:
-        """A mark standing for *joined*, a position the arguments' join
-        decided, in a call's soft result (#1684)."""
-        self._fresh_id += 1
-        mark = TypeVar(f"{_JOIN_MARK}{self._fresh_id}")
-        self._join_marks[mark.name] = joined
-        return mark
-
-    def _unmark(self, ty: Type) -> Type:
-        """*ty* with each join mark the join it stands for."""
-        marks = {name: self._join_marks[name] for name in _join_mark_names(ty)}
-        return substitute(ty, marks) if marks else ty
-
     def _settle_disagreement(
         self,
         given: dict[str, list[tuple[ast.Expr | None, Type]]],
-        from_context: dict[str, Type],
         mapping: dict[str, Type],
-    ) -> set[str]:
+    ) -> None:
         """Rule B of #1684 (spec §5.9): a variable two or more arguments
-        give different types takes, whichever comes first,
-
-        a. the type the result is expected at (*from_context*), where each
-           of those types fits it (`_fits`, the argument fit): each
-           argument is then held to it where it is passed, at its own
-           position, where the caller's facts prove a narrowing;
-        b. otherwise the type they share, `_value_join` (spec §4.8's join,
-           at a function type's parameter what each of them accepts).
+        give different types takes the type they share, `_value_join` (spec
+        §4.8's join, at a function type's parameter what each of them
+        accepts), whatever the result is expected at.  A narrowing into a
+        stronger type the result is bound at is then the binding's, of the
+        call's result, where a run-time check stands: an argument held to
+        the stronger type where it is passed has none for a refinement.
 
         Two types no position reconciles keep the first binding, and the
         argument check refuses the other.  A variable the arguments agree
-        on, or one argument fixes, is left as they give it.  Returns the
-        variables (b) decided, whose positions stay provisional
-        (`_join_mark`)."""
-        joined: set[str] = set()
+        on, or one argument fixes, is left as they give it."""
         for tv, parts in given.items():
             if len(parts) < 2 or tv not in mapping:
                 continue
             first = parts[0][1]
             if all(types_equal(t, first) for _, t in parts[1:]):
-                continue
-            ctx_ty = from_context.get(tv)
-            if ctx_ty is not None and all(
-                    self._fits(t, ctx_ty) for _, t in parts):
-                mapping[tv] = ctx_ty
                 continue
             structure: Type = first
             for _, t in parts[1:]:
@@ -1382,8 +1305,6 @@ class ResolutionMixin:
                 structure = step
             else:
                 mapping[tv] = self._value_join(structure, parts)
-                joined.add(tv)
-        return joined
 
     def _expected_bindings(self, result_type: Type | None,
                            expected: Type | None) -> dict[str, Type]:
@@ -1401,7 +1322,8 @@ class ResolutionMixin:
         # (`twice(None)` at `Tuple<Option<Int>, Option<String>>`) takes
         # neither: the argument check names both positions.
         met: dict[str, list[tuple[ast.Expr | None, Type]]] = {}
-        _bound_parts(result_type, expected, None, met)
+        _bound_parts(result_type, expected, None, met,
+                     into_functions=True)
         conflicted = {tv for tv, parts in met.items()
                       if any(not types_equal(t, parts[0][1])
                              for _, t in parts[1:])}
@@ -1684,9 +1606,7 @@ def _meet_literal_holes(parts: tuple[Type | None, ...], ty: Type) -> Type:
 
 def _overlay_literal_holes(soft: Type, ty: Type) -> Type:
     """*ty* with a hole wherever *soft* has one at an `Int` or `Nat`
-    position of *ty*, and a join mark wherever *soft* has one (#1684)."""
-    if isinstance(soft, TypeVar) and soft.name.startswith(_JOIN_MARK):
-        return soft
+    position of *ty*."""
     if is_literal_hole(soft):
         if isinstance(ty, PrimitiveType) and ty.name in ("Int", "Nat"):
             return soft

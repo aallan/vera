@@ -21,7 +21,6 @@ from vera.lowering import (
     quantifier_bound_lowerable,
     quantifier_predicate_refusals,
 )
-from vera.checker.resolution import has_join_mark
 from vera.types import (
     is_unknown_like,
     AdtType,
@@ -1247,12 +1246,6 @@ class ExpressionsMixin:
                 and len(context.type_args) == len(expr.args)):
             return any(self._call_literal_meets_nat(a, c)
                        for a, c in zip(expr.args, context.type_args))
-        if isinstance(expr, (ast.ArrayLit, ast.FnCall, ast.ModuleCall)):
-            # A position the join of its arguments or elements decided is
-            # provisional: the context decides it (#1684).
-            soft = self._literal_soft_results.get(ast.span_key(expr))
-            if soft is not None and has_join_mark(soft):
-                return True
         if (isinstance(expr, ast.ArrayLit) and isinstance(context, AdtType)
                 and context.name == "Array" and len(context.type_args) == 1):
             return any(self._call_literal_meets_nat(e, context.type_args[0])
@@ -1523,22 +1516,23 @@ class ExpressionsMixin:
         self, expr: ast.ArrayLit, elem_types: Sequence[Type | None],
         structure: Type, element_ctx: Type | None,
     ) -> tuple[Type, Type]:
-        """The literal's element type by spec §4.12.1's rule, the rule a
-        generic call's type variable takes (#1684): where the elements'
-        types differ, the element type the context expects where each of
-        them fits it, each element then held to it; otherwise the type
-        they share (`_value_join`, the join of spec §4.8), whichever comes
-        first.  The context's element type then fills what the elements
+        """The literal's element type by spec §4.12.1's rule (#1684):
+        where the elements' types differ, the element type the literal's
+        own context expects where each of them fits it, each element then
+        held to it, as before #1684; otherwise the type they share
+        (`_value_join`, the join of spec §4.8, which a generic call's
+        disagreeing arguments give its variable, spec §5.9), whichever
+        comes first.  The context's element type then fills what the elements
         leave open (`None`'s payload, an empty literal's element type).
 
         Returns the type each element is held to (before the context's
         filling, so a refused element is named against what the elements
         gave) and the literal's element type.
 
-        A join no context decided stays provisional (`_join_mark`): the
-        literal's soft result marks it, so an enclosing generic call whose
-        expected type decides it synthesizes the literal again against
-        that type."""
+        Only the literal's own context decides: a literal with none (an
+        argument of a generic call, an indexed literal) is the elements'
+        join, and a narrowing of it is where it is bound, as a generic
+        call's join is (spec §5.9)."""
         # An element a literal typed takes its type from the others and the
         # context (#1541), as a literal argument does: it gives the element
         # type nothing to disagree with.
@@ -1552,7 +1546,6 @@ class ExpressionsMixin:
                and not contains_unknown(element_ctx)
                and not contains_literal_hole(element_ctx) else None)
         element_type = structure
-        decided = False
         if typed and any(not types_equal(t, typed[0][1])
                          for _, t in typed[1:]):
             if ctx is not None and all(self._fits(t, ctx) for _, t in typed):
@@ -1566,18 +1559,12 @@ class ExpressionsMixin:
                     joined = step
                 else:
                     element_type = self._value_join(joined, typed)
-                    decided = True
         held = element_type
         if ctx is not None and (contains_fresh_typevar(element_type)
                                 or contains_unknown(element_type)):
             filled = self._join(ctx, element_type)
             if filled is not None:
                 element_type = filled
-                decided = False
-        self._record_literal_soft_result(expr, AdtType("Array", (
-            self._join_mark(element_type)
-            if decided and not contains_fresh_typevar(element_type)
-            else element_type,)))
         return held, element_type
 
     def _leaves_open(self, ty: Type) -> bool:

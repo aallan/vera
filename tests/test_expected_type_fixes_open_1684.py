@@ -10,11 +10,17 @@ The rules, spec §5.9 and §4.12.1:
   nothing an argument fixed is overridden
   (`ResolutionMixin._infer_type_args_in_context`);
 * B: a variable two or more arguments give different types takes the type
-  the result is expected at where each of them fits it, each held to it
-  where it is passed; otherwise the type they share (`_value_join`, the
-  join of spec §4.8, its polarity at a function type's parameter included);
-* J: an array literal's element type by the same rule over its elements,
-  and the context's element type fills what the elements leave open;
+  they share (`_value_join`, the join of spec §4.8, its polarity at a
+  function type's parameter included), whatever the result is expected
+  at; a narrowing into a stronger type the result is bound at is the
+  binding's, of the call's result, where a run-time check stands.  A
+  variable at a function-typed argument's positions is fixed by their
+  polarity (spec §4.2), not by the join;
+* J: an array literal's element type: where its elements' types differ,
+  the element type the literal's own context expects where each element
+  fits it, each held to it at the element (as before #1684); otherwise
+  the elements' join.  The context's element type fills what the
+  elements leave open;
 * E and I: an empty literal takes its type from the context, and an index
   expected at a type reads an array of that type.
 
@@ -40,6 +46,7 @@ pytestmark = pytest.mark.matrix(decides=[
     "vera/checker/control.py",
     "vera/checker/expressions.py",
     "vera/checker/resolution.py",
+    "vera/obligations/table.py",
 ])
 
 
@@ -247,6 +254,183 @@ def test_repro_a_nat_closure_is_never_handed_a_negative_int(
 
 
 # ---------------------------------------------------------------------
+# B: the join stands whatever is expected, and a narrowing into the
+# stronger type is the binding's, where a run-time check stands
+# ---------------------------------------------------------------------
+
+_RS_TYPE = "type RS = { @Set<Int> | set_size(@Set<Int>.0) > 0 };\n\n"
+
+_POS_TYPE = "type Pos = { @Int | @Int.0 > 0 };\n\n"
+
+_PICK = _fn("pick", "@Bool, @T, @T", "T",
+            "if @Bool.0 then {\n  @T.1\n} else {\n  @T.0\n}",
+            forall="forall<T> ")
+
+_OPQ = _fn("opq", "@Int", "Int", "@Int.0 - 10")
+
+
+def _main_printing(call: str) -> str:
+    return _fn("main", "@Unit", "Unit", f"IO.print(int_to_string({call}))",
+               effect="<IO>", visibility="public")
+
+
+def _guarded_at_binding(source: str, kind: str, bound: str) -> None:
+    """`vera verify` passes, the narrowing into the refinement (or `Nat`)
+    is one `tier3` row at *bound*, the expression the `let` binds, whose
+    check the compiled module holds, and the run traps on the violating
+    value the program passes."""
+    verified = pipeline.verify(source, reconcile=True)
+    assert verified.errors == (), [e.format() for e in verified.errors]
+    rows = [(o.status, o.expr_text) for o in verified.obligations
+            if o.kind == kind and o.fn_name == "g"
+            and o.status != "verified"]
+    assert rows == [("tier3", bound)], rows
+    _trap(source)
+
+
+#: The reviewer's programs at a refinement the solver leaves to run time
+#: (a `set_size` predicate): the `let`'s binding of the call.
+_RS_CALLS = {
+    "unwrap": ("@Option<Set<Int>>, @RS",
+               "option_unwrap_or(@Option<Set<Int>>.0, @RS.0)",
+               "g(Some(set_new()), set_add(set_new(), 1))"),
+    "pick_refined_first": ("@RS, @Set<Int>",
+                           "pick(false, @RS.0, @Set<Int>.0)",
+                           "g(set_add(set_new(), 1), set_new())"),
+    "pick_base_first": ("@RS, @Set<Int>",
+                        "pick(true, @Set<Int>.0, @RS.0)",
+                        "g(set_add(set_new(), 1), set_new())"),
+    "pick_nested": ("@RS, @Set<Int>",
+                    "pick(false, @RS.0, pick(true, @Set<Int>.0, @RS.0))",
+                    "g(set_add(set_new(), 1), set_new())"),
+    "pick_nested_inner_first": (
+        "@RS, @Set<Int>",
+        "pick(true, pick(false, @RS.0, @Set<Int>.0), @RS.0)",
+        "g(set_add(set_new(), 1), set_new())"),
+}
+
+
+@pytest.mark.parametrize("form", list(_RS_CALLS))
+def test_repro_a_refined_binding_of_a_disagreeing_call_is_guarded(
+        form: str) -> None:
+    """`let @RS = option_unwrap_or(@Option<Set<Int>>.0, @RS.0)`, and `pick`
+    of an `@RS` beside a `@Set<Int>` in both orders and nested: the
+    arguments give `T` `RS` and `Set<Int>`, which join at `Set<Int>`, and
+    the narrowing into `RS` is the `let`'s, checked at run time, so an
+    empty set never stands as an `@RS`.  Under the expected-type clause
+    (taking the binding's `RS` for `T` and holding each argument to it)
+    the narrowing moved onto the argument, where no check stands: the
+    `unwrap` form verified with the row `tier3_unguarded` and printed 0,
+    the `pick` forms were refused (E541) and printed 0."""
+    formals, call, actuals = _RS_CALLS[form]
+    source = (_RS_TYPE + _PICK + "\n"
+              + _fn("g", f"{formals}", "Int",
+                    f"let @RS = {call};\nset_size(@RS.0)") + "\n"
+              + _main_printing(actuals))
+    _guarded_at_binding(source, "refine_bind", call)
+
+
+#: The same at `Pos`, whose predicate the solver reads: `g`'s argument is
+#: any `Int`, so the binding stays a run-time check, and `-5` traps.
+_POS_CALLS = {
+    "unwrap": ("@Option<Int>, @Pos",
+               "option_unwrap_or(@Option<Int>.0, @Pos.0)",
+               "g(Some(0 - 5), 1)"),
+    "pick_refined_first": ("@Pos, @Int", "pick(false, @Pos.0, @Int.0)",
+                           "g(3, 0 - 5)"),
+    "pick_base_first": ("@Pos, @Int", "pick(true, @Int.0, @Pos.0)",
+                        "g(3, 0 - 5)"),
+    "opaque_refined_first": ("@Pos, @Int",
+                             "pick(false, @Pos.0, opq(@Int.0))",
+                             "g(3, 5)"),
+    "opaque_base_first": ("@Pos, @Int",
+                          "pick(true, opq(@Int.0), @Pos.0)",
+                          "g(3, 5)"),
+}
+
+
+@pytest.mark.parametrize("form", list(_POS_CALLS))
+def test_repro_a_negative_int_never_stands_as_a_pos(form: str) -> None:
+    """`let @Pos = pick(false, @Pos.0, opq(@Int.0))` with `opq(5)` = -5:
+    the join is `Int`, the narrowing is the `let`'s, and the run traps.
+    Under the expected-type clause the row moved onto the argument, was
+    refuted there (E505), and `vera run`, which no refutation stops,
+    printed -5 for a `@Pos`."""
+    formals, call, actuals = _POS_CALLS[form]
+    source = (_POS_TYPE + _PICK + "\n" + _OPQ + "\n"
+              + _fn("g", formals, "Int", f"let @Pos = {call};\n@Pos.0")
+              + "\n" + _main_printing(actuals))
+    _guarded_at_binding(source, "refine_bind", call)
+    assert "-5" not in (pipeline.run(source).stdout or "")
+
+
+_APPLY2 = {
+    "value_first": (
+        "type Endo<T> = fn(T -> T) effects(pure);\n\n"
+        + _fn("apply2", "@T, @Endo<T>", "T", "apply_fn(@Endo<T>.0, @T.0)",
+              forall="forall<T> "),
+        "apply2(@Int.0, fn(@Int -> @Nat) effects(pure) { abs(@Int.0) })"),
+    "closure_first": (
+        "type Endo<T> = fn(T -> T) effects(pure);\n\n"
+        + _fn("apply2", "@Endo<T>, @T", "T", "apply_fn(@Endo<T>.0, @T.0)",
+              forall="forall<T> "),
+        "apply2(fn(@Int -> @Nat) effects(pure) { abs(@Int.0) }, @Int.0)"),
+}
+
+
+@pytest.mark.parametrize("order", list(_APPLY2))
+def test_repro_a_closure_s_positions_fix_the_variable_by_polarity(
+        order: str) -> None:
+    """`let @Nat = apply2(@Int.0, fn(@Int -> @Nat) { abs(@Int.0) })`, the
+    closure before or after the value: the closure's `Int` parameter fixes
+    `T` at `Int` (spec §4.2's polarity), the call is `apply2` at `Int`,
+    and the narrowing into `Nat` is the `let`'s, guarded; the program
+    prints 5.  Under the expected-type clause `T` took the `let`'s `Nat`,
+    the `Int` value was held to it and refuted (E503): a correct program
+    refused."""
+    decl, call = _APPLY2[order]
+    source = (decl + "\n"
+              + _fn("g", "@Int", "Int",
+                    f"let @Nat = {call};\nnat_to_int(@Nat.0)") + "\n"
+              + _main_printing("g(0 - 5)"))
+    assert _instances(source, "apply2") == {("Int",)}
+    verified = pipeline.verify(source, reconcile=True)
+    assert verified.errors == (), [e.format() for e in verified.errors]
+    rows = [(o.status, o.expr_text) for o in verified.obligations
+            if o.kind == "nat_bind" and o.fn_name == "g"]
+    assert rows == [("tier3", call)], rows
+    ran = pipeline.run(source)
+    assert ran.trap is None and ran.stdout == "5", (ran.trap, ran.stdout)
+
+
+@pytest.mark.parametrize("order", ["nat_first", "int_first"])
+def test_repro_a_nat_binding_of_second_is_the_binding_s_narrowing(
+        order: str) -> None:
+    """`let @Nat = second(@Nat.0, @Int.0)`: `T` is `Int` in both orders,
+    and the narrowing is the `let`'s, guarded: the run traps where the
+    call returns the `Int` (-5) and prints 3 where it returns the
+    `Nat`."""
+    a, b = ("@Nat.0", "@Int.0") if order == "nat_first" else (
+        "@Int.0", "@Nat.0")
+    call = f"second({a}, {b})"
+    source = (_SECOND + "\n"
+              + _fn("g", "@Int, @Nat", "Int",
+                    f"let @Nat = {call};\nnat_to_int(@Nat.0)") + "\n"
+              + _main_printing("g(0 - 5, 3)"))
+    assert _instances(source, "second") == {("Int",)}
+    verified = pipeline.verify(source, reconcile=True)
+    assert verified.errors == (), [e.format() for e in verified.errors]
+    rows = [(o.status, o.expr_text) for o in verified.obligations
+            if o.kind == "nat_bind" and o.fn_name == "g"]
+    assert rows == [("tier3", call)], rows
+    ran = pipeline.run(source)
+    if order == "nat_first":
+        assert ran.trap is not None, ran.stdout
+    else:
+        assert ran.trap is None and ran.stdout == "3", (ran.trap, ran.stdout)
+
+
+# ---------------------------------------------------------------------
 # The matrix: site x pair x order x expected
 # ---------------------------------------------------------------------
 
@@ -268,6 +452,8 @@ type IOCb = fn(Int -> Int) effects(<IO>);
 type TakesPure = fn(PureCb -> Int) effects(pure);
 
 type TakesIO = fn(IOCb -> Int) effects(pure);
+
+type RS = { @Set<Int> | set_size(@Set<Int>.0) > 0 };
 
 """
 
@@ -302,6 +488,7 @@ _READ = {
     "SmallFn": "apply_fn({v}, 50)",
     "TakesPure": "apply_fn({v}, " + _IO_CB + ")",
     "TakesIO": "apply_fn({v}, " + _IO_CB + ")",
+    "RS": "set_size({v})", "Set<Int>": "set_size({v})",
 }
 
 PAIRS = {
@@ -309,6 +496,12 @@ PAIRS = {
                      "1, 0 - 5", "Int", "String"),
     "refined_base": _Pair("PosInt", "Int", "@PosInt.0", "@Int.0",
                           "@PosInt, @Int", "1, 0 - 5", "Int", "String"),
+    # A refinement the solver leaves to run time: a narrowing into it is
+    # `tier3`, so the program verifies and its run says whether a check
+    # stands where the narrowing is.
+    "refined_set": _Pair("RS", "Set<Int>", "@RS.0", "@Set<Int>.0",
+                         "@RS, @Set<Int>", "set_add(set_new(), 1), set_new()",
+                         "Set<Int>", "String"),
     "fn_param": _Pair(
         "IntFn", "NatFn", "fn(@Int -> @Int) effects(pure) { @Int.0 }",
         "fn(@Nat -> @Int) effects(pure) { nat_to_int(@Nat.0) }",
@@ -348,10 +541,13 @@ def _expected_type(pair: _Pair, expected: str) -> str | None:
             "unrelated": pair.unrelated}[expected]
 
 
-def _instance(pair: _Pair, expected: str) -> str | None:
-    """The type the rule gives `T`: the expected type where both values
-    fit it (a `strong` value fits `weak`; neither fits `unrelated`),
-    otherwise the type both accept."""
+def _instance(site: str, pair: _Pair, expected: str) -> str | None:
+    """The type the rule gives `T`.  At a call, the type both accept,
+    whatever is expected.  At the array literal, the expected element type
+    where both values fit it (a `strong` value fits `weak`; neither fits
+    `unrelated`), otherwise the type both accept."""
+    if site != "array":
+        return pair.join
     want = _expected_type(pair, expected)
     if pair.join is not None and (
             want == pair.weak or (want == pair.strong and pair.weak_fits)):
@@ -403,10 +599,11 @@ def _outcome(source: str) -> tuple[object, ...]:
     """What the program does: its check codes, and for one that checks,
     its verify codes, its narrowing rows (kind, status, the expression
     narrowed, which says whether an argument or the call's result is),
-    and, for one `vera verify` passes, its run (the value, or the trap's
-    first line).  The narrowing rows are `f`'s, so the twin's own entry
-    checks are not counted; a refuted narrowing refuses the program, so
-    where `vera run` would have trapped on it is not compared."""
+    and its run (the value, or the trap's first line), whatever `vera
+    verify` said, so a program that verifies traps where its twin does
+    and one `vera verify` refuses still runs as its twin runs.  The
+    narrowing rows are `f`'s, so the twin's own entry checks are not
+    counted."""
     checked = pipeline.check(source)
     codes = tuple(e.error_code for e in checked.errors)
     if codes:
@@ -417,12 +614,32 @@ def _outcome(source: str) -> tuple[object, ...]:
                         if o.kind in ("nat_bind", "refine_bind")
                         and o.fn_name == "f"))
     refused = tuple(e.error_code for e in verified.errors)
-    if refused:
-        return ((), refused, rows)
     ran = pipeline.run(source)
     run = (("trap", str(ran.trap).splitlines()[0]) if ran.trap is not None
            else ("value", ran.value, ran.stdout))
     return ((), refused, rows, run)
+
+
+#: A narrowing the solver leaves to run time or refutes: at a call's
+#: result the two are the same claim (the narrowing is unproved there).
+_UNPROVED = {"tier3": "unproved", "violated": "unproved"}
+
+
+def _unproved(outcome: tuple[object, ...]) -> tuple[object, ...]:
+    """*outcome* with a narrowing's `tier3` and `violated` read alike, and
+    the refutation's own codes (E503, E505) dropped.  The solver refutes a
+    narrowing of the twin's result, an `Int` its `ensures(true)` says
+    nothing of, and leaves the generic instance's result to run time; the
+    narrowing is unproved at the same expression in both, and the run, the
+    rest of the verdict (an E541 among it) and the rows' places decide."""
+    if len(outcome) == 1:
+        return outcome
+    codes, refused, rows, run = outcome
+    assert isinstance(refused, tuple) and isinstance(rows, tuple)
+    return (codes,
+            tuple(c for c in refused if c not in ("E503", "E505")),
+            tuple(sorted((k, _UNPROVED.get(st, st), x) for k, st, x in rows)),
+            run)
 
 
 @pytest.mark.parametrize("expected", EXPECTED)
@@ -434,11 +651,12 @@ def test_a_call_s_variable_takes_one_type_whichever_comes_first(
     """The call records `T` at the rule's type, and the program does what
     the same call to the generic written at that type does, in both
     orders: the same verdict, the same narrowing at the same expression
-    (an argument where the expected type was taken, the call's result
-    where the join was), and the same run."""
+    (at a call the result's binding, the join being the instance; at the
+    literal an element where the expected element type was taken), and
+    the same run."""
     p = PAIRS[pair]
     source = _program(site, p, order, expected, _SITE_DECLS.get(site, ""))
-    instance = _instance(p, expected)
+    instance = _instance(site, p, expected)
     if instance is None:
         # Two types no position reconciles: refused, in both orders.
         assert _outcome(source)[0], _outcome(source)
@@ -453,11 +671,13 @@ def test_a_call_s_variable_takes_one_type_whichever_comes_first(
     recorded = ({i.args for i in checked.typed.instances if i.key == key}
                 if checked.ok else None)
     twin = _program(site, p, order, expected, _twin(site, instance))
-    assert _outcome(source) == _outcome(twin), (recorded, instance)
+    assert _unproved(_outcome(source)) == _unproved(_outcome(twin)), (
+        recorded, instance)
     if checked.ok:
         # An instance is built at its type with every refinement stripped.
         names = {"IntFn": "fn(Int -> Int)", "NatFn": "fn(Nat -> Int)",
                  "SmallFn": "fn(Int -> Int)", "PosInt": "Int",
+                 "RS": "Set<Int>",
                  "TakesPure": "fn(PureCb -> Int)",
                  "TakesIO": "fn(IOCb -> Int)"}
         assert recorded is not None
@@ -466,8 +686,7 @@ def test_a_call_s_variable_takes_one_type_whichever_comes_first(
 
 
 # ---------------------------------------------------------------------
-# B, nested: a position the arguments' join decided is provisional until
-# the context declines to decide it
+# B, nested: each level is the join, and the narrowing is the binding's
 # ---------------------------------------------------------------------
 
 _INT_FN = "fn(@Int -> @Int) effects(pure) { @Int.0 }"
@@ -514,33 +733,35 @@ def _narrowed(source: str) -> list[tuple[str, str]]:
 @pytest.mark.parametrize("order", ["nat_first", "int_first"])
 @pytest.mark.parametrize("depth", [2, 3])
 @pytest.mark.parametrize("outer", ["second", "id"])
-def test_repro_seed317_the_binding_decides_every_level(
+def test_seed317_s_shape_narrows_at_the_binding(
         depth: int, order: str, outer: str) -> None:
     """The shape of generator seeds 317 and 335 reduced: the outer call
-    bound at `@Nat`, the inner holding a `Nat` beside an `Int`.  The inner
-    call has no expected type (a generic's arguments are given none), so
-    it joins at `Int`; that position is provisional, the binding decides
-    the outer call's variable at `Nat`, and the inner call is synthesized
-    again against it, where `Nat` is expected and both arguments fit it.
-    Every level is at `Nat`, and the narrowing is the `Int` argument's,
-    where the caller's facts prove it (here refuted: `f(1, 0 - 5)`).  At
-    the rule-B commit the join stood: every level `Int`, the narrowing the
-    binding's."""
+    bound at `@Nat`, the inner holding a `Nat` beside an `Int`.  Every
+    level is the join, `Int`, and the narrowing into `Nat` is the
+    binding's, of the outermost call's result, checked at run time (the
+    cost the rule names: at 6e272f19 the first argument fixed the inner
+    call at `Nat` and the narrowing was the `Int` argument's, proved where
+    the caller's facts prove it; binding that argument at `Nat` first
+    keeps the proof)."""
     source = _nested(depth, order, "Nat", outer)
-    assert _instances(source, "second") == {("Nat",)}
+    assert _instances(source, "second") == {("Int",)}
     if outer == "id":
-        assert _instances(source, "id") == {("Nat",)}
-    assert _narrowed(source) == [("violated", "@Int.0")]
+        assert _instances(source, "id") == {("Int",)}
+    narrowed = _narrowed(source)
+    assert len(narrowed) == 1 and narrowed[0][0] == "tier3", narrowed
+    assert narrowed[0][1].startswith(f"{outer}("), narrowed
+    # The check stands: reconciliation finds it emitted (no E541).
+    assert pipeline.verify(source, reconcile=True).errors == ()
 
 
 @pytest.mark.parametrize("order", ["nat_first", "int_first"])
 @pytest.mark.parametrize("expected", [None, "Int"])
 @pytest.mark.parametrize("depth", [2, 3])
 @pytest.mark.parametrize("outer", ["second", "id"])
-def test_a_nested_join_no_context_decides_stands(
+def test_a_nested_join_with_no_stronger_context_stands(
         depth: int, expected: str | None, order: str, outer: str) -> None:
-    """Nothing expected outside, or an `Int` (which both fit and which is
-    the join): every level is the join, `Int`, and nothing narrows."""
+    """Nothing expected outside, or an `Int` (the join itself): every
+    level is the join, `Int`, and nothing narrows."""
     source = _nested(depth, order, expected, outer)
     assert _instances(source, "second") == {("Int",)}
     if outer == "id":
@@ -551,10 +772,10 @@ def test_a_nested_join_no_context_decides_stands(
 @pytest.mark.parametrize("order", ["nat_first", "int_first"])
 @pytest.mark.parametrize("depth", [2, 3])
 @pytest.mark.parametrize("outer", ["second", "id"])
-def test_a_nested_join_an_unrelated_binding_declines_is_refused_once(
+def test_a_nested_join_an_unrelated_binding_meets_is_refused_once(
         depth: int, order: str, outer: str) -> None:
-    """A `String` binding fits no level: every level stays the join, and
-    the mismatch is reported once, at the binding."""
+    """A `String` binding: every level is the join, and the mismatch is
+    reported once, at the binding."""
     errors = pipeline.check(_nested(depth, order, "String", outer)).errors
     assert [e.error_code for e in errors] == ["E170"], [
         e.format() for e in errors]
@@ -564,10 +785,9 @@ def test_a_nested_join_an_unrelated_binding_declines_is_refused_once(
 @pytest.mark.parametrize("depth", [2, 3])
 def test_a_nested_function_pair_joins_by_polarity_at_every_level(
         depth: int, order: str) -> None:
-    """The function-type pair nested the same way, nothing expected: every
-    level is what both accept, `fn(Nat -> Int)`, so the -5 is refuted
-    (E503); bound at `IntFn`, which both fit (issue #1819's relaxation),
-    every level is `fn(Int -> Int)`."""
+    """The function-type pair nested the same way: every level is what
+    both accept, `fn(Nat -> Int)`, nothing expected or bound at `IntFn`
+    alike, so the -5 is refuted (E503) when it is applied unbound."""
     x, y = (_INT_FN, _NAT_FN) if order == "int_fn_first" else (
         _NAT_FN, _INT_FN)
     call = _chain(depth, f"second({x}, {y})", fill=_INT_FN)
@@ -580,75 +800,7 @@ def test_a_nested_function_pair_joins_by_polarity_at_every_level(
         "main", "@Unit", "Int",
         f"let @IntFn = {call};\napply_fn(@IntFn.0, 0 - 5)",
         visibility="public")
-    assert _instances(bound, "second") == {("fn(Int -> Int)",)}
-
-
-@pytest.mark.parametrize("outer", ["second", "id"])
-def test_a_join_no_context_decides_is_recorded_as_the_join(
-        outer: str) -> None:
-    """Every later reader of a call whose join no context decided reads
-    the join: the type the check records for each level of the chain is
-    `Int`, and no record holds the provisional mark."""
-    source = _nested(3, "nat_first", None, outer)
-    checked = pipeline.check(source)
-    assert checked.ok, [e.format() for e in checked.errors]
-    recorded = checked.artifacts.expr_types
-    calls = {text for key, text in recorded.items()}
-    assert not any("join" in text for text in calls), calls
-    lines = source.splitlines()
-    body_line = next(i for i, text in enumerate(lines, 1)
-                     if f"{outer}({outer}(" in text)
-    at_body = [text for key, text in recorded.items()
-               if key[0] == body_line and text != "Nat"]
-    assert set(at_body) == {"Int"}, at_body
-
-
-def test_an_inner_argument_s_own_error_is_reported_once() -> None:
-    """A three-deep chain whose innermost argument is wrong on its own
-    (`nope(1)`, no such function), bound at `@Nat`: each level is
-    synthesized again against the binding's type, and the error is
-    reported once."""
-    call = _chain(3, "second(@Nat.0, nope(1))")
-    source = _SECOND + "\n" + _fn(
-        "f", "@Nat, @Int", "Int", f"let @Nat = {call};\nnat_to_int(@Nat.0)")
-    errors = pipeline.check(source).errors
-    assert [e.error_code for e in errors] == ["E200"], [
-        e.format() for e in errors]
-
-
-def test_an_eight_deep_chain_synthesizes_each_argument_once_per_level(
-        monkeypatch: pytest.MonkeyPatch) -> None:
-    """The cost of the provisional join: bound at `@Nat`, each level of a
-    chain is synthesized again against the binding's type once, so the
-    innermost argument of an eight-deep chain is synthesized eight times
-    (the #1541 literal path: nine) and the whole chain 70 times more than
-    the same chain with nothing expected.  A re-synthesis that doubled per
-    level (each level synthesizing its argument twice) would count 2**8."""
-    from vera import ast
-    from vera.checker.core import TypeChecker
-
-    synth = TypeChecker._synth_expr
-    counts = {"all": 0, "innermost": 0}
-
-    def counted(self, expr, *, expected=None):  # type: ignore[no-untyped-def]
-        counts["all"] += 1
-        if isinstance(expr, ast.SlotRef) and expr.type_name == "Int":
-            counts["innermost"] += 1
-        return synth(self, expr, expected=expected)
-
-    monkeypatch.setattr(TypeChecker, "_synth_expr", counted)
-    call = _chain(8, "second(@Nat.0, @Int.0)")
-    totals = {}
-    for bound, body in (
-            (True, f"let @Nat = {call};\nnat_to_int(@Nat.0)"),
-            (False, f"{call} + 0")):
-        counts.update(all=0, innermost=0)
-        assert pipeline.check(_SECOND + "\n" + _fn(
-            "f", "@Nat, @Int", "Int", body)).ok
-        totals[bound] = dict(counts)
-    assert totals[True]["innermost"] == 8
-    assert totals[False]["innermost"] == 1
-    assert totals[True]["all"] - totals[False]["all"] == 70
+    assert _instances(bound, "second") == {("fn(Nat -> Int)",)}
 
 
 # ---------------------------------------------------------------------
@@ -871,16 +1023,21 @@ def test_an_empty_collection_meets_the_refinement_it_is_typed_at(
 
 
 @pytest.mark.parametrize("order", ["nat_first", "int_first"])
-def test_an_index_decides_a_literal_s_provisional_join(order: str) -> None:
-    """`[@Nat.0, @Int.0][1]` returned as `@Nat`: the elements join at
-    `Int` with nothing expected of the literal itself, a provisional join
-    the index's expected `Nat` decides (rule J (a), as a nested call's is):
-    the literal is an `Array<Nat>`, and the narrowing is the `Int`
-    element's, guarded at the element in both orders."""
+def test_an_indexed_literal_is_its_elements_join(order: str) -> None:
+    """`[@Nat.0, @Int.0][1]` returned as `@Nat`: nothing is expected of the
+    literal itself, so its elements join at `Int` in both orders, and the
+    narrowing into `Nat` is the returned result's (as a generic call's
+    join is narrowed at its binding): refuted where it reads the `Int`
+    element, proved where it reads the `Nat` one."""
     a, b = ("@Nat.0", "@Int.0") if order == "nat_first" else (
         "@Int.0", "@Nat.0")
     source = _fn("f", "@Nat, @Int", "Nat", f"[{a}, {b}][1]",
                  visibility="public")
-    rows = [(o.kind, o.expr_text) for o in pipeline.verify(source).obligations
+    verified = pipeline.verify(source, reconcile=True)
+    refuted = order == "nat_first"
+    assert [e.error_code for e in verified.errors] == (
+        ["E503"] if refuted else []), [e.format() for e in verified.errors]
+    rows = [(o.status, o.expr_text) for o in verified.obligations
             if o.kind == "nat_bind" and o.fn_name == "f"]
-    assert rows == [("nat_bind", "@Int.0")], rows
+    assert rows == [("violated" if refuted else "verified",
+                     f"{{ [{a}, {b}][1] }}")], rows

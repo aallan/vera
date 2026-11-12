@@ -884,9 +884,6 @@ class TypeChecker(
         # fixes no variable a call leaves open
         # (`ResolutionMixin._expected_bindings`).
         self._sibling_types: list[Type] = []
-        # #1684: each join mark's join, by the mark's name
-        # (`ResolutionMixin._join_mark`).
-        self._join_marks: dict[str, Type] = {}
 
     @staticmethod
     def _is_public(visibility: str | None) -> bool:
