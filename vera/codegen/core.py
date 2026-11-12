@@ -786,6 +786,8 @@ class CodeGenerator(
         *,
         rationale: str = "",
         error_code: str = "",
+        fix: str = "",
+        spec_ref: str = "",
     ) -> None:
         """Record a compilation error (compiler bug / fatal).
 
@@ -805,7 +807,9 @@ class CodeGenerator(
             location=loc,
             source_line=source_line,
             rationale=rationale,
-            severity="error",
+            fix=fix,
+            spec_ref=spec_ref,
+            severity="error",  # pragma: no mutate — `Diagnostic`'s default severity is "error"
             error_code=error_code,
         ))
         self._diag_fn_keys[id(self.diagnostics[-1])] = self._compiling_fn_key

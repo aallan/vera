@@ -105,17 +105,17 @@ class TestTailCallOptimization517:
     silently failed past ~5-10K iterations.
 
     The fix is a per-fn analyzer (`vera/tail_position.py`)
-    that marks `id(FnCall)` AST nodes in syntactic tail position;
+    that marks `id(FnCall)` AST nodes in syntactic tail position,
+    of which the obligation table keeps those after which no check
+    runs (``ObligationTable.tail_calls``, #1849);
     `_translate_call` emits ``return_call $:foo`` instead of
-    ``call $:foo`` when the call's id is in the marked set AND the
+    ``call $:foo`` when the call's id is in that set AND the
     callee's WASM return type matches the caller's (required for
     WASM `return_call` semantics — the signature must match).
 
-    Initially, allocating functions reverted ``return_call`` →
-    ``call`` in a post-process step because `return_call` discards
-    the current frame and skips the GC epilogue, leaking shadow-
-    stack slots.  #549 replaces that fallback with a GC-aware
-    variant: the post-process now PREPENDS
+    `return_call` discards the current frame and skips the GC
+    epilogue, which would leak shadow-stack slots, so (#549) the
+    post-process PREPENDS
     ``local.get $gc_sp_save; global.set $gc_sp`` before each
     ``return_call``, restoring the shadow-stack pointer to the
     caller's entry baseline so the callee's prologue saves a clean
@@ -123,9 +123,9 @@ class TestTailCallOptimization517:
     the return_call site; the restore only touches the
     ``$gc_sp`` global, so args transfer atomically to the callee.
 
-    Functions with a non-trivial runtime postcondition STILL revert
-    ``return_call`` → ``call`` (the postcondition check runs after
-    the call returns; ``return_call`` would skip it).
+    A function with a non-trivial runtime postcondition has no tail
+    calls (the table's epilogue): the postcondition check runs after
+    the call returns, and ``return_call`` would skip it.
     """
 
     def test_tail_recursive_iteration_succeeds_at_50k(self) -> None:
@@ -276,7 +276,7 @@ public fn caller(-> @Int)
         )
 
     def test_postcondition_function_falls_back_to_plain_call(self) -> None:
-        """A function with a non-trivial `ensures` reverts return_call.
+        """A function with a non-trivial `ensures` has no return_call.
 
         Postcondition checks emit instructions AFTER the function
         body in the WAT assembly (`local.set $ret`, condition
@@ -284,15 +284,14 @@ public fn caller(-> @Int)
         WASM `return_call` discards the current frame and skips
         all of those — silently violating the contract.
 
-        The fallback in `_compile_fn` reverts every `return_call`
-        → `call` when `post_instrs` is non-empty (CodeRabbit
-        finding on PR #550 round 2).  Pre-fix this would have
-        shipped as a soundness hole: a tail-recursive function
+        The obligation table lists such a function's body in its
+        epilogue, so ``ObligationTable.tail_calls`` keeps none of its
+        calls (#1849; first a post-process revert, CodeRabbit finding
+        on PR #550 round 2).  Without it a tail-recursive function
         with a runtime postcondition would skip the postcondition
         check on every iteration and the contract would silently
-        fail.  Trivial postconditions like `ensures(true)` are
-        elided by `_compile_postconditions` and don't trigger the
-        fallback (no instructions are emitted, so nothing is
+        fail.  A trivial postcondition like `ensures(true)` is no
+        epilogue (no instructions are emitted, so nothing is
         skipped).
         """
         # A function with a non-trivial postcondition.  The
@@ -326,13 +325,13 @@ public fn f(-> @Int)
         # The recursive call is in syntactic tail position, so the
         # analyzer MARKS it.  But the postcondition check needs to
         # run after every recursive call's return — `return_call`
-        # would skip it.  Post-process must have reverted the
-        # emission to plain `call`.
+        # would skip it — so the table's rule keeps no tail call
+        # and the emission is a plain `call`.
         assert "call $:count_down" in count_down_body
         assert "return_call $:count_down" not in count_down_body, (
             f"count_down has a non-trivial postcondition (ensures "
             f"@Nat.result >= 0); return_call would skip the runtime "
-            f"check.  Post-process should have reverted to plain "
+            f"check.  The tail-call rule should have kept a plain "
             f"call.  Body:\n{count_down_body}"
         )
 
@@ -574,21 +573,19 @@ public fn f(-> @Int)
     def test_allocating_function_with_postcondition_still_reverts(
         self,
     ) -> None:
-        """Postcondition-bearing allocating fns still revert to call.
+        """Postcondition-bearing allocating fns lower to plain call.
 
-        The GC-aware TCO patch from #549 covers the
-        ``needs_alloc and not post_instrs`` case.  When the
-        function carries a non-trivial runtime postcondition
-        check, the post-process still reverts ``return_call`` →
-        ``call`` because the postcondition check needs to run
-        after the call returns — ``return_call`` would skip it.
+        The GC-aware TCO patch from #549 restores ``$gc_sp`` before
+        each surviving ``return_call``.  A function with a
+        non-trivial runtime postcondition has none: the table's
+        rule (``ObligationTable.tail_calls``, #1849) keeps no tail
+        call where a check runs after the body, since the
+        postcondition check must run after the call returns.
 
-        This pins the precedence: post_instrs revert takes priority
-        over the GC-aware patch.  The function below both allocates
-        (the array literal in the base case sets needs_alloc) AND
-        carries a runtime postcondition (`@Int.result >= 0`).  The
-        post-process must therefore revert to plain ``call``, even
-        though #549's path would otherwise patch in a GC restore.
+        The function below both allocates (the array literal in the
+        base case sets needs_alloc) AND carries a runtime
+        postcondition (`@Int.result >= 0`), so its recursive call is
+        a plain ``call`` with no GC restore before it.
         """
         source = """\
 private fn build(@Nat -> @Int)
@@ -625,30 +622,28 @@ public fn f(-> @Int)
             else len(result.wat)
         )
         build_body = result.wat[build_start:build_end]
-        # post_instrs are present, so return_call must revert to
-        # plain call (so the postcondition check actually runs).
+        # A postcondition check runs after the body, so the call
+        # is a plain call (so the postcondition check actually runs).
         # `\bcall \$:build\b` rules out both `return_call` (leading
         # `\b` requires non-word char before `c`) AND `$build_x`
         # (trailing `\b` requires non-word char after `d`).
         assert re.search(r"\bcall \$:build\b", build_body), (
-            f"Expected plain `call $:build` in post-revert body. "
+            f"Expected plain `call $:build` in the body. "
             f"Body:\n{build_body}"
         )
         assert not re.search(r"return_call \$:build\b", build_body), (
             f"build has a runtime postcondition; return_call would "
-            f"skip it. Post-process should have reverted to plain "
+            f"skip it. The tail-call rule should have kept a plain "
             f"call. Body:\n{build_body}"
         )
         # Tighten: the GC-restore preamble (`local.get <N>;
-        # global.set $gc_sp`) must NOT precede the reverted
+        # global.set $gc_sp`) must NOT precede the plain
         # `call $:build`.  The preamble belongs to #549's GC-aware
-        # TCO path; once we've taken the postcondition-revert path
-        # the preamble has no purpose (we're keeping the frame, not
-        # discarding it via return_call), and injecting it anyway
-        # would corrupt the shadow-stack invariant for the
-        # remainder of the function.  This pins the dispatch
-        # precedence: post_instrs revert > GC-aware patch (the
-        # branches are mutually exclusive, not additive).
+        # TCO path, before a `return_call`; before a plain call it
+        # has no purpose (we're keeping the frame, not discarding it
+        # via return_call), and injecting it anyway would corrupt
+        # the shadow-stack invariant for the remainder of the
+        # function.
         #
         # Note: `local.get ...; global.set $gc_sp` legitimately
         # appears in the GC EPILOGUE at the end of every allocating
@@ -672,11 +667,10 @@ public fn f(-> @Int)
                 prev1 == "global.set $gc_sp"
                 and prev2.startswith("local.get ")
             ), (
-                f"Postcondition-revert path mistakenly injected the "
-                f"#549 GC-restore preamble before `call $:build` at "
-                f"line {idx}.  Preamble lines: {prev2!r}, {prev1!r}. "
-                f"Dispatch precedence violated: post_instrs revert "
-                f"and GC-aware patch should be mutually exclusive. "
+                f"The #549 GC-restore preamble was injected before "
+                f"the plain `call $:build` at line {idx}.  Preamble "
+                f"lines: {prev2!r}, {prev1!r}.  It belongs before a "
+                f"`return_call` only. "
                 f"Body:\n{build_body}"
             )
 

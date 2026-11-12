@@ -1706,8 +1706,8 @@ def test_mover_the_self_tail_prefix_is_rendered_only_where_it_splices() -> None:
     """A `decreases` function's self-tail prefix re-evaluates the measure
     before each `return_call`: the table lists its rows once per tail call
     the function transfers to, and none where a runtime postcondition
-    reverts every `return_call` to `call` (the entry check then covers
-    each hop).  The prefix rendered for rows that do not exist was dead
+    leaves no tail call (`ObligationTable.tail_calls`, #1849; the entry
+    check then covers each hop).  The prefix rendered for rows that do not exist was dead
     lowering: its locals go."""
     spliced = pipeline.compile(_PREFIX.replace("{ENSURES}", "true"), file="s.vera")
     reverted = pipeline.compile(_PREFIX.replace("{ENSURES}", "@Nat.result >= 0"), file="r.vera")

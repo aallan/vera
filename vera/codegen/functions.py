@@ -12,16 +12,82 @@ from vera import ast
 from vera.binding import SYMBOL_PREFIX, source_name, symbol
 from vera.obligations.table import ENTRY
 from vera.skip import AdtEqNotDerivableError, CodegenInvariantError, CodegenSkip
-from vera.tail_position import compute_tail_call_sites
 from vera.monomorphize import mangle_type_name
 from vera.slots import type_expr_slot_name
-from vera.trap_registry import signal_instructions
+from vera.trap_registry import CHECK_MARKER_RE, signal_instructions
 from vera.wasm import WasmContext, WasmSlotEnv
 from vera.wasm.helpers import (
     CellNames,
     gc_shadow_push,
     is_gc_pointer_base,
 )
+
+#: The instructions that open a structured block, and the ones that start
+#: its next arm.
+_OPENERS = ("block", "loop", "if", "try")
+_NEXT_ARM = ("else", "catch", "catch_all", "delegate")
+
+
+def _word(line: str) -> str:
+    text = line.strip()
+    return text.split(None, 1)[0] if text else ""
+
+
+def checks_after(lines: list[str], at: int) -> bool:
+    """Whether a recorded check (a line carrying a check marker,
+    :data:`vera.trap_registry.CHECK_MARKER_RE`) stands on the path the value
+    of the ``return_call`` at ``lines[at]`` would take out of its function,
+    had the call returned (#1849): the rest of its block, then what follows
+    each enclosing block's ``end``, skipping the arms it is not in.  Such a
+    check is dead, since a ``return_call`` never returns.
+
+    The unreached remainder of the function's epilogue (the ``$gc_sp``
+    restore, the result's shadow push and its bare overflow
+    ``unreachable``, the decreases restores) carries no marker, so it is
+    not a check.  The walk reads WAT one instruction per line, as code
+    generation emits a body."""
+    depth = 0
+    i = at + 1
+    while i < len(lines):
+        line = lines[i]
+        word = _word(line)
+        if word.startswith((")", "(")):
+            return False  # the function's closing parenthesis
+        if word in _NEXT_ARM and depth == 0:
+            # The arm the call is in ends here: skip the others to the
+            # enclosing block's `end`.
+            nested = 0
+            i += 1
+            while i < len(lines):
+                inner = _word(lines[i])
+                if inner in _OPENERS:
+                    nested += 1
+                elif inner == "end":
+                    if nested == 0:
+                        break
+                    nested -= 1
+                i += 1
+        elif word in _OPENERS:
+            depth += 1
+        elif word == "end":
+            if depth > 0:
+                depth -= 1
+        elif word in ("return", "return_call", "return_call_indirect") \
+                and depth == 0:
+            return False
+        if CHECK_MARKER_RE.search(line):
+            return True
+        i += 1
+    return False
+
+
+def dead_check_tail_call(lines: list[str]) -> str | None:
+    """The first ``return_call`` of *lines* (one function's WAT) with a
+    recorded check after it (:func:`checks_after`), or ``None``."""
+    for at, line in enumerate(lines):
+        if _word(line) == "return_call" and checks_after(lines, at):
+            return line.strip()
+    return None
 
 
 
@@ -822,52 +888,29 @@ class FunctionCompilationMixin:
         if not self._scan_body_for_state_handlers(decl.body, decl):
             return None
 
-        # #517 — configure tail-call optimization for this function.
-        # The analyzer marks `id(FnCall)` for every call in syntactic
-        # tail position; ``_translate_call`` checks membership +
-        # type match before emitting ``return_call $foo``.  The
-        # ``self_ret_wt`` argument is the function's WASM return
-        # type, used by the translator's type-match guard to ensure
-        # WASM ``return_call`` semantics are valid (callee signature
-        # must match caller).  See ``vera/tail_position.py``
-        # for the analyzer rules and ``_translate_call`` in
-        # ``vera/wasm/calls.py`` for the emit site.
-        # #1558: a call by the body's own module path is relinked to the
-        # plain call of its target's link name (`vera.binding.link`), so a
-        # tail call by it is marked as the bare tail call is.
-        tail_sites = compute_tail_call_sites(decl)
-
-        # #758/#983 — per-narrowing-leaf @Int->@Nat return guard.  Collect the
-        # tail-position return leaves that narrow into a bare @Nat return so
-        # each is guarded inline at emission (mirroring the verifier 7d leaf
-        # descent), instead of wrapping the WHOLE body — which reverted EVERY
-        # `return_call` and broke TCO for a non-narrowing @Nat->@Nat recursive
-        # tail call (`drain`, which stack-exhausted at depth).  Alias-aware
-        # (`type Count = Nat`) via `_boundary_base` — the ONE representation-base
-        # derivation the `throw` payload and the `apply_fn` signature also ask
-        # (#1256).  It resolves the type EXPRESSION, where the
-        # `_resolve_base_type_name(_type_expr_to_slot_name(...))` spelling it
-        # replaces chased the alias by NAME and dropped its type arguments:
-        # `type Ident<T> = T; type Count = Ident<Nat>;` answered the bare head
-        # `Ident`, this gate stayed shut, and `f(0 - 5)` returned -5 through the
-        # `@Nat` slot — the #983 silent negative, one spelling over.  Still
-        # refined-excluded (`{ @Nat | P }` / an alias to one stays on the 7b
-        # refinement-boundary path) via `_refinement_guard_parts`, a SEPARATE
-        # conjunct untouched by the base swap even though `_boundary_base`
-        # strips the refinement wrapper.  Exactly as the whole-body
-        # narrow-return gate below.  A narrowing leaf that is itself a tail call
-        # (an @Int-returning call) is removed from `tail_sites` so it lowers to
-        # a plain `call` — the appended guard runs AFTER it, which `return_call`
-        # would skip.
-        nat_leaf_ids: set[int] = set()
+        # #758/#983: the return leaves that narrow into a bare `@Nat` return,
+        # each guarded inline at its leaf (`_guard_nat_return_leaf`, by the
+        # table's `nat_bind` row of the return), and the leaves left
+        # unguarded, for the record a reconciliation reads.  Alias-aware via
+        # `_boundary_base` (#1256); a refined `@Nat` return is the refinement
+        # boundary's.
         if (decl.body is not None
                 and ctx._boundary_base(decl.return_type) == "Nat"
                 and self._refinement_guard_parts(decl.return_type) is None):
-            nat_leaf_ids = ctx._collect_narrowing_return_leaves(decl.body)
+            ctx._collect_narrowing_return_leaves(decl.body)
             self._record_unguarded_return_leaves(ctx)
 
+        # #517, #1849: which calls leave by `return_call` is the table's one
+        # rule (`ObligationTable.tail_calls`): a call in tail position after
+        # which no check runs, so none stands at the call (a `@Nat` return
+        # leaf's sign guard, a composite coercion's walk) and the function
+        # runs none after its body (a postcondition, a refined return).
+        # `_translate_call` (`vera/wasm/calls.py`) emits the `return_call`
+        # where the callee's WASM return type is the caller's, and the
+        # tripwire below (`dead_check_tail_call`) refuses a check found
+        # after one.
         ctx.set_tail_call_context(
-            tail_sites - nat_leaf_ids,
+            ctx.obligations.tail_calls(decl),
             self_ret_wt=ret_wt if ret_wt != "unsupported" else None,
         )
 
@@ -1176,20 +1219,10 @@ class FunctionCompilationMixin:
         # import / memory declaration.  See the propagation block after the
         # postcondition compile (#808 / #823).
 
-        # #758/#983: an @Int body narrowing into a @Nat return can be negative
-        # (`to_nat(0 - 5)` = -5), so trap rather than store a negative in the
-        # @Nat slot — the runtime backstop for the verifier's return nat_bind
-        # obligation (7d).  This is
-        # emitted PER NARROWING LEAF during body translation (via the
-        # `_nat_return_leaf_ids` set threaded above), NOT as a whole-body wrap:
-        # the whole-body wrap appended the guard after the entire body and so
-        # reverted EVERY `return_call`, losing TCO for a non-narrowing
-        # @Nat->@Nat recursive tail call (`drain`) that then stack-exhausted at
-        # depth (#983 regression).  Guarding only the genuine narrowing leaves
-        # inline leaves the recursive tail call's `return_call` structurally
-        # intact — nothing is appended after the body — so this forces no
-        # revert below.  The alias-aware +
-        # refinement-excluded gate lives where `nat_leaf_ids` is computed.
+        # #758/#983: an @Int body narrowing into a @Nat return is guarded PER
+        # NARROWING LEAF during body translation, never by a wrap of the whole
+        # body, so a non-narrowing recursive tail call (`drain`) has nothing
+        # after it and keeps its `return_call`.
 
         # Coerce body result if return type is i32 but body produces i64
         # (e.g. IntLit in a Byte-returning function)
@@ -1325,64 +1358,27 @@ class FunctionCompilationMixin:
         self._collection_helpers.update(ctx._collection_helpers)
         self._collection_exports |= ctx._collection_exports
 
-        # #517 — tail-call optimization fallback for functions whose
-        # bodies are followed by post-body work that must run before
-        # the function returns.  WASM ``return_call`` discards the
-        # current frame and jumps straight to the callee, so any
-        # instructions emitted AFTER ``body_instrs`` in the WAT
-        # assembly (postcondition checks, GC epilogue) are silently
-        # skipped.  Three outcomes (precedence: 1 > 2 > 3):
+        # #517: the work a surviving `return_call` must not skip.  No check
+        # follows one (the table's rule chose the tail calls, and the
+        # tripwire below, `dead_check_tail_call`, refuses a check found
+        # after one), so what is left is the function's own bookkeeping:
         #
-        # 1. ``post_instrs`` non-empty — postcondition checks
-        #    (``ensures(...)`` clauses) emitted by
-        #    ``_compile_postconditions``.  A non-empty
-        #    ``post_instrs`` means the function has a non-trivial
-        #    postcondition that must be checked at runtime;
-        #    ``return_call`` would skip the check and silently
-        #    violate the contract.  REVERTED to plain ``call`` —
-        #    no way to TCO and still run the check.
+        # - the GC epilogue (restore ``$gc_sp``, push the result) runs only
+        #   for an allocating function; ``return_call`` would leak this
+        #   frame's shadow-stack slots once per iteration, so (#549) every
+        #   ``return_call`` site restores ``$gc_sp`` to its entry value
+        #   immediately before the jump, and the callee's prologue saves a
+        #   clean baseline;
+        # - the decreases guard's chain state (#1172), restored or carried
+        #   per site below.
         #
-        # 2. ``ctx.needs_alloc`` and no ``post_instrs`` — the GC
-        #    epilogue (restore ``$gc_sp``, unwind shadow-stack
-        #    pointer slots) runs only for allocating functions.
-        #    ``return_call`` would leak shadow-stack slots once per
-        #    iteration and eventually trap on the next ``$alloc``.
-        #    Pre-#549 this fell to the same revert-to-call path as
-        #    postcondition-bearing functions; post-#549 we instead
-        #    PATCH every ``return_call`` site to restore ``$gc_sp``
-        #    to its entry value immediately before the jump.  The
-        #    callee's prologue then saves a clean baseline and the
-        #    chain continues without unbounded shadow-stack growth.
-        #
-        # 3. Neither condition holds — leave ``return_call``
-        #    untouched.  This is the common non-allocating tail-
-        #    recursion case (the ``Iteration is tail recursion``
-        #    idiom from ``SKILL.md``).
-        #
-        # ``gc_sp_save`` is pre-allocated before the dispatch so
-        # both the per-return_call restore (in branch 2) AND the
-        # function's GC prologue/epilogue below share the same
-        # local index.
+        # ``gc_sp_save`` is pre-allocated so the per-site restore and the
+        # function's GC prologue/epilogue share the same local index.
         gc_sp_save: int | None = (
             ctx.alloc_local("i32") if ctx.needs_alloc else None
         )
 
-        if post_instrs:
-            # Postcondition checks must run; return_call would skip them, so
-            # revert every return_call to plain call so the checks are
-            # reached.  The #758 @Int->@Nat narrow guard is NOT
-            # here: it is emitted per narrowing LEAF during body translation, so
-            # a non-narrowing @Nat->@Nat recursive tail call keeps its
-            # `return_call` (a narrowing-leaf call was already excluded from
-            # `tail_sites` above, so it lowers to a plain `call` reached by its
-            # own inline guard) — this is what restores TCO for `drain` (#983).
-            body_instrs = [
-                instr.replace("return_call ", "call ", 1)
-                if instr.lstrip().startswith("return_call ")
-                else instr
-                for instr in body_instrs
-            ]
-        elif dec_restore_instrs:
+        if dec_restore_instrs:
             # #1172: the decreases guard's tail-call discipline — TCO is
             # PRESERVED for the dominant self-recursive case, which #517
             # exists for (`decreases` is mandatory on pure recursion, so
@@ -1471,10 +1467,7 @@ class FunctionCompilationMixin:
                         instr.replace("return_call ", "call ", 1))
             body_instrs = patched_dec
 
-        if (
-            not post_instrs
-            and ctx.needs_alloc
-        ):
+        if ctx.needs_alloc:
             # #549: GC-aware TCO.  Prepend a ``$gc_sp`` restore
             # immediately before each ``return_call`` so the
             # callee's prologue saves a clean baseline rather than
@@ -1483,10 +1476,9 @@ class FunctionCompilationMixin:
             # WASM operand stack at the return_call site; the
             # restore touches only the ``$gc_sp`` global, not the
             # operand stack, so args transfer atomically to the
-            # callee.  Pre-#549 this revert-to-plain-call path also
-            # fired for allocating fns; closing #549 lets allocating
-            # tail-recursive fns iterate indefinitely without
-            # unbounded shadow-stack growth.
+            # callee, and an allocating tail-recursive function
+            # iterates indefinitely without unbounded shadow-stack
+            # growth.
             assert gc_sp_save is not None  # noqa: S101 - narrows int | None for mypy
             patched: list[str] = []
             for instr in body_instrs:
@@ -1611,6 +1603,29 @@ class FunctionCompilationMixin:
             lines.append(f"    {instr}")
 
         lines.append("  )")
+        # #1849: the tripwire behind `ObligationTable.tail_calls`.  No
+        # recorded check may stand after a `return_call` on the path its
+        # value leaves by (`checks_after`), where it would never run: a
+        # guard kind the rule does not see is refused with one [E699]
+        # naming the function, rather than compiled dead.
+        dead = dead_check_tail_call(lines)
+        if dead is not None:
+            self._harvest_interp_inference_failures(ctx)
+            self._error(
+                decl,
+                f"Internal compiler error while compiling '{decl.name}': a "
+                f"runtime check follows the tail call '{dead}', so it would "
+                "never run (#1849)",
+                rationale="This is a codegen invariant violation — the "
+                "obligation table's tail-call rule let a call leave by "
+                "return_call although a check of its result is emitted after "
+                "it.",
+                fix="No change to the program is the remedy: report it, "
+                "with this diagnostic, at https://github.com/aallan/vera/issues",
+                spec_ref='Chapter 0, Section 0.5.1 "Diagnostic Structure"',
+                error_code="E699",
+            )
+            return None
         if boundary is not None:
             lines.append(boundary)
         return "\n".join(lines)

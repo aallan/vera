@@ -654,12 +654,12 @@ class ClosureLiftingMixin:
         # through the @Nat slot on a verify-clean program — the #758 return
         # nat-bind hole reachable only through this closure path).  Guard it
         # PER NARROWING LEAF, exactly as `_compile_fn` does for the top-level
-        # return (`_nat_return_leaf_ids` threaded into the body translation,
-        # applied by `_guard_nat_return_leaf` at each Block / if-branch / match
-        # arm leaf): a whole-body wrap would false-trap a legitimate @Nat leaf
+        # return (the table's `nat_bind` rows of the return, read by
+        # `_guard_nat_return_leaf` at each Block / if-branch / match arm
+        # leaf): a whole-body wrap would false-trap a legitimate @Nat leaf
         # of a heterogeneous body (a captured @Nat above i64.MAX reads as a
-        # negative i64), and closures emit no `return_call` so no TCO revert is
-        # needed.  Alias-aware + refinement-excluded gate: a refinement over
+        # negative i64), and a closure body has no tail-call set, so it emits
+        # no `return_call` for a guard to follow.  Alias-aware + refinement-excluded gate: a refinement over
         # @Nat is guarded by the #1032 refined-RETURN guard emitted after the
         # body below — its predicate conjoins the @Nat base's `>= 0`
         # (`_refinement_guard_parts`), so adding the leaf guard here would be a
@@ -770,7 +770,7 @@ class ClosureLiftingMixin:
                 body_instrs.append("i32.wrap_i64")
 
         # #1024: emit the refined-formal prologue guards now — AFTER the body
-        # compiles (so the `_nat_return_leaf_ids` setup that MUST precede
+        # compiles (so the return-leaf collection that MUST precede
         # `translate_block` is untouched) and BEFORE the host-import propagation
         # block below, so any ctx state a predicate translation registers (an
         # overflow guard, a Map/Set op) rides the SAME merge the body's does (the
