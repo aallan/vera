@@ -14,9 +14,10 @@ judgements that read only the arms still run: an arm after a catch-all is
 still reported (E310, §4.9.3), and the arms' patterns and bodies are still
 checked, so an error inside an arm is still reported.  The pattern-fit rule
 (E314, §4.9.1) already withholds itself from an `Unknown` scrutinee and is
-unchanged.  An `Unknown` scrutinee with no error reported (`apply_fn` over a
-type variable) is judged as before, so the one error that refuses such a
-program stays.  The skip is keyed on the type, never on a list of codes, and
+unchanged.  An `Unknown` scrutinee with no error reported (an index into
+an empty literal, `[][0]`, the one route left; it goes when #1684 fixes an
+empty literal's element type from its context) is judged as before, so the
+one error that refuses such a program stays.  The skip is keyed on the type, never on a list of codes, and
 every error reported by the time the scrutinee is typed counts, since the
 error behind an `Unknown` can sit at a declaration (E158) or an import
 (E155): an `Unknown` with no error of its own beside an earlier, unrelated
@@ -204,7 +205,7 @@ _GENERIC = """private forall<T> fn g(@T -> @Int)
   ensures(true)
   effects(pure)
 {{
-  match apply_fn(@T.0, 1) {{
+  match [][0] {{
     {arms}
   }}
 }}
@@ -212,10 +213,10 @@ _GENERIC = """private forall<T> fn g(@T -> @Int)
 
 
 def test_an_unknown_scrutinee_with_no_error_reported_is_still_judged() -> None:
-    """`apply_fn` over a type variable is `Unknown` with no error reported,
-    and the E313 its `match` draws is the one error that refuses the
-    program: without it, a caller instantiating `g` at `Int` passes check
-    and verify, and code generation drops the caller and `g$Int` (E620)."""
+    """`[][0]` is `Unknown` with no error reported, and the E313 its
+    `match` draws is the one error that refuses the program.  It stands
+    on the one route to such an `Unknown` left (`apply_fn` over a type
+    variable is `E202` since #1684's first change), and goes with it."""
     source = _GENERIC.format(arms="Some(@Int) -> @Int.0,\n    None -> 0")
     assert _report(pipeline.check(source)) == _errors("E313")
 

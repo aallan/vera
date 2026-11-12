@@ -314,15 +314,15 @@ _UNKNOWN_VALUE = """private forall<F> fn g(@F -> @Int)
   ensures(true)
   effects(pure)
 {
-  let Tuple<@Int, @Int> = apply_fn(@F.0, 1);
+  let Tuple<@Int, @Int> = [][0];
   @Int.0
 }
 """
 
 
 def test_named_a_value_of_no_known_type_is_refused() -> None:
-    """`apply_fn` over a type variable is typed `Unknown` with no error
-    reported, and a `match` over it with only a constructor arm is refused
+    """`[][0]` is typed `Unknown` with no error reported (the one route
+    left, #1684: `apply_fn` over a type variable is `E202`), and a `match` over it with only a constructor arm is refused
     E313, which is then the error that refuses the program (#1671)."""
     _refused_once(_UNKNOWN_VALUE, "E313", _place(_UNKNOWN_VALUE, "let Tuple"))
 
