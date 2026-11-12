@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Collection
+
     from vera import ast as _ast
 
 
@@ -354,6 +356,203 @@ def pretty_effect(eff: EffectRowType) -> str:
             parts.append(eff.row_var)
         return f"effects(<{', '.join(parts)}>)"
     return "effects(?)"
+
+
+# =====================================================================
+# A type as the program writes it (for a fix to paste)
+# =====================================================================
+
+def type_expr_of(ty: Type,
+                 declared: Collection[str] = ()) -> _ast.TypeExpr | None:
+    """*ty* as a type expression the program can write, or ``None`` where a
+    part of it is in no program as written: ``Unknown`` (``?``), and a type
+    variable or an effect row variable outside *declared*, the type
+    parameters in scope where the reader writes it (an inference variable,
+    ``T$1``, a built-in's, another function's).
+
+    A refinement keeps its predicate, the node the checker holds, so the
+    rendering is the type itself and not :func:`pretty_type`'s
+    ``{@Int | ...}`` (#1778).  An alias the checker resolved is written as
+    what it stands for, which names the same type, except as a refinement's
+    base where the predicate names its binder by the alias: there the base
+    is that name, the one the predicate binds; a predicate naming its
+    binder two ways is written by no spelling, and gives ``None``."""
+    return _written_with_binder(ty, declared)[0]
+
+
+def _written_with_binder(
+    ty: Type, declared: Collection[str],
+) -> tuple[_ast.TypeExpr | None, _ast.TypeExpr | None]:
+    """:func:`type_expr_of`'s expression for *ty*, and the name a
+    refinement over *ty* binds: the expression itself, except for a
+    refinement, whose name is its own base's (a refinement of a refinement
+    keeps its inner layer).  Read off the types, so the binder is the one
+    the checker resolved rather than one taken back apart from the
+    expression written for it (#1525)."""
+    from vera import ast as a
+    if isinstance(ty, RefinedType):
+        base, named = _written_with_binder(ty.base, declared)
+        if base is None or named is None:
+            return None, None
+        bound = _predicate_binder_spellings(ty.predicate)
+        if bound is None or len(bound) > 1:
+            return None, None
+        if bound:
+            ((spelled, (head, head_args)),) = bound.items()
+            if a.format_type(named) != spelled:
+                if head_args is not None:
+                    # A binder written with arguments the base does not
+                    # spell (`@Array<T>.0` in `type NonEmpty<T> = …`, used
+                    # at `NonEmpty<Int>`) names the alias's own parameters,
+                    # which no fix outside it can write (E136; PR 1859
+                    # review): no written type.
+                    return None, None
+                if head in declared:
+                    # A type parameter in scope where the reader writes it
+                    # shadows the alias (type parameters resolve first):
+                    # `{ @Count | … }` inside `forall<Count>` refines the
+                    # parameter, not `Nat`, so no spelling writes this type
+                    # there (PR 1859 review).
+                    return None, None
+                # The predicate names its binder by an alias the checker
+                # resolved (`{ @Count | @Count.0 > 0 }` over `Count = Nat`):
+                # the base is written as that name, which the predicate
+                # binds, so the type is the one the program declared.
+                base = named = a.NamedType(head, head_args)
+        return a.RefinementType(base, ty.predicate), named
+    written = _written_plain(ty, declared)
+    return written, written
+
+
+def _written_plain(ty: Type,
+                   declared: Collection[str]) -> _ast.TypeExpr | None:
+    """:func:`type_expr_of` for a type that is not a refinement."""
+    from vera import ast as a
+    if isinstance(ty, PrimitiveType):
+        return a.NamedType(ty.name, None)
+    if isinstance(ty, AdtType):
+        args = [type_expr_of(t, declared) for t in ty.type_args]
+        if any(arg is None for arg in args):
+            return None
+        return a.NamedType(
+            ty.name, tuple(t for t in args if t is not None) or None)
+    if isinstance(ty, TypeVar):
+        return a.NamedType(ty.name, None) if ty.name in declared else None
+    if isinstance(ty, FunctionType):
+        params = [type_expr_of(p, declared) for p in ty.params]
+        ret = type_expr_of(ty.return_type, declared)
+        row = effect_row_expr_of(ty.effect, declared)
+        if ret is None or row is None or any(p is None for p in params):
+            return None
+        return a.FnType(tuple(p for p in params if p is not None), ret, row)
+    return None
+
+
+def _predicate_binder_spellings(
+    predicate: _ast.Expr,
+) -> dict[str, tuple[str, tuple[_ast.TypeExpr, ...] | None]] | None:
+    """Each spelling a refinement predicate names its binder by, keyed by
+    the spelling as a type is written, outside the closures in it (whose
+    own binders a quantifier introduces).  A predicate sees its binder
+    alone, so every slot reference outside a closure is that binder;
+    ``None`` where the predicate binds a slot of its own another way (a
+    `let`, a `match` arm, a handler), whose references are not its
+    binder's."""
+    from vera import ast as a
+    found: dict[str, tuple[str, tuple[a.TypeExpr, ...] | None]] = {}
+    stack: list[object] = [predicate]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, a.AnonFn):
+            continue
+        if (isinstance(node, (a.MatchExpr, a.HandleExpr))
+                or (isinstance(node, a.Block) and node.statements)):
+            return None
+        if isinstance(node, a.SlotRef):
+            spelled = a.format_type(a.NamedType(node.type_name, node.type_args))
+            found[spelled] = (node.type_name, node.type_args)
+            continue
+        if isinstance(node, a.Node) and dataclasses.is_dataclass(node):
+            for fld in dataclasses.fields(node):
+                val = getattr(node, fld.name)
+                if isinstance(val, a.Node):
+                    stack.append(val)
+                elif isinstance(val, (list, tuple)):
+                    stack.extend(v for v in val if isinstance(v, a.Node))
+    return found
+
+
+def effect_row_expr_of(eff: EffectRowType,
+                       declared: Collection[str] = ()) -> _ast.EffectRow | None:
+    """*eff* as an effect row the program can write, members in
+    :func:`effect_sort_key` order; ``None`` as :func:`type_expr_of` says."""
+    from vera import ast as a
+    if isinstance(eff, PureEffectRow):
+        return a.PureEffect()
+    if not isinstance(eff, ConcreteEffectRow):
+        return None
+    refs: list[a.EffectRefNode] = []
+    for inst in sorted(eff.effects, key=effect_sort_key):
+        args = [type_expr_of(t, declared) for t in inst.type_args]
+        if any(arg is None for arg in args):
+            return None
+        refs.append(a.EffectRef(
+            inst.name, tuple(t for t in args if t is not None) or None))
+    if eff.row_var is not None:
+        if eff.row_var not in declared:
+            return None
+        refs.append(a.EffectRef(eff.row_var, None))
+    if not refs:
+        return a.PureEffect()
+    return a.EffectSet(tuple(refs))
+
+
+def written_type(ty: Type, declared: Collection[str] = ()) -> str | None:
+    """*ty* as a type argument is written (``Array<{ @Int | @Int.0 > 0 }>``),
+    by :func:`vera.ast.format_type`, for a fix that tells the reader to
+    write it; ``None`` where :func:`type_expr_of` finds a part no program
+    writes, and the fix then names no type.  :func:`pretty_type` stays the
+    renderer of a type a message only shows."""
+    te = type_expr_of(ty, declared)
+    if te is None:
+        return None
+    from vera import ast as a
+    return a.format_type(te)
+
+
+def written_effect(eff: EffectRowType,
+                   declared: Collection[str] = ()) -> str | None:
+    """*eff* as an ``effects(...)`` clause is written, or ``None``."""
+    row = effect_row_expr_of(eff, declared)
+    if row is None:
+        return None
+    from vera import ast as a
+    if not isinstance(row, a.EffectSet):
+        return "effects(pure)"
+    return f"effects(<{', '.join(written_effect_ref(r) for r in row.effects)}>)"
+
+
+def written_effect_ref(ref: _ast.EffectRefNode) -> str:
+    """One member of an effect row as it is written: ``State<Pos>``.
+    :func:`effect_row_expr_of` builds only :class:`~vera.ast.EffectRef`.
+    Both concrete reference classes declare ``name`` and ``type_args``; the
+    abstract base declares neither, so they are read by ``getattr``."""
+    from vera import ast as a
+    name: str = getattr(ref, "name")
+    args = getattr(ref, "type_args")
+    if not args:
+        return name
+    return f"{name}<{', '.join(a.format_type(t) for t in args)}>"
+
+
+def written_effect_instance(inst: EffectInstance,
+                            declared: Collection[str] = ()) -> str | None:
+    """One effect instance as a row member is written, or ``None``."""
+    row = effect_row_expr_of(ConcreteEffectRow(frozenset({inst})), declared)
+    from vera import ast as a
+    if not isinstance(row, a.EffectSet):
+        return None
+    return written_effect_ref(row.effects[0])
 
 
 # =====================================================================

@@ -285,8 +285,9 @@ private fn wrong_slot_div(@Int, @Int -> @Int)
 { @Int.1 / @Int.0 }
 """, "by zero")
         fix = matched[0].fix
-        assert "@Int.0 != 0" in fix, fix
-        assert "@Int.1" not in fix, fix
+        assert "`requires(@Int.0 != 0)`" in fix, fix
+        assert "`if @Int.0 == 0 then" in fix, fix
+        assert "@Int.1 != 0" not in fix and "@Int.1 == 0" not in fix, fix
 
     def test_literal_destructure_divisor_discharges_at_tier1(self) -> None:
         """A divisor projected from a literal-constructor destructure is

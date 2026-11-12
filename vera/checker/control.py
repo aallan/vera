@@ -12,7 +12,7 @@ from vera.checker.calls import TypePath, _variable_name, describe_position
 from vera.checker.registration import builtin_effect_names
 from vera.checker.resolution import _span_text
 from vera.environment import AdtInfo, Binding, ConstructorInfo, FunctionInfo
-from vera.formatter import format_type_canonical
+from vera.formatter import format_expr_canonical, format_type_canonical
 from vera.lowering import (
     CLAUSE_RESUME_IN_WITH,
     STATE_CLAUSE_INLINE_DEPTH_CAP,
@@ -173,28 +173,24 @@ def _render_literal_pattern(pat: ast.Pattern) -> str:
     return "<literal>"  # pragma: no cover — only literal forms reach here
 
 
-def _display_only(ty: Type, declared: Collection[str]) -> bool:
-    """Whether `pretty_type` renders a part of *ty* that no program can be
-    written with: a refinement, whose predicate it elides (`{@Int | ...}`),
-    `Unknown` (`?`), and a type variable or an effect-row variable outside
-    *declared*, the enclosing function's own (an inference variable,
-    `T$1`, another function's, a built-in's).  The walk is the one
-    `pretty_type` and `pretty_effect` make."""
-    if isinstance(ty, (RefinedType, UnknownType)):
-        return True
-    if isinstance(ty, TypeVar):
-        return ty.name not in declared
-    if isinstance(ty, AdtType):
-        return any(_display_only(a, declared) for a in ty.type_args)
-    if isinstance(ty, FunctionType):
-        row = ty.effect
-        return (any(_display_only(p, declared) for p in ty.params)
-                or _display_only(ty.return_type, declared)
-                or (isinstance(row, ConcreteEffectRow)
-                    and (any(_display_only(a, declared)
-                             for e in row.effects for a in e.type_args)
-                         or (row.row_var is not None
-                             and row.row_var not in declared))))
+def _names_any(te: ast.TypeExpr, names: Collection[str]) -> bool:
+    """Whether the type expression *te* names one of *names* anywhere in
+    it: a type, an effect, or a slot reference's type, a refinement's
+    predicate and the closures in it included."""
+    stack: list[ast.Node] = [te]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (ast.NamedType, ast.EffectRef)):
+            if node.name in names:
+                return True
+        elif isinstance(node, ast.SlotRef) and node.type_name in names:
+            return True
+        for fld in dataclasses.fields(node):
+            val = getattr(node, fld.name)
+            if isinstance(val, ast.Node):
+                stack.append(val)
+            elif isinstance(val, (list, tuple)):
+                stack.extend(v for v in val if isinstance(v, ast.Node))
     return False
 
 
@@ -436,12 +432,6 @@ def _shared_at(
     return out
 
 
-def _bindings_form(name: str, types: tuple[Type, ...]) -> str:
-    """A destructure's head binding *types* by constructor *name*, as
-    written: `Pair<@Int, @String>`."""
-    return f"{name}<{', '.join('@' + pretty_type(t) for t in types)}>"
-
-
 class ControlFlowMixin:
 
     # -----------------------------------------------------------------
@@ -499,8 +489,7 @@ class ControlFlowMixin:
                     f"{pretty_inferred_type(cond_ty)}.",
                     rationale="The condition of an if-expression must have "
                               "type Bool.",
-                    fix="Replace the condition with a Bool-typed expression, "
-                        "e.g. a comparison: if @Int.0 > 0 { ... } else { ... }.",
+                    fix=self._condition_fix(expr.condition, cond_ty),
                     spec_ref='Chapter 4, Section 4.8 "Conditional Expressions"',
                     error_code="E300",
                 )
@@ -571,9 +560,7 @@ class ControlFlowMixin:
             f"{pretty_inferred_type(else_ty)}.",
             rationale="Both branches of an if-expression must have "
                       "the same type.",
-            fix=f"Make both branches produce the same type: convert one "
-                f"branch to {pretty_inferred_type(else_ty)} (or both to a "
-                f"common type), so then and else agree.",
+            fix=self._branch_fix(then_ty, else_ty),
             spec_ref='Chapter 4, Section 4.8 "Conditional Expressions"',
             error_code="E301",
         )
@@ -664,10 +651,7 @@ class ControlFlowMixin:
                         f"incompatible with previous arm type "
                         f"{pretty_inferred_type(result_type)}.",
                         rationale="All match arms must have the same type.",
-                        fix=f"Make this arm produce "
-                            f"{pretty_inferred_type(result_type)} "
-                            f"to match the other arms (or change every arm to "
-                            f"a common type).",
+                        fix=self._arm_fix(result_type),
                         spec_ref='Chapter 4, Section 4.9 "Match Expressions"',
                         error_code="E302",
                     )
@@ -1106,7 +1090,7 @@ class ControlFlowMixin:
                     pat, f"Pattern 'Tuple' with {got} sub-pattern(s)",
                     f"matches a tuple of {got} component(s)", scrut,
                     fix=f"Give the pattern one sub-pattern per component "
-                        f"of {pretty_type(scrut)} ({misfit.components}), or "
+                        f"of the scrutinee's type ({misfit.components}), or "
                         f"match the scrutinee with a wildcard '_'.",
                 )
             return self._pattern_mismatch(
@@ -1174,25 +1158,28 @@ class ControlFlowMixin:
         *, fix: str | None = None,
     ) -> bool:
         """Emit E314 for *pat* against the scrutinee type *scrut*."""
-        scrut_name = pretty_type(scrut)
-        alternatives = [f"a binding pattern '@{scrut_name}'", "a wildcard '_'"]
+        # The fix writes the scrutinee's type as the program does (#1778).
+        written = self._writes_as(scrut)
+        alternatives = [f"a binding pattern '@{written}'" if written
+                        else "a binding pattern of its type",
+                        "a wildcard '_'"]
         if isinstance(scrut, AdtType):
             info = (self.env.data_types.get(scrut.name)
                     or self._stranger_data_type(scrut.name))
             if info is not None and info.constructors:
                 ctors = ", ".join(sorted(info.constructors))
-                alternatives.insert(0, f"a constructor of {scrut_name} "
-                                       f"({ctors})")
+                alternatives.insert(0, f"a constructor of its type ({ctors})")
+        shown = f"`{written}` scrutinee" if written else "scrutinee of this type"
         self._error(
             pat,
             f"{subject} {matches}, but the scrutinee has type "
-            f"{scrut_name}.",
+            f"{pretty_type(scrut)}.",
             rationale="Every value reaching a match arm has the "
                       "scrutinee's type, so a pattern of any other type "
                       "can never be taken — the arm is dead code the "
                       "backend has no way to lower.",
             fix=fix or (
-                f"Match a {scrut_name} scrutinee with "
+                f"Match a {shown} with "
                 f"{' or '.join(alternatives)}, or match a scrutinee this "
                 f"pattern can take."
             ),
@@ -1264,8 +1251,10 @@ class ControlFlowMixin:
                 rationale="A constructor pattern must supply exactly one "
                           "sub-pattern per field of the constructor.",
                 fix=f"Give '{pat.name}' exactly {len(field_types)} "
-                    f"sub-pattern(s), one per field, e.g. "
-                    f"{pat.name}({', '.join('@T' for _ in field_types)}).",
+                    f"sub-pattern(s), one per field"
+                    + (f": `{pat.name}({fields})`."
+                       if (fields := self._field_patterns(field_types))
+                       else "."),
                 spec_ref='Chapter 4, Section 4.9.1 "Patterns"',
                 error_code="E321",
             )
@@ -1287,8 +1276,8 @@ class ControlFlowMixin:
                 rationale="A tuple type has at least one component, so a "
                           "Tuple pattern must contain at least one "
                           "sub-pattern.",
-                fix="Add one sub-pattern per tuple component, e.g. "
-                    "Tuple(@Int, @Bool) for a two-element tuple.",
+                fix="Add one sub-pattern per tuple component, a binding "
+                    "of its type or a wildcard '_'.",
                 spec_ref='Chapter 2, Section 2.3.1 "Tuple Types"',
                 error_code="E323",
             )
@@ -1505,7 +1494,8 @@ class ControlFlowMixin:
                 else:
                     message = (f"Destructuring let names a tuple, but the "
                                f"value has type {shown}.")
-                whole = (f"Bind the value whole with `let @{shown} = …;`, "
+                whole = (f"Bind the value whole with "
+                         f"`let @{self._writes_as(scrut)} = …;`, "
                          f"or match it." if self._fix_writes(scrut)
                          else "Match the value, or destructure a value of "
                               "the type the head names.")
@@ -1538,12 +1528,12 @@ class ControlFlowMixin:
                         "constructor it takes its value apart by, so it "
                         "writes one binding per field."),
                     fix=(f"Write one binding per field of '{ci.name}': "
-                         f"`{_bindings_form(name, fields)}`."
+                         f"`{self._bindings_form(name, fields)}`."
                          if fields and self._fix_writes(*fields)
                          else f"Write one binding per field of "
                               f"'{ci.name}', {len(fields)} in all." if fields
                          else f"'{ci.name}' has no field to bind: bind the "
-                              f"value whole with `let @{pretty_type(ty)} = "
+                              f"value whole with `let @{self._writes_as(ty)} = "
                               f"…;`." if self._fix_writes(ty)
                          else f"'{ci.name}' has no field to bind: bind the "
                               f"value whole with a plain `let`."),
@@ -1575,11 +1565,12 @@ class ControlFlowMixin:
                            f"'{name}' has no constructor to take it apart "
                            f"by." if own else f"Destructure {built}.")
                 else:
-                    fix = (f"Bind the value whole with `let @{shown} = "
+                    whole_ty = self._writes_as(ty)
+                    fix = (f"Bind the value whole with `let @{whole_ty} = "
                            f"…;`: '{name}' has no constructor to take it "
                            f"apart by." if own
                            else f"Destructure {built}, or bind this value "
-                                f"whole with `let @{shown} = …;`.")
+                                f"whole with `let @{whole_ty} = …;`.")
                 self._error(
                     stmt,
                     f"Destructuring let names '{name}', but {value}, which "
@@ -1600,7 +1591,7 @@ class ControlFlowMixin:
             arms = [f"{self._uncovered_arm(m, base)} -> …" for m in missing]
             if ci is not None:
                 written = ", ".join(
-                    "@" + pretty_type(b) if self._fix_writes(b) else "_"
+                    f"@{self._writes_as(b)}" if self._fix_writes(b) else "_"
                     for b in bindings)
                 arms.insert(0, f"{ci.name}({written}) -> …")
                 message = (f"Destructuring let names '{name}', but a value "
@@ -1631,6 +1622,9 @@ class ControlFlowMixin:
                 continue
             refused = True
             position = index + 1
+            bind_text = self._writes_as(binding)
+            wanted = (f"type {bind_text}" if bind_text is not None
+                      else "the binding's type")
             self._error(
                 te,
                 f"Let binding expects {pretty_type(binding)}, component "
@@ -1642,13 +1636,13 @@ class ControlFlowMixin:
                     "a subtype of its binding's type, as a let binding's "
                     "value must be."),
                 fix=(f"Write the binding as "
-                     f"`@{pretty_inferred_type(component)}`, the type of "
+                     f"`@{self._writes_as(component)}`, the type of "
                      f"component {position}, or give the value a component "
-                     f"of type {pretty_type(binding)} there."
+                     f"of {wanted} there."
                      if self._fix_writes(component)
-                     else f"Give the value a component of type "
-                          f"{pretty_type(binding)} there, or write the "
-                          f"binding at the type of component {position}."),
+                     else f"Give the value a component of {wanted} there, "
+                          f"or write the binding at the type of component "
+                          f"{position}."),
                 spec_ref='Chapter 4, Section 4.7.1 "Tuple Destructuring"',
                 error_code="E170",
             )
@@ -1702,7 +1696,14 @@ class ControlFlowMixin:
             return f"{inside}component {component + 1}"
 
         wanted = substitute(components[at], {failure.variable: first_given})
-        writes = not contains_typevar(wanted) and self._fix_writes(wanted)
+        # The binding the fix writes is code the reader pastes, so its type
+        # is written as the program writes it (#1778): a refinement with
+        # its predicate, never the message form's `{@Int | ...}`.
+        shown = (self._writes_as(wanted) if not contains_typevar(wanted)
+                 else None)
+        # An empty literal's element type is no variable a reader can name
+        # (`?`): the fix says what it is in words.
+        named = "the empty literal's element type" if literal else name
         self._error(
             stmt.type_bindings[at],
             f"Let binding expects {pretty_type(bindings[at])}, component "
@@ -1716,25 +1717,114 @@ class ControlFlowMixin:
                 "a type variable the value's type leaves open stands for one "
                 "type, so the bindings must give it the same type at every "
                 "position it holds."),
-            fix=(f"Write binding {at + 1} as `@{pretty_type(wanted)}`, the "
-                 f"type binding {first_at + 1} gives {name}."
-                 if writes
-                 else f"Write binding {at + 1} so that it gives {name} "
-                      f"{pretty_type(first_given)}, the type binding "
-                      f"{first_at + 1} gives it, at {where(path, at)}."),
+            fix=(f"Write binding {at + 1} as `@{shown}`, the "
+                 f"type binding {first_at + 1} gives {named}."
+                 if shown is not None
+                 else f"Write binding {at + 1} so that it gives {named} "
+                      + (f"`{given_shown}`, the type"
+                         if (given_shown := self._writes_as(first_given))
+                         else "the type")
+                      + f" binding {first_at + 1} gives it, at "
+                        f"{where(path, at)}."),
             spec_ref='Chapter 4, Section 4.7.1 "Tuple Destructuring"',
             error_code="E170",
         )
 
+    def _handler_arity_fix(self, given: Sequence[ast.TypeExpr],
+                           state: ast.HandlerState | None,
+                           effect: str) -> str:
+        """E337's fix: one type argument, the first one *given*, or the
+        declared *state*'s type for a State handler written with none; with
+        no type to take from the site, the sentence names none (#1763).
+
+        The example is offered only for an argument E340 lowers as written
+        (a type name, `cell_type_spelling_lowerable`): a type written inline
+        draws E340 once the arity is right (PR 1859 review), so it gets the
+        sentence, with the alias that names it, unless it names one of this
+        function's type parameters, which an alias at the top of the file
+        cannot."""
+        te = (given[0] if given else
+              state.type_expr if effect == "State" and state else None)
+        sentence = (f"Write handle[{effect}<T>] with a single concrete type "
+                    f"argument for T")
+        if te is None:
+            return sentence + "."
+        if not cell_type_spelling_lowerable(te):
+            if _names_any(te, self.env.type_params):
+                return sentence + ", a type name."
+            return (sentence + ", a type name: a type written inline is "
+                    "named by a type alias first.")
+        return (f"Write the handler with a single concrete type argument: "
+                f"`handle[{effect}<{ast.format_type(te)}>]`.")
+
+    def _field_patterns(self, field_types: Sequence[Type]) -> str | None:
+        """One binding pattern per field, each at its field's type as the
+        program writes it (#1763); ``None`` where a type is not one the
+        program writes, or there is no field."""
+        written = [self._writes_as(t) for t in field_types]
+        if not written or any(w is None for w in written):
+            return None
+        return ", ".join(f"@{w}" for w in written)
+
+    def _fresh_type_name(self, stem: str) -> str:
+        """*stem*, or *stem* with the first number that makes it, a type
+        name nothing in scope declares: a fix's new alias (#1763).  A type
+        parameter in scope is taken too: inside its `forall` the name is
+        the parameter, not the alias (PR 1859 review)."""
+        taken = (set(self.env.data_types) | set(self.env.type_aliases)
+                 | set(self.env.type_params))
+        name, n = stem, 1
+        while name in taken:
+            n += 1
+            name = f"{stem}{n}"
+        return name
+
+    def _condition_fix(self, cond: ast.Expr, ty: Type) -> str:
+        """E300's fix: the condition compared with zero where it is
+        numeric (:meth:`_nonzero_test`), computed from the site (#1763),
+        or the instruction with no example."""
+        test = self._nonzero_test(cond, ty)
+        if test is None:
+            return ("Replace the condition with a Bool-typed expression, "
+                    "such as a comparison of the value with a bound.")
+        return (f"Replace the condition with a Bool-typed expression, such "
+                f"as a comparison with zero: `{format_expr_canonical(test)}`.")
+
+    def _branch_fix(self, then_ty: Type, else_ty: Type) -> str:
+        """E301's fix: one branch converted to the other's type, the else
+        branch's or, where that one has a position no program writes
+        (``fn(? -> ?)``, #1763), the then branch's; each written as the
+        program writes it, and named in prose where neither can be."""
+        shown = self._writes_as(else_ty) or self._writes_as(then_ty)
+        target = (f"`{shown}`" if shown is not None
+                  else "the other branch's type")
+        return (f"Make both branches produce the same type: convert one "
+                f"branch to {target} (or both to a common type), so then "
+                f"and else agree.")
+
+    def _arm_fix(self, result_type: Type) -> str:
+        """E302's fix, as :meth:`_branch_fix` writes E301's."""
+        shown = self._writes_as(result_type)
+        target = (f"`{shown}`" if shown is not None
+                  else "the previous arms' type")
+        return (f"Make this arm produce {target} to match the other arms "
+                f"(or change every arm to a common type).")
+
     def _fix_writes(self, *types: Type) -> bool:
-        """Whether a fix may write each of *types* as code: `pretty_type`
-        renders none of it for display only (`_display_only`).  An
-        inference variable left open (`T$1`, shown as `?`), another
-        function's type variable and a refinement, whose predicate the
-        rendering elides, are in no program as written, so code that wrote
-        one would not apply (PR #1721 review); the fix says it in prose."""
-        return not any(_display_only(ty, self.env.type_params)
-                       for ty in types)
+        """Whether a fix may write each of *types* as code
+        (:meth:`_writes_as`).  An inference variable left open (`T$1`,
+        shown as `?`) and another function's type variable are in no
+        program as written, so code that wrote one would not apply (PR
+        #1721 review); the fix says it in prose.  A refinement is written
+        with its predicate (#1778)."""
+        return all(self._writes_as(ty) is not None for ty in types)
+
+    def _bindings_form(self, name: str, types: tuple[Type, ...]) -> str:
+        """A destructure's head binding *types* by constructor *name*, as
+        written: `Pair<@Int, @String>`.  Each of *types* is one
+        :meth:`_fix_writes` writes."""
+        return (f"{name}<"
+                f"{', '.join(f'@{self._writes_as(t)}' for t in types)}>")
 
     def _destructure_fix(self, ty: Type) -> str | None:
         """The fix that destructures a value of *ty* by its own
@@ -1759,7 +1849,7 @@ class ControlFlowMixin:
                 return None
         if self._fix_writes(*fields):
             return (f"Destructure the value by its type's constructor: "
-                    f"`{_bindings_form(ctor, fields)}`.")
+                    f"`{self._bindings_form(ctor, fields)}`.")
         return (f"Destructure the value by its type's constructor, "
                 f"'{ctor}', with one binding per component.")
 
@@ -1819,9 +1909,9 @@ class ControlFlowMixin:
                           f"{effect_inst.name}<T> — which types its "
                           f"operations and, for State, the handler's "
                           f"state cell.",
-                fix=f"Write handle[{effect_inst.name}<T>](...) with a "
-                    f"single concrete type argument, e.g. "
-                    f"handle[State<Int>](@Int = 0) {{ ... }}.",
+                fix=self._handler_arity_fix(
+                    expr.effect.type_args or (), expr.state,
+                    effect_inst.name),
                 spec_ref='Chapter 7, Section 7.5.1 "Handler Syntax"',
                 error_code="E337",
             )
@@ -1850,9 +1940,12 @@ class ControlFlowMixin:
 
         # Check handler state
         state_type: Type | None = None
+        # The state's type as the handler writes it, for a fix (#1778).
+        state_written = ""
         if expr.state:
             self._check_refinement_predicates(expr.state.type_expr)  # #861
             state_type = self._resolve_type(expr.state.type_expr)
+            state_written = ast.format_type(expr.state.type_expr)
             # #993: synth WITH the declared state type as expected — a bare
             # nullary constructor init (`@Option<Int> = None`) mints a fresh
             # ctor var without it, and the #971 bidirectional fill needs the
@@ -1868,10 +1961,9 @@ class ControlFlowMixin:
                         f"{pretty_type(state_type)}.",
                         rationale="A handler's initial state value must have "
                                   "the declared handler state type.",
-                        fix=f"Provide an initial value of type "
-                            f"{pretty_type(state_type)}, e.g. "
-                            f"handle[Eff](@{pretty_type(state_type)} = "
-                            f"<value>) {{ ... }}.",
+                        fix=f"Provide an initial value of the declared "
+                            f"state type, "
+                            f"`{state_written}`.",
                         spec_ref='Chapter 7, Section 7.5.1 "Handler Syntax"',
                         error_code="E331",
                     )
@@ -1913,15 +2005,15 @@ class ControlFlowMixin:
                                   "off T, so a divergent declared type "
                                   "is documentation that lies about "
                                   "what the cell holds.",
+                        # The cell's type as the handler writes it, so an
+                        # alias stays the name it is (#1778).
                         fix=f"Declare the state as "
-                            f"@{pretty_type(cell_type)} (an alias that "
-                            f"resolves to it is fine), and express any "
-                            f"refinement in the effect's State<T> "
-                            f"argument itself via a NAMED refinement "
-                            f"alias — type Small = {{ @Nat | ... }}; "
-                            f"handle[State<Small>](@Small = ...) — an "
-                            f"inline refinement literal in the State<T> "
-                            f"argument is not compilable.",
+                            f"`{ast.format_type_expr(expr.effect.type_args[0])}`"
+                            f", the type the State<T> argument names (an "
+                            f"alias that resolves to it is fine).  A "
+                            f"refinement belongs in that argument, named "
+                            f"by a type alias: an inline refinement "
+                            f"literal there is not compilable.",
                         spec_ref='Chapter 7, Section 7.5.1 '
                                  '"Handler Syntax"',
                         error_code="E336",
@@ -2047,9 +2139,10 @@ class ControlFlowMixin:
                         "handler has no state declaration.",
                         rationale="A 'with' state update may only appear in a "
                                   "handler that declares state to update.",
-                        fix="Declare handler state, e.g. "
-                            "handle[Eff](@Int = 0) { ... }, or remove the "
-                            "'with' clause from this operation.",
+                        fix="Declare the handler's state, its type and "
+                            "initial value in parentheses after the "
+                            "handled effect, or remove the 'with' clause "
+                            "from this operation.",
                         spec_ref='Chapter 7, Section 7.5.2 '
                                  '"Handler Semantics"',
                         error_code="E333",
@@ -2069,7 +2162,9 @@ class ControlFlowMixin:
                             rationale="A 'with' state update must target the "
                                       "handler's declared state type.",
                             fix=f"Update the declared state type instead: "
-                                f"with @{state_tname_outer} = <expr>.",
+                                f"with `"
+                                f"@{state_written}"
+                                f"` = <expr>.",
                             spec_ref='Chapter 7, Section 7.5.2 '
                                      '"Handler Semantics"',
                             error_code="E334",
@@ -2097,8 +2192,9 @@ class ControlFlowMixin:
                                       "update must have the handler's declared "
                                       "state type.",
                             fix=f"Make the update expression evaluate to "
-                                f"{pretty_type(state_type)} (convert it or use "
-                                f"a {pretty_type(state_type)}-typed value).",
+                                f"the declared state type, `"
+                                f"{state_written}`: "
+                                f"convert it, or use a value of that type.",
                             spec_ref='Chapter 7, Section 7.5.2 '
                                      '"Handler Semantics"',
                             error_code="E335",
@@ -2228,24 +2324,31 @@ class ControlFlowMixin:
     def _exn_clause_fix(self, clause: ast.HandlerClause, ty: Type) -> str:
         """E341's fix: the clause's value replaced by a value of the
         handler's type *ty*, where one can be written without context."""
-        wanted = pretty_inferred_type(ty)
+        shown = self._writes_as(ty)
+        # The type as written, in apposition; none where it is not one a
+        # program writes (an open `?`).
+        wanted = f", `{shown}`" if shown is not None else ""
         written = _span_text(self.source, clause.body.span)
         example = self._example_value(ty)
         if written is None or example is None:
-            return (f"Make the clause's value the handled body's type, "
-                    f"{wanted}, or give the handled body the clause's "
+            return (f"Make the clause's value the handled body's "
+                    f"type{wanted}, or give the handled body the clause's "
                     f"type.")
         if written.lstrip().startswith("{"):
             example = "{ " + example + " }"
-        return (f"Make the clause's value the handled body's type, "
-                f"{wanted}: replace '{written}' with '{example}', or give "
-                f"the handled body the clause's type.")
+        return (f"Make the clause's value the handled body's type{wanted}: "
+                f"replace '{written}' with '{example}', or give the handled "
+                f"body the clause's type.")
 
     def _example_value(self, ty: Type) -> str | None:
         """A value of *ty* written with no context, or None: a primitive's
         zero, `None`, `Ok` of an example, `[]`, a `Tuple` of examples, a
-        data type's nullary constructor."""
-        ty = base_type(ty)
+        data type's nullary constructor.  None for a refined type, at any
+        depth a `Result` or `Tuple` example reaches: its base's example need
+        not satisfy the predicate (`0` is no `{ @Int | @Int.0 > 0 }`; PR
+        1859 review)."""
+        if isinstance(ty, RefinedType):
+            return None
         if isinstance(ty, PrimitiveType):
             return {"Int": "0", "Nat": "0", "Bool": "false", "String": '""',
                     "Float64": "0.0", "Unit": "()"}.get(ty.name)
@@ -2354,22 +2457,38 @@ class ControlFlowMixin:
         a resolved refinement renders with its predicate elided."""
         shown = format_type_canonical(te)
         if handler and not cell_type_spelling_lowerable(te):
+            # The description names the shape written, and the fix aliases
+            # the site's own type argument (#1763).
+            shape = ("an inline refinement"
+                     if isinstance(te, ast.RefinementType)
+                     else "an inline function type"
+                     if isinstance(te, ast.FnType) else "not a type name")
+            alias = self._fresh_type_name("Cell" if effect == "State"
+                                          else "Thrown")
+            state = (f", with the state declared `@{alias}`"
+                     if effect == "State" else "")
             self._error(
                 te,
                 f"Code generation cannot lower a handler whose {effect} "
-                f"type argument is an inline refinement: a handler's cell "
-                f"is keyed by a type name.",
+                f"type argument is {shape}: a handler's cell is keyed by a "
+                f"type name.",
                 rationale=(
                     "A handle[State<T>] cell, or a handle[Exn<E>] tag, is "
-                    "named after the type its argument names, and an inline "
-                    "refinement literal names none.  The same refinement "
-                    "under a type alias is a name, and is lowered."
+                    "named after the type its argument names, and a type "
+                    "written inline names none.  The same type under a "
+                    "type alias is a name, and is lowered."
                 ),
+                # An alias is declared at the top of the file, where the
+                # enclosing function's type parameters are not in scope: a
+                # type argument that names one gets the sentence alone.
                 fix=(
-                    f"Name the refinement with an alias and handle that: "
-                    f"type Small = {{ @Nat | @Nat.0 < 10 }}; then "
-                    f"handle[{effect}<Small>], with the state declared "
-                    f"@Small."
+                    f"Name the type with an alias and handle that: "
+                    f"`type {alias} = {shown};`, then "
+                    f"`handle[{effect}<{alias}>]`{state}."
+                    if not _names_any(te, self.env.type_params) else
+                    "Name the type with a type alias and handle that; the "
+                    "alias is declared at the top of the file, so a type "
+                    "parameter of this function is not in scope there."
                 ),
                 spec_ref='Chapter 7, Section 7.5.1 "Handler Syntax"',
                 error_code="E340",

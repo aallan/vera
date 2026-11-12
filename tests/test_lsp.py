@@ -5435,8 +5435,10 @@ class TestDiagnosticInstructionContract:
         # advice: the guard renders the actual call and the
         # substituted precondition.
         assert "Guard the call so the precondition holds" in message
-        assert "if 0 > 0 then { need_pos(0) } else { ... }" in message
-        assert "requires(0 > 0)" in message
+        assert ("`if 0 > 0 then { need_pos(0) } else { <default> }`"
+                in message)
+        # A clause over constants alone is not offered (#1858).
+        assert "requires(0 > 0)" not in message
         # The rationale paragraph travels too.
         assert "SMT solver could not prove" in message
 
