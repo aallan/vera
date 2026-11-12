@@ -1,3 +1,12 @@
+# Codecov reports through commit statuses, not check runs.  A check run is
+# created in progress and completed by a second call, and that second call
+# went missing on about one pull-request commit in eight (12 of 98 commits
+# of #1826 to #1859, measured on 12 November 2026), leaving one of the four
+# checks "in progress" for good: the pull request shows a pending check
+# that never ends, and anything that waits for every check to finish
+# (`gh pr checks --watch`) never returns.  A status is posted whole.
+github_checks: false
+
 coverage:
   status:
     project:
