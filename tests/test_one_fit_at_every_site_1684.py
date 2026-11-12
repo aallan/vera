@@ -613,6 +613,16 @@ def test_a_hole_at_a_rigid_parameter_is_refused() -> None:
     assert _codes(source) == ["E204"]
 
 
+def test_a_hole_at_a_call_s_rigid_parameter_is_refused() -> None:
+    """The same at a call's parameter that is the outer `T` (a `where`
+    helper over it): at bf6d5003 the program checked and verified and
+    `g$String` did not load; the argument is held to `T` by name (`E202`),
+    as an operation's is (PR #1855 review)."""
+    source = _HEAD_PLAIN + _HELPER_ARGUMENT.replace(
+        "helper(9)", "helper(head_plain([]))")
+    assert _codes(source) == ["E202"]
+
+
 _ABILITY_TWO_HOLES = _HEAD_PLAIN + """\
 public fn main(@Unit -> @Bool)
   requires(true)

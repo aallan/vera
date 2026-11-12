@@ -1274,8 +1274,14 @@ class CallsMixin:
                     arg_types[i] = re
             # #993: a type variable left unresolved on either side is a
             # wildcard here (`_fits`), so a call satisfiable at SOME
-            # instantiation is not a false E202.
-            if not self._fits(arg_ty, param_ty):
+            # instantiation is not a false E202.  #1684: a parameter that
+            # is the enclosing function's own variable is held by
+            # subtyping, which matches it by name, as an operation's is: the
+            # fit would bind a variable the argument's call left open to it
+            # and drop the binding, leaving that call's instance open.
+            rigid_param = self._rigid_variable(param_ty) is not None
+            if not (is_subtype(arg_ty, param_ty) if rigid_param
+                    else self._fits(arg_ty, param_ty)):
                 # #1684: a type variable the argument's type leaves open,
                 # taking two types or standing in a closure compiled before
                 # it had one, is named with its positions.
