@@ -911,7 +911,8 @@ def test_repro_1716_the_generated_joins_that_stated_an_arms_fact(
 # module's trap count and a clean reconciliation, as measured at f71c401c,
 # in both orders of the arms and at a return, a `let` and an argument.
 
-#: shape -> (parameters, target, arm a, arm b, the rows at base by position)
+#: shape -> (parameters, target, arm a, arm b, the rows at base by position);
+#: `JOIN` in a row's text stands for the join as the program writes it.
 ROW_SHAPES: dict[str, tuple[str, str, str, str, dict[str, list[tuple[str, str, str]]]]] = {
     "a construction checked at the target": (
         "@Bool, @Int", "Result<Nat, String>", "Ok(@Int.0)", 'Err("no")',
@@ -932,11 +933,11 @@ ROW_SHAPES: dict[str, tuple[str, str, str, str, dict[str, list[tuple[str, str, s
                       [("nat_bind", "tier3", "@Option<Int>.0 [Some.0]")])),
     "a literal beside a refined slot": (
         "@Bool, @PosInt", "PosInt", "1", "@PosInt.0",
-        {"return": [("refine_bind", "verified", "<expr>"),
+        {"return": [("refine_bind", "verified", "{ JOIN }"),
                     ("refine_bind", "verified", "@PosInt")],
-         "let": [("refine_bind", "verified", "<expr>"),
+         "let": [("refine_bind", "verified", "JOIN"),
                  ("refine_bind", "verified", "@PosInt")],
-         "argument": [("refine_bind", "verified", "<expr>"),
+         "argument": [("refine_bind", "verified", "JOIN"),
                       ("refine_bind", "verified", "@PosInt"),
                       ("refine_bind", "verified", "@PosInt")]}),
     "a join inside a join": (
@@ -985,7 +986,9 @@ def test_a_join_under_a_target_lists_its_arms_rows_once(
     verified = pipeline.verify(source, file=FILE, reconcile=True)
     got = sorted((o.kind, o.status, o.expr_text) for o in verified.obligations
                  if o.kind not in ("requires", "ensures"))
-    assert got == sorted(rows[position]), source
+    join = f"if @Bool.0 then {{ {first} }} else {{ {second} }}"
+    assert got == sorted((kind, status, text.replace("JOIN", join))
+                         for kind, status, text in rows[position]), source
     assert verified.reconciled is not None
     report = verified.reconciled.report()
     assert not report.get("mismatches"), report
@@ -1217,7 +1220,9 @@ def test_repro_1716_the_cost_a_literal_arm_through_a_generic() -> None:
     # the binder's own row is the sub-pattern's guard, as at f71c401c
     assert rows == [("ensures", "verified", "@Int.result > 0"),
                     ("refine_bind", "tier3", "@PosInt"),
-                    ("refine_bind", "verified", "<expr>")], rows
+                    ("refine_bind", "verified",
+                     "match @Option<PosInt>.0 { Some(@PosInt) -> @PosInt.0, "
+                     "None -> 1 }")], rows
 
 
 def test_a_handler_whose_body_is_refused_has_its_clauses_type() -> None:
