@@ -2425,6 +2425,11 @@ class TestEndToEnd:
         window = {p["unit"]: p["mutants"] for p in record["planned"]}
         assert {i: len(r["decided"]) for i, r in record["results"].items()} == window  # it went on
         assert record["results"]["vera/m.py::x_g"]["durations"]["1"] < 30
+        # Each run's start is the plugin's line, so every decided mutant has
+        # a measured duration, where the fork server reports zero.
+        for result in record["results"].values():
+            assert set(result["durations"]) == set(result["decided"]) and all(
+                d > 0 for d in result["durations"].values()), result
         code, state = _stitch_cli(held_repo, tmp_path, 1, None)
         assert code == 0 and state["last_complete"]["modules"]["vera/m.py"]["slow"] == 1
         assert any(s.endswith(":slow") for s in state["last_complete"]["survivors"])
@@ -2466,7 +2471,9 @@ class TestEndToEnd:
             assert r["window"] == counted["mutants"] == sum(counted["lines"].values()) >= 1
             assert r["lines"] == sorted(int(line) for line in counted["lines"])  # every line sampled
             assert set(r["decided"].values()) == {"killed"} and len(r["decided"]) == r["window"]
-            assert r["survivors"] == [] and set(r["durations"]) == set(r["decided"])
+            # No oracle plugin here, so no run's start is recorded, and the
+            # fork server reports every duration as zero: none is a measure.
+            assert r["survivors"] == [] and r["durations"] == {}
         code, state = _stitch_cli(repo, tmp_path, 1, None)
         assert code == 0 and state["cycle"] == 2 and state["last_complete"]["modules"]["vera/m.py"]["survived"] == 0
         assert state["last_complete"]["sampled"] == state["last_complete"]["population"] == sum(
