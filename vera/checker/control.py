@@ -170,21 +170,23 @@ def _render_literal_pattern(pat: ast.Pattern) -> str:
 
 def _names_any(te: ast.TypeExpr, names: Collection[str]) -> bool:
     """Whether the type expression *te* names one of *names* anywhere in
-    it, a refinement's predicate aside."""
-    if isinstance(te, ast.NamedType):
-        return te.name in names or any(
-            _names_any(a, names) for a in te.type_args or ())
-    if isinstance(te, ast.RefinementType):
-        return _names_any(te.base_type, names)
-    if isinstance(te, ast.FnType):
-        row = te.effect
-        refs = row.effects if isinstance(row, ast.EffectSet) else ()
-        return (any(_names_any(p, names) for p in te.params)
-                or _names_any(te.return_type, names)
-                or any(getattr(r, "name", None) in names
-                       or any(_names_any(a, names)
-                              for a in getattr(r, "type_args", None) or ())
-                       for r in refs))
+    it: a type, an effect, or a slot reference's type, a refinement's
+    predicate and the closures in it included."""
+    stack: list[object] = [te]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (ast.NamedType, ast.EffectRef)):
+            if node.name in names:
+                return True
+        elif isinstance(node, ast.SlotRef) and node.type_name in names:
+            return True
+        if isinstance(node, ast.Node) and dataclasses.is_dataclass(node):
+            for fld in dataclasses.fields(node):
+                val = getattr(node, fld.name)
+                if isinstance(val, ast.Node):
+                    stack.append(val)
+                elif isinstance(val, (list, tuple)):
+                    stack.extend(v for v in val if isinstance(v, ast.Node))
     return False
 
 
@@ -1399,15 +1401,15 @@ class ControlFlowMixin:
                 error_code="E170",
             )
 
-    def _handler_arity_fix(self, expr: ast.HandleExpr, effect: str) -> str:
-        """E337's fix: one type argument, the first one written, or the
-        declared state's type for a State handler written with none; with
+    @staticmethod
+    def _handler_arity_fix(given: Sequence[ast.TypeExpr],
+                           state: ast.HandlerState | None,
+                           effect: str) -> str:
+        """E337's fix: one type argument, the first one *given*, or the
+        declared *state*'s type for a State handler written with none; with
         no type to take from the site, the sentence names none (#1763)."""
-        given = (expr.effect.type_args or ()
-                 if isinstance(expr.effect, ast.EffectRef) else ())
         te = (given[0] if given else
-              expr.state.type_expr if effect == "State" and expr.state
-              else None)
+              state.type_expr if effect == "State" and state else None)
         if te is None:
             return (f"Write handle[{effect}<T>] with a single concrete type "
                     f"argument for T.")
@@ -1563,7 +1565,9 @@ class ControlFlowMixin:
                           f"{effect_inst.name}<T> — which types its "
                           f"operations and, for State, the handler's "
                           f"state cell.",
-                fix=self._handler_arity_fix(expr, effect_inst.name),
+                fix=self._handler_arity_fix(
+                    expr.effect.type_args or (), expr.state,
+                    effect_inst.name),
                 spec_ref='Chapter 7, Section 7.5.1 "Handler Syntax"',
                 error_code="E337",
             )

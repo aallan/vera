@@ -391,11 +391,16 @@ def type_expr_of(ty: Type,
         if base is None:
             return None
         bound = _predicate_binder_spellings(ty.predicate)
-        if len(bound) > 1:
+        if bound is None or len(bound) > 1:
             return None
         if bound:
             ((spelled, (head, head_args)),) = bound.items()
-            if a.format_type(base) != spelled:
+            # The binder a refinement's base binds is its innermost name: a
+            # refinement of a refinement keeps its inner layer.
+            named = base
+            while isinstance(named, a.RefinementType):
+                named = named.base_type
+            if a.format_type(named) != spelled:
                 # The predicate names its binder by an alias the checker
                 # resolved (`{ @Count | @Count.0 > 0 }` over `Count = Nat`):
                 # the base is written as that name, which the predicate
@@ -416,11 +421,14 @@ def type_expr_of(ty: Type,
 
 def _predicate_binder_spellings(
     predicate: _ast.Expr,
-) -> dict[str, tuple[str, tuple[_ast.TypeExpr, ...] | None]]:
+) -> dict[str, tuple[str, tuple[_ast.TypeExpr, ...] | None]] | None:
     """Each spelling a refinement predicate names its binder by, keyed by
     the spelling as a type is written, outside the closures in it (whose
     own binders a quantifier introduces).  A predicate sees its binder
-    alone, so every slot reference outside a closure is that binder."""
+    alone, so every slot reference outside a closure is that binder;
+    ``None`` where the predicate binds a slot of its own another way (a
+    `let`, a `match` arm, a handler), whose references are not its
+    binder's."""
     from vera import ast as a
     found: dict[str, tuple[str, tuple[a.TypeExpr, ...] | None]] = {}
     stack: list[object] = [predicate]
@@ -428,6 +436,9 @@ def _predicate_binder_spellings(
         node = stack.pop()
         if isinstance(node, a.AnonFn):
             continue
+        if (isinstance(node, (a.MatchExpr, a.HandleExpr))
+                or (isinstance(node, a.Block) and node.statements)):
+            return None
         if isinstance(node, a.SlotRef):
             spelled = a.format_type(a.NamedType(node.type_name, node.type_args))
             found[spelled] = (node.type_name, node.type_args)
