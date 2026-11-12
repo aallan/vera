@@ -14,7 +14,11 @@ name: Mutation (nightly)
 # Each mutant is kept as the engine decides it, and the next night plans
 # the mutants still undecided, so a budget stop is a normal stop.  Each
 # slice runs two mutmut workers, and the oracle plugin ends a mutant's run
-# at 2,400 s as `slow`: decided, counted apart, never caught.  A slice whose
+# at 2,400 s as `slow`: decided, counted apart, never caught.  A slice runs
+# under a memory bound (a systemd scope set up with sudo, the hosted
+# runner's own), so a run the kernel ends there is `memory` and the runner
+# lives; it uploads its record in legs, so a lost runner keeps what its last
+# leg decided, and a mutant in flight on two lost slices is `lost`.  A slice whose
 # engine or lane fails, more than two slices with no record, or a second
 # night in a row that decides no mutant ends the run red, and on the
 # schedule the `issue` job files or updates one tracking issue (the
@@ -101,8 +105,9 @@ jobs:
         slice: ${{ fromJSON(needs.setup.outputs.slices) }}
     runs-on: ubuntu-24.04
     # The script's budget (--budget, 4.5 h) plus installing the lock, the
-    # sweep's own tests, the scratch tree and the engine's grace on a stop,
-    # inside a hosted job's 6 h.
+    # sweep's own tests, the plan, the scratch tree and the engine's grace on
+    # a stop, inside a hosted job's 6 h.  The legs wait inside the budget,
+    # beside the slice.
     timeout-minutes: 330
     # A hosted runner taken away under a slice (the nights of 19 and 20
     # October 2026, #1751) fails its job with nothing uploaded.  The stitch
@@ -146,12 +151,21 @@ jobs:
           run-id: ${{ needs.setup.outputs.state-run }}
           github-token: ${{ github.token }}
 
-      - name: Mutate this slice of the night
+      # The slice runs in the background, across the steps below, inside a
+      # transient systemd scope whose memory is bounded at the runner's less
+      # 2.5 GiB with no swap (scripts/mutate_sweep.py's scope_command): when
+      # a mutant's run outgrows it, the kernel ends that run, not the runner.
+      # A bound that cannot be set fails this step, and the slice is a lane
+      # stop; it never runs unbounded.  The step returns once the slice has
+      # checked its bound.
+      - name: Start this slice under the memory bound
         env:
           SLICE: ${{ matrix.slice }}
           JOBS: ${{ needs.setup.outputs.jobs }}
         run: >-
-          python scripts/mutate_sweep.py night
+          python scripts/mutate_sweep.py start
+          --slice "$SLICE" --live "$RUNNER_TEMP/live"
+          --
           --slice "$SLICE" --of "$JOBS"
           --state "$RUNNER_TEMP/state-in"
           --budget 16200
@@ -159,12 +173,164 @@ jobs:
           --mutant-cap 2400
           --workdir "$RUNNER_TEMP/sweep"
           --out "$RUNNER_TEMP/slice"
+
+      # A lost runner takes its job's log with it and uploads nothing after
+      # the loss, so the slice's record goes up in legs: each leg waits
+      # (printing the slice's output into this job's log) until the slice has
+      # run thirty minutes more, then uploads its partial record.  The stitch
+      # reads a slice's last leg only when its final record never came.
+      - name: Leg 0, the plan
+        run: >-
+          python scripts/mutate_sweep.py leg --leg 0
+          --live "$RUNNER_TEMP/live" --out "$RUNNER_TEMP/legs/0"
+
+      - name: Upload leg 0
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mutation-sweep-slice-${{ matrix.slice }}-leg-0
+          path: ${{ runner.temp }}/legs/0/
+          retention-days: 3
+          if-no-files-found: ignore
+
+      - name: Leg 1, 30 minutes in
+        run: >-
+          python scripts/mutate_sweep.py leg --leg 1
+          --live "$RUNNER_TEMP/live" --out "$RUNNER_TEMP/legs/1"
+
+      - name: Upload leg 1
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mutation-sweep-slice-${{ matrix.slice }}-leg-1
+          path: ${{ runner.temp }}/legs/1/
+          retention-days: 3
+          if-no-files-found: ignore
+
+      - name: Leg 2, 60 minutes in
+        run: >-
+          python scripts/mutate_sweep.py leg --leg 2
+          --live "$RUNNER_TEMP/live" --out "$RUNNER_TEMP/legs/2"
+
+      - name: Upload leg 2
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mutation-sweep-slice-${{ matrix.slice }}-leg-2
+          path: ${{ runner.temp }}/legs/2/
+          retention-days: 3
+          if-no-files-found: ignore
+
+      - name: Leg 3, 90 minutes in
+        run: >-
+          python scripts/mutate_sweep.py leg --leg 3
+          --live "$RUNNER_TEMP/live" --out "$RUNNER_TEMP/legs/3"
+
+      - name: Upload leg 3
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mutation-sweep-slice-${{ matrix.slice }}-leg-3
+          path: ${{ runner.temp }}/legs/3/
+          retention-days: 3
+          if-no-files-found: ignore
+
+      - name: Leg 4, 120 minutes in
+        run: >-
+          python scripts/mutate_sweep.py leg --leg 4
+          --live "$RUNNER_TEMP/live" --out "$RUNNER_TEMP/legs/4"
+
+      - name: Upload leg 4
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mutation-sweep-slice-${{ matrix.slice }}-leg-4
+          path: ${{ runner.temp }}/legs/4/
+          retention-days: 3
+          if-no-files-found: ignore
+
+      - name: Leg 5, 150 minutes in
+        run: >-
+          python scripts/mutate_sweep.py leg --leg 5
+          --live "$RUNNER_TEMP/live" --out "$RUNNER_TEMP/legs/5"
+
+      - name: Upload leg 5
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mutation-sweep-slice-${{ matrix.slice }}-leg-5
+          path: ${{ runner.temp }}/legs/5/
+          retention-days: 3
+          if-no-files-found: ignore
+
+      - name: Leg 6, 180 minutes in
+        run: >-
+          python scripts/mutate_sweep.py leg --leg 6
+          --live "$RUNNER_TEMP/live" --out "$RUNNER_TEMP/legs/6"
+
+      - name: Upload leg 6
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mutation-sweep-slice-${{ matrix.slice }}-leg-6
+          path: ${{ runner.temp }}/legs/6/
+          retention-days: 3
+          if-no-files-found: ignore
+
+      - name: Leg 7, 210 minutes in
+        run: >-
+          python scripts/mutate_sweep.py leg --leg 7
+          --live "$RUNNER_TEMP/live" --out "$RUNNER_TEMP/legs/7"
+
+      - name: Upload leg 7
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mutation-sweep-slice-${{ matrix.slice }}-leg-7
+          path: ${{ runner.temp }}/legs/7/
+          retention-days: 3
+          if-no-files-found: ignore
+
+      - name: Leg 8, 240 minutes in
+        run: >-
+          python scripts/mutate_sweep.py leg --leg 8
+          --live "$RUNNER_TEMP/live" --out "$RUNNER_TEMP/legs/8"
+
+      - name: Upload leg 8
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mutation-sweep-slice-${{ matrix.slice }}-leg-8
+          path: ${{ runner.temp }}/legs/8/
+          retention-days: 3
+          if-no-files-found: ignore
+
+      - name: Leg 9, 270 minutes in
+        run: >-
+          python scripts/mutate_sweep.py leg --leg 9
+          --live "$RUNNER_TEMP/live" --out "$RUNNER_TEMP/legs/9"
+
+      - name: Upload leg 9
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mutation-sweep-slice-${{ matrix.slice }}-leg-9
+          path: ${{ runner.temp }}/legs/9/
+          retention-days: 3
+          if-no-files-found: ignore
+
+      - name: Mutate this slice of the night
+        run: >-
+          python scripts/mutate_sweep.py finish
+          --live "$RUNNER_TEMP/live"
           --summary "$GITHUB_STEP_SUMMARY"
 
-      # A step before the sweep that fails while the runner is still there
-      # (the install, the sweep's own tests, the state download) leaves no
-      # record either; this one writes a lane record in its place, so the
-      # stitch reports the slice rather than reading it as a lost runner.
+      # A step that fails while the runner is still there (the install, the
+      # sweep's own tests, the state download, the bound, or the slice ending
+      # with no record) leaves no final record either; this one writes a
+      # lane record in its place, with what the slice's last partial record
+      # decided, so the stitch reports the slice rather than reading it as a
+      # lost runner.
       - name: Record a lane that failed before the sweep ran
         if: failure()
         env:
@@ -174,8 +340,9 @@ jobs:
           python scripts/mutate_sweep.py lane-failed
           --slice "$SLICE" --of "$JOBS"
           --state "$RUNNER_TEMP/state-in"
+          --live "$RUNNER_TEMP/live"
           --out "$RUNNER_TEMP/slice"
-          --why "a step before the sweep failed"
+          --why "a step of the slice failed before it wrote its record"
           --summary "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the slice's record
@@ -262,7 +429,7 @@ jobs:
             const TITLE = "Nightly mutation sweep stopped short on main (tracking)";
             const sha = process.env.COMMIT_SHA;
             const body = [
-              `The nightly mutation sweep stopped short against \`${sha.slice(0, 7)}\` (commit ${sha}): a slice whose engine or lane failed, records that disagree, more than two slices with no record in one night, a plan with nothing in it while the cycle is open, or a second night in a row that decided no mutant.  A budget stop is a normal stop: each mutant is kept as it is decided, and the next night plans the rest.`,
+              `The nightly mutation sweep stopped short against \`${sha.slice(0, 7)}\` (commit ${sha}): a slice whose engine or lane failed, records that disagree, more than two slices with no record in one night, a plan with nothing in it while the cycle is open, a second night in a row that decided no mutant, or a slice lost two nights running on the same plan with no mutant of it decided.  A budget stop is a normal stop: each mutant is kept as it is decided, and the next night plans the rest.`,
               ``,
               `**Run**: ${process.env.RUN_URL}`,
               ``,

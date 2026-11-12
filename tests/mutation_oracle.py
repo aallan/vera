@@ -51,6 +51,15 @@ plugin, since it already runs in mutmut's worker for each mutant, where a
 watchdog outside could only kill the worker, which mutmut reads as a
 ``segfault``.  With neither variable set (the diff lane) there is no cap.
 
+The sweep also reads which mutants are in flight: with
+``MUTATION_ORACLE_INFLIGHT`` set, a mutant's run appends its name, its
+process, its start and whether it took the next step to the file it names,
+and first writes 1000 to its own ``oom_score_adj``, so inside the sweep's
+memory bound the kernel ends the mutant's run, and whatever it started,
+before the fork server or the engine.  A run the kernel ended is a process
+gone while the bound's ``oom_kill`` count rose, which the sweep records as
+``memory`` (``scripts/mutate_sweep.py``).
+
 The skipped test is out of the oracle entirely.  mutmut's stats pass records,
 at each test's teardown and whatever its outcome, the functions the test
 reached, and runs a mutant against the tests recorded for its function; a
@@ -93,6 +102,10 @@ FAILURES_ENV = "MUTATION_ORACLE_FAILURES"
 #: each mutant the cap ends is named in.
 CAP_ENV = "MUTATION_ORACLE_CAP_S"
 SLOW_ENV = "MUTATION_ORACLE_SLOW"
+
+#: The variable naming the file each mutant's run is named in as it starts,
+#: with its process and its start (:func:`mark_in_flight`).
+INFLIGHT_ENV = "MUTATION_ORACLE_INFLIGHT"
 
 #: The exit status of a mutant's run the cap ends: mutmut's "check was
 #: interrupted by user", which leaves the mutant undecided to any reader that
@@ -226,8 +239,47 @@ def arm_cap(environ: Any = os.environ) -> threading.Timer | None:
     return timer
 
 
+def _first_victim() -> bool:
+    """Make this process, and every process it starts, the kernel's first
+    choice when memory runs out (``oom_score_adj`` 1000, Linux only, best
+    effort): inside the sweep's memory bound the mutant's own run goes before
+    the fork server and the engine.  Whether the write took."""
+    try:
+        fd = os.open("/proc/self/oom_score_adj", os.O_WRONLY)
+    except OSError:
+        return False
+    try:
+        return os.write(fd, b"1000\n") > 0
+    except OSError:
+        return False
+    finally:
+        os.close(fd)
+
+
+def mark_in_flight(environ: Any = os.environ) -> bool:
+    """In a mutant's run with ``MUTATION_ORACLE_INFLIGHT`` set: make the run
+    the kernel's first choice (:func:`_first_victim`), then append
+    ``<mutant>\\t<pid>\\t<start, epoch seconds>\\t<1 when the choice took, else 0>``
+    to the file it names, one ``os.write`` on an ``O_APPEND`` descriptor.
+    The sweep reads it for the mutants in flight, their processes and when
+    each started."""
+    mutant = environ.get("MUTANT_UNDER_TEST", "")
+    path = environ.get(INFLIGHT_ENV)
+    if "__mutmut_" not in mutant or not path:
+        return False
+    took = _first_victim()
+    line = f"{mutant}\t{os.getpid()}\t{time.time():.3f}\t{int(took)}\n".encode("utf-8")
+    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+    try:
+        os.write(fd, line)
+    finally:
+        os.close(fd)
+    return True
+
+
 def pytest_sessionstart(session: pytest.Session) -> None:
     global _timer
+    mark_in_flight()
     _timer = arm_cap()
 
 
