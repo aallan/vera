@@ -2438,7 +2438,7 @@ class TestEndToEnd:
         assert record["results"]["vera/m.py::x_g"]["decided"]["1"] == "slow"
         window = {p["unit"]: p["mutants"] for p in record["planned"]}
         assert {i: len(r["decided"]) for i, r in record["results"].items()} == window  # it went on
-        assert record["results"]["vera/m.py::x_g"]["durations"]["1"] < 30
+        assert "1" not in record["results"]["vera/m.py::x_g"]["durations"]  # the cap's exit wrote no end
         # Each run's start and end are the plugin's lines, so every mutant
         # whose run ended of its own accord has a measured duration, where
         # the fork server reports zero; the slow one, which the cap's exit
