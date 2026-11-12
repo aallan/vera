@@ -1480,3 +1480,144 @@ def test_a_literal_meets_the_enclosing_function_s_own_type_as_before(
     `Array<T>` and `Tuple(1, 2)` at a `T` component are refused (E170),
     as at c35763d6."""
     assert _codes(_in_rigid_g(body)) == ["E170"]
+
+
+# ---------------------------------------------------------------------
+# The class's `Tuple` form (PR 1864 review): a component whose type leaves
+# a variable open takes the component type the context gives
+# ---------------------------------------------------------------------
+
+_LIST = "private data List<A> { Nil, Cons(A, List<A>) }\n\n"
+
+#: A tuple holding a constructor whose type leaves a variable open, and the
+#: type it meets.
+_OPEN_COMPONENTS = {
+    "none_first": ("Tuple(None, 1)", "Tuple<Option<Int>, Int>"),
+    "none_second": ("Tuple(1, None)", "Tuple<Int, Option<Int>>"),
+    "nested_tuple": ("Tuple(Tuple(None, 1), 2)",
+                     "Tuple<Tuple<Option<Int>, Int>, Int>"),
+    "in_some": ("Some(Tuple(None, 1))", "Option<Tuple<Option<Int>, Int>>"),
+    "in_array": ("[Tuple(None, 1)]", "Array<Tuple<Option<Int>, Int>>"),
+    "user_nullary": ("Tuple(Nil, 1)", "Tuple<List<Int>, Int>"),
+    "constructor": ("Tuple(Some(None), 1)",
+                    "Tuple<Option<Option<Int>>, Int>"),
+}
+
+
+def _meeting(value: str, ty: str, meets: str) -> str:
+    if meets == "let":
+        return _fn("f", "@Unit", "Int", f"let @{ty} = {value};\n0")
+    if meets == "return":
+        return _fn("f", "@Unit", ty, value)
+    return (_fn("use", f"@{ty}", "Int", "0") + "\n"
+            + _fn("f", "@Unit", "Int", f"use({value})"))
+
+
+@pytest.mark.parametrize("meets", ["let", "return", "argument"])
+@pytest.mark.parametrize("form", list(_OPEN_COMPONENTS))
+def test_repro_a_tuple_component_left_open_takes_the_component_type(
+        form: str, meets: str) -> None:
+    """`let @Tuple<Option<Int>, Int> = Tuple(None, 1);`: the `None`
+    component is held to the component type the binding gives, as `P(None,
+    1)` is at a user `@Pair<Option<Int>, Int>`.  At c35763d6 and 476dbe06 a
+    `let` and a return refused it (E170, E121; an argument's fit
+    accepted it)."""
+    value, ty = _OPEN_COMPONENTS[form]
+    checked = pipeline.check(_LIST + _meeting(value, ty, meets))
+    assert checked.ok, [e.format() for e in checked.errors]
+
+
+def test_repro_a_tuple_component_left_open_runs() -> None:
+    """The `let` form runs and reads the component back."""
+    source = _fn("main", "@Unit", "Int",
+                 "let @Tuple<Option<Int>, Int> = Tuple(None, 4);\n"
+                 "match @Tuple<Option<Int>, Int>.0 {\n"
+                 "  Tuple(@Option<Int>, @Int) -> "
+                 "option_unwrap_or(@Option<Int>.0, 3) + @Int.0\n}",
+                 visibility="public")
+    assert pipeline.run(source).value == 7
+
+
+def test_repro_a_tuple_component_takes_the_enclosing_function_s_own_type(
+) -> None:
+    """Under a context naming the enclosing function's own `T`."""
+    source = _fn("g", "@T", "Int",
+                 "let @Tuple<Option<T>, Int> = Tuple(None, 1);\n0",
+                 forall="forall<T> ")
+    checked = pipeline.check(source)
+    assert checked.ok, [e.format() for e in checked.errors]
+
+
+def test_a_tuple_component_left_open_with_nothing_expected_stays_open(
+) -> None:
+    """`match Tuple(None, 1) { .. }`: nothing is expected of the tuple, and
+    the check accepts it as before, its `None` open."""
+    source = _fn("f", "@Unit", "Int",
+                 "match Tuple(None, 1) {\n"
+                 "  Tuple(@Option<Int>, @Int) -> @Int.0\n}")
+    assert pipeline.check(source).ok
+
+
+@pytest.mark.parametrize("meets,code", [
+    ("let", "E170"), ("return", "E121"), ("argument", "E202")])
+def test_a_tuple_component_meeting_another_type_is_refused_as_before(
+        meets: str, code: str) -> None:
+    """`Tuple(None, 1)` at `Tuple<Int, Int>`: `None` is no `Int`, refused
+    with the code c35763d6 gives."""
+    assert _codes(_meeting("Tuple(None, 1)", "Tuple<Int, Int>", meets)) == [
+        code]
+
+
+# ---------------------------------------------------------------------
+# Issue #1866 (not this PR): the sibling guard tells a sibling's type from
+# another expected type by the identity of the type object.  These pin
+# where it stands, so the change that fixes it moves them.
+# ---------------------------------------------------------------------
+
+_EMPTY_ORD_MATCH = {
+    "open_second": "match @Bool.0 { false -> @Int.0, true -> empty_ord(())[0] }",
+    "open_first": "match @Bool.0 { true -> empty_ord(())[0], false -> @Int.0 }",
+}
+
+
+@pytest.mark.parametrize("order", list(_EMPTY_ORD_MATCH))
+def test_issue_1866_a_match_s_arm_order_decides_an_indexed_open_call(
+        order: str) -> None:
+    """`idg(match c { false -> @Int.0, true -> empty_ord(())[0] })`: an
+    index wraps the sibling arm's `Int` in a fresh `Array`, which the
+    guard does not recognise as the sibling's, so the later arm's call
+    takes `Int` from its sibling and is accepted; first, the arm is not
+    synthesized again and keeps the default (E613).  #1866 makes the two
+    orders agree; until then this pins both."""
+    source = _ORD_PRE + _fn(
+        "g", "@Bool, @Int", "Int", f"idg({_EMPTY_ORD_MATCH[order]})")
+    if order == "open_second":
+        assert _instances(source, "empty_ord") == {("Int",)}
+    else:
+        assert _codes(source) == ["E613"]
+
+
+_HEAD_ORD = _fn("head_ord", "@Array<T>", "T", "@Array<T>.0[0]",
+                forall="forall<T where Ord<T>> ")
+_TAKE = _fn("take", "@Int", "Int", "@Int.0 + 1")
+
+
+@pytest.mark.parametrize("inside", [True, False])
+def test_issue_1866_an_open_argument_inside_a_branch(inside: bool) -> None:
+    """`take(head_ord([]))`: outside a branch `take`'s `Int` parameter
+    fixes `head_ord`'s variable (`head_ord$Int`); inside an `if` branch
+    synthesized again against its sibling, that parameter is the very
+    object the sibling's type holds, the guard takes it for the sibling's,
+    and the call keeps the default (E613), as at c35763d6.  #1866."""
+    if inside:
+        body = ("match if @Bool.0 then { Tuple(None, take(head_ord([]))) } "
+                "else { @Tuple<Option<Int>, Int>.0 } {\n"
+                "  Tuple(@Option<Int>, @Int) -> @Int.0\n}")
+    else:
+        body = "take(head_ord([]))"
+    source = (_HEAD_ORD + "\n" + _TAKE + "\n"
+              + _fn("g", "@Bool, @Tuple<Option<Int>, Int>", "Int", body))
+    if inside:
+        assert _codes(source) == ["E613"]
+    else:
+        assert _instances(source, "head_ord") == {("Int",)}

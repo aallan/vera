@@ -3173,7 +3173,8 @@ class CallsMixin:
         for i, arg in enumerate(expr.args):
             t = self._synth_expr(arg)
             if components is not None:
-                t = self._check_in_literal_context(arg, t, components[i])
+                t = self._check_in_literal_context(
+                    arg, t, components[i], component=True)
             if t is not None and not isinstance(t, UnknownType):
                 arg_types.append(t)
             else:

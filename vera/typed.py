@@ -909,16 +909,26 @@ def _call_fix(call: ast.Node, source: str, root: Template, needs: str) -> str:
     args: tuple[ast.Expr, ...] = getattr(call, "args", ())
     variables = frozenset(root.decl.forall_vars or ())
     if not any(_mentions(formal, variables) for formal in root.decl.params):
-        var = (root.decl.forall_vars or ("T",))[0]
+        names = root.decl.forall_vars or ("T",)
+        var = names[0]
         head = (f"No argument of '{text or generic}' fixes "
-                f"{', '.join(root.decl.forall_vars or (var,))}, so the call "
+                f"{', '.join(names)}, so the call "
                 f"instantiates '{generic}' at "
                 f"{type_arg_name(PHANTOM_TYPE)}, nothing giving its result a "
                 f"type")
-        param = (f"give '{generic}' a parameter that carries {var} "
-                 f"('@{var}' for example) and pass it a value at a type "
-                 f"that {needs}, Int for example.")
-        if not _mentions(root.decl.return_type, variables):
+        if len(names) == 1:
+            param = (f"give '{generic}' a parameter that carries {var} "
+                     f"('@{var}' for example) and pass it a value at a type "
+                     f"that {needs}, Int for example.")
+        else:
+            # Every variable needs its own: a parameter for one leaves the
+            # others at the phantom type.
+            carried = ", ".join(f"'@{v}'" for v in names)
+            param = (f"give '{generic}' a parameter for each of "
+                     f"{', '.join(names)} ({carried}) and pass each a value "
+                     f"at a type that {needs}, Int for example.")
+        if not all(_mentions(root.decl.return_type, frozenset((v,)))
+                   for v in names):
             # A variable the result's type does not hold (one only a
             # `where` constraint names): no binding of the result fixes it.
             return f"{head}: {param}"

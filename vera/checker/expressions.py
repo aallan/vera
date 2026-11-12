@@ -1200,7 +1200,8 @@ class ExpressionsMixin:
             self.env.bind(tname, resolved, "destruct")
 
     def _check_in_literal_context(self, expr: ast.Expr, ty: Type | None,
-                                  context: Type) -> Type | None:
+                                  context: Type, *,
+                                  component: bool = False) -> Type | None:
         """*expr*, synthesized as *ty* without an expected type, checked
         again against *context* where a generic call it reaches let its
         literals fix a position that *context* makes a `Nat`
@@ -1216,8 +1217,12 @@ class ExpressionsMixin:
         So is a call whose type holds a variable it left open (`T$n`,
         `none_ord(())`'s `Option<T>`): *context* is the type it is expected
         at, which fixes that variable (rule C, spec §5.9), as a constructor's
-        argument takes its field's type (#1684, PR 1864 review).  Returns
-        the type the check settled on."""
+        argument takes its field's type (#1684, PR 1864 review).  A
+        `Tuple`'s *component* holds a constructor whose type leaves a
+        variable open (`None`, `Nil`, `Some(None)`) the same way, as a
+        user constructor's field does (`P(None, 1)`); an array literal's
+        element takes the context's part through the element rule instead
+        (spec §4.12.1).  Returns the type the check settled on."""
         if ty is None or isinstance(ty, UnknownType):
             return ty
         # The open call's re-check is blocked only by what cannot fix its
@@ -1225,7 +1230,10 @@ class ExpressionsMixin:
         # open.  The enclosing function's own type parameter is a type like
         # any other (`let @Array<Option<T>> = [none_ord(())]` inside a
         # `forall<T>` fixes `none_ord`'s variable at that `T`).
-        left_open = (isinstance(expr, (ast.FnCall, ast.ModuleCall))
+        open_kinds: tuple[type, ...] = (ast.FnCall, ast.ModuleCall)
+        if component:
+            open_kinds += (ast.ConstructorCall, ast.NullaryConstructor)
+        left_open = (isinstance(expr, open_kinds)
                      and contains_fresh_typevar(ty)
                      and not contains_fresh_typevar(context)
                      and not contains_unknown(context)

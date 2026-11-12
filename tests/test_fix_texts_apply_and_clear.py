@@ -1884,19 +1884,51 @@ def test_repro_e613_s_argument_fix_is_whole_and_clears() -> None:
 
 def test_repro_e613_names_every_variable_no_argument_fixes() -> None:
     """Two variables no argument fixes, `A` and `B`, both in the result's
-    type: the fix names both, the phantom type and the binding remedy,
-    whole; binding the result at a type that gives both one, as it says,
-    passes the check."""
+    type: the fix names both, the phantom type, the binding remedy and a
+    parameter for each, whole; each alternative, applied as it says,
+    passes the check (a parameter for `A` alone left `B` at the phantom
+    type and did not clear, PR 1864 review)."""
     fix = _the("E613", "check", _E613_TWO_VARIABLES).fix
     assert fix == (
         "No argument of 'pair_ord(())' fixes A, B, so the call "
         "instantiates 'pair_ord' at Bool, nothing giving its result a "
         "type: bind its result at a type that supports 'Ord' (a `let` of "
-        "that type), or give 'pair_ord' a parameter that carries A ('@A' "
-        "for example) and pass it a value at a type that supports 'Ord', "
-        "Int for example."), fix
-    fixed = _E613_TWO_VARIABLES.replace(
+        "that type), or give 'pair_ord' a parameter for each of A, B "
+        "('@A', '@B') and pass each a value at a type that supports "
+        "'Ord', Int for example."), fix
+    bound = _E613_TWO_VARIABLES.replace(
         "  match pair_ord(()) {",
         "  let @Option<Tuple<Int, Int>> = pair_ord(());\n"
         "  match @Option<Tuple<Int, Int>>.0 {")
-    assert "E613" not in _passed_codes("check", fixed)
+    assert "E613" not in _passed_codes("check", bound)
+    carried = (_E613_TWO_VARIABLES
+               .replace("fn pair_ord(@Unit -> ", "fn pair_ord(@Unit, @A, @B -> ")
+               .replace("pair_ord(())", "pair_ord((), 1, 2)"))
+    assert "E613" not in _passed_codes("check", carried)
+
+
+_E613_HALF = _E613_SHAPES.replace(
+    "fn pair_ord(@Unit -> @Option<Tuple<A, B>>)",
+    "fn pair_ord(@Unit -> @Option<A>)") + """\
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Option<Int> = pair_ord(());
+  0
+}
+"""
+
+
+def test_e613_offers_no_binding_where_the_result_holds_some_variables() -> None:
+    """`pair_ord(@Unit -> @Option<A>)`: the result's type holds `A` and not
+    `B`, so no binding fixes both; the fix offers only a parameter for
+    each, which, applied, passes the check."""
+    fix = _the("E613", "check", _E613_HALF).fix
+    assert "bind its result" not in fix, fix
+    assert "a parameter for each of A, B" in fix, fix
+    carried = (_E613_HALF
+               .replace("fn pair_ord(@Unit -> ", "fn pair_ord(@Unit, @A, @B -> ")
+               .replace("pair_ord(())", "pair_ord((), 1, 2)"))
+    assert "E613" not in _passed_codes("check", carried)
