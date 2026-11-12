@@ -241,8 +241,7 @@ JOINS = [
     ("@PosInt", "@Int", "0", "@PosInt.0", "Int"),
     ("@Option<PosInt>", "@Option<PosInt>", "None", "@Option<PosInt>.0",
      "Option<{Int|PosInt}>"),
-    ("@PosFn, @IntFn", "@IntFn", "@PosFn.0", "@IntFn.0",
-     "fn({Int|PosInt} -> Int)"),
+    ("@PosFn, @IntFn", "@IntFn", "@PosFn.0", "@IntFn.0", "fn(Int -> Int)"),
     ("@IntFn, @IntToPos", "@IntFn", "@IntFn.0", "@IntToPos.0",
      "fn(Int -> Int)"),
     ("@Tuple<PosInt, Int>, @Tuple<PosInt, Nat>", "@Tuple<PosInt, Int>",
@@ -444,18 +443,16 @@ _INT_PARAM = "fn(@Int -> @Int) effects(pure) {\n      1\n    }"
 
 
 @pytest.mark.parametrize("swap", [False, True], ids=["pos first", "int first"])
-def test_a_parameter_refinement_one_arm_states_is_what_the_join_accepts(
+def test_a_parameter_refinement_the_arms_differ_by_drops_to_the_base(
         swap: bool) -> None:
     """`fn(PosInt -> Int)` beside `fn(Int -> Int)` is recorded
-    `fn(PosInt -> Int)` in either order, what both closures accept.
-    Returned as an `fn(Int -> Int)` it is the relaxation `is_subtype`
-    already admits (rule 9 with rule 7), the closure's entry check holding
-    its parameter, so the run at 0 through the `PosInt` closure traps
-    there."""
+    `fn(Int -> Int)` in either order: the relaxation `is_subtype` already
+    admits (rule 9 with rule 7), the closure's entry check holding its
+    parameter, so the run at 0 through the `PosInt` closure traps there."""
     first, second = (_INT_PARAM, _POS_PARAM) if swap else (
         _POS_PARAM, _INT_PARAM)
     source = _FN_PROGRAM.format(first=first, second=second)
-    assert _recorded(source, ast.IfExpr) == ["fn({Int|PosInt} -> Int)"]
+    assert _recorded(source, ast.IfExpr) == ["fn(Int -> Int)"]
     verified = pipeline.verify(source, file=FILE)
     assert verified.ok, [(d.error_code, d.description[:80])
                          for d in verified.errors]
@@ -1684,12 +1681,13 @@ _FN_POLARITY = [
      "fn(Option<Nat> -> Int)", "fn(Option<Nat> -> Int)"),
     # a return is a value: the facts both state
     ("fn(Int -> Nat)", "fn(Int -> Int)", "fn(Int -> Int)", "fn(Int -> Int)"),
-    # a refined parameter beside its base: the refined one, both accept it
-    ("fn(Int -> Int)", "fn(Small -> Int)", "fn(Small -> Int)",
+    # a refined parameter beside its base: the base, as at a value
+    ("fn(Int -> Int)", "fn(Small -> Int)", "fn(Int -> Int)", "fn(Int -> Int)"),
+    # nested refinements: the shared prefix, as at a value
+    ("fn(Small -> Int)", "fn(Tiny -> Int)", "fn(Small -> Int)",
      "fn({Int|Small} -> Int)"),
-    # nested refinements: the longest chain, one arm's own
-    ("fn(Small -> Int)", "fn(Tiny -> Int)", "fn(Tiny -> Int)",
-     "fn({{Int|Small}|Tiny} -> Int)"),
+    # a `Nat` beside a refined `Int`: a plain `Nat`
+    ("fn(Small -> Int)", "fn(Nat -> Int)", "fn(Nat -> Int)", "fn(Nat -> Int)"),
     # two predicates at one level: no new chain, the base
     ("fn(Small -> Int)", "fn(Pos -> Int)", "fn(Int -> Int)", "fn(Int -> Int)"),
 ]
@@ -1708,7 +1706,8 @@ def _fn_join(form: str, row: tuple[str, str, str, str], swap: bool) -> str:
 @pytest.mark.parametrize("form", list(_FN_FORMS))
 @pytest.mark.parametrize("swap", [False, True], ids=["ab", "ba"])
 @pytest.mark.parametrize("row", _FN_POLARITY, ids=[
-    "param", "nested", "data", "return", "refined", "chain", "not-nested"])
+    "param", "nested", "data", "return", "refined", "chain", "mixed",
+    "not-nested"])
 def test_a_function_join_reads_a_parameter_as_accepting(
         form: str, swap: bool, row: tuple[str, str, str, str]) -> None:
     kind = {"if": ast.IfExpr, "match": ast.MatchExpr,
@@ -1760,28 +1759,111 @@ def _refined_accepting(other: str, guard: str, swap: bool) -> str:
 
 
 @pytest.mark.parametrize("swap", [False, True], ids=["int first", "small first"])
-def test_repro_1716_a_join_of_functions_obligates_a_refined_parameter(
+def test_repro_1716_a_refined_parameter_beside_its_base_is_the_base(
         swap: bool) -> None:
-    """`fn(Int -> Int)` beside `fn(Small -> Int)` accepts a `Small`, so an
-    `@Int` argument is a refinement narrowing at `apply_fn`: refused
-    (E505) where nothing bounds it, `verified` under `requires(@Int.0 <
-    10)`, in either order.  Read as the shared prefix the parameter was an
-    `Int`: no row, and the argument 50 reached the `Small` closure's entry
-    check at run time."""
-    open_ = pipeline.verify(_refined_accepting("Small", "true", swap),
-                            file=FILE)
-    rows = [(o.kind, o.status) for o in open_.obligations
+    """`fn(Int -> Int)` beside `fn(Small -> Int)`: the parameter is the
+    base `Int` in either order, as at a position that holds a value, so no
+    row is listed at `apply_fn`'s argument and the `Small` closure's entry
+    check holds its parameter: 50 handed to it traps there, as wherever
+    such a function is passed (issue #1819 revisits that relaxation).  At
+    f71c401c, with the `Small` closure second, an unconstrained argument
+    was refused (E505)."""
+    source = _refined_accepting("Small", "true", swap)
+    verified = pipeline.verify(source, file=FILE)
+    assert verified.errors == (), [(d.error_code, d.description[:80])
+                                   for d in verified.errors]
+    rows = [(o.kind, o.status) for o in verified.obligations
             if o.fn_name == "pick" and o.kind == "refine_bind"]
-    assert rows == [("refine_bind", "violated")], rows
-    assert [d.error_code for d in open_.errors] == ["E505"], [
+    assert rows == [], rows
+    ran = pipeline.run(source, "f", [1 if swap else 0, 50], file=FILE)
+    assert ran.trap is not None, ran
+    assert "Refinement violation" in str(ran.trap), str(ran.trap)
+
+
+_MIXED = """\
+type Small = {{ @Int | @Int.0 < 10 }};
+type SmallToInt = fn(Small -> Int) effects(pure);
+type NatToInt = fn(Nat -> Int) effects(pure);
+
+private fn pick(@Bool, @SmallToInt, @NatToInt, @Int -> @Int)
+  requires({guard})
+  ensures(true)
+  effects(pure)
+{{
+  apply_fn(if @Bool.0 then {{ {first} }} else {{ {second} }}, @Int.0)
+}}
+
+public fn f(@Bool, @Int -> @Int)
+  requires({guard})
+  ensures(true)
+  effects(pure)
+{{
+  let @SmallToInt = fn(@Small -> @Int) effects(pure) {{ @Small.0 }};
+  let @NatToInt = fn(@Nat -> @Int) effects(pure) {{ @Nat.0 }};
+  pick(@Bool.0, @SmallToInt.0, @NatToInt.0, @Int.0)
+}}
+"""
+
+
+@pytest.mark.parametrize("swap", [False, True], ids=["small first", "nat first"])
+def test_repro_1716_a_nat_parameter_beside_a_refined_int_is_a_plain_nat(
+        swap: bool) -> None:
+    """`fn(Small -> Int)` beside `fn(Nat -> Int)`: the parameter is a plain
+    `Nat` (no chain moved onto another base), so an unconstrained `@Int`
+    argument is refused (E503) in either order; under `requires(@Int.0 >=
+    0)` it verifies, and 50 handed to the `Small` closure traps in its
+    entry check."""
+    first, second = (("@NatToInt.0", "@SmallToInt.0") if swap
+                     else ("@SmallToInt.0", "@NatToInt.0"))
+    open_ = pipeline.verify(_MIXED.format(guard="true", first=first,
+                                          second=second), file=FILE)
+    assert [d.error_code for d in open_.errors] == ["E503"], [
         (d.error_code, d.description[:80]) for d in open_.errors]
-    guarded = pipeline.verify(_refined_accepting("Small", "@Int.0 < 10", swap),
-                              file=FILE)
-    rows = [(o.kind, o.status) for o in guarded.obligations
-            if o.fn_name == "pick" and o.kind == "refine_bind"]
-    assert rows == [("refine_bind", "verified")], rows
-    assert guarded.errors == (), [(d.error_code, d.description[:80])
-                                  for d in guarded.errors]
+    guarded = _MIXED.format(guard="@Int.0 >= 0", first=first, second=second)
+    verified = pipeline.verify(guarded, file=FILE)
+    assert verified.errors == (), [(d.error_code, d.description[:80])
+                                   for d in verified.errors]
+    ran = pipeline.run(guarded, "f", [0 if swap else 1, 50], file=FILE)
+    assert ran.trap is not None, ran
+    assert "Refinement violation" in str(ran.trap), str(ran.trap)
+
+
+_OVERFLOW_PREDICATE = """\
+type Small = { @Int | @Int.0 * @Int.0 * @Int.0 * @Int.0 * @Int.0 < 100000 };
+type SmallToInt = fn(Small -> Int) effects(pure);
+type IntToInt = fn(Int -> Int) effects(pure);
+
+private fn pick(@Bool, @SmallToInt, @IntToInt, @Int, @Int -> @Int)
+  requires(@Int.1 >= 0 && @Int.1 < 5)
+  ensures(true)
+  effects(pure)
+{
+  apply_fn(if @Bool.0 then { @SmallToInt.0 } else { @IntToInt.0 }, @Int.1)
+}
+
+public fn f(@Bool, @Int -> @Int)
+  requires(@Int.0 >= 0 && @Int.0 < 5)
+  ensures(true)
+  effects(pure)
+{
+  let @SmallToInt = fn(@Small -> @Int) effects(pure) { @Small.0 };
+  let @IntToInt = fn(@Int -> @Int) effects(pure) { @Int.0 };
+  pick(@Bool.0, @SmallToInt.0, @IntToInt.0, @Int.0, 1)
+}
+"""
+
+
+def test_repro_1716_a_refined_parameter_join_reconciles_clean() -> None:
+    """A join of a `Small`-taking and an `Int`-taking closure applied to an
+    argument the `requires` puts in range verifies with a clean
+    reconciliation (no E541): the join's parameter is the base, so the
+    predicate's arithmetic is checked where the closure's entry check
+    holds it, as at f71c401c."""
+    verified = pipeline.verify(_OVERFLOW_PREDICATE, file=FILE, reconcile=True)
+    assert verified.errors == (), [(d.error_code, d.description[:80])
+                                   for d in verified.errors]
+    assert {d.error_code for d in verified.diagnostics} & {
+        "E541", "W004"} == set()
 
 
 @pytest.mark.parametrize("swap", [False, True], ids=["small first", "pos first"])

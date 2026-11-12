@@ -329,15 +329,12 @@ def _shared_facts(
     (`_accepted_row`: a `pure` callback beside an `<IO>` one is `pure`); an
     open row or a row variable leaves the join's row.  At a position that
     holds a value the row is the join's, the wider (`_join_either`).  By
-    the same rule a parameter keeps the longest of the arms'
-    refinement chains where they are nested (each a prefix of the longest):
-    `fn(Int -> X)` beside `fn(Small -> X)` is `fn(Small -> X)`, one arm's
-    own type, and an argument bound into it is obligated.  Where two arms'
-    chains state different predicates at one level, no new chain is built:
-    the parameter has the shared prefix, which is the relaxation
-    `is_subtype` already admits at any site of that function type (rule 9
-    with rule 7), each function's own entry check holding its parameter
-    (issue #1819 revisits it).  Binding the join where
+    contrast, a parameter's refinements are the arms' shared prefix, a
+    refinement one arm lacks dropped to the base (a `Nat` arm beside a
+    refined `Int` arm gives a plain `Nat`, never a chain moved onto another
+    base): the relaxation `is_subtype` already admits at any site of that
+    function type (rule 9 with rule 7), each function's own entry check
+    holding its parameter (issue #1819 revisits it).  Binding the join where
     a refined type is expected is then the narrowing it is, obligated by its
     leaves.
     """
@@ -359,14 +356,6 @@ def _shared_at(
     kept = predicates
     for _, ty in stating:
         kept = _shared_prefix(kept, _refinement_chain(ty)[1])
-    if accepting and stating:
-        # What every arm accepts: where the chains are nested, the longest,
-        # one arm's own; where two differ at a level, the shared prefix
-        # above, each closure's entry check holding its own predicate.
-        chains = [_refinement_chain(ty)[1] for _, ty in stating]
-        longest = max(chains, key=len)
-        if all(_shared_prefix(chain, longest) == chain for chain in chains):
-            kept = longest
     shared_base = base
     if isinstance(base, PrimitiveType) and base.name in ("Nat", "Int"):
         nat_arm = int_arm = False
