@@ -1218,14 +1218,21 @@ class ExpressionsMixin:
         at, which fixes that variable (rule C, spec §5.9), as a constructor's
         argument takes its field's type (#1684, PR 1864 review).  Returns
         the type the check settled on."""
-        if (ty is None or isinstance(ty, UnknownType)
-                or contains_typevar(context)):
+        if ty is None or isinstance(ty, UnknownType):
             return ty
+        # The open call's re-check is blocked only by what cannot fix its
+        # variable: an unknown, a literal's hole, a variable some call left
+        # open.  The enclosing function's own type parameter is a type like
+        # any other (`let @Array<Option<T>> = [none_ord(())]` inside a
+        # `forall<T>` fixes `none_ord`'s variable at that `T`).
         left_open = (isinstance(expr, (ast.FnCall, ast.ModuleCall))
                      and contains_fresh_typevar(ty)
+                     and not contains_fresh_typevar(context)
                      and not contains_unknown(context)
                      and not contains_literal_hole(context))
-        if not left_open and not self._call_literal_meets_nat(expr, context):
+        if not left_open and (contains_typevar(context)
+                              or not self._call_literal_meets_nat(
+                                  expr, context)):
             return ty
         rechecked = self._synth_expr(expr, expected=context)
         if rechecked is None or isinstance(rechecked, UnknownType):

@@ -1426,3 +1426,57 @@ def test_repro_a_call_s_own_expected_type_holds_inside_a_resynthesized_branch(
               + _fn("g", "@Int, @Bool", "Int",
                     f"(if @Bool.0 then {{ {a} }} else {{ {b} }}) + 0"))
     assert _instances(source, "none_ord") == {("Int",)}
+
+
+#: An open call meeting a type that names the enclosing function's own
+#: `T` (PR 1864 review): the body of `g<T where Ord<T>>(@T)`, called as
+#: `g(3)`.
+_RIGID_SITES = {
+    "array_element": "let @Array<Option<T>> = [none_ord(())];\n0",
+    "array_element_later": (
+        "let @Option<T> = Some(@T.0);\n"
+        "let @Array<Option<T>> = [@Option<T>.0, none_ord(())];\n0"),
+    "array_element_beside_none":
+        "let @Array<Option<T>> = [None, none_ord(())];\n0",
+    "tuple_component":
+        "let @Tuple<Option<T>, Option<T>> = Tuple(none_ord(()), none_ord(()));\n0",
+    "tuple_component_mixed":
+        "let @Tuple<Option<T>, Int> = Tuple(none_ord(()), 1);\n0",
+    "index_of_a_literal": "let @Option<T> = [none_ord(())][0];\n0",
+    "index_of_a_call": "let @T = empty_ord(())[0];\n0",
+}
+
+
+def _in_rigid_g(body: str) -> str:
+    return (_ORD_PRE + _fn("g", "@T", "Int", body,
+                           forall="forall<T where Ord<T>> ") + "\n"
+            + _fn("main", "@Unit", "Int", "g(3)", visibility="public"))
+
+
+@pytest.mark.parametrize("site", list(_RIGID_SITES))
+def test_repro_an_open_call_takes_the_enclosing_function_s_own_type(
+        site: str) -> None:
+    """`let @Array<Option<T>> = [none_ord(())]` inside `forall<T where
+    Ord<T>> fn g(@T)`: the element is expected at `Option<T>`, the
+    enclosing function's own `T`, a type like any other, which fixes
+    `none_ord`'s variable, so `g$Int` builds `none_ord$Int`, as `let
+    @Option<T> = none_ord(())` does.  At 8dbc5543 the re-check stopped at
+    any type variable in the context, so the element kept the default
+    (E613, reported at `g(3)`, c35763d6 E170 at the binding)."""
+    checked = pipeline.check(_in_rigid_g(_RIGID_SITES[site]))
+    assert checked.ok, [e.format() for e in checked.errors]
+    built = {i.args for i in checked.typed.instances
+             if i.key in ("none_ord", "empty_ord")}
+    assert built == {("Int",)}, built
+
+
+@pytest.mark.parametrize("body", [
+    "let @Array<T> = [1];\n0",
+    "let @Tuple<T, Int> = Tuple(1, 2);\n0",
+])
+def test_a_literal_meets_the_enclosing_function_s_own_type_as_before(
+        body: str) -> None:
+    """The literal half of the same check keeps its guard: `[1]` at
+    `Array<T>` and `Tuple(1, 2)` at a `T` component are refused (E170),
+    as at c35763d6."""
+    assert _codes(_in_rigid_g(body)) == ["E170"]
