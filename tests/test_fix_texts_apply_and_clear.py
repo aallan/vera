@@ -905,6 +905,15 @@ ENTRY: dict[str, _Entry] = {
     "E526-pattern": _Entry(
         "E526", _fn("@Int, @Option<Int>", "@Int", _ARM.format("10 / @Int.0")),
         "10 / @Int.0", None, base="requires(@Int.0 != 0)"),
+    # A `@Nat` subtraction in the clause is safe only under the site's
+    # path: at the entry it is an obligation of its own (E502), so no
+    # clause is offered (PR 1857's rule, applied to this code).
+    "E526-nat-sub-under-path": _Entry(
+        "E526", _fn("@Nat, @Nat", "@Int",
+                    "if @Nat.1 >= @Nat.0 then {\n    10 / (@Nat.1 - @Nat.0)\n"
+                    "  } else {\n    0\n  }"),
+        "10 / (@Nat.1 - @Nat.0)", None,
+        base="requires(@Nat.1 - @Nat.0 != 0)"),
     "E526-destructure": _Entry(
         "E526", _fn("@Int, @Int", "@Int", _DESTRUCTURE + "10 / @Int.1"),
         "10 / @Int.1", None, base="requires(@Int.1 != 0)"),
@@ -1073,7 +1082,10 @@ def test_the_base_entry_clause_does_not_clear(name: str) -> None:
     cell = ENTRY[name]
     assert cell.base is not None
     codes = _codes("verify", _once(cell.source, "requires(true)", cell.base))
-    assert cell.code in codes or "E130" in codes, (name, sorted(codes))
+    # E130: a slot the entry lacks; E502: a `@Nat` subtraction the site's
+    # path made safe and the entry does not.
+    assert cell.code in codes or codes & {"E130", "E502"}, (
+        name, sorted(codes))
 
 
 _ONE_INT = _fn("@Int", "@Int", "@Int.0")
