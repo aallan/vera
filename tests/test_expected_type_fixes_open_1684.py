@@ -1173,3 +1173,42 @@ def test_an_expected_type_giving_two_predicates_fixes_neither() -> None:
         "let @Tuple<Option<PosInt>, Option<Small>> = nones(None);\n0",
         visibility="public")
     assert _instances(source, "nones") == {("Bool",)}
+
+
+#: A value no argument types (a literal, `None`, `[]`) beside one that
+#: gives `T` another type, the formal of `f` that holds it, and the type.
+_CALL_FOREIGN = {
+    "int_string": ("1", "@String.0", "String"),
+    "negative_bool": ("-1", "@Bool.0", "Bool"),
+    "float_string": ("1.5", "@String.0", "String"),
+    "float_int": ("1.5", "@Int.0", "Int"),
+    "int_data": ("1", "@Box.0", "Box"),
+    "int_array": ("1", "@Array<Int>.0", "Array<Int>"),
+    "none_int": ("None", "@Int.0", "Int"),
+    "none_string": ("None", "@String.0", "String"),
+    "empty_int": ("[]", "@Int.0", "Int"),
+    "empty_string": ("[]", "@String.0", "String"),
+}
+
+
+@pytest.mark.parametrize("expected", ["let", "none"])
+@pytest.mark.parametrize("order", ["foreign_first", "foreign_second"])
+@pytest.mark.parametrize("site", ["second", "pick"])
+@pytest.mark.parametrize("pair", list(_CALL_FOREIGN))
+def test_an_argument_of_another_type_is_refused_at_a_call(
+        pair: str, site: str, order: str, expected: str) -> None:
+    """The call's side of the element check: `second(1, @String.0)`, a
+    literal, `None` or `[]` beside an argument that gives `T` a type it
+    is not, in both orders, bound at that type or not.  The argument the
+    others do not type is held to the parameter at the instance, and
+    refused (E202), as at c35763d6."""
+    foreign, typed, ty = _CALL_FOREIGN[pair]
+    a, b = (foreign, typed) if order == "foreign_first" else (typed, foreign)
+    call = (f"second({a}, {b})" if site == "second"
+            else f"pick(@Bool.0, {a}, {b})")
+    body = (f"let @{ty} = {call};\n0" if expected == "let"
+            else f"match {call} {{\n  _ -> 0\n}}")
+    source = ("private data Box { MkBox(Int) }\n\n" + _SECOND + "\n" + _PICK
+              + "\n" + _fn("f", "@String, @Bool, @Box, @Array<Int>, @Int",
+                           "Int", body))
+    assert "E202" in _codes(source), _codes(source)
