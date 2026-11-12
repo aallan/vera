@@ -1213,6 +1213,7 @@ class ResolutionMixin:
         """
         mapping: dict[str, Type] = {}
         pinned: list[tuple[int, _Pin]] = []
+        given: dict[str, list[tuple[ast.Expr | None, Type]]] = {}
         for index, (param_ty, arg, arg_ty) in enumerate(
                 zip(param_types, args, arg_types)):
             if arg_ty is None or isinstance(arg_ty, UnknownType):
@@ -1224,7 +1225,9 @@ class ResolutionMixin:
             self._unify_for_inference(param_ty, self._as_holes(soft_ty),
                                       mapping, conflicts, pins=pins)
             pinned.extend((index, pin) for pin in pins.found)
+            _bound_parts(param_ty, soft_ty, arg, given)
         from_context = self._expected_bindings(result_type, expected)
+        self._settle_disagreement(given, from_context, mapping)
         # #1684 (rule C): a variable no argument gives a type, or one an
         # argument gives a type holding a variable a nested call left open
         # (`head_plain([])`'s `?`, `wrap(None)`'s `Option<?>`), takes it
@@ -1259,6 +1262,45 @@ class ResolutionMixin:
         if pinned:
             self._apply_polarity_pins(pinned, mapping, soft, args)
         return mapping, soft
+
+    def _settle_disagreement(
+        self,
+        given: dict[str, list[tuple[ast.Expr | None, Type]]],
+        from_context: dict[str, Type],
+        mapping: dict[str, Type],
+    ) -> None:
+        """Rule B of #1684 (spec §5.9): a variable two or more arguments
+        give different types takes, whichever comes first,
+
+        a. the type the result is expected at (*from_context*), where each
+           of those types fits it (`_fits`, the argument fit): each
+           argument is then held to it where it is passed, at its own
+           position, where the caller's facts prove a narrowing;
+        b. otherwise the type they share, `_value_join` (spec §4.8's join,
+           at a function type's parameter what each of them accepts).
+
+        Two types no position reconciles keep the first binding, and the
+        argument check refuses the other.  A variable the arguments agree
+        on, or one argument fixes, is left as they give it."""
+        for tv, parts in given.items():
+            if len(parts) < 2 or tv not in mapping:
+                continue
+            first = parts[0][1]
+            if all(types_equal(t, first) for _, t in parts[1:]):
+                continue
+            ctx_ty = from_context.get(tv)
+            if ctx_ty is not None and all(
+                    self._fits(t, ctx_ty) for _, t in parts):
+                mapping[tv] = ctx_ty
+                continue
+            structure: Type = first
+            for _, t in parts[1:]:
+                step = self._join_either(t, structure)
+                if step is None:
+                    break
+                structure = step
+            else:
+                mapping[tv] = self._value_join(structure, parts)
 
     def _expected_bindings(self, result_type: Type | None,
                            expected: Type | None) -> dict[str, Type]:

@@ -29,6 +29,8 @@ an expected type fixed only a literal's hole, so `[None, None]` met
 
 from __future__ import annotations
 
+import typing
+
 import pytest
 
 from tests import pipeline
@@ -206,3 +208,232 @@ def test_the_expected_type_reaches_every_branch(site: str, order: str) -> None:
         "g", "@Cell<Nat>, @Bool", "Nat",
         f"let @Cell<Nat> = {shape.format(a=a, b=b)};\n0")
     assert _instances(source, "mkcell") == {("Nat",)}
+
+
+# ---------------------------------------------------------------------
+# B: a variable two arguments give different types takes one type,
+# whichever comes first
+# ---------------------------------------------------------------------
+
+_SECOND = _fn("second", "@T, @T", "T", "@T.0", forall="forall<T> ")
+
+_FN_PAIR = """\
+type NatFn = fn(Nat -> Int) effects(pure);
+
+type IntFn = fn(Int -> Int) effects(pure);
+
+"""
+
+
+@pytest.mark.parametrize("order", ["int_first", "nat_first"])
+def test_repro_a_nat_closure_is_never_handed_a_negative_int(
+        order: str) -> None:
+    """`second(int_fn, nat_fn)` applied to -5.  At 6e272f19 the first
+    argument fixed `T` at `fn(Int -> Int)`, the second fitted it, and the
+    `Nat` closure ran on -5 and returned -5, every gate green; in the other
+    order `T` was `fn(Nat -> Int)` and the -5 was refused.  `T` is now what
+    both accept, `fn(Nat -> Int)`, in both orders, and the -5 bound into
+    its parameter is refuted (E503)."""
+    int_fn = "fn(@Int -> @Int) effects(pure) { @Int.0 }"
+    nat_fn = "fn(@Nat -> @Int) effects(pure) { nat_to_int(@Nat.0) }"
+    a, b = (int_fn, nat_fn) if order == "int_first" else (nat_fn, int_fn)
+    source = _FN_PAIR + _SECOND + "\n" + _fn(
+        "main", "@Unit", "Int", f"apply_fn(second({a}, {b}), 0 - 5)",
+        visibility="public")
+    assert _instances(source, "second") == {("fn(Nat -> Int)",)}
+    verified = pipeline.verify(source, reconcile=True)
+    assert [e.error_code for e in verified.errors] == ["E503"], [
+        e.format() for e in verified.errors]
+
+
+# ---------------------------------------------------------------------
+# The matrix: site x pair x order x expected
+# ---------------------------------------------------------------------
+
+_MATRIX_PRE = """\
+type PosInt = { @Int | @Int.0 > 0 };
+
+type Small = { @Int | @Int.0 < 10 };
+
+type NatFn = fn(Nat -> Int) effects(pure);
+
+type IntFn = fn(Int -> Int) effects(pure);
+
+type SmallFn = fn(Small -> Int) effects(pure);
+
+type PureCb = fn(Int -> Int) effects(pure);
+
+type IOCb = fn(Int -> Int) effects(<IO>);
+
+type TakesPure = fn(PureCb -> Int) effects(pure);
+
+type TakesIO = fn(IOCb -> Int) effects(pure);
+
+"""
+
+_IO_CB = 'fn(@Int -> @Int) effects(<IO>) { IO.print("cb"); @Int.0 }'
+
+
+class _Pair(typing.NamedTuple):
+    """Two values of two types, *strong* the one a value of which is also
+    one of *weak* (a subtype), the formals and arguments of `f` that make
+    them, the type both accept (the join, None where there is none), and
+    how a value of each type is read into an `Int`."""
+
+    strong: str
+    weak: str
+    a: str           # the value of type `strong`
+    b: str           # the value of type `weak`
+    formals: str
+    actuals: str
+    join: str | None
+    unrelated: str   # an expected type neither fits
+    #: Whether a `weak` value fits a `strong` parameter: a narrowing
+    #: (`Nat`, a refinement), or the relaxation a function type's
+    #: parameter has at any parameter (issue #1819); an effect row has none.
+    weak_fits: bool = True
+
+
+#: How `f` reads an `Int` out of a value of each type, *v* the value.
+_READ = {
+    "Nat": "nat_to_int({v})", "Int": "{v}", "PosInt": "{v}",
+    "String": "nat_to_int(string_length({v}))", "Bool": "0",
+    "IntFn": "apply_fn({v}, 0 - 5)", "NatFn": "apply_fn({v}, 0 - 5)",
+    "SmallFn": "apply_fn({v}, 50)",
+    "TakesPure": "apply_fn({v}, " + _IO_CB + ")",
+    "TakesIO": "apply_fn({v}, " + _IO_CB + ")",
+}
+
+PAIRS = {
+    "nat_int": _Pair("Nat", "Int", "@Nat.0", "@Int.0", "@Nat, @Int",
+                     "1, 0 - 5", "Int", "String"),
+    "refined_base": _Pair("PosInt", "Int", "@PosInt.0", "@Int.0",
+                          "@PosInt, @Int", "1, 0 - 5", "Int", "String"),
+    "fn_param": _Pair(
+        "IntFn", "NatFn", "fn(@Int -> @Int) effects(pure) { @Int.0 }",
+        "fn(@Nat -> @Int) effects(pure) { nat_to_int(@Nat.0) }",
+        "@Unit", "()", "NatFn", "String"),
+    "refined_param": _Pair(
+        "IntFn", "SmallFn", "fn(@Int -> @Int) effects(pure) { @Int.0 }",
+        "fn(@Small -> @Int) effects(pure) { @Small.0 }",
+        "@Unit", "()", "SmallFn", "String"),
+    "effect_row": _Pair(
+        "TakesIO", "TakesPure",
+        "fn(@IOCb -> @Int) effects(pure) { 0 }",
+        "fn(@PureCb -> @Int) effects(pure) { apply_fn(@PureCb.0, 1) }",
+        "@Unit", "()", "TakesPure", "String", weak_fits=False),
+    "unrelated": _Pair("Int", "String", "@Int.0", "@String.0",
+                       "@Int, @String", '1, "s"', None, "Bool"),
+}
+
+#: The generic each call site calls, `T` its variable.
+_SITE_DECLS = {
+    "two_parameter": _SECOND,
+    "pick": _fn("pick", "@Bool, @T, @T", "T",
+                "if @Bool.0 then { @T.1 } else { @T.0 }",
+                forall="forall<T> "),
+}
+_SITE_CALL = {"two_parameter": "second({x}, {y})",
+              "pick": "pick(false, {x}, {y})"}
+
+EXPECTED = ["none", "stronger", "weaker", "unrelated"]
+
+
+def _expected_type(pair: _Pair, expected: str) -> str | None:
+    return {"none": None, "stronger": pair.strong, "weaker": pair.weak,
+            "unrelated": pair.unrelated}[expected]
+
+
+def _instance(pair: _Pair, expected: str) -> str | None:
+    """The type the rule gives `T`: the expected type where both values
+    fit it (a `strong` value fits `weak`; neither fits `unrelated`),
+    otherwise the type both accept."""
+    want = _expected_type(pair, expected)
+    if pair.join is not None and (
+            want == pair.weak or (want == pair.strong and pair.weak_fits)):
+        return want
+    return pair.join
+
+
+def _program(site: str, pair: _Pair, order: str, expected: str,
+             decl: str) -> str:
+    x, y = (pair.a, pair.b) if order == "strong_first" else (pair.b, pair.a)
+    call = _SITE_CALL[site].format(x=x, y=y)
+    want = _expected_type(pair, expected)
+    if want is None:
+        read = (f"{call} + 0" if pair.join in ("Int", None)
+                else _READ[pair.join].replace("{v}", call))
+    else:
+        read = f"let @{want} = {call};\n" + _READ[want].replace("{v}", f"@{want}.0")
+    return (_MATRIX_PRE + decl + "\n"
+            + _fn("f", pair.formals, "Int", read, effect="<IO>") + "\n"
+            + _fn("main", "@Unit", "Int", f"f({pair.actuals})",
+                  effect="<IO>", visibility="public"))
+
+
+def _twin(site: str, instance: str) -> str:
+    """The site's generic written at *instance*: the program the rule
+    makes the call, its arguments held to *instance* where they are
+    passed."""
+    return _SITE_DECLS[site].replace("forall<T> ", "").replace("T", instance)
+
+
+def _outcome(source: str) -> tuple[object, ...]:
+    """What the program does: its check codes, and for one that checks,
+    its verify codes, its narrowing rows (kind, status, the expression
+    narrowed, which says whether an argument or the call's result is),
+    and, for one `vera verify` passes, its run (the value, or the trap's
+    first line).  The narrowing rows are `f`'s, so the twin's own entry
+    checks are not counted; a refuted narrowing refuses the program, so
+    where `vera run` would have trapped on it is not compared."""
+    checked = pipeline.check(source)
+    codes = tuple(e.error_code for e in checked.errors)
+    if codes:
+        return (codes,)
+    verified = pipeline.verify(source, reconcile=True)
+    rows = tuple(sorted((o.kind, o.status, o.expr_text)
+                        for o in verified.obligations
+                        if o.kind in ("nat_bind", "refine_bind")
+                        and o.fn_name == "f"))
+    refused = tuple(e.error_code for e in verified.errors)
+    if refused:
+        return ((), refused, rows)
+    ran = pipeline.run(source)
+    run = (("trap", str(ran.trap).splitlines()[0]) if ran.trap is not None
+           else ("value", ran.value, ran.stdout))
+    return ((), refused, rows, run)
+
+
+@pytest.mark.parametrize("expected", EXPECTED)
+@pytest.mark.parametrize("order", ["strong_first", "weak_first"])
+@pytest.mark.parametrize("pair", list(PAIRS))
+@pytest.mark.parametrize("site", list(_SITE_DECLS))
+def test_a_call_s_variable_takes_one_type_whichever_comes_first(
+        site: str, pair: str, order: str, expected: str) -> None:
+    """The call records `T` at the rule's type, and the program does what
+    the same call to the generic written at that type does, in both
+    orders: the same verdict, the same narrowing at the same expression
+    (an argument where the expected type was taken, the call's result
+    where the join was), and the same run."""
+    p = PAIRS[pair]
+    source = _program(site, p, order, expected, _SITE_DECLS[site])
+    instance = _instance(p, expected)
+    if instance is None:
+        # Two types no position reconciles: refused, in both orders.
+        assert _outcome(source)[0], _outcome(source)
+        return
+    key = "second" if site == "two_parameter" else "pick"
+    checked = pipeline.check(source)
+    recorded = ({i.args for i in checked.typed.instances if i.key == key}
+                if checked.ok else None)
+    twin = _program(site, p, order, expected, _twin(site, instance))
+    assert _outcome(source) == _outcome(twin), (recorded, instance)
+    if checked.ok:
+        # An instance is built at its type with every refinement stripped.
+        names = {"IntFn": "fn(Int -> Int)", "NatFn": "fn(Nat -> Int)",
+                 "SmallFn": "fn(Int -> Int)", "PosInt": "Int",
+                 "TakesPure": "fn(PureCb -> Int)",
+                 "TakesIO": "fn(IOCb -> Int)"}
+        assert recorded is not None
+        (args,) = recorded
+        assert args[0] in (instance, names.get(instance)), (args, instance)
