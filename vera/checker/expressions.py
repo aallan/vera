@@ -20,6 +20,7 @@ from vera.lowering import (
     quantifier_bound_lowerable,
     quantifier_predicate_refusals,
 )
+from vera.checker.resolution import has_join_mark
 from vera.types import (
     is_unknown_like,
     AdtType,
@@ -1205,6 +1206,12 @@ class ExpressionsMixin:
                 and len(context.type_args) == len(expr.args)):
             return any(self._call_literal_meets_nat(a, c)
                        for a, c in zip(expr.args, context.type_args))
+        if isinstance(expr, (ast.ArrayLit, ast.FnCall, ast.ModuleCall)):
+            # A position the join of its arguments or elements decided is
+            # provisional: the context decides it (#1684).
+            soft = self._literal_soft_results.get(ast.span_key(expr))
+            if soft is not None and has_join_mark(soft):
+                return True
         if (isinstance(expr, ast.ArrayLit) and isinstance(context, AdtType)
                 and context.name == "Array" and len(context.type_args) == 1):
             return any(self._call_literal_meets_nat(e, context.type_args[0])

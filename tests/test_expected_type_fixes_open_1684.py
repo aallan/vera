@@ -809,3 +809,78 @@ def test_a_call_s_result_is_no_static_nat_in_an_if(order: str) -> None:
     assert with_call == [("nat_bind", "if")], with_call
     assert not [o for o in pipeline.verify(program("3")).obligations
                 if o.kind == "nat_bind" and o.fn_name == "f"]
+
+
+# ---------------------------------------------------------------------
+# An empty collection a context types meets that context's refinement
+# ---------------------------------------------------------------------
+
+_RS = """\
+type RS = { @Set<Int> | set_size(@Set<Int>.0) > 0 };
+
+type RM = { @Map<Int, Int> | map_size(@Map<Int, Int>.0) > 0 };
+
+"""
+
+#: Where an empty `set_new()` or `map_new()` meets a refined type the
+#: context gives it: a `let`, a join of a `let`, a `State` cell's initial
+#: value and a `throw`'s payload.
+_EMPTY_SITES = {
+    "let": ("Set<Int>", "let @RS = set_new();\n0"),
+    "let_map": ("Map<Int, Int>", "let @RM = map_new();\n0"),
+    "join": ("Set<Int>",
+             "let @RS = if @Bool.0 then { set_new() } else { "
+             "set_add(set_new(), 1) };\n0"),
+    "state": ("Set<Int>",
+              "handle[State<RS>](@RS = set_new()) {\n"
+              "  put(@RS) -> { resume(()) }\n} in {\n  0\n}"),
+    "throw": ("Set<Int>",
+              "handle[Exn<RS>] {\n  throw(@RS) -> { 1 }\n} in {\n"
+              "  throw(set_new())\n}"),
+}
+
+
+@pytest.mark.parametrize("site", list(_EMPTY_SITES))
+def test_an_empty_collection_meets_the_refinement_it_is_typed_at(
+        site: str) -> None:
+    """`set_new()` and `map_new()` take their type from the context (rule
+    C), so a refined context types them at its base, and the binding is a
+    narrowing into the refinement, obligated and guarded where it is bound
+    (a run-time check, which reconciliation finds emitted).  The
+    obligation table had skipped every value that holds
+    no component, as one that "conforms to any requirement of its shape",
+    which holds of a component's requirement and not of the head's
+    predicate; at 6e272f19 no such value reached a refined position,
+    the open variable being refused (E170, E204)."""
+    _, body = _EMPTY_SITES[site]
+    source = _RS + _fn("f", "@Bool", "Int", body,
+                       effect="<State<RS>>" if site == "state" else "pure")
+    if site == "state":
+        source = source.replace("effects(<State<RS>>)", "effects(pure)")
+    verified = pipeline.verify(source, reconcile=True)
+    rows = [(o.kind, o.status) for o in verified.obligations
+            if o.kind == "refine_bind" and o.fn_name == "f"
+            and ("set_new()" in o.expr_text or "map_new()" in o.expr_text)]
+    assert rows and all(status in ("tier3", "violated")
+                        for _, status in rows), rows
+    if site != "join":
+        assert not [e for e in verified.errors if e.error_code == "E541"]
+    # At a join no check is planted at a call's leaf (E541), as for
+    # `set_add(..)` leaves at 6e272f19: refused by `vera verify`, not
+    # silent (out of this change's class; reported with it).
+
+
+@pytest.mark.parametrize("order", ["nat_first", "int_first"])
+def test_an_index_decides_a_literal_s_provisional_join(order: str) -> None:
+    """`[@Nat.0, @Int.0][1]` returned as `@Nat`: the elements join at
+    `Int` with nothing expected of the literal itself, a provisional join
+    the index's expected `Nat` decides (rule J (a), as a nested call's is):
+    the literal is an `Array<Nat>`, and the narrowing is the `Int`
+    element's, guarded at the element in both orders."""
+    a, b = ("@Nat.0", "@Int.0") if order == "nat_first" else (
+        "@Int.0", "@Nat.0")
+    source = _fn("f", "@Nat, @Int", "Nat", f"[{a}, {b}][1]",
+                 visibility="public")
+    rows = [(o.kind, o.expr_text) for o in pipeline.verify(source).obligations
+            if o.kind == "nat_bind" and o.fn_name == "f"]
+    assert rows == [("nat_bind", "@Int.0")], rows

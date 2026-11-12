@@ -98,8 +98,12 @@ def _join_mark_names(ty: Type) -> set[str]:
     return out
 
 
-def _has_join_mark(ty: Type) -> bool:
+def has_join_mark(ty: Type) -> bool:
+    """Whether a join mark (`ResolutionMixin._join_mark`) stands in *ty*."""
     return bool(_join_mark_names(ty))
+
+
+_has_join_mark = has_join_mark
 
 
 def _part_of(ty: Type, whole: Type) -> bool:
