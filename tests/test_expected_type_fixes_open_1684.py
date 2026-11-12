@@ -1256,6 +1256,11 @@ _ORD_SITES = {
         "fn(@Unit -> @Option<Int>) effects(pure) { none_ord(()) }", "Mk"),
     "index_of_a_literal": ("[none_ord(())][0]", "Option<Int>"),
     "index_of_a_call": ("empty_ord(())[0]", "Int"),
+    "array_element_indexed_call": ("[empty_ord(())[0]]", "Array<Int>"),
+    "array_element_indexed_call_later": (
+        "[1, empty_ord(())[0]]", "Array<Int>"),
+    "tuple_component_indexed_call": (
+        "Tuple(empty_ord(())[0], 1)", "Tuple<Int, Int>"),
 }
 
 
@@ -1444,6 +1449,11 @@ _RIGID_SITES = {
         "let @Tuple<Option<T>, Int> = Tuple(none_ord(()), 1);\n0",
     "index_of_a_literal": "let @Option<T> = [none_ord(())][0];\n0",
     "index_of_a_call": "let @T = empty_ord(())[0];\n0",
+    "array_element_indexed_call": "let @Array<T> = [empty_ord(())[0]];\n0",
+    "array_element_indexed_call_later":
+        "let @Array<T> = [@T.0, empty_ord(())[0]];\n0",
+    "tuple_component_indexed_call":
+        "let @Tuple<T, Int> = Tuple(empty_ord(())[0], 1);\n0",
 }
 
 
@@ -1873,3 +1883,78 @@ def test_repro_an_unresolved_binding_type_is_reported_once() -> None:
     source = _ORD_PRE + _fn("f", "@Unit", "Int",
                             "let @Option<Nope> = empty_ord(())[0];\n0")
     assert _codes(source) == ["E136"]
+
+
+# ---------------------------------------------------------------------
+# An indexed open call as an array element or a `Tuple` component (PR 1864
+# review): the element is held to the type its context gives, as an open
+# call there is
+# ---------------------------------------------------------------------
+
+_INDEXED_OPEN = {
+    "element": "let @Array<{t}> = [empty_ord(())[0]];\n0",
+    "later_element": "let @Array<{t}> = [{v}, empty_ord(())[0]];\n0",
+    "component": "let @Tuple<{t}, Int> = Tuple(empty_ord(())[0], 1);\n0",
+}
+
+
+def test_repro_an_indexed_open_call_takes_the_element_type() -> None:
+    """`let @Array<Int> = [empty_ord(())[0]]`, later in the literal and as a
+    `Tuple` component, at `Int` and at the enclosing function's own `T`:
+    the index is checked against the element (or component) type, which
+    reads `empty_ord(())` at an array of it (rule I), so `empty_ord` is at
+    `Int` (through `g(3)` for `T`).  At c35763d6 and de925bcc each kept the
+    default instance (E613) or left the type open (E170)."""
+    for form, shape in _INDEXED_OPEN.items():
+        concrete = _ORD_PRE + _fn(
+            "f", "@Int", "Int", shape.format(t="Int", v="@Int.0"))
+        assert _instances(concrete, "empty_ord") == {("Int",)}, form
+        rigid = _in_rigid_g(shape.format(t="T", v="@T.0"))
+        assert _instances(rigid, "empty_ord") == {("Int",)}, form
+
+
+def test_an_index_of_a_typed_collection_is_synthesized_once(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """`[@Array<Nat>.0[0]]` and `Tuple(@Array<Nat>.0[0], 1)` at a typed
+    binding: the collection fixes the element type, so the index is not
+    checked a second time against the context."""
+    from vera.checker.expressions import ExpressionsMixin
+
+    calls: list[str] = []
+    original = ExpressionsMixin._check_index
+
+    def counting(self: ExpressionsMixin, expr: typing.Any,
+                 **kwargs: typing.Any) -> typing.Any:
+        calls.append("index")
+        return original(self, expr, **kwargs)
+
+    monkeypatch.setattr(ExpressionsMixin, "_check_index", counting)
+    for body in ("let @Array<Int> = [@Array<Nat>.0[0]];\n0",
+                 "let @Tuple<Int, Int> = Tuple(@Array<Nat>.0[0], 1);\n0"):
+        calls.clear()
+        assert pipeline.check(_fn("f", "@Array<Nat>", "Int", body)).ok
+        assert calls == ["index"], (body, calls)
+
+
+def test_issue_1866_the_workaround_binds_at_its_type_inside_the_arm() -> None:
+    """KNOWN_ISSUES.md's workaround for #1866: bind the value that leaves
+    the variable open at its type with a `let` inside the arm or branch,
+    which runs only when that arm does.  `empty_ord(())` bound at
+    `Array<Int>` (or its element at `Int`) in either arm order, and the
+    empty argument of `head_ord` bound at `Array<Int>` inside either
+    branch, each build their call at `Int`."""
+    for open_arm in ("{ let @Int = empty_ord(())[0]; @Int.0 }",
+                     "{ let @Array<Int> = empty_ord(()); @Array<Int>.0[0] }"):
+        for match in (f"match @Bool.0 {{ true -> {open_arm}, false -> @Int.0 }}",
+                      f"match @Bool.0 {{ false -> @Int.0, true -> {open_arm} }}"):
+            source = _ORD_PRE + _fn("g", "@Bool, @Int", "Int", f"idg({match})")
+            assert _instances(source, "empty_ord") == {("Int",)}, match
+    bound = ("{ let @Array<Int> = []; "
+             "Tuple(None, take(head_ord(@Array<Int>.0))) }")
+    other = "{ @Tuple<Option<Int>, Int>.0 }"
+    for a, b in ((bound, other), (other, bound)):
+        source = (_HEAD_ORD + "\n" + _TAKE + "\n" + _fn(
+            "g", "@Bool, @Tuple<Option<Int>, Int>", "Int",
+            f"match if @Bool.0 then {a} else {b} {{\n"
+            "  Tuple(@Option<Int>, @Int) -> @Int.0\n}"))
+        assert _instances(source, "head_ord") == {("Int",)}, a

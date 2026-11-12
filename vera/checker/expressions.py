@@ -1215,7 +1215,9 @@ class ExpressionsMixin:
         So is a call whose type holds a variable it left open (`T$n`,
         `none_ord(())`'s `Option<T>`): *context* is the type it is expected
         at, which fixes that variable (rule C, spec §5.9), as a constructor's
-        argument takes its field's type (#1684, PR 1864 review).  A
+        argument takes its field's type (#1684, PR 1864 review), and an
+        index whose collection leaves its element type open
+        (`empty_ord(())[0]`), which rule I then reads at *context*.  A
         `Tuple`'s *component* holds a constructor whose type leaves a
         variable open (`None`, `Nil`, `Some(None)`) the same way, as a
         user constructor's field does (`P(None, 1)`); an array literal's
@@ -1228,7 +1230,8 @@ class ExpressionsMixin:
         # open.  The enclosing function's own type parameter is a type like
         # any other (`let @Array<Option<T>> = [none_ord(())]` inside a
         # `forall<T>` fixes `none_ord`'s variable at that `T`).
-        open_kinds: tuple[type, ...] = (ast.FnCall, ast.ModuleCall)
+        open_kinds: tuple[type, ...] = (ast.FnCall, ast.ModuleCall,
+                                        ast.IndexExpr)
         if component:
             open_kinds += (ast.ConstructorCall, ast.NullaryConstructor)
         left_open = (isinstance(expr, open_kinds)
