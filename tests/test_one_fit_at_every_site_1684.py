@@ -587,40 +587,59 @@ public fn main(@Unit -> @Bool)
 """
 
 
-@pytest.mark.parametrize(("source", "code"), [
-    (_OPERATION_HOLE, "E204"), (_ABILITY_HOLE, "E241")],
-    ids=["operation", "ability"])
-def test_a_variable_a_call_left_open_stays_refused_where_it_was(
-        source: str, code: str) -> None:
+def _holds_and_stops(source: str) -> set[tuple[str, ...]]:
+    """`head_plain`'s instances in *source*, which checks clean and stops
+    at the empty array's index, the trap it owes (no load failure)."""
+    checked = pipeline.check(source)
+    assert checked.ok, [e.format() for e in checked.errors]
+    ran = pipeline.run(source)
+    assert ran.trap is not None and "Array index out of bounds" in str(
+        ran.trap), ran.trap
+    return {inst.args for inst in checked.typed.instances
+            if inst.key == "head_plain"}
+
+
+def test_a_variable_a_call_left_open_takes_the_operation_s_parameter(
+) -> None:
     """A value whose type holds a variable its call left open (an empty
-    literal's element type, a `None` no argument types) is refused at an
-    operation's and an ability operation's argument, as at bf6d5003.  The
-    fit would bind the variable there and drop the binding, so the call's
-    instance would stay open: `put(head_plain([]))` then checks and its
-    module does not load.  Fixing such a variable from its context is the
-    next change of #1684, not this one."""
-    assert _codes(source) == [code]
+    literal's element type) at an operation's argument.  At bf6d5003 the
+    fit bound the variable and dropped the binding, so `put(head_plain([]))`
+    checked and its module did not load, and PR #1855 refused it (`E204`).
+    The parameter is the type the argument is expected at, which now fixes
+    the variable (spec §5.9, #1684 rule C): `head_plain` is at `Int`."""
+    assert _holds_and_stops(_OPERATION_HOLE) == {("Int",)}
 
 
-def test_a_hole_at_a_rigid_parameter_is_refused() -> None:
-    """A value whose call left its variable open, at a parameter that is
-    the enclosing function's own `T`: at bf6d5003 the parameter was skipped
-    and the program accepted, running only where the hole's default `Bool`
-    happened to be the instance; the operation's argument is now held to
-    `T` by name (`E204`), as at a concrete cell (PR #1855 review)."""
+def test_a_variable_a_call_left_open_stays_refused_at_an_ability() -> None:
+    """An ability operation's arguments are given no expected type, so the
+    `None` no argument types stays open there and is refused (`E241`), as
+    at bf6d5003."""
+    assert _codes(_ABILITY_HOLE) == ["E241"]
+
+
+def test_a_hole_at_a_rigid_parameter_takes_the_outer_variable() -> None:
+    """A value whose call left its variable open, at an operation's
+    parameter that is the enclosing function's own `T`: at bf6d5003 the
+    parameter was skipped and the program accepted, running only where the
+    hole's default `Bool` happened to be the instance; PR #1855 refused it
+    (`E204`).  `T` is a type, the one the argument is expected at, so it
+    fixes the variable (#1684 rule C), and `head_plain` is built at each
+    instance of the enclosing function (here `g` at `Bool`)."""
     source = _HEAD_PLAIN + _OPERATION_ARGUMENT.replace(
         "put(9)", "put(head_plain([]))")
-    assert _codes(source) == ["E204"]
+    assert _holds_and_stops(source) == {("Bool",)}
 
 
-def test_a_hole_at_a_call_s_rigid_parameter_is_refused() -> None:
+def test_a_hole_at_a_call_s_rigid_parameter_takes_the_outer_variable(
+) -> None:
     """The same at a call's parameter that is the outer `T` (a `where`
     helper over it): at bf6d5003 the program checked and verified and
-    `g$String` did not load; the argument is held to `T` by name (`E202`),
-    as an operation's is (PR #1855 review)."""
+    `g$String` did not load, and PR #1855 refused it (`E202`).  The helper's
+    parameter is now the argument's expected type as an operation's is
+    (#1684 rule C)."""
     source = _HEAD_PLAIN + _HELPER_ARGUMENT.replace(
         "helper(9)", "helper(head_plain([]))")
-    assert _codes(source) == ["E202"]
+    assert _holds_and_stops(source) == {("Bool",)}
 
 
 _ABILITY_TWO_HOLES = _HEAD_PLAIN + """\

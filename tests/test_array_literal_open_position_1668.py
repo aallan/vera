@@ -1113,8 +1113,20 @@ public fn main(@Unit -> @Nat)
 """
 
 
-@pytest.mark.parametrize("program", [_CONV_PROGRAM, _AGREEING_PROGRAM],
-                         ids=["conv", "agreeing"])
+def test_run_closure_the_binding_s_type_fixes_runs() -> None:
+    """The agreeing closure where the `let` expects `NatToNat`: that type
+    reaches both branches and fixes `mk`'s `T` at `Nat` (spec §5.9, #1684
+    rule C), so the closure is compiled at the type it is applied at and
+    the program runs.  Before, the branch kept `T` open and the `if` was
+    refused (E301, E170)."""
+    checked = pipeline.check(_AGREEING_PROGRAM)
+    assert checked.ok, [e.format() for e in checked.errors]
+    assert {i.args for i in checked.typed.instances if i.key == "mk"} == {
+        ("Nat",)}
+    assert pipeline.run(_AGREEING_PROGRAM).value == 5
+
+
+@pytest.mark.parametrize("program", [_CONV_PROGRAM], ids=["conv"])
 def test_run_closure_the_join_cannot_type_is_refused_before_it_runs(
         program: str) -> None:
     ran = pipeline.run(program)

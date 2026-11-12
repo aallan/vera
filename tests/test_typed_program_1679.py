@@ -1360,12 +1360,17 @@ def test_a_refinement_of_a_refinement_of_the_variable_is_not_growth(
     assert checked.ok, [d.format() for d in checked.diagnostics]
 
 
-# A variable only the result mentions is fixed by no argument, so the
-# result's annotation does not reach it (the expected type fills only a
-# literal's hole): the fix names the edit that fixes it (PR #1791 review).
+# A variable only the result mentions is fixed by no argument; where the
+# result is given no type (a `match` scrutinee) nothing fixes it, and the
+# fix names the edits that do (PR #1791 review).  Where the result is bound
+# at a type, that type fixes it (spec §5.9, #1684).
 _NONE_ORD = _fn("private forall<T where Ord<T>> fn none_ord(@Unit -> @Option<T>)",
                 "None") + "\n"
 _NONE_ORD_MAIN = _fn(
+    "public fn main(@Unit -> @Int)",
+    "match none_ord(()) {\n"
+    "    None -> 7,\n    Some(@Int) -> @Int.0\n  }")
+_NONE_ORD_BOUND = _fn(
     "public fn main(@Unit -> @Int)",
     "let @Option<Int> = none_ord(());\n  match @Option<Int>.0 {\n"
     "    None -> 7,\n    Some(@Int) -> @Int.0\n  }")
@@ -1373,14 +1378,17 @@ _NONE_ORD_MAIN = _fn(
 
 def test_the_fix_for_a_variable_no_argument_fixes_names_a_parameter(
         tmp_path: Path) -> None:
-    """E613 at a variable no argument mentions says no argument fixes it
-    and names the edit that does, a parameter that carries it; that edit
-    made, the program checks clean and runs."""
+    """E613 at a variable no argument mentions and nothing gives a type
+    says no argument fixes it and names the edits that do, a binding of
+    the result at a type and a parameter that carries it; each edit made,
+    the program checks clean and runs."""
     source = _NONE_ORD + _NONE_ORD_MAIN
     checked = pipeline.check(pipeline.write_tree(tmp_path / "before",
                                                  {"main.vera": source}))
     (found,) = [d for d in checked.errors if d.error_code == "E613"]
     assert "No argument of 'none_ord(())' fixes T" in found.fix, found.fix
+    assert "nothing giving its result a type" in found.fix, found.fix
+    assert "bind its result at a type" in found.fix, found.fix
     assert "a parameter that carries T" in found.fix, found.fix
     assert "annotating" not in found.fix, found.fix
     edited = source.replace("fn none_ord(@Unit -> @Option<T>)",
@@ -1388,6 +1396,8 @@ def test_the_fix_for_a_variable_no_argument_fixes_names_a_parameter(
                                 "none_ord(())", "none_ord(0)")
     _runs("main", value=7)(pipeline.write_tree(tmp_path / "after",
                                                {"main.vera": edited}))
+    _runs("main", value=7)(pipeline.write_tree(
+        tmp_path / "bound", {"main.vera": _NONE_ORD + _NONE_ORD_BOUND}))
 
 
 def test_each_array_components_fix_replaces_its_own_component(

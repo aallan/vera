@@ -888,9 +888,10 @@ def _call_fix(call: ast.Node, source: str, root: Template, needs: str) -> str:
     judgment here holds for, written as the call with each argument whose
     formal holds one of the generic's type parameters replaced by a value
     at Int, where each such formal has one.  A generic no formal of which
-    holds a type parameter is instantiated at the phantom type whatever its
-    result is bound to, since the type a result is expected at fills only a
-    literal's hole, so its fix is a parameter that carries one."""
+    holds a type parameter is instantiated at the phantom type where nothing
+    gives its result a type (a `match` scrutinee, an operand; the type a
+    result is expected at fixes such a variable, #1684), so its fix is that
+    type or a parameter that carries one."""
     generic = _bare(root.decl.name)
     advice = f"Instantiate '{generic}' at a type that {needs}, Int for example"
     text = _source_text(source, call.span)
@@ -901,10 +902,11 @@ def _call_fix(call: ast.Node, source: str, root: Template, needs: str) -> str:
         return (f"No argument of '{text or generic}' fixes "
                 f"{', '.join(root.decl.forall_vars or (var,))}, so the call "
                 f"instantiates '{generic}' at "
-                f"{type_arg_name(PHANTOM_TYPE)} whatever its result is bound "
-                f"to: give '{generic}' a parameter that carries {var} "
-                f"('@{var}' for example) and pass it a value at a type that "
-                f"{needs}, Int for example.")
+                f"{type_arg_name(PHANTOM_TYPE)}, nothing giving its result a "
+                f"type: bind its result at a type that {needs} (a `let` of "
+                f"that type), or give '{generic}' a parameter that carries "
+                f"{var} ('@{var}' for example) and pass it a value at a type "
+                f"that {needs}, Int for example.")
     if text is None or call.span is None or len(args) != len(root.decl.params):
         return advice + "."
     edits: list[tuple[int, int, str]] = []

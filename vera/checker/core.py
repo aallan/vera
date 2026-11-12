@@ -851,6 +851,12 @@ class TypeChecker(
         # `ResolutionMixin._literal_soft_type`.
         self._literal_soft_results: dict[
             tuple[int, int, int, int], Type] = {}
+        # #1684: the types an `if` branch or a `match` arm is synthesized
+        # again against because a sibling has them (`_synth_against`):
+        # a sibling's type is no type the value is expected at, so it
+        # fixes no variable a call leaves open
+        # (`ResolutionMixin._expected_bindings`).
+        self._sibling_types: list[Type] = []
 
     @staticmethod
     def _is_public(visibility: str | None) -> bool:

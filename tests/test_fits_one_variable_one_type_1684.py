@@ -179,7 +179,10 @@ def _refusal(shape: str, param: str, binder: str) -> str | None:
             return "mismatch"
         return "behaviour" if shape in _BEHAVIOUR else "conflict"
     if not fixed and shape in _BEHAVIOUR:
-        return "behaviour"
+        # A parameter that gives `T` one type is the type the call's result
+        # is expected at, which fixes it (spec §5.9, #1684 rule C); one
+        # that holds `take`'s own variable gives the call no expected type.
+        return None if param == "same" else "behaviour"
     return None
 
 
@@ -407,14 +410,15 @@ def test_repro_a_closure_compiled_at_its_own_type_fits_no_other() -> None:
     """The same closure at a parameter one mapping admits (`T` is `Int`).
     On `main` at 6f25a652 it checks and verifies, the check records `mk`
     with `T` unbound, and `vera run` traps (`indirect call type mismatch`):
-    the fit's `T` and the record's disagreed.  Now `E202`."""
-    error = _only_error(_SAME_TYPE)
-    assert "the parameter's type gives T Int at the parameter." in (
-        error.description)
-    assert error.fix == (
-        "Write the closure at the parameter's type, "
-        "`fn(@Int -> @Int) effects(pure) { ... }`, and pass it in place of "
-        "`mk(())`.")
+    the fit's `T` and the record's disagreed.  PR #1855 refused it (`E202`,
+    the closure compiled at a type of its own); the parameter is the type
+    the call's result is expected at, which now fixes `T` (spec §5.9,
+    #1684 rule C), so the fit and the record agree at `Int` and it runs."""
+    checked = pipeline.check(_SAME_TYPE)
+    assert checked.ok, [e.format() for e in checked.errors]
+    assert {inst.args for inst in checked.typed.instances
+            if inst.key == "mk"} == {("Int",)}
+    assert pipeline.run(_SAME_TYPE).value == 42
 
 
 _HELD = """\
@@ -509,10 +513,14 @@ public fn main(@Unit -> @Int)
 
 def test_repro_a_value_holding_the_closure_fits_no_one_type() -> None:
     """The same-type trap through a data field: on `main` at 6f25a652
-    `vera run` traps.  Now `E202`, at the type argument of `Wrap`."""
-    error = _only_error(_HELD_SAME)
-    assert ("the parameter's type gives T Int at the type argument of Wrap."
-            in error.description)
+    `vera run` traps.  PR #1855 refused it (`E202`, at the type argument
+    of `Wrap`); the parameter's `Wrap<Int>` now fixes `T` (#1684 rule C),
+    and the value is built at `Int` and runs."""
+    checked = pipeline.check(_HELD_SAME)
+    assert checked.ok, [e.format() for e in checked.errors]
+    assert {inst.args for inst in checked.typed.instances
+            if inst.key == "mk"} == {("Int",)}
+    assert pipeline.run(_HELD_SAME).value == 42
 
 
 _EMPTY_LITERAL = """\
@@ -751,24 +759,21 @@ def test_a_value_is_judged_by_its_type_whatever_it_holds() -> None:
     function, at an `Option<IntEndo>` parameter.  On `main` at e255fd95
     it checks, verifies and prints 60, with `none_endo` compiled at
     `Bool`.  The judgement reads the value's type, which holds a function
-    over `T`, and the refusal says so: a function a value of this type
-    holds, not the one it holds."""
-    error = _only_error(_NONE_AT_A_FUNCTION_TYPE)
-    assert error.description == (
-        "Argument 0 of 'useopt' has type Option<fn(T -> T) effects(pure)>, "
-        "expected Option<fn(Int -> Int) effects(pure)>: no argument of the "
-        "call that made the value gives T a type, so a function a value of "
-        "this type holds is compiled at a type of its own, and the "
-        "parameter's type gives T Int at the parameter in the type argument "
-        "of Option.")
-    assert error.fix == ("Build the value at the parameter's type, writing "
-                         "any function it holds at that type, in place of "
-                         "`none_endo(())`.")
+    over `T`.  PR #1855 refused it (`E202`, a function a value of this
+    type holds is compiled at a type of its own); the parameter's
+    `Option<IntEndo>` now fixes `T` (#1684 rule C), so `none_endo` is at
+    `Int`, the value's type is the parameter's, and nothing is compiled at
+    a type of its own.  (Code generation drops `useopt`, which applies a
+    closure in a module that makes none, as it drops `useopt(None)`.)"""
+    checked = pipeline.check(_NONE_AT_A_FUNCTION_TYPE)
+    assert checked.ok, [e.format() for e in checked.errors]
+    assert {inst.args for inst in checked.typed.instances
+            if inst.key == "none_endo"} == {("Int",)}
 
 
 _TWO_PARAMETERS = """\
 type Two2<T> = fn(T, Int -> T) effects(pure);
-type Want = fn(Int, Int -> Int) effects(pure);
+type Want = fn(Int, Int -> String) effects(pure);
 
 private forall<T> fn mk(@Unit -> @Two2<T>)
   requires(true)
@@ -827,17 +832,22 @@ public fn main(@Unit -> @Int)
 
 def test_a_refusal_numbers_a_parameter_and_names_the_result() -> None:
     """A position in a function of two parameters is the parameter's
-    number, and one in a function's result is the result's."""
+    number, and one in a function's result is the result's.  The
+    parameter gives `T` two types (`Int` at parameter 1, `String` at the
+    result), so the type it expects fixes nothing (#1684 rule C) and the
+    refusal stands; where it gives `T` one type (`_RESULT`), it fixes
+    it."""
     error = _only_error(_TWO_PARAMETERS)
     assert ("the parameter's type gives T Int at parameter 1."
             in error.description), error.description
     assert error.fix == (
         "Write the closure at the parameter's type, "
-        "`fn(@Int, @Int -> @Int) effects(pure) { ... }`, and pass it in "
+        "`fn(@Int, @Int -> @String) effects(pure) { ... }`, and pass it in "
         "place of `mk(())`.")
-    error = _only_error(_RESULT)
-    assert ("the parameter's type gives T String at the type argument of "
-            "Option in the result." in error.description), error.description
+    checked = pipeline.check(_RESULT)
+    assert checked.ok, [e.format() for e in checked.errors]
+    assert {inst.args for inst in checked.typed.instances
+            if inst.key == "mk"} == {("String",)}
 
 
 # ---------------------------------------------------------------------

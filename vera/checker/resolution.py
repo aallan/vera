@@ -41,16 +41,20 @@ from vera.types import (
     UnknownType,
     UnresolvedAdtType,
     base_type,
+    contains_fresh_typevar,
     contains_literal_hole,
+    contains_unknown,
     default_literal_holes,
     erases_to_unit,
     fill_literal_holes,
+    is_unknown_like,
     is_literal_hole,
     merge_inferred_types,
     pretty_effect,
     pretty_type,
     strip_builtin_typevar_marker,
     substitute,
+    types_equal,
 )
 
 def _span_bounds(source: str, span: ast.Span | None) -> tuple[int, int] | None:
@@ -71,6 +75,53 @@ def _span_text(source: str, span: ast.Span | None) -> str | None:
     """The text of *source* that *span* covers (1-based, end exclusive)."""
     bounds = _span_bounds(source, span)
     return None if bounds is None else source[bounds[0]:bounds[1]]
+
+
+def _part_of(ty: Type, whole: Type) -> bool:
+    """Whether *ty* is *whole* or one of its parts, the same object (the
+    type a constructor passes its argument down is the part of the type it
+    is expected at)."""
+    if ty is whole:
+        return True
+    whole = base_type(whole)
+    if isinstance(whole, AdtType):
+        return any(_part_of(ty, a) for a in whole.type_args)
+    if isinstance(whole, FunctionType):
+        return (any(_part_of(ty, p) for p in whole.params)
+                or _part_of(ty, whole.return_type))
+    return False
+
+
+def _bound_parts(pattern: Type, concrete: Type, expr: ast.Expr | None,
+                 met: dict[str, list[tuple[ast.Expr | None, Type]]],
+                 ) -> None:
+    """Each type a type variable of *pattern* meets in *concrete*, with
+    *expr*, the expression whose type *concrete* is, where the variable is
+    the whole of *pattern* (the head, where the join reads an `Int`
+    expression's static sign) and ``None`` below it (#1684).  A position
+    *concrete* leaves open (a variable, a literal's hole, the unknown)
+    gives the variable nothing."""
+    pattern = base_type(pattern)
+    if isinstance(pattern, TypeVar):
+        if (contains_literal_hole(concrete)
+                or contains_fresh_typevar(concrete)
+                or contains_unknown(concrete)
+                or isinstance(base_type(concrete), TypeVar)):
+            return
+        met.setdefault(pattern.name, []).append((expr, concrete))
+        return
+    concrete = base_type(concrete)
+    if (isinstance(pattern, AdtType) and isinstance(concrete, AdtType)
+            and pattern.name == concrete.name
+            and len(pattern.type_args) == len(concrete.type_args)):
+        for p, c in zip(pattern.type_args, concrete.type_args):
+            _bound_parts(p, c, None, met)
+    elif (isinstance(pattern, FunctionType)
+            and isinstance(concrete, FunctionType)
+            and len(pattern.params) == len(concrete.params)):
+        for p, c in zip(pattern.params, concrete.params):
+            _bound_parts(p, c, None, met)
+        _bound_parts(pattern.return_type, concrete.return_type, None, met)
 
 
 @dataclass(frozen=True)
@@ -1173,6 +1224,24 @@ class ResolutionMixin:
             self._unify_for_inference(param_ty, self._as_holes(soft_ty),
                                       mapping, conflicts, pins=pins)
             pinned.extend((index, pin) for pin in pins.found)
+        from_context = self._expected_bindings(result_type, expected)
+        # #1684 (rule C): a variable no argument gives a type, or one an
+        # argument gives a type holding a variable a nested call left open
+        # (`head_plain([])`'s `?`, `wrap(None)`'s `Option<?>`), takes it
+        # from the type the result is expected at, joined onto what the
+        # arguments gave, so nothing an argument fixed is overridden.
+        for tv in forall_vars:
+            ctx_ty = from_context.get(tv)
+            if ctx_ty is None:
+                continue
+            bound = mapping.get(tv)
+            if bound is None:
+                mapping[tv] = ctx_ty
+            elif (contains_fresh_typevar(bound)
+                    and not contains_literal_hole(bound)):
+                filled = self._join(ctx_ty, bound)
+                if filled is not None and not contains_fresh_typevar(filled):
+                    mapping[tv] = filled
         holed = [tv for tv, b in mapping.items() if contains_literal_hole(b)]
         if holed:
             if (expected is not None and result_type is not None
@@ -1190,6 +1259,32 @@ class ResolutionMixin:
         if pinned:
             self._apply_polarity_pins(pinned, mapping, soft, args)
         return mapping, soft
+
+    def _expected_bindings(self, result_type: Type | None,
+                           expected: Type | None) -> dict[str, Type]:
+        """Each type variable of a call's *result_type* the type the result
+        is expected at gives a type with no open part (#1684): no variable
+        a call left open, no literal's hole and no unknown."""
+        if (expected is None or result_type is None
+                or is_unknown_like(expected)
+                or contains_fresh_typevar(expected)
+                or any(_part_of(expected, s) for s in self._sibling_types)):
+            return {}
+        taken: dict[str, Type] = {}
+        self._unify_for_inference(result_type, expected, taken)
+        # A variable the expected type gives two types at two positions
+        # (`twice(None)` at `Tuple<Option<Int>, Option<String>>`) takes
+        # neither: the argument check names both positions.
+        met: dict[str, list[tuple[ast.Expr | None, Type]]] = {}
+        _bound_parts(result_type, expected, None, met)
+        conflicted = {tv for tv, parts in met.items()
+                      if any(not types_equal(t, parts[0][1])
+                             for _, t in parts[1:])}
+        return {tv: ty for tv, ty in taken.items()
+                if tv not in conflicted
+                and not contains_fresh_typevar(ty)
+                and not contains_literal_hole(ty)
+                and not contains_unknown(ty)}
 
     def _apply_polarity_pins(
         self,
