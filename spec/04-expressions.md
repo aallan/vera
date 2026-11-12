@@ -148,7 +148,7 @@ let Tuple<@Int, @String> = some_function();
 
 This introduces two bindings: one `Int` and one `String`.
 
-A destructuring `let` names its value's type, by the type's name or an alias of it, or one of the type's constructors, which must be the value's (**E314**, **E320**) and the type's only constructor (**E311**); it writes one binding per component or field (**E314** for a tuple, **E321** for a data constructor), and each binding is checked against its component of the value as a `let` binding is checked against its value (**E170**).
+A destructuring `let` names its value's type, by the type's name or an alias of it, or one of the type's constructors, which must be the value's (**E314**, **E320**) and the type's only constructor (**E311**); it writes one binding per component or field (**E314** for a tuple, **E321** for a data constructor), and each binding is checked against its component of the value as a `let` binding is checked against its value (**E170**).  The bindings are also fitted to the value together: a type variable the value's type leaves open stands for one type across its components (Section 5.9), so `let Tuple<@Option<Int>, @Option<String>> = dup(None);`, with `forall<T> fn dup(@T -> @Tuple<T, T>)`, is refused (**E170**) at the binding where the variable meets its second type.
 
 ### 4.7.2 Let with Type Alias
 
