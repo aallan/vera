@@ -716,12 +716,14 @@ def _stack_fix() -> str:
 
 
 def test_the_stack_fix_names_the_check_at_the_exit() -> None:
-    """The condition is a check when the function returns, from either of
-    its two sources, whatever the verdict; the cells below pin each."""
+    """The condition is a check after the call returns, from any of its
+    three sources, whatever the verdict; the cells below pin each."""
     fix = " ".join(_stack_fix().split())
-    assert "a function that checks something when it returns" in fix
+    assert "when something is checked after it returns" in fix
     assert "a postcondition the compiled code checks at run time" in fix
     assert "the guard of a refined return type" in fix
+    assert ("the guard on the call's result where it becomes a type with "
+            "a `Nat` component") in fix
     assert "does not by itself remove it" in fix
     assert "`array_fold` / `array_map`" in fix
     assert "Tier 1" not in fix and "Tier-3" not in fix
@@ -1217,3 +1219,38 @@ def test_e501_quotes_an_imported_clause_from_its_own_file(
     assert len(e501) == 1, verified.errors
     assert e501[0].description.splitlines()[1] == (
         "  Precondition: requires(@Int.0 > 7)")
+
+
+_COERCED_RESULT = """\
+public fn ping(@Int, @Nat -> @Option<Nat>)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0, 1)
+  effects(pure)
+{
+  if @Nat.0 == 0 then {
+    None
+  } else {
+    pong(@Int.0, @Nat.0 - 1)
+  }
+}
+
+public fn pong(@Int, @Nat -> @Option<Int>)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0, 0)
+  effects(pure)
+{
+  ping(@Int.0, @Nat.0)
+}
+"""
+
+
+def test_repro_1851_a_coerced_result_s_guard_costs_the_tail_call() -> None:
+    """Neither function has a postcondition or a refined return: the guard
+    on `pong`'s `@Option<Int>` result returned as `@Option<Nat>` is checked
+    after the call, the text's third source, so the recursion exhausts the
+    stack."""
+    assert pipeline.verify(_COERCED_RESULT).ok
+    ran = pipeline.run(_COERCED_RESULT, fn="ping", args=[1, 1000000])
+    assert ran.trap is not None and ran.trap.kind == "stack_exhausted"
