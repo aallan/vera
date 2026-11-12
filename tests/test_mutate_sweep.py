@@ -1891,6 +1891,8 @@ if args[0] == "run" and os.environ.get("MUTATE_DIFF_WINDOW"):
             inside = len([l for l in lines if node.lineno <= l < node.lineno + n])  # its mutants, one a line
             files[path][key] = {"held": n, "window": inside if kept else 0}
     Path(spec["record"]).write_text(json.dumps({"files": files}), encoding="utf-8")
+    if os.environ.get("FAKE_RUN_WINDOW_ONLY"):
+        sys.exit(0)  # the generation alone, before the run a cell starts when it is ready
 if args[0] == "run" and os.environ.get("FAKE_RUN_LOG"):
     # A log the engine printed, as it printed it (its stats pass stopping).
     print(Path(os.environ["FAKE_RUN_LOG"]).read_text(encoding="utf-8"), end="")
@@ -1900,11 +1902,19 @@ if args[0] == "run":
     if os.environ.get("FAKE_RUN_TRAP_INT"):
         # The budget's stop: the engine takes its interrupt, marks that it
         # is stopping (the listing then shows what the stop leaves), winds
-        # down for a while, and exits.
+        # down until the slice has published a record listed after the stop
+        # (FAKE_RUN_WAIT_PUBLISH names that record: events, not a clock),
+        # and exits.
         import signal
         def _stopping(*_):
             (state / "stopping").write_text("1", encoding="utf-8")
-            time.sleep(float(os.environ["FAKE_RUN_TRAP_INT"]))
+            published = os.environ.get("FAKE_RUN_WAIT_PUBLISH")
+            marker = state / "listed_stopping"
+            deadline = time.monotonic() + 60
+            while published and time.monotonic() < deadline and not (
+                    marker.exists() and Path(published).exists()
+                    and Path(published).stat().st_mtime_ns > marker.stat().st_mtime_ns):
+                time.sleep(0.02)
             if os.environ.get("FAKE_SNAPSHOT"):
                 # What the slice had written of its record as the engine exits.
                 source, target = os.environ["FAKE_SNAPSHOT"].split(os.pathsep)
@@ -1953,8 +1963,6 @@ if args[0] == "run":
     sys.exit(int(os.environ.get("FAKE_RUN_EXIT", "0")))
 if args[0] == "results":
     import time
-    stopping = (state / "stopping").exists()
-    time.sleep(float(os.environ.get("FAKE_RESULTS_SLEEP_STOPPING" if stopping else "FAKE_RESULTS_SLEEP", "0")))
     calls = state / "results_calls"
     n = int(calls.read_text(encoding="utf-8")) + 1 if calls.exists() else 1
     calls.write_text(str(n), encoding="utf-8")
@@ -1965,9 +1973,16 @@ if args[0] == "results":
     if os.environ.get("FAKE_RESULTS_FAIL_AFTER_EXIT") and (state / "exited").exists():
         print("Traceback (most recent call last):\\njson.decoder.JSONDecodeError: Expecting value")
         sys.exit(1)
+    if os.environ.get("FAKE_RESULTS_HOLD"):
+        # A listing that begins before the stop is held until it is sent,
+        # so it ends after it.
+        deadline = time.monotonic() + 60
+        while not (state / "stopping").exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
     listing = (state / "results.txt").read_text(encoding="utf-8")
     if (state / "stopping").exists():
         listing = listing.replace(": not checked", ": segfault")  # what the stop leaves
+        (state / "listed_stopping").write_text("1", encoding="utf-8")
     sys.stdout.write(listing)
     sys.exit(int(os.environ.get("FAKE_RESULTS_EXIT", "0")))
 sys.exit(9)
@@ -3408,6 +3423,42 @@ class TestACancelledRun:
             assert state["units"][unit].get("losses") == losses, result
 
 
+def _gate_engine(monkeypatch: pytest.MonkeyPatch, live: Path, ready: Any,
+                 when: Path | None = None) -> dict[str, Any]:
+    """Start the engine only once the slice has published a partial record
+    ``ready`` accepts (the heartbeat runs from before the engine starts):
+    the cells order the slice's listings against the engine's run and the
+    budget by events, never by a sleep racing real work; with ``when``,
+    once that file exists instead.  Returns the record that let it start,
+    under ``"partial"``."""
+    import time
+
+    real = sw.md.run_engine
+    seen: dict[str, Any] = {}
+
+    def gated(*args: Any, **kwargs: Any) -> Any:
+        # The stand-in engine's generation first (its count of the window,
+        # which a listing needs), then the wait, then the run and its budget.
+        subprocess.run(args[0], cwd=kwargs["cwd"], env={**kwargs["env"], "FAKE_RUN_WINDOW_ONLY": "1"},
+                       check=True, capture_output=True)
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline:
+            try:
+                partial = json.loads((live / sw.PARTIAL_FILE).read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                partial = None
+            if (when.exists() if when is not None else isinstance(partial, dict) and ready(partial)):
+                seen["partial"] = partial
+                break
+            time.sleep(0.02)
+        else:
+            raise AssertionError("the slice never published the record the cell waits for")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(sw.md, "run_engine", gated)
+    return seen
+
+
 @pytest.mark.usefixtures("no_git_locators")
 class TestThePartialRecordIsMonotone:
     def test_a_listing_that_fails_keeps_the_last_results_read_whole(
@@ -3418,16 +3469,14 @@ class TestThePartialRecordIsMonotone:
         says when the listing failed; so does the final record, whose own
         listing failed too, under the engine's stop."""
         live = tmp_path / "live"
-        snapshot = tmp_path / "snapshot.json"
-        monkeypatch.setenv("FAKE_RUN_SLEEP", "2.5")
         monkeypatch.setenv("FAKE_RESULTS_FAIL_FROM", "2")
-        monkeypatch.setenv("FAKE_SNAPSHOT", os.pathsep.join([str(live / sw.PARTIAL_FILE), str(snapshot)]))
+        seen = _gate_engine(monkeypatch, live, lambda r: bool(r.get("results")) and r.get("listing_failed"))
         code, record, _ = _night(repo, tmp_path, 1, (
             "    vera.m.x_f__mutmut_1: killed\n    vera.m.x_f__mutmut_2: killed\n"
             "    vera.m.x_g__mutmut_1: killed\n    vera.m.x_g__mutmut_2: not checked\n"),
-            extra=["--heartbeat", "0.4", "--live", str(live)])
+            extra=["--heartbeat", "0.1", "--live", str(live)])
         decided = {"vera/m.py::x_f": {"1": "killed", "2": "killed"}, "vera/m.py::x_g": {"1": "killed"}}
-        partial = json.loads(snapshot.read_text(encoding="utf-8"))
+        partial = seen["partial"]
         sw.check_record(partial)
         assert {i: r["decided"] for i, r in partial["results"].items()} == decided
         assert partial["results_at"] is not None and partial["listing_failed"]["why"] == "the listing exited 1"
@@ -3528,16 +3577,20 @@ class TestNoDurationFromTheSlicesEnd:
 @pytest.mark.usefixtures("no_git_locators")
 class TestAfterTheBudgetsStop:
     def _stopped_night(self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
-        """A budget stop the engine takes 2 s to wind down from: the
-        heartbeat lists it meanwhile, when `x_f`'s mutant 2 shows the
-        `segfault` the stop leaves; the final listing then fails."""
-        monkeypatch.setenv("FAKE_RUN_SLEEP", "60")
-        monkeypatch.setenv("FAKE_RUN_TRAP_INT", "2")
-        monkeypatch.setenv("FAKE_RESULTS_FAIL_AFTER_EXIT", "1")
+        """A budget stop the engine winds down from until the slice has
+        published a listing read after the stop, when `x_f`'s mutant 2
+        shows the `segfault` the stop leaves; the final listing then fails.
+        The engine starts once a listing read before the stop is published,
+        and the budget is short: every step is ordered by events."""
         live = tmp_path / "live"
+        monkeypatch.setenv("FAKE_RUN_SLEEP", "60")
+        monkeypatch.setenv("FAKE_RUN_TRAP_INT", "1")
+        monkeypatch.setenv("FAKE_RUN_WAIT_PUBLISH", str(live / sw.PARTIAL_FILE))
+        monkeypatch.setenv("FAKE_RESULTS_FAIL_AFTER_EXIT", "1")
+        _gate_engine(monkeypatch, live, lambda r: bool(r.get("results")))
         code, record, _ = _night(repo, tmp_path, 1, (  # the budget plans x_f alone
             "    vera.m.x_f__mutmut_1: killed\n    vera.m.x_f__mutmut_2: not checked\n"),
-            budget=1.5, extra=["--heartbeat", "0.3", "--live", str(live)])
+            budget=0.5, extra=["--heartbeat", "0.1", "--live", str(live)])
         return code, record, live
 
     def test_a_status_the_stop_left_is_no_decision_in_any_record(
@@ -3573,12 +3626,12 @@ class TestADriverThatRaisedAfterTheEngineRan:
             raise RuntimeError("after the engine")
 
         monkeypatch.setattr(sw.md, "skipped_tests", late)
-        monkeypatch.setenv("FAKE_RUN_SLEEP", "1.5")
         live = tmp_path / "live"
+        _gate_engine(monkeypatch, live, lambda r: bool(r.get("results")))
         code, record, _ = _night(repo, tmp_path, 1, (
             "    vera.m.x_f__mutmut_1: killed\n    vera.m.x_f__mutmut_2: killed\n"
             "    vera.m.x_g__mutmut_1: killed\n    vera.m.x_g__mutmut_2: not checked\n"),
-            extra=["--heartbeat", "0.3", "--live", str(live)])
+            extra=["--heartbeat", "0.1", "--live", str(live)])
         sw.check_record(record)
         assert code == 2 and record["stopped"] == "lane"
         assert record["engine_tail"] == ["RuntimeError: after the engine"]
@@ -3623,31 +3676,37 @@ class TestTheStopsEdges:
         written with a plain write), which hides its mutants' codes from
         ``before_stop``; here there is none at all.  The listing a heartbeat
         read before the stop showed the `segfault`, so it is the engine's own
-        and the final record keeps it."""
+        and the final record keeps it.  The engine starts once that listing
+        is published, so the budget never races it."""
+        live = tmp_path / "live"
         monkeypatch.setenv("FAKE_RUN_SLEEP", "60")
+        _gate_engine(monkeypatch, live, lambda r: bool(r.get("results")))
         code, record, _ = _night(repo, tmp_path, 1, (  # the budget plans x_f alone
             "    vera.m.x_f__mutmut_1: killed\n    vera.m.x_f__mutmut_2: segfault\n"),
-            budget=1.5, extra=["--heartbeat", "0.3", "--live", str(tmp_path / "live")])
+            budget=0.5, extra=["--heartbeat", "0.1", "--live", str(live)])
         assert record["stopped"] == "budget" and record["budget_stopped"] is True
         assert record["results"]["vera/m.py::x_f"]["decided"] == {"1": "killed", "2": "segfault"}
 
     def test_a_record_published_after_the_stop_says_so_though_its_listing_began_before(
         self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """A heartbeat begins a 1 s listing before the stop and publishes
-        after it: that record says the stop was sent, as does the record on
-        disk as the engine exits, so a leg copying it charges no loss."""
+        """A heartbeat's listing begins before the stop (the engine starts
+        once it has) and is held until the stop is sent; the engine winds
+        down until the slice has published that listing.  The record on disk
+        then says the stop was sent, so a leg copying it charges no loss.
+        Every step is ordered by events."""
         if os.name != "posix":
             pytest.skip("the stand-in engine winds down on SIGINT, the budget's stop on POSIX")
         live = tmp_path / "live"
         snapshot = tmp_path / "at-exit.json"
         monkeypatch.setenv("FAKE_RUN_SLEEP", "60")
-        monkeypatch.setenv("FAKE_RUN_TRAP_INT", "2")
-        monkeypatch.setenv("FAKE_RESULTS_SLEEP", "1")
-        monkeypatch.setenv("FAKE_RESULTS_SLEEP_STOPPING", "5")
+        monkeypatch.setenv("FAKE_RUN_TRAP_INT", "1")
+        monkeypatch.setenv("FAKE_RESULTS_HOLD", "1")
+        monkeypatch.setenv("FAKE_RUN_WAIT_PUBLISH", str(live / sw.PARTIAL_FILE))
         monkeypatch.setenv("FAKE_SNAPSHOT", os.pathsep.join([str(live / sw.PARTIAL_FILE), str(snapshot)]))
+        _gate_engine(monkeypatch, live, None, when=tmp_path / "fake1" / "results_calls")
         _night(repo, tmp_path, 1, "    vera.m.x_f__mutmut_1: killed\n    vera.m.x_f__mutmut_2: not checked\n",
-               budget=1.0, extra=["--heartbeat", "0.3", "--live", str(live)])
+               budget=0.3, extra=["--heartbeat", "0.1", "--live", str(live)])
         at_exit = json.loads(snapshot.read_text(encoding="utf-8"))
         assert at_exit["budget_stopped"] is True, at_exit.get("elapsed_s")
         assert sw.charged_in_flight({**at_exit, "leg": 4}) == []

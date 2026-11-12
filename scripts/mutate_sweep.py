@@ -1384,9 +1384,10 @@ def scope_command(argv: Sequence[str], *, memory_max: int, unit: str, uid: int, 
                   env: Mapping[str, str]) -> list[str]:
     """``argv`` run in a transient systemd scope whose memory is bounded at
     ``memory_max`` bytes with no swap, as user ``uid``/``gid``, with ``env``
-    set over what sudo keeps.  The kernel then ends the largest process of
-    the scope (the oracle plugin makes a mutant's run its first choice) and
-    the runner lives; ``OOMPolicy=continue`` keeps systemd from stopping the
+    set over what sudo keeps.  The kernel then ends a process of the scope,
+    by the memory it holds and its ``oom_score_adj`` (the oracle plugin
+    makes a mutant's run its preferred choice, not a certain one), and the
+    runner lives; ``OOMPolicy=continue`` keeps systemd from stopping the
     whole scope at the first kill.  ``systemd-run --scope`` runs ``argv``
     in its own process, so its parent is ours and sudo stays outside the
     bound.  The one builder for the workflow and the self-test that runs it
@@ -1962,8 +1963,9 @@ def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: li
     if beat is not None:
         beat.start()
     # Under the bound, the engine runs at ENGINE_OOM_SCORE and every mutant's
-    # run at 1000 (the oracle plugin), so the slice's own process is the
-    # kernel's last choice.
+    # run at 1000 (the oracle plugin), so the kernel prefers a mutant's run to
+    # the engine and the engine to the slice's own process: a preference
+    # weighed with the memory each holds, not a guarantee.
     lower = ["choom", "-n", str(ENGINE_OOM_SCORE), "--"] if bound else []
     try:
         run, log, dropped = md.run_dropping(

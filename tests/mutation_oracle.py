@@ -55,8 +55,9 @@ The sweep also reads which mutants are in flight: with
 ``MUTATION_ORACLE_INFLIGHT`` set, a mutant's run appends its name, its
 process, its start and whether it took the next step to the file it names,
 and first writes 1000 to its own ``oom_score_adj``, so inside the sweep's
-memory bound the kernel ends the mutant's run, and whatever it started,
-before the fork server or the engine.  A run the kernel ended is a process
+memory bound the kernel prefers to end the mutant's run, and whatever it
+started, to the fork server or the engine (a preference weighed with the
+memory each holds, not a guarantee).  A run the kernel ended is a process
 gone while the bound's ``oom_kill`` count rose, which the sweep records as
 ``memory`` (``scripts/mutate_sweep.py``).  When the run's session ends of
 its own accord it appends an end line, ``<mutant>\\t<pid>\\t<end>\\tend``, to
@@ -243,10 +244,11 @@ def arm_cap(environ: Any = os.environ) -> threading.Timer | None:
 
 
 def _first_victim() -> bool:
-    """Make this process, and every process it starts, the kernel's first
-    choice when memory runs out (``oom_score_adj`` 1000, Linux only, best
-    effort): inside the sweep's memory bound the mutant's own run goes before
-    the fork server and the engine.  Whether the write took."""
+    """Make this process, and every process it starts, the kernel's
+    preferred choice when memory runs out (``oom_score_adj`` 1000, Linux
+    only, best effort): inside the sweep's memory bound the mutant's own run
+    is preferred to the fork server and the engine, a preference the kernel
+    weighs with the memory each holds.  Whether the write took."""
     try:
         fd = os.open("/proc/self/oom_score_adj", os.O_WRONLY)
     except OSError:

@@ -155,7 +155,8 @@ jobs:
       # The slice runs in the background, across the steps below, inside a
       # transient systemd scope whose memory is bounded at the runner's less
       # 2.5 GiB with no swap (scripts/mutate_sweep.py's scope_command): when
-      # a mutant's run outgrows it, the kernel ends that run, not the runner.
+      # a mutant's run outgrows it, the kernel prefers to end that run (a
+      # preference, not a guarantee), and the runner, outside it, lives.
       # A bound that cannot be set fails this step, and the slice is a lane
       # stop; it never runs unbounded.  The step returns once the slice has
       # checked its bound.
