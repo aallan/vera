@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from vera import ast, naming
+from vera.errors import source_lines
 from vera.lexical import blank_comments
 from vera.lowering import (
     ROW_TYPE_ARGUMENT,
@@ -58,7 +59,7 @@ def _span_bounds(source: str, span: ast.Span | None) -> tuple[int, int] | None:
     if span is None or not source:
         return None
     starts = [0]
-    for line in source.splitlines(keepends=True):
+    for line in source_lines(source, keepends=True):
         starts.append(starts[-1] + len(line))
     if not (1 <= span.line < len(starts) and 1 <= span.end_line < len(starts)):
         return None
@@ -1488,7 +1489,8 @@ def _declaration_text(source: str, decl: ast.Node) -> str | None:
     span = decl.span
     if span is None:
         return None
-    lines = blank_comments(source).splitlines()[span.line - 1:span.end_line]
+    lines = source_lines(blank_comments(source))[
+        span.line - 1:span.end_line]
     if not lines:
         return None
     if len(lines) == 1:

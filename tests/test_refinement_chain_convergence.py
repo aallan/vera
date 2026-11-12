@@ -362,8 +362,7 @@ def _clause_binder_records(source: str) -> list[tuple[str, str]]:
     return sorted(
         (o["kind"], o["status"]) for o in envelope["obligations"]
         if o["kind"] == "refine_bind"
-        and (o["description"] == "<expr>"
-             or re.fullmatch(r"@[A-Za-z_][\w<>, ]*", o["description"]))
+        and re.fullmatch(r"@[A-Za-z_][\w<>, ]*", o["description"])
     )
 
 

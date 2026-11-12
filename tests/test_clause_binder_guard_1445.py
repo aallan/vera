@@ -94,7 +94,7 @@ def _is_binder_description(description: str) -> bool:
     """Since #1695 a binder's record stands at its binder row and names the
     binder's declared type (`@Neg`), a slot with no index; every other
     record here names an expression (`@Int.0`, a literal)."""
-    return description == "<expr>" or re.fullmatch(
+    return re.fullmatch(
         r"@[A-Za-z_][\w<>, ]*", description) is not None
 
 
