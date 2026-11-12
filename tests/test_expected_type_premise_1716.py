@@ -19,15 +19,16 @@ readers took it as a fact of the value:
   refinement over its constant: an `Exn` handler whose body is such a join
   proved `ensures(@Int.result > 0)` at Tier 1 and the run broke it.
 
-THE RULE (`narrowing.established_type`).  A value is established at the
-type its leaves (`narrowing.value_leaves`) share where every leaf that
-yields a value has one type, and at none otherwise; a leaf's recorded type
-is its own (a slot's binder, a call's declared return, a construction's
-fields, a literal).  Carrier 1 takes its premises from that type, none where
-there is none; carrier 2's stand-in carries its type's facts only where that
-type is the one it was recorded at, and its base alone otherwise.  The
-obligation is then discharged from the leaves' own facts under each
-branch's path condition, which the solver context holds already.
+THE RULE.  The checker records a join at the facts its arms share,
+position by position (the checker's `_shared_facts`), so the recorded type
+is a fact of whichever arm the value is; a leaf's recorded type is its own
+(a slot's binder, a call's declared return, a construction's fields, a
+literal).  Carrier 1 takes no premise from the value's type at all; carrier
+2's stand-in carries the recorded type's facts, strengthened where every
+non-literal leaf states a refinement and every literal leaf satisfies it
+(`narrowing.established_type`, the literal strengthening).  The obligation
+is then discharged from the leaves' own facts under each branch's path
+condition, which the solver context holds already.
 
 THE INSTRUMENT.  For each carrier, the form of the join × the arm the
 breaking leaf takes × the position the value is coerced at × the leaf's
@@ -693,7 +694,8 @@ def test_an_unknown_leaf_shares_no_type() -> None:
                               then_branch=left, else_branch=right)
             types = {id(left): other, id(right): unknown}
             assert narrowing.established_type(
-                join, lambda e: types.get(id(e))) is None, (unknown, other)
+                join, lambda e: types.get(id(e)),
+                lambda _leaf, _ty: True) is None, (unknown, other)
         assert not narrowing.same_established(unknown, unknown)
 
 

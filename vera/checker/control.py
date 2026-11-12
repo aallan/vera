@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 from collections.abc import Collection, Mapping, Sequence
+from typing import cast
 from dataclasses import dataclass
 
 from vera import ast, naming, narrowing, patterns
@@ -39,6 +40,7 @@ from vera.types import (
     AdtType,
     ConcreteEffectRow,
     EffectInstance,
+    EffectRowType,
     FunctionType,
     PrimitiveType,
     PureEffectRow,
@@ -203,35 +205,235 @@ def _no_call(_call: ast.Expr) -> str | None:
     return None
 
 
-def _signed_join(
-    joined: Type | None, branches: Sequence[tuple[ast.Expr, Type]],
-) -> Type | None:
-    """The type of a join whose branches meet as an `@Int` and a `@Nat`
-    (#1756).
+def _always_throws(ty: Type) -> bool:
+    """Whether a handler's body of type *ty* always throws (`Never`), so
+    the handler's value is its clause's."""
+    return isinstance(ty, PrimitiveType) and ty.name == "Never"
 
-    `is_subtype` admits an `@Int` where a `@Nat` is expected, leaving the
-    narrowing to the verifier, and `_join` gives its first type to its
-    second, so an `if` whose then-branch is an `@Int` and whose else-branch is
-    a `@Nat`, or a `match` whose later arm is the `@Int`, came out a `@Nat`.
-    The verifier reads a join's type to decide whether binding it into a
-    `@Nat` position narrows, and saw no narrowing, while code generation's
-    static rule read the `@Int` branch and planted the guard.  So a join
-    *joined* as a `@Nat`, or as a refinement of `@Nat` (the subtype rule
-    hands it the refined type), is an `@Int`, spec §4.4's meet of the two,
-    when one of its *branches* is an `@Int` that is not statically
-    non-negative: `vera.narrowing.is_static_nat_typed`, the rule code
-    generation's guard reads, which takes a literal at its value and never a
-    negation.  Binding it into a `@Nat` position is then a narrowing the
-    verifier obligates.  A join whose `@Int` branches are all non-negative
-    constants keeps its type, as before.
-    """
-    if joined is None or not types_equal(base_type(joined), NAT):
+
+def _no_guarded_subtraction(_sub: ast.Expr) -> bool:
+    """A subtraction-guard oracle that guards none: in an `@Int` arm every
+    subtraction can go below zero as far as the join knows (a `@Nat`
+    subtraction of two `@Nat` values is itself a `@Nat` arm)."""
+    return False
+
+
+def _refinement_chain(ty: Type) -> tuple[Type, tuple[ast.Expr, ...]]:
+    """*ty*'s base under its refinements, and their predicates, innermost
+    first: `{ { @Int | P } | Q }` is `Int` and `(P, Q)`."""
+    predicates: list[ast.Expr] = []
+    while isinstance(ty, RefinedType):
+        predicates.append(ty.predicate)
+        ty = ty.base
+    predicates.reverse()
+    return ty, tuple(predicates)
+
+
+def _shared_prefix(
+    a: tuple[ast.Expr, ...], b: tuple[ast.Expr, ...],
+) -> tuple[ast.Expr, ...]:
+    """The refinements two chains share, innermost first: each compared by
+    its predicate, as `narrowing.same_established` compares them."""
+    shared = 0
+    for x, y in zip(a, b):
+        if x != y:
+            break
+        shared += 1
+    return a[:shared]
+
+
+def _accepted_row(rows: list[EffectRowType],
+                  joined: EffectRowType) -> EffectRowType:
+    """The effect row every arm's function accepts at a position that
+    accepts a function (#1716): the effects every row names (`pure` beside
+    `<IO>` is `pure`, `<IO, State<Int>>` beside `<IO>` is `<IO>`), with a
+    row variable kept only where every row ends in that same variable;
+    otherwise the row is closed at those effects (`pure` beside
+    `<IO, E>` is `pure`).  *joined*, the join's own row, comes back
+    where it is that row already, or where there are no rows."""
+    if not rows:
         return joined
-    for expr, ty in branches:
-        if (types_equal(base_type(ty), INT)
-                and not narrowing.is_static_nat_typed(expr, _no_call)):
-            return INT
-    return joined
+    named = [row.effects if isinstance(row, ConcreteEffectRow)
+             else frozenset[EffectInstance]() for row in rows]
+    shared = named[0].intersection(*named[1:])
+    tails = {row.row_var if isinstance(row, ConcreteEffectRow) else None
+             for row in rows}
+    (tail,) = tails if len(tails) == 1 else (None,)
+    if tail is None and not shared:
+        return joined if isinstance(joined, PureEffectRow) else PureEffectRow()
+    if (isinstance(joined, ConcreteEffectRow) and joined.row_var == tail
+            and joined.effects == shared):
+        return joined
+    return ConcreteEffectRow(shared, tail)
+
+
+def _constrains(ty: Type, joined_base: Type) -> bool:
+    """Whether an arm of type *ty* states anything at a position the join
+    holds *joined_base* at: not where it is open (a type variable the join
+    filled from another arm, or the checker's unknown), and not where it
+    yields no value (`Never`).  A type variable the join kept (the
+    enclosing function's own, the same on both sides) is no open position:
+    the arm states its refinements there."""
+    base = _refinement_chain(ty)[0]
+    if isinstance(base, TypeVar):
+        return isinstance(joined_base, TypeVar) and base.name == joined_base.name
+    if isinstance(base, UnknownType):
+        return False
+    return not (isinstance(base, PrimitiveType) and base.name == "Never")
+
+
+def _shared_facts(
+    joined: Type, arms: Sequence[tuple[ast.Expr | None, Type]],
+) -> Type:
+    """*joined*, stating at each position only the facts every arm that
+    yields a value states there (#1716).
+
+    The join of two types (`CallsMixin._join`) answers with its second, each
+    open position filled from the first, and keeps the second's refinements
+    whatever the first states; `is_subtype` admits a base where its
+    refinement is expected, and an `@Int` where a `@Nat` is.  So an `if`
+    came out at its else branch's type, a `match` at its first value arm's
+    and an `Exn` handler at its body's, and every reader of the type took
+    one arm's refinement as a fact of a value that may be another arm's.  A
+    join's value is one of its arms', so it states what they all state:
+
+    * a refinement every arm states at a position stays; one an arm does not
+      state, or states with another predicate, is dropped to the base there
+      (the chains' shared prefix, each refinement compared by its
+      predicate);
+    * a `@Nat` beside an `@Int` is an `@Int`, spec §4.4's meet of the two,
+      at every position that holds a value; at a position that accepts
+      one, a function type's parameter, it is a `@Nat` (below); at the head an `@Int` arm that is statically
+      non-negative (`narrowing.is_static_nat_typed`, the rule code
+      generation's guard reads: a non-negative literal, `@Nat.0 + 1`) and
+      holds no subtraction (`narrowing.has_underflow_leaf`: `@Nat.0 - 1`
+      can be negative, and an `Exn` handler's stand-in would take the
+      `@Nat` as a fact of it) is read as a `@Nat`, spec §4.8's exception
+      (#1756), so a join of `@Nat` arms and such `@Int` arms is a `@Nat` in
+      either order;
+    * an arm open at a position (a type variable the join filled from
+      another arm, the checker's unknown) or one that yields no value
+      (`Never`) states nothing there.
+
+    The structure (the data types, each open position's filling) is the
+    join's; this judgement only removes facts, so it admits nothing the join
+    did not, and its answer does not depend on the order of the arms.  A
+    function type's parameter is a position that accepts a value: the join
+    is applied to one argument, which must suit whichever arm it is, so a
+    `@Nat` beside an `@Int` there is a `@Nat`, and binding an `@Int`
+    argument into it is the `Nat` narrowing, obligated where it is bound.
+    The side flips at each parameter (a parameter's own parameter holds a
+    value again) and carries through a return type and a data type's
+    arguments.  A function type at an accepting position has the effect row
+    every arm accepts there, the effects every row names, a row variable
+    kept only where every row ends in it (`_accepted_row`: a `pure`
+    callback beside an `<IO>` one, or an `<IO, E>` one, is `pure`).  At a
+    position that holds a value the row is the join's, the wider
+    (`_join_either`).  A parameter's refinements are what every arm
+    accepts too: where the arms' chains are nested and the arm that owns
+    the longest has the position's base (after the `Nat` rule), that arm's
+    own chain, so `fn(Int -> X)` beside `fn(Small -> X)` is
+    `fn(Small -> X)`; a chain is never moved onto another base (a refined
+    `Int` beside a `Nat` gives a plain `Nat`).  Where two chains state
+    different predicates at one level the parameter has the shared prefix,
+    the relaxation `is_subtype` already admits at any site of that function
+    type (rule 9 with rule 7, issue #1819); that remainder is held by an
+    entry check only where one exists, a closure's own parameter and its
+    data components, never a callback's result; a callback's result whose
+    arms differ by base (a `Nat` beside a refined `Int`, where no chain is
+    kept) is held by none either.  Binding the join where
+    a refined type is expected is then the narrowing it is, obligated by its
+    leaves.
+    """
+    return _shared_at(joined, list(arms))
+
+
+def _shared_at(
+    joined: Type, arms: list[tuple[ast.Expr | None, Type]],
+    accepting: bool = False,
+) -> Type:
+    """:func:`_shared_facts` at one position, *arms* the arms' types there,
+    each with its expression at the head (where the static-literal exception
+    reads it) and ``None`` below; *accepting* where the position accepts a
+    value (a function type's parameter) rather than holds one."""
+    base, predicates = _refinement_chain(joined)
+    if isinstance(base, UnknownType):
+        return joined
+    stating = [(expr, ty) for expr, ty in arms if _constrains(ty, base)]
+    kept = predicates
+    for _, ty in stating:
+        kept = _shared_prefix(kept, _refinement_chain(ty)[1])
+    shared_base = base
+    if isinstance(base, PrimitiveType) and base.name in ("Nat", "Int"):
+        nat_arm = int_arm = False
+        every_int_static = True
+        for expr, ty in stating:
+            arm_base = _refinement_chain(ty)[0]
+            if not isinstance(arm_base, PrimitiveType):
+                continue
+            if arm_base.name == "Nat":
+                nat_arm = True
+            elif arm_base.name == "Int":
+                int_arm = True
+                if not (expr is not None
+                        and narrowing.is_static_nat_typed(expr, _no_call)
+                        and not narrowing.has_underflow_leaf(
+                            expr, _no_guarded_subtraction)):
+                    every_int_static = False
+        if nat_arm and int_arm:
+            shared_base = NAT if accepting or every_int_static else INT
+    elif isinstance(base, AdtType) and base.type_args:
+        args = []
+        for i, arg in enumerate(base.type_args):
+            parts: list[tuple[ast.Expr | None, Type]] = []
+            for _, ty in stating:
+                arm_base = _refinement_chain(ty)[0]
+                if (isinstance(arm_base, AdtType)
+                        and arm_base.name == base.name
+                        and len(arm_base.type_args) == len(base.type_args)):
+                    parts.append((None, arm_base.type_args[i]))
+            args.append(_shared_at(arg, parts, accepting))
+        if any(a is not b for a, b in zip(args, base.type_args)):
+            shared_base = AdtType(base.name, tuple(args))
+    elif isinstance(base, FunctionType):
+        params: list[Type] = []
+        returns: list[tuple[ast.Expr | None, Type]] = []
+        per_param: list[list[tuple[ast.Expr | None, Type]]] = [
+            [] for _ in base.params]
+        rows: list[EffectRowType] = []
+        for _, ty in stating:
+            arm_base = _refinement_chain(ty)[0]
+            if (isinstance(arm_base, FunctionType)
+                    and len(arm_base.params) == len(base.params)):
+                for i, param in enumerate(arm_base.params):
+                    per_param[i].append((None, param))
+                returns.append((None, arm_base.return_type))
+                rows.append(arm_base.effect)
+        for param, parts in zip(base.params, per_param):
+            params.append(_shared_at(param, parts, not accepting))
+        ret = _shared_at(base.return_type, returns, accepting)
+        effect = base.effect
+        if accepting:
+            effect = _accepted_row(rows, effect)
+        if (ret is not base.return_type or effect is not base.effect
+                or any(p is not q for p, q in zip(params, base.params))):
+            shared_base = FunctionType(tuple(params), ret, effect)
+    if accepting and stating:
+        # What every arm accepts: where the chains are nested and the arm
+        # that owns the longest has the position's base, that arm's own
+        # chain; otherwise the shared prefix above.
+        chains = [_refinement_chain(ty) for _, ty in stating]
+        owner_base, longest = max(chains, key=lambda chain: len(chain[1]))
+        if owner_base == shared_base and all(
+                _shared_prefix(chain, longest) == chain
+                for _, chain in chains):
+            kept = longest
+    if shared_base is base and kept == predicates:
+        return joined
+    out = shared_base
+    for predicate in kept:
+        out = RefinedType(out, predicate)
+    return out
 
 
 def _bindings_form(name: str, types: tuple[Type, ...]) -> str:
@@ -245,6 +447,31 @@ class ControlFlowMixin:
     # -----------------------------------------------------------------
     # Control flow
     # -----------------------------------------------------------------
+
+    def _value_join(
+        self, joined: Type, arms: Sequence[tuple[ast.Expr | None, Type]],
+    ) -> Type:
+        """The type a value join is recorded at: an `if` over its branches,
+        a `match` over its arms, an `Exn` handler over its body and clauses,
+        *joined* being the structure the join of their types gives
+        (`_join`), stating only the facts every arm states
+        (:func:`_shared_facts`, #1716)."""
+        return _shared_facts(joined, arms)
+
+    def _join_either(self, ty: Type, onto: Type) -> Type | None:
+        """The structure of a value join of an arm of *ty* with what the
+        arms before it give, *onto*, as the `match` and the `Exn` handler
+        take it (#1716): *ty* joined onto *onto* (`_join`), or *ty* itself
+        where *onto* is a subtype of it.  The walk is directional over a
+        function type's effect row (the first side's row a subtype of the
+        second's), so a pure function beside an `<IO>` one is the `<IO>`
+        one in either order, the wider row; and under a subtype it answers
+        the onto side where it refuses (`_join_parts`), so *onto* joined
+        onto *ty* is *ty*."""
+        merged = self._join(ty, onto)
+        if merged is None and is_subtype(onto, ty):
+            merged = ty
+        return merged
 
     def _check_if(self, expr: ast.IfExpr, *,
                   expected: Type | None = None) -> Type | None:
@@ -287,11 +514,13 @@ class ControlFlowMixin:
         # either order.
         branches = [(expr.then_branch, then_ty), (expr.else_branch, else_ty)]
         if is_subtype(then_ty, else_ty):
-            return _signed_join(
-                self._join(then_ty, else_ty) or else_ty, branches)
-        if is_subtype(else_ty, then_ty):  # pragma: no cover — subtyping is symmetric for current rules
-            return _signed_join(
-                self._join(else_ty, then_ty) or then_ty, branches)
+            # Under a subtype the join answers: `_join_parts` gives the
+            # onto side where the walk refuses.  The other order (the else
+            # branch a subtype of the then branch alone: a function type
+            # whose effect row widens) is the general path's below.
+            return self._value_join(
+                cast(Type,  # pragma: no mutate — equivalent: `cast` returns its argument; the type it names is read by mypy alone
+                     self._join(then_ty, else_ty)), branches)
 
         # Re-synthesis: a branch with an unresolved type variable is
         # synthesized again with the other branch's type expected, so a
@@ -318,8 +547,8 @@ class ControlFlowMixin:
                 # then branch, as two open branches always gave.
                 joined = then_ty
         if joined is not None:
-            return _signed_join(joined, [(expr.then_branch, then_ty),
-                                         (expr.else_branch, else_ty)])
+            return self._value_join(joined, [(expr.then_branch, then_ty),
+                                             (expr.else_branch, else_ty)])
 
         self._error(
             expr,
@@ -409,9 +638,7 @@ class ControlFlowMixin:
                         # gave.
                         joined = arm_ty
                 else:
-                    joined = self._join(arm_ty, result_type)
-                    if joined is None and is_subtype(result_type, arm_ty):
-                        joined = result_type
+                    joined = self._join_either(arm_ty, result_type)
                 if joined is not None:
                     result_type = joined
                 else:
@@ -438,7 +665,9 @@ class ControlFlowMixin:
                 self._names_refused_ctor(arm.pattern) for arm in expr.arms)):
             self._check_exhaustiveness(expr, scrutinee_ty, in_error=in_error,
                                        after_error=after_error)
-        return _signed_join(result_type, arm_types) or UnknownType()
+        if result_type is None:
+            return UnknownType()
+        return self._value_join(result_type, arm_types)
 
     def _unknown_is_reported(self, value: ast.Expr) -> bool:
         """Whether a diagnostic already stands behind the `Unknown` *value*
@@ -1951,43 +2180,36 @@ class ControlFlowMixin:
         reconciles is refused at the clause (E341): read at the body's type,
         a clause's `Some(5)` became a `Result`'s `Err(5)`."""
         joined = body_type
+        # The arms the handler's value is one of, each at its own type: the
+        # judgement of what they share reads them all.
+        arms: list[tuple[ast.Expr | None, Type]] = []
+        if body_type is not None:
+            arms.append((expr.body, body_type))
         for clause, clause_type in clause_types:
-            if joined is None or isinstance(joined, UnknownType):
+            arms.append((clause.body, clause_type))
+            # The structure (each open position's filling) is the join's;
+            # the facts are what the arms share (`_value_join`).  A clause
+            # that re-throws (`Never`) or that the check refused states
+            # nothing, and the join leaves the body's type; a body that
+            # always throws gives the clause's.
+            if joined is None or _always_throws(joined):
                 joined = clause_type
-                continue
-            if isinstance(clause_type, UnknownType):
-                continue
-            if types_equal(joined, NEVER):
-                joined = clause_type
-                continue
-            if types_equal(clause_type, NEVER):
-                continue
-            branches = [(expr.body, joined), (clause.body, clause_type)]
-            if is_subtype(clause_type, joined):
-                joined = _signed_join(
-                    self._join(clause_type, joined) or joined, branches)
-                continue
-            if is_subtype(joined, clause_type):
-                joined = _signed_join(
-                    self._join(joined, clause_type) or clause_type, branches)
-                continue
-            merged = self._join(clause_type, joined)
-            if merged is not None:
-                joined = _signed_join(merged, branches)
-                continue
-            self._error(
-                clause.body,
-                f"The '{clause.op_name}' clause's value has type "
-                f"{pretty_inferred_type(clause_type)}, but the handler's "
-                f"value is {pretty_inferred_type(joined)}.",
-                rationale=("An Exn handler's value is its handled body's, "
-                           "or, when the body throws, the clause's: the two "
-                           "are one value, so they have one type, as the "
-                           "branches of an if do."),
-                fix=self._exn_clause_fix(clause, joined),
-                spec_ref='Chapter 7, Section 7.5.2 "Handler Semantics"',
-                error_code="E341",
-            )
+            elif (merged := self._join_either(clause_type, joined)) is not None:
+                joined = self._value_join(merged, arms)
+            else:
+                self._error(
+                    clause.body,
+                    f"The '{clause.op_name}' clause's value has type "
+                    f"{pretty_inferred_type(clause_type)}, but the handler's "
+                    f"value is {pretty_inferred_type(joined)}.",
+                    rationale=("An Exn handler's value is its handled body's, "
+                               "or, when the body throws, the clause's: the two "
+                               "are one value, so they have one type, as the "
+                               "branches of an if do."),
+                    fix=self._exn_clause_fix(clause, joined),
+                    spec_ref='Chapter 7, Section 7.5.2 "Handler Semantics"',
+                    error_code="E341",
+                )
         return joined
 
     def _exn_clause_fix(self, clause: ast.HandlerClause, ty: Type) -> str:
