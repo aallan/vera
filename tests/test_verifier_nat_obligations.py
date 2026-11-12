@@ -4,6 +4,8 @@ Split from tests/test_verifier.py (#839). Shared helpers live in tests/verifier_
 """
 from __future__ import annotations
 
+import pytest
+
 from tests import pipeline
 
 
@@ -692,52 +694,68 @@ public fn f(@Int -> @Unit)
             [(o.kind, o.status) for o in result.obligations]
         assert [d for d in result.diagnostics if d.severity == "error"] == []
 
-    def test_generic_function_formal_nat_obligated(self) -> None:
-        """A generic function formal fixed to @Nat by a sibling argument
-        (`pick(@Nat.0, @Int.0)` with `pick<T>(@T, @T -> @T)`) narrows the
-        @Int argument into the @Nat-instantiated formal.  #747 recovers the
-        instantiation from the target side-table (deferred pre-#747)."""
-        result = _verify("""
+    @staticmethod
+    def _pick_source(order: str, requires: str) -> str:
+        """`f` returns `pick(@Nat.0, @Int.0)` (or the swapped call) at
+        `@Nat`, `pick`'s body returning the `@Int` argument in either
+        order, so a negative `Int` reaches the result."""
+        call, picked = (("pick(@Nat.0, @Int.0)", "@T.0") if order == "nat_first"
+                        else ("pick(@Int.0, @Nat.0)", "@T.1"))
+        return f"""
 private forall<T>
 fn pick(@T, @T -> @T)
   requires(true)
   ensures(true)
   effects(pure)
-{ @T.0 }
+{{ {picked} }}
 
-private fn f(@Nat, @Int -> @Nat)
-  requires(true)
+public fn f(@Nat, @Int -> @Nat)
+  requires({requires})
   ensures(true)
   effects(pure)
-{ pick(@Nat.0, @Int.0) }
-""")
-        assert [o for o in result.obligations if o.kind == "nat_bind"], \
-            "expected a nat_bind obligation at the generic function formal"
-        errors = [d for d in result.diagnostics if d.severity == "error"]
-        assert any("may be negative" in e.description.lower() for e in errors)
+{{ {call} }}
+"""
 
-    def test_generic_function_formal_nat_discharged(self) -> None:
-        """The generic function-formal narrowing discharges from a
-        precondition constraining the @Int argument.  Pins the emitted
-        `nat_bind` status as ``verified`` (CR #756)."""
-        result = _verify("""
-private forall<T>
-fn pick(@T, @T -> @T)
-  requires(true)
-  ensures(true)
-  effects(pure)
-{ @T.0 }
+    @staticmethod
+    def _return_row(source: str) -> str:
+        """The one `nat_bind` row's status; it is the return's (the
+        call's result), and `vera verify` with reconciliation is clean,
+        so the check that answers it is emitted."""
+        verified = pipeline.verify(source, reconcile=True)
+        assert verified.errors == (), [e.format() for e in verified.errors]
+        rows = [(o.status, o.expr_text) for o in verified.obligations
+                if o.kind == "nat_bind"]
+        assert len(rows) == 1 and rows[0][1].startswith("{ pick("), rows
+        return rows[0][0]
 
-private fn f(@Nat, @Int -> @Nat)
-  requires(@Int.0 >= 0)
-  ensures(true)
-  effects(pure)
-{ pick(@Nat.0, @Int.0) }
-""")
-        assert [o.status for o in result.obligations
-                if o.kind == "nat_bind"] == ["verified"], \
-            [(o.kind, o.status) for o in result.obligations]
-        assert [d for d in result.diagnostics if d.severity == "error"] == []
+    @pytest.mark.parametrize("order", ["nat_first", "int_first"])
+    def test_generic_function_formal_nat_obligated(self, order: str) -> None:
+        """`pick(@Nat.0, @Int.0)` with `pick<T>(@T, @T -> @T)`, returned at
+        `@Nat`: the arguments give `T` `Nat` and `Int`, which join at
+        `Int` (spec §5.9, #1684), so the narrowing into `Nat` is the
+        return's, of the call's result, left to run time and guarded
+        there, in both orders; a negative result traps at that guard.
+        Before #1684 the first argument fixed `T`: in this order the `@Int`
+        argument was refused (E503), in the other the return was
+        guarded."""
+        source = self._pick_source(order, "true")
+        assert pipeline.check(source).ok
+        assert self._return_row(source) == "tier3"
+        ran = pipeline.run(source, fn="f", args=[1, -5])
+        assert ran.trap is not None, ran.value
+
+    @pytest.mark.parametrize("order", ["nat_first", "int_first"])
+    def test_generic_function_formal_nat_discharged(self, order: str) -> None:
+        """The same with `requires(@Int.0 >= 0)`: the narrowing is the
+        return's, which the solver does not prove (a generic's result is
+        opaque to it), so it is a run-time check, guarded, and the program
+        runs to the value.  Before #1684 the `@Int` argument's narrowing
+        in this order was proved from the precondition; binding the
+        argument at `@Nat` first keeps that proof (spec §5.9)."""
+        source = self._pick_source(order, "@Int.0 >= 0")
+        assert self._return_row(source) == "tier3"
+        ran = pipeline.run(source, fn="f", args=[1, 5])
+        assert ran.trap is None and ran.value == 5, (ran.trap, ran.value)
 
     def test_generic_ctor_field_nat_obligated(self) -> None:
         """A generic constructor field instantiated to @Nat (`Some(@Int.0)`

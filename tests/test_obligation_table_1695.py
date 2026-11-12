@@ -1661,21 +1661,31 @@ public fn f(@Int -> @Nat)
   effects(pure)
 {
   let @Nat = 3;
-  [@Nat.0, @Int.0][1]
+  [{a}, {b}][{i}]
 }
 """
 
 
-def test_mover_a_later_array_element_is_guarded(tmp_path: Path) -> None:
-    """`[@Nat.0, @Int.0]` is an `Array<Nat>` (spec §4.12.1 fixes the element
-    type from the first element): the `@Int` element's row is the
-    literal's own, where the store guard read only a requirement the
-    literal's context handed it, so `f(-5)` printed -5 (#1695's line)."""
-    compiled = pipeline.compile(_LATER_ELEMENT, file="l.vera")
+@pytest.mark.parametrize("order", ["nat_first", "int_first"])
+def test_mover_a_later_array_element_is_guarded(
+        tmp_path: Path, order: str) -> None:
+    """`[@Nat.0, @Int.0][1]` returned at `@Nat`, and `[@Int.0, @Nat.0][0]`
+    in the other order: nothing is expected of the
+    literal itself, so its elements join at `Int` (spec §4.12.1, #1684)
+    and the narrowing is the result's, guarded at the return in both
+    orders, so `f(-5)` traps there.  Before #1684 the first element fixed
+    the element type: in this order the `@Int` element was guarded (once
+    the store guard read the literal's own row, #1695's line, where `f(-5)`
+    had printed -5), in the swapped one the return."""
+    a, b, i = ("@Nat.0", "@Int.0", "1") if order == "nat_first" else (
+        "@Int.0", "@Nat.0", "0")
+    source = (_LATER_ELEMENT.replace("{a}", a).replace("{b}", b)
+              .replace("{i}", i))
+    compiled = pipeline.compile(source, file="l.vera")
     assert compiled.ok
     guards = pipeline.checks(compiled.result, kind="nat_guard")
-    assert [(g.line, g.column) for g in guards] == [(7, 12)], guards
-    ran = _run(tmp_path, _LATER_ELEMENT, "f", "-5")
+    assert [(g.line, g.column) for g in guards] == [(7, 3)], guards
+    ran = _run(tmp_path, source, "f", "-5")
     assert ran.returncode != 0 and "Negative value bound into a @Nat slot" in (
         ran.stdout + ran.stderr), ran.stdout + ran.stderr[-300:]
 
