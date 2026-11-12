@@ -23,6 +23,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -354,7 +355,20 @@ BAD_STATES: dict[str, tuple[Any, str]] = {
         "vera/b.py::x_g's survivor's test files"),
     "a window whose survivors are not its survived": (
         lambda s: s["units"][C.ident]["window"]["survivors"].clear(),
-        "vera/b.py::x_g's survivors are not its survived, timeout and slow mutants"),
+        "vera/b.py::x_g's survivors are not its survived, timeout, slow, memory and lost mutants"),
+    "a window's memory column of zero": (_set("units", C.ident, "window", "memory", 0),
+                                         "vera/b.py::x_g's memory is not a whole number from 1"),
+    "a loss at the limit": (lambda s: s["units"][B.ident].update(losses={"2": sw.LOSS_LIMIT}),
+                            "losses of mutant 2 is not a whole number from 1 to 1"),
+    "a loss of a decided mutant": (lambda s: s["units"][B.ident].update(losses={"1": 1}),
+                                   "loss of mutant '1' is not of an undecided mutant"),
+    "a loss beside a decided window": (lambda s: s["units"][A.ident].update(losses={"1": 1}),
+                                       "has losses outside an open window"),
+    "losses that are empty": (lambda s: s["units"][B.ident].update(losses={}), "'s losses"),
+    "a night's lost plan that is not a digest": (_set("nights", 0, "lost_plans", {"0": "plan"}),
+                                                 "a night's lost plans"),
+    "a night's lost plan of a slice out of range": (_set("nights", 0, "lost_plans", {"99": "0" * 16}),
+                                                    "a night's lost plans"),
     "a partial window and a decided one": (_set("units", A.ident, "partial", {"decided": {}, "survivors": []}),
                                            "has a decided window and a partial one"),
     "a partial window's mutant outside the window": (
@@ -1660,7 +1674,7 @@ class TestWorkflow:
         import re
 
         job = self._wf()["jobs"]["sweep"]
-        (step,) = [s for s in job["steps"] if "scripts/mutate_sweep.py night" in s.get("run", "")]
+        (step,) = [s for s in job["steps"] if "scripts/mutate_sweep.py start" in s.get("run", "")]
         budget = int(re.search(r"--budget (\d+)", step["run"]).group(1))  # type: ignore[union-attr]
         assert budget == sw.DEFAULT_BUDGET_S
         assert budget + 30 * 60 <= job["timeout-minutes"] * 60 <= 6 * 3600
@@ -1720,7 +1734,7 @@ class TestWorkflow:
         (keep,) = [s for s in stitch["steps"] if str(s.get("uses", "")).startswith("actions/upload-artifact@")]
         assert keep["if"] == "always()"
         assert keep["with"]["name"] == "mutation-sweep-state" and keep["with"]["retention-days"] == 90
-        (record,) = [s for s in self._steps("sweep") if str(s.get("uses", "")).startswith("actions/upload-artifact@")]
+        (record,) = [s for s in self._steps("sweep") if s.get("name") == "Upload the slice's record"]
         assert record["if"] == "always()"
         assert record["with"]["name"] == "mutation-sweep-slice-${{ matrix.slice }}"
 
@@ -1750,7 +1764,7 @@ class TestWorkflow:
         import re
 
         job = self._wf()["jobs"]["sweep"]
-        (step,) = [s for s in job["steps"] if "scripts/mutate_sweep.py night" in s.get("run", "")]
+        (step,) = [s for s in job["steps"] if "scripts/mutate_sweep.py start" in s.get("run", "")]
         assert re.search(r"--max-children (\d+)", step["run"]).group(1) == str(sw.WORKERS) == "2"  # type: ignore[union-attr]
         assert re.search(r"--mutant-cap (\d+)", step["run"]).group(1) == str(sw.MUTANT_CAP_S) == "2400"  # type: ignore[union-attr]
 
@@ -1766,9 +1780,10 @@ LOADAVG = "3.91 3.80 3.40 5/1234 99999\n"
 
 
 class TestHeartbeat:
-    """A lost runner uploads no record, so what the slice printed is all that
-    survives of it (#1751): a line every few minutes with the time, the
-    runner's memory and load, and the engine's last status."""
+    """A line every few minutes with the time, the runner's memory and load,
+    and the engine's last status, which the legs print into the job log;
+    the record's heartbeat series holds the same figures, and a lost
+    runner's last leg keeps them up to the leg (#1838)."""
 
     def test_the_watch_keeps_the_phases_the_engines_count_and_the_memory_figures(self) -> None:
         """The record carries what the proof night's table reads: when each
@@ -1876,13 +1891,56 @@ if args[0] == "run" and os.environ.get("MUTATE_DIFF_WINDOW"):
             inside = len([l for l in lines if node.lineno <= l < node.lineno + n])  # its mutants, one a line
             files[path][key] = {"held": n, "window": inside if kept else 0}
     Path(spec["record"]).write_text(json.dumps({"files": files}), encoding="utf-8")
+    if os.environ.get("FAKE_RUN_WINDOW_ONLY"):
+        sys.exit(0)  # the generation alone, before the run a cell starts when it is ready
 if args[0] == "run" and os.environ.get("FAKE_RUN_LOG"):
     # A log the engine printed, as it printed it (its stats pass stopping).
     print(Path(os.environ["FAKE_RUN_LOG"]).read_text(encoding="utf-8"), end="")
     sys.exit(1)
 if args[0] == "run":
     import time
+    if os.environ.get("FAKE_RUN_TRAP_INT"):
+        # The budget's stop: the engine takes its interrupt, marks that it
+        # is stopping (the listing then shows what the stop leaves), winds
+        # down until the slice has published a record listed after the stop
+        # (FAKE_RUN_WAIT_PUBLISH names that record: events, not a clock),
+        # and exits.
+        import signal
+        def _stopping(*_):
+            (state / "stopping").write_text("1", encoding="utf-8")
+            published = os.environ.get("FAKE_RUN_WAIT_PUBLISH")
+            marker = state / "listed_stopping"
+            deadline = time.monotonic() + 60
+            while published and time.monotonic() < deadline and not (
+                    marker.exists() and Path(published).exists()
+                    and Path(published).stat().st_mtime_ns > marker.stat().st_mtime_ns):
+                time.sleep(0.02)
+            if os.environ.get("FAKE_SNAPSHOT"):
+                # What the slice had written of its record as the engine exits.
+                source, target = os.environ["FAKE_SNAPSHOT"].split(os.pathsep)
+                if Path(source).exists():
+                    Path(target).write_bytes(Path(source).read_bytes())
+            (state / "exited").write_text("1", encoding="utf-8")
+            sys.exit(0)
+        signal.signal(signal.SIGINT, _stopping)
+    if os.environ.get("FAKE_INFLIGHT") and os.environ.get("MUTATION_ORACLE_INFLIGHT"):
+        # As the oracle plugin writes it for each mutant's run (this
+        # process standing in for the worker).
+        with open(os.environ["MUTATION_ORACLE_INFLIGHT"], "a", encoding="utf-8") as fh:
+            for name in os.environ["FAKE_INFLIGHT"].split(","):
+                fh.write(f"{name}\\t{os.getpid()}\\t{time.time():.3f}\\t0\\n")
     time.sleep(float(os.environ.get("FAKE_RUN_SLEEP", "0")))
+    if os.environ.get("FAKE_META"):
+        # mutmut's meta file for a source file: each mutant's exit code.
+        path, codes = os.environ["FAKE_META"].split("=", 1)
+        meta = Path("mutants") / (path + ".meta")
+        meta.parent.mkdir(parents=True, exist_ok=True)
+        meta.write_text(json.dumps({"exit_code_by_key": json.loads(codes)}), encoding="utf-8")
+    if os.environ.get("FAKE_SNAPSHOT"):
+        # What the slice had written of its record while this run went on.
+        source, target = os.environ["FAKE_SNAPSHOT"].split(os.pathsep)
+        if Path(source).exists():
+            Path(target).write_bytes(Path(source).read_bytes())
     failing = os.environ.get("FAKE_COPY_FAILURE", "")
     config = Path("pyproject.toml").read_text(encoding="utf-8")
     if failing and f"--deselect={failing}" not in config:
@@ -1904,7 +1962,28 @@ if args[0] == "run":
                 fh.write("".join(f"{nodeid}\\n" for nodeid in skipped.split(",")))
     sys.exit(int(os.environ.get("FAKE_RUN_EXIT", "0")))
 if args[0] == "results":
-    sys.stdout.write((state / "results.txt").read_text(encoding="utf-8"))
+    import time
+    calls = state / "results_calls"
+    n = int(calls.read_text(encoding="utf-8")) + 1 if calls.exists() else 1
+    calls.write_text(str(n), encoding="utf-8")
+    if n >= int(os.environ.get("FAKE_RESULTS_FAIL_FROM", "") or 10**9):
+        # A listing that meets a meta file mid-write, from this call on.
+        print("Traceback (most recent call last):\\njson.decoder.JSONDecodeError: Expecting value")
+        sys.exit(1)
+    if os.environ.get("FAKE_RESULTS_FAIL_AFTER_EXIT") and (state / "exited").exists():
+        print("Traceback (most recent call last):\\njson.decoder.JSONDecodeError: Expecting value")
+        sys.exit(1)
+    if os.environ.get("FAKE_RESULTS_HOLD"):
+        # A listing that begins before the stop is held until it is sent,
+        # so it ends after it.
+        deadline = time.monotonic() + 60
+        while not (state / "stopping").exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+    listing = (state / "results.txt").read_text(encoding="utf-8")
+    if (state / "stopping").exists():
+        listing = listing.replace(": not checked", ": segfault")  # what the stop leaves
+        (state / "listed_stopping").write_text("1", encoding="utf-8")
+    sys.stdout.write(listing)
     sys.exit(int(os.environ.get("FAKE_RESULTS_EXIT", "0")))
 sys.exit(9)
 '''
@@ -2399,7 +2478,15 @@ class TestEndToEnd:
         assert record["results"]["vera/m.py::x_g"]["decided"]["1"] == "slow"
         window = {p["unit"]: p["mutants"] for p in record["planned"]}
         assert {i: len(r["decided"]) for i, r in record["results"].items()} == window  # it went on
-        assert record["results"]["vera/m.py::x_g"]["durations"]["1"] < 30
+        assert "1" not in record["results"]["vera/m.py::x_g"]["durations"]  # the cap's exit wrote no end
+        # Each run's start and end are the plugin's lines, so every mutant
+        # whose run ended of its own accord has a measured duration, where
+        # the fork server reports zero; the slow one, which the cap's exit
+        # ended, has none.
+        for result in record["results"].values():
+            ended = {n for n, s in result["decided"].items() if s != sw.SLOW}
+            assert set(result["durations"]) == ended and all(
+                d > 0 for d in result["durations"].values()), result
         code, state = _stitch_cli(held_repo, tmp_path, 1, None)
         assert code == 0 and state["last_complete"]["modules"]["vera/m.py"]["slow"] == 1
         assert any(s.endswith(":slow") for s in state["last_complete"]["survivors"])
@@ -2441,8 +2528,1246 @@ class TestEndToEnd:
             assert r["window"] == counted["mutants"] == sum(counted["lines"].values()) >= 1
             assert r["lines"] == sorted(int(line) for line in counted["lines"])  # every line sampled
             assert set(r["decided"].values()) == {"killed"} and len(r["decided"]) == r["window"]
-            assert r["survivors"] == [] and set(r["durations"]) == set(r["decided"])
+            # No oracle plugin here, so no run's start is recorded, and the
+            # fork server reports every duration as zero: none is a measure.
+            assert r["survivors"] == [] and r["durations"] == {}
         code, state = _stitch_cli(repo, tmp_path, 1, None)
         assert code == 0 and state["cycle"] == 2 and state["last_complete"]["modules"]["vera/m.py"]["survived"] == 0
         assert state["last_complete"]["sampled"] == state["last_complete"]["population"] == sum(
             c["mutants"] for c in record["counts"].values())
+
+
+# ---------------------------------------------------------------------------
+# A slice that survives its runner: legs, the memory bound, `memory`, `lost`
+# ---------------------------------------------------------------------------
+
+
+def _planned(unit: Any, n: int, todo: list[int] | None = None) -> dict[str, Any]:
+    """A slice's plan for a unit's whole window of ``n`` mutants, one a line."""
+    return {"unit": unit.ident, "hash": H, "lines": list(range(1, n + 1)), "mutants": n,
+            "todo": list(range(1, n + 1)) if todo is None else todo}
+
+
+def _leg(slice_: int, of: int, results: dict[str, Any], *, leg: int = 3, running: bool = True,
+         in_flight: list[str] | None = None, planned: list[dict[str, Any]] | None = None,
+         age: float = sw.HEARTBEAT_S) -> dict[str, Any]:
+    """A leg of a slice: its partial record as the workflow uploaded it,
+    each mutant in flight having run ``age`` seconds when it was written."""
+    record = _record(slice_, of, results, counts={})
+    record.update(leg=leg, engine_running=running, in_flight=in_flight or [], elapsed_s=leg * sw.LEG_S,
+                  in_flight_s={n: age for n in in_flight or []})
+    if planned is not None:
+        record["planned"] = planned
+    return record
+
+
+def _legs(records: list[dict[str, Any]], legs: list[dict[str, Any]], state: dict[str, Any] | None = None, *,
+          jobs: int = 2) -> tuple[dict[str, Any], dict[str, Any]]:
+    return sw.stitch(state or _state(f=4), "none", records, jobs=jobs, head=HEAD, units=UNITS,
+                     today="2026-11-12", legs=legs)
+
+
+def _round_trip(state: dict[str, Any], tmp_path: Path) -> dict[str, Any]:
+    loaded = sw.load_state(sw.save_state(state, tmp_path), "x")
+    assert loaded == state
+    return json.loads(json.dumps(loaded))
+
+
+F3 = "vera.a.x_f__mutmut_3"  # A's window mutant 3
+
+
+class TestLegs:
+    """A lost runner uploads nothing after the loss and its job log is gone
+    with it (run 43087350670, slice 0, 11 November 2026), so a slice's
+    record goes up in legs as it runs, and the stitch keeps the last leg of a
+    slice whose final record never came."""
+
+    def test_a_leg_merges_like_a_final_record_and_the_slice_counts_lost(self) -> None:
+        leg = _leg(1, 2, {A.ident: _res(A, window=4, killed=2)})
+        state, night = _legs([_record(0, 2, {C.ident: _res(C, killed=2)})], [leg],
+                             _state(f=4, g=2))
+        assert night["lost"] == [1] and night["problems"] == [] and night["moved"] == 4
+        assert state["units"][A.ident]["partial"]["decided"] == {"1": "killed", "2": "killed"}
+        assert night["notes"] == ["slice 1: no record; its legs keep 2 mutant(s) decided (the last, leg 3, "
+                                  "written 90 minutes in), and the rest of its work waits for the next night"]
+
+    def test_a_final_record_beats_every_leg_of_its_slice(self) -> None:
+        final = _record(1, 2, {A.ident: _res(A, window=4, killed=1)}, counts={})
+        leg = _leg(1, 2, {A.ident: _res(A, window=4, killed=3)}, leg=9)
+        state, night = _legs([_record(0, 2, {}), final], [leg])
+        assert night["lost"] == [] and night["moved"] == 1
+        assert state["units"][A.ident]["partial"]["decided"] == {"1": "killed"}
+
+    def test_the_last_leg_of_a_lost_slice_is_the_one_taken(self) -> None:
+        early = _leg(1, 2, {A.ident: _res(A, window=4, killed=1)}, leg=1)
+        late = _leg(1, 2, {A.ident: _res(A, window=4, killed=3)}, leg=4)
+        for legs in ([early, late], [late, early]):
+            state, night = _legs([_record(0, 2, {})], legs)
+            assert night["moved"] == 3 and state["units"][A.ident]["partial"]["decided"] == {
+                "1": "killed", "2": "killed", "3": "killed"}
+
+    def test_a_leg_of_another_head_or_state_stops_the_night_short(self) -> None:
+        leg = _leg(1, 2, {A.ident: _res(A, window=4, killed=2)})
+        _, night = _legs([_record(0, 2, {})], [{**leg, "head": "e" * 40}])
+        assert night["problems"] == [f"slice 1: a leg the night cannot take: ran {'e' * 40}, not {HEAD}"]
+        assert night["moved"] == 0 and night["lost"] == [1]
+
+    def test_the_stitch_reads_finals_and_legs_apart(self, repo: Path, tmp_path: Path) -> None:
+        """The final record's name is unchanged (`slice-<n>.json`); a leg is
+        `slice-<n>-leg-<k>.json`, read only for a slice with no final."""
+        slices = tmp_path / "slices"
+        slices.mkdir()
+        head = _git(repo, "rev-parse", "HEAD").strip()
+        unit = "vera/m.py::x_f"
+        result = {"hash": sw.inventory(sw.vera_sources(repo, head))[0].hash, "window": 2, "lines": [1, 2],
+                  "decided": {"1": "killed"}, "survivors": [], "durations": {}, "estimates": {}}
+        for name, record in (("slice-0.json", {**_record(0, 2, {}, head=head, counts={})}),
+                             ("slice-1-leg-2.json", {**_record(1, 2, {unit: result}, head=head,
+                                                               counts={unit: {"mutants": 2, "lines": {"1": 1, "2": 1}}}),
+                                                     "leg": 2})):
+            (slices / name).write_text(json.dumps(record), encoding="utf-8")
+        assert sw.main(["stitch", "--of", "2", "--repo", str(repo), "--slices", str(slices),
+                        "--out", str(tmp_path / "out")]) == 0
+        state = json.loads((tmp_path / "out" / sw.STATE_FILE).read_text(encoding="utf-8"))
+        assert state["nights"][-1]["lost"] == [1] and state["nights"][-1]["moved"] == 1
+        assert state["units"][unit]["partial"]["decided"] == {"1": "killed"}
+
+
+class TestLossRule:
+    """A mutant in flight when its slice ended with neither the engine
+    finishing nor the budget stopping it takes a loss; at two recorded
+    losses it is decided `lost`: counted apart, listed, never caught and
+    never survived."""
+
+    def test_two_losses_decide_lost_and_one_does_not(self, tmp_path: Path) -> None:
+        planned = [_planned(A, 4)]
+        first, night = _legs([], [_leg(0, 1, {}, in_flight=[F3], planned=planned)], jobs=1)
+        assert night["moved"] == 0 and first["units"][A.ident]["losses"] == {"3": 1}
+        assert first["units"][A.ident]["partial"] is None
+        first = _round_trip(first, tmp_path / "one")
+        second, night = _legs([], [_leg(0, 1, {}, in_flight=[F3], planned=planned)], first, jobs=1)
+        rec = second["units"][A.ident]
+        assert night["moved"] == 1 and "losses" not in rec
+        assert rec["partial"] == {"decided": {"3": "lost"}, "survivors": [_survivor(3, 3, "lost")]}
+        _round_trip(second, tmp_path / "two")
+
+    def test_a_lost_window_counts_lost_apart_and_scores_nothing(self, tmp_path: Path) -> None:
+        state = _state(f=4)
+        state["units"][A.ident]["partial"] = {"decided": {"1": "killed", "2": "killed", "4": "survived"},
+                                              "survivors": [_survivor(4, 4, "survived")]}
+        state["units"][A.ident]["losses"] = {"3": 1}
+        state, _ = _legs([], [_leg(0, 1, {}, in_flight=[F3], planned=[_planned(A, 4)])], state, jobs=1)
+        window = state["units"][A.ident]["window"]
+        assert window["lost"] == 1 and window["killed"] == 2 and window["survived"] == 1
+        assert "memory" not in window and "losses" not in state["units"][A.ident]
+        _round_trip(state, tmp_path)
+        assert sw.tally(state, [A])["vera/a.py"]["lost"] == 1
+
+    def test_no_loss_for_a_finished_or_budget_stopped_slice_or_a_leg_whose_engine_had_stopped(self) -> None:
+        planned = [_planned(A, 4)]
+        for record in (_record(0, 1, {}, stopped=None, counts={}), _record(0, 1, {}, stopped="budget", counts={})):
+            record.update(in_flight=[F3], in_flight_s={F3: sw.HEARTBEAT_S}, planned=planned)
+            state, _ = _legs([record], [], jobs=1)
+            assert "losses" not in state["units"][A.ident]
+        state, _ = _legs([], [_leg(0, 1, {}, in_flight=[F3], planned=planned, running=False)], jobs=1)
+        assert "losses" not in state["units"][A.ident]
+
+    def test_an_engine_stop_with_a_mutant_in_flight_is_a_loss(self) -> None:
+        record = _record(0, 1, {}, stopped="engine", counts={})
+        record.update(in_flight=[F3], in_flight_s={F3: sw.HEARTBEAT_S}, planned=[_planned(A, 4)])
+        state, night = _legs([record], [], jobs=1)
+        assert state["units"][A.ident]["losses"] == {"3": 1}
+        assert night["problems"] == ["slice 0: stopped by the engine"]
+
+    def test_a_loss_needs_the_cycles_own_window_and_an_undecided_mutant(self) -> None:
+        other = [{**_planned(A, 4), "lines": [1, 2, 3]}]
+        state, _ = _legs([], [_leg(0, 1, {}, in_flight=[F3], planned=other)], jobs=1)
+        assert "losses" not in state["units"][A.ident]
+        state = _state(f=4)
+        state["units"][A.ident]["partial"] = {"decided": {"3": "killed"}, "survivors": []}
+        state, _ = _legs([], [_leg(0, 1, {}, in_flight=[F3], planned=[_planned(A, 4)])], state, jobs=1)
+        assert "losses" not in state["units"][A.ident]
+
+    def test_a_decision_clears_the_mutants_loss(self) -> None:
+        state = _state(f=4)
+        state["units"][A.ident]["losses"] = {"3": 1}
+        state, _ = _legs([_record(0, 1, {A.ident: _res(A, window=4, killed=3)}, counts={})], [], state, jobs=1)
+        assert "losses" not in state["units"][A.ident]
+
+    def test_a_cycle_that_closes_forgets_its_losses(self) -> None:
+        state = _state(f=4, m=0, g=0)
+        state["units"][A.ident]["partial"] = {"decided": {"1": "killed", "2": "killed", "4": "killed"},
+                                              "survivors": []}
+        state["units"][A.ident]["losses"] = {"3": 1}
+        state, night = _legs([], [_leg(0, 1, {}, in_flight=[F3], planned=[_planned(A, 4)])], state, jobs=1)
+        assert night["closed"] and all("losses" not in r for r in state["units"].values())
+        assert state["last_complete"]["modules"]["vera/a.py"]["lost"] == 1
+        assert any(s.endswith(":lost") for s in state["last_complete"]["survivors"])
+
+    def test_a_slice_lost_twice_on_one_plan_deciding_nothing_is_a_problem(self, tmp_path: Path) -> None:
+        """Lost before any mutant was in flight (in the stats pass, say), a
+        slice decides nothing, not even a loss's second strike; the second
+        night it happens on the same plan is red, never silence."""
+        planned = [_planned(A, 4)]
+        first, night = _legs([], [_leg(0, 1, {}, running=False, planned=planned)], jobs=1)
+        assert night["problems"] == [] and set(night["lost_plans"]) == {"0"}
+        first = _round_trip(first, tmp_path)
+        _, night = _legs([], [_leg(0, 1, {}, running=False, planned=planned)], json.loads(json.dumps(first)),
+                         jobs=1)
+        assert (f"slice 0 lost its runner on the plan a slice lost the night before ({A.ident}), and neither "
+                "night decided a mutant of it") in night["problems"]
+        other = [_planned(A, 4, todo=[1, 2])]
+        _, night = _legs([], [_leg(0, 1, {}, running=False, planned=other)], json.loads(json.dumps(first)),
+                         jobs=1)
+        assert not any("lost its runner" in p for p in night["problems"])
+        _, night = _legs([], [_leg(0, 1, {A.ident: _res(A, window=4, killed=1)}, running=False, planned=planned)],
+                         json.loads(json.dumps(first)), jobs=1)
+        assert night["problems"] == [] and "lost_plans" not in night
+
+    def test_a_state_with_no_new_fact_is_shaped_as_before(self) -> None:
+        """Schema 3 stays: each new field is written only when it holds a
+        fact, so a state without one is what the reader before them reads,
+        and one with a fact is one it refuses rather than misreads."""
+        state = _written_state()
+        for rec in state["units"].values():
+            assert set(rec) == {"hash", "mutants", "lines", "window", "partial"}
+            assert rec["window"] is None or not set(sw.OPTIONAL_COLUMNS) & set(rec["window"])
+        assert all("lost_plans" not in n for n in state["nights"])
+
+
+#: Window mutants 1 to 3 of PICK_A by name.
+A1, A2, A3 = (f"vera.a.x_f__mutmut_{n}" for n in (1, 2, 3))
+
+
+class TestMemoryAndTheStop:
+    def test_a_segfault_the_kernel_ended_under_the_bound_is_memory(self) -> None:
+        listing = {A1: "segfault", A2: "killed", A3: "segfault"}
+        out = sw.slice_results([PICK_A], listing, GENERATED, cut_short=False, finished=True, memory={A1, A2})
+        assert out[A.ident]["decided"] == {"1": "memory", "2": "killed", "3": "segfault"}
+        assert out[A.ident]["survivors"] == [_survivor(3, 3, "memory")]
+
+    def test_a_status_the_engine_recorded_before_the_stop_is_kept(self) -> None:
+        listing = {A1: "segfault", A2: "suspicious", A3: "killed"}
+        out = sw.slice_results([PICK_A], listing, GENERATED, cut_short=True, finished=False, kept={A1})
+        assert out[A.ident]["decided"] == {"1": "segfault", "3": "killed"}  # 2 came after the stop
+
+    def test_a_memory_mutant_is_counted_apart_and_never_scored(self, tmp_path: Path) -> None:
+        state = _state(f=4, m=0, g=0)
+        result = _res(A, killed=3)
+        result["decided"]["4"] = "memory"
+        result["window"] = 4
+        result["lines"] = [1, 2, 3, 4]
+        result["survivors"] = [_survivor(4, 4, "memory")]
+        state, night = _legs([_record(0, 1, {A.ident: result}, counts={})], [], state, jobs=1)
+        assert night["closed"] and state["last_complete"]["modules"]["vera/a.py"]["memory"] == 1
+        sw.write_summary(state, tmp_path)
+        assert (tmp_path / "mutation-summary.csv").read_text(encoding="utf-8").splitlines()[-1].startswith(
+            "TOTAL (vera),3,3,0,0,100.0")
+
+
+def _cgroup(tmp_path: Path, kills: int) -> Path:
+    cgroup = tmp_path / "cg"
+    cgroup.mkdir(exist_ok=True)
+    (cgroup / "memory.events").write_text(f"low 0\nhigh 0\nmax 9\noom 1\noom_kill {kills}\n", encoding="utf-8")
+    return cgroup
+
+
+class TestTracker:
+    """Attribution over a stand-in cgroup and stand-in processes: `memory`
+    needs the bound's `oom_kill` count to have risen while the mutant's
+    process disappeared, and its exit to be mutmut's -9.  Whether a process
+    is there is the tracker's `alive`, a set of pids here, so the logic runs
+    the same on every platform; `pid_alive` itself is tested on a real
+    process below."""
+
+    PIDS = (4101, 4102)
+
+    def _tracker(self, tmp_path: Path, live: set[int], codes: dict[str, Any]) -> Any:
+        path = tmp_path / "inflight.txt"
+        path.write_text("".join(f"{name}\t{pid}\t1000.0\t1\n" for name, pid in zip((A1, A2), self.PIDS, strict=True))
+                        + f"{A3}\t1\t", encoding="utf-8")  # a line not whole yet is left out
+        return sw.Tracker(path, _cgroup(tmp_path, 0), lambda: dict(codes), alive=lambda pid: pid in live)
+
+    def _end_line(self, tmp_path: Path, name: str, pid: int, end: float) -> None:
+        with (tmp_path / "inflight.txt").open("r+", encoding="utf-8") as fh:
+            text = fh.read()
+            head, _, partial = text.rpartition("\n")
+            fh.seek(0)
+            fh.write(f"{head}\n{name}\t{pid}\t{end}\tend\n{partial}")
+
+    def test_a_rise_with_the_runs_process_gone_is_memory(self, tmp_path: Path) -> None:
+        live = set(self.PIDS)
+        codes: dict[str, Any] = {A1: None, A2: None}
+        tracker = self._tracker(tmp_path, live, codes)
+        tracker.look(10.0)
+        assert tracker.in_flight() == [A1, A2] and tracker.memory() == set()
+        live.discard(self.PIDS[0])
+        _cgroup(tmp_path, 1)
+        codes[A1] = sw.KILLED
+        tracker.look(20.0)
+        assert tracker.memory() == {A1} and tracker.in_flight() == [A2]
+        assert tracker.durations() == {}  # the kernel ended it: no end line, no duration
+        assert tracker.events == [{"look": 2, "t": 20.0, "rise": 1, "gone": [A1]}]
+        assert tracker.first_choice() == {"took": 2, "not": 0}
+
+    def test_the_rise_may_come_at_the_look_after_the_process_went(self, tmp_path: Path) -> None:
+        live = set(self.PIDS)
+        codes: dict[str, Any] = {A1: None, A2: None}
+        tracker = self._tracker(tmp_path, live, codes)
+        tracker.look(10.0)
+        live.discard(self.PIDS[0])
+        codes[A1] = sw.KILLED
+        tracker.look(20.0)
+        assert tracker.memory() == set()
+        _cgroup(tmp_path, 1)
+        tracker.look(30.0)
+        assert tracker.memory() == {A1}
+
+    def test_no_rise_leaves_a_segfault_and_a_live_process_is_never_memory(self, tmp_path: Path) -> None:
+        live = set(self.PIDS)
+        codes: dict[str, Any] = {A1: None, A2: None}
+        tracker = self._tracker(tmp_path, live, codes)
+        tracker.look(10.0)
+        live.discard(self.PIDS[0])
+        codes[A1] = sw.KILLED  # RLIMIT_CPU's hard limit ends a run with -9 too
+        tracker.look(20.0)
+        tracker.look(30.0)
+        assert tracker.memory() == set()
+        _cgroup(tmp_path, 1)  # a rise with no run gone (the fork server, say)
+        tracker.look(40.0)
+        codes[A2] = sw.KILLED  # its process is still there
+        tracker.look(50.0)
+        assert tracker.memory() == set()
+
+    def test_more_runs_gone_with_minus_nine_than_the_rise_decide_none(self, tmp_path: Path) -> None:
+        live = set(self.PIDS)
+        codes: dict[str, Any] = {A1: None, A2: None}
+        tracker = self._tracker(tmp_path, live, codes)
+        tracker.look(10.0)
+        live.clear()
+        codes.update({A1: sw.KILLED, A2: sw.KILLED})
+        _cgroup(tmp_path, 1)
+        tracker.look(20.0)
+        assert tracker.memory() == set()
+
+    def test_a_run_that_ended_with_a_verdict_is_never_memory(self, tmp_path: Path) -> None:
+        live = set(self.PIDS)
+        codes: dict[str, Any] = {A1: None, A2: None}
+        tracker = self._tracker(tmp_path, live, codes)
+        tracker.look(10.0)
+        live.discard(self.PIDS[0])
+        codes[A1] = 1  # killed by its tests as the kernel ended another process
+        _cgroup(tmp_path, 1)
+        tracker.look(20.0)
+        assert tracker.memory() == set()
+
+    def test_a_duration_is_the_runs_own_end_less_its_start(self, tmp_path: Path) -> None:
+        """The plugin's end line, not the look that first saw the verdict:
+        a look long after the run ended (a slow listing, `--heartbeat 0`'s
+        one look at the slice's end) moves nothing (#1838, PR 1863's review)."""
+        live = set(self.PIDS)
+        codes: dict[str, Any] = {A1: None, A2: None}
+        tracker = self._tracker(tmp_path, live, codes)
+        tracker.look(10.0)
+        self._end_line(tmp_path, A1, self.PIDS[0], 1000.25)
+        live.discard(self.PIDS[0])
+        codes.update({A1: 1, A2: sw.INTERRUPTED})  # A2: the cap ended it, so no end line
+        live.discard(self.PIDS[1])
+        tracker.look(4000.0)
+        assert tracker.durations() == {A1: 0.25}
+        assert sw.read_run_ends(tmp_path / "inflight.txt") == {(A1, self.PIDS[0]): 1000.25}
+        assert [r[0] for r in sw.read_in_flight(tmp_path / "inflight.txt")] == [A1, A2]
+
+    def test_a_run_in_flight_has_its_age_at_the_record(self, tmp_path: Path) -> None:
+        tracker = self._tracker(tmp_path, set(self.PIDS), {A1: None, A2: 1})
+        tracker.look(10.0)
+        assert tracker.in_flight_ages(1450.0) == {A1: 450.0}
+
+    def test_pid_alive_on_a_real_process(self) -> None:
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        try:
+            assert sw.pid_alive(proc.pid)
+            assert proc.poll() is None  # asking does not end it (os.kill(pid, 0) would, on Windows)
+        finally:
+            proc.kill()
+            proc.wait()
+        assert not sw.pid_alive(proc.pid)
+
+    def test_the_cgroup_and_its_bound_are_read_from_proc(self, tmp_path: Path) -> None:
+        assert sw.own_cgroup("0::/system.slice/mutation-sweep-0.scope\n", tmp_path) == (
+            tmp_path / "system.slice" / "mutation-sweep-0.scope")
+        assert sw.own_cgroup("12:memory:/x\n", tmp_path) is None and sw.own_cgroup(None) is None
+        cgroup = _cgroup(tmp_path, 3)
+        (cgroup / "memory.max").write_text("13958643712\n", encoding="utf-8")
+        (cgroup / "memory.swap.max").write_text("0\n", encoding="utf-8")
+        bound = sw.read_bound(cgroup)
+        assert bound == {"cgroup": str(cgroup), "memory_max": 13958643712, "swap_max": 0} and sw.bounded(bound)
+        (cgroup / "memory.max").write_text("max\n", encoding="utf-8")
+        assert not sw.bounded(sw.read_bound(cgroup)) and not sw.bounded(sw.read_bound(None))
+        (cgroup / "memory.max").write_text("1\n", encoding="utf-8")
+        (cgroup / "memory.swap.max").write_text("max\n", encoding="utf-8")
+        assert not sw.bounded(sw.read_bound(cgroup)) and sw.oom_kills(cgroup) == 3
+
+
+class TestScope:
+    def test_the_bound_is_the_runners_memory_less_the_reserve(self) -> None:
+        assert sw.memory_max_bytes(MEMINFO) == 16368832 * 1024 - sw.MEMORY_RESERVE_MIB * 2**20
+        with pytest.raises(sw.md.LaneError, match="no MemTotal"):
+            sw.memory_max_bytes("")
+        with pytest.raises(sw.md.LaneError, match="leave nothing"):
+            sw.memory_max_bytes("MemTotal: 1000 kB\n")
+
+    def test_the_scope_command_bounds_memory_and_swap_and_keeps_the_user_and_the_environment(self) -> None:
+        argv = sw.scope_command(["python", "x.py"], memory_max=1234, unit="u-1", uid=1001, gid=118,
+                                env={"PATH": "/v/bin:/usr/bin", "HOME": "/home/runner"})
+        assert argv == ["sudo", "-n", "--preserve-env", "systemd-run", "--scope", "--quiet", "--unit=u-1",
+                        "--uid=1001", "--gid=118", "--property=MemoryMax=1234", "--property=MemorySwapMax=0",
+                        "--property=OOMPolicy=continue", "--", "/usr/bin/env", "HOME=/home/runner",
+                        "PATH=/v/bin:/usr/bin", "python", "x.py"]
+
+    @pytest.mark.usefixtures("no_git_locators")
+    def test_a_slice_that_requires_the_bound_and_lacks_it_is_a_lane_stop(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The scheduled workflow keeps working only by failing loudly: a
+        slice told to run under the bound that finds none never runs."""
+        monkeypatch.setattr(sw, "own_cgroup", lambda text, root=None: None)
+        code, record, calls = _night(repo, tmp_path, 1, "", extra=["--require-bound"])
+        assert code == 2 and record["stopped"] == "lane" and not [c for c in calls if c["args"][0] == "run"]
+        assert "the memory bound is not in place" in record["engine_tail"][0]
+
+    def test_the_plugin_names_each_run_as_it_starts_and_makes_it_the_first_choice(self, tmp_path: Path) -> None:
+        """In a process of its own: the choice cannot be taken back by an
+        unprivileged process, and the test's own must not keep it."""
+        import time
+
+        import tests.mutation_oracle as plugin
+
+        path = tmp_path / "inflight.txt"
+        assert not plugin.mark_in_flight({"MUTANT_UNDER_TEST": "stats", plugin.INFLIGHT_ENV: str(path)})
+        assert not plugin.mark_in_flight({"MUTANT_UNDER_TEST": A1})
+        assert not path.exists()
+        child = subprocess.run(
+            [sys.executable, "-c",
+             "import json, os, sys\n"
+             f"sys.path.insert(0, {str(ROOT)!r})\n"
+             "import tests.mutation_oracle as p\n"
+             f"ok = p.mark_in_flight({{'MUTANT_UNDER_TEST': {A1!r}, p.INFLIGHT_ENV: {str(path)!r}}})\n"
+             f"os.environ.update({{'MUTANT_UNDER_TEST': {A1!r}, p.INFLIGHT_ENV: {str(path)!r}}})\n"
+             "p.pytest_sessionfinish(None, 0)  # the run's session ends: its end line\n"
+             "adj = open('/proc/self/oom_score_adj').read().strip() if os.path.exists('/proc/self') else None\n"
+             "print(json.dumps({'ok': ok, 'pid': os.getpid(), 'adj': adj}))\n"],
+            capture_output=True, text=True, encoding="utf-8", check=True)
+        seen = json.loads(child.stdout)
+        ((name, pid, start, took),) = sw.read_in_flight(path)
+        assert seen["ok"] and (name, pid) == (A1, seen["pid"]) and abs(start - time.time()) < 60
+        assert list(sw.read_run_ends(path)) == [(A1, seen["pid"])] and sw.read_run_ends(path)[(A1, pid)] >= start
+        assert not plugin.mark_end({"MUTANT_UNDER_TEST": "stats", plugin.INFLIGHT_ENV: str(path)})
+        assert took is (sys.platform == "linux") and seen["adj"] == ("1000" if took else seen["adj"])
+
+
+def _scope_prerequisites() -> str | None:
+    """Why a real scope cannot be made here, or None."""
+    if sys.platform != "linux":
+        return "a systemd scope is Linux's"
+    if not Path("/run/systemd/system").is_dir():
+        return "systemd is not the init here"
+    import shutil
+
+    if shutil.which("sudo") is None or shutil.which("systemd-run") is None:
+        return "no sudo or systemd-run"
+    if subprocess.run(["sudo", "-n", "true"], capture_output=True, check=False).returncode != 0:
+        return "sudo asks for a password here"
+    return None
+
+
+def _on_a_hosted_runner() -> bool:
+    """A GitHub-hosted runner's own VM, outside any container: where the
+    nightly sweep runs its slices, and where this test must run."""
+    in_container = Path("/.dockerenv").exists() or Path("/run/.containerenv").exists()
+    return (sys.platform == "linux" and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted"
+            and not in_container)
+
+
+#: Run under the scope: the night's own check of its bound
+#: (`mutate_sweep.check_bound`, what `night --require-bound` runs before it
+#: plans), then, with `hog`, a child that allocates until the kernel ends
+#: it, and what the scope saw, as JSON.  Its own footprint is small, so the
+#: kernel's choice is the child, which also makes itself the first choice
+#: as a mutant's run does.
+SCOPE_HARNESS = """
+import json, os, subprocess, sys
+sys.path.insert(0, sys.argv[1])
+import mutate_sweep as sw
+try:
+    bound, refused = sw.check_bound(), None
+except sw.md.LaneError as exc:
+    bound, refused = None, str(exc)
+cgroup = sw.own_cgroup(open("/proc/self/cgroup", encoding="utf-8").read())
+before = sw.oom_kills(cgroup)
+hog = None
+if sys.argv[2] == "hog":
+    hog = subprocess.run([sys.executable, "-c",
+        "open('/proc/self/oom_score_adj', 'w').write('1000')\\n"
+        "chunks = []\\n"
+        "while True:\\n"
+        "    chunks.append(bytearray(4 << 20))\\n"], check=False).returncode
+print(json.dumps({"hog": hog, "before": before, "after": sw.oom_kills(cgroup), "bound": bound,
+                  "refused": refused, "uid": os.getuid(), "gid": os.getgid(), "home": os.environ.get("HOME"),
+                  "kept": os.environ.get("SWEEP_SCOPE_SENTINEL"), "path": os.environ.get("PATH")}))
+"""
+
+
+class TestARealScope:
+    """The bound on a runner: the workflow's own builder (`scope_command`),
+    a small MemoryMax, a child that allocates until the kernel ends it.  The
+    night's own check of its bound accepts the scope, the parent under it
+    lives, the scope's `oom_kill` count rises, the child ends by signal 9,
+    and the user and the environment are the runner's; the same check
+    refuses a scope with no bound on its swap.  It must run on a
+    GitHub-hosted runner outside a container (it fails there when it
+    cannot), and is skipped with its reason elsewhere."""
+
+    def _run(self, tmp_path: Path, mode: str, *, drop: str | None = None) -> dict[str, Any]:
+        harness = tmp_path / "harness.py"
+        harness.write_text(SCOPE_HARNESS, encoding="utf-8")
+        env = {k: os.environ[k] for k in sw.PINNED_ENV if k in os.environ}
+        env["SWEEP_SCOPE_SENTINEL"] = "kept"
+        argv = sw.scope_command([sys.executable, "-I", str(harness), str(ROOT / "scripts"), mode],
+                                memory_max=self.LIMIT, unit=f"vera-sweep-scope-test-{mode}-{os.getpid()}",
+                                uid=os.getuid(), gid=os.getgid(), env=env)
+        argv = [a for a in argv if a != drop]
+        done = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", timeout=300, check=False)
+        assert done.returncode == 0, done.stderr
+        seen: dict[str, Any] = json.loads(done.stdout.strip().splitlines()[-1])
+        return seen
+
+    LIMIT = 96 * 2**20
+
+    def test_the_kernel_ends_the_child_and_the_parent_lives(self, tmp_path: Path) -> None:
+        why = _scope_prerequisites()
+        if why is not None:
+            if _on_a_hosted_runner():
+                pytest.fail(f"a hosted runner must be able to make the sweep's scope: {why}")
+            pytest.skip(why)
+        seen = self._run(tmp_path, "hog")
+        assert seen["refused"] is None and sw.bounded(seen["bound"]), seen
+        assert (seen["bound"]["memory_max"], seen["bound"]["swap_max"]) == (self.LIMIT, 0), seen
+        assert seen["hog"] == -9, seen
+        assert seen["after"] > seen["before"], seen
+        assert (seen["uid"], seen["gid"]) == (os.getuid(), os.getgid()), seen
+        assert seen["kept"] == "kept" and seen["home"] == os.environ.get("HOME"), seen
+        assert seen["path"] == os.environ.get("PATH"), seen
+        unbounded = self._run(tmp_path, "check", drop="--property=MemorySwapMax=0")
+        assert unbounded["bound"] is None and "the memory bound is not in place" in unbounded["refused"], unbounded
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+class TestRunEngine:
+    def test_any_interrupt_ends_the_engines_whole_process_group(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The engine runs in a session of its own, so an exception that
+        ends the wait (a keyboard interrupt, the slice's SIGTERM, a test's
+        timeout) must end its group, its workers included (#1838, the
+        review of #1846)."""
+        if os.name != "posix":
+            pytest.skip("process groups are POSIX's")
+        import time
+
+        pids = tmp_path / "pids"
+        script = tmp_path / "engine.py"
+        script.write_text(
+            "import os, subprocess, sys, time\n"
+            "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
+            f"open({str(pids)!r}, 'w').write(f'{{os.getpid()}} {{child.pid}}')\n"
+            "time.sleep(120)\n", encoding="utf-8")
+        real = subprocess.Popen.wait
+        calls = {"n": 0}
+
+        def interrupted(self: Any, timeout: float | None = None) -> Any:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                deadline = time.monotonic() + 30
+                while not pids.exists() and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                raise KeyboardInterrupt
+            return real(self, timeout=timeout)
+
+        monkeypatch.setattr(subprocess.Popen, "wait", interrupted)
+        with pytest.raises(KeyboardInterrupt):
+            sw.md.run_engine([sys.executable, str(script)], cwd=tmp_path, budget_s=60,
+                             log_path=tmp_path / "log", grace_s=(1.0, 1.0))
+        monkeypatch.setattr(subprocess.Popen, "wait", real)
+        engine, worker = (int(p) for p in pids.read_text(encoding="utf-8").split())
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline and _alive(worker):
+            time.sleep(0.1)
+        alive = _alive(worker)
+        for pid in (engine, worker):  # nothing outlives the test whatever it found
+            try:
+                os.kill(pid, 9)
+            except OSError:
+                pass
+        assert not alive
+
+    def test_the_budgets_stop_reads_the_run_before_any_signal(self, tmp_path: Path) -> None:
+        seen: list[bool] = []
+        log = tmp_path / "log"
+        script = tmp_path / "engine.py"
+        script.write_text("import time\nprint('ran', flush=True)\ntime.sleep(60)\n", encoding="utf-8")
+
+        def before() -> None:
+            seen.append("ran" in log.read_text(encoding="utf-8"))
+
+        run = sw.md.run_engine([sys.executable, str(script)], cwd=tmp_path, budget_s=2.0, log_path=log,
+                               grace_s=(1.0, 1.0), before_stop=before)
+        assert run.stopped == "budget" and seen == [True]
+
+
+class TestDurations:
+    def test_a_night_of_zero_durations_leaves_the_calibration_where_it_was(self) -> None:
+        """mutmut's fork server reports every mutant's duration as zero; a
+        night of them moved the factor halfway to zero."""
+        result = _res(A, killed=10)
+        result["durations"] = {str(n): 0.0 for n in range(1, 11)}
+        state = _state(f=10)
+        state["calibration"] = 5.0
+        record = {**_record(0, 1, {A.ident: result}), "workers": 2}
+        state, _ = _stitch([record], state, jobs=1)
+        assert state["calibration"] == 5.0
+        result["durations"] = {str(n): 20.0 for n in range(1, 11)}
+        state = _state(f=10)
+        state["calibration"] = 5.0
+        state, _ = _stitch([record], state, jobs=1)
+        assert state["calibration"] == 4.5  # halfway from 5 to 4
+
+    def test_a_zero_duration_is_not_recorded(self) -> None:
+        out = sw.slice_results([PICK_A], {A1: "killed", A2: "killed", A3: "killed"}, GENERATED, cut_short=False,
+                               finished=True, seconds={A1: (0.0, 1.0), A2: (3.5, 1.0)})
+        assert out[A.ident]["durations"] == {"2": 3.5}
+
+
+@pytest.mark.usefixtures("no_git_locators")
+class TestTheSliceAcrossSteps:
+    def test_the_partial_record_is_written_while_the_engine_runs(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The stand-in engine copies the slice's partial record while it
+        runs: the plan and the decisions listed so far are in it, the engine
+        still running, the mutants it started in flight."""
+        live = tmp_path / "live"
+        snapshot = tmp_path / "snapshot.json"
+        monkeypatch.setenv("FAKE_RUN_SLEEP", "2.5")
+        monkeypatch.setenv("FAKE_INFLIGHT", "vera.m.x_g__mutmut_2")
+        monkeypatch.setenv("FAKE_SNAPSHOT", os.pathsep.join([str(live / sw.PARTIAL_FILE), str(snapshot)]))
+        code, record, _ = _night(repo, tmp_path, 1, (
+            "    vera.m.x_f__mutmut_1: killed\n    vera.m.x_f__mutmut_2: killed\n"
+            "    vera.m.x_g__mutmut_1: killed\n    vera.m.x_g__mutmut_2: not checked\n"),
+            extra=["--heartbeat", "0.4", "--live", str(live)])
+        assert code == 0
+        partial = json.loads(snapshot.read_text(encoding="utf-8"))
+        sw.check_record(partial)
+        assert partial["engine_running"] is True and partial["in_flight"] == ["vera.m.x_g__mutmut_2"]
+        assert {i: r["decided"] for i, r in partial["results"].items()} == {
+            "vera/m.py::x_f": {"1": "killed", "2": "killed"}, "vera/m.py::x_g": {"1": "killed"}}
+        assert partial["heartbeats"] and set(partial["heartbeats"][0]) == {
+            "t", "mem_avail_mib", "swap_used_mib", "load1", "disk_free_mib", "procs", "bound_mib", "oom_kill"}
+        assert json.loads((live / sw.EXIT_FILE).read_text(encoding="utf-8")) == {"code": 0}
+        assert record["engine_running"] is False and record["in_flight"] == ["vera.m.x_g__mutmut_2"]
+
+    def test_start_legs_and_finish_follow_a_slice_run_in_the_background(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The workflow's steps, on a slice started without the scope: the
+        start returns once it runs, leg 0 keeps the plan, a later leg finds
+        it finished and keeps nothing, and the finish gives its exit."""
+        # The slice runs in a process of its own, at the committed sample
+        # fraction: a one-function module whose lines the sample draws.
+        monkeypatch.setattr(sw, "SAMPLE_FRACTION", 0.02)
+        name, lines = next((f"f{i}", drawn) for i in range(5000) if (drawn := [
+            line for line in (1, 2) if sw.in_sample(1, f"vera/m.py::x_f{i}", line)]))
+        (repo / "vera" / "m.py").write_text(f"def {name}(x):\n    return x + 1\n", encoding="utf-8")
+        (repo / "tests" / "test_m.py").write_text("def test_nothing():\n    pass\n", encoding="utf-8")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-q", "-m", "one function")
+        fake = tmp_path / "fake"
+        fake.mkdir()
+        (fake / "results.txt").write_text("".join(f"    vera.m.x_{name}__mutmut_{n}: killed\n"
+                                                  for n in range(1, len(lines) + 1)), encoding="utf-8")
+        (tmp_path / "fake_mutmut.py").write_text(FAKE_ENGINE, encoding="utf-8")
+        monkeypatch.setenv("FAKE_STATE", str(fake))
+        monkeypatch.setenv("FAKE_RUN_SLEEP", "3")
+        live, out, legs = tmp_path / "live", tmp_path / "slice", tmp_path / "legs"
+        assert sw.main(["start", "--slice", "0", "--live", str(live), "--no-bound", "--wait", "120", "--",
+                        "--slice", "0", "--of", "1", "--repo", str(repo), "--out", str(out),
+                        "--workdir", str(tmp_path / "work"), "--heartbeat", "0.3",
+                        "--engine", sys.executable, str(tmp_path / "fake_mutmut.py")]) == 0
+        assert sw.main(["leg", "--leg", "0", "--live", str(live), "--out", str(legs / "0"), "--poll", "0.2"]) == 0
+        (zero,) = (legs / "0").glob("*.json")
+        assert zero.name == "slice-0-leg-0.json"
+        plan = json.loads(zero.read_text(encoding="utf-8"))
+        assert plan["leg"] == 0 and [p["unit"] for p in plan["planned"]] == [f"vera/m.py::x_{name}"]
+        sw.check_record(plan)
+        summary = tmp_path / "summary.md"
+        assert sw.main(["finish", "--live", str(live), "--summary", str(summary), "--poll", "0.2"]) == 0
+        assert sw.main(["leg", "--leg", "1", "--live", str(live), "--out", str(legs / "1"), "--leg-s", "0"]) == 0
+        assert not (legs / "1").exists()  # finished: the final record is the one uploaded
+        assert json.loads((out / "slice-0.json").read_text(encoding="utf-8"))["stopped"] is None
+        assert "## Mutation sweep: slice 0 of 1" in summary.read_text(encoding="utf-8")
+        assert "heartbeat +0:00" in capsys.readouterr().out  # the slice's output reached this job's log
+
+    def test_a_slice_whose_driver_ended_with_no_record_keeps_its_partial_decisions(
+        self, repo: Path, tmp_path: Path,
+    ) -> None:
+        live, out = tmp_path / "live", tmp_path / "slice"
+        head = _git(repo, "rev-parse", "HEAD").strip()
+        partial = {**_record(0, 1, {}, head=head, counts={}), "in_flight": [], "engine_running": True}
+        partial["results"] = {"vera/m.py::x_f": {"hash": "0" * 16, "window": 2, "lines": [1, 2],
+                                                 "decided": {"1": "killed"}, "survivors": [], "durations": {},
+                                                 "estimates": {}}}
+        sw.write_atomically(live / sw.PARTIAL_FILE, partial)
+        write_driver = {"pid": 2**22 + 12345}  # a process that is not there
+        sw.write_atomically(live / sw.DRIVER_FILE, write_driver)
+        assert sw.main(["finish", "--live", str(live), "--poll", "0.1"]) == 2
+        assert sw.main(["lane-failed", "--slice", "0", "--of", "1", "--repo", str(repo), "--out", str(out),
+                        "--live", str(live), "--why", "a step of the slice failed before it wrote its record"]) == 0
+        record = json.loads((out / "slice-0.json").read_text(encoding="utf-8"))
+        sw.check_record(record)
+        assert record["stopped"] == "lane" and record["results"]["vera/m.py::x_f"]["decided"] == {"1": "killed"}
+        assert record["engine_tail"] == ["a step of the slice failed before it wrote its record"]
+
+
+class TestTheWorkflowsLegs:
+    def _wf(self) -> dict[Any, Any]:
+        data = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+        assert isinstance(data, dict)
+        return data
+
+    def test_every_leg_waits_then_uploads_whatever_happened_and_they_cover_the_budget(self) -> None:
+        import re
+
+        steps = self._wf()["jobs"]["sweep"]["steps"]
+        names = [s.get("name", "") for s in steps]
+        legs = [i for i, s in enumerate(steps) if "scripts/mutate_sweep.py leg" in s.get("run", "")]
+        assert len(legs) == sw.LEGS + 1
+        for k, i in enumerate(legs):
+            assert re.search(rf"--leg {k}\b", steps[i]["run"]) and f'"$RUNNER_TEMP/legs/{k}"' in steps[i]["run"]
+            upload = steps[i + 1]
+            assert upload["uses"].startswith("actions/upload-artifact@") and upload["if"] == "always()"
+            assert upload["with"] == {"name": f"mutation-sweep-slice-${{{{ matrix.slice }}}}-leg-{k}",
+                                      "path": f"${{{{ runner.temp }}}}/legs/{k}/", "retention-days": 3,
+                                      "if-no-files-found": "ignore"}
+        assert names[legs[0] - 1] == "Start this slice under the memory bound"
+        assert names[legs[-1] + 2] == "Mutate this slice of the night"
+        # The last leg is within one leg of the budget's end, and the job's
+        # timeout holds the budget, the grace and the steps around it.
+        assert (sw.LEGS + 1) * sw.LEG_S >= sw.DEFAULT_BUDGET_S
+        job = self._wf()["jobs"]["sweep"]
+        assert sw.DEFAULT_BUDGET_S + 90 + 30 * 60 <= job["timeout-minutes"] * 60 <= 6 * 3600
+
+    def test_the_final_record_keeps_its_name_and_the_stitch_reads_every_slice_artifact(self) -> None:
+        steps = self._wf()["jobs"]["sweep"]["steps"]
+        (final,) = [s for s in steps if s.get("name") == "Upload the slice's record"]
+        assert final["with"] == {"name": "mutation-sweep-slice-${{ matrix.slice }}",
+                                 "path": "${{ runner.temp }}/slice/", "retention-days": 7}
+        (download,) = [s for s in self._wf()["jobs"]["stitch"]["steps"]
+                       if s.get("name") == "Download the slices' records"]
+        assert download["with"]["pattern"] == "mutation-sweep-slice-*" and download["with"]["merge-multiple"]
+
+    def test_only_the_start_step_asks_for_sudo_and_it_runs_the_scope_builder(self) -> None:
+        text = WORKFLOW.read_text(encoding="utf-8")
+        assert "sudo" not in "\n".join(s.get("run", "") for j in self._wf()["jobs"].values() for s in j["steps"])
+        assert "scripts/mutate_sweep.py start" in text and "--no-bound" not in text
+
+
+# ---------------------------------------------------------------------------
+# PR 1863's review: a leg never loses what an earlier one held; a failed leg
+# never ends the slice; a cancelled run charges no loss; a loss needs a run
+# that had lasted a heartbeat; the bound's check run where a night runs it
+# ---------------------------------------------------------------------------
+
+
+def _killed(*numbers: int) -> dict[str, Any]:
+    """A's result with ``numbers`` killed, of its window of 4."""
+    return {"hash": H, "window": 4, "lines": [1, 2, 3, 4], "decided": {str(n): "killed" for n in numbers},
+            "survivors": [], "durations": {}, "estimates": {}}
+
+
+class TestTheLegsUnion:
+    """A lost slice's valid legs are taken together: a decision is final,
+    so a mutant any of them decided is decided, and a later leg that holds
+    less (its listing failed) takes nothing away."""
+
+    def test_a_later_empty_leg_keeps_what_an_earlier_one_decided(self) -> None:
+        """The review's probe: leg 4 holds mutants 1 to 3 killed, leg 5 is
+        valid and empty."""
+        legs = [_leg(1, 2, {A.ident: _killed(1, 2, 3)}, leg=4), _leg(1, 2, {}, leg=5)]
+        for order in (legs, legs[::-1]):
+            state, night = _legs([_record(0, 2, {})], order)
+            assert night["moved"] == 3 and night["problems"] == []
+            assert state["units"][A.ident]["partial"]["decided"] == {"1": "killed", "2": "killed", "3": "killed"}
+            assert night["notes"][0].startswith("slice 1: no record; its legs keep 3 mutant(s) decided "
+                                                "(the last, leg 5, written 150 minutes in)")
+
+    def test_two_legs_that_disagree_leave_the_mutant_undecided_and_are_a_problem(self) -> None:
+        early = _leg(1, 2, {A.ident: _killed(1, 2)}, leg=2)
+        late = _res(A, window=4, killed=1, survived=1, survivors=("2@2:survived",))
+        late["decided"] = {"1": "killed", "2": "survived", "3": "killed"}
+        state, night = _legs([_record(0, 2, {})], [early, _leg(1, 2, {A.ident: late}, leg=3)])
+        assert state["units"][A.ident]["partial"] == {"decided": {"1": "killed", "3": "killed"}, "survivors": []}
+        assert night["problems"] == [f"slice 1: its legs disagree on mutant 2 of {A.ident} (leg 2: killed, "
+                                     "leg 3: survived); it is left undecided"]
+
+    def test_a_malformed_highest_leg_is_a_problem_and_the_valid_ones_are_taken(self) -> None:
+        bad = {**_leg(1, 2, {A.ident: _killed(4)}, leg=6, in_flight=[F3]), "in_flight": ["not a mutant"]}
+        legs = [_leg(1, 2, {A.ident: _killed(1)}, leg=2), _leg(1, 2, {A.ident: _killed(2)}, leg=4), bad]
+        state, night = _legs([_record(0, 2, {})], legs)
+        assert state["units"][A.ident]["partial"]["decided"] == {"1": "killed", "2": "killed"}
+        assert len(night["problems"]) == 1 and night["problems"][0].startswith(
+            "slice 1: a leg the night cannot take: a malformed record")
+        assert "losses" not in state["units"][A.ident]  # in flight only in the leg refused
+
+    def test_in_flight_is_the_highest_legs_and_a_later_decision_is_no_loss(self) -> None:
+        """A mutant in flight at leg 2 and decided at leg 5 draws no loss:
+        the union holds its decision; one in flight at the highest leg does."""
+        legs = [_leg(1, 2, {}, leg=2, in_flight=[F3], planned=[_planned(A, 4)]),
+                _leg(1, 2, {A.ident: _killed(3)}, leg=5, in_flight=["vera.a.x_f__mutmut_4"],
+                     planned=[_planned(A, 4)])]
+        state, _ = _legs([_record(0, 2, {})], legs)
+        assert state["units"][A.ident]["partial"]["decided"] == {"3": "killed"}
+        assert state["units"][A.ident]["losses"] == {"4": 1}
+
+
+class TestTheLossNeedsARunThatHadLasted:
+    """What a lost slice's last record says is all that is known of its
+    end: a mutant whose run had just started there draws no loss."""
+
+    def test_a_run_that_had_lasted_a_heartbeat_takes_a_loss_and_one_just_started_does_not(self) -> None:
+        planned = [_planned(A, 4)]
+        state, _ = _legs([], [_leg(0, 1, {}, in_flight=[F3], planned=planned, age=sw.HEARTBEAT_S)], jobs=1)
+        assert state["units"][A.ident]["losses"] == {"3": 1}
+        state, night = _legs([], [_leg(0, 1, {}, in_flight=[F3], planned=planned, age=sw.HEARTBEAT_S - 1)],
+                             jobs=1)
+        assert "losses" not in state["units"][A.ident] and set(night["lost_plans"]) == {"0"}
+        record = _record(0, 1, {}, stopped="engine", counts={})
+        record.update(in_flight=[F3], in_flight_s={F3: 3.0}, planned=planned)
+        state, _ = _legs([record], [], jobs=1)
+        assert "losses" not in state["units"][A.ident]
+        record["in_flight_s"] = {}  # no age recorded: none is known
+        state, _ = _legs([record], [], jobs=1)
+        assert "losses" not in state["units"][A.ident]
+
+    def test_a_record_holds_only_ages_of_its_mutants_in_flight(self) -> None:
+        leg = _leg(0, 1, {}, in_flight=[F3])
+        sw.check_record(leg)
+        for bad in ({"vera.a.x_f__mutmut_4": 400.0}, {F3: -1.0}, [F3]):
+            with pytest.raises(sw.StateError, match="time in flight"):
+                sw.check_record({**leg, "in_flight_s": bad})
+
+
+class TestACancelledRun:
+    """A cancelled run's slices end with no final record, as a lost
+    runner's do: the stitch is told the sweep job's result and charges no
+    loss on a cancelled run."""
+
+    def test_a_cancelled_run_charges_no_loss_and_keeps_the_decisions(self) -> None:
+        planned = [_planned(A, 4)]
+        leg = _leg(0, 1, {A.ident: _killed(1)}, in_flight=[F3], planned=planned)
+        state, night = sw.stitch(_state(f=4), "none", [], jobs=1, head=HEAD, units=UNITS, today="2026-11-12",
+                                 legs=[leg], cancelled=True)
+        assert "losses" not in state["units"][A.ident] and night["moved"] == 1
+        assert "the run was cancelled: no slice's end is a loss" in night["notes"]
+        idle = _leg(0, 1, {}, running=False, planned=planned)
+        _, night = sw.stitch(_state(f=4), "none", [], jobs=1, head=HEAD, units=UNITS, today="2026-11-12",
+                             legs=[idle], cancelled=True)
+        assert "lost_plans" not in night  # a cancel is no strike either
+        engine = _record(0, 1, {}, stopped="engine", counts={})
+        engine.update(in_flight=[F3], in_flight_s={F3: sw.HEARTBEAT_S}, planned=planned)
+        state, _ = sw.stitch(_state(f=4), "none", [engine], jobs=1, head=HEAD, units=UNITS, today="2026-11-12",
+                             cancelled=True)
+        assert "losses" not in state["units"][A.ident]
+
+    def test_a_lost_runner_still_takes_a_loss(self) -> None:
+        leg = _leg(0, 1, {}, in_flight=[F3], planned=[_planned(A, 4)])
+        state, _ = sw.stitch(_state(f=4), "none", [], jobs=1, head=HEAD, units=UNITS, today="2026-11-12",
+                             legs=[leg], cancelled=False)
+        assert state["units"][A.ident]["losses"] == {"3": 1}
+
+    @pytest.mark.usefixtures("no_git_locators")
+    def test_the_cli_reads_the_sweep_jobs_result(self, repo: Path, tmp_path: Path) -> None:
+        head = _git(repo, "rev-parse", "HEAD").strip()
+        unit = "vera/m.py::x_f"
+        fn_hash = sw.inventory(sw.vera_sources(repo, head))[0].hash
+        mutant = "vera.m.x_f__mutmut_2"
+        leg = {**_record(0, 1, {}, head=head, counts={unit: {"mutants": 2, "lines": {"1": 1, "2": 1}}}),
+               "leg": 3, "engine_running": True, "in_flight": [mutant], "in_flight_s": {mutant: sw.HEARTBEAT_S},
+               "planned": [{"unit": unit, "hash": fn_hash, "lines": [1, 2], "mutants": 2, "todo": [1, 2]}]}
+        for result, losses in (("cancelled", None), ("failure", {"2": 1})):
+            slices = tmp_path / f"slices-{result}"
+            slices.mkdir()
+            (slices / "slice-0-leg-3.json").write_text(json.dumps(leg), encoding="utf-8")
+            out = tmp_path / f"out-{result}"
+            sw.main(["stitch", "--of", "1", "--repo", str(repo), "--slices", str(slices), "--out", str(out),
+                     "--sweep-result", result])
+            state = json.loads((out / sw.STATE_FILE).read_text(encoding="utf-8"))
+            assert state["units"][unit].get("losses") == losses, result
+
+
+def _gate_engine(monkeypatch: pytest.MonkeyPatch, live: Path, ready: Any,
+                 when: Path | None = None) -> dict[str, Any]:
+    """Start the engine only once the slice has published a partial record
+    ``ready`` accepts (the heartbeat runs from before the engine starts):
+    the cells order the slice's listings against the engine's run and the
+    budget by events, never by a sleep racing real work; with ``when``,
+    once that file exists instead.  Returns the record that let it start,
+    under ``"partial"``."""
+    import time
+
+    real = sw.md.run_engine
+    seen: dict[str, Any] = {}
+
+    def gated(*args: Any, **kwargs: Any) -> Any:
+        # The stand-in engine's generation first (its count of the window,
+        # which a listing needs), then the wait, then the run and its budget.
+        subprocess.run(args[0], cwd=kwargs["cwd"], env={**kwargs["env"], "FAKE_RUN_WINDOW_ONLY": "1"},
+                       check=True, capture_output=True)
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline:
+            try:
+                partial = json.loads((live / sw.PARTIAL_FILE).read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                partial = None
+            if (when.exists() if when is not None else isinstance(partial, dict) and ready(partial)):
+                seen["partial"] = partial
+                break
+            time.sleep(0.02)
+        else:
+            raise AssertionError("the slice never published the record the cell waits for")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(sw.md, "run_engine", gated)
+    return seen
+
+
+@pytest.mark.usefixtures("no_git_locators")
+class TestThePartialRecordIsMonotone:
+    def test_a_listing_that_fails_keeps_the_last_results_read_whole(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The first listing reads; every later one fails (a meta file met
+        mid-write).  The partial record keeps the first's decisions and
+        says when the listing failed; so does the final record, whose own
+        listing failed too, under the engine's stop."""
+        live = tmp_path / "live"
+        monkeypatch.setenv("FAKE_RESULTS_FAIL_FROM", "2")
+        seen = _gate_engine(monkeypatch, live, lambda r: bool(r.get("results")) and r.get("listing_failed"))
+        code, record, _ = _night(repo, tmp_path, 1, (
+            "    vera.m.x_f__mutmut_1: killed\n    vera.m.x_f__mutmut_2: killed\n"
+            "    vera.m.x_g__mutmut_1: killed\n    vera.m.x_g__mutmut_2: not checked\n"),
+            extra=["--heartbeat", "0.1", "--live", str(live)])
+        decided = {"vera/m.py::x_f": {"1": "killed", "2": "killed"}, "vera/m.py::x_g": {"1": "killed"}}
+        partial = seen["partial"]
+        sw.check_record(partial)
+        assert {i: r["decided"] for i, r in partial["results"].items()} == decided
+        assert partial["results_at"] is not None and partial["listing_failed"]["why"] == "the listing exited 1"
+        assert partial["listing_failed"]["at"] > partial["results_at"]
+        assert code == 2 and record["stopped"] == "engine"
+        sw.check_record(record)
+        assert {i: r["decided"] for i, r in record["results"].items()} == decided
+
+
+class TestAFailedLegNeverEndsTheSlice:
+    def test_a_leg_that_raises_returns_zero_and_says_why(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        live = tmp_path / "live"
+        sw.write_atomically(live / sw.STARTED_FILE, {"epoch": 0.0, "bound": None, "pid": 1})
+        sw.write_atomically(live / sw.PARTIAL_FILE, _record(0, 1, {}))
+
+        def full(path: Path, data: Any) -> None:
+            raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr(sw, "write_atomically", full)
+        assert sw.main(["leg", "--leg", "0", "--live", str(live), "--out", str(tmp_path / "legs"),
+                        "--leg-s", "0.2", "--poll", "0.05"]) == 0
+        assert "leg 0: failed, and the slice goes on: OSError" in capsys.readouterr().out
+
+    def test_every_leg_and_upload_continues_on_error_and_the_finish_runs_whatever_they_did(self) -> None:
+        steps = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]["sweep"]["steps"]
+        names = [s.get("name", "") for s in steps]
+        start, finish = names.index("Start this slice under the memory bound"), names.index(
+            "Mutate this slice of the night")
+        between = steps[start + 1:finish]
+        assert len(between) == 2 * (sw.LEGS + 1)
+        for step in between:
+            assert step.get("continue-on-error") is True, step["name"]
+        # The finish runs when the steps up to the start succeeded, which no
+        # leg can change, and never on a cancel; the final upload always.
+        assert "if" not in steps[finish] and "continue-on-error" not in steps[finish]
+        (upload,) = [s for s in steps if s.get("name") == "Upload the slice's record"]
+        assert upload["if"] == "always()"
+
+    def test_the_stitch_is_told_the_sweep_jobs_result(self) -> None:
+        steps = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]["stitch"]["steps"]
+        (fold,) = [s for s in steps if s.get("name") == "Fold the night into the state"]
+        assert fold["env"]["SWEEP_RESULT"] == "${{ needs.sweep.result }}"
+        assert '--sweep-result "$SWEEP_RESULT"' in fold["run"]
+
+    def test_the_jobs_timeout_holds_the_budget_the_grace_and_the_legs(self) -> None:
+        """A job's own timeout reads to the stitch as a lost runner, so it
+        must not arise: the last leg waits no longer than the budget from
+        the slice's start, and the timeout holds the budget, the engine's
+        grace (60 s and 30 s), its last listing, and the steps before the
+        slice with room (the proof night's install and self-tests took 3 to
+        4 minutes, run 43087350670)."""
+        job = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]["sweep"]
+        assert sw.LEGS * sw.LEG_S <= sw.DEFAULT_BUDGET_S
+        grace = 60 + 30
+        assert sw.DEFAULT_BUDGET_S + grace + sw.md.ENGINE_CALL_TIMEOUT_S + 30 * 60 <= job["timeout-minutes"] * 60
+
+
+class TestTheBoundsCheck:
+    @pytest.mark.usefixtures("no_git_locators")
+    def test_a_slice_whose_bound_holds_but_has_no_choom_is_a_lane_stop(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        real = shutil.which
+        monkeypatch.setattr(sw, "read_bound", lambda cgroup: {"cgroup": "/x", "memory_max": 1, "swap_max": 0})
+        monkeypatch.setattr(sw.shutil, "which", lambda name, *a, **k: None if name == "choom" else real(name))
+        code, record, calls = _night(repo, tmp_path, 1, "", extra=["--require-bound"])
+        assert code == 2 and record["stopped"] == "lane" and not [c for c in calls if c["args"][0] == "run"]
+        assert "choom is not on the path" in record["engine_tail"][0]
+
+
+@pytest.mark.usefixtures("no_git_locators")
+class TestNoDurationFromTheSlicesEnd:
+    def test_with_no_heartbeat_the_one_look_at_the_end_measures_nothing(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """`--heartbeat 0` leaves one look, after the engine ends: a run
+        whose start the plugin wrote and whose end it did not has no
+        duration, where the slice's end less its start would be one."""
+        monkeypatch.setenv("FAKE_RUN_SLEEP", "1.5")
+        monkeypatch.setenv("FAKE_INFLIGHT", "vera.m.x_f__mutmut_1")
+        monkeypatch.setenv("FAKE_META", 'vera/m.py={"vera.m.x_f__mutmut_1": 1}')
+        code, record, _ = _night(repo, tmp_path, 1, (
+            "    vera.m.x_f__mutmut_1: killed\n    vera.m.x_f__mutmut_2: killed\n"
+            "    vera.m.x_g__mutmut_1: killed\n    vera.m.x_g__mutmut_2: killed\n"),
+            extra=["--heartbeat", "0"])
+        assert code == 0 and record["results"]["vera/m.py::x_f"]["decided"]["1"] == "killed"
+        assert record["results"]["vera/m.py::x_f"]["durations"] == {}
+
+
+# ---------------------------------------------------------------------------
+# PR 1863's second review: what a stop leaves, a budget stop's failed
+# listing, a driver that raised after the engine ran, one loss predicate
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.usefixtures("no_git_locators")
+class TestAfterTheBudgetsStop:
+    def _stopped_night(self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
+        """A budget stop the engine winds down from until the slice has
+        published a listing read after the stop, when `x_f`'s mutant 2
+        shows the `segfault` the stop leaves; the final listing then fails.
+        The engine starts once a listing read before the stop is published,
+        and the budget is short: every step is ordered by events."""
+        live = tmp_path / "live"
+        monkeypatch.setenv("FAKE_RUN_SLEEP", "60")
+        monkeypatch.setenv("FAKE_RUN_TRAP_INT", "1")
+        monkeypatch.setenv("FAKE_RUN_WAIT_PUBLISH", str(live / sw.PARTIAL_FILE))
+        monkeypatch.setenv("FAKE_RESULTS_FAIL_AFTER_EXIT", "1")
+        _gate_engine(monkeypatch, live, lambda r: bool(r.get("results")))
+        code, record, _ = _night(repo, tmp_path, 1, (  # the budget plans x_f alone
+            "    vera.m.x_f__mutmut_1: killed\n    vera.m.x_f__mutmut_2: not checked\n"),
+            budget=0.5, extra=["--heartbeat", "0.1", "--live", str(live)])
+        return code, record, live
+
+    def test_a_status_the_stop_left_is_no_decision_in_any_record(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        if os.name != "posix":
+            pytest.skip("the stand-in engine winds down on SIGINT, the budget's stop on POSIX")
+        code, record, live = self._stopped_night(repo, tmp_path, monkeypatch)
+        assert code == 2 and record["stopped"] == "engine" and record["budget_stopped"] is True
+        assert record["results"]["vera/m.py::x_f"]["decided"] == {"1": "killed"}, record["results"]
+        partial = json.loads((live / sw.PARTIAL_FILE).read_text(encoding="utf-8"))
+        assert partial["budget_stopped"] is True
+        assert partial["results"]["vera/m.py::x_f"]["decided"] == {"1": "killed"}
+
+    def test_a_budget_stop_whose_listing_failed_charges_no_loss(self) -> None:
+        record = _record(0, 1, {}, stopped="engine", counts={})
+        record.update(in_flight=[F3], in_flight_s={F3: sw.HEARTBEAT_S}, planned=[_planned(A, 4)],
+                      budget_stopped=True)
+        state, _ = _legs([record], [], jobs=1)
+        assert "losses" not in state["units"][A.ident]
+        assert "charged a loss" not in sw.render_slice(record)
+        leg = {**_leg(0, 1, {}, in_flight=[F3], planned=[_planned(A, 4)]), "budget_stopped": True}
+        state, _ = _legs([], [leg], jobs=1)  # a leg written in the stop's grace
+        assert "losses" not in state["units"][A.ident]
+
+
+@pytest.mark.usefixtures("no_git_locators")
+class TestADriverThatRaisedAfterTheEngineRan:
+    def test_its_record_keeps_the_last_partial_records_decisions(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        def late(path: Path) -> list[str]:
+            raise RuntimeError("after the engine")
+
+        monkeypatch.setattr(sw.md, "skipped_tests", late)
+        live = tmp_path / "live"
+        _gate_engine(monkeypatch, live, lambda r: bool(r.get("results")))
+        code, record, _ = _night(repo, tmp_path, 1, (
+            "    vera.m.x_f__mutmut_1: killed\n    vera.m.x_f__mutmut_2: killed\n"
+            "    vera.m.x_g__mutmut_1: killed\n    vera.m.x_g__mutmut_2: not checked\n"),
+            extra=["--heartbeat", "0.1", "--live", str(live)])
+        sw.check_record(record)
+        assert code == 2 and record["stopped"] == "lane"
+        assert record["engine_tail"] == ["RuntimeError: after the engine"]
+        assert {i: r["decided"] for i, r in record["results"].items()} == {
+            "vera/m.py::x_f": {"1": "killed", "2": "killed"}, "vera/m.py::x_g": {"1": "killed"}}
+
+
+class TestOneLossPredicate:
+    """The slice's report names a loss exactly where the stitch charges one."""
+
+    def test_the_report_and_the_stitch_agree_on_every_stop(self) -> None:
+        planned = [_planned(A, 4)]
+        records: list[tuple[dict[str, Any], bool]] = []
+        for stopped, budget, age, charged in (("engine", False, sw.HEARTBEAT_S, True),
+                                              ("engine", False, 3.0, False),
+                                              ("engine", True, sw.HEARTBEAT_S, False),
+                                              ("lane", False, sw.HEARTBEAT_S, False),
+                                              ("unmapped", False, sw.HEARTBEAT_S, False),
+                                              ("budget", True, sw.HEARTBEAT_S, False)):
+            record = _record(0, 1, {}, stopped=stopped, counts={})
+            record.update(in_flight=[F3], in_flight_s={F3: age}, planned=planned, budget_stopped=budget)
+            state, _ = _legs([record], [], jobs=1)
+            assert ("losses" in state["units"][A.ident]) is charged, (stopped, budget, age)
+            assert ("charged a loss" in sw.render_slice(record)) is charged, (stopped, budget, age)
+            records.append((record, charged))
+        for record, charged in records:
+            assert sw.charged_in_flight(record) == ([F3] if charged else [])
+
+
+# ---------------------------------------------------------------------------
+# PR 1863's third review: what a listing showed before the stop is kept; a
+# record says the stop was sent wherever it is written after it
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.usefixtures("no_git_locators")
+class TestTheStopsEdges:
+    def test_a_status_a_listing_showed_before_the_stop_is_kept_with_no_meta_file(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """mutmut's meta file can be mid-write when the stop is sent (it is
+        written with a plain write), which hides its mutants' codes from
+        ``before_stop``; here there is none at all.  The listing a heartbeat
+        read before the stop showed the `segfault`, so it is the engine's own
+        and the final record keeps it.  The engine starts once that listing
+        is published, so the budget never races it."""
+        live = tmp_path / "live"
+        monkeypatch.setenv("FAKE_RUN_SLEEP", "60")
+        _gate_engine(monkeypatch, live, lambda r: bool(r.get("results")))
+        code, record, _ = _night(repo, tmp_path, 1, (  # the budget plans x_f alone
+            "    vera.m.x_f__mutmut_1: killed\n    vera.m.x_f__mutmut_2: segfault\n"),
+            budget=0.5, extra=["--heartbeat", "0.1", "--live", str(live)])
+        assert record["stopped"] == "budget" and record["budget_stopped"] is True
+        assert record["results"]["vera/m.py::x_f"]["decided"] == {"1": "killed", "2": "segfault"}
+
+    def test_a_record_published_after_the_stop_says_so_though_its_listing_began_before(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A heartbeat's listing begins before the stop (the engine starts
+        once it has) and is held until the stop is sent; the engine winds
+        down until the slice has published that listing.  The record on disk
+        then says the stop was sent, so a leg copying it charges no loss.
+        Every step is ordered by events."""
+        if os.name != "posix":
+            pytest.skip("the stand-in engine winds down on SIGINT, the budget's stop on POSIX")
+        live = tmp_path / "live"
+        snapshot = tmp_path / "at-exit.json"
+        monkeypatch.setenv("FAKE_RUN_SLEEP", "60")
+        monkeypatch.setenv("FAKE_RUN_TRAP_INT", "1")
+        monkeypatch.setenv("FAKE_RESULTS_HOLD", "1")
+        monkeypatch.setenv("FAKE_RUN_WAIT_PUBLISH", str(live / sw.PARTIAL_FILE))
+        monkeypatch.setenv("FAKE_SNAPSHOT", os.pathsep.join([str(live / sw.PARTIAL_FILE), str(snapshot)]))
+        _gate_engine(monkeypatch, live, None, when=tmp_path / "fake1" / "results_calls")
+        _night(repo, tmp_path, 1, "    vera.m.x_f__mutmut_1: killed\n    vera.m.x_f__mutmut_2: not checked\n",
+               budget=0.3, extra=["--heartbeat", "0.1", "--live", str(live)])
+        at_exit = json.loads(snapshot.read_text(encoding="utf-8"))
+        assert at_exit["budget_stopped"] is True, at_exit.get("elapsed_s")
+        assert sw.charged_in_flight({**at_exit, "leg": 4}) == []
+
+    def test_the_report_says_a_cancelled_run_charges_no_loss(self) -> None:
+        record = _record(0, 1, {}, stopped="engine", counts={})
+        record.update(in_flight=[F3], in_flight_s={F3: sw.HEARTBEAT_S}, planned=[_planned(A, 4)])
+        assert ("each is charged a loss when the night is stitched, unless the run was cancelled, the "
+                "mutant is already decided or its window no longer matches the state") in sw.render_slice(record)
+
+
+# ---------------------------------------------------------------------------
+# The proof night (run 43261600452): an event is a rise of the bound's
+# `oom_kill` count, never a run that ended of its own accord
+# ---------------------------------------------------------------------------
+
+
+class TestAnOomEventIsARise:
+    """Every record of the proof night held 11 to 45 events with a rise of
+    0: runs gone at a look, at ordinary completions.  The shape here is
+    one of them: four mutants of one function ending within a look."""
+
+    NAMES = tuple(f"vera.a.x_f__mutmut_{n}" for n in (1, 2, 3, 4))
+
+    def _tracker(self, tmp_path: Path, live: set[int], codes: dict[str, Any]) -> Any:
+        path = tmp_path / "inflight.txt"
+        path.write_text("".join(f"{name}\t{5000 + i}\t1000.0\t1\n" for i, name in enumerate(self.NAMES)),
+                        encoding="utf-8")
+        return sw.Tracker(path, _cgroup(tmp_path, 0), lambda: dict(codes), alive=lambda pid: pid in live)
+
+    def test_runs_that_end_with_no_rise_record_nothing(self, tmp_path: Path) -> None:
+        live = {5000, 5001, 5002, 5003}
+        codes: dict[str, Any] = dict.fromkeys(self.NAMES)
+        tracker = self._tracker(tmp_path, live, codes)
+        tracker.look(6869.5)
+        live.clear()
+        codes.update(dict.fromkeys(self.NAMES, 1))  # each killed by its tests
+        tracker.look(6879.5)
+        tracker.look(6889.5)
+        assert tracker.events == [] and tracker.memory() == set()
+        record = {**_record(0, 1, {}), "memory_bound": {"cgroup": "/x", "memory_max": 13424 * 2**20, "swap_max": 0},
+                  "oom_events": tracker.events, "memory": []}
+        assert "the kernel ended 0 process(es) under it" in sw.render_slice(record)
+
+    def test_a_rise_with_no_run_gone_is_listed_unattributed(self, tmp_path: Path) -> None:
+        tracker = self._tracker(tmp_path, {5000, 5001, 5002, 5003}, dict.fromkeys(self.NAMES))
+        tracker.look(10.0)
+        _cgroup(tmp_path, 1)
+        tracker.look(20.0)
+        assert tracker.events == [{"look": 2, "t": 20.0, "rise": 1, "gone": []}] and tracker.memory() == set()
+
+    def test_a_rise_with_a_run_gone_at_that_look_or_the_one_before_is_attributed(self, tmp_path: Path) -> None:
+        live = {5000, 5001, 5002, 5003}
+        codes: dict[str, Any] = dict.fromkeys(self.NAMES)
+        tracker = self._tracker(tmp_path, live, codes)
+        tracker.look(10.0)
+        live.discard(5000)
+        codes[self.NAMES[0]] = sw.KILLED
+        tracker.look(20.0)  # the process went; no rise yet
+        assert tracker.events == []
+        _cgroup(tmp_path, 1)
+        tracker.look(30.0)
+        assert tracker.events == [{"look": 3, "t": 30.0, "rise": 1, "gone": [self.NAMES[0]]}]
+        assert tracker.memory() == {self.NAMES[0]}

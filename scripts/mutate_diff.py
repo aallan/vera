@@ -1014,12 +1014,39 @@ class EngineRun:
     error: str | None = None
 
 
+def _end_group(proc: subprocess.Popen[Any], grace_s: float) -> None:
+    """End ``proc``'s process group: a terminate, then after ``grace_s`` a
+    kill to whatever of the group is left (a test's subprocess included)."""
+    if os.name != "posix":
+        proc.kill()
+        return
+    for sig, wait in ((signal.SIGTERM, grace_s), (signal.SIGKILL, None)):
+        try:
+            os.killpg(proc.pid, sig)
+        except ProcessLookupError:
+            return
+        try:
+            proc.wait(timeout=wait)
+        except subprocess.TimeoutExpired:
+            continue
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
 def run_engine(cmd: Sequence[str], *, cwd: Path, budget_s: float, log_path: Path,
                env: Mapping[str, str] | None = None,
-               grace_s: tuple[float, float] = (60.0, 30.0)) -> EngineRun:
+               grace_s: tuple[float, float] = (60.0, 30.0),
+               before_stop: Callable[[], None] | None = None) -> EngineRun:
     """Run ``cmd`` within ``budget_s`` wall-clock seconds, its output to
-    ``log_path``.  Past the budget: an interrupt, then after ``grace_s[0]``
-    a terminate to its process group, then after ``grace_s[1]`` a kill."""
+    ``log_path``.  Past the budget: ``before_stop`` (what the caller reads
+    of the run before any signal reaches it), then an interrupt, then after
+    ``grace_s[0]`` a terminate to its process group, then after
+    ``grace_s[1]`` a kill.  Anything else that ends the wait (a keyboard
+    interrupt, a signal the caller turned into an exception, a test's
+    timeout) ends the engine's whole process group before it propagates:
+    the engine runs in a session of its own, so nothing else would."""
     start = time.monotonic()
     posix = os.name == "posix"
     with log_path.open("w", encoding="utf-8") as log:
@@ -1030,37 +1057,53 @@ def run_engine(cmd: Sequence[str], *, cwd: Path, budget_s: float, log_path: Path
             return EngineRun(proc.wait(timeout=budget_s), None, time.monotonic() - start)
         except subprocess.TimeoutExpired:
             pass
-        steps: list[tuple[Any, float | None]] = []
-        if posix:
-            steps = [(lambda: proc.send_signal(signal.SIGINT), grace_s[0]),
-                     (lambda: os.killpg(proc.pid, signal.SIGTERM), grace_s[1]),
-                     (lambda: os.killpg(proc.pid, signal.SIGKILL), None)]
-        else:
-            steps = [(proc.terminate, grace_s[1]), (proc.kill, None)]
-        returncode = None
-        for send, grace in steps:
-            try:
-                send()
-            except ProcessLookupError:
-                pass
-            try:
-                returncode = proc.wait(timeout=grace)
-                break
-            except subprocess.TimeoutExpired:
-                continue
-        if posix:
-            # What the engine started (a test's subprocess) is still in its
-            # group once the engine itself has stopped.
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-        return EngineRun(returncode, "budget", time.monotonic() - start)
+        except BaseException:
+            _end_group(proc, grace_s[1])
+            raise
+        try:
+            return _stop_engine(proc, posix, grace_s, before_stop, start)
+        except BaseException:
+            _end_group(proc, grace_s[1])
+            raise
+
+
+def _stop_engine(proc: subprocess.Popen[Any], posix: bool, grace_s: tuple[float, float],
+                 before_stop: Callable[[], None] | None, start: float) -> EngineRun:
+    """The budget's stop of :func:`run_engine`'s engine."""
+    if before_stop is not None:
+        before_stop()
+    steps: list[tuple[Any, float | None]] = []
+    if posix:
+        steps = [(lambda: proc.send_signal(signal.SIGINT), grace_s[0]),
+                 (lambda: os.killpg(proc.pid, signal.SIGTERM), grace_s[1]),
+                 (lambda: os.killpg(proc.pid, signal.SIGKILL), None)]
+    else:
+        steps = [(proc.terminate, grace_s[1]), (proc.kill, None)]
+    returncode = None
+    for send, grace in steps:
+        try:
+            send()
+        except ProcessLookupError:
+            pass
+        try:
+            returncode = proc.wait(timeout=grace)
+            break
+        except subprocess.TimeoutExpired:
+            continue
+    if posix:
+        # What the engine started (a test's subprocess) is still in its
+        # group once the engine itself has stopped.
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    return EngineRun(returncode, "budget", time.monotonic() - start)
 
 
 def run_dropping(cmd: Sequence[str], *, tree: Path, pyproject: Path,
                  config_for: Callable[[Sequence[str]], str], budget_s: float, workdir: Path,
-                 env: Mapping[str, str]) -> tuple[EngineRun, Path, list[str]]:
+                 env: Mapping[str, str], before_stop: Callable[[], None] | None = None,
+                 ) -> tuple[EngineRun, Path, list[str]]:
     """Run the engine in ``tree`` within ``budget_s``; when a test stops its
     stats pass or its clean run (it fails inside mutmut's copy with no mutant
     active, so it is no oracle there), drop it and run again in what is left
@@ -1069,7 +1112,9 @@ def run_dropping(cmd: Sequence[str], *, tree: Path, pyproject: Path,
     stops there, drops no further test, and the returned run's ``error``
     names the exception and the engine's frame.  ``config_for(dropped)`` is the
     ``pyproject.toml`` text for a run without the tests dropped so far.
-    Returns the last run, its log and the tests dropped."""
+    Returns the last run, its log and the tests dropped.  ``before_stop``
+    goes to :func:`run_engine`."""
+    stop_hook: dict[str, Any] = {} if before_stop is None else {"before_stop": before_stop}
     dropped: list[str] = []
     remaining = budget_s
     attempt = 0
@@ -1080,7 +1125,7 @@ def run_dropping(cmd: Sequence[str], *, tree: Path, pyproject: Path,
         if failures is not None:
             failures.unlink(missing_ok=True)  # each attempt's failures are its own
         log = workdir / f"mutmut-run-{attempt}.log"
-        run = run_engine(cmd, cwd=tree, budget_s=remaining, log_path=log, env=env)
+        run = run_engine(cmd, cwd=tree, budget_s=remaining, log_path=log, env=env, **stop_hook)
         remaining -= run.elapsed_s
         if run.stopped is not None or run.returncode != 1:
             return run, log, dropped
