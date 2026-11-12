@@ -11,8 +11,12 @@ name: Mutation (nightly)
 # README badge reads `mutation.json` on main), the score with its 95%
 # interval.
 #
-# A night that decides nothing, or whose engine or lane fails, or a slice
-# of which ran out its budget before its first mutant, ends red, and on the
+# Each mutant is kept as the engine decides it, and the next night plans
+# the mutants still undecided, so a budget stop is a normal stop.  Each
+# slice runs two mutmut workers, and the oracle plugin ends a mutant's run
+# at 2,400 s as `slow`: decided, counted apart, never caught.  A slice whose
+# engine or lane fails, more than two slices with no record, or a second
+# night in a row that decides no mutant ends the run red, and on the
 # schedule the `issue` job files or updates one tracking issue (the
 # `mutation-sweep` label), as nightly-stress.yml does.  Survivors are the
 # measurement, never a failure.  The sweep jobs read the repository and the
@@ -151,6 +155,8 @@ jobs:
           --slice "$SLICE" --of "$JOBS"
           --state "$RUNNER_TEMP/state-in"
           --budget 16200
+          --max-children 2
+          --mutant-cap 2400
           --workdir "$RUNNER_TEMP/sweep"
           --out "$RUNNER_TEMP/slice"
           --summary "$GITHUB_STEP_SUMMARY"
@@ -256,7 +262,7 @@ jobs:
             const TITLE = "Nightly mutation sweep stopped short on main (tracking)";
             const sha = process.env.COMMIT_SHA;
             const body = [
-              `The nightly mutation sweep stopped short against \`${sha.slice(0, 7)}\` (commit ${sha}): a night that decided no mutant, a slice whose engine or lane failed, a slice whose budget ran out before its first mutant, or more than two slices with no record in one night.`,
+              `The nightly mutation sweep stopped short against \`${sha.slice(0, 7)}\` (commit ${sha}): a slice whose engine or lane failed, records that disagree, more than two slices with no record in one night, a plan with nothing in it while the cycle is open, or a second night in a row that decided no mutant.  A budget stop is a normal stop: each mutant is kept as it is decided, and the next night plans the rest.`,
               ``,
               `**Run**: ${process.env.RUN_URL}`,
               ``,
