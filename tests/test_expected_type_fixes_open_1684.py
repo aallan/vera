@@ -862,7 +862,10 @@ def test_repro_find_a_the_literal_s_type_does_not_depend_on_order(
 def test_an_expected_element_type_holds_each_element(order: str) -> None:
     """`let @Array<Nat> = [@Nat.0, @Int.0]`: both fit `Nat`, so the
     element type is `Nat` and the `Int` element is the narrowing, refuted
-    at the element in both orders (as at 6e272f19)."""
+    at the element in both orders (as at 6e272f19).  The literal is
+    recorded at `Array<Nat>` alone in both orders; at c35763d6 the
+    `Int`-first order also recorded it at `Array<Int>`, the first
+    element's type, as the elements' join with no expected type would."""
     a, b = ("@Nat.0", "@Int.0") if order == "nat_first" else (
         "@Int.0", "@Nat.0")
     source = _fn("f", "@Nat, @Int", "Int",
@@ -871,6 +874,11 @@ def test_an_expected_element_type_holds_each_element(order: str) -> None:
     assert [row for row in _narrowed(source)
             if row[1] == "@Int.0" or row[1].startswith("[")] == [
         ("violated", "@Int.0")]
+    checked = pipeline.check(source)
+    arrays = {t for t in checked.artifacts.expr_types.values()
+              if t.startswith("Array<")}
+    assert arrays == {"Array<Nat>"}, arrays
+
 
 # ---------------------------------------------------------------------
 # E and I: an empty literal takes its type from the context, and an index
