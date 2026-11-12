@@ -39,6 +39,7 @@ from vera.types import (
     AdtType,
     ConcreteEffectRow,
     EffectInstance,
+    EffectRowType,
     FunctionType,
     PrimitiveType,
     PureEffectRow,
@@ -240,6 +241,32 @@ def _shared_prefix(
     return a[:shared]
 
 
+def _accepted_row(rows: list[EffectRowType],
+                  joined: EffectRowType) -> EffectRowType:
+    """The effect row every arm's function accepts at a position that
+    accepts a function (#1716): where each row is closed, the effects they
+    all name (`pure` beside `<IO>` is `pure`, `<IO, State<Int>>` beside
+    `<IO>` is `<IO>`); where any is open or a row variable, *joined*, the
+    join's own row."""
+    shared: frozenset[EffectInstance] | None = None
+    for row in rows:
+        if isinstance(row, PureEffectRow):
+            effects: frozenset[EffectInstance] = frozenset()
+        elif isinstance(row, ConcreteEffectRow) and row.row_var is None:
+            effects = row.effects
+        else:
+            return joined
+        shared = effects if shared is None else shared & effects
+    if shared is None:
+        return joined
+    if isinstance(joined, ConcreteEffectRow) and joined.row_var is None and (
+            joined.effects == shared):
+        return joined
+    if not shared:
+        return joined if isinstance(joined, PureEffectRow) else PureEffectRow()
+    return ConcreteEffectRow(shared)
+
+
 def _constrains(ty: Type, joined_base: Type) -> bool:
     """Whether an arm of type *ty* states anything at a position the join
     holds *joined_base* at: not where it is open (a type variable the join
@@ -275,7 +302,8 @@ def _shared_facts(
       (the chains' shared prefix, each refinement compared by its
       predicate);
     * a `@Nat` beside an `@Int` is an `@Int`, spec §4.4's meet of the two,
-      at every position; at the head an `@Int` arm that is statically
+      at every position that holds a value; at a position that accepts
+      one, a function type's parameter, it is a `@Nat` (below); at the head an `@Int` arm that is statically
       non-negative (`narrowing.is_static_nat_typed`, the rule code
       generation's guard reads: a non-negative literal, `@Nat.0 + 1`) and
       holds no subtraction (`narrowing.has_underflow_leaf`: `@Nat.0 - 1`
@@ -290,22 +318,40 @@ def _shared_facts(
     The structure (the data types, each open position's filling) is the
     join's; this judgement only removes facts, so it admits nothing the join
     did not, and its answer does not depend on the order of the arms.  A
-    function type's parameters are read by the same rule: a parameter
-    refinement the arms differ by drops to the base, which is the
-    relaxation `is_subtype` already admits at any site of that function
-    type (rule 9 with rule 7), the function's own entry check holding its
-    parameter (issue #1819 revisits it).  Binding the join where a refined
-    type is expected is then the narrowing it is, obligated by its leaves.
+    function type's parameter is a position that accepts a value: the join
+    is applied to one argument, which must suit whichever arm it is, so a
+    `@Nat` beside an `@Int` there is a `@Nat`, and binding an `@Int`
+    argument into it is the `Nat` narrowing, obligated where it is bound.
+    The side flips at each parameter (a parameter's own parameter holds a
+    value again) and carries through a return type and a data type's
+    arguments.  A function type at an accepting position has the effect row
+    every arm accepts there, the effects every closed row names
+    (`_accepted_row`: a `pure` callback beside an `<IO>` one is `pure`); an
+    open row or a row variable leaves the join's row.  At a position that
+    holds a value the row is the join's, the wider (`_join_either`).  By
+    the same rule a parameter keeps the longest of the arms'
+    refinement chains where they are nested (each a prefix of the longest):
+    `fn(Int -> X)` beside `fn(Small -> X)` is `fn(Small -> X)`, one arm's
+    own type, and an argument bound into it is obligated.  Where two arms'
+    chains state different predicates at one level, no new chain is built:
+    the parameter has the shared prefix, which is the relaxation
+    `is_subtype` already admits at any site of that function type (rule 9
+    with rule 7), each function's own entry check holding its parameter
+    (issue #1819 revisits it).  Binding the join where
+    a refined type is expected is then the narrowing it is, obligated by its
+    leaves.
     """
     return _shared_at(joined, list(arms))
 
 
 def _shared_at(
     joined: Type, arms: list[tuple[ast.Expr | None, Type]],
+    accepting: bool = False,
 ) -> Type:
     """:func:`_shared_facts` at one position, *arms* the arms' types there,
     each with its expression at the head (where the static-literal exception
-    reads it) and ``None`` below."""
+    reads it) and ``None`` below; *accepting* where the position accepts a
+    value (a function type's parameter) rather than holds one."""
     base, predicates = _refinement_chain(joined)
     if isinstance(base, UnknownType):
         return joined
@@ -313,6 +359,14 @@ def _shared_at(
     kept = predicates
     for _, ty in stating:
         kept = _shared_prefix(kept, _refinement_chain(ty)[1])
+    if accepting and stating:
+        # What every arm accepts: where the chains are nested, the longest,
+        # one arm's own; where two differ at a level, the shared prefix
+        # above, each closure's entry check holding its own predicate.
+        chains = [_refinement_chain(ty)[1] for _, ty in stating]
+        longest = max(chains, key=len)
+        if all(_shared_prefix(chain, longest) == chain for chain in chains):
+            kept = longest
     shared_base = base
     if isinstance(base, PrimitiveType) and base.name in ("Nat", "Int"):
         nat_arm = int_arm = False
@@ -331,7 +385,7 @@ def _shared_at(
                             expr, _no_guarded_subtraction)):
                     every_int_static = False
         if nat_arm and int_arm:
-            shared_base = NAT if every_int_static else INT
+            shared_base = NAT if accepting or every_int_static else INT
     elif isinstance(base, AdtType) and base.type_args:
         args = []
         for i, arg in enumerate(base.type_args):
@@ -342,7 +396,7 @@ def _shared_at(
                         and arm_base.name == base.name
                         and len(arm_base.type_args) == len(base.type_args)):
                     parts.append((None, arm_base.type_args[i]))
-            args.append(_shared_at(arg, parts))
+            args.append(_shared_at(arg, parts, accepting))
         if any(a is not b for a, b in zip(args, base.type_args)):
             shared_base = AdtType(base.name, tuple(args))
     elif isinstance(base, FunctionType):
@@ -350,6 +404,7 @@ def _shared_at(
         returns: list[tuple[ast.Expr | None, Type]] = []
         per_param: list[list[tuple[ast.Expr | None, Type]]] = [
             [] for _ in base.params]
+        rows: list[EffectRowType] = []
         for _, ty in stating:
             arm_base = _refinement_chain(ty)[0]
             if (isinstance(arm_base, FunctionType)
@@ -357,12 +412,16 @@ def _shared_at(
                 for i, param in enumerate(arm_base.params):
                     per_param[i].append((None, param))
                 returns.append((None, arm_base.return_type))
+                rows.append(arm_base.effect)
         for param, parts in zip(base.params, per_param):
-            params.append(_shared_at(param, parts))
-        ret = _shared_at(base.return_type, returns)
-        if (ret is not base.return_type
+            params.append(_shared_at(param, parts, not accepting))
+        ret = _shared_at(base.return_type, returns, accepting)
+        effect = base.effect
+        if accepting:
+            effect = _accepted_row(rows, effect)
+        if (ret is not base.return_type or effect is not base.effect
                 or any(p is not q for p, q in zip(params, base.params))):
-            shared_base = FunctionType(tuple(params), ret, base.effect)
+            shared_base = FunctionType(tuple(params), ret, effect)
     if shared_base is base and kept == predicates:
         return joined
     out = shared_base
