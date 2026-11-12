@@ -385,11 +385,12 @@ def test_element_pair_against_the_oracle(first: str, second: str) -> None:
 
 #: The function-type arms the families above leave out: the effect row and
 #: a parameter that is a subtype in one direction only.  A pure function
-#: fits where an `IO` one is the element type, and not the other way round,
-#: as an argument does.
+#: fits where an `IO` one is the element type.  The elements' join is the
+#: wider row whichever comes first (#1684 rule J, `_join_either`), so a
+#: pure function first no longer refuses an `IO` one after it.
 _EFFECT_PAIRS = [
     ("@NatToNatIO.0", "@NatToNat.0", True),
-    ("@NatToNat.0", "@NatToNatIO.0", False),
+    ("@NatToNat.0", "@NatToNatIO.0", True),
 ]
 
 
@@ -445,7 +446,9 @@ KEPT: dict[str, _Kept] = {
     "negative_then_literal": _Kept("[-1, 1]", "Array<Int>"),
     "byte_slots": _Kept("[@Byte.0, @Byte.0]", "Array<Byte>"),
     # A refinement beside its base, either way round.
-    "refined_then_base": _Kept("[@PosInt.0, @Int.0]", "Array<{@Int | ...}>"),
+    # The elements' join, whichever comes first (#1684 rule J, find (a)):
+    # before, the first element's refinement stood.
+    "refined_then_base": _Kept("[@PosInt.0, @Int.0]", "Array<Int>"),
     "base_then_refined": _Kept("[@Int.0, @PosInt.0]", "Array<Int>"),
     "refined_then_literal": _Kept("[@PosInt.0, 3]", "Array<{@Int | ...}>"),
     # An element whose type is already an error, reported by its own check.

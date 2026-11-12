@@ -336,6 +336,10 @@ _SITE_DECLS = {
 _SITE_CALL = {"two_parameter": "second({x}, {y})",
               "pick": "pick(false, {x}, {y})"}
 
+#: Every site: the two calls, and the array literal of the two values,
+#: whose element type the same rule gives (spec §4.12.1).
+SITES = [*_SITE_DECLS, "array"]
+
 EXPECTED = ["none", "stronger", "weaker", "unrelated"]
 
 
@@ -355,16 +359,33 @@ def _instance(pair: _Pair, expected: str) -> str | None:
     return pair.join
 
 
-def _program(site: str, pair: _Pair, order: str, expected: str,
-             decl: str) -> str:
-    x, y = (pair.a, pair.b) if order == "strong_first" else (pair.b, pair.a)
-    call = _SITE_CALL[site].format(x=x, y=y)
-    want = _expected_type(pair, expected)
+def _read(pair: _Pair, want: str | None, value: str) -> str:
+    """`f`'s body reading *value*: at *want* where a type is expected, and
+    where none is, as an operand or an applied function."""
     if want is None:
-        read = (f"{call} + 0" if pair.join in ("Int", None)
-                else _READ[pair.join].replace("{v}", call))
+        return (f"{value} + 0" if pair.join in ("Int", None)
+                else _READ[pair.join].replace("{v}", value))
+    return f"let @{want} = {value};\n" + _READ[want].replace(
+        "{v}", f"@{want}.0")
+
+
+def _program(site: str, pair: _Pair, order: str, expected: str,
+             decl: str, element: str | None = None) -> str:
+    """The cell's program.  At the array site *element*, where given, is
+    the twin's element type: the literal is bound at it, and its second
+    element read where the cell's expected type (or none) reads it."""
+    x, y = (pair.a, pair.b) if order == "strong_first" else (pair.b, pair.a)
+    want = _expected_type(pair, expected)
+    if site == "array":
+        literal = f"[{x}, {y}]"
+        held = element or want
+        if held is None:
+            read = _read(pair, None, f"{literal}[1]")
+        else:
+            read = (f"let @Array<{held}> = {literal};\n"
+                    + _read(pair, want, f"@Array<{held}>.0[1]"))
     else:
-        read = f"let @{want} = {call};\n" + _READ[want].replace("{v}", f"@{want}.0")
+        read = _read(pair, want, _SITE_CALL[site].format(x=x, y=y))
     return (_MATRIX_PRE + decl + "\n"
             + _fn("f", pair.formals, "Int", read, effect="<IO>") + "\n"
             + _fn("main", "@Unit", "Int", f"f({pair.actuals})",
@@ -407,7 +428,7 @@ def _outcome(source: str) -> tuple[object, ...]:
 @pytest.mark.parametrize("expected", EXPECTED)
 @pytest.mark.parametrize("order", ["strong_first", "weak_first"])
 @pytest.mark.parametrize("pair", list(PAIRS))
-@pytest.mark.parametrize("site", list(_SITE_DECLS))
+@pytest.mark.parametrize("site", SITES)
 def test_a_call_s_variable_takes_one_type_whichever_comes_first(
         site: str, pair: str, order: str, expected: str) -> None:
     """The call records `T` at the rule's type, and the program does what
@@ -416,11 +437,16 @@ def test_a_call_s_variable_takes_one_type_whichever_comes_first(
     (an argument where the expected type was taken, the call's result
     where the join was), and the same run."""
     p = PAIRS[pair]
-    source = _program(site, p, order, expected, _SITE_DECLS[site])
+    source = _program(site, p, order, expected, _SITE_DECLS.get(site, ""))
     instance = _instance(p, expected)
     if instance is None:
         # Two types no position reconciles: refused, in both orders.
         assert _outcome(source)[0], _outcome(source)
+        return
+    if site == "array":
+        # The literal bound at the element type the rule gives it.
+        twin = _program(site, p, order, expected, "", element=instance)
+        assert _outcome(source) == _outcome(twin), instance
         return
     key = "second" if site == "two_parameter" else "pick"
     checked = pipeline.check(source)
@@ -623,3 +649,73 @@ def test_an_eight_deep_chain_synthesizes_each_argument_once_per_level(
     assert totals[True]["innermost"] == 8
     assert totals[False]["innermost"] == 1
     assert totals[True]["all"] - totals[False]["all"] == 70
+
+
+# ---------------------------------------------------------------------
+# J: an array literal's element type by the same rule
+# ---------------------------------------------------------------------
+
+@pytest.mark.parametrize("form", ["let", "return", "closure"])
+def test_repro_line_1_elements_left_open_take_the_context_s_type(
+        form: str) -> None:
+    """Line 1: `[None, None]` where an `Array<Option<Nat>>` is expected.
+    At 6e272f19 the elements left the element type `Option<?>`, which the
+    holding site met by name: E170, E121, E171.  The context's element
+    type fills what the elements leave open."""
+    if form == "let":
+        body = ("let @Array<Option<Nat>> = [None, None];\n"
+                "array_length(@Array<Option<Nat>>.0)")
+        source = _fn("main", "@Unit", "Nat", body, visibility="public")
+    elif form == "return":
+        source = (_fn("nones", "@Unit", "Array<Option<Nat>>",
+                      "[None, None]") + "\n"
+                  + _fn("main", "@Unit", "Nat",
+                        "array_length(nones(()))", visibility="public"))
+    else:
+        source = ("type Mk = fn(Unit -> Array<Option<Nat>>) effects(pure);\n\n"
+                  + _fn("main", "@Unit", "Nat",
+                        "let @Mk = fn(@Unit -> @Array<Option<Nat>>) "
+                        "effects(pure) { [None, None] };\n"
+                        "array_length(apply_fn(@Mk.0, ()))",
+                        visibility="public"))
+    checked = pipeline.check(source)
+    assert checked.ok, [e.format() for e in checked.errors]
+    assert pipeline.run(source).value == 2
+
+
+_IDG = _fn("idg", "@T", "T", "@T.0", forall="forall<T> ")
+
+
+@pytest.mark.parametrize("order", ["refined_first", "base_first"])
+def test_repro_find_a_the_literal_s_type_does_not_depend_on_order(
+        order: str) -> None:
+    """Find (a): `idg([@PosInt.0, @Int.0])`.  At 6e272f19 the first element
+    decided the element type: refined first, the `Int` element was held
+    to `PosInt` and refuted (E505); base first, the literal was
+    `Array<Int>`.  The elements' join is `Int` in both orders, and the
+    program verifies and prints 2."""
+    a, b = ("@PosInt.0", "@Int.0") if order == "refined_first" else (
+        "@Int.0", "@PosInt.0")
+    source = ("type PosInt = { @Int | @Int.0 > 0 };\n\n" + _IDG + "\n"
+              + _fn("f", "@PosInt, @Int", "Nat",
+                    f"array_length(idg([{a}, {b}]))") + "\n"
+              + _fn("main", "@Unit", "Nat", "f(1, 0 - 5)",
+                    visibility="public"))
+    assert pipeline.verify(source).errors == ()
+    assert _instances(source, "idg") == {("Array<Int>",)}
+    assert pipeline.run(source).value == 2
+
+
+@pytest.mark.parametrize("order", ["nat_first", "int_first"])
+def test_an_expected_element_type_holds_each_element(order: str) -> None:
+    """`let @Array<Nat> = [@Nat.0, @Int.0]`: both fit `Nat`, so the
+    element type is `Nat` and the `Int` element is the narrowing, refuted
+    at the element in both orders (as at 6e272f19)."""
+    a, b = ("@Nat.0", "@Int.0") if order == "nat_first" else (
+        "@Int.0", "@Nat.0")
+    source = _fn("f", "@Nat, @Int", "Int",
+                 f"let @Array<Nat> = [{a}, {b}];\n"
+                 "nat_to_int(array_length(@Array<Nat>.0))")
+    assert [row for row in _narrowed(source)
+            if row[1] == "@Int.0" or row[1].startswith("[")] == [
+        ("violated", "@Int.0")]

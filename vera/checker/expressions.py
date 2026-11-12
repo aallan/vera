@@ -29,7 +29,9 @@ from vera.types import (
     canonical_type_name,
     ConcreteEffectRow,
     contains_fresh_typevar,
+    contains_literal_hole,
     contains_typevar,
+    contains_unknown,
     EffectInstance,
     erases_to_unit,
     FLOAT64,
@@ -1433,11 +1435,90 @@ class ExpressionsMixin:
         if not erases_to_unit(first):
             element_type, completed_by, conflicting = self._join_elements(
                 elem_types, first, first_at)
+            held = element_type
+            if not conflicting:
+                held, element_type = self._element_type_by_rule(
+                    expr, elem_types, element_type, element_ctx)
             self._check_array_elements(
-                expr, elem_types, element_type, first_at, completed_by,
+                expr, elem_types, held, first_at, completed_by,
                 conflicting)
 
         return AdtType("Array", (element_type,))
+
+    def _element_type_by_rule(
+        self, expr: ast.ArrayLit, elem_types: Sequence[Type | None],
+        structure: Type, element_ctx: Type | None,
+    ) -> tuple[Type, Type]:
+        """The literal's element type by spec §4.12.1's rule, the rule a
+        generic call's type variable takes (#1684): where the elements'
+        types differ, the element type the context expects where each of
+        them fits it, each element then held to it; otherwise the type
+        they share (`_value_join`, the join of spec §4.8), whichever comes
+        first.  The context's element type then fills what the elements
+        leave open (`None`'s payload, an empty literal's element type).
+
+        Returns the type each element is held to (before the context's
+        filling, so a refused element is named against what the elements
+        gave) and the literal's element type.
+
+        A join no context decided stays provisional (`_join_mark`): the
+        literal's soft result marks it, so an enclosing generic call whose
+        expected type decides it synthesizes the literal again against
+        that type."""
+        # An element a literal typed takes its type from the others and the
+        # context (#1541), as a literal argument does: it gives the element
+        # type nothing to disagree with.
+        typed = [(e, t) for e, t in zip(expr.elements, elem_types)
+                 if t is not None and not isinstance(t, UnknownType)
+                 and not contains_literal_hole(
+                     self._literal_soft_type(e, t) or t)
+                 and not self._leaves_open(t)]
+        ctx = (element_ctx if element_ctx is not None
+               and not contains_fresh_typevar(element_ctx)
+               and not contains_unknown(element_ctx)
+               and not contains_literal_hole(element_ctx) else None)
+        element_type = structure
+        decided = False
+        if typed and any(not types_equal(t, typed[0][1])
+                         for _, t in typed[1:]):
+            if ctx is not None and all(self._fits(t, ctx) for _, t in typed):
+                element_type = ctx
+            else:
+                joined: Type = typed[0][1]
+                for _, t in typed[1:]:
+                    step = self._join_either(t, joined)
+                    if step is None:
+                        break
+                    joined = step
+                else:
+                    element_type = self._value_join(joined, typed)
+                    decided = True
+        held = element_type
+        if ctx is not None and (contains_fresh_typevar(element_type)
+                                or contains_unknown(element_type)):
+            filled = self._join(ctx, element_type)
+            if filled is not None:
+                element_type = filled
+                decided = False
+        self._record_literal_soft_result(expr, AdtType("Array", (
+            self._join_mark(element_type)
+            if decided and not contains_fresh_typevar(element_type)
+            else element_type,)))
+        return held, element_type
+
+    def _leaves_open(self, ty: Type) -> bool:
+        """Whether *ty* holds a type variable that is not the enclosing
+        function's own: one a call left open (`T$3`), or a built-in's a
+        failed substitution lost (`T#b`), a position no value fixes."""
+        ty = base_type(ty)
+        if isinstance(ty, TypeVar):
+            return "$" in ty.name or ty.name not in self.env.type_params
+        if isinstance(ty, AdtType):
+            return any(self._leaves_open(a) for a in ty.type_args)
+        if isinstance(ty, FunctionType):
+            return (any(self._leaves_open(p) for p in ty.params)
+                    or self._leaves_open(ty.return_type))
+        return False
 
     def _join_elements(self, elem_types: Sequence[Type | None],
                        first: Type, first_at: int,

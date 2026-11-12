@@ -1159,6 +1159,10 @@ class ResolutionMixin:
         if (isinstance(expr, ast.ArrayLit) and expr.elements
                 and isinstance(ty, AdtType) and ty.name == "Array"
                 and len(ty.type_args) == 1):
+            recorded = self._literal_soft_results.get(ast.span_key(expr))
+            if recorded is not None and _has_join_mark(recorded):
+                # The elements' join no context decided (#1684).
+                return recorded
             elem = ty.type_args[0]
             return AdtType("Array", (_meet_literal_holes(
                 tuple(self._literal_soft_type(e, elem)

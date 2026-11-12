@@ -544,14 +544,7 @@ def _cells() -> list[_Cell]:
 
 
 def _params() -> list[object]:
-    return [
-        pytest.param(cell, id=_cell_id(cell), marks=pytest.mark.xfail(
-            strict=True,
-            reason="#1684: a `let` or a return refuses an open type "
-                   "variable"))
-        if _refused_open_var(cell) else pytest.param(cell, id=_cell_id(cell))
-        for cell in _cells()
-    ]
+    return [pytest.param(cell, id=_cell_id(cell)) for cell in _cells()]
 
 
 def _cell_id(cell: _Cell) -> str:
@@ -587,8 +580,15 @@ def _build(cell: _Cell) -> _Built:
     # The rule.  The parts' join is the first part's type, with the position
     # it leaves open given by the first later part that fills it; a part of
     # another type fills nothing and is refused.
-    if filler.joined is None:
+    if filler.joined is None and (cell.context == "bare" or (
+            cell.head == "array" and cell.context == "generic")):
+        # No context, or an empty literal's element type at a generic
+        # call's argument, which waits for rule E.
         element = wrap_type.format(t=head.open_recorded)
+    elif filler.joined is None:
+        # A position the parts leave open takes the type the context
+        # expects of the element (spec §4.12.1, #1684 rule J).
+        element = wrap_type.format(t=head.type.format(x=filler.context))
     else:
         element = wrap_type.format(t=head.type.format(x=filler.joined))
     expected: list[tuple[str, int, int]] = []
