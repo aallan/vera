@@ -44,9 +44,11 @@ mutmut over the lines of those functions near the diff:
    test files that reach the compiler in process (they import ``vera``,
    directly or through a ``tests/`` helper) added to the test selection, bar
    the families the selection leaves out on purpose.  mutmut then runs over
-   one glob per changed unit (``vera.smt.xǁSmtContextǁreset__mutmut_*``):
-   its stats pass records which tests reach each function, and each mutant
-   runs only those tests, fastest first, stopping at the first failure.  A
+   one glob per changed unit (``vera.smt.xǁSmtContextǁreset__mutmut_*``),
+   with the unit's first mutant by its name, which adds the unit's covering
+   tests to the clean run (:func:`mutant_targets`): its stats pass records
+   which tests reach each function, and each mutant runs only those tests,
+   fastest first, stopping at the first failure.  A
    test that fails inside mutmut's copy with no mutant active (as one that
    reads a file the copy lacks, or ``vera/``'s source text, which in the copy
    is mutmut's generated file, does) stops that pass; it is no oracle there,
@@ -610,6 +612,18 @@ def module_name(path: str) -> str:
 def mutant_glob(path: str, key: str) -> str:
     """The glob that selects one unit's mutants and no other unit's."""
     return f"{module_name(path)}.{key}__mutmut_*"
+
+
+def mutant_targets(path: str, key: str) -> list[str]:
+    """mutmut's arguments for one unit: its glob, which selects every mutant
+    the window generates for it, and its first mutant by name.  mutmut reads
+    the clean run's tests off the arguments (``tests_for_mutant_names``): a
+    glob is matched against the functions' names, which hold no
+    ``__mutmut_``, so it adds no test, and a run of globs alone runs the
+    whole selection clean; a name adds its function's covering tests
+    (#1838).  The name selects a mutant the glob already does, or none when
+    the window holds none of the unit's."""
+    return [mutant_glob(path, key), f"{module_name(path)}.{key}__mutmut_1"]
 
 
 def unit_of_mutant(name: str) -> tuple[str, str]:
@@ -1727,7 +1741,7 @@ def _lane(args: argparse.Namespace, repo: Path, workdir: Path, engine: list[str]
                                            "lines": kept}, indent=1) + "\n", encoding="utf-8")
         record["window"] = {"context": args.context, "rule": rule(args.context), "lines": kept}
         record["engine_version"] = _engine_version(engine, env)
-        globs = [mutant_glob(u.path, u.key) for u in mutable]
+        globs = [target for u in mutable for target in mutant_targets(u.path, u.key)]
         run, log, dropped = run_dropping(
             [*engine, "run", "--max-children", str(args.max_children), *globs],
             tree=tree, pyproject=pyproject, budget_s=args.budget, workdir=workdir,

@@ -719,6 +719,8 @@ MARKED_FILES = (
     "test_one_error_per_refusal_1563.py",
     "test_counterexample_result_1707.py",
     "test_fix_texts_apply_and_clear.py",
+    "test_join_recorded_type_1716.py",
+    "test_one_fit_at_every_site_1684.py",
     "test_tail_call_guards_1849.py",
     "test_diagnostic_text_reads_back_1573.py",
 )

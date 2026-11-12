@@ -11330,17 +11330,16 @@ class ContractVerifier:
         Tier-1 record counted in ``tier1_verified``.  A ``verified`` here now
         only ever comes from a discharged obligation.
 
-        The query is the predicate over the value, with the source's own
-        nested facts as premises — WITHHELD into ``_tainted_facts`` when the
-        producer disclosed them (#1363), so a goal that holds only from them
-        comes back ``disclosed`` and lands at Tier 3 rather than Tier 1.
-        Those premises are legitimate because every position that gives a
-        value a nested-refined declared type is itself obligated: a
-        construction at its constructor-field site, a function result at the
-        return slot, a `let` at its binder, an argument here, a parameter by
-        R1 whose call sites discharge it.  That closure is what the review's
-        F3/F4 findings were missing, and it is why the premise is a fact
-        rather than the claim it certifies.
+        The query is the predicate over the value under the context's own
+        facts, with no premise taken from the value's type (#1716): the
+        facts its leaves state are in the context already (a slot's binder,
+        a call's declared refined return through the gate, a pattern
+        binder's guard, each branch under its path condition), withheld into
+        ``_tainted_facts`` where a producer disclosed them (#1363), so a goal
+        that holds only from them comes back ``disclosed`` and lands at Tier
+        3 rather than Tier 1.  The premises the value's type added moved no
+        status over every leaf kind measured, and taken from a join's
+        recorded type they proved the very payload asked.
         """
         if (not self._has_nested_refinement(formal_ty)
                 or not self._rows_taking(value_node, "refine_bind")):
@@ -11403,35 +11402,18 @@ class ContractVerifier:
                 reason=self._nested_unstatable_reason(formal_ty),
             )
             return
-        # #1716: the facts the value's own leaves establish, never the type
-        # the checker recorded a join over them at.
-        established = narrowing.established_type(
-            value_node, self._resolved_type_of)
-        source_facts = ([] if established is None else
-                        self._nested_refinement_facts(smt, established, val)[0])
+        # #1716: no premise from the value's type.  The facts a value's
+        # leaves state are in the solver context already (a slot's binder,
+        # a call's declared refined return, a pattern binder's guard, each
+        # branch under its path condition), and a value whose term holds a
+        # stand-in (#1696) carries its type's facts and no component's
+        # (R2).  Measured over every leaf kind (an index read, a pattern
+        # binder, a destructure, a `State` `get`, an `apply_fn` result, a
+        # `map_get` read, a `match` arm, a `let`, a slot, a call, a join),
+        # the premises the value's type added moved no status; and taken
+        # from a join's recorded type they proved the very payload this
+        # obligation asks, where the type stated one arm's refinement.
         premises = list(assumptions)
-        # THE GATE, not a fourth hand-rolled copy of it (#1418 review).  This
-        # site had a local test of its own instead — since deleted with its
-        # only call site — which descended to the value's producing leaves and
-        # put a SYNTACTIC question to each, so a `let`-bound disclosed
-        # producer arrived as a slot reference, answered False, and its
-        # declared type was granted as a premise.  That
-        # is #1406 exactly, in a reader added after it: measured, the same
-        # value gave this obligation `tier3_unguarded` spelled
-        # `consume(mk(x))` and `verified` spelled
-        # `let @T = mk(x); consume(@T.0)`.  The gate asks of the VALUE, so
-        # both spellings agree.
-        #
-        # A value whose term holds a stand-in (#1696) carries its type's
-        # facts and no composite's component facts (R2): its payload is
-        # whatever its producer made of it, which nothing here obligated
-        # (a closure's return, a call refused at its precondition).  Its
-        # declared type's nested facts as premises certified the very claim
-        # this obligation asks: `consume(apply_fn(maker, x))` recorded
-        # `verified` while the run broke the payload's refinement.
-        if not smt._mentions_stand_in(val):
-            premises.extend(self._established_facts(
-                source_facts, source=value_node, term=val, smt=smt))
         goal = z3.And(*goal_facts) if len(goal_facts) > 1 else goal_facts[0]
         result = smt.check_valid(goal, premises)
         if self._refuted_only_over_a_placeholder(

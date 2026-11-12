@@ -982,8 +982,8 @@ private fn broken(@Int -> @Int)
 #: (`Some(e)` with `e` in error is `Option<T$1>`), is not judged once an
 #: error has been reported, as a scrutinee typed `Unknown` after one is not,
 #: so the arms draw nothing beside that error, whatever they leave; with no
-#: error reported (`apply_fn` over a type variable, `None` with no type to
-#: take) it is open, as a scrutinee of it is.  A `Tuple` with no components
+#: error reported (`[][0]`, the one route to an unreported `Unknown`
+#: left, #1684; `None` with no type to take) it is open, as a scrutinee of it is.  A `Tuple` with no components
 #: is not judged, as a scrutinee of one is not.
 OPEN_POSITIONS: dict[str, tuple[str, list[tuple[str, str, str]]]] = {
     "option-t-constructor-subs": (_matching(
@@ -1034,7 +1034,7 @@ OPEN_POSITIONS: dict[str, tuple[str, list[tuple[str, str, str]]]] = {
         ["Tuple(Some(None), _) -> 1", "Tuple(Some(Some(_)), _) -> 2",
          "Tuple(None, _) -> 0"]), [_E200]),
     "unknown-with-no-error": (_matching(
-        "T", "Some(apply_fn(@T.0, 1))",
+        "T", "Some([][0])",
         ["Some(None) -> 1", "Some(Some(_)) -> 2", "None -> 0"]),
         [("E311", "error", _message("Some(_)"))]),
     "unbound-variable-after-an-error-covered": (_matching(
@@ -1239,7 +1239,7 @@ def test_mutant_an_unsettled_position_is_not_judged_after_an_error() -> None:
     open, which draws an E311 beside the error, and a type variable no
     inference bound read as a declared one, which is open, so the same E311
     is drawn; and one with no error reported not judged, which takes
-    `apply_fn`'s `Unknown` and `None`'s `T$1` to be covered."""
+    `[][0]`'s `Unknown` and `None`'s `T$1` to be covered."""
     for key in ("unbound-variable-after-an-error-gap",
                 "unknown-with-no-error", "unbound-variable-with-no-error",
                 "unbound-variable-after-an-error-covered",

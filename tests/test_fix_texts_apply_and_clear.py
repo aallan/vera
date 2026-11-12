@@ -1467,3 +1467,108 @@ def test_no_fix_renders_a_type_in_the_message_form() -> None:
     found = [site for path in sorted(package.rglob("*.py"))
              for site in _reaches_a_renderer(path, package.parent)]
     assert found == [], found
+
+
+# =====================================================================
+# #1684's fix sites (PR 1855), under #1778's rule
+# =====================================================================
+
+_DUP = _helper("dup", "@T -> @Tuple<T, T>", "Tuple(@T.0, @T.0)", forall="T")
+_REFINED = "{ @Int | @Int.0 > 0 }"
+_E170_REFINED = _DUP + _fn(
+    "@Unit", "@Int",
+    f"let Tuple<@Option<{_REFINED}>, @Option<String>> = dup(None);\n  5")
+
+
+def test_e170_writes_a_refined_binding_as_the_program_writes_it() -> None:
+    """E170's binding is code the reader pastes: at a refinement it is
+    written with its predicate, and applied it clears the code."""
+    fix = _the("E170", "check", _E170_REFINED).fix
+    (binding,) = spans(fix)
+    assert binding == f"@Option<{_REFINED}>", fix
+    fixed = _E170_REFINED.replace("@Option<String>", binding)
+    assert _codes("check", fixed) == set(), fixed
+
+
+def test_the_e170_message_form_binding_does_not_clear() -> None:
+    """The honesty cell: the binding as the merge of PR 1855 wrote it, in
+    the message form, does not clear the code when applied."""
+    fixed = _E170_REFINED.replace("@Option<String>", "@Option<{@Int | ...}>")
+    assert _codes("check", fixed) != set(), fixed
+
+
+def test_e170_at_a_type_parameter_writes_no_binding() -> None:
+    """A binding the type parameter `U` stands in is not one the fix can
+    write whole; the sentence names `U` as written, and no `?`."""
+    source = _DUP + _fn(
+        "@U", "@Int",
+        "let Tuple<@Option<U>, @Option<String>> = dup(None);\n  5",
+        forall="U")
+    assert _the("E170", "check", source).fix == (
+        "Write binding 2 so that it gives T `U`, the type binding 1 gives "
+        "it, at the type argument of Option in component 2.")
+
+
+def test_the_applied_value_fix_applied_clears_e202() -> None:
+    """`apply_fn` of a value whose type is the enclosing function's own
+    `T`: the alias, the binding's type and the application, each pasted
+    from the fix, clear the code."""
+    source = _fn("@T", "@T", "apply_fn(@T.0, @T.0)", forall="T")
+    fix = _the("E202", "check", source).fix
+    signature, decl, binding, value = spans(fix)
+    assert (signature, decl, binding, value) == (
+        "fn(T -> T) effects(pure)",
+        "type Applied<T> = fn(T -> T) effects(pure);", "@Applied<T>",
+        "@T.0"), fix
+    fixed = decl + "\n\n" + source.replace(
+        "fn f(@T -> @T)", f"fn f(@T, {binding} -> @T)").replace(
+        "apply_fn(@T.0, @T.0)", f"apply_fn({binding}.0, @T.0)")
+    assert _codes("check", fixed) == set(), fixed
+
+
+_STATE_T = ("handle[State<T>](@T = @T.0) {{\n    get(@Unit) -> {{ resume({0}) "
+            "}},\n    put(@T) -> {{ resume(()) }}\n  }} in {{\n    {1}0\n  }}")
+
+#: A rigid `T` with a value of it in scope: name -> (code, program, the
+#: argument the fix's `@T.0` replaces).
+_RIGID_IN_SCOPE: dict[str, tuple[str, str, str]] = {
+    "E202-resume": ("E202", _fn("@T", "@Int", _STATE_T.format("9", ""),
+                                forall="T"), "resume(9)"),
+    "E204-operation": ("E204", _fn("@T", "@Int", _STATE_T.format(
+        "@T.0", "put(9);\n    "), forall="T"), "put(9)"),
+    "E241-ability": ("E241", _fn("@T", "@Bool", "eq(@T.0, 9)",
+                                 forall="T where Eq<T>"), "eq(@T.0, 9)"),
+}
+
+
+def test_each_rigid_fix_with_a_value_in_scope_clears() -> None:
+    """`_rigid_fix` names `@T.0` only where a `T` is bound at the site, so
+    the slot it writes exists there: pasted in place of the argument, it
+    clears each code.  The value's own type is written as the program
+    writes it (`Int`), never the message form."""
+    moved: dict[str, tuple[str, list[str]]] = {}
+    for name, (code, source, argument) in _RIGID_IN_SCOPE.items():
+        fix = _the(code, "check", source).fix
+        slot, given = spans(fix)
+        fixed = source.replace(argument, argument.replace("9", slot))
+        if (slot, given) != ("@T.0", "Int") or _codes("check", fixed):
+            moved[name] = (fix, sorted(_codes("check", fixed)))
+    assert moved == {}, moved
+
+
+def test_a_rigid_fix_with_no_value_in_scope_names_no_slot() -> None:
+    """With no `T` bound at the site, the fix names a parameter to take,
+    `@T`, and no slot reference."""
+    source = ("type Fn<T> = fn(T -> Nat) effects(pure);\n\n"
+              + _fn("@Fn<T>", "@Nat", "apply_fn(@Fn<T>.0, 9)", forall="T"))
+    fix = _the("E202", "check", source).fix
+    assert spans(fix) == ["@T", "Int"], fix
+
+
+def test_an_unfixed_application_names_the_site_and_no_open_type() -> None:
+    """E202 at an argument applied to a function a call left open: the
+    span is the call as the site writes it, and the type to take is
+    written, never `?`."""
+    source = ENDO + _fn("@Unit", "@Nat", "abs(apply_fn(mk(()), 40))")
+    fix = _the("E202", "check", source).fix
+    assert spans(fix) == ["mk(())", "Int"] and "?" not in fix, fix

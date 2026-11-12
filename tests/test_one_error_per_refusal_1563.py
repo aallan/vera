@@ -31,7 +31,8 @@ The matrix spans source x judgement site; each cell asserts the program's
 errors are exactly the refusal's own.  The negative space: the nearest
 accepted neighbour of each source (the declaration renamed, the type name
 spelled right, the hole filled) checks clean, and an `Unknown` no diagnostic
-stands behind (`apply_fn` over a type variable) is still judged (E313).
+stands behind (`[][0]`, the one route left, #1684) is still judged
+(E313).
 """
 
 from __future__ import annotations
@@ -271,7 +272,8 @@ def test_the_hole_filled_is_judged() -> None:
 
 
 def test_an_unknown_no_diagnostic_stands_behind_is_still_judged() -> None:
-    """`apply_fn` over a type variable is `Unknown` with nothing reported, and
+    """`[][0]` is `Unknown` with nothing reported (the one route left,
+    #1684: `apply_fn` over a type variable is `E202`), and
     its E313 is the error that refuses the program (#1671's boundary)."""
     source = """\
 private forall<T> fn g(@T -> @Int)
@@ -279,7 +281,7 @@ private forall<T> fn g(@T -> @Int)
   ensures(true)
   effects(pure)
 {
-  match apply_fn(@T.0, 1) {
+  match [][0] {
     1 -> 1
   }
 }
@@ -557,8 +559,8 @@ def test_an_unguarded_at_nat_binder_holds_no_post_fact() -> None:
 
 
 _APPLY_FN_SITES = {
-    "match": "  match apply_fn(@T.0, 1) {\n    1 -> 1\n  }\n",
-    "destructure": ("  let Tuple<@Int, @Int> = apply_fn(@T.0, 1);\n"
+    "match": "  match [][0] {\n    1 -> 1\n  }\n",
+    "destructure": ("  let Tuple<@Int, @Int> = [][0];\n"
                     "  @Int.0\n"),
 }
 
@@ -568,7 +570,7 @@ _APPLY_FN_SITES = {
 def test_a_hole_elsewhere_stands_behind_no_other_unknown(
         hole_first: bool, site: str) -> None:
     """A hole's W001 stands behind the hole alone: a hole in another
-    function, before or after it, leaves `apply_fn(@T.0, 1)`'s `Unknown`
+    function, before or after it, leaves `[][0]`'s `Unknown`
     judged, so its E313 still refuses the program (the review of PR #1842:
     a hole declared first suppressed it)."""
     hole = f"public fn h(@Int -> @Int)\n{_SIG}{{\n  ?\n}}\n"
