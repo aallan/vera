@@ -221,9 +221,11 @@ def expr_text_for(node: ast.Expr | ast.Contract) -> str:
     """Render the obligation's expression for identity / display.
 
     Contracts wrap their predicate expression(s); bare expressions
-    (subtraction sites) format directly.  ``format_expr`` is total —
-    it ends in a ``"<expr>"`` fallback — so no defensive guard is
-    needed; the class-name fallback below covers only non-Expr
+    (subtraction sites) format directly.  ``format_expr`` is the canonical
+    formatter's expression rule, total over every expression and a left
+    inverse of parsing (#1573), so two obligations over different
+    expressions never share a text; the class-name fallback below covers
+    only non-Expr
     contract shapes (``Invariant``, which never reaches the verifier's
     function-contract path today).
     """

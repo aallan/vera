@@ -7,6 +7,7 @@ See spec/00-introduction.md, Section 0.5 "Diagnostics as Instructions".
 from __future__ import annotations
 
 import shlex
+import unicodedata
 from dataclasses import dataclass
 from collections.abc import Sequence
 from pathlib import Path
@@ -225,9 +226,63 @@ def partial_diagnostics(exc: BaseException) -> list[Diagnostic]:
     return [d for d in found if isinstance(d, Diagnostic)]
 
 
+#: Default-ignorable code points (Unicode's DerivedCoreProperties) outside
+#: the categories above: they display as nothing.
+_INVISIBLE_OTHER = frozenset({
+    0x034F, 0x115F, 0x1160, 0x17B4, 0x17B5, 0x3164, 0xFFA0,
+    *range(0x180B, 0x180E), *range(0xFE00, 0xFE10),
+    *range(0xE0100, 0xE01F0),
+})
+
+
+def _name_character(char: str) -> str:
+    """*char* as E006 quotes it: itself in quotes when it has a glyph, else
+    its code point and name, so a diagnostic never points at nothing.
+
+    No glyph: the Unicode categories ``Cc`` (control), ``Cf`` (format, the
+    byte-order mark and the zero-width characters among them), ``Zs`` other
+    than the space, ``Zl`` and ``Zp``, and the default-ignorable characters
+    of other categories (the combining grapheme joiner, the variation
+    selectors, the Hangul fillers) (#1790).
+    """
+    category = unicodedata.category(char)
+    if category in ("Cc", "Cf", "Zl", "Zp") or (
+            category == "Zs" and char != " ") or ord(char) in _INVISIBLE_OTHER:
+        name = unicodedata.name(char, "").lower() or "control character"
+        return f"U+{ord(char):04X} ({name})"
+    return f'"{char}"'
+
+
+def source_lines(source: str, *, keepends: bool = False) -> list[str]:
+    """*source*'s lines as a location counts them: cut at ``\\n`` and
+    nowhere else, as the lexer counts a line (#1853).
+
+    ``str.splitlines`` also cuts at U+000B, U+000C, U+001C to U+001E,
+    U+0085, U+2028 and U+2029, which the lexer reads as whitespace inside a
+    line, so after one of them the line it returned was not the line the
+    location named.  A file is read with universal newlines
+    (:func:`vera.parser.read_source`), so its text holds no carriage
+    return; a text handed in whole (the language server's, a test's) keeps
+    the ``\\r`` of a ``\\r\\n``, which is dropped from each line here as
+    ``splitlines`` drops it, and only there.  *keepends* keeps each line's
+    ``\\n`` (and that ``\\r``), so the lengths sum to the text's, for a
+    caller that turns a line and column into an offset.  A final empty
+    piece after a last ``\\n`` is no line, as ``splitlines`` has it."""
+    pieces = source.split("\n")
+    if keepends:
+        lines = [piece + "\n" for piece in pieces[:-1]]
+        if pieces[-1]:
+            lines.append(pieces[-1])
+        return lines
+    if pieces[-1] == "":
+        pieces.pop()
+    return [piece[:-1] if piece.endswith("\r") else piece
+            for piece in pieces]
+
+
 def _get_source_line(source: str, line: int) -> str:
-    """Extract a specific line from source text."""
-    lines = source.splitlines()
+    """Extract a specific line from source text (:func:`source_lines`)."""
+    lines = source_lines(source)
     if 1 <= line <= len(lines):
         return lines[line - 1]
     return ""
@@ -810,9 +865,12 @@ def source_not_utf8(
 
     Located at that byte's line and column, counted as the reader counts
     them: lines with universal newlines, and characters, not bytes, along
-    the line, since every byte before *offset* decodes.
+    the line, since every byte before *offset* decodes.  A leading UTF-8
+    byte-order mark is no column and no part of the quoted line: the reader
+    drops it (#1790), so the position is the unmarked file's.
     """
-    before = raw[:offset].decode()
+    skip = 3 if raw.startswith(b"\xef\xbb\xbf") else 0
+    before = raw[skip:offset].decode()
     lines = before.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     line, column = len(lines), len(lines[-1]) + 1
     description = (
@@ -830,7 +888,7 @@ def source_not_utf8(
         source_line, encoding = "", mark
     else:
         start = max(raw[:offset].rfind(b"\n"),
-                    raw[:offset].rfind(b"\r")) + 1
+                    raw[:offset].rfind(b"\r"), skip - 1) + 1
         ends = [i for i in (raw.find(b"\n", offset), raw.find(b"\r", offset))
                 if i != -1]
         source_line = raw[start:min([*ends, len(raw)])].decode(
@@ -944,8 +1002,8 @@ def diagnose_lark_error(
 
         return Diagnostic(
             description=(
-                f'Unexpected character "{char}". This character is not valid '
-                "in Vera source code at this position."
+                f"Unexpected character {_name_character(char)}. This "
+                "character is not valid in Vera source code at this position."
             ),
             location=SourceLocation(file=file, line=line, column=column),
             source_line=_get_source_line(source, line),

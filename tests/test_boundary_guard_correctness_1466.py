@@ -270,14 +270,12 @@ _REPRS: dict[str, _Repr] = {
         repr_class="handle", safe="Tuple(1, 1)",
         witness="fst(@Tuple<Int, Int>.0) > 0",
     ),
-    # The trap renders a constructor call in a predicate as `<expr>`, so the
-    # witness stops at the comparison rather than claiming text the message
-    # does not carry.
+    # The trap quotes a constructor call in a predicate as written (#1573).
     "option": _Repr(
         decls=_R % ("Option<Int>", "@Option<Int>.0 == Some(1)"),
         base="Option<Int>", good="Some(1)", bad="None",
         repr_class="handle", safe="Some(1)",
-        witness="@Option<Int>.0 == ",
+        witness="@Option<Int>.0 == Some(1)",
     ),
 }
 

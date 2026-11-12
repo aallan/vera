@@ -702,6 +702,9 @@ MARKED_FILES = (
     "test_clone_suffix_1774.py",
     "test_gc_free_blocks_1718.py",
     "test_source_encoding_1728_1666.py",
+    "test_source_boundary_chars_1790.py",
+    "test_exn_boundary_cut_1526.py",
+    "test_error_body_cut_1526.py",
     "test_diagnostic_codes_1490.py",
     "test_declared_by_the_emitter_1744.py",
     "test_fits_one_variable_one_type_1684.py",
@@ -715,6 +718,8 @@ MARKED_FILES = (
     "test_expected_type_premise_1716.py",
     "test_one_error_per_refusal_1563.py",
     "test_counterexample_result_1707.py",
+    "test_tail_call_guards_1849.py",
+    "test_diagnostic_text_reads_back_1573.py",
 )
 UNMARKED_FILES = (
     "test_obligations.py",

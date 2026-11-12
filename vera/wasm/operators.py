@@ -1870,15 +1870,17 @@ class OperatorsMixin:
 
     def _nat_sub_message(self, at: ast.Node | None) -> str:
         """The `nat_underflow` message: the two operands, and the clause that
-        discharges the subtraction."""
-        if isinstance(at, ast.BinaryExpr):
-            lhs, rhs = ast.format_expr(at.left), ast.format_expr(at.right)
-        else:  # pragma: no cover — every caller passes the subtraction
-            lhs, rhs = "lhs", "rhs"
+        discharges the subtraction.  Each is a node rendered whole by
+        :func:`ast.format_expr`, so an operand keeps the parentheses its
+        precedence needs (#1573): `@Nat.1 - (@Nat.0 - @Nat.2)`."""
+        assert isinstance(at, ast.BinaryExpr)  # noqa: S101 — the one caller passes the subtraction
+        site = ast.format_expr(at)
+        bound = ast.format_expr(
+            ast.BinaryExpr(op=ast.BinOp.GE, left=at.left, right=at.right))
         return (
-            f"@Nat subtraction `{lhs} - {rhs}` would be negative"
+            f"@Nat subtraction `{site}` would be negative"
             f"{self._at_line(at)}: its right operand is larger than its "
-            f"left.  Add `requires({lhs} >= {rhs})` to the enclosing "
+            f"left.  Add `requires({bound})` to the enclosing "
             "function, or compute in @Int."
         )
 
@@ -2001,17 +2003,12 @@ class OperatorsMixin:
     def _collect_narrowing_return_leaves(self, body: ast.Expr) -> set[int]:
         """The ``id()`` of every tail-position return leaf of a ``@Nat``
         return that the obligation table lists a checked ``@Nat`` return row
-        at (#758, #1836).  ``CodeGenerator._compile_fn`` guards each such leaf
-        inline instead of wrapping the whole body (#983 review).
-
-        The whole-body ``_emit_nat_bind_guard(body_instrs)`` wrap appended the
-        sign check after the entire body, which forced EVERY ``return_call`` to
-        revert to ``call`` — losing TCO for a non-narrowing @Nat->@Nat recursive
-        tail call (`drain(@Int.0 - 1)`, itself @Nat->@Nat) that then
-        stack-exhausted at depth.  Guarding only the leaves that narrow
-        (`@Int.0`, `0 - x`, an @Int-returning tail call) leaves the
-        non-narrowing recursive tail call structurally untouched, so its
-        ``return_call`` survives and the chain runs constant-stack.
+        at (#758, #1836).  Each such leaf is guarded inline, never by a wrap
+        of the whole body (#983 review), so a non-narrowing @Nat->@Nat
+        recursive tail call (`drain(@Int.0 - 1)`) has nothing after it.  A
+        narrowing leaf that is a call (an @Int-returning tail call) is a
+        checked row at the call, so ``ObligationTable.tail_calls`` lowers it
+        to a plain ``call`` and its guard runs (#1849).
 
         Which leaves narrow is the table's: it lists a row at a leaf by the
         shared rule (:func:`vera.narrowing.nat_narrowing`, a genuine
@@ -2038,13 +2035,14 @@ class OperatorsMixin:
         self, expr: ast.Expr, instrs: list[str],
     ) -> list[str]:
         """Wrap a tail-position leaf's WAT with the #758 @Int->@Nat narrowing
-        guard when *expr* is a designated narrowing return leaf (per-leaf
-        emission — #983 review; replaces the whole-body wrap that broke TCO).
+        guard when the obligation table lists a checked ``nat_bind`` row of
+        the return at *expr* (per-leaf emission, #983 review).
 
-        A no-op unless ``id(expr)`` was collected into ``_nat_return_leaf_ids``
-        for the function currently being compiled, so only the genuine
-        narrowing leaves pay the guard; a non-narrowing @Nat->@Nat recursive
-        tail leaf keeps its ``return_call`` untouched.
+        A no-op at any other leaf, so only the genuine narrowing leaves pay
+        the guard; a non-narrowing @Nat->@Nat recursive tail leaf has no row
+        and keeps its ``return_call``.  A narrowing leaf that is a call has
+        its row at the call, so ``ObligationTable.tail_calls`` lowers it to a
+        plain ``call`` and this guard runs after it (#1849).
         """
         return self._guard_nat_narrowing(instrs, expr, evaluation=("return",))
 

@@ -883,9 +883,8 @@ def format_type(te: TypeExpr) -> str:
     (:func:`vera.formatter.format_type_canonical`), so a message spells a type
     as ``vera fmt`` writes it, and there is one renderer of a type into text.
     A refinement's predicate is an expression, and the formatter is the
-    renderer that writes every expression so that it parses back to itself:
-    :func:`format_expr` writes some shapes ``<expr>`` and never
-    parenthesises an operand.  Imported here, as
+    renderer that writes every expression so that it parses back to itself,
+    the one :func:`format_expr` renders through.  Imported here, as
     :func:`vera.types.structural_type_key` imports the formatter:
     :mod:`vera.formatter` imports this module, and pulls in the parser."""
     from vera.formatter import format_type_canonical
@@ -942,105 +941,36 @@ def predicate_binder_ref(predicate: "Expr") -> "SlotRef | None":
 
 
 def format_expr(expr: Expr) -> str:
-    """Reconstruct Vera source text from an expression AST node.
+    """*expr* as Vera writes it, on one line: the text every message, trap
+    and obligation description quotes an expression by.
 
-    Produces human-readable representations for contract expressions
-    in runtime error messages.
-    """
-    if isinstance(expr, IntLit):
-        return str(expr.value)
-    if isinstance(expr, FloatLit):
-        return str(expr.value)
-    if isinstance(expr, BoolLit):
-        return "true" if expr.value else "false"
-    if isinstance(expr, StringLit):
-        return f'"{expr.value}"'
-    if isinstance(expr, UnitLit):
-        # #1248: without this arm the `<expr>` catch-all below swallowed every
-        # Unit literal, so an obligation over `mk(())` described its call as
-        # `mk(<expr>)` in `verify --json` and in E505 text — two calls that
-        # differ only in a Unit argument became indistinguishable by
-        # description.  A missing arm here never fails; it silently degrades.
-        return "()"
-    if isinstance(expr, InterpolatedString):
-        parts = []
-        for p in expr.parts:
-            if isinstance(p, str):
-                parts.append(p)
-            else:
-                parts.append(f"\\({format_expr(p)})")
-        return '"' + "".join(parts) + '"'
-    if isinstance(expr, ArrayLit):
-        elements = ", ".join(format_expr(e) for e in expr.elements)
-        return f"[{elements}]"
-    if isinstance(expr, SlotRef):
-        base = expr.type_name
-        if expr.type_args:
-            args = ", ".join(format_type(a) for a in expr.type_args)
-            base = f"{base}<{args}>"
-        return f"@{base}.{expr.index}"
-    if isinstance(expr, ResultRef):
-        base = expr.type_name
-        if expr.type_args:
-            args = ", ".join(format_type(a) for a in expr.type_args)
-            base = f"{base}<{args}>"
-        return f"@{base}.result"
-    if (isinstance(expr, (FnCall, ConstructorCall, QualifiedCall, ModuleCall))
-            and expr.piped and expr.args):
-        # As written: the first argument, `|>`, and the call without it.
-        rest = ", ".join(format_expr(a) for a in expr.args[1:])
-        if isinstance(expr, QualifiedCall):
-            callee = f"{expr.qualifier}.{expr.name}"
-        elif isinstance(expr, ModuleCall):
-            callee = f"{'.'.join(expr.path)}::{expr.name}"
-        else:
-            callee = expr.name
-        return f"{format_expr(expr.args[0])} |> {callee}({rest})"
-    if isinstance(expr, BinaryExpr):
-        left = format_expr(expr.left)
-        right = format_expr(expr.right)
-        return f"{left} {expr.op.value} {right}"
-    if isinstance(expr, UnaryExpr):
-        operand = format_expr(expr.operand)
-        if expr.op == UnaryOp.NEG:
-            return f"-{operand}"
-        return f"!{operand}"
-    if isinstance(expr, FnCall):
-        args = ", ".join(format_expr(a) for a in expr.args)
-        return f"{expr.name}({args})"
-    if isinstance(expr, ModuleCall):
-        path = ".".join(expr.path)
-        args = ", ".join(format_expr(a) for a in expr.args)
-        return f"{path}::{expr.name}({args})"
-    if isinstance(expr, OldExpr):
-        ref = expr.effect_ref
-        if isinstance(ref, EffectRef):
-            if ref.type_args:
-                args = ", ".join(format_type(a) for a in ref.type_args)
-                return f"old({ref.name}<{args}>)"
-            return f"old({ref.name})"
-        return "old(...)"
-    if isinstance(expr, NewExpr):
-        ref = expr.effect_ref
-        if isinstance(ref, EffectRef):
-            if ref.type_args:
-                args = ", ".join(format_type(a) for a in ref.type_args)
-                return f"new({ref.name}<{args}>)"
-            return f"new({ref.name})"
-        return "new(...)"
-    if isinstance(expr, ForallExpr):
-        binding = format_type_expr(expr.binding_type)
-        domain = format_expr(expr.domain)
-        return f"forall({binding}, {domain}, ...)"
-    if isinstance(expr, ExistsExpr):
-        binding = format_type_expr(expr.binding_type)
-        domain = format_expr(expr.domain)
-        return f"exists({binding}, {domain}, ...)"
-    if isinstance(expr, IndexExpr):
-        coll = format_expr(expr.collection)
-        idx = format_expr(expr.index)
-        return f"{coll}[{idx}]"
-    return "<expr>"
+    The canonical formatter's rendering
+    (:func:`vera.formatter.format_expr_canonical`), so a message spells an
+    expression as ``vera fmt`` writes it, and there is one renderer of an
+    expression into text (#1573).  That renderer re-derives each operand's
+    parentheses from precedence and associativity
+    (:func:`vera.formatter._needs_parens`), so the text parses back to the
+    expression it came from: ``@Nat.1 - (@Nat.0 - 1)`` keeps its
+    parentheses, where a renderer that printed ``left op right`` named
+    ``(@Nat.1 - @Nat.0) - 1``.  A message that composes an expression of
+    its own (a ``requires`` to add, a bound to meet) builds the node and
+    renders it here, rather than joining rendered operands with an
+    operator.  Imported here, as :func:`format_type` imports it."""
+    from vera.formatter import format_expr_canonical
+    return format_expr_canonical(expr)
+
+
+def index_bounds(collection: Expr, index: Expr,
+                 length: str = "array_length") -> tuple[Expr, Expr]:
+    """The two bounds an index into *collection* must meet, as the nodes a
+    message renders by :func:`format_expr`: ``0 <= index`` and
+    ``index < length(collection)``.  Built as nodes rather than joined as
+    text, so an operand keeps the parentheses its precedence needs (#1573)."""
+    return (
+        BinaryExpr(op=BinOp.LE, left=IntLit(value=0), right=index),
+        BinaryExpr(op=BinOp.LT, left=index,
+                   right=FnCall(name=length, args=(collection,))),
+    )
 
 
 def format_fn_signature(decl: FnDecl) -> str:

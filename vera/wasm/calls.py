@@ -297,21 +297,17 @@ class CallsMixin:
             arg_instrs = self._guard_nat_narrowing(arg_instrs, arg)
             instructions.extend(arg_instrs)
 
-        # #517 — emit ``return_call $target`` for tail-position
-        # calls whose WASM signature matches the current function's.
-        # The analyzer in ``vera/tail_position.py`` populates
-        # ``self._tail_call_sites`` with ids of syntactically tail-
-        # position FnCalls; the type-match guard ensures WASM
-        # ``return_call`` semantics are valid (the callee must
-        # return the same type the caller returns).  Falls back to
-        # plain ``call`` if either condition fails — never an error,
-        # just a missed optimization.  See the post-process at the
-        # end of ``_compile_fn`` in ``vera/codegen/functions.py``:
-        # for allocating functions (#549) it PREPENDS a ``$gc_sp``
-        # restore before each ``return_call`` so the shadow stack
-        # stays bounded; for functions with a runtime postcondition
-        # it REVERTS ``return_call`` → ``call`` so the post-check
-        # runs.
+        # #517 — emit ``return_call $target`` for a call the obligation
+        # table lets leave by one (``ObligationTable.tail_calls``, #1849:
+        # a call in tail position after which no check runs), whose WASM
+        # signature matches the current function's: the type-match guard
+        # keeps WASM ``return_call`` semantics valid (the callee must
+        # return the same type the caller returns).  Falls back to plain
+        # ``call`` if either condition fails — never an error, just a
+        # missed optimization.  For an allocating function (#549) the
+        # post-process at the end of ``_compile_fn`` PREPENDS a ``$gc_sp``
+        # restore before each ``return_call`` so the shadow stack stays
+        # bounded.
         is_tail = tail or id(call) in self._tail_call_sites
         callee_ret_wt: str | None = None
         if is_tail:

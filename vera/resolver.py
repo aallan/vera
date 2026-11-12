@@ -18,6 +18,7 @@ from vera.errors import (
     SourceEncodingError,
     SourceLocation,
     TransformError,
+    source_lines,
 )
 from vera.parser import parse, read_source
 from vera.transform import transform
@@ -330,8 +331,10 @@ class ModuleResolver:
         if not node.span:
             return ""
         try:
-            lines = importing_file.read_text(encoding="utf-8").splitlines()
-        except (OSError, UnicodeDecodeError):
+            # The text the parser saw: a leading byte-order mark is no
+            # part of line 1, as the node's column counts it (#1790).
+            lines = source_lines(read_source(importing_file))
+        except (OSError, SourceEncodingError):
             return ""
         idx = node.span.line - 1
         return lines[idx] if 0 <= idx < len(lines) else ""
