@@ -1873,12 +1873,10 @@ class OperatorsMixin:
         discharges the subtraction.  Each is a node rendered whole by
         :func:`ast.format_expr`, so an operand keeps the parentheses its
         precedence needs (#1573): `@Nat.1 - (@Nat.0 - @Nat.2)`."""
-        if isinstance(at, ast.BinaryExpr):
-            site = ast.format_expr(at)
-            bound = ast.format_expr(
-                ast.BinaryExpr(op=ast.BinOp.GE, left=at.left, right=at.right))
-        else:  # pragma: no cover — every caller passes the subtraction
-            site, bound = "lhs - rhs", "lhs >= rhs"
+        assert isinstance(at, ast.BinaryExpr)  # noqa: S101 — the one caller passes the subtraction
+        site = ast.format_expr(at)
+        bound = ast.format_expr(
+            ast.BinaryExpr(op=ast.BinOp.GE, left=at.left, right=at.right))
         return (
             f"@Nat subtraction `{site}` would be negative"
             f"{self._at_line(at)}: its right operand is larger than its "

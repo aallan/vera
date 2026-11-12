@@ -1138,3 +1138,82 @@ def test_the_string_index_trap_message_whole() -> None:
         'String index out of bounds (line 6): `string_char_code("abc", '
         '@Int.0 + 1)` needs `0 <= @Int.0 + 1` and '
         '`@Int.0 + 1 < string_length("abc")`, the string\'s length in bytes.')
+
+
+def test_the_resolver_quotes_nothing_from_a_file_it_cannot_read(
+        tmp_path: Path) -> None:
+    from vera.resolver import ModuleResolver
+    node = vast.IntLit(value=0, span=_span(1))
+    assert ModuleResolver._source_line(tmp_path / "absent.vera", node) == ""
+
+
+@pytest.mark.parametrize("line", sorted(_LINES))
+def test_the_verifier_quotes_the_counted_line(line: int) -> None:
+    from types import SimpleNamespace
+
+    from vera.verifier import ContractVerifier
+    verifier = SimpleNamespace(_current_source=_TEXT)
+    assert ContractVerifier._get_source_line(
+        verifier, line) == _LINES[line]  # type: ignore[arg-type]
+
+
+def _reporting_verifier(reported: list[tuple[str, str]], **reads: object):
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        _as_written=lambda node: node, _written=vast.format_expr,
+        _error=lambda node, description, **kw: reported.append(
+            (description, kw["fix"])), **reads)
+
+
+def test_e527_leaves_the_result_out_of_its_counterexample() -> None:
+    from vera.verifier import ContractVerifier
+    reported: list[tuple[str, str]] = []
+    access = vast.IndexExpr(
+        collection=vast.SlotRef(type_name="Array", type_args=None, index=0),
+        index=_A)
+    ContractVerifier._report_index_oob(
+        _reporting_verifier(reported), _named("f"), access,
+        {"@result": "1", "@Int.2": "-1"})  # type: ignore[arg-type]
+    assert reported[0][0] == (
+        "Array index in 'f' is out of bounds.\n  Counterexample:\n"
+        "      @Int.2 = -1")
+
+
+def _named(name: str) -> object:
+    from types import SimpleNamespace
+    return SimpleNamespace(name=name)
+
+
+def test_e505_names_the_predicate_it_cannot_render() -> None:
+    """A refined type whose chain the verifier cannot read: the report says
+    "the predicate" in both places, and leaves the result out."""
+    from vera.verifier import ContractVerifier
+    reported: list[tuple[str, str]] = []
+    ContractVerifier._report_refined_binding(
+        _reporting_verifier(reported, _refined_chain=lambda ty: None),
+        _named("f"), _A, None, "return type",
+        {"@result": "1", "@Int.2": "0"})  # type: ignore[arg-type]
+    description, fix = reported[0]
+    assert description == (
+        "Value narrowing into a refined return type in 'f' may violate the "
+        "refinement predicate `the predicate`.\n  Counterexample:\n"
+        "      @Int.2 = 0")
+    assert "`requires(the predicate)`" in fix
+
+
+def test_e501_quotes_an_imported_clause_from_its_own_file(
+        tmp_path: Path) -> None:
+    """The clause is quoted out of the module that declares it: the line
+    numbers its span counts are that file's."""
+    (tmp_path / "lib.vera").write_text(
+        "-- a library\n\npublic fn h(@Int -> @Int)\n"
+        "  requires(@Int.0 > 7)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  @Int.0\n}\n", encoding="utf-8")
+    (tmp_path / "main.vera").write_text(
+        "import lib(h);\n\npublic fn caller(@Int -> @Int)\n" + _H
+        + "{\n  h(0)\n}\n", encoding="utf-8")
+    verified = pipeline.verify(tmp_path / "main.vera")
+    e501 = [d for d in verified.errors if d.error_code == "E501"]
+    assert len(e501) == 1, verified.errors
+    assert e501[0].description.splitlines()[1] == (
+        "  Precondition: requires(@Int.0 > 7)")
