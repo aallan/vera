@@ -1003,8 +1003,6 @@ class ExpressionsMixin:
         # synthesized again against it (#1684).
         coll_base = base_type(coll_ty) if coll_ty is not None else None
         if (expected is not None
-                and not contains_unknown(expected)
-                and not contains_fresh_typevar(expected)
                 and isinstance(coll_base, AdtType)
                 and coll_base.name == "Array" and coll_base.type_args
                 and (contains_unknown(coll_base.type_args[0])
@@ -1591,6 +1589,13 @@ class ExpressionsMixin:
                     joined = step
                 else:
                     element_type = self._value_join(joined, typed)
+        elif typed and any(t is not None and not isinstance(t, UnknownType)
+                           and self._leaves_open(t) for t in elem_types):
+            # The structure may hold a fact only an element a call left open
+            # states (its refinement, `NeArr<..>` beside a plain array): the
+            # elements do not share it, so the element type states only the
+            # facts the elements that took part state (#1684, rule J).
+            element_type = self._value_join(structure, typed)
         held = element_type
         if ctx is not None and (contains_fresh_typevar(element_type)
                                 or contains_unknown(element_type)):
@@ -1605,7 +1610,7 @@ class ExpressionsMixin:
         failed substitution lost (`T#b`), a position no value fixes."""
         ty = base_type(ty)
         if isinstance(ty, TypeVar):
-            return "$" in ty.name or ty.name not in self.env.type_params
+            return ty.name not in self.env.type_params
         if isinstance(ty, AdtType):
             return any(self._leaves_open(a) for a in ty.type_args)
         if isinstance(ty, FunctionType):

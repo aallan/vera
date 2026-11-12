@@ -1621,3 +1621,255 @@ def test_issue_1866_an_open_argument_inside_a_branch(inside: bool) -> None:
         assert _codes(source) == ["E613"]
     else:
         assert _instances(source, "head_ord") == {("Int",)}
+
+
+# ---------------------------------------------------------------------
+# What `_leaves_open` decides (PR 1864 mutation lane): an element whose
+# type holds a type variable that is not the enclosing function's own takes
+# no part in choosing the literal's element type, wherever in its type the
+# variable stands; one that holds the enclosing function's own `T` takes
+# part like any other
+# ---------------------------------------------------------------------
+
+_OPEN_FN_PRE = """\
+type Sink<T> = fn(T -> Int) effects(pure);
+
+type Src<T> = fn(Unit -> Option<T>) effects(pure);
+
+private forall<T> fn sink(@Unit -> @Sink<T>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  fn(@T -> @Int) effects(pure) { 7 }
+}
+
+private forall<T> fn src(@Unit -> @Src<T>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  fn(@Unit -> @Option<T>) effects(pure) { None }
+}
+
+private forall<T> fn sp(@Unit -> @Tuple<Sink<T>, Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Tuple(fn(@T -> @Int) effects(pure) { 7 }, 1)
+}
+
+type NeF<T> = { @Array<Sink<T>> | array_length(@Array<Sink<T>>.0) > 0 };
+
+private forall<T> fn nef(@Unit -> @NeF<T>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  [fn(@T -> @Int) effects(pure) { 7 }]
+}
+
+"""
+
+
+def _only_the_open_element_refused(literal: str, open_call: str,
+                                   formals: str, element_type: str) -> None:
+    """`[open, a, b]` with nothing expected: the element type is the join of
+    `a` and `b` (*element_type*), and the one refusal is the open element's
+    own E162, at its column, naming that join.  Counted among the typed
+    elements, the open one breaks the join and the first element's type
+    stands, so `a` and `b` are each refused against the open type."""
+    body = f"array_length({literal})"
+    source = _OPEN_FN_PRE + _fn("f", formals, "Nat", body)
+    errors = pipeline.check(source).errors
+    column = body.index(open_call) + 3
+    assert [(e.error_code, e.location.column) for e in errors] == [
+        ("E162", column)], [e.format() for e in errors]
+    assert f"the literal's element type is {element_type}" in (
+        errors[0].description), errors[0].description
+
+
+def test_repro_an_element_open_in_a_function_parameter_takes_no_part(
+) -> None:
+    """`[sink(()), fn(@Int -> @Int), fn(@Nat -> @Int)]`: `sink`'s `T` stands
+    only at its function type's parameter, and the join of the two
+    closures is `fn(Nat -> Int)` (a parameter's polarity)."""
+    is_, ns = ("fn(@Int -> @Int) effects(pure) { 2 }",
+               "fn(@Nat -> @Int) effects(pure) { 1 }")
+    _only_the_open_element_refused(
+        f"[sink(()), {is_}, {ns}]", "sink(())", "@Unit",
+        "fn(Nat -> Int) effects(pure)")
+
+
+def test_repro_an_element_open_in_a_function_result_takes_no_part() -> None:
+    """`[src(()), .. -> Option<Nat>, .. -> Option<Int>]`: `src`'s `T` stands
+    only in its function type's result; the closures join at
+    `fn(Unit -> Option<Int>)`."""
+    nat, int_ = ("fn(@Unit -> @Option<Nat>) effects(pure) { Some(1) }",
+                 "fn(@Unit -> @Option<Int>) effects(pure) { None }")
+    _only_the_open_element_refused(
+        f"[src(()), {nat}, {int_}]", "src(())", "@Unit",
+        "fn(Unit -> Option<Int>) effects(pure)")
+
+
+def test_repro_an_element_open_in_one_component_takes_no_part() -> None:
+    """`[sp(()), @Tuple<Sink<Int>, Int>.0, @Tuple<Sink<Nat>, Int>.0]`: `sp`'s
+    type leaves one component of its `Tuple` open and fixes the other; one
+    open component makes the element open."""
+    _only_the_open_element_refused(
+        "[sp(()), @Tuple<Sink<Int>, Int>.0, @Tuple<Sink<Nat>, Int>.0]",
+        "sp(())", "@Tuple<Sink<Int>, Int>, @Tuple<Sink<Nat>, Int>",
+        "Tuple<fn(Nat -> Int) effects(pure), Int>")
+
+
+def test_repro_an_element_open_under_a_refinement_takes_no_part() -> None:
+    """`[nef(()), @Array<Sink<Int>>.0, @Array<Sink<Nat>>.0]`: `nef`'s type
+    is a refinement whose base leaves `T` open; the open part is read
+    through the refinement."""
+    _only_the_open_element_refused(
+        "[nef(()), @Array<Sink<Int>>.0, @Array<Sink<Nat>>.0]", "nef(())",
+        "@Array<Sink<Int>>, @Array<Sink<Nat>>",
+        "Array<fn(Nat -> Int) effects(pure)>")
+
+
+def test_repro_an_element_holding_the_enclosing_function_s_type_takes_part(
+) -> None:
+    """`[Tuple(@T.0, @Nat.0), Tuple(@T.0, @Int.0)][1]` inside `forall<T> fn
+    g`: `T` is the enclosing function's own, a type like any other, so both
+    elements take part and the literal is their join, `Tuple<T, Int>`; `g(true,
+    3, 0 - 5)` reads back -5.  Taken for open, both elements dropped out of
+    the choice, the first element's `Tuple<T, Nat>` stood, and the run
+    trapped binding -5 into the `Nat` component."""
+    source = _fn("g", "@T, @Nat, @Int", "Int",
+                 "match [Tuple(@T.0, @Nat.0), Tuple(@T.0, @Int.0)][1] {\n"
+                 "  Tuple(@T, @Int) -> @Int.0\n}",
+                 forall="forall<T> ") + "\n" + _fn(
+        "main", "@Unit", "Int", "g(true, 3, 0 - 5)", visibility="public")
+    checked = pipeline.check(source)
+    assert checked.ok, [e.format() for e in checked.errors]
+    arrays = {t for t in checked.artifacts.expr_types.values()
+              if t.startswith("Array<Tuple")}
+    assert arrays == {"Array<Tuple<T, Int>>"}, arrays
+    ran = pipeline.run(source)
+    assert ran.trap is None, ran.trap
+    assert ran.value == -5
+
+
+# ---------------------------------------------------------------------
+# A refinement an element a call left open carries is no type the other
+# elements share (rule J, PR 1864 mutation lane)
+# ---------------------------------------------------------------------
+
+_NE = """\
+type NeArr<T> = { @Array<T> | array_length(@Array<T>.0) > 0 };
+
+private forall<T> fn ne(@Unit -> @NeArr<Option<T>>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  [None]
+}
+
+private fn ne_int(@Unit -> @NeArr<Option<Int>>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  [None]
+}
+
+"""
+
+
+def _literal_types(body: str, formals: str) -> set[str]:
+    checked = pipeline.check(_NE + _fn("f", formals, "Nat", body))
+    assert checked.ok, [e.format() for e in checked.errors]
+    return {t for t in checked.artifacts.expr_types.values()
+            if t.startswith(("Array<Array", "Array<{"))}
+
+
+def test_repro_an_open_element_s_refinement_is_not_shared() -> None:
+    """`[ne(()), @Array<Option<Int>>.0]` with nothing expected: `ne`'s call
+    leaves `T` open, so it takes no part in the choice, and the only element
+    that does is a plain `Array<Option<Int>>`: the literal is
+    `Array<Array<Option<Int>>>` in both orders.  At de925bcc the open
+    element first gave the literal its own refinement, `NeArr`, which the
+    plain element does not state (the narrowing unguarded, E506)."""
+    plain = "@Array<Option<Int>>.0"
+    for literal in (f"[ne(()), {plain}]", f"[{plain}, ne(())]"):
+        assert _literal_types(f"array_length({literal})",
+                              "@Array<Option<Int>>") == {
+            "Array<Array<Option<Int>>>"}, literal
+
+
+def test_repro_an_open_element_s_refinement_another_states_is_kept() -> None:
+    """`[ne(()), ne_int(())]`: the element that takes part states the same
+    refinement, so the literal keeps it, in both orders."""
+    for literal in ("[ne(()), ne_int(())]", "[ne_int(()), ne(())]"):
+        assert _literal_types(f"array_length({literal})", "@Unit") == {
+            "Array<{@Array<Option<Int>> | ...}>"}, literal
+
+
+# ---------------------------------------------------------------------
+# What `_check_index`'s re-synthesis decides (PR 1864 mutation lane): an
+# index expected at a type reads an array of that type where the
+# collection's element type is unknown or a variable a call left open
+# ---------------------------------------------------------------------
+
+def test_repro_an_empty_literal_indexed_at_a_type_is_an_array_of_it(
+) -> None:
+    """`let @Int = [][0];`: the literal is synthesized again against
+    `Array<Int>`, recorded there, and the program compiles and stops at the
+    index (the trap it owes)."""
+    source = _fn("main", "@Unit", "Int", "let @Int = [][0];\n@Int.0",
+                 visibility="public")
+    checked = pipeline.check(source)
+    assert checked.ok, [e.format() for e in checked.errors]
+    assert "Array<Int>" in checked.artifacts.expr_types.values()
+    assert "Array index out of bounds" in _trap(source)
+
+
+def test_repro_an_open_call_s_element_indexed_at_a_type_takes_it() -> None:
+    """`let @Option<Int> = [none_ord(())][0];`: the element type the call
+    left open (`Option<T$n>`) is read at the index's `Option<Int>`."""
+    source = _ORD_PRE + _fn("f", "@Unit", "Int",
+                            "let @Option<Int> = [none_ord(())][0];\n0")
+    assert _instances(source, "none_ord") == {("Int",)}
+
+
+def test_repro_an_index_nothing_types_reads_its_collection_as_it_is(
+) -> None:
+    """`[][0] + 1`: no type is expected of the index, so the literal is not
+    synthesized again and keeps its unknown element type (#1862)."""
+    checked = pipeline.check(_fn("main", "@Unit", "Int", "[][0] + 1",
+                                 visibility="public"))
+    arrays = {t for t in checked.artifacts.expr_types.values()
+              if t.startswith("Array<")}
+    assert arrays == {"Array<?>"}, arrays
+
+
+def test_repro_indexing_a_function_value_is_refused() -> None:
+    """`@Endo<Int>.0[0]` expected at `Int`: a function value is no array;
+    E161, as before the re-synthesis."""
+    source = ("type Endo<T> = fn(T -> T) effects(pure);\n\n"
+              + _fn("f", "@Endo<Int>", "Int",
+                    "let @Int = @Endo<Int>.0[0];\n@Int.0"))
+    assert _codes(source) == ["E161"]
+
+
+def test_repro_an_array_with_no_element_type_is_indexed() -> None:
+    """`@Array.0[0]` expected at `Int`: an `Array` type written with no type
+    argument holds no element type to read, and the check completes."""
+    pipeline.check(_fn("f", "@Array", "Int", "let @Int = @Array.0[0];\n0"))
+
+
+def test_repro_an_unresolved_binding_type_is_reported_once() -> None:
+    """`let @Option<Nope> = empty_ord(())[0];`: the unknown type is E136,
+    one diagnostic for one defect.  At de925bcc the index was not read at
+    the type the binding names, and a second, E170 ("value has type ?"),
+    stood beside it."""
+    source = _ORD_PRE + _fn("f", "@Unit", "Int",
+                            "let @Option<Nope> = empty_ord(())[0];\n0")
+    assert _codes(source) == ["E136"]
