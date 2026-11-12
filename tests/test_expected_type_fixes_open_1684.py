@@ -1871,8 +1871,9 @@ def test_repro_indexing_a_function_value_is_refused() -> None:
 
 def test_repro_an_array_with_no_element_type_is_indexed() -> None:
     """`@Array.0[0]` expected at `Int`: an `Array` type written with no type
-    argument holds no element type to read, and the check completes."""
-    pipeline.check(_fn("f", "@Array", "Int", "let @Int = @Array.0[0];\n0"))
+    argument holds no element type to read, so the index is not read again;
+    the check accepts the program with no diagnostic, as c35763d6 does."""
+    assert _codes(_fn("f", "@Array", "Int", "let @Int = @Array.0[0];\n0")) == []
 
 
 def test_repro_an_unresolved_binding_type_is_reported_once() -> None:
@@ -1958,3 +1959,204 @@ def test_issue_1866_the_workaround_binds_at_its_type_inside_the_arm() -> None:
             f"match if @Bool.0 then {a} else {b} {{\n"
             "  Tuple(@Option<Int>, @Int) -> @Int.0\n}"))
         assert _instances(source, "head_ord") == {("Int",)}, a
+
+
+# ---------------------------------------------------------------------
+# PR 1864 mutation lane, round 2 (at 98f69a64): what the element rule, the
+# literal context check and the argument join decide, one cell each
+# ---------------------------------------------------------------------
+
+_PICK3 = _fn("pick3", "@T, @T, @T", "T", "@T.0", forall="forall<T> ")
+_ARR2 = _fn("arr2", "@Array<T>, @Array<T>", "Array<T>", "@Array<T>.0",
+            forall="forall<T> ")
+_TUP2 = _fn("tup2", "@Tuple<T, Int>, @Tuple<T, Int>", "Int", "0",
+            forall="forall<T> ")
+_NE_PAIR = """\
+type NeArr<T> = { @Array<T> | array_length(@Array<T>.0) > 0 };
+
+type IntNe = { @Array<Int> | array_length(@Array<Int>.0) > 0 };
+
+type NatNe = { @Array<Nat> | array_length(@Array<Nat>.0) > 0 };
+
+""" + _fn("ne2", "@NeArr<T>, @NeArr<T>", "Array<T>", "@NeArr<T>.0",
+          forall="forall<T> ")
+
+
+def _recorded_arrays(source: str) -> set[str]:
+    checked = pipeline.check(source)
+    return {t for t in checked.artifacts.expr_types.values()
+            if t.startswith("Array<")}
+
+
+def test_repro_an_unknown_element_context_decides_nothing() -> None:
+    """`let @Array<Nope> = [@Nat.0, @Int.0]`: the binding's type is unknown
+    (E136), so it is no context: the literal is its elements' join,
+    `Array<Int>`, and no recorded type takes the unknown name."""
+    source = _fn("f", "@Nat, @Int", "Int",
+                 "let @Array<Nope> = [@Nat.0, @Int.0];\n0")
+    assert _codes(source) == ["E136"]
+    arrays = _recorded_arrays(source)
+    assert "Array<Int>" in arrays and not any("Nope" in t for t in arrays), (
+        arrays)
+
+
+def test_repro_an_unknown_context_fixes_no_open_call() -> None:
+    """`let @Array<Option<Nope>> = [none_ord(()), @Option<Int>.0]`: the
+    open call is not synthesized again against the unknown type, and the
+    literal is `Array<Option<Int>>`, its typed element's."""
+    source = _ORD_PRE + _fn(
+        "f", "@Option<Int>", "Int",
+        "let @Array<Option<Nope>> = [none_ord(()), @Option<Int>.0];\n0")
+    assert _codes(source) == ["E136"]
+    arrays = _recorded_arrays(source)
+    assert "Array<Option<Int>>" in arrays and not any(
+        "Nope" in t for t in arrays), arrays
+
+
+def test_repro_an_unjoinable_element_stops_the_join() -> None:
+    """`[@Nat.0, "s", @Int.0]`: the `String` joins with nothing, so the
+    element type stays the first element's, `Nat`, and the one refusal is
+    the `String`'s E162 naming it."""
+    errors = pipeline.check(_fn("f", "@Nat, @Int", "Nat",
+                                'array_length([@Nat.0, "s", @Int.0])')).errors
+    assert [e.error_code for e in errors] == ["E162"]
+    assert "element type is Nat, the type of element 0" in (
+        errors[0].description), errors[0].description
+
+
+def test_repro_the_context_fills_only_what_the_element_leaves_open() -> None:
+    """`let @Array<Tuple<Int, Option<Int>>> = [Tuple(@PosInt.0, None)]`: the
+    context fills the `None`'s open payload and keeps the element's own
+    `PosInt` component: the literal is `Array<Tuple<PosInt, Option<Int>>>`.
+    Read the other way, the context's `Int` replaced the component's
+    refinement."""
+    source = ("type PosInt = { @Int | @Int.0 > 0 };\n\n"
+              + _fn("f", "@PosInt", "Int",
+                    "let @Array<Tuple<Int, Option<Int>>> = "
+                    "[Tuple(@PosInt.0, None)];\n0"))
+    assert _codes(source) == []
+    assert "Array<Tuple<{@Int | ...}, Option<Int>>>" in _recorded_arrays(
+        source)
+
+
+def test_repro_a_module_qualified_open_call_takes_the_element_type() -> None:
+    """`[ma::none_ord(())]` and `Tuple(ma::none_ord(()), 1)` in `module
+    ma;` at a typed binding: a module-qualified call is held to its context
+    as a bare one is (`none_ord` at `Int`)."""
+    for body in ("let @Array<Option<Int>> = [ma::none_ord(())];\n0",
+                 "let @Tuple<Option<Int>, Int> = Tuple(ma::none_ord(()), 1);"
+                 "\n0"):
+        source = "module ma;\n\n" + _ORD_PRE + _fn("f", "@Unit", "Int", body)
+        assert _instances(source, "none_ord") == {("Int",)}, body
+
+
+def test_repro_an_index_read_into_a_nat_meets_its_literals() -> None:
+    """`let @Nat = array_reverse([0 - 3, 5])[0]`: the index is checked
+    against `Array<Nat>`, so the `0 - 3` element is a narrowing into `Nat`,
+    refuted at `vera verify` (E503), as `let @Nat = id(0 - 3)` is (PR
+    #1583); `[3, 5]` in its place verifies."""
+    def program(literal: str) -> str:
+        return _fn("f", "@Unit", "Nat",
+                   f"let @Nat = array_reverse({literal})[0];\n@Nat.0")
+    refuted = pipeline.verify(program("[0 - 3, 5]"))
+    assert [e.error_code for e in refuted.errors] == ["E503"], [
+        e.format() for e in refuted.errors]
+    assert pipeline.verify(program("[3, 5]")).errors == ()
+
+
+def test_repro_three_arguments_two_of_which_agree_still_join() -> None:
+    """`pick3(@Nat.0, @Nat.0, @Int.0)`: two arguments agree and a third
+    does not, so `T` is their join, `Int`; read as agreement wherever any
+    two agree, it was `Nat` and the `Int` argument was refuted (E503)."""
+    source = _PICK3 + "\n" + _fn(
+        "f", "@Nat, @Int", "Int", "let @Int = pick3(@Nat.0, @Nat.0, @Int.0);\n0")
+    assert _instances(source, "pick3") == {("Int",)}
+    assert pipeline.verify(source).errors == ()
+
+
+def test_repro_an_unjoinable_argument_stops_the_argument_join() -> None:
+    """`pick3(@Nat.0, "s", @Int.0)`: the `String` joins with nothing, so
+    `T` keeps the first argument's `Nat` and the `String` is refused against
+    it (E202)."""
+    errors = pipeline.check(_PICK3 + "\n" + _fn(
+        "f", "@Nat, @Int", "Int",
+        'let @Int = pick3(@Nat.0, "s", @Int.0);\n0')).errors
+    assert [e.error_code for e in errors] == ["E202"]
+    assert "expected Nat" in errors[0].description, errors[0].description
+
+
+def test_repro_a_statically_non_negative_argument_joins_as_a_nat() -> None:
+    """`second(@Nat.0, @Nat.0 + 1)`, both orders: the `Int` argument is
+    statically non-negative (spec §4.8), read at the head where it is
+    passed, so the join is `Nat`."""
+    for call in ("second(@Nat.0, @Nat.0 + 1)", "second(@Nat.0 + 1, @Nat.0)"):
+        source = _SECOND + "\n" + _fn("f", "@Nat", "Nat", call)
+        assert _instances(source, "second") == {("Nat",)}, call
+
+
+def test_repro_an_argument_s_refinement_is_read_at_its_base() -> None:
+    """`arr2(@Array<Nat>.0, @IntNe.0)` and `ne2(@NatNe.0, @IntNe.0)`: a
+    refined argument (and a refined parameter) meets `T` through its base,
+    so `T` is the join `Int` in either order."""
+    for call in ("arr2(@Array<Nat>.0, @IntNe.0)", "arr2(@IntNe.0, @Array<Nat>.0)"):
+        source = _NE_PAIR + _ARR2 + "\n" + _fn(
+            "f", "@IntNe, @Array<Nat>", "Nat", f"array_length({call})")
+        assert _instances(source, "arr2") == {("Int",)}, call
+    for call in ("ne2(@NatNe.0, @IntNe.0)", "ne2(@IntNe.0, @NatNe.0)"):
+        source = _NE_PAIR + _fn("f", "@NatNe, @IntNe", "Nat",
+                                f"array_length({call})")
+        assert _instances(source, "ne2") == {("Int",)}, call
+
+
+def test_repro_an_argument_of_another_shape_gives_the_variable_nothing(
+) -> None:
+    """`arr2(@Option<Int>.0, @Array<Nat>.0)` and `tup2(Tuple(@Nat.0, 1),
+    Tuple(@Int.0, 1, 2))`: an argument whose type is another data type, or
+    a `Tuple` of another arity, gives `T` nothing, so the refusal (E202)
+    names the parameter at the other argument's type."""
+    errors = pipeline.check(_ARR2 + "\n" + _fn(
+        "f", "@Option<Int>, @Array<Nat>", "Nat",
+        "array_length(arr2(@Option<Int>.0, @Array<Nat>.0))")).errors
+    assert [e.error_code for e in errors] == ["E202"]
+    assert "expected Array<Nat>" in errors[0].description
+    errors = pipeline.check(_TUP2 + "\n" + _fn(
+        "f", "@Nat, @Int", "Int",
+        "tup2(Tuple(@Nat.0, 1), Tuple(@Int.0, 1, 2))")).errors
+    assert [e.error_code for e in errors] == ["E202"]
+    assert "expected Tuple<Nat, Int>" in errors[0].description
+
+
+def test_repro_a_function_of_another_arity_gives_the_variable_nothing(
+) -> None:
+    """`let @Tuple<fn(Nat, Nat -> Int), Option<Int>> = mkf(())`, with
+    `mkf(@Unit -> @Tuple<Sink<T>, Option<T>>)`: the expected function type
+    has another arity, so it gives `T` nothing and the `Option`'s payload
+    alone is read; the refusal (E170) shows `mkf`'s result with `T` fixed,
+    no open position in it."""
+    source = ("type Sink<T> = fn(T -> Int) effects(pure);\n\n"
+              + _fn("mkf", "@Unit", "Tuple<Sink<T>, Option<T>>",
+                    "Tuple(fn(@T -> @Int) effects(pure) { 7 }, None)",
+                    forall="forall<T> ") + "\n"
+              + _fn("f", "@Unit", "Int",
+                    "let @Tuple<fn(Nat, Nat -> Int) effects(pure), "
+                    "Option<Int>> = mkf(());\n0"))
+    errors = pipeline.check(source).errors
+    assert [e.error_code for e in errors] == ["E170"]
+    assert "?" not in errors[0].description.split("value has type")[1], (
+        errors[0].description)
+
+
+def test_repro_a_rigid_argument_gives_a_built_in_s_variable_nothing(
+) -> None:
+    """`map_insert(map_new(), @T.0, 1)` inside `forall<T> fn g(@T)`: the
+    enclosing function's own `T` at the key is a type variable, which gives
+    `map_insert`'s variable nothing to join; `g(5)` checks, verifies and
+    runs (the #1679 judgement's direct form)."""
+    source = (_fn("g", "@T", "Int",
+                  "nat_to_int(map_size(map_insert(map_new(), @T.0, 1)))",
+                  forall="forall<T> ", visibility="public") + "\n"
+              + _fn("main", "@Unit", "Int", "g(5)", visibility="public"))
+    assert pipeline.check(source).ok
+    assert pipeline.verify(source).ok
+    ran = pipeline.run(source)
+    assert ran.trap is None and ran.value == 1, (ran.trap, ran.value)
