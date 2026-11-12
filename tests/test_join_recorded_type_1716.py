@@ -241,7 +241,8 @@ JOINS = [
     ("@PosInt", "@Int", "0", "@PosInt.0", "Int"),
     ("@Option<PosInt>", "@Option<PosInt>", "None", "@Option<PosInt>.0",
      "Option<{Int|PosInt}>"),
-    ("@PosFn, @IntFn", "@IntFn", "@PosFn.0", "@IntFn.0", "fn(Int -> Int)"),
+    ("@PosFn, @IntFn", "@IntFn", "@PosFn.0", "@IntFn.0",
+     "fn({Int|PosInt} -> Int)"),
     ("@IntFn, @IntToPos", "@IntFn", "@IntFn.0", "@IntToPos.0",
      "fn(Int -> Int)"),
     ("@Tuple<PosInt, Int>, @Tuple<PosInt, Nat>", "@Tuple<PosInt, Int>",
@@ -443,16 +444,18 @@ _INT_PARAM = "fn(@Int -> @Int) effects(pure) {\n      1\n    }"
 
 
 @pytest.mark.parametrize("swap", [False, True], ids=["pos first", "int first"])
-def test_a_parameter_refinement_the_arms_differ_by_drops_to_the_base(
+def test_a_parameter_refinement_one_arm_states_is_what_the_join_accepts(
         swap: bool) -> None:
     """`fn(PosInt -> Int)` beside `fn(Int -> Int)` is recorded
-    `fn(Int -> Int)` in either order: the relaxation `is_subtype` already
-    admits (rule 9 with rule 7), the closure's entry check holding its
-    parameter, so the run at 0 through the `PosInt` closure traps there."""
+    `fn(PosInt -> Int)` in either order, what both closures accept.
+    Returned as an `fn(Int -> Int)` it is the relaxation `is_subtype`
+    already admits (rule 9 with rule 7), the closure's entry check holding
+    its parameter, so the run at 0 through the `PosInt` closure traps
+    there."""
     first, second = (_INT_PARAM, _POS_PARAM) if swap else (
         _POS_PARAM, _INT_PARAM)
     source = _FN_PROGRAM.format(first=first, second=second)
-    assert _recorded(source, ast.IfExpr) == ["fn(Int -> Int)"]
+    assert _recorded(source, ast.IfExpr) == ["fn({Int|PosInt} -> Int)"]
     verified = pipeline.verify(source, file=FILE)
     assert verified.ok, [(d.error_code, d.description[:80])
                          for d in verified.errors]
@@ -1660,6 +1663,7 @@ _FN_ALIASES = """\
 type Small = {{ @Int | @Int.0 < 10 }};
 type Tiny = {{ @Small | @Small.0 > 0 }};
 type Pos = {{ @Int | @Int.0 > 0 }};
+type SmallNat = {{ @Nat | @Nat.0 < 10 }};
 type NatF = fn(Nat -> Int) effects(pure);
 type IntF = fn(Int -> Int) effects(pure);
 type A = {a} effects(pure);
@@ -1681,13 +1685,18 @@ _FN_POLARITY = [
      "fn(Option<Nat> -> Int)", "fn(Option<Nat> -> Int)"),
     # a return is a value: the facts both state
     ("fn(Int -> Nat)", "fn(Int -> Int)", "fn(Int -> Int)", "fn(Int -> Int)"),
-    # a refined parameter beside its base: the base, as at a value
-    ("fn(Int -> Int)", "fn(Small -> Int)", "fn(Int -> Int)", "fn(Int -> Int)"),
-    # nested refinements: the shared prefix, as at a value
-    ("fn(Small -> Int)", "fn(Tiny -> Int)", "fn(Small -> Int)",
+    # a refined parameter beside its base: the refined one, both accept it
+    ("fn(Int -> Int)", "fn(Small -> Int)", "fn(Small -> Int)",
      "fn({Int|Small} -> Int)"),
-    # a `Nat` beside a refined `Int`: a plain `Nat`
+    # nested refinements: the longest chain, one arm's own
+    ("fn(Small -> Int)", "fn(Tiny -> Int)", "fn(Tiny -> Int)",
+     "fn({{Int|Small}|Tiny} -> Int)"),
+    # a `Nat` beside a refined `Int`: a plain `Nat`, no chain moved onto
+    # another base
     ("fn(Small -> Int)", "fn(Nat -> Int)", "fn(Nat -> Int)", "fn(Nat -> Int)"),
+    # a refinement over `Nat` beside an `Int`: its own chain, on the `Nat`
+    ("fn(SmallNat -> Int)", "fn(Int -> Int)", "fn(SmallNat -> Int)",
+     "fn({Nat|SmallNat} -> Int)"),
     # two predicates at one level: no new chain, the base
     ("fn(Small -> Int)", "fn(Pos -> Int)", "fn(Int -> Int)", "fn(Int -> Int)"),
 ]
@@ -1707,7 +1716,7 @@ def _fn_join(form: str, row: tuple[str, str, str, str], swap: bool) -> str:
 @pytest.mark.parametrize("swap", [False, True], ids=["ab", "ba"])
 @pytest.mark.parametrize("row", _FN_POLARITY, ids=[
     "param", "nested", "data", "return", "refined", "chain", "mixed",
-    "not-nested"])
+    "smallnat", "not-nested"])
 def test_a_function_join_reads_a_parameter_as_accepting(
         form: str, swap: bool, row: tuple[str, str, str, str]) -> None:
     kind = {"if": ast.IfExpr, "match": ast.MatchExpr,
@@ -1759,25 +1768,28 @@ def _refined_accepting(other: str, guard: str, swap: bool) -> str:
 
 
 @pytest.mark.parametrize("swap", [False, True], ids=["int first", "small first"])
-def test_repro_1716_a_refined_parameter_beside_its_base_is_the_base(
+def test_repro_1716_a_join_of_functions_obligates_a_refined_parameter(
         swap: bool) -> None:
-    """`fn(Int -> Int)` beside `fn(Small -> Int)`: the parameter is the
-    base `Int` in either order, as at a position that holds a value, so no
-    row is listed at `apply_fn`'s argument and the `Small` closure's entry
-    check holds its parameter: 50 handed to it traps there, as wherever
-    such a function is passed (issue #1819 revisits that relaxation).  At
-    f71c401c, with the `Small` closure second, an unconstrained argument
-    was refused (E505)."""
-    source = _refined_accepting("Small", "true", swap)
-    verified = pipeline.verify(source, file=FILE)
-    assert verified.errors == (), [(d.error_code, d.description[:80])
-                                   for d in verified.errors]
-    rows = [(o.kind, o.status) for o in verified.obligations
+    """`fn(Int -> Int)` beside `fn(Small -> Int)` accepts a `Small`, so an
+    `@Int` argument is a refinement narrowing at `apply_fn`: refused
+    (E505) where nothing bounds it, `verified` under `requires(@Int.0 <
+    10)`, in either order.  Read as the shared prefix the parameter was an
+    `Int`: no row, and the argument 50 reached the `Small` closure's entry
+    check at run time."""
+    open_ = pipeline.verify(_refined_accepting("Small", "true", swap),
+                            file=FILE)
+    rows = [(o.kind, o.status) for o in open_.obligations
             if o.fn_name == "pick" and o.kind == "refine_bind"]
-    assert rows == [], rows
-    ran = pipeline.run(source, "f", [1 if swap else 0, 50], file=FILE)
-    assert ran.trap is not None, ran
-    assert "Refinement violation" in str(ran.trap), str(ran.trap)
+    assert rows == [("refine_bind", "violated")], rows
+    assert [d.error_code for d in open_.errors] == ["E505"], [
+        (d.error_code, d.description[:80]) for d in open_.errors]
+    guarded = pipeline.verify(_refined_accepting("Small", "@Int.0 < 10", swap),
+                              file=FILE)
+    rows = [(o.kind, o.status) for o in guarded.obligations
+            if o.fn_name == "pick" and o.kind == "refine_bind"]
+    assert rows == [("refine_bind", "verified")], rows
+    assert guarded.errors == (), [(d.error_code, d.description[:80])
+                                  for d in guarded.errors]
 
 
 _MIXED = """\
@@ -1853,13 +1865,24 @@ public fn f(@Bool, @Int -> @Int)
 """
 
 
-def test_repro_1716_a_refined_parameter_join_reconciles_clean() -> None:
-    """A join of a `Small`-taking and an `Int`-taking closure applied to an
-    argument the `requires` puts in range verifies with a clean
-    reconciliation (no E541): the join's parameter is the base, so the
-    predicate's arithmetic is checked where the closure's entry check
-    holds it, as at f71c401c."""
-    verified = pipeline.verify(_OVERFLOW_PREDICATE, file=FILE, reconcile=True)
+@pytest.mark.xfail(strict=True, reason=(
+    "#1861: apply_fn of a non-slot function value loses the checks of a "
+    "refined parameter's arithmetic (E541)"))
+@pytest.mark.parametrize("swap", [False, True], ids=["small first", "int first"])
+def test_repro_1716_a_refined_parameter_join_reconciles_clean(
+        swap: bool) -> None:
+    """A join of a `Small`-taking and an `Int`-taking closure, applied to
+    an argument the `requires` puts in range, verifies with a clean
+    reconciliation (no E541), once issue #1861 is fixed: `apply_fn` of the
+    join itself loses the checks of `Small`'s arithmetic, as it does where
+    both arms are `Small`-taking; bound by a `let` first, the join
+    reconciles."""
+    source = _OVERFLOW_PREDICATE
+    if swap:
+        source = source.replace(
+            "if @Bool.0 then { @SmallToInt.0 } else { @IntToInt.0 }",
+            "if @Bool.0 then { @IntToInt.0 } else { @SmallToInt.0 }")
+    verified = pipeline.verify(source, file=FILE, reconcile=True)
     assert verified.errors == (), [(d.error_code, d.description[:80])
                                    for d in verified.errors]
     assert {d.error_code for d in verified.diagnostics} & {
@@ -2024,14 +2047,128 @@ def test_repro_1716_a_callback_s_own_callback_keeps_the_wider_row() -> None:
         assert _row_names(inner.effect) == {"IO"}, (first, recorded)
 
 
-def test_repro_1716_an_open_row_leaves_the_join_s_row() -> None:
-    """A row with a variable tail at an accepting position: no intersection
-    is taken, the join's own row stands (what the checker gave before)."""
+def test_repro_1716_an_open_row_keeps_its_variable_only_where_every_row_does() -> None:
+    """An open row at an accepting position: the effects every row names,
+    the row variable kept only where every row ends in that same variable,
+    the row closed otherwise; the join's own row never stands in."""
     from vera.checker.control import _accepted_row
     from vera.types import ConcreteEffectRow, EffectInstance, PureEffectRow
 
-    io = ConcreteEffectRow(frozenset({EffectInstance("IO", ())}))
-    open_ = ConcreteEffectRow(frozenset({EffectInstance("IO", ())}), "E")
-    assert _accepted_row([PureEffectRow(), open_], io) is io
-    assert _accepted_row([open_, PureEffectRow()], io) is io
-    assert _accepted_row([PureEffectRow(), io], io) == PureEffectRow()
+    io_i = EffectInstance("IO", ())
+    st = EffectInstance("State", (INT,))
+    io = ConcreteEffectRow(frozenset({io_i}))
+    io_e = ConcreteEffectRow(frozenset({io_i}), "E")
+    io_st_e = ConcreteEffectRow(frozenset({io_i, st}), "E")
+    io_f = ConcreteEffectRow(frozenset({io_i}), "F")
+    # the same variable on every row: kept, with the shared effects
+    assert _accepted_row([io_e, io_st_e], io_st_e) == io_e
+    assert _accepted_row([io_e, io_e], io_e) is io_e
+    # one row closed: closed at the shared effects
+    assert _accepted_row([PureEffectRow(), io_e], io_e) == PureEffectRow()
+    assert _accepted_row([io_e, io], io_e) == io
+    # two different variables: closed
+    assert _accepted_row([io_e, io_f], io_e) == io
+    # no rows: the join's own
+    assert _accepted_row([], io_e) is io_e
+
+
+_ROW_VARIABLE = """\
+type PureCb = fn(Int -> Int) effects(pure);
+type IoCb = fn(Int -> Int) effects(<IO>);
+type TakesPure = fn(PureCb -> Int) effects(pure);
+type CbE<E> = fn(Int -> Int) effects(<IO, E>);
+type TakesE<E> = fn(CbE<E> -> Int) effects(<IO, E>);
+type TakesIo = fn(IoCb -> Int) effects(<IO>);
+
+private forall<E> fn pick(@Bool, @TakesPure, @TakesE<E>, @CbE<E> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{{
+  apply_fn(if @Bool.0 then {{ {first} }} else {{ {second} }}, @CbE<E>.0)
+}}
+
+public fn f(@Bool, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{{
+  let @TakesPure = fn(@PureCb -> @Int) effects(pure) {{ apply_fn(@PureCb.0, 1) }};
+  let @IoCb = fn(@Int -> @Int) effects(<IO>) {{
+    IO.print("io ran\\n");
+    @Int.0
+  }};
+  let @TakesIo = fn(@IoCb -> @Int) effects(<IO>) {{ apply_fn(@IoCb.0, 2) }};
+  pick(@Bool.0, @TakesPure.0, @TakesIo.0, @IoCb.0)
+}}
+"""
+
+
+@pytest.mark.parametrize("swap", [False, True], ids=["pure first", "open first"])
+def test_repro_1716_a_pure_function_is_handed_no_open_row_callback(
+        swap: bool) -> None:
+    """A function taking a `pure` callback beside one taking an `<IO, E>`
+    callback takes a `pure` one, so `apply_fn` of the join to the
+    `<IO, E>` callback is refused (E202) in either order, as passing it to
+    the pure function directly is.  At f71c401c and at 291d66cd both
+    orders were accepted and the `effects(pure)` function printed
+    `io ran`."""
+    first, second = (("@TakesE<E>.0", "@TakesPure.0") if swap
+                     else ("@TakesPure.0", "@TakesE<E>.0"))
+    checked = pipeline.check(_ROW_VARIABLE.format(first=first, second=second),
+                             file=FILE)
+    assert [d.error_code for d in checked.errors] == ["E202"], [
+        (d.error_code, d.description[:80]) for d in checked.errors]
+
+
+_CALLBACK_RESULT = """\
+type PosInt = {{ @Int | @Int.0 > 0 }};
+type IntF = fn(Int -> Int) effects(pure);
+type PosF = fn(Int -> PosInt) effects(pure);
+type A = fn(IntF -> Int) effects(pure);
+type B = fn(PosF -> Int) effects(pure);
+
+private fn pick(@Bool, @A, @B, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  apply_fn(if @Bool.0 then {{ {first} }} else {{ {second} }},
+    fn(@Int -> @Int) effects(pure) {{ @Int.0 }})
+}}
+
+public fn f(@Bool, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  let @A = fn(@IntF -> @Int) effects(pure) {{ 0 }};
+  let @B = fn(@PosF -> @Int) effects(pure) {{
+    let @PosInt = apply_fn(@PosF.0, 0 - 5);
+    @PosInt.0
+  }};
+  pick(@Bool.0, @A.0, @B.0, @Int.0)
+}}
+"""
+
+
+@pytest.mark.parametrize("swap", [False, True], ids=["intf first", "posf first"])
+def test_repro_1716_a_refined_callback_result_is_recorded_at_the_arm(
+        swap: bool) -> None:
+    """`fn(IntF -> Int)` beside `fn(PosF -> Int)` is recorded
+    `fn(PosF -> Int)` in either order: the join states what both accept.
+    The run still hands the `PosF` arm an `Int`-returning closure and
+    prints -5 into its `@PosInt`, because the formal `PosF` admits a
+    `fn(Int -> Int)` argument (rule 9 with rule 7): issue #1819's
+    relaxation, which the same call made directly also takes."""
+    first, second = (("@B.0", "@A.0") if swap else ("@A.0", "@B.0"))
+    source = _CALLBACK_RESULT.format(first=first, second=second)
+    checked = pipeline.check(source, file=FILE)
+    _learn_predicates(checked)
+    types = checked.artifacts.node_semantic_types
+    (pick,) = [getattr(tl, "decl", tl) for tl in checked.program.declarations
+               if getattr(getattr(tl, "decl", tl), "name", "") == "pick"]
+    (join,) = [n for n in fold.walk(pick.body) if isinstance(n, ast.IfExpr)]
+    assert _show(types.get(join.node_id)) == "fn(fn(Int -> {Int|PosInt}) -> Int)"
+    ran = pipeline.run(source, "f", [1 if swap else 0, 0], file=FILE)
+    assert ran.trap is None and ran.value == -5, ran

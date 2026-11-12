@@ -244,27 +244,26 @@ def _shared_prefix(
 def _accepted_row(rows: list[EffectRowType],
                   joined: EffectRowType) -> EffectRowType:
     """The effect row every arm's function accepts at a position that
-    accepts a function (#1716): where each row is closed, the effects they
-    all name (`pure` beside `<IO>` is `pure`, `<IO, State<Int>>` beside
-    `<IO>` is `<IO>`); where any is open or a row variable, *joined*, the
-    join's own row."""
-    shared: frozenset[EffectInstance] | None = None
-    for row in rows:
-        if isinstance(row, PureEffectRow):
-            effects: frozenset[EffectInstance] = frozenset()
-        elif isinstance(row, ConcreteEffectRow) and row.row_var is None:
-            effects = row.effects
-        else:
-            return joined
-        shared = effects if shared is None else shared & effects
-    if shared is None:
+    accepts a function (#1716): the effects every row names (`pure` beside
+    `<IO>` is `pure`, `<IO, State<Int>>` beside `<IO>` is `<IO>`), with a
+    row variable kept only where every row ends in that same variable;
+    otherwise the row is closed at those effects (`pure` beside
+    `<IO, E>` is `pure`).  *joined*, the join's own row, comes back
+    where it is that row already, or where there are no rows."""
+    if not rows:
         return joined
-    if isinstance(joined, ConcreteEffectRow) and joined.row_var is None and (
-            joined.effects == shared):
-        return joined
-    if not shared:
+    named = [row.effects if isinstance(row, ConcreteEffectRow)
+             else frozenset[EffectInstance]() for row in rows]
+    shared = named[0].intersection(*named[1:])
+    tails = {row.row_var if isinstance(row, ConcreteEffectRow) else None
+             for row in rows}
+    (tail,) = tails if len(tails) == 1 else (None,)
+    if tail is None and not shared:
         return joined if isinstance(joined, PureEffectRow) else PureEffectRow()
-    return ConcreteEffectRow(shared)
+    if (isinstance(joined, ConcreteEffectRow) and joined.row_var == tail
+            and joined.effects == shared):
+        return joined
+    return ConcreteEffectRow(shared, tail)
 
 
 def _constrains(ty: Type, joined_base: Type) -> bool:
@@ -325,16 +324,21 @@ def _shared_facts(
     The side flips at each parameter (a parameter's own parameter holds a
     value again) and carries through a return type and a data type's
     arguments.  A function type at an accepting position has the effect row
-    every arm accepts there, the effects every closed row names
-    (`_accepted_row`: a `pure` callback beside an `<IO>` one is `pure`); an
-    open row or a row variable leaves the join's row.  At a position that
-    holds a value the row is the join's, the wider (`_join_either`).  By
-    contrast, a parameter's refinements are the arms' shared prefix, a
-    refinement one arm lacks dropped to the base (a `Nat` arm beside a
-    refined `Int` arm gives a plain `Nat`, never a chain moved onto another
-    base): the relaxation `is_subtype` already admits at any site of that
-    function type (rule 9 with rule 7), each function's own entry check
-    holding its parameter (issue #1819 revisits it).  Binding the join where
+    every arm accepts there, the effects every row names, a row variable
+    kept only where every row ends in it (`_accepted_row`: a `pure`
+    callback beside an `<IO>` one, or an `<IO, E>` one, is `pure`).  At a
+    position that holds a value the row is the join's, the wider
+    (`_join_either`).  A parameter's refinements are what every arm
+    accepts too: where the arms' chains are nested and the arm that owns
+    the longest has the position's base (after the `Nat` rule), that arm's
+    own chain, so `fn(Int -> X)` beside `fn(Small -> X)` is
+    `fn(Small -> X)`; a chain is never moved onto another base (a refined
+    `Int` beside a `Nat` gives a plain `Nat`).  Where two chains state
+    different predicates at one level the parameter has the shared prefix,
+    the relaxation `is_subtype` already admits at any site of that function
+    type (rule 9 with rule 7, issue #1819); that remainder is held by an
+    entry check only where one exists, a closure's own parameter and its
+    data components, never a callback's result.  Binding the join where
     a refined type is expected is then the narrowing it is, obligated by its
     leaves.
     """
@@ -411,6 +415,16 @@ def _shared_at(
         if (ret is not base.return_type or effect is not base.effect
                 or any(p is not q for p, q in zip(params, base.params))):
             shared_base = FunctionType(tuple(params), ret, effect)
+    if accepting and stating:
+        # What every arm accepts: where the chains are nested and the arm
+        # that owns the longest has the position's base, that arm's own
+        # chain; otherwise the shared prefix above.
+        chains = [_refinement_chain(ty) for _, ty in stating]
+        owner_base, longest = max(chains, key=lambda chain: len(chain[1]))
+        if owner_base == shared_base and all(
+                _shared_prefix(chain, longest) == chain
+                for _, chain in chains):
+            kept = longest
     if shared_base is base and kept == predicates:
         return joined
     out = shared_base
