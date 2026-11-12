@@ -377,6 +377,42 @@ def type_expr_of(ty: Type,
     base where the predicate names its binder by the alias: there the base
     is that name, the one the predicate binds; a predicate naming its
     binder two ways is written by no spelling, and gives ``None``."""
+    return _written_with_binder(ty, declared)[0]
+
+
+def _written_with_binder(
+    ty: Type, declared: Collection[str],
+) -> tuple[_ast.TypeExpr | None, _ast.TypeExpr | None]:
+    """:func:`type_expr_of`'s expression for *ty*, and the name a
+    refinement over *ty* binds: the expression itself, except for a
+    refinement, whose name is its own base's (a refinement of a refinement
+    keeps its inner layer).  Read off the types, so the binder is the one
+    the checker resolved rather than one taken back apart from the
+    expression written for it (#1525)."""
+    from vera import ast as a
+    if isinstance(ty, RefinedType):
+        base, named = _written_with_binder(ty.base, declared)
+        if base is None or named is None:
+            return None, None
+        bound = _predicate_binder_spellings(ty.predicate)
+        if bound is None or len(bound) > 1:
+            return None, None
+        if bound:
+            ((spelled, (head, head_args)),) = bound.items()
+            if a.format_type(named) != spelled:
+                # The predicate names its binder by an alias the checker
+                # resolved (`{ @Count | @Count.0 > 0 }` over `Count = Nat`):
+                # the base is written as that name, which the predicate
+                # binds, so the type is the one the program declared.
+                base = named = a.NamedType(head, head_args)
+        return a.RefinementType(base, ty.predicate), named
+    written = _written_plain(ty, declared)
+    return written, written
+
+
+def _written_plain(ty: Type,
+                   declared: Collection[str]) -> _ast.TypeExpr | None:
+    """:func:`type_expr_of` for a type that is not a refinement."""
     from vera import ast as a
     if isinstance(ty, PrimitiveType):
         return a.NamedType(ty.name, None)
@@ -386,27 +422,6 @@ def type_expr_of(ty: Type,
             return None
         return a.NamedType(
             ty.name, tuple(t for t in args if t is not None) or None)
-    if isinstance(ty, RefinedType):
-        base = type_expr_of(ty.base, declared)
-        if base is None:
-            return None
-        bound = _predicate_binder_spellings(ty.predicate)
-        if bound is None or len(bound) > 1:
-            return None
-        if bound:
-            ((spelled, (head, head_args)),) = bound.items()
-            # The binder a refinement's base binds is its innermost name: a
-            # refinement of a refinement keeps its inner layer.
-            named = base
-            while isinstance(named, a.RefinementType):
-                named = named.base_type
-            if a.format_type(named) != spelled:
-                # The predicate names its binder by an alias the checker
-                # resolved (`{ @Count | @Count.0 > 0 }` over `Count = Nat`):
-                # the base is written as that name, which the predicate
-                # binds, so the type is the one the program declared.
-                base = a.NamedType(head, head_args)
-        return a.RefinementType(base, ty.predicate)
     if isinstance(ty, TypeVar):
         return a.NamedType(ty.name, None) if ty.name in declared else None
     if isinstance(ty, FunctionType):
