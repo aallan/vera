@@ -953,6 +953,20 @@ class ExpressionsMixin:
         `let @Nat = array_reverse([0 - 3, 5])[0]` is refused (E503) as
         `let @Nat = id(0 - 3)` is."""
         coll_ty = self._synth_expr(expr.collection)
+        # An element expected at a type is read from an array of that
+        # type: a collection whose element type nothing fixed (an empty
+        # literal, `[[]][0]`) is synthesized again against it (#1684).
+        coll_base = base_type(coll_ty) if coll_ty is not None else None
+        if (expected is not None
+                and not contains_unknown(expected)
+                and not contains_fresh_typevar(expected)
+                and isinstance(coll_base, AdtType)
+                and coll_base.name == "Array" and coll_base.type_args
+                and contains_unknown(coll_base.type_args[0])):
+            again = self._synth_expr(
+                expr.collection, expected=AdtType("Array", (expected,)))
+            if again is not None:
+                coll_ty = again
         if expected is not None:
             coll_ty = self._check_in_literal_context(
                 expr.collection, coll_ty, AdtType("Array", (expected,)))
@@ -1357,6 +1371,15 @@ class ExpressionsMixin:
                          expected: Type | None = None) -> Type | None:
         """Type-check an array literal."""
         if not expr.elements:
+            # An empty literal takes its element type from its context
+            # (spec §4.12.1, #1684); with none it is unknown.
+            ctx = base_type(expected) if expected is not None else None
+            if (isinstance(ctx, AdtType) and ctx.name == "Array"
+                    and len(ctx.type_args) == 1
+                    and not contains_unknown(ctx.type_args[0])
+                    and not contains_fresh_typevar(ctx.type_args[0])
+                    and not contains_literal_hole(ctx.type_args[0])):
+                return AdtType("Array", (ctx.type_args[0],))
             return AdtType("Array", (UnknownType(),))
         self._clear_element_targets(expr)
 

@@ -719,3 +719,65 @@ def test_an_expected_element_type_holds_each_element(order: str) -> None:
     assert [row for row in _narrowed(source)
             if row[1] == "@Int.0" or row[1].startswith("[")] == [
         ("violated", "@Int.0")]
+
+# ---------------------------------------------------------------------
+# E and I: an empty literal takes its type from the context, and an index
+# expected at a type reads an array of that type
+# ---------------------------------------------------------------------
+
+#: Forms where `[][0]` (or a deeper empty) meets a type: the body of a
+#: `main` returning `Int`.
+_TYPED_EMPTY_INDEX = {
+    "let": "let @Int = [][0];\n@Int.0",
+    "return": "[][0]",
+    "argument": 'string_length([][0]) + 0',
+    "nested": "let @Int = [[]][0][0];\n@Int.0",
+}
+
+
+@pytest.mark.parametrize("form", list(_TYPED_EMPTY_INDEX))
+def test_an_index_the_context_types_reads_an_array_of_that_type(
+        form: str) -> None:
+    """At 6e272f19 each form checked with the index's element type
+    unknown, `vera verify` warned that code generation skipped `main`
+    (E602), and `vera run` refused it (E907, function dropped).  The type
+    the index is expected at types the empty literal (`Array<Int>`, or
+    `Array<String>` for `string_length`'s argument), and the program
+    compiles and stops at the index, the trap it owes."""
+    source = _fn("main", "@Unit", "Int", _TYPED_EMPTY_INDEX[form],
+                 visibility="public")
+    if form == "argument":
+        source = source.replace("string_length([][0]) + 0",
+                                "nat_to_int(string_length([][0]))")
+    checked = pipeline.check(source)
+    assert checked.ok, [e.format() for e in checked.errors]
+    assert "Array index out of bounds" in _trap(source)
+
+
+def test_an_empty_literal_takes_the_binding_s_element_type() -> None:
+    """`let @Array<Int> = [];` records the literal at `Array<Int>`."""
+    source = _fn("main", "@Unit", "Nat",
+                 "let @Array<Int> = [];\narray_length(@Array<Int>.0)",
+                 visibility="public")
+    checked = pipeline.check(source)
+    assert checked.ok
+    recorded = checked.artifacts.expr_types
+    assert "Array<Int>" in recorded.values(), recorded
+    assert pipeline.run(source).value == 0
+
+
+@pytest.mark.parametrize("form", [
+    "match [][0] {\n  _ -> 1\n}",
+    'nat_to_int(string_length("\\([][0])"))',
+    "[][0] + 1",
+])
+def test_an_index_no_context_types_is_left_to_1862(form: str) -> None:
+    """With no type around it the index's element type stays unknown, with
+    no diagnostic: the check accepts, `vera verify` warns that `main` is
+    skipped (E602) and `vera run` refuses it (E907).  Issue #1862 refuses
+    such an index at check; this pins where it stands until then."""
+    source = _fn("main", "@Unit", "Int", form, visibility="public")
+    assert pipeline.check(source).ok
+    warnings = {w.error_code
+                for w in pipeline.verify(source, reconcile=True).warnings}
+    assert "E602" in warnings, warnings

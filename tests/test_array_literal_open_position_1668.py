@@ -308,9 +308,14 @@ def test_repro_rigid_type_variable_fills_the_position() -> None:
 
 
 def test_repro_if_branch_fills_the_empty_branch() -> None:
+    # The empty literal takes the `Array<Nat>` the argument expects of
+    # each branch (spec §4.12.1, #1684 rule E), as a `None` branch takes
+    # `Option<Nat>`: the branches then disagree (E301) and the `if` meets
+    # the parameter (E202), both at the `if`, as `Some("abc")` beside
+    # `None` is reported at 6e272f19.
     checked = _checked(_IF_FIRST)
-    assert _where(checked) == [
-        ("E202", *_place(_IF_FIRST, 'if true then { ["abc"] } else { [] }'))]
+    at = _place(_IF_FIRST, 'if true then { ["abc"] } else { [] }')
+    assert _where(checked) == [("E301", *at), ("E202", *at)]
 
 
 def test_repro_match_arm_of_another_type_after_an_open_arm() -> None:
@@ -583,7 +588,8 @@ def _build(cell: _Cell) -> _Built:
     if filler.joined is None and (cell.context == "bare" or (
             cell.head == "array" and cell.context == "generic")):
         # No context, or an empty literal's element type at a generic
-        # call's argument, which waits for rule E.
+        # call's argument: a generic's arguments are given no expected
+        # type, so nothing fixes it.
         element = wrap_type.format(t=head.open_recorded)
     elif filler.joined is None:
         # A position the parts leave open takes the type the context
