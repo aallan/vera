@@ -871,3 +871,94 @@ def test_the_universal_form_finds_a_planted_check(
     compiled = pipeline.compile(_UNGUARDED, file=FILE)
     assert scan.found == ["return_call $:wrap"]
     assert len(_internal_errors(compiled)) == 1
+
+
+# =====================================================================
+# The walk and the refusal's diagnostic, cell by cell
+# =====================================================================
+
+
+def _m() -> str:
+    from vera.trap_registry import check_marker
+    return "nop" + check_marker(1)
+
+
+def test_the_walk_ends_at_the_function_without_a_closing_line() -> None:
+    from vera.codegen.functions import checks_after
+    assert checks_after(["return_call $:g", "local.set 1"], 0) is False
+    assert checks_after(["return_call $:g", "else", "nop"], 0) is False
+
+
+def test_the_walk_stops_at_the_functions_closing_parenthesis() -> None:
+    """A check of the next function is not on this one's path."""
+    from vera.codegen.functions import checks_after
+    assert checks_after(["return_call $:g", "  )", _m()], 0) is False
+    assert checks_after(["return_call $:g", "  (func $:h", _m()], 0) is False
+
+
+def test_the_walk_resumes_right_after_an_empty_other_arm() -> None:
+    from vera.codegen.functions import checks_after
+    assert checks_after(["return_call $:g", "else", "end", _m()], 0) is True
+
+
+def test_the_walk_skips_a_nested_block_in_the_other_arm() -> None:
+    """The other arm's nested `if ... end` is skipped whole, and the check
+    after the enclosing `end` is on the path."""
+    from vera.codegen.functions import checks_after
+    lines = ["return_call $:g", "else", "if", "end", "end", _m()]
+    assert checks_after(lines, 0) is True
+    other_arm_only = ["return_call $:g", "else", "if", "end", _m(), "end"]
+    assert checks_after(other_arm_only, 0) is False
+
+
+def test_the_refusal_records_every_field_it_is_given() -> None:
+    """`CodeGenerator._error` carries the fix and spec_ref the tripwire's
+    `E699` gives, beside its rationale, code and source line, and leaves
+    each field it is not given empty."""
+    compiled = pipeline.compile(_UNGUARDED, file=FILE)
+    gen = compiled.generator
+    assert gen is not None
+    (decl,) = [tld.decl for tld in compiled.parsed.program.declarations
+               if getattr(tld.decl, "name", "") == "f"]
+    gen._error(decl, "given", rationale="r", error_code="E699", fix="x",
+               spec_ref="s")
+    given = gen.diagnostics[-1]
+    assert (given.description, given.rationale, given.error_code, given.fix,
+            given.spec_ref, given.severity) == (
+        "given", "r", "E699", "x", "s", "error")
+    assert "fn f(" in given.source_line
+    gen._error(decl, "bare")
+    bare = gen.diagnostics[-1]
+    assert (bare.rationale, bare.error_code, bare.fix, bare.spec_ref) == (
+        "", "", "", "")
+
+
+_ANSWERED = """\
+private fn pos(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+
+public fn f(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(pure)
+{
+  pos(@Int.0)
+}
+"""
+
+
+def test_repro_a_row_another_check_answers_keeps_the_tail_call() -> None:
+    """The `call_pre` row at `pos(@Int.0)` is answered by `pos`'s own
+    `requires` check, at its entry, so nothing runs after the call and it
+    keeps its `return_call`: the rule cuts a call only for a row with a
+    check of its own."""
+    compiled = pipeline.compile(_ANSWERED, file=FILE)
+    rows = [row for row in compiled.generator._obligations.rows
+            if row.kind == "call_pre" and row.fn == "f"]
+    assert rows and all(row.answered_by is not None for row in rows)
+    assert "return_call $:pos" in _func(compiled.wat, "f")

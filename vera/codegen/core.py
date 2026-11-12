@@ -809,7 +809,7 @@ class CodeGenerator(
             rationale=rationale,
             fix=fix,
             spec_ref=spec_ref,
-            severity="error",
+            severity="error",  # pragma: no mutate — `Diagnostic`'s default severity is "error"
             error_code=error_code,
         ))
         self._diag_fn_keys[id(self.diagnostics[-1])] = self._compiling_fn_key
