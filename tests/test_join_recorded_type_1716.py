@@ -2172,3 +2172,106 @@ def test_repro_1716_a_refined_callback_result_is_recorded_at_the_arm(
     assert _show(types.get(join.node_id)) == "fn(fn(Int -> {Int|PosInt}) -> Int)"
     ran = pipeline.run(source, "f", [1 if swap else 0, 0], file=FILE)
     assert ran.trap is None and ran.value == -5, ran
+
+
+_NON_EMPTY_JOIN = """\
+type NonEmpty = {{ @Array<Int> | array_length(@Array<Int>.0) > 0 }};
+type A = fn(NonEmpty -> Int) effects(pure);
+type B = fn(Array<Int> -> Int) effects(pure);
+
+private fn pick(@Bool, @A, @B, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  let @Array<Int> = [@Int.0];
+  apply_fn(if @Bool.0 then {{ {first} }} else {{ {second} }}, @Array<Int>.0)
+}}
+
+public fn f(@Bool, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  let @A = fn(@NonEmpty -> @Int) effects(pure) {{ @NonEmpty.0[0] }};
+  let @B = fn(@Array<Int> -> @Int) effects(pure) {{ 0 }};
+  pick(@Bool.0, @A.0, @B.0, @Int.0)
+}}
+"""
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "#1861: apply_fn of a non-slot function value loses the run-time check "
+    "of an argument obligation that is neither proved nor refuted (E541)"))
+@pytest.mark.parametrize("swap", [False, True], ids=["nonempty first",
+                                                     "array first"])
+def test_repro_1716_a_tier3_argument_into_a_join_reconciles_clean(
+        swap: bool) -> None:
+    """`fn(NonEmpty -> Int)` beside `fn(Array<Int> -> Int)`, applied to
+    `[@Int.0]`: the join's parameter is `NonEmpty` in either order, so the
+    argument is obligated; the solver neither proves nor refutes it
+    (`tier3`, E506), and the run-time check it rests on is the one issue
+    #1861 loses where the function operand is not a slot reference, so
+    `vera verify` reports E541.  Bound by a `let` first, the join
+    reconciles.  Once #1861 is fixed this verifies with no E541."""
+    first, second = (("@B.0", "@A.0") if swap else ("@A.0", "@B.0"))
+    verified = pipeline.verify(
+        _NON_EMPTY_JOIN.format(first=first, second=second), file=FILE,
+        reconcile=True)
+    assert {d.error_code for d in verified.diagnostics} & {
+        "E541", "W004"} == set()
+
+
+_MIXED_CALLBACK_RESULT = """\
+type PosInt = {{ @Int | @Int.0 > 0 }};
+type PosF = fn(Int -> PosInt) effects(pure);
+type NatF = fn(Int -> Nat) effects(pure);
+type A = fn(NatF -> Int) effects(pure);
+type B = fn(PosF -> Int) effects(pure);
+
+private fn pick(@Bool, @A, @B, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  apply_fn(if @Bool.0 then {{ {first} }} else {{ {second} }},
+    fn(@Int -> @Nat) effects(pure) {{ 0 }})
+}}
+
+public fn f(@Bool, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  let @A = fn(@NatF -> @Int) effects(pure) {{ 0 }};
+  let @B = fn(@PosF -> @Int) effects(pure) {{
+    let @PosInt = apply_fn(@PosF.0, 3);
+    @PosInt.0
+  }};
+  pick(@Bool.0, @A.0, @B.0, @Int.0)
+}}
+"""
+
+
+@pytest.mark.parametrize("swap", [False, True], ids=["natf first", "posf first"])
+def test_repro_1716_a_mixed_base_callback_result_is_held_by_no_check(
+        swap: bool) -> None:
+    """`fn(NatF -> Int)` beside `fn(PosF -> Int)`: the callback's result is
+    a `Nat` beside a refined `Int`, a mixed base, so no chain is kept and
+    the join records the `NatF` callback in either order.  A
+    `Nat`-returning callback then reaches the arm that binds its result at
+    `@PosInt`, and the run returns 0 from it: no entry check holds a
+    callback's result.  The same call made directly is as silent, at
+    f71c401c too: issue #1819's relaxation at the formal."""
+    first, second = (("@B.0", "@A.0") if swap else ("@A.0", "@B.0"))
+    source = _MIXED_CALLBACK_RESULT.format(first=first, second=second)
+    checked = pipeline.check(source, file=FILE)
+    assert checked.ok, [(d.error_code, d.description[:80])
+                        for d in checked.errors]
+    types = checked.artifacts.node_semantic_types
+    (pick,) = [getattr(tl, "decl", tl) for tl in checked.program.declarations
+               if getattr(getattr(tl, "decl", tl), "name", "") == "pick"]
+    (join,) = [n for n in fold.walk(pick.body) if isinstance(n, ast.IfExpr)]
+    assert _show(types.get(join.node_id)) == "fn(fn(Int -> Nat) -> Int)"
+    ran = pipeline.run(source, "f", [1 if swap else 0, 0], file=FILE)
+    assert ran.trap is None and ran.value == 0, ran

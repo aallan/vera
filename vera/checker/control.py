@@ -338,7 +338,9 @@ def _shared_facts(
     the relaxation `is_subtype` already admits at any site of that function
     type (rule 9 with rule 7, issue #1819); that remainder is held by an
     entry check only where one exists, a closure's own parameter and its
-    data components, never a callback's result.  Binding the join where
+    data components, never a callback's result; a callback's result whose
+    arms differ by base (a `Nat` beside a refined `Int`, where no chain is
+    kept) is held by none either.  Binding the join where
     a refined type is expected is then the narrowing it is, obligated by its
     leaves.
     """
