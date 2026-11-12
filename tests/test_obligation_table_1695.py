@@ -1656,7 +1656,7 @@ def test_mover_a_clause_binder_over_a_container_payload_is_walked(
 
 _LATER_ELEMENT = """\
 public fn f(@Int -> @Nat)
-  requires(true)
+  requires({req})
   ensures(true)
   effects(pure)
 {
@@ -1666,21 +1666,31 @@ public fn f(@Int -> @Nat)
 """
 
 
+def _later_element(order: str, req: str) -> str:
+    a, b, i = ("@Nat.0", "@Int.0", "1") if order == "nat_first" else (
+        "@Int.0", "@Nat.0", "0")
+    return (_LATER_ELEMENT.replace("{a}", a).replace("{b}", b)
+            .replace("{i}", i).replace("{req}", req))
+
+
 @pytest.mark.parametrize("order", ["nat_first", "int_first"])
 def test_mover_a_later_array_element_is_guarded(
         tmp_path: Path, order: str) -> None:
     """`[@Nat.0, @Int.0][1]` returned at `@Nat`, and `[@Int.0, @Nat.0][0]`
-    in the other order: nothing is expected of the
-    literal itself, so its elements join at `Int` (spec §4.12.1, #1684)
-    and the narrowing is the result's, guarded at the return in both
-    orders, so `f(-5)` traps there.  Before #1684 the first element fixed
-    the element type: in this order the `@Int` element was guarded (once
-    the store guard read the literal's own row, #1695's line, where `f(-5)`
-    had printed -5), in the swapped one the return."""
-    a, b, i = ("@Nat.0", "@Int.0", "1") if order == "nat_first" else (
-        "@Int.0", "@Nat.0", "0")
-    source = (_LATER_ELEMENT.replace("{a}", a).replace("{b}", b)
-              .replace("{i}", i))
+    in the other order: nothing is expected of the literal itself, so its
+    elements join at `Int` (spec §4.12.1, #1684), and the narrowing is the
+    returned element's, an `Int` the solver sees through the index to the
+    unconstrained `@Int`: refuted (E503) in both orders, the guard at the
+    return, and `f(-5)` traps there.  Before #1684 the first element fixed
+    the element type: in this order the `@Int` element was a run-time
+    check (tier 3, guarded once the store guard read the literal's own
+    row, #1695's line, where `f(-5)` had printed -5), and `vera verify`
+    passed; the swapped order was E503 at the return already."""
+    source = _later_element(order, "true")
+    v = _verified(source, "l.vera")
+    assert [e.error_code for e in v.errors] == ["E503"], _codes(v)
+    assert _records(v, "nat_bind") == [("violated", 7, 3)], _records(
+        v, "nat_bind")
     compiled = pipeline.compile(source, file="l.vera")
     assert compiled.ok
     guards = pipeline.checks(compiled.result, kind="nat_guard")
@@ -1688,6 +1698,22 @@ def test_mover_a_later_array_element_is_guarded(
     ran = _run(tmp_path, source, "f", "-5")
     assert ran.returncode != 0 and "Negative value bound into a @Nat slot" in (
         ran.stdout + ran.stderr), ran.stdout + ran.stderr[-300:]
+
+
+@pytest.mark.parametrize("order", ["nat_first", "int_first"])
+def test_mover_a_later_array_element_verifies_from_a_precondition(
+        tmp_path: Path, order: str) -> None:
+    """The same with `requires(@Int.0 >= 0)`: the return's narrowing is
+    proved (before #1684 this order's element narrowing was a run-time
+    check), so `vera verify` passes and `f(5)` runs to 5."""
+    source = _later_element(order, "@Int.0 >= 0")
+    v = _verified(source, "l.vera")
+    assert v.errors == (), _codes(v)
+    assert _records(v, "nat_bind") == [("verified", 7, 3)], _records(
+        v, "nat_bind")
+    ran = _run(tmp_path, source, "f", "5")
+    assert ran.returncode == 0 and ran.stdout.strip() == "5", (
+        ran.stdout + ran.stderr[-300:])
 
 
 def test_mover_the_second_guard_on_a_clause_binders_use_goes() -> None:
