@@ -34,20 +34,20 @@
     <text class="m t" x="248" y="102" font-size="11.5px">WebAssembly.Module.imports(module)</text>
     <text class="f d" x="248" y="120">discover exactly which host functions it requires</text>
   </g>
-  <line class="edge" x1="530" y1="106" x2="570" y2="106" marker-end="url(#arr)"/>
+  <line class="edge" x1="530" y1="106" x2="556" y2="106" marker-end="url(#arr)"/>
 
   <g>
-    <rect class="card" x="574" y="80" width="310" height="52" rx="10"/>
-    <rect x="574.5" y="80.5" width="4" height="51" rx="2" fill="#5a9e6f"/>
-    <text class="f t" x="592" y="102">build the import object with only those bindings</text>
-    <text class="f d" x="592" y="120">hello-world needs one (<tspan class="m" font-size="10px">print</tspan>); markdown-heavy, dozens</text>
+    <rect class="card" x="560" y="80" width="324" height="52" rx="10"/>
+    <rect x="560.5" y="80.5" width="4" height="51" rx="2" fill="#5a9e6f"/>
+    <text class="f t" x="578" y="102">build the import object with only those bindings</text>
+    <text class="f d" x="578" y="120">hello-world needs one (<tspan class="m" font-size="10px">print</tspan>); markdown-heavy, dozens</text>
   </g>
-  <polyline class="edge" points="729,132 729,156" marker-end="url(#arr)"/>
+  <polyline class="edge" points="722,132 722,156" marker-end="url(#arr)"/>
 
   <g>
-    <rect class="card" x="574" y="158" width="310" height="40" rx="10"/>
-    <rect x="574.5" y="158.5" width="4" height="39" rx="2" fill="#cc9966"/>
-    <text class="f t" x="592" y="183">instantiate; the program runs in the page</text>
+    <rect class="card" x="560" y="158" width="324" height="40" rx="10"/>
+    <rect x="560.5" y="158.5" width="4" height="39" rx="2" fill="#cc9966"/>
+    <text class="f t" x="578" y="183">instantiate; the program runs in the page</text>
   </g>
 
   <!-- state pattern-matching -->
