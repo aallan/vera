@@ -2890,9 +2890,9 @@ The standard library and built-in effects have the following limitations, each t
 <!-- render_lists:begin limitations -->
 | Limitation | Issue |
 |-----------|-------|
-| No date or time handling beyond `IO.time` — no ISO 8601 parsing, formatting, or arithmetic | [#233](https://github.com/aallan/vera/issues/233) |
+| No date or time handling beyond `IO.time` (no ISO 8601 parsing, formatting, or arithmetic) | [#233](https://github.com/aallan/vera/issues/233) |
 | No cryptographic primitives (hashing, HMAC) | [#235](https://github.com/aallan/vera/issues/235) |
 | No CSV parsing or generation | [#236](https://github.com/aallan/vera/issues/236) |
-| `Http`: fixed request headers — no custom header support; `Http`: response status codes are not accessible; `Http`: no per-request timeout control; `Http`: browser runtime uses deprecated synchronous XMLHttpRequest; `Http`: GET and POST only — no PUT, PATCH, or DELETE | [#351](https://github.com/aallan/vera/issues/351) |
-| `Inference.complete`: `max_tokens` and `temperature` are not configurable; `Inference`: no `embed` operation (vector embeddings); `Inference`: no user-defined handlers — `handle[Inference]` is rejected; Host imports cannot return `Array<Float64>` (`alloc_result_ok_float_array` infrastructure) | [#370](https://github.com/aallan/vera/issues/370) |
+| `Http`: fixed request headers, no custom header support; `Http`: response status codes are not accessible; `Http`: no per-request timeout control; `Http`: browser runtime uses deprecated synchronous XMLHttpRequest; `Http`: GET and POST only, no PUT, PATCH, or DELETE | [#351](https://github.com/aallan/vera/issues/351) |
+| `Inference.complete`: `max_tokens` and `temperature` are not configurable; `Inference`: no `embed` operation (vector embeddings); `Inference`: no user-defined handlers (`handle[Inference]` is rejected); Host imports cannot return `Array<Float64>` (`alloc_result_ok_float_array` infrastructure) | [#370](https://github.com/aallan/vera/issues/370) |
 <!-- render_lists:end limitations -->
