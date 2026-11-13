@@ -76,6 +76,6 @@
   </g>
 
   <!-- footer -->
-  <text class="f footi" x="36" y="248">Ten releases chosen for the capability each unlocked, not even spacing —</text>
+  <text class="f footi" x="36" y="248">Ten releases, chosen for the capability each unlocked rather than for even spacing:</text>
   <text class="f footi" x="36" y="264">first release → runs end-to-end → GC → Inference → LSP → soundness → HttpServer → WASI serve → zero known bugs → first PyPI release.</text>
 </svg>
