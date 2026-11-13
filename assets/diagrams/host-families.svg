@@ -35,7 +35,7 @@
 
   <!-- IO inline card -->
   <g>
-    <rect class="card" x="36" y="88" width="256" height="120" rx="10"/>
+    <rect class="card" x="36" y="88" width="268" height="120" rx="10"/>
     <rect x="36.5" y="88.5" width="4" height="119" rx="2" fill="#8b6cad"/>
     <text class="f t" x="54" y="110">IO: inline, by design</text>
     <text class="f d" x="54" y="128">IO is execute()'s <tspan font-weight="600">observation channel</tspan>:</text>
@@ -45,7 +45,7 @@
     <text class="f d" x="54" y="186">tee → live streaming. Moving it out would</text>
     <text class="f d" x="54" y="200">relocate a cohesive unit without decoupling it.</text>
   </g>
-  <line class="edge" x1="292" y1="117" x2="326" y2="117" marker-end="url(#arr)"/>
+  <line class="edge" x1="304" y1="117" x2="326" y2="117" marker-end="url(#arr)"/>
 
   <!-- browser card -->
   <g>
