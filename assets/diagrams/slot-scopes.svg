@@ -1,5 +1,5 @@
 <svg width="920" height="412" viewBox="0 0 920 412" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
-  <title id="title">De Bruijn slot resolution: parameters bind left to right into scope 0, a let pushes a new binding in scope 1, and @Int.n counts backwards from the most recent Int binding — so @Int.0 is the let, @Int.1 the second parameter, @Int.2 the first.</title>
+  <title id="title">De Bruijn slot resolution: parameters bind left to right into scope 0, a let pushes a new binding in scope 1, and @Int.n counts backwards from the most recent Int binding, so @Int.0 is the let, @Int.1 the second parameter, @Int.2 the first.</title>
   <!-- Design system: see architecture.svg. Grounded in vera/README.md + DE_BRUIJN.md. -->
   <defs>
     <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
@@ -22,7 +22,7 @@
   <rect x="1.5" y="1.5" width="917" height="409" rx="14" fill="#faf9f7" stroke="#e8e6e1" stroke-width="1.5"/>
 
   <text class="f micro" x="36" y="42">SLOT REFERENCES · @Int.0 IS THE MOST RECENT BINDING</text>
-  <text class="f sub" x="36" y="64">Indices count backwards through the scope stack — not forwards through the parameter list.</text>
+  <text class="f sub" x="36" y="64">Indices count backwards through the scope stack, not forwards through the parameter list.</text>
 
   <!-- code card -->
   <g>
@@ -48,9 +48,9 @@
     <rect x="72" y="346" width="96" height="30" rx="15" fill="#f3f2ef" stroke="#e8e6e1"/>
     <text class="m t" x="120" y="366" text-anchor="middle">@Int.2</text>
   </g>
-  <text class="f d" x="200" y="266" fill="#3d7a4d">most recent — the let binding</text>
-  <text class="f d" x="200" y="316" fill="#7a756d">one before — param₂ (rightmost)</text>
-  <text class="f d" x="200" y="366" fill="#7a756d">two before — param₁</text>
+  <text class="f d" x="200" y="254" fill="#3d7a4d">most recent: the let binding</text>
+  <text class="f d" x="200" y="304" fill="#7a756d">one before: param₂ (rightmost)</text>
+  <text class="f d" x="200" y="354" fill="#7a756d">two before: param₁</text>
 
   <!-- scope stack -->
   <g>
@@ -77,5 +77,5 @@
   <polyline class="edge" points="168,361 540,361 540,167 572,167" marker-end="url(#arr)"/>
 
   <!-- footer -->
-  <text class="f footi" x="36" y="396">Commutative operators mask a wrong index — subtraction, division, comparison and recursive-call order do not. `vera check --explain-slots` prints this table.</text>
+  <text class="f footi" x="36" y="396">Commutative operators mask a wrong index; subtraction, division, comparison and recursive-call order do not. vera check --explain-slots prints the parameter rows.</text>
 </svg>
