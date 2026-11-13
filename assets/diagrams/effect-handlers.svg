@@ -67,8 +67,9 @@
 
   <!-- abort variant -->
   <polyline class="edge" points="690,344 690,376 662,376" stroke-dasharray="4 3" marker-end="url(#arr)"/>
-  <rect x="252" y="364" width="406" height="24" rx="12" fill="#ffffff" stroke="#cfccc5" stroke-width="1" stroke-dasharray="4 3"/>
-  <text class="f note" x="455" y="380" text-anchor="middle">alternative: the clause never calls <tspan class="m" font-size="10px">resume</tspan> → the body aborts (how <tspan class="m" font-size="10px">Exn&lt;E&gt;</tspan> is built)</text>
+  <rect x="252" y="364" width="406" height="40" rx="12" fill="#ffffff" stroke="#cfccc5" stroke-width="1" stroke-dasharray="4 3"/>
+  <text class="f note" x="455" y="380" text-anchor="middle">alternative: the clause never calls <tspan class="m" font-size="10px">resume</tspan> → the body aborts</text>
+  <text class="f note" x="455" y="396" text-anchor="middle">(how <tspan class="m" font-size="10px">Exn&lt;E&gt;</tspan> is built)</text>
 
   <!-- footer -->
   <text class="f footi" x="36" y="428">The handler owns the continuation: resume(v) supplies the operation's return value; omitting resume abandons the body.</text>
