@@ -1,6 +1,6 @@
 # Testing
 
-This is the single source of truth for Vera's testing infrastructure, coverage data, and test conventions.
+Vera's testing infrastructure, coverage data and test conventions.
 
 ## Overview
 
@@ -25,7 +25,7 @@ This block, the [test file table](#test-files), the [skipped tests](#skipped-tes
 
 | Measure | Where it is |
 |---------|-------------|
-| **Compiler code coverage** | 95% Python, 87% JavaScript (CI minimum: 94%); see [Compiler Code Coverage](#compiler-code-coverage) |
+| **Compiler code coverage** | 97% Python, 87% JavaScript (CI minimum: 94%); see [Compiler Code Coverage](#compiler-code-coverage) |
 | **Documentation code blocks** | `check_doc_examples.py` prints each gated document's Vera blocks by stage and category on every run; see [Documentation example pipeline](#documentation-example-pipeline) |
 | **Contract verification** | the tiers `vera verify --json` reports over the examples; see [Contract Verification Coverage](#contract-verification-coverage) |
 | **CI matrix** | the platforms and Python versions [README § Supported platforms](README.md#supported-platforms) lists, plus browser parity (Node.js 22) and the wheel-availability preflight; see [CI Pipeline](#ci-pipeline) |
@@ -122,7 +122,7 @@ mypy vera/                                           # strict mode
 python scripts/check_conformance.py                  # the conformance suite (every program in manifest.json)
 python scripts/check_examples.py                     # every example program
 python scripts/check_doc_examples.py                 # every agent-facing doc's Vera blocks: parse + check + verify + vera:run
-python scripts/check_wheel_availability.py           # pre-flight: every runtime dep has wheels for all supported platforms (#691 backstop)
+python scripts/check_wheel_availability.py           # pre-flight: every runtime dep has wheels for all supported platforms
 python scripts/render_status.py --github --junit PATH # the release PR: rewrite this file's generated status, the scorecard's network and junit rows too
 ```
 
@@ -447,13 +447,13 @@ One row per test file: its tests as a full collection counts them (the stress te
 
 The conformance suite is a collection of small, focused programs in `tests/conformance/`, named by spec chapter and feature, that validate the language against the spec. Most programs are self-contained; the module-focused Chapter 8 cases use `import` statements where needed, and `ch07_cross_module_contracts.vera` depends on `ch07_cross_module_contracts_lib.vera`. Each program tests one feature or a small group of related features.
 
-Simon Willison [argues](https://simonwillison.net/tags/conformance-suites/) that conformance suites are a "huge unlock" for language projects — they transform development from trust-based to verification-based. The conformance suite serves as the definitive specification artifact that any implementation (or agent) can validate against.
+Simon Willison [argues](https://simonwillison.net/tags/conformance-suites/) that a conformance suite moves a language project from trusting an implementation to verifying it. Vera's suite is the executable form of the specification, which any implementation, or an agent, can validate against.
 
 ### Three-layer testing model
 
-Vera has three distinct test layers, each serving a different purpose:
+Vera has three test layers, each with its own purpose:
 
-![The three test layers — unit tests for compiler internals, spec-anchored conformance programs, end-to-end examples — and the four nested conformance levels: parse, check, verify, run.](assets/diagrams/testing-layers.svg)
+![The three test layers (unit tests for compiler internals, spec-anchored conformance programs, end-to-end examples) and the four nested conformance levels: parse, check, verify, run.](assets/diagrams/testing-layers.svg)
 
 | Layer | Location | Purpose | What it tests |
 |-------|----------|---------|---------------|
@@ -474,7 +474,7 @@ Each conformance program declares the deepest pipeline stage it must pass:
 | `verify` | Type-checks and all contracts verified by Z3 |
 | `run` | Compiles to WASM and executes correctly |
 
-Most programs are at the `run` level: they compile and execute, producing correct results.  A program stops at an earlier level when it cannot go further.  A library module has no `main` of its own, so it is pinned at the deepest level it reaches: `verify` when it carries contracts to prove, `check` otherwise.  A program with typed holes type-checks but never compiles.  A feature can need what CI does not have: `ch09_http` makes outbound HTTP requests and `ch09_inference` needs a provider key.  And a **negative fixture** must fail: the negative fixtures are the entries with `expected_error` in `tests/conformance/manifest.json`, each declared at `check` and required to fail with that diagnostic code at the stage `expected_error_stage` names — `check` by default, or `compile` for a diagnostic the checker accepts and code generation refuses, where the harness also asserts that the program type-checks cleanly first.  The [status block](#overview) counts the programs at each level and the negative fixtures.
+Most programs are at the `run` level: they compile and execute, producing correct results.  A program stops at an earlier level when it cannot go further.  A library module has no `main` of its own, so it is pinned at the deepest level it reaches: `verify` when it carries contracts to prove, `check` otherwise.  A program with typed holes type-checks but never compiles.  A feature can need what CI does not have: `ch09_http` makes outbound HTTP requests and `ch09_inference` needs a provider key.  And a **negative fixture** must fail: the negative fixtures are the entries with `expected_error` in `tests/conformance/manifest.json`, each declared at `check` and required to fail with that diagnostic code at the stage `expected_error_stage` names: `check` by default, or `compile` for a diagnostic the checker accepts and code generation refuses, where the harness also asserts that the program type-checks cleanly first.  The [status block](#overview) counts the programs at each level and the negative fixtures.
 
 ### Skipped tests
 
@@ -669,7 +669,7 @@ tests/conformance/
 ├── ch01_int_literals.vera     # Chapter 1: Integer literals
 ├── ch01_float_literals.vera   # Chapter 1: Float64 literals
 ├── ch01_string_escapes.vera   # Chapter 1: String escape sequences
-├── ...                        # one program per feature, organized by spec chapter
+├── ...                        # one program per feature, organised by spec chapter
 ├── ch07_state_handler.vera    # Chapter 7: State<T> effect handler
 ├── ch07_exn_handler.vera      # Chapter 7: Exn<E> effect handler
 ├── ch09_numeric_builtins.vera # Chapter 9: Numeric built-in functions
@@ -694,15 +694,15 @@ tests/conformance/
   "title": "Arithmetic operators",
   "level": "run",
   "spec_ref": "Section 4.1",
-  "expected_stdout": "15\n",
+  "expected_stdout": "add 15\nsub 5\nmul 50\ndiv 2\nmod 1\nneg -42\n",
   "expected_exit": 0,
   "features": ["add", "sub", "mul", "div", "mod", "unary_neg"]
 }
 ```
 
-The manifest is the machine-readable feature inventory — agents can query it to find which features exist and where they are tested.
+The manifest is the machine-readable feature inventory: an agent can query it to find which features exist and where they are tested.
 
-A run-level entry also declares what its run does, and the run stage holds the program to it: `expected_exit` is the exit status of `vera run <file>`, and `expected_stdout` is everything the run writes to stdout, exactly, as a JSON string (`"15\n"` above, because `vera run` prints a returned value and ends its output with a newline).  An exit status of 0 is not a pass on its own: a program that prints the wrong value, or nothing, exits 0 too, and so does a self-checking `main` that returns its failure code, which `vera run` prints rather than exits with.  A program whose output is not a function of its source carries `"nondeterministic_stdout": "<reason>"` in place of `expected_stdout`, as `ch07_io_time_stderr` does because it prints the wall clock; the reason is required, never a bare flag, and the exit status is still compared.  No entry carries both, and no entry below the run level carries any of the three, which `test_every_run_level_entry_declares_its_run` enforces.  `scripts/conformance_golden.py` holds the rule, and `tests/test_conformance.py` and `scripts/check_conformance.py` both use it, so the two cannot disagree.  The run reads an empty stdin and gets the inherited environment less the variables that change what a program does (`VERA_DB_URL` and the provider keys, the list `scripts/check_examples_run.py` keeps); `VERA_EAGER_GC` passes through, so the eager-GC lane holds every program to the same output.  The suite runs `vera run` in process, into a stream that writes as a process's text-mode stdout does, so stdout is compared as the bytes a pipe from `vera` carries, each newline as the platform's line separator.  A run still going after its budget (`RUN_TIMEOUT_SECONDS`) ends the worker that holds it, with its traceback in the log, and pytest-xdist reports the test it was running; `scripts/check_conformance.py` runs each program as a process and stops one past the same budget as a mismatch naming the program.  Neither stalls the job.  A value is pinned from what the program prints today only once it has been checked against the program's source, since a wrong output pinned is a wrong output enforced.
+A run-level entry also declares what its run does, and the run stage holds the program to it: `expected_exit` is the exit status of `vera run <file>`, and `expected_stdout` is everything the run writes to stdout, exactly, as a JSON string (above, every line the program prints, each ended by a newline).  An exit status of 0 is not a pass on its own: a program that prints the wrong value, or nothing, exits 0 too, and so does a self-checking `main` that returns its failure code, which `vera run` prints rather than exits with.  A program whose output is not a function of its source carries `"nondeterministic_stdout": "<reason>"` in place of `expected_stdout`, as `ch07_io_time_stderr` does because it prints the wall clock; the reason is required, never a bare flag, and the exit status is still compared.  No entry carries both, and no entry below the run level carries any of the three, which `test_every_run_level_entry_declares_its_run` enforces.  `scripts/conformance_golden.py` holds the rule, and `tests/test_conformance.py` and `scripts/check_conformance.py` both use it, so the two cannot disagree.  The run reads an empty stdin and gets the inherited environment less the variables that change what a program does (`VERA_DB_URL` and the provider keys, the list `scripts/check_examples_run.py` keeps); `VERA_EAGER_GC` passes through, so the eager-GC lane holds every program to the same output.  The suite runs `vera run` in process, into a stream that writes as a process's text-mode stdout does, so stdout is compared as the bytes a pipe from `vera` carries, each newline as the platform's line separator.  A run still going after its budget (`RUN_TIMEOUT_SECONDS`) ends the worker that holds it, with its traceback in the log, and pytest-xdist reports the test it was running; `scripts/check_conformance.py` runs each program as a process and stops one past the same budget as a mismatch naming the program, so neither stalls the job.  A value is pinned from what the program prints today only once it has been checked against the program's source, since a wrong output pinned is a wrong output enforced.
 
 ### Running the conformance suite
 
@@ -710,7 +710,7 @@ A run-level entry also declares what its run does, and the run stage holds the p
 # Via pytest (parametrized: five stages for each manifest entry)
 pytest tests/test_conformance.py -v
 
-# Via standalone script (used in CI)
+# Via standalone script (each program as a process)
 python scripts/check_conformance.py
 ```
 
@@ -725,7 +725,7 @@ The pytest runner (`test_conformance.py`) parametrizes over every manifest entry
 5. Add an entry to `manifest.json` with the appropriate level and feature tags; a `run`-level entry also gets `expected_stdout`, what `vera run` prints, checked against the program rather than copied unread, and `expected_exit`, or a `nondeterministic_stdout` reason in place of `expected_stdout` (see [Manifest](#manifest))
 6. Run `python scripts/check_conformance.py` to validate
 
-When implementing a new language feature, write the conformance program *first* — this is test-driven development against the spec.
+When implementing a new language feature, write the conformance program *first*: test-driven development against the spec.
 
 ## Compiler Code Coverage
 
@@ -733,56 +733,56 @@ Coverage by module, measured by `pytest --cov=vera`.  A test's child Python proc
 
 | Module | Stmts | Miss | Coverage |
 |--------|------:|-----:|---------:|
-| `wasm/` | 11,130 | 566 | 95% |
-| `codegen/` | 3,605 | 239 | 93% |
-| `checker/` | 1,223 | 68 | 94% |
-| `lsp/` | 492 | 52 | 89% |
-| `obligations/` | 188 | 1 | 99% |
-| `browser/` | 21 | 0 | 100% |
-| `verifier.py` | 702 | 31 | 96% |
-| `transform.py` | 617 | 24 | 96% |
-| `formatter.py` | 675 | 49 | 93% |
-| `ast.py` | 462 | 17 | 96% |
-| `smt.py` | 651 | 32 | 95% |
-| `markdown.py` | 413 | 54 | 87% |
-| `types.py` | 182 | 7 | 96% |
-| `errors.py` | 129 | 1 | 99% |
-| `environment.py` | 339 | 8 | 98% |
-| `cli.py` | 583 | 29 | 95% |
-| `parser.py` | 45 | 0 | 100% |
-| `resolver.py` | 68 | 2 | 97% |
-| `slots.py` | 41 | 5 | 88% |
-| `skip.py` | 12 | 3 | 75% |
-| `tester.py` | 389 | 3 | 99% |
-| `prelude.py` | 188 | 9 | 95% |
-| `registration.py` | 18 | 0 | 100% |
-| `__init__.py` | 2 | 0 | 100% |
-| **Total** | **22,174** | **1,200** | **95%** |
+| `wasm/` | 12,559 | 467 | 96% |
+| `checker/` | 4,907 | 121 | 98% |
+| `codegen/` | 4,447 | 212 | 95% |
+| `verifier.py` | 4,364 | 185 | 96% |
+| `smt.py` | 1,753 | 59 | 97% |
+| `runtime/` | 1,574 | 48 | 97% |
+| `obligations/` | 1,357 | 27 | 98% |
+| `cli.py` | 1,003 | 22 | 98% |
+| `formatter.py` | 922 | 23 | 98% |
+| `typed.py` | 829 | 25 | 97% |
+| `tester.py` | 795 | 13 | 98% |
+| `transform.py` | 708 | 21 | 97% |
+| `lsp/` | 690 | 18 | 97% |
+| `monomorphize.py` | 563 | 23 | 96% |
+| `types.py` | 560 | 21 | 96% |
+| `ast.py` | 446 | 1 | 100% |
+| `markdown.py` | 438 | 3 | 99% |
+| `binding.py` | 435 | 5 | 99% |
+| `narrowing.py` | 404 | 23 | 94% |
+| `naming.py` | 397 | 10 | 97% |
+| `reconcile.py` | 342 | 5 | 99% |
+| `errors.py` | 285 | 2 | 99% |
+| `environment.py` | 273 | 6 | 98% |
+| `fold.py` | 224 | 7 | 97% |
+| `builtins.py` | 216 | 2 | 99% |
+| `trap_registry.py` | 200 | 9 | 96% |
+| `callgraph.py` | 195 | 2 | 99% |
+| `regularity.py` | 185 | 10 | 95% |
+| The other 22 modules and packages | 1,490 | 41 | 97% |
+| **Total** | **42,561** | **1,411** | **97%** |
 
-The lowest-coverage files of any size are `vera/lsp/server.py` at 64% (pygls feature-registration glue, exercised end-to-end by editors rather than by unit tests) and `wasm/inference.py` at 80% (deep type-dispatch branches for specific builtin return types).
+Measured by the coverage job on `main` at 559ca8fb.  The lowest-coverage files of any size are in `wasm/`: `inference.py` at 81% (deep type-dispatch branches for specific built-in return types), `calls.py` at 88%, `calls_containers.py` at 88% and `data.py` at 88%.
 
 ## Contract Verification Coverage
 
-Vera's verifier classifies each contract into one of three tiers. **Tier 1** contracts are proved correct statically by Z3; the non-trivial runtime check is still emitted as a defensive backstop (code generation is tier-agnostic — see spec §11.8), so a Tier-1 proof means the guard provably never fires, not that it is absent. **Tier 3** contracts cannot be fully decided by the SMT solver, so their runtime check is the only line of defence. The verifier never rejects a valid program; it simply warns when a contract drops to Tier 3.
+Vera's verifier classifies each contract into one of three tiers. **Tier 1** contracts are proved statically by Z3; the non-trivial runtime check is still emitted as a defensive backstop (code generation is tier-agnostic, spec §11.8), so a Tier 1 proof means the guard provably never fires, not that it is absent. **Tier 3** contracts cannot be decided by the SMT solver, so their runtime check is the only line of defence. The verifier never rejects a valid program; it warns when a contract drops to Tier 3.
 
-Across the example programs (live sums of `vera verify --json`; regenerate by summing the `verification` block over `examples/*.vera`):
+Across the example programs (the sums of `vera verify --json`'s `verification` block over `examples/*.vera`):
 
-These totals are measured at the DEFAULT per-query Z3 budget of 10,000 ms, with
-`VERA_Z3_TIMEOUT_MS` unset and no `--timeout-ms` flag. The budget is part of the
-measurement, not a detail of it: an obligation whose proof lands near it is Tier 1
-on a fast host and Tier 3 on a slow one, so a re-derived total that disagrees with
-the figures below should be checked against the budget before it is treated as
-drift ([#1350](https://github.com/aallan/vera/issues/1350)).
+These totals are measured at the default per-query Z3 budget of 10,000 ms, with `VERA_Z3_TIMEOUT_MS` unset and no `--timeout-ms` flag. The budget is part of the measurement: an obligation whose proof lands near it is Tier 1 on a fast host and Tier 3 on a slow one, so a re-derived total that disagrees with the figures below should be checked against the budget before it is treated as drift.
 
 | Metric | Value |
 |--------|-------|
-| **Tier 1 (static)** | 411 obligations — proved automatically by Z3 |
-| **Tier 3 (runtime)** | 122 obligations — checked at runtime |
-| **Total** | 533 obligations (77.1% static; the summary's `total` field equals `tier1_verified + tier3_runtime`, derived from the reified obligation stream) |
+| **Tier 1 (static)** | 478 obligations, proved automatically by Z3 |
+| **Tier 3 (runtime)** | 105 obligations, checked at runtime |
+| **Total** | 583 obligations (82.0% static; the summary's `total` field equals `tier1_verified + tier3_runtime`, derived from the reified obligation stream) |
 
-The Tier 3 population is dominated by a few built-in-heavy examples (`life.vera` 29, `maximum_syntax.vera` 11, `collections.vera` 10, `array_utilities.vera` 9, `nested_closures.vera` 7, `string_utilities.vera` 6), with a long tail of one to five per example across twenty more.  The recurring reasons: postconditions over collection/string/HTML built-in pipelines outside the decidable fragment, `decreases` metrics the fragment cannot express, `old`/`new` state modelling (not implemented), and generic type parameters without a Z3 sort.
+Measured at 9d71d17e.  A few built-in-heavy examples hold most of the Tier 3 population (`life.vera` 15, `maximum_syntax.vera` 13, `ephemeris.vera` 13, `collections.vera` 8, `array_utilities.vera` 7), with a long tail of one to five per example across nineteen more.  The recurring reasons are postconditions over collection, string and HTML built-in pipelines outside the decidable fragment, `decreases` metrics the fragment cannot express, `old`/`new` state modelling (not implemented), and generic type parameters without a Z3 sort.
 
-The Tier 1 fragment covers: integer/boolean arithmetic, comparisons, if/else, let bindings, match expressions, ADT constructors, function calls (modular postcondition), `length`, and `decreases` clauses (self-recursive, mutual recursion via where-blocks, Nat and structural ADT measures).
+The Tier 1 fragment covers integer and Boolean arithmetic, comparisons, if/else, let bindings, match expressions, ADT constructors, function calls (modular postcondition), `array_length`, and `decreases` clauses (self-recursive, mutual recursion through where-blocks, Nat and structural ADT measures).
 
 ## Language Feature Coverage
 
@@ -792,7 +792,7 @@ How Vera language features (by spec chapter) map to test files and example progr
 |-------------|---------|-----------|-------------|----------|
 | Ch 1: Lexical | Literals (Int, Float64, Bool, Byte, String) | test_ast, test_codegen_* | ch01_int_literals, ch01_float_literals, ch01_bool_literals, ch01_byte_literals | most examples |
 | Ch 1: Lexical | String escape sequences (`\n`, `\t`, `\\`, `\"`, `\r`, `\0`, `\u{XXXX}`) | test_ast, test_codegen_* | ch01_string_escapes | io_operations, file_io |
-| Ch 1: Lexical | Comments | test_parser | ch01_comments | — |
+| Ch 1: Lexical | Comments | test_parser | ch01_comments | none |
 | Ch 2: Types | Int, Nat, Bool, String, Float64, Byte, Unit | test_codegen_*, test_checker_* | ch02_builtin_types | most examples |
 | Ch 2: Types | ADTs (algebraic data types), Option, Result | test_codegen_*, test_checker_* | ch02_adt_basic, ch02_adt_recursive, ch02_option_result | pattern_matching, list_ops |
 | Ch 2: Types | Refinement types | test_codegen_*, test_verifier_* | ch02_refinement_types | refinement_types, safe_divide |
@@ -810,44 +810,38 @@ How Vera language features (by spec chapter) map to test files and example progr
 | Ch 6: Contracts | Quantifiers (forall, exists) | test_codegen_*, test_verifier_* | ch06_quantifiers | quantifiers |
 | Ch 7: Effects | Pure, IO, State\<T\> | test_codegen_*, test_checker_* | ch07_pure, ch07_io, ch07_state_handler | hello_world, increment, io_operations, file_io |
 | Ch 7: Effects | Effect handlers (State\<T\>, Exn\<E\>) | test_codegen_*, test_checker_* | ch07_state_handler, ch07_exn_handler | effect_handler |
-| Ch 9: Stdlib | Numeric builtins (abs, min, max, floor, ceil, round, sqrt, pow) | test_codegen_*, test_checker_* | ch09_numeric_builtins | — |
-| Ch 9: Stdlib | Type conversions (int_to_float, float_to_int, nat_to_int, int_to_nat, byte_to_int, int_to_byte) | test_codegen_*, test_checker_* | ch09_type_conversions | — |
-| Ch 9: Stdlib | Float64 predicates (float_is_nan, float_is_infinite, nan, infinity) | test_codegen_*, test_checker_* | ch09_float_predicates | — |
-| Ch 7: Effects | Effect subtyping (§7.8), call-site checking | test_types, test_checker_* | — | — |
-| Ch 2: Types | Bidirectional type checking (local inference) | test_checker_* | — | — |
+| Ch 9: Stdlib | Numeric builtins (abs, min, max, floor, ceil, round, sqrt, pow) | test_codegen_*, test_checker_* | ch09_numeric_builtins | none |
+| Ch 9: Stdlib | Type conversions (int_to_float, float_to_int, nat_to_int, int_to_nat, byte_to_int, int_to_byte) | test_codegen_*, test_checker_* | ch09_type_conversions | none |
+| Ch 9: Stdlib | Float64 predicates (float_is_nan, float_is_infinite, nan, infinity) | test_codegen_*, test_checker_* | ch09_float_predicates | none |
+| Ch 7: Effects | Effect subtyping (§7.8), call-site checking | test_types, test_checker_* | none | none |
+| Ch 2: Types | Bidirectional type checking (local inference) | test_checker_* | none | none |
 | Ch 4: Expressions | Nested constructor patterns in match | test_codegen_* | ch04_match_nested | pattern_matching |
-| Ch 8: Modules | Imports, cross-module typing and codegen | test_codegen_modules, test_resolver | — | modules |
-| Ch 11: Compilation | Every declaration under its link name: two modules' same-named declarations compile apart (#1694) | test_resolver_1694, test_codegen_modules | — | — |
+| Ch 8: Modules | Imports, cross-module typing and codegen | test_codegen_modules, test_resolver | none | modules |
+| Ch 11: Compilation | Every declaration under its link name: two modules' same-named declarations compile apart | test_resolver_1694, test_codegen_modules | none | none |
 | Ch 9: Stdlib | Markdown (md_parse, md_render, md_has_heading, md_has_code_block, md_extract_code_blocks) | test_codegen_*, test_markdown | ch09_markdown | markdown |
 | Ch 9: Stdlib | Regex (regex_match, regex_find, regex_find_all, regex_replace) | test_codegen_*, test_checker_* | ch09_regex | regex |
 | Ch 9: Stdlib | Map, Set, Decimal collections | test_codegen_*, test_checker_* | ch09_map, ch09_set, ch09_decimal, ch09_decimal_generics | collections |
 | Ch 9: Stdlib | Json (json_parse, json_stringify, json_get, json_array_get, json_array_length, json_keys, json_has_field, json_type) | test_codegen_*, test_checker_* | ch09_json | json |
 | Ch 9: Stdlib | Html (html_parse, html_to_string, html_query, html_text, html_attr) | test_codegen_*, test_checker_* | ch09_html | html |
 | Ch 9: Stdlib | Http effect (Http.get, Http.post) | test_codegen_*, test_checker_* | ch09_http | http |
-| Ch 9: Stdlib | Async/Future\<T\> effect (async, await, #841 concurrency) | test_checker_effects, test_codegen_effects | ch09_async | — |
-| Ch 7: Effects | HttpServer marker effect, `vera serve` (§7.7.5, #305) | test_serve, test_checker_effects | ch09_http_server | http_server |
-| Ch 11: Compilation | Contract-driven testing (Z3 input gen + WASM execution) | test_tester, test_tester_distrust, test_distrust_corpus, test_cli | — | safe_divide, factorial |
-| Ch 12: Runtime | Browser runtime parity (JS host bindings match Python) | test_browser | — | — |
-| Ch 13: WASI | WASI Preview 2 target (component emission, wasip2 host runner, dual-target differential); `--world server` wasi:http components (§13.7) | test_wasi_target | run-level suite via the dual-target differential | — |
+| Ch 9: Stdlib | Async/Future\<T\> effect (async, await, #841 concurrency) | test_checker_effects, test_codegen_effects | ch09_async | none |
+| Ch 7: Effects | HttpServer marker effect, `vera serve` (§7.7.5) | test_serve, test_checker_effects | ch09_http_server | http_server |
+| Ch 11: Compilation | Contract-driven testing (Z3 input gen + WASM execution) | test_tester, test_tester_distrust, test_distrust_corpus, test_cli | none | safe_divide, factorial |
+| Ch 12: Runtime | Browser runtime parity (JS host bindings match Python) | test_browser | none | none |
+| Ch 13: WASI | WASI Preview 2 target (component emission, wasip2 host runner, dual-target differential); `--world server` wasi:http components (§13.7) | test_wasi_target | run-level suite via the dual-target differential | none |
 
 ## Test Helpers
 
 `tests/pipeline.py` is the suite's one driver for the compiler pipeline.  It has one function per stage (`parse`, `check`, `verify`, `compile`, `run` and `contract_test`), each of which runs the stages before it in process, wired as the CLI wires them, and returns the stage's result: `ok`, the diagnostics in the order the CLI reports them, the artefact the stage made, and `envelope()`, the object `vera <stage> --json` prints.  A stage takes source text or a path, and a path's imports resolve from its directory, as the CLI resolves them.  Reading an artefact a stage did not make raises what stopped it: the parse error, the trap, or `StageFailed` naming the errors of the stage that refused the program.  `cli()` runs `vera.cli.main` in process for a test that crosses the CLI.  `tests/checker_helpers.py`, `tests/verifier_helpers.py`, `tests/codegen_helpers.py` and `tests/module_fixture_helpers.py` are layers over it.  Every stage after the check runs on a program the check accepts, with the checker's tables, as the commands do.  `verify` is the verification stage, as `vera verify --no-reconcile` runs it; `verify(..., reconcile=True)` also compiles the program and joins its records with the module's checks, as `vera verify` does by default, and its diagnostics and envelope are that command's.  `checks` reads the runtime checks a compiled module holds from its record, `CompileResult.emitted_checks`, by trap kind, emitter, obligation, function, path or prelude, which is how a test asks whether a module holds a check; the WAT text answers how a check is rendered, and `scripts/check_record_assertions.py` fails a test that asks the text what the record answers.  `tests/test_pipeline.py` holds `check`, `verify` in both modes and `compile` to their commands over the whole corpus, `run` over every conformance program whose run is pinned and over programs that trap or exit through `IO.exit`, `compile` also over a program that compiles to no export, and `contract_test` over three examples, and `scripts/check_test_drivers.py` fails a test helper that drives a stage itself ([Test Fixture Conventions](#test-fixture-conventions)).
 
-A test module's other helpers are its own rather than shared through `conftest.py`, which carries only session-scoped fixtures — opt-in JS coverage, and the `VERA_Z3_TIMEOUT_MS` scrub that stops tier assertions inheriting an ambient solver budget, so the ones that do not name a budget of their own measure the default (#1350) — an explicit `timeout_ms=` outranks the environment and was never exposed — bar the one that runs a test under the budget its `budget` or `stress` marker names, and one reporting hook, which sums the counts `test_distrust_corpus.py` records into a single session line.  The
-three split suites are the exception: the `test_checker_*.py` files (split from
-`test_checker.py`, #420) import their shared helpers from
-`tests/checker_helpers.py`; the `test_codegen_*.py` feature files (split from
-`test_codegen.py`, #419) import theirs — plus the `_IO_PRELUDE` /
-`_INLINE_BUILTIN_NAMES` fixture constants — from `tests/codegen_helpers.py`; the two `json_parse` accept-domain batteries (#1306 / #1308) share their Vera probe program, its JSON-into-a-Vera-literal escaper, the `OK:` / `ERR:` output protocol and the two integer-overflow boundary constants through `tests/json_domain_helpers.py`, because a reference-host battery and a cross-host one only mean the same thing if they send `json_parse` the same bytes — one mutation of that escaper reddens both, which is the property a second copy would quietly lose;
-and the `test_verifier_*.py` theme files (split from `test_verifier.py`, #839)
-import theirs — plus the `EXAMPLES_DIR` / `ALL_EXAMPLES` corpus constants and
-the `_MK` source template — from `tests/verifier_helpers.py`.
+A test module's other helpers are its own rather than shared through `conftest.py`.  `conftest.py` holds four autouse fixtures and two hooks.  Three fixtures are session-scoped: the scrub of an inherited `VERA_Z3_TIMEOUT_MS`, so a tier assertion that names no budget of its own measures the default (an explicit `timeout_ms=` still outranks the environment); the scrub of every inherited `GIT_*` variable, so a test's git never reaches the repository being committed ([A test's git must not reach the repository being committed](#a-tests-git-must-not-reach-the-repository-being-committed)); and the opt-in JS coverage directory.  The fourth, `_marked_budget`, runs a test under the budget its `budget` or `stress` marker names.  `pytest_configure` hands the watchdog its stderr, and `pytest_terminal_summary` sums the counts `test_distrust_corpus.py` records into a single session line.
+
+Four groups of test files share helpers through a module of their own: the `test_checker_*.py` files import theirs from `tests/checker_helpers.py`; the `test_codegen_*.py` feature files import theirs, with the `_INLINE_BUILTIN_NAMES` fixture constant, from `tests/codegen_helpers.py`; the `test_verifier_*.py` theme files import theirs, with the `EXAMPLES_DIR` / `ALL_EXAMPLES` corpus constants and the `_MK` source template, from `tests/verifier_helpers.py`; and the two `json_parse` accept-domain batteries share their Vera probe program, its JSON-into-a-Vera-literal escaper, the `OK:` / `ERR:` output protocol and the two integer-overflow boundary constants through `tests/json_domain_helpers.py`.  The batteries share them because a reference-host battery and a cross-host one only mean the same thing if they send `json_parse` the same bytes; one mutation of that escaper reddens both, which a second copy would lose.
 
 `tests/md_parse_corpus.py` and `tests/md_parse_bridge.mjs` are the two legs of
-the #1301 `md_parse` parity gate, and are a pair for the same reason: the
+the `md_parse` parity gate, and are a pair for the same reason: the
 Python module holds the corpus AND the canonical positional ADT encoding, and
-the `.mjs` bridge — the browser leg, one Node process for the whole corpus —
+the `.mjs` bridge (the browser leg, one Node process for the whole corpus)
 reads that corpus as JSON and re-implements only the encoding.  A corpus
 written twice would let the gate pass on two hosts that were never asked the
 same question, and an encoding compared after re-parsing would stop being a
@@ -861,25 +855,25 @@ its programs, through `tests/pipeline.py`.
 
 `tests/guard_emitter_scan.py` is the one derivation of WHERE code generation
 plants a guard, read by two rosters that would otherwise each keep a list:
-`carriers.ELEMENT_GUARD_SITES` (#1430) and the boundary-guard roster in
-`test_boundary_guard_correctness_1466.py` (#1466).  It ENUMERATES the
-code-generation layer — `vera/codegen/*.py` and `vera/wasm/*.py` — rather
+`carriers.ELEMENT_GUARD_SITES` and the boundary-guard roster in
+`test_boundary_guard_correctness_1466.py`.  It ENUMERATES the
+code-generation layer (`vera/codegen/*.py` and `vera/wasm/*.py`) rather
 than naming files, with the files known to wire an emitter asserted to lie
 inside that enumeration, and it matches an emitter's name on a WORD boundary
 so a `functools.partial` wiring counts as a site.  It answers two more
 questions beside it.  Which modules outside `vera/wasm/helpers.py` declare a
-heap-field size or alignment table of their own — matched on the dict's
-SHAPE, through the AST, so a rename, a requoting, a reordering or a
+heap-field size or alignment table of their own, matched on the dict's
+SHAPE through the AST, so a rename, a requoting, a reordering or a
 `dict(...)` call cannot hide one.  And where every guarded value's local
 comes from: each guard emitter's value argument is traced back to the
 assignments that produce it within the enclosing function, through a list it
 is appended to, a comprehension that unpacks it, a keyword argument and the
 emitter that is INSTALLED rather than called by name, so a pair bound on the
-adjacency of two `alloc_local` calls — in any of the ways Python binds one to
+adjacency of two `alloc_local` calls (in any of the ways Python binds one to
 a name, since an annotated assignment keeps its target in a different
-field — or a route the walk cannot follow at all, is a finding rather than a
-silence.  All three answers are read as data
-by cells in the #1466 matrix; the module itself asserts nothing.
+field), or a route the walk cannot follow at all, is a finding rather than a
+silence.  Cells of the boundary-guard matrix read all three answers as
+data; the module itself asserts nothing.
 
 `tests/naming_helpers.py` holds one fixture constructor rather than a suite's
 shared helpers: `alias_env_from_declarations(decls, base=None)` builds a
@@ -889,31 +883,29 @@ production consumer builds its environment from a namespace it already holds
 alias maps), so this walk lives test-side, where it cannot become a second
 source of truth for declaration-index assignment.
 
-`tests/module_fixture_helpers.py` cuts across all three suites: it builds the
+`tests/module_fixture_helpers.py` cuts across the suites: it builds the
 `ResolvedModule` fixtures the multi-module tests need, and its two functions
 are two different things rather than one with an option.  What separates them
-is **parse provenance**, not whether a file survives the call — **neither
+is **parse provenance**, not whether a file survives the call: **neither
 leaves one on disk, and neither `file_path` can be opened after it returns**.
 `resolved_module(path, source)` writes the source to a real temporary file,
 parses THAT via `parse_file`, and deletes it before returning: the module keeps
 a program that came through the on-disk parse path, under a realistic absolute
 path.  `fake_resolved_module(path, source)` parses in memory via `parse_to_ast`
-and labels the module `/fake/<path>.vera` — cheaper, and correct wherever the
+and labels the module `/fake/<path>.vera`, which is cheaper and correct wherever the
 parse path does not matter; the label is conspicuously synthetic, so a path in
 a failure message is recognisable as a fixture's.
 
 Deleting is safe because nothing downstream reopens `file_path`: `compile()`
 and the checker work off the parsed program and the in-memory `source` string
-and keep the path only as a diagnostic label (PR #664 review).  A test that
+and keep the path only as a diagnostic label.  A test that
 needs a module file to EXIST while it runs must write one itself.
 `TestModuleFixtureBuilders` in `test_checker_modules.py` pins all of that,
 including a cross-module type-check against an already-deleted path.
 
 Both are the canonical implementation of the tempfile, encoding and path rules
-in [Test Fixture Conventions](#test-fixture-conventions) below — six files
-carried their own copies before #1228, one of which leaked a temp file per
-fixture, and a new multi-module test should import from here rather than write
-a seventh.
+in [Test Fixture Conventions](#test-fixture-conventions) below, and a new
+multi-module test imports from here rather than writing its own copy.
 
 ```python
 # test_checker_*.py pattern (helpers from tests/checker_helpers.py):
@@ -932,9 +924,8 @@ _run_io(source, fn, args)      # compile + execute, return captured stdout
 _run_trap(source, fn, args)    # compile + execute, assert WASM trap
 ```
 
-`tests/pipeline.py`'s `compile` — and therefore every helper built on it,
-`_compile()` among them — asserts the #1185
-invariant on the emitted WAT: a module that contains a `call_indirect` must
+`tests/pipeline.py`'s `compile`, and therefore every helper built on it,
+`_compile()` among them, asserts an invariant on the emitted WAT: a module that contains a `call_indirect` must
 declare a function table.  This is a differential over the two sides that have
 to agree (the instruction stream and the table section), so a future desync
 fails wherever it is introduced rather than at the next `vera run`.
@@ -945,9 +936,9 @@ use `_assert_call_indirect_iff_table` for the biconditional.
 
 ## Round-Trip Testing
 
-Every example program in `examples/` is carried through the front of the pipeline by parametrised tests that glob the directory, so a new `.vera` example joins them the moment it lands: parsing (`test_parser.py`), AST transformation (`test_ast.py`), type checking (`test_checker_functions.py`), contract verification (`test_verifier_contracts.py`), and canonical form (`test_formatter.py`).
+Parametrised tests that glob `examples/` carry every example program through the front of the pipeline, so a new `.vera` example joins them as soon as it is added: parsing (`test_parser.py`), AST transformation (`test_ast.py`), type checking (`test_checker_functions.py`), contract verification (`test_verifier_contracts.py`), and canonical form (`test_formatter.py`).
 
-The back of the pipeline — compilation and execution — is not covered by a directory glob, and is described in full below.
+No directory glob covers the back of the pipeline, compilation and execution; the next section describes what does.
 
 The formatter has **idempotency tests**: `format(format(x)) == format(x)` for all tested programs.
 
@@ -959,65 +950,63 @@ An example that parses, type-checks, verifies and compiles can still trap the in
 |-------|-----------|-------|
 | Check + verify | `scripts/check_examples.py` | all |
 | Canonical form, parse, transform, check, verify | the directory-globbing parametrised tests above | all |
-| Compilation to WASM | `scripts/check_e602_clean.py` — it exists to police `[E600]`/`[E601]`/`[E602]` silent skips, but it compiles every example with `--json` and treats an `ok: false` envelope as a hard failure, so full compile coverage is real though incidental to the script's name | all |
-| Execution under both runtimes | `tests/test_browser.py`, from two explicit lists — `EXAMPLES_WITH_MAIN` (compared on stdout) and `FUNCTION_CALL_EXAMPLES` (compared on return value) | the examples the two lists name |
+| Compilation to WASM | `scripts/check_e602_clean.py`: it polices `[E600]`/`[E601]`/`[E602]` silent skips, and to do so compiles every example with `--json` and treats an `ok: false` envelope as a hard failure | all |
+| Execution under both runtimes | `tests/test_browser.py`, from two explicit lists: `EXAMPLES_WITH_MAIN` (compared on stdout) and `FUNCTION_CALL_EXAMPLES` (compared on return value) | the examples the two lists name |
 | Execution with pinned output | dedicated tests, each asserting a specific value or rendering (see the table) | the examples the table names a pinning test for |
-| Execution asserted trap-free | `scripts/check_examples_run.py` — the harness gate | every example without a skip property |
+| Execution asserted trap-free | `scripts/check_examples_run.py`, the harness gate | every example without a skip property |
 
 The gate is what makes the set closed. It enumerates `examples/*.vera` from disk and requires every name to be either run or matched to a documented skip property, so **an unclassified example fails the gate** and adding an example forces the author to classify it. The table below is cross-checked against the script's own tables on every run: a row that disagrees, a missing row, or a renamed example is an error.
 
-What the gate asserts is *runs green*, deliberately not *prints what it used to*: output pinning stays in the dedicated tests, which is why `sqlitedb.vera`'s rendered city table and `inference_json.vera`'s score line are pinned there and only trap-freedom here.
+The gate asserts that an example *runs green*, not that it *prints what it used to*: output pinning stays in the dedicated tests, which is why `sqlitedb.vera`'s rendered city table and `inference_json.vera`'s score line are pinned there and only trap-freedom here.
 
-Trap-freedom is two signals, not one — the discipline `check_examples.py` already applies, for the same reason. An exit code alone accepts two measured failures. Every spec names its entry point rather than relying on `vera run`'s first-export fallback, because a `main` that is privatised or renamed otherwise runs *some other function* at exit 0. And the examples that reach outside the process — `sqlitedb.vera` for its committed fixture, `database.vera` for an in-memory database, `file_io.vera` and `copy_bytes.vera` for the filesystem — answer a failure by printing a message and completing normally, so each pins a substring only its success path prints. Deleting `examples/sqlitedb.sqlite` fails the gate on that sentinel rather than passing on the graceful in-memory arm.
+Trap-freedom is two signals, as `check_examples.py` also applies, because an exit code alone accepts two failures. First, every spec names its entry point rather than relying on `vera run`'s first-export fallback, because a `main` that is privatised or renamed otherwise runs *some other function* at exit 0. Second, the examples that reach outside the process (`sqlitedb.vera` for its committed fixture, `database.vera` for an in-memory database, `file_io.vera` and `copy_bytes.vera` for the filesystem) answer a failure by printing a message and completing normally, so each pins a substring only its success path prints. Deleting `examples/sqlitedb.sqlite` fails the gate on that sentinel rather than passing on the graceful in-memory arm.
 
 | Example | Executed by | Harness gate |
 |---------|-------------|--------------|
 | `absolute_value.vera` | browser parity (return value); `test_codegen_infrastructure.py` pins three results | runs |
-| `array_utilities.vera` | nothing, before the gate | runs |
+| `array_utilities.vera` | the harness gate alone | runs |
 | `async_futures.vera` | browser parity (stdout) | runs |
 | `async_http_fanout.vera` | nothing | skip: network |
 | `base64.vera` | browser parity (stdout) | runs |
 | `closures.vera` | browser parity (return value); `test_codegen_closures.py` pins 15 and 105 | runs |
-| `collections.vera` | nothing, before the gate | runs |
+| `collections.vera` | the harness gate alone | runs |
 | `copy_bytes.vera` | the harness gate, natively | runs |
-| `database.vera` | nothing, before the gate | runs |
+| `database.vera` | the harness gate alone | runs |
 | `effect_handler.vera` | browser parity (stdout + State round-trips); `test_codegen_effects.py` pins six results | runs |
-| `ephemeris.vera` | `test_examples_ephemeris.py` pins the full stdout, both geocentric distances, agreement with ERFA to 30″, and the per-function tier statuses — the eccentricity binds verified, `wrap_deg` at Tier 1, the transcendentals exactly `tier3` at a low, the default and a generous budget, `kepler_solve`'s termination proved | runs |
+| `ephemeris.vera` | `test_examples_ephemeris.py` pins the full stdout, both geocentric distances, agreement with ERFA to 30″, and the per-function tier statuses: the eccentricity binds verified, `wrap_deg` at Tier 1, the transcendentals exactly `tier3` at a low, the default and a generous budget, `kepler_solve`'s termination proved | runs |
 | `factorial.vera` | browser parity (return value); `test_codegen_infrastructure.py` pins 120 | runs |
-| `file_io.vera` | browser runtime only, where file IO is a documented `Err` stub; never run natively before the gate | runs |
-| `fizzbuzz.vera` | nothing, before the gate | runs |
+| `file_io.vera` | the harness gate, natively; the browser runtime, where file IO is a documented `Err` stub | runs |
+| `fizzbuzz.vera` | the harness gate alone | runs |
 | `gc_pressure.vera` | browser parity (stdout) | runs |
 | `generics.vera` | browser parity (return value); `test_codegen_monomorphize.py` compiles it without running it | runs |
 | `hello_world.vera` | browser parity (stdout); `test_codegen_strings.py` pins the greeting | runs |
-| `html.vera` | nothing, before the gate | runs |
+| `html.vera` | the harness gate alone | runs |
 | `http.vera` | nothing | skip: network |
 | `http_server.vera` | `test_wasi_target.py` serves the emitted component under stock `wasmtime serve` and pins three request round-trips | skip: non-scalar-entry |
 | `increment.vera` | browser parity (return value + State); `test_codegen_effects.py` | runs |
 | `inference.vera` | nothing | skip: api-key |
 | `inference_json.vera` | `test_codegen_host_effects.py` pins five score renderings and the bad-response arm against a mocked provider | skip: api-key |
 | `io_operations.vera` | nothing | skip: stdin |
-| `json.vera` | nothing, before the gate | runs |
+| `json.vera` | the harness gate alone | runs |
 | `life.vera` | nothing | skip: long-running |
 | `list_ops.vera` | browser parity (return value); `test_codegen_monomorphize.py` pins 60 | runs |
 | `markdown.vera` | browser parity (stdout) | runs |
-| `maximum_syntax.vera` | nothing, before the gate | runs |
-| `modules.vera` | nothing, before the gate | runs |
+| `maximum_syntax.vera` | the harness gate alone | runs |
+| `modules.vera` | the harness gate alone | runs |
 | `mutual_recursion.vera` | browser parity (return value); `test_codegen_infrastructure.py` pins three results | runs |
-| `nested_closures.vera` | nothing, before the gate | runs |
+| `nested_closures.vera` | the harness gate alone | runs |
 | `pattern_matching.vera` | browser parity (return value) | runs |
 | `quantifiers.vera` | browser parity (return value) | runs |
 | `read_char.vera` | nothing | skip: stdin |
 | `refinement_types.vera` | browser parity (return value) | runs |
 | `regex.vera` | browser parity (stdout) | runs |
 | `safe_divide.vera` | browser parity (return value + precondition failure); `test_codegen_infrastructure.py` pins the result and the trap | runs |
-| `scoreboard.vera` | nothing, before the gate | runs |
+| `scoreboard.vera` | the harness gate alone | runs |
 | `sqlitedb.vera` | `test_db_runtime.py` pins the rendered city table against the committed fixture | runs |
 | `string_ops.vera` | browser parity (stdout) | runs |
-| `string_utilities.vera` | nothing, before the gate | runs |
+| `string_utilities.vera` | the harness gate alone | runs |
 | `url_encoding.vera` | browser parity (stdout) | runs |
 | `url_parsing.vera` | browser parity (stdout) | runs |
-
-Seventeen of those examples were executed by nothing at all before the gate. It runs eleven of them; the remaining six are the ones a property excludes. A twelfth example joins them natively — `file_io.vera`, which ran only under the browser runtime, where the file IO it demonstrates is a deliberate `Err` stub.
 
 Each skip cites a property, and the gate prints the property and its reason on every run:
 
@@ -1033,39 +1022,39 @@ Skipping is for programs the harness structurally cannot drive. An example that 
 
 ## Stress Tests
 
-Scale-dependent regression tests live in `tests/test_stress.py` (#596).  These exercise Vera programs at sizes where historical bugs (#570 iterative-builder shadow-stack overflow at ~4000 elements, #515 GC self-fault under sustained allocation, #593 Conway's Life corruption at 12×30+) first manifested, plus 2-3x safety margin.
+Scale-dependent regression tests live in `tests/test_stress.py`.  They run Vera programs at the sizes where each bug class they guard (iterative-builder shadow-stack overflow at about 4,000 elements, a GC self-fault under sustained allocation, Conway's Life corruption at 12×30 and above) first appeared, with a margin of two to three times.
 
-### The 9 initial test programs
+### The nine stress programs
 
-Each test compiles a self-contained Vera program, executes it via the in-process API, and asserts on a SPECIFIC observable.  Iteration counts are tuned to the smallest scale where each bug class historically manifested.
+Each test compiles a self-contained Vera program, executes it through the in-process API, and asserts on a SPECIFIC observable.  Iteration counts are the smallest scale at which each bug class appeared.
 
 Tests marked **[eager-GC]** also run under the `VERA_EAGER_GC=1` lane (see below).
 
-**1. `test_array_map_over_10k_int_array`** **[eager-GC]** — `array_map` over a 10,000-element `Array<Int>`, each element incremented by 1.  Asserts `array_length` of the result == 10000.  Pre-#570 this class of program shadow-stack-overflowed at ~4,000 elements; 10K is a 2.5x safety margin.  Pins the iterative-builder fix and acts as an early-warning for any future regression in shadow-stack hygiene under `array_map`.
+**1. `test_array_map_over_10k_int_array`** **[eager-GC]**: `array_map` over a 10,000-element `Array<Int>`, each element incremented by 1.  Asserts `array_length` of the result is 10,000.  This class of program overflowed the shadow stack at about 4,000 elements before the iterative builder, so 10,000 is a margin of 2.5 times; the test is an early warning for any regression in shadow-stack hygiene under `array_map`.
 
-**2. `test_array_map_over_5k_nested_bool_array`** **[eager-GC]** — `array_map` over a 5,000-element `Array<Int>` producing a fresh `Array<Bool>` (`[true, false, true]`) per iteration.  Asserts the outer length == 5000.  Tests per-iteration allocation pressure where each closure call allocates and the result must remain rooted across the loop.  Pre-#570 + pre-#515 this class corrupted intermediate roots; the test pins the per-iteration alloc/root hygiene fix.
+**2. `test_array_map_over_5k_nested_bool_array`** **[eager-GC]**: `array_map` over a 5,000-element `Array<Int>` producing a fresh `Array<Bool>` (`[true, false, true]`) per iteration.  Asserts the outer length is 5,000.  It tests per-iteration allocation pressure, where each closure call allocates and the result must stay rooted across the loop.
 
-**3. `test_deep_tail_recursion_with_allocating_arg`** **[eager-GC]** — 1,000-deep tail recursion over `loop(@Int, @Int -> @Int)` where each iteration allocates a fresh `let @Array<Int> = [@Int.0, @Int.1]` before recursing.  Asserts the final accumulator == 2,000 (1,000 × `array_length([_, _])` = 1,000 × 2).  Tests the TCO / GC interaction (#549) — tail-call optimisation must not discard the shadow-stack roots that keep the allocating arg live.  The body allocates a genuine heap array each iteration (a string-pool literal would not trigger `needs_alloc`), so the eager-GC lane fires on every iteration.
+**3. `test_deep_tail_recursion_with_allocating_arg`** **[eager-GC]**: 1,000-deep tail recursion over `loop(@Int, @Int -> @Int)` where each iteration allocates a fresh `let @Array<Int> = [@Int.0, @Int.1]` before recursing.  Asserts the final accumulator is 2,000 (1,000 × `array_length([_, _])`).  It tests the interaction of tail calls and the GC: tail-call optimisation must not discard the shadow-stack roots that keep the allocating argument live.  The body allocates a real heap array each iteration (a string-pool literal would not set `needs_alloc`), so the eager-GC lane fires on every iteration.
 
-**4. `test_conways_life_grid_alloc_and_count_alive_20x20`** **[eager-GC]** — synthetic regression covering #593 (Life corruption from gen 1+ at 12×30).  Bug is closed; this test pins the fix.  The program builds a 20×20 all-false `Array<Array<Bool>>` via nested `array_map`-of-`array_range`, then runs a single `count_alive` pass — an array-fold over array-fold that walks every cell.  Asserts the count == 0.  This is a **structural-shape** test, not a Life simulation: it does NOT run 100 generations (the original test name implied that; the rename in #669 corrects it).  The structural shape — 400-cell allocation, nested `array_fold` of `array_fold`, captured outer-binding references inside the inner closure — is what matters; the trivially-deterministic outcome (all-false → 0) makes the test fast and unambiguous while still exercising the code paths #593 hit.  (An earlier version of this entry also cited #595 — that was misattributed; #595 is a cleanup-path bug exercised by `TestHostSleepKeyboardInterrupt` in `test_runtime_traps.py`, not by this stress test.)
+**4. `test_conways_life_grid_alloc_and_count_alive_20x20`** **[eager-GC]**: a synthetic test of the Life corruption at 12×30.  The program builds a 20×20 all-false `Array<Array<Bool>>` through nested `array_map` of `array_range`, then runs a single `count_alive` pass, an `array_fold` over `array_fold` that walks every cell.  Asserts the count is 0.  It is a **structural-shape** test, not a Life simulation, and runs no generations.  The shape is what matters (400-cell allocation, nested `array_fold` of `array_fold`, captured outer-binding references inside the inner closure); the all-false grid makes the outcome fast and unambiguous while still exercising the code paths the corruption hit.
 
-**5. `test_array_fold_100k_iterations`** — `array_fold` over an `array_range(0, 100000)` summing all values.  Asserts the result == 4,999,950,000 (the closed-form sum of 0..99999).  Tests the fold accumulator across many GC cycles.  Pre-#487 / #348 (worklist + multi-page grow) this class of program ran the heap into multi-page territory and tripped allocation-pressure bugs; the test pins the fixes.  The closed-form assertion catches any regression that silently short-circuits or skips iterations.  *Not in the eager-GC lane* — allocation-pressure target, not GC-rooting; 100K × forced-GC would inflate suite time without strengthening detection.
+**5. `test_array_fold_100k_iterations`**: `array_fold` over `array_range(0, 100000)` summing all values.  Asserts the result is 4,999,950,000 (the closed-form sum of 0..99999).  It tests the fold accumulator across many GC cycles, with the heap grown over several pages.  The closed-form assertion catches a regression that silently short-circuits or skips iterations.  *Not in the eager-GC lane*: its target is allocation pressure, not GC rooting, and 100,000 forced collections would inflate the suite's time without strengthening detection.
 
-**6. `test_10k_string_allocations`** **[eager-GC]** — `array_fold` over `array_range(0, 10000)` where each iteration produces a fresh String via `let @String = "\(@Int.0)"` and accumulates `string_length`.  Asserts the total == 38,890 (10 × 1-digit + 90 × 2-digit + 900 × 3-digit + 9000 × 4-digit).  Pre-#573 (wrap-table compaction) and #575 / #576 (host-store reclamation) this class of program would leak handles or self-fault under sustained String allocation; the test pins the fixes.  The digit-count assertion is uniquely sensitive to any short-circuit because it varies non-linearly with iteration count.
+**6. `test_10k_string_allocations`** **[eager-GC]**: `array_fold` over `array_range(0, 10000)` where each iteration produces a fresh String with `let @String = "\(@Int.0)"` and accumulates `string_length`.  Asserts the total is 38,890 (10 × 1-digit + 90 × 2-digit + 900 × 3-digit + 9000 × 4-digit).  It guards wrapper-table compaction and host-store reclamation under sustained String allocation.  The digit-count assertion is sensitive to any short-circuit, because it varies non-linearly with the iteration count.
 
-**7. `test_state_handler_1k_ops`** **[eager-GC]** — 1,000 `State<Int>` get/put cycles within a single `handle[State<Int>](@Int = 0) { ... } in { ... }` scope, driven by a `count_up(@Int -> @Int)` helper that does `get(()); put(state + 1); count_up(n - 1)`.  Asserts the final state == 1000.  Pins the handler installation + resume continuation plumbing under sustained host-import call rate.  Pre-stage-11 / pre-#535 work, large State-handler programs accumulated captured-frame roots without bound.
+**7. `test_state_handler_1k_ops`** **[eager-GC]**: 1,000 `State<Int>` get/put cycles within a single `handle[State<Int>](@Int = 0) { ... } in { ... }` scope, driven by a `count_up(@Int -> @Int)` helper that does `get(()); put(state + 1); count_up(n - 1)`.  Asserts the final state is 1,000.  It covers handler installation and the resume continuation at a sustained rate of host-import calls, where captured-frame roots must not accumulate without bound.
 
-**8. `test_10k_io_print_calls`** — 10,000 `IO.print("x\n")` calls in sequence via a `loop(@Int -> @Unit)` helper, with `tee_stdout=True` so the captured output buffer grows in lock-step.  Asserts the captured stdout contains exactly 10,000 `x` characters.  Exercises the `host_print` bridge at sustained rate; tests the in-process stdout-capture buffer's growth and the host-import call path under load.  The character-count assertion (rather than line-count) is robust to subtle buffering variations.  *Not in the eager-GC lane* — host-import target, not GC-rooting; the `host_print` bridge doesn't allocate Vera-heap data.
+**8. `test_10k_io_print_calls`**: 10,000 `IO.print("x\n")` calls in sequence through a `loop(@Int -> @Unit)` helper, with `tee_stdout=True` so the captured output buffer grows in step.  Asserts the captured stdout holds exactly 10,000 `x` characters.  It exercises the `host_print` bridge at a sustained rate, the growth of the in-process stdout capture buffer, and the host-import call path under load.  Counting characters rather than lines makes it robust to buffering.  *Not in the eager-GC lane*: its target is the host import, and the `host_print` bridge allocates no Vera-heap data.
 
-**9. `test_tco_with_allocation_1m_iterations`** **[eager-GC]** — 1,000,000-deep tail recursion over `loop(@Int, @Int -> @Int)` with a fresh `let @Array<Int> = [_, _]` per iteration.  Asserts the final accumulator == 2,000,000 (1M × 2).  The high-volume companion to #3.  1M plain `call`s would blow the WASM call stack at ~30K frames; the `return_call` + `$gc_sp` restore keeps shadow-stack usage flat, so 1M iterations complete in constant memory in ~190ms in both default and eager-GC modes.  A shadow-stack leak per iteration would trap the overflow guard around 1,300 iterations (16K shadow stack / ~12 bytes per leaked frame); completing all 1M proves the invariant.
+**9. `test_tco_with_allocation_1m_iterations`** **[eager-GC]**: 1,000,000-deep tail recursion over `loop(@Int, @Int -> @Int)` with a fresh `let @Array<Int> = [_, _]` per iteration.  Asserts the final accumulator is 2,000,000.  It is the high-volume companion to test 3.  A million plain `call`s would exhaust the WASM call stack at about 30,000 frames; `return_call` and the `$gc_sp` restore keep shadow-stack use flat, so the million iterations complete in constant memory, in about 190 ms in both modes.  A shadow-stack leak per iteration would trip the overflow guard at about 1,300 iterations (16K shadow stack, about 12 bytes per leaked frame), so completing all of them proves the invariant.
 
 ### Eager-GC lane
 
-Seven of the nine tests target GC-rooting bug classes (#570 / #515 / #549 / #573 / #593 / captured-frame State handlers).  Each of those runs under **two parameter modes**: default GC and `VERA_EAGER_GC=1`.  The `VERA_EAGER_GC` env var (read at compile time by `vera/codegen/assembly.py`) emits a `call $gc_collect` as the first instruction of the runtime's `$alloc` function, forcing a full GC pass on every allocation.
+Seven of the nine tests target GC-rooting bug classes.  Each of those runs in **two parameter modes**: default GC and `VERA_EAGER_GC=1`.  The `VERA_EAGER_GC` variable, read at compile time by `vera/codegen/assembly.py`, emits a `call $gc_collect` as the first instruction of the runtime's `$alloc` function, forcing a full GC pass on every allocation.
 
-This converts latent missing-shadow-root bugs from "fires occasionally at scale" to "fires on the very next allocation," so a regression that would require thousands of iterations to surface under default GC will fail on the first or second iteration under eager GC.  The eager lane embeds this diagnostic capability as ongoing regression coverage.
+A missing shadow root then fails on the next allocation rather than occasionally at scale, so a regression that would take thousands of iterations to surface under default GC fails on the first or second iteration under eager GC.
 
-The eager-GC lane is implemented via a `pytest.mark.parametrize("eager_gc", [False, True], ids=["default_gc", "eager_gc"])` decorator + a `monkeypatch` fixture that scopes the env var to the parametrised test instance.  The two non-parametrised tests — `test_array_fold_100k_iterations` (allocation-pressure target, not GC-rooting) and `test_10k_io_print_calls` (host-import target) — would inflate the suite under eager GC without strengthening detection of the relevant bug class.
+The lane is a `pytest.mark.parametrize("eager_gc", [False, True], ids=["default_gc", "eager_gc"])` decorator plus a `monkeypatch` fixture that scopes the variable to the parametrised test instance.  The two tests left out, `test_array_fold_100k_iterations` (allocation pressure) and `test_10k_io_print_calls` (host import), would inflate the suite under eager GC without strengthening detection of their bug class.
 
 ### Configuration and behaviour
 
@@ -1080,42 +1069,46 @@ pytest "tests/test_stress.py::test_array_map_over_10k_int_array[eager_gc]" -m st
 
 **CI integration**: `.github/workflows/nightly-stress.yml` runs them in three triggers:
 
-1. **Nightly cron** (`0 6 * * *` UTC) — primary safety net, catches drift in a daily window so bisection cost stays small.  **Failures auto-file (or comment on) a tracking issue** with the `stress-regression` label so the regression is visible to anyone watching the issue feed.  See the failure-reporting subsection below.
-2. **Path-filtered PRs** touching `vera/codegen/**`, `vera/wasm/**`, `vera/checker/**`, `tests/test_stress.py`, `tests/test_codegen_gc_reclamation.py`, `tests/conftest.py`, `tests/pipeline.py`, or the workflow file itself — fail-fast for PRs that change code most likely to break stress invariants.  `vera/checker/**` is included because the AST shape it produces flows into codegen — a checker change that subtly alters the AST can break runtime invariants without touching `vera/codegen/` or `vera/wasm/`.  `tests/conftest.py` and `tests/pipeline.py` are included because they decide the budget a stress test runs under (#1670).  PR failures show on the PR's checks tab; no tracking issue is filed (the PR author already sees the failure).
-3. **`workflow_dispatch`** — manual trigger from the Actions tab for local-suspicious commits.  Failures are visible to whoever triggered the run; no tracking issue is filed.
+1. **Nightly cron** (`0 6 * * *` UTC), the primary safety net: it catches drift in a daily window, so bisection stays cheap.  **A failure files (or comments on) a tracking issue** with the `stress-regression` label, so the regression is visible in the issue feed.  See the failure reporting below.
+2. **Path-filtered PRs** touching `vera/codegen/**`, `vera/wasm/**`, `vera/checker/**`, `tests/test_stress.py`, `tests/test_codegen_gc_reclamation.py`, `tests/conftest.py`, `tests/pipeline.py`, or the workflow file itself: a fast failure for the pull requests most likely to break a stress invariant.  `vera/checker/**` is included because the AST shape it produces flows into codegen, so a checker change that alters the AST can break runtime invariants without touching `vera/codegen/` or `vera/wasm/`.  `tests/conftest.py` and `tests/pipeline.py` are included because they decide the budget a stress test runs under.  A pull request's failure shows in its checks; no tracking issue is filed.
+3. **`workflow_dispatch`**: a manual trigger from the Actions tab.  A failure is visible to whoever started the run; no tracking issue is filed.
 
-**The distrust corpus**: once the stress tests have run, pass or fail, the job runs `tests/test_distrust_corpus.py` at 1,000 trials per proved function (`VERA_DISTRUST_TRIALS`), against the pull request's 5, with a ten-minute stop: 27.6 s of wall on four local workers at c9235415, 1 min 44 s on the runner.
+**The distrust corpus**: once the stress tests have run, pass or fail, the job runs `tests/test_distrust_corpus.py` at 1,000 trials per proved function (`VERA_DISTRUST_TRIALS`), against the pull request's 5, with a ten-minute stop.  At c9235415 it took 27.6 s on four local workers and 1 min 44 s on the runner.
 
-**Failure reporting (cron only)**: when the nightly cron fails, the workflow opens an issue titled "Nightly stress regression on main (tracking)" with the `stress-regression` label, including the commit SHA, the run URL and which of the two test steps failed.  If an open issue with that label already exists, the new failure posts a comment on it instead of filing a duplicate — so the issue persists across days of failures until a maintainer manually closes it.  The `stress-regression` label is auto-created on first failure.  This converts cron failures from "visible only to whoever opens the Actions tab" to "visible in the issue feed where Vera work is already triaged."  Implementation uses `actions/github-script@v9` with `issues: write` job-scoped permission.
+**Failure reporting (cron only)**: when the nightly cron fails, the workflow opens an issue titled "Nightly stress regression on main (tracking)" with the `stress-regression` label, including the commit SHA, the run URL and which of the two test steps failed.  If an open issue with that label exists, the new failure comments on it instead of filing a duplicate, so the issue persists across days of failures until a maintainer closes it.  The `stress-regression` label is created on the first failure.  The step uses `actions/github-script@v9` with job-scoped `issues: write` permission.
 
-**Budget**: the workflow's suite — every `stress`-marked test under `tests/` (`pytest -v -m stress tests/`): `test_stress.py`'s 16 instances, `TestHostHandleReclamation573`'s 10 in `test_codegen_gc_reclamation.py`, and `test_gc_mark_width_1510.py`'s stress cells, a matrix file of which the run draws a sample (24 of its 40 cells) — has a 5-minute target it no longer meets: the job took 11.0 to 16.5 minutes over the five nights to 21 October 2026 (its pytest step 10.7 to 16.1 minutes); `test_stress.py` measures **0.66s in-process** on a developer laptop (2026-05-13) for its 16 test instances (9 logical × eager-GC lane on 7 of them), and `test_gc_mark_width_1510.py`'s eager-collection cells take 2.5s to 40s each and its native `Map` cells 5s to 15s (2026-10-16).  CI cold-start adds workflow setup time on top.  Iteration counts are tuned to the smallest scale where each bug class has historically manifested with ~2-3x safety margin, NOT maximised — the goal is reliable detection of the bug class, not benchmarking.  If this measured figure drifts more than ~2x in either direction, treat it as a signal: either iteration counts have grown without rationale (revisit per the "Adding a stress test" rule 2) or a runtime perf regression has landed.
+**Budget**: the workflow's suite is every `stress`-marked test under `tests/` (`pytest -v -m stress tests/`): `test_stress.py`'s 16 instances, `TestHostHandleReclamation573`'s 10 in `test_codegen_gc_reclamation.py`, and `test_gc_mark_width_1510.py`'s stress cells, a matrix file of which the run draws a sample (24 of its 40 cells).  Its target is five minutes, which it does not meet: over the five nights to 21 October 2026 the job took 11.0 to 16.5 minutes (its pytest step 10.7 to 16.1).  `test_stress.py` takes **0.66 s in process** on a developer laptop for its 16 instances; `test_gc_mark_width_1510.py`'s eager-collection cells take 2.5 s to 40 s each and its native `Map` cells 5 s to 15 s.  Iteration counts are the smallest scale at which each bug class appeared, with a margin of two to three times, not the largest the budget allows: the goal is reliable detection, not benchmarking.  If `test_stress.py`'s time moves by more than about twice in either direction, either iteration counts have grown without a reason (see rule 2 under "Adding a stress test") or the runtime has slowed.
 
-**Assertion shape**: each test asserts on a SPECIFIC observable (e.g. `array_fold` returning the closed-form sum `4999950000`, `IO.print` producing exactly 10000 `x` characters), not just "completed without crashing".  This catches a future regression where the loop silently short-circuits or skips iterations.
+**Assertion shape**: each test asserts on a SPECIFIC observable (for example `array_fold` returning the closed-form sum `4999950000`, or `IO.print` producing exactly 10,000 `x` characters), not just "completed without crashing".  This catches a future regression where the loop silently short-circuits or skips iterations.
 
 ### Adding a stress test
 
 A new stress test should:
 
-1. **Target a specific scale axis** (iteration count, allocation pressure, recursion depth, handler-op rate, etc.) and **name the bug class it guards against** in its docstring.  Reference the issue number(s).
-2. **Pick the smallest scale that reliably manifested the bug class historically**, plus ~2-3x safety margin.  Don't maximise — bigger isn't better and inflates the suite.
-3. **Assert on a SPECIFIC observable** with a closed-form or otherwise unambiguous expected value.  Avoid "no exception raised" — that passes silently when the loop short-circuits.
-4. **Use the `_run` helper** (or a parallel helper for non-pure tests) — it handles tempfile lifecycle, parsing, compilation, error checking, and execution.
+1. **Target a specific scale axis** (iteration count, allocation pressure, recursion depth, handler-op rate) and **name the bug class it guards against** in its docstring, with the issue number.
+2. **Pick the smallest scale at which the bug class reliably appears**, with a margin of two to three times.  Do not maximise: a bigger scale inflates the suite and detects nothing more.
+3. **Assert on a SPECIFIC observable** with a closed-form or otherwise unambiguous expected value.  Avoid "no exception raised", which passes silently when the loop short-circuits.
+4. **Use the `_run` helper** (or a parallel helper for tests that are not pure): it handles parsing, compilation, error checking and execution.
 5. **Carry `pytestmark = pytest.mark.stress` at module level** (the file already does) so the test is collected only under `pytest -m stress`.
-6. **Opt into the eager-GC lane** if the target bug class is GC-rooting-related (shadow-stack, captured-frame, alloc-pressure-root-loss).  Add `@EAGER_GC_PARAMS` above the function, change the signature to `(eager_gc: bool, monkeypatch: pytest.MonkeyPatch)`, and pass both through to `_run(src, eager_gc=eager_gc, monkeypatch=monkeypatch)`.  Skip the lane if the bug class is unrelated to GC rooting (host-import call rate, parser perf) — doubling the test cost without strengthening detection is the wrong trade.
+6. **Opt into the eager-GC lane** if the target bug class is GC-rooting-related (shadow-stack, captured-frame, alloc-pressure-root-loss).  Add `@EAGER_GC_PARAMS` above the function, change the signature to `(eager_gc: bool, monkeypatch: pytest.MonkeyPatch)`, and pass both through to `_run(src, eager_gc=eager_gc, monkeypatch=monkeypatch)`.  Leave the lane out if the bug class is unrelated to GC rooting (host-import call rate, parser speed): it doubles the test's cost without strengthening detection.
 
 ## Mutation Testing
 
-A passing suite is necessary, not sufficient — a green test can pass *for the wrong reason* (the #680 audit found 8 such tests in one 57-test battery; #734 had to mutation-validate its own harness).  Mutation testing checks the checker: it deliberately breaks each line of `vera/` and confirms a test flips RED.  A surviving mutant is a test gap — a **weak test** to strengthen or an **equivalent mutant** to annotate (`# pragma: no mutate`).
+A passing suite is necessary, not sufficient: a green test can pass *for the wrong reason*.  Mutation testing checks the tests: it breaks each line of `vera/` on purpose and confirms a test turns red.  A surviving mutant is a test gap, either a **weak test** to strengthen or an **equivalent mutant** to annotate (`# pragma: no mutate`).
 
-The full mechanics — the tool decision (`mutmut`, the `[mutation]` extra, the `[tool.mutmut]` config), the **in-process-oracle caveat** (subprocess suites import the un-mutated package, so they can't kill mutants), resume-after-hard-kill, the Z3-flakiness guardrail, and the survivor-triage workflow — live in the runbook: **[`MUTATION.md`](MUTATION.md)**.
+[`MUTATION.md`](MUTATION.md) is the runbook: the tool (`mutmut`, the `[mutation]` extra, the `[tool.mutmut]` config), the **in-process oracle** (subprocess suites import the un-mutated package, so they cannot kill mutants), resuming after a hard kill, the Z3 flakiness guard, and the triage of a survivor.
 
-**Baseline — soundness core.**  The 2026-06-25 sweep of `verifier.py`, `smt.py`, `checker/` and `obligations/`, with the targeted re-runs after [#793](https://github.com/aallan/vera/pull/793), scores 10,620 mutants **83.3% caught**, 1,773 survivors.  The committed score is `mutation-summary.csv` (per-module, diff-able) plus a README badge (`mutation.json`, regenerated by `scripts/mutation_report.py`); the full survivor inventory and per-module chart are attached to [#387](https://github.com/aallan/vera/issues/387).  Soundness-core triage is tracked there; the whole of `vera/` is measured by the nightly sweep below, whose first closed cycle replaces this score.
+**Baseline: the soundness core.**  The sweep of `verifier.py`, `smt.py`, `checker/` and `obligations/` scores 10,620 mutants **83.3% caught**, with 1,773 survivors.  The committed score is `mutation-summary.csv` (per module) and the README badge (`mutation.json`); the full survivor inventory and the per-module chart are attached to [#387](https://github.com/aallan/vera/issues/387).  The nightly sweep measures the whole of `vera/`, and its first closed cycle replaces this score.
 
-The measure-all sweep measures a random sample of the tree's mutants, a cycle a night or two: `.github/workflows/mutation-nightly.yml` runs `scripts/mutate_sweep.py` in seven jobs, each running its slice of the night's plan over the sample (2% of the mutants: a line of a function is in a cycle's sample by a hash of the cycle, the function and the line, with every mutant on it, every function's mutants counted by line by mutmut's own visitor, and a function's sampled lines reach mutmut as the diff lane's window does), and folds the slices into a state it keeps as an artifact, each mutant as the engine decides it; a scheduled night whose engine or lane fails, or the second in a row that decides nothing, files or updates a tracking issue (`mutation-sweep`), and a closed cycle's score, with its 95% interval, reaches the badge by a pull request (`MUTATION.md` § The measure-all baseline).  Both lanes install `uv.lock` (`uv sync --locked --extra mutation`), so the engine and everything it runs with are the lock's: a new version reaches a lane only through a lock bump, a reviewed pull request on which the diff lane runs both lanes' self-tests against the bumped engine, and a bump that moves mutmut restarts the sweep's cycle.  Both lanes run every pytest session in a process of its own (`process_isolation = "forkserver"`), and `tests/mutation_oracle.py` keeps a test that starts a Python or `vera` process, or reads the compiler's source, out of the oracle inside mutmut's copy (`MUTATION.md` § Oracle).  On a pull request that changes a `vera/**/*.py` file, `.github/workflows/mutation-diff.yml` runs `scripts/mutate_diff.py`, after both lanes' self-tests, which it also runs on a pull request that moves `uv.lock` or either lane's workflow, script or self-tests, or `tests/mutation_oracle.py`: mutmut over the lines the pull request changes, the mutants whose node starts within two lines of the diff, or on the first line of a call, match, assignment, operation, comparison, conditional expression or lambda that spans one of those lines, in the functions that hold them, failing on a survivor (exit 1) and on a run that the engine, a mutant it cannot place or the lane itself stops (exit 2); a run its 2,400 s budget stops with no survivor passes, its headline and a warning annotation saying it is incomplete.  It is not a required check; `MUTATION.md` § CI has its rules.
+**The nightly sweep.**  `.github/workflows/mutation-nightly.yml` runs `scripts/mutate_sweep.py` in seven jobs, each running its slice of the night's plan over a 2% sample of the tree's mutants (a line of a function is in a cycle's sample by a hash of the cycle, the function and the line, with every mutant on it), and folds the slices into a state it keeps as an artifact.  A cycle takes a night or two.  A scheduled night whose engine or lane fails, or the second in a row that decides nothing, files or updates a tracking issue (`mutation-sweep`), and a closed cycle's score, with its 95% interval, reaches the badge through a pull request (`MUTATION.md` § The measure-all baseline).
+
+**The diff lane.**  On a pull request that changes a `vera/**/*.py` file, `.github/workflows/mutation-diff.yml` runs `scripts/mutate_diff.py` over the lines the pull request changes: the mutants whose node starts within two lines of the diff, or on the first line of a call, match, assignment, operation, comparison, conditional expression or lambda that spans one of those lines, in the functions that hold them.  It fails on a survivor (exit 1) and on a run that the engine, a mutant it cannot place or the lane itself stops (exit 2); a run its 2,400 s budget stops with no survivor passes, with a headline and a warning annotation saying it is incomplete.  It is not a required check (`MUTATION.md` § CI: the diff lane).
+
+Both lanes install `uv.lock` (`uv sync --locked --extra mutation`), so the engine and everything it runs with are the lock's; a new version reaches a lane only through a lock bump, on whose pull request the diff lane runs both lanes' self-tests against the bumped engine.  Both lanes run every pytest session in a process of its own (`process_isolation = "forkserver"`), and `tests/mutation_oracle.py` keeps a test that starts a Python or `vera` process, or reads the compiler's source, out of the oracle inside mutmut's copy (`MUTATION.md` § Oracle).
 
 ## Test Fixture Conventions
 
-Footguns in how a fixture is written or run — most cross-platform, from the post-#637 Windows CI rollout (PRs #639/#643/#644/#646) and #1246's, two about which checkout a suite measures and which repository its git commands reach, and one about reaching a drop the check now refuses.  Each has a workaround that makes the fixture portable across Linux / macOS / Windows.  This section is the one place they are stated; for the specific job of building a `ResolvedModule` fixture, `tests/module_fixture_helpers.py` applies all of them and is what a multi-module test should import (#1228).
+Traps in how a fixture is written or run: most are cross-platform, two concern which checkout a suite measures and which repository its git commands reach, and one concerns reaching a drop the check refuses.  Each has a workaround that makes the fixture portable across Linux, macOS and Windows.  This section is the one place they are stated; for building a `ResolvedModule` fixture, `tests/module_fixture_helpers.py` applies all of them and is what a multi-module test should import.
 
 ### A test drives the pipeline through `tests/pipeline.py`
 
@@ -1125,20 +1118,20 @@ A new test parses, checks, verifies, compiles, runs or contract-tests a program 
 
 A test drives the pipeline in process: a stage call where it reads a stage's result, and `pipeline.cli()` where it reads what a command prints or the status it exits with, which `vera.cli.main` writes, in process, to streams that write as a process's text-mode stdout does, reading its stdin from a pipe or a file as a process reads it.  A new test starts `vera` as a process only where the boundary is what it measures, and `scripts/check_test_drivers.py`'s `ALLOWED` list names each helper that does, with the reason: the CLI smoke (`CLI_SMOKE` and `CLI_EXIT_SHAPES` in `tests/test_conformance.py`), which runs a few corpus programs, and a program for each exit the corpus lacks, through `python -m vera.cli` and holds each command's exit status and output to the in-process CLI's, byte for byte; a sweep of `PYTHONHASHSEED`, which an interpreter fixes when it starts; a program that faults the host interpreter, or never stops, whose failure only a child turns into an exit status or a timeout; a deadline that is itself the assertion; and a scratch copy of the compiler, which only another interpreter imports.  `tests/test_cli.py`, the CLI's own suite, crosses the boundary too.
 
-Each stage call and each `pipeline.cli()` call runs under a budget, as a process runs under its caller's timeout: `budget_s=` seconds, or 120 when the caller passes none, and a file whose calls had another timeout as processes passes that.  A test whose own work takes longer names a budget with the `budget(seconds)` marker, and `tests/conftest.py` runs the whole test under it, so each call in the test that passes no `budget_s=` runs under the test's budget in place of 120, and a call that passes one keeps its own.  A `stress`-marked test that names none runs under 600 s, since at scale one call can take longer than 120 s on a slow runner (#1670).  A call still running at the end of its budget ends the process, after writing every thread's traceback to the stderr the run started with, which `tests/conftest.py` hands the watchdog at `pytest_configure`; under pytest-xdist the report names the test the worker was running, and a plain `pytest` run without xdist ends there, with that traceback and no summary.
+Each stage call and each `pipeline.cli()` call runs under a budget, as a process runs under its caller's timeout: `budget_s=` seconds, or 120 when the caller passes none, and a file whose calls had another timeout as processes passes that.  A test whose own work takes longer names a budget with the `budget(seconds)` marker, and `tests/conftest.py` runs the whole test under it, so each call in the test that passes no `budget_s=` runs under the test's budget in place of 120, and a call that passes one keeps its own.  A `stress`-marked test that names none runs under 600 s, since at scale one call can take longer than 120 s on a slow runner.  A call still running at the end of its budget ends the process, after writing every thread's traceback to the stderr the run started with, which `tests/conftest.py` hands the watchdog at `pytest_configure`; under pytest-xdist the report names the test the worker was running, and a plain `pytest` run without xdist ends there, with that traceback and no summary.
 
 ### A function code generation drops is dropped by injection
 
-The constructs code generation cannot lower are refused at check, at the written type, the operation or the call that instantiates a generic (#1679, #1680), so a test of the drop machinery, the `[E602]` skip, its `[E620]` propagation to every caller (#1100) and the refusal of a dropped entry (#1183, #1186), injects the skip: the `skip_map_inserts` fixture (`tests/codegen_helpers.py`) makes `map_insert`'s translator raise the skip an `Array`-valued map raised, and the fixture program writes a map the check accepts.  No check-green shape is known to be dropped there, which is why the skip is injected.
+The constructs code generation cannot lower are refused at check, at the written type, the operation or the call that instantiates a generic, so a test of the drop machinery (the `[E602]` skip, its `[E620]` propagation to every caller and the refusal of a dropped entry) injects the skip: the `skip_map_inserts` fixture (`tests/codegen_helpers.py`) makes `map_insert`'s translator raise the skip an `Array`-valued map raised, and the fixture program writes a map the check accepts.  No check-green shape is known to be dropped there, which is why the skip is injected.
 
 ### A parametrised test takes a list, never a generator
 
-`pytest.mark.parametrize` over a generator (or any one-shot iterable) collects its cells once per process: the generator is consumed at the first collection, and a second `pytest.main` in the same process imports no fresh module, so the test then has no parameter sets.  mutmut runs its stats pass, its listing and its clean run as sessions of one process and asks the clean run for the ids the stats pass recorded, so a generator-parametrised test turned the nightly sweep's rerun into pytest's usage-error exit (`ERROR: not found: …`) for three nights (#1822).  pytest names every such usage under `PytestRemovedIn10Warning`, which the suite's configuration makes an error, so the pull-request gate refuses it at collection; `tests/test_mutate_diff.py::TestASecondCollectionInOneProcess` collects the oracle twice in one interpreter and asks for every recorded id the second time, the mechanism's own differential.  Wrap the iterable: `list(cells())`.
+`pytest.mark.parametrize` over a generator (or any one-shot iterable) collects its cells once per process: the generator is consumed at the first collection, and a second `pytest.main` in the same process imports no fresh module, so the test then has no parameter sets.  mutmut runs its stats pass, its listing and its clean run as sessions of one process and asks the clean run for the ids the stats pass recorded, so a generator-parametrised test turns the clean run into pytest's usage-error exit (`ERROR: not found: …`).  pytest names every such usage under `PytestRemovedIn10Warning`, which the suite's configuration makes an error, so the pull-request gate refuses it at collection; `tests/test_mutate_diff.py::TestASecondCollectionInOneProcess` collects the oracle twice in one interpreter and asks for every recorded id the second time, the mechanism's own differential.  Wrap the iterable: `list(cells())`.
 
 ### Running against ANOTHER checkout: the argument decides, not `PYTHONPATH`
 
-To measure a test file against a different revision — a baseline worktree, to
-prove a new cell is red before a fix — it is not enough to set `PYTHONPATH` to
+To measure a test file against a different revision (a baseline worktree, to
+prove a new cell is red before a fix), it is not enough to set `PYTHONPATH` to
 that checkout and pass the test file by path:
 
 ```bash
@@ -1148,10 +1141,10 @@ PYTHONPATH=/path/to/baseline pytest /path/to/current/tests/test_x.py
 ```
 
 pytest resolves its rootdir from the ARGUMENTS, finds the current checkout's
-`pyproject.toml`, and inserts that directory at `sys.path[0]` — ahead of
+`pyproject.toml`, and inserts that directory at `sys.path[0]`, ahead of
 `PYTHONPATH`.  `import vera` then loads the tree the file came from, so the
 "baseline" run exercises the code under test and passes.  Nothing warns; the
-run simply proves the opposite of what it appears to.
+run proves the opposite of what it appears to.
 
 ```bash
 # RIGHT — copy the file in, so rootdir and sys.path[0] are the baseline.
@@ -1165,7 +1158,7 @@ cd /path/to/baseline && pytest tests/test_x.py
 The same trap has a second form, and it is the one most people meet first:
 for `python -c` and `python -m`, `sys.path[0]` is the process's CWD, so those
 invocations follow the directory you are standing in and ignore a `PYTHONPATH`
-that points elsewhere — including the canary below, which is why the canary
+that points elsewhere, the canary below included, which is why the canary
 must be run from the tree you mean to measure.
 
 Assert the canary rather than trusting it: `python -c "import vera;
@@ -1181,7 +1174,7 @@ When pre-commit runs the suite, git exports `GIT_DIR` and `GIT_INDEX_FILE` for t
 
 ### Tempfiles handed off to subprocesses must use `delete=False`
 
-Windows can't reopen a file while another handle is still held; if a test fixture writes to a tempfile via `with tempfile.NamedTemporaryFile(delete=True) as f:` and then runs `subprocess.run([..., f.name])` inside the `with` block, the subprocess fails with a `PermissionError` because the parent still holds the handle.  Unix allows concurrent handles so the same fixture works there.
+Windows cannot reopen a file while another handle is still held; if a test fixture writes to a tempfile via `with tempfile.NamedTemporaryFile(delete=True) as f:` and then runs `subprocess.run([..., f.name])` inside the `with` block, the subprocess fails with a `PermissionError` because the parent still holds the handle.  Unix allows concurrent handles so the same fixture works there.
 
 ```python
 # Wrong — fails on Windows:
@@ -1200,9 +1193,7 @@ finally:
     Path(f.name).unlink(missing_ok=True)
 ```
 
-Surfaced via `tests/test_html.py::TestHtmlCodeSamples` — see PR #646 for the fix.
-
-**Corollary — the cleanup must be sequenced, not just present.** `delete=False` means the file outlives its `with`, so a failure *inside* the block leaves it behind and the fixture needs its own cleanup. It is tempting to put that in an `except` next to the write — but Windows cannot delete a file whose handle is still open, so an unlink there is `PermissionError` (WinError 32) rather than a cleanup. Both rules are satisfied by capturing the name first, letting the `with` close the handle on its way out however it leaves, and unlinking once afterwards:
+**Corollary: the cleanup must be sequenced, not just present.** `delete=False` means the file outlives its `with`, so a failure *inside* the block leaves it behind and the fixture needs its own cleanup. It is tempting to put that in an `except` next to the write, but Windows cannot delete a file whose handle is still open, so an unlink there is `PermissionError` (WinError 32) rather than a cleanup. Both rules are satisfied by capturing the name first, letting the `with` close the handle on its way out however it leaves, and unlinking once afterwards:
 
 ```python
 # Wrong — cleans up on failure, but while the handle is still open:
@@ -1225,7 +1216,7 @@ finally:
     Path(fp).unlink(missing_ok=True)
 ```
 
-The ordering is observable without a Windows machine — record whether the handle is closed at the moment each unlink is issued — which is how `TestModuleFixtureBuilders::test_the_handle_is_closed_before_every_unlink` pins it on every platform.  Surfaced by #1228's leak fix, which was green on POSIX and red on all three Windows cells.
+The ordering is observable without a Windows machine, by recording whether the handle is closed at the moment each unlink is issued, which is how `TestModuleFixtureBuilders::test_the_handle_is_closed_before_every_unlink` pins it on every platform.  A fixture that unlinks too early is green on POSIX and red on every Windows cell.
 
 ### Paths embedded into Vera string literals must use POSIX form
 
@@ -1245,11 +1236,9 @@ vera_path = Path(tmp_path).as_posix()
 source = f'IO.read_file("{vera_path}")'
 ```
 
-Surfaced via `tests/test_codegen_io.py::TestIOOperations::test_io_read_file_*` — see PR #643 for the fix.
-
 ### Repo-relative paths COMPARED as strings must be POSIX form
 
-The rule above is about a path *embedded in Vera source*; this one is about a path used as a **key**.  `str(path.relative_to(ROOT))` renders `tests\conformance\x.vera` on Windows, so any later `startswith("tests/conformance/")`, `"examples/" in origin`, or dict lookup against a POSIX-spelled literal matches **nothing** — and matching nothing is silent.  A filter that classifies zero files does not raise; it reports an empty population, which reads as "the thing you were counting shrank", not "your comparison is broken".  It is also invisible to a local hook run, because macOS and Linux satisfy the POSIX spelling.
+The rule above is about a path *embedded in Vera source*; this one is about a path used as a **key**.  `str(path.relative_to(ROOT))` renders `tests\conformance\x.vera` on Windows, so any later `startswith("tests/conformance/")`, `"examples/" in origin`, or dict lookup against a POSIX-spelled literal matches **nothing**, and matching nothing is silent.  A filter that classifies zero files does not raise; it reports an empty population, which reads as "the thing you were counting shrank", not "your comparison is broken".  It is also invisible to a local hook run, because macOS and Linux satisfy the POSIX spelling.
 
 ```python
 # Wrong — the string is native-separator, so every POSIX prefix misses on Windows:
@@ -1262,11 +1251,11 @@ origin = path.relative_to(ROOT).as_posix()
 
 Do the conversion where the string is *created*, not at each comparison: one `as_posix()` makes the property hold for every consumer, where a per-comparison fix has to be remembered by each new one.  `Path.parts` tuples are an equally portable alternative when you are matching whole segments rather than a prefix.
 
-Surfaced via `tests/test_slot_naming_differential.py::test_corpus_is_almost_entirely_parseable`, which re-anchored its floor on the maintained corpus (`examples/` + `tests/conformance/`) and went red on all three Windows cells with `AssertionError: (0, 428)` — the walk had collected all 428 files, and the *classification* matched none of them.  That test now also asserts no origin contains a backslash, so the regression names its own cause.
+On Windows, a corpus walk that collects every file can classify none of them, and the assertion reads `(0, n)`.  `tests/test_slot_naming_differential.py::test_corpus_is_almost_entirely_parseable` also asserts no origin contains a backslash, so such a regression names its own cause.
 
 ### A path a converter RETURNED must not be asserted by its POSIX shape
 
-The two rules above are about paths the test *constructs* — embedded into Vera source, or compared as a repo-relative key.  This is their assertion-side twin: a path handed back by a standard-library converter is in the **platform's** spelling, so pinning it against a literal `/`-shaped string passes on Linux and macOS and fails on all three Windows cells.  `urllib.request.url2pathname("/tmp/x.vera")` is `/tmp/x.vera` on POSIX and `\tmp\x.vera` on Windows; `url2pathname("/")` is `/` and `\`.  The POSIX cells greening proves nothing about the Windows ones, which is what makes this class of assertion easy to write and impossible to notice locally.
+The two rules above are about paths the test *constructs*, embedded into Vera source or compared as a repo-relative key.  This is their assertion-side twin: a path handed back by a standard-library converter is in the **platform's** spelling, so pinning it against a literal `/`-shaped string passes on Linux and macOS and fails on all three Windows cells.  `urllib.request.url2pathname("/tmp/x.vera")` is `/tmp/x.vera` on POSIX and `\tmp\x.vera` on Windows; `url2pathname("/")` is `/` and `\`.  The POSIX cells greening proves nothing about the Windows ones, which is what makes this class of assertion easy to write and impossible to notice locally.
 
 Assert the **property**, relationally, so no shape is named:
 
@@ -1287,13 +1276,13 @@ root = Path(uri_to_path("file:///"))
 assert root.name == "" and root.parent == root
 ```
 
-Assertions that compare against a path the test itself built (`str(tmp_path / "x.vera")`, or a round-trip through `Path.as_uri()`) are already portable — the expected value is in the same spelling as the actual.  So are assertions that the INPUT comes back unchanged, which is how the opaque/pass-through cases are pinned.  Surfaced by `tests/test_lsp.py::TestUriToPath` (#1246), where two of nine assertions named a shape and seven did not.
+Assertions that compare against a path the test itself built (`str(tmp_path / "x.vera")`, or a round-trip through `Path.as_uri()`) are already portable, since the expected value is in the same spelling as the actual.  So are assertions that the INPUT comes back unchanged, which is how the opaque and pass-through cases are pinned (`tests/test_lsp.py::TestUriToPath`).
 
 ### File I/O without explicit encoding falls back to the locale default
 
 Python's text-mode `open()` / `read_text()` / `write_text()` without an explicit `encoding=` kwarg defaults to `locale.getpreferredencoding()`, which is **cp1252 on en-US Windows**.  Tests that read or write files containing `→` (right arrow), `—` (em-dash), or other non-ASCII characters fail on Windows with `UnicodeEncodeError: 'charmap' codec can't encode '→'` or `UnicodeDecodeError: ... 0x97`.
 
-Every text-mode `open()` / `read_text()` / `write_text()` under `vera/`, `scripts/`, `tests/` — **and** every `subprocess.run/Popen/check_output(..., text=True)` capture and text-mode `tempfile.NamedTemporaryFile` — therefore MUST pass an explicit `encoding="utf-8"`, enforced by `scripts/check_explicit_encoding.py` (pre-commit + CI lint, #645).  The `vera` CLI additionally reconfigures its stdin/stdout/stderr to UTF-8 at startup, so a Vera program reading or printing `→` / `—` is UTF-8 on any locale.  Together these made text I/O locale-independent and let the `PYTHONUTF8=1` CI backstop (#641) be removed.  Use the explicit form (a deliberate non-UTF-8 site can opt out with `# encoding-exempt: <reason>`):
+Every text-mode `open()` / `read_text()` / `write_text()` under `vera/`, `scripts/` and `tests/`, **and** every `subprocess.run/Popen/check_output(..., text=True)` capture and text-mode `tempfile.NamedTemporaryFile`, therefore MUST pass an explicit `encoding="utf-8"`, enforced by `scripts/check_explicit_encoding.py` (pre-commit and CI lint).  The `vera` CLI also reconfigures its stdin, stdout and stderr to UTF-8 at startup, so a Vera program reading or printing `→` is UTF-8 on any locale.  Together these make text I/O independent of the locale, with no `PYTHONUTF8=1` in CI.  Use the explicit form (a deliberate non-UTF-8 site can opt out with `# encoding-exempt: <reason>`):
 
 ```python
 # Implicit — locale-dependent (cp1252 on Windows); rejected by the gate:
@@ -1302,8 +1291,6 @@ text = path.read_text()
 # Explicit — works everywhere:
 text = path.read_text(encoding="utf-8")
 ```
-
-Surfaced via ~9 tests across `test_codegen_monomorphize.py`, `test_codegen_closures.py`, `test_html.py`, and the other `test_codegen_*.py` split files — see PR #646 for the CI-side fix.
 
 ### Evidence about temp files must name them, not sweep a shared directory
 
@@ -1324,7 +1311,7 @@ assert len(created) == 1, created          # else the check is vacuous
 assert [n for n in created if Path(n).exists()] == []
 ```
 
-The sweep form was flaky rather than wrong: it passed for a whole PR and then failed on the v0.1.10 release push over a `C:\...\tmp*.vera` on worker gw1, an hour after the identical tree passed (~33% reproducible on macOS under a second writer).  Capturing the name removes the race instead of relocating it — no shared directory is read at all — and a `len(...) == 1` guard keeps it from passing vacuously if the builder stops creating its file that way.  Redirecting `TMPDIR`/`TEMP`/`TMP` at a private directory is the other cure, but it costs an env triple plus a reset of `tempfile.tempdir` (which caches the resolved directory, so the env alone changes nothing) and still asserts over a directory rather than a file.
+The sweep form is flaky rather than wrong: it can pass for a whole pull request and fail on a later run over another worker's `tmp*.vera`.  Capturing the name removes the race instead of relocating it, since no shared directory is read at all, and a `len(...) == 1` guard keeps it from passing vacuously if the builder stops creating its file that way.  Redirecting `TMPDIR`/`TEMP`/`TMP` at a private directory is the other cure, but it costs an env triple plus a reset of `tempfile.tempdir` (which caches the resolved directory, so the env alone changes nothing) and still asserts over a directory rather than a file.
 
 ## Class Instruments
 
@@ -1332,27 +1319,27 @@ A bug fix closes a class rather than the reported instance when one mechanism
 bounds that class (`CONTRIBUTING.md` § Bugs: the class, not the instance), so
 the test that proves it ranges over that class.  Two shapes do that, and each
 is worth only as much as what makes its cells able to fail.  A class whose
-boundary is architectural — two phases re-deriving the same fact — is not
+boundary is architectural (two phases re-deriving the same fact) is not
 fixed per site at all: it carries the milestone of the release that removes
 the mechanism, and closes there.
 
 ### The exhaustive matrix
 
-Enumerate the dimensions the class spans — for a cache-invalidation fault,
+Enumerate the dimensions the class spans (for a cache-invalidation fault,
 every kind of thing a cached result depends on, crossed with every kind of
-edit that can move one — and parametrize a single test over the product,
+edit that can move one) and parametrise a single test over the product,
 rather than adding a cell per case as it occurs to you.  The enumeration
 comes from the code that makes the decision (what the key is built out of,
 which arms the dispatch has), so a dimension the code has and the matrix does
 not shows up as a missing row instead of as silence.  Every product that is
-NOT a cell is stated with its reason in the PR body: a vacuous cell — one
-whose premise cannot fail — is worse than an absent one, because it reads as
-coverage.
+NOT a cell is stated with its reason in the pull request body: a vacuous cell,
+one whose premise cannot fail, is worse than an absent one, because it reads
+as coverage.
 
 Label a cell by what it can hold to account, and assert the label.  A cell
 whose edit leaves the input valid exercises the machinery under test; one
-whose only reachable edit makes an earlier stage refuse — the checker, the
-parser — exercises that refusal instead, and since the earlier stage runs on
+whose only reachable edit makes an earlier stage refuse (the checker, the
+parser) exercises that refusal instead, and since the earlier stage runs on
 both sides of any comparison, agreement there is architecture rather than the
 thing being tested.  Both are worth keeping; conflating them is what turns a
 matrix into a count.
@@ -1365,41 +1352,38 @@ that asserts a LITERAL status instead goes green for a compiler that has
 stopped working.
 
 `tests/test_composite_coercion_guards.py` is this shape for a rule code
-generation applies off the typed program (#1542's shape, #1695's line): every
+generation applies off the typed program, the composite coercion: every
 position the checker records a target type at (twenty, the pattern binders
 among them, each at its nesting depth) crossed with fourteen composite shapes,
 two forms (built in place, or opaque behind a slot) and three inputs, each
 cell asserting the run (a negative component traps with the narrowing guard's
 message, an allowed one runs to its value, an empty value passes the walk) and
-the record (exactly one narrowing guard per coercion, and each guard answered
-by its row's record, where a W004 stood per guard before #1695's second half).  Its negative space is the three guards the obligation table
-(#1695) keeps apart from the walk's: a leaf the checker typed at `Nat` in
-place and #1606's construction hand-down, whose rows keep the store's own
-sign guard, and a function boundary's tuple-component guard (#746), whose
-entry rows answer the argument's, each keeping the one guard it had.
+the record (exactly one narrowing guard per coercion, each answered by its
+row's record).  Its negative space is the three guards the obligation table
+keeps apart from the walk's: a leaf the checker typed at `Nat` in place and
+the construction hand-down, whose rows keep the store's own sign guard, and a
+function boundary's tuple-component guard, whose entry rows answer the
+argument's, each keeping its one guard.
 
-`tests/test_obligation_table_1695.py` is the obligation table's instrument
-(#1695, Stage 27).  Its architectural cells hold the shape: every emitted
+`tests/test_obligation_table_1695.py` is the obligation table's instrument.  Its architectural cells hold the shape: every emitted
 check names its row, every row a held function lists has one check or a
 reason it has none, the verifier makes no guard claim of its own and
 defines no mirror of code generation's decisions, it keeps no walk that
 finds its own sites, no fallback for a row no discharge reaches and no
-roster of guarded positions beside the row (#1836), and the corpus gate's
+roster of guarded positions beside the row, and the corpus gate's
 `KNOWN` and the generator's `KNOWN_CLASSES` are empty.  Its identity
 differential runs over the corpus, the doc blocks and generator seeds 0 to
 999, in both directions: every row of a verified function has exactly one
 record and every record names rows (every record is keyed to its rows
-where it is made and none reaches the settling without one; the four
-classes a fallback once discharged are ordinary discharges, pinned per
-class), every `violated` record has its error and no site carries more
+where it is made and none reaches the settling without one), every `violated` record has its error and no site has more
 errors than records, and every value leaf that narrows has a row (the
 census for a site the table does not list, which the identity alone
 cannot see).
 
 ### The verdict-signature diff
 
-When a change moves *where* a decision is made rather than what it decides —
-extracting a helper, rerouting callers, replacing one gate with another — run
+When a change moves *where* a decision is made rather than what it decides
+(extracting a helper, rerouting callers, replacing one gate with another), run
 the whole gate over a broad corpus at both revisions and diff the per-item
 verdicts.  Name the deliberate movers in advance; everything else must be
 identical.  A green suite cannot do this job, because it says every case it
@@ -1413,14 +1397,12 @@ Tier-1 proof is never contradicted when the program runs.  It runs
 `vera test --distrust` over every example and every `run`-level conformance
 program, so each proved public function the generator can serve is executed
 against the checks code generation emits for it, and a refuted proof fails its
-program.  A proved function it cannot run is reported not exercised: when it was
-introduced, 173 proofs ran and 3 did not, two for parameters the generator does
-not encode (a generic in `ch02_generic_over_param_adt`, an `Array<UrlParts>` in
-`ch08_prelude_adt_name_alias`) and one for a precondition it cannot translate
-(#1229, `ch09_abilities`).  It can refute a proof only where a check exists and the generator
+program.  A proved function it cannot run is reported not exercised: one whose
+parameters the generator does not encode (a generic, an `Array<UrlParts>`) or
+whose precondition it cannot translate.  It can refute a proof only where a check exists and the generator
 reaches the input (`@Int` and `@Nat` within 2^53); a missing check is the
 reconciliation's class.  A trap is read against the reconciliation's
-relation between a check and the records it stands for (#1633), so a check
+relation between a check and the records it stands for, so a check
 whose record sits at another node (a refined parameter's guard and the
 argument, a binder and the value it takes apart, a refined return and the
 body, an arm and its join, a measure and its tail call) is attributed; a trap
@@ -1445,24 +1427,22 @@ pattern or a table keyed by `type(...)`, however its file imports `vera.ast`)
 and returns a type (a `vera.types` type or a type expression by its
 annotation, or a string naming one: a primitive's or a WASM value's name, a
 type expression's `.name`, a slot's `.type_name`), which is a second
-derivation of a type the typed program holds (#1525).  Its exceptions are two
+derivation of a type the typed program holds.  Its exceptions are two
 lists, each entry a function with its reason: `DELIBERATE`, the derivations
 that stay (naming's slot names, which the check binds before any table
 exists, the clone substitution, which writes the type expressions the typed
 program then types, and `vera fmt`'s rendering of a type expression as its
 source text), and `KNOWN`, code generation's seventeen readers of a written
-type that #1525 still lists.  An entry whose function no longer derives a
-type fails too, so the lists only shrink.  It replaced
-`tests/test_one_classifier_1503.py`'s roster of the readers allowed into the
-checker's tables, which named them one by one.
+type that [#1525](https://github.com/aallan/vera/issues/1525) still lists.  An entry whose function no longer derives a
+type fails too, so the lists only shrink.
 
 ### Where an instrument runs
 
 A class instrument is a burndown tool: it proves the class closed at the fix,
 and it is not a cost every pull request pays on every platform.  Its file
 carries the `matrix` marker at module level, naming the modules where its
-class is decided, as paths from the repository root — the modules the fix
-changed to close it:
+class is decided, as paths from the repository root (the modules the fix
+changed to close it):
 
 ```python
 pytestmark = pytest.mark.matrix(decides=["vera/narrowing.py"])
@@ -1490,8 +1470,8 @@ open instance; every cell whose id carries `repro`, `red`, `mutant` or
 than the sample; and one from each run of the collection order, which spreads
 it across the loops the generator nests.
 
-The cells that must run on every pull request — those that reproduce a
-report, were red before the fix or kill a documented mutant — are kept by
+The cells that must run on every pull request (those that reproduce a
+report, were red before the fix or kill a documented mutant) are kept by
 three of those rules, so write each one as an unparametrised test, in a
 function named for a `repro`, or as a strict `xfail`.  The keep words are a
 fourth way in, but no cell id of a marked file uses `repro`, `red` or
@@ -1526,7 +1506,7 @@ slot reference is computed from the generator's own binding stack, and every
 contract is true of every input its `requires` admits, so a refutation, a trap
 or a mismatch is the toolchain's or the generator's, never the program's own.
 
-Version two writes type aliases (`type Score = Int;`, and refinements such as
+The generator (version two) writes type aliases (`type Score = Int;`, and refinements such as
 `type Span = { @Int | @Int.0 >= -3 && @Int.0 <= 9 };`), up to three `data`
 declarations beside a generic one (`Box<T>`) and a recursive one (`Chain`),
 private generic helpers, `State` and `Exn` helpers (each written only where a
@@ -1561,9 +1541,9 @@ facts: a `State<Nat>` cell's read is a `Nat`, a `State` handler with the
 canonical clauses has its body's value, a `match` on `map_get`'s result has
 its arms' value, a literal keeps its length whatever its elements, a call
 taking a stand-in keeps its `ensures`, and a `let` of any of them holds the
-value's own term (#1696's rule).  A construction is a term of
+value's own term.  A construction is a term of
 the sort of its checked type, whatever file declares the type, so a contract
-may rest on one in place (#1525).  A fold is an `@Int`, its
+may rest on one in place.  A fold is an `@Int`, its
 closure's return type, whatever its initial value (spec §4.2), and the
 generator writes no `let @Nat` of one.
 
@@ -1578,26 +1558,22 @@ Each program is held to the generator's contract and four differentials:
 | (4) Warm | the program and the four edits `program_generator.edits` writes for it (a literal moved inside its interval, a `let` added, a non-commutative pair's operands swapped, a function added with a call to it, a `requires` tightened inside its callers' arguments, a contract broken and then restored) go in order to one `VerificationSession`, as the language server sends a document's text, and each text alone to a fresh session; the two report the same obligations, with the same statuses at the same places, and the same diagnostics | a warm session that replays a stale verdict |
 
 A counterexample is the model the solver returned, one of the many that refute
-a clause, and one text has met two of them (#1785), so the warm differential
+a clause, and one text can meet two of them
+([#1785](https://github.com/aallan/vera/issues/1785)), so the warm differential
 compares a diagnostic without its counterexample's values; an edit whose two
-sessions differ in a counterexample alone is #1785's class.
+sessions differ in a counterexample alone is in #1785's class.
 
 **Known classes.**  `KNOWN_CLASSES` reads `scripts/check_reconciliation.py`'s
 `KNOWN` as classes, each by its mismatch's kind, obligation and emitter and by
 the shape of its site, which its predicate reads from the program as written.
-Both are empty since the obligation table's second half (#1695): the join
-keys on the rows the records and the checks share, and the classes it
-reported before (#1598's `@Int` division, a division by a non-zero literal, a
-narrowing into a refinement of `Nat`, a refinement check on a value the
-declarations already give the refinement, a join of a refined arm with an
-unrefined one, a composite coercion, a later array element) are each a
-repro in `_RETIRED_CLASSES` that reports nothing.
-A `nat_bind` guard at a `@Nat` binder of a field the declarations type `Nat`
-was #1695's while code generation guarded the binder by the field's type and
-the verifier traced it to the value stored; both read the binder's source
-now (#1525), and the shape makes no find.  A verify error is a find of the
-contract check: the counterfactual that keyed one to #1525's constructed
-sorts went with that line, and its shape makes no find either.
+Both are empty: the join keys on the rows the records and the checks share,
+and each class it could report (an `@Int` division, a division by a non-zero
+literal, a narrowing into a refinement of `Nat`, a refinement check on a value
+the declarations already give the refinement, a join of a refined arm with an
+unrefined one, a composite coercion, a later array element) is a repro in
+`_RETIRED_CLASSES` that reports nothing.  A `nat_bind` guard at a `@Nat`
+binder of a field the declarations type `Nat` makes no find, since code
+generation and the verifier both read the binder's source.
 A find of the load, reconcile or distrust differential is a class of code
 generation's own reading of a value's type when it vanishes with each fold and
 each handler a branch takes bound in place by a `let` of the type the checker
@@ -1606,22 +1582,19 @@ provided that program checks, verifies and makes no find outside the known
 classes that the program does not; a find it makes again, in a known class or
 not, has not vanished (a known guard at a value it binds is its own), and the
 distrust run counted is then that program's.  Code generation reads every
-value's type off the typed program, so no such class is open: #1525's folds
-and #1744's handlers make no find, and the classification's cells hold it to
-these rules over a class they inject.
+value's type off the typed program, so no such class is open: the fold and
+handler shapes make no find, and the classification's cells hold it to these
+rules over a class they inject.
 A find at those shapes that does not vanish under the `let` is reported.
-A warm find whose two sessions differ in a counterexample alone is #1785's: the
-differences seen came in a four-worker run, after other programs, and not when
-the seed ran alone in a new process, so the mechanism is not established and
-the class has no pin.
+A warm find whose two sessions differ in a counterexample alone is in #1785's
+class: the differences seen came in a four-worker run, after other programs,
+and not when the seed ran alone in a new process, so the mechanism is not
+established and the class has no pin.
 A find inside a known class is counted under its issue, with its class and the
 evidence in its record, and fails nothing; the night's report gives each class
-its count, its programs and its first seeds.  The one class left is #1785's, a
-warm counterexample, which has no pin; the reconciliation classes are retired,
-and each one's repro cell reports nothing.
-Version one's first scheduled night (2026-10-22, 5,010 programs, #1781) counted
-8 mismatches under #1525, 182 under #1598, 3,889 under #1695 for #1557 and 7,426
-under #1695 for #1629.
+its count, its programs and its first seeds.  The one class left is #1785's;
+the reconciliation classes are retired, and each one's repro cell reports
+nothing.
 
 **Where it runs.**  Every pull request runs the contract and the four
 differentials over eleven pinned seeds, which between them write every construct
@@ -1641,9 +1614,8 @@ that changes the generator, its instrument or the workflow, and any seeds
 `workflow_dispatch` names.  The night is scheduled at 14:17 UTC and starts
 when GitHub runs it, hours later on this repository.  A night's seeds start at
 its day's offset from 2026-10-01 times 100,000, so no two nights share one.
-On the runner's four workers the short night takes 1.24 s a program, 5.8 times
-version one's 0.213 s there, so a night of 1,400 is about 29 minutes of the
-step's 45; on a laptop the warm differential is 0.87 s of a program's 1.20 s.
+On the runner's four workers the short night takes 1.24 s a program, so a
+night of 1,400 is about 29 minutes of the step's 45; on a laptop the warm differential is 0.87 s of a program's 1.20 s.
 
 **A find.**  A find outside the known classes is minimised: a function, a
 module's function or the module dropped with a literal standing in for each
@@ -1674,7 +1646,7 @@ index into anything but a `let`-bound array literal.  A fold as a scrutinee or
 as a constructor's argument, and a branch whose every arm is a fold, a `throw`
 or a handler, are inside it and make no find (the `test_repro_*_makes_no_find`
 cells); so is an arithmetic argument at a generic's type variable, whose call
-runs against the instance the checker chose (#1791).
+runs against the instance the checker chose.
 
 ## Adding Tests
 
@@ -1685,8 +1657,8 @@ When extending the compiler, add tests following the existing patterns:
 3. **New type rule:** Add checker tests to the matching `test_checker_*.py` phase file using `_check_ok()`/`_check_err()` (imported from `tests/checker_helpers.py`)
 4. **New SMT support:** Add verifier tests to the matching `test_verifier_*.py` theme file using `_verify_ok()`/`_verify_err()` (imported from `tests/verifier_helpers.py`)
 5. **New codegen support:** Add compilation tests to the matching `test_codegen_*.py` feature file using `_compile_ok()`/`_run()`/`_run_trap()` (imported from `tests/codegen_helpers.py`)
-5a. **New multi-module test (any suite):** Build the imported modules with `resolved_module()` / `fake_resolved_module()` from `tests/module_fixture_helpers.py` — never a local tempfile copy
-6. **New example program:** Add to `examples/` -- it is automatically included in round-trip tests
+5a. **New multi-module test (any suite):** Build the imported modules with `resolved_module()` / `fake_resolved_module()` from `tests/module_fixture_helpers.py`, never a local tempfile copy
+6. **New example program:** Add to `examples/`; the round-trip tests include it automatically
 7. **New error pattern:** Add formatting tests to `test_errors.py`
 8. **New tester feature:** Add tests to `test_tester.py` using `_test(source)` helper
 9. **New host binding:** Add parity tests to `test_browser.py` to ensure the JavaScript runtime stays in sync with the Python runtime
@@ -1697,29 +1669,29 @@ The scripts in `scripts/` validate cross-cutting concerns beyond unit tests.  `b
 
 | Script | Runs | What it validates |
 |--------|------|-------------------|
-| `check_conformance.py` | local (CI runs the suite's `tests/test_conformance.py` instead) | Every conformance entry holds at its declared level (parse/check/verify/run) — positives pass; the negatives fail at the stage their `expected_error_stage` names (`check` by default, or `compile`, which also asserts the program type-checks cleanly) with their `expected_error` E-code |
+| `check_conformance.py` | local (CI runs the suite's `tests/test_conformance.py` instead) | Every conformance entry holds at its declared level (parse/check/verify/run): positives pass; the negatives fail at the stage their `expected_error_stage` names (`check` by default, or `compile`, which also asserts the program type-checks cleanly) with their `expected_error` E-code |
 | `check_examples.py` | local (CI runs the suite's `tests/test_verifier_contracts.py` and `tests/test_pipeline.py` instead) | Every `.vera` example passes `vera check` + `vera verify` |
 | `check_corpus_canonical.py` | hook, CI `lint` | Every corpus program (recursive over `examples/` + `tests/conformance/`) is in canonical form under `vera fmt` |
 | `check_examples_readme.py` | hook, CI `lint` | Every `vera run` command in examples/README.md references an existing file and exported function |
-| `check_doc_examples.py` | hook (CI runs the suite's `tests/test_check_doc_examples.py` instead) | Every Vera block in the agent-facing documents (SKILL.md, README.md, FAQ.md, EXAMPLES.md, DE_BRUIJN.md, PYPI_README.md, `spec/*.md`, `docs/index.html`, `docs/index.md`) parses, passes `vera check` (with no warning outside a named benign set) and `vera verify`, and prints exactly what each `vera:run` marker says, or carries a `vera:skip-<stage>` marker naming the stage and the codes it fails with; a block that exports a function names an invocation or a `vera:no-run` property that holds of each export it does not run; every `vera run examples/...` a document names is run unless `check_examples_run.py` already runs that exact invocation or skips that example by property; a tracked document with Vera blocks in neither `DOC_GATES` nor `NOT_GATED` fails it ([#1481](https://github.com/aallan/vera/issues/1481); see "Documentation example pipeline" below) |
-| `check_diagnostic_examples.py` | hook, CI `lint` | Every `vera:diagnostic`-annotated ```` ```text ```` fence is byte-identical to the live diagnostic its program produces ([#1291](https://github.com/aallan/vera/issues/1291)) |
-| `check_site_assets.py` | hook, CI `lint` | Generated site assets under `docs/` are up-to-date, and `check_fact_coherence()` verifies the load-bearing facts of `docs/index.html` and `docs/index.md` agree (#1154) |
-| `check_doc_counts.py` | CI `plan` and `lint`; the release PR | The documentation's release-time checks, and nothing else: with `--release` (which CI turns on for the change that raises `[project].version`, `--release-if-version-raised`), that TESTING.md's generated status is what `render_status.py` writes now, save the scorecard's network and junit rows, which must each state the window they were measured over, and every `render_lists` block what `render_lists.py` writes now; with `--check-bug-issues`, that KNOWN_ISSUES.md's Bugs table carries one row per open `bug`-labelled issue (it needs the GitHub API); with `--print-release-mode`, the release-mode answer ci.yml's `plan` job reads.  No hook runs it |
+| `check_doc_examples.py` | hook (CI runs the suite's `tests/test_check_doc_examples.py` instead) | Every Vera block in the agent-facing documents (SKILL.md, README.md, FAQ.md, EXAMPLES.md, DE_BRUIJN.md, PYPI_README.md, `spec/*.md`, `docs/index.html`, `docs/index.md`) parses, passes `vera check` (with no warning outside a named benign set) and `vera verify`, and prints exactly what each `vera:run` marker says, or carries a `vera:skip-<stage>` marker naming the stage and the codes it fails with; a block that exports a function names an invocation or a `vera:no-run` property that holds of each export it does not run; every `vera run examples/...` a document names is run unless `check_examples_run.py` already runs that exact invocation or skips that example by property; a tracked document with Vera blocks in neither `DOC_GATES` nor `NOT_GATED` fails it (see "Documentation example pipeline" below) |
+| `check_diagnostic_examples.py` | hook, CI `lint` | Every `vera:diagnostic`-annotated ```` ```text ```` fence is byte-identical to the live diagnostic its program produces |
+| `check_site_assets.py` | hook, CI `lint` | Generated site assets under `docs/` are up-to-date, and `check_fact_coherence()` verifies the load-bearing facts of `docs/index.html` and `docs/index.md` agree |
+| `check_doc_counts.py` | CI `plan` and `lint`; the release PR | The documentation's release-time checks, and nothing else: with `--release` (which CI turns on for the change that raises `[project].version`, `--release-if-version-raised`), that TESTING.md's generated status is what `render_status.py` writes now, save the scorecard's network and junit rows, which must each state the window they were measured over, and every `render_lists` block what `render_lists.py` writes now; with `--check-bug-issues`, that KNOWN_ISSUES.md's Bugs table has one row per open `bug`-labelled issue (it needs the GitHub API); with `--print-release-mode`, the release-mode answer ci.yml's `plan` job reads.  No hook runs it |
 | `render_status.py` | the release PR | Writes TESTING.md's generated status, between `render_status` markers: the test totals from a `--matrix=full` collection, the per-file and skipped-tests tables, the counts of conformance programs, examples, corpus programs, built-ins, effects, spec chapters, hooks, CI jobs and gate scripts, and the scorecard (`scripts/scorecard.py`), whose rows that need the GitHub API or Codecov's `--github` measures, and whose worker-seconds and subprocess share `--junit PATH` reads from the junit file of a sample-mode run that loaded `tests/subprocess_census.py`.  The release PR runs it |
 | `render_lists.py` | `--write` by hand when a source changes; `--check` in the release PR, through `check_doc_counts.py --release` | Writes the lists that have one source, each between `render_lists` markers: the built-in effect names, from the registry `vera effects --json` publishes, into the editor grammars under `editors/` and the two extension READMEs; and the limitation tables, from `limitations.json`, into KNOWN_ISSUES.md, vera/README.md, spec chapters 8, 9 and 12, SKILL.md and LSP_SERVER.md.  `--check` names each block that is not what `--write` writes |
 | `check_limitations_sync.py` | hook, CI `lint`; weekly with `--check-states` (`limitations-sync.yml`) | `limitations.json` loads, and KNOWN_ISSUES.md's and SKILL.md's Bugs headings survive; with `--check-states`, every issue `limitations.json` names, and every issue in the Issue column of those two Bugs tables, is still open (it needs the GitHub API) |
 | `check_changelog_updated.py` | pre-push hook, CI `lint` | A branch that changes substantive files adds a `changelog.d/` fragment, or a CHANGELOG.md entry (`Skip-changelog:` trailer to bypass), against the base its argument names: CI names the pull request's base branch, and with no argument it is `origin/main` |
-| `check_changelog_fragments.py` | hook, CI `lint` | Every file under `changelog.d/` other than its README is a CHANGELOG fragment: named `<issue>.<section>.md` or `+<slug>.<section>.md` for a Keep a Changelog section, holding bullets and space-indented continuation lines only, with no blank line and one trailing newline ([#1529](https://github.com/aallan/vera/issues/1529)) |
-| `check_diagnostic_fields.py` | hook, CI `lint` | Every diagnostic in `vera/` carries rationale + spec_ref, and errors also a `fix` (warnings exempt); every present spec_ref resolves to a real spec section; every literal `error_code` is registered in `ERROR_CODES`, and every `error_code` emitted from more than one distinct `(file, enclosing-function)` site has that exact site set declared in `KNOWN_MULTI_SITE_ERROR_CODES`, an undeclared or drifted reuse failing the gate (#828); `# diag-fields-exempt: <reason>` waives missing/unresolvable fields only — never a wrong-but-resolving spec_ref or an unregistered error_code (#682, #955) |
-| `check_explicit_encoding.py` | hook, CI `lint` | Every text-mode `open()` / `read_text()` / `write_text()`, `subprocess.run/Popen/check_output` text capture, and text-mode `tempfile.NamedTemporaryFile` under `vera/`, `scripts/` and `tests/` passes an explicit `encoding="utf-8"`; `# encoding-exempt: <reason>` opts a deliberate non-UTF-8 site out (#645) |
+| `check_changelog_fragments.py` | hook, CI `lint` | Every file under `changelog.d/` other than its README is a CHANGELOG fragment: named `<issue>.<section>.md` or `+<slug>.<section>.md` for a Keep a Changelog section, holding bullets and space-indented continuation lines only, with no blank line and one trailing newline |
+| `check_diagnostic_fields.py` | hook, CI `lint` | Every diagnostic in `vera/` carries rationale + spec_ref, and errors also a `fix` (warnings exempt); every present spec_ref resolves to a real spec section; every literal `error_code` is registered in `ERROR_CODES`, and every `error_code` emitted from more than one distinct `(file, enclosing-function)` site has that exact site set declared in `KNOWN_MULTI_SITE_ERROR_CODES`, an undeclared or drifted reuse failing the gate; `# diag-fields-exempt: <reason>` waives missing or unresolvable fields only, never a wrong-but-resolving spec_ref or an unregistered error_code |
+| `check_explicit_encoding.py` | hook, CI `lint` | Every text-mode `open()` / `read_text()` / `write_text()`, `subprocess.run/Popen/check_output` text capture, and text-mode `tempfile.NamedTemporaryFile` under `vera/`, `scripts/` and `tests/` passes an explicit `encoding="utf-8"`; `# encoding-exempt: <reason>` opts a deliberate non-UTF-8 site out |
 | `check_test_drivers.py` | hook, CI `lint` | Every helper in `tests/test_*.py` (a top-level function, or a method of a top-level class, not named `test*`) drives the compiler pipeline through `tests/pipeline.py` rather than itself: through a stage function under whatever name it is imported as, `TypeChecker.check_program`, `CodeGenerator.compile_program`, `ContractVerifier.verify_program`, `ModuleResolver.resolve_imports`, `vera.cli.main` or a `cmd_*` command, or a subprocess whose command names `vera`; a stage function or a command counts when the helper reaches it through a value too: a dict's value, a list's or tuple's element, a parameter's default, or an argument a call to the helper hands it.  Its `ALLOWED` list names each helper that stays, with the reason, among them the CLI smoke's process driver (`CLI_SMOKE` in `tests/test_conformance.py`) and the helpers whose process boundary is what they measure, and an entry that names no driver fails the gate |
 | `check_record_assertions.py` | hook, CI `lint` | Every test that asks whether a compiled module holds a runtime check (of a trap kind, from an emitter, for an obligation, how many, in which function) reads the module's record, `CompileResult.emitted_checks`, through `tests/pipeline.py`'s `checks`, rather than the WAT text: a site in `tests/*.py` that refers to `signal_call_pattern`, `TRAP_SIGNAL` or `CONTRACT_SIGNAL`, holds a string naming `vera.trap` or `contract_fail` outside a docstring, or uses a module-level name bound to one, fails it unless its `KEPT` list names the site with the reason it stays on the text (the oracle in `tests/test_emitted_checks_1479.py` and `tests/test_named_traps_1479.py` that holds the record to the signals the text calls, a test of how a check is rendered, the module `vera compile --wat` prints, a host-side name), and an entry that names no site fails the gate |
 | `check_e602_clean.py` | CI `lint` | No unexpected E600/E601/E602 silent-skip sites outside the explicit allowlist |
 | `ci_changes.py` | CI `plan` | Whether every file a pull request changes, from its merge base, is one of the VS Code extension's own (under `editors/vscode/`, its code, manifests and icon, not its grammar or documents), which no filtered job reads; `inert=true` stands those jobs down ([CI Pipeline](#ci-pipeline)) |
-| `check_examples_run.py` | local (CI runs the suite's `tests/test_check_examples_run.py` instead, its `TestRealExamples` in `eager-gc` under `VERA_EAGER_GC=1` too) | Every `examples/*.vera` either runs trap-free under the native runtime or carries a documented skip property.  Two signals, as in `check_examples.py`: the exit code, and an output signal — every spec names its entry point (so a privatised or renamed `main` exits 1 instead of silently running another export) and every example that declares a resource effect or calls a resource operation pins a success sentinel (so a vanished fixture fails rather than passing on a graceful arm), the set being derived from those declarations rather than named.  An unclassified example is an error, and TESTING.md's execution-coverage table must match the script's own classification |
-| `check_reconciliation.py` | local, and the burndown (CI runs `tests/test_reconciliation.py` instead) | Every corpus program's runtime-check claims against the checks its compiled module holds (the audit's T2a): each program goes through check, verify, compile and `vera.reconcile.join` in process, exactly as `vera verify` runs them, and the gate fails on a mismatch its `KNOWN` allowlist does not name (a `tier3` record no emitted check answers, a check no record accounts for, a site the join cannot place), on a `KNOWN` entry the join no longer reports (its issue is fixed, so the entry comes out), and on a program stopping before the join where the manifest does not say it should.  Every `KNOWN` entry names its open issue, the mismatch kind, the obligation kind and the site |
-| `check_doc_builtin_shadowing.py` | hook, CI `lint` | No documentation example defines a function named after an opaque verifier-modelled built-in (would fail `vera check` with E151); the `spec/09` signature reference is exempt ([#819](https://github.com/aallan/vera/issues/819)) |
-| `check_grammar_alignment.py` | hook, CI `lint` | Every rule header in `spec/10-grammar.md`'s EBNF has a same-named rule in `vera/grammar.lark`, and the reverse ([#683](https://github.com/aallan/vera/issues/683)); every terminal is declared and referenced within its own file, every regex-bodied terminal carries the same pattern in both, and each shared production's right-hand side refers to the same rules and terminals ([#1290](https://github.com/aallan/vera/issues/1290)).  The *shape* of a right-hand side — alternation, grouping, repetition — is not compared |
+| `check_examples_run.py` | local (CI runs the suite's `tests/test_check_examples_run.py` instead, its `TestRealExamples` in `eager-gc` under `VERA_EAGER_GC=1` too) | Every `examples/*.vera` either runs trap-free under the native runtime or carries a documented skip property.  Two signals, as in `check_examples.py`: the exit code, and an output signal (every spec names its entry point (so a privatised or renamed `main` exits 1 instead of silently running another export) and every example that declares a resource effect or calls a resource operation pins a success sentinel (so a vanished fixture fails rather than passing on a graceful arm), the set being derived from those declarations rather than named).  An unclassified example is an error, and TESTING.md's execution-coverage table must match the script's own classification |
+| `check_reconciliation.py` | local, and the burndown (CI runs `tests/test_reconciliation.py` instead) | Every corpus program's runtime-check claims against the checks its compiled module holds: each program goes through check, verify, compile and `vera.reconcile.join` in process, exactly as `vera verify` runs them, and the gate fails on a mismatch its `KNOWN` allowlist does not name (a `tier3` record no emitted check answers, a check no record accounts for, a site the join cannot place), on a `KNOWN` entry the join no longer reports (its issue is fixed, so the entry comes out), and on a program stopping before the join where the manifest does not say it should.  Every `KNOWN` entry names its open issue, the mismatch kind, the obligation kind and the site |
+| `check_doc_builtin_shadowing.py` | hook, CI `lint` | No documentation example defines a function named after an opaque verifier-modelled built-in (would fail `vera check` with E151); the `spec/09` signature reference is exempt |
+| `check_grammar_alignment.py` | hook, CI `lint` | Every rule header in `spec/10-grammar.md`'s EBNF has a same-named rule in `vera/grammar.lark`, and the reverse; every terminal is declared and referenced within its own file, every regex-bodied terminal carries the same pattern in both, and each shared production's right-hand side refers to the same rules and terminals.  The *shape* of a right-hand side (alternation, grouping, repetition) is not compared |
 | `check_distribution.py` | CI `package-distribution`; `release.yml`'s build | The built wheel and sdist carry the project's own name and version, ship the files the installed package needs plus a packaged LICENSE, and exclude `tests/` and generated Python files |
 | `check_wheel_availability.py` | CI `wheel-preflight` | Every runtime dependency ships wheels for all supported platforms |
 | `check_licenses.py` | hook, CI `lint` | All installed packages have MIT-compatible licenses |
@@ -1734,17 +1706,17 @@ The scripts in `scripts/` validate cross-cutting concerns beyond unit tests.  `b
 
 The Runs column says where each script runs: *hook* is the commit stage of `.pre-commit-config.yaml` and *pre-push hook* its push stage, a CI job is the job in [`ci.yml`](.github/workflows/ci.yml) that runs the script, and *local* means nothing runs it for you.  `build_site.py` is the generator whose output `check_site_assets.py` verifies.
 
-`check_corpus_differential.py` compiles every corpus program at two revisions and reports the ones whose WAT moved, including the ones that compile on only one side — the measurement behind a "codegen is unchanged" claim, and the scope list when output is meant to change. It costs minutes rather than milliseconds, so it is a burndown instrument run by hand (`--base-ref origin/main`), not a hook and not a CI gate; a test asserts its absence from `.pre-commit-config.yaml` so that claim cannot rot. `check_doc_counts.py --check-bug-issues` is opt-in for the same kind of reason — it needs the GitHub API, which a commit hook must not — and belongs to the release PR (see `RELEASING.md`).  So do `render_status.py` and `check_doc_counts.py --release`, for a different reason: the counts move with every pull request, so the release PR is the one that writes them, and the one that checks they are current.
+`check_corpus_differential.py` compiles every corpus program at two revisions and reports the ones whose WAT moved, including the ones that compile on only one side: the measurement behind a "codegen is unchanged" claim, and the scope list when output is meant to change. It takes minutes rather than milliseconds, so it is a burndown instrument run by hand (`--base-ref origin/main`), not a hook and not a CI gate; a test asserts its absence from `.pre-commit-config.yaml`. `check_doc_counts.py --check-bug-issues` is opt-in for a similar reason (it needs the GitHub API, which a commit hook must not use) and belongs to the release PR (see `RELEASING.md`).  So do `render_status.py` and `check_doc_counts.py --release`, for a different reason: the counts move with every pull request, so the release PR is the one that writes them, and the one that checks they are current.
 
 ### The zero form of the Bugs table
 
-`KNOWN_ISSUES.md`'s `## Bugs` table carries one row per open `bug`-labelled issue, and `check_doc_counts.py --check-bug-issues` holds the two together when a release is cut.  The table has to be readable at **zero**, the state a burndown exists to reach: the `## Bugs` heading stays, its standing description of what the table is stays, the table goes, and the section's last non-empty line is exactly `No known bugs.`
+`KNOWN_ISSUES.md`'s `## Bugs` table has one row per open `bug`-labelled issue, and `check_doc_counts.py --check-bug-issues` holds the two together when a release is cut.  The table has to be readable at **zero**, the state a burndown aims for: the `## Bugs` heading stays, its standing description of what the table is stays, the table goes, and the section's last non-empty line is exactly `No known bugs.`
 
-The marker is compared as a whole stripped line, so a quotation of it inside a sentence is not a claim, and text after it is an error.  A marker and a table cannot coexist in either order, not even a leftover header row, because such a section claims both some open bugs and none.  A table emptied *without* the marker stays unreadable, which keeps "the last row was deleted by accident" an error.  `SKILL.md`'s "Known Bugs and Workarounds" carries the same marker text by the same convention; nothing counts its rows, so only the heading surviving is gated there (by `check_limitations_sync.py`).
+The marker is compared as a whole stripped line, so a quotation of it inside a sentence is not a claim, and text after it is an error.  A marker and a table cannot coexist in either order, not even a leftover header row, because such a section claims both some open bugs and none.  A table emptied *without* the marker stays unreadable, which keeps "the last row was deleted by accident" an error.  `SKILL.md`'s "Known Bugs and Workarounds" uses the same marker text by the same convention; nothing counts its rows, so only the heading surviving is gated there (by `check_limitations_sync.py`).
 
 ### Documentation example pipeline
 
-`check_doc_examples.py` holds every agent-facing document to one standard.  Its `DOC_GATES` list names the documents; `NOT_GATED` names the tracked documents with Vera blocks it deliberately leaves alone (the generated `docs/SKILL.md` and `docs/llms-full.txt`, which `check_site_assets.py` holds equal to their gated sources, and the issue templates' empty fences), each with its reason.  A tracked document with Vera blocks in neither list fails the gate, and so does an entry that no longer matches a document.
+`check_doc_examples.py` holds every agent-facing document to one standard.  Its `DOC_GATES` list names the documents; `NOT_GATED` names the tracked documents with Vera blocks it leaves alone (the generated `docs/SKILL.md` and `docs/llms-full.txt`, which `check_site_assets.py` holds equal to their gated sources, and the issue templates' empty fences), each with its reason.  A tracked document with Vera blocks in neither list fails the gate, and so does an entry that no longer matches a document.
 
 Fences are read as CommonMark reads them: backtick or tilde runs of three or more, indented or not, with the language taken from the first word of the info string.  A fence tagged `vera` is always gated.  An untagged fence, or an HTML `<pre>` block, is gated when its first word is a keyword in FIRST(`start`) of the compiler's grammar.  The rule is fail-closed: it reads that word and nothing else, so whether a block is gated never depends on whether it is valid, and a mistake in the second token fails at parse instead of hiding the block.  A keyword-led block that is not a program, such as a function type `fn(@Int -> @Int)` or a quantifier, carries a `vera:skip-parse` marker with its reason, and code in another language takes its own language tag; the gate's failure message says so.  Most of the spec's programs, and all of the landing page's, are written untagged.  Each gated block goes through four stages in order, and stops at the first it fails:
 
@@ -1771,11 +1743,11 @@ The `vera:no-run` properties are a second closed vocabulary, `NO_RUN_PROPERTIES`
 
 Every `vera run examples/<name>.vera` invocation a gated document names is run too, unless `check_examples_run.py` already runs that exact invocation or skips that example by property.
 
-Markers travel with their fence through document edits, so there are no line numbers to maintain ([#538](https://github.com/aallan/vera/issues/538)/[#606](https://github.com/aallan/vera/issues/606)).  `build_site.py` strips them from the generated site assets.
+Markers travel with their fence through document edits, so there are no line numbers to maintain.  `build_site.py` strips them from the generated site assets.
 
 ## JSON Output Stability
 
-`vera check --json`, `vera verify --json`, and `vera test --json` emit structured JSON for downstream tooling (CI pipelines, IDE plugins, agent feedback loops).  The field set is a public API — see [`spec/00-introduction.md` §0.5.8](spec/00-introduction.md#058-machine-readable-output---json) for the stability rules.  Tests in `tests/test_cli.py` assert on the documented field set, so a regression that drops a documented field will fail at least one test.
+`vera check --json`, `vera verify --json` and `vera test --json` emit structured JSON for downstream tooling (CI pipelines, IDE plugins, agent feedback loops).  The field set is a public API; [`spec/00-introduction.md` §0.5.8](spec/00-introduction.md#058-machine-readable-output---json) has the stability rules.  Tests in `tests/test_cli.py` assert on the documented field set, so a regression that drops a documented field will fail at least one test.
 
 ### `vera check --json` / `vera verify --json`
 
@@ -1787,8 +1759,10 @@ Top-level:
 | `file` | string | The source file checked (echoes the path argument) |
 | `diagnostics` | array | List of error-severity `Diagnostic` objects (see below) |
 | `warnings` | array | List of warning-severity `Diagnostic` objects |
-| `verification` | object | Only on `vera verify --json` — counts of `tier1_verified`, `tier3_runtime`, `total` |
-| `slot_environments` | array | Only when `--explain-slots` is passed — per-function slot tables |
+| `verification` | object | Only on `vera verify --json`: the counts `tier1_verified`, `tier3_runtime` and `total`, the `assumptions` taken on trust, and the `timeout_ms` budget |
+| `obligations` | array | Only on `vera verify --json`: one entry per reified obligation, with its `kind`, `status`, `description`, `location` and `error_code` |
+| `reconciliation` | object | Only on `vera verify --json` without `--no-reconcile`: the join's counts and each mismatch, or `{"skipped": "<reason>"}` |
+| `slot_environments` | array | Only when `--explain-slots` is passed: per-function slot tables |
 
 `Diagnostic` shape: `severity`, `description`, `location`, `source_line`, `rationale`, `fix`, `spec_ref`, `error_code` (the `error_code` set is documented in `vera/errors.py::ERROR_CODES`).
 
@@ -1800,7 +1774,7 @@ Top-level:
 |---|---|---|
 | `ok` | bool | `true` iff `summary.failed == 0`, nothing is refuted, and no error diagnostics; the canonical exit-code signal |
 | `file` | string | The source file tested |
-| `functions` | array | Per-function `FunctionTestResult`: `name`, `category` (one of `"verified"`, `"tested"`, `"failed"`, `"skipped"`, and under `--distrust` `"refuted"`), `reason`, `trials_run`, `trials_passed`, `trials_failed`, `failures` (up to five failing trials, each with `args`, `status` — `"fail"` for a broken contract, `"error"` for any other trap, and under `--distrust` `"refuted"` or `"unattributed"` — `message`, and `trap_kind`, the kind `vera run --json` names the same trap by).  Under `--distrust` only: each function's `proved` (the verifier proved its contracts), and each failure's `attribution` (what the trap stands for, in words) and `refutes` (the proved obligations it contradicts: `function`, `kind`, `expr`, `file`, `line`, `column`) |
+| `functions` | array | Per-function `FunctionTestResult`: `name`, `category` (one of `"verified"`, `"tested"`, `"failed"`, `"skipped"`, and under `--distrust` `"refuted"`), `reason`, `trials_run`, `trials_passed`, `trials_failed`, `failures` (up to five failing trials, each with `args`, `status` (`"fail"` for a broken contract, `"error"` for any other trap, and under `--distrust` `"refuted"` or `"unattributed"`), `message`, and `trap_kind`, the kind `vera run --json` names the same trap by).  Under `--distrust` only: each function's `proved` (the verifier proved its contracts), and each failure's `attribution` (what the trap stands for, in words) and `refutes` (the proved obligations it contradicts: `function`, `kind`, `expr`, `file`, `line`, `column`) |
 | `distrust` | bool | Present, and `true`, only under `--distrust` |
 | `summary` | object | Aggregate counts (see below) |
 | `diagnostics` | array | Verifier-error diagnostics that fed into `"failed"` classifications |
@@ -1813,11 +1787,11 @@ Top-level:
 | `tested` | Functions exercised with Z3-generated inputs |
 | `passed` | Subset of `tested` where all trials passed |
 | `failed` | Verifier-refuted OR Tier-3-tested-with-trial-failures (under `--distrust`, also a proved function whose failing trials refute nothing) |
-| `skipped` | Functions whose inputs can't be Z3-generated (e.g. ADT params) |
+| `skipped` | Functions whose inputs cannot be Z3-generated (for example ADT parameters) |
 | `total_trials` | Sum of trials run across all tested functions |
 | `total_passes` | Sum of passing trials |
 | `total_failures` | Sum of failing trials |
-| `unlisted_errors` | Verifier-error diagnostics whose attributable function isn't in the displayed `functions` list (`--fn` filtering, private helpers).  Added in v0.0.156. |
+| `unlisted_errors` | Verifier-error diagnostics whose attributable function is not in the displayed `functions` list (`--fn` filtering, private helpers) |
 | `refuted` | Only under `--distrust`: proved functions a trial refuted (each with an E703 error) |
 | `unattributed` | Only under `--distrust`: proved functions with at least one trial whose trap could not be attributed to an obligation |
 
@@ -1827,9 +1801,9 @@ Per `spec/00-introduction.md` §0.5.8: fields MAY be added (consumers MUST toler
 
 ## Pre-commit Hooks
 
-The hooks are defined in `.pre-commit-config.yaml`, the authority on each one's command and trigger; the table below follows its order.  The hooks marked (pre-push) run at the push stage, after `pre-commit install --hook-type pre-push`, and the rest at the commit stage, after `pre-commit install`.  Many commit-stage hooks use per-hook `files:` / `types:` filters and only fire when matching files are staged — a docs-only commit triggers a small subset, a compiler-level commit triggers most.  No hook checks a count: the release PR writes and checks this file's generated status.
+The hooks are defined in `.pre-commit-config.yaml`, the authority on each one's command and trigger; the table below follows its order.  The hooks marked (pre-push) run at the push stage, after `pre-commit install --hook-type pre-push`, and the rest at the commit stage, after `pre-commit install`.  Many commit-stage hooks use per-hook `files:` / `types:` filters and fire only when matching files are staged, so a docs-only commit triggers a small subset and a compiler change triggers most.  No hook checks a count: the release PR writes and checks this file's generated status.
 
-**What runs where.** The commit-stage hooks are the FAST gates: lint, types, the doc and consistency gates, and the tests a commit stages, so a commit takes minutes.  The slow gates run in CI only.  On every pull request: the full pytest suite under Python 3.12, in three shards on Linux and two on Windows (it carries the conformance suite), each class-instrument matrix sampled bar the ones whose file or deciding module the pull request changes ([Where an instrument runs](#where-an-instrument-runs)), the examples' `check`, `verify` and runs and every document's Vera blocks among its tests, the `[E600]`/`[E601]`/`[E602]` compile sweep, and the conformance and example runs under `VERA_EAGER_GC=1` (see [CI Pipeline](#ci-pipeline)); a pull request whose every file is one of the VS Code extension's own runs plan, lint, security and matrix-gate, and the rest stand down.  The whole OS × Python matrix runs on a pull request that raises `[project].version`, on the push event its merge produces on `main` (a release), and every night (`nightly-matrix.yml`, which calls `ci.yml`), and a failed cell on that push or a scheduled nightly run, bar the advisory aarch64 cell, files an issue; the nightly run also runs the watched images, advisory cells on the floating `-latest` labels and the newest release image, whose failure on a scheduled night files an issue and blocks nothing.  On the push event any other merge produces: the same jobs, with the shards replaced by one run of the suite that measures coverage and runs every matrix cell, since strict branch protection means the pull request's last run already tested that tree.  CI also runs every gate the hooks run, so a commit that reaches it without them — a `git rebase --continue`, which runs no hooks, or a contributor who never installed them — is still gated.  `tests/test_gate_placement.py` holds both halves to the two configuration files.
+**What runs where.** The commit-stage hooks are the FAST gates: lint, types, the doc and consistency gates, and the tests a commit stages, so a commit takes minutes.  The slow gates run in CI only.  On every pull request: the full pytest suite under Python 3.12, in three shards on Linux and two on Windows (it carries the conformance suite), each class-instrument matrix sampled bar the ones whose file or deciding module the pull request changes ([Where an instrument runs](#where-an-instrument-runs)), the examples' `check`, `verify` and runs and every document's Vera blocks among its tests, the `[E600]`/`[E601]`/`[E602]` compile sweep, and the conformance and example runs under `VERA_EAGER_GC=1` (see [CI Pipeline](#ci-pipeline)); a pull request whose every file is one of the VS Code extension's own runs plan, lint, security and matrix-gate, and the rest stand down.  The whole OS × Python matrix runs on a pull request that raises `[project].version`, on the push event its merge produces on `main` (a release), and every night (`nightly-matrix.yml`, which calls `ci.yml`), and a failed cell on that push or a scheduled nightly run, bar the advisory aarch64 cell, files an issue; the nightly run also runs the watched images, advisory cells on the floating `-latest` labels and the newest release image, whose failure on a scheduled night files an issue and blocks nothing.  On the push event any other merge produces: the same jobs, with the shards replaced by one run of the suite that measures coverage and runs every matrix cell, since strict branch protection means the pull request's last run already tested that tree.  CI also runs every gate the hooks run, so a commit that reaches it without them (a `git rebase --continue`, which runs no hooks, or a contributor who never installed them) is still gated.  `tests/test_gate_placement.py` holds both halves to the two configuration files.
 
 Full list:
 
@@ -1851,26 +1825,26 @@ Full list:
 | `check_examples_readme.py` | `vera run` commands in `examples/README.md` reference existing files and exported functions |
 | `check_doc_examples.py` | Every agent-facing document's Vera blocks parse, check, verify, and print what each `vera:run` marker says, or carry a `vera:skip-<stage>` marker naming the codes they fail with; a block that exports a function names an invocation or a `vera:no-run` property; every `vera run examples/...` a document names is run unless `check_examples_run.py` already runs that exact invocation or skips that example by property; every tracked document with Vera blocks is gated or listed as exempt |
 | `check_diagnostic_examples.py` | Every `vera:diagnostic` fence matches the live diagnostic |
-| `check_doc_builtin_shadowing.py` | No doc example defines a function named after an opaque built-in (would fail `vera check` with E151); `spec/09` signature reference exempt ([#819](https://github.com/aallan/vera/issues/819)) |
-| `check_grammar_alignment.py` | Spec EBNF and Lark grammar agree on every rule name ([#683](https://github.com/aallan/vera/issues/683)), every terminal, and the symbols each shared production refers to ([#1290](https://github.com/aallan/vera/issues/1290)) |
+| `check_doc_builtin_shadowing.py` | No doc example defines a function named after an opaque built-in (would fail `vera check` with E151); `spec/09` signature reference exempt |
+| `check_grammar_alignment.py` | Spec EBNF and Lark grammar agree on every rule name, every terminal, and the symbols each shared production refers to |
 | `check_test_drivers.py` | Every test helper drives the compiler pipeline through `tests/pipeline.py`, or is named in the gate's `ALLOWED` list with its reason |
 | `check_record_assertions.py` | Every test that asks whether a compiled module holds a runtime check reads the module's record through `tests/pipeline.py`'s `checks`, or its site is named in the gate's `KEPT` list with its reason |
-| `check_diagnostic_fields.py` | Every diagnostic in `vera/` carries rationale + spec_ref, and errors also a `fix` (warnings exempt); every present spec_ref resolves to a real spec section; every literal `error_code` is registered in `ERROR_CODES`, and every `error_code` emitted from more than one distinct `(file, enclosing-function)` site has that exact site set declared in `KNOWN_MULTI_SITE_ERROR_CODES`, an undeclared or drifted reuse failing the gate (#828); `# diag-fields-exempt: <reason>` waives missing/unresolvable fields only — never a wrong-but-resolving spec_ref or an unregistered error_code (#682, #955) |
-| `explicit-encoding` | Every text-mode `open()` / `read_text()` / `write_text()`, `subprocess.run/Popen/check_output` text capture, and text-mode `tempfile.NamedTemporaryFile` passes `encoding="utf-8"` (#645) |
+| `check_diagnostic_fields.py` | Every diagnostic in `vera/` carries rationale + spec_ref, and errors also a `fix` (warnings exempt); every present spec_ref resolves to a real spec section; every literal `error_code` is registered in `ERROR_CODES`, and every `error_code` emitted from more than one distinct `(file, enclosing-function)` site has that exact site set declared in `KNOWN_MULTI_SITE_ERROR_CODES`, an undeclared or drifted reuse failing the gate; `# diag-fields-exempt: <reason>` waives missing or unresolvable fields only, never a wrong-but-resolving spec_ref or an unregistered error_code |
+| `explicit-encoding` | Every text-mode `open()` / `read_text()` / `write_text()`, `subprocess.run/Popen/check_output` text capture, and text-mode `tempfile.NamedTemporaryFile` passes `encoding="utf-8"` |
 | `check_limitations_sync.py` | `limitations.json` loads, and KNOWN_ISSUES.md's and SKILL.md's Bugs headings survive (offline; the weekly run adds `--check-states`) |
 | `check_licenses.py` | All package licenses are MIT-compatible |
-| `build_site.py` | Regenerate AI-readable site assets (llms.txt, llms-full.txt, robots.txt, sitemap.xml, index.md) |
-| `check_site_assets.py` | The regenerated assets are current, and `docs/index.html` and `docs/index.md` state the same facts (#1154) |
+| `build_site.py` | Regenerate AI-readable site assets (llms.txt, llms-full.txt, robots.txt, sitemap.xml, index.md, SKILL.md) |
+| `check_site_assets.py` | The regenerated assets are current, and `docs/index.html` and `docs/index.md` state the same facts |
 | `browser parity` | Browser runtime matches the Python runtime across the surface the two share (the tests for the host-binding surface, when that surface changes) |
-| `check_changelog_fragments.py` | Every `changelog.d/` fragment has a fragment's name and holds only bullets ([#1529](https://github.com/aallan/vera/issues/1529)) |
+| `check_changelog_fragments.py` | Every `changelog.d/` fragment has a fragment's name and holds only bullets |
 | `check-changelog-updated` (pre-push) | A branch that changes substantive files adds a `changelog.d/` fragment or a CHANGELOG entry |
 | `uv-lock-check` (pre-push) | `uv.lock` is in sync with `pyproject.toml` |
 
-The validation hooks are smart about triggers -- each fires only when files matching its own `files:` pattern in `.pre-commit-config.yaml` change, so that file is the authority on any given hook's trigger set. The common patterns are `.vera` sources, `vera/**/*.py`, `grammar.lark`, and the documents a doc gate reads (the doc example gate fires on the documents it gates, its `DOC_GATES` list, and on the compiler, the examples and its own modules; a new document with Vera blocks is classified by the gate's run over every document, on any commit that fires it and in CI); narrower ones exist too, such as `vera/browser/*` for browser parity. The two pre-push hooks only fire at push time.
+Each validation hook fires only when files matching its own `files:` pattern in `.pre-commit-config.yaml` change, so that file is the authority on any hook's trigger set. The common patterns are `.vera` sources, `vera/**/*.py`, `grammar.lark`, and the documents a doc gate reads (the doc example gate fires on the documents it gates, its `DOC_GATES` list, and on the compiler, the examples and its own modules; a new document with Vera blocks is classified by the gate's run over every document, on any commit that fires it and in CI); narrower ones exist too, such as `vera/browser/*` for browser parity. The two pre-push hooks only fire at push time.
 
 ## Scheduled limitations sync
 
-`.github/workflows/limitations-sync.yml` runs `check_limitations_sync.py --check-states` every Monday 07:00 UTC (and on demand via `workflow_dispatch`): every issue `limitations.json` names, the source of every limitation table, and every issue in the Issue column of KNOWN_ISSUES.md's and SKILL.md's Bugs tables, is queried against the tracker, and a closed issue still listed as a limitation fails the run — as does an issue whose state cannot be determined (gh auth failure / rate limit / timeout), which errors rather than passing vacuously (#852, #960).  Deliberately **not** a required merge check: issue state drifts independently of any PR, so it is a visibility signal — a cron failure files or updates a `limitations-drift`-labelled tracking issue, mirroring `nightly-stress.yml`'s failure routing.
+`.github/workflows/limitations-sync.yml` runs `check_limitations_sync.py --check-states` every Monday 07:00 UTC (and on demand via `workflow_dispatch`): every issue `limitations.json` names, the source of every limitation table, and every issue in the Issue column of KNOWN_ISSUES.md's and SKILL.md's Bugs tables, is queried against the tracker, and a closed issue still listed as a limitation fails the run, as does an issue whose state cannot be determined (a gh authentication failure, a rate limit, a timeout), which errors rather than passing vacuously.  It is **not** a required merge check: issue state drifts independently of any pull request, so the run is a signal, and a scheduled failure files or updates a `limitations-drift`-labelled tracking issue, as `nightly-stress.yml` does for its own.
 
 ## CI Pipeline
 
@@ -1878,7 +1852,7 @@ GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs the
 
 | Job | Matrix / Runner | What it checks |
 |-----|----------------|---------------|
-| **plan** | Ubuntu | On a pull request and on a push, whether the change raises `[project].version` (`check_doc_counts.py --print-release-mode`: a pull request's head against its base, a push against the commit before it), which decides whether the test matrix runs; on a pull request, also the files under `vera/` and the `tests/test_*.py` files it changes since its merge base, which the shards and the test matrix hand the suite as `VERA_MATRIX_CHANGED`, and whether every file it changes is inert (`scripts/ci_changes.py`), which decides whether the filtered jobs run; its steps do not run on the nightly run |
+| **plan** | Ubuntu | On a pull request and on a push, whether the change raises `[project].version` (`check_doc_counts.py --print-release-mode`: a pull request's head against its base, a push against the commit before it), which decides whether the test matrix runs; on a pull request, also the files under `vera/`, the `tests/test_*.py` files and `scripts/mutate_diff.py` that it changes since its merge base, which the shards and the test matrix hand the suite as `VERA_MATRIX_CHANGED`, and whether every file it changes is inert (`scripts/ci_changes.py`), which decides whether the filtered jobs run; its steps do not run on the nightly run |
 | **shard** | Python 3.12 x Ubuntu in three shards and x Windows in two, on a pull request | The full suite, `pytest -v -n 4 --dist worksteal --shard=K/N`, uninstrumented: a test belongs to the shard its node id hashes to (`tests/shard.py`), so the shards are the suite between them, and each runs its share of the class-instrument matrices' sample, with every cell of one whose file or deciding module the pull request changes (`VERA_MATRIX_CHANGED`, [Where an instrument runs](#where-an-instrument-runs)) |
 | **test** | The OS × Python matrix [README § Supported platforms](README.md#supported-platforms) lists, its advisory cell included, on a pull request that raises `[project].version`, a release merge's push and the nightly run | The full suite, `pytest -v -n auto`, runs on all combinations, uninstrumented, and must pass on every cell but the advisory one.  A pull request runs each class-instrument matrix's sample, and every cell of one whose file or deciding module it changes; a release merge's push and the nightly run run every cell (`--matrix=full`).  The advisory cell's failure fails neither the job nor the run (`continue-on-error`).  Each cell first records the image its runner booted (`ImageOS`, `ImageVersion`), which matrix-issue names |
 | **watch** | `ubuntu-latest`, `windows-latest`, `macos-latest` and `ubuntu-26.04` x Python 3.12, on the nightly run alone | The test job's steps on the watched images: the floating `-latest` labels, which GitHub moves to a new OS release on a date of its own, and the newest release image no cell of the test matrix runs (a preview image joins when GitHub lists it as a release image).  Advisory: a failed cell fails neither the run nor matrix-gate (`continue-on-error`), and on a scheduled night matrix-issue files it.  No job that runs on a push or a pull request takes one of these labels; moving a pinned image is a reviewed change, made once the watched cell of its successor has run green |
@@ -1888,16 +1862,16 @@ GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs the
 | **typecheck** | Python 3.12 x Ubuntu | `mypy vera/` clean in strict mode |
 | **lint** | Python 3.12 x Ubuntu | The gate scripts over the whole tree, among them the `[E600]`/`[E601]`/`[E602]` compile sweep and the CHANGELOG gate against the pull request's base branch; the examples' `check`, `verify` and runs, the conformance programs and the documents' Vera blocks are the suite's, and lint does not repeat them; ruff, with its security rules over `vera/`; the pre-commit-hooks hygiene hooks over every file (`pre-commit run --all-files`; `check-added-large-files` stays at the commit, since it inspects what a commit adds); and `uv lock --check`.  `check_doc_counts.py` checks the generated status on the change that raises `[project].version`.  The steps are listed in the job itself, in [`ci.yml`](.github/workflows/ci.yml) |
 | **security** | Ubuntu | [Gitleaks](https://github.com/gitleaks/gitleaks-action) secret scanning on full history |
-| **dependency-audit** | Python 3.12 x Ubuntu | `pip-audit --skip-editable` — checks all installed packages against the OSV vulnerability database (skips the local editable `vera` package) |
-| **wheel-preflight** | Python 3.12 x Ubuntu | `python scripts/check_wheel_availability.py` — verifies every runtime dep has prebuilt wheels for every (platform, python-version) tuple documented in README §Supported platforms; structural backstop for #691-class install regressions |
-| **package-distribution** | Python 3.12 x Ubuntu | `python -m build`, `twine check dist/*`, and `python scripts/check_distribution.py dist` on the artifacts that will ship under the `veralang` name, then a wheel smoke-test: install `dist/*.whl` into a fresh venv outside the checkout and run `vera version` / `vera check` / `vera run` over `hello_world.vera`. PR CI validates the archives and publishes nothing (#737) |
-| **sbom** | Python 3.12 x Ubuntu | `cyclonedx-py environment` — generates a [CycloneDX](https://cyclonedx.org) JSON SBOM of the full installed dependency tree and uploads it as a 90-day CI artifact |
+| **dependency-audit** | Python 3.12 x Ubuntu | `pip-audit --skip-editable`: checks every installed package against the OSV vulnerability database (skipping the local editable `vera` package) |
+| **wheel-preflight** | Python 3.12 x Ubuntu | `python scripts/check_wheel_availability.py`: every runtime dependency has prebuilt wheels for every (platform, Python version) pair README §Supported platforms lists, so a dependency release cannot break an install on a supported platform |
+| **package-distribution** | Python 3.12 x Ubuntu | `python -m build`, `twine check dist/*`, and `python scripts/check_distribution.py dist` on the archives that will ship under the `veralang` name, then a wheel smoke test: install `dist/*.whl` into a fresh venv outside the checkout and run `vera version`, `vera check` and `vera run` over `hello_world.vera`. A pull request's run validates the archives and publishes nothing |
+| **sbom** | Python 3.12 x Ubuntu | `cyclonedx-py environment`: generates a [CycloneDX](https://cyclonedx.org) JSON SBOM of the full installed dependency tree and uploads it as an artifact kept 90 days |
 | **eager-gc** | Python 3.12 x Ubuntu | The conformance programs' runs and the examples' (`pytest tests/test_conformance.py tests/test_check_examples_run.py::TestRealExamples -k run -n auto`) again under `VERA_EAGER_GC=1`, which collects at every allocation so a GC-rooting bug fails deterministically rather than by timing (see [ENVIRONMENT.md](ENVIRONMENT.md)) |
-| **browser-parity** | Python 3.12 + Node.js 22 x Ubuntu | `pytest tests/test_browser.py -v` — verifies JS runtime matches Python runtime; collects V8 coverage via `NODE_V8_COVERAGE` and uploads to Codecov |
+| **browser-parity** | Python 3.12 + Node.js 22 x Ubuntu | `pytest tests/test_browser.py -v`: the JavaScript runtime matches the Python runtime; collects V8 coverage through `NODE_V8_COVERAGE` and uploads it to Codecov |
 
-[`mutation-diff.yml`](.github/workflows/mutation-diff.yml)'s one job, `mutation (diff)`, runs beside these on a pull request that changes a `vera/**/*.py` file, `uv.lock`, or either mutation lane's workflow, script or self-tests ([Mutation Testing](#mutation-testing)).  It is not a required check.  [`nightly-generator.yml`](.github/workflows/nightly-generator.yml)'s one job runs the program generator's four differentials over the night's seeds, scheduled at 14:17 UTC, over a short night on a pull request that changes the generator, its instrument or the workflow, and on demand ([Program Generator](#program-generator)); it has `contents: read` and the `issues: write` its tracking-issue step needs on a failed scheduled night, and it is not a required check.  The pull request's shards run the generator's eleven pinned seeds as ordinary tests.  [`mutation-nightly.yml`](.github/workflows/mutation-nightly.yml) runs nightly at 21:00 UTC and on demand, never on a pull request: a `setup` job, seven `sweep` jobs, a `stitch` job, and an `issue` job, the only one with write access (`issues: write`), when a scheduled night stops short.
+[`mutation-diff.yml`](.github/workflows/mutation-diff.yml)'s one job, `mutation (diff)`, runs beside these on a pull request that changes a `vera/**/*.py` file, `uv.lock`, either mutation lane's workflow, script or self-tests, `scripts/mutation_report.py` or `tests/mutation_oracle.py` ([Mutation Testing](#mutation-testing)).  It is not a required check.  [`nightly-generator.yml`](.github/workflows/nightly-generator.yml)'s one job runs the program generator's four differentials over the night's seeds, scheduled at 14:17 UTC, over a short night on a pull request that changes the generator, its instrument or the workflow, and on demand ([Program Generator](#program-generator)); it has `contents: read` and the `issues: write` its tracking-issue step needs on a failed scheduled night, and it is not a required check.  The pull request's shards run the generator's eleven pinned seeds as ordinary tests.  [`mutation-nightly.yml`](.github/workflows/mutation-nightly.yml) runs nightly at 21:00 UTC and on demand, never on a pull request: a `setup` job, seven `sweep` jobs, a `stitch` job, and an `issue` job, the only one with write access (`issues: write`), when a scheduled night stops short.
 
-The coverage threshold of **94%** is enforced in CI, by the coverage job. Coverage is **95% Python, 87% JavaScript** — matching the overview table above. The two are reported as two figures and never blended into one: they come from different collectors over different line populations (`pytest --cov` over the Python compiler, V8 over `vera/browser/`), so a combined percentage would need a line-weighted total that neither report produces. JavaScript coverage for `vera/browser/runtime.mjs` is collected separately using V8's built-in coverage and uploaded to Codecov with the `javascript` flag, independently of the Python `pytest --cov` report.
+The coverage job enforces the threshold of **94%**. Coverage is **97% Python, 87% JavaScript**, as in the overview table above. The two are reported as two figures and never blended into one: they come from different collectors over different line populations (`pytest --cov` over the Python compiler, V8 over `vera/browser/`), so a combined percentage would need a line-weighted total that neither report produces. JavaScript coverage for `vera/browser/runtime.mjs` is collected separately using V8's built-in coverage and uploaded to Codecov with the `javascript` flag, independently of the Python `pytest --cov` report.
 
 Each job uses scoped permissions (`contents: read`; the security job additionally has `security-events: write`, matrix-gate `actions: read` to list the run's jobs, and matrix-issue `issues: write` alone; `nightly-matrix.yml`'s one job grants the `ci.yml` it calls these between them, and passes it the Codecov token alone) and all checkout steps set `persist-credentials: false` to prevent the `GITHUB_TOKEN` from being baked into `.git/config`. Action refs are pinned to major-version tags (`actions/checkout@v7`), with two exceptions pinned to full commit SHAs: `pypa/gh-action-pypi-publish` (the Trusted Publishing step, which holds the `pypi` environment's credentials) and `codecov/codecov-action` (a third-party uploader that runs with the repository checkout). Each SHA carries the tag it corresponds to in a trailing comment.
 
@@ -1909,7 +1883,7 @@ Tracked improvements to the testing and CI infrastructure:
 |-------|-------------|
 | [#1295](https://github.com/aallan/vera/issues/1295) | Decide whether the four abilities (`Eq`/`Hash`/`Ord`/`Show`) highlight distinctly from ordinary types in the editor grammars |
 | [#1103](https://github.com/aallan/vera/issues/1103) | Migrate GitHub Pages off legacy branch-deploy to a self-owned Actions workflow |
-| [#712](https://github.com/aallan/vera/issues/712) | Watch: Codecov → Harness migration (action / token / endpoint / badge). The JavaScript side is also unasserted — `codecov.yml` marks both JavaScript statuses `informational: true` with `target: auto` (a comparison against the base commit, not an absolute floor), and the `browser-parity` job uploads `lcov.info` without printing or asserting a percentage, so nothing holds `runtime.mjs` above a threshold the way `pytest --cov` holds the Python side |
+| [#712](https://github.com/aallan/vera/issues/712) | Watch: Codecov → Harness migration (action / token / endpoint / badge). The JavaScript side is also unasserted: `codecov.yml` marks both JavaScript statuses `informational: true` with `target: auto` (a comparison against the base commit, not an absolute floor), and the `browser-parity` job uploads `lcov.info` without printing or asserting a percentage, so nothing holds `runtime.mjs` above a threshold the way `pytest --cov` holds the Python side |
 | [#540](https://github.com/aallan/vera/issues/540) | Add lychee + markdownlint MD051 for cross-doc anchor validation |
 | [#402](https://github.com/aallan/vera/issues/402) | Investigate parser fuzzing with Atheris for crash detection |
 | [#386](https://github.com/aallan/vera/issues/386) | Add property-based testing for parser/formatter round-trip |
