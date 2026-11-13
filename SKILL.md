@@ -450,7 +450,7 @@ array, useful when processing diagnostics programmatically.
 ### Primitive types
 
 - `Bool`: `true`, `false`
-- `Int`: signed 64-bit integer; arithmetic overflow traps, `INT_MIN / -1` included, and each overflow has a verifier obligation (E528)
+- `Int`: signed 64-bit integer; `+`, `-`, `*`, `abs` and `INT_MIN / -1` trap on overflow, and each has a verifier obligation (E528). Unary negation has neither, so `-@Int.0` with `@Int.0` at `INT_MIN` returns `INT_MIN`; write `0 - @Int.0` where the operand can reach it
 - `Nat`: natural number, the non-negative half of the 64-bit `Int` (`0` to `2^63 - 1`)
 - `Float64`: 64-bit IEEE 754 floating-point
 - `Byte`: unsigned 8-bit integer (0–255)

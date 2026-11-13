@@ -415,7 +415,7 @@ scripts; the LSP is for interactive editing and edit-verify-apply loops.
 | "Contract should hold but does not" | `vera check --explain-slots` | which parameter `@T.n` actually resolves to |
 | Recursive call behaves backwards | `vera check --explain-slots` | non-commutative slot order (`@T.0` is *most recent*) |
 | A `@T.n` you wrote does not resolve | `vera check --explain-slots` | an alias in the head or in a type argument; the bound name may not be the one you spelled |
-| "Verified, but it trapped at runtime" | `vera verify --json` | a non-zero `tier3_runtime`: it was a runtime guard, not a proof |
+| "Verified, but it trapped at runtime" | `vera verify --json` | the contract the trap names, and its entry in the `obligations` array (`tier3` is a runtime guard, not a proof) |
 | "Z3 cannot prove my postcondition" | `vera test --fn f` | a generated counterexample input |
 | Wrong *output* (not wrong *proof*) | `vera compile --wat` | the actual emitted instructions |
 | "Does feature/built-in X exist?" | `vera builtins --json` / `vera effects --json` | the registry, not your memory |
