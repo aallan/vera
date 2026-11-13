@@ -45,8 +45,8 @@
 
   <!-- flows -->
   <g>
-    <rect class="card" x="60" y="228" width="380" height="60" rx="10"/>
-    <rect x="60.5" y="228.5" width="4" height="59" rx="2" fill="#4a82a8"/>
+    <rect class="card" x="60" y="228" width="380" height="74" rx="10"/>
+    <rect x="60.5" y="228.5" width="4" height="73" rx="2" fill="#4a82a8"/>
     <text class="f t" x="78" y="250">host writes land here</text>
     <text class="f d" x="78" y="268">the canon lowering places lists and strings via cabi_realloc;</text>
     <text class="f d" x="78" y="282">retptrs use the fixed slab at the base</text>
@@ -54,11 +54,12 @@
   <polyline class="edge" points="440,258 490,258" marker-end="url(#arr)"/>
   <text class="f d" x="466" y="248" text-anchor="middle" font-size="9px" font-style="italic" fill="#a9a49b">copy out</text>
   <g>
-    <rect class="card" x="494" y="228" width="390" height="60" rx="10"/>
-    <rect x="494.5" y="228.5" width="4" height="59" rx="2" fill="#5a9e6f"/>
+    <rect class="card" x="494" y="228" width="390" height="74" rx="10"/>
+    <rect x="494.5" y="228.5" width="4" height="73" rx="2" fill="#5a9e6f"/>
     <text class="f t" x="512" y="250">…then cross into Vera properly</text>
-    <text class="f d" x="512" y="268">an IO.read_file payload or the IO.args array is copied into ordinary</text>
-    <text class="f d" x="512" y="282">GC-heap blocks with explicit shadow-stack rooting (_ShadowGuard discipline)</text>
+    <text class="f d" x="512" y="268">an IO.read_file payload or the IO.args array is copied</text>
+    <text class="f d" x="512" y="282">into ordinary GC-heap blocks with explicit shadow-stack</text>
+    <text class="f d" x="512" y="296">rooting (_ShadowGuard discipline)</text>
   </g>
 
   <!-- why card -->
