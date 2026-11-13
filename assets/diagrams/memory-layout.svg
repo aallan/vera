@@ -24,7 +24,7 @@
   <rect x="1.5" y="1.5" width="917" height="497" rx="14" fill="#faf9f7" stroke="#e8e6e1" stroke-width="1.5"/>
 
   <text class="f micro" x="36" y="42">LINEAR MEMORY · GROWABLE</text>
-  <text class="f sub" x="36" y="64">Addresses increase downward. The GC scaffolding is only emitted when the program heap-allocates.</text>
+  <text class="f sub" x="36" y="64">Addresses increase down the page, and the GC scaffolding is emitted only when the program heap-allocates.</text>
 
   <!-- ═══ the address-space bar ═══ -->
   <!-- string constants -->
