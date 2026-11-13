@@ -10,7 +10,7 @@ Vera's type system is the primary mechanism for constraining the space of valid 
 - Refinement types (types with logical predicates)
 - Function types with effect annotations
 
-Every expression in a Vera program has a statically determined type. There is no type inference for top-level function signatures; all types must be explicitly declared. Local type inference is permitted within function bodies for let bindings.
+Every expression in a Vera program has a statically determined type. There is no type inference for top-level function signatures; all types must be explicitly declared. A `let` binding declares its type too (Section 4.7). Within a function body, inference fixes the type arguments of a generic call or constructor (Sections 4.2 and 5.9).
 
 ## 2.2 Primitive Types
 
