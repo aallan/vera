@@ -17,6 +17,10 @@ holds `-7`, so reading the wrong field cannot pass), and a box returned by a
 callee whose contract is `ensures(true)` are each `violated` (E500) through
 the same field read.
 
+The issue reproduced the gap with a callee in another module as well, so two
+cells call an imported `mag`, by its bare name and by its module's path, with
+the stronger postcondition as their control.
+
 A value the function did not build is another class: the `Nat` component of
 an `@Tuple<Nat, Nat>` parameter read at `@Int` carries no `>= 0` (#1814).
 """
@@ -24,9 +28,11 @@ an `@Tuple<Nat, Nat>` parameter read at `@Int` carries no `>= 0` (#1814).
 from __future__ import annotations
 
 import textwrap
+from pathlib import Path
 
 import pytest
 
+from tests.module_fixture_helpers import verify_multi_module
 from tests.verifier_helpers import _verify
 
 MAG = textwrap.dedent("""\
@@ -283,3 +289,58 @@ def test_field_read_proves_nothing_the_fact_does_not(control: str) -> None:
     statuses, errors = _ensures(CONTROLS[control], "f")
     assert statuses == ["violated"], control
     assert errors == ["E500"], control
+
+
+# =====================================================================
+# The callee in another module
+# =====================================================================
+
+#: `mag`, exported by a module of its own.
+MAGNITUDE = "module magnitude;\n\n" + MAG.replace(
+    "private fn mag", "public fn mag")
+
+_IMPORTER = "import magnitude(mag);\n\n" + BOX + textwrap.dedent("""\
+    public fn f(@Int -> @Int)
+      requires(true)
+      ensures(POST)
+      effects(pure)
+    {
+      let @Box = MkBox(CALL);
+      match @Box.0 {
+        MkBox(@Int) -> @Int.0
+      }
+    }
+    """)
+
+
+def _imported(tmp_path: Path, call: str, post: str) -> tuple[list[str], list[str]]:
+    """The statuses of `f`'s `ensures` and the error codes, where `f` boxes
+    *call*, a call of the imported `mag`, and promises *post*."""
+    assert "public fn mag" in MAGNITUDE
+    files = {
+        "magnitude.vera": MAGNITUDE,
+        "main.vera": _IMPORTER.replace("CALL", call).replace("POST", post),
+    }
+    _diagnostics, result = verify_multi_module(tmp_path, files)
+    statuses = [o.status for o in result.obligations
+                if o.kind == "ensures" and o.fn_name == "f"]
+    errors = [d.error_code for d in result.diagnostics
+              if d.severity == "error"]
+    return statuses, errors
+
+
+@pytest.mark.parametrize("call", ["mag(@Int.0)", "magnitude::mag(@Int.0)"])
+def test_fact_from_an_imported_callee_holds_through_a_field(
+    tmp_path: Path, call: str,
+) -> None:
+    statuses, errors = _imported(tmp_path, call, "@Int.result >= 0")
+    assert statuses == ["verified"], call
+    assert errors == [], call
+
+
+def test_imported_callee_proves_nothing_its_contract_does_not(
+    tmp_path: Path,
+) -> None:
+    statuses, errors = _imported(tmp_path, "mag(@Int.0)", "@Int.result > 0")
+    assert statuses == ["violated"]
+    assert errors == ["E500"]
