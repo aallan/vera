@@ -21,7 +21,7 @@
   <rect x="1.5" y="1.5" width="917" height="469" rx="14" fill="#faf9f7" stroke="#e8e6e1" stroke-width="1.5"/>
 
   <text class="f micro" x="36" y="42">HOW VERA COMPARES · DAFNY / LEAN 4 / KOKA / F*</text>
-  <text class="f sub" x="36" y="64">Each cell traces to the FAQ's comparison — ● yes · ◐ partial or qualified · ○ no.</text>
+  <text class="f sub" x="36" y="64">Each cell traces to the FAQ's comparison: ● yes · ◐ partial or qualified · ○ no.</text>
 
   <!-- table card -->
   <rect class="card" x="36" y="84" width="848" height="308" rx="10"/>
@@ -55,7 +55,7 @@
   <text class="m cell no" x="315" y="208">○</text>
   <text class="m cell part" x="425" y="208">◐</text>
   <text class="m cell no" x="530" y="208">○</text>
-  <text class="f note" x="616" y="195">theorem prover — explicit proofs; monadic</text>
+  <text class="f note" x="616" y="195">theorem prover with explicit proofs; monadic</text>
   <text class="f note" x="616" y="208">effects; richest LLM ecosystem, yet 27%</text>
   <text class="f note" x="616" y="221">success vs Dafny's 82%</text>
   <line class="rowline" x1="52" y1="230" x2="868" y2="230"/>
@@ -77,7 +77,7 @@
   <text class="m cell no" x="315" y="308">○</text>
   <text class="m cell yes" x="425" y="308">●</text>
   <text class="m cell yes" x="530" y="308">●</text>
-  <text class="f note" x="616" y="301">the closest feature set — but it targets</text>
+  <text class="f note" x="616" y="301">the closest feature set, but it targets</text>
   <text class="f note" x="616" y="314">human programmers; steep learning curve</text>
   <line class="rowline" x1="52" y1="330" x2="868" y2="330"/>
 
@@ -89,11 +89,11 @@
   <text class="m cell yes" x="425" y="366">●</text>
   <text class="m cell yes" x="530" y="366">●</text>
   <text class="f note" x="616" y="352">…plus constrained generics, De Bruijn</text>
-  <text class="f note" x="616" y="365">indices, and WebAssembly — purpose-built</text>
+  <text class="f note" x="616" y="365">indices, and WebAssembly, purpose-built</text>
   <text class="f note" x="616" y="378">for LLM code generation</text>
 
   <!-- footer -->
-  <text class="f footi" x="36" y="420">The Dafny-as-verification-target paper (2025) validates the core thesis — SMT-automated verification suits model-written code</text>
+  <text class="f footi" x="36" y="420">The Dafny-as-verification-target paper (2025) validates the core thesis: SMT-automated verification suits model-written code</text>
   <text class="f footi" x="36" y="436">far better than explicit proof construction. No production language today combines this whole column in one design.</text>
   <text class="f" x="36" y="458" font-size="9.5px" fill="#a9a49b">Claims as stated in FAQ.md; success-rate figures quoted there from published LLM benchmarks.</text>
 </svg>
