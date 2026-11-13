@@ -1,6 +1,6 @@
 # Editor Support
 
-Vera syntax highlighting packages for popular editors.
+Editor packages for Vera: a VS Code extension with the language server, and syntax highlighting for TextMate, Sublime Text and Vim.
 
 ## VS Code
 

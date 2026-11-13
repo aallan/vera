@@ -1,21 +1,21 @@
 # Vera Language for Visual Studio Code
 
-Language server integration and syntax highlighting for the [Vera programming language](https://veralang.dev/) — a statically typed, purely functional language with algebraic effects, mandatory contracts, and typed slot references (`@T.n`), designed for LLM-generated code.
+Language server integration and syntax highlighting for the [Vera programming language](https://veralang.dev/), a statically typed, purely functional language with algebraic effects, mandatory contracts, and typed slot references (`@T.n`), designed for LLM-generated code.
 
 ## Features
 
-**Language server integration** — the extension starts Vera's own
+**Language server integration.** The extension starts Vera's own
 language server ([`vera lsp`](https://github.com/aallan/vera/blob/main/LSP_SERVER.md)) for `.vera` files,
-which runs the full pipeline — parse, type-check, **verify** — on every
+which runs the full pipeline (parse, type-check, **verify**) on every
 edit and provides:
 
 - **Proof-aware diagnostics** as you type, with the same stable error
   codes and spec references as `vera verify --json`, plus per-function
   verification-tier hints ("Tier 1 — all contracts proven by Z3").
 - **Hover** showing the inferred type of the expression under the cursor.
-- **Go-to-definition on slot references** — jump from `@T.n` to the
+- **Go-to-definition on slot references**: jump from `@T.n` to the
   parameter it names under De Bruijn resolution.
-- **Typed-hole completion** — at a `?` hole, completion lists the
+- **Typed-hole completion**: at a `?` hole, completion lists the
   in-scope bindings that fit, with their types.
 
 Requires the `vera` binary with the `[lsp]` extra from PyPI (see
@@ -26,14 +26,14 @@ coding agents.
 
 **Syntax highlighting** for the full Vera language, including constructs that have no equivalent in other languages:
 
-- **Slot references** — `@Int.0`, `@Array<String>.1`, `@Nat.result`, and bare `@Type` bindings in match arms are all highlighted distinctly, since they are the primary way Vera code refers to values.
-- **Contract blocks** — `requires`, `ensures`, `effects`, `decreases`, and `invariant` are scoped separately from control flow keywords, so colour themes can distinguish verification annotations from program logic.
+- **Slot references**: `@Int.0`, `@Array<String>.1`, `@Nat.result`, and bare `@Type` bindings in match arms are all highlighted distinctly, since they are the primary way Vera code refers to values.
+- **Contract blocks**: `requires`, `ensures`, `effects`, `decreases`, and `invariant` are scoped separately from control flow keywords, so colour themes can distinguish verification annotations from program logic.
   <!-- render_lists:begin effects -->
 - **Effects** — built-in effects (`Async`, `DB`, `Diverge`, `Exn`, `Http`, `HttpServer`, `IO`, `Inference`, `Random`, `State`) and qualified operation calls (`IO.print`, `Exn.throw`) are highlighted with their components broken out.
   <!-- render_lists:end effects -->
-- **String interpolation** — `\(...)` expressions inside strings get full Vera highlighting.
-- **Nestable block comments** — `{- ... {- ... -} ... -}` handled correctly.
-- **Typed holes** — the `?` placeholder expression is scoped as a language constant, so it stands out as the thing left to fill in.
+- **String interpolation**: `\(...)` expressions inside strings get full Vera highlighting.
+- **Nestable block comments**: `{- ... {- ... -} ... -}` nest as the language nests them.
+- **Typed holes**: the `?` placeholder expression is scoped as a language constant, so it stands out as the thing left to fill in.
 
 **Language configuration** so VS Code understands Vera's structure:
 
@@ -70,7 +70,7 @@ Syntax highlighting works without the binary.
 | `vera.lsp.path` | `"vera"` | Command used to launch it (absolute path or `PATH`-resolved) |
 
 The **Vera: Restart Language Server** command restarts the server
-(e.g. after switching venvs or upgrading `vera`).
+(for example after switching virtual environments or upgrading `vera`).
 
 ## Installation
 
@@ -105,7 +105,7 @@ ln -s "$(pwd)/vera/editors/vscode" ~/.vscode/extensions/vera-language
 ln -s "$(pwd)/editors/vscode" ~/.vscode/extensions/vera-language
 ```
 
-Then reload VS Code. Any `.vera` file will be recognised automatically.
+Then reload VS Code, which recognises any `.vera` file.
 The build bundles the LSP client library into `dist/extension.js`.
 Skipping it leaves the declarative syntax highlighting available, but
 the language server integration cannot start.

@@ -1,6 +1,6 @@
 # Vera.tmbundle
 
-TextMate 2 syntax highlighting for the [Vera programming language](https://veralang.dev/) — a statically typed, purely functional language with algebraic effects, mandatory contracts, and typed slot references (`@T.n`), designed for LLM-generated code.
+TextMate 2 syntax highlighting for the [Vera programming language](https://veralang.dev/), a statically typed, purely functional language with algebraic effects, mandatory contracts, and typed slot references (`@T.n`), designed for LLM-generated code.
 
 ## Installation
 
@@ -12,17 +12,17 @@ Clone the Vera repository (or navigate to an existing clone), then copy the bund
 cp -r editors/textmate/Vera.tmbundle ~/Library/Application\ Support/TextMate/Bundles/
 ```
 
-Alternatively, open Finder, navigate to `editors/textmate/`, and double-click `Vera.tmbundle`. TextMate will install it automatically.
+Alternatively, open Finder, navigate to `editors/textmate/`, and double-click `Vera.tmbundle`, which TextMate installs.
 
 Then restart TextMate or select **Bundles → Bundle Editor → Reload Bundles**.
 
 ## What gets highlighted
 
-The grammar covers the full Vera language. Its effect names, and the list below, are written from the compiler's own effect registry by `scripts/render_lists.py`, so a release cannot ship either one behind the registry.
+The grammar covers the full Vera language. `scripts/render_lists.py` writes its effect names, and the effects line below, from the compiler's own effect registry, so a release cannot ship either one behind the registry.
 
-**Slot references** are the most distinctive feature of Vera syntax, and the bundle treats them as first-class citizens. Full references like `@Int.0`, `@Array<String>.1`, and `@Nat.result` are scoped as `variable.other.slot`, while bare bindings in match arms (e.g. `Some(@Int)`) are scoped as `variable.other.slot-binding`. Both are visually distinct from all other tokens.
+**Slot references** are the most distinctive feature of Vera syntax, and the bundle scopes them on their own. Full references like `@Int.0`, `@Array<String>.1`, and `@Nat.result` are scoped as `variable.other.slot`, while bare bindings in match arms (e.g. `Some(@Int)`) are scoped as `variable.other.slot-binding`. Both are visually distinct from all other tokens.
 
-**Contract blocks** — `requires`, `ensures`, `effects`, `decreases`, and `invariant` — are scoped separately from control flow keywords (`keyword.contract` vs `keyword.control`), so they can be themed independently.
+**Contract blocks** (`requires`, `ensures`, `effects`, `decreases`, and `invariant`) are scoped separately from control flow keywords (`keyword.contract` vs `keyword.control`), so they can be themed independently.
 
 <!-- render_lists:begin effects -->
 **Effects** — built-in effects (`Async`, `DB`, `Diverge`, `Exn`, `Http`, `HttpServer`, `IO`, `Inference`, `Random`, `State`) are recognised as `entity.name.type.effect`. Qualified operation calls like `IO.print` and `Exn.throw` are decomposed into effect name, accessor, and operation name.
@@ -47,7 +47,7 @@ The grammar covers the full Vera language. Its effect names, and the list below,
 
 ## Scope naming
 
-The grammar uses standard TextMate scope conventions so it works with any colour scheme out of the box. Key scope assignments:
+The grammar uses standard TextMate scope conventions, so it works with any colour scheme. Key scope assignments:
 
 | Vera construct | Scope |
 |---|---|
@@ -69,7 +69,7 @@ The grammar uses standard TextMate scope conventions so it works with any colour
 
 ## Known limitations
 
-Slot reference patterns (`variable.other.slot.vera` and `variable.other.slot-binding.vera`) use `(?:<[^>]*>)*` to match generic type arguments. This cannot handle nested generics — `@Array<Option<Int>>.0` will only highlight up to the first `>`. Single-level generics like `@Map<String, Int>.0` work correctly. This is an accepted limitation of TextMate's regex-only grammar engine.
+Slot reference patterns (`variable.other.slot.vera` and `variable.other.slot-binding.vera`) use `(?:<[^>]*>)*` to match generic type arguments. It cannot match nested generics, so `@Array<Option<Int>>.0` is not highlighted as a slot reference. Single-level generics like `@Map<String, Int>.0` are. The limitation comes from TextMate's regex-only grammar engine.
 
 ## Compatibility
 
