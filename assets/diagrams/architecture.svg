@@ -7,7 +7,7 @@
       tints (15% over white): #e4ecf2 · #ede8f2 · #f8efdf · #e6f0e9 · #f7efe8
       text #2d2b28 / #7a756d / #a9a49b · system font stack, mono for file names
     Rules: no live counts (they drift); the check → {verify | compile} fork is deliberate —
-    `vera compile` does not consume verify results; contract guards are always emitted.
+    `vera compile` does not consume verify results; a contract's guard is emitted whether or not the contract was proved.
   -->
   <defs>
     <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">

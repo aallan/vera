@@ -138,11 +138,14 @@ it gives none of the join's diagnostics.
 (Tier 2, Z3-*guided*, is specified in spec/06 but not implemented.)
 
 **Debugging "it verified but it still trapped at runtime."** First read which
-contract the trap names. A Tier 1 function traps when it is called with an
-argument that breaks its `requires` (one passed with `vera run --fn`, which
-the verifier never sees), since that clause is compiled as a check too. Otherwise it is Tier 3
-doing its job: the contract was not *statically* proved, so it became a runtime
-guard. `--json` shows you exactly how much fell through:
+contract the trap names, then what `vera verify` said of that contract. A
+`requires` traps when the function is called with an argument that breaks it
+(one passed with `vera run --fn`, which the verifier never sees), since that
+clause is compiled as a check too. A contract `vera verify` left to Tier 3 is
+the runtime guard doing its job: it was not *statically* proved. A contract it
+reported as proved that traps anyway is a verifier bug: look for it in
+[KNOWN_ISSUES.md](KNOWN_ISSUES.md), and report it if it is not there. `--json`
+shows you exactly how much fell through:
 
 ```bash
 vera verify --json file.vera

@@ -689,7 +689,8 @@ The browser stubs are covered in two ways. `IO.read_file` and `IO.write_file` ru
 
 The code generator does **not** consult the verifier: `vera compile` emits the module, with its contract guards, whether or not `vera verify` ever ran. Tier classification is `vera verify`'s *reporting*, not a codegen input:
 - **Trivial (`requires(true)`, `ensures(true)`):** omitted, recognised syntactically, since there is nothing to check
-- **Everything else:** compiled as runtime assertions using `unreachable` traps, whether Z3 proved it (Tier 1) or deferred it (Tier 3)
+- **Every other clause code generation can lower:** compiled as a runtime assertion using an `unreachable` trap, whether Z3 proved it (Tier 1) or deferred it (Tier 3)
+- **A clause it cannot lower** (an `ensures` over a `String` or `Array` result): no check; where the verifier does not prove it either, `vera verify` discloses it (`E543`)
 
 A Tier 1 guard provably never fires, and spec §11.8 keeps it as a backstop: a false Tier 1 surfaces as a runtime trap rather than a wrong answer.
 

@@ -22,8 +22,9 @@ renders the same through GitHub's camo proxy.
   check → {verify | compile} fork because `vera compile` does not consume
   verify results: a contract's guard is emitted whether or not the contract
   was proved (spec §11.8). A clause no check can express, such as an
-  `ensures` over a `String` or `Array` result, has no guard, and
-  `vera verify` discloses it (`E543`). No diagram may claim Tier 1
+  `ensures` over a `String` or `Array` result, has no guard; where the
+  verifier does not prove it either, `vera verify` discloses it (`E543`).
+  No diagram may claim Tier 1
   contracts are omitted from compiled output.
 - **Accessibility.** Every SVG has a `<title>` (read by screen readers and
   used as hover text) that states the diagram's full claim in a sentence.
