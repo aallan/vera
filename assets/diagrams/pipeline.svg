@@ -21,7 +21,7 @@
   <rect x="1.5" y="1.5" width="917" height="577" rx="14" fill="#faf9f7" stroke="#e8e6e1" stroke-width="1.5"/>
 
   <text class="f micro" x="36" y="42">COMPILATION PIPELINE</text>
-  <text class="f sub" x="36" y="64">Each stage leaves one artifact. <tspan class="m" font-size="10.5px">vera compile</tspan> skips Verify; <tspan class="m" font-size="10.5px">vera verify</tspan> also compiles, to match each Tier 3 claim to a check.</text>
+  <text class="f sub" x="36" y="64">Each stage leaves one artefact. <tspan class="m" font-size="10.5px">vera compile</tspan> skips Verify; <tspan class="m" font-size="10.5px">vera verify</tspan> also compiles, to match each Tier 3 claim to a check.</text>
 
   <!-- source chip -->
   <rect x="36" y="84" width="118" height="26" rx="13" fill="#f3f2ef" stroke="#e8e6e1"/>
