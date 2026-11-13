@@ -111,7 +111,7 @@ Vera verifies in two implemented tiers, at every call site:
   Z3. `unsat` means the contract holds *for all inputs*, apart from the open
   soundness bugs listed in [KNOWN_ISSUES.md](KNOWN_ISSUES.md). The
   non-trivial `requires`/`ensures` clauses are also compiled as runtime checks, so a proof
-  bug surfaces as a trap rather than a wrong answer; a clause code generation cannot express, an `ensures` over a `String` or `Array` result, has no check, and `vera verify` discloses it (`E543`).
+  bug surfaces as a trap rather than a wrong answer; a clause code generation cannot express, such as an `ensures` on a function that returns a `String` or an `Array`, has no check, and `vera verify` discloses it (`E543`) where it is not proved.
 - **Tier 3: runtime fallback.** When Z3 returns `unknown` or times out, the
   contract is compiled as a runtime check that traps on violation with the
   contract text.
@@ -199,8 +199,9 @@ only `diagnostics` still learns why nothing ran.
 `--distrust` runs those functions too: code generation emits a contract's
 runtime check whatever its tier, wherever it can express one, so the proved
 function's checks are in the module the trials execute.  A contract it cannot
-express has no check, and no trial can refute its proof: an `ensures` over a
-`String` or `Array` result is one.  A proved function is not run when no check
+express has no check, and no trial can refute its proof: an `ensures` on a
+function that returns a `String` or an `Array` is one, whatever the clause
+reads.  A proved function is not run when no check
 its run reaches can stand for something the verifier proved (a clause of its
 own, an operation in its body, the contract of a function it calls), when the
 generator has no input for it, or when there is nothing to run; the last two

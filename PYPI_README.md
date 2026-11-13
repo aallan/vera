@@ -5,8 +5,9 @@ has mandatory contracts, algebraic effects, typed slot references instead of
 variable names, and a compiler that emits WebAssembly. Contracts are verified
 statically with Z3 where Z3 can decide them, and the compiled program also
 checks its contracts at run time. A contract code generation cannot lower,
-such as an `ensures` over a `String` or `Array` result, is disclosed as a
-warning (`E543`) rather than reported as a runtime check.
+such as an `ensures` on a function that returns a `String` or an `Array`,
+is disclosed as a warning (`E543`) where it is not proved, rather than
+reported as a runtime check.
 Recursion must be shown to terminate (`decreases`) or declare that it may not
 (`Diverge`), every runtime trap names its cause, and SQL injection is a
 compile-time error.
