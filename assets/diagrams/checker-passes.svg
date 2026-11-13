@@ -74,8 +74,8 @@
   </g>
 
   <!-- output -->
-  <polyline class="edge" points="768,256 768,282 630,282" marker-end="url(#arr)"/>
-  <rect x="360" y="270" width="268" height="24" rx="12" fill="#f3f2ef" stroke="#e8e6e1"/>
+  <polyline class="edge" points="768,256 768,282 640,282" marker-end="url(#arr)"/>
+  <rect x="352" y="270" width="284" height="24" rx="12" fill="#f3f2ef" stroke="#e8e6e1"/>
   <text class="m" x="494" y="286" text-anchor="middle" font-size="10.5px" fill="#2d2b28">list[Diagnostic]: returned, never raised</text>
 
   <!-- footer -->
