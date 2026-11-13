@@ -64,7 +64,7 @@ vera errors [--json]              # List the diagnostic code registry (no file n
 pytest tests/ -v                  # Run the test suite (see TESTING.md); each class-instrument matrix runs its sample
 pytest tests/ -v --matrix=full    # The same, with every cell of every class-instrument matrix
 VERA_JS_COVERAGE=1 pytest tests/test_browser.py -v  # Browser tests with JS coverage
-VERA_EAGER_GC=1 vera run file.vera  # Force GC on every alloc (see ENVIRONMENT.md, debug knob for #593-class GC-rooting bugs)
+VERA_EAGER_GC=1 vera run file.vera  # Force GC on every alloc (see ENVIRONMENT.md, debug knob for GC-rooting bugs)
 VERA_DEBUG_HOST_ERRORS=1 vera run file.vera  # Re-raise a host callback's own exception (see ENVIRONMENT.md, debug knob for host-binding bugs)
 mypy vera/                        # Type-check the compiler itself
 

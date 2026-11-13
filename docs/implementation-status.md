@@ -1,10 +1,10 @@
-<!-- GENERATED FILE — do not edit.
+<!-- GENERATED FILE: do not edit.
      Source: scripts/build_site.py (build_impl_status).
      Regenerate: python scripts/build_site.py -->
 
 # Implementation Status
 
-Vera's specification describes the language; the reference compiler implements most of it. Where the two stand apart, the chapter says so in a `Status:` callout — usually naming a gap, sometimes recording that a feature has landed. This page collects every one of those callouts — 9 across 5 chapters — so the boundary between what is shipped and what is specified is readable in one place.
+Vera's specification describes the language; the reference compiler implements most of it. Where the two stand apart, the chapter says so in a `Status:` callout, usually naming a gap and sometimes recording that a feature is implemented. This page collects every one of those callouts (9 across 5 chapters), so the boundary between what is shipped and what is specified is readable in one place.
 
 Each entry keeps its chapter's wording, including the issue it cites. The specification remains the normative source; this page is an index into it.
 

@@ -162,7 +162,7 @@ Mandatory contracts and typed slot references give a model enough structure to m
 
 The gap between Python and TypeScript tells the same story. Python is dynamically typed, so a type error surfaces when the code runs; TypeScript rejects the same error before anything runs. Vera goes further than TypeScript, making `requires`, `ensures` and `effects` mandatory on every function and replacing variable names with typed slot references. Sort the three languages by how much they constrain the model, rather than by how much of them it has read, and the two that constrain it finish ahead of the one that doesn't.
 
-TypeScript earns its results from years of training data. Vera earns very nearly the same results with none. Whatever familiarity buys TypeScript, Vera's constraints supply by other means.
+TypeScript earns its results from years of training data. Vera earns very nearly the same results with none. Whatever familiarity gives TypeScript, Vera's constraints supply by other means.
 
 Each model made one attempt per problem, with no pass@k, and each of the sixty problems is worth just under two percentage points. Language design can outweigh sheer volume of training data, and if you generate code at any scale, that's worth knowing.
 
@@ -184,7 +184,7 @@ Full source and data: [https://github.com/aallan/vera-bench](https://github.com/
 - **No variable names.** Typed [De Bruijn indices](https://raw.githubusercontent.com/aallan/vera/main/DE_BRUIJN.md) (`@T.n`) replace variable names: `@Int.0` is the most-recent `Int` binding, `@Int.1` the one before. A whole class of naming hallucinations disappears from the language instead of being caught after the fact.
 - **Full contracts.** Mandatory preconditions, postconditions and effect declarations on every function, plus a `decreases` measure (or the `Diverge` effect) on every recursive one. `vera test` uses Z3 to generate inputs from the contracts and runs them through WASM, so there are no test cases to write by hand.
 - **SQL injection won't compile.** The `<DB>` effect accepts only a query written as literals in the source, never one spliced together from a runtime value. Interpolating user input into SQL is a compile-time error (`E207`), so every value goes through a `?` placeholder. Injection safety stops being a discipline you have to remember and becomes a rule the compiler enforces.
-- **Algebraic effects.** IO, Http, HttpServer, State, Exceptions, Async, Inference, DB, Random, Diverge. Every effect is declared and typed, and code is pure by default. `State` and `Exn` are handled in Vera code; the host effects are backed by the runtime.
+- **Algebraic effects.** IO, Http, HttpServer, State, Exn, Async, Inference, DB, Random, Diverge. Every effect is declared and typed, and code is pure by default. `State` and `Exn` are handled in Vera code; the host effects are backed by the runtime.
 - **Refinement types.** Types that state constraints, such as a list of positive integers of length `n`.
 - **Proof, then runtime checks.** Contracts are proved at compile time with [Z3](https://www.microsoft.com/en-us/research/project/z3-3/), and most of what Z3 can't prove is checked at run time instead. A `requires` that can never hold is refused, so a contradiction can't prove everything. `vera verify --timeout-ms` sets the solver budget.
 - **Traps that name their cause.** A `@Nat` underflow, a failed contract or `assert`, an index out of bounds or an escaped exception reports what kind of trap it is and how to fix it, the same way on wasmtime, in the browser and under WASI 0.2.
@@ -312,7 +312,7 @@ The documents above are how machines *read* Vera. The [language server](https://
 
 ## Status
 
-Vera is under [active development](https://raw.githubusercontent.com/aallan/vera/main/ROADMAP.md). A complete compiler with 168 built-in functions, ten algebraic effects (IO, Http, HttpServer, State, Exceptions, Async, Inference, DB, Random, Diverge), contract-driven testing with [Z3](https://www.microsoft.com/en-us/research/project/z3-3/), a language server with agent-facing proof deltas, and a 14-chapter specification. A 273-program conformance suite and 44 worked examples are validated against the spec on every pull request. It's all developed in the open on [GitHub](https://github.com/aallan/vera) under the MIT licence.
+Vera is under [active development](https://raw.githubusercontent.com/aallan/vera/main/ROADMAP.md). A complete compiler with 168 built-in functions, ten algebraic effects (IO, Http, HttpServer, State, Exn, Async, Inference, DB, Random, Diverge), contract-driven testing with [Z3](https://www.microsoft.com/en-us/research/project/z3-3/), a language server with agent-facing proof deltas, and a 14-chapter specification. A 273-program conformance suite and 44 worked examples are validated against the spec on every pull request. It's all developed in the open on [GitHub](https://github.com/aallan/vera) under the MIT licence.
 
 ## Links
 

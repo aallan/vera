@@ -896,7 +896,7 @@ class TestImplementationStatusAppendix:
             f"appendix — the scanner is missing a spelling, or a chapter is "
             f"not being visited"
         )
-        assert f"— {live} across " in out, (
+        assert f"({live} across " in out, (
             "the page's own header count must agree with the entries below it"
         )
 

@@ -1,8 +1,8 @@
-# Vera — Language Reference Documentation
+# Vera: Language Reference Documentation
 
 > Vera is a statically typed, purely functional programming language designed for large language models to write. It uses typed slot references (@T.n) instead of variable names, requires contracts on every function, and compiles to WebAssembly.
 
-This file contains the core Vera language documentation — language reference, agent instructions, FAQ, error codes, and formal grammar — compiled into a single document. For the full documentation index, including the specification and the supplementary docs, see llms.txt.
+This file contains the core Vera language documentation (language reference, agent instructions, FAQ, error codes and formal grammar) compiled into a single document. For the full documentation index, including the specification and the supplementary docs, see llms.txt.
 
 
 ========================================================================

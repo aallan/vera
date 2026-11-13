@@ -1747,7 +1747,7 @@ Markers travel with their fence through document edits, so there are no line num
 
 ## JSON Output Stability
 
-`vera check --json`, `vera verify --json` and `vera test --json` emit structured JSON for downstream tooling (CI pipelines, IDE plugins, agent feedback loops).  The field set is a public API; [`spec/00-introduction.md` §0.5.8](spec/00-introduction.md#058-machine-readable-output---json) has the stability rules.  Tests in `tests/test_cli.py` assert on the documented field set, so a regression that drops a documented field will fail at least one test.
+`vera check`, `vera verify`, `vera test`, `vera compile` and `vera run` each take `--json` and emit structured JSON for downstream tooling (CI pipelines, IDE plugins, agent feedback loops).  The field set is a public API; [`spec/00-introduction.md` §0.5.8](spec/00-introduction.md#058-machine-readable-output---json) has the stability rules.  Tests in `tests/test_cli.py` assert on the documented field set, so a regression that drops a documented field will fail at least one test.
 
 ### `vera check --json` / `vera verify --json`
 
@@ -1794,6 +1794,31 @@ Top-level:
 | `unlisted_errors` | Verifier-error diagnostics whose attributable function is not in the displayed `functions` list (`--fn` filtering, private helpers) |
 | `refuted` | Only under `--distrust`: proved functions a trial refuted (each with an E703 error) |
 | `unattributed` | Only under `--distrust`: proved functions with at least one trial whose trap could not be attributed to an obligation |
+
+### `vera compile --json`
+
+| Field | Type | Description |
+|---|---|---|
+| `ok` | bool | `true` iff the module was built |
+| `file` | string | The source file compiled |
+| `exports` | array | The names of the functions the module exports |
+| `diagnostics` | array | Empty when the module was built; otherwise the error that refused it |
+| `warnings` | array | Code generation's warning-severity `Diagnostic` objects |
+
+### `vera run --json`
+
+| Field | Type | Description |
+|---|---|---|
+| `ok` | bool | `true` iff the call returned |
+| `file` | string | The source file run |
+| `function` | string | The function called: the one `--fn` names, else `main`, else the first export |
+| `value` | number, string or null | The value the function returned: a number, the text of a `String`, or `null` for `Unit`. An `Array` or data-type result is reported as its address in the module's memory |
+| `stdout` | string | What the program printed |
+| `stderr` | string | Present only when the program wrote to standard error |
+| `exit_code` | int | Present only when the program ended through `IO.exit` |
+| `warnings` | array | Present only when code generation warned |
+
+A call that traps gives `ok: false` and one `E800` entry in `diagnostics`, which adds `trap_kind` and `frames` (the source backtrace) to the `Diagnostic` shape; `stdout` and `stderr` are present when the program wrote to them before it stopped.
 
 ### Stability contract
 
