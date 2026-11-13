@@ -528,7 +528,7 @@ def load_limitations(root: Path) -> Limitations | list[str]:
 
 def _issue_cell(issues: Sequence[int]) -> str:
     if not issues:
-        return "—"
+        return "none"
     return ", ".join(f"[#{n}]({ISSUES_URL}{n})" for n in issues)
 
 
