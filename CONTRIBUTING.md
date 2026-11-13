@@ -1,6 +1,6 @@
 # Contributing to Vera
 
-Thank you for your interest in contributing to Vera. This document provides guidelines and information for contributors.
+Thank you for your interest in contributing to Vera.
 
 ## How to Contribute
 
@@ -39,19 +39,19 @@ For contributions to the reference compiler:
 6. Commit your changes with a clear commit message.
 7. Push to your fork and open a pull request.
 
-**First-time contributors**: GitHub gates CI on first-time PRs behind a manual maintainer approval (you'll see `action_required` next to the CI check rather than `pending`).  A maintainer will approve the workflow once the PR is reviewed; subsequent pushes to the same PR run CI automatically.  This is a GitHub security feature, not a project-specific gate.
+**First-time contributors**: GitHub holds CI on a first-time contributor's pull request until a maintainer approves the workflow (the CI check shows `action_required` rather than `pending`).  A maintainer approves it once the pull request is reviewed, and later pushes to the same pull request run CI automatically.  The hold is a GitHub security feature rather than a project rule.
 
 ### Built-in functions and types
 
 When adding or modifying built-in functions (one record each in `vera/builtins.py`, which `vera/environment.py` registers):
 
 - **One record, and the hosts.** A built-in is its record: its signature, its `since`, and its lowering, in place or through a host import, whose row in the same file the module declares.  A host-imported one is also implemented in each host, `vera/runtime/<family>.py` and `vera/browser/runtime.mjs`, and in `vera/codegen/wasi.py` where its row's `wasi` names a WASI world; each host binds it from the row.  `python scripts/render_lists.py --write` then writes its row into the browser runtime's roster and its signature into spec §9's tables; `tests/test_builtin_registry.py` holds every record to the checker, its emitter and the hosts ([vera/README.md](vera/README.md) § "New built-in function or effect").  Its result's WASM width is its signature's: code generation reads the checker's type of the call (`vera/wasm/inference.py`, `_type_of`), so no width is written by hand.
-- **A host effect operation** is one operation in its effect's `EffectInfo` (`vera/environment.py`) and one `HostImport` row in `vera/builtins.py` serving it, implemented in the same hosts as a host-imported built-in and rendered the same way.  An `IO` operation's result width is an entry in `_IO_WASM_TYPES` (`vera/wasm/inference.py`).  In `vera/codegen/wasi.py`, an operation the cli world implements takes a free `_OPS` slot, an index the server world's dispatch table shares; one the server world refuses gives its reason in `_SERVER_REJECTED_OPS`; and one that reaches a file joins `_FS_OPS`.
-- **Prelude types are automatic.** `Option<T>`, `Result<T, E>`, `Ordering`, and `UrlParts` are provided by the standard prelude in every program — no explicit `data` declaration is required. `Json`, `HtmlNode`, `Request` and `Response` are injected the same way when a program mentions them. User-defined types with the same name shadow the prelude.
+- **A host effect operation** is one operation in its effect's `EffectInfo` (`vera/environment.py`) and one `HostImport` row in `vera/builtins.py` serving it, implemented in the same hosts as a host-imported built-in and rendered the same way.  Its result's WASM width, like a built-in's, is its signature's, read off the checker's type of the call.  In `vera/codegen/wasi.py`, an operation the cli world implements takes a free `_OPS` slot, an index the server world's dispatch table shares; one the server world refuses gives its reason in `_SERVER_REJECTED_OPS`; and one that reaches a file joins `_FS_OPS`.
+- **Prelude types are automatic.** `Option<T>`, `Result<T, E>`, `Ordering`, and `UrlParts` are provided by the standard prelude in every program, with no `data` declaration. `Json`, `HtmlNode`, `Request` and `Response` are injected the same way when a program mentions them. The prelude's names are reserved: a user `data` declaration, `type` alias or type parameter with one of them is refused (`E158`), and so is a function with a prelude function's name (`E151`).
 - **Follow the naming convention** (spec §9.1.1): `domain_verb` for most functions (e.g. `string_length`, `array_append`), `source_to_target` for conversions (e.g. `int_to_float`), `domain_is_predicate` for boolean tests (e.g. `float_is_nan`). Only math universals (`abs`, `min`, `max`, etc.) are prefix-less.
 - **Match the spec.** Type signatures should use the types specified in the language specification (e.g. `NAT` where the spec says `Nat`, not `INT`). Reference the relevant spec chapter and section in your PR description.
-- **Add type checker tests** in the matching `tests/test_checker_*.py` phase file — for built-ins, `test_checker_builtins_strings.py` or `test_checker_builtins_collections.py` (shared helpers come from `tests/checker_helpers.py`) — at minimum, one test with correct types and one with a wrong argument type.
-- **Add codegen/runtime tests** in the matching `tests/test_codegen_*.py` feature file — for built-ins, e.g. `test_codegen_string_builtins.py` or `test_codegen_numeric.py` (shared helpers come from `tests/codegen_helpers.py`) — cover normal cases, edge cases (empty inputs, zero values), and composition with other built-ins.
+- **Add type checker tests** in the matching `tests/test_checker_*.py` phase file (for built-ins, `test_checker_builtins_strings.py` or `test_checker_builtins_collections.py`, with shared helpers from `tests/checker_helpers.py`): at minimum, one test with correct types and one with a wrong argument type.
+- **Add codegen/runtime tests** in the matching `tests/test_codegen_*.py` feature file (for built-ins, `test_codegen_string_builtins.py` or `test_codegen_numeric.py`, for example, with shared helpers from `tests/codegen_helpers.py`), covering normal cases, edge cases (empty inputs, zero values), and composition with other built-ins.
 - **Update the example** if an existing example demonstrates the feature, or add a new one in `examples/`.
 
 ### Effects and limitations
@@ -60,7 +60,7 @@ The built-in effect names, the limitation tables, the browser runtime's roster o
 
 - **A built-in effect** is added to the registry in `vera/environment.py`, which `vera effects --json` publishes.  The renderer writes it into the editor grammars under `editors/` and the two extension READMEs.
 - **A host import or a built-in's signature** is a row or a record in `vera/builtins.py` (an effect operation's signature, its `EffectInfo` in `vera/environment.py`).  The renderer writes each row into the roster in `vera/browser/runtime.mjs`, and each signature into the Signature cell of its row in spec §9; a table's names and descriptions are the spec's own.
-- **A limitation** is a record in `limitations.json`, beside KNOWN_ISSUES.md: the issues it cites, and the cells each table that carries it shows, the Issue column apart.  Each table names its records in its `rows`, in the order it shows them.  The renderer writes KNOWN_ISSUES.md's Limitations table and the tables in vera/README.md, the spec, SKILL.md and LSP_SERVER.md.  When its issue is closed, the record and its id in each table's `rows` go.  The Bugs tables in KNOWN_ISSUES.md and SKILL.md are kept by hand.
+- **A limitation** is a record in `limitations.json`, beside KNOWN_ISSUES.md: the issues it cites, and the cells each table that lists it shows, the Issue column apart.  Each table names its records in its `rows`, in the order it shows them.  The renderer writes KNOWN_ISSUES.md's Limitations table and the tables in vera/README.md, the spec, SKILL.md and LSP_SERVER.md.  When its issue is closed, the record and its id in each table's `rows` go.  The Bugs tables in KNOWN_ISSUES.md and SKILL.md are kept by hand.
 
 The release PR's `python scripts/check_doc_counts.py --release` fails when a block is not what the renderer writes.
 
@@ -70,15 +70,15 @@ A bug report is one sighting of a fault.  What gets filed, and what gets fixed, 
 
 ### Fixing: close the class
 
-When one mechanism bounds the class, a bug fix closes the class the report belongs to, not the reported instance, and a class instrument proves it.  When review shows a fix covers the instance but not the class, the class fix goes into the **same** pull request, bounded to the mechanism at fault — repair where that mechanism decides, not each way the wrong decision surfaces, and do not widen past it.  A fix that closes only the instance is a review-blocking finding, and narrowing the claim to the instance while leaving the issue open is deferral rather than a fix.
+When one mechanism bounds the class, a bug fix closes the class the report belongs to, not the reported instance, and a class instrument proves it.  When review shows a fix covers the instance but not the class, the class fix goes into the **same** pull request, bounded to the mechanism at fault: repair where that mechanism decides, not each way the wrong decision surfaces, and do not widen past it.  A fix that closes only the instance is a review-blocking finding, and narrowing the claim to the instance while leaving the issue open is deferral rather than a fix.
 
-When the class boundary is **architectural** — two phases each re-derive the same fact, so a member sits wherever their derivations can disagree — nothing fixes it per site, the pull request that reports it included.  The issue carries the milestone of the release that removes the mechanism, which [ROADMAP.md](ROADMAP.md) schedules, and closes there.
+When the class boundary is **architectural**, because two phases each re-derive the same fact and a member sits wherever their derivations can disagree, nothing fixes it per site, the pull request that reports it included.  The issue carries the milestone of the release that removes the mechanism, which [ROADMAP.md](ROADMAP.md) schedules, and closes there.
 
-Every fix PR states its **class boundary** in the body — which inputs the fix now covers, and which neighbouring ones it deliberately does not, with the reason — and ships a **class instrument**: an exhaustive matrix over the space the class spans, or a generator that samples it.  Hand-picked cases alone are not a class instrument; they demonstrate the instance again.  [TESTING.md](TESTING.md) § Class Instruments has the two shapes and what keeps a cell from being vacuous.
+Every fix PR states its **class boundary** in the body (which inputs the fix covers, and which neighbouring ones it does not, with the reason) and ships a **class instrument**: an exhaustive matrix over the space the class spans, or a generator that samples it.  Hand-picked cases alone are not a class instrument; they demonstrate the instance again.  [TESTING.md](TESTING.md) § Class Instruments has the two shapes and what keeps a cell from being vacuous.
 
-A class instrument is a **burndown tool**, not a permanent gate.  Its file carries the `matrix` marker, naming the modules where its class is decided — the modules the fix changed to close it — as paths from the repository root: `pytestmark = pytest.mark.matrix(decides=["vera/narrowing.py"])`.  The nightly lane runs it in full, and so does any pull request that changes the file or one of those modules (CI hands the suite the pull request's changed files as `VERA_MATRIX_CHANGED`); every other pull request runs a stratified sample of its cells, pinned for a week.  Write the cells that reproduce the report, were red before the fix or kill a documented mutant as unparametrised tests, in a function named for a `repro`, or as strict `xfail`s, and every pull request runs them ([TESTING.md](TESTING.md) § Where an instrument runs).
+A class instrument is a **burndown tool**, not a permanent gate.  Its file has the `matrix` marker, naming the modules where its class is decided (the modules the fix changed to close it) as paths from the repository root: `pytestmark = pytest.mark.matrix(decides=["vera/narrowing.py"])`.  The nightly lane runs it in full, and so does any pull request that changes the file or one of those modules (CI hands the suite the pull request's changed files as `VERA_MATRIX_CHANGED`); every other pull request runs a stratified sample of its cells, pinned for a week.  Write the cells that reproduce the report, were red before the fix or kill a documented mutant as unparametrised tests, in a function named for a `repro`, or as strict `xfail`s, and every pull request runs them ([TESTING.md](TESTING.md) § Where an instrument runs).
 
-A change that moves *where* a decision is made rather than what it decides is proved by a **verdict-signature diff** — the whole gate's verdicts at both revisions, with no movers except the deliberate ones — not by a green suite, which cannot tell a preserved decision from a coincidentally equal one.
+A change that moves *where* a decision is made rather than what it decides is proved by a **verdict-signature diff** (the whole gate's verdicts at both revisions, with no movers except the deliberate ones) rather than by a green suite, which cannot tell a preserved decision from a coincidentally equal one.
 
 ### Reviewing: three rounds, then the mechanism
 
@@ -86,11 +86,11 @@ A pull request's review is capped at three rounds.  A fourth needs a written ans
 
 ### Filing: file the class, not the manifestation
 
-One issue per class of bug, with its known instances as a checklist in the body.  Before filing, search the open `bug` issues for the mechanism — the rule that produces the wrong result, not the construct it surfaced in.  A finding that is another instance of an open class **extends that issue and its instrument** as a checklist line and a comment, never a second issue: two issues for one mechanism are fixed twice, or half-fixed once.  A new issue is for a mechanism no open issue names, and its title names the mechanism.
+One issue per class of bug, with its known instances as a checklist in the body.  Before filing, search the open `bug` issues for the mechanism: the rule that produces the wrong result, not the construct it surfaced in.  A finding that is another instance of an open class **extends that issue and its instrument** as a checklist line and a comment, never a second issue: two issues for one mechanism are fixed twice, or half-fixed once.  A new issue is for a mechanism no open issue names, and its title names the mechanism.
 
 Every issue states two facts the fix depends on:
 
-- **Effect.**  *Silent*: a wrong value, a wrong proof, or a wrong program accepted, with every gate green; it carries the `soundness` label.  *Loud*: a failure the user sees — a compile or load error after a green check, a false refusal, a wrong message or location; it never carries `soundness`.
+- **Effect.**  *Silent*: a wrong value, a wrong proof, or a wrong program accepted, with every gate green; it carries the `soundness` label.  *Loud*: a failure the user sees, such as a compile or load error after a green check, a false refusal, or a wrong message or location; it never carries `soundness`.
 - **Reach.**  Where a program written to accomplish something meets the shape: a file under `examples/` or `tests/conformance/`, a VeraBench task, an idiom the documentation teaches, or "none found" after looking.  The corpus differentials every fix pull request runs answer this.
 
 Effect and reach decide the disposition at filing.  Silent and reachable: fixed by the next free lane, as its own pull request.  Silent and contrived: a checklist line on its mechanism's class issue, closed by the release that removes the mechanism.  Loud and reachable: a row in the limitation tables, fixed when a change is already in the file.  Loud and contrived: a checklist line, nothing scheduled.
@@ -128,7 +128,7 @@ pre-commit install
 pre-commit install --hook-type pre-push
 ```
 
-Plain `uv sync` (without `--extra dev`) skips the dev extras and removes pytest, mypy, ruff, and pre-commit from the environment — the `--extra dev` flag is load-bearing.
+Plain `uv sync` (without `--extra dev`) skips the dev extras and removes pytest, mypy, ruff, and pre-commit from the environment, so the `--extra dev` flag is required.
 
 `uv.lock` is checked in and tracks exact versions with hashes. Run `uv lock --check` to verify
 the lockfile is consistent with `pyproject.toml`, or `uv lock` to regenerate it after updating
@@ -136,13 +136,13 @@ dependencies. CI enforces that `uv.lock` stays current.
 
 ### Pre-commit Hooks
 
-The hooks are defined in `.pre-commit-config.yaml`.  Most run at the commit stage (after `pre-commit install`); `check-changelog-updated` and `uv-lock-check`, described below, run at the push stage (after `pre-commit install --hook-type pre-push`). Most commit-stage hooks have per-hook `files:` / `types:` filters — the `python` type-check only runs when Python files are staged; `check_diagnostic_examples.py` only runs when a `.md`/`.txt` file or compiler source changes, etc. A plain-text commit touching only one markdown file triggers a small subset; a compiler-level commit triggers most of them.
+The hooks are defined in `.pre-commit-config.yaml`.  Most run at the commit stage (after `pre-commit install`); `check-changelog-updated` and `uv-lock-check`, described below, run at the push stage (after `pre-commit install --hook-type pre-push`). Most commit-stage hooks have per-hook `files:` / `types:` filters: ruff runs only when Python files are staged, and `check_diagnostic_examples.py` only when a `.md`/`.txt` file or compiler source changes. A plain-text commit touching only one markdown file triggers a small subset; a compiler-level commit triggers most of them.
 
 ![The gate pipeline: the fast commit-stage hooks, the push-stage CHANGELOG and uv.lock gates, and CI running the full suite in Linux and Windows shards (on the whole platform matrix for a release and nightly), conformance and the examples, and every hook again, before anything lands on protected main.](assets/diagrams/ci-gates.svg)
 
 **What runs where.** The commit-stage hooks are the fast gates, so a commit takes minutes.  The full pytest suite, the conformance suite and the examples run in CI only.  On every pull request the suite runs under Python 3.12, in shards on Linux and Windows.  The whole OS × Python matrix runs on a pull request that raises `[project].version`, on the push event its merge produces on `main` (a release) and every night, and a failed cell on that push or a scheduled nightly run, bar the advisory aarch64 cell, files an issue.  On the push event any other merge produces the suite runs once, measuring coverage, because strict branch protection means the pull request's last run already tested that tree.  CI also re-runs every gate below, so a commit that skipped the hooks is still gated before it can merge.  A commit runs the test files it stages: under the test-first rule, the test that proves a change is in the commit that makes it.
 
-The **commit-stage** hooks — each gated to relevant `files:`/`types:` filters, except `check-added-large-files`, a general `--maxkb=500` size check on the files a commit adds — include:
+The **commit-stage** hooks, each gated by `files:`/`types:` filters except `check-added-large-files` (a general `--maxkb=500` size check on the files a commit adds), include:
 
 - Trailing whitespace and file endings
 - YAML/TOML validity
@@ -162,28 +162,28 @@ CI runs, in addition: the full suite, in the Linux and Windows shards and on eve
 
 If you modify documentation sources (SKILL.md, AGENTS.md, FAQ.md, LSP_SERVER.md, `vera/errors.py`, `vera/grammar.lark`, or `docs/index.html`), the `site-assets` hook will regenerate `docs/` files via `scripts/build_site.py`. The CI also runs `scripts/check_site_assets.py` to verify freshness.
 
-`docs/index.md` is a special case: it is not derived from `docs/index.html` but written out by `build_index_md()` in `scripts/build_site.py`, so an edit to the landing page's substance has to be made in both places. `check_site_assets.py` compares the load-bearing facts across the pair — benchmark version strings, problem and model counts, the results table, the editor names, the status paragraph's counts of built-in functions, conformance programs and examples — and fails when they diverge or when one of them can no longer be located.
+`docs/index.md` is not derived from `docs/index.html`: `build_index_md()` in `scripts/build_site.py` writes it, so an edit to the landing page's substance is made in both places. `check_site_assets.py` compares the facts the pair share (benchmark version strings, problem and model counts, the results table, the editor names, and the status paragraph's counts of built-in functions, conformance programs and examples) and fails when they diverge or when one of them cannot be found.
 
 ### Pre-push hook: CHANGELOG enforcement
 
-A separate `pre-push` hook runs once before each `git push` (not per-commit — which would be too noisy on feature branches). It verifies that any PR touching a non-exempt top-level path adds a CHANGELOG fragment under `changelog.d/`, whose name and content [`changelog.d/README.md`](changelog.d/README.md) states; a new bullet under `[Unreleased]` in `CHANGELOG.md` also counts. The same check also runs in CI, so pushes without the local hook installed are still caught before merge.
+A separate `pre-push` hook runs once before each `git push`, rather than on every commit. It verifies that any PR touching a non-exempt top-level path adds a CHANGELOG fragment under `changelog.d/`, whose name and content [`changelog.d/README.md`](changelog.d/README.md) states; a new bullet under `[Unreleased]` in `CHANGELOG.md` also counts. The same check also runs in CI, so pushes without the local hook installed are still caught before merge.
 
-**Classification.** The check is exempt-list based: changes confined to `tests/`, `scripts/`, `.github/`, `docs/`, `examples/`, `editors/`, `assets/`, `changelog.d/`; to any of the root-level doc files (`README.md`, `HISTORY.md`, `ROADMAP.md`, `KNOWN_ISSUES.md`, `limitations.json`, `FAQ.md`, `CONTRIBUTING.md`, `TESTING.md`, `AGENTS.md`, `CLAUDE.md`, `DE_BRUIJN.md`, `EXAMPLES.md`, `CHANGELOG.md`, `LICENSE`); or to `pyproject.toml`, `uv.lock`, `.pre-commit-config.yaml`, `.coderabbit.yaml`, `.gitignore` skip the requirement. Everything else — `vera/**`, `spec/**`, `SKILL.md`, and any new top-level directory you haven't explicitly added to the exempt list in `scripts/check_changelog_updated.py` — is treated as substantive and needs an entry. The conservative default means contributors get a clear failure rather than a silent bypass when adding a new top-level folder (e.g. `stdlib/` or `runtime/`).
+**Classification.** The check is exempt-list based: changes confined to `tests/`, `scripts/`, `.github/`, `docs/`, `examples/`, `editors/`, `assets/`, `changelog.d/`; to any of the root-level doc files (`README.md`, `HISTORY.md`, `ROADMAP.md`, `KNOWN_ISSUES.md`, `limitations.json`, `FAQ.md`, `CONTRIBUTING.md`, `TESTING.md`, `AGENTS.md`, `CLAUDE.md`, `DE_BRUIJN.md`, `EXAMPLES.md`, `CHANGELOG.md`, `LICENSE`); or to `pyproject.toml`, `uv.lock`, `.pre-commit-config.yaml`, `.coderabbit.yaml`, `.gitignore` skip the requirement. Everything else, including `vera/**`, `spec/**`, `SKILL.md`, every other root-level file, and any new top-level directory not added to the exempt list in `scripts/check_changelog_updated.py`, is treated as substantive and needs an entry. A new top-level folder (such as `stdlib/` or `runtime/`) therefore gets a clear failure rather than a silent bypass.
 
 **To enable locally:** `pre-commit install --hook-type pre-push` (part of the install instructions above).
 
-**Escape hatches** for PRs that genuinely don't need a CHANGELOG entry (e.g. fixing a typo in a code comment):
+**Escape hatches** for a pull request that needs no CHANGELOG entry (for example, a typo fixed in a code comment):
 
-- Include a `Skip-changelog: <reason>` trailer in any commit message on the branch (Git-native — works locally and in CI), or
+- Include a `Skip-changelog: <reason>` trailer in any commit message on the branch (Git-native, so it works locally and in CI), or
 - Add the `skip-changelog` label to the PR on GitHub (CI-only).
 
-**Configuration:** Override the base ref with `CHANGELOG_CHECK_BASE=<ref>` if you're working on a non-`main` release branch.
+**Configuration:** override the base ref with `CHANGELOG_CHECK_BASE=<ref>` when working on a release branch other than `main`.
 
 ### Pre-push hook: uv.lock sync
 
-A second pre-push hook runs `uv lock --check` to confirm `uv.lock` is in sync with `pyproject.toml`. The same check already runs in CI's `lint` job; the local hook catches it before the push so you don't pay the CI round-trip. The common trigger is a version bump in `pyproject.toml` that didn't rerun `uv lock` — the lockfile's project entry drifts and CI fails. Running `uv lock` regenerates the file; re-push.
+A second pre-push hook runs `uv lock --check` to confirm `uv.lock` is in sync with `pyproject.toml`. The same check runs in CI's `lint` job; the local hook catches a mismatch before the push, which saves a CI round-trip. The common cause is a version bump in `pyproject.toml` without a `uv lock` run, which leaves the lockfile's project entry behind and fails CI. Run `uv lock` to regenerate the file, then push again.
 
-**To enable locally:** same command as the CHANGELOG hook — `pre-commit install --hook-type pre-push` installs both.
+**To enable locally:** the same command as the CHANGELOG hook; `pre-commit install --hook-type pre-push` installs both.
 
 ### Running Tests
 
@@ -196,7 +196,7 @@ pytest --cov=vera --matrix=full  # with coverage
 VERA_JS_COVERAGE=1 pytest tests/test_browser.py -v  # JS coverage
 ```
 
-PRs touching `vera/browser/runtime.mjs` have JavaScript coverage tracked by Codecov (via V8's built-in coverage). See [TESTING.md](TESTING.md) for the full testing reference -- coverage data, test helpers, and guidelines for adding tests.  See [ENVIRONMENT.md](ENVIRONMENT.md) for all `VERA_*` environment variables (provider keys, runtime knobs, and debug flags like `VERA_EAGER_GC` for hunting GC-rooting bugs and `VERA_DEBUG_HOST_ERRORS` for host-binding ones).
+The browser-parity job measures the JavaScript coverage of `vera/browser/` with V8's built-in coverage and uploads it to Codecov. See [TESTING.md](TESTING.md) for the full testing reference: coverage data, test helpers, and guidelines for adding tests.  See [ENVIRONMENT.md](ENVIRONMENT.md) for all `VERA_*` environment variables (provider keys, runtime knobs, and debug flags like `VERA_EAGER_GC` for hunting GC-rooting bugs and `VERA_DEBUG_HOST_ERRORS` for host-binding ones).
 
 **The program generator** writes a Vera program from a seed, with a module beside it when it imports one, and holds it to the generator's contract and four differentials ([TESTING.md](TESTING.md) § Program Generator).  To run it against a change, over a thousand seeds or one:
 
@@ -207,7 +207,7 @@ python -m tests.program_generator 1234     # the program seed 1234 writes, its m
 
 A night's finds arrive on the open issue labelled `generator-find`.  Each names its seed, the differential it failed and the minimal program, and states what the generator expected of each function: the contract it wrote, the interval the verifier can see, the interval a run can reach, and the value an exact `ensures` states on the failing arguments.  Where the minimal program breaks what the generator expected of it, the generator is wrong, and the fix is the generator's.  Any other find is the toolchain's: it is filed by its class ([Filing](#filing-file-the-class-not-the-manifestation)), never fixed in the generator's pull request, and once its issue is named the generator counts it as a known class.
 
-**Counts**: no pull request edits a count.  `TESTING.md`'s status — the test totals, the per-file and skipped-tests tables, and the counts of conformance programs, examples, built-ins, hooks and the rest — is generated from the tree by `scripts/render_status.py`, which the release PR runs; `scripts/check_doc_counts.py --release` checks that it is current then, and nothing checks it in between.  A test file says what it covers in its module docstring, whose first paragraph is the description the generated table shows.  Every other document says "every" or links the source rather than stating a number; the landing page's status paragraph is the exception, written into `docs/index.md` by `scripts/build_site.py` and copied by hand into `docs/index.html`.
+**Counts**: no pull request edits a count.  `TESTING.md`'s status (the test totals, the per-file and skipped-tests tables, and the counts of conformance programs, examples, built-ins, hooks and the rest) is generated from the tree by `scripts/render_status.py`, which the release PR runs; `scripts/check_doc_counts.py --release` checks that it is current then, and nothing checks it in between.  A test file says what it covers in its module docstring, whose first paragraph is the description the generated table shows.  Every other document says "every" or links the source rather than stating a number; the landing page's status paragraph is the exception, written into `docs/index.md` by `scripts/build_site.py` and copied by hand into `docs/index.html`.
 
 ### Type Checking
 
@@ -217,7 +217,7 @@ mypy vera/
 
 ### Validation Scripts
 
-Every Vera code block in the agent-facing documentation is gated by one checker, `check_doc_examples.py`: each block parses, passes `vera check` with no warning outside a named benign set, passes `vera verify`, and runs every `vera:run` invocation it names, printing exactly the output the marker states. A block that exports a function names at least one invocation, or carries a `<!-- vera:no-run category="..." reason="..." -->` whose property holds of each export it does not run. A block that is deliberately wrong or partial carries a `<!-- vera:skip-<stage> category="..." code="..." reason="..." -->` marker on the line before its fence; the gate still runs that stage, fails if the block passes it, and fails unless the block fails with exactly the codes the marker names, one per diagnostic, so a marker cannot outlive its reason or excuse a second defect (`scripts/doc_annotations.py` defines the markers and the vocabularies). Every `vera run examples/...` a document names is run, unless `check_examples_run.py` already runs that exact invocation or skips that example by property, and a tracked document with Vera blocks that the gate neither reads nor lists as exempt fails the gate too. The `examples/` corpus is held to the same standard as programs: `check_examples.py` type-checks and verifies all of it, and `check_examples_run.py` runs it.
+Every Vera code block in the agent-facing documentation is gated by one checker, `check_doc_examples.py`: each block parses, passes `vera check` with no warning outside a named benign set, passes `vera verify`, and runs every `vera:run` invocation it names, printing exactly the output the marker states. A block that exports a function names at least one invocation, or carries a `<!-- vera:no-run category="..." reason="..." -->` whose property holds of each export it does not run. A block that is wrong or partial on purpose carries a `<!-- vera:skip-<stage> category="..." code="..." reason="..." -->` marker on the line before its fence; the gate still runs that stage, fails if the block passes it, and fails unless the block fails with exactly the codes the marker names, one per diagnostic, so a marker cannot outlive its reason or excuse a second defect (`scripts/doc_annotations.py` defines the markers and the vocabularies). Every `vera run examples/...` a document names is run, unless `check_examples_run.py` already runs that exact invocation or skips that example by property, and a tracked document with Vera blocks that the gate neither reads nor lists as exempt fails the gate too. The `examples/` corpus is held to the same standard as programs: `check_examples.py` type-checks and verifies all of it, and `check_examples_run.py` runs it.
 
 ```bash
 python scripts/check_conformance.py      # verify all conformance programs
@@ -244,7 +244,7 @@ python scripts/check_doc_counts.py --release  # the release PR: check that it is
 - Use Markdown.
 - Use RFC 2119 keywords (MUST, SHOULD, MAY) precisely.
 - Include code examples for every construct.
-- Code examples must be valid Vera (they will be tested against the parser).
+- Code examples must be valid Vera: `scripts/check_doc_examples.py` parses, checks and verifies each one, or holds it to the `vera:skip` marker that names how it fails.
 - Use the canonical formatting rules defined in Chapter 1 for all examples.
 
 ### Commit Messages
@@ -285,8 +285,8 @@ vera/
 The `main` branch has the following protections enabled:
 
 - **Pull request required.** All changes to `main` must go through a pull request. No direct pushes.
-- **CI must pass.** The test, typecheck, and lint jobs must all pass before merging.
-- **No admin bypass.** `enforce_admins` is enabled — the protections apply to the maintainer too, so nothing lands without a passing PR.
+- **CI must pass, on a branch up to date with `main`.** The required checks are the Linux and Windows test shards, typecheck, lint, security, wheel-preflight, browser-parity, eager-gc, CodeQL's analyze and matrix-gate.
+- **No admin bypass.** `enforce_admins` is enabled, so the protections apply to the maintainer too and nothing lands without a passing PR.
 - **Review.** No approving-review count is required (CI is the gate); stale reviews are dismissed on new pushes, and every PR gets an automated CodeRabbit review.
 - **No force pushes.** History on `main` is immutable.
 
@@ -294,13 +294,13 @@ If you are a maintainer setting up branch protection on a fork, configure these 
 
 ## Releases
 
-Contributors don't cut releases. A release-prep PR carries the version and notes; after it merges, the approval-gated release workflow publishes the tested archives through PyPI Trusted Publishing and creates the matching tag and GitHub Release. The maintainer approves the production deployment. See [RELEASING.md](RELEASING.md) for the maintainer runbook. What your PR needs to contain:
+Contributors do not cut releases. A release-prep PR carries the version and notes; after it merges, the approval-gated release workflow publishes the tested archives through PyPI Trusted Publishing and creates the matching tag and GitHub Release. The maintainer approves the production deployment. See [RELEASING.md](RELEASING.md) for the maintainer runbook. What your PR needs to contain:
 
 1. **Bump the version** in `pyproject.toml`, the one place it is written, then regenerate `uv.lock` (`uv lock`) so its `veralang` entry matches; `uv lock --check` holds the two together.
 2. **Assemble the `## [X.Y.Z]` section** with `python scripts/release.py assemble --version X.Y.Z --date YYYY-MM-DD`, which writes it to `CHANGELOG.md` from the `changelog.d/` fragments with its compare-link reference at the bottom and deletes the fragments; write its `### Highlights`, and add the version's one-sentence row to the current stage table in `HISTORY.md`.
 3. **Regenerate TESTING.md's status** with `python scripts/render_status.py --github --junit PATH`, which measures the scorecard too (RELEASING.md has the run that writes `PATH`) and which `python scripts/check_doc_counts.py --release` checks; regenerate the site assets (`python scripts/build_site.py`) if AI-readable docs changed, and refresh `uv.lock` for any dependency changes.
 
-Not every PR is a release: small changes can ride along and ship with the next version bump. If you're unsure whether your change merits one, leave the bump out and say so in the PR description — the maintainer will include it in the next release.
+Not every PR is a release: small changes ship with the next version bump. If you are unsure whether your change merits a release, leave the bump out and say so in the PR description, and the maintainer includes it in the next release.
 
 Published versions are immutable. Never amend a released CHANGELOG section or move an existing release tag to fold in a follow-up; fixes after publication require a new patch version.
 
