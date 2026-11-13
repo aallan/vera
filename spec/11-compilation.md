@@ -302,7 +302,7 @@ The `State<T>` effect compiles to typed host imports for `get` and `put`, beside
 (import "vera" "state_put_Int" (func $vera.state_put_Int (param i64)))
 ```
 
-Each concrete `State<T>` type (`State<Int>`, `State<Bool>`, `State<Nat>`, `State<Float64>`) generates a separate set of imports. The host runtime maintains mutable state cells per type, initialised to zero. Mixed effects (e.g. `effects(<State<Int>, IO>)`) are supported; both sets of imports are emitted.
+Each concrete `State<T>` type generates a separate set of imports: a scalar cell (`State<Int>`, `State<Nat>`, `State<Bool>`, `State<Byte>`, `State<Float64>`) at its own WASM type, and a compound, `data` or `Map` cell (`State<Option<Int>>`, `State<Map<String, Int>>`) at `i32`, a heap pointer (Chapter 12, Section 12.4.2). The host runtime maintains mutable state cells per type, initialised to zero. Mixed effects (e.g. `effects(<State<Int>, IO>)`) are supported; both sets of imports are emitted.
 
 ## 11.8 Runtime Contract Insertion
 
