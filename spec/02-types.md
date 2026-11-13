@@ -10,7 +10,7 @@ Vera's type system is the primary mechanism for constraining the space of valid 
 - Refinement types (types with logical predicates)
 - Function types with effect annotations
 
-Every expression in a Vera program has a statically determined type. There is no type inference for top-level function signatures; all types must be explicitly declared. Local type inference is permitted within function bodies for let bindings.
+Every expression in a Vera program has a statically determined type. There is no type inference for top-level function signatures; all types must be explicitly declared. A `let` binding declares its type too (Section 4.7). Within a function body, inference fixes the type arguments of a generic call or constructor (Sections 4.2 and 5.9).
 
 ## 2.2 Primitive Types
 
@@ -377,11 +377,9 @@ Vera has minimal subtyping, and the complete subtyping relation is:
 2. **Refinement subtyping**: `{ @T | P } <: { @T | Q }` if `P ==> Q` is valid.
 3. **Refinement to base**: `{ @T | P } <: T`.
 4. **Never subtyping**: `Never <: T` for all types `T`.
-5. **No other subtyping**: there is no structural subtyping, no implicit numeric conversions, no covariance/contravariance on compound types.
+5. **No other subtyping**, beyond the variance of compound types: a data type, built-in (`Array`, `Map`, `Set`, `Tuple`, `Option`, `Result`) or declared with `data`, is covariant in each of its type arguments (`C<S> <: C<T>` if `S <: T`, so `Array<PosInt> <: Array<Int>`), and a function type is contravariant in its parameters and covariant in its result and its effect row (`fn(A1 -> B1) effects(E1) <: fn(A2 -> B2) effects(E2)` if `A2 <: A1`, `B1 <: B2` and `E1 <: E2`, Chapter 7, Section 7.8). There is no structural subtyping between different types and no implicit numeric conversion.
 
-> **Implementation note:** The type checker additionally permits `Int <: Nat` (the reverse of the `Nat <: Int` relationship in Section 2.2.1) to allow functions that compute a natural number from integer inputs without explicit conversion. Non-negativity is not enforced by the type checker alone; the contract verifier enforces the `>= 0` constraint via Z3. Code that passes `vera check` but fails `vera verify` on a `Nat` return type indicates that the verifier could not prove the result is non-negative.
-
-This means `Array<PosInt>` is NOT a subtype of `Array<Int>`. Converting between them requires an explicit mapping.
+> **Implementation note:** The type checker additionally permits `Int <: Nat` (the reverse of the `Nat <: Int` relationship in Section 2.2.1) to allow functions that compute a natural number from integer inputs without explicit conversion. Non-negativity is not enforced by the type checker alone; the contract verifier enforces the `>= 0` constraint via Z3. Code that passes `vera check` but fails `vera verify` on a `Nat` return type indicates that the verifier could not prove the result is non-negative. Rule 5 carries the relaxation into a data type's type argument: an `Array<Int>` where an `Array<Nat>` is expected is a narrowing of its elements, obligated, and checked at run time where the verifier cannot discharge it.
 
 ![The complete subtyping relation: Never below everything, refinement subtyping when one predicate implies the other, refinement-to-base, reflexivity, and nothing else. The checker additionally permits Int where Nat is expected; the verifier enforces the non-negativity proof.](../assets/diagrams/subtyping-lattice.svg)
 

@@ -63,7 +63,7 @@ Generic type variables are resolved via monomorphization: each concrete instanti
 
 `Nat` and `Int` share the same WASM representation (`i64`). The non-negativity invariant of `Nat` is enforced by the contract system (preconditions, postconditions), not by the WASM type. This avoids the overhead of runtime range checks on every arithmetic operation while maintaining the correctness guarantee through verification.  A `@Nat` holds `0 .. 2^63 - 1` (Section 2.2), the non-negative half of the `i64`, so every operation reads it as the `@Int` operation reads the same `i64`: comparison, `/`, `%` and rendering take it as the non-negative number it is, and reading a `@Nat` as an `@Int` (at a return, a `let`, a call argument, a field, a component, an arm of a join or an operand) is the identity, with no obligation and no guard.
 
-The one operation that can violate the non-negativity invariant despite well-typed operands is `@Nat` subtraction (`@Nat - @Nat`).  At every site whose operands are both `@Nat` the compiler emits a Tier-1 proof obligation `lhs >= rhs`, discharged at Tier 1 when a precondition or path condition proves it, else dropped to Tier 3.  A literal is an `Int` (Section 4.2), so `@Nat.0 - 1` and `0 - 1` are `@Int` subtractions, with the overflow obligation below; bound into a `@Nat` slot, their value is the narrowing that slot obligates (`E503`).  The codegen is type-driven, not tier-driven: it emits the guarded subtraction at *every* such site regardless of the verifier's tier (a Tier-1 discharge means the guard provably never fires, but it is still emitted).  Both operands are non-negative `i64`s, so the signed comparison orders them as the values they are:
+The one operation that can violate the non-negativity invariant despite well-typed operands is `@Nat` subtraction (`@Nat - @Nat`).  At every site whose operands are both `@Nat` the compiler emits a Tier-1 proof obligation `lhs >= rhs`, discharged at Tier 1 when a precondition or path condition proves it, refused with `E502` and a counterexample when the solver refutes it (`@Nat.1 - @Nat.0` under `requires(true)`), and otherwise dropped to Tier 3 behind the guard below.  A literal is an `Int` (Section 4.2), so `@Nat.0 - 1` and `0 - 1` are `@Int` subtractions, with the overflow obligation below; bound into a `@Nat` slot, their value is the narrowing that slot obligates (`E503`).  The codegen is type-driven, not tier-driven: it emits the guarded subtraction at *every* such site regardless of the verifier's tier (a Tier-1 discharge means the guard provably never fires, but it is still emitted).  Both operands are non-negative `i64`s, so the signed comparison orders them as the values they are:
 
 ```wat
 (if (i64.lt_s lhs rhs)
@@ -223,13 +223,13 @@ A skip propagates to callers: every function that calls a skipped function (dire
 
 Indirect calls propagate on the same rule. A closure is applied through the module's function table, which exists only while at least one closure compiles; if every closure in a program is dropped, or the program applies a closure-typed parameter while writing no closure literal at all so no table is populated, a function that applies one, through `apply_fn` on a closure-typed parameter or through a monomorphized combinator, has no reachable target and is dropped with its own `[E620]`. A module therefore never contains an indirect call without a function table to dispatch on: the refusal names the construct to fix rather than deferring to a WebAssembly error at load time.
 
-### 11.4.2 Two-Pass Compilation
+### 11.4.2 Registration Before Compilation
 
-The code generator uses a two-pass approach:
+The code generator registers every function before it compiles any body, so all function names are available for forward references and mutual recursion.
 
-**Pass 1 (Registration):** Walk all declarations and register compilable functions. This makes all function names available for forward references and mutual recursion.
+**Registration:** Hoist each `where` helper to a top-level declaration named after its parent, then register the declarations of imported modules, the program's own function signatures (which shadow imports), and the prelude's data types and functions. Then emit a concrete clone of each generic function for each instantiation the checker recorded (Section 11.4.1), and rewrite each ability operation call to the concrete expression for its type.
 
-**Pass 2 (Compilation):** For each registered function, compile the body to WASM instructions. Allocate locals, translate the body, and emit the function definition.
+**Compilation:** For each registered function, compile the body to WASM instructions. Allocate locals, translate the body, and emit the function definition. The bodies of imported functions are compiled after the program's own (Section 11.16), and the module is assembled from the compiled functions.
 
 ### 11.4.3 Where-Block Functions
 
@@ -302,7 +302,7 @@ The `State<T>` effect compiles to typed host imports for `get` and `put`, beside
 (import "vera" "state_put_Int" (func $vera.state_put_Int (param i64)))
 ```
 
-Each concrete `State<T>` type (`State<Int>`, `State<Bool>`, `State<Nat>`, `State<Float64>`) generates a separate set of imports. The host runtime maintains mutable state cells per type, initialised to zero. Mixed effects (e.g. `effects(<State<Int>, IO>)`) are supported; both sets of imports are emitted.
+Each concrete `State<T>` type generates a separate set of imports: a scalar cell (`State<Int>`, `State<Nat>`, `State<Bool>`, `State<Byte>`, `State<Float64>`) at its own WASM type, and a compound, `data` or `Map` cell (`State<Option<Int>>`, `State<Map<String, Int>>`) at `i32`, a heap pointer (Chapter 12, Section 12.4.2). The host runtime maintains mutable state cells per type, initialised to zero. Mixed effects (e.g. `effects(<State<Int>, IO>)`) are supported; both sets of imports are emitted.
 
 ## 11.8 Runtime Contract Insertion
 
@@ -512,7 +512,7 @@ A `handle[State<T>](@T = init) { clauses } in { body }` expression compiles to:
 
 1. **Push a cell**: compile the `init` expression, then call `$vera.state_push_T`, which gives this handler its own cell
 2. **Initialise state**: call `$vera.state_put_T` with the `init` value
-3. **Compile body**: with `get`/`put` mapped to `$vera.state_get_T`/`$vera.state_put_T` host imports
+3. **Compile body**: with `get`/`put` mapped to `$vera.state_get_T`/`$vera.state_put_T` host imports, and each operation's clause inlined at its call (Section 11.11.2)
 4. **Pop the cell**: call `$vera.state_pop_T`; the handle expression evaluates to the body's final expression
 
 ```wat
@@ -529,9 +529,9 @@ call $vera.state_get_Int    ;; get(()) — body result
 call $vera.state_pop_Int    ;; drop this handler's cell
 ```
 
-### 11.11.2 Handler Clauses as Specifications
+### 11.11.2 Handler Clause Compilation
 
-Handler clauses (e.g. `get(@Unit) -> { resume(@Int.0) }`) describe the handler's operational semantics but are not compiled to WASM. The host runtime already implements the correct `get`/`put` behaviour. The `resume` calls in handler clauses serve as specifications validated by the type checker.
+Code generation compiles a `State<T>` handler's clauses by inlining each at every `get` or `put` the handled body performs. The operation acts on the cell first (`put(x)` stores `x`, `get` reads it), and the clause's state slot holds the cell's value as it was before that store. The clause body then runs with the operation's parameters bound before the state, and its one `resume(v)`, in tail position, gives the operation's result at that site. A clause's `with @T = expr` stores `expr` in the cell after the body, in place of the operation's own store. So in `handle[State<Int>](@Int = 2) { get(@Unit) -> { resume(@Int.0 * 3) }, put(@Int) -> { resume(()) } with @Int = @Int.1 + 100 } in { put(5); get(()) }` the `put` leaves 105 in the cell and the `get` returns 315. A `State` clause whose body does not end in exactly one `resume(...)` is refused at check (`E340`). An `Exn<E>` handler's clause is compiled as the body of its `catch` (Section 11.11.4).
 
 ### 11.11.3 Effect Discharge
 

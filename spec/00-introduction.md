@@ -144,7 +144,7 @@ The grammar is defined in EBNF notation in Chapter 10 and implemented as a machi
 
 ### 0.5.8 Machine-Readable Output (`--json`)
 
-The compiler emits structured JSON diagnostics via the `--json` flag, supported on `vera check`, `vera verify`, and `vera test`. The JSON shape is a public API for downstream tooling (CI pipelines, IDE plugins, agent feedback loops), and the field set is governed by the following stability rules:
+The compiler emits structured JSON diagnostics via the `--json` flag, supported on `vera check`, `vera verify`, `vera test`, `vera compile` and `vera run`. The JSON shape is a public API for downstream tooling (CI pipelines, IDE plugins, agent feedback loops), and the field set is governed by the following stability rules:
 
 - **Fields MAY be added** in any release. Consumers MUST tolerate unknown fields.
 - **Fields MUST NOT be removed or renamed** without a major version bump.

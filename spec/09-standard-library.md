@@ -45,6 +45,9 @@ Every Vera program implicitly has access to a **standard prelude** that provides
 - **`Result<T, E>`**: `Ok(T)`, `Err(E)` constructors.
 - **`Ordering`**: `Less`, `Equal`, `Greater` constructors (for `Ord`'s `compare` operation).
 - **`UrlParts`**: `UrlParts(String, String, String, String, String)` constructor (RFC 3986 decomposition).
+- **`Json`**: `JNull`, `JBool(Bool)`, `JNumber(Float64)`, `JString(String)`, `JArray(Array<Json>)`, `JObject(Map<String, Json>)` constructors (Section 9.7.1).
+- **`HtmlNode`**: `HtmlElement(String, Map<String, String>, Array<HtmlNode>)`, `HtmlText(String)`, `HtmlComment(String)` constructors (Section 9.7.4).
+- **`Request`** and **`Response`**: `Request(String, String, Map<String, String>, String)` and `Response(Int, Map<String, String>, String)` constructors, the `HttpServer` handler types (Section 9.5.6).
 
 In addition, Option/Result combinators (`option_unwrap_or`, `option_map`, `option_and_then`, `result_unwrap_or`, `result_map`) and array operations (`array_slice`, `array_map`, `array_filter`, `array_fold`) are automatically available.
 
@@ -441,7 +444,7 @@ For the runtime implementation of `State<T>`, see Chapter 12, Section 12.4.2.
 
 ### 9.5.3 Http
 
-> **Status: Implemented.** Tracked in [#57](https://github.com/aallan/vera/issues/57). `Http.get` and `Http.post` are fully compilable and execute via host imports (Python `urllib` / a synchronous `XMLHttpRequest` in the browser). Returns `Result<String, String>`: `Ok` with the response body, `Err` with the error message. The conformance test `ch09_http` and the example `http.vera` exercise it.
+> **Status: Implemented.** `Http.get` and `Http.post` are fully compilable and execute via host imports (Python `urllib` / a synchronous `XMLHttpRequest` in the browser). Returns `Result<String, String>`: `Ok` with the response body, `Err` with the error message. The conformance test `ch09_http` and the example `http.vera` exercise it.
 
 Network I/O is modelled as a built-in algebraic effect with two operations: `get` and `post`. Functions performing network access declare `effects(<Http>)`. The effect is built-in: no `effect Http { ... }` declaration is needed (and one is `E152`).
 
@@ -2007,7 +2010,7 @@ The callback-based combinators (`array_mapi`, `array_find`, `array_any`, `array_
 
 ### 9.6.22 String Utilities and Character Classification
 
-Vera provides eight additional string utilities and eight character classification primitives. All sixteen are implemented as inline WAT with no host imports, so they execute identically under the Python (`wasmtime`) and browser (Node.js / web) runtimes. Tracked in [#470](https://github.com/aallan/vera/issues/470) (utilities) and [#471](https://github.com/aallan/vera/issues/471) (classifiers).
+Vera provides eight additional string utilities and eight character classification primitives. All sixteen are implemented as inline WAT with no host imports, so they execute identically under the Python (`wasmtime`) and browser (Node.js / web) runtimes.
 
 All operations use **ASCII byte semantics**: classifiers test the first byte of the input string; case-conversion functions transform the first byte and pass remaining bytes through unchanged; structural splits work at the byte level. Unicode-aware variants are not provided.
 
@@ -2154,7 +2157,7 @@ is_whitespace("\t")  -- true
 
 ### 9.6.23 JSON Typed Accessors
 
-Vera provides eleven additional JSON accessor functions that eliminate the two-level pattern-match boilerplate (`match option ... { Some(@Json) -> match @Json.0 { JNumber(@Float64) -> ... } }`) that every JSON API consumer would otherwise write. Tracked in [#366](https://github.com/aallan/vera/issues/366).
+Vera provides eleven additional JSON accessor functions that eliminate the two-level pattern-match boilerplate (`match option ... { Some(@Json) -> match @Json.0 { JNumber(@Float64) -> ... } }`) that every JSON API consumer would otherwise write.
 
 Unlike the rest of the chapter-9 built-ins, these are **pure-Vera prelude functions**, not WASM translators. The compiler injects them into every module that references `Json` values, alongside the existing `json_get` / `json_keys` / `json_type` combinators. There are no new host imports and no dedicated WASM translator paths, but the accessors are still compiled as ordinary WASM functions (via the standard AST-to-WAT pipeline) whenever a module actually references them. A module that never calls any of the eleven accessors pays zero compiled-WASM cost for them.
 
@@ -2236,7 +2239,7 @@ json_get_int(obj, "name")                  -- None (wrong type)
 
 ### 9.7.1 Json
 
-`Json` is a standard library ADT for structured data interchange. Tracked in [#58](https://github.com/aallan/vera/issues/58).
+`Json` is a standard library ADT for structured data interchange.
 
 <!-- vera:skip-check category="ILLUSTRATIVE" code="E158" reason="the prelude's own declaration of a reserved name, shown as the compiler injects it (#1469)" -->
 ```vera
@@ -2337,7 +2340,7 @@ type ApiResponse = { @Json | json_has_field(@Json.0, "status") };
 
 ### 9.7.2 Decimal
 
-`Decimal` provides exact decimal arithmetic for financial and precision-sensitive applications. Tracked in [#333](https://github.com/aallan/vera/issues/333).
+`Decimal` provides exact decimal arithmetic for financial and precision-sensitive applications.
 
 Decimal is an opaque built-in type implemented via host imports, following the same pattern as `Map<K, V>` and `Set<T>`. The runtime maintains `decimal.Decimal` values (Python) or exact scaled-BigInt values (JavaScript); WASM code interacts with decimals through `i32` handles. All operations are pure.
 
@@ -2736,7 +2739,7 @@ Returns the value of the named attribute if the node is an `HtmlElement` with th
 
 ## 9.8 Abilities
 
-> **Status: Implemented.** Tracked in [#60](https://github.com/aallan/vera/issues/60). Four built-in abilities (`Eq`, `Ord`, `Hash`, `Show`) are fully compilable. Supported types: Int, Nat, Bool, Float64, String, Byte, Unit. `Eq` derivation is **structural** ([#773](https://github.com/aallan/vera/issues/773)): a simple enum, or an ADT every field of which is itself `Eq` (an `Eq` primitive, `String` included and compared by content, or a nested `Eq` ADT, compared recursively, including recursive types), supports `Eq` automatically. Fields with no `Eq` semantics (`Array`, `Map`, host handles) make the ADT non-derivable. `Show` and `Hash` derive **structurally** for composite types too ([#911](https://github.com/aallan/vera/issues/911)): ADT, `Tuple`, `Option`, `Result`, and `Array`, recursing into each field/element by its own `show`/`hash` (see §9.8.2), including directly-recursive ADTs (`List<T>`, `Tree<T>`), which lower to a generated self-calling helper ([#924](https://github.com/aallan/vera/issues/924)). The built-in `Ordering` ADT (`Less`, `Equal`, `Greater`) is available for `Ord`'s `compare` operation.
+> **Status: Implemented.** Four built-in abilities (`Eq`, `Ord`, `Hash`, `Show`) are fully compilable. Supported types: Int, Nat, Bool, Float64, String, Byte, Unit. `Eq` derivation is **structural** ([#773](https://github.com/aallan/vera/issues/773)): a simple enum, or an ADT every field of which is itself `Eq` (an `Eq` primitive, `String` included and compared by content, or a nested `Eq` ADT, compared recursively, including recursive types), supports `Eq` automatically. Fields with no `Eq` semantics (`Array`, `Map`, host handles) make the ADT non-derivable. `Show` and `Hash` derive **structurally** for composite types too ([#911](https://github.com/aallan/vera/issues/911)): ADT, `Tuple`, `Option`, `Result`, and `Array`, recursing into each field/element by its own `show`/`hash` (see §9.8.2), including directly-recursive ADTs (`List<T>`, `Tree<T>`), which lower to a generated self-calling helper ([#924](https://github.com/aallan/vera/issues/924)). The built-in `Ordering` ADT (`Less`, `Equal`, `Greater`) is available for `Ord`'s `compare` operation.
 
 Vera supports restricted abilities for constraining type variables in generic functions. To support practical generic programming (sorting, hashing, serialisation), type variables need constraints. Vera adopts restricted abilities rather than full typeclasses:
 

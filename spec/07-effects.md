@@ -333,7 +333,7 @@ Functions can be polymorphic over effects:
 
 <!-- vera:skip-parse category="FRAGMENT" reason="fn(A -> B) in param position" -->
 ```
-private forall<A, B> fn option_map(@Option<A>, fn(A -> B) effects(<E>) -> @Option<B>)
+private forall<A, B, E> fn option_map(@Option<A>, fn(A -> B) effects(<E>) -> @Option<B>)
   requires(true)
   ensures(true)
   effects(<E>)
@@ -355,7 +355,7 @@ Effect row variables can appear alongside concrete effects:
 
 <!-- vera:skip-parse category="FRAGMENT" reason="fn(Unit -> A) in param position" -->
 ```
-private forall<A> fn with_logging(fn(Unit -> A) effects(<E>) -> @A)
+private forall<A, E> fn with_logging(fn(Unit -> A) effects(<E>) -> @A)
   requires(true)
   ensures(true)
   effects(<IO, E>)

@@ -42,6 +42,8 @@ A binding is introduced at each of the following positions:
 3. **Match arms**: pattern variables in match arms introduce bindings.
 4. **Effect handler parameters**: each operation in a handler introduces bindings for its parameters.
 5. **Tuple destructuring**: `let Tuple<@T1, @T2> = expr;` introduces one binding per component.
+6. **Anonymous function parameters**: each parameter of a closure, `fn(@T -> @U) effects(...) { ... }`, introduces a binding of its declared type, in scope in the closure's body (Chapter 5, Section 5.7).
+7. **Handler state**: a handler's state declaration, `handle[State<T>](@T = expr)`, introduces a binding of type `T`, in scope only in the handler's operation clauses (Chapter 7, Section 7.5.1).
 
 Binding sites are ordered by textual position. Within a single scope, earlier bindings have higher indices (they are farther away):
 
@@ -347,7 +349,7 @@ Here `@Tuple<Int, String>.result` refers to the entire return tuple. A slot refe
 
 ## 3.7 Function Type References
 
-Function-type parameters use the same `@T.n` system, where `T` is the full function type. Since function types can be long, a type alias is recommended:
+Function-type parameters use the same `@T.n` system. A binding whose type is written as a function type, `fn(...) effects(...)`, has the type name `Fn`, whatever its parameter, result and effect types, so every such binding is in the one namespace `@Fn.n`: in `fn(@fn(Int -> Int) effects(pure), @fn(Int -> Bool) effects(pure) -> @Bool)`, `@Fn.0` is the second parameter and `@Fn.1` the first. A binding whose type is an alias of a function type takes the alias's name (Section 3.8). A type alias is recommended: it shortens a long function type and gives the parameter a namespace of its own:
 
 ```
 type IntTransform = fn(Int -> Int) effects(pure);
@@ -433,6 +435,8 @@ In keeping with the "one canonical form" principle, the index MUST always be pre
 | `match` arm pattern | One per pattern variable | The arm's body expression |
 | Tuple destructuring | One per component | Subsequent statements in the same block |
 | Effect handler op | One per operation parameter | The operation's handler body |
+| Anonymous function parameter | One per parameter | The closure's body |
+| Handler state | One of the state's type | The handler's operation clauses |
 | `forall<A>` | Type variable `A` | The entire declaration |
 
 ## 3.11 Error Cases

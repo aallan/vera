@@ -70,6 +70,40 @@ The module imports host functions from the runtime for two distinct reasons. The
 | `vera.md_has_heading` | `(i32, i64) -> (i32)` | Program uses `md_has_heading` |
 | `vera.md_has_code_block` | `(i32, i32, i32) -> (i32)` | Program uses `md_has_code_block` |
 | `vera.md_extract_code_blocks` | `(i32, i32, i32) -> (i32, i32)` | Program uses `md_extract_code_blocks` |
+| `vera.regex_find` | `(i32, i32, i32, i32) -> (i32)` | Program uses `regex_find` |
+| `vera.regex_find_all` | `(i32, i32, i32, i32) -> (i32)` | Program uses `regex_find_all` |
+| `vera.regex_match` | `(i32, i32, i32, i32) -> (i32)` | Program uses `regex_match` |
+| `vera.regex_replace` | `(i32, i32, i32, i32, i32, i32) -> (i32)` | Program uses `regex_replace` |
+| `vera.decimal_abs` | `(i32) -> (i32)` | Program uses `decimal_abs` |
+| `vera.decimal_add` | `(i32, i32) -> (i32)` | Program uses `decimal_add` |
+| `vera.decimal_compare` | `(i32, i32) -> (i32)` | Program uses `decimal_compare` |
+| `vera.decimal_div` | `(i32, i32) -> (i32)` | Program uses `decimal_div` |
+| `vera.decimal_eq` | `(i32, i32) -> (i32)` | Program uses `decimal_eq` |
+| `vera.decimal_from_float` | `(f64) -> (i32)` | Program uses `decimal_from_float` |
+| `vera.decimal_from_int` | `(i64) -> (i32)` | Program uses `decimal_from_int` |
+| `vera.decimal_from_string` | `(i32, i32) -> (i32)` | Program uses `decimal_from_string` |
+| `vera.decimal_mul` | `(i32, i32) -> (i32)` | Program uses `decimal_mul` |
+| `vera.decimal_neg` | `(i32) -> (i32)` | Program uses `decimal_neg` |
+| `vera.decimal_round` | `(i32, i64) -> (i32)` | Program uses `decimal_round` |
+| `vera.decimal_sub` | `(i32, i32) -> (i32)` | Program uses `decimal_sub` |
+| `vera.decimal_to_float` | `(i32) -> (f64)` | Program uses `decimal_to_float` |
+| `vera.decimal_to_string` | `(i32) -> (i32, i32)` | Program uses `decimal_to_string` |
+| `vera.host_decref_handle` | `(i32, i32) -> ()` | Program holds a host handle (a `Decimal` or a `Future`) |
+| `vera.attach_bucket_to_wrapper` | `(i32, i32, i32) -> ()` | Program holds a host handle (a `Decimal` or a `Future`) |
+| `vera.json_parse` | `(i32, i32) -> (i32)` | Program uses `json_parse` |
+| `vera.json_stringify` | `(i32) -> (i32, i32)` | Program uses `json_stringify` |
+| `vera.html_parse` | `(i32, i32) -> (i32)` | Program uses `html_parse` |
+| `vera.html_to_string` | `(i32) -> (i32, i32)` | Program uses `html_to_string` |
+| `vera.html_query` | `(i32, i32, i32) -> (i32, i32)` | Program uses `html_query` |
+| `vera.html_text` | `(i32) -> (i32, i32)` | Program uses `html_text` |
+| `vera.http_get` | `(i32, i32) -> (i32)` | Program uses `Http.get` |
+| `vera.http_post` | `(i32, i32, i32, i32) -> (i32)` | Program uses `Http.post` |
+| `vera.async_http_get` | `(i32, i32) -> (i32)` | Program uses `async(Http.get(...))` |
+| `vera.async_http_post` | `(i32, i32, i32, i32) -> (i32)` | Program uses `async(Http.post(...))` |
+| `vera.async_await` | `(i32) -> (i32)` | Program awaits a `Future` from `async(Http.get(...))` or `async(Http.post(...))` |
+| `vera.inference_complete` | `(i32, i32) -> (i32)` | Program uses `Inference.complete` |
+| `vera.db_query` | `(i32, i32, i32, i32) -> (i32)` | Program uses `DB.query` |
+| `vera.db_execute` | `(i32, i32, i32, i32) -> (i32)` | Program uses `DB.execute` |
 
 Imports are only emitted when the program uses the corresponding host-backed feature: either an effect operation (`IO.*`, `Http.*`, `State.*`, `Random.*`, …) or a pure host-backed built-in (`vera.log`, `vera.sin`, `vera.atan2`, …). A pure program that uses only inlined built-ins (`pi()`, `sign`, `clamp`, arithmetic operators, `Map` and `Set` operations) imports no effect operation and no host-backed built-in; the only imports it can carry are the two trap signals, `vera.contract_fail` and `vera.trap`, each only when a runtime check calls it (an arithmetic operator the verifier cannot prove in range, for instance, has an overflow check that signals through `vera.trap`), and `vera.hash_key`, when it hashes a `String` key in a `Map` or `Set`.
 
@@ -347,6 +381,9 @@ No line terminator is added; callers include `\n` if they want one. Mirrors `IO.
 | `State<Bool>` | `i32` | `0` |
 | `State<Byte>` | `i32` | `0` |
 | `State<Float64>` | `f64` | `0.0` |
+| `State<T>`, `T` a compound type (`Option<Int>`, `Tuple<Int, Int>`), a `data` type or a `Map` | `i32` (heap pointer) | `0` |
+
+The import names carry the cell type's mangled name: `State<Option<Int>>` imports `state_get_Option_LInt_R`. A cell whose value is a `(ptr, len)` pair (`String`, `Array<T>`) or has no representation (`Unit`, `Never`) is refused at check (`E340`, Chapter 7, Section 7.5.1).
 
 **get:** Returns the current value of the state cell.
 
