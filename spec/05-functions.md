@@ -118,7 +118,7 @@ requires(true)
 ensures(true)
 ```
 
-This states no preconditions and no postconditions. While permitted, the compiler SHOULD emit a note suggesting that the contracts could be strengthened.
+This states no preconditions and no postconditions. `requires(true)` and `ensures(true)` are the canonical spelling of a function with no precondition and no postcondition.
 
 Contract syntax and semantics are detailed in Chapter 6.
 
