@@ -1,12 +1,11 @@
-# TOOLCHAIN.md — Driving the Vera toolchain
+# TOOLCHAIN.md: driving the Vera toolchain
 
 How to use the `vera` command line to write, check, verify, test, run, and debug
-Vera programs — and how to drive the compiler as a source of truth about itself.
+Vera programs, and how to ask the compiler about itself.
 
 This is a **cookbook**: recipes and workflows organised by what you are trying to
 do, not an exhaustive flag reference. For the bare command list see the
-[README](README.md#the-workflow) or `vera` with no arguments. For the
-editor/agent surface — the language server and its proof-delta methods — see
+[README](README.md#the-workflow) or `vera` with no arguments. For the editor and agent surface (the language server and its proof-delta methods), see
 [LSP_SERVER.md](LSP_SERVER.md). For the language itself, see [SKILL.md](SKILL.md)
 and [spec/](spec/).
 
@@ -14,7 +13,7 @@ and [spec/](spec/).
 
 ## The shape of the toolchain
 
-The CLI mirrors the compiler pipeline — one command per stage, each a gate you
+The CLI mirrors the compiler pipeline, one command per stage, each a gate you
 can stop at:
 
 ![The CLI mirrors the pipeline: parse and fmt stop at parsing; check and ast at type checking; verify at verification; compile and test at code generation; run and serve at execution.](assets/diagrams/toolchain.svg)
@@ -33,17 +32,15 @@ source ──▶ parse ──▶ check ──▶ verify ──▶ compile ──
 Two commitments from [DESIGN.md](DESIGN.md) shape every command:
 
 1. **Fail loud, with a fix.** A diagnostic *names* the problem, explains *why*,
-   and gives a concrete instruction — never a bare status. Every diagnostic
-   carries a stable code, which `vera errors` lists, that you can pin tooling
+   and gives a concrete instruction, never a bare status. Every diagnostic has a stable code, which `vera errors` lists, that you can pin tooling
    to: a command's own refusals too (E9xx), and a runtime trap (E800).
 2. **Two audiences.** Every diagnostic-producing command has a `--json` mode.
    People read the default text; agents consume `--json` in a feedback loop. The
-   JSON is the machine contract; the prose is for humans. This is the single
-   most important thing to know about the toolchain: **if you are scripting Vera
-   from an agent, use `--json`.**
+JSON is the machine contract; the prose is for humans. **If you are scripting
+Vera from an agent, use `--json`.**
 
-The thread running through all of it: *the compiler is the authority.* It tells
-you what's wrong (`check`/`verify`), what it can prove (`verify --json` tiers),
+*The compiler is the authority.* It tells
+you what is wrong (`check`/`verify`), what it can prove (`verify --json` tiers),
 what inputs break a contract (`test`), and what its own built-ins, effects, and
 error codes are (`builtins`/`effects`/`errors --json`).
 Ask it rather than guess or hand-maintain a fact it already knows.
@@ -57,31 +54,31 @@ Ask it rather than guess or hand-maintain a fact it already knows.
 ```bash
 vera check file.vera           # human-readable: "OK: ..." or a diagnostic
 vera check --json file.vera    # {"ok": true, "diagnostics": [], "warnings": []}
-vera check --quiet file.vera   # exit code only, no success chatter
+vera check --quiet file.vera   # no success line; errors still print
 ```
 
 `check` is the fast inner-loop gate: parse + type-check, no Z3. Reach for it on
 every edit. `typecheck` is an explicit alias.
 
 **Untangle a slot reference.** Vera names bindings by *type and position*
-(`@T.n`, De Bruijn — see [DE_BRUIJN.md](DE_BRUIJN.md)), and `@Int.0` is the
+(`@T.n`, De Bruijn; see [DE_BRUIJN.md](DE_BRUIJN.md)), and `@Int.0` is the
 *most recent* `@Int`, not the first. When a slot resolves to a parameter you
-didn't expect — the classic source of a silent logic bug in a function with two
-same-typed parameters — ask the compiler instead of counting on your fingers:
+did not expect (the usual source of a silent logic bug in a function with two
+same-typed parameters), ask the compiler instead of counting by hand:
 
 ```bash
 vera check --explain-slots file.vera   # a table: which @T.n maps to which param
 ```
 
-This is the first thing to run when a contract "should hold" but doesn't, or a
+Run it first when a contract "should hold" but does not, or a
 recursive call behaves backwards.
 
-Two things the table tells you that the source does not. It covers `where`-block
+The table also shows two things the source does not. It covers `where`-block
 helpers, each in its own indented block under its parent (`slot_environments`
-qualifies them `parent.helper` under `--json`) — a helper's scope is closed, so
+qualifies them `parent.helper` under `--json`); a helper's scope is closed, so
 its indices start over. And the rows print **resolved** names: a slot name's head
 stays as written, but its type arguments resolve through aliases, so a parameter
-declared `@Option<Cnt>` under `type Cnt = Int` is listed — and referenced — as
+declared `@Option<Cnt>` under `type Cnt = Int` is listed, and referenced, as
 `@Option<Int>`. The signature line echoes your spelling; when the two disagree,
 the rows are the one place the bound name appears.
 
@@ -107,25 +104,24 @@ vera verify --no-reconcile file.vera       # verify without compiling: no reconc
 
 Vera verifies in two implemented tiers, at every call site:
 
-- **Tier 1 — Z3 static.** The compiler builds a verification condition and asks
+- **Tier 1: Z3 static.** The compiler builds a verification condition and asks
   Z3. `unsat` means the contract holds *for all inputs*, apart from the open
   soundness bugs listed in [KNOWN_ISSUES.md](KNOWN_ISSUES.md). The
   non-trivial `requires`/`ensures` clauses are also compiled as runtime checks, so a proof
   bug surfaces as a trap rather than a wrong answer; a clause code generation
   cannot express, such as a quantified `ensures`, has no check.
-- **Tier 3 — runtime fallback.** When Z3 returns `unknown` or times out, the
+- **Tier 3: runtime fallback.** When Z3 returns `unknown` or times out, the
   contract is compiled as a runtime check that traps on violation with the
   contract text.
 - **Unguarded sites.** The few obligations that have no runtime guard are
-  reported as warnings (`E504`, `E506`) and counted in neither tier.
+  reported as warnings (`E504`, `E506`, `E542`, `E543`) and counted in neither tier.
 
 **Checking the Tier 3 claims against the module.** A `tier3` status claims that
 the compiled module checks the property. `vera verify` compiles the program in
 process, as `vera compile` would, and joins the verifier's records with the
 checks the module holds: a `tier3` or `timeout` obligation that no emitted
 check answers is an **E541** error, and an emitted check that no obligation
-accounts for is a **W004** warning. With `--json` the envelope carries a
-`reconciliation` object holding the counts and each mismatch, and the text
+accounts for is a **W004** warning. With `--json` the envelope has a `reconciliation` object holding the counts and each mismatch, and the text
 output ends with a `Reconciliation:` line when the program claims a runtime
 check. A program code generation refuses fails `vera verify` with that
 refusal, bar one holding typed holes: `vera verify` still verifies a partial
@@ -140,8 +136,7 @@ it gives none of the join's diagnostics.
 
 (Tier 2, Z3-*guided*, is specified in spec/06 but not implemented.)
 
-**Debugging "it verified but it still trapped at runtime."** That is Tier 3
-doing its job — the contract wasn't *statically* proved, so it became a runtime
+**Debugging "it verified but it still trapped at runtime."** That is Tier 3 doing its job: the contract was not *statically* proved, so it became a runtime
 guard. `--json` shows you exactly how much fell through:
 
 ```bash
@@ -149,8 +144,8 @@ vera verify --json file.vera
 # {"verification": {"tier1_verified": 12, "tier3_runtime": 1, "total": 13}, ...}
 ```
 
-A non-zero `tier3_runtime` is your list of "things Z3 couldn't decide." If you
-want them at Tier 1, the usual levers are tightening a `requires`, adding a
+A non-zero `tier3_runtime` counts the obligations Z3 could not decide. To
+move them to Tier 1, the usual levers are tightening a `requires`, adding a
 refinement type, or restructuring so the obligation is decidable arithmetic.
 
 ---
@@ -168,20 +163,19 @@ vera test --distrust file.vera # also run the functions the verifier proved
 `test` is contract-driven, not example-driven: Z3 generates inputs that
 *satisfy each function's `requires`*, the compiled WASM runs them, and the real
 outputs are checked against `ensures`. It is the empirical counterpart to
-`verify` — where `verify` proves, `test` looks for a falsifying input. Run it on the Tier-3
-functions `verify --json` flagged: those are the ones a proof didn't cover, so
-they're where a generated counterexample is most valuable.
+`verify`: where `verify` proves, `test` looks for a falsifying input. Run it on the Tier-3
+functions `verify --json` flagged; a proof did not cover them, so a generated
+counterexample is most useful there.
 
 A parameter's type is **resolved before** the encodability test, so an alias of a
-generatable type is trialled rather than skipped: `type Cnt = Int;` costs you
-nothing here, and an alias-spelled `requires` still constrains the inputs. A
+generatable type is trialled rather than skipped: `type Cnt = Int;` changes nothing here, and an alias-spelled `requires` still constrains the inputs. A
 `SKIPPED` line names the type it could not generate for after resolution
 (`cannot generate Option<Nat> inputs`), which is what to look for when a function
-you expected to be tested wasn't.
+you expected to be tested was not.
 
 The generator only runs when it can honour *every* input constraint, so
 "satisfy each function's `requires`" is a promise rather than a best effort.
-Where a `requires` conjunct — or a refined parameter's predicate — is outside
+Where a `requires` conjunct, or a refined parameter's predicate, is outside
 the SMT layer's decidable fragment (`string_length` over a non-literal is the
 common one: Vera counts UTF-8 bytes and Z3's string theory has no byte-length
 operator), the constraint would reach the solver as nothing at all, the inputs
@@ -258,8 +252,8 @@ vera run file.vera --fn f -- 42    # call f with argument 42 (args after --)
 Everything after `--` is passed to the function, parsed by type (so `42` becomes
 an `@Int`). Use `--fn` to enter at a function other than `main`.
 
-The entry is never substituted. If the function you asked for — `main`, or a
-`--fn` name — was declared but dropped from the compiled output (an `[E602]`
+The entry is never substituted. If the function you asked for (`main`, or a
+`--fn` name) was declared but dropped from the compiled output (an `[E602]`
 skip in it or in something it calls, propagating as `[E620]`), `vera run` exits
 nonzero and names the function and the root diagnostic rather than running a
 surviving sibling. Auto-selection applies only where no `main` was ever
@@ -275,11 +269,11 @@ vera compile --target browser file.vera    # emit a browser bundle (wasm + JS + 
 ```
 
 `--wat` is the window into codegen: when a program runs wrong (not *verifies*
-wrong — *runs* wrong), the WAT is the ground truth of what was emitted.
+wrong, but *runs* wrong), the WAT is the ground truth of what was emitted.
 `--target browser` produces a self-contained bundle that runs the same WASM in
 the browser runtime; it refuses to write the bundle when `main` was dropped,
 since the generated `index.html` calls `main()` on load. A compile that declares
-a public non-generic function and then exports nothing at all exits nonzero —
+a public non-generic function and then exports nothing at all exits nonzero, since
 the module has no entry point. A file of private helpers, or a cross-module
 generic library, still compiles successfully with no exports.
 
@@ -291,9 +285,9 @@ wasmtime run file.wasm                     # ...or under stock wasmtime, no flag
 
 `--target wasi-p2` covers the IO and Random host families; any other family is
 rejected with a diagnostic naming it. `vera run --target wasi-p2` is the parity
-check that the artifact behaves like the core target (same stdout/stderr, same
+check that the component behaves like the core target (same stdout/stderr, same
 trap kinds) before handing it to an external host. Divergences inherent to
-WASI 0.2 — exit codes collapse to 0/1, no structured trap frames — are in
+WASI 0.2 (exit codes collapse to 0/1, no structured trap frames) are in
 spec chapter 13.
 
 ```bash
@@ -302,7 +296,7 @@ wasmtime serve file.wasm                                 # stock wasmtime hosts 
 ```
 
 `--world server` packages the same `handle(Request -> Response)` program
-`vera serve` runs natively as a `wasi:http/incoming-handler` component —
+`vera serve` runs natively as a `wasi:http/incoming-handler` component:
 one handler, two deployment paths.  `vera run` cannot host it (no
 wasi:http in wasmtime-py); the error says so and points here.
 
@@ -314,13 +308,13 @@ VERA_DB_URL=sqlite:///examples/sqlitedb.sqlite \
   vera run examples/sqlitedb.vera                                     # ...or an on-disk SQLite file
 ```
 
-A program with `effects(<DB>)` connects to the database named by `VERA_DB_URL` — unset, that's a hermetic in-memory SQLite database, so `vera run` and `vera test` work with no setup. The SQL string must be a literal (`E207` otherwise) with runtime values passed through `?` placeholders; see [`ENVIRONMENT.md`](ENVIRONMENT.md) and spec §9.5.7.
+A program with `effects(<DB>)` connects to the database named by `VERA_DB_URL`; unset, that is a hermetic in-memory SQLite database, so `vera run` and `vera test` work with no setup. The SQL string must be a literal (`E207` otherwise) with runtime values passed through `?` placeholders; see [`ENVIRONMENT.md`](ENVIRONMENT.md) and spec §9.5.7.
 
 ---
 
 ## Recipe: serve verified HTTP handlers
 
-`vera serve` hosts a program's `handle(Request -> Response)` function over HTTP (#305). The accept loop lives in the host — the handler is a total, contract-checked function; no `Diverge` involved.
+`vera serve` hosts a program's `handle(Request -> Response)` function over HTTP. The accept loop lives in the host; the handler is a total, contract-checked function, with no `Diverge` involved.
 
 ```bash
 vera serve examples/http_server.vera              # default port 8000
@@ -328,7 +322,7 @@ vera serve --port 8080 examples/http_server.vera  # explicit port
 curl -i http://127.0.0.1:8080/
 ```
 
-Each request runs on a **fresh module instance**, so `State<T>` cannot leak between requests. A runtime contract violation inside the handler answers **500** with the trap diagnostic as JSON (`trap_kind`, message, frames) — the same envelope `vera run --json` uses. Handler `IO.print` output goes to the server console. Ctrl-C stops the server (exit 130). See spec §9.5.6 for the `Request` / `Response` types and semantics.
+Each request runs on a **fresh module instance**, so `State<T>` cannot leak between requests. A runtime contract violation inside the handler answers **500** with the trap diagnostic as JSON (`trap_kind`, message, frames), the same envelope `vera run --json` uses. Handler `IO.print` output goes to the server console. Ctrl-C stops the server (exit 130). See spec §9.5.6 for the `Request` / `Response` types and semantics.
 
 ## Recipe: inspect a program's structure
 
@@ -340,7 +334,7 @@ vera ast --json file.vera      # the AST as JSON (a refusal: the diagnostics env
 
 `parse` answers "did the grammar accept this?"; `ast` answers "what did the
 type-checker make of it?". Reach for `ast` when a slot or type resolves
-surprisingly and `--explain-slots` wasn't enough.
+surprisingly and `--explain-slots` was not enough.
 
 ---
 
@@ -358,15 +352,15 @@ vera errors   --json     # every diagnostic + warning code, with its phase
 
 Each emits a uniform `{"schema": "...", "items": [...]}` envelope (the `schema`
 field is versioned for forward-compatibility), or an aligned text table without
-`--json`. Every item also carries a **`since`** — the version that first
-introduced it — which is what makes "what shipped since version 0.0.X"
+`--json`. Every item also has a **`since`**, the version that first
+introduced it, so "what shipped since version 0.0.X" is
 answerable by diffing two dumps. A diagnostic code's `since` is derived from
 the release tags and covers every code; a built-in function's, effect's or
 ability's is reconstructed from the git history, and a name it misses reports
 `null`. Recipes:
 
 ```bash
-# How many built-ins are there, really? (the answer the docs should quote)
+# How many built-ins are there? (the number the docs should quote)
 vera builtins --json | jq '.items | length'
 
 # Does a built-in named `string_split` exist?
@@ -387,8 +381,8 @@ vera errors --json | jq '.items[] | select(.phase == "verify") | .code'
 
 Because these are sourced from the live registries (`effects` additionally
 surfaces the parameterised `Exn<T>`, recognised specially by the compiler), a
-test that asserts `len(builtins --json) == <doc number>` will catch doc drift
-the moment it happens — which is the whole point.
+test that asserts `len(builtins --json) == <doc number>` catches doc drift as
+soon as it happens.
 
 ---
 
@@ -402,8 +396,8 @@ prove?" without a full re-verify), run the LSP:
 vera lsp                       # serve LSP over stdio (needs the [lsp] extra)
 ```
 
-The LSP is its own surface with its own guide — see
-[LSP_SERVER.md](LSP_SERVER.md). Rule of thumb: the CLI is for batch gates and
+The LSP has its own guide,
+[LSP_SERVER.md](LSP_SERVER.md). As a rule, the CLI is for batch gates and
 scripts; the LSP is for interactive editing and edit-verify-apply loops.
 
 ---
@@ -412,11 +406,11 @@ scripts; the LSP is for interactive editing and edit-verify-apply loops.
 
 | Symptom | Reach for | What to look at |
 |---|---|---|
-| "Contract should hold but doesn't" | `vera check --explain-slots` | which parameter `@T.n` actually resolves to |
+| "Contract should hold but does not" | `vera check --explain-slots` | which parameter `@T.n` actually resolves to |
 | Recursive call behaves backwards | `vera check --explain-slots` | non-commutative slot order (`@T.0` is *most recent*) |
-| A `@T.n` you wrote doesn't resolve | `vera check --explain-slots` | an alias in the head or in a type argument — the bound name may not be the one you spelled |
-| "Verified, but it trapped at runtime" | `vera verify --json` | a non-zero `tier3_runtime` — it was a runtime guard, not a proof |
-| "Z3 can't prove my postcondition" | `vera test --fn f` | a generated counterexample input |
+| A `@T.n` you wrote does not resolve | `vera check --explain-slots` | an alias in the head or in a type argument; the bound name may not be the one you spelled |
+| "Verified, but it trapped at runtime" | `vera verify --json` | a non-zero `tier3_runtime`: it was a runtime guard, not a proof |
+| "Z3 cannot prove my postcondition" | `vera test --fn f` | a generated counterexample input |
 | Wrong *output* (not wrong *proof*) | `vera compile --wat` | the actual emitted instructions |
 | "Does feature/built-in X exist?" | `vera builtins --json` / `vera effects --json` | the registry, not your memory |
 | "What is error EXXX?" | `vera errors --json \| jq ...` | the code's `title` and `phase` |
@@ -441,9 +435,9 @@ live catalogue.
 
 ## See also
 
-- [LSP_SERVER.md](LSP_SERVER.md) — the language server and proof-delta methods
-- [DESIGN.md](DESIGN.md) — why the toolchain is shaped this way
-- [WASI.md](WASI.md) — the WASI/component toolchain facts under the server-effects sprint
-- [DE_BRUIJN.md](DE_BRUIJN.md) — the `@T.n` slot model `--explain-slots` reports
-- [SKILL.md](SKILL.md) — writing Vera: syntax, contracts, effects, common mistakes
-- [README.md](README.md) — install, the command list, and the project overview
+- [LSP_SERVER.md](LSP_SERVER.md): the language server and proof-delta methods
+- [DESIGN.md](DESIGN.md): why the toolchain is shaped this way
+- [WASI.md](WASI.md): the WASI and component toolchain facts the WASI targets rest on
+- [DE_BRUIJN.md](DE_BRUIJN.md): the `@T.n` slot model `--explain-slots` reports
+- [SKILL.md](SKILL.md): writing Vera: syntax, contracts, effects, common mistakes
+- [README.md](README.md): install, the command list, and the project overview
