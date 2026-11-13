@@ -35,7 +35,7 @@
   <text class="f col" x="425" y="121">EFFECTS</text>
   <text class="f col" x="530" y="110">REFINEMENT</text>
   <text class="f col" x="530" y="121">TYPES</text>
-  <text class="f col" x="616" y="116" text-anchor="start">NOTES (FROM THE FAQ)</text>
+  <text class="f col" x="616" y="116" style="text-anchor: start">NOTES (FROM THE FAQ)</text>
 
   <line class="rowline" x1="52" y1="130" x2="868" y2="130"/>
 
