@@ -169,6 +169,7 @@ Exit criterion: the LSP limitation rows are retired, and a fresh VeraBench run (
 | [#558](https://github.com/aallan/vera/issues/558) | `--explain-slots-at <line>:<col>`: query the slot table at any position, not only where a diagnostic already fires. |
 | [#1292](https://github.com/aallan/vera/issues/1292) | LSP: `vera/addEffect` bounds handlers by resolved effect instance, so an alias-spelled `handle[State<MyAlias>]` prunes what `State<Int>` prunes. |
 | [#1471](https://github.com/aallan/vera/issues/1471) | **E538** names the premise that contributes the contradiction (an unsat core over the author's premises), not the first `assume`. |
+| [#1873](https://github.com/aallan/vera/issues/1873) | **E310** for a `match` arm that earlier constructor or literal arms already cover, not only for an arm after a catch-all. |
 | [#523](https://github.com/aallan/vera/issues/523) | `vera context`: token-budgeted project export for agents. |
 | [#698](https://github.com/aallan/vera/issues/698) | `vera shape`: function-archetype histograms per module. |
 | [#224](https://github.com/aallan/vera/issues/224) | REPL; the shortest feedback path is `vera run` on a file. |
