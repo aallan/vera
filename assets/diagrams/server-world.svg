@@ -77,7 +77,8 @@
     <text class="f d" x="508" y="140">exports what the adapter needs: it builds the request's headers</text>
     <text class="f d" x="508" y="154">with one <tspan class="m" font-size="10px">map_from_arrays$ks_vs</tspan> call (a repeated header keeps its</text>
     <text class="f d" x="508" y="168">first position and its last value) and reads the response's with</text>
-    <text class="f d" x="508" y="182"><tspan class="m" font-size="10px">map_keys$ks</tspan> and <tspan class="m" font-size="10px">map_values$vs</tspan>. Handlers use Map and Set unchanged.</text>
+    <text class="f d" x="508" y="182"><tspan class="m" font-size="10px">map_keys$ks</tspan> and <tspan class="m" font-size="10px">map_values$vs</tspan>.</text>
+    <text class="f d" x="508" y="196">Handlers use Map and Set unchanged.</text>
   </g>
 
   <g>
