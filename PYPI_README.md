@@ -4,9 +4,9 @@ Vera is a programming language designed for large language models to write. It
 has mandatory contracts, algebraic effects, typed slot references instead of
 variable names, and a compiler that emits WebAssembly. Contracts are verified
 statically with Z3 where Z3 can decide them, and the compiled program also
-checks its contracts at run time. A contract code generation cannot express,
-such as a quantified `ensures`, is reported as a runtime check but is not
-compiled into one.
+checks its contracts at run time. A contract code generation cannot lower,
+such as an `ensures` over a `String` or `Array` result, is disclosed as a
+warning (`E543`) rather than reported as a runtime check.
 Recursion must be shown to terminate (`decreases`) or declare that it may not
 (`Diverge`), every runtime trap names its cause, and SQL injection is a
 compile-time error.
@@ -39,25 +39,25 @@ VS Code users can pair that server with
 the extension supplies syntax highlighting and starts `vera lsp`
 automatically.
 
-The distribution is named `veralang`, but the installed command remains
-`vera`, and Python code still imports it as `import vera`. **Do not run `pip install vera`**: that name belongs to an unrelated
+The distribution is named `veralang`, but the installed command is
+`vera`, and Python code imports it as `import vera`. **Do not run `pip install vera`**: that name belongs to an unrelated
 ERAV citizen-science project on PyPI. The wheel ships the compiler and the
-`vera` command only — the bundled examples, the conformance suite, and the
+`vera` command only; the bundled examples, the conformance suite, and the
 specification live in the GitHub repository.
 
 **Upgrading to 0.2.0:** the checker and verifier are stricter than in 0.1.x, so
-0.2.0 refuses some programs 0.1.13 accepted — most often a recursive function with
-neither `decreases` nor `Diverge` (`E137`), a `decreases` measure that is not
-proved to decrease (`E502`), or a name, type or effect the checker cannot
-resolve. The
+0.2.0 refuses some programs 0.1.13 accepted. The most common are a recursive function with
+neither `decreases` nor `Diverge` (`E137`), a `decreases` measure whose `@Nat`
+subtraction can underflow (`E502`), or a name, type or effect the checker
+cannot resolve. The
 [CHANGELOG](https://github.com/aallan/vera/blob/main/CHANGELOG.md) lists each
 new check.
 
 ## Install from GitHub source
 
-The source route provides the full environment — the examples, conformance
-programs, and specification alongside the toolchain (the recommended setup for
-agents learning the language) — and remains the route for compiler
+The source route provides the full environment: the examples, conformance
+programs, and specification alongside the toolchain. It is the recommended
+setup for agents learning the language, and the route for compiler
 development, unreleased changes, and testing the current `main` branch:
 
 ```bash
