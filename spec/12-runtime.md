@@ -28,7 +28,7 @@ Functions the backend cannot compile are dropped with an E6xx warning and do not
 
 ### 12.2.2 Imports
 
-The module imports host functions from the runtime for two distinct reasons. The first is effect operations: `IO.print`, `Http.get`, `State.put`, and so on bind to host-provided implementations. The second is pure host-backed built-ins such as `log`, `sin`, `cos` and `atan2`, which have no WASM instruction equivalent and so are routed through host imports (`vera.log`, `vera.sin`, …) even though the Vera-level functions are pure. Each entry in the table below lists its condition; a module only imports what it actually uses.
+The module imports host functions from the runtime for two distinct reasons. The first is effect operations: `IO.print`, `Http.get`, `State.put`, and so on bind to host-provided implementations. The second is pure host-backed built-ins such as `log`, `sin`, `cos` and `atan2`, which have no WASM instruction equivalent and so are routed through host imports (`vera.log`, `vera.sin`, …) even though the Vera-level functions are pure. Each entry in the table below lists its condition; a module only imports what it uses.
 
 | Import | Signature | Condition |
 |--------|-----------|-----------|
@@ -71,7 +71,7 @@ The module imports host functions from the runtime for two distinct reasons. The
 | `vera.md_has_code_block` | `(i32, i32, i32) -> (i32)` | Program uses `md_has_code_block` |
 | `vera.md_extract_code_blocks` | `(i32, i32, i32) -> (i32, i32)` | Program uses `md_extract_code_blocks` |
 
-Imports are only emitted when the program actually uses the corresponding host-backed feature: either an effect operation (`IO.*`, `Http.*`, `State.*`, `Random.*`, …) or a pure host-backed built-in (`vera.log`, `vera.sin`, `vera.atan2`, …). A pure program that uses only inlined built-ins (`pi()`, `sign`, `clamp`, arithmetic operators, `Map` and `Set` operations) imports no effect operation and no host-backed built-in; the only imports it can carry are the two trap signals, `vera.contract_fail` and `vera.trap`, each only when a runtime check calls it (an arithmetic operator the verifier cannot prove in range, for instance, has an overflow check that signals through `vera.trap`), and `vera.hash_key`, when it hashes a `String` key in a `Map` or `Set`.
+Imports are only emitted when the program uses the corresponding host-backed feature: either an effect operation (`IO.*`, `Http.*`, `State.*`, `Random.*`, …) or a pure host-backed built-in (`vera.log`, `vera.sin`, `vera.atan2`, …). A pure program that uses only inlined built-ins (`pi()`, `sign`, `clamp`, arithmetic operators, `Map` and `Set` operations) imports no effect operation and no host-backed built-in; the only imports it can carry are the two trap signals, `vera.contract_fail` and `vera.trap`, each only when a runtime check calls it (an arithmetic operator the verifier cannot prove in range, for instance, has an overflow check that signals through `vera.trap`), and `vera.hash_key`, when it hashes a `String` key in a `Map` or `Set`.
 
 ### 12.2.3 Linear Memory
 

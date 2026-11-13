@@ -284,7 +284,7 @@ The `IO` effect is implemented via host imports. Each IO operation the program u
 | `time` | `(import "vera" "time" (func $vera.time (result i64)))` |
 | `stderr` | `(import "vera" "stderr" (func $vera.stderr (param i32 i32)))` |
 
-Only the operations actually used in the program are imported. Operations that return host-allocated data (`read_line`, `read_char`, `read_file`, `write_file`, `read_bytes`, `write_bytes`, `args`, `get_env`) cause the module to export its `$alloc` function, as `"vera.alloc"`, so the host can allocate WASM memory.  Every name the module exports its runtime under starts with `vera.`, which no Vera identifier can spell, so a program's public function named `alloc` is exported beside the allocator.
+Only the operations the program uses are imported. Operations that return host-allocated data (`read_line`, `read_char`, `read_file`, `write_file`, `read_bytes`, `write_bytes`, `args`, `get_env`) cause the module to export its `$alloc` function, as `"vera.alloc"`, so the host can allocate WASM memory.  Every name the module exports its runtime under starts with `vera.`, which no Vera identifier can spell, so a program's public function named `alloc` is exported beside the allocator.
 
 `IO.exit` emits `unreachable` after the call since the process terminates. Operations returning `Result` or `Option` return an `i32` heap pointer to the ADT; operations returning `String` or `Array<String>` return an `(i32, i32)` pair.
 
@@ -381,7 +381,7 @@ if
 end
 ```
 
-`old(State<T>)` resolves to a `local.get` of the saved snapshot. `new(State<T>)` resolves to a fresh `call $vera.state_get_<Type>` that reads the current value. The snapshot local is allocated only when the function's ensures clauses actually reference `old()`.
+`old(State<T>)` resolves to a `local.get` of the saved snapshot. `new(State<T>)` resolves to a fresh `call $vera.state_get_<Type>` that reads the current value. The snapshot local is allocated only when the function's ensures clauses reference `old()`.
 
 ### 11.8.5 Trap Handling
 

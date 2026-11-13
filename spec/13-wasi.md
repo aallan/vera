@@ -65,7 +65,7 @@ can run, so the shims never call through an unfilled slot.  The
 dispatch table is defined *after* the closure table so existing
 `call_indirect` sites keep table index 0.
 
-Only the WASI interfaces an op-dependency closure actually needs are
+Only the WASI interfaces an op-dependency closure needs are
 imported: a print-only program imports exactly
 `wasi:io/error`, `wasi:io/streams`, and `wasi:cli/stdout`.
 
