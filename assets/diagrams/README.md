@@ -82,7 +82,7 @@ and any paired `<details>` text version in the same commit.
 | `testing-layers.svg` | `TESTING.md` | three test layers + four conformance levels |
 | `lsp-session.svg` | `LSP_SERVER.md` | the agent proof-delta session |
 | `history-growth.svg` | `HISTORY.md` | growth across the ten landmark releases |
-| `subtyping-lattice.svg` | `spec/02` | the complete subtyping relation + the checker/verifier Nat split |
+| `subtyping-lattice.svg` | `spec/02` | the complete subtyping relation, the variance of compound types, and the checker/verifier Nat split |
 | `effect-row-lattice.svg` | `spec/07`, `DESIGN.md` | effect subtyping by row inclusion |
 | `module-resolution.svg` | `spec/08` | path mapping, cache, cycle rejection, transitive-≠-visible |
 | `async-model.svg` | `spec/09` | eager vs concurrent futures, the commutative-row gate, and the fused `Http` shape the reference implementation runs concurrently |

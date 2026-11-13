@@ -13,7 +13,6 @@
         "686",
         "439",
         "770",
-        "909",
         "440",
         "294",
         "56",
@@ -91,7 +90,6 @@
       "issue_column": 2,
       "rows": [
         "294",
-        "empty-collection-type-context",
         "370",
         "db-handlers",
         "1143",
@@ -163,15 +161,6 @@
       "rows": {
         "KNOWN_ISSUES.md#limitations": [
           "`IO.read_line` and `IO.read_char` block indefinitely. There is no non-blocking or timed stdin read, so a program cannot wait on a key press and a clock at once (input concurrency)."
-        ]
-      }
-    },
-    {
-      "id": "909",
-      "issues": [909],
-      "rows": {
-        "KNOWN_ISSUES.md#limitations": [
-          "A value's postcondition or refinement is not propagated **through an ADT field**: storing a provably constrained value (e.g. a `mag(@Int -> @Int) ensures(@Int.result >= 0)` result) into a `data` constructor field and recovering it with `match` forgets the constraint, so a postcondition whose truth depends on it cannot be discharged at Tier 1. It falls to a Tier 3 runtime check, or on some shapes is reported as an unprovable obligation. The verifier stays sound: the false variant is still rejected and the contract is enforced at run time, for same-file and cross-module callees alike."
         ]
       }
     },
@@ -439,16 +428,6 @@
         "vera/README.md#limitations": [
           "**Http: GET/POST only**",
           "No custom headers, no PUT/DELETE/PATCH, no status codes, no timeouts, no streaming, no cookies"
-        ]
-      }
-    },
-    {
-      "id": "empty-collection-type-context",
-      "issues": [],
-      "rows": {
-        "SKILL.md#limitations": [
-          "`map_new()` / `set_new()` require type context",
-          "The empty-collection constructors `map_new()` and `set_new()` cannot infer their key/value types without a surrounding type annotation. Assign the result to a typed `let` binding: `let @Map<String, Int> = map_new();`"
         ]
       }
     },

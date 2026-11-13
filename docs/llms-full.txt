@@ -905,7 +905,7 @@ map_keys(@Map<String, Nat>.0)                       -- returns Array<String>
 map_values(@Map<String, Nat>.0)                     -- returns Array<Nat>
 ```
 
-> `map_new()` is a zero-argument generic function. Nest it inside `map_insert(map_new(), k, v)` so that type inference can resolve the key and value types from the arguments. Using `option_unwrap_or(map_get(...), default)` is the idiomatic way to extract values with a fallback.
+> `map_new()` takes no arguments. Its key and value types come from where it is used: the arguments of `map_insert(map_new(), k, v)`, or the type of a `let`. Using `option_unwrap_or(map_get(...), default)` is the idiomatic way to extract values with a fallback.
 
 ### Set operations
 
@@ -2378,15 +2378,15 @@ CORRECT: use escape sequences:
 "line one\nline two"
 ```
 
-### Standalone `map_new()` / `set_new()` without type context
+### A `Map` or `Set` type written without its type arguments
 
-WRONG: type inference cannot resolve the key/value or element types:
+WRONG: the binding's type names no key, value or element type (`E170`):
 ```vera
 let @Map = map_new();
 let @Set = set_new();
 ```
 
-CORRECT: nest inside an operation so types can be inferred, or provide explicit type annotation:
+CORRECT: write the type in full. The constructors themselves need no annotation:
 ```vera
 let @Map<String, Int> = map_new();
 map_insert(map_new(), "key", 42)
@@ -2555,7 +2555,6 @@ These are known limitations in the reference implementation. Most are tracked as
 | Limitation | Details | Issue |
 |-----------|---------|-------|
 | Effect row variable unification | A function's own row may not name a type variable (`effects(<E>)` is `E340`), and one in a parameter's function type is not unified with concrete effect rows at call sites. Functions that abstract over effects require explicit row declarations. | [#294](https://github.com/aallan/vera/issues/294) |
-| `map_new()` / `set_new()` require type context | The empty-collection constructors `map_new()` and `set_new()` cannot infer their key/value types without a surrounding type annotation. Assign the result to a typed `let` binding: `let @Map<String, Int> = map_new();` | none |
 | `Inference.complete` has no `max_tokens` or temperature controls; `Inference` effect has no user-defined handlers | The host sends a `max_tokens` of 1024 to Anthropic and nothing else; OpenAI-style requests take the provider's defaults, and `temperature`, top-p and a system prompt cannot be set from Vera. `Inference` is always host-backed (dispatches to a real API). User-defined handlers for mocking, local models, or replay are not supported, and a user-declared effect is a declaration only: no row may name it and no handler handles it (`E340`). | [#370](https://github.com/aallan/vera/issues/370) |
 | `DB` effect has no user-defined handlers | `DB` is always host-backed; `handle[DB]` for mocking or replay is not supported (shared with the other host effects). Test against `sqlite::memory:` for a hermetic real database. | [#370](https://github.com/aallan/vera/issues/370) |
 | `DB` effect is SQLite-only with positional string rows | `DB` supports SQLite only, a single connection per run, and stringly-typed positional rows (`Array<Array<Option<String>>>`). Named columns, typed cells, other backends, and transactions are not supported. | [#1143](https://github.com/aallan/vera/issues/1143) |
@@ -2576,6 +2575,10 @@ These are known limitations in the reference implementation. Most are tracked as
 | A `--world server` component whose handler holds a closure (a lambda passed to `array_map`, say) is refused by the default `wasmtime serve`, which exits at load with `defined tables count of 2 exceeds the per-instance limit of 1`. | Serve it with `wasmtime serve -O pooling-allocator=n`. | [#1739](https://github.com/aallan/vera/issues/1739) |
 | A closure typed `fn(Int -> Int)` is accepted where `fn(Int -> Nat)` is expected, and a `fn(Nat -> Int)` one where `fn(Int -> Int)` is, with no check at the flow, so a function declared `-> @Nat` can return a negative with `vera check` and `vera verify` clean. | Write the closure at the type expected (`fn(@Int -> @Nat) effects(pure) { ... }`), so its return is an ordinary `Int` to `Nat` site, proved or guarded; v0.3.0 refuses the flow. | [#1819](https://github.com/aallan/vera/issues/1819) |
 | A refined payload built as the value of a `handle` body or a non-resuming `Exn` clause takes no store check at run time (`vera verify` discloses it, `E506`). | Bind the payload to a slot outside the handle and construct the value from the slot, which is a checked store. | [#1542](https://github.com/aallan/vera/issues/1542) |
+| `eq` or `compare` written inside an effect operation's argument, a string interpolation, an array literal, an index, an `assert` or a `handle` body passes `vera check`, and its function is dropped at compile (`E907` at `vera run`). | Bind the result first, `let @Bool = eq(@Int.0, @Int.1);`, and use `@Bool.0`. | [#1525](https://github.com/aallan/vera/issues/1525) |
+| `parse_nat`, `parse_int`, `parse_float64` and `parse_bool` strip only spaces, so a tab or a `\r` beside the value is an error; `parse_float64` also accepts `"+1.0"` and `".5"` and refuses an exponent (`"1e3"`). | Strip the input first: `parse_float64(string_strip(@String.0))`.  An exponent has no workaround short of parsing it by hand. | [#1869](https://github.com/aallan/vera/issues/1869) |
+| A refuted contract's counterexample can be empty, list a `@Unit` parameter as `@Unit.0 = 0`, or name an internal constant such as `_call_take_14_3`. | The error, its code and its location are right: read the failing expression at the location given. | [#1871](https://github.com/aallan/vera/issues/1871) |
+| `vera check`, `vera verify` and `vera fmt --check` read only the first file named; `vera <command> --help` is read as a file name; a flag a command does not take is ignored. | Pass one file per command.  `vera` with no arguments prints the usage. | [#1872](https://github.com/aallan/vera/issues/1872) |
 
 When a Vera program type-checks cleanly, compiles without errors, and then produces a runtime trap you cannot explain, read its diagnostic. Each trap has a `kind` label naming its cause (`contract_violation`, `overflow`, `nat_guard`, `nat_underflow`, `assertion_failed`, `index_out_of_bounds`, `string_index_out_of_bounds`, `float_conversion`, `heap_exhausted`, `uncaught_exception` (an `Exn<T>` no `handle[Exn<T>]` caught before it left the entry point), `divide_by_zero`, `out_of_bounds`, `stack_exhausted`, `host_error`, or `unreachable` for the runtime's own internal limits (shadow-stack overflow and the like), and `unknown`), a message describing the failure, which names the failing site wherever the check has one (the assertion's text, the index and its bound, the subtraction and the `requires` that discharges it), a per-kind `Fix:` paragraph naming the canonical remediation (omitted for `contract_violation` and `host_error`, whose descriptions already carry the specific instruction, and for `unknown`, where there is nothing general to suggest), and, under the default `vera run` host, a source backtrace pointing at the offending Vera function and line rather than a bare `wasm trap: <reason>` (a `--target wasi-p2` trap keeps its kind, message and `Fix:`, but its `frames` list is empty, because frames do not cross the component boundary, spec §13.6).  Tail-recursive iteration runs in constant WASM stack space for both non-allocating and allocating tail calls; for the latter, code generation restores the shadow-stack pointer before each `return_call`, so the shadow stack stays bounded across iterations.
 
