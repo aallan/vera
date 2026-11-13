@@ -2,7 +2,7 @@
 
 ## 11.1 Overview
 
-Vera programs compile to WebAssembly (WASM). The compilation pipeline extends the verification pipeline: after parsing, transformation, type checking, and contract verification, the code generator translates the verified AST into a WASM module.
+Vera programs compile to WebAssembly (WASM). The source is parsed and transformed into an AST; the resolver gathers the module closure and binds every name to the declaration it denotes; the type checker checks the program; and the typed program (`vera/typed.py`) is then built once, holding every generic instance and clone. The code generator translates that typed program into a WASM module. `vera compile` and `vera run` do not run the contract verifier. `vera verify` runs it over the same typed program and then, unless `--no-reconcile` is given, compiles the program in process and matches each runtime-check claim against the checks the compiled module holds: a claim no check answers is an error (`E541`), a check no claim accounts for is a warning (`W004`), and a program holding typed holes skips the match with a warning (`W005`).
 
 ![The compilation pipeline: parse to a Lark tree, transform to a typed AST, type-check into diagnostics, verify into a Tier 1/Tier 3 classification, and compile to WAT plus a WASM binary.](../assets/diagrams/pipeline.svg)
 

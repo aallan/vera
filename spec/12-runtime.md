@@ -117,6 +117,7 @@ The linker resolves all imports before instantiation. If the module imports a ho
 The linker registers host functions before instantiation:
 1. IO host functions, registered for each IO operation the module imports (`vera.print`, `vera.read_line`, `vera.read_char`, `vera.read_file`, `vera.write_file`, `vera.read_bytes`, `vera.write_bytes`, `vera.args`, `vera.exit`, `vera.get_env`, `vera.sleep`, `vera.time`, `vera.stderr`).
 2. `vera.state_get_{T}` / `vera.state_put_{T}` / `vera.state_push_{T}` / `vera.state_pop_{T}`, registered for each concrete `State<T>` type used by the program.
+3. Every other host family the module imports, each bound by its own binder (`HOST_BINDERS` in `vera/codegen/api.py`, keyed by the families of `HOST_FAMILIES` in `vera/builtins.py`): the trap signals `vera.contract_fail` and `vera.trap`; `Random`; the math functions (`vera.log`, `vera.sin`, …); Markdown, Regex, JSON, HTML and `Decimal`; `Http`, the fused `Async` requests, `Inference` and `DB`; the wrapper table's handle imports; and `vera.hash_key`. Each binder defines only the imports of its family the module declares.
 
 ### 12.3.3 Entry Point Resolution
 
@@ -577,7 +578,7 @@ All heap allocations are 8-byte aligned. This ensures correct access for all WAS
 
 The runtime implements a conservative mark-sweep garbage collector entirely in WASM (no host-side GC logic). The GC is triggered automatically when the bump allocator runs out of space.
 
-![Allocation and collection: $alloc aligns the request, tries the free list, bumps if there is room, and otherwise runs the three collector phases (clear marks, mark from shadow-stack roots with conservative scanning, sweep unmarked blocks onto the free list) before retrying and finally growing memory.](../assets/diagrams/gc-cycle.svg)
+![Allocation and collection: $alloc aligns the request, tries the free list, bumps if there is room, and otherwise runs the three collector phases — clear marks, mark from shadow-stack roots with conservative scanning, sweep unmarked blocks onto the free list — before retrying and finally growing memory.](../assets/diagrams/gc-cycle.svg)
 
 **Shadow stack.** WASM does not support stack scanning, so the compiler maintains an explicit shadow stack in linear memory. The compiler pushes live heap pointers onto it at function entry (pointer-type parameters), after each `call $alloc` (newly allocated objects), and manages save/restore at function exit. Thirteen globals track the shadow stack and GC state:
 
