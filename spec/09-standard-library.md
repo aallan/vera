@@ -45,6 +45,9 @@ Every Vera program implicitly has access to a **standard prelude** that provides
 - **`Result<T, E>`**: `Ok(T)`, `Err(E)` constructors.
 - **`Ordering`**: `Less`, `Equal`, `Greater` constructors (for `Ord`'s `compare` operation).
 - **`UrlParts`**: `UrlParts(String, String, String, String, String)` constructor (RFC 3986 decomposition).
+- **`Json`**: `JNull`, `JBool(Bool)`, `JNumber(Float64)`, `JString(String)`, `JArray(Array<Json>)`, `JObject(Map<String, Json>)` constructors (Section 9.7.1).
+- **`HtmlNode`**: `HtmlElement(String, Map<String, String>, Array<HtmlNode>)`, `HtmlText(String)`, `HtmlComment(String)` constructors (Section 9.7.4).
+- **`Request`** and **`Response`**: `Request(String, String, Map<String, String>, String)` and `Response(Int, Map<String, String>, String)` constructors, the `HttpServer` handler types (Section 9.5.6).
 
 In addition, Option/Result combinators (`option_unwrap_or`, `option_map`, `option_and_then`, `result_unwrap_or`, `result_map`) and array operations (`array_slice`, `array_map`, `array_filter`, `array_fold`) are automatically available.
 
