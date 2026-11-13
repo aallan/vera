@@ -23,7 +23,7 @@
   <rect x="1.5" y="1.5" width="917" height="421" rx="14" fill="#faf9f7" stroke="#e8e6e1" stroke-width="1.5"/>
 
   <text class="f micro" x="36" y="42">WASI TARGET · THE GC-EXEMPT ARENA</text>
-  <text class="f sub" x="36" y="64">Canonical-ABI lowering needs a cabi_realloc the host can call — routing it through the GC heap would be unsound.</text>
+  <text class="f sub" x="36" y="64">Canonical-ABI lowering needs a cabi_realloc the host can call, and routing it through the GC heap would be unsound.</text>
 
   <!-- memory strip -->
   <rect class="seg" x="60" y="96" width="70" height="72" fill="#f8efdf"/>
@@ -31,7 +31,7 @@
   <text class="m" x="95" y="141" text-anchor="middle" font-size="10px" fill="#b07820">slab</text>
   <text class="f off" x="95" y="158" text-anchor="middle" font-size="8.5px">128 B</text>
   <rect class="seg" x="130" y="96" width="330" height="72" fill="#f7efe8"/>
-  <text class="f t" x="295" y="126" text-anchor="middle">bump arena — cabi_realloc</text>
+  <text class="f t" x="295" y="126" text-anchor="middle">bump arena: cabi_realloc</text>
   <text class="f d" x="295" y="144" text-anchor="middle">reset at every op entry · never scanned, never swept</text>
   <rect class="seg" x="460" y="96" width="360" height="72" fill="#e6f0e9"/>
   <text class="f t" x="640" y="126" text-anchor="middle">GC heap</text>
@@ -67,9 +67,9 @@
     <rect x="60.5" y="312.5" width="4" height="55" rx="2" fill="#c45"/>
     <text class="f t" x="78" y="332" fill="#a83838">why the exemption is load-bearing</text>
     <text class="f d" x="78" y="349">a collection between two host writes inside one lowered call could move or sweep the</text>
-    <text class="f d" x="78" y="363">half-written block — the same use-after-free class as #593/#695, from the host side.</text>
+    <text class="f d" x="78" y="363">half-written block, the same use-after-free class as #593/#695, from the host side.</text>
   </g>
 
   <!-- footer -->
-  <text class="f footi" x="36" y="400">Host data larger than the arena — say an argv list over 64 KiB — traps cleanly rather than overflowing into the GC heap.</text>
+  <text class="f footi" x="36" y="400">Host data larger than the arena (an argv list over 64 KiB, say) traps cleanly rather than overflowing into the GC heap.</text>
 </svg>

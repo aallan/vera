@@ -22,11 +22,11 @@
   <rect x="1.5" y="1.5" width="917" height="497" rx="14" fill="#faf9f7" stroke="#e8e6e1" stroke-width="1.5"/>
 
   <text class="f micro" x="36" y="42">WASI 0.2 TARGET · COMPONENT ARCHITECTURE</text>
-  <text class="f sub" x="36" y="64"><tspan class="m" font-size="10.5px">vera compile --target wasi-p2</tspan> emits one binary component any stock wasip2 host can run — no Vera bindings.</text>
+  <text class="f sub" x="36" y="64"><tspan class="m" font-size="10.5px">vera compile --target wasi-p2</tspan> emits one binary component any stock wasip2 host can run, with no Vera bindings.</text>
 
   <!-- component container -->
   <rect x="36" y="84" width="848" height="342" rx="12" fill="#f5f4f1" stroke="#cfccc5" stroke-width="1" stroke-dasharray="5 4"/>
-  <text class="m" x="52" y="106" font-size="11px" font-weight="600" fill="#7a756d">component — one binary .wasm</text>
+  <text class="m" x="52" y="106" font-size="11px" font-weight="600" fill="#7a756d">component: one binary .wasm</text>
 
   <!-- $Main -->
   <g>
@@ -68,7 +68,7 @@
     <text class="f d" x="460" y="370" text-anchor="middle" font-size="9.5px">one slot per vera.* operation</text>
   </g>
   <polyline class="edge" points="252,272 252,357 246,357" marker-end="url(#arr)"/>
-  <text class="f elbl" x="112" y="300">$Main calls through it —</text>
+  <text class="f elbl" x="112" y="300">$Main calls through it:</text>
   <text class="f elbl" x="112" y="313">call_indirect, one shim per op</text>
   <polyline class="edge" points="672,310 672,338" marker-end="url(#arr)"/>
   <text class="f elbl" x="684" y="328">$Adapter fills the slots</text>
@@ -78,9 +78,9 @@
     <rect class="card" x="60" y="390" width="380" height="26" rx="13"/>
     <text class="m" x="250" y="407" text-anchor="middle" font-size="10.5px" fill="#2d2b28">exports: wasi:cli/run@0.2.0 · lifted main (scalar returns)</text>
   </g>
-  <text class="f elbl" x="460" y="407">instantiation order $Main → lowers → $Adapter is a strict DAG — slots are live before any vera.* call</text>
+  <text class="f elbl" x="460" y="407">instantiation order $Main → lowers → $Adapter is a strict DAG, so slots are live before any vera.* call</text>
 
   <!-- footer -->
-  <text class="f footi" x="36" y="454">Same Chapter 11 semantics — contracts, GC, traps — the component boundary only changes who serves the host imports.</text>
-  <text class="m" x="36" y="478" font-size="10px" fill="#7a756d">wasmtime run program.wasm   ·   --world server → wasi:http/incoming-handler for `wasmtime serve`</text>
+  <text class="f footi" x="36" y="454">Same Chapter 11 semantics (contracts, GC, traps); the component boundary only changes who serves the host imports.</text>
+  <text class="m" x="36" y="478" font-size="10px" fill="#7a756d">wasmtime run program.wasm   ·   --world server → wasi:http/incoming-handler for wasmtime serve</text>
 </svg>
