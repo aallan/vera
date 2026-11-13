@@ -435,9 +435,9 @@ The refinement on `SafeDiv`'s **second** parameter serves as the contract. The c
 
 | Tier | Scope | Solver | Timeout | Failure mode |
 |------|-------|--------|---------|--------------|
-| 1 | Z3 quantifier-free decidable fragment: linear integer + real arithmetic, bool, strings (Z3 `String` sort), uninterpreted sorts/functions (length, **array literals and indexing via `index_<T>` functions**, [#667](https://github.com/aallan/vera/issues/667)).  No single SMT-LIB logic name covers all of these; QF_UFLIRA is the closest standard logic (integer + real + uninterpreted functions, without strings); strings are a Z3-specific extension. | Z3 | 10 seconds | Compile error with counterexample; falls to Tier 3 on unknown or timeout |
+| 1 | Z3 quantifier-free decidable fragment: linear integer + real arithmetic, bool, strings (Z3 `String` sort), uninterpreted sorts/functions (length, **array literals and indexing via `index_<T>` functions**, [#667](https://github.com/aallan/vera/issues/667)).  No single SMT-LIB logic name covers all of these; QF_UFLIRA is the closest standard logic (integer + real + uninterpreted functions, without strings); strings are a Z3-specific extension. | Z3 | 10 seconds | `vera verify` error with counterexample; falls to Tier 3 on unknown or timeout |
 | 2 | Extended: quantifiers, lemma/assert hints ([not implemented](https://github.com/aallan/vera/issues/427)) | Z3 with hints | 10 seconds | Falls to Tier 3 |
-| 3 | Runtime | None (checks emitted as code) | N/A | Runtime trap |
+| 3 | Runtime | None (checks emitted as code) | N/A | Runtime trap; a site no check can evaluate is disclosed instead and counted in no tier (§6.8.1) |
 
 The ten-second figure is the DEFAULT per-query budget, not a fixed property of the
 language: `vera verify --timeout-ms N` sets it for one run and `VERA_Z3_TIMEOUT_MS`
@@ -446,7 +446,7 @@ obligation whose proof lands near the budget is Tier 1 on a fast host and Tier 3
 a slow one, so raising the budget is what distinguishes a claim that needed more
 time from one the solver can never see through.
 
-A fully Tier 1-verified program has the strongest guarantee: if it compiles, the contracts hold for all inputs. A program with Tier 3 contracts may fail at runtime if the contracts are violated.
+A fully Tier 1-verified program has the strongest guarantee: the contracts hold for all inputs. A program with Tier 3 contracts may fail at runtime if the contracts are violated.
 
 `vera verify` reports a one-line summary:
 
