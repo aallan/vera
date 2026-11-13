@@ -108,8 +108,7 @@ Vera verifies in two implemented tiers, at every call site:
   Z3. `unsat` means the contract holds *for all inputs*, apart from the open
   soundness bugs listed in [KNOWN_ISSUES.md](KNOWN_ISSUES.md). The
   non-trivial `requires`/`ensures` clauses are also compiled as runtime checks, so a proof
-  bug surfaces as a trap rather than a wrong answer; a clause code generation
-  cannot express, such as a quantified `ensures`, has no check.
+  bug surfaces as a trap rather than a wrong answer; a clause code generation cannot express, an `ensures` over a `String` or `Array` result, has no check, and `vera verify` discloses it (`E543`).
 - **Tier 3: runtime fallback.** When Z3 returns `unknown` or times out, the
   contract is compiled as a runtime check that traps on violation with the
   contract text.

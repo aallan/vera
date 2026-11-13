@@ -11,7 +11,7 @@ Vera is a programming language designed for LLMs to write. It uses typed slot re
 
 Vera requires Python 3.11 or later. Node.js 22+ is optional (only needed for `vera compile --target browser` and browser parity tests).
 
-**Recommended — install from the GitHub source checkout.** The checkout is the full environment this file teaches from: alongside the compiler and the `vera` CLI it carries the bundled `examples/`, the conformance suite in `tests/conformance/` (minimal working programs, named by spec chapter and feature), and the specification in `spec/`:
+**Recommended: install from the GitHub source checkout.** The checkout is the full environment this file teaches from: alongside the compiler and the `vera` CLI it has the bundled `examples/`, the conformance suite in `tests/conformance/` (minimal working programs, named by spec chapter and feature), and the specification in `spec/`:
 
 ```bash
 git clone https://github.com/aallan/vera.git && cd vera
@@ -19,14 +19,14 @@ python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\act
 python -m pip install -e .
 ```
 
-For an editable source install with the language server, use `python -m pip install -e ".[lsp]"` — see [LSP_SERVER.md](LSP_SERVER.md). Verify the install end to end with the bundled example:
+For an editable source install with the language server, use `python -m pip install -e ".[lsp]"`; see [LSP_SERVER.md](LSP_SERVER.md). Verify the install end to end with the bundled example:
 
 ```bash
 vera check examples/hello_world.vera    # prints "OK: examples/hello_world.vera"
 vera run examples/hello_world.vera      # prints "Hello, World!"
 ```
 
-**Toolchain only — install the released `veralang` distribution from PyPI.** This installs the `vera` command and all runtime dependencies (Lark parser, Z3 solver, wasmtime), but **not** the examples, conformance programs, or specification — those exist only in the checkout:
+**Toolchain only: install the released `veralang` distribution from PyPI.** This installs the `vera` command and all runtime dependencies (Lark parser, Z3 solver, wasmtime), but **not** the examples, conformance programs, or specification, which exist only in the checkout:
 
 ```bash
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
@@ -44,13 +44,13 @@ python -m pip install -e ".[dev]"
 
 > **Platform support**: [README §Supported platforms](README.md#supported-platforms) lists the platforms and Python versions CI tests on, the ones that are out of scope (where install fails at dependency resolution), the workarounds, and the data behind the baseline.
 >
-> **For agents running in a sandbox** (Claude.ai, Code Interpreter, container-based execution environments, etc.): the steps above work. Sandboxes typically have Python, `git`, `pip`, and outbound network access — that's all Vera needs. **Run the install commands and verify with `vera run examples/hello_world.vera` before concluding that Vera "isn't available." Don't assume the sandbox lacks the toolchain — try it.**
+> **For agents running in a sandbox** (Claude.ai, Code Interpreter, container-based execution environments, etc.): the steps above work. Sandboxes typically have Python, `git`, `pip`, and outbound network access, which is all Vera needs. **Run the install commands and verify with `vera run examples/hello_world.vera` before concluding that Vera "isn't available." Do not assume the sandbox lacks the toolchain; try it.**
 >
-> `pip install vera` installs a *different* package from PyPI (an ERAV citizen-science library — unrelated to this Vera). Use the `veralang` distribution or the GitHub source clone shown above; both install the `vera` command.
+> `pip install vera` installs a *different* package from PyPI (an ERAV citizen-science library, unrelated to this Vera). Use the `veralang` distribution or the GitHub source clone shown above; both install the `vera` command.
 
 ## Toolchain
 
-See [TOOLCHAIN.md](TOOLCHAIN.md) for the CLI cookbook — driving the toolchain to write, verify, test, run, and debug Vera, plus the `builtins`/`effects`/`errors` introspection commands.
+See [TOOLCHAIN.md](TOOLCHAIN.md) for the CLI cookbook: driving the toolchain to write, verify, test, run, and debug Vera, plus the `builtins`/`effects`/`errors` introspection commands.
 
 ```bash
 vera check file.vera              # Parse and type-check (or "OK")
@@ -97,7 +97,7 @@ pytest tests/ -v                  # Run the test suite
 
 Errors are natural language instructions explaining what went wrong and how to fix it. Feed them back into your context to correct the code.
 
-`vera test` generates Z3 inputs for `Int`, `Nat`, `Bool`, `Byte`, `String`, and `Float64` parameters. The decision is made on each parameter's **resolved** type, not its spelling: a type alias or refinement that resolves to one of those six is generated for like any other, so a parameter spelled `@Count` under `type Count = Nat;` is not skipped for its parameter type, and an alias-spelled `requires` still constrains the inputs. (Trials are what a *Tier 3* contract gets; a signature the verifier proves reports `VERIFIED (Tier 1)` instead, unless `vera test --distrust` runs it too, and one with only trivial contracts is skipped as `trivial contracts only`.) A parameter resolving to an ADT or a function type is skipped with a message naming that resolved type — `type MaybeCount = Option<Nat>` skips with `cannot generate Option<Nat> inputs`. A generic function is skipped as `generic function` before its parameter types are considered at all, so a `forall<T>` signature never reports a per-parameter reason even when every parameter is generable. A generable signature is also skipped when a `requires` conjunct — or a refined parameter's predicate — is outside the SMT layer's decidable fragment, since Z3 could not constrain the generated inputs by it; the skip names the conjunct (`cannot generate inputs satisfying `` `string_length(@String.0) > 0` ``), because running trials the precondition never shaped would report the function's own entry-guard trap as a broken contract. `string_length` over a non-literal is the usual trigger — Vera counts UTF-8 bytes and Z3's string theory has no byte-length operator — so compare a `string_length` against a literal where you want the function trialled. Float64 uses Z3's mathematical reals (NaN, ±∞, and subnormals are not generated). Strings are capped at 50 characters.
+`vera test` generates Z3 inputs for `Int`, `Nat`, `Bool`, `Byte`, `String`, and `Float64` parameters. The decision is made on each parameter's **resolved** type, not its spelling: a type alias or refinement that resolves to one of those six is generated for like any other, so a parameter spelled `@Count` under `type Count = Nat;` is not skipped for its parameter type, and an alias-spelled `requires` still constrains the inputs. (Trials are what a *Tier 3* contract gets; a signature the verifier proves reports `VERIFIED (Tier 1)` instead, unless `vera test --distrust` runs it too, and one with only trivial contracts is skipped as `trivial contracts only`.) A parameter resolving to an ADT or a function type is skipped with a message naming that resolved type: `type MaybeCount = Option<Nat>` skips with `cannot generate Option<Nat> inputs`. A generic function is skipped as `generic function` before its parameter types are considered at all, so a `forall<T>` signature never reports a per-parameter reason even when every parameter is generable. A generable signature is also skipped when a `requires` conjunct, or a refined parameter's predicate, is outside the SMT layer's decidable fragment, since Z3 could not constrain the generated inputs by it; the skip names the conjunct (`cannot generate inputs satisfying `` `string_length(@String.0) > 0` ``), because running trials the precondition never shaped would report the function's own entry-guard trap as a broken contract. `string_length` over a non-literal is the usual trigger (Vera counts UTF-8 bytes and Z3's string theory has no byte-length operator), so compare a `string_length` against a literal where you want the function trialled. Float64 uses Z3's mathematical reals (NaN, ±∞, and subnormals are not generated). Strings are capped at 50 characters.
 
 ### Browser compilation
 
@@ -108,27 +108,27 @@ vera compile --target browser file.vera            # Output to file_browser/
 vera compile --target browser file.vera -o dist/   # Output to dist/
 ```
 
-This generates three files: `module.wasm` (the compiled binary), `runtime.mjs` (self-contained JavaScript runtime with all host bindings), and `index.html` (loads and runs the program). Serve the output directory with any HTTP server (`python -m http.server`) and open `index.html` — ES module imports require HTTP, not `file://`.
+This generates three files: `module.wasm` (the compiled binary), `runtime.mjs` (self-contained JavaScript runtime with all host bindings), and `index.html` (loads and runs the program). Serve the output directory with any HTTP server (`python -m http.server`) and open `index.html`; ES module imports require HTTP, not `file://`.
 
-The JavaScript runtime provides browser-appropriate implementations: `IO.print` writes to the page, `IO.read_line` uses `prompt()`, `IO.stderr` captures into a separate buffer, `IO.time` uses `Date.now()`, `IO.sleep` busy-waits (main-thread blocking — best kept short in the browser), file IO returns `Result.Err`, and `IO.read_char` returns `Result.Err`, since the browser runtime has no JSPI suspend/resume support. All other operations (State, contracts, Markdown) work identically to the Python runtime.
+The JavaScript runtime provides browser-appropriate implementations: `IO.print` writes to the page, `IO.read_line` uses `prompt()`, `IO.stderr` captures into a separate buffer, `IO.time` uses `Date.now()`, `IO.sleep` busy-waits (it blocks the main thread, so keep it short in the browser), file IO returns `Result.Err`, and `IO.read_char` returns `Result.Err`, since the browser runtime has no JSPI suspend/resume support. `Http` runs, backed by `XMLHttpRequest`; `Inference` and `DB` return `Err` from every operation, since their credentials would be readable from page source. State, contracts, JSON and Markdown work identically to the Python runtime.
 
 #### IO model: terminal vs browser
 
-Vera's "write once, run anywhere" claim has a real seam at the IO boundary, and writing for one target without thinking about the other will produce a program that compiles cleanly to both but only *runs* meaningfully on one:
+The two targets differ at the IO boundary, and writing for one target without thinking about the other produces a program that compiles cleanly to both but only *runs* meaningfully on one:
 
-- **Terminal target** assumes a synchronous IO loop: `IO.sleep(120)` blocks the program for 120 ms (fine), ANSI escape codes (`"\u{1B}[2J\u{1B}[H"` to clear screen + home cursor) drive cursor and colour, and the program drives its own pacing.
-- **Browser target** assumes "Vera = pure simulation core, JS = timing and rendering driver".  `IO.sleep` still works numerically but busy-waits on the main thread (freezing the tab); ANSI escape codes render as literal control bytes in the DOM rather than mutating a virtual screen; `IO.print` writes to the page (good) but the program has no way to *yield* between writes.
+- **Terminal target** assumes a synchronous IO loop: `IO.sleep(120)` blocks the program for 120 ms, ANSI escape codes (`"\u{1B}[2J\u{1B}[H"` to clear screen + home cursor) drive cursor and colour, and the program drives its own pacing.
+- **Browser target** assumes "Vera = pure simulation core, JS = timing and rendering driver".  `IO.sleep` still works numerically but busy-waits on the main thread (freezing the tab); ANSI escape codes render as literal control bytes in the DOM rather than mutating a virtual screen; `IO.print` writes to the page, but the program has no way to *yield* between writes.
 
-The recommended pattern for browser-targeted Vera programs is to **expose pure update functions** (`@State<T>, @Input -> @State<T>`) that JavaScript drives via `requestAnimationFrame`, with Vera computing the next state and JS handling timing + DOM updates.  Two runtime gaps make the recommended pattern less ergonomic than it should be — both are tracked on [#603](https://github.com/aallan/vera/issues/603):
+The recommended pattern for browser-targeted Vera programs is to **expose pure update functions** (`@Model, @Input -> @Model`, with `Model` and `Input` data types of your own) that JavaScript drives via `requestAnimationFrame`, with Vera computing the next state and JS handling timing + DOM updates.  Two runtime gaps make the pattern harder to use; both are tracked on [#603](https://github.com/aallan/vera/issues/603):
 
 - implement `IO.sleep` against the WebAssembly JavaScript Promise Integration (JSPI) proposal so the WASM call suspends on `setTimeout` instead of busy-waiting.
 - interpret a minimal ANSI escape subset in the browser runtime so terminal-style programs (clear-screen, cursor-home, colour) render unchanged.
 
-Terminal Vera programs (animation via `IO.sleep` + cursor control via ANSI) need either a terminal target or a deliberate browser-shaped variant.  The design point ("pure core, effects at the boundary") is unchanged; the boundary just differs between targets.
+Terminal Vera programs (animation via `IO.sleep` + cursor control via ANSI) need either a terminal target or a separate browser-shaped variant.  The design point ("pure core, effects at the boundary") is unchanged; only the boundary differs between targets.
 
 ### WASI Preview 2 compilation
 
-`vera compile --target wasi-p2` emits a binary WebAssembly *component* that runs under any stock wasip2 host with no Vera bindings — `wasmtime run file.wasm` just works.  The target covers the **IO and Random host families only**; a program using any other host family (Http, Decimal, Json, Html, Md, Regex, Math, Inference, State, Async, DB) is rejected with a diagnostic naming the family.  `Map` and `Set` are not host families: the module carries their operations, so both worlds run every instance code generation builds; a `Map` or `Set` with an `Array` key, value or element is refused at check (`E135`).  `vera run --target wasi-p2 file.vera` executes the component under the built-in wasip2 host with the usual output/trap reporting.  Divergences inherent to WASI 0.2 (exit codes collapse to 0/1; no structured trap frames) are documented in [spec chapter 13](spec/13-wasi.md).  `--world server` packages a `handle(Request -> Response)` program (the `<HttpServer>` effect) as a `wasi:http/incoming-handler` component that stock `wasmtime serve` runs — headers work via in-guest String maps; of the IO operations that world implements `IO.print`, `IO.stderr`, `IO.time` and `IO.sleep`, and rejects stdin (`IO.read_line`, `IO.read_char`), the filesystem (`IO.read_file`, `IO.write_file`, `IO.read_bytes`, `IO.write_bytes`), `IO.args`, `IO.get_env` and `IO.exit` (spec §13.7).
+`vera compile --target wasi-p2` emits a binary WebAssembly *component* that runs under any stock wasip2 host with no Vera bindings: `wasmtime run file.wasm` runs it.  The target covers the **IO and Random host families only**; a program using any other host family (Http, Decimal, Json, Html, Md, Regex, Math, Inference, State, Async, DB) is rejected with a diagnostic naming the family.  `Map` and `Set` are not host families: the module carries their operations, so both worlds run every instance code generation builds; a `Map` or `Set` with an `Array` key, value or element is refused at check (`E135`).  `vera run --target wasi-p2 file.vera` executes the component under the built-in wasip2 host with the usual output/trap reporting.  Divergences inherent to WASI 0.2 (exit codes collapse to 0/1; no structured trap frames) are documented in [spec chapter 13](spec/13-wasi.md).  `--world server` packages a `handle(Request -> Response)` program (the `<HttpServer>` effect) as a `wasi:http/incoming-handler` component that stock `wasmtime serve` runs. Headers work via in-guest String maps; of the IO operations that world implements `IO.print`, `IO.stderr`, `IO.time` and `IO.sleep`, and rejects stdin (`IO.read_line`, `IO.read_char`), the filesystem (`IO.read_file`, `IO.write_file`, `IO.read_bytes`, `IO.write_bytes`), `IO.args`, `IO.get_env` and `IO.exit` (spec §13.7).
 
 To run the WASM directly in Node.js:
 
@@ -144,43 +144,43 @@ Use `--json` on `check` or `verify` for machine-readable output:
 {"ok": true, "file": "...", "diagnostics": [], "warnings": []}
 ```
 
-On error, each diagnostic includes `severity`, `description`, `location` (`file`, `line`, `column`), `source_line`, `rationale`, `fix`, `spec_ref`, and `error_code`. The `verify --json` output also includes a `verification` summary (`tier1_verified`, `tier3_runtime` and `total` counts, `assumptions` — the number of unverified `assume` statements, each a W003 — and the `timeout_ms` budget the run used) and an `obligations` array, one entry per obligation with `kind`, `status`, `description`, `location` and, when present, `error_code`. The counts are derived from `status`: `verified` counts as Tier 1, `tier3` and `timeout` as Tier 3, and `violated` and `tier3_unguarded` in neither, since each surfaces as a diagnostic instead.
+On error, each diagnostic includes `severity`, `description`, `location` (`file`, `line`, `column`), `source_line`, `rationale`, `fix`, `spec_ref`, and `error_code`. The `verify --json` output also includes a `verification` summary (`tier1_verified`, `tier3_runtime` and `total` counts, `assumptions` (the number of unverified `assume` statements, each a W003), and the `timeout_ms` budget the run used) and an `obligations` array, one entry per obligation with `kind`, `status`, `description`, `location` and, when present, `error_code`. The counts are derived from `status`: `verified` counts as Tier 1, `tier3` and `timeout` as Tier 3, and `violated` and `tier3_unguarded` in neither, since each surfaces as a diagnostic instead.
 
 ### Error codes
 
-Every diagnostic has a stable code grouped by compiler phase — the `W` series is warnings, the `E` series errors:
+Every diagnostic has a stable code grouped by compiler phase. Every `W` code is a warning; most `E` codes are errors, and a few are warnings (the Tier 3 notes `E520` to `E525`, and the disclosures `E504`, `E506`, `E539`, `E540`, `E542` and `E543`):
 
-- **W001** — Typed hole (`?`) — expected type and available bindings reported (warning, not error)
-- **W002** — `async()` argument evaluates eagerly: its effects fall outside the commutative set (`Http`), so the future is computed sequentially at the `async()` site rather than concurrently (warning, not error)
-- **W003** — Unverified assumption: an `assume` statement is taken on trust, not proved (warning, not error)
-- **W004** — `vera verify` found a runtime check in the compiled module that no verification record accounts for: the check still runs, and the summary omits it (warning, not error)
-- **W005** — `vera verify` did not reconcile the runtime checks, because the program holds typed holes and code generation compiles nothing until they are filled (warning, not error)
-- **E001–E009** — Parse errors (missing contracts, unexpected tokens, malformed slot references, bad string escapes)
-- **E011–E013** — Import errors (circular import, unresolvable import, a module that fails to parse)
-- **E020, E021, E023** — Malformed comments: unterminated `{-` (E020) or `/*` (E021), or a `/*` nested inside another (E023 — only `{- -}` nests). Each names the delimiter at fault and how to close it.
-- **E024** — A source file that is not UTF-8: the byte that does not decode, its offset, line and column, and the `iconv` command that converts the file to UTF-8 (an imported module's E024 is located in the module)
-- **E030–E032** — Contract syntax: an `old()`/`new()` argument that is not an effect reference (E030, E031), or a contract clause written after `effects` (E032)
-- **E040** — A pipe whose right operand is not a call: `a |> b` needs `b` to be a call with an argument list, such as `a |> f()`
-- **E010** — Transform errors (internal)
-- **E1xx** — Type check: core + expressions (type mismatches, slot resolution, operators, declarations, termination)
-- **E2xx** — Type check: calls (unresolved functions, argument mismatches, module calls, ability operations)
-- **E3xx** — Type check: control flow (if/match, patterns, effect handlers)
-- **E5xx** — Verification (contract violations, undecidable fallbacks, primitive-operation safety incl. arithmetic overflow, premise satisfiability, and E541: a runtime-check claim `vera verify` found no check for in the compiled module)
-- **E6xx** — Codegen (unsupported features, name collisions, typed holes block compilation); **E699** is an internal compiler error
-- **E7xx** — Testing (contract violations, input generation, execution errors, a proof a test run refutes)
-- **E8xx** — Run: a program's own failure while it runs (**E800**, a runtime trap: its `trap_kind`, the source backtrace and the kind's fix)
-- **E9xx** — Command: the command line's own refusals, not a property of the program (a file not found, an option a command does not take or a value it does not accept, a function `--fn` cannot call, arguments that do not fit the function, a port in use, a missing optional dependency, an output path that cannot be written)
+- **W001**: Typed hole (`?`); reports the expected type and available bindings (warning, not error)
+- **W002**: `async()` argument evaluates eagerly: its effects fall outside the commutative set (`Http`), so the future is computed sequentially at the `async()` site rather than concurrently (warning, not error)
+- **W003**: Unverified assumption: an `assume` statement is taken on trust, not proved (warning, not error)
+- **W004**: `vera verify` found a runtime check in the compiled module that no verification record accounts for: the check still runs, and the summary omits it (warning, not error)
+- **W005**: `vera verify` did not reconcile the runtime checks, because the program holds typed holes and code generation compiles nothing until they are filled (warning, not error)
+- **E001–E009**: Parse errors (missing contracts, unexpected tokens, malformed slot references, bad string escapes)
+- **E011–E013**: Import errors (circular import, unresolvable import, a module that fails to parse)
+- **E020, E021, E023**: Malformed comments: unterminated `{-` (E020) or `/*` (E021), or a `/*` nested inside another (E023; only `{- -}` nests). Each names the delimiter at fault and how to close it.
+- **E024**: A source file that is not UTF-8: the byte that does not decode, its offset, line and column, and the `iconv` command that converts the file to UTF-8 (an imported module's E024 is located in the module)
+- **E030–E032**: Contract syntax: an `old()`/`new()` argument that is not an effect reference (E030, E031), or a contract clause written after `effects` (E032)
+- **E040**: A pipe whose right operand is not a call: `a |> b` needs `b` to be a call with an argument list, such as `a |> f()`
+- **E010**: Transform errors (internal)
+- **E1xx**: Type check: core + expressions (type mismatches, slot resolution, operators, declarations, termination)
+- **E2xx**: Type check: calls (unresolved functions, argument mismatches, module calls, ability operations)
+- **E3xx**: Type check: control flow (if/match, patterns, effect handlers)
+- **E5xx**: Verification (contract violations, undecidable fallbacks, primitive-operation safety incl. arithmetic overflow, premise satisfiability, and E541: a runtime-check claim `vera verify` found no check for in the compiled module)
+- **E6xx**: Codegen (unsupported features, name collisions, typed holes block compilation); **E699** is an internal compiler error
+- **E7xx**: Testing (contract violations, input generation, execution errors, a proof a test run refutes)
+- **E8xx**: Run: a program's own failure while it runs (**E800**, a runtime trap: its `trap_kind`, the source backtrace and the kind's fix)
+- **E9xx**: Command: the command line's own refusals, not a property of the program (a file not found, an option a command does not take or a value it does not accept, a function `--fn` cannot call, arguments that do not fit the function, a port in use, a missing optional dependency, an output path that cannot be written)
 
 In diagnostic messages, a `?` inside a printed type (`Array<?>`, `Map<String, ?>`) marks a component the checker could not infer. That is a rendering marker for an unknown type, not the typed-hole expression `?` (W001) you write in source.
 
 Common codes you'll encounter:
-- **W001** — Typed hole: fill `?` with an expression of the stated type
-- **E130** — Unresolved slot reference (`@T.n` has no matching binding)
-- **E121** — Function body type doesn't match return type
-- **E200** — Unresolved function call
-- **E300** — If condition is not Bool
-- **E001** — Missing contract block (requires/ensures/effects)
-- **E614** — Program contains typed holes; compile rejected until holes are filled
+- **W001**: Typed hole: fill `?` with an expression of the stated type
+- **E130**: Unresolved slot reference (`@T.n` has no matching binding)
+- **E121**: Function body type does not match return type
+- **E200**: Unresolved function call
+- **E300**: If condition is not Bool
+- **E001**: Missing contract block (requires/ensures/effects)
+- **E614**: Program contains typed holes; compile rejected until holes are filled
 
 ## Function Structure
 
@@ -198,9 +198,7 @@ private fn function_name(@ParamType1, @ParamType2 -> @ReturnType)
 }
 ```
 
-The order is fixed: every contract clause first (`requires`, `ensures` and
-`decreases` — in any order among themselves, and each may appear more than
-once), then exactly one `effects` clause, then the body.  A contract clause
+The order is fixed: every contract clause first (`requires`, `ensures` and `decreases`, in any order among themselves, and each may appear more than once), then exactly one `effects` clause, then the body.  A contract clause
 written after `effects` is a parse error (`E032`) naming the move.
 (`invariant` is a `data` declaration's clause, not a function's.)
 
@@ -227,11 +225,11 @@ public fn a(-> @Int)        requires(true) ensures(true) effects(pure) { 42 }
 public fn b(@Unit -> @Int)  requires(true) ensures(true) effects(pure) { 42 }
 ```
 
-At every call site the arity must match the declaration: `a()` calls the nullary form, `b(())` passes a `Unit` value to the Unit-taking form. They cannot be mixed — `a(())` and `b()` are both type errors. Use the nullary form for constants and computations that have no conceptual input; use the Unit-taking form when you want to match the shape of a combinator that expects a `fn(T -> U)` (the callee side of `apply_fn`, see below). Write `main` as `main(@Unit -> @Unit)` with `effects(<IO>)`, the shape spec §5.11 requires; the toolchain does not enforce it, and runs a `main` of any signature.
+At every call site the arity must match the declaration: `a()` calls the nullary form, `b(())` passes a `Unit` value to the Unit-taking form. They cannot be mixed: `a(())` and `b()` are both type errors. Use the nullary form for constants and computations that have no conceptual input; use the Unit-taking form when you want to match the shape of a combinator that expects a `fn(T -> U)` (the callee side of `apply_fn`, see below). Write `main` as `main(@Unit -> @Unit)` with `effects(<IO>)`, the shape spec §5.11 requires; the toolchain does not enforce it, and runs a `main` of any signature.
 
 ### Stored function values and `apply_fn`
 
-Functions passed as arguments or stored in `let` bindings use the type form `fn(T -> U) effects(...)` — plain types, no `@`, and the `effects` clause is required. To invoke such a stored value, use `apply_fn`:
+Functions passed as arguments or stored in `let` bindings use the type form `fn(T -> U) effects(...)`: plain types, no `@`, and the `effects` clause is required. To invoke such a stored value, use `apply_fn`:
 
 ```vera
 type IntToInt = fn(Int -> Int) effects(pure);
@@ -243,7 +241,7 @@ private fn use_fn(@IntToInt, @Int -> @Int)
 }
 ```
 
-`apply_fn(f, x)` is the only way to call a function that's stored as a value — direct application syntax (`f(x)`) is reserved for declared names. The prelude uses this pattern for `option_map`, `option_and_then`, `result_map` etc., where the mapping function is a parameter. See `examples/closures.vera` and `tests/conformance/ch05_closures.vera` for worked examples.
+`apply_fn(f, x)` is the only way to call a function stored as a value; direct application syntax (`f(x)`) is reserved for declared names. The prelude uses this pattern for `option_map`, `option_and_then`, `result_map` etc., where the mapping function is a parameter. See `examples/closures.vera` and `tests/conformance/ch05_closures.vera` for worked examples.
 
 ## Function Visibility
 
@@ -429,18 +427,16 @@ Slot environments (index 0 = last occurrence in signature):
 ```
 
 **Read this table before writing any contract or recursive call.** The ordering only matters
-when a function has multiple parameters of the same type — but that is exactly when bugs occur.
+when a function has multiple parameters of the same type, and that is when bugs occur.
 
-Example: for `fn divide(@Int, @Int -> @Int)`, the contract `requires(@Int.1 != 0)` guards the
-*first* parameter (the divisor). Confirm this by checking the table: `@Int.1 = parameter 1
+Example: for `fn divide(@Int, @Int -> @Int)` with the body `@Int.0 / @Int.1`, the contract `requires(@Int.1 != 0)` guards the *first* parameter (the divisor). Confirm this by checking the table: `@Int.1 = parameter 1
 (first @Int)`.
 
 **Workflow:**
 1. Write the function signature.
 2. Run `vera check --explain-slots` to get the slot table.
 3. Use the table to write contracts and body expressions with correct `@T.n` indices.
-4. If `vera check` reports E130 (unresolved slot), read the `Available bindings:` table in its
-   own fix text — it lists the slot bindings in scope *at that reference* with their `@T.n`,
+4. If `vera check` reports E130 (unresolved slot), read the `Available bindings:` table in its own fix text. It lists the slot bindings in scope *at that reference* with their `@T.n`,
    including the `let` and `match`-arm ones the signature table cannot show. The table renders
    at most twelve rows and then `; … and K more`, so a scope wider than that shows its first
    twelve bindings and names how many it withheld. `@T.result` is not a slot binding, so it
@@ -453,16 +449,16 @@ array, useful when processing diagnostics programmatically.
 
 ### Primitive types
 
-- `Bool` — `true`, `false`
-- `Int` — signed 64-bit integer; arithmetic overflow traps (and `INT_MIN / -1` traps with no verifier obligation)
-- `Nat` — natural number, the non-negative half of the 64-bit `Int` (`0` to `2^63 - 1`)
-- `Float64` — 64-bit IEEE 754 floating-point
-- `Byte` — unsigned 8-bit integer (0–255)
-- `String` — text
-- `Unit` — singleton type, value is `()`. Zero-size and **declaration-only**: a `@Unit` parameter (function or handler-clause op) is legal but reading it (`@Unit.0`) is a checker error (E182) — write the literal `()` instead — and a `let` of a zero-size type (`let @Unit = put(5);`) is a checker error (E183) — call the expression as a statement (`put(5);`). Applies to anything with no runtime representation, including `Future<Unit>`.
-- `Never` — bottom type (used for non-terminating expressions like `throw`)
+- `Bool`: `true`, `false`
+- `Int`: signed 64-bit integer; arithmetic overflow traps (and `INT_MIN / -1` traps with no verifier obligation)
+- `Nat`: natural number, the non-negative half of the 64-bit `Int` (`0` to `2^63 - 1`)
+- `Float64`: 64-bit IEEE 754 floating-point
+- `Byte`: unsigned 8-bit integer (0–255)
+- `String`: text
+- `Unit`: singleton type, value is `()`. Zero-size and **declaration-only**: a `@Unit` parameter (function or handler-clause op) is legal but reading it (`@Unit.0`) is a checker error (E182), so write the literal `()` instead; and a `let` of a zero-size type (`let @Unit = put(5);`) is a checker error (E183), so call the expression as a statement (`put(5);`). Applies to anything with no runtime representation, including `Future<Unit>`.
+- `Never`: bottom type (used for non-terminating expressions like `throw`)
 
-**`Int` and `Nat` are interchangeable in both directions.**  `@Nat <: @Int` is a formal subtyping rule at the *type* level (use a `@Nat` anywhere `@Int` is expected, no `nat_to_int` call), and `@Int <: @Nat` is permitted by the type checker with a verifier-discharged obligation (`@Int.0 >= 0`).  This means `array_length` (declared `@Int`) flows freely into `@Nat` positions without explicit conversion — the verifier proves non-negativity from context or falls back to a runtime check.  Only narrowing carries a *value*-level obligation: a `@Nat` is the non-negative half of the i64 an `@Int` is, so widening is the identity, and narrowing requires `>= 0` (`E503`/`E504`).  Runtime guards and verifier obligations correspond at every closure depth (nested closure returns included).  Every `@Int` -> `@Nat` narrowing at a PATTERN BIND or a BOUNDARY is runtime-guarded.  One ARGUMENT site is not, and is disclosed instead: `string_slice`, whose `@Nat` index arguments code generation deliberately does not guard because the builtin CLAMPS them to `[0, len]` (#475), so a negative becomes a valid `0` and no invalid `@Nat` propagates — the disclosure is `E504` and the roster is `_NAT_ARG_UNGUARDED_BUILTINS`.  A user-declared effect operation's argument is never reached: a row naming the effect, and a call of the operation where no row names it, are refused at check (`E340`).  An array element and a `Map` value take the SIGN guard at their store too.  The refinement PREDICATE (`E505`/`E506`) is a different obligation over an arbitrary predicate rather than a sign, and it is guarded at every construction-position component — a constructor field, a tuple component, an array element, a `Map` value ([#1426](https://github.com/aallan/vera/issues/1426)) — and at the `State` write boundaries ([#1439](https://github.com/aallan/vera/issues/1439)), by the same lowering the pattern binds use.  It stays unguarded only where no guard can be lowered at all: a refinement whose BASE is itself a refinement (the guard would silently drop the inner membership predicate), or one whose base ERASES at run time.  At an internal bind that is disclosed with an `E506` warning; at a function BOUNDARY it is refused outright with `E618`, because there the verifier would otherwise be promising a runtime check it cannot deliver.  Every other site is guarded: the pattern binds at any depth, the function and closure boundaries, the generic-instantiated constructor field, the conversion builtins, a BUILT-IN effect operation's argument, and — of the two write boundaries — the `Exn` `throw` payload, which takes the refinement-predicate guard beside the sign guard ([#1268](https://github.com/aallan/vera/issues/1268)).  A user-declared effect operation's argument is never reached, as above.  **Do not** insert `nat_to_int` defensively; `@Nat` already flows to `@Int`. Keep a value that may be negative as `@Int`, or use `int_to_nat` (which returns `Option`) when an explicit narrowing must handle the failure case.  See spec §2.2.1 for the formal rule.
+**`Int` and `Nat` are interchangeable in both directions.**  `@Nat <: @Int` is a formal subtyping rule at the *type* level (use a `@Nat` anywhere `@Int` is expected, no `nat_to_int` call), and `@Int <: @Nat` is permitted by the type checker with a verifier-discharged obligation (`@Int.0 >= 0`).  So `array_length` (declared `@Int`) flows into `@Nat` positions without explicit conversion; the verifier proves non-negativity from context or falls back to a runtime check.  Only narrowing has a *value*-level obligation: a `@Nat` is the non-negative half of the i64 an `@Int` is, so widening is the identity, and narrowing requires `>= 0` (`E503`/`E504`).  Runtime guards and verifier obligations correspond at every closure depth (nested closure returns included).  Every `@Int` -> `@Nat` narrowing at a PATTERN BIND or a BOUNDARY is runtime-guarded.  One ARGUMENT site is not, and is disclosed instead: `string_slice`, whose `@Nat` index arguments code generation does not guard because the builtin CLAMPS them to `[0, len]`, so a negative becomes a valid `0` and no invalid `@Nat` propagates; the disclosure is `E504`.  An array element and a `Map` value take the SIGN guard at their store too.  The refinement PREDICATE (`E505`/`E506`) is a different obligation over an arbitrary predicate rather than a sign, and it is guarded at every construction-position component (a constructor field, a tuple component, an array element, a `Map` value) and at the `State` write boundaries, by the same lowering the pattern binds use.  It stays unguarded only where no guard can be lowered at all: a refinement whose BASE is itself a refinement (the guard would drop the inner membership predicate), or one whose base ERASES at run time.  At an internal bind that is disclosed with an `E506` warning; at a function BOUNDARY it is refused outright with `E618`, because there the verifier would otherwise be promising a runtime check it cannot deliver.  Every other site is guarded: the pattern binds at any depth, the function and closure boundaries, the generic-instantiated constructor field, the conversion builtins, a BUILT-IN effect operation's argument, and, of the two write boundaries, the `Exn` `throw` payload, which takes the refinement-predicate guard beside the sign guard.  A user-declared effect operation's argument is never reached: a row naming the effect, and a call of the operation where no row names it, are refused at check (`E340`).  **Do not** insert `nat_to_int` defensively; `@Nat` already flows to `@Int`. Keep a value that may be negative as `@Int`, or use `int_to_nat` (which returns `Option`) when an explicit narrowing must handle the failure case.  See spec §2.2.1 for the formal rule.
 
 ### Composite types
 
@@ -495,9 +491,9 @@ let @Array<Array<Int>> = [[1, 2], [3, 4]]; -- nested arrays
 let @Array<Json> = [JNumber(1.0), JNull];   -- ADT elements
 ```
 
-Empty arrays **must** appear in a position with a known type — a `let` binding with a type annotation, a function argument whose parameter type is known, or the branch of a match arm whose type is fixed by another arm. An empty literal with no surrounding type context is a type error. When the element type is polymorphic in the context (e.g. returning `Array<T>` from a `forall<T>` function body), annotate the `let` or thread through a concrete instantiation.
+Empty arrays **must** appear in a position with a known type: a `let` binding with a type annotation, a function argument whose parameter type is known, or the branch of a match arm whose type is fixed by another arm. An empty literal with no surrounding type context is a type error. When the element type is polymorphic in the context (e.g. returning `Array<T>` from a `forall<T>` function body), annotate the `let` or thread through a concrete instantiation.
 
-`[` and `]` are context-disambiguated: in expression position (`let @Array<Int> = []`) they delimit an array literal; in postfix position (`@Array<Int>.0[@Int.0]`) they are the index operator — see the operator precedence table at the bottom of this file. The parser resolves the two by lookahead; there is no ambiguity you need to work around.
+`[` and `]` are context-disambiguated: in expression position (`let @Array<Int> = []`) they delimit an array literal; in postfix position (`@Array<Int>.0[@Int.0]`) they are the index operator (see the operator precedence table at the bottom of this file). The parser resolves the two by lookahead; there is no ambiguity you need to work around.
 
 ### Tuples
 
@@ -511,7 +507,7 @@ match @Tuple<Int, String>.0 {
 }
 ```
 
-`Tuple` is just an upper-case constructor — there is no special tuple-literal syntax (no `(1, 2, 3)` form). The empty tuple `Tuple<>` is equivalent to `Unit`. The name is reserved in both the data and the constructor namespace: `data Tuple { ... }` and `data Box { Tuple(Bool) }` are each rejected at `vera check` with **E158** (see below), because the compiler recognises `Tuple` by name when it renders and lays out a value. A `type Tuple = ...` alias is E158 too, as every reserved type name is.
+`Tuple` is an upper-case constructor; there is no special tuple-literal syntax (no `(1, 2, 3)` form). There is no empty tuple: `Tuple<>` is a parse error, `Tuple()` is refused (`E216`), and the zero-size type is `Unit`. The name is reserved in both the data and the constructor namespace: `data Tuple { ... }` and `data Box { Tuple(Bool) }` are each rejected at `vera check` with **E158** (see below), because the compiler recognises `Tuple` by name when it renders and lays out a value. A `type Tuple = ...` alias is E158 too, as every reserved type name is.
 
 ### Type aliases
 
@@ -521,8 +517,7 @@ type Name = String;
 ```
 
 An alias is **opaque as the head** of a slot name and **transparent inside type arguments**
-(spec §3.8.1). A parameter written `@PosInt` is referenced `@PosInt.0`, never `@Int.0` — the
-two are separate namespaces. A parameter written `@Option<Name>` binds `Option<String>`, so it
+(spec §3.8.1). A parameter written `@PosInt` is referenced `@PosInt.0`, never `@Int.0`; the two are separate namespaces. A parameter written `@Option<Name>` binds `Option<String>`, so it
 is referenced `@Option<String>.0`. When in doubt, run `vera check --explain-slots`: it prints
 the resolved name of every parameter.
 
@@ -552,7 +547,7 @@ private data Positive invariant(@Int.0 > 0) {
 }
 ```
 
-The `invariant(...)` clause on `data` declarations is specified but does not work in the reference compiler — every documented form fails with `[E130] no <DataName> bindings in scope`.  Express the same constraint with a refinement type:
+The `invariant(...)` clause on `data` declarations is specified but does not work in the reference compiler: every documented form fails with `[E130] no <DataName> bindings in scope`.  Express the same constraint with a refinement type:
 
 ```vera
 type Positive = { @Int | @Int.0 > 0 };
@@ -625,7 +620,7 @@ Statements end with `;`. The final expression (no `;`) is the block's value.
 
 ## Typed Holes
 
-**When you do not know the right expression to write, use `?` rather than guessing.** A typed hole tells you immediately what type is needed and what bindings are available — it is always faster than writing the wrong thing and debugging the type error.
+**When you do not know the right expression to write, use `?` rather than guessing.** A typed hole tells you immediately what type is needed and what bindings are available, which is faster than writing the wrong thing and debugging the type error.
 
 <!-- vera:no-run category="typed-hole" reason="it holds a typed hole, which vera run refuses (E614)" -->
 ```vera
@@ -639,11 +634,23 @@ public fn double(@Int -> @Int)
 `vera check` reports a `W001` warning (not an error):
 
 ```text
-Warning [W001]: Typed hole: expected Int.
-Fix: Replace ? with an expression of type Int. Available bindings: @Int.0: Int.
+warning: [W001] Warning at double.vera, line 4, column 3:
+
+      ?
+      ^
+
+  Typed hole: expected Int.
+
+  ? is a placeholder for an incomplete expression. The compiler reports the expected type and available bindings so the hole can be filled in.
+
+  Fix:
+
+    Replace ? with an expression of type Int. Available bindings: @Int.0: Int.
+
+  See: Chapter 4, Section 4.17 "Typed Holes"
 ```
 
-The program type-checks successfully (`ok: true`) — holes are warnings, not errors. This means you can check the *rest* of a function for type errors while one expression is still incomplete.
+The program type-checks successfully (`ok: true`); holes are warnings, not errors. This means you can check the *rest* of a function for type errors while one expression is still incomplete.
 
 `vera check --json` includes hole warnings in the `warnings` array with the full expected type and binding context, making them machine-readable for agent workflows.
 
@@ -706,7 +713,7 @@ private fn loop(@Nat, @Nat -> @Unit)
 }
 ```
 
-Here `@Nat.0` is the counter (De Bruijn index 0 = most recent, i.e. the second parameter) and `@Nat.1` is the limit (the first parameter). The contract `requires(@Nat.0 <= @Nat.1)` ensures the counter never exceeds the limit — and since the recursive call passes `@Nat.0 + 1` where `@Nat.0 < @Nat.1`, the precondition is maintained at every step. The function prints, then either recurses with an incremented counter or returns `()`.
+Here `@Nat.0` is the counter (De Bruijn index 0 = most recent, i.e. the second parameter) and `@Nat.1` is the limit (the first parameter). The contract `requires(@Nat.0 <= @Nat.1)` ensures the counter never exceeds the limit, and since the recursive call passes `@Nat.0 + 1` where `@Nat.0 < @Nat.1`, the precondition is maintained at every step. The function prints, then either recurses with an incremented counter or returns `()`.
 
 The measure `decreases(@Nat.1 - @Nat.0)` is the number of steps left. It shrinks by one on every recursive call and never goes below zero, which is what proves the loop ends; the `requires` is what makes the subtraction safe at entry. Every recursive function needs a measure, whatever its effect row, `<IO>` included (see [decreases](#decreases-termination)). A loop that is not meant to end declares `Diverge` instead.
 
@@ -730,9 +737,9 @@ Inside the closure body, `@Int.0` is the closure's own parameter (index 0 = most
 
 ### Capturing outer bindings
 
-**Closures can capture any outer binding** — primitives (`Int`, `Nat`, `Bool`, `Byte`, `Float64`), pair types (`String`, `Array<T>`), single-pointer ADTs (`Option<T>`, `Result<T, E>`, user-defined `data` types), and the opaque-handle ADTs (`Map<K, V>`, `Set<T>`, `Decimal`).
+**Closures can capture any outer binding**: primitives (`Int`, `Nat`, `Bool`, `Byte`, `Float64`), pair types (`String`, `Array<T>`), single-pointer ADTs (`Option<T>`, `Result<T, E>`, user-defined `data` types), and the opaque-handle ADTs (`Map<K, V>`, `Set<T>`, `Decimal`).
 
-Outer bindings are available at higher De Bruijn indices — the closure's own parameters are pushed on top of the slot stack, so outer `@T` bindings shift up by the number of inner `@T` parameters.
+Outer bindings are available at higher De Bruijn indices: the closure's own parameters are pushed on top of the slot stack, so outer `@T` bindings shift up by the number of inner `@T` parameters.
 
 <!-- vera:run fn="sum_plus_offset" stdout="306" -->
 ```vera
@@ -760,13 +767,13 @@ public fn sum_plus_offset(@Unit -> @Int)
 -- 0+1+100 + 2+100 + 3+100 = 306
 ```
 
-The rule when capture IS safe: count the closure's own `@T` parameters, and the outermost captured `@T` binding sits at that index. A closure with no `@Int` parameters of its own would see the outer `let @Int` as `@Int.0`; a closure with two `@Int` parameters sees it as `@Int.2`. Types are independent — a closure's `@Int` parameter does not shift outer `@String` bindings.
+The rule when capture IS safe: count the closure's own `@T` parameters, and the outermost captured `@T` binding sits at that index. A closure with no `@Int` parameters of its own would see the outer `let @Int` as `@Int.0`; a closure with two `@Int` parameters sees it as `@Int.2`. Types are independent: a closure's `@Int` parameter does not shift outer `@String` bindings.
 
 Use `vera check --explain-slots file.vera` if you need the resolved index table printed for a specific function (including closures).
 
 ### Capturing a pair-typed value
 
-Capturing a `String` or `Array<T>` works the same way as capturing any other outer binding — the closure-struct layout serialises both halves of the (ptr, len) pair, so `array_length` / `string_length` / element-access all see the captured value correctly inside the closure body.
+Capturing a `String` or `Array<T>` works the same way as capturing any other outer binding; the closure-struct layout serialises both halves of the (ptr, len) pair, so `array_length` / `string_length` / element-access all see the captured value correctly inside the closure body.
 
 <!-- vera:skip-parse category="FRAGMENT" reason="Pair-type capture example (post-#535), bare let-in-closure" -->
 ```vera
@@ -786,22 +793,22 @@ array_fold(
 -- 0+1+3 + 2+3 + 3+3 = 15
 ```
 
-The same applies to `String` captures.  ADT captures (`Option<T>`, `Result<T, E>`, user `data` types, `Json`, `HtmlNode`, `MdBlock`, opaque handles `Map<K, V>` / `Set<T>` / `Decimal`) work too — they're single-i32 pointers that the closure-struct layout handles directly.
+The same applies to `String` captures.  ADT captures (`Option<T>`, `Result<T, E>`, user `data` types, `Json`, `HtmlNode`, `MdBlock`, opaque handles `Map<K, V>` / `Set<T>` / `Decimal`) work too; they are single-i32 pointers that the closure-struct layout handles directly.
 
 ### When to use recursion instead
 
 Closures cover pure, self-contained transformations and simple captured constants. Prefer a top-level recursive function when any of these hold:
 
-- The body needs an effect row other than `pure` that doesn't match the combinator's expected effect signature.
-- The body needs to early-return or short-circuit in a way the combinator doesn't provide (`array_find` / `array_any` / `array_all` short-circuit; `array_map` / `array_fold` do not).
-- The iteration shape isn't one-pass left-to-right (e.g. you need to look ahead, or process in reverse while mutating a different data structure).
-- Termination requires a `decreases` clause that proves non-trivial progress — closures cannot carry `decreases`.
+- The body needs an effect row other than `pure` that does not match the combinator's expected effect signature.
+- The body needs to early-return or short-circuit in a way the combinator does not provide (`array_find` / `array_any` / `array_all` short-circuit; `array_map` / `array_fold` do not).
+- The iteration shape is not one-pass left-to-right (e.g. you need to look ahead, or process in reverse while mutating a different data structure).
+- Termination requires a `decreases` clause that proves non-trivial progress; closures cannot carry `decreases`.
 
 For counted iteration with IO, use the recursive `loop` pattern from the Iteration section above; for array transformations, use the array combinators with closures.
 
 ### Nested closures
 
-Closures inside closure bodies work end-to-end — the natural 2D `array_map(rows, fn(row) { array_map(cols, fn(col) { ... }) })` shape compiles, validates, and runs at any return type. Captures from the outer scope flow through nested closures correctly for every type that can be captured at the top level (primitives, pair types, ADTs, opaque handles). Three or more levels of nesting work the same way; the lifting pass uses a worklist that handles arbitrary depth.
+Closures inside closure bodies work end to end: the natural 2D `array_map(rows, fn(row) { array_map(cols, fn(col) { ... }) })` shape compiles, validates, and runs at any return type. Captures from the outer scope flow through nested closures correctly for every type that can be captured at the top level (primitives, pair types, ADTs, opaque handles). Three or more levels of nesting work the same way; the lifting pass uses a worklist that handles arbitrary depth.
 
 <!-- vera:run fn="build_grid" reason="returns Array, which vera run prints as a heap address" -->
 ```vera
@@ -825,7 +832,7 @@ public fn build_grid(@Unit -> @Array<Array<Int>>)
 
 ### Naming convention
 
-All built-in functions follow predictable naming patterns. When guessing a function name you haven't seen, apply these rules:
+All built-in functions follow predictable naming patterns. When guessing a function name you have not seen, apply these rules:
 
 | Pattern | When | Examples |
 |---------|------|----------|
@@ -834,9 +841,9 @@ All built-in functions follow predictable naming patterns. When guessing a funct
 | `domain_is_predicate` | Boolean predicates | `float_is_nan`, `float_is_infinite` |
 | Prefix-less | Math universals and float constants only | `abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow`, `nan`, `infinity` |
 
-**String operations always use `string_` prefix** — `string_contains`, `string_starts_with`, `string_split`, `string_join`, `string_strip`, `string_upper`, `string_lower`, `string_replace`, `string_index_of`, `string_char_code`, `string_from_char_code`, `string_chars`, `string_lines`, `string_words`, `string_reverse`, `string_trim_start`, `string_trim_end`, `string_pad_start`, `string_pad_end`. **Character classifiers use `is_` prefix** — `is_digit`, `is_alpha`, `is_alphanumeric`, `is_whitespace`, `is_upper`, `is_lower`. **First-character conversion uses `char_` prefix** — `char_to_upper`, `char_to_lower`. **JSON typed accessors use `json_as_` and `json_get_` prefixes** — `json_as_string`/`number`/`bool`/`int`/`array`/`object` for Layer-1 coercions; `json_get_string`/`number`/`bool`/`int`/`array` for Layer-2 compound field accessors. **Float64 predicates use `float_` prefix** — `float_is_nan`, `float_is_infinite`. **Type conversions use `source_to_target`** — `int_to_float` (not `to_float`), `float_to_int`, `int_to_nat`. Math functions (`abs`, `min`, `max`, etc.) and float constants (`nan`, `infinity`) are the **only** exceptions — they need no prefix because they are universally understood mathematical names.
+**String operations always use `string_` prefix**: `string_contains`, `string_starts_with`, `string_split`, `string_join`, `string_strip`, `string_upper`, `string_lower`, `string_replace`, `string_index_of`, `string_char_code`, `string_from_char_code`, `string_chars`, `string_lines`, `string_words`, `string_reverse`, `string_trim_start`, `string_trim_end`, `string_pad_start`, `string_pad_end`. **Character classifiers use `is_` prefix**: `is_digit`, `is_alpha`, `is_alphanumeric`, `is_whitespace`, `is_upper`, `is_lower`. **First-character conversion uses `char_` prefix**: `char_to_upper`, `char_to_lower`. **JSON typed accessors use `json_as_` and `json_get_` prefixes**: `json_as_string`/`number`/`bool`/`int`/`array`/`object` for Layer-1 coercions; `json_get_string`/`number`/`bool`/`int`/`array` for Layer-2 compound field accessors. **Float64 predicates use `float_` prefix**: `float_is_nan`, `float_is_infinite`. **Type conversions use `source_to_target`**: `int_to_float` (not `to_float`), `float_to_int`, `int_to_nat`. Math functions (`abs`, `min`, `max`, etc.) and float constants (`nan`, `infinity`) are the **only** exceptions; they need no prefix because they are universally understood mathematical names.
 
-**If `vera check` reports an unresolved function name, apply these patterns to derive the correct name before giving up.** The convention is strict and consistent — the right name is always derivable. Do not invent names that don't follow the pattern; they will not exist.
+**If `vera check` reports an unresolved function name, apply these patterns to derive the correct name before giving up.** The convention is strict and consistent, so the right name is always derivable. Do not invent names that do not follow the pattern; they will not exist.
 
 ### Option and Result Combinators
 
@@ -892,15 +899,15 @@ array_sort_by(@Array<Int>.0, fn(@Int, @Int -> @Ordering) effects(pure) { ... }) 
 
 `array_map` / `array_mapi` are generic: the element type can change (e.g. `array_map(@Array<Int>.0, fn(@Int -> @String) ...)`).
 `array_fold` is generic: the accumulator type can differ from the element type.
-`array_mapi` passes the zero-based index as a `@Nat` second argument — use this rather than hand-rolling a recursive accumulator with an index counter.
+`array_mapi` passes the zero-based index as a `@Nat` second argument; use this rather than hand-rolling a recursive accumulator with an index counter.
 `array_find` short-circuits on the first match; `array_any` and `array_all` do the same and observe the standard vacuous-truth convention on empty input (`any([], _) == false`, `all([], _) == true`).
 `array_sort_by`'s comparator returns `@Ordering` (`Less` / `Equal` / `Greater`); insertion sort, stable.
 
-`array_sort<T> where Ord<T>`, `array_contains<T> where Eq<T>`, and `array_index_of<T> where Eq<T>` (operations that would dispatch on the element type's built-in ability) are not implemented — use `array_sort_by` with an explicit comparator, or `array_any` / `array_find` with an equality predicate.
+`array_sort<T> where Ord<T>`, `array_contains<T> where Eq<T>`, and `array_index_of<T> where Eq<T>` (operations that would dispatch on the element type's built-in ability) are not implemented; use `array_sort_by` with an explicit comparator, or `array_any` / `array_find` with an equality predicate.
 
 ### Map operations
 
-`Map<K, V>` is a key-value collection. Keys must satisfy `Eq` and `Hash` abilities (primitive types: `Int`, `Nat`, `Bool`, `Float64`, `String`, `Byte`). Values may be any type with a runtime representation but an `Array` — a zero-size key or value type (`Unit`, or a `Future` wrapping one) and an `Array` key or value are rejected at check time with E135. All operations are pure — insert and remove return new maps, sharing what they do not change, so an insert costs the depth of the map's trie, not its size. `map_keys` and `map_values` return the keys and values in insertion order: a key inserted again keeps its first position, and a removed key loses it. `-0.0` and `0.0` are one key, and so are any two NaNs.
+`Map<K, V>` is a key-value collection. Keys must satisfy `Eq` and `Hash` abilities (primitive types: `Int`, `Nat`, `Bool`, `Float64`, `String`, `Byte`). Values may be any type with a runtime representation but an `Array`: a zero-size key or value type (`Unit`, or a `Future` wrapping one) and an `Array` key or value are rejected at check time with E135. All operations are pure: insert and remove return new maps, sharing what they do not change, so an insert costs the depth of the map's trie, not its size. `map_keys` and `map_values` return the keys and values in insertion order: a key inserted again keeps its first position, and a removed key loses it. `-0.0` and `0.0` are one key, and so are any two NaNs.
 
 <!-- vera:skip-parse category="FRAGMENT" reason="Map built-in examples, bare calls" -->
 ```vera
@@ -918,7 +925,7 @@ map_values(@Map<String, Nat>.0)                     -- returns Array<Nat>
 
 ### Set operations
 
-`Set<T>` is a collection of unique elements, which `set_to_array` returns in insertion order. Elements must satisfy `Eq` and `Hash` abilities (primitive types: `Int`, `Nat`, `Bool`, `Float64`, `String`, `Byte`); a zero-size element type (`Unit`, or a `Future` wrapping one) and an `Array` element are rejected at check time with E135. All operations are pure — add and remove return new sets.
+`Set<T>` is a collection of unique elements, which `set_to_array` returns in insertion order. Elements must satisfy `Eq` and `Hash` abilities (primitive types: `Int`, `Nat`, `Bool`, `Float64`, `String`, `Byte`); a zero-size element type (`Unit`, or a `Future` wrapping one) and an `Array` element are rejected at check time with E135. All operations are pure: add and remove return new sets.
 
 <!-- vera:skip-parse category="FRAGMENT" reason="Set built-in examples, bare calls" -->
 ```vera
@@ -951,18 +958,18 @@ decimal_to_string(@Decimal.0)                       -- returns String
 decimal_to_float(@Decimal.0)                        -- returns Float64 (potentially lossy)
 ```
 
-`decimal_from_string` and `decimal_div` return `Option<Decimal>` — use `option_unwrap_or` or `match` to extract the value. `decimal_compare` returns `Ordering` — use `match` to dispatch on `Less`, `Equal`, `Greater`.
+`decimal_from_string` and `decimal_div` return `Option<Decimal>`; use `option_unwrap_or` or `match` to extract the value. `decimal_compare` returns `Ordering`; use `match` to dispatch on `Less`, `Equal`, `Greater`.
 
 ### JSON operations
 
 `Json` is a built-in ADT for structured data interchange. Parse JSON strings, query fields and array elements, and serialize back to strings. All operations are pure.
 
-The `Json` type has six constructors: `JNull`, `JBool(Bool)`, `JNumber(Float64)`, `JString(String)`, `JArray(Array<Json>)`, `JObject(Map<String, Json>)`. It is provided by the standard prelude — no `data` declaration needed.
+The `Json` type has six constructors: `JNull`, `JBool(Bool)`, `JNumber(Float64)`, `JString(String)`, `JArray(Array<Json>)`, `JObject(Map<String, Json>)`. It is provided by the standard prelude, so no `data` declaration is needed.
 
-**What `json_parse` accepts.** Exactly RFC 8259-valid text that decodes to finite numbers and strings of Unicode scalar values (spec §9.7.1). Anything else is `Err`, at the parse, with the same message on the CLI and in the browser — Vera defines this domain rather than inheriting whichever one the host parser implements. Two consequences bear on the `Err` arm:
+**What `json_parse` accepts.** Exactly RFC 8259-valid text that decodes to finite numbers and strings of Unicode scalar values (spec §9.7.1). Anything else is `Err`, at the parse, with the same message on the CLI and in the browser. Vera defines this domain rather than inheriting whichever one the host parser implements. Two consequences bear on the `Err` arm:
 
-- A **non-finite number** never parses, however it is written. The constants `NaN`, `Infinity` and `-Infinity` are not JSON at all; a number that merely *overflows*, like `1e999`, is syntactically fine and still refused, because what it decodes to is an infinity. Underflow is different — `1e-999` gives you `0` and parses. If a producer you do not control emits any of these, fix the producer or pre-process the text; there is no flag to admit them.
-- A **lone surrogate** escape (`\ud800` with no matching partner) never parses either: its decoded value is not a Unicode scalar, and a Vera `String` is. A *matched* pair is ordinary — `"\ud83d\ude00"` parses fine and gives you the astral character.
+- A **non-finite number** never parses, however it is written. The constants `NaN`, `Infinity` and `-Infinity` are not JSON at all; a number that merely *overflows*, like `1e999`, is syntactically fine and still refused, because what it decodes to is an infinity. Underflow is different: `1e-999` gives you `0` and parses. If a producer you do not control emits any of these, fix the producer or pre-process the text; there is no flag to admit them.
+- A **lone surrogate** escape (`\ud800` with no matching partner) never parses either: its decoded value is not a Unicode scalar, and a Vera `String` is. A *matched* pair is ordinary: `"\ud83d\ude00"` parses and gives you the astral character.
 
 Everything else that fails is a plain syntax error, and that message is the host parser's own.
 
@@ -1016,7 +1023,7 @@ json_get_int(@Json.0, "age")       -- Option<Int>
 json_get_array(@Json.0, "tags")    -- Option<Array<Json>>
 ```
 
-The Layer-2 accessors return `None` both when the field is missing AND when the field is present but of the wrong type — exactly what 90% of real API-consuming code wants. The example above collapses to:
+The Layer-2 accessors return `None` both when the field is missing AND when the field is present but of the wrong type, which is what most API-consuming code wants. The example above collapses to:
 
 <!-- vera:skip-parse category="FRAGMENT" reason="JSON Layer-2 compound accessor example, bare match" -->
 ```vera
@@ -1145,13 +1152,13 @@ is_upper(@String.0)                                -- returns Bool
 is_lower(@String.0)                                -- returns Bool
 ```
 
-`string_chars` is the canonical bridge from `String` to `Array<String>` — combine with `array_map`, `array_filter`, `array_fold` to thread per-byte logic through the array combinators. `string_lines` follows Python's `splitlines()` (trailing `\n` does not add an empty segment). `string_words` follows Python's `split()` with no args (runs collapse, empty segments discarded).
+`string_chars` is the canonical bridge from `String` to `Array<String>`; combine it with `array_map`, `array_filter`, `array_fold` to thread per-byte logic through the array combinators. `string_lines` follows Python's `splitlines()` (trailing `\n` does not add an empty segment). `string_words` follows Python's `split()` with no args (runs collapse, empty segments discarded).
 
 `string_pad_start` and `string_pad_end` cycle the fill left-to-right and truncate to exactly the padding length, matching JavaScript's `padStart` / `padEnd`. If the input is already at least `n` bytes, the input is returned unchanged. An empty `fill` is a no-op.
 
-`char_to_upper` / `char_to_lower` convert only the **first byte** of the string; remaining bytes pass through unchanged. Useful for title-casing a token. The six classifiers all inspect only the first byte and return `false` for the empty string. All sixteen are ASCII-only — no Unicode awareness.
+`char_to_upper` / `char_to_lower` convert only the **first byte** of the string; remaining bytes pass through unchanged. Useful for title-casing a token. The six classifiers all inspect only the first byte and return `false` for the empty string. All sixteen are ASCII-only, with no Unicode awareness.
 
-String functions use the heap allocator (`$alloc`). Memory is managed automatically by a conservative mark-sweep garbage collector — there is no manual allocation or deallocation. All four parse functions return `Result<T, String>`: `parse_nat`, `parse_int`, `parse_float64`, and `parse_bool`. They return `Ok(value)` on valid input and `Err(msg)` on empty or invalid input; leading and trailing spaces are tolerated. `parse_int` accepts an optional `+` or `-` sign. `parse_bool` is strict: only `"true"` and `"false"` (lowercase) are valid. `base64_encode` encodes a string to standard Base64 (RFC 4648); `base64_decode` returns `Result<String, String>`, failing on invalid length or characters. `url_encode` percent-encodes a string for use in URLs (RFC 3986), leaving unreserved characters (`A-Z`, `a-z`, `0-9`, `-`, `_`, `.`, `~`) unchanged; `url_decode` returns `Result<String, String>`, failing on invalid `%XX` sequences. `url_parse` decomposes a URL into its RFC 3986 components, returning `Result<UrlParts, String>` where `UrlParts(scheme, authority, path, query, fragment)` is a built-in ADT with five String fields; it returns `Err("missing scheme")` if no `:` is found. `url_join` reassembles a `UrlParts` value into a URL string. `UrlParts` is in every program, so match on it directly (`UrlParts(@String, @String, @String, @String, @String) -> ...`) with no local declaration.
+String functions use the heap allocator (`$alloc`). Memory is managed automatically by a conservative mark-sweep garbage collector; there is no manual allocation or deallocation. All four parse functions return `Result<T, String>`: `parse_nat`, `parse_int`, `parse_float64`, and `parse_bool`. They return `Ok(value)` on valid input and `Err(msg)` on empty or invalid input; leading and trailing spaces are tolerated. `parse_int` accepts an optional `+` or `-` sign. `parse_bool` is strict: only `"true"` and `"false"` (lowercase) are valid. `base64_encode` encodes a string to standard Base64 (RFC 4648); `base64_decode` returns `Result<String, String>`, failing on invalid length or characters. `url_encode` percent-encodes a string for use in URLs (RFC 3986), leaving unreserved characters (`A-Z`, `a-z`, `0-9`, `-`, `_`, `.`, `~`) unchanged; `url_decode` returns `Result<String, String>`, failing on invalid `%XX` sequences. `url_parse` decomposes a URL into its RFC 3986 components, returning `Result<UrlParts, String>` where `UrlParts(scheme, authority, path, query, fragment)` is a built-in ADT with five String fields; it returns `Err("missing scheme")` if no `:` is found. `url_join` reassembles a `UrlParts` value into a URL string. `UrlParts` is in every program, so match on it directly (`UrlParts(@String, @String, @String, @String, @String) -> ...`) with no local declaration.
 
 #### Bytes
 
@@ -1200,23 +1207,23 @@ md_extract_code_blocks(@MdBlock.0, @String.0) -- returns Array<String>
 
 Two built-in ADTs represent the Markdown document structure:
 
-**MdInline** — inline content within blocks:
-- `MdText(String)` — plain text
-- `MdCode(String)` — inline code
-- `MdEmph(Array<MdInline>)` — emphasis (*italic*)
-- `MdStrong(Array<MdInline>)` — strong (**bold**)
-- `MdLink(Array<MdInline>, String)` — link with text and URL
-- `MdImage(String, String)` — image with alt text and source
+**MdInline**: inline content within blocks:
+- `MdText(String)`: plain text
+- `MdCode(String)`: inline code
+- `MdEmph(Array<MdInline>)`: emphasis (*italic*)
+- `MdStrong(Array<MdInline>)`: strong (**bold**)
+- `MdLink(Array<MdInline>, String)`: link with text and URL
+- `MdImage(String, String)`: image with alt text and source
 
-**MdBlock** — block-level content:
-- `MdParagraph(Array<MdInline>)` — paragraph
-- `MdHeading(Nat, Array<MdInline>)` — heading with level (1–6)
-- `MdCodeBlock(String, String)` — fenced code block (language, code)
-- `MdBlockQuote(Array<MdBlock>)` — block quote
-- `MdList(Bool, Array<Array<MdBlock>>)` — list (ordered?, items)
-- `MdThematicBreak` — horizontal rule
-- `MdTable(Array<Array<Array<MdInline>>>)` — table (rows of cells)
-- `MdDocument(Array<MdBlock>)` — top-level document
+**MdBlock**: block-level content:
+- `MdParagraph(Array<MdInline>)`: paragraph
+- `MdHeading(Nat, Array<MdInline>)`: heading with level (1–6)
+- `MdCodeBlock(String, String)`: fenced code block (language, code)
+- `MdBlockQuote(Array<MdBlock>)`: block quote
+- `MdList(Bool, Array<Array<MdBlock>>)`: list (ordered?, items)
+- `MdThematicBreak`: horizontal rule
+- `MdTable(Array<Array<Array<MdInline>>>)`: table (rows of cells)
+- `MdDocument(Array<MdBlock>)`: top-level document
 
 All Markdown functions are pure and available without imports. Pattern match on `MdBlock` and `MdInline` constructors to traverse the document tree.
 
@@ -1233,13 +1240,13 @@ html_text(@HtmlNode.0)                  -- returns String (extract text content)
 html_attr(@HtmlNode.0, @String.0)       -- returns Option<String> (get attribute value)
 ```
 
-`html_parse` is lenient (like browsers) — malformed HTML produces a best-effort tree, not an error. `html_query` supports simple CSS selectors: tag name (`div`), class (`.classname`), ID (`#id`), attribute presence (`[href]`), and descendant combinator (`div p`). `html_text` recursively concatenates all text content, excluding comments. `html_attr` returns `None` for non-element nodes or missing attributes.
+`html_parse` is lenient (like browsers): malformed HTML produces a best-effort tree, not an error. `html_query` supports simple CSS selectors: tag name (`div`), class (`.classname`), ID (`#id`), attribute presence (`[href]`), and descendant combinator (`div p`). `html_text` recursively concatenates all text content, excluding comments. `html_attr` returns `None` for non-element nodes or missing attributes.
 
 **HtmlNode constructors:**
 
-- `HtmlElement(String, Map<String, String>, Array<HtmlNode>)` — element (tag name, attributes, children)
-- `HtmlText(String)` — text content
-- `HtmlComment(String)` — HTML comment
+- `HtmlElement(String, Map<String, String>, Array<HtmlNode>)`: element (tag name, attributes, children)
+- `HtmlText(String)`: text content
+- `HtmlComment(String)`: HTML comment
 
 <!-- vera:skip-parse category="FRAGMENT" reason="HTML constructor match expression, bare expression" -->
 ```vera
@@ -1265,9 +1272,9 @@ regex_find_all(@String.0, @String.1)             -- returns Result<Array<String>
 regex_replace(@String.0, @String.1, @String.2)   -- returns Result<String, String>
 ```
 
-All four regex functions take the input string as the first argument and the regex pattern as the second. `regex_replace` takes a third argument for the replacement string. All return `Result` types — `Err(msg)` for invalid patterns, `Ok(value)` on success.
+All four regex functions take the input string as the first argument and the regex pattern as the second. `regex_replace` takes a third argument for the replacement string. All return `Result` types: `Err(msg)` for invalid patterns, `Ok(value)` on success.
 
-`regex_match` tests whether the pattern matches anywhere in the input (substring match, not full-string). `regex_find` returns the first matching substring wrapped in `Option`. `regex_find_all` returns all non-overlapping matches as an `Array<String>` — always returns full match strings (group 0), even when the pattern contains capture groups. `regex_replace` replaces only the **first** match.
+`regex_match` tests whether the pattern matches anywhere in the input (substring match, not full-string). `regex_find` returns the first matching substring wrapped in `Option`. `regex_find_all` returns all non-overlapping matches as an `Array<String>`, always the full match strings (group 0), even when the pattern contains capture groups. `regex_replace` replaces only the **first** match.
 
 <!-- vera:skip-parse category="FRAGMENT" reason="Regex Result matching example, bare expression" -->
 ```vera
@@ -1294,7 +1301,7 @@ sqrt(@Float64.0)                    -- returns Float64 (square root)
 pow(@Float64.0, @Int.0)             -- returns Float64 (exponentiation)
 ```
 
-`abs` returns `Nat` because absolute values are non-negative. `floor`, `ceil`, and `round` convert `Float64` to `Int`; they trap as `float_conversion` on NaN, an infinity, or a value outside the `Int` range `[-2^63, 2^63)`. `round` uses IEEE 754 roundTiesToEven (banker's rounding): `round(2.5)` is `2`, not `3`. `pow` takes an `Int` exponent — negative exponents produce reciprocals (`pow(2.0, -1)` is `0.5`). The integer builtins (`abs`, `min`, `max`) are fully verifiable by the SMT solver (Tier 1). The float builtins fall to Tier 3 (runtime).
+`abs` returns `Nat` because absolute values are non-negative. `floor`, `ceil`, and `round` convert `Float64` to `Int`; they trap as `float_conversion` on NaN, an infinity, or a value outside the `Int` range `[-2^63, 2^63)`. `round` uses IEEE 754 roundTiesToEven (banker's rounding): `round(2.5)` is `2`, not `3`. `pow` takes an `Int` exponent; negative exponents produce reciprocals (`pow(2.0, -1)` is `0.5`). The integer builtins (`abs`, `min`, `max`) are fully verifiable by the SMT solver (Tier 1). The float builtins fall to Tier 3 (runtime).
 
 ### Logarithmic, trigonometric, and numeric utility functions
 
@@ -1317,7 +1324,7 @@ clamp(@Int.0, @Int.1, @Int.2)       -- clamp(v, lo, hi) -> Int
 float_clamp(@Float64.0, @Float64.1, @Float64.2)  -- Float64 clamp
 ```
 
-All log and trig functions follow IEEE 754 semantics: `NaN` for out-of-domain inputs (e.g. `log(-1.0)`, `asin(2.0)`), `±Infinity` for overflow. The logarithms' zero pole is not a domain error: `log(0.0)` / `log2(0.0)` / `log10(0.0)` return `-Infinity` in both runtimes (#790). The argument order for `atan2` is `(y, x)`, matching POSIX / Python / JavaScript — `atan2(1.0, 1.0)` is `π/4`. `sign` and `clamp` are inlined as WAT (no host call). `pi()` and `e()` inline as `f64.const` constants. The log and trig functions fall to Tier 3 verification (they're uninterpreted in Z3's real-arithmetic fragment).
+All log and trig functions follow IEEE 754 semantics: `NaN` for out-of-domain inputs (e.g. `log(-1.0)`, `asin(2.0)`), `±Infinity` for overflow. The logarithms' zero pole is not a domain error: `log(0.0)` / `log2(0.0)` / `log10(0.0)` return `-Infinity` in both runtimes. The argument order for `atan2` is `(y, x)`, matching POSIX / Python / JavaScript: `atan2(1.0, 1.0)` is `π/4`. `sign` and `clamp` are inlined as WAT (no host call). `pi()` and `e()` inline as `f64.const` constants. The log and trig functions fall to Tier 3 verification (they're uninterpreted in Z3's real-arithmetic fragment).
 
 ### Type conversions
 
@@ -1331,9 +1338,9 @@ byte_to_int(@Byte.0)              -- returns Int (zero-extension)
 int_to_byte(@Int.0)               -- returns Option<Byte> (None if out of 0..255)
 ```
 
-Vera has no implicit numeric conversions — use these functions to convert between numeric types. `int_to_float` and `byte_to_int` are widening conversions that always succeed (a `@Byte` is `0..255`, always in i64 range). `nat_to_int` widens `@Nat → @Int` as the identity, the same no-op as the implicit `@Nat → @Int` coercion, so it is never needed for widening. `float_to_int` truncates toward zero and traps on NaN/Infinity. `int_to_nat` and `int_to_byte` are checked narrowing conversions that return `Option` — pattern match on the result to handle the failure case. `byte_to_int` is SMT-verifiable (Tier 1); the rest are Tier 3 (runtime).
+Vera has no implicit numeric conversions; use these functions to convert between numeric types. `int_to_float` and `byte_to_int` are widening conversions that always succeed (a `@Byte` is `0..255`, always in i64 range). `nat_to_int` widens `@Nat → @Int` as the identity, the same no-op as the implicit `@Nat → @Int` coercion, so it is never needed for widening. `float_to_int` truncates toward zero and traps on NaN/Infinity. `int_to_nat` and `int_to_byte` are checked narrowing conversions that return `Option`; pattern match on the result to handle the failure case. `byte_to_int` is SMT-verifiable (Tier 1); the rest are Tier 3 (runtime).
 
-`Byte` is excluded from arithmetic operators (`+`, `-`, `*`, `/`, `%`, unary `-`) at type-check time — `@Byte.0 + @Byte.1` produces `E140`. For byte-level math, convert to `Int` via `byte_to_int`, do the arithmetic in `@Int`, and convert back via `int_to_byte` if needed. Direct `@Byte` arithmetic (with verified underflow + overflow guards) is an open design question, [#564](https://github.com/aallan/vera/issues/564); the convention keeps the verifier's range-checking story focused on `@Nat` (where only underflow can occur).
+`Byte` is excluded from arithmetic operators (`+`, `-`, `*`, `/`, `%`, unary `-`) at type-check time: `@Byte.0 + @Byte.1` produces `E140`. For byte-level math, convert to `Int` via `byte_to_int`, do the arithmetic in `@Int`, and convert back via `int_to_byte` if needed. Direct `@Byte` arithmetic (with verified underflow + overflow guards) is an open design question, [#564](https://github.com/aallan/vera/issues/564); the convention keeps the verifier's range-checking story focused on `@Nat` (where only underflow can occur).
 
 ### Float64 predicates
 
@@ -1345,15 +1352,15 @@ nan()                              -- returns Float64 (quiet NaN)
 infinity()                         -- returns Float64 (positive infinity)
 ```
 
-`float_is_nan` and `float_is_infinite` test for IEEE 754 special values. `nan()` and `infinity()` construct them — use `0.0 - infinity()` for negative infinity. All four are Tier 3 (runtime-tested, not SMT-verifiable).
+`float_is_nan` and `float_is_infinite` test for IEEE 754 special values. `nan()` and `infinity()` construct them; use `0.0 - infinity()` for negative infinity. All four are Tier 3 (runtime-tested, not SMT-verifiable).
 
-**Float postconditions are near the solver's ceiling.** Contract predicates over `@Float64` are discharged against Z3's IEEE-754 sort, which costs roughly an order of magnitude more solver time than the integer equivalent of the same shape — a two-branch absolute difference runs to several seconds where the `@Int` version takes a fraction of one. Shapes that land near the default per-query budget (10 s) are therefore host-sensitive: the same program can report Tier 1 on a fast machine and Tier 3 on a slow or busy one. When a float contract falls to Tier 3, re-run it with a larger budget — `vera verify --timeout-ms 60000 file.vera`, or `VERA_Z3_TIMEOUT_MS` for a whole session — before concluding anything: a claim that proves with more time needed time, while one that stays Tier 3 at any budget is standing behind something the solver cannot see through at all, such as `sqrt` or `asin`. Only the second kind is a reason to restate the contract.
+**Float postconditions are near the solver's ceiling.** Contract predicates over `@Float64` are discharged against Z3's IEEE-754 sort, which costs roughly an order of magnitude more solver time than the integer equivalent of the same shape: a two-branch absolute difference runs to several seconds where the `@Int` version takes a fraction of one. Shapes that land near the default per-query budget (10 s) are therefore host-sensitive: the same program can report Tier 1 on a fast machine and Tier 3 on a slow or busy one. When a float contract falls to Tier 3, re-run it with a larger budget (`vera verify --timeout-ms 60000 file.vera`, or `VERA_Z3_TIMEOUT_MS` for a whole session) before concluding anything: a claim that proves with more time needed time, while one that stays Tier 3 at any budget is standing behind something the solver cannot see through at all, such as `sqrt` or `asin`. Only the second kind is a reason to restate the contract.
 
-**Redeclaring a built-in effect is an error (E152)**: an `effect IO { ... }` block — or `State<T>`, `Exn<E>`, `Http`, `Random`, `Inference`, `DB`, `Diverge`, `Async`, `HttpServer` — is rejected at `vera check`, whether or not its operation signatures match the built-in. The operations come with the effect row: write `effects(<IO>)` on the function and call `IO.print(...)`. Beyond one canonical form, the block cannot be honoured — code generation routes a qualified `IO.op(...)` to the fixed host import by qualifier name and never reads the declaration, so a divergent signature would compile to invalid WebAssembly that traps at `run`. Give a genuinely different effect a distinct name (e.g. `Logger`).
+**Redeclaring a built-in effect is an error (E152)**: an `effect IO { ... }` block (or `State<T>`, `Exn<E>`, `Http`, `Random`, `Inference`, `DB`, `Diverge`, `Async`, `HttpServer`) is rejected at `vera check`, whether or not its operation signatures match the built-in. The operations come with the effect row: write `effects(<IO>)` on the function and call `IO.print(...)`. Beyond one canonical form, the block cannot be honoured: code generation routes a qualified `IO.op(...)` to the fixed host import by qualifier name and never reads the declaration, so a divergent signature would compile to invalid WebAssembly that traps at `run`. Give a different effect a distinct name (e.g. `Logger`).
 
-**Redefining a built-in is an error (E151)**: a function whose name matches a built-in (e.g. `abs`, `array_length`, `clamp`, `to_string`) is rejected at `vera check`. Built-ins are always in scope as the single canonical definition, so a second one is both redundant (one canonical form) and — for the verifier-modelled built-ins — silently unsound: the verifier would reason with the built-in's model while codegen runs your body. Call the built-in directly (no import needed), or give your function a distinct name (e.g. `magnitude`) for genuinely different behaviour. The prelude's own functions (`option_map`, `option_and_then`, `option_unwrap_or`, `result_map`, `result_unwrap_or`, `json_*`, `html_attr`) are reserved the same way, in every file and for a `where` helper too: the prelude is a module whose names are reserved, so `fn json_get(...)` is refused and renaming it (`json_get_custom`) is the fix.
+**Redefining a built-in is an error (E151)**: a function whose name matches a built-in (e.g. `abs`, `array_length`, `clamp`, `to_string`) is rejected at `vera check`. Built-ins are always in scope as the single canonical definition, so a second one is both redundant (one canonical form) and, for the verifier-modelled built-ins, silently unsound: the verifier would reason with the built-in's model while codegen runs your body. Call the built-in directly (no import needed), or give your function a distinct name (e.g. `magnitude`) for different behaviour. The prelude's own functions (`option_map`, `option_and_then`, `option_unwrap_or`, `result_map`, `result_unwrap_or`, `json_*`, `html_attr`) are reserved the same way, in every file and for a `where` helper too: the prelude is a module whose names are reserved, so `fn json_get(...)` is refused and renaming it (`json_get_custom`) is the fix.
 
-**Declaring a data type with a built-in type's name is an error (E158)**: `data Array { ... }`, `data Map { ... }`, `data Set { ... }`, `data Decimal { ... }`, `data Future { ... }` and `data Tuple { ... }` are rejected at `vera check`, with any number of type parameters, at the entry file and inside a module alike. The compiler recognises `Future` and `Tuple` *by name* throughout code generation — how a value is rendered, compared and laid out — so a declaration of one could not be told apart from the built-in: under a `data Tuple`, `show(MkShadow(7))` would print `(7)`, dropping the constructor name. A declaration of `Array`, `Map`, `Set` or `Decimal` with the built-in's number of type parameters is the same type as the built-in to the type checker, so a built-in value would be accepted where the declaration's is expected and read through the wrong layout: `show(decimal_from_int(5))` beside a `data Decimal { MkShadow(Int) }` would print the declaration's constructor. It is the same rule that reserves built-in function names (E151) and built-in effect names (E152). For `Future` and `Tuple` it also covers a **constructor** name inside any ADT (`data Box { Tuple(Bool) }` is also E158, because code generation flattens constructor layouts by name and the user's would displace the built-in carrier's); a constructor may still be called `Array`, `Map`, `Set` or `Decimal`. The prelude's data types (`Option`, `Result`, `Ordering`, `UrlParts`, `Json`, `HtmlNode`, `MdBlock`, `MdInline`, `Request`, `Response`) and the built-in type names are reserved at every binder that declares a type name: a `data` declaration, a `type` alias (`type Decimal = Int;`) and a type parameter (`forall<Array>`) of one of those names are each E158, in the entry file and in a module. A constructor may still share a prelude constructor's name (`data Box { Less(Bool) }` is legal). Rename the declaration (`data Money`, not `data Decimal`), or use the built-in directly.
+**Declaring a data type with a built-in type's name is an error (E158)**: `data Array { ... }`, `data Map { ... }`, `data Set { ... }`, `data Decimal { ... }`, `data Future { ... }` and `data Tuple { ... }` are rejected at `vera check`, with any number of type parameters, at the entry file and inside a module alike. The compiler recognises `Future` and `Tuple` *by name* throughout code generation (how a value is rendered, compared and laid out), so a declaration of one could not be told apart from the built-in: under a `data Tuple`, `show(MkShadow(7))` would print `(7)`, dropping the constructor name. A declaration of `Array`, `Map`, `Set` or `Decimal` with the built-in's number of type parameters is the same type as the built-in to the type checker, so a built-in value would be accepted where the declaration's is expected and read through the wrong layout: `show(decimal_from_int(5))` beside a `data Decimal { MkShadow(Int) }` would print the declaration's constructor. It is the same rule that reserves built-in function names (E151) and built-in effect names (E152). For `Future` and `Tuple` it also covers a **constructor** name inside any ADT (`data Box { Tuple(Bool) }` is also E158, because code generation flattens constructor layouts by name and the user's would displace the built-in carrier's); a constructor may still be called `Array`, `Map`, `Set` or `Decimal`. The prelude's data types (`Option`, `Result`, `Ordering`, `UrlParts`, `Json`, `HtmlNode`, `MdBlock`, `MdInline`, `Request`, `Response`) and the built-in type names are reserved at every binder that declares a type name: a `data` declaration, a `type` alias (`type Decimal = Int;`) and a type parameter (`forall<Array>`) of one of those names are each E158, in the entry file and in a module. A constructor may still share a prelude constructor's name (`data Box { Less(Bool) }` is legal). Rename the declaration (`data Money`, not `data Decimal`), or use the built-in directly.
 
 The reserved names, in full, from `vera.prelude` (the one source):
 
@@ -1362,9 +1369,9 @@ The reserved names, in full, from `vera.prelude` (the one source):
 - A `data` declaration, a `type` alias or a type parameter (`E158`): `Array`, `Decimal`, `Future`, `HtmlNode`, `Json`, `Map`, `MdBlock`, `MdInline`, `Option`, `Ordering`, `Request`, `Response`, `Result`, `Set`, `Tuple`, `UrlParts`.
 <!-- render_lists:end reserved-names -->
 
-**Two declarations may not share a constructor name (E159)**: within one file, two `data` declarations may not both declare a constructor of the same name — `private data A1 { Pair(Int, Int) }` beside `private data A2 { Pair(Bool, Bool) }` is rejected at `vera check`, located at the second declaration and naming the first. Constructor names are resolved by name alone, so one namespace cannot hold two, and accepting the pair produced diagnostics describing whichever declaration registered last rather than the collision. It is the single-file sibling of E157 (two imports). Taking a *prelude* constructor's name is a different shape and stays legal — the prelude's type and function names are reserved, its constructor names are not — as is shadowing an *imported* constructor (§8.5.2).
+**Two declarations may not share a constructor name (E159)**: within one file, two `data` declarations may not both declare a constructor of the same name: `private data A1 { Pair(Int, Int) }` beside `private data A2 { Pair(Bool, Bool) }` is rejected at `vera check`, located at the second declaration and naming the first. Constructor names are resolved by name alone, so one namespace cannot hold two. It is the single-file sibling of E157 (two imports). Taking a *prelude* constructor's name is a different shape and stays legal (the prelude's type and function names are reserved, its constructor names are not), as is shadowing an *imported* constructor (§8.5.2).
 
-**Reserved function names (E153)**: four groups of identifier cannot be a function name. `old` and `new` are contract state forms, so `old(...)` / `new(...)` always parses as a reference to an effect's before/after state (Chapter 7, Section 7.9.2) and never as a call. `assert`, `assume`, `forall`, `exists`, `match`, `if`, `let`, `fn`, `true` and `false` are keywords the lexer admits as a name after `fn` but reads as the keyword everywhere else, so `match(3)` in a body does not parse as a call either. `resume` is not a keyword and a declaration does parse, but inside every handler clause body `resume` is the resumption operator, so a function of that name would give one spelling two meanings by position; writing `resume(...)` inside a handler clause is unaffected. The 21 contextual keywords — `ability`, `data`, `decreases`, `effect`, `effects`, `else`, `ensures`, `import`, `in`, `invariant`, `module`, `op`, `private`, `public`, `pure`, `requires`, `result`, `then`, `type`, `where` and `with` — would parse and run as function names, but spec §1.4 reserves them, so they are refused too. A function under any of these names — top-level, `where`-helper, or in an imported module — is rejected at `vera check`; rename it (the diagnostic suggests a name, such as `combined_with` for `with`). Only the exact identifiers are reserved: `older`, `renew`, `matched`, `resumed` and the like are ordinary function names. `handle` is the one keyword still available, because `public fn handle(@Request -> @Response)` is the entry point `vera serve` invokes from the host (Chapter 9, Section 9.5.6).
+**Reserved function names (E153)**: four groups of identifier cannot be a function name. `old` and `new` are contract state forms, so `old(...)` / `new(...)` always parses as a reference to an effect's before/after state (Chapter 7, Section 7.9.2) and never as a call. `assert`, `assume`, `forall`, `exists`, `match`, `if`, `let`, `fn`, `true` and `false` are keywords the lexer admits as a name after `fn` but reads as the keyword everywhere else, so `match(3)` in a body does not parse as a call either. `resume` is not a keyword and a declaration does parse, but inside every handler clause body `resume` is the resumption operator, so a function of that name would give one spelling two meanings by position; writing `resume(...)` inside a handler clause is unaffected. The 21 contextual keywords (`ability`, `data`, `decreases`, `effect`, `effects`, `else`, `ensures`, `import`, `in`, `invariant`, `module`, `op`, `private`, `public`, `pure`, `requires`, `result`, `then`, `type`, `where` and `with`) would parse and run as function names, but spec §1.4 reserves them, so they are refused too. A function under any of these names (top-level, `where`-helper, or in an imported module) is rejected at `vera check`; rename it (the diagnostic suggests a name, such as `combined_with` for `with`). Only the exact identifiers are reserved: `older`, `renew`, `matched`, `resumed` and the like are ordinary function names. `handle` is the one keyword still available, because `public fn handle(@Request -> @Response)` is the entry point `vera serve` invokes from the host (Chapter 9, Section 9.5.6).
 
 Example:
 
@@ -1403,7 +1410,7 @@ A contract performs no effect, whatever the function's effects clause names: an 
 
 ### decreases (termination)
 
-Required on **every** recursive function whose effect row does not name `Diverge`, pure or effectful: the expression must strictly decrease on each recursive call so Z3 can discharge termination.  A function is recursive when it lies on a cycle of calls, whether it calls itself directly, through a `where` helper, through a closure or handler clause in its own body, or through other top-level functions.  Every function on the cycle that does not name `Diverge` needs its own `decreases`, and the measure must decrease on every call from one member of the cycle to another.  A recursive function with neither a `decreases` clause nor `Diverge` is rejected at check time (`E137`).  An `<IO>` loop that counts up to a bound takes the distance left as its measure — see the FizzBuzz loop in the [Iteration](#iteration) section.  A contract cannot call back into its own function, directly or through other calls (`E138`).
+Required on **every** recursive function whose effect row does not name `Diverge`, pure or effectful: the expression must strictly decrease on each recursive call so Z3 can discharge termination.  A function is recursive when it lies on a cycle of calls, whether it calls itself directly, through a `where` helper, through a closure or handler clause in its own body, or through other top-level functions.  Every function on the cycle that does not name `Diverge` needs its own `decreases`, and the measure must decrease on every call from one member of the cycle to another.  A recursive function with neither a `decreases` clause nor `Diverge` is rejected at check time (`E137`).  An `<IO>` loop that counts up to a bound takes the distance left as its measure; see the FizzBuzz loop in the [Iteration](#iteration) section.  A contract cannot call back into its own function, directly or through other calls (`E138`).
 
 ```vera
 private fn factorial(@Nat -> @Nat)
@@ -1422,9 +1429,9 @@ private fn factorial(@Nat -> @Nat)
 
 For nested recursion, use lexicographic ordering: `decreases(@Nat.0, @Nat.1)`.
 
-**A precondition no argument can satisfy is not a proof.** `requires(@Int.0 > 5 && @Int.0 < 3)` has no model, so every obligation in the function would discharge from a contradiction — the body is never checked against a reachable state. `vera verify` reports **E538**, an ERROR, and refuses the program at the definition; the function's *proved* obligations are demoted to `tier3_unguarded` (counted in no tier).  An obligation that came back anything else — `violated`, `tier3`, `tier3_unguarded` — keeps its status and its own code, because a contradiction can only manufacture a proof and that verdict was reached for some other reason.  A call to such a function reports the ordinary `E501` when the callee is monomorphic; through a `forall` generic it is only disclosed. A top-level `assume` is a premise here too, because it is taken on trust rather than discharged: `assume(@Int.0 < 3); assume(@Int.0 > 5);` is the same contradiction, and the diagnostic points at the `assume` rather than at a `requires` that may be blameless. A branch or `match` arm whose guard cannot hold is *unreachable* rather than contradictory, and is not reported. The same demotion under **E539** means the premises contradict a fact derived from the program — a callee's postcondition, a refined return, a declared-type fact.  Usually that is the program disagreeing with itself (an `assume` or a `requires` no callee's contract permits) and the fix is to weaken one of them; only when no such premise is at fault is the derived fact the compiler's, and worth reporting. E539 stays a warning where E538 is an error: the premise at fault there can be one you do not control, so the run declines to certify rather than refusing your program.  A third code, **E540**, is neither: it means the premises could not be SHOWN satisfiable and they use arithmetic outside the decidable fragment (a product or a division of two slot references), so Tier 1 is withheld rather than claimed — raise `--timeout-ms` or replace the nonlinear premise with a linear bound.  E539 also covers the case where the solver could not decide which layer is at fault — E538 refuses only on a REFUTATION of your own premises, so a budget too small to attribute the contradiction never refuses your program.
+**A precondition no argument can satisfy is not a proof.** `requires(@Int.0 > 5 && @Int.0 < 3)` has no model, so every obligation in the function would discharge from a contradiction, and the body is never checked against a reachable state. `vera verify` reports **E538**, an ERROR, and refuses the program at the definition; the function's *proved* obligations are demoted to `tier3_unguarded` (counted in no tier).  An obligation that came back anything else (`violated`, `tier3`, `tier3_unguarded`) keeps its status and its own code, because a contradiction can only manufacture a proof and that verdict was reached for some other reason.  A call to such a function reports the ordinary `E501` when the callee is monomorphic; through a `forall` generic it is only disclosed. A top-level `assume` is a premise here too, because it is taken on trust rather than discharged: `assume(@Int.0 < 3); assume(@Int.0 > 5);` is the same contradiction, and the diagnostic points at the `assume` rather than at a `requires` that may be blameless. A branch or `match` arm whose guard cannot hold is *unreachable* rather than contradictory, and is not reported. The same demotion under **E539** means the premises contradict a fact derived from the program: a callee's postcondition, a refined return, a declared-type fact.  Usually that is the program disagreeing with itself (an `assume` or a `requires` no callee's contract permits) and the fix is to weaken one of them; only when no such premise is at fault is the derived fact the compiler's, and worth reporting. E539 stays a warning where E538 is an error: the premise at fault there can be one you do not control, so the run declines to certify rather than refusing your program.  A third code, **E540**, is neither: it means the premises could not be SHOWN satisfiable and they use arithmetic outside the decidable fragment (a product or a division of two slot references), so Tier 1 is withheld rather than claimed; raise `--timeout-ms` or replace the nonlinear premise with a linear bound.  E539 also covers the case where the solver could not decide which layer is at fault: E538 refuses only on a REFUTATION of your own premises, so a budget too small to attribute the contradiction never refuses your program.
 
-The measure must have a well-founded ordering — `Nat`, `Int`, a data type (ordered by structural size), or a lexicographic tuple of these; a `Float64`/`String`/`Bool` measure is rejected at check time (`E127`). A measure Z3 cannot prove is checked at run time: a recursive re-entry whose measure fails to strictly decrease (or goes negative) traps with a message naming the function, instead of looping forever. Self-recursive tail calls keep tail-call optimization (the hop is checked at the call site, so guarded iteration still runs at constant stack depth); only *mutually*-recursive tail calls between guarded functions fall back to plain calls. An ADT measure of a *parameterized* type (`List<Int>`) is not runtime-ranked, and a function declaring `Exn` gets no runtime guard (a throw would unwind past the state restores). In both cases `vera verify` still reports an unproved measure as a Tier 3 runtime check (`E525`) that nothing performs, so prove those measures statically.
+The measure must have a well-founded ordering: `Nat`, `Int`, a data type (ordered by structural size), or a lexicographic tuple of these; a `Float64`/`String`/`Bool` measure is rejected at check time (`E127`). A measure Z3 cannot prove is checked at run time: a recursive re-entry whose measure fails to strictly decrease (or goes negative) traps with a message naming the function, instead of looping forever. Self-recursive tail calls keep tail-call optimisation (the hop is checked at the call site, so guarded iteration still runs at constant stack depth); only *mutually*-recursive tail calls between guarded functions fall back to plain calls. An ADT measure of a *parameterized* type (`List<Int>`) is not runtime-ranked, and a function declaring `Exn` gets no runtime guard (a throw would unwind past the state restores). In both cases `vera verify` still reports an unproved measure as a Tier 3 runtime check (`E525`) that nothing performs, so prove those measures statically.
 
 ### Workflow: writing contracts incrementally
 
@@ -1438,11 +1445,11 @@ requires(true) ensures(true)
 
 Fill in real contracts *after* the body type-checks cleanly. Strengthen in this order:
 
-1. Write `requires(true) ensures(true)` and run `vera check` — confirm the body is correct first.
+1. Write `requires(true) ensures(true)` and run `vera check` to confirm the body is correct first.
 2. Add a `requires` condition for each invariant the caller must satisfy.
 3. Add an `ensures` condition describing what the function guarantees. Use `@T.result` for the
    return value.
-4. Run `vera verify` — **not just `vera check`** — to confirm contracts are statically provable.
+4. Run `vera verify`, **not only `vera check`**, to confirm contracts are statically provable.
    `vera check` only type-checks; `vera verify` runs Z3.
 5. If `vera verify` reports a contract will be checked at runtime (Tier 3), the Z3 solver could
    not prove it. Re-run with a larger budget first (`vera verify --timeout-ms 60000 file.vera`);
@@ -1522,13 +1529,13 @@ its own body (`E340` otherwise).
 
 ### Effect declarations
 
-The IO effect is built-in — no declaration is needed. It provides these operations:
+The IO effect is built-in, so no declaration is needed. It provides these operations:
 
 | Operation | Signature | Description |
 |-----------|-----------|-------------|
 | `IO.print` | `String -> Unit` | Print a string to stdout (no implicit newline; flushes per call) |
 | `IO.read_line` | `Unit -> String` | Read a line from stdin |
-| `IO.read_char` | `Unit -> Result<String, String>` | Read one character from stdin — cbreak mode on a Unix TTY, where Ctrl-D gives `Err("EOF")`; redirected input reads one character from the stdin stream and gives `Err("EOF")` at end of input.  Browser target not supported — depends on JSPI for suspend/resume. |
+| `IO.read_char` | `Unit -> Result<String, String>` | Read one character from stdin: cbreak mode on a Unix TTY, where Ctrl-D gives `Err("EOF")`; redirected input reads one character from the stdin stream and gives `Err("EOF")` at end of input.  Not supported on the browser target, which would need JSPI for suspend/resume. |
 | `IO.read_file` | `String -> Result<String, String>` | Read file contents |
 | `IO.write_file` | `String, String -> Result<Unit, String>` | Write string to file |
 | `IO.read_bytes` | `String -> Result<Array<Byte>, String>` | Read a file's bytes, unchanged (no UTF-8 decoding, no newline translation) |
@@ -1540,9 +1547,9 @@ The IO effect is built-in — no declaration is needed. It provides these operat
 | `IO.time` | `Unit -> Nat` | Current Unix time in milliseconds |
 | `IO.stderr` | `String -> Unit` | Print a string to stderr |
 
-Do **not** write an `effect IO { ... }` block: redeclaring a built-in effect is a compile error (`E152`), whether or not the signatures match the built-in. The same holds for `State<T>`, `Exn<E>`, `Http`, `Random`, `Inference`, `DB`, `Diverge`, `Async`, and `HttpServer`. Declaring `effects(<IO>)` on the function is all that is needed — the operations follow from the effect row, so there is exactly one way to write the program.
+Do **not** write an `effect IO { ... }` block: redeclaring a built-in effect is a compile error (`E152`), whether or not the signatures match the built-in. The same holds for `State<T>`, `Exn<E>`, `Http`, `Random`, `Inference`, `DB`, `Diverge`, `Async`, and `HttpServer`. Declaring `effects(<IO>)` on the function is all that is needed; the operations follow from the effect row, so there is exactly one way to write the program.
 
-**Output buffering and live writes.** Under `vera run` text mode, every `IO.print` call writes to `sys.stdout` and flushes immediately — animations, progress bars, REPLs, and any output using ANSI escape sequences (cursor home, clear screen) render in real time. The captured transcript is *also* preserved in memory so that if the program traps, every byte printed before the trap reaches `WasmTrapError.stdout` and the JSON envelope's `stdout` field. Under `vera run --json`, live mirroring is suppressed — the transcript lives only in the JSON envelope, because writing live to stdout would corrupt the envelope for downstream consumers parsing it. Programs do not need to call any "flush" operation; per-call flushing is the contract.
+**Output buffering and live writes.** Under `vera run` text mode, every `IO.print` call writes to `sys.stdout` and flushes immediately, so animations, progress bars, REPLs, and any output using ANSI escape sequences (cursor home, clear screen) render in real time. The captured transcript is *also* preserved in memory so that if the program traps, every byte printed before the trap reaches `WasmTrapError.stdout` and the JSON envelope's `stdout` field. Under `vera run --json`, live mirroring is suppressed: the transcript lives only in the JSON envelope, because writing live to stdout would corrupt the envelope for downstream consumers parsing it. Programs do not need to call any "flush" operation; per-call flushing is the contract.
 
 ### Performing effects
 
@@ -1590,7 +1597,7 @@ In `ensures` clauses, `old(State<T>)` is the state before the call and `new(Stat
 
 ### Exception effects
 
-The `Exn<E>` effect models exceptions with error type `E`. It is built-in — no
+The `Exn<E>` effect models exceptions with error type `E`. It is built-in, so no
 declaration is needed, and writing one is `E152`. Its single operation is
 `throw : E -> Never`, which never resumes.
 
@@ -1627,7 +1634,7 @@ private fn try_div(@Int, @Int -> @Option<Int>)
 }
 ```
 
-The handler catches the exception and returns a fallback value. The `throw` handler clause receives the error value and must return the same type as the overall `handle` expression. Exception handlers do not use `resume` — throwing is non-resumable.
+The handler catches the exception and returns a fallback value. The `throw` handler clause receives the error value and must return the same type as the overall `handle` expression. Exception handlers do not use `resume`; throwing is non-resumable.
 
 ### Async effect
 
@@ -1655,7 +1662,7 @@ private fn compute(@Int, @Int -> @Int)
 
 `async(expr)` evaluates `expr` and wraps the result in `Future<T>`. `await(@Future<T>.n)` unwraps it.
 
-**Concurrency (#841):** `async(Http.get(url))` and `async(Http.post(url, body))` — with call-free argument expressions — run **concurrently** in the native runtime: the request is issued on a worker thread at the `async(...)` point, and `await` blocks for the response. Fire several, then await them in any order to overlap network latency:
+**Concurrency:** `async(Http.get(url))` and `async(Http.post(url, body))`, with call-free argument expressions, run **concurrently** in the native runtime: the request is issued on a worker thread at the `async(...)` point, and `await` blocks for the response. Fire several, then await them in any order to overlap network latency:
 
 <!-- vera:no-run category="network" reason="calls Http, so a run would reach the network" -->
 ```vera
@@ -1670,11 +1677,11 @@ public fn fan_out(@String, @String -> @Bool)
 }
 ```
 
-Every other `async` shape evaluates eagerly (sequential) — `Future<T>` is then just `T`'s representation with no overhead. The checker warns (`W002`) when the argument's effect row falls outside the commutative whitelist `{Http, Async}` (e.g. an `IO`-effectful call), marking where eager evaluation is semantically required. The browser runtime is always eager (identical values, request fires at the `async` point).
+Every other `async` shape evaluates eagerly (sequential), and `Future<T>` is then `T`'s representation with no overhead. The checker warns (`W002`) when the argument's effect row falls outside the commutative whitelist `{Http, Async}` (e.g. an `IO`-effectful call), marking where eager evaluation is semantically required. The browser runtime is always eager (identical values, request fires at the `async` point).
 
 ### HttpServer effect
 
-`HttpServer` is a marker effect (no operations) for **verified HTTP request handling** (#305). Define a total handler and serve it with `vera serve prog.vera [--port N]` — the accept loop lives in the host, so no `Diverge` is involved and every contract on the handler is an ordinary obligation. `Request` / `Response` are built-in prelude ADTs:
+`HttpServer` is a marker effect (no operations) for **verified HTTP request handling**. Define a total handler and serve it with `vera serve prog.vera [--port N]`; the accept loop lives in the host, so no `Diverge` is involved and every contract on the handler is an ordinary obligation. `Request` / `Response` are built-in prelude ADTs:
 
 <!-- vera:no-run category="non-scalar-entry" reason="its exported functions take Request parameters" -->
 ```vera
@@ -1688,11 +1695,11 @@ public fn handle(@Request -> @Response)
 }
 ```
 
-Request fields: method, path, headers (`Map<String, String>`), body — in the match arm above the String bindings are method (`@String.2`, oldest), path (`@String.1`), body (`@String.0`, most recent). Response fields: status (`Int`), headers, body. Each request runs on a fresh instance (State cannot leak between requests); a runtime contract violation answers 500 with the trap diagnostic. Native-only (no browser serving).
+Request fields: method, path, headers (`Map<String, String>`), body. In the match arm above the String bindings are method (`@String.2`, oldest), path (`@String.1`), body (`@String.0`, most recent). Response fields: status (`Int`), headers, body. Each request runs on a fresh instance (State cannot leak between requests); a runtime contract violation answers 500 with the trap diagnostic. It is native-only (no browser serving).
 
 ### Http effect
 
-The `Http` effect enables network I/O. It is built-in — no `effect Http { ... }` declaration is needed.
+The `Http` effect enables network I/O. It is built-in, so no `effect Http { ... }` declaration is needed.
 
 | Operation | Signature | Description |
 |-----------|-----------|-------------|
@@ -1705,7 +1712,7 @@ effects(<Http>)                  -- network access
 effects(<Http, IO>)              -- network + IO
 ```
 
-Both operations return `Result<String, String>` — `Ok` with the response body on success, `Err` with the error message on failure. Compose with `json_parse` for typed API responses:
+Both operations return `Result<String, String>`: `Ok` with the response body on success, `Err` with the error message on failure. Compose with `json_parse` for typed API responses:
 
 <!-- vera:no-run category="network" reason="calls Http, so a run would reach the network" -->
 ```vera
@@ -1722,11 +1729,11 @@ public fn fetch_json(@String -> @Result<Json, String>)
 }
 ```
 
-Like IO, `Http` is a built-in effect. Unlike IO, it has a fixed set of two operations — there is no need to restrict operations via an explicit declaration.
+Like IO, `Http` is a built-in effect. Unlike IO, it has a fixed set of two operations, so there is no need to restrict operations via an explicit declaration.
 
 ### Inference effect
 
-The `Inference` effect makes LLM calls explicit in the type system. It is built-in — no `effect Inference { ... }` declaration is needed.
+The `Inference` effect makes LLM calls explicit in the type system. It is built-in, so no `effect Inference { ... }` declaration is needed.
 
 | Operation | Signature | Description |
 |-----------|-----------|-------------|
@@ -1739,7 +1746,7 @@ effects(<Inference, IO>)         -- LLM + console output
 effects(<Http, Inference>)       -- fetch + LLM
 ```
 
-Returns `Result<String, String>` — `Ok` with the completion text on success, `Err` with the error message on failure. Provider is selected from environment variables: `VERA_ANTHROPIC_API_KEY`, `VERA_OPENAI_API_KEY`, `VERA_MOONSHOT_API_KEY` (Kimi), `VERA_MISTRAL_API_KEY`, `VERA_XAI_API_KEY` (Grok), or `VERA_DEEPSEEK_API_KEY`. Auto-detection walks the provider registry in insertion order — `anthropic`, `openai`, `moonshot`, `mistral`, `xai`, `deepseek` — and takes the first whose key is set to a non-empty value — an empty string is skipped, as if unset — so when several are set the earliest in that order wins. Setting `VERA_INFERENCE_PROVIDER` (valid values: `anthropic`, `openai`, `moonshot`, `mistral`, `xai`, `deepseek`) skips detection entirely and forces that provider; `VERA_INFERENCE_MODEL` overrides its default model.  See [`ENVIRONMENT.md`](ENVIRONMENT.md) for the full env-var reference.
+Returns `Result<String, String>`: `Ok` with the completion text on success, `Err` with the error message on failure. Provider is selected from environment variables: `VERA_ANTHROPIC_API_KEY`, `VERA_OPENAI_API_KEY`, `VERA_MOONSHOT_API_KEY` (Kimi), `VERA_MISTRAL_API_KEY`, `VERA_XAI_API_KEY` (Grok), or `VERA_DEEPSEEK_API_KEY`. Auto-detection walks the provider registry in insertion order (`anthropic`, `openai`, `moonshot`, `mistral`, `xai`, `deepseek`) and takes the first whose key is set to a non-empty value (an empty string is skipped, as if unset), so when several are set the earliest in that order wins. Setting `VERA_INFERENCE_PROVIDER` (valid values: `anthropic`, `openai`, `moonshot`, `mistral`, `xai`, `deepseek`) skips detection entirely and forces that provider; `VERA_INFERENCE_MODEL` overrides its default model.  See [`ENVIRONMENT.md`](ENVIRONMENT.md) for the full env-var reference.
 
 ```vera
 private fn classify(@String -> @Result<String, String>)
@@ -1773,7 +1780,7 @@ Like `Http`, `Inference` is host-backed. The browser runtime returns a detailed 
 
 ### Random effect
 
-The `Random` effect provides non-deterministic number generation. Like `IO` and `Http`, it is built-in — no `effect Random { ... }` declaration is needed. Functions that draw random values must declare `effects(<Random>)`, making the non-determinism visible in the type signature.
+The `Random` effect provides non-deterministic number generation. Like `IO` and `Http`, it is built-in, so no `effect Random { ... }` declaration is needed. Functions that draw random values must declare `effects(<Random>)`, making the non-determinism visible in the type signature.
 
 | Operation | Signature | Description |
 |-----------|-----------|-------------|
@@ -1791,7 +1798,7 @@ private fn pick_card(@Unit -> @Int)
 }
 ```
 
-The Python runtime backs Random onto the `random` module (`random.randint`, `random.random()`). The browser runtime backs all three onto `Math.random()` — fast, non-cryptographic, adequate for games and simulations. There is no seeding API (deterministic testing via `handle[Random]` is not supported).
+The Python runtime backs Random onto the `random` module (`random.randint`, `random.random()`). The browser runtime backs all three onto `Math.random()`: fast, non-cryptographic, adequate for games and simulations. There is no seeding API (deterministic testing via `handle[Random]` is not supported).
 
 Functions that mix randomness with other effects compose normally:
 
@@ -1808,14 +1815,14 @@ public fn print_random_card(-> @Unit)
 
 ### DB effect
 
-The `DB` effect executes SQL against a relational database. Like `IO` and `Http`, it is built-in — no `effect DB { ... }` declaration is needed. Functions that read or write the database must declare `effects(<DB>)`.
+The `DB` effect executes SQL against a relational database. Like `IO` and `Http`, it is built-in, so no `effect DB { ... }` declaration is needed. Functions that read or write the database must declare `effects(<DB>)`.
 
 | Operation | Signature | Description |
 |-----------|-----------|-------------|
 | `DB.execute` | `String, Array<Option<String>> -> Result<Int, String>` | Runs a write (`CREATE`/`INSERT`/`UPDATE`/`DELETE`); `Ok` carries the affected-row count |
 | `DB.query` | `String, Array<Option<String>> -> Result<Array<Array<Option<String>>>, String>` | Runs a `SELECT`; `Ok` is a grid of rows, each cell an `Option<String>` (SQL `NULL` is `None`) |
 
-The second argument is the positional parameter list bound to the `?` placeholders: `Some(v)` binds a value, `None` binds SQL `NULL`. Bind data as parameters rather than splicing it into the SQL text — a bound value can never be parsed as SQL, the standard defence against injection.
+The second argument is the positional parameter list bound to the `?` placeholders: `Some(v)` binds a value, `None` binds SQL `NULL`. Bind data as parameters rather than splicing it into the SQL text; a bound value can never be parsed as SQL, the standard defence against injection.
 
 <!-- vera:run fn="insert_and_count" stdout="1" -->
 ```vera
@@ -1837,9 +1844,9 @@ public fn insert_and_count(-> @Int)
 }
 ```
 
-A query result is `Array<Array<Option<String>>>` — rows of cells, each cell `Some(text)` or `None` for SQL `NULL`. `NULL` and `""` stay distinct; read a `NOT NULL` column with `option_unwrap_or(cell, "")`. Both operations return `Result`, so a failed statement is the `Err(String)` arm, never a trap.
+A query result is `Array<Array<Option<String>>>`: rows of cells, each cell `Some(text)` or `None` for SQL `NULL`. `NULL` and `""` stay distinct; read a `NOT NULL` column with `option_unwrap_or(cell, "")`. Both operations return `Result`, so a failed statement is the `Err(String)` arm, never a trap.
 
-**Keep the SQL literal.** The query string must be a literal (or a `string_concat` / `let` chain of literals). A SQL string built from a runtime value — a call result, a parameter, or a `\(expr)` interpolation of one — is a **compile-time error** (`E207`): that is the injection vector. (An interpolation or concatenation whose parts are all literals stays literal, so it is accepted.) Pass every runtime value through a `?` placeholder and the params array — `DB.query("SELECT * FROM users WHERE id = ?", [Some(@String.0)])`, never `DB.query(string_concat("... id = ", @String.0), [])`. A `?`-placeholder/parameter count mismatch is `E208` when both are statically known.
+**Keep the SQL literal.** The query string must be a literal (or a `string_concat` / `let` chain of literals). A SQL string built from a runtime value (a call result, a parameter, or a `\(expr)` interpolation of one) is a **compile-time error** (`E207`): that is the injection vector. (An interpolation or concatenation whose parts are all literals stays literal, so it is accepted.) Pass every runtime value through a `?` placeholder and the params array: `DB.query("SELECT * FROM users WHERE id = ?", [Some(@String.0)])`, never `DB.query(string_concat("... id = ", @String.0), [])`. A `?`-placeholder/parameter count mismatch is `E208` when both are statically known.
 
 The connection is chosen by `VERA_DB_URL` (default `sqlite::memory:`, or `sqlite:///path/to/file.db`). The effect is SQLite-only, single-connection, and un-mockable (`handle[DB]` is refused at check, `E340`). The browser runtime returns `Err` for every `DB` operation, and `vera compile --target wasi-p2` rejects `<DB>`.
 
@@ -1877,16 +1884,16 @@ handle[EffectName<TypeArgs>](@StateType = initial_value) {
 
 Use `resume(value)` in a handler clause to continue the handled computation with the given return value.
 
-For `State<T>`, `put(x)` stores `x` as the new state **intrinsically** — the canonical clause `put(@T) -> { resume(()) }` needs no `with` (see `run_counter` above). A `with @T = expr` clause **overrides** that intrinsic store, letting a clause *transform* what gets written. Inside a `put` clause the state slot `@T.0` is the state **before** the store and `@T.1` is the argument being stored (operation parameters bind first, state last — most-recent wins):
+For `State<T>`, `put(x)` stores `x` as the new state **intrinsically**; the canonical clause `put(@T) -> { resume(()) }` needs no `with` (see `run_counter` above). A `with @T = expr` clause **overrides** that intrinsic store, letting a clause *transform* what gets written. Inside a `put` clause the state slot `@T.0` is the state **before** the store and `@T.1` is the argument being stored (operation parameters bind first, state last, and the most recent wins):
 
 <!-- vera:skip-parse category="FRAGMENT" reason="Handler with-clause, bare put arm expression" -->
 ```vera
 put(@Int) -> { resume(()) } with @Int = @Int.1 * 2   -- store double the argument
 ```
 
-Because `@T.0` is the pre-store state, `with @T = @T.0` keeps the *old* state — it silently undoes the `put`. For an ordinary "store the argument" `put`, omit `with` entirely; reach for it only to transform the stored value. The `with` expression's type must match the handler's state type.
+Because `@T.0` is the pre-store state, `with @T = @T.0` keeps the *old* state, which silently undoes the `put`. For an ordinary "store the argument" `put`, omit `with` entirely; reach for it only to transform the stored value. The `with` expression's type must match the handler's state type.
 
-For the builtin `State` effect the state declaration **is** the `State<T>` cell: its declared type must structurally equal the effect's `T` after alias resolution (for refined types, predicate included), or the handle is a checker error (E336) — declare `handle[State<Nat>](@Nat = ...)`, never `(@Int = ...)`. An alias that resolves to `T`, like `type Count = Nat` with `(@Count = ...)`, is fine, and scalar aliases work as the cell type: `handle[State<Count>]`. A refined cell must use a **named** refinement alias on both sides — `type Small = { @Nat | @Nat.0 < 10 }; handle[State<Small>](@Small = 0)` — never an inline refinement literal in the `State<T>` argument (not compilable) or a refinement on the declaration alone (E336: nothing would enforce it). A handler **without** a state declaration binds no state slot in its clauses — in a stateless `put` clause, `@T.0` is the operation's argument. A user-declared effect's handler state is the handler's own accumulator and may take any type.
+For the builtin `State` effect the state declaration **is** the `State<T>` cell: its declared type must structurally equal the effect's `T` after alias resolution (for refined types, predicate included), or the handle is a checker error (E336): declare `handle[State<Nat>](@Nat = ...)`, never `(@Int = ...)`. An alias that resolves to `T`, like `type Count = Nat` with `(@Count = ...)`, is fine, and scalar aliases work as the cell type: `handle[State<Count>]`. A refined cell must use a **named** refinement alias on both sides (`type Small = { @Nat | @Nat.0 < 10 }; handle[State<Small>](@Small = 0)`), never an inline refinement literal in the `State<T>` argument (not compilable) or a refinement on the declaration alone (E336: nothing would enforce it). A handler **without** a state declaration binds no state slot in its clauses; in a stateless `put` clause, `@T.0` is the operation's argument.
 
 ### Qualified operation calls
 
@@ -1946,10 +1953,10 @@ where {
 `vera run file.vera --fn sum_with_state -- 5` prints `15`, and `-- 0` prints `0`.
 
 Key points:
-- The outer function `sum_with_state` is **pure** — the handler discharges the State effect
-- The `where` block helper `sum_loop` has `effects(<State<Int>>)` — it uses `get`/`put` directly
+- The outer function `sum_with_state` is **pure**: the handler discharges the State effect
+- The `where` block helper `sum_loop` has `effects(<State<Int>>)` and uses `get`/`put` directly
 - Functions inside `where` blocks do NOT take `public`/`private` visibility
-- The `put` clause stores its argument as the new state intrinsically — no `with` clause is needed for the common "store the value" case (a `with` clause is only for *transforming* the stored value; see the handler-syntax notes above)
+- The `put` clause stores its argument as the new state intrinsically, so no `with` clause is needed for the common "store the value" case (a `with` clause is only for *transforming* the stored value; see the handler-syntax notes above)
 - Pure helper functions (like `add_value`) can be called from the `where` block helper (`sum_loop`)
 - The `decreases` clause on the loop helper ensures termination. The runtime guard evaluates a measure on every call, so a `@Nat` subtraction inside it needs the same bound a body would. Here the bound is `requires(@Nat.0 <= @Nat.1 + 1)`: it holds on the last call too, where the counter has passed the limit, and the measure adds before it subtracts. `decreases(@Nat.1 - @Nat.0 + 1)` computes `n - (n + 1)` on that last call and traps. A count-down loop, `decreases(@Nat.0)`, has no subtraction to bound
 
@@ -2019,12 +2026,12 @@ private forall<T where Eq<T>> fn are_equal(@T, @T -> @Bool)
 }
 ```
 
-Four built-in abilities are available — no declarations needed:
+Four built-in abilities are available, with no declarations needed:
 
-- **`Eq<T>`** — `eq(x, y)` returns `@Bool`. Satisfied by: Int, Nat, Bool, Float64, String, Byte, Unit, and ADTs (including `Option` / `Result`, recursive, nested-generic, and mutually-recursive) whose fields are themselves `Eq` (structural derivation). Unlike `Hash`/`Show`, `Tuple`, `Array`, `Map`, and `Set` are **not** Eq-derivable — a non-Eq `==` / `eq` is rejected at check with E243.
-- **`Ord<T>`** — `compare(x, y)` returns `@Ordering` (`Less`, `Equal`, `Greater`). Satisfied by: Int, Nat, Float64, Byte, String — exactly the orderable types (the `<`/`>`/`<=`/`>=` domain). A user ADT is **not** Ord-derivable, and neither is `Bool`; `compare` on a non-orderable operand is rejected with E242 (mirroring E143 on a direct `<`).
-- **`Hash<T>`** — `hash(x)` returns `@Int`. Satisfied by: Int, Nat, Bool, Float64, String, Byte, Unit, and composite types (ADT, Tuple, Option, Result, Array) whose fields/elements are themselves `Hash` (structural derivation).
-- **`Show<T>`** — `show(x)` returns `@String`. Satisfied by: Int, Nat, Bool, Float64, String, Byte, Unit, and composite types (ADT, Tuple, Option, Result, Array) whose fields/elements are themselves `Show`; renders `Ctor(f0, f1, …)` / `(a, b)` / `Some(x)` / `Ok(x)` / `[e0, e1, …]`.
+- **`Eq<T>`**: `eq(x, y)` returns `@Bool`. Satisfied by: Int, Nat, Bool, Float64, String, Byte, Unit, and ADTs (including `Option` / `Result`, recursive, nested-generic, and mutually-recursive) whose fields are themselves `Eq` (structural derivation). Unlike `Hash`/`Show`, `Tuple`, `Array`, `Map`, and `Set` are **not** Eq-derivable; a non-Eq `==` / `eq` is rejected at check with E243.
+- **`Ord<T>`**: `compare(x, y)` returns `@Ordering` (`Less`, `Equal`, `Greater`). Satisfied by: Int, Nat, Float64, Byte, String, the orderable types (the `<`/`>`/`<=`/`>=` domain). A user ADT is **not** Ord-derivable, and neither is `Bool`; `compare` on a non-orderable operand is rejected with E242 (mirroring E143 on a direct `<`).
+- **`Hash<T>`**: `hash(x)` returns `@Int`. Satisfied by: Int, Nat, Bool, Float64, String, Byte, Unit, and composite types (ADT, Tuple, Option, Result, Array) whose fields/elements are themselves `Hash` (structural derivation).
+- **`Show<T>`**: `show(x)` returns `@String`. Satisfied by: Int, Nat, Bool, Float64, String, Byte, Unit, and composite types (ADT, Tuple, Option, Result, Array) whose fields/elements are themselves `Show`; renders `Ctor(f0, f1, …)` / `(a, b)` / `Some(x)` / `Ok(x)` / `[e0, e1, …]`.
 
 The `Ordering` type is a built-in ADT with three constructors: `Less`, `Equal`, `Greater`. Use it with pattern matching:
 
@@ -2045,11 +2052,11 @@ public fn signum(@Int, @Int -> @Int)
 
 Key rules:
 - Abilities are first-order only: `Eq<T>`, not `Mappable<F>` where `F` is a type constructor
-- Constraint syntax: `forall<T where Eq<T>>` — constraints go inside the angle brackets
+- Constraint syntax: `forall<T where Eq<T>>`; constraints go inside the angle brackets
 - Multiple constraints: `forall<T where Eq<T>, Ord<T>>`
 - Ability declarations mirror effect declarations (both use `op`)
 - User-defined abilities are declared with the same syntax, but nothing implements one for a type, so a call to one of their operations and a `where` constraint naming one are refused at check (`E340`); use the four built-in abilities, or pass an explicit function value. An ability's operation is called bare: `Eq.eq(1, 1)` is refused (`E340`), `eq(1, 1)` is the call
-- ADT auto-derivation: `Eq` is derived **structurally** — a simple enum, or an ADT every field of which is itself `Eq` (an `Eq` primitive including `String` (compared by content), or a nested `Eq` ADT, recursively). A field with no `Eq` semantics (`Array`, `Map`, a host handle) makes the ADT non-derivable.
+- ADT auto-derivation: `Eq` is derived **structurally**: a simple enum, or an ADT every field of which is itself `Eq` (an `Eq` primitive including `String` (compared by content), or a nested `Eq` ADT, recursively). A field with no `Eq` semantics (`Array`, `Map`, a host handle) makes the ADT non-derivable.
 - An unsatisfied constraint is error E613, at the call that instantiates the generic at the type that does not satisfy it
 
 ## Modules
@@ -2080,17 +2087,17 @@ Imported function contracts are verified at call sites by the SMT solver. Precon
 
 Cross-module compilation uses a flattening strategy: imported function bodies are compiled into the same WASM module as the importing program. The result is a single self-contained `.wasm` binary. Imported functions are internal (not exported); only the importing program's `public` functions are WASM exports.
 
-If two of a namespace's imports supply the same bare name, `vera check` refuses it — E155 (function), E156 (data type), E157 (constructor) — reported at the second supplying import, in whichever file holds the clash. Resolve it either by narrowing one import (`import m(other_name);`) so a single supplier remains, or by declaring the name locally and reaching the imports with the module-qualified form (`m::name(...)`) — the local declaration takes every bare use, and each qualified call reaches its own module. Every module declaration is compiled under its own internal name, so two modules' same-named functions, data types and constructors never collide in the compiled program. Two modules' same-named data types are two types: a value of one passed where the other is expected — `bone(aone(6))`, with `liba`'s `aone(@Int -> @Shape)` and `libb`'s `bone(@Shape -> @Int)` — is refused at check as an ordinary type mismatch (E202 for an argument, E314 for a pattern), whose message names both owners (`liba.Shape`, `libb.Shape`). Declare the type once, in one module, and import it in the other, and the value crosses.
+If two of a namespace's imports supply the same bare name, `vera check` refuses it (E155 for a function, E156 for a data type, E157 for a constructor), reported at the second supplying import, in whichever file holds the clash. Resolve it either by narrowing one import (`import m(other_name);`) so a single supplier remains, or by declaring the name locally and reaching the imports with the module-qualified form (`m::name(...)`): the local declaration takes every bare use, and each qualified call reaches its own module. Every module declaration is compiled under its own internal name, so two modules' same-named functions, data types and constructors never collide in the compiled program. Two modules' same-named data types are two types: a value of one passed where the other is expected (`bone(aone(6))`, with `liba`'s `aone(@Int -> @Shape)` and `libb`'s `bone(@Shape -> @Int)`) is refused at check as an ordinary type mismatch (E202 for an argument, E314 for a pattern), whose message names both owners (`liba.Shape`, `libb.Shape`). Declare the type once, in one module, and import it in the other, and the value crosses.
 
-A module can no more declare a prelude type than the entry file can: the prelude's names are reserved in every file (E158 for a `data` declaration, a `type` alias or a type parameter named `Option`, `Result`, `Ordering`, `UrlParts`, `Json`, `HtmlNode`, `Request` or `Response`; E151 for a function or `where` helper named after a prelude function), so a module's type never shares a name with the prelude's. Rename the declaration (`data Maybe<T> { Nothing, Just(T) }`).
+A module can no more declare a prelude type than the entry file can: the prelude's names are reserved in every file (E158 for a `data` declaration, a `type` alias or a type parameter named `Option`, `Result`, `Ordering`, `UrlParts`, `Json`, `HtmlNode`, `MdBlock`, `MdInline`, `Request` or `Response`; E151 for a function or `where` helper named after a prelude function), so a module's type never shares a name with the prelude's. Rename the declaration (`data Maybe<T> { Nothing, Just(T) }`).
 
 Type aliases and effect declarations are module-local and cannot be imported. If another module needs the same alias or effect, it must declare its own copy.
 
-Module-qualified calls use `::` between the module path and the function name: `vera.math::magnitude(42)`. The dot-separated path identifies the module and `::` separates it from the function name. This syntax can be used anywhere a function call is valid, and it is not affected by local shadowing. A path that names an imported module resolves against that module's public declarations. Inside a module, its own path names the module itself: in `module ma;`, `ma::two(3)` calls the file's own top-level `two`, a private one too, and a `where` helper named `two` does not shadow it. Qualification names a call site, not an import list, so writing a clashing call as `m::name(42)` does not by itself lift E155 — the ambiguity is in the namespace. It is how you reach both suppliers once a local declaration or a narrowed import has settled which one owns the bare name.
+Module-qualified calls use `::` between the module path and the function name: `vera.math::magnitude(42)`. The dot-separated path identifies the module and `::` separates it from the function name. This syntax can be used anywhere a function call is valid, and it is not affected by local shadowing. A path that names an imported module resolves against that module's public declarations. Inside a module, its own path names the module itself: in `module ma;`, `ma::two(3)` calls the file's own top-level `two`, a private one too, and a `where` helper named `two` does not shadow it. Qualification names a call site, not an import list, so writing a clashing call as `m::name(42)` does not by itself lift E155; the ambiguity is in the namespace. It is how you reach both suppliers once a local declaration or a narrowed import has settled which one owns the bare name.
 
-There is no import aliasing (`import m(abs as math_abs)`) and no wildcard exclusion (`import m hiding(x)`). These are intentional design decisions, not limitations. When a name clashes across two imports, narrow one import or declare the name locally and qualify the rest. Two identical declarations in two modules are still two declarations, so if both imports supply the bare name `vera check` refuses it as ambiguous (E156/E157), and where a value of one module's type must reach the other's, declare the type once and import it. This preserves the one-canonical-form principle — every declaration has exactly one name.
+There is no import aliasing (`import m(abs as math_abs)`) and no wildcard exclusion (`import m hiding(x)`). These are intentional design decisions, not limitations. When a name clashes across two imports, narrow one import or declare the name locally and qualify the rest. Two identical declarations in two modules are still two declarations, so if both imports supply the bare name `vera check` refuses it as ambiguous (E156/E157), and where a value of one module's type must reach the other's, declare the type once and import it. This preserves the one-canonical-form principle: every declaration has exactly one name.
 
-There are no raw strings (`r"..."`) or multi-line string literals. Use escape sequences for special characters; this is by design — alternative string syntaxes would create two representations for the same value.
+There are no raw strings (`r"..."`) or multi-line string literals. Use escape sequences for special characters; this is by design, because alternative string syntaxes would create two representations for the same value.
 
 The full set of escape sequences Vera's lexer accepts:
 
@@ -2104,7 +2111,7 @@ The full set of escape sequences Vera's lexer accepts:
 | `\"` | double-quote | |
 | `\u{XXXX}` | Unicode code point | 1–6 hex digits, up to U+10FFFF |
 
-`\v` / `\f` / `\x..` / `\a` / `\b` are **not** recognised — Vera's rule is "one canonical form per value". For ASCII control bytes outside the simple-escape set (e.g. ESC 0x1B, VT 0x0B, FF 0x0C), either use the unicode escape (`"\u{1B}"`, `"\u{0B}"`, `"\u{0C}"`) or call `string_from_char_code(N)` at runtime:
+`\v` / `\f` / `\x..` / `\a` / `\b` are **not** recognised; Vera's rule is "one canonical form per value". For ASCII control bytes outside the simple-escape set (e.g. ESC 0x1B, VT 0x0B, FF 0x0C), either use the unicode escape (`"\u{1B}"`, `"\u{0B}"`, `"\u{0C}"`) or call `string_from_char_code(N)` at runtime:
 
 <!-- vera:skip-parse category="FRAGMENT" reason="ANSI cursor-home via string_from_char_code (#513)" -->
 ```vera
@@ -2114,7 +2121,7 @@ let @String = string_concat(string_from_char_code(27), "[H");
 let @String = "\u{1B}[H";
 ```
 
-Raw UTF-8 bytes in string literals are supported — the lexer reads the source as UTF-8 and stores the bytes unchanged. `"██ hello ██"` compiles and prints the six UTF-8 bytes of each block character. `string_length`, indexing, and the classifiers operate on bytes, not grapheme clusters.
+Raw UTF-8 bytes in string literals are supported: the lexer reads the source as UTF-8 and stores the bytes unchanged. `"██ hello ██"` compiles and prints each block character as its three UTF-8 bytes. `string_length`, indexing, and the classifiers operate on bytes, not grapheme clusters.
 
 See: spec Chapter 8 for the full module system specification.
 
@@ -2154,12 +2161,12 @@ Vera's De Bruijn slot references (`@T.n`) are clear when functions have 2–3 pa
 **Guidelines:**
 - Keep functions under ~5 parameters total
 - When multiple parameters share a type, prefer breaking into smaller helper functions or where-functions
-- Break long let-chains (4+ bindings of the same type) into where-functions — they create fresh scopes with reset slot indices
+- Break long let-chains (4+ bindings of the same type) into where-functions, which create fresh scopes with reset slot indices
 - Commutative operations (`+`, `*`) mask index errors; be especially careful with non-commutative operations (`-`, `/`, `<`, `>`) and recursive calls
 
 ### Use typed holes to build incrementally
 
-When writing a new function, start with `?` placeholders and check the skeleton first. The `W001` warning tells you the expected type and lists every available binding — it is the cheapest way to confirm the return type is correct before writing the body:
+When writing a new function, start with `?` placeholders and check the skeleton first. The `W001` warning tells you the expected type and lists every available binding, the cheapest way to confirm the return type is correct before writing the body:
 
 <!-- vera:no-run category="typed-hole" reason="it holds a typed hole, which vera run refuses (E614)" -->
 ```vera
@@ -2172,7 +2179,7 @@ public fn gcd(@Int, @Int -> @Int)
 }
 ```
 
-Read the hint, then fill in the expression. This is especially useful when De Bruijn indices are non-obvious — the hint always shows the correct `@T.n` form for every binding in scope.
+Read the hint, then fill in the expression. This is especially useful when De Bruijn indices are not obvious: the hint always shows the correct `@T.n` form for every binding in scope.
 
 ### Use where-functions for complex logic
 
@@ -2234,7 +2241,7 @@ private fn add(@Int, @Int -> @Int)
 }
 ```
 
-CORRECT — add `effects(pure)` (or the appropriate effect row):
+CORRECT: add `effects(pure)` (or the appropriate effect row):
 ```vera
 private fn add(@Int, @Int -> @Int)
   requires(true)
@@ -2247,7 +2254,7 @@ private fn add(@Int, @Int -> @Int)
 
 ### Wrong slot index
 
-WRONG — both `@Int.0` refer to the same binding (the second parameter):
+WRONG: both `@Int.0` refer to the same binding (the second parameter):
 ```vera
 private fn add(@Int, @Int -> @Int)
   requires(true)
@@ -2258,7 +2265,7 @@ private fn add(@Int, @Int -> @Int)
 }
 ```
 
-CORRECT — `@Int.1` is the first parameter, `@Int.0` is the second:
+CORRECT: `@Int.1` is the first parameter, `@Int.0` is the second:
 ```vera
 private fn add(@Int, @Int -> @Int)
   requires(true)
@@ -2319,7 +2326,7 @@ private fn factorial(@Nat -> @Nat)
 
 ### Undeclared effects
 
-WRONG — `IO.print` performs IO but function declares `pure`:
+WRONG: `IO.print` performs IO but function declares `pure`:
 <!-- vera:skip-check category="WRONG" code="E122" reason="IO.print in a pure function is E122" -->
 ```vera
 private fn greet(@String -> @Unit)
@@ -2358,7 +2365,7 @@ private fn f(@Int -> @Int)
 }
 ```
 
-CORRECT — `@T.result` is only valid in `ensures`, and the input bound that makes it hold goes in `requires`:
+CORRECT: `@T.result` is only valid in `ensures`, and the input bound that makes it hold goes in `requires`:
 ```vera
 private fn f(@Int -> @Int)
   requires(@Int.0 > 0)
@@ -2408,13 +2415,13 @@ if @Bool.0 then {
 
 ### Trying to use import aliasing
 
-WRONG — Vera does not support renaming imports:
+WRONG: Vera does not support renaming imports:
 <!-- vera:skip-parse category="WRONG" code="E005" reason="import aliasing not supported" -->
 ```vera
 import vera.math(magnitude as math_magnitude);
 ```
 
-CORRECT — use selective import and qualified calls for readability:
+CORRECT: use selective import and qualified calls for readability:
 <!-- vera:skip-parse category="FRAGMENT" reason="Correct: import syntax example" -->
 ```vera
 import vera.math(magnitude);
@@ -2425,27 +2432,27 @@ If two of a namespace's imports supply the same bare name, `vera check` refuses 
 
 ### Trying to use wildcard exclusion
 
-WRONG — Vera does not support `hiding` syntax:
+WRONG: Vera does not support `hiding` syntax:
 <!-- vera:skip-parse category="WRONG" code="E005" reason="import hiding not supported" -->
 ```vera
 import vera.math hiding(larger);
 ```
 
-CORRECT — use selective import to list the names you need:
+CORRECT: use selective import to list the names you need:
 ```vera
 import vera.math(magnitude, larger);
 ```
 
 ### Trying to use raw or multi-line strings
 
-WRONG — Vera does not support raw strings or multi-line literals:
+WRONG: Vera does not support raw strings or multi-line literals:
 ```
 r"path\to\file"
 """multi-line
 string"""
 ```
 
-CORRECT — use escape sequences:
+CORRECT: use escape sequences:
 <!-- vera:skip-parse category="FRAGMENT" reason="Correct escape sequence examples, bare strings" -->
 ```vera
 "path\\to\\file"
@@ -2454,14 +2461,14 @@ CORRECT — use escape sequences:
 
 ### Standalone `map_new()` / `set_new()` without type context
 
-WRONG — type inference cannot resolve the key/value or element types:
+WRONG: type inference cannot resolve the key/value or element types:
 <!-- vera:skip-parse category="FRAGMENT" reason="Wrong: standalone map_new/set_new without type context" -->
 ```vera
 let @Map = map_new();
 let @Set = set_new();
 ```
 
-CORRECT — nest inside an operation so types can be inferred, or provide explicit type annotation:
+CORRECT: nest inside an operation so types can be inferred, or provide explicit type annotation:
 <!-- vera:skip-parse category="FRAGMENT" reason="Correct: map_new/set_new with type context" -->
 ```vera
 let @Map<String, Int> = map_new();
@@ -2472,7 +2479,7 @@ set_add(set_new(), 1)
 
 ### Declaring a data type with a built-in type's name
 
-WRONG — `Array`, `Map`, `Set`, `Decimal`, `Future` and `Tuple` are reserved built-in type names:
+WRONG: `Array`, `Map`, `Set`, `Decimal`, `Future` and `Tuple` are reserved built-in type names:
 <!-- vera:skip-check category="WRONG" code="E158" reason="a data declaration named Decimal is E158" -->
 ```vera
 private data Decimal {
@@ -2480,7 +2487,7 @@ private data Decimal {
 }
 ```
 
-CORRECT — give the type a name of its own:
+CORRECT: give the type a name of its own:
 ```vera
 private data Money {
   Cents(Int)
@@ -2613,9 +2620,9 @@ public fn main(@Unit -> @Unit)
 
 ## Conformance Suite
 
-The `tests/conformance/` directory contains small programs — most self-contained, with the Chapter 8 module-system programs and a few cross-module Chapter 7 and 9 programs importing companion `_lib.vera` / `_mid.vera` modules — that validate the language against the spec, named by spec chapter and feature; some features (slot references, match, contracts) span several programs. These are the best minimal working examples of Vera syntax and semantics.
+The `tests/conformance/` directory contains small programs (most self-contained, with the Chapter 8 module-system programs and a few cross-module Chapter 7 and 9 programs importing companion `_lib.vera` / `_mid.vera` modules) that validate the language against the spec, named by spec chapter and feature; some features (slot references, match, contracts) span several programs. These are the best minimal working examples of Vera syntax and semantics.
 
-Each program is organized by spec chapter (`ch01_int_literals.vera`, `ch04_match_basic.vera`, `ch07_state_handler.vera`, etc.) and the `manifest.json` file maps features to programs. When you need to see how a specific construct works, check the conformance program before reading the spec.
+Each program is organised by spec chapter (`ch01_int_literals.vera`, `ch04_match_basic.vera`, `ch07_state_handler.vera`, etc.) and the `manifest.json` file maps features to programs. When you need to see how a specific construct works, check the conformance program before reading the spec.
 
 Key conformance programs by feature:
 
@@ -2648,18 +2655,20 @@ These are known limitations in the reference implementation. Most are tracked as
 
 ## Known Bugs and Workarounds
 
-`requires` and `ensures` clauses are also compiled as runtime checks, so where one of these bugs lets `vera verify` prove a false contract, the run traps with `contract_violation` rather than returning a wrong value; a contract code generation cannot express, such as a quantified `ensures`, is not compiled into one. The full list of open bugs is in [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
+`requires` and `ensures` clauses are also compiled as runtime checks, so where one of these bugs lets `vera verify` prove a false contract, the run traps with `contract_violation` rather than returning a wrong value; a contract code generation cannot express, an `ensures` over a `String` or `Array` result, is not compiled into one, and `vera verify` discloses it (`E543`). The full list of open bugs is in [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
 
 | Bug | Workaround | Issue |
 |-----|-----------|-------|
 | Code generation reads a type off the written type expression in seventeen functions (a signature's and a closure's WASM types, a refinement guard's carrier, a data layout, a clone's key), where the checker, the verifier and every other reader read the typed program; they close in v0.2.9. | None needed for a known shape: the `array_find` row below is the line with a known effect. | [#1525](https://github.com/aallan/vera/issues/1525) |
 | An `Array<Nat>` element carries no `>= 0`, so a contract resting on an element's sign is refused with an impossible counterexample. | State an element's sign with `assume(nat_to_int(@Array<Nat>.0[0]) >= 0)` where a contract needs it, which `vera verify` counts (W003). | [#1814](https://github.com/aallan/vera/issues/1814) |
 | `array_find` over an array of `Bool`, `Byte`, `String` or a record returns a `Some` holding the wrong value; over `Int`, `Nat` and `Float64` it is right. | Use `array_filter` with the same predicate and take element 0 when its `array_length` is positive. | [#1525](https://github.com/aallan/vera/issues/1525) |
+| A generic function's self-recursive tail call is compiled as a plain call, so a generic counting loop exhausts the call stack at a million steps where its non-generic twin runs. | Keep a generic loop within a few tens of thousands of steps, or write the loop at a concrete type. | [#1525](https://github.com/aallan/vera/issues/1525) |
+| A function whose `ensures` is anything other than `true` compiles each of its tail calls as a plain call, proved or not, so a tail-recursive loop with `ensures(@Nat.result >= 0)` exhausts the call stack at 50,000 steps where its `ensures(true)` twin runs a million. | Over a collection use `array_fold` or `array_map`; otherwise keep the recursion within a few tens of thousands of steps, or give the loop `ensures(true)` (a non-recursive wrapper can restate only a postcondition that follows from the result's type, such as `@Nat.result >= 0`; the verifier refuses one that says more, `E500`). | [#1851](https://github.com/aallan/vera/issues/1851) |
 | A `--world server` component whose handler holds a closure (a lambda passed to `array_map`, say) is refused by the default `wasmtime serve`, which exits at load with `defined tables count of 2 exceeds the per-instance limit of 1`. | Serve it with `wasmtime serve -O pooling-allocator=n`. | [#1739](https://github.com/aallan/vera/issues/1739) |
 | A closure typed `fn(Int -> Int)` is accepted where `fn(Int -> Nat)` is expected, and a `fn(Nat -> Int)` one where `fn(Int -> Int)` is, with no check at the flow, so a function declared `-> @Nat` can return a negative with `vera check` and `vera verify` clean. | Write the closure at the type expected (`fn(@Int -> @Nat) effects(pure) { ... }`), so its return is an ordinary `Int` to `Nat` site, proved or guarded; v0.3.0 refuses the flow. | [#1819](https://github.com/aallan/vera/issues/1819) |
 | A refined payload built as the value of a `handle` body or a non-resuming `Exn` clause takes no store check at run time (`vera verify` discloses it, `E506`). | Bind the payload to a slot outside the handle and construct the value from the slot, which is a checked store. | [#1542](https://github.com/aallan/vera/issues/1542) |
 
-When a Vera program type-checks cleanly, compiles without errors, and then produces a runtime trap you can't explain, runtime trap diagnostics are Vera-native end-to-end: each trap carries a `kind` label naming its cause — `contract_violation`, `overflow`, `nat_guard`, `nat_underflow`, `assertion_failed`, `index_out_of_bounds`, `string_index_out_of_bounds`, `float_conversion`, `heap_exhausted`, `uncaught_exception` (an `Exn<T>` no `handle[Exn<T>]` caught before it left the entry point), `divide_by_zero`, `out_of_bounds`, `stack_exhausted`, `host_error`, or `unreachable` for the runtime's own internal limits (shadow-stack overflow and the like), and `unknown` — a message describing the failure, which names the failing site wherever the check carries one (the assertion's text, the index and its bound, the subtraction and the `requires` that discharges it), a per-kind `Fix:` paragraph naming the canonical remediation (omitted for `contract_violation` and `host_error`, whose descriptions already carry the specific instruction, and for `unknown`, where there is nothing general to suggest), and, under the default `vera run` host, a source backtrace pointing at the offending Vera function and line — not just `wasm trap: <reason>` (a `--target wasi-p2` trap keeps its kind, message and `Fix:`, but its `frames` list is empty, because frames do not cross the component boundary, spec §13.6).  Tail-recursive iteration runs in constant WASM stack space for both non-allocating ([#517](https://github.com/aallan/vera/issues/517)) and allocating ([#549](https://github.com/aallan/vera/issues/549)) tail calls — the latter prepends a `$gc_sp` restore before each `return_call` to keep the shadow stack bounded across iterations.
+When a Vera program type-checks cleanly, compiles without errors, and then produces a runtime trap you cannot explain, read its diagnostic. Each trap has a `kind` label naming its cause (`contract_violation`, `overflow`, `nat_guard`, `nat_underflow`, `assertion_failed`, `index_out_of_bounds`, `string_index_out_of_bounds`, `float_conversion`, `heap_exhausted`, `uncaught_exception` (an `Exn<T>` no `handle[Exn<T>]` caught before it left the entry point), `divide_by_zero`, `out_of_bounds`, `stack_exhausted`, `host_error`, or `unreachable` for the runtime's own internal limits (shadow-stack overflow and the like), and `unknown`), a message describing the failure, which names the failing site wherever the check has one (the assertion's text, the index and its bound, the subtraction and the `requires` that discharges it), a per-kind `Fix:` paragraph naming the canonical remediation (omitted for `contract_violation` and `host_error`, whose descriptions already carry the specific instruction, and for `unknown`, where there is nothing general to suggest), and, under the default `vera run` host, a source backtrace pointing at the offending Vera function and line rather than a bare `wasm trap: <reason>` (a `--target wasi-p2` trap keeps its kind, message and `Fix:`, but its `frames` list is empty, because frames do not cross the component boundary, spec §13.6).  Tail-recursive iteration runs in constant WASM stack space for both non-allocating and allocating tail calls; for the latter, code generation restores the shadow-stack pointer before each `return_call`, so the shadow stack stays bounded across iterations.
 
 ## Specification Reference
 
