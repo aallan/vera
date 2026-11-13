@@ -37,8 +37,8 @@ The measures [ROADMAP.md](ROADMAP.md)'s Stage 29 holds v0.3.0 to, each beside th
 <!-- render_status:begin scorecard -->
 | Measure | v0.2.0, the audit (2026-10-06) | Now | Measured over |
 |---------|---------------------------|-----|---------------|
-| Open `soundness` bugs | 14 (≥17 by definition) | 3 | the tracker, 2026-11-13 01:02 UTC |
-| Open bugs | 82 | 26 | the tracker, 2026-11-13 01:02 UTC |
+| Open `soundness` bugs | 14 (≥17 by definition) | 3 | the tracker, 2026-11-13 09:23 UTC |
+| Open bugs | 82 | 22 | the tracker, 2026-11-13 09:23 UTC |
 | Backend `_infer_*` functions | 29 | 0 | the tree |
 | Pipeline entry points with an optional semantic table | 3 | 0 | the tree |
 | Same-named `Nat`/`Int` helpers in `vera/verifier.py` and `vera/wasm/` | 12 | 1 | the tree |
@@ -47,8 +47,8 @@ The measures [ROADMAP.md](ROADMAP.md)'s Stage 29 holds v0.3.0 to, each beside th
 | Functions over 500 lines | 17 | 10 | the tree |
 | Host built-ins hand-mirrored across hosts | 53 × 2, plus WASI | 39 × 2, plus none | the tree |
 | Gate scripts that exist only to sync copies | 8 of 23 | 4 of 24 | the tree |
-| CI wall time per pull-request push | 57 min | 34.5 min | 20 pull-request runs, 2026-11-12 to 2026-11-12 |
-| Runner-minutes per pull-request push | 375 | 131 | 20 pull-request runs, 2026-11-12 to 2026-11-12 |
+| CI wall time per pull-request push | 57 min | 36.3 min | 20 pull-request runs, 2026-11-12 to 2026-11-13 |
+| Runner-minutes per pull-request push | 375 | 131 | 20 pull-request runs, 2026-11-12 to 2026-11-13 |
 | Fix pull requests, median: CI runs | 6 | 6 | 10 pull requests merged since v0.2.7 (2026-11-06), to 2026-11-13 |
 | Fix pull requests, median: hours to merge | 11.0 | 8.3 | 10 pull requests merged since v0.2.7 (2026-11-06), to 2026-11-13 |
 | Suite in the pull-request gate: tests | 30,095 | 28,938 | the tree |
@@ -57,7 +57,7 @@ The measures [ROADMAP.md](ROADMAP.md)'s Stage 29 holds v0.3.0 to, each beside th
 | Conformance entries with golden output | 0 of 256 | 176 of 273; every run-level entry, one of them by exit status only | the tree |
 | Program generator with differentials | none | every pull request, nightly | the tree |
 | `vera test` executes proved functions | no | yes, in CI | the tree |
-| Statement coverage | 96.2% | 96.63% | Codecov, the post-merge run of `27430d2` (2026-11-12) |
+| Statement coverage | 96.2% | 96.68% | Codecov, the post-merge run of `559ca8f` (2026-11-13) |
 | Spec words | 86,558 | 91,418 | the tree |
 | Issue links in the spec | 175 | 123 | the tree |
 
