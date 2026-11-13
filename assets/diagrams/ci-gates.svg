@@ -33,16 +33,16 @@
     <text class="f t" x="56" y="112">git commit: the commit-stage hooks</text>
     <text class="f d" x="56" y="130">File-filtered: a docs-only commit triggers a small subset; a compiler-level commit triggers most of them.</text>
     <!-- pill grid -->
-    <rect class="pill" x="56"  y="146" width="152" height="24" rx="12"/><text class="m pt" x="132" y="162" text-anchor="middle">whitespace · yaml · toml</text>
-    <rect class="pill" x="216" y="146" width="112" height="24" rx="12"/><text class="m pt" x="272" y="162" text-anchor="middle">ruff + security</text>
-    <rect class="pill" x="336" y="146" width="64"  height="24" rx="12"/><text class="m pt" x="368" y="162" text-anchor="middle">mypy</text>
-    <rect class="pill" x="408" y="146" width="120" height="24" rx="12"/><text class="m pt" x="468" y="162" text-anchor="middle">staged test files</text>
-    <rect class="pill" x="536" y="146" width="112" height="24" rx="12"/><text class="m pt" x="592" y="162" text-anchor="middle">suite collection</text>
-    <rect class="pill" x="656" y="146" width="140" height="24" rx="12"/><text class="m pt" x="726" y="162" text-anchor="middle">corpus canonical form</text>
-    <rect class="pill" x="56"  y="178" width="228" height="24" rx="12"/><text class="m pt" x="170" y="194" text-anchor="middle">doc code-blocks (README/spec/SKILL/…)</text>
-    <rect class="pill" x="292" y="178" width="150" height="24" rx="12"/><text class="m pt" x="367" y="194" text-anchor="middle">site assets + coherence</text>
-    <rect class="pill" x="450" y="178" width="120" height="24" rx="12"/><text class="m pt" x="510" y="194" text-anchor="middle">licence compliance</text>
-    <rect class="pill" x="578" y="178" width="120" height="24" rx="12"/><text class="m pt" x="638" y="194" text-anchor="middle">browser parity</text>
+    <rect class="pill" x="56"  y="146" width="164" height="24" rx="12"/><text class="m pt" x="138" y="162" text-anchor="middle">whitespace · yaml · toml</text>
+    <rect class="pill" x="228" y="146" width="112" height="24" rx="12"/><text class="m pt" x="284" y="162" text-anchor="middle">ruff + security</text>
+    <rect class="pill" x="348" y="146" width="64"  height="24" rx="12"/><text class="m pt" x="380" y="162" text-anchor="middle">mypy</text>
+    <rect class="pill" x="420" y="146" width="120" height="24" rx="12"/><text class="m pt" x="480" y="162" text-anchor="middle">staged test files</text>
+    <rect class="pill" x="548" y="146" width="112" height="24" rx="12"/><text class="m pt" x="604" y="162" text-anchor="middle">suite collection</text>
+    <rect class="pill" x="668" y="146" width="140" height="24" rx="12"/><text class="m pt" x="738" y="162" text-anchor="middle">corpus canonical form</text>
+    <rect class="pill" x="56"  y="178" width="240" height="24" rx="12"/><text class="m pt" x="176" y="194" text-anchor="middle">doc code-blocks (README/spec/SKILL/…)</text>
+    <rect class="pill" x="304" y="178" width="150" height="24" rx="12"/><text class="m pt" x="379" y="194" text-anchor="middle">site assets + coherence</text>
+    <rect class="pill" x="462" y="178" width="120" height="24" rx="12"/><text class="m pt" x="522" y="194" text-anchor="middle">licence compliance</text>
+    <rect class="pill" x="590" y="178" width="120" height="24" rx="12"/><text class="m pt" x="650" y="194" text-anchor="middle">browser parity</text>
     <rect class="pill" x="56"  y="210" width="120" height="24" rx="12"/><text class="m pt" x="116" y="226" text-anchor="middle">diagnostic fields</text>
     <rect class="pill" x="184" y="210" width="120" height="24" rx="12"/><text class="m pt" x="244" y="226" text-anchor="middle">explicit encoding</text>
     <rect class="pill" x="312" y="210" width="124" height="24" rx="12"/><text class="m pt" x="374" y="226" text-anchor="middle">grammar alignment</text>
