@@ -15,8 +15,8 @@ The bullets exactly as they will appear in `CHANGELOG.md`, in the style of its l
 
 ## Checks
 
-`scripts/check_changelog_fragments.py` holds every file here to the name and content rules, in the commit hook and in CI's `lint` job. `scripts/check_changelog_updated.py` accepts a fragment the branch adds as the CHANGELOG entry a substantive change needs, and a `Skip-changelog: <reason>` trailer still bypasses it.
+`scripts/check_changelog_fragments.py` holds every file here to the name and content rules, in the commit hook and in CI's `lint` job. `scripts/check_changelog_updated.py` accepts a fragment the branch adds as the CHANGELOG entry a substantive change needs, and a `Skip-changelog: <reason>` trailer bypasses it.
 
 ## Release
 
-The release pull request runs `python scripts/release.py assemble --version X.Y.Z --date YYYY-MM-DD`. It writes the `## [X.Y.Z] - YYYY-MM-DD` section below a fresh, empty `## [Unreleased]`: the sections in the order above, any bullets still under `[Unreleased]` first in their section, and then the fragments, by issue number and then by slug. It adds the `[X.Y.Z]` compare link, points `[Unreleased]`'s at the new tag, and deletes the fragments it consumed. The release pull request then writes the section's `### Highlights` above its first section, and `scripts/release.py notes` reads the section as before.
+The release pull request runs `python scripts/release.py assemble --version X.Y.Z --date YYYY-MM-DD`. It writes the `## [X.Y.Z] - YYYY-MM-DD` section below a fresh, empty `## [Unreleased]`: the sections in the order above, any bullets still under `[Unreleased]` first in their section, and then the fragments, by issue number and then by slug. It adds the `[X.Y.Z]` compare link, points `[Unreleased]`'s at the new tag, and deletes the fragments it consumed. The release pull request then writes the section's `### Highlights` above its first section, and `scripts/release.py notes` reads the section into the GitHub Release's notes.

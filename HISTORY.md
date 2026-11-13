@@ -2,7 +2,7 @@
 
 How the Vera compiler was built, from initial commit through the first release of Stage 28, across 176 active development days.
 
-Vera was developed in an interleaved spiral — each phase added a complete compiler layer with tests, documentation, and working examples before moving to the next. The compiler was built by a single developer working with Claude Code, with CodeRabbit providing AI code review on pull requests from v0.0.80 onwards. The entire project — language design, specification, compiler, test suite, documentation, website — was built from scratch starting 22 February 2026.
+Vera was developed in an interleaved spiral: each phase added a complete compiler layer with tests, documentation, and working examples before moving to the next. The compiler was built by a single developer working with Claude Code, with CodeRabbit providing AI code review on pull requests from v0.0.80 onwards. The entire project (language design, specification, compiler, test suite, documentation, website) was built from scratch starting 22 February 2026.
 
 Version rows follow one rule: one sentence, at most one issue link.  [CHANGELOG.md](CHANGELOG.md) is the per-release log of record; this file is the story.
 
@@ -47,7 +47,7 @@ The first day of development produced the complete compiler pipeline: parser, AS
 
 | Version | Date | What shipped |
 |---------|------|-------------|
-| — | 22 Feb | Initial commit: repository structure, licence, empty scaffolding. |
+| – | 22 Feb | Initial commit: repository structure, licence, empty scaffolding. |
 | v0.0.1 | 23 Feb | **Parser.** Lark LALR(1) grammar with natural-language errors designed for LLM consumption, SKILL.md, 13 example programs, and the veralang.dev domain live the same day. |
 | v0.0.2 | 23 Feb | CI workflow, social preview, domain configuration. |
 | v0.0.3 | 23 Feb | Full parser coverage: 110 tests, 13 examples, specification cleanup. |
@@ -57,7 +57,7 @@ The first day of development produced the complete compiler pipeline: parser, AS
 | v0.0.8 | 23 Feb | **Contract verifier.** Z3 SMT solver integration, refinement types, counterexample generation for failed contracts. |
 | v0.0.9 | 23 Feb | **WASM code generator.** `vera compile` and `vera run` deliver the first end-to-end execution. |
 
-66 commits on 23 February alone — from an empty repository to a language that parses, type-checks, verifies contracts, compiles to WebAssembly, and runs. The specification (Chapters 0–7) was written in parallel with the compiler, not after it.
+66 commits on 23 February alone took the project from an empty repository to a language that parses, type-checks, verifies contracts, compiles to WebAssembly, and runs. The specification (Chapters 0–7) was written in parallel with the compiler, not after it.
 
 ---
 
@@ -210,11 +210,11 @@ The standard library grew from a handful of operations to over 100 built-in func
 |---------|------|-------------|
 | v0.0.89 | 12 Mar | **Option/Result combinators**: option_unwrap_or, option_map, option_and_then, result_unwrap_or, result_map, implemented via source injection. |
 | v0.0.90 | 13 Mar | **Abilities**: Eq, Ord, Hash, and Show with `forall<T where Eq<T>>` constraint syntax, ADT auto-derivation, and full WASM codegen. |
-| — | 17 Mar | TextMate syntax highlighting bundle. |
-| — | 18 Mar | VS Code extension for Vera syntax highlighting. |
+| – | 17 Mar | TextMate syntax highlighting bundle. |
+| – | 18 Mar | VS Code extension for Vera syntax highlighting. |
 | v0.0.91 | 19 Mar | **Array operations**: array_slice, array_map, array_filter, array_fold, plus six monomorphization and WASM type-inference bug fixes. |
 | v0.0.92 | 19 Mar | **BREAKING naming audit**: 14 built-ins renamed to the `domain_verb` convention, the last intentional breaking change before stabilisation. |
-| — | 20 Mar | AI discoverability assets on veralang.dev: llms.txt, llms-full.txt, robots.txt, sitemap.xml, ai-plugin.json. |
+| – | 20 Mar | AI discoverability assets on veralang.dev: llms.txt, llms-full.txt, robots.txt, sitemap.xml, ai-plugin.json. |
 | v0.0.93 | 20 Mar | **Standard prelude**: Option\<T\>, Result\<T, E\>, Ordering, and UrlParts injected automatically into every program. |
 
 The abilities release (v0.0.90) was the last major type system feature. After v0.0.93, every Vera program had access to Option, Result, Ordering, combinators, and higher-order array operations without any boilerplate declarations.
@@ -223,7 +223,7 @@ The abilities release (v0.0.90) was the last major type system feature. After v0
 
 ## Stage 8: Data types and effects (23–27 March)
 
-*Five days. Collections, JSON, HTML, HTTP, Decimal, and Inference — the features that make Vera an agent-viable language.*
+*Five days. Collections, JSON, HTML, HTTP, Decimal, and Inference: the features that make Vera an agent-viable language.*
 
 This stage delivered the critical dependency chain that had driven the roadmap from the beginning: Map → JSON → HTTP → Inference, culminating in LLM calls as typed algebraic effects.
 
@@ -238,7 +238,7 @@ This stage delivered the critical dependency chain that had driven the roadmap f
 | v0.0.100 | 26 Mar | **HTML**: the built-in `HtmlNode` ADT with lenient parsing, CSS selector queries, and text extraction. |
 | v0.0.101 | 27 Mar | **Inference**: LLM calls as typed algebraic effects, dispatching to Anthropic, OpenAI, or Moonshot, impossible to invoke from a pure function. |
 
-v0.0.101 completed the chain. A Vera program can fetch data from the web, parse HTML or JSON, call an LLM, verify the response against contracts, and return typed results — all with every side effect tracked in the type system.
+v0.0.101 completed the chain. A Vera program can fetch data from the web, parse HTML or JSON, call an LLM, verify the response against contracts, and return typed results, with every side effect tracked in the type system.
 
 ---
 
@@ -246,13 +246,13 @@ v0.0.101 completed the chain. A Vera program can fetch data from the web, parse 
 
 *Four days. Friction removal: the small issues that would bias any benchmark or frustrate any agent.*
 
-With the core language complete, this stage cleared the path for honest evaluation while [VeraBench](https://github.com/aallan/vera-bench) began producing initial results in a separate repository.
+With the core language complete, this stage cleared the path for a fair evaluation while [VeraBench](https://github.com/aallan/vera-bench) began producing initial results in a separate repository.
 
 | Version | Date | What shipped |
 |---------|------|-------------|
 | v0.0.102 | 28 Mar | **Bug fixes**: the stdin double-read ([#335](https://github.com/aallan/vera/issues/335)) plus cross-module Option and pipe-into-qualified-call fixes. |
-| — | 28 Mar | Typed CLI argument passing for `vera run --fn f -- arg` (String, Float64, Bool, Byte alongside Int). |
-| — | 28 Mar | Agent discovery metadata: llms-txt link elements and JSON-LD TechArticle entries on veralang.dev. |
+| – | 28 Mar | Typed CLI argument passing for `vera run --fn f -- arg` (String, Float64, Bool, Byte alongside Int). |
+| – | 28 Mar | Agent discovery metadata: llms-txt link elements and JSON-LD TechArticle entries on veralang.dev. |
 | v0.0.103 | 29 Mar | **CI security hardening** (pip-audit, ruff security rules, zizmor, SBOM) plus `vera version`, `--quiet`, and conformance additions. |
 | v0.0.104 | 29 Mar | Bare `None`/`Err` constructors in generic calls type-check without `let` workarounds ([#293](https://github.com/aallan/vera/issues/293)). |
 | v0.0.105 | 30 Mar | **Typed holes**: the `?` placeholder reports W001 with expected type and slot bindings, and blocks compilation with E614. |
@@ -270,13 +270,13 @@ By v0.0.106, contract-driven testing covered every primitive parameter type, and
 |---------|------|-------------|
 | v0.0.107 | 7 Apr | CI validation for `examples/README.md` run commands ([#361](https://github.com/aallan/vera/issues/361)). |
 | v0.0.108 | 7 Apr | **`vera check --explain-slots`** ([#445](https://github.com/aallan/vera/issues/445)): the slot resolution table addressing the dominant VeraBench failure mode, plus a prescriptive SKILL.md rework. |
-| — | 8 Apr | **Multi-model evaluation** (VeraBench v0.0.7): 6 models across 3 providers, with Kimi K2.5 hitting 100% run-correct on Vera against 86% on Python. |
-| — | 9 Apr | Two effect-runtime bug fixes: `Exn<String>` WASM tag encoding ([#416](https://github.com/aallan/vera/issues/416)) and nested handler isolation. |
+| – | 8 Apr | **Multi-model evaluation** (VeraBench v0.0.7): 6 models across 3 providers, with Kimi K2.5 hitting 100% run-correct on Vera against 86% on Python. |
+| – | 9 Apr | Two effect-runtime bug fixes: `Exn<String>` WASM tag encoding ([#416](https://github.com/aallan/vera/issues/416)) and nested handler isolation. |
 | v0.0.109 | 10 Apr | Closure `i32_pair` parameter and return types fixed so String/Array values in closures emit correct two-slot WAT ([#359](https://github.com/aallan/vera/issues/359)). |
 | v0.0.110 | 10 Apr | **Mistral provider** for `Inference.complete`, with the provider registry refactored so new providers are a one-row change ([#413](https://github.com/aallan/vera/issues/413)). |
 | v0.0.111 | 10 Apr | SMT translator declares String/Float64 parameters with correct Z3 sorts, promoting the string predicates to Tier 1. |
 
-The evaluation verdict: flagship models held Vera even with Python, and the failure modes clustered on missing primitives — which set the agenda for Stage 11.
+The evaluation verdict: flagship models held Vera even with Python, and the failure modes clustered on missing primitives, which set the agenda for Stage 11.
 
 ---
 
@@ -290,13 +290,13 @@ VeraBench identified missing primitives as the dominant friction: models reachin
 |---------|------|-------------|
 | v0.0.112 | 16 Apr | Fix GC shadow stack overflow ([#464](https://github.com/aallan/vera/issues/464)). |
 | v0.0.113 | 16 Apr | Decompose `calls.py` into 8 subsystem mixins ([#418](https://github.com/aallan/vera/issues/418)). |
-| — | 16 Apr | CHANGELOG enforcement at pre-push and CI ([#478](https://github.com/aallan/vera/issues/478)). |
-| — | 17 Apr | Widen GC object header size field from 16-bit to 31-bit ([#484](https://github.com/aallan/vera/issues/484)). |
-| — | 17 Apr | Iterative WASM higher-order array ops ([#480](https://github.com/aallan/vera/issues/480)). |
+| – | 16 Apr | CHANGELOG enforcement at pre-push and CI ([#478](https://github.com/aallan/vera/issues/478)). |
+| – | 17 Apr | Widen GC object header size field from 16-bit to 31-bit ([#484](https://github.com/aallan/vera/issues/484)). |
+| – | 17 Apr | Iterative WASM higher-order array ops ([#480](https://github.com/aallan/vera/issues/480)). |
 | v0.0.114 | 17 Apr | `IO.sleep`, `IO.time`, `IO.stderr` ([#463](https://github.com/aallan/vera/issues/463)). |
 | v0.0.115 | 18 Apr | `Random` effect ([#465](https://github.com/aallan/vera/issues/465)). |
 | v0.0.116 | 20 Apr | Math built-ins ([#467](https://github.com/aallan/vera/issues/467)). |
-| — | 22 Apr | Dependabot uv ecosystem + auto-uv-lock ([#500](https://github.com/aallan/vera/pull/500)). |
+| – | 22 Apr | Dependabot uv ecosystem + auto-uv-lock ([#500](https://github.com/aallan/vera/pull/500)). |
 | v0.0.117 | 22 Apr | Array utility built-ins, phase 1 ([#466](https://github.com/aallan/vera/issues/466)). |
 | v0.0.118 | 23 Apr | String utilities + character classification ([#470](https://github.com/aallan/vera/issues/470)). |
 | v0.0.119 | 23 Apr | JSON typed accessors ([#366](https://github.com/aallan/vera/issues/366)). |
@@ -309,11 +309,11 @@ After v0.0.119 the missing-primitive complaints stopped; what remained was runti
 
 *Thirteen days. Sixteen runtime and codegen bugs, a Game of Life, and the debugging UX to match.*
 
-Agent-written programs at real scale — capstone: Conway's Life — drove a sustained campaign through the closure, GC-rooting, and string-interpolation layers. Crash-debugging UX shipped alongside the fixes: trap kinds, source backtraces, fix suggestions, and live stdout.
+Agent-written programs at real scale, with Conway's Life as the capstone, drove a sustained campaign through the closure, GC-rooting, and string-interpolation layers. Crash-debugging UX shipped alongside the fixes: trap kinds, source backtraces, fix suggestions, and live stdout.
 
 | Version | Date | What shipped |
 |---------|------|-------------|
-| — | 26 Apr | veralang.dev homepage redesign: editorial-research aesthetic with the bilingual reading-path device. |
+| – | 26 Apr | veralang.dev homepage redesign: editorial-research aesthetic with the bilingual reading-path device. |
 | v0.0.120 | 26 Apr | Crash-debugging UX: trap categorisation + stdout preserved on trap ([#522](https://github.com/aallan/vera/issues/522)). |
 | v0.0.121 | 27 Apr | Nested closures + ADT capture work end-to-end ([#514](https://github.com/aallan/vera/issues/514)). |
 | v0.0.122 | 27 Apr | Conservative GC bounds-checked against `$heap_ptr` ([#515](https://github.com/aallan/vera/issues/515)). |
@@ -331,8 +331,8 @@ Agent-written programs at real scale — capstone: Conway's Life — drove a sus
 | v0.0.134 | 6 May | Active reclamation of host-store handles via heap-wrap-as-ADT ([#573](https://github.com/aallan/vera/issues/573)). |
 | v0.0.135 | 6 May | Three codegen bug fixes ([#584](https://github.com/aallan/vera/issues/584)). |
 | v0.0.136 | 6 May | Two host-runtime hygiene fixes ([#586](https://github.com/aallan/vera/issues/586)). |
-| — | 7 May | `examples/life.vera`: Conway's Game of Life with nested array combinators, a recursive `<IO>` loop, ANSI rendering, and the formal B3/S23 rule on `next_cell`. |
-| — | 7 May | `VERA_EAGER_GC=1` debug knob: GC on every `$alloc` so missing-shadow-root bugs surface immediately (documented in ENVIRONMENT.md). |
+| – | 7 May | `examples/life.vera`: Conway's Game of Life with nested array combinators, a recursive `<IO>` loop, ANSI rendering, and the formal B3/S23 rule on `next_cell`. |
+| – | 7 May | `VERA_EAGER_GC=1` debug knob: GC on every `$alloc` so missing-shadow-root bugs surface immediately (documented in ENVIRONMENT.md). |
 | v0.0.137 | 7 May | Captured-`Array<T>` indexing inside a closure body ([#588](https://github.com/aallan/vera/issues/588)). |
 | v0.0.138 | 7 May | Closure-return shadow-push asymmetry ([#593](https://github.com/aallan/vera/issues/593)). |
 | v0.0.139 | 8 May | Closure codegen pair: `f()[i]` element-type inference ([#614](https://github.com/aallan/vera/issues/614)) and capture ordering. |
@@ -363,7 +363,7 @@ First the gates: Windows in CI, walker-completeness enforcement, the stress harn
 | v0.0.151 | 12 May | Walker-completeness audit with pre-commit enforcement ([#597](https://github.com/aallan/vera/issues/597)). |
 | v0.0.152 | 13 May | Stress-test harness for scale-dependent regression coverage ([#596](https://github.com/aallan/vera/issues/596)). |
 | v0.0.153 | 13 May | SMT translator covers `FloatLit` / `IndexExpr` / `ArrayLit` in contracts ([#667](https://github.com/aallan/vera/issues/667)). |
-| v0.0.154 | 13 May | GC-aware tail-call optimization for allocating functions ([#549](https://github.com/aallan/vera/issues/549)). |
+| v0.0.154 | 13 May | GC-aware tail-call optimisation for allocating functions ([#549](https://github.com/aallan/vera/issues/549)). |
 | v0.0.155 | 13 May | Wrapper-handle bit-31 tagging closes the last conservative-GC retention bug ([#578](https://github.com/aallan/vera/issues/578)). |
 | v0.0.156 | 19 May | `vera test` fails closed on verifier-refuted contracts ([#674](https://github.com/aallan/vera/issues/674)). |
 | v0.0.157 | 19 May | `IO.read_char` effect operation for single-character input ([#618](https://github.com/aallan/vera/issues/618)). |
@@ -402,7 +402,7 @@ After v0.0.170 the editor loop was complete, and attention turned to the verifie
 
 *Closing the gap between what the verifier proves and what the runtime does.*
 
-A sustained audit of every place where `vera verify` could prove a postcondition the runtime then violated — the Tier-0 silent-unsoundness burn-down, then pushing what remained up to Tier 1. Each hole became an auto-synthesised obligation: discharged statically where the value is provably in range, a loud compile error where it provably is not, and a runtime guard otherwise.
+A sustained audit of every place where `vera verify` could prove a postcondition the runtime then violated: the Tier-0 silent-unsoundness burn-down, then pushing what remained up to Tier 1. Each hole became an auto-synthesised obligation: discharged statically where the value is provably in range, a loud compile error where it provably is not, and a runtime guard otherwise.
 
 | Version | Date | What shipped |
 |---------|------|-------------|
@@ -430,7 +430,7 @@ A sustained audit of every place where `vera verify` could prove a postcondition
 
 ## Stage 16: The server-effects sprint (2–3 July)
 
-*From concurrent `<Async>` to a served `<HttpServer>` — the road to WASI.*
+*From concurrent `<Async>` to a served `<HttpServer>`: the road to WASI.*
 
 Demo-first: each stage ships a working capability, cut as its own release, on the way to Vera programs serving verified HTTP.  Groundwork recorded in [`WASI.md`](WASI.md) (the executed toolchain spike: component-text instantiation, host threading, `wasmtime serve`).
 
@@ -446,11 +446,11 @@ Demo-first: each stage ships a working capability, cut as its own release, on th
 
 *Zero known bugs, then the first minor release.*
 
-A single integration branch absorbed a fix for every open `bug`-labelled issue — 37 in all, each on its own adversarially-reviewed PR, the severest being silent wrong results (ADT ordering and non-`Eq` `==` compiled to pointer comparisons, now rejected at check).  With the tracker empty, **v0.1.0** shipped with the literal "No known bugs."
+A single integration branch absorbed a fix for every open `bug`-labelled issue, 37 in all, each on its own adversarially-reviewed PR, the severest being silent wrong results (ADT ordering and non-`Eq` `==` compiled to pointer comparisons, now rejected at check).  With the tracker empty, **v0.1.0** shipped with the literal "No known bugs."
 
 | Version | Date | What shipped |
 |---------|------|-------------|
-| v0.1.0 | 4 Jul | **Zero known bugs** — the first minor release: 37 `bug`-labelled issues fixed on one integration branch. |
+| v0.1.0 | 4 Jul | **Zero known bugs**: the first minor release: 37 `bug`-labelled issues fixed on one integration branch. |
 
 
 
@@ -462,7 +462,7 @@ Three external PRs hardened the self-checking machinery, and their adversarial r
 
 | Version | Date | What shipped |
 |---------|------|-------------|
-| v0.1.1 | 8 Jul | **The visual documentation release** — 34 figures, a six-auditor consistency sweep, three external PRs, and the #957 verifier-soundness fix. |
+| v0.1.1 | 8 Jul | **The visual documentation release**: 34 figures, a six-auditor consistency sweep, three external PRs, and the #957 verifier-soundness fix. |
 
 
 
@@ -470,23 +470,23 @@ Three external PRs hardened the self-checking machinery, and their adversarial r
 
 *Two sprints at once.*
 
-Stages 19 and 20 run dual-threaded: community PRs against the single-source sprint's table landed first — the scheduled limitations-sync workflow (made failure-proof in review), the advisory Linux aarch64 lane, and the diagnostic-fields gate-honesty pair — while the verification-completeness campaign follows.  The pre-release sweep also caught an E009 crash, fixed in the release, and retired two CI workarounds whose removal triggers had fired.
+Stages 19 and 20 run dual-threaded: community PRs against the single-source sprint's table landed first (the scheduled limitations-sync workflow, made failure-proof in review, the advisory Linux aarch64 lane, and the diagnostic-fields gate-honesty pair), while the verification-completeness campaign follows.  The pre-release sweep also caught an E009 crash, fixed in the release, and retired two CI workarounds whose removal triggers had fired.
 
 | Version | Date | What shipped |
 |---------|------|-------------|
-| v0.1.2 | 9 Jul | **The gate-hardening batch** — scheduled limitations-sync, the arm64 advisory lane, the gate-honesty pair ([#956](https://github.com/aallan/vera/issues/956)), and the E009 crash fix from the pre-release sweep. |
-| v0.1.3 | 10 Jul | **Monomorphizer completeness** ([#769](https://github.com/aallan/vera/issues/769)) — registry-complete builtin return tables, recursive type-argument unification, and the scope-aware De Bruijn reindex walker. |
-| v0.1.4 | 11 Jul | **The second burndown** — 19 bug fixes across the checker, verifier, and codegen: the fresh-ctor-var family under `forall`, where-helper scoping, `handle[State<T>]` clause execution, the `@Nat`/`@Int` obligations, and imported-body compilation ([#991](https://github.com/aallan/vera/issues/991)). |
-| v0.1.5 | 17 Jul | **The third burndown and the first PyPI release** — 29 bug-labelled issues fixed across the checker, codegen, and diagnostics, published to PyPI as `veralang` ([#737](https://github.com/aallan/vera/issues/737)). |
-| v0.1.6 | 20 Jul | **The comment system** — block comments nest, malformed ones get their own `E02x` diagnostics, annotation labels reach the AST, and `vera fmt` stops deleting comments it had silently dropped since the formatter was written ([#1112](https://github.com/aallan/vera/issues/1112)). |
-| v0.1.7 | 24 Jul | **SQL injection won't compile** — the built-in `<DB>` effect and a literal-provenance checker that makes SQL injection a compile-time error ([#309](https://github.com/aallan/vera/issues/309): `E207`/`E208`/`E209`), plus the bare-effect-op routing check (`E217`) and a Float64 rounding-assertion CI-flake fix. |
-| v0.1.8 | 27 Jul | **Editors and toolchain hygiene** — the VS Code extension reaches the Marketplace ([#1106](https://github.com/aallan/vera/issues/1106)). |
-| v0.1.9 | 4 Aug | **The declarable-trap purge** — the reserved-name family completes under E153 ([#1187](https://github.com/aallan/vera/issues/1187)). |
-| v0.1.10 | 12 Aug | **The handler-machinery consolidation** — 37 bugs fixed by giving each fact one derivation ([#1213](https://github.com/aallan/vera/issues/1213)). |
-| v0.1.11 | 13 Aug | **The community-PR queue clears** — seven third-party contributions reviewed and merged. |
-| v0.1.12 | 15 Aug | **The twelve-group burndown** — refusal rails, the JSON accept domain, throw-payload guards, branch-join monomorphization, and release and spec-drift gates. |
-| v0.1.13 | 21 Aug | **The inference response-shape fix** — `Inference.complete` selects text by block type, and every failure names its provider. |
-| v0.2.0 | 28 Sep | **The soundness release** — termination, obligations where the program evaluates, and runtime traps that name their cause ([#1480](https://github.com/aallan/vera/issues/1480)). |
+| v0.1.2 | 9 Jul | **The gate-hardening batch**: scheduled limitations-sync, the arm64 advisory lane, the gate-honesty pair ([#956](https://github.com/aallan/vera/issues/956)), and the E009 crash fix from the pre-release sweep. |
+| v0.1.3 | 10 Jul | **Monomorphizer completeness** ([#769](https://github.com/aallan/vera/issues/769)): registry-complete builtin return tables, recursive type-argument unification, and the scope-aware De Bruijn reindex walker. |
+| v0.1.4 | 11 Jul | **The second burndown**: 19 bug fixes across the checker, verifier, and codegen: the fresh-ctor-var family under `forall`, where-helper scoping, `handle[State<T>]` clause execution, the `@Nat`/`@Int` obligations, and imported-body compilation ([#991](https://github.com/aallan/vera/issues/991)). |
+| v0.1.5 | 17 Jul | **The third burndown and the first PyPI release**: 29 bug-labelled issues fixed across the checker, codegen, and diagnostics, published to PyPI as `veralang` ([#737](https://github.com/aallan/vera/issues/737)). |
+| v0.1.6 | 20 Jul | **The comment system**: block comments nest, malformed ones get their own `E02x` diagnostics, annotation labels reach the AST, and `vera fmt` stops deleting comments it had silently dropped since the formatter was written ([#1112](https://github.com/aallan/vera/issues/1112)). |
+| v0.1.7 | 24 Jul | **SQL injection won't compile**: the built-in `<DB>` effect and a literal-provenance checker that makes SQL injection a compile-time error ([#309](https://github.com/aallan/vera/issues/309): `E207`/`E208`/`E209`), plus the bare-effect-op routing check (`E217`) and a Float64 rounding-assertion CI-flake fix. |
+| v0.1.8 | 27 Jul | **Editors and toolchain hygiene**: the VS Code extension reaches the Marketplace ([#1106](https://github.com/aallan/vera/issues/1106)). |
+| v0.1.9 | 4 Aug | **The declarable-trap purge**: the reserved-name family completes under E153 ([#1187](https://github.com/aallan/vera/issues/1187)). |
+| v0.1.10 | 12 Aug | **The handler-machinery consolidation**: 37 bugs fixed by giving each fact one derivation ([#1213](https://github.com/aallan/vera/issues/1213)). |
+| v0.1.11 | 13 Aug | **The community-PR queue clears**: seven third-party contributions reviewed and merged. |
+| v0.1.12 | 15 Aug | **The twelve-group burndown**: refusal rails, the JSON accept domain, throw-payload guards, branch-join monomorphization, and release and spec-drift gates. |
+| v0.1.13 | 21 Aug | **The inference response-shape fix**: `Inference.complete` selects text by block type, and every failure names its provider. |
+| v0.2.0 | 28 Sep | **The soundness release**: termination, obligations where the program evaluates, and runtime traps that name their cause ([#1480](https://github.com/aallan/vera/issues/1480)). |
 
 ## Stage 21 and Stage 22: Instruments and truth (9–13 October)
 
@@ -496,8 +496,8 @@ The first of the releases toward v0.3.0's sound base gave the pipeline instrumen
 
 | Version | Date | What shipped |
 |---------|------|-------------|
-| v0.2.1 | 10 Oct | **Instruments and truth** — the pipeline checks its own claims. |
-| v0.2.2 | 13 Oct | **Fast lane and one driver** — a 12-to-19-minute pull-request lane, one in-process test driver, CHANGELOG fragments, rendered lists, and the scorecard measured at release. |
+| v0.2.1 | 10 Oct | **Instruments and truth**: the pipeline checks its own claims. |
+| v0.2.2 | 13 Oct | **Fast lane and one driver**: a 12-to-19-minute pull-request lane, one in-process test driver, CHANGELOG fragments, rendered lists, and the scorecard measured at release. |
 
 ## Stage 23: `Nat` and the lowering boundary (13–15 October)
 
@@ -507,7 +507,7 @@ v0.2.3 made `Nat` the non-negative i64 that spec §2.2 defines, where the compil
 
 | Version | Date | What shipped |
 |---------|------|-------------|
-| v0.2.3 | 15 Oct | **`Nat` and the lowering boundary** — `Nat` the non-negative i64 and every literal an `Int`, what code generation cannot lower refused at check, effect operations held to their row, short-circuit `&&`, `\|\|` and `==>`, nested patterns read to full depth, and the open bugs consolidated by mechanism. |
+| v0.2.3 | 15 Oct | **`Nat` and the lowering boundary**: `Nat` the non-negative i64 and every literal an `Int`, what code generation cannot lower refused at check, effect operations held to their row, short-circuit `&&`, `\|\|` and `==>`, nested patterns read to full depth, and the open bugs consolidated by mechanism. |
 
 ## Stage 24: Hosts and the fold (15–16 October)
 
@@ -517,7 +517,7 @@ v0.2.4 gave the host bindings and the tree walks one source each.  The built-in 
 
 | Version | Date | What shipped |
 |---------|------|-------------|
-| v0.2.4 | 16 Oct | **Hosts and the fold** — every built-in one registry record and every host import bound from its row, `Map` and `Set` as persistent hash tries in the module's own code, bytes in, out and through, one fold over the AST with the walker-coverage gate retired, mutation testing over a pull request's diff and over all of `vera/` by night, a call's facts assumed only where its arguments fit, a destructuring `let` checked as the pattern it names, and a collector that marks a heap of any width. |
+| v0.2.4 | 16 Oct | **Hosts and the fold**: every built-in one registry record and every host import bound from its row, `Map` and `Set` as persistent hash tries in the module's own code, bytes in, out and through, one fold over the AST with the walker-coverage gate retired, mutation testing over a pull request's diff and over all of `vera/` by night, a call's facts assumed only where its arguments fit, a destructuring `let` checked as the pattern it names, and a collector that marks a heap of any width. |
 
 ## Stage 25: One resolver (21–22 October)
 
@@ -527,7 +527,7 @@ v0.2.5 gave names one owner.  A binding pass, `vera/binding.py`, gives every dec
 
 | Version | Date | What shipped |
 |---------|------|-------------|
-| v0.2.5 | 22 Oct | **One resolver** — every name bound once to one declaration and read by the checker, the verifier and code generation, the prelude's names reserved, `vera verify` reconciled by default, `Map` and `Set` keyed per instantiation, contracts held to purity, a program generator with three nightly differentials, and the conformance corpus running what it names. |
+| v0.2.5 | 22 Oct | **One resolver**: every name bound once to one declaration and read by the checker, the verifier and code generation, the prelude's names reserved, `vera verify` reconciled by default, `Map` and `Set` keyed per instantiation, contracts held to purity, a program generator with three nightly differentials, and the conformance corpus running what it names. |
 
 ## Stage 26: One typed program (22–28 October)
 
@@ -537,7 +537,7 @@ v0.2.6 gave types one owner.  The checker records each generic call's type argum
 
 | Version | Date | What shipped |
 |---------|------|-------------|
-| v0.2.6 | 28 Oct | **One typed program** — every generic's instances derived once from the check and judged at the call that chooses them, code generation and the verifier each reading every type from the typed program, save seventeen code-generation functions that read a written type, a call argument's open type variable bound to one type and a function-typed argument's by the polarity of its position, every diagnostic with a registered code, every source decoded by one reader with a file that is not UTF-8 refused, a collector that never marks a free block, a module declaring only the cells and tags its code uses, the program generator's second version with a warm-session differential, the mutation lanes installing the lock with an engine-failure classifier and its class matrix, and the lock on z3-solver 5.3.2.0 with the hold on 5.x ended. |
+| v0.2.6 | 28 Oct | **One typed program**: every generic's instances derived once from the check and judged at the call that chooses them, code generation and the verifier each reading every type from the typed program, save seventeen code-generation functions that read a written type, a call argument's open type variable bound to one type and a function-typed argument's by the polarity of its position, every diagnostic with a registered code, every source decoded by one reader with a file that is not UTF-8 refused, a collector that never marks a free block, a module declaring only the cells and tags its code uses, the program generator's second version with a warm-session differential, the mutation lanes installing the lock with an engine-failure classifier and its class matrix, and the lock on z3-solver 5.3.2.0 with the hold on 5.x ended. |
 
 ## Stage 27: One obligation table (29 October – 9 November)
 
@@ -547,7 +547,7 @@ v0.2.7 gave obligations one owner.  One pass over the typed program, `vera/oblig
 
 | Version | Date | What shipped |
 |---------|------|-------------|
-| v0.2.7 | 9 Nov | **One obligation table** — the table complete, with code generation guarding and the verifier discharging its rows, a join's recorded refinement no longer a premise of the value, a generic at a function type compiled, the small verifier batch of counterexamples, refused binders and stand-ins, the nightly matrix on pinned images, and the mutation sweep sampled by line. |
+| v0.2.7 | 9 Nov | **One obligation table**: the table complete, with code generation guarding and the verifier discharging its rows, a join's recorded refinement no longer a premise of the value, a generic at a function type compiled, the small verifier batch of counterexamples, refused binders and stand-ins, the nightly matrix on pinned images, and the mutation sweep sampled by line. |
 
 ## Stage 28: Decomposition and the spec (from 11 November)
 
@@ -557,7 +557,7 @@ v0.2.8 opened the stage with the bugs the obligation table's reviews had left lo
 
 | Version | Date | What shipped |
 |---------|------|-------------|
-| v0.2.8 | 13 Nov | **Joins and open variables** — a join typed at what its arms share, a type variable given one type whatever the argument order and fixed by the type its site expects, messages that quote the program's own text with fixes computed from the site, a check kept on a tail call's result, and the mutation sweep accounting per mutant under a memory bound. |
+| v0.2.8 | 13 Nov | **Joins and open variables**: a join typed at what its arms share, a type variable given one type whatever the argument order and fixed by the type its site expects, messages that quote the program's own text with fixes computed from the site, a check kept on a tail call's result, and the mutation sweep accounting per mutant under a memory bound. |
 
 ---
 
@@ -576,6 +576,6 @@ Ten releases, chosen for the capability each one unlocked rather than even spaci
 | Built-in functions | 0 | 0 | ~30 | 122 | 164 | 164 | 164 | 164 | 164 | 164 |
 | Conformance programs | 0 | 0 | 0 | 64 | 89 | 103 | 104 | 104 | 143 | 163 |
 | Spec chapters | 7 | 10 | 12 | 13 | 13 | 13 | 13 | 14 | 14 | 14 |
-| Python coverage | — | — | 90% | 96% | 95% | 95% | 95% | 95% | 95% | 95% |
+| Python coverage | – | – | 90% | 96% | 95% | 95% | 95% | 95% | 95% | 95% |
 
 Total: **3,300+ commits, 220 tagged releases, 176 active development days.**

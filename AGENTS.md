@@ -1,4 +1,4 @@
-# AGENTS.md — Instructions for AI agents
+# AGENTS.md: instructions for AI agents
 
 This document is for AI agents working with the Vera codebase. There are two audiences: agents writing Vera code, and agents working on the compiler.
 
@@ -8,7 +8,7 @@ Read `SKILL.md` for the full language reference. It covers syntax, slot referenc
 
 ### Conformance programs as reference
 
-The conformance suite in `tests/conformance/` contains small, self-contained programs — named by spec chapter and feature (`chNN_feature.vera`) — that serve as minimal working examples (most are fully self-contained; the cross-module programs of Chapters 7–9 import companion `_lib`/module fixtures). Each positive program must pass its declared verification level (see `manifest.json` for mappings: `parse`, `check`, `verify`, or `run`); the negative fixtures (the entries with `expected_error` in `tests/conformance/manifest.json`) instead must *fail* with the E-code in their `expected_error` field, at the stage their `expected_error_stage` names — `check` by default, or `compile` for a diagnostic the checker accepts and codegen refuses. When you need to see how a specific construct works (e.g. effect handlers, match expressions, closures), check the corresponding conformance program before reading the spec.
+The conformance suite in `tests/conformance/` contains small programs, named by spec chapter and feature (`chNN_feature.vera`), that serve as minimal working examples. Most are self-contained; the cross-module programs of Chapters 7 to 9 import companion `_lib` and module fixtures. Each positive program must pass its declared verification level (see `manifest.json` for mappings: `parse`, `check`, `verify`, or `run`); the negative fixtures (the entries with `expected_error` in `tests/conformance/manifest.json`) instead must *fail* with the E-code in their `expected_error` field, at the stage their `expected_error_stage` names: `check` by default, or `compile` for a diagnostic the checker accepts and codegen refuses. When you need to see how a specific construct works (e.g. effect handlers, match expressions, closures), check the corresponding conformance program before reading the spec.
 
 ### Workflow
 
@@ -16,7 +16,7 @@ The conformance suite in `tests/conformance/` contains small, self-contained pro
 write .vera file -> vera check -> fix errors -> vera verify -> fix errors -> done
 ```
 
-Use **typed holes** (`?`) to build programs incrementally. A `?` in any expression position is valid — `vera check` reports a `W001` warning with the expected type and all available slot bindings:
+Use **typed holes** (`?`) to build programs incrementally. A `?` in any expression position is valid, and `vera check` reports a `W001` warning with the expected type and all available slot bindings:
 
 ```text
 warning: [W001] Warning at file.vera, line 6, column 3:
@@ -35,7 +35,7 @@ warning: [W001] Warning at file.vera, line 6, column 3:
   See: Chapter 4, Section 4.17 "Typed Holes"
 ```
 
-Programs with holes type-check (`ok: true`) but cannot compile (`E614`). Iterative workflow:
+Programs with holes type-check (`ok: true`) but cannot compile (`E614`). The iterative workflow:
 
 ```text
 write skeleton with ? -> vera check (get W001 hints) -> fill holes -> vera check -> vera verify
@@ -73,22 +73,22 @@ vera effects [--json]             # List the effect and ability registry (no fil
 vera errors [--json]              # List the diagnostic-code registry (no file needed)
 ```
 
-See [TOOLCHAIN.md](TOOLCHAIN.md) for the CLI cookbook — driving the toolchain to write, verify, test, run, and debug Vera, including the `builtins`/`effects`/`errors` introspection commands.
+See [TOOLCHAIN.md](TOOLCHAIN.md) for the CLI cookbook: driving the toolchain to write, verify, test, run, and debug Vera, including the `builtins`/`effects`/`errors` introspection commands.
 
 ### The language server: proof deltas without re-running the CLI
 
 For long editing sessions, `vera lsp` (install: `pip install -e ".[lsp]"`) keeps a warm incremental Z3 session alive, so verification feedback arrives at editor latency instead of cold-start latency. Any LSP client gets diagnostics (same error codes as `--json`), per-function verification-tier hints, hover types, slot go-to-definition, and typed-hole completion.
 
-Four custom methods exist specifically for agents — full request/response shapes in [LSP_SERVER.md](LSP_SERVER.md):
+Four custom methods are for agents; [LSP_SERVER.md](LSP_SERVER.md) gives their request and response shapes:
 
 | Method | Question it answers |
 |---|---|
-| `vera/speculativeEdit` | "Would this edit keep, break, or strengthen the proofs?" — in-memory verify, returns a proof delta, touches nothing |
-| `vera/proposeEdit` | "Apply this edit *iff* it verifies" — the gate cannot be skipped; `force: true` overrides loudly |
-| `vera/strengthenContract` | "Tighten this contract — do all call sites still satisfy it?" — refusals point at the breaking call sites |
-| `vera/addEffect` | "Thread this effect through every transitive caller" — one verified multi-site rewrite, all-or-nothing |
+| `vera/speculativeEdit` | "Would this edit keep, break, or strengthen the proofs?" In-memory verify; returns a proof delta and touches nothing |
+| `vera/proposeEdit` | "Apply this edit *iff* it verifies." The gate cannot be skipped; `force: true` overrides it and says so |
+| `vera/strengthenContract` | "Tighten this contract: do all call sites still satisfy it?" A refusal names the breaking call sites |
+| `vera/addEffect` | "Thread this effect through every transitive caller." One verified multi-site rewrite, all or nothing |
 
-The intended loop: draft → `speculativeEdit` → inspect the delta → `proposeEdit`. Prefer the two structured refactors over hand-editing contracts/effect rows — the server constructs the candidate and audits the blast radius for you.
+The intended loop: draft → `speculativeEdit` → inspect the delta → `proposeEdit`. Prefer the two structured refactors to hand-editing contracts and effect rows, since the server builds the candidate and checks every call site it reaches.
 
 ### Error handling
 
@@ -105,7 +105,7 @@ For machine-parseable errors, use the `--json` flag:
       "severity": "error",
       "description": "Function is missing its contract block...",
       "location": {"file": "example.vera", "line": 12, "column": 1},
-      "source_line": "private fn add(@Int, @Int -> @Int)",
+      "source_line": "{",
       "rationale": "Vera requires all functions to have explicit contracts...",
       "fix": "Add a contract block after the signature:\n\n  private fn example(@Int -> @Int)\n    requires(true)\n    ensures(@Int.result >= 0)\n    effects(pure)\n  {\n    ...\n  }",
       "spec_ref": "Chapter 5, Section 5.2 \"Function Declaration Syntax\"",
@@ -122,17 +122,17 @@ Every diagnostic carries a stable code, which `vera errors` lists. Common codes:
 
 | Code | Meaning |
 |------|---------|
-| W001 | Typed hole (`?`) — expected type and available bindings reported |
+| W001 | Typed hole (`?`); reports the expected type and available bindings |
 | E001 | Missing contract block (requires/ensures/effects) |
-| E020 | Unterminated block comment — `{-` with no matching `-}` (they nest, so each needs its own closer) |
-| E121 | Function body type doesn't match return type |
+| E020 | Unterminated block comment: `{-` with no matching `-}` (they nest, so each needs its own closer) |
+| E121 | Function body type does not match return type |
 | E130 | Unresolved slot reference (`@T.n` has no matching binding) |
 | E140 | Arithmetic requires numeric operands |
 | E170 | Let binding type mismatch |
 | E200 | Unresolved function call |
 | E300 | If condition is not Bool |
 | E311 | Non-exhaustive match |
-| E614 | Program contains typed holes — compile rejected until holes are filled |
+| E614 | Program contains typed holes; compile is refused until they are filled |
 
 Full code ranges: W0xx (warnings), E0xx (parse), E1xx (type/expressions), E2xx (calls), E3xx (control flow), E5xx (verification), E6xx (codegen), E7xx (testing), E8xx (run: a program's own failure while it runs), E9xx (command: the command line's own refusals). See `vera/errors.py` `ERROR_CODES` for the complete registry.
 
@@ -147,15 +147,16 @@ The `verify --json` output includes a verification summary:
   "verification": {
     "tier1_verified": 2,
     "tier3_runtime": 0,
+    "total": 2,
     "assumptions": 0,
-    "total": 2
+    "timeout_ms": 10000
   }
 }
 ```
 
-Alongside it, an `obligations` array carries one entry per reified proof obligation (`kind`, `status`, `description`, `location`). The summary is derived from that array by `status` — `verified` counts as `tier1_verified`, `tier3`/`timeout` as `tier3_runtime`, and `total` is their sum. Reproduce the counts by *filtering on `status`*, not by taking the array's length: a `violated` or `tier3_unguarded` obligation discharged to no tier, so it is counted nowhere and is surfaced as an error or warning diagnostic instead. On a program with one refuted contract, `total: 2` beside a three-entry array is the expected partition.
+Alongside it, an `obligations` array holds one entry per reified proof obligation (`kind`, `status`, `description`, `location`). The summary is derived from that array by `status`: `verified` counts as `tier1_verified`, `tier3` and `timeout` as `tier3_runtime`, and `total` is their sum. Reproduce the counts by *filtering on `status`*, not by taking the array's length: a `violated` or `tier3_unguarded` obligation discharged to no tier, so it is counted nowhere and is surfaced as an error or warning diagnostic instead. On a program with one refuted contract, `total: 2` beside a three-entry array is the expected partition.
 
-`assumptions` sits beside those counts and is NOT part of that identity: it counts the `assume` statements this run took on trust (one W003 warning each, spec §6.2.6), which are not obligations and discharge to no tier. It is derived from the assembled diagnostics, so a consumer reproduces it by counting W003 rather than by reading any obligation's status. A non-zero value is the honest measure of how much of a "verified" result rests on something nobody proved.
+`assumptions` sits beside those counts and is NOT part of that identity: it counts the `assume` statements this run took on trust (one W003 warning each, spec §6.2.6), which are not obligations and discharge to no tier. It is derived from the assembled diagnostics, so a consumer reproduces it by counting W003 rather than by reading any obligation's status. A non-zero value measures how much of a "verified" result rests on something nobody proved.
 
 
 ### Essential rules
@@ -167,7 +168,7 @@ Alongside it, an `obligations` array carries one entry per reified proof obligat
 5. `Inference.complete(@String.0)` returns `Result<String, String>`; requires `VERA_ANTHROPIC_API_KEY`, `VERA_OPENAI_API_KEY`, `VERA_MOONSHOT_API_KEY` (Kimi), `VERA_MISTRAL_API_KEY`, `VERA_XAI_API_KEY` (Grok), or `VERA_DEEPSEEK_API_KEY` to run; provider auto-detected from whichever key is set to a non-empty value.  See [`ENVIRONMENT.md`](ENVIRONMENT.md) for the full env-var reference, including `VERA_INFERENCE_PROVIDER` / `VERA_INFERENCE_MODEL` overrides
 6. Recursive functions need a `decreases()` clause
 7. Match expressions must be exhaustive
-8. `DB.query` / `DB.execute` (effect `<DB>`) take a **literal** SQL string — a query assembled from a runtime value is a compile-time error (`E207`). Every runtime value goes through a `?` placeholder and the `Array<Option<String>>` params array (`DB.query("SELECT ... WHERE id = ?", [Some(@String.0)])`); a placeholder/params count mismatch with a literal params array is `E208`. The connection comes from `VERA_DB_URL` (default: in-memory SQLite) — see [`ENVIRONMENT.md`](ENVIRONMENT.md)
+8. `DB.query` / `DB.execute` (effect `<DB>`) take a **literal** SQL string; a query assembled from a runtime value is a compile-time error (`E207`). Every runtime value goes through a `?` placeholder and the `Array<Option<String>>` params array (`DB.query("SELECT ... WHERE id = ?", [Some(@String.0)])`); a placeholder/params count mismatch with a literal params array is `E208`. The connection comes from `VERA_DB_URL` (default: in-memory SQLite); see [`ENVIRONMENT.md`](ENVIRONMENT.md)
 
 ## For agents working on the compiler
 
@@ -176,10 +177,10 @@ Read `vera/README.md` for architecture docs, module map, and design patterns.
 ### Pipeline
 
 ```
-source -> parse (parser.py) -> transform (transform.py) -> resolve (resolver.py) -> typecheck (checker/) -> verify (verifier.py) -> compile (codegen/ + wasm/) -> execute (wasmtime or browser/runtime.mjs)
+source -> parse (parser.py) -> transform (transform.py) -> resolve (resolver.py, then binding.py) -> typecheck (checker/) -> typed program (typed.py) -> verify (verifier.py) -> compile (codegen/ + wasm/) -> execute (wasmtime or browser/runtime.mjs)
 ```
 
-Each stage is a module with a single public API function (`parse_file`, `transform`, `resolve_imports`, `typecheck`, `verify`, `compile`, `execute`, `test`) and is independently testable.
+Each stage is a module with a public entry point (`parse_file`, `transform`, `ModuleResolver.resolve_imports`, `typecheck`, `verify`, `compile`, `execute`, and `test` for the contract tester) and is independently testable. `typecheck` runs the binding pass; the verifier and code generation read the one typed program that `typed.py` builds.
 
 ### Key modules
 
@@ -216,13 +217,13 @@ python scripts/check_corpus_canonical.py # Every corpus program in canonical for
 
 Test helpers follow a pattern: `_check_ok(source)` / `_check_err(source, match)` / `_verify_ok(source)` / `_verify_err(source, match)`. See existing tests for examples.
 
-When implementing a new language feature, write the conformance program *first* — add a `.vera` file and manifest entry in `tests/conformance/`, then implement the feature until the conformance test passes.  A `run`-level entry pins its run: `expected_stdout`, exactly what the program must print, and `expected_exit`, or a `nondeterministic_stdout` reason in place of `expected_stdout` (TESTING.md § Manifest).
+When implementing a new language feature, write the conformance program *first*: add a `.vera` file and manifest entry in `tests/conformance/`, then implement the feature until the conformance test passes.  A `run`-level entry pins its run: `expected_stdout`, exactly what the program must print, and `expected_exit`, or a `nondeterministic_stdout` reason in place of `expected_stdout` (TESTING.md § Manifest).
 
-When one mechanism bounds a bug's class, the fix closes the **class** the report belongs to, not the reported instance, in the same pull request and bounded to that mechanism: name the class boundary in the PR body and ship a class instrument — an exhaustive matrix over the space the class spans, or a generator — rather than hand-picked cases.  A class whose boundary is architectural, two phases re-deriving the same fact, is not fixed per site: its issue carries the milestone of the release that removes the mechanism, and closes there.  A class instrument is a burndown tool: its file carries the `matrix` marker, naming the modules that decide its class; the nightly lane and any pull request that changes the file or one of those modules run it in full, and every other pull request runs a stratified sample of its cells, pinned for a week.  Review is capped at three rounds; a fourth needs a written answer to "which mechanism produces these members, and does this PR remove it?".  One issue per class, with its instances as a checklist.  See `CONTRIBUTING.md` § Bugs: the class, not the instance, and `TESTING.md` § Class Instruments.
+When one mechanism bounds a bug's class, the fix closes the **class** the report belongs to, not the reported instance, in the same pull request and bounded to that mechanism: name the class boundary in the PR body and ship a class instrument (an exhaustive matrix over the space the class spans, or a generator) rather than hand-picked cases.  A class whose boundary is architectural, two phases re-deriving the same fact, is not fixed per site: its issue carries the milestone of the release that removes the mechanism, and closes there.  A class instrument is a burndown tool: its file has the `matrix` marker, naming the modules that decide its class; the nightly lane and any pull request that changes the file or one of those modules run it in full, and every other pull request runs a stratified sample of its cells, pinned for a week.  Review is capped at three rounds; a fourth needs a written answer to "which mechanism produces these members, and does this PR remove it?".  One issue per class, with its instances as a checklist.  See `CONTRIBUTING.md` § Bugs: the class, not the instance, and `TESTING.md` § Class Instruments.
 
 ### Invariants
 
-- Every conformance program in `tests/conformance/` must hold at its declared level — positive entries pass, and the negative fixtures (the entries with `expected_error` in `tests/conformance/manifest.json`) must *fail* with their `expected_error` E-code, at the stage `expected_error_stage` names — `check` by default, or `compile` for a diagnostic the checker accepts and codegen refuses, which also asserts the program type-checks cleanly first
+- Every conformance program in `tests/conformance/` must hold at its declared level: positive entries pass, and the negative fixtures (the entries with `expected_error` in `tests/conformance/manifest.json`) must *fail* with their `expected_error` E-code, at the stage `expected_error_stage` names (`check` by default, or `compile` for a diagnostic the checker accepts and codegen refuses, which also asserts the program type-checks cleanly first)
 - Every example in `examples/` must pass `vera check` and `vera verify`
 - `mypy vera/` must be clean
 - `pytest tests/ -v` must pass
@@ -230,10 +231,10 @@ When one mechanism bounds a bug's class, the fix closes the **class** the report
 
 ### Releases and install docs
 
-**Releases are automated after merge.** A version bump on `main` (`[project].version` in `pyproject.toml`, with a matching non-empty `CHANGELOG.md` section) triggers `.github/workflows/release.yml`: it builds, waits for the maintainer to approve the protected `pypi` environment, publishes to PyPI via Trusted Publishing, then creates the tag and GitHub Release at the merge SHA. Do NOT create tags, run `twine`, or `gh release create` — the maintainer and the workflow own that. See `CONTRIBUTING.md` §Releases and `RELEASING.md`.
+**Releases are automated after merge.** A version bump on `main` (`[project].version` in `pyproject.toml`, with a matching non-empty `CHANGELOG.md` section) triggers `.github/workflows/release.yml`: it builds, waits for the maintainer to approve the protected `pypi` environment, publishes to PyPI via Trusted Publishing, then creates the tag and GitHub Release at the merge SHA. Do NOT create tags, run `twine`, or `gh release create`; the maintainer and the workflow own that. See `CONTRIBUTING.md` §Releases and `RELEASING.md`.
 
-**Install docs are circumstance-dependent — match `README.md`, `SKILL.md`, and `PYPI_README.md`; don't invent "the install route".** The GitHub source checkout (`pip install -e .`, plus `[lsp]` or `[dev]`) is the full environment — the toolchain alongside `examples/`, `tests/conformance/`, and `spec/` — and is the recommended route for agents; `pip install veralang` installs the toolchain only; the `[lsp]` extra adds the language server; never write `pip install vera` (an unrelated PyPI project). Only document a channel as an available install route once the artifact is live there **and** the install flow works end to end — check the registry, don't rely on what you remember. The VS Code extension meets that bar: [`veralang.vera-language`](https://marketplace.visualstudio.com/items?itemName=veralang.vera-language) installs from the Marketplace, in the Extensions view or via `code --install-extension veralang.vera-language`. The same gate applies to any future distribution channel.
+**Install docs depend on circumstance: match `README.md`, `SKILL.md`, and `PYPI_README.md`, and do not invent "the install route".** The GitHub source checkout (`pip install -e .`, plus `[lsp]` or `[dev]`) is the full environment (the toolchain alongside `examples/`, `tests/conformance/`, and `spec/`) and is the recommended route for agents; `pip install veralang` installs the toolchain only; the `[lsp]` extra adds the language server; never write `pip install vera` (an unrelated PyPI project). Only document a channel as an available install route once the package is live there **and** the install flow works end to end; check the registry rather than relying on memory. The VS Code extension meets that bar: [`veralang.vera-language`](https://marketplace.visualstudio.com/items?itemName=veralang.vera-language) installs from the Marketplace, in the Extensions view or via `code --install-extension veralang.vera-language`. The same gate applies to any future distribution channel.
 
 ### Contributing
 
-See `CONTRIBUTING.md` for guidelines. Pre-commit hooks run the fast gates on every commit — ruff, mypy, trailing whitespace checks, the doc gates, and the test files the commit stages; CI runs the full test suite, the conformance suite and every example on every pull request.
+See `CONTRIBUTING.md` for the contribution guidelines. Pre-commit hooks run the fast gates on every commit: ruff, mypy, trailing whitespace checks, the doc gates, and the test files the commit stages. CI runs the full test suite, the conformance suite and every example on every pull request.

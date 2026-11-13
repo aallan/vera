@@ -31,7 +31,7 @@ module_decl: MODULE module_path SEMICOLON
 module_path: LOWER_IDENT (DOT LOWER_IDENT)*
 ```
 
-The module declaration must appear before any import declarations or top-level definitions. A file without a module declaration is still a valid module — it is treated as an anonymous module.
+The module declaration must appear before any import declarations or top-level definitions. A file without a module declaration is still a valid module; it is treated as an anonymous module.
 
 ## 8.3 Import Declarations
 
@@ -64,7 +64,7 @@ A selective import makes only the named declarations available. Each name in the
 Error: Cannot import 'helper' from module 'vera.math': it is private.
 ```
 
-**Design note.** Vera does not support wildcard exclusion syntax (e.g., `import m hiding(x)`). When a module exports names that conflict with local definitions or other imports, the canonical mechanism is selective import: list exactly the names needed — advice for the local-definition case (§8.5.2), and a requirement for the two-import case (§8.5.2.2). Wildcard exclusion would be a semantic equivalent of selective import — the same import set expressible two ways — violating the one-canonical-form principle (§0.2.3). When wildcard import causes a name clash, the local definition shadows the import (§8.5.2), and the imported version remains accessible via module-qualified call syntax (§8.5.3). Both mechanisms address a clashing data type or constructor name as well: each module's declaration is a type of its own (§8.5.4), and where a value of one must reach code expecting the other, the remedy is to declare the type once, in one module, and import it in the other (§8.5.2.2).
+**Design note.** Vera does not support wildcard exclusion syntax (e.g., `import m hiding(x)`). When a module exports names that conflict with local definitions or other imports, the canonical mechanism is selective import: list exactly the names needed. That is advice for the local-definition case (§8.5.2), and a requirement for the two-import case (§8.5.2.2). Wildcard exclusion would be a semantic equivalent of selective import (the same import set expressible two ways), violating the one-canonical-form principle (§0.2.3). When wildcard import causes a name clash, the local definition shadows the import (§8.5.2), and the imported version remains accessible via module-qualified call syntax (§8.5.3). Both mechanisms address a clashing data type or constructor name as well: each module's declaration is a type of its own (§8.5.4), and where a value of one must reach code expecting the other, the remedy is to declare the type once, in one module, and import it in the other (§8.5.2.2).
 
 ### 8.3.3 Grammar
 
@@ -107,7 +107,7 @@ private fn helper(@Int -> @Int)
 
 - `public` declarations are visible to any module that imports them.
 - `private` declarations are visible only within the module that defines them.
-- Type aliases (`type Foo = ...`), effect declarations (`effect E { ... }`), module declarations, and import statements do not take visibility modifiers. These declarations are **module-local** — they are not importable by other modules. If another module needs the same type alias or effect, it must declare its own copy. The prelude's own combinators resolve their closure-parameter types through aliases a program cannot name: those aliases carry reserved names, and a name beginning with `Vera` followed by an uppercase letter or digit is a compile error (**E154**) — whether the program *declares* that name as a type, an alias, an effect, an ability or a constructor, *binds* it as a type parameter, or merely *mentions* it in a type. The reservation is one rule across every namespace, so the prelude's internal namespace can be neither re-typed, shadowed by a binder, nor referenced, and a program that wants a short name for a function type declares its own alias for it. Outside a type position there is no alias escape, so the fix in the effect, ability and constructor namespaces is simply a name that does not start with the reserved prefix. The prelude is a module whose names are **reserved**: no declaration may take one, in the entry file or in any module, whatever its shape, so that each name the prelude declares has one meaning in every file. A `data` declaration, a `type` alias or a type parameter named after a prelude data type (`Option`, `Result`, `Ordering`, `UrlParts`, `Json`, `HtmlNode`, `Request`, `Response`), a built-in data type (`MdBlock`, `MdInline`) or a built-in type name (`Array`, `Decimal`, `Future`, `Map`, `Set`, `Tuple`) is **E158**, whatever number of type parameters it takes, and a function or a `where` helper named after one of the prelude's functions (`option_map`, `result_map`, `html_attr`, the `json_*` accessors and the rest, §9.1.2) is **E151**, on the same rule that reserves built-in function names (**E151**) and built-in effect names (**E152**); the fix is to rename the declaration. The built-in type names are reserved for a reason of their own as well: the compiler recognises `Future` and `Tuple` by name throughout code generation — how a value is rendered, compared and laid out — and a declaration of `Array`, `Map`, `Set` or `Decimal` that takes the built-in's number of type arguments would be the same type as the built-in, so a value of the built-in would be accepted where a value of the declaration is expected and read through the wrong layout. For `Future` and `Tuple` the reservation also covers the **constructor** namespace (`data Box { Tuple(Bool) }` is also **E158**), because code generation keys the built-in on the constructor's name as well as the type's. No other constructor name is reserved: a declaration may take a built-in type's name as a constructor (`data Money { Decimal(Int) }`), a primitive's (`data Value { Int(Int) }`) or a prelude constructor's, and a declaration that takes a prelude constructor's name does not change what the prelude's constructor of that name means — constructor layouts are keyed per owning data type, so the two coexist (a `data ZzBox { Less(Bool) }` leaves `Ordering`'s `Less` rendering as `Less`). The primitive type names (`Int`, `Nat`, `Bool`, `Float64`, `String`, `Byte`, `Unit`, `Never`) are reserved too, as a `data` type and as a `type` alias alike, for a different reason: a type position resolves the name to the primitive before it consults any declaration, so a declaration of one could never be named (**E158**). `vera.prelude.reserved_function_names()` and `vera.prelude.reserved_type_names()` are the one source of the reserved set.
+- Type aliases (`type Foo = ...`), effect declarations (`effect E { ... }`), module declarations, and import statements do not take visibility modifiers. These declarations are **module-local**: they are not importable by other modules. If another module needs the same type alias or effect, it must declare its own copy. The prelude's own combinators resolve their closure-parameter types through aliases a program cannot name: those aliases carry reserved names, and a name beginning with `Vera` followed by an uppercase letter or digit is a compile error (**E154**), whether the program *declares* that name as a type, an alias, an effect, an ability or a constructor, *binds* it as a type parameter, or merely *mentions* it in a type. The reservation is one rule across every namespace, so the prelude's internal namespace can be neither re-typed, shadowed by a binder, nor referenced, and a program that wants a short name for a function type declares its own alias for it. Outside a type position there is no alias escape, so the fix in the effect, ability and constructor namespaces is a name that does not start with the reserved prefix. The prelude is a module whose names are **reserved**: no declaration may take one, in the entry file or in any module, whatever its shape, so that each name the prelude declares has one meaning in every file. A `data` declaration, a `type` alias or a type parameter named after a prelude data type (`Option`, `Result`, `Ordering`, `UrlParts`, `Json`, `HtmlNode`, `Request`, `Response`), a built-in data type (`MdBlock`, `MdInline`) or a built-in type name (`Array`, `Decimal`, `Future`, `Map`, `Set`, `Tuple`) is **E158**, whatever number of type parameters it takes, and a function or a `where` helper named after one of the prelude's functions (`option_map`, `result_map`, `html_attr`, the `json_*` accessors and the rest, §9.1.2) is **E151**, on the same rule that reserves built-in function names (**E151**) and built-in effect names (**E152**); the fix is to rename the declaration. The built-in type names are reserved for a reason of their own as well: the compiler recognises `Future` and `Tuple` by name throughout code generation (how a value is rendered, compared and laid out), and a declaration of `Array`, `Map`, `Set` or `Decimal` that takes the built-in's number of type arguments would be the same type as the built-in, so a value of the built-in would be accepted where a value of the declaration is expected and read through the wrong layout. For `Future` and `Tuple` the reservation also covers the **constructor** namespace (`data Box { Tuple(Bool) }` is also **E158**), because code generation keys the built-in on the constructor's name as well as the type's. No other constructor name is reserved: a declaration may take a built-in type's name as a constructor (`data Money { Decimal(Int) }`), a primitive's (`data Value { Int(Int) }`) or a prelude constructor's, and a declaration that takes a prelude constructor's name does not change what the prelude's constructor of that name means: constructor layouts are keyed per owning data type, so the two coexist (a `data ZzBox { Less(Bool) }` leaves `Ordering`'s `Less` rendering as `Less`). The primitive type names (`Int`, `Nat`, `Bool`, `Float64`, `String`, `Byte`, `Unit`, `Never`) are reserved too, as a `data` type and as a `type` alias alike, for a different reason: a type position resolves the name to the primitive before it consults any declaration, so a declaration of one could never be named (**E158**). `vera.prelude.reserved_function_names()` and `vera.prelude.reserved_type_names()` are the one source of the reserved set.
 - Functions declared inside `where` blocks are always local to the parent function and do not take visibility modifiers.
 
 ### 8.4.2 Data Type Visibility
@@ -148,7 +148,7 @@ public forall<T> fn identity(@T -> @T)
 
 ### 8.5.1 Bare Calls
 
-Imported declarations are available as **bare calls** — the importer does not need to qualify the name with the module path:
+Imported declarations are available as **bare calls**: the importer does not need to qualify the name with the module path:
 
 <!-- vera:run fn="abs_max" args="-3 -5" stdout="3" -->
 ```
@@ -169,7 +169,7 @@ Here, `magnitude` and `larger` resolve to the imported functions from `vera.math
 
 ### 8.5.2 Shadowing
 
-Local definitions shadow imported declarations. If a module imports `magnitude` from `vera.math` but also defines its own `magnitude`, the local definition takes precedence for bare-call resolution. The import is not an error — it is simply unused for that name.
+Local definitions shadow imported declarations. If a module imports `magnitude` from `vera.math` but also defines its own `magnitude`, the local definition takes precedence for bare-call resolution. The import is not an error; it is unused for that name.
 
 The shadowing rule follows from registration order: imported names are injected into the type environment first, and the local declarations are registered after them, replacing any imported declaration of the same name. The injection uses `setdefault`, so an import never replaces a built-in.
 
@@ -196,13 +196,13 @@ module's bodies, which resolve in their own namespace as above.
 Qualified-only is not the same as importer-callable. A module-qualified call
 (§8.5.3) reaches a declaration only when it is `public` **and** its module is
 imported directly **and** the import list admits the name; the other cases are
-rejected rather than routed — a private declaration is `E232`, a name outside the
+rejected rather than routed: a private declaration is `E232`, a name outside the
 import list is `E231`, and a module the program does not import at all is not in
 scope to qualify. So the only declarations that fail the bare-name predicate and
 remain callable by an importer are the public, admitted ones of a directly
 imported module that the importer also shadows. Everything else that is
-qualified-only — private declarations, names outside the import list, and
-everything in a transitively reached module — is reachable only from its own
+qualified-only (private declarations, names outside the import list, and
+everything in a transitively reached module) is reachable only from its own
 module's bodies.  Every module declaration is compiled under a module-qualified
 internal name (§8.9.1), which is a naming rule, not a call surface.
 
@@ -221,7 +221,7 @@ qualified-only in another.
 
 §8.5.2 orders a local declaration against an import. Nothing orders two
 **imports** against each other. When two of a namespace's imports both supply
-the same bare name — each `public`, each admitted by that import's list — and
+the same bare name (each `public`, each admitted by that import's list), and
 the namespace declares nothing of that name itself, the bare name names two
 declarations and the language chooses neither.
 
@@ -253,12 +253,12 @@ Each is rejected at check time, in whichever namespace holds the clash: the
 entry program's, or any module's, since a module's bodies resolve in their own
 namespace (§8.5.2.1) and the rule is a property of that namespace rather than of
 the file being compiled. A name the built-in registry or the prelude already
-owns is not a clash — the incumbent holds the bare name and the imports never
+owns is not a clash: the incumbent holds the bare name and the imports never
 win it, exactly as a local declaration settles one (§8.5.2).
 
 The refusal is a property of the **import list alone**. It does not require any
 body to name the clashing name, and rewriting a call in module-qualified form
-does not lift it — qualification disambiguates a call site, while the clash is
+does not lift it; qualification disambiguates a call site, while the clash is
 in the namespace. It is also the one error the clash gives: a use of the
 clashing name resolves to nothing and draws no error of its own, such as an
 unresolved call (E200) or an unknown constructor (E210, E320), which would only
@@ -267,10 +267,10 @@ restate it.
 For a clashing **function** name, two resolutions, differing in which
 suppliers the namespace can still reach:
 
-- **Selective import** (§8.3.2) — list exactly the names needed, so at most one
+- **Selective import** (§8.3.2): list exactly the names needed, so at most one
   import supplies the clashing name. The other module's declaration of it is
   then outside the import list and unreachable from this namespace (§8.5.2.1).
-- **A local declaration** (§8.5.2) — declare the name here. Every bare call is
+- **A local declaration** (§8.5.2): declare the name here. Every bare call is
   then the local one, so the imports no longer compete, and each import's
   declaration remains reachable through the module-qualified form (§8.5.3).
 
@@ -284,14 +284,14 @@ other; a value of one module's `Box` passed where the other's is expected is a
 type mismatch at check (**E202** for an argument), whose message names both
 owners.
 
-**Design note.** The alternative — defining an order, first import wins or last
-— was rejected. It would make the resolved declaration implicit in import
+**Design note.** The alternative, defining an order (first import wins, or last),
+was rejected. It would make the resolved declaration implicit in import
 sequence, which §0.2.2 excludes, and it would enlarge the valid-program set with
 programs whose meaning depends on that sequence, which §0.2.6 excludes. It would
 also make a *dependency update* a silent semantic change: a library adding an
 export would rebind a downstream namespace's bare call to a different body,
 where refusal reports the change at the importer. Refusal is additionally the
-reversible choice — an order could still be defined later, giving every refused
+reversible choice: an order could still be defined later, giving every refused
 program a meaning, whereas retreating from an order to refusal would break
 programs that had come to rely on it.
 
@@ -313,9 +313,9 @@ module_call: module_path "::" LOWER_IDENT "(" arg_list? ")"
 
 A module-qualified call through the path of a module the file imports resolves against that module's public declarations. Module-qualified calls are not affected by local shadowing -- if the importer defines its own `magnitude`, a module-qualified call `vera.math::magnitude(x)` still calls the module's version.
 
-A module's own path names the module itself. Inside a file whose `module` declaration gives the path `ma`, `ma::two(x)` calls that file's own top-level `two` — a private one too, since the call is inside the module that declares it (§8.4.1) — and it is checked, verified and compiled as the bare call to that top-level function is: it is a call-graph edge (§5.6), and a tail call where the bare call would be one. The one difference is the one a qualified call always has: nothing local shadows it, so where a `where` helper of `four` is also named `two`, the bare `two(x)` inside `four` reaches the helper and `ma::two(x)` the module's function. The path is the file's own only when the program reaches the file by it. An imported module's declaration must give the path it is imported by, and the entry file's must not be the path of a module the entry resolves, which that path names instead. So a file without a `module` declaration, or one imported under a path it does not declare, has no path of its own to qualify by, and the fix **E230** gives there is the declaration. Every other path must be a module the file imports (**E230**), and a name its own path does not declare at the top level is **E233**.
+A module's own path names the module itself. Inside a file whose `module` declaration gives the path `ma`, `ma::two(x)` calls that file's own top-level `two` (a private one too, since the call is inside the module that declares it, §8.4.1), and it is checked, verified and compiled as the bare call to that top-level function is: it is a call-graph edge (§5.6), and a tail call where the bare call would be one. The one difference is the one a qualified call always has: nothing local shadows it, so where a `where` helper of `four` is also named `two`, the bare `two(x)` inside `four` reaches the helper and `ma::two(x)` the module's function. The path is the file's own only when the program reaches the file by it. An imported module's declaration must give the path it is imported by, and the entry file's must not be the path of a module the entry resolves, which that path names instead. So a file without a `module` declaration, or one imported under a path it does not declare, has no path of its own to qualify by, and the fix **E230** gives there is the declaration. Every other path must be a module the file imports (**E230**), and a name its own path does not declare at the top level is **E233**.
 
-**Design note.** Vera does not support import aliasing (renaming a declaration at the import site). Where two reachable declarations share a name, the module-qualified call syntax (`vera.math::magnitude(x)`) names the one wanted without introducing a second name for the same declaration — for a name a local declaration shadows (§8.5.2), and, together with a local declaration or a selective import, for two imports supplying one name (§8.5.2.2). Aliasing would violate the one-canonical-form principle (§0.2.3): the same function could be referenced by different names in different files, making semantically identical call sites textually distinct.
+**Design note.** Vera does not support import aliasing (renaming a declaration at the import site). Where two reachable declarations share a name, the module-qualified call syntax (`vera.math::magnitude(x)`) names the one wanted without introducing a second name for the same declaration: for a name a local declaration shadows (§8.5.2), and, together with a local declaration or a selective import, for two imports supplying one name (§8.5.2.2). Aliasing would violate the one-canonical-form principle (§0.2.3): the same function could be referenced by different names in different files, making semantically identical call sites textually distinct.
 
 ### 8.5.4 Constructor Resolution
 
@@ -370,9 +370,9 @@ A constructor name no type in scope declares is an error: **E210** for a
 construction with arguments, **E214** for a nullary one, **E320** and **E322**
 for the same in a pattern. One case is a warning instead. When the constructor
 belongs to a `public` data type of a module this file reaches through its
-imports, but the file does not import the type — such as one that reaches it
+imports, but the file does not import the type (such as one that reaches it
 only through an imported function's signature, as in `paint(Green)` after
-`import ma(paint);` where `ma` imports `Colour` from `mb` — it compiles and is
+`import ma(paint);` where `ma` imports `Colour` from `mb`), it compiles and is
 reported at warning severity, with the import that names it
 (`import mb(Colour);`) as the fix: **E210** or **E214** for a construction,
 **E320** or **E322** for a pattern such as `Some(Green)`. It is typed by its own
@@ -393,8 +393,8 @@ Two modules may each declare a data type of one name, and constructors of one
 name: each declaration is a type of its own, in compilation as in checking
 (§11.16), so what the two describe does not matter and a value of one is not a
 value of the other.  A value of one module's type that reaches code expecting
-the other's — `bone(aone(6))`, with `liba::aone(@Int -> @Shape)` and
-`libb::bone(@Shape -> @Int)` — is a type mismatch at check (**E202** for an
+the other's (`bone(aone(6))`, with `liba::aone(@Int -> @Shape)` and
+`libb::bone(@Shape -> @Int)`) is a type mismatch at check (**E202** for an
 argument, **E314** for a pattern), whose message names both owners
 (`liba.Shape`, `libb.Shape`) and whose fix names the expected type's import and
 its constructors.  An entry file's `data Shape` beside a module's is two types
@@ -538,7 +538,7 @@ nothing more, so neither is a duplicate.
 
 The resolver maps an import path to a source file on disk using a simple file-system-based algorithm.
 
-![Module resolution: path mapping relative to the importer then the project root, a parse cache keyed by module path, an in-progress set that rejects circular imports, and recursive resolution — with transitively reached modules compiled but not visible to the original importer.](../assets/diagrams/module-resolution.svg)
+![Module resolution: path mapping relative to the importer then the project root, a parse cache keyed by module path, an in-progress set that rejects circular imports, and recursive resolution, with transitively reached modules compiled but not visible to the original importer.](../assets/diagrams/module-resolution.svg)
 
 ### 8.6.1 Path Mapping
 
@@ -571,7 +571,7 @@ Circular imports are not allowed. The dependency graph must be acyclic.
 
 ### 8.6.4 Transitive Resolution
 
-When a module is resolved, its own imports are also resolved recursively. This means importing module A, which imports module B, will resolve both A and B. However, declarations from B are not transitively visible to the original importer — only A's public declarations are available.
+When a module is resolved, its own imports are also resolved recursively. This means importing module A, which imports module B, will resolve both A and B. However, declarations from B are not transitively visible to the original importer; only A's public declarations are available.
 
 ### 8.6.5 Resolution Errors
 
@@ -611,7 +611,7 @@ After module registration, the main type environment contains:
 - All imported `public` data types, with their constructors.
 - All locally declared types and functions (from Pass 1).
 
-A name two imports both supply is the exception, in every one of those namespaces: it is refused (§8.5.2.2) and enters none of them, so a use of it resolves to nothing rather than to whichever supplier was injected first. That holds for a clashing function name (`E155`), a clashing data type name (`E156`) and a clashing constructor name (`E157`) independently — a type excluded for a clash takes its constructors with it, and a constructor name two differently-named types supply is excluded on its own while both types remain.
+A name two imports both supply is the exception, in every one of those namespaces: it is refused (§8.5.2.2) and enters none of them, so a use of it resolves to nothing rather than to whichever supplier was injected first. That holds for a clashing function name (`E155`), a clashing data type name (`E156`) and a clashing constructor name (`E157`) independently: a type excluded for a clash takes its constructors with it, and a constructor name two differently-named types supply is excluded on its own while both types remain.
 
 Local declarations always take priority over imported declarations because of the registration order: imports are injected first, then local registration overwrites any collisions.
 
@@ -679,21 +679,21 @@ The code generator uses a **flattening** strategy: imported function bodies are 
 
 1. **Linking**: the resolver pass (`vera/binding.py`) binds every call, type name and constructor in every file to the declaration it denotes in that file's namespace (§8.5), and names each declaration by a **link name** unique across the program: an entry-file or prelude declaration keeps its name; a module's function, data type or alias is `mod$<path>$<name>`, the module path's segments joined by `$`; a `where` helper is `<its parent's link name>$where$<name>`; a user constructor is `<its type's link name>$<Name>`. Every bound occurrence is rewritten to its target's link name, and `$` cannot occur in a Vera identifier, so no link name is a name the program writes, and two modules' same-named declarations are two names.
 
-2. **Pass 0 — Module registration**: For each resolved module, register all function signatures and ADT layouts into the code generator's state, under their link names. A module's signatures are measured in the module's own namespace — its own declarations and the data types its own import lists admit (the same derivation the checker's registration reads, §8.7.1) — so a function returning a data type its module imported has the same WebAssembly signature whichever file is the entry. Type aliases are **not** merged into the shared state: an alias is module-local (§8.4.1), so each module's aliases are captured in a per-module namespace, and that module's declarations compile and register against `{prelude aliases, module's own aliases}` — never against the importing program's. Harvested return-type expressions are canonicalized (alias references substituted) against the defining module's namespace before entering the shared registries. That same per-module namespace is what slot names, slot-reference keys and `State`/`Exn` cell families are rendered against — in the checker, the verifier and the code generator alike — so a declaration is named in the module that declared it, whichever phase is asking.
+2. **Pass 0, module registration**: For each resolved module, register all function signatures and ADT layouts into the code generator's state, under their link names. A module's signatures are measured in the module's own namespace (its own declarations and the data types its own import lists admit, the same derivation the checker's registration reads, §8.7.1), so a function returning a data type its module imported has the same WebAssembly signature whichever file is the entry. Type aliases are **not** merged into the shared state: an alias is module-local (§8.4.1), so each module's aliases are captured in a per-module namespace, and that module's declarations compile and register against `{prelude aliases, module's own aliases}`, never against the importing program's. Harvested return-type expressions are canonicalised (alias references substituted) against the defining module's namespace before entering the shared registries. That same per-module namespace is what slot names, slot-reference keys and `State`/`Exn` cell families are rendered against (in the checker, the verifier and the code generator alike), so a declaration is named in the module that declared it, whichever phase is asking.
 
-3. **Pass 2.5 — Imported function compilation**: After compiling local functions (Pass 2), compile all imported function bodies — both public and private — as internal WASM functions. Private helpers must be compiled because imported public functions may call them.
+3. **Pass 2.5, imported function compilation**: After compiling local functions (Pass 2), compile all imported function bodies, both public and private, as internal WASM functions. Private helpers must be compiled because imported public functions may call them.
 
 4. **Calls**: a module-qualified call (`vera.math::magnitude(x)`) is linked to a plain call of its target's link name (`mod$vera$math$magnitude(x)`), since the imported function exists in the same WASM module, and so is a bare call in any file, an imported module's body included: the binding was made in the namespace that writes the call (§8.5.2.1), so a same-named declaration elsewhere is a different name and is never called instead.  A generic's monomorphized clones are named under its link name the same way, so an importer's same-named generic and a module's compile to different functions.
 
 ### 8.9.2 Export Rules
 
-Imported functions are **not** exported from the WASM module. Only the importing program's `public` functions are WASM exports. An imported public function is internal to the compiled binary — it exists as a callable helper but is not externally visible.
+Imported functions are **not** exported from the WASM module. Only the importing program's `public` functions are WASM exports. An imported public function is internal to the compiled binary: it exists as a callable helper but is not externally visible.
 
 ### 8.9.3 Guard Rail
 
-A call that resolves to no function is an error at type-check time — **E200** for a bare call, **E230** for a module-qualified call to a path that is neither a module this file imports nor the file's own (§8.5.3), **E233** for a function the named module does not declare. A bare call to a name two imports supply is refused at the import instead (**E155**, §8.5.2.2). A bare call to an operation of a user-declared ability has no function behind it either, and is refused at type-check time too (**E340**, §9.8).
+A call that resolves to no function is an error at type-check time: **E200** for a bare call, **E230** for a module-qualified call to a path that is neither a module this file imports nor the file's own (§8.5.3), **E233** for a function the named module does not declare. A bare call to a name two imports supply is refused at the import instead (**E155**, §8.5.2.2). A bare call to an operation of a user-declared ability has no function behind it either, and is refused at type-check time too (**E340**, §9.8).
 
-The code generator keeps a guard rail for the same condition (**E624**), which a program compiled without being checked first reaches. After module registration populates the known-function set, the guard rail only flags truly unknown calls — imported functions are recognised as known.
+The code generator keeps a guard rail for the same condition (**E624**), which a program compiled without being checked first reaches. After module registration populates the known-function set, the guard rail only flags truly unknown calls; imported functions are recognised as known.
 
 If a function call cannot be resolved against either local definitions or imported modules, the guard rail reports:
 
@@ -705,7 +705,7 @@ Error: Function 'foo' is not defined in this module and was not found in any imp
 
 A complete multi-module example demonstrating all features:
 
-**`vera/math.vera`** — a utility module:
+**`vera/math.vera`**, a utility module:
 
 <!-- vera:run fn="magnitude" args="3" stdout="3" -->
 ```
@@ -737,7 +737,7 @@ public fn larger(@Int, @Int -> @Int)
 }
 ```
 
-**`vera/collections.vera`** — generic data types:
+**`vera/collections.vera`**, generic data types:
 
 ```
 module vera.collections;
@@ -753,7 +753,7 @@ public data Maybe<T> {
 }
 ```
 
-**`modules.vera`** — the importing program:
+**`modules.vera`**, the importing program:
 
 <!-- vera:run fn="clamp_to_range" args="10 1 5" stdout="5" -->
 ```

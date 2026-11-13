@@ -3,21 +3,18 @@
 Vera ships a language server: a long-running process that an editor (or
 an agent) talks to over the [Language Server
 Protocol](https://microsoft.github.io/language-server-protocol/), the
-standard JSON-RPC protocol editors use to get language intelligence —
-diagnostics, hover, go-to-definition, completion — without each editor
-reimplementing the compiler. One server, any LSP-capable client: VS
-Code, Neovim, Emacs, Helix, Zed, or a coding agent speaking the
-protocol directly.
+standard JSON-RPC protocol editors use to get diagnostics, hover,
+go-to-definition and completion without each editor reimplementing the
+compiler. Any LSP-capable client can use it: VS Code, Neovim, Emacs,
+Helix, Zed, or a coding agent speaking the protocol directly.
 
-What makes Vera's server different from a typical language server is
-*what* it serves. Most language servers answer "does this parse, what
-type is this?". Vera's also answers "**does this still prove?**" — it
-keeps a warm, incremental Z3 verification session alive between
-keystrokes, so contract proofs re-check at editor latency rather than
-batch-compile latency, and it exposes that capability to agents through
-four custom methods that no generic language server has.
+Most language servers answer "does this parse, what type is this?".
+Vera's also answers "**does this still prove?**". It keeps a warm,
+incremental Z3 verification session alive between keystrokes, so
+contract proofs re-check at editor latency rather than batch-compile
+latency, and it offers that to agents through four custom methods.
 
-This guide covers the editor/agent surface — the long-running server.
+This guide covers the editor and agent surface, the long-running server.
 For the command-line surface (`vera check`/`verify`/`test`/`run` and
 the introspection commands), see the CLI cookbook,
 [TOOLCHAIN.md](TOOLCHAIN.md).
@@ -49,20 +46,21 @@ vera lsp
 
 speaks LSP over stdio. There is nothing to configure server-side: the
 client launches the process and the handshake does the rest. Without
-the extra installed, `vera lsp` prints an actionable install message
-and exits; every other `vera` command works without it.
+the extra installed, `vera lsp` prints a message naming the missing
+package and the install command, and exits; every other `vera` command
+works without it.
 
 ### Wiring up an editor
 
-- **VS Code** — install [Vera Language from the VS Code
+- **VS Code**: install [Vera Language from the VS Code
   Marketplace](https://marketplace.visualstudio.com/items?itemName=veralang.vera-language)
   (or see the [extension source](https://github.com/aallan/vera/tree/main/editors/vscode)).
   It starts the server automatically for `.vera` files, finding the binary via the
   `vera.lsp.path` setting, then a workspace-local venv
-  (`.venv/bin/vera`, or `.venv\Scripts\vera.exe` on Windows — so a
+  (`.venv/bin/vera`, or `.venv\Scripts\vera.exe` on Windows, so a
   from-source clone needs no configuration on either platform), then
   `PATH`. See its [README](editors/vscode/README.md) for setup.
-- **Anything else** — point your editor's generic LSP client at the
+- **Anything else**: point your editor's generic LSP client at the
   command `vera lsp` for language `vera` / file pattern `*.vera`,
   using stdio transport and full-document sync. That is the whole
   contract for diagnostics, hover, navigation and completion. The three
@@ -74,36 +72,37 @@ and exits; every other `vera` command works without it.
 
 ## Standard features
 
-On `didOpen`/`didChange` the server runs the full pipeline — parse,
-type-check, **verify** — on the in-memory buffer (unsaved changes
+On `didOpen`/`didChange` the server runs the full pipeline (parse,
+type-check, **verify**) on the in-memory buffer (unsaved changes
 included) and publishes:
 
 - **Diagnostics** with the same stable error codes, rationale, and
   spec references as `vera check --json` / `vera verify --json`, plus
-  a `tier` annotation on verification diagnostics (Tier 3 fallbacks
-  carry `tier: 3` in their data).  The server compiles nothing, so the
+  a `tier` annotation on verification diagnostics (a Tier 3 fallback
+  has `tier: 3` in its data).  The server compiles nothing, so the
   reconciliation `vera verify` runs after verifying (E541, W004, W005,
   and a code generation refusal) is the command's alone.
-- **Per-function verification-tier hints** — a Hint-severity
-  diagnostic per function summarising its proof state: "Tier 1 — all
-  contracts proven by Z3" or "Tier 3 — N of M obligations fall back
-  to runtime checks". The verifier itself stays silent about
-  successes; the hint is how the editor shows you which functions are
-  *proven* rather than merely checked.
-- **Hover** — the inferred type of the smallest expression under the
+- **Per-function verification-tier hints**: a Hint-severity
+  diagnostic per function summarising its proof state:
+  `Tier 1 — all contracts proven by Z3`,
+  `Tier 3 — N of M obligation(s) fall back to runtime checks`, or
+  `not verified — U of M obligation(s) were neither proved nor guarded`.
+  The verifier itself reports nothing for a
+  success; the hint is how the editor shows which functions are
+  *proven* rather than only checked.
+- **Hover**: the inferred type of the smallest expression under the
   cursor.
-- **Go-to-definition on slot references** — `@T.n` under the cursor
+- **Go-to-definition on slot references**: `@T.n` under the cursor
   jumps to the parameter it names under De Bruijn resolution
-  (most-recent-first), which is exactly the lookup humans find
-  hardest to do in their head. Both sides of the lookup — the
-  parameter's name and the reference's — are rendered by the same
-  function the checker keys its binding table with, so a
+  (most recent first), the lookup people find hardest to do in their
+  head. Both sides of the lookup, the parameter's name and the
+  reference's, are rendered by the same function the checker keys its binding table with, so a
   parameterised reference (`@Option<Int>.0`) resolves, an
   alias-spelled parameter (`@Option<Cnt>` under `type Cnt = Int`) is
   reachable from its canonical spelling, and a reference inside a
   `where` helper resolves against that helper's own scope, including
   any `forall` variables it inherits from its parent.
-- **Typed-hole completion** — with the cursor at a `?` hole,
+- **Typed-hole completion**: with the cursor at a `?` hole,
   completion lists the in-scope bindings that fit, innermost first,
   each with its type.
 
@@ -116,7 +115,7 @@ the edit methods refuse, until a change the server can analyse. None of
 them answers from the previous text's analysis, because the buffer no
 longer holds that text.
 
-## What no generic language server can do
+## Proof-aware features
 
 ### The warm verification core
 
@@ -125,30 +124,29 @@ proof obligations are cached against a structural hash, and the
 invalidation rule follows the proof dependencies: editing a function's
 *body* re-verifies only that function; editing its *contract* also
 re-verifies every caller (callers assume postconditions and must
-re-prove preconditions at call sites). Timeouts are never cached. The
-result: after the first full pass, re-verification cost is
-proportional to what your edit could actually have broken.
+re-prove preconditions at call sites). Timeouts are never cached. After
+the first full pass, re-verification costs time in proportion to what
+the edit could have broken.
 
 ### Custom methods: the agent surface
 
-Four methods extend LSP 3.17, designed for coding agents rather than
-humans-with-cursors. All take plain JSON params; malformed requests
-(missing/non-string fields, unknown functions) refuse with standard
-JSON-RPC `InvalidParams` rather than opaque errors.
+Four methods extend LSP 3.17 for coding agents. All take plain JSON
+params; a malformed request (a missing or non-string field, an unknown
+function) is refused with the standard JSON-RPC `InvalidParams`.
 
-#### `vera/speculativeEdit` — "would this edit break my proofs?"
+#### `vera/speculativeEdit`: "would this edit break my proofs?"
 
 ```json
 {"uri": "file:///main.vera", "text": "<full proposed source>", "version": 7}
 ```
 
-Verifies the proposed text *in memory* — the canonical document, its
-published diagnostics, and the editor's view are untouched — and
+Verifies the proposed text *in memory*, leaving the canonical document,
+its published diagnostics and the editor's view untouched, and
 returns a **proof delta** against the document's current obligation
 set. A delta is only as good as its baseline, so the request is
 refused with `InvalidParams`, as `vera/proposeEdit` is, when there is
-no baseline to measure against — the document is not open, or the
-server has no analysis of its current text — or when the optional
+no baseline to measure against (the document is not open, or the
+server has no analysis of its current text), or when the optional
 `"version"` names a version the document is no longer at:
 
 ```json
@@ -174,37 +172,36 @@ server has no analysis of its current text — or when the optional
 An agent learns whether an edit **keeps** the program's proofs
 (everything still discharges), **breaks** them (obligations become
 violated or fall to runtime checks), or **strengthens** them
-(previously-runtime obligations now prove) — before committing
+(previously-runtime obligations now prove), before committing
 anything.
 
-Three of the lists — `newly_discharged`, `newly_undischarged` and
-`timed_out` — **sort the speculative obligations by their status AFTER
+Three of the lists, `newly_discharged`, `newly_undischarged` and
+`timed_out`, **sort the speculative obligations by their status AFTER
 the edit**, and together with `unchanged`, which is a count rather
 than a list, they account for every obligation in the speculative
 stream exactly once.  `removed` is the old side: baseline-only
-obligations, each carrying `status_after: null`.  So the set is a
-presentation of the delta rather than an answer to "did this edit take
-a proof away?".  That question has its own list: `proof_regressions`
+obligations, each with `status_after: null`.  The set presents the
+delta; it does not answer "did this edit take a proof away?".  That question has its own list: `proof_regressions`
 holds every obligation that was `verified` before and is anything else
-after — `timeout`, `tier3`, `tier3_unguarded` or `violated` — so an
+after (`timeout`, `tier3`, `tier3_unguarded` or `violated`), so an
 obligation appears in it **as well as** in whichever status list its
 new status puts it in (`verified → timeout` is in both `timed_out` and
 `proof_regressions`).  Read `proof_regressions` to ask
 about lost proofs; read the lists to display what happened.
 
-The two views also differ on **identity**, and deliberately.  An
+The two views also differ on **identity**.  An
 obligation is keyed by its span, so one inserted line above it gives it
 a new key: the categories report that as a removal plus a rediscovery,
 which is what a display of positions should say.  The gate cannot
-reason that way — an edit that shifts a line and costs a proof further
-down the file would walk straight past it — so before judging anything
+reason that way, since an edit that shifts a line and costs a proof
+further down the file would pass it unseen, so before judging anything
 it pairs the leftovers on a span-insensitive key (file, owning
 function, function, kind, predicate text; equal keys pair positionally
 in source order).  A pair is one obligation that **moved**.  Pairing
 changes what an entry is reported *against*, not which list it is in: the three status lists
 still account for every speculative obligation exactly once, and a
 relocated obligation is still an entry in `removed` at its old span
-plus an entry in a status list at its new one — it simply carries the
+plus an entry in a status list at its new one.  It has the
 `status_before` it paired with, where an
 obligation the edit really did introduce carries `null`.  The gate
 reads that: a `newly_undischarged` entry whose `status_before` equals
@@ -212,29 +209,29 @@ its `status_after` only moved, so it introduced nothing and took
 nothing away.  Relocation is invisible to the gate; the presentation
 keeps its span view.
 
-Each `proof_regressions` entry carries both ends: `line` / `column` are
+Each `proof_regressions` entry has both ends: `line` / `column` are
 where the obligation is now, `line_before` / `column_before` where it
-was.  They differ exactly when the obligation moved — in the same-span
-example above they are equal — and the pair is what points an agent at
+was.  They differ exactly when the obligation moved (in the same-span
+example above they are equal), and the pair is what points an agent at
 the proof it broke rather than at the line it happens to sit on now.
 
 An old obligation with no counterpart on the new side is a **deletion**,
 not a regression, and does not need `force`: the gate protects proofs,
-not contracts — the removal is visible in the edit itself, and no
+not contracts.  The removal is visible in the edit itself, and no
 unproved code is left behind.  It is reported under `removed` with the
 status it had.  Replacing a proved contract with a differently-worded
 one is a deletion plus an addition, so the replacement is judged as an
-addition: refused if it is `violated`, `tier3` or `tier3_unguarded` —
-every after-status other than `verified` and `timeout` reaches
+addition: refused if it is `violated`, `tier3` or `tier3_unguarded`
+(every after-status other than `verified` and `timeout` reaches
 `newly_undischarged`, and with no `before` to match, a `status_before`
-of `null` differs from any `status_after` — and applied if it merely
+of `null` differs from any `status_after`), and applied if it only
 times out, which is the same boundary any newly introduced timeout
-already sits on.  What the pairing key does not cover, by construction:
+already sits on.  The pairing key does not cover
 renaming the function, changing the obligation's kind, rewriting the
 predicate text, or moving the code to another file all make it a new
 obligation to the gate.
 
-#### `vera/proposeEdit` — the enforced edit workflow
+#### `vera/proposeEdit`: the enforced edit workflow
 
 ```json
 {"uri": "file:///main.vera", "text": "<full proposed source>", "force": false,
@@ -244,16 +241,16 @@ obligation to the gate.
 The whole edit → verify → apply sequence as one method, so the
 verification gate cannot be skipped or reordered: the proposed text is
 speculatively verified, and **applies only if** the proof delta has no
-`proof_regressions` (no obligation lost a proof — whatever it lost it
-to, and wherever in the file it now sits), no `newly_undischarged`
+`proof_regressions` (no obligation lost a proof, whatever it lost it
+to and wherever in the file it now sits), no `newly_undischarged`
 entry whose `status_before` differs from its `status_after`, and no
 error diagnostics in the proposed state.  Neither list subsumes the
 other: `newly_undischarged` is the only one that can see an obligation
 the edit INTRODUCES, which has no `before` to regress from and so
 arrives with `status_before: null`.  The `status_before` qualifier is
 what lets a **relocated** obligation through: one that is undischarged
-at both ends of its pair is listed here — the status lists account for
-every speculative obligation, so it has to be — but it introduced
+at both ends of its pair is listed here (the status lists account for
+every speculative obligation, so it has to be), but it introduced
 nothing and took nothing away, so the gate passes it.  A pair that
 worsened is refused exactly as the identical unmoved edit is.
 
@@ -262,7 +259,7 @@ nothing of its own. The client owns the buffer: the server's copy of
 the text, its version and the published diagnostics describe what the
 client has, and they move only when the client's own `didOpen`,
 `didChange` or `didClose` says the buffer moved. So the edit goes out
-as one `workspace/applyEdit` — a whole-document replacement guarded by
+as one `workspace/applyEdit`: a whole-document replacement guarded by
 the version of the text it was verified against, which a client whose
 buffer has moved on since (the user typed, or another edit landed
 first) must refuse rather than let it overwrite the newer text. The
@@ -279,8 +276,8 @@ changes, and the response says why:
 
 `applied` is `true` when the client applied the edit, `false` when it
 did not or the edit was never sent, and `null` when the server cannot
-tell — it states only what it knows. `client` says what became of the
-edit, and `client_reason` says why when there is a why — the client's
+tell. `client` says what became of the edit, and `client_reason` says
+why when there is a reason: the client's
 `failureReason`, the error it answered with, or what arrived in place
 of an answer:
 
@@ -288,15 +285,15 @@ of an answer:
 |----------|---------------|------------|
 | `null` | The gate refused; nothing was sent. | Read the proof delta and the diagnostics count. |
 | `"applied"` | The client applied the edit. | Nothing: its `didChange` brings the server's state along. |
-| `"declined"` | The client answered `applied: false` — most often because its buffer is no longer at the version the edit was verified against. | Re-read the document and propose again. |
+| `"declined"` | The client answered `applied: false`, most often because its buffer is no longer at the version the edit was verified against. | Re-read the document and propose again. |
 | `"failed"` | The client answered with an error, or the request could not be sent (`applied: false`); or the client answered with something other than a boolean `applied` (`applied: null`). | Propose again; after `applied: null`, re-read the document first. |
 | `"timeout"` | No answer arrived within 60 seconds, the bound on the wait, so the proposal answers rather than wait for ever (`applied: null`). The edit request is still open: the client may still apply it, and its `didChange` then updates the server as any change does. | Re-read the document before proposing again. |
 | `"cancelled"` | The request was cancelled before the client answered (`applied: null`). | Re-read the document before proposing again. |
 | `"unsupported"` | The client does not advertise `workspace.applyEdit` and `workspace.workspaceEdit.documentChanges`, so no version-guarded edit could be sent, and none was. | Advertise both capabilities. |
 
 If the client cancels the `vera/proposeEdit` request itself while the
-edit is pending, that request ends with a `RequestCancelled` error —
-never `applied` — and the edit request stays open for the client to
+edit is pending, that request ends with a `RequestCancelled` error,
+never `applied`, and the edit request stays open for the client to
 answer.
 
 The version guard protects the newer text only if the edit was made
@@ -306,17 +303,17 @@ text the client no longer has:
 
 - **The document is not open.** An edit is sent only for a document
   the client has open, because only then is there a version to guard it
-  with — the protocol's `null` version means "the file on disk is the
+  with (the protocol's `null` version means "the file on disk is the
   master", which a client applies to whatever its buffer holds when the
-  edit lands — and an analysis to judge it against. Open the document
+  edit lands) and an analysis to judge it against. Open the document
   first.
-- **The server has no analysis of the open text** — the change it last
+- **The server has no analysis of the open text**: the change it last
   received could not be analysed (see [Standard
   features](#standard-features)). `force` does not waive this: it
   overrides the gate's verdict, not the question of which text the edit
   is about. The next change the server can analyse clears it.
 - **The request was made from an older version.** The optional
-  `"version"` names the document version the request was made from —
+  `"version"` names the document version the request was made from;
   for `vera/proposeEdit`, the version the proposed text was written
   against. When the open document is at any other version, the server
   has seen changes the request did not, and refuses. Without
@@ -325,13 +322,12 @@ text the client no longer has:
   server had already seen. A client that cannot send it accepts that
   risk.
 
-`"force": true` (strictly boolean — anything else fails closed)
+`"force": true` (strictly boolean; anything else fails closed)
 overrides the gate for the cases where breaking a proof is the point,
-but it must be said out loud. This is the same philosophy as Vera's
-mandatory contracts, applied to tooling: the right thing is the only
-easy thing.
+and the caller has to say so explicitly. Vera's mandatory contracts
+follow the same principle.
 
-#### `vera/strengthenContract` — contract change with a call-site audit
+#### `vera/strengthenContract`: contract change with a call-site audit
 
 ```json
 {"uri": "file:///main.vera", "fn": "callee",
@@ -343,7 +339,7 @@ of the named top-level function and runs it through the proposeEdit
 gate. The call-site audit *is* the proof delta: a tightened
 precondition some caller no longer satisfies surfaces as
 `newly_undischarged` items of kind `call_pre` located **at the call
-sites**, and the gate refuses. There is no `force` here — an agent
+sites**, and the gate refuses. There is no `force` here; an agent
 that wants to push through a breaking contract change must construct
 the full text and call `vera/proposeEdit` with `force` explicitly.
 The splice is made from the server's current text, so the optional
@@ -351,22 +347,22 @@ The splice is made from the server's current text, so the optional
 rather than a text it wrote; it is refused on the same terms as
 `vera/proposeEdit`'s, and so is `vera/addEffect`'s.
 
-#### `vera/addEffect` — effect propagation through the call graph
+#### `vera/addEffect`: effect propagation through the call graph
 
 ```json
 {"uri": "file:///main.vera", "fn": "target", "effect": "Async", "version": 7}
 ```
 
-The genuinely multi-site one. Adding an effect to a function
+This is the multi-site method. Adding an effect to a function
 invalidates the effect row of every **transitive caller**, so the
 server computes that closure over the call graph, rewrites each
 affected `effects(...)` clause (`pure` → `<Async>`; `<IO>` →
-`<IO, Async>`; functions already naming the effect are skipped —
-identity is the base name before type arguments), and verifies the
+`<IO, Async>`; functions already naming the effect are skipped,
+identity being the base name before type arguments), and verifies the
 whole rewrite as **one** candidate through the proposeEdit gate:
 all-or-nothing, never a half-propagated document. The response adds
 `"rewritten"`: the affected functions in declaration order. If every
-row already carries the effect, nothing runs and the no-op shape comes
+row already has the effect, nothing runs and the no-op shape comes
 back (`"applied": false, "ok": true, "proof_delta": null,
 "client": null, "rewritten": []`).
 
@@ -374,16 +370,15 @@ The closure is **bounded at handlers**: a call site inside a
 `handle[E]` body contributes no edge, because the handler discharges
 the effect there, so a caller that wraps every one of its call sites
 is left unrewritten and nothing propagates past it. A caller that also
-reaches the callee on an unhandled path is still rewritten — the
-effect genuinely escapes along that path — and a call in a handler
+reaches the callee on an unhandled path is still rewritten, since the
+effect escapes along that path, and a call in a handler
 *clause* propagates, since a clause body runs outside its own handler,
 as does one in the handler's *state initialiser*, which is evaluated
 in the enclosing scope before the handler is installed.
 The bound compares the `handle[...]` head's **spelling** to the
 requested effect, type arguments included and as written rather than
 as resolved. So `handle[State<Nat>]` does not bound a `State<Int>`
-propagation and a caller around it still gets the row — which it
-needs, since the checker discharges against effect *instance*
+propagation and a caller around it still gets the row, which it needs, since the checker discharges against effect *instance*
 equality. An alias spelling of the same instance
 (`handle[State<MyAlias>]` with `type MyAlias = Int`) does not bound it
 either, though the checker does discharge that one: there the
@@ -394,9 +389,9 @@ bound on the resolved instance. Propagation stops at the file boundary, by
 design: module-qualified calls are not followed.
 
 Rows are rewritten for top-level functions only. A call inside a
-`where` block attributes to the top-level function containing it —
-that is what the closure reports, and the handler bound applies inside
-a helper body the same way — but the helper's own `effects(...)` row is
+`where` block attributes to the top-level function containing it
+(that is what the closure reports, and the handler bound applies inside
+a helper body the same way), but the helper's own `effects(...)` row is
 never rewritten, so a helper that itself needs the new effect leaves
 the candidate refused at the gate rather than half-applied.
 
@@ -408,11 +403,11 @@ every step.
 
 1. `didOpen` the file; read the published diagnostics and tier hints.
 2. Draft an edit; `vera/speculativeEdit` it; inspect the proof delta.
-3. If the delta looks right, `vera/proposeEdit` the same text — the
+3. If the delta looks right, `vera/proposeEdit` the same text. The
    server re-verifies (cheaply, from the warm cache) and has the client
    apply it; `applied: true` means the client did.
-4. For the two structured refactors — tightening a contract,
-   threading an effect — call the dedicated method instead and let
+4. For the two structured refactors, tightening a contract and
+   threading an effect, call the dedicated method instead and let
    the server construct the candidate.
 
 ![The agent proof-delta loop: didOpen returns diagnostics and tier hints; speculativeEdit verifies a draft in memory and returns a proof delta without touching the document; proposeEdit re-verifies from the warm cache and applies only if nothing newly fails to prove.](assets/diagrams/lsp-session.svg)
@@ -435,8 +430,4 @@ tracked work.
 The server is a thin transport and feature layer over the reusable
 obligation core in `vera/obligations/` (reified `ProofObligation`
 records, the warm incremental `VerificationSession`). Architecture
-notes live in the [compiler README](vera/README.md) module map; the
-design history —
-including why the obligation core was built before any wire format —
-is the comment trail on
-[#222](https://github.com/aallan/vera/issues/222).
+notes live in the [compiler README](vera/README.md) module map.

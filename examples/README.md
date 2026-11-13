@@ -1,6 +1,6 @@
 # Vera Examples
 
-The example programs demonstrating Vera's features. All examples pass `vera check` and `vera verify`.
+Example programs for Vera's features. Every example passes `vera check` and `vera verify`.
 
 ## Running Examples
 
@@ -10,13 +10,13 @@ Examples with a `main` function run directly:
 vera run examples/hello_world.vera
 ```
 
-Examples without `main` export named functions — use `--fn` to call them:
+Examples without `main` export named functions; call one with `--fn`:
 
 ```bash
 vera run examples/factorial.vera --fn factorial -- 10
 ```
 
-Examples that use only the IO and Random host families (e.g. `hello_world.vera`, `fizzbuzz.vera`) compile to a stock-runnable WASI Preview 2 component — `vera compile --target wasi-p2 examples/hello_world.vera` emits a `.wasm` any `wasmtime run` executes with no flags and no Vera bindings.
+Examples that use only the IO and Random host families (e.g. `hello_world.vera`, `fizzbuzz.vera`) compile to a stock-runnable WASI Preview 2 component: `vera compile --target wasi-p2 examples/hello_world.vera` emits a `.wasm` any `wasmtime run` executes with no flags and no Vera bindings.
 
 ## Example Index
 
@@ -51,9 +51,9 @@ Examples that use only the IO and Random host families (e.g. `hello_world.vera`,
 | `file_io.vera` | `vera run examples/file_io.vera` | File read/write with error handling |
 | `copy_bytes.vera` | `vera run examples/copy_bytes.vera` | IO.read_bytes, IO.write_bytes: copy a file by its bytes and compare the copy |
 | `database.vera` | `vera run examples/database.vera` | <DB> effect: parameterised SQL on in-memory SQLite, Option<String> cells (SQL NULL = None) |
-| `sqlitedb.vera` | `VERA_DB_URL=sqlite:///examples/sqlitedb.sqlite vera run examples/sqlitedb.vera` | <DB> effect reading a committed on-disk SQLite file; prints the city table, Option<String> cells (SQL NULL = None); without VERA_DB_URL it falls back to the in-memory default and prints a graceful Err |
+| `sqlitedb.vera` | `VERA_DB_URL=sqlite:///examples/sqlitedb.sqlite vera run examples/sqlitedb.vera` | <DB> effect reading a committed on-disk SQLite file; prints the city table, Option<String> cells (SQL NULL = None); without VERA_DB_URL it falls back to the in-memory default and prints the missing-table error |
 | `async_futures.vera` | `vera run examples/async_futures.vera` | Async effect, Future type, eager async/await composition (these scalar wraps stay eager) |
-| `async_http_fanout.vera` | `vera run examples/async_http_fanout.vera` | Concurrent async fan-out: two `async(Http.get)` calls overlap on host worker threads then await (#841), Tier-1 status-range contract, network I/O (requires network) |
+| `async_http_fanout.vera` | `vera run examples/async_http_fanout.vera` | Concurrent async fan-out: two `async(Http.get)` calls overlap on host worker threads then await, Tier-1 status-range contract, network I/O (requires network) |
 | `http.vera` | `vera run examples/http.vera` | Http.get, JSON parsing, network I/O (requires network) |
 | `http_server.vera` | `vera serve examples/http_server.vera` | <HttpServer> verified request handler: Request/Response ADTs, Tier-1 status-range contract (serve, then curl it); also compiles to a `wasi:http` component with `vera compile --target wasi-p2 --world server` for `wasmtime serve` |
 | `read_char.vera` | `vera run examples/read_char.vera` | IO.read_char, single-character input (reads stdin) |
@@ -73,7 +73,7 @@ Examples that use only the IO and Random host families (e.g. `hello_world.vera`,
 
 | Example | Run | Demonstrates |
 |---------|-----|-------------|
-| `array_utilities.vera` | `vera run examples/array_utilities.vera --fn merge_sections` | The #466 phase-1 array utility built-ins: `array_flatten`, `array_mapi`, `array_sort_by`, `array_reverse`, `array_find`, `array_any`, `array_all` |
+| `array_utilities.vera` | `vera run examples/array_utilities.vera --fn merge_sections` | The array utility built-ins `array_flatten`, `array_mapi`, `array_sort_by`, `array_reverse`, `array_find`, `array_any`, `array_all` |
 | `string_ops.vera` | `vera run examples/string_ops.vera` | String and numeric conversions: `string_length`, `string_concat`, `string_slice`, `string_char_code`, `string_strip`, `parse_nat`, `parse_float64`, `parse_int`, `parse_bool`, `to_string`, `bool_to_string`, `nat_to_string`, `int_to_string`, `float_to_string` |
 | `string_utilities.vera` | `vera run examples/string_utilities.vera --fn padded_id` | string_chars, string_lines, string_words, string_pad_*, string_trim_*, string_reverse, char_to_*, is_digit/alpha/alphanumeric/whitespace/upper/lower |
 | `regex.vera` | `vera run examples/regex.vera` | regex_match, regex_find, regex_find_all, regex_replace |
@@ -90,6 +90,6 @@ Examples that use only the IO and Random host families (e.g. `hello_world.vera`,
 |---------|-----|-------------|
 | `modules.vera` | `vera run examples/modules.vera --fn clamp_to_range -- 100 0 42` | Module imports, qualified calls, cross-file composition |
 | `gc_pressure.vera` | `vera run examples/gc_pressure.vera` | GC behaviour under allocation pressure |
-| `life.vera` | `vera run examples/life.vera` | Conway's Game of Life — nested array combinators, recursive run_loop with `<IO>`, ANSI cursor-control rendering, formal Conway B3/S23 rule on `next_cell` |
-| `ephemeris.vera` | `vera run examples/ephemeris.vera` | Geocentric ephemeris from Keplerian elements — `sin`, `cos`, `asin`, `atan2`, `sqrt`, `floor`, `round`, `int_to_float`, `float_to_string`, `string_pad_start`, `string_pad_end`; refinement types, `decreases` fuel loops, and the Tier 1/Tier 3 boundary at the transcendental builtins |
+| `life.vera` | `vera run examples/life.vera` | Conway's Game of Life: nested array combinators, recursive run_loop with `<IO>`, ANSI cursor-control rendering, formal Conway B3/S23 rule on `next_cell` |
+| `ephemeris.vera` | `vera run examples/ephemeris.vera` | Geocentric ephemeris from Keplerian elements: `sin`, `cos`, `asin`, `atan2`, `sqrt`, `floor`, `round`, `int_to_float`, `float_to_string`, `string_pad_start`, `string_pad_end`; refinement types, `decreases` fuel loops, and the Tier 1/Tier 3 boundary at the transcendental builtins |
 | `maximum_syntax.vera` | `vera run examples/maximum_syntax.vera` | Breadth showcase: generics + abilities, refinement types, quantifiers, assert/assume, old()/new(), State/Exn handlers, Async/Random/HttpServer markers, Json/Ordering/Request/Response ADTs, pipe operator |
