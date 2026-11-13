@@ -692,7 +692,7 @@ The code generator does **not** consult the verifier: `vera compile` emits the m
 - **Every other clause code generation can lower:** compiled as a runtime assertion using an `unreachable` trap, whether Z3 proved it (Tier 1) or deferred it (Tier 3)
 - **A clause it cannot lower** (every non-trivial `ensures` on a function that returns a `String` or an `Array`, including one that reads only the parameters): no check; where the verifier does not prove it either, `vera verify` discloses it (`E543`)
 
-A Tier 1 guard provably never fires, and spec §11.8 keeps it as a backstop: a false Tier 1 surfaces as a runtime trap rather than a wrong answer.
+A Tier 1 guard provably never fires, and spec §11.8 keeps it as a backstop: a false Tier 1 surfaces as a runtime trap rather than a wrong answer.  A clause with no guard has no backstop, so a false Tier 1 of an `ensures` on a function that returns a `String` or an `Array` is checked by nothing.
 
 `vera verify` compiles the program in process and joins the verifier's records with the checks the module holds (`reconcile.py`): a record claiming a runtime check that no emitted check answers is an E541 error, and an emitted check no record accounts for is a W004 warning.  `--no-reconcile` skips the join.  `tests/test_reconciliation.py` runs the same join over the corpus in CI, and `scripts/check_reconciliation.py` locally, with the known mismatches allowlisted by their open issues.
 

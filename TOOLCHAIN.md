@@ -200,8 +200,8 @@ only `diagnostics` still learns why nothing ran.
 runtime check whatever its tier, wherever it can express one, so the proved
 function's checks are in the module the trials execute.  A contract it cannot
 express has no check, and no trial can refute its proof: an `ensures` on a
-function that returns a `String` or an `Array` is one, whatever the clause
-reads.  A proved function is not run when no check
+function that returns a `String` or an `Array` is such a contract, whatever
+the clause reads.  A proved function is not run when no check
 its run reaches can stand for something the verifier proved (a clause of its
 own, an operation in its body, the contract of a function it calls), when the
 generator has no input for it, or when there is nothing to run; the last two

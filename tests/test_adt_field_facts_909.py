@@ -1,19 +1,24 @@
 """A fact about a value holds through a data type's field (#909).
 
-A callee's `ensures` is a fact about its result.  Stored in a constructor
-field and read back by a `match`, the value is still that result, so a
-postcondition resting on the fact is proved at Tier 1.  #909 recorded the
-opposite as a limitation: the box-then-unbox program fell to a runtime check.
-The verifier proves it, and nothing pinned that, so the limitation's rows
-could be removed and the behaviour lost again with every gate green.
+A fact the verifier holds about a value (a callee's `ensures`, a refined
+return type, a refined or `@Nat` parameter) is a fact about that value
+wherever it goes.  Stored in a constructor field and read back by a `match`,
+it is still the same value, so a postcondition resting on the fact is proved
+at Tier 1.  #909 recorded the opposite as a limitation: the box-then-unbox
+program fell to a runtime check.  The verifier proves it, and nothing pinned
+that, so the limitation's rows could be removed and the behaviour lost again
+with every gate green.
 
-Each positive cell stores `mag(...)`, whose contract is
-`ensures(@Int.result >= 0)`, and asserts the caller's
-`ensures(@Int.result >= 0)` is `verified`.  The controls keep a cell from
-passing for a reason other than the fact: a postcondition stronger than the
-fact, a field that holds a value no contract speaks of, and a box returned by
-a callee whose contract is `ensures(true)` are each `violated` (E500) through
+Each positive cell stores such a value and asserts the caller's `ensures`
+is `verified`.  The controls keep a cell from passing for a reason other
+than the fact: a postcondition stronger than the fact, a field that holds a
+value no contract speaks of, the other field of a nested constructor (which
+holds `-7`, so reading the wrong field cannot pass), and a box returned by a
+callee whose contract is `ensures(true)` are each `violated` (E500) through
 the same field read.
+
+A value the function did not build is another class: the `Nat` component of
+an `@Tuple<Nat, Nat>` parameter read at `@Int` carries no `>= 0` (#1814).
 """
 
 from __future__ import annotations
@@ -39,6 +44,13 @@ MAG = textwrap.dedent("""\
     """)
 
 BOX = "private data Box { MkBox(Int) }\n"
+
+POS = "type PosInt = { @Int | @Int.0 > 0 };\n"
+
+NESTED = (
+    "private data Pair { MkPair(Int, Int) }\n"
+    "private data Outer { MkOuter(Pair) }\n"
+)
 
 #: The issue's reproduction, as filed.
 REPRO = BOX + MAG + textwrap.dedent("""\
@@ -93,22 +105,21 @@ SHAPES: dict[str, str] = {
           }
         }
         """),
-    "a nested constructor": (
-        "private data Pair { MkPair(Int, Int) }\n"
-        "private data Outer { MkOuter(Pair) }\n"
-        + MAG + textwrap.dedent("""\
+    # The second field is negative, so the cell passes only where the arm
+    # reads the first: `@Int.1`, the binding before the most recent.
+    "a nested constructor": NESTED + MAG + textwrap.dedent("""\
         public fn f(@Int -> @Int)
           requires(true)
           ensures(@Int.result >= 0)
           effects(pure)
         {
-          let @Outer = MkOuter(MkPair(mag(@Int.0), 7));
+          let @Outer = MkOuter(MkPair(mag(@Int.0), -7));
           match @Outer.0 {
             MkOuter(MkPair(@Int, @Int)) -> @Int.1
           }
         }
-        """)),
-    "a constructor in one arm of an if": MAG + textwrap.dedent("""\
+        """),
+    "a constructor in each arm of an if": MAG + textwrap.dedent("""\
         public fn f(@Int, @Bool -> @Int)
           requires(true)
           ensures(@Int.result >= 0)
@@ -133,6 +144,50 @@ SHAPES: dict[str, str] = {
         {
           let @Array<Int> = [mag(@Int.0)];
           @Array<Int>.0[0]
+        }
+        """),
+    "a refined parameter boxed": POS + BOX + textwrap.dedent("""\
+        public fn f(@PosInt -> @Int)
+          requires(true)
+          ensures(@Int.result > 0)
+          effects(pure)
+        {
+          let @Box = MkBox(@PosInt.0);
+          match @Box.0 {
+            MkBox(@Int) -> @Int.0
+          }
+        }
+        """),
+    "a refined return boxed": POS + BOX + textwrap.dedent("""\
+        private fn pos(@Int -> @PosInt)
+          requires(@Int.0 > 0)
+          ensures(true)
+          effects(pure)
+        {
+          @Int.0
+        }
+
+        public fn f(@Int -> @Int)
+          requires(@Int.0 > 0)
+          ensures(@Int.result > 0)
+          effects(pure)
+        {
+          let @Box = MkBox(pos(@Int.0));
+          match @Box.0 {
+            MkBox(@Int) -> @Int.0
+          }
+        }
+        """),
+    "a Nat parameter boxed": BOX + textwrap.dedent("""\
+        public fn f(@Nat -> @Int)
+          requires(true)
+          ensures(@Int.result >= 0)
+          effects(pure)
+        {
+          let @Box = MkBox(@Nat.0);
+          match @Box.0 {
+            MkBox(@Int) -> @Int.0
+          }
         }
         """),
 }
@@ -160,6 +215,18 @@ CONTROLS: dict[str, str] = {
           let @Box = MkBox(@Int.0);
           match @Box.0 {
             MkBox(@Int) -> @Int.0
+          }
+        }
+        """),
+    "the other field of a nested constructor": NESTED + MAG + textwrap.dedent("""\
+        public fn f(@Int -> @Int)
+          requires(true)
+          ensures(@Int.result >= 0)
+          effects(pure)
+        {
+          let @Outer = MkOuter(MkPair(mag(@Int.0), -7));
+          match @Outer.0 {
+            MkOuter(MkPair(@Int, @Int)) -> @Int.0
           }
         }
         """),

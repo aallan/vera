@@ -768,7 +768,7 @@ Measured by the coverage job on `main` at 559ca8fb.  The lowest-coverage files o
 
 ## Contract Verification Coverage
 
-Vera's verifier classifies each contract into one of three tiers. **Tier 1** contracts are proved statically by Z3; the non-trivial runtime check is still emitted as a defensive backstop (code generation is tier-agnostic, spec §11.8), so a Tier 1 proof means the guard provably never fires, not that it is absent. **Tier 3** contracts cannot be decided by the SMT solver, so their runtime check is the only line of defence. The verifier never rejects a valid program; it warns when a contract drops to Tier 3.
+Vera's verifier classifies each contract into one of three tiers. **Tier 1** contracts are proved statically by Z3; the non-trivial runtime check is still emitted as a defensive backstop wherever code generation can express it (code generation is tier-agnostic, spec §11.8), so a Tier 1 proof means the guard provably never fires, not that it is absent. **Tier 3** contracts cannot be decided by the SMT solver, so their runtime check is the only line of defence. The verifier never rejects a valid program; it warns when a contract drops to Tier 3.
 
 Across the example programs (the sums of `vera verify --json`'s `verification` block over `examples/*.vera`):
 
