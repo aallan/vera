@@ -102,7 +102,7 @@
   <g>
     <rect class="card" x="36" y="468" width="520" height="58" rx="10"/>
     <rect x="36.5" y="468.5" width="4" height="57" rx="2" fill="#8b6cad"/>
-    <rect x="50" y="480" width="28" height="20" rx="6" fill="#ede8f2"/>
+    <rect x="47" y="480" width="34" height="20" rx="6" fill="#ede8f2"/>
     <text class="f num" x="64" y="494.5" text-anchor="middle" fill="#8b6cad">4b</text>
     <text class="f title" x="90" y="495">Typed program</text>
     <text class="m mod" x="540" y="494" text-anchor="end">typed.py · obligations/table.py</text>
@@ -111,23 +111,24 @@
 
   <!-- fork: spine continues to Compile; branch goes right to Verify; both read the typed program -->
   <line class="edge" x1="64" y1="526" x2="64" y2="628" marker-end="url(#arr)"/>
-  <rect class="pill" x="78" y="560" width="140" height="18" rx="9"/>
-  <text class="m pillt" x="148" y="572.5" text-anchor="middle">vera compile · vera run</text>
+  <rect class="pill" x="74" y="560" width="166" height="18" rx="9"/>
+  <text class="m pillt" x="157" y="572.5" text-anchor="middle">vera compile · vera run</text>
 
   <polyline class="edge" points="500,526 500,540 590,540" marker-end="url(#arr)"/>
-  <rect class="pill" x="508" y="548" width="70" height="18" rx="9"/>
+  <rect class="pill" x="498" y="548" width="90" height="18" rx="9"/>
   <text class="m pillt" x="543" y="560.5" text-anchor="middle">vera verify</text>
 
   <!-- 5 · Verify (report path, right column) -->
   <g>
-    <rect class="card" x="600" y="504" width="284" height="100" rx="10"/>
-    <rect x="600.5" y="504.5" width="4" height="99" rx="2" fill="#d4952a"/>
-    <rect x="614" y="514" width="24" height="20" rx="6" fill="#f8efdf"/>
-    <text class="f num" x="626" y="528.5" text-anchor="middle" fill="#d4952a">5</text>
-    <text class="f title" x="648" y="529">Verify</text>
-    <text class="m mod" x="870" y="528" text-anchor="end">verifier.py · smt.py</text>
-    <text class="f desc" x="614" y="548">Z3 proves each obligation (Tier 1) or defers it (Tier 3)</text>
-    <text class="f desc" x="614" y="564">then compiles and matches each Tier 3 claim</text>
+    <rect class="card" x="600" y="488" width="284" height="116" rx="10"/>
+    <rect x="600.5" y="488.5" width="4" height="115" rx="2" fill="#d4952a"/>
+    <rect x="614" y="498" width="24" height="20" rx="6" fill="#f8efdf"/>
+    <text class="f num" x="626" y="512.5" text-anchor="middle" fill="#d4952a">5</text>
+    <text class="f title" x="648" y="513">Verify</text>
+    <text class="m mod" x="870" y="512" text-anchor="end">verifier.py · smt.py</text>
+    <text class="f desc" x="614" y="532">Z3 proves each obligation (Tier 1)</text>
+    <text class="f desc" x="614" y="548">or defers it (Tier 3) then compiles</text>
+    <text class="f desc" x="614" y="564">and matches each Tier 3 claim</text>
     <text class="m" x="614" y="580" font-size="10px" fill="#7a756d">reconcile.py · E541 / W004 on a mismatch</text>
     <text class="m" x="614" y="595" font-size="10px" fill="#b07820">→ ok · diagnostics · Tier 1 / Tier 3 counts</text>
   </g>
