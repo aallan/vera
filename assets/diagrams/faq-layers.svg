@@ -1,5 +1,5 @@
 <svg width="920" height="404" viewBox="0 0 920 404" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
-  <title id="title">What actually gets verified — three layers: the type system is mechanical and complete (if it type-checks, the pieces fit), Z3 contract verification is mechanical and bounded (prove or counterexample within a decidable fragment, the remainder runtime-checked), and human intent is expressive but unverified — a contract can be a perfectly verified implementation of the wrong specification.</title>
+  <title id="title">What actually gets verified, in three layers: the type system is mechanical and complete (if it type-checks, the pieces fit), Z3 contract verification is mechanical and bounded (prove or counterexample within a decidable fragment, the remainder runtime-checked), and human intent is expressive but unverified; a contract can be a perfectly verified implementation of the wrong specification.</title>
   <!-- Design system: see architecture.svg. Grounded in FAQ §What actually gets verified. -->
   <defs>
     <style>
@@ -24,7 +24,7 @@
   <g>
     <rect class="card" x="36" y="88" width="848" height="80" rx="10"/>
     <rect x="36.5" y="88.5" width="4" height="79" rx="2" fill="#8b6cad"/>
-    <text class="f t" x="56" y="112">Layer 1 — the type system</text>
+    <text class="f t" x="56" y="112">Layer 1: the type system</text>
     <text class="m tag" x="864" y="112" text-anchor="end" fill="#3d7a4d">MECHANICAL · COMPLETE</text>
     <text class="f d" x="56" y="132">Typed De Bruijn references mean every reference resolves to a binding of the right type, every call matches its</text>
     <text class="f d" x="56" y="146">signature, every match is exhaustive, generics monomorphise correctly.</text>
@@ -35,11 +35,11 @@
   <g>
     <rect class="card" x="36" y="180" width="848" height="94" rx="10"/>
     <rect x="36.5" y="180.5" width="4" height="93" rx="2" fill="#d4952a"/>
-    <text class="f t" x="56" y="204">Layer 2 — Z3 contract verification</text>
+    <text class="f t" x="56" y="204">Layer 2: Z3 contract verification</text>
     <text class="m tag" x="864" y="204" text-anchor="end" fill="#b07820">MECHANICAL · BOUNDED</text>
     <text class="f d" x="56" y="224">Mandatory requires/ensures/effects, translated into a decidable SMT fragment: linear arithmetic, booleans, array</text>
-    <text class="f d" x="56" y="238">lengths, ADT discrimination and fields, termination measures. Proved for all inputs — or a concrete counterexample.</text>
-    <text class="f d" x="56" y="254">What the fragment can't decide falls back to runtime contract checks: still executed, just not proven ahead of time.</text>
+    <text class="f d" x="56" y="238">lengths, ADT discrimination and fields, termination measures. Proved for all inputs, or a concrete counterexample.</text>
+    <text class="f d" x="56" y="254">What the fragment cannot decide becomes a runtime check (executed, not proven ahead of time), or is disclosed where none can be emitted.</text>
     <text class="f d" x="56" y="268" font-style="italic">Actual correctness properties, not just interface compatibility.</text>
   </g>
 
@@ -47,13 +47,13 @@
   <g>
     <rect class="card" x="36" y="286" width="848" height="80" rx="10"/>
     <rect x="36.5" y="286.5" width="4" height="79" rx="2" fill="#c45"/>
-    <text class="f t" x="56" y="310">Layer 3 — human intent</text>
+    <text class="f t" x="56" y="310">Layer 3: human intent</text>
     <text class="m tag" x="864" y="310" text-anchor="end" fill="#a83838">EXPRESSIVE · UNVERIFIED</text>
-    <text class="f d" x="56" y="330">Nothing checks that <tspan class="m" font-size="10px">ensures(@Int.result &gt;= 0)</tspan> is what you <tspan font-weight="600">wanted</tspan> — a contract can be a perfectly verified</text>
+    <text class="f d" x="56" y="330">Nothing checks that <tspan class="m" font-size="10px">ensures(@Int.result &gt;= 0)</tspan> is what you <tspan font-weight="600">wanted</tspan>; a contract can be a perfectly verified</text>
     <text class="f d" x="56" y="344">implementation of the wrong specification. SKILL.md steers models toward reasonable contracts; "reasonable" has</text>
-    <text class="f d" x="56" y="358">no formal backing. This layer is deliberately the smallest possible auditable surface.</text>
+    <text class="f d" x="56" y="358">no formal backing. Vera keeps this layer to the smallest auditable surface: the contracts.</text>
   </g>
 
   <!-- footer -->
-  <text class="f footi" x="36" y="390">Provably correct relative to stated requirements — and the human reviews contracts, not implementations.</text>
+  <text class="f footi" x="36" y="390">Provably correct relative to stated requirements, and the human reviews contracts, not implementations.</text>
 </svg>
