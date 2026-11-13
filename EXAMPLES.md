@@ -17,11 +17,11 @@ public fn safe_divide(@Int, @Int -> @Int)
 }
 ```
 
-> [`examples/safe_divide.vera`](examples/safe_divide.vera) — run with `vera run examples/safe_divide.vera --fn safe_divide -- 3 10`
+> [`examples/safe_divide.vera`](examples/safe_divide.vera): run with `vera run examples/safe_divide.vera --fn safe_divide -- 3 10`
 
-## Refinement types — constraints at the type level
+## Refinement types: constraints at the type level
 
-Types can carry predicates. `PosInt` is not just `Int` — it's an integer the compiler has proved is positive. `NonEmptyArray` is an array the compiler has proved is non-empty. Indexing into it is safe by construction.
+A type can hold a predicate. `PosInt` is an integer the compiler has proved is positive, not any `Int`. `NonEmptyArray` is an array the compiler has proved is non-empty. Indexing into it is safe by construction.
 
 <!-- vera:run fn="safe_divide" args="10 2" stdout="5" -->
 ```vera
@@ -46,11 +46,11 @@ private fn head(@NonEmptyArray -> @Int)
 }
 ```
 
-> [`examples/refinement_types.vera`](examples/refinement_types.vera) — run with `vera run examples/refinement_types.vera --fn test_refine`
+> [`examples/refinement_types.vera`](examples/refinement_types.vera): run with `vera run examples/refinement_types.vera --fn test_refine`
 
 ## Algebraic data types and pattern matching
 
-User-defined types with recursive structure. `decreases(@List<Int>.0)` is a termination proof — the compiler verifies that the argument shrinks on every recursive call.
+User-defined types with recursive structure. `decreases(@List<Int>.0)` is a termination proof: the compiler verifies that the argument shrinks on every recursive call.
 
 <!-- vera:no-run category="non-scalar-entry" reason="its exported functions take List parameters" -->
 ```vera
@@ -72,11 +72,11 @@ public fn sum(@List<Int> -> @Int)
 }
 ```
 
-> [`examples/list_ops.vera`](examples/list_ops.vera) — run with `vera run examples/list_ops.vera --fn test_list`
+> [`examples/list_ops.vera`](examples/list_ops.vera): run with `vera run examples/list_ops.vera --fn test_list`
 
-## Effects — explicit state, no hidden mutation
+## Effects: explicit state, no hidden mutation
 
-Vera is pure by default. State changes must be declared as effects. `effects(<State<Int>>)` says this function reads and writes an integer. The `ensures` clause specifies exactly how the state changes. Handlers provide the actual state implementation — the function `run_counter` eliminates the effect entirely and is pure.
+Vera is pure by default. State changes must be declared as effects. `effects(<State<Int>>)` says this function reads and writes an integer. The `ensures` clause specifies exactly how the state changes. A handler provides the state itself. `run_counter` handles the effect, so it is pure.
 
 <!-- vera:run fn="run_counter" stdout="3" -->
 ```vera
@@ -108,11 +108,11 @@ public fn run_counter(@Unit -> @Int)
 }
 ```
 
-> [`examples/effect_handler.vera`](examples/effect_handler.vera) — run with `vera run examples/effect_handler.vera --fn run_counter`
+> [`examples/effect_handler.vera`](examples/effect_handler.vera): run with `vera run examples/effect_handler.vera --fn run_counter`
 
 ## Exceptions as effects
 
-The `Exn<E>` effect models exceptions with a typed error value. Unlike most languages, exceptions are explicit in the type signature and must be handled by the caller. The handler catches the thrown value and returns a fallback — `safe_div` is pure because the effect has been discharged.
+The `Exn<E>` effect models exceptions with a typed error value. Unlike most languages, exceptions are explicit in the type signature and must be handled by the caller. The handler catches the thrown value and returns a fallback, so `safe_div` is pure because the effect has been discharged.
 
 <!-- vera:run fn="safe_div" args="10 0" stdout="-1" -->
 ```vera
@@ -137,11 +137,11 @@ public fn safe_div(@Int, @Int -> @Int)
 }
 ```
 
-> [`examples/effect_handler.vera`](examples/effect_handler.vera) — run with `vera run examples/effect_handler.vera --fn safe_div -- 10 0`
+> [`examples/effect_handler.vera`](examples/effect_handler.vera): run with `vera run examples/effect_handler.vera --fn safe_div -- 10 0`
 
 ## String interpolation and async
 
-`IO.print` is an effect operation. The `\(@Int.0)` syntax interpolates values into strings, auto-converting primitive types. `effects(<IO, Async>)` declares both IO and async effects — the compiler rejects any call to this function from a context that doesn't permit both.
+`IO.print` is an effect operation. The `\(@Int.0)` syntax interpolates values into strings, auto-converting primitive types. `effects(<IO, Async>)` declares both IO and async effects; the compiler rejects any call to this function from a context that does not permit both.
 
 <!-- vera:run fn="main" stdout="roundtrip(42) = 42" -->
 ```vera
@@ -165,9 +165,9 @@ public fn main(@Unit -> @Unit)
 }
 ```
 
-> [`examples/async_futures.vera`](examples/async_futures.vera) — run with `vera run examples/async_futures.vera`
+> [`examples/async_futures.vera`](examples/async_futures.vera): run with `vera run examples/async_futures.vera`
 
-The scalar `async(@Int.0)` above evaluates **eagerly**: `Future<T>` is just `T`'s representation with no runtime overhead, and `await` unwraps it in place. A direct whitelisted Http call under `async` — `async(Http.get(url))` or `async(Http.post(url, body))` with a call-free argument — runs **concurrently** in the native runtime: each request is issued on a host worker thread at the `async(...)` point, so firing several then awaiting them overlaps the round-trips. Every other shape stays eager, and the browser runtime is always eager (spec-conformant).
+The scalar `async(@Int.0)` above evaluates **eagerly**: `Future<T>` has `T`'s representation with no runtime overhead, and `await` unwraps it in place. A direct whitelisted Http call under `async` (`async(Http.get(url))` or `async(Http.post(url, body))` with a call-free argument) runs **concurrently** in the native runtime: each request is issued on a host worker thread at the `async(...)` point, so firing several then awaiting them overlaps the round-trips. Every other shape stays eager, and the browser runtime is always eager (spec-conformant).
 
 ```vera
 private fn fetch_both(@String, @String -> @Bool)
@@ -183,15 +183,15 @@ private fn fetch_both(@String, @String -> @Bool)
 }
 ```
 
-> [`examples/async_http_fanout.vera`](examples/async_http_fanout.vera) — run with `vera run examples/async_http_fanout.vera` (requires network). It folds the two `Result` outcomes into a status code whose `0..3` range `vera verify` discharges statically.
+> [`examples/async_http_fanout.vera`](examples/async_http_fanout.vera): run with `vera run examples/async_http_fanout.vera` (requires network). It folds the two `Result` outcomes into a status code whose `0..3` range `vera verify` discharges statically.
 
 ## Recursion as iteration
 
-Vera has no `for` or `while` loops — iteration is always recursion. The `loop` function calls itself with `@Nat.0 + 1` until it reaches the bound. This is the standard Vera pattern for counted iteration.
+Vera has no `for` or `while` loops; iteration is recursion. The `loop` function calls itself with `@Nat.0 + 1` until it reaches the bound. This is the standard Vera pattern for counted iteration.
 
-`fizzbuzz` is `effects(pure)` — the verifier can reason about it with SMT. `loop` has `effects(<IO>)` because it prints. `main` calls `loop` and also has `effects(<IO>)`. The effect annotations propagate up the call chain but never contaminate the pure classifier.
+`fizzbuzz` is `effects(pure)`, so the verifier can reason about it with SMT. `loop` has `effects(<IO>)` because it prints. `main` calls `loop` and also has `effects(<IO>)`. The effect annotations propagate up the call chain but never contaminate the pure classifier.
 
-The contract `requires(@Nat.0 <= @Nat.1)` on `loop` ensures the function is only called with valid bounds — and since the recursive call passes `@Nat.0 + 1` where `@Nat.0 < @Nat.1`, the precondition is maintained at every step.
+The contract `requires(@Nat.0 <= @Nat.1)` on `loop` ensures the function is only called with valid bounds. Since the recursive call passes `@Nat.0 + 1` where `@Nat.0 < @Nat.1`, the precondition is maintained at every step.
 
 <!-- vera:run fn="fizzbuzz" args="15" stdout="FizzBuzz" -->
 ```vera
@@ -238,7 +238,7 @@ public fn main(@Unit -> @Unit)
 }
 ```
 
-> [`examples/fizzbuzz.vera`](examples/fizzbuzz.vera) — run with `vera run examples/fizzbuzz.vera`
+> [`examples/fizzbuzz.vera`](examples/fizzbuzz.vera): run with `vera run examples/fizzbuzz.vera`
 
 ## Typed Markdown
 
@@ -269,9 +269,9 @@ public fn main(@Unit -> @Unit)
 }
 ```
 
-> [`examples/markdown.vera`](examples/markdown.vera) — run with `vera run examples/markdown.vera`
+> [`examples/markdown.vera`](examples/markdown.vera): run with `vera run examples/markdown.vera`
 
-## JSON — structured data interchange
+## JSON: structured data interchange
 
 Vera has a built-in `Json` ADT. `json_parse` parses a JSON string into a typed `Json` value; `json_get`, `json_array_get`, and `json_has_field` query its structure. Pattern matching on `JString`, `JNumber`, `JBool`, etc. extracts typed values with compiler-enforced exhaustiveness.
 
@@ -294,9 +294,9 @@ private fn get_name(@String -> @Result<String, String>)
 }
 ```
 
-> [`examples/json.vera`](examples/json.vera) — run with `vera run examples/json.vera`
+> [`examples/json.vera`](examples/json.vera): run with `vera run examples/json.vera`
 
-## HTTP — network I/O as an algebraic effect
+## HTTP: network I/O as an algebraic effect
 
 `Http.get` and `Http.post` are effect operations returning `Result<String, String>`. The `<Http>` effect is declared in the signature, making network access explicit. A `handle[Http]` is refused at check (`E340`), so the effect is declared and propagated but not mocked. Compose with `json_parse` for typed API responses.
 
@@ -322,11 +322,11 @@ private fn fetch_title(@String -> @Result<String, String>)
 }
 ```
 
-> [`examples/http.vera`](examples/http.vera) — run with `vera run examples/http.vera` (requires network)
+> [`examples/http.vera`](examples/http.vera): run with `vera run examples/http.vera` (requires network)
 
-## HTML — lenient parsing and CSS selector queries
+## HTML: lenient parsing and CSS selector queries
 
-`html_parse` produces a typed `HtmlNode` tree from any HTML string. The parser is lenient (like browsers) — malformed HTML produces a best-effort tree. Query elements with CSS selectors, extract text, and read attributes.
+`html_parse` produces a typed `HtmlNode` tree from any HTML string. The parser is lenient (like browsers). Malformed HTML produces a best-effort tree. Query elements with CSS selectors, extract text, and read attributes.
 
 ```vera
 private fn count_links(@HtmlNode -> @Int)
@@ -338,11 +338,11 @@ private fn count_links(@HtmlNode -> @Int)
 }
 ```
 
-> [`examples/html.vera`](examples/html.vera) — run with `vera run examples/html.vera`
+> [`examples/html.vera`](examples/html.vera): run with `vera run examples/html.vera`
 
 ## LLM inference as an algebraic effect
 
-`Inference.complete` sends a prompt to an LLM and returns the completion. The `<Inference>` effect is declared in the signature — a function typed `effects(pure)` provably cannot call an LLM. Provider auto-detected from environment variables.
+`Inference.complete` sends a prompt to an LLM and returns the completion. The `<Inference>` effect is declared in the signature, so a function typed `effects(pure)` cannot call an LLM. The runtime picks the provider from environment variables.
 
 ```vera
 private fn classify_sentiment(@String -> @Result<String, String>)
@@ -357,11 +357,11 @@ private fn classify_sentiment(@String -> @Result<String, String>)
 }
 ```
 
-> [`examples/inference.vera`](examples/inference.vera) — run with `VERA_ANTHROPIC_API_KEY=sk-ant-... vera run examples/inference.vera`
+> [`examples/inference.vera`](examples/inference.vera): run with `VERA_ANTHROPIC_API_KEY=sk-ant-... vera run examples/inference.vera`
 
-## SQL — injection is a compile-time error
+## SQL: injection is a compile-time error
 
-The `<DB>` effect runs SQL against a relational database (SQLite, chosen by `VERA_DB_URL`; in-memory by default). The query string must be a **literal** — runtime values reach the database only through `?` placeholders and the params array. Rows come back as `Array<Array<Option<String>>>`: a SQL `NULL` is a `None` cell, distinct from an empty string, and reading a cell goes through `Option` — the `NULL` case must be matched or explicitly defaulted (`option_unwrap_or`) before the text can be used.
+The `<DB>` effect runs SQL against a relational database (SQLite, chosen by `VERA_DB_URL`; in-memory by default). The query string must be a **literal**; runtime values reach the database only through `?` placeholders and the params array. Rows come back as `Array<Array<Option<String>>>`: a SQL `NULL` is a `None` cell, distinct from an empty string, and reading a cell goes through `Option`, so the `NULL` case must be matched or explicitly defaulted (`option_unwrap_or`) before the text can be used.
 
 <!-- vera:no-run category="fixture" reason="queries a users table the block does not create" -->
 ```vera
@@ -374,7 +374,7 @@ public fn find_user(@String -> @Result<Array<Array<Option<String>>>, String>)
 }
 ```
 
-Building the query from the parameter instead — `DB.query(string_concat("SELECT ... WHERE name = '", @String.0), [])` — does not compile:
+Building the query from the parameter instead, as `DB.query(string_concat("SELECT ... WHERE name = '", @String.0), [])` does, fails to compile:
 
 ```text
 [E207] Error at main.vera, line 6, column 12:
@@ -388,17 +388,17 @@ Building the query from the parameter instead — `DB.query(string_concat("SELEC
   data flows through the ? placeholders and the params array.
 ```
 
-> [`examples/sqlitedb.vera`](examples/sqlitedb.vera) — run with `VERA_DB_URL=sqlite:///examples/sqlitedb.sqlite vera run examples/sqlitedb.vera`
+> [`examples/sqlitedb.vera`](examples/sqlitedb.vera): run with `VERA_DB_URL=sqlite:///examples/sqlitedb.sqlite vera run examples/sqlitedb.vera`
 
-## Conway's Game of Life — putting it all together
+## Conway's Game of Life: putting it all together
 
 A real Vera program: 80×22 grid, three classic patterns interacting, recursive `run_loop` driven by `<IO>` for animation timing.
 
-`next_cell` carries a *formal specification* of Conway's B3/S23 transition rule in its `ensures` clause — the verifier discharges it at Tier 1 by symbolic substitution of the body, so any future edit that breaks the rule fails verification before it can run.
+`next_cell` states Conway's B3/S23 transition rule as a *formal specification* in its `ensures` clause. The verifier discharges it at Tier 1 by symbolic substitution of the body, so an edit that breaks the rule fails verification before it can run.
 
-`step` uses nested `array_mapi` over `array_mapi`, capturing the whole grid into the closure so each cell's transition can read its eight neighbours via `count_neighbors`.  This is the canonical iterative shape — no manual recursion over indices.
+`step` uses nested `array_mapi` over `array_mapi`, capturing the whole grid into the closure so each cell's transition can read its eight neighbours via `count_neighbors`.  This is the canonical iterative shape, with no manual recursion over indices.
 
-`render` builds the entire frame (banner + grid) as a single string and emits it in one `IO.print`, prefixed with `\u{1B}[H` to home the cursor.  The frame overwrites the previous one in place; `IO.sleep(100)` between frames paces the animation at 10 fps.
+`render` builds the entire frame (banner + grid) as a single string and emits it in one `IO.print`, prefixed with `\u{001B}[H` to home the cursor.  The frame overwrites the previous one in place; `IO.sleep(100)` between frames paces the animation at 10 fps.
 
 ```vera
 -- Conway's B3/S23 transition rule, formally specified in `ensures`.
@@ -415,4 +415,4 @@ private fn next_cell(@Bool, @Nat -> @Bool)
 }
 ```
 
-> [`examples/life.vera`](examples/life.vera) — run with `vera run examples/life.vera`
+> [`examples/life.vera`](examples/life.vera): run with `vera run examples/life.vera`
