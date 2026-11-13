@@ -38,7 +38,7 @@ Each entry keeps its chapter's wording, including the issue it cites. The specif
 
 ### 9.5.3 Http
 
-**Status: Implemented.** Tracked in [#57](https://github.com/aallan/vera/issues/57). `Http.get` and `Http.post` are fully compilable and execute via host imports (Python `urllib` / a synchronous `XMLHttpRequest` in the browser). Returns `Result<String, String>`: `Ok` with the response body, `Err` with the error message. The conformance test `ch09_http` and the example `http.vera` exercise it.
+**Status: Implemented.** `Http.get` and `Http.post` are fully compilable and execute via host imports (Python `urllib` / a synchronous `XMLHttpRequest` in the browser). Returns `Result<String, String>`: `Ok` with the response body, `Err` with the error message. The conformance test `ch09_http` and the example `http.vera` exercise it.
 
 ### 9.6.19 similarity (Future)
 
@@ -46,7 +46,7 @@ Each entry keeps its chapter's wording, including the issue it cites. The specif
 
 ### 9.8 Abilities
 
-**Status: Implemented.** Tracked in [#60](https://github.com/aallan/vera/issues/60). Four built-in abilities (`Eq`, `Ord`, `Hash`, `Show`) are fully compilable. Supported types: Int, Nat, Bool, Float64, String, Byte, Unit. `Eq` derivation is **structural** ([#773](https://github.com/aallan/vera/issues/773)): a simple enum, or an ADT every field of which is itself `Eq` (an `Eq` primitive, `String` included and compared by content, or a nested `Eq` ADT, compared recursively, including recursive types), supports `Eq` automatically. Fields with no `Eq` semantics (`Array`, `Map`, host handles) make the ADT non-derivable. `Show` and `Hash` derive **structurally** for composite types too ([#911](https://github.com/aallan/vera/issues/911)): ADT, `Tuple`, `Option`, `Result`, and `Array`, recursing into each field/element by its own `show`/`hash` (see §9.8.2), including directly-recursive ADTs (`List<T>`, `Tree<T>`), which lower to a generated self-calling helper ([#924](https://github.com/aallan/vera/issues/924)). The built-in `Ordering` ADT (`Less`, `Equal`, `Greater`) is available for `Ord`'s `compare` operation.
+**Status: Implemented.** Four built-in abilities (`Eq`, `Ord`, `Hash`, `Show`) are fully compilable. Supported types: Int, Nat, Bool, Float64, String, Byte, Unit. `Eq` derivation is **structural** ([#773](https://github.com/aallan/vera/issues/773)): a simple enum, or an ADT every field of which is itself `Eq` (an `Eq` primitive, `String` included and compared by content, or a nested `Eq` ADT, compared recursively, including recursive types), supports `Eq` automatically. Fields with no `Eq` semantics (`Array`, `Map`, host handles) make the ADT non-derivable. `Show` and `Hash` derive **structurally** for composite types too ([#911](https://github.com/aallan/vera/issues/911)): ADT, `Tuple`, `Option`, `Result`, and `Array`, recursing into each field/element by its own `show`/`hash` (see §9.8.2), including directly-recursive ADTs (`List<T>`, `Tree<T>`), which lower to a generated self-calling helper ([#924](https://github.com/aallan/vera/issues/924)). The built-in `Ordering` ADT (`Less`, `Equal`, `Greater`) is available for `Ord`'s `compare` operation.
 
 ## [spec/13-wasi.md](https://raw.githubusercontent.com/aallan/vera/main/spec/13-wasi.md)
 

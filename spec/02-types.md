@@ -381,7 +381,7 @@ Vera has minimal subtyping, and the complete subtyping relation is:
 
 > **Implementation note:** The type checker additionally permits `Int <: Nat` (the reverse of the `Nat <: Int` relationship in Section 2.2.1) to allow functions that compute a natural number from integer inputs without explicit conversion. Non-negativity is not enforced by the type checker alone; the contract verifier enforces the `>= 0` constraint via Z3. Code that passes `vera check` but fails `vera verify` on a `Nat` return type indicates that the verifier could not prove the result is non-negative. Rule 5 carries the relaxation into a data type's type argument: an `Array<Int>` where an `Array<Nat>` is expected is a narrowing of its elements, obligated, and checked at run time where the verifier cannot discharge it.
 
-![The complete subtyping relation: Never below everything, refinement subtyping when one predicate implies the other, refinement-to-base, reflexivity, and nothing else. The checker additionally permits Int where Nat is expected; the verifier enforces the non-negativity proof.](../assets/diagrams/subtyping-lattice.svg)
+![The complete subtyping relation: Never below everything, refinement subtyping when one predicate implies the other, refinement-to-base and reflexivity; a data type is covariant in its type arguments, and a function type is contravariant in its parameters and covariant in its result and effect row. The checker additionally permits Int where Nat is expected; the verifier enforces the non-negativity proof.](../assets/diagrams/subtyping-lattice.svg)
 
 ## 2.9 Type Equality
 
