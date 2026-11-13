@@ -1,5 +1,5 @@
-<svg width="920" height="336" viewBox="0 0 920 336" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
-  <title id="title">The three-pass type checker: pass 0 registers each resolved module's declarations into module-qualified dictionaries, pass 1 registers all local declarations into the TypeEnv, and pass 2 checks every function body against the fully populated environment.</title>
+<svg width="920" height="356" viewBox="0 0 920 356" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
+  <title id="title">The three-pass type checker: pass 0 registers each resolved module's declarations into module-qualified dictionaries, pass 1 registers all local declarations into the TypeEnv, binding.py then binds every call to its declaration, and pass 2 checks every function body against the fully populated environment and that binding.</title>
   <!-- Design system: see architecture.svg. Grounded in vera/README.md §Type checker. -->
   <defs>
     <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
@@ -19,10 +19,10 @@
     </style>
   </defs>
 
-  <rect x="1.5" y="1.5" width="917" height="333" rx="14" fill="#faf9f7" stroke="#e8e6e1" stroke-width="1.5"/>
+  <rect x="1.5" y="1.5" width="917" height="353" rx="14" fill="#faf9f7" stroke="#e8e6e1" stroke-width="1.5"/>
 
   <text class="f micro" x="36" y="42">TYPE CHECKER · THREE PASSES</text>
-  <text class="f sub" x="36" y="64">Signatures are registered before any body is checked — forward references need no declaration order.</text>
+  <text class="f sub" x="36" y="64">Signatures are registered before any body is checked, so forward references need no declaration order.</text>
 
   <!-- pass 0 -->
   <g>
@@ -35,7 +35,7 @@
     <text class="f d" x="54" y="188">· register its declarations</text>
     <text class="f d" x="54" y="204">· harvest signatures into</text>
     <text class="f d" x="66" y="218">module-qualified dictionaries</text>
-    <text class="f d" x="54" y="242" font-style="italic" fill="#a9a49b">signatures only — no bodies</text>
+    <text class="f d" x="54" y="242" font-style="italic" fill="#a9a49b">signatures only, no bodies</text>
   </g>
   <line class="edge" x1="296" y1="172" x2="340" y2="172" marker-end="url(#arr)"/>
   <text class="f elbl" x="318" y="158" text-anchor="middle">TypeEnv</text>
@@ -74,10 +74,11 @@
   </g>
 
   <!-- output -->
-  <polyline class="edge" points="768,256 768,282 630,282" marker-end="url(#arr)"/>
-  <rect x="380" y="270" width="246" height="24" rx="12" fill="#f3f2ef" stroke="#e8e6e1"/>
-  <text class="m" x="503" y="286" text-anchor="middle" font-size="10.5px" fill="#2d2b28">list[Diagnostic] — never raised, always returned</text>
+  <polyline class="edge" points="768,256 768,282 640,282" marker-end="url(#arr)"/>
+  <rect x="352" y="270" width="284" height="24" rx="12" fill="#f3f2ef" stroke="#e8e6e1"/>
+  <text class="m" x="494" y="286" text-anchor="middle" font-size="10.5px" fill="#2d2b28">list[Diagnostic]: returned, never raised</text>
 
   <!-- footer -->
-  <text class="f footi" x="36" y="318">Every error accumulates; a broken body cannot hide the errors after it.</text>
+  <text class="f d" x="36" y="318">Between passes 1 and 2, <tspan class="m" font-size="10.5px">binding.py</tspan> binds every call to its declaration; pass 2 reads that binding instead of resolving names itself.</text>
+  <text class="f footi" x="36" y="338">Every error accumulates; a broken body cannot hide the errors after it.</text>
 </svg>

@@ -1,5 +1,5 @@
 <svg width="920" height="440" viewBox="0 0 920 440" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
-  <title id="title">How a contract becomes a Z3 query: the requires clauses become assumptions, the ensures clause with the body substituted for the result becomes the goal, and the solver is asked to refute it — assert the assumptions and the negated goal. Unsat means verified, sat yields a concrete counterexample, unknown defers to a Tier 3 runtime check.</title>
+  <title id="title">How a contract becomes a Z3 query: the requires clauses become assumptions, the ensures clause with the body substituted for the result becomes the goal, and the solver is asked to refute it by asserting the assumptions and the negated goal. Unsat means verified, sat yields a concrete counterexample, and unknown or timeout defers to a Tier 3 runtime check. At a call site the callee's requires is checked and its ensures is assumed about the result.</title>
   <!-- Design system: see architecture.svg. Grounded in vera/README.md §Verifier. -->
   <defs>
     <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
@@ -23,7 +23,7 @@
   <rect x="1.5" y="1.5" width="917" height="437" rx="14" fill="#faf9f7" stroke="#e8e6e1" stroke-width="1.5"/>
 
   <text class="f micro" x="36" y="42">VERIFIER · PROOF BY REFUTATION</text>
-  <text class="f sub" x="36" y="64">To prove the postcondition always holds, ask Z3 for a world where it doesn't.</text>
+  <text class="f sub" x="36" y="64">To prove the postcondition always holds, ask Z3 for an input where it fails.</text>
 
   <!-- sources -->
   <g>
@@ -68,22 +68,22 @@
   <g>
     <rect class="card" x="80" y="328" width="220" height="56" rx="10"/>
     <rect x="80.5" y="328.5" width="4" height="55" rx="2" fill="#5a9e6f"/>
-    <text class="f t" x="96" y="350" fill="#3d7a4d">Verified — Tier 1</text>
+    <text class="f t" x="96" y="350" fill="#3d7a4d">Verified: Tier 1</text>
     <text class="f d" x="96" y="368">no counterexample can exist</text>
   </g>
   <g>
     <rect class="card" x="350" y="328" width="220" height="56" rx="10"/>
     <rect x="350.5" y="328.5" width="4" height="55" rx="2" fill="#c45"/>
-    <text class="f t" x="366" y="350" fill="#a83838">Violated — E500</text>
+    <text class="f t" x="366" y="350" fill="#a83838">Violated: E500</text>
     <text class="f d" x="366" y="368">the model is reported as inputs</text>
   </g>
   <g>
     <rect class="card" x="620" y="328" width="220" height="56" rx="10"/>
     <rect x="620.5" y="328.5" width="4" height="55" rx="2" fill="#d4952a"/>
-    <text class="f t" x="636" y="350" fill="#b07820">Tier 3 — runtime guard</text>
-    <text class="f d" x="636" y="368">checked on every call instead</text>
+    <text class="f t" x="636" y="350" fill="#b07820">Tier 3: runtime check</text>
+    <text class="f d" x="636" y="368">checked when the program runs</text>
   </g>
 
   <!-- footer -->
-  <text class="f footi" x="36" y="418">Callee contracts join the assumptions at call sites — scoped to the path that established them.</text>
+  <text class="f footi" x="36" y="418">At a call site the callee's requires is a goal of its own (E501), and its ensures joins the assumptions about the result.</text>
 </svg>

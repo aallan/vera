@@ -1,5 +1,5 @@
-<svg width="920" height="336" viewBox="0 0 920 336" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
-  <title id="title">The CLI mirrors the pipeline: vera parse and fmt stop at parsing, check and ast at type checking, verify at contract verification, compile and test at code generation, run and serve at execution — and vera lsp keeps the whole pipeline warm at editor latency.</title>
+<svg width="920" height="352" viewBox="0 0 920 352" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
+  <title id="title">The CLI mirrors the pipeline: vera parse, fmt and ast stop at parsing, check at type checking, verify at contract verification (it then compiles to check its runtime-check claims), compile at code generation, and run, serve and test at execution; vera compile, run and serve skip verification, and vera lsp keeps type checking and verification warm at editor latency.</title>
   <!-- Design system: see architecture.svg. Grounded in TOOLCHAIN.md. -->
   <defs>
     <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
@@ -20,10 +20,10 @@
     </style>
   </defs>
 
-  <rect x="1.5" y="1.5" width="917" height="333" rx="14" fill="#faf9f7" stroke="#e8e6e1" stroke-width="1.5"/>
+  <rect x="1.5" y="1.5" width="917" height="349" rx="14" fill="#faf9f7" stroke="#e8e6e1" stroke-width="1.5"/>
 
   <text class="f micro" x="36" y="42">TOOLCHAIN · THE CLI MIRRORS THE PIPELINE</text>
-  <text class="f sub" x="36" y="64">Every command stops at its stage; everything before it must already hold.</text>
+  <text class="f sub" x="36" y="64">Each command stops at its stage. vera compile, run and serve skip verify; vera verify and vera test also compile.</text>
 
   <!-- stage strip -->
   <g>
@@ -62,12 +62,12 @@
   <text class="m pt" x="106" y="165" text-anchor="middle">vera parse</text>
   <rect class="pill" x="36" y="182" width="140" height="26" rx="13"/>
   <text class="m pt" x="106" y="199" text-anchor="middle">vera fmt</text>
+  <rect class="pill" x="36" y="216" width="140" height="26" rx="13"/>
+  <text class="m pt" x="106" y="233" text-anchor="middle">vera ast</text>
 
   <line class="drop" x1="278" y1="126" x2="278" y2="146"/>
   <rect class="pill" x="208" y="148" width="140" height="26" rx="13"/>
   <text class="m pt" x="278" y="165" text-anchor="middle">vera check</text>
-  <rect class="pill" x="208" y="182" width="140" height="26" rx="13"/>
-  <text class="m pt" x="278" y="199" text-anchor="middle">vera ast</text>
 
   <line class="drop" x1="450" y1="126" x2="450" y2="146"/>
   <rect class="pill" x="380" y="148" width="140" height="26" rx="13"/>
@@ -76,21 +76,21 @@
   <line class="drop" x1="622" y1="126" x2="622" y2="146"/>
   <rect class="pill" x="552" y="148" width="140" height="26" rx="13"/>
   <text class="m pt" x="622" y="165" text-anchor="middle">vera compile</text>
-  <rect class="pill" x="552" y="182" width="140" height="26" rx="13"/>
-  <text class="m pt" x="622" y="199" text-anchor="middle">vera test</text>
 
   <line class="drop" x1="794" y1="126" x2="794" y2="146"/>
   <rect class="pill" x="724" y="148" width="140" height="26" rx="13"/>
   <text class="m pt" x="794" y="165" text-anchor="middle">vera run</text>
   <rect class="pill" x="724" y="182" width="140" height="26" rx="13"/>
   <text class="m pt" x="794" y="199" text-anchor="middle">vera serve</text>
+  <rect class="pill" x="724" y="216" width="140" height="26" rx="13"/>
+  <text class="m pt" x="794" y="233" text-anchor="middle">vera test</text>
 
   <!-- cross-stage tools -->
-  <rect class="pill" x="36" y="240" width="430" height="28" rx="14"/>
-  <text class="m pt" x="251" y="258" text-anchor="middle">vera lsp — the whole pipeline, warm, at editor latency</text>
-  <rect class="pill" x="480" y="240" width="404" height="28" rx="14"/>
-  <text class="m pt" x="682" y="258" text-anchor="middle">vera builtins · effects · errors — registries, no file needed</text>
+  <rect class="pill" x="36" y="264" width="430" height="28" rx="14"/>
+  <text class="m pt" x="251" y="282" text-anchor="middle">vera lsp: check and verify, warm, at editor latency</text>
+  <rect class="pill" x="480" y="264" width="404" height="28" rx="14"/>
+  <text class="m pt" x="682" y="282" text-anchor="middle">vera builtins · effects · errors: registries, no file</text>
 
   <!-- footer -->
-  <text class="f footi" x="36" y="304">Every command takes --json for machine-readable output; --quiet suppresses success chatter.</text>
+  <text class="f footi" x="36" y="324">vera check, verify, test, compile, run, ast and the registries take --json for machine-readable output; check and verify take --quiet.</text>
 </svg>
