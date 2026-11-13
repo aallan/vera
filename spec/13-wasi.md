@@ -4,8 +4,8 @@
 
 The `wasi-p2` compilation target packages a Vera program as a
 **WebAssembly component** whose host imports are implemented on top of
-WASI 0.2 interfaces.  The artifact runs under any stock wasip2 host —
-`wasmtime run`, wasmtime-py's `component.Linker.add_wasip2()` — with no
+WASI 0.2 interfaces.  The artefact runs under any stock wasip2 host
+(`wasmtime run`, wasmtime-py's `component.Linker.add_wasip2()`) with no
 Vera-specific host bindings.
 
 ```bash
@@ -18,14 +18,14 @@ vera run --target wasi-p2 program.vera       # execute under the built-in wasip2
 families** (Section 13.4).  It is not a blanket "WASI 0.2 compliant"
 mode: a program using any other host family (Http, Decimal, Json, Html, Md,
 Regex, Math, Inference, DB, State, Async) is rejected with a diagnostic
-naming the unsupported family — never silently compiled against the core
+naming the unsupported family, never silently compiled against the core
 target instead.  `Map` and `Set` are the module's own code (Section 9.4.3)
 and run in both worlds at every instance.
 
 The core `wasm` target (Chapters 11–12) is the default and the
 canonical compilation model; the browser runtime (Section 12.9) is
 unaffected.  The `wasi-p2` component embeds the **unchanged core
-module** — post-processed only at the WAT level as described below —
+module** (post-processed only at the WAT level, as described below),
 so all Chapter 11 semantics (contract insertion, GC, traps) are
 inherited, not reimplemented.
 
@@ -113,7 +113,7 @@ Host data larger than the arena (for example an argv list over
 The runtime trap channels (`contract_fail`, `trap`; Section 11.8.5)
 are also implemented by the adapter: a contract-violation message, or a
 named check's own message, is written to WASI stderr before the trap
-fires, after a one-byte mark — a newline, as a write of its own — that
+fires, after a one-byte mark (a newline, as a write of its own) that
 says where the message starts, and a named check traps inside an adapter
 function named for its kind, so every kind keeps its classification
 (Section 13.6).  The host takes the message from the last such mark that
@@ -132,15 +132,15 @@ each instantiation draws a key of its own.
 
 ## 13.5 Entry Points
 
-Every component exports `wasi:cli/run@0.2.0` — the world entry stock
-`wasmtime run` invokes — whose `run` drives the program's `main`.
+Every component exports `wasi:cli/run@0.2.0`, the world entry stock
+`wasmtime run` invokes, whose `run` drives the program's `main`.
 
 When `main` returns a scalar (`Int`/`Nat` as `s64`, `Float64` as
 `float64`, or `Unit`), the component additionally exports a plain
 lifted `main` returning that value; `vera run --target wasi-p2` calls
 it and reports the value exactly as the core target does.  A `main`
-returning `String` or a heap value (arrays, ADTs) has no scalar lift —
-the pointer would be meaningless outside the instance — so execution
+returning `String` or a heap value (arrays, ADTs) has no scalar lift
+(the pointer would be meaningless outside the instance), so execution
 falls back to `wasi:cli/run` and no value is reported.
 
 The target requires a public zero-argument `main`; `vera run --fn`
@@ -155,12 +155,12 @@ pinned by tests:
   ok/err, so `IO.exit(3)` surfaces as exit status 1 under *any* stock
   wasip2 host, including `vera run --target wasi-p2`.
 - **No structured trap frames.**  A trap's backtrace does not cross
-  the component boundary as data (spike check 5 in `WASI.md`); the
-  trap *kind* and message are preserved — contract violations
+  the component boundary as data (check 5 in `WASI.md`).  The
+  trap *kind* and message are preserved (contract violations
   classify as `contract_violation` with the full violation text, and
   every check `vera.trap` names as its own kind with its own message,
   read from the innermost frame's whole name in the adapter module and
-  never from a program function's — but the `frames` list in the JSON
+  never from a program function's), but the `frames` list in the JSON
   trap envelope is empty.
 - **Environment is a launch-time snapshot.**  The component receives
   its environment once via `get-environment`; the core target reads
@@ -168,8 +168,8 @@ pinned by tests:
   mid-run.
 - **String-returning `main` reports no value** (Section 13.5).
 - **A lone `\r` is not a line terminator for `IO.read_line`.**  The
-  adapter strips `\n` and a `\r` immediately before it (CRLF input —
-  what Windows pipes actually contain — matches the core host, whose
+  adapter strips `\n` and a `\r` immediately before it (CRLF input,
+  which is what Windows pipes contain, matches the core host, whose
   Python text layer does the same), but a bare `\r` *separator*
   (classic-Mac line endings) is returned as content where the core
   host treats it as a line break.  `IO.read_char` reads raw UTF-8
@@ -180,7 +180,7 @@ pinned by tests:
 
 `vera compile --target wasi-p2 --world server` packages an
 `<HttpServer>` program (Section 9.5.6) as a component exporting
-`wasi:http/incoming-handler@0.2.0#handle` — the same handler contract
+`wasi:http/incoming-handler@0.2.0#handle`, so the same handler contract
 `vera serve` drives natively runs under stock `wasmtime serve`
 unmodified:
 
@@ -198,7 +198,7 @@ guest heap (using the compilation's own constructor layouts), calls
 outgoing-response resource sequence.  Guest traps map to a 500 from
 the host.
 
-![The server world: stock wasmtime serve delivers each request through wasi:http; the generated adapter builds the Request ADT in the guest heap, calls the verified handle, decodes the Response, and drives the outgoing resources — building the Request's headers and reading the Response's through the module's own Map operations.](../assets/diagrams/server-world.svg)
+![The server world: stock wasmtime serve delivers each request through wasi:http; the generated adapter builds the Request ADT in the guest heap, calls the verified handle, decodes the Response, and drives the outgoing resources, building the Request's headers and reading the Response's through the module's own Map operations.](../assets/diagrams/server-world.svg)
 
 **Headers without a host.**  `Request`/`Response` headers are
 `Map<String, String>`, and a `Map` is the module's own code (Section
@@ -217,20 +217,20 @@ language.  `IO.read_line` / `read_char` /
 `read_file` / `write_file` / `read_bytes` / `write_bytes` / `get_env` /
 `args` / `exit` are rejected
 with a diagnostic: the wasi:http proxy world provides no stdin,
-filesystem, or environment (verified by negative probe — the imports
-do not link under stock `wasmtime serve`).
+filesystem, or environment (the imports do not link under stock
+`wasmtime serve`).
 
 **Limits** (each a diagnostic or documented cap, never silent):
 request and response bodies are buffered, not streamed; request
 headers share the fixed arena (roughly 63 KiB combined); a response
 status outside 0–65535 or a forbidden header answers 500 rather than
 trapping the server.  Handler `IO.print` output is line-buffered by
-the `wasmtime serve` host — a print whose content has no trailing
+the `wasmtime serve` host: a print whose content has no trailing
 newline is held until a subsequent newline is written (and is lost on
 shutdown if none ever is), so end each log line with `\n`.  (The
 native `vera serve` driver does not buffer this way.)
 
-`vera run` cannot execute a server-world artifact (wasmtime-py's
+`vera run` cannot execute a server-world artefact (wasmtime-py's
 built-in host has no wasi:http support); it fails with a message
 pointing at `wasmtime serve`.  The native `vera serve` driver
 (Section 9.5.6) is the Python-side way to run the same handler.
@@ -239,8 +239,8 @@ pointing at `wasmtime serve`.  The native `vera serve` driver
 
 The dual-target differential in `tests/test_wasi_target.py` runs every
 deterministic run-level conformance program under both targets and
-requires byte-identical stdout/stderr: 131 of the 179 run-level programs
-execute identically (the remainder use host families outside the
-target's surface, have no `main`, or depend on wall-clock time).  A
-stock-host smoke test additionally runs the compiled artifact under
+requires byte-identical stdout/stderr.  The programs it skips use host
+families outside the target's surface, have no `main`, or depend on
+wall-clock time.  A
+stock-host smoke test additionally runs the compiled artefact under
 the `wasmtime` CLI where installed.
