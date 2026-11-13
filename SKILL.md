@@ -81,7 +81,7 @@ vera test --trials 50 file.vera   # Limit trials per function (default 100)
 vera test --distrust file.vera    # Also execute proved functions; a failed proved check refutes the proof (E703)
 vera test file.vera --fn f        # Test a single function
 vera parse file.vera              # Print the parse tree
-vera ast file.vera                # Print the typed AST
+vera ast file.vera                # Print the AST (parse + transform; no type check)
 vera ast --json file.vera         # Print the AST as JSON
 vera fmt file.vera                # Format to canonical form (stdout)
 vera fmt --write file.vera        # Format in place

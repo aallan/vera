@@ -13,8 +13,7 @@ and [spec/](spec/).
 
 ## The shape of the toolchain
 
-The CLI mirrors the compiler pipeline, one command per stage, each a gate you
-can stop at:
+The commands follow the compiler pipeline, each stopping at a stage. `parse`, `fmt` and `ast` stop at parsing; `check` at type checking; `verify` at verification, after which it compiles the program to check its runtime-check claims; `compile` at code generation; `run`, `serve` and `test` execute. `compile`, `run` and `serve` type-check but do not run the verifier, and `test` runs it to choose which functions to trial:
 
 ![The CLI mirrors the pipeline: parse and fmt stop at parsing; check and ast at type checking; verify at verification; compile and test at code generation; run and serve at execution.](assets/diagrams/toolchain.svg)
 
@@ -34,7 +33,7 @@ Two commitments from [DESIGN.md](DESIGN.md) shape every command:
 1. **Fail loud, with a fix.** A diagnostic *names* the problem, explains *why*,
    and gives a concrete instruction, never a bare status. Every diagnostic has a stable code, which `vera errors` lists, that you can pin tooling
    to: a command's own refusals too (E9xx), and a runtime trap (E800).
-2. **Two audiences.** Every diagnostic-producing command has a `--json` mode.
+2. **Two audiences.** `check`, `verify`, `compile`, `run`, `test` and `ast` have a `--json` mode (`check` and `verify` also take `--quiet`).
    People read the default text; agents consume `--json` in a feedback loop. The
 JSON is the machine contract; the prose is for humans. **If you are scripting
 Vera from an agent, use `--json`.**
@@ -127,8 +126,7 @@ refusal, bar one holding typed holes: `vera verify` still verifies a partial
 program, and says with a **W005** warning that its runtime checks were not
 reconciled, since code generation compiles nothing until every hole is filled
 (`reconciliation` is then `{"skipped": ...}`). `--no-reconcile` skips the join
-and compiles nothing. The mismatches the corpus shows are listed, each under
-its open issue, in `scripts/check_reconciliation.py`. `vera test --distrust`
+and compiles nothing. `scripts/check_reconciliation.py` runs the join over the whole corpus; its `KNOWN` allowlist, which keys any expected mismatch to its open issue, is empty. `vera test --distrust`
 reads a trap against the same join's relation between checks and records,
 and reports none of its mismatches; the language server compiles nothing, so
 it gives none of the join's diagnostics.
@@ -327,13 +325,11 @@ Each request runs on a **fresh module instance**, so `State<T>` cannot leak betw
 
 ```bash
 vera parse file.vera           # the parse tree (syntax)
-vera ast file.vera             # the typed AST (post type-checking)
+vera ast file.vera             # the AST (parsed and transformed; not type-checked)
 vera ast --json file.vera      # the AST as JSON (a refusal: the diagnostics envelope)
 ```
 
-`parse` answers "did the grammar accept this?"; `ast` answers "what did the
-type-checker make of it?". Reach for `ast` when a slot or type resolves
-surprisingly and `--explain-slots` was not enough.
+`parse` answers "did the grammar accept this?"; `ast` answers "what AST did the parser and transformer build?". It does not type-check, so for how a slot or type resolves, use `check --explain-slots`.
 
 ---
 
@@ -423,8 +419,7 @@ The intended agent loop is: emit a `.vera` file → `vera check --json` → if n
 `ok`, read `diagnostics[].fix` and edit → repeat → `vera verify --json` → act on
 the tier summary → `vera test --json` on the Tier-3 remainder.
 
-Every diagnostic-producing command (`check`, `verify`, `compile`, `run`, `test`,
-`ast`) speaks `--json`; the introspection commands (`builtins`, `effects`,
+The diagnostic-producing commands `check`, `verify`, `compile`, `run`, `test` and `ast` speak `--json` (`parse` and `fmt` ignore the flag); the introspection commands (`builtins`, `effects`,
 `errors`) speak it natively. Diagnostic codes are **stable** (`vera errors`
 lists them), so an agent can branch on `error_code` rather than parsing prose. See the [JSON diagnostics](CLAUDE.md#json-diagnostics)
 section of CLAUDE.md for the diagnostic schema, and `vera errors --json` for the

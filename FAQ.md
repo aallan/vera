@@ -65,7 +65,7 @@ private fn excess(@Meters, @Feet -> @Int)
 
 There are three layers, and they cover different things.
 
-![The three verification layers: the type system is mechanical and complete, Z3 contract verification is mechanical and bounded (prove or counterexample, the rest runtime-checked), and human intent is expressive but unverified; the human reviews contracts, not implementations.](assets/diagrams/faq-layers.svg)
+![The three verification layers: the type system is mechanical and complete, Z3 contract verification is mechanical and bounded (prove or counterexample, the rest runtime-checked), and human intent is expressive but unverified — the human reviews contracts, not implementations.](assets/diagrams/faq-layers.svg)
 
 **Layer 1: Type system (mechanical).** Every binding uses typed De Bruijn indices (`@Int.0`, `@String.1`, etc.), so the type checker can verify that every reference resolves to a binding of the correct type, every function call matches its signature, every pattern match is exhaustive, and generics monomorphise correctly. This is the "components slot together" layer. Nothing novel here beyond the index scheme; the known gaps in it, such as a case missing inside a nested constructor pattern, are listed in [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
 
@@ -188,13 +188,13 @@ Mandatory parity tests enforce that on every PR. For the two operations that car
 
 `vera test` is Vera's built-in testing command. It generates test inputs from function contracts, so you do not write test cases by hand.
 
-![Contract-driven testing: Z3 generates inputs satisfying each requires clause, every input runs for real as WASM under wasmtime, and the ensures postcondition is checked against the actual output; a violation fails with the concrete input.](assets/diagrams/contract-testing.svg)
+![Contract-driven testing: Z3 generates inputs satisfying each requires clause, every input runs for real as WASM under wasmtime, and the ensures postcondition is checked against the actual output — a violation fails with the concrete input.](assets/diagrams/contract-testing.svg)
 
 The process works in three steps:
 
 1. **Input generation**: The compiler reads each function's `requires()` clause and uses Z3 to generate concrete values that satisfy the precondition. For example, if a function requires `@Int.1 != 0`, Z3 produces pairs of integers where the first is non-zero (`@Int.1` is the leftmost parameter, since De Bruijn indices count back from the most recent binding). It generates up to 100 trials per function by default (configurable with `--trials`). Whether a parameter can be generated for is decided on its *resolved* type, not its spelling, so an alias of a generatable type (`type Cnt = Int;`) is trialled rather than skipped, and an alias-spelled precondition still constrains the inputs. "Satisfy the precondition" is exact rather than best-effort, for the functions that reach trials at all: among the Tier-3 targets, if any conjunct, or any refined parameter's predicate, falls outside the SMT layer's decidable fragment, Z3 cannot constrain the inputs by it, so the function is *skipped* with the blocking conjunct named instead of being exercised on inputs its own guard would reject. A function the verifier proved at Tier 1 is reported `VERIFIED` and never trialled, so the question does not arise for it unless `vera test --distrust` runs it too, and then a proved function whose precondition the generator cannot honour is reported `VERIFIED` and not exercised, never run on inputs its precondition does not admit.
 
-2. **Execution**: Each generated input is compiled to WASM and executed via wasmtime. The function runs with real values, not symbolic ones.
+2. **Execution**: The program is compiled to WASM once, and each generated input runs under wasmtime. The function runs with real values, not symbolic ones.
 
 3. **Contract checking**: The `ensures()` postcondition is checked against the actual output. If any trial produces a result that violates the postcondition, the test fails with the concrete input that triggered it.
 
