@@ -29,7 +29,7 @@ coding agents.
 - **Slot references**: `@Int.0`, `@Array<String>.1`, `@Nat.result`, and bare `@Type` bindings in match arms are all highlighted distinctly, since they are the primary way Vera code refers to values.
 - **Contract blocks**: `requires`, `ensures`, `effects`, `decreases`, and `invariant` are scoped separately from control flow keywords, so colour themes can distinguish verification annotations from program logic.
   <!-- render_lists:begin effects -->
-- **Effects** — built-in effects (`Async`, `DB`, `Diverge`, `Exn`, `Http`, `HttpServer`, `IO`, `Inference`, `Random`, `State`) and qualified operation calls (`IO.print`, `Exn.throw`) are highlighted with their components broken out.
+- **Effects**: built-in effects (`Async`, `DB`, `Diverge`, `Exn`, `Http`, `HttpServer`, `IO`, `Inference`, `Random`, `State`) and qualified operation calls (`IO.print`, `Exn.throw`) are highlighted with their components broken out.
   <!-- render_lists:end effects -->
 - **String interpolation**: `\(...)` expressions inside strings get full Vera highlighting.
 - **Nestable block comments**: `{- ... {- ... -} ... -}` nest as the language nests them.

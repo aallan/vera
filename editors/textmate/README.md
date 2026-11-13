@@ -25,7 +25,7 @@ The grammar covers the full Vera language. `scripts/render_lists.py` writes its 
 **Contract blocks** (`requires`, `ensures`, `effects`, `decreases`, and `invariant`) are scoped separately from control flow keywords (`keyword.contract` vs `keyword.control`), so they can be themed independently.
 
 <!-- render_lists:begin effects -->
-**Effects** — built-in effects (`Async`, `DB`, `Diverge`, `Exn`, `Http`, `HttpServer`, `IO`, `Inference`, `Random`, `State`) are recognised as `entity.name.type.effect`. Qualified operation calls like `IO.print` and `Exn.throw` are decomposed into effect name, accessor, and operation name.
+**Effects**: built-in effects (`Async`, `DB`, `Diverge`, `Exn`, `Http`, `HttpServer`, `IO`, `Inference`, `Random`, `State`) are recognised as `entity.name.type.effect`. Qualified operation calls like `IO.print` and `Exn.throw` are decomposed into effect name, accessor, and operation name.
 <!-- render_lists:end effects -->
 
 **Other language features:**
