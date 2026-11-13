@@ -1,5 +1,5 @@
 <svg width="920" height="548" viewBox="0 0 920 548" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
-  <title id="title">The agent proof-delta loop: didOpen returns diagnostics and tier hints; vera/speculativeEdit verifies a draft in memory against the warm session and returns a proof delta without touching the document; vera/proposeEdit re-verifies from the warm cache and applies only if nothing newly fails to prove.</title>
+  <title id="title">The agent proof-delta loop: didOpen returns diagnostics and tier hints; vera/speculativeEdit verifies a draft in memory against the warm session and returns a proof delta without touching the document; vera/proposeEdit re-verifies from the warm cache and applies only if no proof is lost, no obligation newly fails to prove and the result has no errors (force overrides the gate).</title>
   <!-- Design system: see architecture.svg. Grounded in LSP_SERVER.md. -->
   <defs>
     <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
@@ -53,7 +53,7 @@
   <line class="edge" x1="156" y1="156" x2="458" y2="156" marker-end="url(#arr)"/>
   <text class="m msg" x="300" y="147" text-anchor="middle">didOpen(main.vera)</text>
   <line class="edge" x1="476" y1="172" x2="768" y2="172" marker-end="url(#arr)"/>
-  <text class="f note" x="620" y="164" text-anchor="middle">full pass — every obligation, cached by structural hash</text>
+  <text class="f note" x="620" y="164" text-anchor="middle">full pass: every obligation, cached by structural hash</text>
   <line class="ret" x1="464" y1="196" x2="162" y2="196"/>
   <text class="f note" x="300" y="188" text-anchor="middle">diagnostics + per-function tier hints</text>
 
@@ -64,7 +64,7 @@
   <line class="edge" x1="476" y1="270" x2="768" y2="270" marker-end="url(#arr)"/>
   <text class="f note" x="620" y="262" text-anchor="middle">re-prove only what the edit could break</text>
   <line class="ret" x1="464" y1="298" x2="162" y2="298"/>
-  <text class="m" x="300" y="290" text-anchor="middle" font-size="10.5px" fill="#b07820">proof delta: newly_discharged · newly_undischarged · unchanged</text>
+  <text class="m" x="300" y="290" text-anchor="middle" font-size="10.5px" fill="#b07820">proof delta: newly_discharged · newly_undischarged · …</text>
   <text class="f note" x="300" y="312" text-anchor="middle">the canonical document is untouched</text>
 
   <!-- 3 · proposeEdit -->
@@ -74,10 +74,10 @@
     <rect class="card" x="384" y="372" width="224" height="40" rx="10"/>
     <rect x="384.5" y="372.5" width="4" height="39" rx="2" fill="#5a9e6f"/>
     <text class="f" x="400" y="389" font-size="10.5px" fill="#2d2b28" font-weight="600">the gate</text>
-    <text class="f d" x="400" y="404">apply iff no new failures, no errors</text>
+    <text class="f d" x="400" y="404">apply iff no proof regresses, no errors</text>
   </g>
   <line class="ret" x1="464" y1="440" x2="162" y2="440"/>
-  <text class="f note" x="300" y="432" text-anchor="middle">applied — or refused, with the delta that says why</text>
+  <text class="f note" x="300" y="432" text-anchor="middle">applied, or refused with the delta that says why</text>
 
   <!-- invalidation card -->
   <g>
@@ -91,6 +91,6 @@
   </g>
 
   <!-- footer -->
-  <text class="f footi" x="36" y="500">The structured refactors — vera/strengthenContract, vera/addEffect — construct the candidate server-side, then run the same gate.</text>
+  <text class="f footi" x="36" y="500">The structured refactors, vera/strengthenContract and vera/addEffect, build the candidate server-side, then run the same gate.</text>
   <text class="f footi" x="36" y="520">Malformed requests refuse with standard JSON-RPC InvalidParams, never opaque errors.</text>
 </svg>
