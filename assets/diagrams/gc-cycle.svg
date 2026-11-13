@@ -94,7 +94,7 @@
   <text class="f t" x="54" y="475" fill="#a83838">trap: out of memory</text>
 
   <!-- success rail -->
-  <rect class="card" x="334" y="164" width="170" height="270" rx="10"/>
+  <rect class="card" x="334" y="164" width="180" height="270" rx="10"/>
   <rect x="334.5" y="164.5" width="4" height="269" rx="2" fill="#5a9e6f"/>
   <text class="f t" x="352" y="188" fill="#3d7a4d">allocate</text>
   <text class="f d" x="352" y="206">write the 4-byte header,</text>
@@ -148,10 +148,11 @@
   <text class="f d" x="524" y="350" text-anchor="end" font-style="italic" fill="#a9a49b">free list refilled</text>
 
   <!-- conservative note -->
-  <text class="f d" x="560" y="430" font-style="italic" fill="#a9a49b">conservative scanning: a word that is an object's base counts as a</text>
-  <text class="f d" x="560" y="444" font-style="italic" fill="#a9a49b">pointer; a false positive keeps a dead object, never corrupts a live one.</text>
-  <text class="f d" x="560" y="462" font-style="italic" fill="#a9a49b">With host-backed values, a pass before the sweep releases</text>
-  <text class="f d" x="560" y="476" font-style="italic" fill="#a9a49b">the handles of unreachable wrappers.</text>
+  <text class="f d" x="560" y="430" font-style="italic" fill="#a9a49b">conservative scanning: a word that is an object's base</text>
+  <text class="f d" x="560" y="444" font-style="italic" fill="#a9a49b">counts as a pointer; a false positive keeps a dead object,</text>
+  <text class="f d" x="560" y="458" font-style="italic" fill="#a9a49b">never corrupts a live one.</text>
+  <text class="f d" x="560" y="476" font-style="italic" fill="#a9a49b">With host-backed values, a pass before the sweep releases</text>
+  <text class="f d" x="560" y="490" font-style="italic" fill="#a9a49b">the handles of unreachable wrappers.</text>
 
   <!-- footer -->
   <text class="f footi" x="36" y="530">No host-side GC logic and no type maps: the collector is plain WASM over the header bits and the shadow stack.</text>
