@@ -2,7 +2,7 @@
 
 ## 10.1 Notation
 
-This chapter defines the complete grammar of Vera using Extended Backus-Naur Form (EBNF). The grammar is LALR(1)-compatible, and the reference compiler generates its parser from `vera/grammar.lark` with the Lark parser generator in LALR(1) mode. The two files share their rule names, with two exceptions: Lark's entry point is `start` where this chapter's is `program`, and four productions this chapter names separately (`qualified_call`, `module_call`, `tuple_literal`, `tuple_type`) are alternatives of another rule there, labelled with a `->` alias.
+This chapter defines the complete grammar of Vera using Extended Backus-Naur Form (EBNF). The grammar is LALR(1)-compatible, and the reference compiler generates its parser from `vera/grammar.lark` with the Lark parser generator in LALR(1) mode. The two files share their rule names, with two exceptions: Lark's entry point is `start` where this chapter's is `program`, and four productions this chapter names separately have no rule of their own there: `qualified_call` and `module_call` are alternatives of `fn_call`, labelled with a `->` alias, and `tuple_literal` and `tuple_type` are parsed by the `constructor_call` and `named_type` alternatives and told apart by the checker.
 
 Conventions:
 - `UPPER_CASE`: terminal tokens (lexer rules)

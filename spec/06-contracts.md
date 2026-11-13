@@ -290,9 +290,9 @@ The verifier checks the contracts the programmer wrote, and **auto-synthesises**
 |---|---|---|
 | `a - b` (Nat) | `a >= b` (no underflow) | E502 |
 | `@Int` value into a `@Nat` slot | `value >= 0` | E503 |
-| `a / b`, `a % b` (Int / Nat) | `b != 0`; `INT_MIN / -1` traps with no obligation | E526 |
+| `a / b`, `a % b` (Int / Nat) | `b != 0` | E526 |
 | `arr[i]` (`Array<T>`) | `0 <= i < array_length(arr)` | E527 |
-| `a + b`, `a * b` (Int / Nat); `a - b` (Int); `abs(a)` | result within the i64 range (no overflow) | E528 |
+| `a + b`, `a * b` (Int / Nat); `a - b` (Int); `abs(a)`; `a / b` (Int, for `INT_MIN / -1`) | result within the i64 range (no overflow) | E528 |
 | `float_to_int(x)`, `floor(x)`, `ceil(x)`, `round(x)` | `x` finite (not NaN / Inf) and its truncated, floored, ceiled or rounded value within i64 range | E529 |
 | `float_to_string(x)`, and a `show` or string interpolation of a `@Float64` | `x` not finite, or its magnitude below 2^63 | E529 |
 | `string_char_code(s, i)` | `0 <= i < string_length(s)`, the length in bytes, which is the built-in's declared `requires` (§9.6.14) | E501 |
@@ -431,7 +431,7 @@ The refinement on `SafeDiv`'s **second** parameter serves as the contract. The c
 
 ## 6.8 Summary of Verification Tiers
 
-![Three-tier verification: each contract obligation goes to Z3 with a ten-second default budget. Unsat is verified (Tier 1) and sat is a vera verify error with a counterexample; unknown or timeout becomes a Tier 3 runtime check compiled where the obligation arises, whose violation traps with E800 and a source backtrace, or, where no check can be emitted, a disclosed warning or the E538 error, counted in no tier. Tier 2, hints from assert axioms and lemmas, is specified but not implemented.](../assets/diagrams/tiers.svg)
+![Three-tier verification: each contract obligation goes to Z3 with a ten-second default budget. Unsat is verified (Tier 1) and sat is a vera verify error with a counterexample, unless the countermodel rests on a stand-in for a value the verifier cannot translate, which counts as unknown; unknown or timeout becomes a Tier 3 runtime check compiled where the obligation arises, whose violation traps with E800 and a source backtrace, or, where no check can be emitted, a disclosed warning or the E538 error, counted in no tier. Tier 2, hints from assert axioms and lemmas, is specified but not implemented.](../assets/diagrams/tiers.svg)
 
 | Tier | Scope | Solver | Timeout | Failure mode |
 |------|-------|--------|---------|--------------|

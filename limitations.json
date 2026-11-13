@@ -195,7 +195,7 @@
       "issues": [56],
       "rows": {
         "KNOWN_ISSUES.md#limitations": [
-          "Every `vera` invocation re-parses and re-checks the whole module graph from scratch. In the editor, the LSP server's warm `VerificationSession` avoids that."
+          "Every `vera` invocation re-parses and re-checks the whole module graph from scratch. The LSP server parses and checks the document again on each analysis too; its warm `VerificationSession` saves only the verification of functions whose inputs have not changed."
         ],
         "vera/README.md#limitations": [
           "**No incremental compilation**",
@@ -342,7 +342,7 @@
       "issues": [351],
       "rows": {
         "KNOWN_ISSUES.md#limitations": [
-          "`Http.get`/`Http.post` send fixed headers, so callers cannot add custom ones such as `Authorization`. Http responses surface only the body: status codes are not accessible, so callers cannot distinguish a 404 from a 500. Http requests have no per-request timeout control: the native runtime gives up after a fixed 60 seconds, which a caller cannot change. The browser runtime implements Http with deprecated synchronous XMLHttpRequest, which blocks the main thread and is unavailable in workers. Http supports GET and POST only, with no PUT, PATCH or DELETE."
+          "`Http.get`/`Http.post` send fixed headers, so callers cannot add custom ones such as `Authorization`. Http responses surface only the body: status codes are not accessible, so callers cannot distinguish a 404 from a 500. Http requests have no per-request timeout control: the native runtime gives up after a fixed 60 seconds, which a caller cannot change. The browser runtime implements Http with deprecated synchronous XMLHttpRequest, which blocks the thread that calls it and is unavailable in service workers. Http supports GET and POST only, with no PUT, PATCH or DELETE."
         ],
         "spec/09-standard-library.md#limitations": [
           "`Http`: fixed request headers, no custom header support; `Http`: response status codes are not accessible; `Http`: no per-request timeout control; `Http`: browser runtime uses deprecated synchronous XMLHttpRequest; `Http`: GET and POST only, no PUT, PATCH, or DELETE"

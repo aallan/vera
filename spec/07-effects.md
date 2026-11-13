@@ -47,7 +47,7 @@ Rules:
 3. Each operation has a typed signature: parameter types and return type.
 4. Operations implicitly have access to the `resume` continuation (see Section 7.5).
 5. A declaration MUST NOT name a built-in effect (Section 7.7): `effect IO { ... }`, `effect Exn<E> { ... }`, `effect DB { ... }`, and every other built-in name are compile errors (`E152`). The built-in operations are in scope automatically for any function whose effect row names the effect.
-6. A user-declared effect is a declaration only. The reference implementation lowers the built-in effects' operations, and a handler only for `State<T>` and `Exn<E>` (Section 7.5), so nothing implements a user-declared effect's operations: an effect row that names one, in a function's signature, a closure's or a function type's, is a checker error (`E340`), reported at the row entry, and so is a call of one of its operations under a row that does not name it, reported at the call; the declaration itself checks.
+6. A user-declared effect is a declaration only. The reference implementation lowers the built-in effects' operations, and a handler only for `State<T>` and `Exn<E>` (Section 7.5), so nothing implements a user-declared effect's operations: an effect row that names one, in a function's signature, a closure's or a function type's, is a checker error (`E340`), reported at the row entry, and so is a qualified call of one of its operations under a row that does not name it, reported at the call (a bare call outside a `handle` block is `E217`, Section 7.4); the declaration itself checks.
 
 ## 7.3 Effect Rows
 

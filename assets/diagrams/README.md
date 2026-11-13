@@ -18,10 +18,13 @@ renders the same through GitHub's camo proxy.
   `scripts/render_status.py` writes, and nothing can write inside an SVG. The
   one exception is `history-growth.svg`, which charts the historical release
   columns in `HISTORY.md` §By the numbers and says so on its face.
-- **The compile path keeps every guard.** `architecture.svg` draws the
+- **The compile path keeps its guards.** `architecture.svg` draws the
   check → {verify | compile} fork because `vera compile` does not consume
-  verify results and contract guards are always emitted (spec §11.8). No
-  diagram may claim Tier 1 contracts are omitted from compiled output.
+  verify results: a contract's guard is emitted whether or not the contract
+  was proved (spec §11.8). A clause no check can express, such as an
+  `ensures` over a `String` or `Array` result, has no guard, and
+  `vera verify` discloses it (`E543`). No diagram may claim Tier 1
+  contracts are omitted from compiled output.
 - **Accessibility.** Every SVG has a `<title>` (read by screen readers and
   used as hover text) that states the diagram's full claim in a sentence.
 - **All embeds use repo-relative paths**, `README.md`'s included, so they

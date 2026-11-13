@@ -334,7 +334,7 @@ The built-in `Exn` effect's `throw` payload is guarded, not internal. `throw(v)`
 
 This covers refinements over **a base the verifier does not model** too, such as `{ @Array<Int> | array_length(@Array<Int>.0) > 0 }` and `{ @Byte | @Byte.0 < 10 }`. The predicate translator does not substitute such a binder, so a *symbolic* narrowing is Tier 3 *statically* (§2.6.4, cause 2) even where the predicate is itself in the decidable fragment; codegen compiles it directly to WebAssembly regardless, so an empty array passed into a `@NonEmptyArray` parameter (or a `@Byte` computed at run time and passed into a `@SmallByte` one) traps at run time. A literal argument does not reach the guard: it is decided statically (§2.6.4, cause 2), so `small(200)` is rejected before it can run.
 
-The guard is *defence in depth* for the unverified path: a `vera verify`-clean program proves the predicate statically, so the runtime guard is never reached.
+The guard is *defence in depth* for the unverified path: where `vera verify` proves a predicate statically (Tier 1), its runtime guard is never reached. A program that passes `vera verify` can still hold Tier 3 predicates, whose guards are the check.
 
 ## 2.7 Parametric Polymorphism
 

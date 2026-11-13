@@ -137,7 +137,11 @@ it gives none of the join's diagnostics.
 
 (Tier 2, Z3-*guided*, is specified in spec/06 but not implemented.)
 
-**Debugging "it verified but it still trapped at runtime."** That is Tier 3 doing its job: the contract was not *statically* proved, so it became a runtime
+**Debugging "it verified but it still trapped at runtime."** First read which
+contract the trap names. A Tier 1 function traps when it is called with an
+argument that breaks its `requires` (one passed with `vera run --fn`, which
+the verifier never sees), since that clause is compiled as a check too. Otherwise it is Tier 3
+doing its job: the contract was not *statically* proved, so it became a runtime
 guard. `--json` shows you exactly how much fell through:
 
 ```bash
