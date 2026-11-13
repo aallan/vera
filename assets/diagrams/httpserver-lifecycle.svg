@@ -58,11 +58,11 @@
 
   <!-- handler -->
   <g>
-    <rect class="card" x="286" y="228" width="574" height="74" rx="10"/>
-    <rect x="286.5" y="228.5" width="4" height="73" rx="2" fill="#d4952a"/>
-    <text class="m t" x="304" y="252" font-size="12px">handle(@Request -&gt; @Response)  effects(&lt;HttpServer&gt;)</text>
-    <text class="f d" x="304" y="272">total and contract-checked: its compiled checks run on every request; vera verify proves what it can beforehand.</text>
-    <text class="f d" x="304" y="288">Routing is ordinary pattern matching; per-request effects compose in the row (e.g. State&lt;Int&gt;).</text>
+    <rect class="card" x="60" y="228" width="800" height="74" rx="10"/>
+    <rect x="60.5" y="228.5" width="4" height="73" rx="2" fill="#d4952a"/>
+    <text class="m t" x="78" y="252" font-size="12px">handle(@Request -&gt; @Response)  effects(&lt;HttpServer&gt;)</text>
+    <text class="f d" x="78" y="272">total and contract-checked: its compiled checks run on every request; vera verify proves what it can beforehand.</text>
+    <text class="f d" x="78" y="288">Routing is ordinary pattern matching; per-request effects compose in the row (e.g. State&lt;Int&gt;).</text>
   </g>
 
   <!-- outcomes -->
@@ -73,12 +73,12 @@
     <text class="m t" x="78" y="334" font-size="11.5px">Response(status, headers, body)</text>
     <text class="f d" x="78" y="352">becomes the HTTP response</text>
   </g>
-  <polyline class="edge" points="700,302 700,330 732,330" marker-end="url(#arr)"/>
+  <polyline class="edge" points="680,302 680,340 704,340" marker-end="url(#arr)"/>
   <g>
-    <rect class="card" x="736" y="312" width="148" height="56" rx="10"/>
-    <rect x="736.5" y="312.5" width="4" height="55" rx="2" fill="#c45"/>
-    <text class="f t" x="754" y="334" fill="#a83838">trap → 500</text>
-    <text class="f d" x="754" y="352">diagnostic in a JSON body</text>
+    <rect class="card" x="708" y="312" width="176" height="56" rx="10"/>
+    <rect x="708.5" y="312.5" width="4" height="55" rx="2" fill="#c45"/>
+    <text class="f t" x="726" y="334" fill="#a83838">trap → 500</text>
+    <text class="f d" x="726" y="352">diagnostic in a JSON body</text>
   </g>
 
   <!-- footer -->
