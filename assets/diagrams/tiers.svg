@@ -27,8 +27,8 @@
 
   <!-- obligation source -->
   <g>
-    <rect class="card" x="270" y="88" width="380" height="46" rx="10"/>
-    <rect x="270.5" y="88.5" width="4" height="45" rx="2" fill="#8b6cad"/>
+    <rect class="card" x="230" y="88" width="460" height="46" rx="10"/>
+    <rect x="230.5" y="88.5" width="4" height="45" rx="2" fill="#8b6cad"/>
     <text class="f title" x="460" y="108" text-anchor="middle">Contract obligation</text>
     <text class="f desc" x="460" y="124" text-anchor="middle">requires · ensures · decreases · refinements · underflow / div-zero / bounds</text>
   </g>
@@ -95,11 +95,12 @@
   <!-- tier-3 runtime trap -->
   <line class="edge" x1="742" y1="376" x2="742" y2="404" marker-end="url(#arr)"/>
   <g>
-    <rect class="card" x="600" y="406" width="284" height="62" rx="10"/>
-    <rect x="600.5" y="406.5" width="4" height="61" rx="2" fill="#cc9966"/>
+    <rect class="card" x="600" y="406" width="284" height="76" rx="10"/>
+    <rect x="600.5" y="406.5" width="4" height="75" rx="2" fill="#cc9966"/>
     <text class="f title" x="616" y="428">Violation at run time → trap</text>
     <text class="f desc" x="616" y="446">E800 names the failed contract · trap_kind</text>
-    <text class="f desc" x="616" y="460">(contract_violation, …) in --json · source backtrace</text>
+    <text class="f desc" x="616" y="460">(contract_violation, …) in --json ·</text>
+    <text class="f desc" x="616" y="474">source backtrace</text>
   </g>
 
   <!-- unknown, and no check can be emitted: disclosed -->
