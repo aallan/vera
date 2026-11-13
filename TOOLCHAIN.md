@@ -261,6 +261,13 @@ vera run file.vera --fn f -- 42    # call f with argument 42 (args after --)
 Everything after `--` is passed to the function, parsed by type (so `42` becomes
 an `@Int`). Use `--fn` to enter at a function other than `main`.
 
+Where the program writes nothing to standard output, `vera run` prints the
+function's result: a number, the text of a `String`, and nothing for `Unit`.
+A `Bool` prints as `1` or `0`. An `Array`, a `Tuple`, an `Option` or another
+data type prints as the address of the value in memory, a number that says
+nothing about the value ([#1876](https://github.com/aallan/vera/issues/1876)).
+Return `show(value)` from a wrapper, or print it, to see the value.
+
 The entry is never substituted. If the function you asked for (`main`, or a
 `--fn` name) was declared but dropped from the compiled output (an `[E602]`
 skip in it or in something it calls, propagating as `[E620]`), `vera run` exits
