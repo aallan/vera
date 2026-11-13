@@ -49,7 +49,8 @@
   <text class="f ss" x="460" y="321" text-anchor="middle">ADTs · closures · arrays</text>
   <line x1="460" y1="330" x2="460" y2="382" stroke="#5a9e6f" stroke-width="1.5" marker-end="url(#arr)"/>
   <text class="f ss" x="472" y="352" fill="#3d7a4d">bump allocation,</text>
-  <text class="f ss" x="472" y="365" fill="#3d7a4d">grows toward higher addresses</text>
+  <text class="f ss" x="472" y="365" fill="#3d7a4d">grows toward</text>
+  <text class="f ss" x="472" y="378" fill="#3d7a4d">higher addresses</text>
   <!-- unused -->
   <rect x="340" y="390" width="240" height="38" fill="#f5f4f1" stroke="#cfccc5" stroke-width="1" stroke-dasharray="4 3"/>
   <text class="f ss" x="460" y="413" text-anchor="middle" fill="#a9a49b">unused</text>
@@ -77,10 +78,10 @@
 
   <!-- allocation inset (right, under offsets) -->
   <text class="f noteh" x="640" y="316">one allocation</text>
-  <rect x="640" y="326" width="52" height="30" fill="#f8efdf" stroke="#e8e6e1"/>
-  <text class="m" x="666" y="345" text-anchor="middle" font-size="10px" fill="#b07820">hdr · 4 B</text>
-  <rect x="692" y="326" width="150" height="30" fill="#ffffff" stroke="#e8e6e1"/>
-  <text class="f ss" x="767" y="345" text-anchor="middle">payload, 8-byte aligned</text>
+  <rect x="640" y="326" width="76" height="30" fill="#f8efdf" stroke="#e8e6e1"/>
+  <text class="m" x="678" y="345" text-anchor="middle" font-size="10px" fill="#b07820">hdr · 4 B</text>
+  <rect x="716" y="326" width="150" height="30" fill="#ffffff" stroke="#e8e6e1"/>
+  <text class="f ss" x="791" y="345" text-anchor="middle">payload, 8-byte aligned</text>
   <text class="m" x="640" y="376" font-size="10px" fill="#7a756d">bit 0      GC mark (white/black)</text>
   <text class="m" x="640" y="390" font-size="10px" fill="#7a756d">bits 1–31  payload size (&lt; 2³¹)</text>
 
