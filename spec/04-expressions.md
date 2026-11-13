@@ -2,7 +2,7 @@
 
 ## 4.1 Overview
 
-Vera is expression-oriented: nearly every construct produces a value. Blocks are expressions whose value is the last expression in the block. There are no void statements — even effectful operations return `Unit`.
+Vera is expression-oriented: nearly every construct produces a value. Blocks are expressions whose value is the last expression in the block. There are no void statements; even effectful operations return `Unit`.
 
 The one exception is `let` bindings, which are statements (they introduce a binding but do not themselves have a value). Statements appear only within blocks.
 
@@ -20,9 +20,9 @@ Literal expressions produce values of the corresponding primitive type:
 
 An integer literal in a context expecting `Nat` is a narrowing, checked for non-negativity at compile time.  A leading `-` is negation, not part of a literal (below).
 
-**Every integer literal is an `Int`.** Where the context names a type — a `let` binding, a parameter, a return, a constructor field — the literal is checked at that type: in a `@Nat` or a refined context it is a narrowing (§2.2.1, §6.4.3), discharged at compile time for a literal that satisfies the type and refuted for one that does not, so `let @Nat = 5` verifies and `let @Nat = 0 - 3` is refused (**E503**).  In a `@Byte` context a literal in `0 .. 255` is a `Byte` (§2.6).  Where nothing names a type the literal is an `Int`, and so is every expression built from integer literals alone with `+`, `-`, `*`, `/`, `%` and negation: `5 - 2`, `0 - 3` and `(1 - 4) * 2` are all `Int`.  The sign of a literal never decides a type.
+**Every integer literal is an `Int`.** Where the context names a type (a `let` binding, a parameter, a return, a constructor field), the literal is checked at that type: in a `@Nat` or a refined context it is a narrowing (§2.2.1, §6.4.3), discharged at compile time for a literal that satisfies the type and refuted for one that does not, so `let @Nat = 5` verifies and `let @Nat = 0 - 3` is refused (**E503**).  In a `@Byte` context a literal in `0 .. 255` is a `Byte` (§2.6).  Where nothing names a type the literal is an `Int`, and so is every expression built from integer literals alone with `+`, `-`, `*`, `/`, `%` and negation: `5 - 2`, `0 - 3` and `(1 - 4) * 2` are all `Int`.  The sign of a literal never decides a type.
 
-A literal can also fix a type argument that is being inferred: a generic function's (§5.9) or a generic constructor's, directly or from inside an argument — an array literal's elements, a tuple's or a constructor's fields, a branch of an `if` or `match`, or a nested generic call whose own literals decided it. Its context there is, in order:
+A literal can also fix a type argument that is being inferred: a generic function's (§5.9) or a generic constructor's, directly or from inside an argument (an array literal's elements, a tuple's or a constructor's fields, a branch of an `if` or `match`, or a nested generic call whose own literals decided it). Its context there is, in order:
 
 1. the other arguments. In `array_fold(@Array<Int>.0, 0, fn(@Int, @Int -> @Int) effects(pure) { @Int.1 + @Int.0 })` the closure's declared parameters fix the accumulator type at `Int`, so the literal `0` is an `Int`, and in `array_fold(@Array<Nat>.0, 0, fn(@Nat, @Nat -> @Nat) effects(pure) { @Nat.1 + @Nat.0 })` they fix it at `Nat`, where the `0` is a narrowing like any literal in a `@Nat` position;
 2. the type the result is expected at: with `forall<T> fn id(@T -> @T)`, `let @Int = id(5)` instantiates `id` at `Int` and `let @Nat = id(5)` instantiates it at `Nat`.  The expected type fixes the type argument whatever the literals' signs: with `forall<T> fn second(@T, @T -> @T)`, `let @Nat = second(-3, 5)` instantiates `second` at `Nat`, and the `-3` is refused (**E503**) although the call returns 5.  A collection's element type is fixed the same way, so `let @Array<Nat> = array_reverse([0 - 1, 5])` and `let @Array<Nat> = array_slice([-3, 5], 1, 2)` are refused (**E503**) too.  The expected type also fixes a type argument no argument gives a type, and completes one an argument leaves open, as a literal's (§5.9): with `forall<T> fn head_plain(@Array<T> -> @T)`, `let @String = head_plain([])` instantiates `head_plain` at `String`.  It overrides nothing an argument fixed: `let @Nat = id(@Int.0)` instantiates `id` at `Int`, and the `Int` result bound into the `Nat` is the narrowing.  Nor does it choose between arguments that give the variable different types, which give it the type they share (§5.9): `let @Nat = second(@Nat.0, @Int.0)` instantiates `second` at `Int`, and the narrowing is the binding's.
@@ -33,9 +33,9 @@ A function-typed argument fixes a type argument by the polarity of the position 
 
 A literal whose context turns out to be `Nat` is checked for non-negativity like any other. With `forall<T> fn pick(@T, @T -> @T)`, `pick(@Nat.0, 0 - 1)` has `T` fixed at `Nat` by the `@Nat` argument, and `0 - 1` is a narrowing the verifier refutes (**E503**); so is `let @Nat = id(0 - 3)`. A destructuring `let` gives its source the tuple of its bindings' types, so `let Tuple<@Nat, @Nat> = id(Tuple(1, 0 - 3))` is refused the same way. The type a context expects reaches the call through whatever form the call is written in: the branches of an `if` or a `match` and the result of a block; a tuple's component and an array literal's element (`let @Tuple<Nat, Nat> = Tuple(1, id(0 - 3))` instantiates `id` at `Nat`); a pipe, which is the call it desugars to (`let @Nat = (0 - 3) |> id()` is `let @Nat = id(0 - 3)`); and an element read from an array, whose array is expected at the element's type (`let @Nat = array_reverse([0 - 3])[0]` and `let @Nat = array_reverse([0 - 3, 5])[0]` both instantiate `array_reverse` at `Nat`, and both are refused). A refinement of `Nat` gives its base: with `type Small = { @Nat | @Nat.0 < 100 }`, `let @Small = id(0 - 3)` instantiates `id` at `Nat`, and the -3 is refused (**E503**). An arithmetic operand is given no expected type (§4.4), so in `let @Nat = id(0 - 3) + 1` the call is `id` at `Int` and the sum an `Int`, narrowed into the `@Nat` binding: obligated, and guarded at run time where the verifier cannot discharge it.
 
-Integer literals are also range-checked against their target machine type at compile time ([#812](https://github.com/aallan/vera/issues/812)): `Int` is a signed 64-bit integer (range `-2^63 .. 2^63 - 1`), `Nat` holds its non-negative half (`0 .. 2^63 - 1`), and a `Byte` holds `0 .. 255`.  A literal above `2^63 - 1` is a compile error (**E149**) in every context, a literal pattern included, as is one above `255` in a `@Byte` context or as a pattern over a `@Byte` scrutinee, rather than an opaque codegen failure or a silent reinterpretation of its bit pattern — for example `18446744073709551615` is valid nowhere, and `999` is valid as `Int` or `Nat` but not as `Byte`.  A negative value in a `@Nat` context is not an E149: it is the narrowing above, which the verifier refutes (**E503**).
+Integer literals are also range-checked against their target machine type at compile time ([#812](https://github.com/aallan/vera/issues/812)): `Int` is a signed 64-bit integer (range `-2^63 .. 2^63 - 1`), `Nat` holds its non-negative half (`0 .. 2^63 - 1`), and a `Byte` holds `0 .. 255`.  A literal above `2^63 - 1` is a compile error (**E149**) in every context, a literal pattern included, as is one above `255` in a `@Byte` context or as a pattern over a `@Byte` scrutinee, rather than an opaque codegen failure or a silent reinterpretation of its bit pattern. For example, `18446744073709551615` is valid nowhere, and `999` is valid as `Int` or `Nat` but not as `Byte`.  A negative value in a `@Nat` context is not an E149: it is the narrowing above, which the verifier refutes (**E503**).
 
-An integer *literal* is always non-negative: a leading `-` is negation applied to the literal's magnitude, not part of it.  So the two ends of `Int`'s range are checked in different places.  The upper end is checked on the literal, against the bound its target implies (`2^63 - 1` for `Int` and `Nat`, `255` for `Byte`).  The lower end is checked on the negation, whose operand may reach the magnitude `2^63` — that is `Int`'s minimum `-9223372036854775808`, valid only in negated position — and no further: `-9223372036854775809` is **E149** at the negation, because the magnitude that would represent it exceeds what an `i64` can hold.  Either way the diagnostic names the value the program wrote.  The check reads the target's base type, so a refinement over one (`{ @Byte | @Byte.0 < 10 }`) is range-checked as its base and the predicate is left to verification.
+An integer *literal* is always non-negative: a leading `-` is negation applied to the literal's magnitude, not part of it.  So the two ends of `Int`'s range are checked in different places.  The upper end is checked on the literal, against the bound its target implies (`2^63 - 1` for `Int` and `Nat`, `255` for `Byte`).  The lower end is checked on the negation, whose operand may reach the magnitude `2^63` (that is `Int`'s minimum `-9223372036854775808`, valid only in negated position) and no further: `-9223372036854775809` is **E149** at the negation, because the magnitude that would represent it exceeds what an `i64` can hold.  Either way the diagnostic names the value the program wrote.  The check reads the target's base type, so a refinement over one (`{ @Byte | @Byte.0 < 10 }`) is range-checked as its base and the predicate is left to verification.
 
 ## 4.3 Slot References
 
@@ -64,7 +64,7 @@ Arithmetic operators work on numeric types (`Int`, `Nat`, `Float64`):
 
 Division by zero is undefined behaviour in Vera. The compiler SHOULD verify that the divisor is non-zero via contracts or refinement types. If it cannot, it MUST insert a runtime check.
 
-**Result type of mixed `Int`/`Nat` arithmetic.** The type of a binary arithmetic expression is the least upper bound of its operand types under the *formal* subtyping lattice, in which the only relation among the numeric primitives is `Nat <: Int` (§2.2.1). So `Nat <op> Nat` is `Nat`, `Int <op> Int` is `Int`, and any mix of `Int` and `Nat` (in either operand order) is `Int` — the `@Nat` operand is read as the `@Int` it already is, and nothing is checked where it is (§2.2.1). A literal is an `Int` (§4.2), so `@Nat.0 + 1` and `@Nat.0 - 1` are `Int` too: the subtraction may go below zero, and is obligated only where its value is bound into a `@Nat` position. The result is **not** `Nat`: the checker does not treat the verifier-mediated `Int -> Nat` narrowing relaxation (§2.8 rule 5) as a widening, because doing so would silently assert non-negativity of a possibly-negative result (e.g. `@Int.0 - 2`) with no verification obligation, contrary to §0.2.2. A mixed result flowing into a `@Nat` position is then a `@Nat`-narrowing binding site, obligated and guarded like any other (§6.4.3, §11.2.1). `Int` and `Float64` never mix (see below).
+**Result type of mixed `Int`/`Nat` arithmetic.** The type of a binary arithmetic expression is the least upper bound of its operand types under the *formal* subtyping lattice, in which the only relation among the numeric primitives is `Nat <: Int` (§2.2.1). So `Nat <op> Nat` is `Nat`, `Int <op> Int` is `Int`, and any mix of `Int` and `Nat` (in either operand order) is `Int`; the `@Nat` operand is read as the `@Int` it already is, and nothing is checked where it is (§2.2.1). A literal is an `Int` (§4.2), so `@Nat.0 + 1` and `@Nat.0 - 1` are `Int` too: the subtraction may go below zero, and is obligated only where its value is bound into a `@Nat` position. The result is **not** `Nat`: the checker does not treat the verifier-mediated `Int -> Nat` narrowing relaxation (§2.8 rule 5) as a widening, because doing so would silently assert non-negativity of a possibly-negative result (e.g. `@Int.0 - 2`) with no verification obligation, contrary to §0.2.2. A mixed result flowing into a `@Nat` position is then a `@Nat`-narrowing binding site, obligated and guarded like any other (§6.4.3, §11.2.1). `Int` and `Float64` never mix (see below).
 
 Subtraction on `Nat` is undefined behaviour when it would underflow (`lhs < rhs` produces a negative value below `Nat`'s `>= 0` range). The compiler SHOULD verify `lhs >= rhs` via contracts or refinement types. If it cannot, it MUST insert a runtime check that traps on underflow. `Byte` arithmetic is not supported by the type checker (`Byte` is excluded from the numeric-types set in `vera/types.py`); user code that needs byte-level arithmetic uses `byte_to_int` to convert before arithmetic and `int_to_byte` to convert back. Allowing `Byte` arithmetic with both underflow and overflow guards is tracked speculatively as [#564](https://github.com/aallan/vera/issues/564).
 
@@ -127,11 +127,11 @@ let @String = "hello";
 let @Bool = @Int.0 > 0;
 ```
 
-The type on the left is mandatory — there is no type inference for let bindings. This ensures that the slot reference type is always explicit and locally determinable.
+The type on the left is mandatory; there is no type inference for let bindings. This ensures that the slot reference type is always explicit and locally determinable.
 
-The declared type must have a runtime representation: a `let` of a zero-size type (`let @Unit = put(5);`) is a checker error (**E183**, §2.2.2), since the binding could never be read — evaluate the expression as a statement instead (`put(5);`).
+The declared type must have a runtime representation: a `let` of a zero-size type (`let @Unit = put(5);`) is a checker error (**E183**, §2.2.2), since the binding could never be read; evaluate the expression as a statement instead (`put(5);`).
 
-Let bindings are immutable. There is no reassignment. To "update" a value, bind a new slot:
+Let bindings are immutable, and there is no reassignment. To "update" a value, bind a new slot:
 
 ```
 let @Int = 10;
@@ -213,9 +213,9 @@ Every arm MUST have a type compatible with the others', and the type of the `mat
 | `_` | Anything (wildcard) | None |
 | Literal (`42`, `"hi"`, `true`) | Exact value | None |
 
-Patterns are matched top-to-bottom. The first matching arm is taken.
+Patterns are matched top-to-bottom, and the first matching arm is taken.
 
-Every arm's pattern MUST be one the scrutinee's type can take: a constructor pattern names a constructor of that type, a literal pattern has that type (an integer literal matches `Int`, `Nat` or `Byte`, and is range-checked against it as §4.2 says), and a binding pattern `@T` names a type related to it by subtyping. A `Tuple` pattern supplies exactly one sub-pattern per component of the scrutinee's tuple type, and matches no other type. A pattern that can never match is rejected (**E314**) — a `Map<K, V>` has no constructors, so `Some(...)` over one is not an unreachable arm but a type error, and an `Int` can equal no `Bool`. The rule is decided from what the checker knows: it does not apply where the scrutinee's type is a type variable (a `forall<T>` body cannot know which type `T` will be) or a named type the module does not declare.
+Every arm's pattern MUST be one the scrutinee's type can take: a constructor pattern names a constructor of that type, a literal pattern has that type (an integer literal matches `Int`, `Nat` or `Byte`, and is range-checked against it as §4.2 says), and a binding pattern `@T` names a type related to it by subtyping. A `Tuple` pattern supplies exactly one sub-pattern per component of the scrutinee's tuple type, and matches no other type. A pattern that can never match is rejected (**E314**). A `Map<K, V>` has no constructors, so `Some(...)` over one is not an unreachable arm but a type error, and an `Int` can equal no `Bool`. The rule is decided from what the checker knows: it does not apply where the scrutinee's type is a type variable (a `forall<T>` body cannot know which type `T` will be) or a named type the module does not declare.
 
 ### 4.9.2 Exhaustiveness
 
@@ -255,7 +255,7 @@ A block is a sequence of statements followed by a final expression, enclosed in 
 
 The value of a block is the value of its final expression. The type of a block is the type of its final expression.
 
-All let bindings in a block are scoped to the block — they are not visible outside.
+All let bindings in a block are scoped to the block; they are not visible outside.
 
 An empty block is not valid. A block must contain at least one expression.
 
@@ -283,7 +283,7 @@ Tuple(1, "hello", true)
 
 ### 4.11.2 Pipe Operator
 
-The pipe operator `|>` writes a call with its first argument in front: `a |> f(b, c)` is the call `f(a, b, c)`. The right operand is a call written with its argument list — a function, built-in or effect operation (`f(...)`, `E.op(...)`), a constructor (`C(...)`) or a module-qualified function (`m::f(...)`) — and the left operand becomes its first argument:
+The pipe operator `|>` writes a call with its first argument in front: `a |> f(b, c)` is the call `f(a, b, c)`. The right operand is a call written with its argument list, to a function, built-in or effect operation (`f(...)`, `E.op(...)`), a constructor (`C(...)`) or a module-qualified function (`m::f(...)`), and the left operand becomes its first argument:
 
 ```
 @Int.0 |> abs() |> add(@Int.1)
@@ -297,7 +297,7 @@ add(abs(@Int.0), @Int.1)
 
 A pipe is that call in every respect: it is typed, verified, compiled and evaluated as the call written out, its arguments left to right with the piped value first. Pipes are left-associative, so `a |> f() |> g()` is `g(f(a))`, and `|>` binds more loosely than every other operator: `a |> f() + 1` pipes into `f() + 1`, which is not a call, while `(a |> f()) + 1` adds 1 to the call's result.
 
-A right operand that is not a call — a literal, a slot reference, an operator expression, a block, a constructor written without an argument list, or a pipe in parentheses — has no argument list for the piped value to join, and the program is rejected (**E040**).
+A right operand that is not a call (a literal, a slot reference, an operator expression, a block, a constructor written without an argument list, or a pipe in parentheses) has no argument list for the piped value to join, and the program is rejected (**E040**).
 
 ## 4.12 Array Expressions
 
@@ -408,7 +408,7 @@ String interpolation provides ergonomic syntax for building strings from mixed t
 
 Membership is decided on the expression's **resolved** type, not on how that type is spelled: a type alias and a refinement type both interpolate exactly as the primitive they resolve to (`type Warm = { @Float64 | @Float64.0 > 0.0 };` renders as a `Float64`). A refinement predicate constrains which values exist; it does not change how one of them prints.
 
-**Canonical form.** `InterpolatedString` is a first-class AST node and the canonical representation for strings with embedded expressions. The formatter preserves interpolation syntax — it does not desugar to `string_concat`/`to_string` chains.
+**Canonical form.** `InterpolatedString` is a first-class AST node and the canonical representation for strings with embedded expressions. The formatter preserves interpolation syntax; it does not desugar to `string_concat`/`to_string` chains.
 
 **Compilation.** At the WASM level, interpolation desugars to a chain of `string_concat` and `*_to_string` calls. For example, `"a=\(@Int.0), b=\(@Bool.0)"` becomes `string_concat(string_concat(string_concat("a=", to_string(@Int.0)), ", b="), bool_to_string(@Bool.0))`.
 
@@ -446,7 +446,7 @@ This is deliberate: loops require reasoning about mutable state across iteration
 
 ## 4.16 No Mutation
 
-There are no assignment statements. All `let` bindings are immutable. State changes are handled through the effect system (Chapter 7).
+There are no assignment statements, and all `let` bindings are immutable. State changes are handled through the effect system (Chapter 7).
 
 The only way to "modify" data is to construct a new value. This is the standard functional programming approach, and Vera's garbage collector handles the allocation overhead.
 
@@ -462,7 +462,7 @@ A hole is a development aid, not a runtime value:
 - `vera check` reports each hole as a **warning** (`W001`): a partial program
   type-checks, but every unfinished spot is surfaced.
 - `vera compile` / `vera run` **reject** a program that still contains a hole
-  (`E614`) — a hole has no runtime behaviour, so it can never be executed.
+  (`E614`), since a hole has no runtime behaviour and can never be executed.
 
 For example, a hole can stand in for an unwritten sub-expression:
 
