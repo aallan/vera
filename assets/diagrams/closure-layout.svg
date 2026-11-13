@@ -29,12 +29,12 @@
   <rect class="seg" x="36" y="108" width="150" height="44" fill="#f8efdf"/>
   <text class="m t" x="111" y="127" text-anchor="middle" font-size="11px">func_table_idx</text>
   <text class="f d" x="111" y="143" text-anchor="middle" font-size="9.5px">i32 · offset 0</text>
-  <rect class="seg" x="186" y="108" width="130" height="44" fill="#e6f0e9"/>
-  <text class="m t" x="251" y="127" text-anchor="middle" font-size="11px">capture_0</text>
-  <text class="f d" x="251" y="143" text-anchor="middle" font-size="9.5px">offset 4+ · 8-byte aligned</text>
-  <rect class="seg" x="316" y="108" width="120" height="44" fill="#e6f0e9"/>
-  <text class="m t" x="376" y="127" text-anchor="middle" font-size="11px">capture_1 …</text>
-  <text class="f d" x="376" y="143" text-anchor="middle" font-size="9.5px">i32 / i64 / f64</text>
+  <rect class="seg" x="186" y="108" width="150" height="44" fill="#e6f0e9"/>
+  <text class="m t" x="261" y="127" text-anchor="middle" font-size="11px">capture_0</text>
+  <text class="f d" x="261" y="143" text-anchor="middle" font-size="9.5px">offset 4+ · 8-byte aligned</text>
+  <rect class="seg" x="336" y="108" width="120" height="44" fill="#e6f0e9"/>
+  <text class="m t" x="396" y="127" text-anchor="middle" font-size="11px">capture_1 …</text>
+  <text class="f d" x="396" y="143" text-anchor="middle" font-size="9.5px">i32 / i64 / f64</text>
   <text class="f d" x="36" y="174">Captures are evaluated <tspan font-weight="600">at closure creation</tspan>: a SlotRef is a capture when its De Bruijn index reaches past</text>
   <text class="f d" x="36" y="188">the anonymous function's own parameters of that type. Same bump-allocation pattern as ADTs.</text>
 
@@ -66,9 +66,9 @@
 
   <!-- funcref table -->
   <g>
-    <rect x="564" y="322" width="320" height="38" rx="10" fill="#ede8f2" stroke="#e8e6e1"/>
-    <text class="m t" x="724" y="341" text-anchor="middle" font-size="11.5px">(table funcref) · (elem $anon_0 $anon_1 …)</text>
-    <text class="f d" x="724" y="354" text-anchor="middle" font-size="9px">one slot per lifted function; one $closure_sig_N per unique signature</text>
+    <rect x="504" y="322" width="380" height="38" rx="10" fill="#ede8f2" stroke="#e8e6e1"/>
+    <text class="m t" x="694" y="341" text-anchor="middle" font-size="11.5px">(table funcref) · (elem $anon_0 $anon_1 …)</text>
+    <text class="f d" x="694" y="354" text-anchor="middle" font-size="9px">one slot per lifted function; one $closure_sig_N per unique signature</text>
   </g>
   <line class="edge" x1="724" y1="298" x2="724" y2="318" marker-end="url(#arr)"/>
 
