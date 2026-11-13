@@ -12,13 +12,13 @@ Each entry keeps its chapter's wording, including the issue it cites. The specif
 
 ### 2.4.1 ADT Invariants
 
-**Status: Not implemented.** The `invariant(...)` clause on `data` declarations is specified here and does not work in the reference compiler — every documented form fails with `[E130] no <DataName> bindings in scope`, because the slot environment for the invariant predicate is not wired up.  Tracked in [#686](https://github.com/aallan/vera/issues/686).  Refinement types (Section 2.6) are the working alternative for expressing constraints on data values.
+**Status: Not implemented.** The `invariant(...)` clause on `data` declarations is specified here and does not work in the reference compiler. Every documented form fails with `[E130] no <DataName> bindings in scope`, because the slot environment for the invariant predicate is not wired up.  Tracked in [#686](https://github.com/aallan/vera/issues/686).  Refinement types (Section 2.6) are the working alternative for expressing constraints on data values.
 
 ## [spec/06-contracts.md](https://raw.githubusercontent.com/aallan/vera/main/spec/06-contracts.md)
 
 ### 6.2.3 Invariants (`invariant`)
 
-**Status: Not implemented.** The `invariant(...)` clause on `data` declarations is specified here and does not work in the reference compiler — every documented form fails with `[E130] no <DataName> bindings in scope`, because the slot environment for the invariant predicate is not wired up.  Tracked in [#686](https://github.com/aallan/vera/issues/686).  Refinement types (Chapter 2, Section 2.6) are the working alternative for expressing constraints on data values.
+**Status: Not implemented.** The `invariant(...)` clause on `data` declarations is specified here and does not work in the reference compiler. Every documented form fails with `[E130] no <DataName> bindings in scope`, because the slot environment for the invariant predicate is not wired up.  Tracked in [#686](https://github.com/aallan/vera/issues/686).  Refinement types (Chapter 2, Section 2.6) are the working alternative for expressing constraints on data values.
 
 ### 6.3.2 Additionally Allowed in Contracts (Tier 2)
 
@@ -38,7 +38,7 @@ Each entry keeps its chapter's wording, including the issue it cites. The specif
 
 ### 9.5.3 Http
 
-**Status: Implemented.** Tracked in [#57](https://github.com/aallan/vera/issues/57). `Http.get` and `Http.post` are fully compilable and execute via host imports (Python `urllib` / a synchronous `XMLHttpRequest` in the browser). Returns `Result<String, String>` — `Ok` with the response body, `Err` with the error message. The conformance test `ch09_http` and the example `http.vera` exercise it.
+**Status: Implemented.** Tracked in [#57](https://github.com/aallan/vera/issues/57). `Http.get` and `Http.post` are fully compilable and execute via host imports (Python `urllib` / a synchronous `XMLHttpRequest` in the browser). Returns `Result<String, String>`: `Ok` with the response body, `Err` with the error message. The conformance test `ch09_http` and the example `http.vera` exercise it.
 
 ### 9.6.19 similarity (Future)
 
@@ -46,10 +46,10 @@ Each entry keeps its chapter's wording, including the issue it cites. The specif
 
 ### 9.8 Abilities
 
-**Status: Implemented.** Tracked in [#60](https://github.com/aallan/vera/issues/60). Four built-in abilities (`Eq`, `Ord`, `Hash`, `Show`) are fully compilable. Supported types: Int, Nat, Bool, Float64, String, Byte, Unit. `Eq` derivation is **structural** ([#773](https://github.com/aallan/vera/issues/773)): a simple enum, or an ADT every field of which is itself `Eq` — an `Eq` primitive (`String` included, compared by content) or a nested `Eq` ADT (compared recursively, including recursive types) — supports `Eq` automatically. Fields with no `Eq` semantics (`Array`, `Map`, host handles) make the ADT non-derivable. `Show` and `Hash` derive **structurally** for composite types too ([#911](https://github.com/aallan/vera/issues/911)) — ADT, `Tuple`, `Option`, `Result`, and `Array`, recursing into each field/element by its own `show`/`hash` (see §9.8.2) — including directly-recursive ADTs (`List<T>`, `Tree<T>`), which lower to a generated self-calling helper ([#924](https://github.com/aallan/vera/issues/924)). The built-in `Ordering` ADT (`Less`, `Equal`, `Greater`) is available for `Ord`'s `compare` operation.
+**Status: Implemented.** Tracked in [#60](https://github.com/aallan/vera/issues/60). Four built-in abilities (`Eq`, `Ord`, `Hash`, `Show`) are fully compilable. Supported types: Int, Nat, Bool, Float64, String, Byte, Unit. `Eq` derivation is **structural** ([#773](https://github.com/aallan/vera/issues/773)): a simple enum, or an ADT every field of which is itself `Eq` (an `Eq` primitive, `String` included and compared by content, or a nested `Eq` ADT, compared recursively, including recursive types), supports `Eq` automatically. Fields with no `Eq` semantics (`Array`, `Map`, host handles) make the ADT non-derivable. `Show` and `Hash` derive **structurally** for composite types too ([#911](https://github.com/aallan/vera/issues/911)): ADT, `Tuple`, `Option`, `Result`, and `Array`, recursing into each field/element by its own `show`/`hash` (see §9.8.2), including directly-recursive ADTs (`List<T>`, `Tree<T>`), which lower to a generated self-calling helper ([#924](https://github.com/aallan/vera/issues/924)). The built-in `Ordering` ADT (`Less`, `Equal`, `Greater`) is available for `Ord`'s `compare` operation.
 
 ## [spec/13-wasi.md](https://raw.githubusercontent.com/aallan/vera/main/spec/13-wasi.md)
 
 ### 13.1 Overview
 
-**Status: Partially implemented.**  The target covers the **IO and Random host families** (Section 13.4).  It is not a blanket "WASI 0.2 compliant" mode: a program using any other host family (Http, Decimal, Json, Html, Md, Regex, Math, Inference, DB, State, Async) is rejected with a diagnostic naming the unsupported family — never silently compiled against the core target instead.  `Map` and `Set` are the module's own code (Section 9.4.3) and run in both worlds at every instance.
+**Status: Partially implemented.**  The target covers the **IO and Random host families** (Section 13.4).  It is not a blanket "WASI 0.2 compliant" mode: a program using any other host family (Http, Decimal, Json, Html, Md, Regex, Math, Inference, DB, State, Async) is rejected with a diagnostic naming the unsupported family, never silently compiled against the core target instead.  `Map` and `Set` are the module's own code (Section 9.4.3) and run in both worlds at every instance.

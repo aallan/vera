@@ -453,7 +453,7 @@ Simon Willison [argues](https://simonwillison.net/tags/conformance-suites/) that
 
 Vera has three test layers, each with its own purpose:
 
-![The three test layers — unit tests for compiler internals, spec-anchored conformance programs, end-to-end examples — and the four nested conformance levels: parse, check, verify, run.](assets/diagrams/testing-layers.svg)
+![The three test layers (unit tests for compiler internals, spec-anchored conformance programs, end-to-end examples) and the four nested conformance levels: parse, check, verify, run.](assets/diagrams/testing-layers.svg)
 
 | Layer | Location | Purpose | What it tests |
 |-------|----------|---------|---------------|

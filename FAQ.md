@@ -65,7 +65,7 @@ private fn excess(@Meters, @Feet -> @Int)
 
 There are three layers, and they cover different things.
 
-![The three verification layers: the type system is mechanical and complete, Z3 contract verification is mechanical and bounded (prove or counterexample, the rest runtime-checked), and human intent is expressive but unverified — the human reviews contracts, not implementations.](assets/diagrams/faq-layers.svg)
+![The three verification layers: the type system is mechanical and complete, Z3 contract verification is mechanical and bounded (prove or counterexample; the rest checked at run time, or disclosed where no check can be emitted), and human intent is expressive but unverified, so the human reviews contracts, not implementations.](assets/diagrams/faq-layers.svg)
 
 **Layer 1: Type system (mechanical).** Every binding uses typed De Bruijn indices (`@Int.0`, `@String.1`, etc.), so the type checker can verify that every reference resolves to a binding of the correct type, every function call matches its signature, every pattern match is exhaustive, and generics monomorphise correctly. This is the "components slot together" layer. Nothing novel here beyond the index scheme; the known gaps in it, such as a case missing inside a nested constructor pattern, are listed in [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
 
@@ -188,7 +188,7 @@ Mandatory parity tests enforce that on every PR. For the two operations that car
 
 `vera test` is Vera's built-in testing command. It generates test inputs from function contracts, so you do not write test cases by hand.
 
-![Contract-driven testing: Z3 generates inputs satisfying each requires clause, every input runs for real as WASM under wasmtime, and the ensures postcondition is checked against the actual output — a violation fails with the concrete input.](assets/diagrams/contract-testing.svg)
+![Contract-driven testing: for each function the verifier did not prove, Z3 generates inputs satisfying its requires clause, the program is compiled to WASM once and every input runs for real under wasmtime, and the ensures postcondition is checked against the actual output; a violation fails with the concrete input. Proved functions run only under --distrust.](assets/diagrams/contract-testing.svg)
 
 The process works in three steps:
 

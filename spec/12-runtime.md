@@ -578,7 +578,7 @@ All heap allocations are 8-byte aligned. This ensures correct access for all WAS
 
 The runtime implements a conservative mark-sweep garbage collector entirely in WASM (no host-side GC logic). The GC is triggered automatically when the bump allocator runs out of space.
 
-![Allocation and collection: $alloc aligns the request, tries the free list, bumps if there is room, and otherwise runs the three collector phases — clear marks, mark from shadow-stack roots with conservative scanning, sweep unmarked blocks onto the free list — before retrying and finally growing memory.](../assets/diagrams/gc-cycle.svg)
+![Allocation and collection: $alloc aligns the request, tries the free list, bumps if there is room, and otherwise runs the collector (clear the marks and record each block as an object base; mark from shadow-stack roots, scanning conservatively for object bases and rescanning when a full worklist dropped a push; sweep unmarked blocks onto the free list) before retrying and finally growing memory.](../assets/diagrams/gc-cycle.svg)
 
 **Shadow stack.** WASM does not support stack scanning, so the compiler maintains an explicit shadow stack in linear memory. The compiler pushes live heap pointers onto it at function entry (pointer-type parameters), after each `call $alloc` (newly allocated objects), and manages save/restore at function exit. Thirteen globals track the shadow stack and GC state:
 

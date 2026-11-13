@@ -12,7 +12,7 @@ For other documentation:
 
 The compiler is a seven-stage pipeline. Each stage consumes the output of the previous one, has a single public entry point, and is independently testable.
 
-![The compiler pipeline and module map: parse, transform and resolve feed the two-pass type checker, where naming.py answers what any type expression is called for every later stage; after checking, vera verify proves each contract obligation (Tier 1) or defers it to a runtime guard (Tier 3) with a warm-verification sidecar for the LSP, while vera compile emits WAT and WASM for the wasmtime host, the browser bundle, or a WASI 0.2 component.](../assets/diagrams/architecture.svg)
+![The compiler pipeline and module map: parse, transform, resolve (every call bound to its declaration) and type check build one typed program, with every generic instance and obligation site derived once. vera verify proves each obligation (Tier 1) or defers it to a runtime check (Tier 3), then compiles the program and matches every Tier 3 claim to a check in the module, with a warm-verification sidecar for the LSP; vera compile emits WAT and WASM, with contract guards, for the wasmtime host, the browser bundle or a WASI 0.2 component.](../assets/diagrams/architecture.svg)
 
 <details>
 <summary>Text version</summary>
@@ -24,24 +24,30 @@ Source (.vera)
 1   Parse        grammar.lark + parser.py     -> Lark parse tree (LALR(1))
 2   Transform    transform.py + ast.py        -> typed AST
 3   Resolve      resolver.py + binding.py     -> transitive module closure,
-  |              every name bound to its declaration (the checker reads it)
+  |              every call bound to its declaration (the checker reads it)
 4   Type Check   checker/ + naming.py + environment.py -> list[Diagnostic]
-  |              (two passes: register every signature, then check bodies;
-  |              every node typed by its identity, every generic call's
-  |              instantiation recorded)
-4b  Instances    typed.py                     -> the typed program: linked
+  |              (register every signature, then check bodies; every node
+  |              typed by its identity, every generic call's instantiation
+  |              recorded)
+4b  Typed program  typed.py + obligations/table.py -> the program linked
   |              once, every instance derived once and judged at the call
-  |              that chooses it, every clone built once and typed
+  |              that chooses it, every clone built once, every obligation
+  |              site listed once
   |
   +--- vera verify ------------->  5  Verify   verifier.py + smt.py (Z3)
   |                                   each obligation proved (Tier 1) or
-  |                                   deferred to a runtime guard (Tier 3)
+  |                                   deferred to a runtime check (Tier 3);
+  |                                   then compiles in process and
+  |                                   reconcile.py matches every Tier 3
+  |                                   claim to an emitted check (E541 a
+  |                                   claim with no check, W004 a check
+  |                                   with no claim)
   |                                   -> ok / diagnostics / tier counts
-  |                                   sidecar: obligations/ + lsp/ -- warm
+  |                                   sidecar: obligations/ + lsp/, warm
   |                                   incremental re-verification (LSP)
   v    vera compile / vera run
 6   Compile      codegen/ + wasm/             -> WAT + .wasm
-  |              emit the typed program's clones / insert contract guards
+  |              emit the typed program's clones, insert contract guards
   +------------------------------>  Browser bundle   (--target browser)
   +------------------------------>  WASI 0.2 component (--target wasi-p2)
   v
@@ -50,11 +56,11 @@ Source (.vera)
 Cross-cutting: cli.py (orchestrates every stage) / errors.py (Diagnostic,
 E- and W-series diagnostic codes) / formatter.py (vera fmt) /
 tester.py (vera test).
-naming.py answers "what is this type expression called?" once -- stages 5
-and 6, tester.py and lsp/ all render slot names and State/Exn cell families
+naming.py answers "what is this type expression called?" once: stages 5
+and 6, tester.py and lsp/ render slot names and State/Exn cell families
 through it, never their own.
-Nothing exits early -- every stage accumulates diagnostics, so an agent
-gets all feedback in one pass.
+Within a stage nothing exits early: the checker and the verifier
+accumulate every diagnostic, so an agent gets them all in one pass.
 ```
 
 </details>
@@ -283,25 +289,26 @@ Node
 
 ### Three-pass architecture
 
-![The three checker passes: module registration harvests imported signatures, local registration populates the TypeEnv, and the checking pass verifies every function body against it.](../assets/diagrams/checker-passes.svg)
+![The three checker passes: module registration harvests imported signatures, local registration populates the TypeEnv, binding.py binds every call to its declaration, and the checking pass checks every function body against the environment and that binding.](../assets/diagrams/checker-passes.svg)
 
 <details>
 <summary>Text version</summary>
 
 ```text
- Pass 0: Module Registration       Pass 1: Local Registration         Pass 2: Checking
-  ┌──────────────────────┐          ┌────────────────────────┐          ┌──────────────────────────┐
-  │  For each resolved   │          │  Walk all declarations │          │  Walk all declarations   │
-  │  module:             │          │                        │          │                          │
-  │   • create temp      │          │  Register into TypeEnv:│          │  For each function:      │
-  │     TypeChecker      │  TypeEnv │   • functions           │  TypeEnv │   • bind forall vars    │
-  │   • register decls   │ ───────▶ │   • ADTs + constructors│ ───────▶ │   • resolve param types  │
-  │   • harvest into     │ imports  │   • type aliases       │ populated│   • push scope, bind     │
-  │     module-qual dicts│ injected │   • effects + ops      │          │   • check contracts      │
-         │                        │          │   • synthesise body type │
-         │  (signatures only,     │          │   • check effects        │
-         │   no bodies checked)   │          │   • pop scope            │
-         └────────────────────────┘          └──────────────────────────┘
+ Pass 0: Module Registration    Pass 1: Local Registration    Pass 2: Checking
+ For each resolved module:      Walk all declarations and     For each function:
+  • create a temp TypeChecker   register into the TypeEnv:     • bind forall vars,
+  • register its declarations    • functions                     resolve param types
+  • harvest signatures into      • ADTs + constructors         • push scope, bind params
+    module-qualified dicts       • type aliases                • check contracts
+  (signatures only, no           • effects + operations        • synthesise body type
+   bodies checked)                                             • check effects
+                                                               • pop scope
+        --- TypeEnv, imports injected --->   --- TypeEnv fully populated --->
+
+ Between passes 1 and 2, binding.py binds every call to its declaration;
+ pass 2 reads that binding instead of resolving names itself.
+ Output: list[Diagnostic], returned, never raised.
 ```
 
 </details>
@@ -517,6 +524,8 @@ When a contract or function body contains constructs that cannot be translated t
         Verified   Violated    Tier 3
                   + counter-
                    example
+At a call site the callee's requires is a goal of its own (E501), and its
+ensures joins the assumptions about the call's result.
 ```
 
 </details>
@@ -634,7 +643,7 @@ Registration before compilation mirrors the type checker: Pass 1 registers every
 
 Every host import a module can declare is a row of the built-in registry, `builtins.py`: its name, its WAT signature, its family, and the flags its declaration sets.  Code generation declares the rows a module uses; the families below implement them.  `execute()` lives in `codegen/api.py`; the rest of the wasmtime host layer is in `vera/runtime/`: trap classification (`traps.py`), WASM memory marshalling (`heap.py`), and **one module per optional effect family**, each exposing a single `register_<family>(linker, …)` that defines and registers its host callbacks. `execute()` binds a module's imports through `HOST_BINDERS`, the binder of each import's row's family, so the module's imports are bound exactly, and an import no row declares, or one no binder defines, is a `HostBindingError` naming the row. The compiled `.wasm` import interface does not depend on this layout, which is internal structure, not a contract.
 
-![The wasmtime host layer: execute() registers one pluggable adapter per optional effect family into the Linker — Decimal, State, and the fused Async adapter carry an explicit store — while IO stays inline as execute()'s observation channel; the module's import interface is the portability contract the browser runtime also implements.](../assets/diagrams/host-families.svg)
+![The wasmtime host layer: execute() binds each host-import family the module declares through one adapter module per family; Decimal, State and the fused Async adapter carry an explicit store, IO stays inline as execute()'s observation channel, and Map and Set need no adapter because they are the module's own code. The module's import interface is the portability contract the browser runtime also implements.](../assets/diagrams/host-families.svg)
 
 **What counts as a "family" module.** Each of the twelve (`random`, `math`, `md`, `json`, `regex`, `html`, `decimal`, `http`, `async_http`, `inference`, `state`, `db`) is a *pluggable adapter* with minimal coupling to `execute()`. Decimal marshals opaque handles; Json/Html/Markdown/Regex bridge Python parsers; Http/Inference wrap network calls; Db opens one connection per run, captured by its op closures; Random/Math/State are thin shims. Most are stateless, each bound when the module declares an import of its family. The three stateful ones (Decimal, State and the fused Async adapter) keep a single Python-side store that `execute()` creates and reads back (Decimal's handle store feeds the GC decref hook and `host_store_sizes`; State's cell stacks feed `ExecuteResult.state`; `async_http.py`'s `register_async` takes the `future_store` `execute()` builds up-front, publishes it as `host_store_refs["future"]` so it too reaches `host_store_sizes`, and has its entries evicted by the same `host_decref_handle`, kind 4, which also cancels a future that never started), passed as one explicit parameter (for example `register_decimal(linker, ops, decimal_store, host_store_refs)`), so each family stays a self-contained unit. `heap.py` holds the marshalling primitives they all call. `Map` and `Set` need no adapter: they are the module's own code (`wasm/hamt.py`).
 
@@ -730,7 +739,7 @@ VeraError (exception hierarchy)
 
 Every diagnostic includes eight fields designed for a model to read, and a Tier 3 fallback warning also has a ninth, `tier`, set to 3:
 
-![The Diagnostic record: description, location, source line, rationale, fix, spec_ref, severity, and a stable error code.](../assets/diagrams/diagnostic-card.svg)
+![The Diagnostic record: description, location, source line, rationale, fix, spec_ref, severity and a stable error code, plus a tier on the Tier 3 fallback warnings.](../assets/diagrams/diagnostic-card.svg)
 
 <details>
 <summary>Text version</summary>
@@ -742,12 +751,15 @@ Every diagnostic includes eight fields designed for a model to read, and a Tier 
 │  description   "what went wrong" (plain English)     │
 │  location      file, line, column                    │
 │  source_line   the offending line of code            │
-│  rationale     which language rule was violated       │
+│  rationale     which language rule was violated      │
 │  fix           concrete corrected code               │
 │  spec_ref      "Chapter X, Section Y.Z"              │
 │  severity      "error" or "warning"                  │
 │  error_code    stable identifier ("E130", "E200")    │
+│  tier          3 on a Tier 3 fallback warning        │
 └──────────────────────────────────────────────────────┘
+scripts/check_diagnostic_fields.py fails an error that lacks a rationale,
+a fix or a resolvable spec_ref (a warning needs no fix).
 ```
 
 </details>

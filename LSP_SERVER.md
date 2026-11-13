@@ -410,7 +410,7 @@ every step.
    threading an effect, call the dedicated method instead and let
    the server construct the candidate.
 
-![The agent proof-delta loop: didOpen returns diagnostics and tier hints; speculativeEdit verifies a draft in memory and returns a proof delta without touching the document; proposeEdit re-verifies from the warm cache and applies only if nothing newly fails to prove.](assets/diagrams/lsp-session.svg)
+![The agent proof-delta loop: didOpen returns diagnostics and tier hints; speculativeEdit verifies a draft in memory and returns a proof delta without touching the document; proposeEdit re-verifies from the warm cache and applies only if no proof regresses, no obligation newly fails to prove and the result has no errors, unless the request forces it.](assets/diagrams/lsp-session.svg)
 
 ## Current limitations
 

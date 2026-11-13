@@ -4,7 +4,7 @@
 
 Vera programs compile to WebAssembly (WASM). The source is parsed and transformed into an AST; the resolver gathers the module closure and binds every name to the declaration it denotes; the type checker checks the program; and the typed program (`vera/typed.py`) is then built once, holding every generic instance and clone. The code generator translates that typed program into a WASM module. `vera compile` and `vera run` do not run the contract verifier. `vera verify` runs it over the same typed program and then, unless `--no-reconcile` is given, compiles the program in process and matches each runtime-check claim against the checks the compiled module holds: a claim no check answers is an error (`E541`), a check no claim accounts for is a warning (`W004`), and a program holding typed holes skips the match with a warning (`W005`).
 
-![The compilation pipeline: parse to a Lark tree, transform to a typed AST, type-check into diagnostics, verify into a Tier 1/Tier 3 classification, and compile to WAT plus a WASM binary.](../assets/diagrams/pipeline.svg)
+![The compilation pipeline: parse to a Lark tree, transform to a typed AST, resolve the module closure and bind every call, type-check into diagnostics and build one typed program; verification classifies each obligation as Tier 1 or Tier 3, and compilation emits WAT plus a WASM binary, contract guards included, without reading the verifier's result.](../assets/diagrams/pipeline.svg)
 
 <details>
 <summary>Text version</summary>
@@ -12,11 +12,16 @@ Vera programs compile to WebAssembly (WASM). The source is parsed and transforme
 ```text
 Source (.vera)
   │
-  ├── Parse        → Lark parse tree
-  ├── Transform    → Typed AST
-  ├── Type Check   → Diagnostics
-  ├── Verify       → VerifyResult (Tier 1/3 classification)
-  └── Compile      → CompileResult (WAT text + WASM binary)
+  ├── Parse          → Lark parse tree
+  ├── Transform      → Typed AST
+  ├── Resolve        → module closure, every call bound to its declaration
+  ├── Type Check     → Diagnostics
+  ├── Typed program  → instances, clones and obligation sites, each built once
+  │     │
+  │     └── Verify   → VerifyResult (Tier 1/3 classification); vera verify
+  │                    then compiles and matches each Tier 3 claim to a check
+  └── Compile        → CompileResult (WAT text + WASM binary); vera compile
+                       and vera run do not run Verify
 ```
 
 </details>

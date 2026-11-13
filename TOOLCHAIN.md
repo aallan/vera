@@ -15,7 +15,7 @@ and [spec/](spec/).
 
 The commands follow the compiler pipeline, each stopping at a stage. `parse`, `fmt` and `ast` stop at parsing; `check` at type checking; `verify` at verification, after which it compiles the program to check its runtime-check claims; `compile` at code generation; `run`, `serve` and `test` execute. `compile`, `run` and `serve` type-check but do not run the verifier, and `test` runs it to choose which functions to trial:
 
-![The CLI mirrors the pipeline: parse and fmt stop at parsing; check and ast at type checking; verify at verification; compile and test at code generation; run and serve at execution.](assets/diagrams/toolchain.svg)
+![The CLI mirrors the pipeline: parse, fmt and ast stop at parsing; check at type checking; verify at verification, after which it compiles to check its runtime-check claims; compile at code generation; run, serve and test at execution. vera compile, run and serve skip verification.](assets/diagrams/toolchain.svg)
 
 <details>
 <summary>Text version</summary>
@@ -23,7 +23,11 @@ The commands follow the compiler pipeline, each stopping at a stage. `parse`, `f
 ```text
 source ──▶ parse ──▶ check ──▶ verify ──▶ compile ──▶ run
             parse     check     verify     compile     run
-            fmt       ast                  test        serve
+            fmt                                        serve
+            ast                                        test
+
+vera compile, run and serve skip verify; vera verify and vera test
+also compile. vera lsp keeps check and verify warm.
 ```
 
 </details>

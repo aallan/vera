@@ -195,7 +195,7 @@ The macOS 15+ baseline follows [TelemetryDeck's macOS version distribution data]
 
 ### The workflow
 
-![The workflow: an LLM agent writes Vera with mandatory contracts; vera check and vera verify prove the types and contracts, feeding every diagnostic (description, rationale, fix, spec_ref) straight back to the agent; when the proofs hold, vera run executes the WebAssembly on CLI, browser, WASI or HTTP.](assets/diagrams/workflow.svg)
+![The workflow: an LLM agent writes Vera with mandatory contracts; vera check and vera verify check every type and prove each contract with Z3, check it at run time or diagnose it, feeding every diagnostic (description, rationale, fix, spec_ref) straight back to the agent; when the proofs hold, the WebAssembly runs on the command line, in the browser, as a WASI 0.2 component or behind HTTP.](assets/diagrams/workflow.svg)
 
 ```
 $ vera check examples/absolute_value.vera
@@ -285,7 +285,7 @@ Known bugs and open issues are tracked on the **[issue tracker](https://github.c
 
 The compiler is a seven-stage pipeline; [vera/README.md](vera/README.md) describes the architecture in depth:
 
-![The compiler pipeline and module map: parse, transform and resolve feed the two-pass type checker, where naming.py answers what any type expression is called for every later stage; after checking, vera verify proves each contract obligation or defers it to a runtime guard, with a warm-verification sidecar for the LSP, while vera compile emits WAT and WASM for the wasmtime host, the browser bundle, or a WASI 0.2 component.](assets/diagrams/architecture.svg)
+![The compiler pipeline and module map: parse, transform, resolve (every call bound to its declaration) and type check build one typed program, with every generic instance and obligation site derived once. vera verify proves each obligation or defers it to a runtime check, then compiles the program and matches every runtime-check claim to a check in the module; vera compile emits WAT and WASM, with contract guards, for the wasmtime host, the browser bundle or a WASI 0.2 component. naming.py answers what any type expression is called for every later stage.](assets/diagrams/architecture.svg)
 
 <details>
 <summary><strong>Project structure</strong></summary>

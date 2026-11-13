@@ -244,7 +244,7 @@ The handler may also choose NOT to call `resume`, which aborts the handled body.
 
 **An `Exn` handler's value is its body's or its clause's.** A `throw` clause runs in place of the rest of the handled body and does not resume, so its value is the `handle` expression's, as a branch's value is its `if`'s: an `Exn` handler's type is the join of the handled body's type and each `throw` clause's, which meet as the two branches of an `if` do (Chapter 4, Section 4.8), so a `Nat` body and an `Int` clause make an `Int` handler. A body that always throws has type `Never`, and the handler has its clause's type; a clause that throws again has type `Never`, and the handler has its body's. A clause whose type has no join with the body's is a checker error (`E341`), reported at the clause's value; where a value of the handler's type can be written without context, the fix writes one in its place. A `State` clause resumes, so its value goes back to the handled body, and a `State` handler has its body's type.
 
-![Handler dispatch: an effect operation suspends the handled body, control transfers to the matching clause with the arguments and handler state in scope, and resume(value) continues the body — omitting resume aborts it.](../assets/diagrams/effect-handlers.svg)
+![Handler dispatch: an effect operation suspends the handled body, control transfers to the matching clause with the arguments and handler state in scope, resume(value) continues the body with that value and a with clause sets the state later operations see; omitting resume aborts the body. The reference compiler lowers handlers for State and Exn only (E340 for any other effect).](../assets/diagrams/effect-handlers.svg)
 
 ### 7.5.3 Examples
 

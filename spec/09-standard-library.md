@@ -539,7 +539,7 @@ private fn compute(@Nat, @Nat -> @Int)
 }
 ```
 
-![The async model: async(e) evaluates concurrently when e's effect row is commutative (Http requests issue on a host worker thread at the async point and await blocks for the response), while every other shape evaluates eagerly with a W002 warning; Future of T is WASM-transparent either way.](../assets/diagrams/async-model.svg)
+![The async model: an implementation may evaluate async(e) concurrently when e's effect row is commutative; the reference implementation does so for async(Http.get(…)) and async(Http.post(…)), issuing the request on a host worker thread at the async point while await blocks for the response. Every other shape evaluates eagerly, with a W002 warning where the row leaves {Http, Async}; Future of T is WASM-transparent either way.](../assets/diagrams/async-model.svg)
 
 Key design points:
 - `async(expr)` evaluates `expr` and wraps the result in `Future<T>`.
