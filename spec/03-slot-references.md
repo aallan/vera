@@ -1,6 +1,6 @@
 # Chapter 3: Slot References
 
-> This chapter is the formal specification for slot reference syntax and resolution. For conceptual background — the academic origins of De Bruijn indices, Vera's typed variant, the commutative-operations trap, and connections to proof assistants and LLM code generation research — see [`DE_BRUIJN.md`](../DE_BRUIJN.md).
+> This chapter is the formal specification for slot reference syntax and resolution. For conceptual background (the academic origins of De Bruijn indices, Vera's typed variant, the commutative-operations trap, and connections to proof assistants and LLM code generation research), see [`DE_BRUIJN.md`](../DE_BRUIJN.md).
 
 ## 3.1 Overview
 
@@ -25,13 +25,13 @@ Traditional variable names serve two purposes:
 1. **Binding**: associating a value with a location in the environment
 2. **Reference**: retrieving a value from the environment
 
-For human programmers, meaningful names ("width", "height") aid comprehension. For LLMs, arbitrary names introduce a coherence burden: the model must consistently use the same name across an entire scope, and must choose names that don't collide. Naming errors are among the most common LLM code generation failures.
+For human programmers, meaningful names ("width", "height") aid comprehension. For LLMs, arbitrary names introduce a coherence burden: the model must consistently use the same name across an entire scope, and must choose names that do not collide. Naming errors are among the most common LLM code generation failures.
 
 Typed slot references eliminate this burden. The model needs only to know:
 - What type of value it wants
 - How many bindings of that type exist between here and the target
 
-Both pieces of information are locally determinable — the model does not need to maintain global naming consistency.
+Both pieces of information are locally determinable, so the model does not need to maintain global naming consistency.
 
 ## 3.3 Binding Sites
 
@@ -42,6 +42,8 @@ A binding is introduced at each of the following positions:
 3. **Match arms**: pattern variables in match arms introduce bindings.
 4. **Effect handler parameters**: each operation in a handler introduces bindings for its parameters.
 5. **Tuple destructuring**: `let Tuple<@T1, @T2> = expr;` introduces one binding per component.
+6. **Anonymous function parameters**: each parameter of a closure, `fn(@T -> @U) effects(...) { ... }`, introduces a binding of its declared type, in scope in the closure's body (Chapter 5, Section 5.7).
+7. **Handler state**: a handler's state declaration, `handle[State<T>](@T = expr)`, introduces a binding of type `T`, in scope only in the handler's operation clauses (Chapter 7, Section 7.5.1).
 
 Binding sites are ordered by textual position. Within a single scope, earlier bindings have higher indices (they are farther away):
 
@@ -56,13 +58,13 @@ let @Int = 20;    -- within subsequent code: @Int.0
 To resolve `@T.n`, the compiler:
 
 1. Starting from the reference site, walks outward through enclosing scopes.
-2. Counts each binding whose type is exactly `T` (after alias resolution for subtyping, but exact match for reference resolution — see Section 3.8).
+2. Counts each binding whose type is exactly `T` (after alias resolution for subtyping, but exact match for reference resolution; see Section 3.8).
 3. The `n`th such binding (zero-indexed) is the referent.
 4. If fewer than `n + 1` bindings of type `T` are in scope, the reference is a compile error.
 
 ### 3.4.1 Scope Ordering
 
-Scopes are nested. Inner scopes are searched before outer scopes:
+Scopes are nested, and inner scopes are searched before outer scopes:
 
 <!-- vera:skip-parse category="FRAGMENT" reason="an unnamed signature with its contracts, not a declaration" -->
 ```
@@ -86,7 +88,7 @@ In this example:
 
 The `vera check --explain-slots` flag prints a slot resolution table for each function after a
 successful type-check, showing which parameter position each `@T.n` index refers to. This is
-a development and debugging aid — it is equivalent to manually applying the resolution algorithm
+a development and debugging aid, equivalent to manually applying the resolution algorithm
 to the function's parameter list.
 
 Example output for `fn divide(@Int, @Int -> @Int)`:
@@ -164,9 +166,9 @@ fn(@Int -> @Int)
 
 Trace:
 1. Function body entered. `@Int.0` = parameter.
-2. `let @Int = @Int.0 * 2;` — RHS: `@Int.0` = parameter. Now in scope: `@Int.0` = this let (param * 2), `@Int.1` = parameter.
-3. `let @Int = @Int.0 + 1;` — RHS: `@Int.0` = previous let (param * 2). Now in scope: `@Int.0` = this let (param * 2 + 1), `@Int.1` = previous let (param * 2), `@Int.2` = parameter.
-4. `let @String = to_string(@Int.0);` — `@Int.0` = most recent Int let (param * 2 + 1). `@String` binding added.
+2. `let @Int = @Int.0 * 2;`: on the RHS, `@Int.0` = parameter. Now in scope: `@Int.0` = this let (param * 2), `@Int.1` = parameter.
+3. `let @Int = @Int.0 + 1;`: on the RHS, `@Int.0` = previous let (param * 2). Now in scope: `@Int.0` = this let (param * 2 + 1), `@Int.1` = previous let (param * 2), `@Int.2` = parameter.
+4. `let @String = to_string(@Int.0);`: `@Int.0` = most recent Int let (param * 2 + 1). `@String` binding added.
 5. `@Int.0` = most recent Int let = param * 2 + 1. This is the return value.
 
 ### Example 4: Pattern Matching
@@ -293,7 +295,7 @@ private forall<T> fn list_head(@List<T> -> @Option<T>)
 
 In the `Cons` arm:
 - `@T.0` = the head element
-- `@List<T>.0` = the tail (innermost `List<T>`, from the pattern) — the pattern binding **pushes** onto the slot stack rather than replacing the scrutinee; the function-parameter `List<T>` is still accessible at `@List<T>.1` (one deeper in De Bruijn ordering).  This is the same push-on-binding rule that `let` uses (Section 3.4).  If the same pattern binding shape repeats — e.g. `match @Term.0 { App(@Term, @Term) -> ... }` — the rightmost field binding is `@Term.0`, the leftmost is `@Term.1`, and the scrutinee is one deeper at `@Term.2`.  Non-commutative operations inside arms (subtraction, comparison, recursive calls) must respect this ordering; commutative ones happen to read the same either way and so don't expose the rule.
+- `@List<T>.0` = the tail (innermost `List<T>`, from the pattern). The pattern binding **pushes** onto the slot stack rather than replacing the scrutinee; the function-parameter `List<T>` is still accessible at `@List<T>.1` (one deeper in De Bruijn ordering).  This is the same push-on-binding rule that `let` uses (Section 3.4).  If the same pattern binding shape repeats (for example `match @Term.0 { App(@Term, @Term) -> ... }`), the rightmost field binding is `@Term.0`, the leftmost is `@Term.1`, and the scrutinee is one deeper at `@Term.2`.  Non-commutative operations inside arms (subtraction, comparison, recursive calls) must respect this ordering; commutative ones happen to read the same either way and so do not expose the rule.
 
 ### Example 10: Multiple Return-Type References in Contracts
 
@@ -347,7 +349,7 @@ Here `@Tuple<Int, String>.result` refers to the entire return tuple. A slot refe
 
 ## 3.7 Function Type References
 
-Function-type parameters use the same `@T.n` system, where `T` is the full function type. Since function types can be long, a type alias is recommended:
+Function-type parameters use the same `@T.n` system. A binding whose type is written as a function type, `fn(...) effects(...)`, has the type name `Fn`, whatever its parameter, result and effect types, so every such binding is in the one namespace `@Fn.n`: in `fn(@fn(Int -> Int) effects(pure), @fn(Int -> Bool) effects(pure) -> @Bool)`, `@Fn.0` is the second parameter and `@Fn.1` the first. A binding whose type is an alias of a function type takes the alias's name (Section 3.8). A type alias is recommended: it shortens a long function type and gives the parameter a namespace of its own:
 
 ```
 type IntTransform = fn(Int -> Int) effects(pure);
@@ -363,7 +365,7 @@ private fn apply_to_array(@Array<Int>, @IntTransform -> @Array<Int>)
 
 ## 3.8 Type Alias and Reference Resolution
 
-At the **head** of a slot name, type aliases are **not transparent** for reference resolution. This is a critical rule (§3.8.1 gives the complementary rule for type *arguments*, which do resolve):
+At the **head** of a slot name, type aliases are **not transparent** for reference resolution (§3.8.1 gives the complementary rule for type *arguments*, which do resolve):
 
 <!-- vera:skip-parse category="FRAGMENT" reason="fn(@PosInt, @Int -> @Int) — no name" -->
 ```
@@ -386,7 +388,7 @@ Rationale: If heads were transparent, adding a type alias to a library could sil
 
 Opacity applies to the **head** of a slot name only. A slot name's type **arguments** are fully resolved through aliases, so two spellings of the same argument name one namespace. A parameter written `@Option<Cnt>` under `type Cnt = Int` binds the name `Option<Int>`, and `@Option<Int>.0` is how it is referenced; a parameter written `@Cnt` binds `Cnt`, and only `@Cnt.0` reaches it.
 
-The two rules have different jobs. The head is the name the programmer chose for the binding, so leaving it opaque is what keeps a library's new alias from splitting a caller's namespace. An argument is a *component* of a structural type, so resolving it is what keeps `Option<Cnt>` and `Option<Int>` — one type — from becoming two namespaces.
+The two rules have different jobs. The head is the name the programmer chose for the binding, so leaving it opaque is what keeps a library's new alias from splitting a caller's namespace. An argument is a *component* of a structural type, so resolving it is what keeps `Option<Cnt>` and `Option<Int>`, which are one type, from becoming two namespaces.
 
 ```vera
 type Cnt = Int;
@@ -433,6 +435,8 @@ In keeping with the "one canonical form" principle, the index MUST always be pre
 | `match` arm pattern | One per pattern variable | The arm's body expression |
 | Tuple destructuring | One per component | Subsequent statements in the same block |
 | Effect handler op | One per operation parameter | The operation's handler body |
+| Anonymous function parameter | One per parameter | The closure's body |
+| Handler state | One of the state's type | The handler's operation clauses |
 | `forall<A>` | Type variable `A` | The entire declaration |
 
 ## 3.11 Error Cases
@@ -442,7 +446,7 @@ The compiler MUST reject the following:
 1. **Unresolvable reference**: `@Int.2` when fewer than 3 `Int` bindings are in scope.
 2. **Type mismatch**: `@String.0` used where an `Int` is expected.
 3. **`@result` outside `ensures`**: using `@T.result` anywhere other than a postcondition clause.
-4. **Ambiguous compound reference**: a slot reference to a type that doesn't exist in scope.
+4. **Ambiguous compound reference**: a slot reference to a type that does not exist in scope.
 
 Each error MUST include:
 - The source location of the reference

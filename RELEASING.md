@@ -1,17 +1,18 @@
 # Releasing Vera
 
 Vera publishes the Python distribution `veralang`; the installed command and
-Python import package remain `vera`. Releases use GitHub Actions and PyPI
+Python import package are `vera`. Releases use GitHub Actions and PyPI
 Trusted Publishing. No long-lived PyPI token or repository secret is involved.
 
 The ordinary release signal is a strictly increasing `[project].version` merged
 to `main`. The workflow builds and tests one wheel and one source archive,
 passes those exact files to an approval-protected OIDC job, verifies their
-registry hashes, and only then creates the tag and GitHub Release.
+registry hashes, and then creates the tag and GitHub Release.
 
 ## One-time maintainer setup
 
-Complete this only after `.github/workflows/release.yml` exists on `main`.
+The workflow is `.github/workflows/release.yml`, and this setup is done once,
+with it on `main`.
 
 ### Accounts
 
@@ -52,8 +53,7 @@ add a pending GitHub publisher with these exact fields:
 
 A pending publisher creates the project on its first successful upload and then
 becomes a normal publisher. It does **not** reserve the name. Configure the
-production pending publisher close to the first production release, after the
-TestPyPI path has been proved.
+production pending publisher after the TestPyPI path has run green.
 
 ## Stage the current version on TestPyPI
 
@@ -67,8 +67,8 @@ as production. It never creates a production tag or GitHub Release.
    `confirm_version`.
 4. Confirm that `publish-testpypi` and `verify-testpypi` pass.
 
-For the initial staging run, publish `veralang==0.1.4`. Verify installation
-without asking TestPyPI to supply Vera's third-party dependencies:
+Verify the staged version (`X.Y.Z` below) installs, without asking TestPyPI to
+supply Vera's third-party dependencies:
 
 ```bash
 python -m venv /tmp/veralang-testpypi
@@ -76,13 +76,13 @@ source /tmp/veralang-testpypi/bin/activate
 python -m pip download --no-deps \
   --index-url https://test.pypi.org/simple/ \
   --dest /tmp/veralang-testpypi-dist \
-  veralang==0.1.4
+  veralang==X.Y.Z
 python -m pip install /tmp/veralang-testpypi-dist/*.whl
 vera version
 ```
 
 TestPyPI versions are immutable too. A repeated dispatch for the same version
-fails before upload instead of silently skipping files.
+fails before upload rather than skipping files unannounced.
 
 ## Ordinary production release
 
@@ -99,15 +99,14 @@ The release-prep PR must:
    anything is written.  Then write the section's `### Highlights` above its
    first subsection.
 3. Add the release's one-line HISTORY entry and regenerate site assets.
-4. Regenerate TESTING.md's status — the test totals, the per-file and
-   skipped-tests tables, and the tree's counts — with
+4. Regenerate TESTING.md's status (the test totals, the per-file and
+   skipped-tests tables, and the tree's counts) with
    `python scripts/render_status.py`, and commit it; confirm with
    `python scripts/check_doc_counts.py --release`.  The same run measures the
    scorecard when it is given `--github`, with `GH_TOKEN` exported, and
    `--junit PATH`, the junit file of one sample-mode run of the suite,
    `python -m pytest -n auto -p tests.subprocess_census --junitxml=PATH`.
-   Fix PRs leave the status
-   alone, since every one of them moves it.  CI runs that check on the change
+   Fix PRs leave the status alone, since every one of them moves it.  CI runs that check on the change
    that raises `[project].version`, the same signal `release.yml` publishes on:
    a pull request whose version is higher than its base branch's, and the push
    event its merge produces on `main`, whose version is higher than the commit
@@ -117,13 +116,13 @@ The release-prep PR must:
    checks no count.
 5. Reconcile `KNOWN_ISSUES.md`'s Bugs table with the tracker, by running
    `python scripts/check_doc_counts.py --check-bug-issues`.  The convention
-   is one row per open `bug`-labelled issue, and the check needs the GitHub
-   API — it sends `GH_TOKEN` or `GITHUB_TOKEN` when either is set, and is
-   rate limited per IP when neither is, so export one before running it —
-   so it is opt-in rather than part of the pre-commit hook: mid-cycle
-   the two legitimately disagree, since a bug filed against an open PR's
-   branch has an issue before it has a row.  At release time they must
-   agree — that is the point at which the file is the published list.
+   is one row per open `bug`-labelled issue.  The check needs the GitHub
+   API: it sends `GH_TOKEN` or `GITHUB_TOKEN` when either is set and is
+   rate limited per IP when neither is, so export one before running it.
+   It is opt-in rather than part of the pre-commit hook, because mid-cycle
+   the two can disagree: a bug filed against an open PR's branch has an
+   issue before it has a row.  At release time they must agree, because
+   the file is then the published list.
 6. Pass the ordinary protected-branch CI and review process.
 
 The release PR merges by merge commit or squash, the only methods the
@@ -139,10 +138,7 @@ After merge, CI's run on the merge commit runs the full test matrix, and
    summary names beside the CI run. Two version-raising merges release one
    at a time, in the order their CI runs complete, which need not be the
    order of the merges, and step 8 marks a release Latest only when no
-   higher version is released. On a version-raising pull request, re-run failed
-   matrix jobs as a set, never one leg: `matrix-gate` reads each cell's latest
-   run from the run's job listing, so it stays red while any blocking cell is
-   still failed;
+   higher version is released;
 2. validates the version, CHANGELOG section, and absence of the version/tag;
 3. builds, inspects, installs, and smoke-tests exactly one universal wheel and
    one source distribution in a job without OIDC permission;
@@ -157,7 +153,11 @@ After merge, CI's run on the merge commit runs the full test matrix, and
    version has a published Release. An empty listing of the Releases stops
    the step before the Release is created.
 
-The release hears CI's runs alone: the nightly full matrix is a run of its
+On a version-raising pull request, re-run failed matrix jobs as a set, never
+one cell: `matrix-gate` reads each cell's latest run from the run's job
+listing, so it stays red while any blocking cell is still failed.
+
+Only CI's runs start a release: the nightly full matrix is a run of its
 own workflow, Nightly matrix (`nightly-matrix.yml`, which calls `ci.yml`),
 so its completion starts no release run.
 
@@ -169,14 +169,12 @@ correct: the run's own commit is `main`'s tip when CI's run completed.
 
 - When CI's run on the release merge fails, re-run its failed jobs. A
   successful re-run completes that run again, and its completion starts the
-  release: GitHub's `workflow_run` documentation excludes only the
-  `requested` activity from a re-run; the first failed release merge is the
-  first live case of it. A re-run that starts no release, or a fix merged
-  after the release merge, is recovered by dispatching
+  release (GitHub's `workflow_run` documentation excludes only the
+  `requested` activity from a re-run). A re-run that starts no release, or a
+  fix merged after the release merge, is recovered by dispatching
   **production-recovery**: the fix does not raise the version, so its own
   CI run starts no release, and the recovery waits for CI's run on the
-  dispatched commit, at most 180 minutes. Releases have started from CI's
-  completion since v0.2.6, whose cut is the first live run.
+  dispatched commit, at most 180 minutes.
 - Before PyPI accepts files, fix the cause and rerun failed jobs. If the whole
   run can no longer be resumed, **production-recovery** may be dispatched from
   `main` with the exact version. It refuses to run if the version, tag, or
@@ -199,5 +197,5 @@ Vera applies the same rule to every release surface:
 - yank a bad PyPI release rather than deleting or disguising it; and
 - ship every post-release fix as a new patch version.
 
-The pre-PyPI fold-in convention is retired. Once `veralang==X.Y.Z` exists, that
-version describes one source state and one immutable set of archive hashes.
+Once `veralang==X.Y.Z` exists, that version describes one source state and one
+immutable set of archive hashes.

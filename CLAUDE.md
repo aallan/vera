@@ -1,4 +1,4 @@
-# CLAUDE.md — Project orientation for Claude Code
+# CLAUDE.md: project orientation for Claude Code
 
 Vera is a programming language designed for LLMs to write. It has mandatory contracts, algebraic effects, typed slot references (`@T.n`), and compiles to WebAssembly. The reference compiler is written in Python.
 
@@ -16,7 +16,7 @@ If the venv does not exist, create it first:
 python -m venv .venv && source .venv/bin/activate && pip install -e ".[dev]"
 ```
 
-If you prefer `uv`, use `uv sync --extra dev` (not plain `uv sync`). The `[dev]` extras group holds pytest, mypy, ruff, pre-commit, and pip-licenses; `uv sync` without `--extra dev` will quietly uninstall those and make `pytest` fall through to a non-venv copy that can't import `vera`.
+If you prefer `uv`, use `uv sync --extra dev` (not plain `uv sync`). The `[dev]` extras group holds pytest, mypy, ruff, pre-commit, and pip-licenses; `uv sync` without `--extra dev` uninstalls them without a message, and `pytest` then falls through to a copy outside the venv that cannot import `vera`.
 
 ## Key commands
 
@@ -50,7 +50,7 @@ vera test --json file.vera        # Test with JSON output
 vera test --trials 50 file.vera   # Limit trials per function (default 100)
 vera test --distrust file.vera    # Also execute proved functions; a failed proved check refutes the proof (E703)
 vera parse file.vera              # Print the parse tree
-vera ast file.vera                # Print the typed AST
+vera ast file.vera                # Print the AST (parse + transform; no type check)
 vera ast --json file.vera         # Print the AST as JSON
 vera fmt file.vera                # Format to canonical form (stdout)
 vera fmt --write file.vera        # Format in place
@@ -64,7 +64,7 @@ vera errors [--json]              # List the diagnostic code registry (no file n
 pytest tests/ -v                  # Run the test suite (see TESTING.md); each class-instrument matrix runs its sample
 pytest tests/ -v --matrix=full    # The same, with every cell of every class-instrument matrix
 VERA_JS_COVERAGE=1 pytest tests/test_browser.py -v  # Browser tests with JS coverage
-VERA_EAGER_GC=1 vera run file.vera  # Force GC on every alloc (see ENVIRONMENT.md, debug knob for #593-class GC-rooting bugs)
+VERA_EAGER_GC=1 vera run file.vera  # Force GC on every alloc (see ENVIRONMENT.md, debug knob for GC-rooting bugs)
 VERA_DEBUG_HOST_ERRORS=1 vera run file.vera  # Re-raise a host callback's own exception (see ENVIRONMENT.md, debug knob for host-binding bugs)
 mypy vera/                        # Type-check the compiler itself
 
@@ -94,16 +94,16 @@ python scripts/check_limitations_sync.py              # Verify limitations.json 
 python scripts/check_limitations_sync.py --check-states # Also verify every issue they cite is still open via GitHub API (limitations-sync.yml runs it weekly)
 ```
 
-See [`TOOLCHAIN.md`](TOOLCHAIN.md) for the CLI cookbook — driving the toolchain to write, verify, test, run, and debug Vera, including the `builtins`/`effects`/`errors` introspection commands.
+See [`TOOLCHAIN.md`](TOOLCHAIN.md) for the CLI cookbook: driving the toolchain to write, verify, test, run, and debug Vera, including the `builtins`/`effects`/`errors` introspection commands.
 
 ## Project layout
 
-- `spec/` — Language specification, a chapter per file
-- `vera/` — Reference compiler: grammar, parser, AST, transformer, type checker, verifier, codegen, CLI
-- `examples/` — Example Vera programs (all must pass `vera check` and `vera verify`)
-- `tests/` — Test suite (unit tests + conformance suite)
-- `tests/conformance/` — Conformance programs, named by spec chapter and feature, validating the language against the spec
-- `scripts/` — CI and validation scripts
+- `spec/`: the language specification, a chapter per file
+- `vera/`: the reference compiler (grammar, parser, AST, transformer, type checker, verifier, codegen, CLI)
+- `examples/`: example Vera programs (all must pass `vera check` and `vera verify`)
+- `tests/`: the test suite (unit tests and the conformance suite)
+- `tests/conformance/`: conformance programs, named by spec chapter and feature, validating the language against the spec
+- `scripts/`: CI and validation scripts
 
 ## Writing Vera code
 
@@ -126,30 +126,30 @@ The compiler pipeline: source -> parse (`parser.py`) -> transform (`transform.py
 
 The language server (`vera/lsp/`, served by `vera lsp`) and the obligation core it sits on (`vera/obligations/`: reified `ProofObligation` records + the warm incremental `VerificationSession`) are documented in `LSP_SERVER.md` (user/agent surface, including the four custom proof-delta methods) and the `vera/README.md` module map (architecture). The custom methods are the agent-facing way to ask "does this edit still prove?" without round-tripping through `vera verify`.
 
-Each stage is a module with a public API function and is independently testable. See `CONTRIBUTING.md` for contribution guidelines.
+Each stage is a module with a public API function and is independently testable; `CONTRIBUTING.md` gives the contribution guidelines.
 
 ## Test-first: prove every change with a test
 
-Before changing code — **adding or removing** — write the test that proves your hypothesis and confirm it **fails for the reason you care about**, then make the change and watch it flip. A passing suite is necessary, not sufficient: green *without* your change does not prove removed code was dead (the distinguishing case may simply be untested), and green *with* it does not prove added code does anything (nothing may exercise it). A test that is green both before and after the change proves nothing about the change.
+Before changing code, **adding or removing**, write the test that proves your hypothesis and confirm it **fails for the reason you care about**, then make the change and watch it flip. A passing suite is necessary, not sufficient: green *without* your change does not prove removed code was dead (the distinguishing case may be untested), and green *with* it does not prove added code does anything (nothing may exercise it). A test that is green both before and after the change proves nothing about the change.
 
-- Removing code because "no test relies on it" is backwards — tests don't enumerate what the system needs. Write the test that *would* fail if the code is load-bearing; if you genuinely can't make it fail, that is itself the evidence.
-- Choose inputs that **cannot coincide with a fallback/default value**. A default that happens to equal the right answer makes a real bug invisible — a `forall<T>` instantiation-discovery miss once passed CI because the test's where-helper returned `Bool`, the same value as the inference's phantom-var default, so wrong and right looked identical.
-- For cross-component soundness invariants (e.g. the verifier must statically check exactly the set codegen emits), the proving check is a **differential** — run both sides and compare — not a unit test; a green unit suite can hide a desync between the two.
+- Removing code because "no test relies on it" is backwards: tests do not enumerate what the system needs. Write the test that *would* fail if the code is load-bearing; if you cannot make it fail, that is itself the evidence.
+- Choose inputs that **cannot coincide with a fallback/default value**. A default that happens to equal the right answer makes a real bug invisible. A `forall<T>` test whose where-helper returns `Bool`, the same value as the inference's phantom-var default, cannot tell a missed instantiation from a found one.
+- For cross-component soundness invariants (e.g. the verifier must statically check exactly the set codegen emits), the proving check is a **differential** (run both sides and compare), not a unit test; a green unit suite can hide a desync between the two.
 
 ## Fix the class, not the instance
 
-A bug fix closes the **class** the report belongs to — the set of inputs the same mechanism gets wrong — not the reported instance.  The canonical statement is `CONTRIBUTING.md` § Bugs: the class, not the instance; the instrument shapes, and where an instrument runs, are in `TESTING.md` § Class Instruments.
+A bug fix closes the **class** the report belongs to (the set of inputs the same mechanism gets wrong), not the reported instance.  The canonical statement is `CONTRIBUTING.md` § Bugs: the class, not the instance; the instrument shapes, and where an instrument runs, are in `TESTING.md` § Class Instruments.
 
 - **One mechanism: fix the class in its PR.**  When one mechanism bounds the class, the fix closes it and a class instrument proves it; when review shows a fix covers the instance but not the class, the class fix goes in the same PR, bounded to the mechanism at fault.  Every fix PR names its class boundary in the body and ships the instrument: an exhaustive matrix over the space the class spans, or a generator, never hand-picked cases alone.
-- **An architectural boundary: no per-site fix.**  When the class boundary is architectural — two phases re-deriving the same fact — nothing fixes it per site, the reporting PR included; the issue carries the milestone of the release that removes the mechanism (`ROADMAP.md` schedules it), and closes there.
-- **Instruments are burndown tools.**  A class instrument's file carries the `matrix` marker, naming the modules that decide its class (`pytestmark = pytest.mark.matrix(decides=["vera/narrowing.py"])`, the modules the fix changed); it runs in full in the nightly lane and on PRs that change the file or a module it names (CI hands the suite the changed files as `VERA_MATRIX_CHANGED`), and the PR gate runs a stratified sample of it, pinned for a week.  Write the reported instance, the red-first pins and the mutant killers as unparametrised tests, in a `repro`-named function or as strict xfails, and every PR runs them.
+- **An architectural boundary: no per-site fix.**  When the class boundary is architectural (two phases re-deriving the same fact), nothing fixes it per site, the reporting PR included; the issue carries the milestone of the release that removes the mechanism (`ROADMAP.md` schedules it), and closes there.
+- **Instruments are burndown tools.**  A class instrument's file has the `matrix` marker, naming the modules that decide its class (`pytestmark = pytest.mark.matrix(decides=["vera/narrowing.py"])`, the modules the fix changed); it runs in full in the nightly lane and on PRs that change the file or a module it names (CI hands the suite the changed files as `VERA_MATRIX_CHANGED`), and the PR gate runs a stratified sample of it, pinned for a week.  Write the reported instance, the red-first pins and the mutant killers as unparametrised tests, in a `repro`-named function or as strict xfails, and every PR runs them.
 - **Three review rounds.**  A fourth needs a written answer to "which mechanism produces these members, and does this PR remove it?"; a class that keeps widening across rounds is at the wrong layer, and goes to its mechanism's release.
 - **File, don't fold, by class.**  A bug found in review never enters an in-flight PR unless it is a regression or a defect in the PR's own code.  It is filed only when no open issue names its mechanism; an instance of an open class is a checklist line on that issue.  Every issue states its effect (silent: a wrong value, proof or accepted program with every gate green; loud: a failure the user sees) and its reach (where a real program meets the shape, with the evidence, or none found), and those two decide its disposition (`CONTRIBUTING.md` § Filing).  Instruments and reviewers report finds in the PR; filing is a separate step.
 
 ## What not to break
 
-- The pre-commit hook runs the fast gates on every commit — ruff, mypy, the doc and consistency gates, and the test files the commit stages. A pull request runs lint, typecheck, the full pytest suite (which carries the conformance suite, example validation and the documentation gate) in Python 3.12 shards on Linux and Windows with each class-instrument matrix sampled bar the ones whose file or deciding module the PR changes, eager-GC, browser parity, and the security and supply-chain jobs, plus every gate the hook runs; a PR whose every file is one of the VS Code extension's own (`scripts/ci_changes.py`) runs plan, lint, security and matrix-gate, and the rest stand down. The full OS × Python matrix runs on a pull request that raises `[project].version`, on the push event its merge produces on `main`, and every night (`nightly-matrix.yml`, which calls `ci.yml`, so its runs start no release), and a failed cell on that push or a scheduled nightly run, bar the advisory aarch64 cell, files an issue; the push event any other merge produces runs the suite once, measuring coverage with every matrix cell (TESTING.md §Pre-commit Hooks). Supported images (README §Supported platforms) are pinned by name in every gating job, and watched images (the floating `-latest` labels and the newest release image) run on the nightly run alone, advisory as the aarch64 cell is: a failed watched cell on a scheduled nightly run files an issue and blocks nothing
-- Every conformance program in `tests/conformance/` must hold at its declared level — positive entries pass, and the negative fixtures (the entries with `expected_error` in `tests/conformance/manifest.json`) must *fail* with their `expected_error` E-code, at the stage `expected_error_stage` names — `check` by default, or `compile` for a diagnostic the checker accepts and codegen refuses, which also asserts the program type-checks cleanly first
+- The pre-commit hook runs the fast gates on every commit: ruff, mypy, the doc and consistency gates, and the test files the commit stages. A pull request runs lint, typecheck, the full pytest suite (which includes the conformance suite, example validation and the documentation gate) in Python 3.12 shards on Linux and Windows with each class-instrument matrix sampled bar the ones whose file or deciding module the PR changes, eager-GC, browser parity, and the security and supply-chain jobs, plus every gate the hook runs; a PR whose every file is one of the VS Code extension's own (`scripts/ci_changes.py`) runs plan, lint, security and matrix-gate, and the rest stand down. The full OS × Python matrix runs on a pull request that raises `[project].version`, on the push event its merge produces on `main`, and every night (`nightly-matrix.yml`, which calls `ci.yml`, so its runs start no release), and a failed cell on that push or a scheduled nightly run, bar the advisory aarch64 cell, files an issue; the push event any other merge produces runs the suite once, measuring coverage with every matrix cell (TESTING.md §Pre-commit Hooks). Supported images (README §Supported platforms) are pinned by name in every gating job, and watched images (the floating `-latest` labels and the newest release image) run on the nightly run alone, advisory as the aarch64 cell is: a failed watched cell on a scheduled nightly run files an issue and blocks nothing
+- Every conformance program in `tests/conformance/` must hold at its declared level: positive entries pass, and the negative fixtures (the entries with `expected_error` in `tests/conformance/manifest.json`) must *fail* with their `expected_error` E-code, at the stage `expected_error_stage` names (`check` by default, or `compile` for a diagnostic the checker accepts and codegen refuses, which also asserts the program type-checks cleanly first)
 - Every example in `examples/` must pass `vera check` and `vera verify`
 - Every Vera block in the agent-facing docs must pass `scripts/check_doc_examples.py`: it parses, checks, verifies and prints what each `vera:run` marker says, or carries a `vera:skip-<stage>` marker with a category, the codes it fails with, and a reason (`scripts/doc_annotations.py`); a block that exports a function names a `vera:run` invocation or a `vera:no-run` property
 - The version is written in `pyproject.toml` alone: `vera.__version__` reads the installed metadata, and `uv lock --check` holds `uv.lock`'s own entry to it; a release also needs a matching `## [X.Y.Z]` section in CHANGELOG.md, which `scripts/release.py` requires
@@ -171,40 +171,43 @@ A bug fix closes the **class** the report belongs to — the set of inputs the s
 
 ## JSON diagnostics
 
-`vera check --json` and `vera verify --json` output machine-readable diagnostics. The output is a single JSON object on stdout:
+`vera check --json` and `vera verify --json` print machine-readable diagnostics. The output is a single JSON object on stdout:
 
 ```json
 {"ok": true, "file": "...", "diagnostics": [], "warnings": []}
 ```
 
-Each diagnostic includes: `severity`, `description`, `location` (`file`, `line`, `column`), `source_line`, `rationale`, `fix`, `spec_ref`, and `error_code`. The `verify --json` output also includes a `verification` summary with `tier1_verified`, `tier3_runtime`, and `total` counts, plus an `obligations` array — one entry per reified obligation with `kind`, `status`, `description`, `location`, and `error_code` (when present).
+Each diagnostic includes: `severity`, `description`, `location` (`file`, `line`, `column`), `source_line`, `rationale`, `fix`, `spec_ref`, and `error_code`. The `verify --json` output also includes a `verification` summary with `tier1_verified`, `tier3_runtime`, and `total` counts, plus an `obligations` array, one entry per reified obligation, with `kind`, `status`, `description`, `location`, and `error_code` (when present).
 
 The summary is *derived* from that array, by `status`. A consumer reproduces the counts by filtering on `status`, never by taking the array's length:
 
 | `status` | counted as | also surfaced as |
 |----------|-----------|------------------|
-| `verified` | `tier1_verified` | — |
+| `verified` | `tier1_verified` | nothing |
 | `tier3`, `timeout` | `tier3_runtime` | an informational warning, for the kinds that carry one |
 | `violated` | *nothing* | an error diagnostic (E500, E501, E502, E505, …) |
-| `tier3_unguarded` | *nothing* | a warning diagnostic (E504, E506, E539, E540), or the E538 **error** |
+| `tier3_unguarded` | *nothing* | a warning diagnostic (E504, E506, E539, E540, E542, E543), or the E538 **error** |
 
-So `total == tier1_verified + tier3_runtime`, and the array — which is the complete stream — is a *superset* of what the counts cover: `violated` and `tier3_unguarded` discharged to no tier, so they are counted nowhere and appear only as diagnostics. The full accounting is `len(obligations) == total + violated + tier3_unguarded`. A program with one refuted contract therefore reports (say) `total: 2` beside a three-entry array; that is the partition, not a disagreement.
+So `total == tier1_verified + tier3_runtime`, and the array, which is the complete stream, is a *superset* of what the counts cover: `violated` and `tier3_unguarded` discharged to no tier, so they are counted nowhere and appear only as diagnostics. The full accounting is `len(obligations) == total + violated + tier3_unguarded`. A program with one refuted contract therefore reports (say) `total: 2` beside a three-entry array; that is the partition, not a disagreement.
 
-`assumptions` sits beside those counts and is NOT part of that identity: it counts the `assume` statements this run took on trust (one W003 warning each, spec §6.2.6), which are not obligations and discharge to no tier. It is derived from the assembled diagnostics, so a consumer reproduces it by counting W003 rather than by reading any obligation's status. A non-zero value is the honest measure of how much of a "verified" result rests on something nobody proved.
+`assumptions` sits beside those counts and is NOT part of that identity: it counts the `assume` statements this run took on trust (one W003 warning each, spec §6.2.6), which are not obligations and discharge to no tier. It is derived from the assembled diagnostics, so a consumer reproduces it by counting W003 rather than by reading any obligation's status. A non-zero value measures how much of a "verified" result rests on something nobody proved.
 
 `vera verify` also compiles the program in process and joins the `obligations` array with the checks the compiled module holds, adding a `reconciliation` object (its counts and each mismatch) to the envelope: a `tier3` or `timeout` obligation that no emitted check answers is an **E541** error, and an emitted check that no obligation accounts for is a **W004** warning. A program code generation refuses fails `vera verify` with that refusal, except a program holding typed holes: the join is skipped with a **W005** warning, and `reconciliation` is `{"skipped": "<reason>"}` with no counts. `--no-reconcile` skips the join, and the envelope carries no `reconciliation`.
 
 
 ### Error codes
 
-Every diagnostic carries a stable code, which `vera errors` lists. The prefix is the **namespace**, not the severity: the `W` codes are all warnings, but a number of `E` codes are warning-severity too (`E504`, `E506`, `E539`, `E540` are the ones the partition table above names). Codes are grouped by compiler phase:
+Every diagnostic carries a stable code, which `vera errors` lists. The prefix is the **namespace**, not the severity: the `W` codes are all warnings, but a number of `E` codes are warning-severity too: the Tier 3 notes `E520` to `E525`, and the `E504`, `E506`, `E539`, `E540`, `E542` and `E543` disclosures the partition table above names. Codes are grouped by compiler phase:
 
 | Range | Phase |
 |-------|-------|
 | E001–E009 | Parse & transform errors |
 | E010 | Transform errors |
+| E011–E013 | Module resolution: a circular import, an import with no file, an imported module that does not parse |
 | E020, E021, E023 | Parse: malformed comments (lexical) |
 | E024 | Parse: a source file that is not UTF-8 (lexical) |
+| E030–E032 | Parse: contract constructs (`old()`/`new()` arguments, a clause after `effects`) |
+| E040 | Transform: a pipe whose right operand is not a call |
 | E1xx | Type check: core + expressions |
 | E2xx | Type check: calls |
 | E3xx | Type check: control flow |
@@ -218,30 +221,30 @@ See `vera/errors.py` `ERROR_CODES` dict for the full registry.
 
 ## Git workflow
 
-The `main` branch is protected — all changes require a PR with passing CI. Never commit directly to main; always create a feature branch, push it, and open a PR.
+The `main` branch is protected: every change needs a PR with passing CI. Never commit directly to main; always create a feature branch, push it, and open a PR.
 
 When creating commits, use this co-author trailer:
 
     Co-Authored-By: Claude <noreply@anthropic.invalid>
 
-Do NOT use `noreply@anthropic.com` — that email resolves to an unrelated GitHub account. The `.invalid` TLD (RFC 2606) is reserved and will never resolve to a real address.
+Do NOT use `noreply@anthropic.com`; that address resolves to an unrelated GitHub account. The `.invalid` TLD (RFC 2606) is reserved and will never resolve to a real address.
 
 ## Release workflow
 
-- **Completed issues in the feature PR**: When an issue is closed by a PR, **delete** the entry from `ROADMAP.md` entirely.  The matching **`HISTORY.md` one-liner is added when the release that ships the fix is cut** — into that release's version row (`| vX.Y.Z | date | … |`) in the **most recent Stage table in `HISTORY.md`**, not in the issue-closing PR itself.  A PR that *is* the release cut does both together; a fix is recorded in its `changelog.d/` fragment and rolls into the HISTORY row at tag time (do **not** add a speculative `| vX.Y.Z | Pending |` row in the closing PR — one was flagged and reverted on #1020).  Stage numbers roll forward periodically — check `grep "^## Stage" HISTORY.md | tail -1` to confirm the current stage before writing (a stale "Stage 9" reference here caused a correction on 2026-05-11, by which point the project had moved through Stages 10, 11, and 12).  Do NOT use `<del>` strikethroughs in ROADMAP.md — completed items live in HISTORY.md, not as struck-through clutter in the roadmap.
-- **No strikethroughs anywhere in docs**: Things are either future (in ROADMAP.md) or past (in HISTORY.md). Do NOT use `<del>` or `~~...~~` to strike through completed items in ROADMAP.md, spec chapters, SKILL.md limitation tables, or anywhere else in the documentation. Instead: delete completed items from wherever they appear as future work, and add a note in HISTORY.md or CHANGELOG.md. Limitation tables in the spec should only list current limitations — fixed items are removed, not struck through, with a reference to the CHANGELOG entry that fixed them.
+- **Completed issues in the feature PR**: When an issue is closed by a PR, **delete** the entry from `ROADMAP.md` entirely.  The matching **`HISTORY.md` one-liner is added when the release that ships the fix is cut**, into that release's version row (`| vX.Y.Z | date | … |`) in the **most recent Stage table in `HISTORY.md`**, not in the issue-closing PR itself.  A PR that *is* the release cut does both together; a fix is recorded in its `changelog.d/` fragment and rolls into the HISTORY row at tag time (do **not** add a speculative `| vX.Y.Z | Pending |` row in the closing PR).  Stage numbers roll forward; run `grep "^## Stage" HISTORY.md | tail -1` to confirm the current stage before writing.  Do NOT use `<del>` strikethroughs in ROADMAP.md; completed items live in HISTORY.md.
+- **No strikethroughs anywhere in docs**: Things are either future (in ROADMAP.md) or past (in HISTORY.md). Do NOT use `<del>` or `~~...~~` to strike through completed items in ROADMAP.md, spec chapters, SKILL.md limitation tables, or anywhere else in the documentation. Instead: delete completed items from wherever they appear as future work, and add a note in HISTORY.md or CHANGELOG.md. Limitation tables in the spec should only list current limitations; fixed items are removed, not struck through, with a reference to the CHANGELOG entry that fixed them.
 - **CHANGELOG link references**: Keep a Changelog format requires `[version]: compare-url` link references at the bottom of CHANGELOG.md, one for every version, and the `[Unreleased]` link points to `latest-tag...HEAD`. `scripts/release.py assemble` writes the new version's link and repoints `[Unreleased]`'s when the release PR assembles its section.
 - **Roadmap is in ROADMAP.md**: The project roadmap (phase table, priority tiers, completed-phase details) lives in `ROADMAP.md`, not README.md. README.md links to it.
-- **Zero-state convention for the Bugs table**: `KNOWN_ISSUES.md`'s `## Bugs` rows are the one hand-kept reading of "how many open bugs are there", and `scripts/check_doc_counts.py --check-bug-issues` holds them to the open `bug` issues at release, including at zero.  At zero, keep the `## Bugs` heading AND its description paragraph, delete the table, and make the section's last non-empty line exactly `No known bugs.` — do NOT delete the description, and do NOT leave an empty markdown table.  The marker is a whole line: quoting it inside a sentence is not a claim, text after it is an error, and a marker beside any table line — even a leftover header row — is an error, because the section would claim both some open bugs and none.  A table emptied without the marker stays an error, which is what catches a row deleted by accident.  `SKILL.md`'s "Known Bugs and Workarounds" section uses the same marker text when its table empties, but nothing counts its rows there, so only the heading surviving is gated (by `check_limitations_sync.py`) and the marker's position within the section is free.  See TESTING.md § "The zero form of the Bugs table".
-- **CHANGELOG fragments and the gate (`Skip-changelog:` trailer)**: a PR records its CHANGELOG entry as a fragment, one file per section under `changelog.d/` — `changelog.d/<issue>.<section>.md` when it closes an issue, `changelog.d/+<slug>.<section>.md` otherwise, the slug being the branch name's last path component — holding its bullets exactly as `CHANGELOG.md` will carry them, so no two PRs edit the same line (`changelog.d/README.md` states the convention, and `scripts/check_changelog_fragments.py` holds every fragment to it).  `scripts/check_changelog_updated.py` blocks any PR touching `vera/`, `spec/` or `SKILL.md` unless the branch adds a fragment; a new `[Unreleased]` bullet or a new version section in `CHANGELOG.md` also counts.  Add the fragment proactively when making substantive changes.  The release PR runs `python scripts/release.py assemble --version X.Y.Z --date YYYY-MM-DD`, which writes the version's section from the fragments and deletes them.  If a change genuinely doesn't merit a CHANGELOG entry (e.g. a comment-only edit to a `vera/` source file), include `Skip-changelog: <one-line reason>` in a commit message trailer to bypass the gate.  Don't paper-over with empty bullets — the gate exists to keep the release notes accurate.
+- **Zero-state convention for the Bugs table**: `KNOWN_ISSUES.md`'s `## Bugs` rows are the one hand-kept reading of "how many open bugs are there", and `scripts/check_doc_counts.py --check-bug-issues` holds them to the open `bug` issues at release, including at zero.  At zero, keep the `## Bugs` heading AND its description paragraph, delete the table, and make the section's last non-empty line exactly `No known bugs.`. Do NOT delete the description, and do NOT leave an empty markdown table.  The marker is a whole line: quoting it inside a sentence is not a claim, text after it is an error, and a marker beside any table line, even a leftover header row, is an error, because the section would claim both some open bugs and none.  A table emptied without the marker stays an error, which is what catches a row deleted by accident.  `SKILL.md`'s "Known Bugs and Workarounds" section uses the same marker text when its table empties, but nothing counts its rows there, so only the heading surviving is gated (by `check_limitations_sync.py`) and the marker's position within the section is free.  See TESTING.md § "The zero form of the Bugs table".
+- **CHANGELOG fragments and the gate (`Skip-changelog:` trailer)**: a PR records its CHANGELOG entry as a fragment, one file per section under `changelog.d/` (`changelog.d/<issue>.<section>.md` when it closes an issue, `changelog.d/+<slug>.<section>.md` otherwise, the slug being the branch name's last path component), holding its bullets exactly as `CHANGELOG.md` will print them, so no two PRs edit the same line (`changelog.d/README.md` states the convention, and `scripts/check_changelog_fragments.py` holds every fragment to it).  `scripts/check_changelog_updated.py` blocks any PR touching `vera/`, `spec/` or `SKILL.md` unless the branch adds a fragment; a new `[Unreleased]` bullet or a new version section in `CHANGELOG.md` also counts.  Add the fragment proactively when making substantive changes.  The release PR runs `python scripts/release.py assemble --version X.Y.Z --date YYYY-MM-DD`, which writes the version's section from the fragments and deletes them.  If a change does not merit a CHANGELOG entry (e.g. a comment-only edit to a `vera/` source file), include `Skip-changelog: <one-line reason>` in a commit message trailer to bypass the gate.  Do not paper over the gate with empty bullets; it keeps the release notes accurate.
 - **Release mechanics (automated after merge)**: `.github/workflows/release.yml` starts when CI's run on the merge commit succeeds, detects a strictly increasing `[project].version` on `main`, validates its matching non-empty CHANGELOG section, builds and tests one wheel/sdist artifact, pauses at the approval-protected `pypi` environment, publishes through Trusted Publishing, verifies the registry hashes, then creates the tag and GitHub Release at the merge SHA with those same archives. The maintainer approves the production environment deployment; no manual tag, upload, or release command is part of the ordinary path. See `RELEASING.md` for one-time environment/publisher setup, TestPyPI staging, and recovery.
-- **Published releases are immutable**: after a version reaches PyPI, never move its tag, replace its files, or amend its released CHANGELOG section. A bad release is yanked and followed by a new patch version. An immediate follow-up therefore receives a new version; the old tag-moving/fold-in convention ended when PyPI publication began. If a workflow fails after PyPI accepts the files, rerun only the failed jobs so the verified artifact continues to the tag/Release step.
-- **Don't advertise an unpublished distribution channel**: only document a channel as an available install route once the artifact is live there **and** the install flow works end to end — check the registry, don't rely on what you remember. `veralang` is on PyPI (the release target), and [`veralang.vera-language`](https://marketplace.visualstudio.com/items?itemName=veralang.vera-language) installs from the VS Code Marketplace via `code --install-extension veralang.vera-language`. The same gate applies to any future channel. Install docs are circumstance-dependent — match `README.md` / `SKILL.md` / `PYPI_README.md` (source checkout = full env and the recommended route for agents; `pip install veralang` = toolchain only; never `pip install vera`), rather than collapsing them to one "canonical" route.
-- **Merge style**: squash-merge multi-round PRs (review iterations don't need to land on `main` individually); a merge commit is fine for single-commit PRs. The release PR merges by merge commit or squash, the only methods the repository allows: `release.yml` reads the version rise against the merge commit's first parent, which both methods make the pre-merge `main`.
+- **Published releases are immutable**: after a version reaches PyPI, never move its tag, replace its files, or amend its released CHANGELOG section. A bad release is yanked and followed by a new patch version. An immediate follow-up therefore receives a new version. If a workflow fails after PyPI accepts the files, rerun only the failed jobs so the verified artifact continues to the tag/Release step.
+- **Don't advertise an unpublished distribution channel**: only document a channel as an available install route once the package is live there **and** the install flow works end to end; check the registry rather than relying on memory. `veralang` is on PyPI (the release target), and [`veralang.vera-language`](https://marketplace.visualstudio.com/items?itemName=veralang.vera-language) installs from the VS Code Marketplace via `code --install-extension veralang.vera-language`. The same gate applies to any future channel. Install docs depend on circumstance: match `README.md` / `SKILL.md` / `PYPI_README.md` (source checkout = full env and the recommended route for agents; `pip install veralang` = toolchain only; never `pip install vera`), rather than collapsing them to one "canonical" route.
+- **Merge style**: squash-merge multi-round PRs (review iterations need not land on `main` individually); a merge commit is fine for single-commit PRs. The release PR merges by merge commit or squash, the only methods the repository allows: `release.yml` reads the version rise against the merge commit's first parent, which both methods make the pre-merge `main`.
 
 ## CodeRabbit
 
-This repo uses [CodeRabbit](https://coderabbit.ai) for AI code review on pull requests. Configuration is in `.coderabbit.yaml`.
+This repo uses [CodeRabbit](https://coderabbit.ai) for AI code review on pull requests, configured in `.coderabbit.yaml`.
 
 - **Reply with `@coderabbitai`**: When responding to CodeRabbit review comments on a PR, prefix your reply with `@coderabbitai` so the bot registers the interaction. You can discuss, argue against, or ask for clarification on any suggestion.
 - **Commands**: Use `@coderabbitai pause`, `@coderabbitai review`, `@coderabbitai full review`, `@coderabbitai generate unit tests` in PR comments to control the bot.
@@ -253,10 +256,10 @@ This repo uses [CodeRabbit](https://coderabbit.ai) for AI code review on pull re
 
 ## Cross-platform pitfalls (test fixtures)
 
-The CI matrix runs the platforms and Python versions README §Supported platforms lists, macOS pinned explicitly to insulate from silent `macos-latest` migration.  When writing test fixtures, five Windows-portability rules apply — see the **Test Fixture Conventions** section in `TESTING.md` for full examples:
+The CI matrix runs the platforms and Python versions README §Supported platforms lists, macOS pinned explicitly to insulate from silent `macos-latest` migration.  When writing test fixtures, five Windows-portability rules apply; see the **Test Fixture Conventions** section in `TESTING.md` for full examples:
 
-- `tempfile.NamedTemporaryFile` handed off to a subprocess MUST use `delete=False` + manual `Path.unlink()` (Windows can't reopen a held file).
+- `tempfile.NamedTemporaryFile` handed off to a subprocess MUST use `delete=False` + manual `Path.unlink()` (Windows cannot reopen a held file).
 - Paths embedded into Vera string literals MUST be POSIX-form (`Path(tmp_path).as_posix()`); Windows backslashes trip Vera's `\U` escape grammar.
 - Repo-relative paths COMPARED as strings MUST be POSIX-form (`path.relative_to(ROOT).as_posix()`); a native-separator string makes every `startswith("tests/…")` match nothing, silently.
 - A path a stdlib converter RETURNED must be asserted by its PROPERTY, not its POSIX shape: `url2pathname` returns `\tmp\x` on Windows where it returns `/tmp/x` elsewhere, so compare against another call's result or against a path the test built, never a `/`-shaped literal.
-- Text I/O MUST pass `encoding="utf-8"` explicitly, enforced by `scripts/check_explicit_encoding.py` (pre-commit + CI lint, #645): every text-mode `open()` / `read_text()` / `write_text()` **and** every `subprocess.run/Popen/check_output(..., text=True)` capture. A deliberate non-UTF-8 site opts out with `# encoding-exempt: <reason>`. The `vera` CLI also reconfigures its stdout/stderr to UTF-8 at startup, so a Vera program printing `→` / `—` is UTF-8 on any locale. Together these replaced the `PYTHONUTF8=1` CI backstop (#641), which has been removed — no reliance on the runner's or a local Windows shell's locale.
+- Text I/O MUST pass `encoding="utf-8"` explicitly, enforced by `scripts/check_explicit_encoding.py` (pre-commit + CI lint, #645): every text-mode `open()` / `read_text()` / `write_text()` **and** every `subprocess.run/Popen/check_output(..., text=True)` capture. A deliberate non-UTF-8 site opts out with `# encoding-exempt: <reason>`. The `vera` CLI also reconfigures its stdout/stderr to UTF-8 at startup, so a Vera program printing `→` / `—` is UTF-8 on any locale. No CI test job sets `PYTHONUTF8=1`, and nothing relies on the runner's or a local Windows shell's locale.

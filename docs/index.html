@@ -61,7 +61,7 @@
     p + p{margin-top:1rem}
     hr.rule{border:0;border-top:1px solid var(--rule);margin:2.5rem 0}
 
-    /* Reading path strip — the bilingual device */
+    /* Reading path strip: the bilingual device */
     .readpath{background:var(--paper)}
     .readpath-inner{display:flex;gap:1.5rem;align-items:center;justify-content:space-between;padding:.75rem 1.5rem .25rem;max-width:1180px;margin:0 auto;font-family:var(--mono);font-size:.72rem;letter-spacing:.04em;color:var(--ink-500);flex-wrap:wrap}
     .readpath .slot{color:var(--flame-400)}
@@ -87,7 +87,7 @@
     .version{display:flex;justify-content:center;align-items:center;gap:.6rem;margin-top:1.1rem;font-family:var(--mono);font-size:.78rem;color:var(--ink-500)}
     .version a{color:var(--ink-900)}
 
-    /* Why — the thesis */
+    /* Why: the thesis */
     .why{background:linear-gradient(var(--paper) 0%,var(--paper-hi) 100%)}
     .why h2{font-size:clamp(2.25rem,5vw,3.5rem);line-height:1.05;margin-bottom:2rem;max-width:10ch}
     .why p{font-size:1.125rem;color:var(--ink-700);line-height:1.6}
@@ -126,7 +126,7 @@
     .err-fix{color:#79ECB2}
     .err-ref{color:#975526;font-style:italic}
 
-    /* VeraBench — background matches the cream baked into the chart and mascot assets */
+    /* VeraBench: background matches the cream baked into the chart and mascot assets */
     .verabench{background:#FEEAD1}
     .bench-stat{font-family:var(--serif);font-size:clamp(2rem,4.5vw,3.25rem);line-height:1.1;color:var(--ink-900);letter-spacing:-.015em;margin:0;max-width:22ch}
     .bench-stat b{color:var(--flame-400);font-style:normal;font-weight:400}
@@ -172,7 +172,7 @@
     .twocol p code, .install p code, .agents p code{background:var(--paper-hi);padding:.05rem .3rem;border-radius:3px;font-size:.85em}
     .agents p code, .agents .lead code{color:var(--ink-900)}
 
-    /* Agents — the bilingual declaration */
+    /* Agents: the bilingual declaration */
     .agents{background:var(--ink-900);color:var(--paper-hi);border-top:0}
     .agents h2{color:var(--paper-hi)}
     .agents h2 .accent{color:var(--flame-100)}
@@ -236,7 +236,7 @@
 </head>
 <body>
 
-  <!-- Bilingual reading-path strip — quiet structural acknowledgement -->
+  <!-- Bilingual reading-path strip: quiet structural acknowledgement -->
   <div class="readpath" aria-label="Reading paths">
     <div class="readpath-inner">
       <div class="readpath-group">
@@ -419,7 +419,7 @@
     </div>
   </section>
 
-  <!-- VeraBench — lifted, with headline stat -->
+  <!-- VeraBench: lifted, with headline stat -->
   <section class="verabench">
     <div class="col col-wide">
       <div class="eyebrow"><span class="slot">@section.03</span> · empirical evidence</div>
@@ -506,7 +506,7 @@
 
           <p class="bench-caveat">The gap between Python and TypeScript tells the same story. Python is dynamically typed, so a type error surfaces when the code runs; TypeScript rejects the same error before anything runs. Vera goes further than TypeScript, making <code>requires</code>, <code>ensures</code> and <code>effects</code> mandatory on every function and replacing variable names with typed slot references. Sort the three languages by how much they constrain the model, rather than by how much of them it has read, and the two that constrain it finish ahead of the one that doesn&rsquo;t.</p>
 
-          <p class="bench-caveat" style="margin-top:.75rem">TypeScript earns its results from years of training data. Vera earns very nearly the same results with none. Whatever familiarity buys TypeScript, Vera&rsquo;s constraints supply by other means.</p>
+          <p class="bench-caveat" style="margin-top:.75rem">TypeScript earns its results from years of training data. Vera earns very nearly the same results with none. Whatever familiarity gives TypeScript, Vera&rsquo;s constraints supply by other means.</p>
 
           <p class="bench-caveat">Each model made one attempt per problem, with no pass@k, and each of the sixty problems is worth just under two percentage points. Language design can outweigh sheer volume of training data, and if you generate code at any scale, that&rsquo;s worth knowing.</p>
           <p class="bench-caveat" style="margin-top:.75rem">Results from <a href="https://github.com/aallan/vera-bench#results">VeraBench v0.0.18</a> against <a href="https://github.com/aallan/vera/releases/tag/v0.1.8">Vera v0.1.8</a>. Inspired by <a href="https://github.com/openai/human-eval">HumanEval</a>, <a href="https://github.com/google-research/google-research/tree/master/mbpp">MBPP</a>, and <a href="https://github.com/sun-wendy/DafnyBench">DafnyBench</a>.</p>
@@ -536,7 +536,7 @@
         <div class="ref-item"><div class="title">No variable names</div><div class="desc">Typed <a href="https://github.com/aallan/vera/blob/main/DE_BRUIJN.md">De Bruijn indices</a> (<code>@T.n</code>) replace variable names: <code>@Int.0</code> is the most-recent <code>Int</code> binding, <code>@Int.1</code> the one before. A whole class of naming hallucinations disappears from the language instead of being caught after the fact.</div></div>
         <div class="ref-item"><div class="title">Full contracts</div><div class="desc">Mandatory preconditions, postconditions and effect declarations on every function, plus a <code>decreases</code> measure (or the <code>Diverge</code> effect) on every recursive one. <code>vera test</code> uses Z3 to generate inputs from the contracts and runs them through WASM, so there are no test cases to write by hand.</div></div>
         <div class="ref-item"><div class="title">SQL injection won&rsquo;t compile</div><div class="desc">The <code>&lt;DB&gt;</code> effect accepts only a query written as literals in the source, never one spliced together from a runtime value. Interpolating user input into SQL is a compile-time error (<code>E207</code>), so every value goes through a <code>?</code> placeholder. Injection safety stops being a discipline you have to remember and becomes a rule the compiler enforces.</div></div>
-        <div class="ref-item"><div class="title">Algebraic effects</div><div class="desc">IO, Http, HttpServer, State, Exceptions, Async, Inference, DB, Random, Diverge<br>Every effect is declared and typed, and code is pure by default. <code>State</code> and <code>Exn</code> are handled in Vera code; the host effects are backed by the runtime.</div></div>
+        <div class="ref-item"><div class="title">Algebraic effects</div><div class="desc">IO, Http, HttpServer, State, Exn, Async, Inference, DB, Random, Diverge<br>Every effect is declared and typed, and code is pure by default. <code>State</code> and <code>Exn</code> are handled in Vera code; the host effects are backed by the runtime.</div></div>
         <div class="ref-item"><div class="title">Refinement types</div><div class="desc">Types that state constraints, such as a list of positive integers of length <code>n</code>.</div></div>
         <div class="ref-item"><div class="title">Proof, then runtime checks</div><div class="desc">Contracts are proved at compile time with <a href="https://www.microsoft.com/en-us/research/project/z3-3/">Z3</a>, and most of what Z3 can&rsquo;t prove is checked at run time instead. A <code>requires</code> that can never hold is refused, so a contradiction can&rsquo;t prove everything. <code>vera verify --timeout-ms</code> sets the solver budget.</div></div>
         <div class="ref-item"><div class="title">Traps that name their cause</div><div class="desc">A <code>@Nat</code> underflow, a failed contract or <code>assert</code>, an index out of bounds or an escaped exception reports what kind of trap it is and how to fix it, the same way on wasmtime, in the browser and under WASI 0.2.</div></div>
@@ -642,7 +642,7 @@ vera compile --target browser examples/hello_world.vera</pre>
     </div>
   </section>
 
-  <!-- For Agents — bilingual declaration -->
+  <!-- For Agents: bilingual declaration -->
   <section class="agents" id="agents">
     <div class="col col-wide">
       <div class="eyebrow"><span class="slot">@section.07</span> · for machines</div>
@@ -706,7 +706,7 @@ cp /path/to/vera/SKILL.md ~/.claude/skills/vera-language/SKILL.md</pre>
         Vera is under <a href="https://github.com/aallan/vera/blob/main/ROADMAP.md" style="color:inherit;text-decoration:underline;text-decoration-color:var(--flame-400);text-underline-offset:2px">active development</a>
       </div>
       <p class="status-text">
-        A complete compiler with 168 built-in functions, ten algebraic effects (IO, Http, HttpServer, State, Exceptions, Async, Inference, DB, Random, Diverge), contract-driven testing with <a href="https://www.microsoft.com/en-us/research/project/z3-3/">Z3</a>, a language server with agent-facing proof deltas, and a 14-chapter specification. A 273-program conformance suite and 44 worked examples are validated against the spec on every pull request. It&rsquo;s all developed in the open on <a href="https://github.com/aallan/vera">GitHub</a> under the MIT licence.
+        A complete compiler with 168 built-in functions, ten algebraic effects (IO, Http, HttpServer, State, Exn, Async, Inference, DB, Random, Diverge), contract-driven testing with <a href="https://www.microsoft.com/en-us/research/project/z3-3/">Z3</a>, a language server with agent-facing proof deltas, and a 14-chapter specification. A 273-program conformance suite and 44 worked examples are validated against the spec on every pull request. It&rsquo;s all developed in the open on <a href="https://github.com/aallan/vera">GitHub</a> under the MIT licence.
       </p>
     </div>
   </section>

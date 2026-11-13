@@ -2,7 +2,7 @@
 
 ## 10.1 Notation
 
-This chapter defines the complete grammar of Vera using Extended Backus-Naur Form (EBNF). The grammar is LALR(1)-compatible, and the reference compiler generates its parser from `vera/grammar.lark`, which has the same rule names, with the Lark parser generator in LALR(1) mode.
+This chapter defines the complete grammar of Vera using Extended Backus-Naur Form (EBNF). The grammar is LALR(1)-compatible, and the reference compiler generates its parser from `vera/grammar.lark` with the Lark parser generator in LALR(1) mode. The two files share their rule names, with two exceptions: Lark's entry point is `start` where this chapter's is `program`, and four productions this chapter names separately have no rule of their own there: `qualified_call` and `module_call` are alternatives of `fn_call`, labelled with a `->` alias, and `tuple_literal` and `tuple_type` are parsed by the `constructor_call` and `named_type` alternatives and told apart by the checker.
 
 Conventions:
 - `UPPER_CASE`: terminal tokens (lexer rules)
@@ -393,7 +393,7 @@ with_clause: WITH AT type_expr ASSIGN expr
 // keyword terminal, so resume(expr) is parsed as a regular fn_call.
 ```
 
-`resume` stays an ordinary `LOWER_IDENT` at every point above: no production and no terminal mentions it, and the parser gives it no special treatment. Its reservation as a function name (Chapter 1, Section 1.4) is therefore enforced after parsing, by the checker — `fn resume(...)` parses and is then rejected **E153** (Chapter 5, Section 5.2). The two statements are about different phases and do not conflict.
+`resume` stays an ordinary `LOWER_IDENT` at every point above: no production and no terminal mentions it, and the parser gives it no special treatment. Its reservation as a function name (Chapter 1, Section 1.4) is therefore enforced after parsing, by the checker: `fn resume(...)` parses and is then rejected **E153** (Chapter 5, Section 5.2). The two statements are about different phases and do not conflict.
 
 ### 10.3.16 Array Literals
 
@@ -476,7 +476,7 @@ The grammar as specified is LALR(1)-compatible with the Lark parser generator. K
 1. **No optional semicolons**: all statements end with `;`, removing the need for ASI.
 2. **Mandatory braces on all blocks**: no dangling-else ambiguity.
 3. **`then` keyword in conditionals**: `if expr then { ... } else { ... }` avoids if/else parsing ambiguity.
-4. **Prefix markers**: `@` for slot references, `fn` for functions, `data` for ADTs — each construct has a unique leading token.
+4. **Prefix markers**: `@` for slot references, `fn` for functions, `data` for ADTs; each construct has a unique leading token.
 5. **No operator overloading**: operator tokens have fixed meaning.
 6. **Explicit effect syntax**: `effects(...)` is unambiguous.
 

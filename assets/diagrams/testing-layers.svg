@@ -1,5 +1,5 @@
 <svg width="920" height="372" viewBox="0 0 920 372" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
-  <title id="title">The three-layer testing model — unit tests for compiler internals, spec-anchored conformance programs, and end-to-end examples — and the nested conformance levels: parse, check, verify, run, where each program declares the deepest stage it must pass.</title>
+  <title id="title">The three-layer testing model (unit tests for compiler internals, spec-anchored conformance programs, and end-to-end examples) and the nested conformance levels: parse, check, verify, run, where each program declares the deepest stage it must pass.</title>
   <!-- Design system: see architecture.svg. Grounded in TESTING.md §Three-layer model + §Test levels.
        Deliberately count-free: the per-level counts drift and live in TESTING.md's tables. -->
   <defs>
@@ -18,7 +18,7 @@
   <rect x="1.5" y="1.5" width="917" height="369" rx="14" fill="#faf9f7" stroke="#e8e6e1" stroke-width="1.5"/>
 
   <text class="f micro" x="36" y="42">TESTING · THREE LAYERS, FOUR LEVELS</text>
-  <text class="f sub" x="36" y="64">Unit tests prove the compiler works; conformance programs prove the language works; examples prove it's usable.</text>
+  <text class="f sub" x="36" y="64">Unit tests prove the compiler works; conformance programs prove the language works; examples prove it is usable.</text>
 
   <!-- left: layers -->
   <text class="f micro" x="36" y="98">THE LAYERS</text>
@@ -27,7 +27,7 @@
     <rect x="36.5" y="108.5" width="4" height="63" rx="2" fill="#8b6cad"/>
     <text class="f t" x="54" y="130">Unit tests</text>
     <text class="m" x="400" y="129" text-anchor="end" font-size="10px" fill="#7a756d">tests/test_*.py</text>
-    <text class="f d" x="54" y="148">compiler internals — error paths, edge cases,</text>
+    <text class="f d" x="54" y="148">compiler internals: error paths, edge cases,</text>
     <text class="f d" x="54" y="162">internal APIs, mutation-validated guards</text>
   </g>
   <g>
@@ -43,12 +43,12 @@
     <rect x="36.5" y="252.5" width="4" height="63" rx="2" fill="#5a9e6f"/>
     <text class="f t" x="54" y="274">Example programs</text>
     <text class="m" x="400" y="273" text-anchor="end" font-size="10px" fill="#7a756d">examples/</text>
-    <text class="f d" x="54" y="292">end-to-end showcases — every one must pass</text>
-    <text class="f d" x="54" y="306"><tspan class="m" font-size="9.5px">vera check</tspan> and <tspan class="m" font-size="9.5px">vera verify</tspan></text>
+    <text class="f d" x="54" y="292">end-to-end showcases; every one must pass</text>
+    <text class="f d" x="54" y="306"><tspan class="m" font-size="9.5px">vera check</tspan> and <tspan class="m" font-size="9.5px">vera verify</tspan>; a runnable one runs trap-free</text>
   </g>
 
   <!-- right: levels staircase -->
-  <text class="f micro" x="470" y="98">CONFORMANCE LEVELS — EACH PROGRAM DECLARES ITS DEEPEST</text>
+  <text class="f micro" x="470" y="98">CONFORMANCE LEVELS · EACH PROGRAM DECLARES ITS DEEPEST</text>
   <g>
     <rect class="card" x="470" y="108" width="414" height="46" rx="10"/>
     <rect x="470.5" y="108.5" width="4" height="45" rx="2" fill="#4a82a8"/>
@@ -59,7 +59,7 @@
     <rect class="card" x="500" y="162" width="384" height="46" rx="10"/>
     <rect x="500.5" y="162.5" width="4" height="45" rx="2" fill="#8b6cad"/>
     <text class="m t" x="518" y="182" font-size="12px">check</text>
-    <text class="f d" x="518" y="198">…and type-checks cleanly — negative fixtures assert their E-code here</text>
+    <text class="f d" x="518" y="198">…and type-checks cleanly; negative fixtures assert their E-code here</text>
   </g>
   <g>
     <rect class="card" x="530" y="216" width="354" height="46" rx="10"/>
@@ -75,5 +75,5 @@
   </g>
 
   <!-- footer -->
-  <text class="f footi" x="36" y="350">Stages past a program's declared level are skipped by design; almost the whole suite sits at run. Counts live in TESTING.md.</text>
+  <text class="f footi" x="36" y="350">Stages past a program's declared level are skipped by design; most of the suite sits at run, and TESTING.md holds the counts.</text>
 </svg>

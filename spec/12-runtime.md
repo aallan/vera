@@ -10,7 +10,7 @@ Vera programs compile to WebAssembly (WASM) modules and execute in a host runtim
 - Capturing output and state for the caller
 - Handling traps and runtime errors
 
-The runtime is deliberately minimal. It provides only what is needed to execute the compiled WASM — there is no scheduler. IO operations cover standard output (`print`), standard error (`stderr`), standard input (`read_line`, `read_char`), file access (`read_file`, `write_file`, `read_bytes`, `write_bytes`), command-line arguments (`args`), environment variables (`get_env`), time (`time`, `sleep`), and process exit (`exit`). Networking (`Http`), inference (`Inference`), randomness (`Random`) and SQL (`DB`) are host-backed the same way. Memory is managed automatically by a conservative mark-sweep garbage collector compiled into each WASM module (see Section 12.5.4).
+The runtime provides only what is needed to execute the compiled WASM; there is no scheduler. IO operations cover standard output (`print`), standard error (`stderr`), standard input (`read_line`, `read_char`), file access (`read_file`, `write_file`, `read_bytes`, `write_bytes`), command-line arguments (`args`), environment variables (`get_env`), time (`time`, `sleep`), and process exit (`exit`). Networking (`Http`), inference (`Inference`), randomness (`Random`) and SQL (`DB`) are host-backed the same way. Memory is managed automatically by a conservative mark-sweep garbage collector compiled into each WASM module (see Section 12.5.4).
 
 ## 12.2 WASM Module Structure
 
@@ -28,7 +28,7 @@ Functions the backend cannot compile are dropped with an E6xx warning and do not
 
 ### 12.2.2 Imports
 
-The module imports host functions from the runtime for two distinct reasons. The first is effect operations: `IO.print`, `Http.get`, `State.put`, and so on bind to host-provided implementations. The second is pure host-backed built-ins such as `log`, `sin`, `cos`, `atan2` — these have no WASM instruction equivalent and so are routed through host imports (`vera.log`, `vera.sin`, …) even though the Vera-level functions are pure. Each entry in the table below lists its condition; a module only imports what it actually uses.
+The module imports host functions from the runtime for two distinct reasons. The first is effect operations: `IO.print`, `Http.get`, `State.put`, and so on bind to host-provided implementations. The second is pure host-backed built-ins such as `log`, `sin`, `cos` and `atan2`, which have no WASM instruction equivalent and so are routed through host imports (`vera.log`, `vera.sin`, …) even though the Vera-level functions are pure. Each entry in the table below lists its condition; a module only imports what it uses.
 
 | Import | Signature | Condition |
 |--------|-----------|-----------|
@@ -70,14 +70,48 @@ The module imports host functions from the runtime for two distinct reasons. The
 | `vera.md_has_heading` | `(i32, i64) -> (i32)` | Program uses `md_has_heading` |
 | `vera.md_has_code_block` | `(i32, i32, i32) -> (i32)` | Program uses `md_has_code_block` |
 | `vera.md_extract_code_blocks` | `(i32, i32, i32) -> (i32, i32)` | Program uses `md_extract_code_blocks` |
+| `vera.regex_find` | `(i32, i32, i32, i32) -> (i32)` | Program uses `regex_find` |
+| `vera.regex_find_all` | `(i32, i32, i32, i32) -> (i32)` | Program uses `regex_find_all` |
+| `vera.regex_match` | `(i32, i32, i32, i32) -> (i32)` | Program uses `regex_match` |
+| `vera.regex_replace` | `(i32, i32, i32, i32, i32, i32) -> (i32)` | Program uses `regex_replace` |
+| `vera.decimal_abs` | `(i32) -> (i32)` | Program uses `decimal_abs` |
+| `vera.decimal_add` | `(i32, i32) -> (i32)` | Program uses `decimal_add` |
+| `vera.decimal_compare` | `(i32, i32) -> (i32)` | Program uses `decimal_compare` |
+| `vera.decimal_div` | `(i32, i32) -> (i32)` | Program uses `decimal_div` |
+| `vera.decimal_eq` | `(i32, i32) -> (i32)` | Program uses `decimal_eq` |
+| `vera.decimal_from_float` | `(f64) -> (i32)` | Program uses `decimal_from_float` |
+| `vera.decimal_from_int` | `(i64) -> (i32)` | Program uses `decimal_from_int` |
+| `vera.decimal_from_string` | `(i32, i32) -> (i32)` | Program uses `decimal_from_string` |
+| `vera.decimal_mul` | `(i32, i32) -> (i32)` | Program uses `decimal_mul` |
+| `vera.decimal_neg` | `(i32) -> (i32)` | Program uses `decimal_neg` |
+| `vera.decimal_round` | `(i32, i64) -> (i32)` | Program uses `decimal_round` |
+| `vera.decimal_sub` | `(i32, i32) -> (i32)` | Program uses `decimal_sub` |
+| `vera.decimal_to_float` | `(i32) -> (f64)` | Program uses `decimal_to_float` |
+| `vera.decimal_to_string` | `(i32) -> (i32, i32)` | Program uses `decimal_to_string` |
+| `vera.host_decref_handle` | `(i32, i32) -> ()` | Program holds a host handle (a `Decimal` or a `Future`) |
+| `vera.attach_bucket_to_wrapper` | `(i32, i32, i32) -> ()` | Program holds a host handle (a `Decimal` or a `Future`) |
+| `vera.json_parse` | `(i32, i32) -> (i32)` | Program uses `json_parse` |
+| `vera.json_stringify` | `(i32) -> (i32, i32)` | Program uses `json_stringify` |
+| `vera.html_parse` | `(i32, i32) -> (i32)` | Program uses `html_parse` |
+| `vera.html_to_string` | `(i32) -> (i32, i32)` | Program uses `html_to_string` |
+| `vera.html_query` | `(i32, i32, i32) -> (i32, i32)` | Program uses `html_query` |
+| `vera.html_text` | `(i32) -> (i32, i32)` | Program uses `html_text` |
+| `vera.http_get` | `(i32, i32) -> (i32)` | Program uses `Http.get` |
+| `vera.http_post` | `(i32, i32, i32, i32) -> (i32)` | Program uses `Http.post` |
+| `vera.async_http_get` | `(i32, i32) -> (i32)` | Program uses `async(Http.get(...))` |
+| `vera.async_http_post` | `(i32, i32, i32, i32) -> (i32)` | Program uses `async(Http.post(...))` |
+| `vera.async_await` | `(i32) -> (i32)` | Program awaits a `Future` from `async(Http.get(...))` or `async(Http.post(...))` |
+| `vera.inference_complete` | `(i32, i32) -> (i32)` | Program uses `Inference.complete` |
+| `vera.db_query` | `(i32, i32, i32, i32) -> (i32)` | Program uses `DB.query` |
+| `vera.db_execute` | `(i32, i32, i32, i32) -> (i32)` | Program uses `DB.execute` |
 
-Imports are only emitted when the program actually uses the corresponding host-backed feature — either an effect operation (`IO.*`, `Http.*`, `State.*`, `Random.*`, …) or a pure host-backed built-in (`vera.log`, `vera.sin`, `vera.atan2`, …). A pure program that uses only inlined built-ins (`pi()`, `sign`, `clamp`, arithmetic operators, `Map` and `Set` operations) imports no effect operation and no host-backed built-in; the only imports it can carry are the two trap signals, `vera.contract_fail` and `vera.trap`, each only when a runtime check calls it — an arithmetic operator the verifier cannot prove in range, for instance, carries an overflow check that signals through `vera.trap` — and `vera.hash_key`, when it hashes a `String` key in a `Map` or `Set`.
+Imports are only emitted when the program uses the corresponding host-backed feature: either an effect operation (`IO.*`, `Http.*`, `State.*`, `Random.*`, …) or a pure host-backed built-in (`vera.log`, `vera.sin`, `vera.atan2`, …). A pure program that uses only inlined built-ins (`pi()`, `sign`, `clamp`, arithmetic operators, `Map` and `Set` operations) imports no effect operation and no host-backed built-in; the only imports it can carry are the two trap signals, `vera.contract_fail` and `vera.trap`, each only when a runtime check calls it (an arithmetic operator the verifier cannot prove in range, for instance, has an overflow check that signals through `vera.trap`), and `vera.hash_key`, when it hashes a `String` key in a `Map` or `Set`.
 
 ### 12.2.3 Linear Memory
 
 The module exports one page (64 KiB) of linear memory as `"vera.memory"`. The host runtime uses this export to read string data for `IO.print` and to write data returned by host functions (e.g., `IO.read_line`, `IO.read_file`).
 
-When the program uses IO operations that return strings or ADTs — `IO.read_line`, `IO.read_char`, `IO.read_file`, `IO.write_file`, `IO.read_bytes`, `IO.write_bytes`, `IO.args`, `IO.get_env` — the module also exports the `$alloc` function, as `"vera.alloc"`, so the host can allocate memory in the WASM linear memory for return values. The fire-and-forget operations (`IO.print`, `IO.exit`, `IO.sleep`, `IO.time`, `IO.stderr`) don't allocate: `vera.print`, `vera.stderr`, and `vera.sleep` take only primitive parameters and return nothing; `vera.time` returns an `i64` scalar; `vera.exit` traps without returning. Modules that use only these operations don't need `$alloc` exported.
+When the program uses IO operations that return strings or ADTs (`IO.read_line`, `IO.read_char`, `IO.read_file`, `IO.write_file`, `IO.read_bytes`, `IO.write_bytes`, `IO.args`, `IO.get_env`), the module also exports the `$alloc` function, as `"vera.alloc"`, so the host can allocate memory in the WASM linear memory for return values. The fire-and-forget operations (`IO.print`, `IO.exit`, `IO.sleep`, `IO.time`, `IO.stderr`) do not allocate: `vera.print`, `vera.stderr`, and `vera.sleep` take only primitive parameters and return nothing; `vera.time` returns an `i64` scalar; `vera.exit` traps without returning. Modules that use only these operations do not need `$alloc` exported.
 
 For the memory layout, see Section 12.5.
 
@@ -115,8 +149,9 @@ Each execution creates a fresh engine, module, linker, and store. There is no pe
 The linker resolves all imports before instantiation. If the module imports a host function that the linker has not defined, instantiation fails with an error.
 
 The linker registers host functions before instantiation:
-1. IO host functions — registered for each IO operation the module imports (`vera.print`, `vera.read_line`, `vera.read_char`, `vera.read_file`, `vera.write_file`, `vera.read_bytes`, `vera.write_bytes`, `vera.args`, `vera.exit`, `vera.get_env`, `vera.sleep`, `vera.time`, `vera.stderr`).
-2. `vera.state_get_{T}` / `vera.state_put_{T}` / `vera.state_push_{T}` / `vera.state_pop_{T}` — registered for each concrete `State<T>` type used by the program.
+1. IO host functions, registered for each IO operation the module imports (`vera.print`, `vera.read_line`, `vera.read_char`, `vera.read_file`, `vera.write_file`, `vera.read_bytes`, `vera.write_bytes`, `vera.args`, `vera.exit`, `vera.get_env`, `vera.sleep`, `vera.time`, `vera.stderr`).
+2. `vera.state_get_{T}` / `vera.state_put_{T}` / `vera.state_push_{T}` / `vera.state_pop_{T}`, registered for each concrete `State<T>` type used by the program.
+3. Every other host family the module imports, each bound by its own binder (`HOST_BINDERS` in `vera/codegen/api.py`, keyed by the families of `HOST_FAMILIES` in `vera/builtins.py`): the trap signals `vera.contract_fail` and `vera.trap`; `Random`; the math functions (`vera.log`, `vera.sin`, …); Markdown, Regex, JSON, HTML and `Decimal`; `Http`, the fused `Async` requests, `Inference` and `DB`; the wrapper table's handle imports; and `vera.hash_key`. Each binder defines only the imports of its family the module declares.
 
 ### 12.3.3 Entry Point Resolution
 
@@ -133,7 +168,7 @@ Arguments are passed as WASM values. The CLI parses string arguments to integers
 
 ### 12.4.1 IO Operations
 
-The IO effect provides eleven host function bindings. Each is imported only when the program uses the corresponding `IO.*` qualified call.
+The IO effect provides thirteen host function bindings. Each is imported only when the program uses the corresponding `IO.*` qualified call.
 
 #### 12.4.1.1 IO.print
 
@@ -154,7 +189,7 @@ The output is captured in a buffer so the caller can inspect it programmatically
 
 **Import:** `(import "vera" "read_line" (func $vera.read_line (result i32 i32)))`
 
-**Returns:** `(ptr, len)` — a String pair (byte offset and length).
+**Returns:** `(ptr, len)`, a String pair (byte offset and length).
 
 **Behaviour:**
 1. Read one line from standard input (up to and including the newline character).
@@ -173,7 +208,7 @@ The `execute()` function accepts an optional `stdin` parameter. If provided, `re
 - `path_ptr` (i32): byte offset of the file path string.
 - `path_len` (i32): length of the file path in bytes.
 
-**Returns:** `i32` — a heap pointer to a `Result<String, String>` ADT value.
+**Returns:** `i32`, a heap pointer to a `Result<String, String>` ADT value.
 
 **Behaviour:**
 1. Decode the file path from linear memory.
@@ -193,7 +228,7 @@ The host allocates memory via the exported `$alloc` function.
 - `data_ptr` (i32): byte offset of the content string.
 - `data_len` (i32): length of the content in bytes.
 
-**Returns:** `i32` — a heap pointer to a `Result<Unit, String>` ADT value.
+**Returns:** `i32`, a heap pointer to a `Result<Unit, String>` ADT value.
 
 **Behaviour:**
 1. Decode the file path and content from linear memory.
@@ -205,7 +240,7 @@ The host allocates memory via the exported `$alloc` function.
 
 **Import:** `(import "vera" "args" (func $vera.args (result i32 i32)))`
 
-**Returns:** `(ptr, count)` — an Array\<String\> pair (pointer to element data and element count).
+**Returns:** `(ptr, count)`, an Array\<String\> pair (pointer to element data and element count).
 
 **Behaviour:**
 1. Retrieve the command-line arguments (passed via `execute(cli_args=...)` or from the CLI `--` separator).
@@ -234,7 +269,7 @@ The `execute()` function catches this exception and returns an `ExecuteResult` w
 - `name_ptr` (i32): byte offset of the environment variable name.
 - `name_len` (i32): length of the name in bytes.
 
-**Returns:** `i32` — a heap pointer to an `Option<String>` ADT value.
+**Returns:** `i32`, a heap pointer to an `Option<String>` ADT value.
 
 **Behaviour:**
 1. Decode the variable name from linear memory.
@@ -253,7 +288,7 @@ The `execute()` function catches this exception and returns an `ExecuteResult` w
 1. If `ms <= 0`, return immediately.
 2. Otherwise, block the current thread for approximately `ms` milliseconds before returning.
 
-Precision is host-dependent. The Python runtime uses `time.sleep(ms / 1000.0)`. The browser runtime busy-waits on `performance.now()` because `Atomics.wait` isn't available on the main thread — long sleeps will block rendering and should be avoided in the browser.
+Precision is host-dependent. The Python runtime uses `time.sleep(ms / 1000.0)`. The browser runtime busy-waits on `performance.now()` because `Atomics.wait` is not available on the main thread, so long sleeps block rendering and should be avoided in the browser.
 
 #### 12.4.1.9 IO.time
 
@@ -261,7 +296,7 @@ Precision is host-dependent. The Python runtime uses `time.sleep(ms / 1000.0)`. 
 
 **Parameters:** none (the `Unit` argument at the Vera level is erased at the WASM boundary).
 
-**Returns:** `i64` — the current Unix timestamp in milliseconds (non-negative, treated as `Nat` at the Vera level).
+**Returns:** `i64`, the current Unix timestamp in milliseconds (non-negative, treated as `Nat` at the Vera level).
 
 **Behaviour:** Return `floor(current_time_in_milliseconds_since_1970)`. The Python runtime uses `time.time()`; the browser uses `Date.now()`.
 
@@ -275,7 +310,7 @@ Precision is host-dependent. The Python runtime uses `time.sleep(ms / 1000.0)`. 
 
 **Behaviour:**
 1. Decode `len` bytes from `ptr` as UTF-8.
-2. Write the decoded text to the runtime's stderr sink — by default the host's `sys.stderr` (Python) or `console.error`-equivalent buffer (browser). Tests can opt in to capture via `execute(capture_stderr=True)`, which routes writes to `ExecuteResult.stderr`.
+2. Write the decoded text to the runtime's stderr sink: by default the host's `sys.stderr` (Python) or `console.error`-equivalent buffer (browser). Tests can opt in to capture via `execute(capture_stderr=True)`, which routes writes to `ExecuteResult.stderr`.
 
 No line terminator is added; callers include `\n` if they want one. Mirrors `IO.print` but for the stderr stream.
 
@@ -283,7 +318,7 @@ No line terminator is added; callers include `\n` if they want one. Mirrors `IO.
 
 **Import:** `(import "vera" "read_char" (func $vera.read_char (result i32)))`
 
-**Returns:** `i32` — a pointer to a `Result<String, String>` the host allocates with `$alloc`.
+**Returns:** `i32`, a pointer to a `Result<String, String>` the host allocates with `$alloc`.
 
 **Behaviour:**
 1. If `execute()` was given a `stdin` string, read the next character from it.
@@ -299,7 +334,7 @@ No line terminator is added; callers include `\n` if they want one. Mirrors `IO.
 - `path_ptr` (i32): byte offset of the file path string.
 - `path_len` (i32): length of the file path in bytes.
 
-**Returns:** `i32` — a heap pointer to a `Result<Array<Byte>, String>` ADT value.
+**Returns:** `i32`, a heap pointer to a `Result<Array<Byte>, String>` ADT value.
 
 **Behaviour:**
 1. Decode the file path from linear memory.
@@ -317,7 +352,7 @@ No line terminator is added; callers include `\n` if they want one. Mirrors `IO.
 - `data_ptr` (i32): byte offset of the array's first element.
 - `data_len` (i32): the array's length, which is its length in bytes.
 
-**Returns:** `i32` — a heap pointer to a `Result<Unit, String>` ADT value.
+**Returns:** `i32`, a heap pointer to a `Result<Unit, String>` ADT value.
 
 **Behaviour:**
 1. Decode the file path from linear memory, and read the array's bytes.
@@ -336,7 +371,7 @@ No line terminator is added; callers include `\n` if they want one. Mirrors `IO.
 (import "vera" "state_pop_Int" (func $vera.state_pop_Int))
 ```
 
-**State cells:** The host runtime maintains a stack of cells per concrete `State<T>` type; `get` and `put` act on the top cell. Cells are initialized to zero (0 for integers, 0.0 for floats). The `execute()` function accepts an optional `initial_state` parameter to override initial values for testing.
+**State cells:** The host runtime maintains a stack of cells per concrete `State<T>` type; `get` and `put` act on the top cell. Cells are initialised to zero (0 for integers, 0.0 for floats). The `execute()` function accepts an optional `initial_state` parameter to override initial values for testing.
 
 **Type mapping:**
 | Vera State Type | WASM Type | Default |
@@ -346,6 +381,9 @@ No line terminator is added; callers include `\n` if they want one. Mirrors `IO.
 | `State<Bool>` | `i32` | `0` |
 | `State<Byte>` | `i32` | `0` |
 | `State<Float64>` | `f64` | `0.0` |
+| `State<T>`, `T` a compound type (`Option<Int>`, `Tuple<Int, Int>`), a `data` type or a `Map` | `i32` (heap pointer) | `0` |
+
+The import names carry the cell type's mangled name: `State<Option<Int>>` imports `state_get_Option_LInt_R`. A cell whose value is a `(ptr, len)` pair (`String`, `Array<T>`) or has no representation (`Unit`, `Never`) is refused at check (`E340`, Chapter 7, Section 7.5.1).
 
 **get:** Returns the current value of the state cell.
 
@@ -353,7 +391,7 @@ No line terminator is added; callers include `\n` if they want one. Mirrors `IO.
 
 **push / pop:** A `handle[State<T>]` calls `state_push_{T}` on entry, which pushes a fresh default cell, and `state_pop_{T}` on exit, which removes it. A nested handler of the same type therefore has its own cell.
 
-Multiple independent state types can coexist — each has its own cell stack and its own host functions.
+Multiple independent state types can coexist; each has its own cell stack and its own host functions.
 
 ### 12.4.3 Contract Violations
 
@@ -374,7 +412,7 @@ The import is emitted when the program contains a runtime contract check, and co
 
 ### 12.4.4 Markdown Operations
 
-The Markdown standard library provides the host function bindings below for parsing and querying Markdown documents. Each is imported only when the program uses the corresponding builtin function. All of them are pure — they have no side effects and produce deterministic results.
+The Markdown standard library provides the host function bindings below for parsing and querying Markdown documents. Each is imported only when the program uses the corresponding builtin function. All of them are pure: they have no side effects and produce deterministic results.
 
 For the `MdInline` and `MdBlock` ADT definitions, see Section 9.3.5 and Section 9.3.6. For the function specifications, see Section 9.7.3.
 
@@ -386,7 +424,7 @@ For the `MdInline` and `MdBlock` ADT definitions, see Section 9.3.5 and Section 
 - `ptr` (i32): byte offset of the Markdown source string.
 - `len` (i32): length of the source string in bytes.
 
-**Returns:** `i32` — a heap pointer to a `Result<MdBlock, String>` ADT value.
+**Returns:** `i32`, a heap pointer to a `Result<MdBlock, String>` ADT value.
 
 **Behaviour:**
 1. Decode the Markdown source from linear memory.
@@ -403,7 +441,7 @@ The host allocates all tree nodes (including nested `MdBlock` and `MdInline` val
 **Parameters:**
 - `block_ptr` (i32): heap pointer to an `MdBlock` ADT value.
 
-**Returns:** `(ptr, len)` — a String pair containing the rendered Markdown text.
+**Returns:** `(ptr, len)`, a String pair containing the rendered Markdown text.
 
 **Behaviour:**
 1. Read the `MdBlock` tree from WASM linear memory by tag dispatch.
@@ -419,7 +457,7 @@ The host allocates all tree nodes (including nested `MdBlock` and `MdInline` val
 - `block_ptr` (i32): heap pointer to an `MdBlock` ADT value.
 - `level` (i64): the heading level to search for (1–6).
 
-**Returns:** `i32` — 1 if a heading of the given level exists, 0 otherwise.
+**Returns:** `i32`: 1 if a heading of the given level exists, 0 otherwise.
 
 #### 12.4.4.4 md\_has\_code\_block
 
@@ -430,7 +468,7 @@ The host allocates all tree nodes (including nested `MdBlock` and `MdInline` val
 - `lang_ptr` (i32): byte offset of the language string.
 - `lang_len` (i32): length of the language string in bytes.
 
-**Returns:** `i32` — 1 if a fenced code block with the given language exists, 0 otherwise.
+**Returns:** `i32`: 1 if a fenced code block with the given language exists, 0 otherwise.
 
 #### 12.4.4.5 md\_extract\_code\_blocks
 
@@ -441,7 +479,7 @@ The host allocates all tree nodes (including nested `MdBlock` and `MdInline` val
 - `lang_ptr` (i32): byte offset of the language string.
 - `lang_len` (i32): length of the language string in bytes.
 
-**Returns:** `(ptr, count)` — an `Array<String>` pair (pointer to element data and element count).
+**Returns:** `(ptr, count)`, an `Array<String>` pair (pointer to element data and element count).
 
 **Behaviour:**
 1. Read the `MdBlock` tree from WASM linear memory.
@@ -451,7 +489,7 @@ The host allocates all tree nodes (including nested `MdBlock` and `MdInline` val
 
 ### 12.4.5 Random Operations
 
-The `Random` effect provides three host-backed operations for non-deterministic value generation. None allocate or return heap data, so modules that use only `Random` (alongside e.g. arithmetic) don't need `$alloc` exported.
+The `Random` effect provides three host-backed operations for non-deterministic value generation. None allocate or return heap data, so modules that use only `Random` (alongside e.g. arithmetic) do not need `$alloc` exported.
 
 #### 12.4.5.1 Random.random\_int
 
@@ -461,7 +499,7 @@ The `Random` effect provides three host-backed operations for non-deterministic 
 - `low` (i64): inclusive lower bound.
 - `high` (i64): inclusive upper bound.
 
-**Returns:** `i64` — an integer drawn uniformly from `[low, high]`.
+**Returns:** `i64`, an integer drawn uniformly from `[low, high]`.
 
 **Behaviour:** The Python runtime calls `random.randint(low, high)`; the browser runtime computes `floor(Math.random() * (high - low + 1)) + low`. Caller is required by contract (`requires(@Int.0 <= @Int.1)`) to ensure `low <= high`; the host does not double-check.
 
@@ -471,7 +509,7 @@ The `Random` effect provides three host-backed operations for non-deterministic 
 
 **Parameters:** none (the `Unit` argument at the Vera level is erased at the WASM boundary).
 
-**Returns:** `f64` — a value in `[0.0, 1.0)`.
+**Returns:** `f64`, a value in `[0.0, 1.0)`.
 
 **Behaviour:** The Python runtime calls `random.random()`; the browser runtime calls `Math.random()`.
 
@@ -481,16 +519,16 @@ The `Random` effect provides three host-backed operations for non-deterministic 
 
 **Parameters:** none (Unit erased).
 
-**Returns:** `i32` — `0` or `1`, each with probability ≈ 0.5.
+**Returns:** `i32`: `0` or `1`, each with probability ≈ 0.5.
 
-**Behaviour:** Both runtimes derive the bit from a uniform draw (`random.random() < 0.5` and `Math.random() < 0.5` respectively). No determinism / seeding API is offered.
+**Behaviour:** Both runtimes derive the bit from a uniform draw (`random.random() < 0.5` and `Math.random() < 0.5` respectively). No determinism or seeding API is offered.
 
 ### 12.4.6 Named Traps
 
 **Import:** `(import "vera" "trap" (func $vera.trap (param i32 i32 i32)))`
 
 **Parameters:**
-- `kind` (i32): the trap kind's code — `1` `overflow`, `2` `nat_guard`, `4` `nat_underflow`, `5` `assertion_failed`, `6` `index_out_of_bounds`, `7` `string_index_out_of_bounds`, `8` `float_conversion`, `9` `heap_exhausted`, `10` `uncaught_exception` (`TRAP_KINDS` in `vera/trap_registry.py`).
+- `kind` (i32): the trap kind's code: `1` `overflow`, `2` `nat_guard`, `4` `nat_underflow`, `5` `assertion_failed`, `6` `index_out_of_bounds`, `7` `string_index_out_of_bounds`, `8` `float_conversion`, `9` `heap_exhausted`, `10` `uncaught_exception` (`TRAP_KINDS` in `vera/trap_registry.py`).
 - `ptr` (i32), `len` (i32): the check's own message in linear memory, as for `contract_fail`; both zero for a kind whose checks carry no message of their own.
 
 **Behaviour:**
@@ -505,7 +543,7 @@ As with `contract_fail`, the WASM code always follows a `call $vera.trap` with `
 
 **Parameters:** none.
 
-**Returns:** `i64` — a fresh random word at each call.
+**Returns:** `i64`, a fresh random word at each call.
 
 **Behaviour:** The Python runtime returns eight bytes of `os.urandom`; the browser runtime fills a `BigInt64Array` of one element with `crypto.getRandomValues`; a WASI component's adapter returns `wasi:random/random.get-random-u64` (Chapter 13, Section 13.4).  The module calls it twice, on its first `String` hash, and keeps the two words as the 128-bit key its `Map` and `Set` hash `String` keys under for the rest of the instantiation (Chapter 9, Section 9.4.3).  The import is emitted when the program hashes a `String` key in a `Map` or `Set`, including the maps a host builds through the module's exports: a JSON object's members, an HTML element's attributes, and a request's headers.
 
@@ -539,7 +577,7 @@ As with `contract_fail`, the WASM code always follows a `call $vera.trap` with `
 
 </details>
 
-String constants occupy the lowest addresses, with the scratch an entry point's exception boundary builds its message in (Chapter 11, Section 11.8.5). The GC shadow stack follows the string data: 16384 bytes, 4096 roots. The mark worklist follows it: 65536 bytes, 16384 entries. A program that holds host-backed values — `Decimal` values or pending async requests — carries the wrapper table next: 65536 bytes, 4096 entries of 16 bytes. The heap grows toward higher addresses from `$heap_ptr`'s initial value: `data_end + 81920`, or `data_end + 147456` with the wrapper table. The GC infrastructure (shadow stack, worklist, wrapper table and heap offset) is only emitted when the program needs the allocator (Section 12.5.2).
+String constants occupy the lowest addresses, with the scratch an entry point's exception boundary builds its message in (Chapter 11, Section 11.8.5). The GC shadow stack follows the string data: 16384 bytes, 4096 roots. The mark worklist follows it: 65536 bytes, 16384 entries. A program that holds host-backed values (`Decimal` values or pending async requests) has the wrapper table next: 65536 bytes, 4096 entries of 16 bytes. The heap grows toward higher addresses from `$heap_ptr`'s initial value: `data_end + 81920`, or `data_end + 147456` with the wrapper table. The GC infrastructure (shadow stack, worklist, wrapper table and heap offset) is only emitted when the program needs the allocator (Section 12.5.2).
 
 ### 12.5.2 Allocator
 
@@ -577,7 +615,7 @@ All heap allocations are 8-byte aligned. This ensures correct access for all WAS
 
 The runtime implements a conservative mark-sweep garbage collector entirely in WASM (no host-side GC logic). The GC is triggered automatically when the bump allocator runs out of space.
 
-![Allocation and collection: $alloc aligns the request, tries the free list, bumps if there is room, and otherwise runs the three collector phases — clear marks, mark from shadow-stack roots with conservative scanning, sweep unmarked blocks onto the free list — before retrying and finally growing memory.](../assets/diagrams/gc-cycle.svg)
+![Allocation and collection: $alloc aligns the request, tries the free list, bumps if there is room, and otherwise runs the collector (clear the marks and record each block as an object base; mark from shadow-stack roots, scanning conservatively for object bases and rescanning when a full worklist dropped a push; sweep unmarked blocks onto the free list) before retrying and finally growing memory.](../assets/diagrams/gc-cycle.svg)
 
 **Shadow stack.** WASM does not support stack scanning, so the compiler maintains an explicit shadow stack in linear memory. The compiler pushes live heap pointers onto it at function entry (pointer-type parameters), after each `call $alloc` (newly allocated objects), and manages save/restore at function exit. Thirteen globals track the shadow stack and GC state:
 
@@ -650,7 +688,7 @@ The raw WASM return value is extracted and returned as a Python `int` or `float`
 
 All `IO.print` calls during execution write to an in-memory buffer. The buffer contents are returned in `ExecuteResult.stdout`. This allows programmatic inspection of output without interfering with the host process's stdout. `execute(tee_stdout=True)` also mirrors each write live to the host's stdout as it happens.
 
-`IO.stderr` has a parallel capture path, but it's opt-in. By default, `IO.stderr` writes go directly to the host's `sys.stderr` (Python) or equivalent browser sink. Callers that want to capture stderr for inspection pass `execute(capture_stderr=True)`, which routes writes into an in-memory buffer exposed as `ExecuteResult.stderr`. When the flag is `False` (the default), `ExecuteResult.stderr` is an empty string.
+`IO.stderr` has a parallel capture path, which is opt-in. By default, `IO.stderr` writes go directly to the host's `sys.stderr` (Python) or equivalent browser sink. Callers that want to capture stderr for inspection pass `execute(capture_stderr=True)`, which routes writes into an in-memory buffer exposed as `ExecuteResult.stderr`. When the flag is `False` (the default), `ExecuteResult.stderr` is an empty string.
 
 `vera run` calls `execute(capture_stderr=True, tee_stdout=True)`. `IO.print` output streams to the terminal as the program writes it, and the CLI ends it with a newline if the last write lacked one. The function's return value is printed only when the program printed nothing: a function that prints `hello` and returns `42` shows `hello` alone, one that only returns `42` shows `42`, and a `Unit` result prints nothing. `IO.stderr` output is captured and written to stderr once the call returns, ending with a newline if it lacked one. `vera run --json` turns off the live mirror and always reports both the return value and the output, as `value` and `stdout`; it adds `stderr` when the program wrote any.
 
@@ -669,9 +707,9 @@ WASM traps are unrecoverable runtime errors. The following conditions cause trap
 | An exception leaving an export no boundary wraps | `throw` | A module not compiled from Vera; every Vera entry point declaring `Exn<T>` has a boundary | `uncaught_exception` |
 | A runtime-internal limit | `unreachable`, with no call before it | GC shadow-stack overflow, a collector limit, a WASI host I/O failure | `unreachable` |
 | Out-of-bounds memory access | `i64.load`, etc. | Invalid pointer dereference by a runtime helper | `out_of_bounds` |
-| Call stack exhaustion | — | Recursion deeper than the engine's stack | `stack_exhausted` |
+| Call stack exhaustion | (none) | Recursion deeper than the engine's stack | `stack_exhausted` |
 
-When a trap occurs, the wasmtime engine raises a `WasmtimeError` or `Trap` exception. The CLI reports this as a runtime error and exits with a non-zero status.  The report names the trap by its kind — the kind a signal stored, or, for an instruction that trapped by itself, the kind its trap message identifies — with a message and the kind's Fix paragraph, the same on the browser runtime and under WASI 0.2 (Chapter 11, Section 11.8.5).  No check on a value the program computed reaches the generic `unreachable` kind.
+When a trap occurs, the wasmtime engine raises a `WasmtimeError` or `Trap` exception. The CLI reports this as a runtime error and exits with a non-zero status.  The report names the trap by its kind (the kind a signal stored, or, for an instruction that trapped by itself, the kind its trap message identifies), with a message and the kind's Fix paragraph, the same on the browser runtime and under WASI 0.2 (Chapter 11, Section 11.8.5).  No check on a value the program computed reaches the generic `unreachable` kind.
 
 ### 12.7.2 Runtime Contract Violations
 
@@ -692,7 +730,7 @@ For the bounds checking implementation, see Chapter 11, Section 11.12.
 <!-- render_lists:begin limitations -->
 | Limitation | Issue |
 |-----------|-------|
-| Browser runtime: `IO.sleep` busy-waits on the main thread (freezing the tab for the sleep duration), because the current implementation uses `performance.now()` polling rather than yielding to the event loop.  Documented in §12.9.3.  Fix path: implement against the WebAssembly JavaScript Promise Integration (JSPI) proposal so the WASM call suspends on a `setTimeout` continuation; Asyncify is the fallback for browsers without JSPI. Browser runtime: ANSI escape sequences are not interpreted — `IO.print("\u{1B}[2J\u{1B}[H")` appears as literal control bytes in the DOM rather than clearing the screen and homing the cursor.  Fix path: a small ANSI-subset interpreter (~200 lines of JS) maintaining a virtual screen buffer, applied against a target `<pre>` element. | [#603](https://github.com/aallan/vera/issues/603) |
+| Browser runtime: `IO.sleep` busy-waits on the main thread (freezing the tab for the sleep duration), because the implementation uses `performance.now()` polling rather than yielding to the event loop.  Documented in §12.9.3.  Fix path: implement against the WebAssembly JavaScript Promise Integration (JSPI) proposal so the WASM call suspends on a `setTimeout` continuation; Asyncify is the fallback for browsers without JSPI. Browser runtime: ANSI escape sequences are not interpreted, so `IO.print("\u{1B}[2J\u{1B}[H")` appears as literal control bytes in the DOM rather than clearing the screen and homing the cursor.  Fix path: a small ANSI-subset interpreter (~200 lines of JS) maintaining a virtual screen buffer, applied against a target `<pre>` element. | [#603](https://github.com/aallan/vera/issues/603) |
 <!-- render_lists:end limitations -->
 
 ## 12.9 Browser Runtime
@@ -701,11 +739,11 @@ The browser runtime (`vera/browser/runtime.mjs`) is a self-contained JavaScript 
 
 ### 12.9.1 Architecture
 
-The runtime uses **dynamic import introspection** to work with any compiled Vera program. At initialization, it calls `WebAssembly.Module.imports(module)` to discover which host functions the module requires, then builds the import object containing only those bindings. This means the same runtime file works with every compiled Vera program — from a hello-world (1 import: `print`) to a markdown-heavy program (15+ imports).
+The runtime uses **dynamic import introspection** to work with any compiled Vera program. At initialisation, it calls `WebAssembly.Module.imports(module)` to discover which host functions the module requires, then builds the import object containing only those bindings. This means the same runtime file works with every compiled Vera program, from a hello-world (1 import: `print`) to a markdown-heavy program (15+ imports).
 
-![Dynamic import introspection: the browser runtime asks the compiled module which host functions it needs via WebAssembly.Module.imports, builds an import object with only those bindings, and instantiates — one runtime file for every program, with State bindings pattern-matched from import names.](../assets/diagrams/browser-bindings.svg)
+![Dynamic import introspection: the browser runtime asks the compiled module which host functions it needs via WebAssembly.Module.imports, builds an import object with only those bindings, and instantiates: one runtime file for every program, with State bindings pattern-matched from import names.](../assets/diagrams/browser-bindings.svg)
 
-State\<T\> bindings are pattern-matched from import names: `state_get_Int`, `state_put_Int`, `state_push_Int` and `state_pop_Int` are recognized as `State<Int>` operations and bound to one cell stack.
+State\<T\> bindings are pattern-matched from import names: `state_get_Int`, `state_put_Int`, `state_push_Int` and `state_pop_Int` are recognised as `State<Int>` operations and bound to one cell stack.
 
 ### 12.9.2 Public API
 
@@ -727,7 +765,7 @@ const state = getState();
 resetState();
 ```
 
-The `init()` function follows the **init-then-use pattern**: async initialization, synchronous calls after. The module is cached — calling `init()` again with the same URL is a no-op.
+The `init()` function follows the **init-then-use pattern**: async initialisation, synchronous calls after. The module is cached: calling `init()` again with the same URL is a no-op.
 
 A WASM trap leaves `call()` as a thrown `VeraTrap`: an `Error` whose message is the trap's, carrying `kind` and `fix` beside it, named from the same kind table as the reference runtime (Section 12.7.1).  So does everything else that leaves it: an escaping `WebAssembly.Exception` as `uncaught_exception`, and an error a host binding throws as `host_error` with the binding's own message, as on the reference runtime.
 
@@ -749,29 +787,29 @@ The browser runtime provides browser-appropriate implementations of IO operation
 | `IO.time` | `Date.now()` as BigInt | `int(time.time() * 1000)` |
 | `IO.stderr` | Appends to internal buffer, flushed via `getStderr()` | Writes to `sys.stderr` or capture buffer |
 | `async(Http.get/post(...))` (#841) | Eager: the request fires synchronously (XHR) at the `async(...)` point; `await` returns the buffered outcome | Concurrent: the request runs on a host worker thread; `await` blocks for it |
-| `vera serve` / `<HttpServer>` handlers (#305) | Not available — the browser runtime does not host an HTTP accept loop | `vera serve` drives the accept loop with instance-per-request isolation |
-| `Inference.complete` (§9.5.5) | Returns an explanatory `Result.Err` from every call — an API key in client-side JavaScript is readable from page source and network traffic; reach a provider through a server-side endpoint called with `Http` | Calls the configured provider over HTTPS |
-| `DB.query` / `DB.execute` (§9.5.7) | Returns an explanatory `Result.Err` from every operation — the same credential-exposure boundary as `Inference` | Executes SQL against the database `VERA_DB_URL` selects |
+| `vera serve` / `<HttpServer>` handlers (#305) | Not available: the browser runtime does not host an HTTP accept loop | `vera serve` drives the accept loop with instance-per-request isolation |
+| `Inference.complete` (§9.5.5) | Returns an explanatory `Result.Err` from every call: an API key in client-side JavaScript is readable from page source and network traffic; reach a provider through a server-side endpoint called with `Http` | Calls the configured provider over HTTPS |
+| `DB.query` / `DB.execute` (§9.5.7) | Returns an explanatory `Result.Err` from every operation, the same credential-exposure boundary as `Inference` | Executes SQL against the database `VERA_DB_URL` selects |
 
 The rows above fall into three kinds, and the distinction matters when reading a browser `Err`:
 
-- **Adaptations.** `IO.print`, `IO.read_line`, `IO.args`, `IO.exit`, `IO.get_env`, `IO.sleep`, `IO.time` and `IO.stderr` do the same job against a different substrate. The operation succeeds; only the mechanism differs. `async(Http.get/post(...))` is an adaptation of evaluation order rather than of mechanism — the values are identical, as the paragraph below records.
+- **Adaptations.** `IO.print`, `IO.read_line`, `IO.args`, `IO.exit`, `IO.get_env`, `IO.sleep`, `IO.time` and `IO.stderr` do the same job against a different substrate. The operation succeeds; only the mechanism differs. `async(Http.get/post(...))` is an adaptation of evaluation order rather than of mechanism; the values are identical, as the paragraph below says.
 - **Deliberate boundaries.** `IO.read_file` / `IO.write_file` (no filesystem), `<HttpServer>` (no accept loop), and `Inference.complete` / `DB.query` / `DB.execute` (the credential would be readable from page source and network traffic) return `Err` on every call **by definition of the browser target**, not pending a fix. Reach a filesystem, a database or a model provider through a server-side endpoint and call it with `Http`, which does run in the browser.
 - **Not implemented.** `IO.read_char` is the only row of this kind: reading a key needs JSPI suspend/resume, which the browser runtime does not implement, so its `Err` is a stub, and unlike a boundary's it is not part of the browser target's definition.
 
-Across the surface the two runtimes actually share — State, contracts, JSON, Markdown and the rest of the non-IO operations — results are identical. The boundary rows are outside that claim by construction, having no browser counterpart to agree with, and an `Http` call's outcome is host-specific for a milder reason: the browser issues it through synchronous `XMLHttpRequest`, so a JavaScript host without one returns an explanatory `Err` where the reference runtime performs the request.
+Across the surface the two runtimes share (State, contracts, JSON, Markdown and the rest of the non-IO operations), results are identical. The boundary rows are outside that claim by construction, having no browser counterpart to agree with, and an `Http` call's outcome is host-specific for a milder reason: the browser issues it through synchronous `XMLHttpRequest`, so a JavaScript host without one returns an explanatory `Err` where the reference runtime performs the request.
 
-Two operations reach that identity by carrying a canonical form the specification states rather than by both hosts happening to agree. `json_stringify` emits the one form §9.7.1 pins, down to separators and number rendering, and refuses a non-finite number on both hosts instead of one refusing and the other substituting `null`. `json_parse` reaches the same identity from the other side: §9.7.1 states the accepted domain — RFC 8259-valid text that decodes to finite numbers and strings of Unicode scalar values — so both hosts refuse the JavaScript constants and a lone-surrogate escape at the parse, with one message, rather than each inheriting whatever its own parser admits. `md_render` emits the canonical Markdown §9.7.3 describes — soft line breaks collapsed, each container's prefix re-applied to every line of every child, children separated, code spans fenced wider than their content — which is what makes the render a fixed point on both hosts, outside the three code-span shapes §9.7.3 records as unwriteable in the subset, which both hosts lose identically rather than differently.
+Two operations reach that identity by carrying a canonical form the specification states rather than by both hosts happening to agree. `json_stringify` emits the one form §9.7.1 pins, down to separators and number rendering, and refuses a non-finite number on both hosts instead of one refusing and the other substituting `null`. `json_parse` reaches the same identity from the other side: §9.7.1 states the accepted domain (RFC 8259-valid text that decodes to finite numbers and strings of Unicode scalar values), so both hosts refuse the JavaScript constants and a lone-surrogate escape at the parse, with one message, rather than each inheriting whatever its own parser admits. `md_render` emits the canonical Markdown §9.7.3 describes (soft line breaks collapsed, each container's prefix re-applied to every line of every child, children separated, code spans fenced wider than their content), which is what makes the render a fixed point on both hosts; the fixed point has no exceptions. The two code-span shapes §9.7.3 records as unwriteable in the subset are outside the round-trip property, and both hosts lose them identically rather than differently.
 
-`md_parse` reaches it the same way: §9.7.3 pins the ADT and also the *grammar* — the character classes it is written in, the order the block constructs claim a line, the fixed width a continuation loses, and the maximal-run rule for inline text. Without the grammar the two hand-written parsers would be free to disagree — on how a paragraph's plain-text runs are grouped (invisible to `md_render`, since the runs concatenate to the same text), on how a delimiter run is scanned, on how much indentation a list continuation loses, and on the block markers each recognises. Neither implementation is the specification, so both are held to it — a `+` bullet, an `n)` ordered marker, a loose list, a list nested three deep, a thematic break needing no interior space, and a table needing a separator row are grammar decisions, not implementation accidents. A generated corpus is parsed by both hosts on every PR and the resulting ADTs compared byte for byte, so a construct added to one host and not the other is red before it is released.
+`md_parse` reaches it the same way: §9.7.3 pins the ADT and also the *grammar*: the character classes it is written in, the order the block constructs claim a line, the fixed width a continuation loses, and the maximal-run rule for inline text. Without the grammar the two hand-written parsers would be free to disagree on how a paragraph's plain-text runs are grouped (invisible to `md_render`, since the runs concatenate to the same text), on how a delimiter run is scanned, on how much indentation a list continuation loses, and on the block markers each recognises. Neither implementation is the specification, so both are held to it: a `+` bullet, an `n)` ordered marker, a loose list, a list nested three deep, a thematic break needing no interior space, and a table needing a separator row are grammar decisions, not implementation accidents. A generated corpus is parsed by both hosts on every PR and the resulting ADTs compared byte for byte, so a construct added to one host and not the other is red before it is released.
 
-Fused async preserves the underlying value whenever the two hosts' results are comparable. Only the evaluation strategy differs, which is spec-conformant — §9.5.4 says an implementation MAY evaluate `async(e)` concurrently — and any difference that remains comes from the `Http` outcome underneath rather than from `async` itself. Mandatory parity tests enforce identical results across the shared surface.
+Fused async preserves the underlying value whenever the two hosts' results are comparable. Only the evaluation strategy differs, which is spec-conformant (§9.5.4 says an implementation MAY evaluate `async(e)` concurrently), and any difference that remains comes from the `Http` outcome underneath rather than from `async` itself. Mandatory parity tests enforce identical results across the shared surface.
 
 ### 12.9.4 Memory Protocol
 
 The JavaScript runtime follows the same memory protocol as the Python runtime (Section 12.5):
 
-- **Never cache TypedArray views** across WASM calls — `memory.buffer` can be detached by `memory.grow`. Always create fresh views before each access.
+- **Never cache TypedArray views** across WASM calls: `memory.buffer` can be detached by `memory.grow`. Always create fresh views before each access.
 - **BigInt for i64**: JavaScript WASM i64 values are `BigInt`, not `number`. The runtime handles the conversion transparently.
 - **ADT layout**: All ADT values use the same byte layout as the Python runtime (tag at offset 0, fields at computed offsets matching `codegen/registration.py`).
 
@@ -786,12 +824,12 @@ output_dir/
 └── index.html           # Loads and runs the program
 ```
 
-The `index.html` file uses an ES module script that imports from `vera-runtime.mjs`, initializes the WASM module, calls `main()`, and displays the captured stdout in a `<pre>` element.
+The `index.html` file uses an ES module script that imports from `vera-runtime.mjs`, initialises the WASM module, calls `main()`, and displays the captured stdout in a `<pre>` element.
 
 ### 12.9.6 Parity Testing
 
-The browser parity test suite (`tests/test_browser.py`) runs the examples the browser target can execute — and per-binding batteries over the Decimal, Json, Regex and Markdown host imports and the generated `Map` and `Set` operations — through both the Python/wasmtime runtime and the Node.js/JS-runtime. The example corpus is two explicit lists in that file rather than the whole `examples/` directory, and the two carry different oracles: the examples exporting `main` are run and compared on stdout, while the ones reached as exported functions are called with fixed arguments and compared on the returned value. The per-binding batteries compare stdout. An example is excluded from the corpus when it reads stdin interactively, when it uses a host family the browser refuses (file IO, `DB`), or when it does not compile standalone, and each exclusion is recorded beside the list with its reason. This catches drift between the two implementations across the shared surface, and is joined for `md_parse` by an ADT-level differential over a generated corpus — the two parsers are run directly and their trees compared byte for byte, because a comparison routed through `md_render` cannot see how a paragraph's plain-text runs are grouped. The tests cover IO operations, State operations, contract violations, Markdown parsing/rendering, and browser bundle emission.
+The browser parity test suite (`tests/test_browser.py`) runs the examples the browser target can execute, and per-binding batteries over the Decimal, Json, Regex and Markdown host imports and the generated `Map` and `Set` operations, through both the Python/wasmtime runtime and the Node.js/JS-runtime. The example corpus is two explicit lists in that file rather than the whole `examples/` directory, and the two carry different oracles: the examples exporting `main` are run and compared on stdout, while the ones reached as exported functions are called with fixed arguments and compared on the returned value. The per-binding batteries compare stdout. An example is excluded from the corpus when it reads stdin interactively, when it uses a host family the browser refuses (file IO, `DB`), or when it does not compile standalone, and each exclusion is recorded beside the list with its reason. This catches drift between the two implementations across the shared surface, and is joined for `md_parse` by an ADT-level differential over a generated corpus: the two parsers are run directly and their trees compared byte for byte, because a comparison routed through `md_render` cannot see how a paragraph's plain-text runs are grouped. The tests cover IO operations, State operations, contract violations, Markdown parsing/rendering, and browser bundle emission.
 
-The two operations that carry a canonical form (§12.9.3) are tested three ways rather than by equality alone, because two hosts agreeing on a wrong answer would satisfy equality: each case asserts cross-host equality, the expected string written out, and — for `md_render` — stability under re-render, which is the observable form of §9.7.3's round-trip property. Some rules are reachable only from an `MdBlock` a program *built* rather than parsed, so the Markdown battery renders constructed values too. `json_stringify`'s number rendering is additionally checked differentially against a real `JSON.stringify` over a sample of doubles drawn from raw bit patterns, since the reference host renders numbers itself rather than delegating. Failures that are contracts rather than values are asserted two-sidedly: a non-finite `JNumber` must make the call fail on both hosts **and** produce no output, so a host that emitted `null` before failing could not read as a pass. `json_parse`'s accepted domain (§9.7.1) is covered by a battery that compares the whole `Err` message across hosts, parameterised over the excluded inputs at every position a string can occupy — value, key, array element, nested — and run beside controls whose acceptance the refusals must not disturb, matched surrogate pairs among them. The browser stubs are covered on two different shapes: `IO.read_file` and `IO.write_file` get per-host pinning, running both runtimes against a path that is really readable or writable so the native `Ok` and the browser `Err` are each asserted, while `IO.read_char` is checked in the browser alone — that the module links and the stub's `Err` arm is taken — with no native side to compare against.
+The two operations that carry a canonical form (§12.9.3) are tested three ways rather than by equality alone, because two hosts agreeing on a wrong answer would satisfy equality: each case asserts cross-host equality, the expected string written out, and (for `md_render`) stability under re-render, which is the observable form of §9.7.3's round-trip property. Some rules are reachable only from an `MdBlock` a program *built* rather than parsed, so the Markdown battery renders constructed values too. `json_stringify`'s number rendering is additionally checked differentially against a real `JSON.stringify` over a sample of doubles drawn from raw bit patterns, since the reference host renders numbers itself rather than delegating. Failures that are contracts rather than values are asserted two-sidedly: a non-finite `JNumber` must make the call fail on both hosts **and** produce no output, so a host that emitted `null` before failing could not read as a pass. `json_parse`'s accepted domain (§9.7.1) is covered by a battery that compares the whole `Err` message across hosts, parameterised over the excluded inputs at every position a string can occupy (value, key, array element, nested) and run beside controls whose acceptance the refusals must not disturb, matched surrogate pairs among them. The browser stubs are covered on two different shapes: `IO.read_file` and `IO.write_file` get per-host pinning, running both runtimes against a path that is really readable or writable so the native `Ok` and the browser `Err` are each asserted, while `IO.read_char` is checked in the browser alone (that the module links and the stub's `Err` arm is taken), with no native side to compare against.
 
 Pre-commit hooks trigger parity tests on any change to the host binding surface (`vera/browser/`, `vera/codegen/api.py`, `vera/wasm/markdown.py`, `vera/markdown.py`). CI runs the full parity suite on every PR.

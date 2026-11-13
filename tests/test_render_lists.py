@@ -188,7 +188,7 @@ _DOC_BLOCK = (
     "| Limitation | Issue |\n"
     "|---|---|\n"
     f"| Ten, at length. | {_LINK.format(n=10)} |\n"
-    "| Deliberate behaviour, `a \\| b`. | — |\n"
+    "| Deliberate behaviour, `a \\| b`. | none |\n"
 )
 _OTHER_BLOCK = (
     "| Limitation | Issue | Notes |\n"

@@ -1,5 +1,5 @@
-<svg width="920" height="490" viewBox="0 0 920 490" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
-  <title id="title">The gate pipeline: file-filtered commit-stage hooks running the fast gates (lint and security rules, types, the test files a commit stages, suite collection, canonical form, doc code-blocks, site assets, licences, browser parity), two push-stage hooks (the CHANGELOG gate with its Skip-changelog escape, and uv.lock sync), and CI running the full test suite in Linux and Windows shards (on the whole platform matrix for a release and nightly), conformance and the examples, plus every hook above, before anything merges to protected main.</title>
+<svg width="920" height="522" viewBox="0 0 920 522" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
+  <title id="title">The gate pipeline: file-filtered commit-stage hooks running the fast gates (lint and security rules, types, the test files a commit stages, suite collection, canonical form, doc code blocks, diagnostic fields, encodings, site assets, licences, browser parity and the rest), two push-stage hooks (the CHANGELOG gate, which wants a changelog.d fragment or a Skip-changelog escape, and uv.lock sync), and CI running the full test suite in Linux and Windows shards with the class-instrument matrices sampled (the whole platform matrix when the version rises, and nightly), conformance, the examples, eager-GC, browser parity, the security and supply-chain jobs, and every hook again, before anything merges to protected main.</title>
   <!-- Design system: see architecture.svg. Grounded in CONTRIBUTING.md §Pre-commit Hooks.
        Deliberately count-free — hook counts are policed doc counts and drift. -->
   <defs>
@@ -21,51 +21,58 @@
     </style>
   </defs>
 
-  <rect x="1.5" y="1.5" width="917" height="487" rx="14" fill="#faf9f7" stroke="#e8e6e1" stroke-width="1.5"/>
+  <rect x="1.5" y="1.5" width="917" height="519" rx="14" fill="#faf9f7" stroke="#e8e6e1" stroke-width="1.5"/>
 
   <text class="f micro" x="36" y="42">CONTRIBUTING · THE GATE PIPELINE</text>
-  <text class="f sub" x="36" y="64">Three rings around main: per-commit hooks, per-push hooks, and CI on the pull request — main itself is protected.</text>
+  <text class="f sub" x="36" y="64">Three rings around main: per-commit hooks, per-push hooks, and CI on the pull request; main itself is protected.</text>
 
   <!-- commit stage -->
   <g>
-    <rect class="card" x="36" y="88" width="848" height="170" rx="10"/>
-    <rect x="36.5" y="88.5" width="4" height="169" rx="2" fill="#8b6cad"/>
-    <text class="f t" x="56" y="112">git commit — the commit-stage hooks</text>
+    <rect class="card" x="36" y="88" width="848" height="182" rx="10"/>
+    <rect x="36.5" y="88.5" width="4" height="181" rx="2" fill="#8b6cad"/>
+    <text class="f t" x="56" y="112">git commit: the commit-stage hooks</text>
     <text class="f d" x="56" y="130">File-filtered: a docs-only commit triggers a small subset; a compiler-level commit triggers most of them.</text>
     <!-- pill grid -->
-    <rect class="pill" x="56"  y="146" width="128" height="24" rx="12"/><text class="m pt" x="120" y="162" text-anchor="middle">whitespace · yaml · toml</text>
-    <rect class="pill" x="192" y="146" width="112" height="24" rx="12"/><text class="m pt" x="248" y="162" text-anchor="middle">ruff + security</text>
-    <rect class="pill" x="312" y="146" width="64"  height="24" rx="12"/><text class="m pt" x="344" y="162" text-anchor="middle">mypy</text>
-    <rect class="pill" x="384" y="146" width="120" height="24" rx="12"/><text class="m pt" x="444" y="162" text-anchor="middle">staged test files</text>
-    <rect class="pill" x="512" y="146" width="112" height="24" rx="12"/><text class="m pt" x="568" y="162" text-anchor="middle">suite collection</text>
-    <rect class="pill" x="632" y="146" width="140" height="24" rx="12"/><text class="m pt" x="702" y="162" text-anchor="middle">corpus canonical form</text>
-    <rect class="pill" x="56"  y="178" width="196" height="24" rx="12"/><text class="m pt" x="154" y="194" text-anchor="middle">doc code-blocks (README/spec/SKILL/…)</text>
-    <rect class="pill" x="260" y="178" width="150" height="24" rx="12"/><text class="m pt" x="335" y="194" text-anchor="middle">site assets + coherence</text>
-    <rect class="pill" x="418" y="178" width="120" height="24" rx="12"/><text class="m pt" x="478" y="194" text-anchor="middle">licence compliance</text>
-    <rect class="pill" x="546" y="178" width="120" height="24" rx="12"/><text class="m pt" x="606" y="194" text-anchor="middle">browser parity</text>
-    <text class="f d" x="56" y="230" font-style="italic" fill="#a9a49b">…the fast gates: the tests a commit stages, and docs that match the tree. The slow gates wait for CI.</text>
+    <rect class="pill" x="56"  y="146" width="164" height="24" rx="12"/><text class="m pt" x="138" y="162" text-anchor="middle">whitespace · yaml · toml</text>
+    <rect class="pill" x="228" y="146" width="112" height="24" rx="12"/><text class="m pt" x="284" y="162" text-anchor="middle">ruff + security</text>
+    <rect class="pill" x="348" y="146" width="64"  height="24" rx="12"/><text class="m pt" x="380" y="162" text-anchor="middle">mypy</text>
+    <rect class="pill" x="420" y="146" width="120" height="24" rx="12"/><text class="m pt" x="480" y="162" text-anchor="middle">staged test files</text>
+    <rect class="pill" x="548" y="146" width="112" height="24" rx="12"/><text class="m pt" x="604" y="162" text-anchor="middle">suite collection</text>
+    <rect class="pill" x="668" y="146" width="140" height="24" rx="12"/><text class="m pt" x="738" y="162" text-anchor="middle">corpus canonical form</text>
+    <rect class="pill" x="56"  y="178" width="240" height="24" rx="12"/><text class="m pt" x="176" y="194" text-anchor="middle">doc code-blocks (README/spec/SKILL/…)</text>
+    <rect class="pill" x="304" y="178" width="150" height="24" rx="12"/><text class="m pt" x="379" y="194" text-anchor="middle">site assets + coherence</text>
+    <rect class="pill" x="462" y="178" width="120" height="24" rx="12"/><text class="m pt" x="522" y="194" text-anchor="middle">licence compliance</text>
+    <rect class="pill" x="590" y="178" width="120" height="24" rx="12"/><text class="m pt" x="650" y="194" text-anchor="middle">browser parity</text>
+    <rect class="pill" x="56"  y="210" width="120" height="24" rx="12"/><text class="m pt" x="116" y="226" text-anchor="middle">diagnostic fields</text>
+    <rect class="pill" x="184" y="210" width="120" height="24" rx="12"/><text class="m pt" x="244" y="226" text-anchor="middle">explicit encoding</text>
+    <rect class="pill" x="312" y="210" width="124" height="24" rx="12"/><text class="m pt" x="374" y="226" text-anchor="middle">grammar alignment</text>
+    <rect class="pill" x="444" y="210" width="116" height="24" rx="12"/><text class="m pt" x="502" y="226" text-anchor="middle">limitations sync</text>
+    <rect class="pill" x="568" y="210" width="136" height="24" rx="12"/><text class="m pt" x="636" y="226" text-anchor="middle">changelog fragments</text>
+    <rect class="pill" x="712" y="210" width="60"  height="24" rx="12"/><text class="m pt" x="742" y="226" text-anchor="middle">…</text>
+    <text class="f d" x="56" y="256" font-style="italic" fill="#a9a49b">…the fast gates: the tests a commit stages, and docs that match the tree. The slow gates wait for CI.</text>
   </g>
-  <line class="edge" x1="80" y1="258" x2="80" y2="278" marker-end="url(#arr)"/>
+  <line class="edge" x1="80" y1="270" x2="80" y2="290" marker-end="url(#arr)"/>
 
   <!-- push stage -->
   <g>
-    <rect class="card" x="36" y="280" width="848" height="74" rx="10"/>
-    <rect x="36.5" y="280.5" width="4" height="73" rx="2" fill="#d4952a"/>
-    <text class="f t" x="56" y="304">git push — the push-stage hooks</text>
-    <text class="f d" x="56" y="322"><tspan font-weight="600">CHANGELOG gate:</tspan> substantive paths (vera/**, spec/**, SKILL.md, unknown top-level dirs) need a new entry — escape with a</text>
-    <text class="f d" x="56" y="336"><tspan class="m" font-size="10px">Skip-changelog: &lt;reason&gt;</tspan> trailer or the PR label. <tspan font-weight="600">uv.lock sync:</tspan> <tspan class="m" font-size="10px">uv lock --check</tspan> before the CI round-trip.</text>
+    <rect class="card" x="36" y="292" width="848" height="74" rx="10"/>
+    <rect x="36.5" y="292.5" width="4" height="73" rx="2" fill="#d4952a"/>
+    <text class="f t" x="56" y="316">git push: the push-stage hooks</text>
+    <text class="f d" x="56" y="334"><tspan font-weight="600">CHANGELOG gate:</tspan> substantive paths (vera/**, spec/**, SKILL.md, any path off the exempt list) need a changelog.d/ fragment; escape with a</text>
+    <text class="f d" x="56" y="348"><tspan class="m" font-size="10px">Skip-changelog: &lt;reason&gt;</tspan> trailer or the skip-changelog PR label. <tspan font-weight="600">uv.lock sync:</tspan> <tspan class="m" font-size="10px">uv lock --check</tspan> before the CI round-trip.</text>
   </g>
-  <line class="edge" x1="80" y1="354" x2="80" y2="374" marker-end="url(#arr)"/>
+  <line class="edge" x1="80" y1="366" x2="80" y2="386" marker-end="url(#arr)"/>
 
   <!-- CI -->
   <g>
-    <rect class="card" x="36" y="376" width="848" height="76" rx="10"/>
-    <rect x="36.5" y="376.5" width="4" height="75" rx="2" fill="#5a9e6f"/>
-    <text class="f t" x="56" y="400">pull request — CI (the whole OS × Python matrix for a release and nightly; after a merge, coverage)</text>
-    <text class="f d" x="56" y="418">The full test suite in Linux and Windows shards, conformance at each declared level, the examples (check, verify, run), eager-GC runs —</text>
-    <text class="f d" x="56" y="434">and every hook above again. main is protected: merging needs the required contexts green.</text>
+    <rect class="card" x="36" y="388" width="848" height="92" rx="10"/>
+    <rect x="36.5" y="388.5" width="4" height="91" rx="2" fill="#5a9e6f"/>
+    <text class="f t" x="56" y="412">pull request: CI (the whole OS × Python matrix when the version rises, and nightly; after any other merge, coverage)</text>
+    <text class="f d" x="56" y="430">The full test suite in Linux and Windows shards with each class-instrument matrix sampled, conformance at each declared level,</text>
+    <text class="f d" x="56" y="446">the examples (check, verify, run), eager-GC runs, browser parity, the security and supply-chain jobs, and every hook above again.</text>
+    <text class="f d" x="56" y="462">main is protected: merging needs the required contexts green.</text>
   </g>
 
   <!-- footer -->
-  <text class="f footi" x="36" y="476">The hooks catch the fast failures before the push; CI catches everything before the merge; nothing lands on main unchecked.</text>
+  <text class="f footi" x="36" y="506">The hooks catch the fast failures before the push; CI catches everything before the merge; nothing lands on main unchecked.</text>
 </svg>

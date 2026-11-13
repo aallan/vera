@@ -6,10 +6,10 @@ Technical decisions, rationale, and prior art. For the design philosophy and FAQ
 
 ## Design principles
 
-1. **Checkability over correctness.** Code that can be mechanically checked. When wrong, the compiler provides a natural language explanation of the error with a concrete fix — an instruction, not a status report.
-2. **Explicitness over convenience.** All state changes declared. All effects typed. All function contracts mandatory. No implicit behaviour.
-3. **One canonical form.** One preferred spelling per construct; for a given parse, formatting is deterministic and idempotent. No style choices.
-4. **Structural references over names.** Bindings referenced by type and positional index (`@T.n`), not arbitrary names. See [`DE_BRUIJN.md`](DE_BRUIJN.md).
+1. **Checkability over correctness.** Code is written to be mechanically checked. When it is wrong, the compiler explains the error in natural language and gives a concrete fix: an instruction rather than a status report.
+2. **Explicitness over convenience.** Every state change is declared, every effect is typed, every function has a contract, and nothing happens implicitly.
+3. **One canonical form.** Each construct has one preferred spelling, and for a given parse, formatting is deterministic and idempotent, so there are no style choices.
+4. **Structural references over names.** A binding is referenced by its type and positional index (`@T.n`) rather than by an arbitrary name. See [`DE_BRUIJN.md`](DE_BRUIJN.md).
 5. **Contracts as the source of truth.** Every function declares what it requires and guarantees. The compiler verifies statically what the solver can decide, and checks the rest at run time.
 6. **Constrained expressiveness.** Fewer valid programs means fewer opportunities for the model to be wrong.
 
@@ -22,7 +22,7 @@ Technical decisions, rationale, and prior art. For the design philosophy and FAQ
 | References | [`@T.n` typed De Bruijn indices](DE_BRUIJN.md) | Eliminates naming coherence errors; indices are locally determinable from types alone |
 | Contracts | Mandatory `requires`/`ensures`/`effects` on all functions | Programs must be checkable; contracts are the machine-verifiable specification |
 | Verification | Z3 static (Tier 1) → Z3 guided (Tier 2) → runtime fallback (Tier 3) | Maximises static guarantees; degrades gracefully where SMT is undecidable |
-| Effects | Algebraic, row-polymorphic (`IO`, `Http`, `HttpServer`, `State`, `Async`, `Inference`, `DB`, `Random`, `Diverge`, plus the parameterised exception effect `Exn<T>` — all reported by `vera effects --json`) | All state and side effects explicit; effects are typed, trackable, and handleable |
+| Effects | Algebraic, row-polymorphic (`IO`, `Http`, `HttpServer`, `State`, `Async`, `Inference`, `DB`, `Random`, `Diverge`, plus the parameterised exception effect `Exn<T>`, all listed by `vera effects --json`) | All state and side effects explicit; effects are typed, trackable, and handleable |
 | Error handling | `Result<T,E>` ADTs for expected errors; `Exn<T>` algebraic effect for exceptions | Errors are values; `match` enforces handling every case; `Exn<T>` is handleable like any other effect |
 | Inference | `Inference.complete` as an algebraic effect | LLM calls are typed, contract-verifiable, handleable, and explicit in signatures |
 | Data types | Algebraic data types + exhaustive `match` | No classes, no inheritance; compiler enforces every case is handled |
@@ -30,7 +30,7 @@ Technical decisions, rationale, and prior art. For the design philosophy and FAQ
 | Refinement types | `{ @T \| predicate }` checked by Z3 | Encode value-level constraints in the type system; rejected statically or at runtime |
 | Type aliases | Opaque at a slot name's head; resolved inside type arguments, and in `State`/`Exn` cell identity wherever the resolved type has a mangle-safe family name ([`DE_BRUIJN.md`](DE_BRUIJN.md) §6.5) | An alias names a binding, so a library adding one must not split a caller's namespace; a type argument is a structural component, so one type must not become two namespaces |
 | Collections | `Array<T>`, `Map<K,V>`, `Set<T>` | Functional, immutable; no mutation, no loops; `array_map`/`filter`/`fold`/`slice` as built-ins |
-| Standard library | Built-in functions, as `vera builtins` lists them | Strings, arrays, maps, sets, decimals, math (log/trig/constants/utilities), JSON, HTML, Markdown, regex, base64, URL — no external deps |
+| Standard library | Built-in functions, as `vera builtins` lists them | Strings, arrays, maps, sets, decimals, math (log/trig/constants/utilities), JSON, HTML, Markdown, regex, base64 and URL, with no external dependencies |
 | Modules | `module`/`import` with explicit `public`/`private` visibility | Programs split across files; `vera check` resolves the module graph |
 | Recursion | Explicit termination measures (`decreases`), or the `Diverge` effect for a function that may not terminate; a recursive function with neither is refused (`E137`) | Termination is proved via Z3 where it can be and guarded at run time otherwise; non-termination is visible in the signature |
 | Evaluation | Strict (call-by-value) | Simpler for models to reason about; no lazy evaluation to track |
@@ -49,11 +49,11 @@ Technical decisions, rationale, and prior art. For the design philosophy and FAQ
 
 Vera's contracts are checked in two implemented tiers, applied at every call site:
 
-![Three-tier verification: each obligation goes to Z3. Unsat is verified (Tier 1) and sat is a compile error with a counterexample; unknown or timeout goes on to Tier 2, where hints from assert axioms and lemmas extend the solver to quantifiers, calls and arrays, and what remains becomes a Tier 3 runtime guard.](assets/diagrams/tiers.svg)
+![Three-tier verification: each obligation goes to Z3. Unsat is verified (Tier 1) and sat is a vera verify error with a counterexample, unless the countermodel rests on a stand-in for a value the verifier cannot translate, which counts as unknown; unknown or timeout becomes a Tier 3 runtime check, or, where no check can be emitted, a disclosed warning. Tier 2, hints from assert axioms and lemmas, is specified but not implemented.](assets/diagrams/tiers.svg)
 
-**Tier 1 — Z3 static (decidable fragment).** The compiler generates a verification condition and sends it to Z3. If Z3 returns `unsat`, the contract is proved for all inputs. This covers linear integer and real arithmetic, boolean logic, strings, ADT constructor discrimination and fields, array lengths and literals, and refinement predicates (spec §6.8).
+**Tier 1: Z3 static (decidable fragment).** The compiler generates a verification condition and sends it to Z3. If Z3 returns `unsat`, the contract is proved for all inputs. This covers linear integer and real arithmetic, boolean logic, strings, ADT constructor discrimination and fields, array lengths and literals, and refinement predicates (spec §6.8).
 
-**Tier 3 — Runtime fallback.** If Z3 returns `unknown` or times out, the contract is compiled as a runtime check in the WASM binary. A violation traps on entry to the function (a `requires`) or on its return (an `ensures`), naming the contract. A site that can be neither proved nor guarded is disclosed as a warning (`E504`, `E506`) and counted in neither tier.
+**Tier 3: runtime fallback.** If Z3 returns `unknown` or times out, the contract is compiled as a runtime check in the WASM binary. A violation traps on entry to the function (a `requires`) or on its return (an `ensures`), naming the contract. A site that can be neither proved nor guarded is disclosed as a warning (`E504`, `E506`, `E542`, `E543`) and counted in neither tier.
 
 `vera verify --json` reports the tier breakdown:
 
@@ -63,7 +63,7 @@ Vera's contracts are checked in two implemented tiers, applied at every call sit
 
 A fully Tier 1–verified program has the strongest guarantee: if it compiles and verifies, the contracts hold for all inputs. The compiled program checks its contracts at run time as well, so a wrong proof traps rather than returning a wrong answer. See [spec/06-contracts.md](spec/06-contracts.md) for the formal treatment.
 
-**Tier 2 — Z3 guided (extended fragment).** Hints from `assert` statements and lemma functions extend the decidable fragment to function calls, quantifiers, and array properties. See [spec/06-contracts.md §6.3.2](spec/06-contracts.md).
+**Tier 2: Z3 guided (extended fragment).** Hints from `assert` statements and lemma functions extend the decidable fragment to function calls, quantifiers, and array properties. See [spec/06-contracts.md §6.3.2](spec/06-contracts.md).
 
 ---
 
@@ -80,15 +80,15 @@ Built-in effects:
 | `State<T>` | `get`, `put` | Typed mutable state; scope controlled by `handle[State<T>]` |
 | `Exn<T>` | `throw` | Typed exceptions; `throw` never resumes (`Never` return type); handling is via `handle[Exn<T>]` syntax |
 | `Async` | `async`, `await` | `Future<T>` is zero-overhead at compile time; `async(Http.get/post(...))` runs concurrently on a host worker thread, all other shapes evaluate eagerly |
-| `HttpServer` | — (marker) | Verified HTTP handling: `vera serve` hosts a contract-checked `handle(Request -> Response)`; compiles to a wasi:http component with `--world server` |
+| `HttpServer` | none (marker) | Verified HTTP handling: `vera serve` hosts a contract-checked `handle(Request -> Response)`; compiles to a wasi:http component with `--world server` |
 | `Random` | `random_int`, `random_float`, `random_bool` | Host randomness; rejection-sampled for unbiased ranges |
-| `Diverge` | — (marker) | Declares potential non-termination |
+| `Diverge` | none (marker) | Declares potential non-termination |
 | `Inference` | `complete` | LLM calls; `String → Result<String, String>`; provider selected by env var |
 | `DB` | `query`, `execute` | SQL against SQLite (chosen by `VERA_DB_URL`); the SQL argument must be literal-provenance (`E207`) with runtime values through `?` placeholders; rows are `Array<Array<Option<String>>>` (SQL `NULL` = `None`) |
 
 Effects compose in rows: `effects(<IO, Http>)`, `effects(<Inference, IO>)`.
 
-![Effect subtyping by row inclusion: pure fits where IO is allowed, and IO fits where IO plus State is allowed — fewer effects always fit where more are expected.](assets/diagrams/effect-row-lattice.svg)
+![Effect subtyping by row inclusion: pure fits where IO is allowed, and IO fits where IO plus State is allowed; fewer effects always fit where more are expected.](assets/diagrams/effect-row-lattice.svg)
 
 `handle[State<T>]` and `handle[Exn<E>]` blocks give a computation local state and recoverable failure: the handler discharges its effect, so the function around it stays pure. A closure is a value that can be applied outside the handlers around it, so its body is held to its own row, and a closure that keeps state or throws writes the handler inside its own body. See [spec/07-effects.md](spec/07-effects.md).
 
@@ -96,15 +96,15 @@ Effects compose in rows: `effects(<IO, Http>)`, `effects(<Inference, IO>)`.
 
 ## Prior art
 
-Vera draws on ideas from several existing languages and systems (see also [spec/00-introduction.md §0.4](spec/00-introduction.md#04-prior-art)):
+Vera takes ideas from these languages and systems (see also [spec/00-introduction.md §0.4](spec/00-introduction.md#04-prior-art)):
 
-- [Eiffel](https://www.eiffel.org/) — the originator of Design by Contract; `require`/`ensure` as first-class language constructs
-- [Dafny](https://dafny.org/) — full functional verification with preconditions, postconditions, and termination measures; the closest single-language ancestor
-- [F*](https://fstar-lang.org/) — refinement types, algebraic effects, and SMT-based verification in a dependently-typed language
-- [Koka](https://koka-lang.github.io/koka/doc/book.html) — row-polymorphic algebraic effects; Vera's effect system follows this model
-- [Liquid Haskell](https://ucsd-progsys.github.io/liquidhaskell/) — refinement types checked via SMT solver
-- [Idris](https://www.idris-lang.org/) — totality checking and termination proofs; Vera's `decreases` clauses draw on this
-- [SPARK/Ada](https://www.adacore.com/about-spark) — contract-based industrial verification; the "if it compiles, it's correct" philosophy
-- [bruijn](https://bruijn.marvinborner.de/) — De Bruijn indices as surface syntax for a pure lambda calculus; Vera extends this to a typed, effectful language with type-namespaced indices (see [`DE_BRUIJN.md`](DE_BRUIJN.md))
-- [TLA+](https://lamport.azurewebsites.net/tla/tla.html) / [Alloy](https://alloytools.org/) — executable specifications that constrain what implementations can do; Vera's contracts serve an analogous role
-- [WebAssembly](https://webassembly.org/) — portable, sandboxed compilation target; the host-import model enables the effect system's runtime dispatch without ambient capabilities
+- [Eiffel](https://www.eiffel.org/): the originator of Design by Contract; `require`/`ensure` as first-class language constructs
+- [Dafny](https://dafny.org/): full functional verification with preconditions, postconditions, and termination measures; the closest single-language ancestor
+- [F*](https://fstar-lang.org/): refinement types, algebraic effects, and SMT-based verification in a dependently-typed language
+- [Koka](https://koka-lang.github.io/koka/doc/book.html): row-polymorphic algebraic effects; Vera's effect system follows this model
+- [Liquid Haskell](https://ucsd-progsys.github.io/liquidhaskell/): refinement types checked via SMT solver
+- [Idris](https://www.idris-lang.org/): totality checking and termination proofs; Vera's `decreases` clauses draw on this
+- [SPARK/Ada](https://www.adacore.com/about-spark): contract-based industrial verification; the "if it compiles, it's correct" philosophy
+- [bruijn](https://bruijn.marvinborner.de/): De Bruijn indices as surface syntax for a pure lambda calculus; Vera extends this to a typed, effectful language with type-namespaced indices (see [`DE_BRUIJN.md`](DE_BRUIJN.md))
+- [TLA+](https://lamport.azurewebsites.net/tla/tla.html) / [Alloy](https://alloytools.org/): executable specifications that constrain what implementations can do; Vera's contracts serve an analogous role
+- [WebAssembly](https://webassembly.org/): portable, sandboxed compilation target; the host-import model enables the effect system's runtime dispatch without ambient capabilities

@@ -1,5 +1,5 @@
 <svg width="920" height="420" viewBox="0 0 920 420" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
-  <title id="title">How slot indices shift as lets stack, traced through double_then_increment: on entry the parameter is at Int index zero; after the first let the doubled value takes index zero and the parameter shifts to one; after the second let the incremented value is zero, the doubled value one, the parameter two — and the ensures clause evaluates in the entry environment, where index zero is still the parameter.</title>
+  <title id="title">How slot indices shift as lets stack, traced through double_then_increment: on entry the parameter is at Int index zero; after the first let the doubled value takes index zero and the parameter shifts to one; after the second let the incremented value is zero, the doubled value one, the parameter two; the ensures clause evaluates in the entry environment, where index zero is still the parameter.</title>
   <!-- Design system: see architecture.svg. Grounded in DE_BRUIJN.md §5.3. -->
   <defs>
     <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
@@ -36,7 +36,7 @@
     <text class="m" x="54" y="164" font-size="11px" fill="#2d2b28">    let @Int = @Int.0 + 1;  @Int.0 }</text>
   </g>
   <text class="f d" x="392" y="110">On each let's right-hand side, <tspan class="m" font-size="10px">@Int.0</tspan> is the <tspan font-weight="600">current</tspan></text>
-  <text class="f d" x="392" y="126">most-recent Int — never the binding being introduced;</text>
+  <text class="f d" x="392" y="126">most-recent Int, never the binding being introduced;</text>
   <text class="f d" x="392" y="142">it only becomes visible after the let completes.</text>
 
   <!-- timeline: 4 stack snapshots -->
@@ -85,7 +85,7 @@
     <rect x="648.5" y="300.5" width="4" height="73" rx="2" fill="#d4952a"/>
     <text class="f" x="664" y="320" font-size="11px" font-weight="600" fill="#b07820">ensures sees the entry state</text>
     <text class="f d" x="664" y="338">postconditions evaluate in the</text>
-    <text class="f d" x="664" y="352">function's <tspan font-weight="600">entry</tspan> environment —</text>
+    <text class="f d" x="664" y="352">function's <tspan font-weight="600">entry</tspan> environment, so</text>
     <text class="f d" x="664" y="366"><tspan class="m" font-size="10px">@Int.0</tspan> there is the parameter</text>
   </g>
 

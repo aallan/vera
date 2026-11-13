@@ -6,9 +6,9 @@ If you discover a security vulnerability in Vera, please report it responsibly.
 
 **Do not open a public issue.** Instead, use one of these channels:
 
-1. **GitHub private vulnerability reporting** (preferred) — go to the [Security tab](https://github.com/aallan/vera/security/advisories/new) and click "Report a vulnerability". This keeps the report within GitHub and allows coordinated disclosure.
+1. **GitHub private vulnerability reporting** (preferred): go to the [Security tab](https://github.com/aallan/vera/security/advisories/new) and choose "Report a vulnerability". The report stays within GitHub and allows coordinated disclosure.
 
-2. **Email** — send details to **alasdair@babilim.co.uk** if you prefer.
+2. **Email**: send details to **alasdair@babilim.co.uk** if you prefer.
 
 In either case, include:
 
@@ -30,17 +30,17 @@ Issues in the language specification that affect soundness of the type system or
 
 ## CI Security Practices
 
-The project uses automated security scanning on every push and pull request:
+Automated security scanning runs on every push to `main` and every pull request. A pull request that changes only the VS Code extension's own files skips the dependency audit and the SBOM.
 
-- **`ruff check --select S vera/`** (lint job) — Bandit-equivalent security rules applied to the compiler source. Detects patterns such as unsafe `subprocess` use, hardcoded secrets, and insecure HTTP calls. All findings are reviewed and either fixed or explicitly suppressed with a `# noqa: SXXX` annotation explaining why.
-- **`pip-audit --skip-editable`** (dependency-audit job) — Scans all installed packages against the [OSV vulnerability database](https://osv.dev) for known CVEs. The local editable `vera` install is skipped (it is not on PyPI); all third-party dependencies are audited. Known unfixed CVEs in transitive dependencies are suppressed with `--ignore-vuln` and a comment to revisit when a fix ships.
-- **CycloneDX SBOM** (sbom job) — Generates a [CycloneDX](https://cyclonedx.org) JSON Software Bill of Materials via `cyclonedx-py environment`, capturing the full transitive dependency tree at the point of each CI run. The SBOM is uploaded as a 90-day CI artifact for supply-chain auditing.
-- **Gitleaks** (security job) — Full-history secret scanning on every push and PR.
+- **`ruff check --select S vera/`** (lint job): Bandit-equivalent security rules over the compiler source, for patterns such as unsafe `subprocess` use, hard-coded secrets and insecure HTTP calls. Each finding is fixed or suppressed with a `# noqa: SXXX` annotation that gives the reason.
+- **`pip-audit --skip-editable`** (dependency-audit job): checks every installed package for known CVEs against PyPI's vulnerability data, pip-audit's default service. The local editable `vera` install is skipped; every third-party dependency is audited. A known unfixed CVE in a transitive dependency is suppressed with `--ignore-vuln` and a comment to revisit it when a fix ships.
+- **CycloneDX SBOM** (sbom job): generates a [CycloneDX](https://cyclonedx.org) JSON Software Bill of Materials with `cyclonedx-py environment`, recording the full transitive dependency tree for each CI run. The SBOM is uploaded as a CI artifact kept for 90 days, for supply-chain auditing.
+- **Gitleaks** (security job): full-history secret scanning.
 
 ### Workflow hardening
 
-All CI jobs use least-privilege permissions (`permissions: contents: read`). The security job additionally requires `security-events: write` for GitHub advisory integration. All `actions/checkout` steps set `persist-credentials: false` to prevent the `GITHUB_TOKEN` from being stored in `.git/config` for the lifetime of the runner.
+Every CI job declares least-privilege permissions, `contents: read` unless it needs more: the security job also takes `security-events: write` for GitHub advisory integration, matrix-gate `actions: read`, and matrix-issue `issues: write` to file a failed nightly cell. Every `actions/checkout` step in `ci.yml` and `release.yml` sets `persist-credentials: false`, so the `GITHUB_TOKEN` is not stored in `.git/config` for the lifetime of the runner.
 
-Third-party GitHub Actions are pinned to major-version tags and kept current by Dependabot (`github-actions` ecosystem, `.github/dependabot.yml`). `codecov/codecov-action` is additionally pinned to a commit SHA as targeted supply-chain hardening following the Codecov → Harness acquisition; see [#712](https://github.com/aallan/vera/issues/712) and the CI-workarounds table in [`KNOWN_ISSUES.md`](KNOWN_ISSUES.md) for the revisit trigger.
+Third-party GitHub Actions are pinned to major-version tags and kept current by Dependabot (`github-actions` ecosystem, `.github/dependabot.yml`). `codecov/codecov-action` is also pinned to a commit SHA, because Codecov's acquisition by Harness raises the risk that its floating tag is repointed; see [#712](https://github.com/aallan/vera/issues/712) and the CI-workarounds table in [`KNOWN_ISSUES.md`](KNOWN_ISSUES.md) for the revisit trigger.
 
-`zizmor` reports one acknowledged `secrets-outside-env` finding: the `CODECOV_TOKEN` is passed as an action input (`token: ${{ secrets.CODECOV_TOKEN }}`) rather than through an environment variable. This is not actionable — `codecov/codecov-action` requires the token as an `inputs:` parameter and does not read it from an environment variable. The risk is low: the Codecov token has read-only scope on repository data, and `fail_ci_if_error: false` means missing or invalid tokens do not block CI.
+One `zizmor` finding is acknowledged and left open: `secrets-outside-env`, for the two coverage uploads in `ci.yml`. They read the repository secret `CODECOV_TOKEN` in jobs that have no deployment environment, and zizmor's remedy is to hold the secret in a GitHub environment and attach those jobs to it. The token is a Codecov upload token: a leaked one lets its holder upload false coverage reports for this repository, and gives no access to GitHub. `fail_ci_if_error: false` does not limit that; it means a missing or invalid token does not block CI.

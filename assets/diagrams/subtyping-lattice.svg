@@ -1,5 +1,5 @@
 <svg width="920" height="432" viewBox="0 0 920 432" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
-  <title id="title">Vera's complete subtyping relation: Never below everything, refinement subtyping when one predicate implies the other, refinement-to-base, reflexivity — and nothing else: no structural subtyping, no covariance. The checker additionally permits Int where Nat is expected; the verifier, not the checker, enforces the non-negativity proof.</title>
+  <title id="title">Vera's complete subtyping relation: Never below everything, refinement subtyping when one predicate implies the other, refinement-to-base and reflexivity; a data type is covariant in its type arguments, and a function type is contravariant in its parameters and covariant in its result and effect row. There is no structural subtyping and no implicit numeric conversion. The checker additionally permits Int where Nat is expected; the verifier, not the checker, enforces the non-negativity proof.</title>
   <!-- Design system: see architecture.svg. Grounded in spec/02 §2.8. Arrows point at the SUPERTYPE. -->
   <defs>
     <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
@@ -22,7 +22,7 @@
   <rect x="1.5" y="1.5" width="917" height="429" rx="14" fill="#faf9f7" stroke="#e8e6e1" stroke-width="1.5"/>
 
   <text class="f micro" x="36" y="42">TYPES · THE COMPLETE SUBTYPING RELATION</text>
-  <text class="f sub" x="36" y="64">Four rules and nothing else — arrows point at the supertype.</text>
+  <text class="f sub" x="36" y="64">Four rules, and a compound type follows its parts; arrows point at the supertype.</text>
 
   <!-- lattice chain -->
   <g>
@@ -69,27 +69,28 @@
   </g>
   <text class="f d" x="420" y="158">…and <tspan class="m" font-size="10px">Nat &lt;: Int</tspan> (§2.2.1). Each step holds because its predicate implies the next.</text>
 
-  <!-- what is NOT here -->
+  <!-- compound types: variance (spec/02 §2.8 rule 5) -->
   <g>
-    <rect class="card" x="420" y="184" width="464" height="92" rx="10"/>
-    <rect x="420.5" y="184.5" width="4" height="91" rx="2" fill="#c45"/>
-    <text class="f t" x="438" y="208" fill="#a83838">That is the whole relation</text>
-    <text class="f d" x="438" y="228">No structural subtyping, no implicit numeric conversions, no</text>
-    <text class="f d" x="438" y="242">covariance or contravariance on compound types:</text>
-    <text class="f d" x="438" y="262"><tspan class="m" font-size="10px">Array&lt;PosInt&gt;</tspan> is NOT <tspan class="m" font-size="10px">&lt;: Array&lt;Int&gt;</tspan> — convert with an explicit map.</text>
+    <rect class="card" x="420" y="184" width="464" height="100" rx="10"/>
+    <rect x="420.5" y="184.5" width="4" height="99" rx="2" fill="#8b6cad"/>
+    <text class="f t" x="438" y="208">A compound type follows its parts</text>
+    <text class="f d" x="438" y="228">A data type is covariant in its arguments: <tspan class="m" font-size="10px">Array&lt;PosInt&gt; &lt;: Array&lt;Int&gt;</tspan></text>
+    <text class="f d" x="438" y="242">A function type is contravariant in its parameters, and covariant in</text>
+    <text class="f d" x="438" y="256">its result and effect row (§7.8). No structural subtyping, and no</text>
+    <text class="f d" x="438" y="270">implicit numeric conversion.</text>
   </g>
 
   <!-- checker/verifier split -->
   <g>
-    <rect class="card" x="420" y="292" width="464" height="90" rx="10"/>
-    <rect x="420.5" y="292.5" width="4" height="89" rx="2" fill="#d4952a"/>
+    <rect class="card" x="420" y="292" width="464" height="98" rx="10"/>
+    <rect x="420.5" y="292.5" width="4" height="97" rx="2" fill="#d4952a"/>
     <text class="f t" x="438" y="316" fill="#b07820">One implementation allowance</text>
     <text class="f d" x="438" y="336">The checker also permits <tspan class="m" font-size="10px">Int</tspan> where <tspan class="m" font-size="10px">Nat</tspan> is expected, so Nat-computing</text>
     <text class="f d" x="438" y="350">functions need no explicit conversion. Non-negativity is enforced by the</text>
-    <text class="f d" x="438" y="364"><tspan font-weight="600">verifier</tspan> (Z3), not the checker — check-green but verify-red on a Nat</text>
+    <text class="f d" x="438" y="364"><tspan font-weight="600">verifier</tspan> (Z3), not the checker: check-green but verify-red on a Nat</text>
     <text class="f d" x="438" y="378">return means the ≥ 0 proof failed.</text>
   </g>
 
   <!-- footer -->
-  <text class="f footi" x="36" y="414">Minimal by design: every conversion the relation doesn't grant is spelled out in the program.</text>
+  <text class="f footi" x="36" y="414">Minimal by design: every conversion the relation does not grant is spelled out in the program.</text>
 </svg>

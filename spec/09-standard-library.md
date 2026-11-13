@@ -2,7 +2,7 @@
 
 ## 9.1 Overview
 
-Vera's standard library provides built-in types, effects, and functions that are available in every Vera program without explicit import. The library is deliberately small — it includes only the types and operations that are universally needed and cannot be expressed purely in user code.
+Vera's standard library provides built-in types, effects, and functions that are available in every Vera program without explicit import. The library is small. It includes only the types and operations that are universally needed and cannot be expressed purely in user code.
 
 The standard library comprises:
 
@@ -11,10 +11,10 @@ The standard library comprises:
 - **Built-in effects**: `IO` for output, `State<T>` for mutable state, `Http` for network I/O (`get` and `post`), `Async` for concurrency, `Inference` for LLM calls, `HttpServer` for verified HTTP handling, and `DB` for SQL database access (see §9.5 for each).
 - **Built-in functions**: `array_length`, `array_append`, `array_range`, and `array_concat` for arrays, numeric operations (`abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow`), type conversions (`int_to_float`, `float_to_int`, `nat_to_int`, `int_to_nat`, `byte_to_int`, `int_to_byte`), Float64 predicates (`float_is_nan`, `float_is_infinite`, `nan`, `infinity`), string search (`string_contains`, `string_starts_with`, `string_ends_with`, `string_index_of`), string transformation (`string_strip`, `string_upper`, `string_lower`, `string_replace`, `string_split`, `string_join`, `string_char_code`, `string_from_char_code`), regular expressions (`regex_match`, `regex_find`, `regex_find_all`, `regex_replace`), plus functions for vector similarity, which are specified but not implemented (§9.6.19).
 - **Decimal type**: `Decimal` for exact decimal arithmetic via host imports (see §9.7.2). Exact in both the Python runtime (`decimal.Decimal`) and the browser runtime (scaled-BigInt engine), which mirror each other operation-for-operation over finite decimal values.
-- **Json type**: `Json` ADT for structured data interchange — parse, query, and serialize JSON via the built-in functions §9.7.1 lists.
-- **Markdown type**: `MdBlock` and `MdInline` ADTs for agent-oriented document structure — parse, render, and query Markdown via pure host-import functions (see §9.7.3).
-- **Html type**: `HtmlNode` ADT for parsing and querying HTML documents — parse, serialize, query, and extract text via the built-in functions §9.7.4 lists.
-- **Built-in abilities**: `Eq`, `Ord`, `Hash`, `Show` — type constraints for generic programming. The `Ordering` ADT (`Less`, `Equal`, `Greater`) supports `Ord`'s `compare` operation.
+- **Json type**: `Json` ADT for structured data interchange: parse, query, and serialize JSON via the built-in functions §9.7.1 lists.
+- **Markdown type**: `MdBlock` and `MdInline` ADTs for agent-oriented document structure: parse, render, and query Markdown via pure host-import functions (see §9.7.3).
+- **Html type**: `HtmlNode` ADT for parsing and querying HTML documents: parse, serialize, query, and extract text via the built-in functions §9.7.4 lists.
+- **Built-in abilities**: `Eq`, `Ord`, `Hash` and `Show`, the type constraints for generic programming. The `Ordering` ADT (`Less`, `Equal`, `Greater`) supports `Ord`'s `compare` operation.
 
 All built-in types participate fully in the type system: they can appear in contracts, be verified by the SMT solver, and be used with refinement types and pattern matching. Built-in effects follow the same algebraic effect semantics as user-defined effects (see Chapter 7).
 
@@ -24,27 +24,30 @@ Built-in function names follow a consistent `domain_verb` convention to make nam
 
 | Pattern | When to use | Examples |
 |---------|-------------|----------|
-| `domain_verb` | Most functions — domain prefix identifies the type or module | `string_length`, `array_append`, `regex_match`, `md_parse` |
-| `source_to_target` | Type conversions — source and target types in the name | `int_to_float`, `float_to_int`, `nat_to_int`, `int_to_byte` |
-| `domain_is_predicate` | Boolean predicates — domain prefix + `is_` + property | `float_is_nan`, `float_is_infinite` |
-| Prefix-less | Math universals only — names understood across all languages | `abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow` |
+| `domain_verb` | Most functions; the domain prefix identifies the type or module | `string_length`, `array_append`, `regex_match`, `md_parse` |
+| `source_to_target` | Type conversions; source and target types in the name | `int_to_float`, `float_to_int`, `nat_to_int`, `int_to_byte` |
+| `domain_is_predicate` | Boolean predicates: domain prefix + `is_` + property | `float_is_nan`, `float_is_infinite` |
+| Prefix-less | Math universals only, names understood across all languages | `abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow` |
 
 **Key rules:**
 
 1. **String operations always use `string_` prefix**: `string_contains`, `string_starts_with`, `string_split`, `string_join`, `string_strip`, `string_upper`, `string_lower`, `string_replace`, `string_index_of`, `string_char_code`, `string_from_char_code`.
 2. **Float64 predicates use `float_` prefix**: `float_is_nan`, `float_is_infinite`.
 3. **Type conversions use `source_to_target`**: `int_to_float` (not `to_float`), `float_to_int`, `int_to_nat`.
-4. **Math functions and float constants are the only exceptions** to domain prefixing — `abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow`, `nan`, and `infinity` need no prefix because they are universally understood mathematical names.
+4. **Math functions and float constants are the only exceptions** to domain prefixing: `abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow`, `nan`, and `infinity` need no prefix because they are universally understood mathematical names.
 5. **New functions MUST follow these patterns.** When adding a function, choose the pattern that matches its category. If uncertain, use `domain_verb`.
 
 ### 9.1.2 Standard Prelude
 
 Every Vera program implicitly has access to a **standard prelude** that provides commonly used ADTs and their associated operations without requiring explicit `data` declarations:
 
-- **`Option<T>`** — `Some(T)`, `None` constructors.
-- **`Result<T, E>`** — `Ok(T)`, `Err(E)` constructors.
-- **`Ordering`** — `Less`, `Equal`, `Greater` constructors (for `Ord`'s `compare` operation).
-- **`UrlParts`** — `UrlParts(String, String, String, String, String)` constructor (RFC 3986 decomposition).
+- **`Option<T>`**: `Some(T)`, `None` constructors.
+- **`Result<T, E>`**: `Ok(T)`, `Err(E)` constructors.
+- **`Ordering`**: `Less`, `Equal`, `Greater` constructors (for `Ord`'s `compare` operation).
+- **`UrlParts`**: `UrlParts(String, String, String, String, String)` constructor (RFC 3986 decomposition).
+- **`Json`**: `JNull`, `JBool(Bool)`, `JNumber(Float64)`, `JString(String)`, `JArray(Array<Json>)`, `JObject(Map<String, Json>)` constructors (Section 9.7.1).
+- **`HtmlNode`**: `HtmlElement(String, Map<String, String>, Array<HtmlNode>)`, `HtmlText(String)`, `HtmlComment(String)` constructors (Section 9.7.4).
+- **`Request`** and **`Response`**: `Request(String, String, Map<String, String>, String)` and `Response(Int, Map<String, String>, String)` constructors, the `HttpServer` handler types (Section 9.5.6).
 
 In addition, Option/Result combinators (`option_unwrap_or`, `option_map`, `option_and_then`, `result_unwrap_or`, `result_map`) and array operations (`array_slice`, `array_map`, `array_filter`, `array_fold`) are automatically available.
 
@@ -52,7 +55,7 @@ The prelude is a module whose names are **reserved** (§8.4.1): a `data` declara
 
 ## 9.2 Primitive Types
 
-The primitive types (`Int`, `Nat`, `Bool`, `Byte`, `Float64`, `String`, `Unit`, `Never`) are documented in Chapter 2, Section 2.2. They are not part of the standard library per se — they are built into the language core.
+The primitive types (`Int`, `Nat`, `Bool`, `Byte`, `Float64`, `String`, `Unit`, `Never`) are documented in Chapter 2, Section 2.2. They are built into the language core rather than the standard library.
 
 ## 9.3 Built-in ADTs
 
@@ -66,11 +69,11 @@ public data Option<T> {
 }
 ```
 
-`Option<T>` represents a value that may or may not be present. It is the standard way to express partiality in Vera — functions that might not produce a result return `Option<T>` rather than using null pointers or sentinel values.
+`Option<T>` represents a value that may or may not be present. It is the standard way to express partiality in Vera. Functions that might not produce a result return `Option<T>` rather than using null pointers or sentinel values.
 
 Constructors:
-- `Some(@T)` — wraps a present value.
-- `None` — represents absence.
+- `Some(@T)`: wraps a present value.
+- `None`: represents absence.
 
 Pattern matching on `Option<T>` is exhaustive: both `Some` and `None` must be handled.
 
@@ -101,8 +104,8 @@ public data Result<T, E> {
 `Result<T, E>` represents a computation that may succeed with a value of type `T` or fail with an error of type `E`. It is the standard way to express fallible operations without using exceptions.
 
 Constructors:
-- `Ok(@T)` — wraps a successful result.
-- `Err(@E)` — wraps an error value.
+- `Ok(@T)`: wraps a successful result.
+- `Err(@E)`: wraps an error value.
 
 Pattern matching on `Result<T, E>` is exhaustive: both `Ok` and `Err` must be handled.
 
@@ -132,7 +135,7 @@ data UrlParts {
 `UrlParts` is a built-in ADT representing the five components of a URL per RFC 3986: scheme, authority, path, query, and fragment. It is provided by the standard prelude (see §9.1.2) and available in every program without an explicit `data` declaration.
 
 Constructors:
-- `UrlParts(@String, @String, @String, @String, @String)` — scheme, authority, path, query, fragment.
+- `UrlParts(@String, @String, @String, @String, @String)`: scheme, authority, path, query, fragment.
 
 See §9.6.18 for the `url_parse` and `url_join` function specifications.
 
@@ -143,10 +146,10 @@ See §9.6.18 for the `url_parse` and `url_join` function specifications.
 data Future<T> { Future(T) }
 ```
 
-`Future<T>` represents the result of an asynchronous computation. An eagerly-evaluated future is WASM-transparent — it has the same runtime representation as `T`, with no overhead; a concurrently-evaluated future is an opaque pending handle with the same WASM value type (see §9.5.4).
+`Future<T>` represents the result of an asynchronous computation. An eagerly-evaluated future is WASM-transparent. It has the same runtime representation as `T`, with no overhead. A concurrently-evaluated future is an opaque pending handle with the same WASM value type (see §9.5.4).
 
 Constructors:
-- `Future(@T)` — wraps a value.
+- `Future(@T)`: wraps a value.
 
 See §9.5.4 for the `async` and `await` function specifications.
 
@@ -164,15 +167,15 @@ public data MdInline {
 }
 ```
 
-`MdInline` represents inline-level Markdown content. It is one of two mutually defined ADTs (with `MdBlock`) that make illegal states unrepresentable — a heading cannot contain another heading at the type level.
+`MdInline` represents inline-level Markdown content. It is one of two mutually defined ADTs (with `MdBlock`) that make illegal states unrepresentable. A heading cannot contain another heading at the type level.
 
 Constructors:
-- `MdText(@String)` — plain text run.
-- `MdCode(@String)` — inline code span.
-- `MdEmph(@Array<MdInline>)` — emphasis (italic).
-- `MdStrong(@Array<MdInline>)` — strong emphasis (bold).
-- `MdLink(@Array<MdInline>, @String)` — hyperlink: display text and URL.
-- `MdImage(@String, @String)` — image: alt text and source URL.
+- `MdText(@String)`: plain text run.
+- `MdCode(@String)`: inline code span.
+- `MdEmph(@Array<MdInline>)`: emphasis (italic).
+- `MdStrong(@Array<MdInline>)`: strong emphasis (bold).
+- `MdLink(@Array<MdInline>, @String)`: hyperlink, with display text and URL.
+- `MdImage(@String, @String)`: image, with alt text and source URL.
 
 See §9.7.3 for the Markdown function specifications.
 
@@ -195,14 +198,14 @@ public data MdBlock {
 `MdBlock` represents block-level Markdown elements.
 
 Constructors:
-- `MdParagraph(@Array<MdInline>)` — paragraph.
-- `MdHeading(@Nat, @Array<MdInline>)` — heading: level (1--6) and content.
-- `MdCodeBlock(@String, @String)` — fenced code block: language and code body.
-- `MdBlockQuote(@Array<MdBlock>)` — block quote.
-- `MdList(@Bool, @Array<Array<MdBlock>>)` — list: ordered/unordered, with items.
-- `MdThematicBreak` — horizontal rule (nullary).
-- `MdTable(@Array<Array<Array<MdInline>>>)` — table: rows of cells of inlines.
-- `MdDocument(@Array<MdBlock>)` — top-level document.
+- `MdParagraph(@Array<MdInline>)`: paragraph.
+- `MdHeading(@Nat, @Array<MdInline>)`: heading, with level (1--6) and content.
+- `MdCodeBlock(@String, @String)`: fenced code block, with language and code body.
+- `MdBlockQuote(@Array<MdBlock>)`: block quote.
+- `MdList(@Bool, @Array<Array<MdBlock>>)`: list, ordered or unordered, with items.
+- `MdThematicBreak`: horizontal rule (nullary).
+- `MdTable(@Array<Array<Array<MdInline>>>)`: table, with rows of cells of inlines.
+- `MdDocument(@Array<MdBlock>)`: top-level document.
 
 See §9.7.3 for the Markdown function specifications.
 
@@ -229,7 +232,7 @@ The standard prelude (§9.1.2) provides combinator functions that eliminate comm
 | `result_map` | `forall<A, B, E> Result<A, E>, fn(A -> B) -> Result<B, E>` | Transform the `Ok` value |
 <!-- render_lists:end signatures-result -->
 
-Combinators follow the `domain_verb` naming convention (see §5). They are injected as private generic functions before compilation and undergo normal monomorphization.
+Combinators follow the `domain_verb` naming convention (see §9.1.1). They are injected as private generic functions before compilation and undergo normal monomorphization.
 
 ## 9.4 Built-in Collections
 
@@ -260,7 +263,7 @@ For the compilation model of arrays, see Chapter 11, Section 11.12.
 
 `Set<T>` is a collection of unique elements. It requires the `Eq` and `Hash` abilities on `T` (see Section 9.8). Element types must be hashable primitives: `Int`, `Nat`, `Bool`, `Float64`, `String`, or `Byte`.
 
-Set is an opaque built-in type, the persistent hash trie Section 9.4.3 describes for a map, whose entries hold elements alone; WASM code holds a set as one `i32` pointer. All operations are pure — `set_add` and `set_remove` return new sets and leave the one they were given unchanged, sharing every block the update does not change. Elements compare as a map's keys do, and `set_to_array` returns them in insertion order: an element added again keeps its first position, and a removed element loses its position.
+Set is an opaque built-in type, the persistent hash trie Section 9.4.3 describes for a map, whose entries hold elements alone; WASM code holds a set as one `i32` pointer. All operations are pure. `set_add` and `set_remove` return new sets and leave the one they were given unchanged, sharing every block the update does not change. Elements compare as a map's keys do, and `set_to_array` returns them in insertion order: an element added again keeps its first position, and a removed element loses its position.
 
 **Operations:**
 
@@ -291,7 +294,7 @@ private fn set_demo(-> @Int)
 
 `Map<K, V>` is a key-value mapping. It requires the `Eq` and `Hash` abilities on `K` (see Section 9.8). Keys must be hashable primitive types: `Int`, `Nat`, `Bool`, `Float64`, `String`, or `Byte`. Values must be primitives (`Int`, `Nat`, `Bool`, `Byte`, `Float64`, `String`), ADT heap-pointer types (`Option<T>`, `Result<T, E>`), or other `Map` values. `Array<T>` values are not supported as Map values: a `Map` with an `Array` key or value is a checker error (**E135**, Section 2.2).
 
-Map is an opaque built-in type: a persistent hash trie in the module's own heap, a 32-way branch for each five bits of a key's hash with the entries below them, and its operations are functions the module carries, generated for each key and value representation the program uses. No host implements one. WASM code holds a map as one `i32` pointer. All operations are pure — `map_insert` and `map_remove` return new maps and leave the one they were given unchanged, sharing every block the update does not change: an update copies the branches on its key's path, at most thirteen, so its time and space grow with the trie's depth, not with the map's size.
+Map is an opaque built-in type: a persistent hash trie in the module's own heap, a 32-way branch for each five bits of a key's hash with the entries below them, and its operations are functions the module carries, generated for each key and value representation the program uses. No host implements one. WASM code holds a map as one `i32` pointer. All operations are pure. `map_insert` and `map_remove` return new maps and leave the one they were given unchanged, sharing every block the update does not change: an update copies the branches on its key's path, at most thirteen, so its time and space grow with the trie's depth, not with the map's size.
 
 Keys compare by SameValueZero. A `Float64` key is stored in a canonical form, `-0.0` as `0.0` and every NaN as one NaN, so `-0.0` and `0.0` are one key and a NaN key can be found again; a `String` key compares by content; any other key by its value. A `String` key's hash is keyed (below); any other key's is the `Hash` ability's value for its type (Section 9.8.1), its bits mixed before the trie reads them. No comparison the trie makes requires `Ord`.
 
@@ -358,7 +361,7 @@ The `IO` effect has no type parameters. All IO operations are invoked as qualifi
 | `stderr` | `String -> Unit` | Write a UTF-8 string to stderr |
 <!-- render_lists:end signatures-io -->
 
-The `IO` effect is registered as a built-in: the operations above are in scope for any function whose effect row names `IO`, and no declaration brings them there. An `effect IO { ... }` block in a program is a compile error (`E152`) — the same one-canonical-form rule that forbids redefining a built-in function (`E151`, Section 9.6). The rule is name-keyed and unconditional: a block whose operation signatures agree with the built-in is rejected too, because it is a second textual spelling of the same program (Chapter 0, Section 0.2, design goal 3). It also cannot be honoured — code generation lowers every qualified `IO.op(...)` call to the fixed host import selected by the qualifier and never reads the declaration, so a block whose signatures diverge from the built-in would compile to structurally invalid WebAssembly.
+The `IO` effect is registered as a built-in: the operations above are in scope for any function whose effect row names `IO`, and no declaration brings them there. An `effect IO { ... }` block in a program is a compile error (`E152`), by the same one-canonical-form rule that forbids redefining a built-in function (`E151`, Section 9.6). The rule is name-keyed and unconditional: a block whose operation signatures agree with the built-in is rejected too, because it is a second textual spelling of the same program (Chapter 0, Section 0.2, design goal 3). It also cannot be honoured. Code generation lowers every qualified `IO.op(...)` call to the fixed host import selected by the qualifier and never reads the declaration, so a block whose signatures diverge from the built-in would compile to structurally invalid WebAssembly.
 
 The same rule holds for every built-in effect, marker effects included. Chapter 7, Section 7.7 states it once for the whole registered set rather than naming them here, so the rule cannot fall out of step with the registry as effects are added.
 
@@ -395,7 +398,7 @@ For the runtime implementation of IO operations, see Chapter 12, Section 12.4.1.
 
 ### 9.5.2 State\<T\>
 
-The `State<T>` effect provides mutable state operations. Functions that read or write state must declare the specific state type in their effect row: `effects(<State<Int>>)`. Like `IO`, `State<T>` is built-in — no `effect State<T> { ... }` declaration is needed (and one is `E152`).
+The `State<T>` effect provides mutable state operations. Functions that read or write state must declare the specific state type in their effect row: `effects(<State<Int>>)`. Like `IO`, `State<T>` is built-in: no `effect State<T> { ... }` declaration is needed (and one is `E152`).
 
 <!-- render_lists:begin signatures-state -->
 | Operation | Signature | Description |
@@ -404,7 +407,7 @@ The `State<T>` effect provides mutable state operations. Functions that read or 
 | `put` | `T -> Unit` | Writes a new state value |
 <!-- render_lists:end signatures-state -->
 
-Multiple independent state types can be used in the same function by declaring them in the effect row. State operations (`get`, `put`) are called without qualification — the type checker resolves which state cell is targeted from the types:
+Multiple independent state types can be used in the same function by declaring them in the effect row. State operations (`get`, `put`) are called without qualification; the type checker resolves which state cell is targeted from the types:
 
 ```
 private fn increment(-> @Unit)
@@ -441,9 +444,9 @@ For the runtime implementation of `State<T>`, see Chapter 12, Section 12.4.2.
 
 ### 9.5.3 Http
 
-> **Status: Implemented.** Tracked in [#57](https://github.com/aallan/vera/issues/57). `Http.get` and `Http.post` are fully compilable and execute via host imports (Python `urllib` / a synchronous `XMLHttpRequest` in the browser). Returns `Result<String, String>` — `Ok` with the response body, `Err` with the error message. The conformance test `ch09_http` and the example `http.vera` exercise it.
+> **Status: Implemented.** `Http.get` and `Http.post` are fully compilable and execute via host imports (Python `urllib` / a synchronous `XMLHttpRequest` in the browser). Returns `Result<String, String>`: `Ok` with the response body, `Err` with the error message. The conformance test `ch09_http` and the example `http.vera` exercise it.
 
-Network I/O is modelled as a built-in algebraic effect with two operations: `get` and `post`. Functions performing network access declare `effects(<Http>)`. The effect is built-in — no `effect Http { ... }` declaration is needed (and one is `E152`).
+Network I/O is modelled as a built-in algebraic effect with two operations: `get` and `post`. Functions performing network access declare `effects(<Http>)`. The effect is built-in: no `effect Http { ... }` declaration is needed (and one is `E152`).
 
 **Operations:**
 
@@ -482,7 +485,7 @@ This follows the same pattern as Markdown: `json_parse(Http.get(url))`, not a de
 - The Python runtime uses `urllib.request.urlopen` (stdlib, no external dependencies).
 - The browser runtime uses a synchronous `XMLHttpRequest`. Node.js has no `XMLHttpRequest`, so there both operations return `Err`.
 - `Http.post` sends the body with `Content-Type: application/json`.
-- Responses are returned as the full response body string. Status codes are not exposed — non-2xx responses produce `Err`.
+- Responses are returned as the full response body string. Status codes are not exposed; non-2xx responses produce `Err`.
 - HTTPS is supported. Certificate verification follows the platform default.
 
 **Known limitations:**
@@ -539,17 +542,17 @@ private fn compute(@Nat, @Nat -> @Int)
 }
 ```
 
-![The async model: async(e) evaluates concurrently when e's effect row is commutative — Http requests issue on a host worker thread at the async point and await blocks for the response — while every other shape evaluates eagerly with a W002 warning; Future of T is WASM-transparent either way.](../assets/diagrams/async-model.svg)
+![The async model: an implementation may evaluate async(e) concurrently when e's effect row is commutative; the reference implementation does so for async(Http.get(…)) and async(Http.post(…)), issuing the request on a host worker thread at the async point while await blocks for the response. Every other shape evaluates eagerly, with a W002 warning where the row leaves {Http, Async}; Future of T is WASM-transparent either way.](../assets/diagrams/async-model.svg)
 
 Key design points:
 - `async(expr)` evaluates `expr` and wraps the result in `Future<T>`.
 - `await(@Future<T>.n)` unwraps the future, yielding the result of type `T`.
 - The `<Async>` effect must be declared, making concurrency explicit and trackable.
-- `Async` is a marker effect with no operations — `async` and `await` are built-in generic functions that require `effects(<Async>)`.
+- `Async` is a marker effect with no operations: `async` and `await` are built-in generic functions that require `effects(<Async>)`.
 - `Future<T>` is WASM-transparent: an eagerly-evaluated future has the same runtime representation as `T`, with no overhead.  (A concurrently-evaluated future is an opaque pending handle with the same WASM value type; `await` resolves it.)
-- **Concurrency (#841):** an implementation MAY evaluate `async(e)` concurrently when `e`'s effect row is commutative — value semantics are unchanged, and all other effects retain program order.  The reference implementation evaluates `async(Http.get(...))` and `async(Http.post(...))` (with call-free argument expressions) concurrently: the request is issued on a host worker thread at the `async(...)` point (so request *issuance* keeps program order), and `await` blocks for the response.  Every other shape evaluates eagerly (sequential execution); the checker warns (`W002`) when the argument's effect row is not within the commutative whitelist (`{Http, Async}`), documenting exactly where eager evaluation is semantically forced rather than merely unoptimized.
-- The concurrent lowering keys the `await` handle-check on the type `Future<Result<String, String>>`, covering slots, parameters, direct compositions, and calls (bare, imported, or module-qualified) whose declared return is that type — with type aliases resolved transitively, here as everywhere else ([#1109](https://github.com/aallan/vera/issues/1109)).  An **indirectly-called closure** (`await(apply_fn(closure, …))`) returning this future type is classified by the closure's *declared* return type — a fn-typed slot resolved through its `FnType` alias, following the alias chain **transitively** to the terminal `FnType` (`type Fetcher = Inner;` where `Inner` aliases the fn type, [#867](https://github.com/aallan/vera/issues/867)) and substituting each generic alias's type params (so `Producer<Future<Result<String, String>>>` classifies), or an inline closure literal — so the await lowers correctly ([#843](https://github.com/aallan/vera/issues/843)).  A closure whose declared return type is not statically resolvable falls back to the identity lowering, with a loud backstop: a closure *argument produced by a nested call* (`apply_fn(make_fn(), …)`) is rejected by the `apply_fn` translation with `[E616]` (the function is skipped), so no fused wrapper is silently read as the ADT.
-- The browser runtime evaluates all futures eagerly — spec-conformant under the MAY above: only the evaluation strategy differs, the underlying value is preserved whenever the two hosts' results are comparable, and any difference that remains comes from the `Http` outcome underneath rather than from `async` itself (documented in §12).
+- **Concurrency (#841):** an implementation MAY evaluate `async(e)` concurrently when `e`'s effect row is commutative; value semantics are unchanged, and all other effects retain program order.  The reference implementation evaluates `async(Http.get(...))` and `async(Http.post(...))` (with call-free argument expressions) concurrently: the request is issued on a host worker thread at the `async(...)` point (so request *issuance* keeps program order), and `await` blocks for the response.  Every other shape evaluates eagerly (sequential execution); the checker warns (`W002`) when the argument's effect row is not within the commutative whitelist (`{Http, Async}`), documenting exactly where eager evaluation is semantically forced rather than merely unoptimized.
+- The concurrent lowering keys the `await` handle-check on the type `Future<Result<String, String>>`, covering slots, parameters, direct compositions, and calls (bare, imported, or module-qualified) whose declared return is that type, with type aliases resolved transitively, here as everywhere else ([#1109](https://github.com/aallan/vera/issues/1109)).  An **indirectly-called closure** (`await(apply_fn(closure, …))`) returning this future type is classified by the closure's *declared* return type, so the await lowers correctly ([#843](https://github.com/aallan/vera/issues/843)). The declared type comes from an inline closure literal, or from a fn-typed slot resolved through its `FnType` alias, following the alias chain **transitively** to the terminal `FnType` (`type Fetcher = Inner;` where `Inner` aliases the fn type, [#867](https://github.com/aallan/vera/issues/867)) and substituting each generic alias's type params (so `Producer<Future<Result<String, String>>>` classifies).  A closure whose declared return type is not statically resolvable falls back to the identity lowering, with a loud backstop: a closure *argument produced by a nested call* (`apply_fn(make_fn(), …)`) is rejected by the `apply_fn` translation with `[E616]` (the function is skipped), so no fused wrapper is silently read as the ADT.
+- The browser runtime evaluates all futures eagerly, which is spec-conformant under the MAY above: only the evaluation strategy differs, the underlying value is preserved whenever the two hosts' results are comparable, and any difference that remains comes from the `Http` outcome underneath rather than from `async` itself (documented in §12).
 - True multi-await suspension and custom scheduling strategies (thread pool, event loop) via `handle[Async]` handlers are not supported.
 - This avoids coloured-function problems because algebraic effects already separate the description of an operation from its execution.
 
@@ -563,7 +566,7 @@ The `Inference` effect models LLM calls as algebraic effects, making them explic
 | `Inference.complete` | `String -> Result<String, String>` | Send a prompt to the configured LLM provider; returns `Ok(completion)` or `Err(message)` |
 <!-- render_lists:end signatures-inference -->
 
-`Inference` is a built-in effect — no `effect Inference { ... }` declaration is needed in source files (and one is `E152`).
+`Inference` is a built-in effect: no `effect Inference { ... }` declaration is needed in source files (and one is `E152`).
 
 ```vera
 private fn classify(@String -> @Result<String, String>)
@@ -578,34 +581,34 @@ private fn classify(@String -> @Result<String, String>)
 
 **Effect composition:** `effects(<Inference, IO>)` for LLM + console output; `effects(<Http, Inference>)` for fetching + LLM.
 
-**Runtime:** In the reference implementation, `Inference` is host-backed — the runtime dispatches to the provider specified by environment variable:
+**Runtime:** In the reference implementation, `Inference` is host-backed. The runtime dispatches to the provider specified by environment variable:
 
 | Variable | Purpose |
 |----------|---------|
 | `VERA_ANTHROPIC_API_KEY` | Anthropic API key (Claude models) |
 | `VERA_OPENAI_API_KEY` | OpenAI API key (GPT models) |
-| `VERA_MOONSHOT_API_KEY` | Kimi (Moonshot) API key — developer portal at [platform.kimi.ai](https://platform.kimi.ai) |
+| `VERA_MOONSHOT_API_KEY` | Kimi (Moonshot) API key; developer portal at [platform.kimi.ai](https://platform.kimi.ai) |
 | `VERA_MISTRAL_API_KEY` | Mistral AI API key |
 | `VERA_XAI_API_KEY` | xAI (Grok) API key |
 | `VERA_DEEPSEEK_API_KEY` | DeepSeek API key |
-| `VERA_INFERENCE_PROVIDER` | Force a provider (`anthropic`, `openai`, `moonshot`, `mistral`, `xai`, `deepseek`).  When unset, the provider is the **first** of those whose key is set to a non-empty value, in that order — so several keys at once resolve to the earliest rather than to the one most recently exported.  Every provider-backed `Err` names the **selected** provider and model associated with the request — including the failures raised before any response arrives, such as a DNS or timeout failure, where no provider answered at all — so a run can always be attributed (the browser `Err` below reaches no provider to name) |
+| `VERA_INFERENCE_PROVIDER` | Force a provider (`anthropic`, `openai`, `moonshot`, `mistral`, `xai`, `deepseek`).  When unset, the provider is the **first** of those whose key is set to a non-empty value, in that order, so several keys at once resolve to the earliest rather than to the one most recently exported.  Every provider-backed `Err` names the **selected** provider and model associated with the request, including the failures raised before any response arrives (such as a DNS or timeout failure, where no provider answered at all), so a run can always be attributed (the browser `Err` below reaches no provider to name) |
 | `VERA_INFERENCE_MODEL` | Override the model.  Each provider's default is its flagship general-chat model: `claude-opus-5`, `gpt-5.6-sol`, `kimi-k3`, `mistral-large-latest`, `grok-4.6`, `deepseek-v4-pro`.  A cheaper tier is reached by setting this variable |
 
-**Browser:** the browser runtime binds `Inference.complete` but never calls a provider — every invocation returns an explanatory `Err`, so a program compiled with `<Inference>` still loads and runs in the browser and handles the refusal through the same `Result` it already matches on. Embedding API keys in client-side JavaScript would expose them in page source and network traffic; route inference through a server-side proxy called with the `Http` effect.
+**Browser:** the browser runtime binds `Inference.complete` but never calls a provider. Every invocation returns an explanatory `Err`, so a program compiled with `<Inference>` still loads and runs in the browser and handles the refusal through the same `Result` it already matches on. Embedding API keys in client-side JavaScript would expose them in page source and network traffic; route inference through a server-side proxy called with the `Http` effect.
 
-**Error text from the provider.** When a provider rejects a request, its own message is surfaced in the `Err` rather than only the HTTP status line. That text — and every other provider-supplied fragment an `Err` quotes, including a response body that is not JSON, a `stop_reason` or `finish_reason`, a refusal, and the key and type names a shape report lists — is bounded and **redacted**: the configured API key and any credential-shaped token — `sk-`, `sk_`, `key-`, `key_`, `token-`, `token_`, `xai-` or `xai_` followed by eight or more of `[A-Za-z0-9_-]` — are replaced with `[redacted]`. The configured key is matched literally and unconditionally: there is no minimum length, so a very short key also redacts incidental occurrences of its characters. That is deliberate — a length floor would stop redacting short real tokens, which gateways and proxies do issue, and redaction never trades coverage for tidiness. The prefix pattern cannot cover every provider either: a key with no recognisable prefix, such as Mistral's bare alphanumeric form, is matched only by the configured-key rule, which is why the two rules exist together. Providers quote the key they rejected (`Incorrect API key provided: sk-…`), and an `Err` is an ordinary Vera value that a program may print, log, or send onward.
+**Error text from the provider.** When a provider rejects a request, its own message is surfaced in the `Err` rather than only the HTTP status line. That text, and every other provider-supplied fragment an `Err` quotes (including a response body that is not JSON, a `stop_reason` or `finish_reason`, a refusal, and the key and type names a shape report lists), is bounded and **redacted**. The configured API key and any credential-shaped token (`sk-`, `sk_`, `key-`, `key_`, `token-`, `token_`, `xai-` or `xai_` followed by eight or more of `[A-Za-z0-9_-]`) are replaced with `[redacted]`. The configured key is matched literally and unconditionally: there is no minimum length, so a very short key also redacts incidental occurrences of its characters. There is no length floor because one would stop redacting short real tokens, which gateways and proxies do issue, and redaction never trades coverage for tidiness. The prefix pattern cannot cover every provider either: a key with no recognisable prefix, such as Mistral's bare alphanumeric form, is matched only by the configured-key rule, which is why the two rules exist together. Providers quote the key they rejected (`Incorrect API key provided: sk-…`), and an `Err` is an ordinary Vera value that a program may print, log, or send onward.
 
-**Accepted response shapes.** On the Anthropic branch the completion is every `content` block whose `type` is `"text"`, joined in order. On the OpenAI-compatible branch it is `message.content` when that is a string; when it is a list, the parts are taken by discriminator in PREFERENCE order — every `"text"` part joined in order if any yields text, and otherwise every `"output_text"` part. The two are never merged, and parts under the discriminator not selected are neither joined nor validated: a gateway mirroring one reply under both spellings must not have it returned twice. A block or part **of the selected type** that carries no `text` field, or whose `text` is not a string, is an error rather than a value to coerce. Blocks and parts of any other type — `thinking`, `tool_use`, `reasoning` — are skipped, not errors. If that leaves NO block or part of the selected type at all — a `content` of only `thinking` blocks, a parts list with neither `text` nor `output_text`, an empty list — the response is an `Err` naming the block or part types that were present and, when the provider sent one, its `stop_reason` or `finish_reason`. That is distinct from a selected block that IS present but empty, which is `Ok("")` unless the turn was refused or truncated. `message.refusal` is surfaced when the model declined — including when the content beside it is empty, where returning the empty completion would discard the reason. An empty or whitespace-only completion is an error whenever the provider itself explained it: on the Anthropic branch when `stop_reason` is `refusal` or `max_tokens`, and on the OpenAI-compatible branch when `message.refusal` is present or `finish_reason` is `length`. The reason is matched case-insensitively, so a gateway normalising it to `MAX_TOKENS` is treated the same as `max_tokens`, while the diagnostic carries the token exactly as received — `stop_reason=refusal`, `finish_reason=length` — so a caller can tell a declined request from a truncated one and can see what the provider actually sent. Under any other reason, or none at all, an empty completion remains `Ok("")`: a model may legitimately answer with nothing. A NON-empty reply is returned unchanged whatever the reason, truncated output still being the model's answer.
+**Accepted response shapes.** On the Anthropic branch the completion is every `content` block whose `type` is `"text"`, joined in order. On the OpenAI-compatible branch it is `message.content` when that is a string; when it is a list, the parts are taken by discriminator in PREFERENCE order: every `"text"` part joined in order if any yields text, and otherwise every `"output_text"` part. The two are never merged, and parts under the discriminator not selected are neither joined nor validated: a gateway mirroring one reply under both spellings must not have it returned twice. A block or part **of the selected type** that carries no `text` field, or whose `text` is not a string, is an error rather than a value to coerce. Blocks and parts of any other type (`thinking`, `tool_use`, `reasoning`) are skipped, not errors. If that leaves NO block or part of the selected type at all (a `content` of only `thinking` blocks, a parts list with neither `text` nor `output_text`, an empty list), the response is an `Err` naming the block or part types that were present and, when the provider sent one, its `stop_reason` or `finish_reason`. That is distinct from a selected block that IS present but empty, which is `Ok("")` unless the turn was refused or truncated. `message.refusal` is surfaced when the model declined, including when the content beside it is empty, where returning the empty completion would discard the reason. An empty or whitespace-only completion is an error whenever the provider itself explained it: on the Anthropic branch when `stop_reason` is `refusal` or `max_tokens`, and on the OpenAI-compatible branch when `message.refusal` is present or `finish_reason` is `length`. The reason is matched case-insensitively, so a gateway normalising it to `MAX_TOKENS` is treated the same as `max_tokens`, while the diagnostic keeps the token exactly as received (`stop_reason=refusal`, `finish_reason=length`), so a caller can tell a declined request from a truncated one and can see what the provider actually sent. Under any other reason, or none at all, an empty completion remains `Ok("")`: a model may legitimately answer with nothing. A NON-empty reply is returned unchanged whatever the reason, truncated output still being the model's answer.
 
 **Limitations:**
-- `complete` only — `embed` (returning `Array<Float64>`) is not supported
-- No streaming — full response only
-- No system prompt — single `complete(user_prompt)` call; structured prompting via `string_concat`
+- `complete` only: `embed` (returning `Array<Float64>`) is not supported
+- No streaming: full response only
+- No system prompt: a single `complete(user_prompt)` call; structured prompting via `string_concat`
 - User-defined `handle[Inference]` handlers (for mocking, local models, replay) are rejected at check (`E340`)
 
 ### 9.5.6 HttpServer
 
-The `HttpServer` effect (a marker, §7.7.5 — no operations) enables **verified HTTP request handling** (#305).  A server program defines a total, contract-checked handler:
+The `HttpServer` effect (a marker with no operations, §7.7.5) enables **verified HTTP request handling** (#305).  A server program defines a total, contract-checked handler:
 
 <!-- vera:no-run category="non-scalar-entry" reason="its exported functions take Request parameters" -->
 ```vera
@@ -631,13 +634,13 @@ data Response { Response(Int, Map<String, String>, String) }
 
 `Request` fields are method, path, headers, body; `Response` fields are status, headers, body.
 
-**Handler validation.**  Both serving surfaces — `vera serve` and
-`--target wasi-p2 --world server` — refuse a program whose `handle` is
+**Handler validation.**  Both serving surfaces, `vera serve` and
+`--target wasi-p2 --world server`, refuse a program whose `handle` is
 not a handler, and they ask the same question of it, about the
 **declared Vera types**: exactly one parameter, that parameter the
 prelude's `Request`, and the return the prelude's `Response`.  The
-lowered ABI cannot answer it — `Bool`, every heap ADT and every boxed
-value share the `i32` shape — and neither can the presence of the
+lowered ABI cannot answer it (`Bool`, every heap ADT and every boxed
+value share the `i32` shape), and neither can the presence of the
 `Request` / `Response` layouts, which the prelude injects whenever the
 *program* mentions those types, so any other function can supply them
 while `handle` has some unrelated signature.  No program can declare
@@ -645,13 +648,13 @@ a `Request` or `Response` of its own: the prelude's names are reserved
 (§8.4.1), so `vera check` refuses such a declaration (E158) before either
 surface validates the handler, and a `Request` the handler names is the
 prelude's.  This matters because the host marshals raw bytes through those
-layouts — it builds the `Request` in guest memory and decodes the
-returned pointer as a `Response` — and a wrong type there is not a
+layouts (it builds the `Request` in guest memory and decodes the
+returned pointer as a `Response`), and a wrong type there is not a
 type error but a read at an address that was never a `Response`.
 
-**Execution model.**  `vera serve prog.vera [--port N]` hosts the accept loop: each incoming request is marshalled into a `Request` value, the handler is called on a **fresh module instance** (per-request isolation — `State<T>` mutations cannot leak between requests), and the returned `Response` becomes the HTTP response.  Because the loop lives in the host, handlers are ordinary total functions — no `Diverge`, and every contract on the handler (or its helpers) is an ordinary Tier-1/Tier-3 obligation.  A runtime contract violation (or any trap) inside a handler answers **500** with the trap diagnostic in a JSON body; the connection is always answered.
+**Execution model.**  `vera serve prog.vera [--port N]` hosts the accept loop: each incoming request is marshalled into a `Request` value, the handler is called on a **fresh module instance** (per-request isolation: `State<T>` mutations cannot leak between requests), and the returned `Response` becomes the HTTP response.  Because the loop lives in the host, handlers are ordinary total functions with no `Diverge`, and every contract on the handler (or its helpers) is an ordinary Tier-1/Tier-3 obligation.  A runtime contract violation (or any trap) inside a handler answers **500** with the trap diagnostic in a JSON body; the connection is always answered.
 
-![The vera serve request lifecycle: the host owns the accept loop, marshals each request into a Request value, calls the contract-checked handler on a fresh module instance, and turns the returned Response into the HTTP response — traps answer 500 with the diagnostic.](../assets/diagrams/httpserver-lifecycle.svg)
+![The vera serve request lifecycle: the host owns the accept loop, marshals each request into a Request value, calls the contract-checked handler on a fresh module instance, and turns the returned Response into the HTTP response; traps answer 500 with the diagnostic.](../assets/diagrams/httpserver-lifecycle.svg)
 
 - Routing is ordinary pattern matching on the request fields.
 - Per-request effects compose in the row: `effects(<HttpServer, State<Int>>)`.
@@ -682,19 +685,19 @@ public fn seed_and_count(-> @Int)
 }
 ```
 
-**Row and parameter marshalling.**  A query result is an `Array<Array<Option<String>>>`: the outer array is the rows, each row is an array of cells, and each cell is an `Option<String>`.  A cell that is SQL `NULL` marshals to `None`; a present value marshals to `Some(text)`.  `NULL` and the empty string `""` therefore stay distinct — the effect never collapses one into the other (DESIGN principle 2, no implicit behaviour).  A `NOT NULL` column is read with `option_unwrap_or(cell, "")`, or matched explicitly when the caller must handle absence.
+**Row and parameter marshalling.**  A query result is an `Array<Array<Option<String>>>`: the outer array is the rows, each row is an array of cells, and each cell is an `Option<String>`.  A cell that is SQL `NULL` marshals to `None`; a present value marshals to `Some(text)`.  `NULL` and the empty string `""` therefore stay distinct. The effect never collapses one into the other (DESIGN principle 2, no implicit behaviour).  A `NOT NULL` column is read with `option_unwrap_or(cell, "")`, or matched explicitly when the caller must handle absence.
 
-Parameters travel the same shape one level down: the `Array<Option<String>>` second argument binds positionally to the `?` placeholders — `Some(v)` for a value, `None` for `NULL`.  All values cross the host boundary as UTF-8 strings; a non-text SQLite column is rendered to its text form on the way out.
+Parameters travel the same shape one level down: the `Array<Option<String>>` second argument binds positionally to the `?` placeholders: `Some(v)` for a value, `None` for `NULL`.  All values cross the host boundary as UTF-8 strings; a non-text SQLite column is rendered to its text form on the way out.
 
-**SQL literal provenance (injection prevention).**  The SQL argument of `query` / `execute` must be *literal-provenance*: a string literal, a `string_concat` of literals, or a `let` chain of those.  A SQL string that embeds a runtime value — a function result, a parameter, or a `\(expr)` interpolation of one — is the SQL injection vector, so Vera rejects it at **compile time** (`E207`); an interpolation, concatenation, or `let`-bound slot whose embedded expressions are themselves literals stays literal-provenance and is accepted.  Runtime data reaches the query only through the `?` placeholders and the params array.  The guarantee is a deterministic type error, not an SMT obligation — it needs no solver and holds even inside handled code where solver-based claims cannot reach.  When both the SQL and the params array are statically sized, a placeholder/parameter count mismatch is also a compile-time error (`E208`); a dynamically-sized params array defers that arity check to the driver at run time.  Only anonymous `?` placeholders are supported: because parameters bind positionally through the `Array<Option<String>>` argument, a numbered (`?NNN`) or named (`:name` / `@name` / `$name`) placeholder has no well-defined binding and is a compile-time error (`E209`).  The gate keys on the call reaching the host database — the `DB.query` / `DB.execute` spelling codegen routes to the host — rather than on the identity of the resolved operation, so no runtime SQL slips through an unusual declaration; an imported library body carrying a non-literal query is rejected on the compile path as well. A program cannot redeclare `effect DB` at all (`E152`, Section 9.5.1), so that route is closed twice over.
+**SQL literal provenance (injection prevention).**  The SQL argument of `query` / `execute` must be *literal-provenance*: a string literal, a `string_concat` of literals, or a `let` chain of those.  A SQL string that embeds a runtime value (a function result, a parameter, or a `\(expr)` interpolation of one) is the SQL injection vector, so Vera rejects it at **compile time** (`E207`); an interpolation, concatenation, or `let`-bound slot whose embedded expressions are themselves literals stays literal-provenance and is accepted.  Runtime data reaches the query only through the `?` placeholders and the params array.  The guarantee is a deterministic type error, not an SMT obligation. It needs no solver and holds even inside handled code where solver-based claims cannot reach.  When both the SQL and the params array are statically sized, a placeholder/parameter count mismatch is also a compile-time error (`E208`); a dynamically-sized params array defers that arity check to the driver at run time.  Only anonymous `?` placeholders are supported: because parameters bind positionally through the `Array<Option<String>>` argument, a numbered (`?NNN`) or named (`:name` / `@name` / `$name`) placeholder has no well-defined binding and is a compile-time error (`E209`).  The gate keys on the call reaching the host database (the `DB.query` / `DB.execute` spelling codegen routes to the host) rather than on the identity of the resolved operation, so no runtime SQL slips through an unusual declaration; an imported library body carrying a non-literal query is rejected on the compile path as well. A program cannot redeclare `effect DB` at all (`E152`, Section 9.5.1), so that route is closed twice over.
 
 - **Failure is a value.**  Both operations return `Result<_, String>`; a driver error is the `Err(msg)` arm, never a trap, so a database call is checked like any other `Result`.
-- **Connection.**  `VERA_DB_URL` selects the database — `sqlite::memory:` by default, or `sqlite:///path/to/file.db` for a file.  One connection is used per program run.
+- **Connection.**  `VERA_DB_URL` selects the database: `sqlite::memory:` by default, or `sqlite:///path/to/file.db` for a file.  One connection is used per program run.
 - **Portability.**  Native only: the browser runtime returns `Err` for every `DB` operation (documented divergence, §12), and `vera compile --target wasi-p2` rejects a program that uses `<DB>`.
 
 ## 9.6 Built-in Functions
 
-Built-in functions are always in scope as the single canonical definition of each operation. A user or module function whose name matches a built-in is a compile error (**E151**): there is one canonical form, so a second definition is redundant, and for the verifier-modelled built-ins it is silently unsound — the verifier would reason with the built-in's idealized model while code generation runs the user's body, letting a postcondition be *proved* against the built-in yet *violated at runtime*. Call the built-in directly (no import is needed) or choose a distinct name for genuinely different behaviour. The Option/Result/Json/Html combinators listed in the standard prelude (Section 9.1.2) are ordinary Vera functions the prelude injects, and their names are reserved: a function or a `where` helper named after one is refused with **E151** too.
+Built-in functions are always in scope as the single canonical definition of each operation. A user or module function whose name matches a built-in is a compile error (**E151**): there is one canonical form, so a second definition is redundant, and for the verifier-modelled built-ins it is silently unsound. The verifier would reason with the built-in's idealized model while code generation runs the user's body, letting a postcondition be *proved* against the built-in yet *violated at runtime*. Call the built-in directly (no import is needed) or choose a distinct name for different behaviour. The Option/Result/Json/Html combinators listed in the standard prelude (Section 9.1.2) are ordinary Vera functions the prelude injects, and their names are reserved: a function or a `where` helper named after one is refused with **E151** too.
 
 ### 9.6.1 array\_length
 
@@ -852,7 +855,7 @@ array_fold([1, 2, 3, 4], 0, fn(@Int, @Int -> @Int) effects(pure) { @Int.1 + @Int
 
 ### 9.6.9 Numeric Operations
 
-Vera provides eight built-in numeric functions for common mathematical operations. The integer functions (`abs`, `min`, `max`) operate on `Int` values and are pure — they perform no effects and are fully verifiable by the SMT solver (Tier 1). The floating-point functions (`floor`, `ceil`, `round`, `sqrt`, `pow`) use IEEE 754 semantics via WebAssembly's native instructions.
+Vera provides eight built-in numeric functions for common mathematical operations. The integer functions (`abs`, `min`, `max`) operate on `Int` values and are pure. They perform no effects and are fully verifiable by the SMT solver (Tier 1). The floating-point functions (`floor`, `ceil`, `round`, `sqrt`, `pow`) use IEEE 754 semantics via WebAssembly's native instructions.
 
 #### abs
 
@@ -864,7 +867,7 @@ public fn abs(@Int -> @Nat)
   effects(pure)
 ```
 
-Returns the absolute value of an integer. The result type is `Nat` because absolute values are always non-negative. Both `Nat` and `Int` are `i64` at the WASM level, so this involves no runtime conversion.  One argument has an absolute value no `Nat` holds: `-9223372036854775808`, whose absolute value is `2^63` (§2.2).  The call traps there as an `overflow`, and carries the overflow obligation of §6.4.3 at the call site — proved where a precondition or path condition excludes that argument, a runtime check otherwise.
+Returns the absolute value of an integer. The result type is `Nat` because absolute values are always non-negative. Both `Nat` and `Int` are `i64` at the WASM level, so this involves no runtime conversion.  One argument has an absolute value no `Nat` holds: `-9223372036854775808`, whose absolute value is `2^63` (§2.2).  The call traps there as an `overflow`, and carries the overflow obligation of §6.4.3 at the call site, proved where a precondition or path condition excludes that argument, a runtime check otherwise.
 
 ```
 abs(-42)
@@ -954,7 +957,7 @@ public fn round(@Float64 -> @Int)
   effects(pure)
 ```
 
-Rounds to the nearest integer using banker's rounding (IEEE 754 roundTiesToEven). This means `round(2.5)` evaluates to `2`, not `3` — ties round to the nearest even integer. Compiles to `f64.nearest` followed by `i64.trunc_f64_s`, behind a domain check: NaN, an infinity, or a result outside `[-2^63, 2^63)` traps as `float_conversion` (Section 11.8.5), so each call carries the `E529` domain obligation over the rounded value (§6.4.3): decided for a constant argument, checked at run time for a computed one.
+Rounds to the nearest integer using banker's rounding (IEEE 754 roundTiesToEven). This means `round(2.5)` evaluates to `2`, not `3`: ties round to the nearest even integer. Compiles to `f64.nearest` followed by `i64.trunc_f64_s`, behind a domain check: NaN, an infinity, or a result outside `[-2^63, 2^63)` traps as `float_conversion` (Section 11.8.5), so each call carries the `E529` domain obligation over the rounded value (§6.4.3): decided for a constant argument, checked at run time for a computed one.
 
 ```
 round(3.7)
@@ -990,7 +993,7 @@ public fn pow(@Float64, @Int -> @Float64)
   effects(pure)
 ```
 
-Raises a floating-point base to an integer exponent. The exponent is `Int`, not `Float64` — this avoids silent truncation of fractional exponents. Negative exponents produce reciprocals (`pow(2.0, -1)` evaluates to `0.5`). Implemented via exponentiation by squaring for efficiency.
+Raises a floating-point base to an integer exponent. The exponent is `Int`, not `Float64`, which avoids silent truncation of fractional exponents. Negative exponents produce reciprocals (`pow(2.0, -1)` evaluates to `0.5`). Implemented via exponentiation by squaring for efficiency.
 
 ```
 pow(2.0, 10)
@@ -1000,7 +1003,7 @@ This expression evaluates to `1024.0`.
 
 ### 9.6.10 Logarithmic, Trigonometric, and Numeric Utility Functions
 
-Fifteen additional math functions cover common scientific computing needs: three logarithms, seven trigonometric functions, two constants, and three numeric utilities. All are pure, and the `Float64` functions defer to IEEE 754 semantics — returning `NaN` for out-of-domain inputs (`log(-1.0)`, `asin(2.0)`) and `±Infinity` for overflow. The logarithms' zero pole is not a domain error: `log(0.0)`, `log2(0.0)`, and `log10(0.0)` (including `-0.0`) return `-Infinity`, matching IEEE 754 and JS `Math.log` in both runtimes (#790).
+Fifteen additional math functions cover common scientific computing needs: three logarithms, seven trigonometric functions, two constants, and three numeric utilities. All are pure, and the `Float64` functions defer to IEEE 754 semantics, returning `NaN` for out-of-domain inputs (`log(-1.0)`, `asin(2.0)`) and `±Infinity` for overflow. The logarithms' zero pole is not a domain error: `log(0.0)`, `log2(0.0)`, and `log10(0.0)` (including `-0.0`) return `-Infinity`, matching IEEE 754 and JS `Math.log` in both runtimes (#790).
 
 The log and trig functions are uninterpreted in Z3's real-arithmetic fragment, so contracts that depend on their specific values fall to Tier 3 (runtime check). Call-site type checking and effect inference still apply.
 
@@ -1024,7 +1027,7 @@ The log and trig functions are uninterpreted in Z3's real-arithmetic fragment, s
 | `float_clamp` | `Float64, Float64, Float64 -> Float64` | Float64 variant of `clamp` |
 <!-- render_lists:end signatures-math -->
 
-The argument order for `atan2` is `(y, x)`, matching POSIX, Python's `math.atan2`, and JavaScript's `Math.atan2` — `atan2(1.0, 1.0)` is `π/4`, `atan2(1.0, -1.0)` is `3π/4`.
+The argument order for `atan2` is `(y, x)`, matching POSIX, Python's `math.atan2`, and JavaScript's `Math.atan2`: `atan2(1.0, 1.0)` is `π/4`, `atan2(1.0, -1.0)` is `3π/4`.
 
 <!-- vera:skip-parse category="FRAGMENT" reason="let statements outside a function body, with their results in comments" -->
 ```vera
@@ -1034,7 +1037,7 @@ let @Int = sign(-42)              -- evaluates to -1
 let @Int = clamp(15, 0, 10)       -- evaluates to 10
 ```
 
-Clamp is defined as `min(max(v, lo), hi)`; when `lo > hi` the outer `min` dominates and the result equals `hi`. This is intentional — callers with strict ordering expectations should pre-check their bounds.
+Clamp is defined as `min(max(v, lo), hi)`; when `lo > hi` the outer `min` dominates and the result equals `hi`. This is intended: callers with strict ordering expectations should pre-check their bounds.
 
 ### 9.6.11 Type Conversions
 
@@ -1066,7 +1069,7 @@ public fn nat_to_int(@Nat -> @Int)
   effects(pure)
 ```
 
-Converts a natural number to a signed integer. This is a no-op at runtime — both types share the same representation (i64), and a `Nat` holds `0 .. 2^63 - 1`. The postcondition captures the invariant that the result is non-negative.  It is never needed to widen: a `Nat` is an `Int` as it stands (§2.2.1), and `nat_to_int` serves only where an operation on `Nat` values is meant to give an `Int` (`nat_to_int(@Nat.1) - @Nat.0` may be negative where `@Nat.1 - @Nat.0` traps).
+Converts a natural number to a signed integer. This is a no-op at runtime. Both types share the same representation (i64), and a `Nat` holds `0 .. 2^63 - 1`. The postcondition captures the invariant that the result is non-negative.  It is never needed to widen: a `Nat` is an `Int` as it stands (§2.2.1), and `nat_to_int` serves only where an operation on `Nat` values is meant to give an `Int` (`nat_to_int(@Nat.1) - @Nat.0` may be negative where `@Nat.1 - @Nat.0` traps).
 
 ```
 nat_to_int(abs(42))
@@ -1201,9 +1204,9 @@ Renders a `Float64` as its decimal string (up to six fractional digits, trailing
 | `+∞` (e.g. `infinity()`) | `"inf"` |
 | `-∞` (e.g. `log(0.0)`, `0.0 - infinity()`) | `"-inf"` |
 
-These spellings are chosen for cross-runtime parity: `float_to_string` compiles to inline WASM (no host import), so the Python host runtime and the browser runtime execute the same module and emit these bytes identically by construction. Because the math built-ins commit to IEEE 754 semantics — `log(0.0)` returns `-∞` and out-of-domain inputs return `NaN` (§9.6.10) — these are ordinary, reachable values, not errors; rendering them never traps ([#857](https://github.com/aallan/vera/issues/857)).
+These spellings are chosen for cross-runtime parity: `float_to_string` compiles to inline WASM (no host import), so the Python host runtime and the browser runtime execute the same module and emit these bytes identically by construction. Because the math built-ins commit to IEEE 754 semantics (`log(0.0)` returns `-∞` and out-of-domain inputs return `NaN`, §9.6.10), these are ordinary, reachable values, not errors; rendering them never traps ([#857](https://github.com/aallan/vera/issues/857)).
 
-A finite value of magnitude 2^63 or more does trap: the integer part is extracted with `i64.trunc_f64_s`, which that magnitude overflows. Each call therefore carries the `E529` domain obligation (§6.4.3), as does every `show` or string interpolation of a `@Float64`, which lower to this function — decided for a constant argument, checked at run time for a computed one.
+A finite value of magnitude 2^63 or more does trap: the integer part is extracted with `i64.trunc_f64_s`, which that magnitude overflows. Each call therefore carries the `E529` domain obligation (§6.4.3), as does every `show` or string interpolation of a `@Float64`, which lower to this function; the obligation is decided for a constant argument and checked at run time for a computed one.
 
 ```
 float_to_string(log(0.0))
@@ -1395,7 +1398,7 @@ public fn string_char_code(@String, @Int -> @Nat)
   requires(@Int.0 >= 0 && @Int.0 < string_length(@String.0)) ensures(true) effects(pure)
 ```
 
-Returns the unsigned byte value (as a `Nat`) at the given index in the string. The index is zero-based, and counts bytes: it must lie in `[0, string_length(s))`, the string's length in BYTES, or the call traps as `string_index_out_of_bounds` (Section 11.8.5). That range is the declared precondition, obligated at each call site like any `requires` (§6.4.2) — proved where the index is bounded against a string literal, `E501` where it may not hold, and checked at run time (`E532`) where the string's byte length is not known statically (§6.4.3) or where it is refuted only over a value the verifier cannot state, such as an effect operation's result (§6.4.2).
+Returns the unsigned byte value (as a `Nat`) at the given index in the string. The index is zero-based, and counts bytes: it must lie in `[0, string_length(s))`, the string's length in BYTES, or the call traps as `string_index_out_of_bounds` (Section 11.8.5). That range is the declared precondition, obligated at each call site like any `requires` (§6.4.2): proved where the index is bounded against a string literal, `E501` where it may not hold, and checked at run time (`E532`) where the string's byte length is not known statically (§6.4.3) or where it is refuted only over a value the verifier cannot state, such as an effect operation's result (§6.4.2).
 
 <!-- vera:skip-parse category="FRAGMENT" reason="bare string_char_code calls with their results in comments" -->
 ```vera
@@ -1548,9 +1551,9 @@ public fn parse_nat(@String -> @Result<Nat, String>)
 Parses a non-negative integer from a string. After stripping whitespace, the remaining characters must all be ASCII digits (`0`–`9`). Leading zeros are permitted (e.g., `"007"` parses as `7`).
 
 Error messages:
-- `"empty string"` — the input is empty or contains only whitespace
-- `"invalid digit"` — a non-digit character was encountered
-- `"out of range"` — the numeral is above `9223372036854775807`, the largest `Nat` (§2.2)
+- `"empty string"`: the input is empty or contains only whitespace
+- `"invalid digit"`: a non-digit character was encountered
+- `"out of range"`: the numeral is above `9223372036854775807`, the largest `Nat` (§2.2)
 
 <!-- vera:skip-parse category="FRAGMENT" reason="bare parse_nat calls with their results in comments" -->
 ```vera
@@ -1574,9 +1577,9 @@ public fn parse_int(@String -> @Result<Int, String>)
 Parses a signed integer from a string. After stripping whitespace, an optional leading `+` or `-` sign is consumed. The remaining characters must all be ASCII digits (`0`–`9`). A bare sign with no digits (e.g., `"-"`) is an error.
 
 Error messages:
-- `"empty string"` — the input is empty, contains only whitespace, or is a sign with no digits
-- `"invalid digit"` — a non-digit character was encountered (after any sign)
-- `"out of range"` — the numeral is outside the `Int` range, `-9223372036854775808 .. 9223372036854775807` (§2.2)
+- `"empty string"`: the input is empty, contains only whitespace, or is a sign with no digits
+- `"invalid digit"`: a non-digit character was encountered (after any sign)
+- `"out of range"`: the numeral is outside the `Int` range, `-9223372036854775808 .. 9223372036854775807` (§2.2)
 
 <!-- vera:skip-parse category="FRAGMENT" reason="bare parse_int calls with their results in comments" -->
 ```vera
@@ -1602,8 +1605,8 @@ public fn parse_float64(@String -> @Result<Float64, String>)
 Parses a 64-bit floating-point number from a string. After stripping whitespace, an optional leading `-` sign is consumed, followed by one or more digits, an optional decimal point with additional digits, and an optional exponent (`e` or `E` followed by an optional sign and digits). At least one digit must appear in the integer part.
 
 Error messages:
-- `"empty string"` — the input is empty or contains only whitespace
-- `"invalid character"` — a non-digit, non-`.`, non-`e`/`E` character was encountered
+- `"empty string"`: the input is empty or contains only whitespace
+- `"invalid character"`: a non-digit, non-`.`, non-`e`/`E` character was encountered
 
 <!-- vera:skip-parse category="FRAGMENT" reason="bare parse_float64 calls with their results in comments" -->
 ```vera
@@ -1623,10 +1626,10 @@ public fn parse_bool(@String -> @Result<Bool, String>)
   requires(true) ensures(true) effects(pure)
 ```
 
-Parses a boolean from a string. After stripping whitespace, the remaining content must be exactly `"true"` or `"false"` (strict lowercase). No other forms are accepted — `"True"`, `"TRUE"`, `"yes"`, `"1"`, etc. all produce errors. This strictness prevents ambiguity when models generate boolean values.
+Parses a boolean from a string. After stripping whitespace, the remaining content must be exactly `"true"` or `"false"` (strict lowercase). No other forms are accepted: `"True"`, `"TRUE"`, `"yes"`, `"1"`, etc. all produce errors. This strictness prevents ambiguity when models generate boolean values.
 
 Error messages:
-- `"expected true or false"` — the input does not match `"true"` or `"false"` after whitespace stripping
+- `"expected true or false"`: the input does not match `"true"` or `"false"` after whitespace stripping
 
 <!-- vera:skip-parse category="FRAGMENT" reason="bare parse_bool calls with their results in comments" -->
 ```vera
@@ -1675,8 +1678,8 @@ Decodes a standard Base64 string (RFC 4648) to its original UTF-8 bytes. Returns
 
 **Error conditions:**
 
-- `"invalid base64 length"` — the input length is not a multiple of 4
-- `"invalid base64"` — the input contains characters outside the Base64 alphabet
+- `"invalid base64 length"`: the input length is not a multiple of 4
+- `"invalid base64"`: the input contains characters outside the Base64 alphabet
 
 <!-- vera:skip-parse category="FRAGMENT" reason="bare base64_decode calls with their results in comments" -->
 ```vera
@@ -1751,7 +1754,7 @@ Decodes a percent-encoded string (RFC 3986). Each `%XX` sequence is converted to
 
 **Error conditions:**
 
-- `"invalid percent-encoding"` — truncated `%` sequence (fewer than 2 hex digits following `%`) or invalid hex digits
+- `"invalid percent-encoding"`: truncated `%` sequence (fewer than 2 hex digits following `%`) or invalid hex digits
 
 <!-- vera:skip-parse category="FRAGMENT" reason="bare url_decode calls with their results in comments" -->
 ```vera
@@ -1819,7 +1822,7 @@ public fn similarity(@Array<Float64>, @Array<Float64> -> @Float64)
 
 Computes the cosine similarity between two vectors (embeddings). The arrays must have equal length (enforced by precondition). The result is in the range \[-1, 1\], where 1 indicates identical direction, 0 indicates orthogonality, and -1 indicates opposite direction.
 
-This function is pure — it performs no effects. It pairs with the `Inference.embed` operation to compare semantic similarity of text.
+This function is pure. It performs no effects. It pairs with the `Inference.embed` operation to compare semantic similarity of text.
 
 ### 9.6.20 Regular Expressions
 
@@ -1897,11 +1900,11 @@ let @Result<String, String> = regex_replace("hello world", "world", "vera");
 -- Ok("hello vera")
 ```
 
-**Implementation note:** These functions are implemented as host imports — they delegate to the runtime's native regex engine (Python's `re` module for wasmtime, JavaScript's `RegExp` for the browser runtime). This avoids embedding a regex engine in WASM while providing access to mature, well-tested implementations.
+**Implementation note:** These functions are implemented as host imports. They delegate to the runtime's native regex engine (Python's `re` module for wasmtime, JavaScript's `RegExp` for the browser runtime). This avoids embedding a regex engine in WASM while providing access to mature, well-tested implementations.
 
 ### 9.6.21 Array Utilities
 
-Vera provides seven additional array combinators beyond `array_map` / `array_filter` / `array_fold`. All are implemented as iterative WASM loops with O(1) shadow-stack depth, mirroring the architecture established by [#480](https://github.com/aallan/vera/issues/480). None require ability dispatch on the polymorphic element type — `array_sort`, `array_contains`, and `array_index_of` (which would need to invoke `compare<T>` / `eq<T>` from inside the loop) are not implemented.
+Vera provides seven additional array combinators beyond `array_map` / `array_filter` / `array_fold`. All are implemented as iterative WASM loops with O(1) shadow-stack depth, mirroring the architecture established by [#480](https://github.com/aallan/vera/issues/480). None require ability dispatch on the polymorphic element type; `array_sort`, `array_contains`, and `array_index_of` (which would need to invoke `compare<T>` / `eq<T>` from inside the loop) are not implemented.
 
 <!-- vera:skip-parse category="FRAGMENT" reason="array_mapi signature (no body)" -->
 ```vera
@@ -1909,7 +1912,7 @@ public forall<A, B> fn array_mapi(@Array<A>, fn(A, Nat -> B) effects(pure) -> @A
   requires(true) ensures(true) effects(pure)
 ```
 
-`array_mapi` maps a function over the array, passing each element along with its zero-based position as the second argument. Same return shape as `array_map`; the index is provided so the caller can avoid the recursive-accumulator-with-index pattern that has historically been a leading source of De Bruijn indexing mistakes. Matches `mapi` from OCaml's `List`, `enumerate().map()` from Rust, and `arr.map((x, i) => ...)` from JavaScript.
+`array_mapi` maps a function over the array, passing each element along with its zero-based position as the second argument. Same return shape as `array_map`; the index is provided so the caller can avoid the recursive-accumulator-with-index pattern that is a leading source of De Bruijn indexing mistakes. Matches `mapi` from OCaml's `List`, `enumerate().map()` from Rust, and `arr.map((x, i) => ...)` from JavaScript.
 
 <!-- vera:skip-parse category="FRAGMENT" reason="bare array_mapi calls with their results in comments" -->
 ```vera
@@ -1938,7 +1941,7 @@ public forall<T> fn array_find(@Array<T>, fn(T -> Bool) effects(pure) -> @Option
   requires(true) ensures(true) effects(pure)
 ```
 
-`array_find` returns `Some(x)` for the first element where the predicate is `true`, or `None` if no element matches. Short-circuits on the first match — the predicate is not invoked for elements past the match.
+`array_find` returns `Some(x)` for the first element where the predicate is `true`, or `None` if no element matches. It short-circuits on the first match. The predicate is not invoked for elements past the match.
 
 <!-- vera:skip-parse category="FRAGMENT" reason="bare array_find calls with their results in comments" -->
 ```vera
@@ -1984,7 +1987,7 @@ public forall<T> fn array_sort_by(@Array<T>, fn(T, T -> Ordering) effects(pure) 
   requires(true) ensures(true) effects(pure)
 ```
 
-`array_sort_by` returns a new array sorted using a caller-supplied comparator. The comparator receives two elements and returns an `@Ordering` value (`Less`, `Equal`, or `Greater`); the convention `cmp(a, b) == Less when a < b` produces ascending order. Implementation is insertion sort — stable, O(n²) worst-case, well-suited to the small-to-medium arrays Vera programs typically handle. `array_sort<T> where Ord<T>`, which would infer the comparator from the element type's `Ord` ability rather than take it explicitly, is not implemented.
+`array_sort_by` returns a new array sorted using a caller-supplied comparator. The comparator receives two elements and returns an `@Ordering` value (`Less`, `Equal`, or `Greater`); the convention `cmp(a, b) == Less when a < b` produces ascending order. The implementation is insertion sort: stable, O(n²) worst-case, suited to the small-to-medium arrays Vera programs typically handle. `array_sort<T> where Ord<T>`, which would infer the comparator from the element type's `Ord` ability rather than take it explicitly, is not implemented.
 
 <!-- vera:skip-parse category="FRAGMENT" reason="a bare array_sort_by call with its result in a comment" -->
 ```vera
@@ -2001,17 +2004,17 @@ array_sort_by(
 
 **Verification:** all seven utilities have signatures verifiable by the type checker; their bodies fall to Tier 3 (runtime) verification, but for two distinct reasons.
 
-The callback-based combinators — `array_mapi`, `array_find`, `array_any`, `array_all`, and `array_sort_by` — are Tier 3 because their semantics iterate a user-supplied closure whose effects, returns, and termination behaviour are not statically modelled in the verifier's encoding. This category cannot move to Tier 1 without a substantial extension to the SMT translation that reasons about higher-order functions.
+The callback-based combinators (`array_mapi`, `array_find`, `array_any`, `array_all`, and `array_sort_by`) are Tier 3 because their semantics iterate a user-supplied closure whose effects, returns, and termination behaviour are not statically modelled in the verifier's encoding. This category cannot move to Tier 1 without a substantial extension to the SMT translation that reasons about higher-order functions.
 
 `array_reverse` and `array_flatten` are Tier 3 for a different and narrower reason: they have no closure callback at all and their behaviour is entirely structural (length-preserving / length-summing respectively). They could in principle support stronger Tier 1 contracts such as `ensures(array_length(@result) == array_length(@input))` for `array_reverse` or `ensures(array_length(@result) == sum_inner_lengths(@input))` for `array_flatten`. The underlying SMT encoding for those properties is not implemented; with it, both functions become candidates for Tier 1 promotion without any change to their signatures.
 
 ### 9.6.22 String Utilities and Character Classification
 
-Vera provides eight additional string utilities and eight character classification primitives. All sixteen are implemented as inline WAT — no host imports — so they execute identically under the Python (`wasmtime`) and browser (Node.js / web) runtimes. Tracked in [#470](https://github.com/aallan/vera/issues/470) (utilities) and [#471](https://github.com/aallan/vera/issues/471) (classifiers).
+Vera provides eight additional string utilities and eight character classification primitives. All sixteen are implemented as inline WAT with no host imports, so they execute identically under the Python (`wasmtime`) and browser (Node.js / web) runtimes.
 
 All operations use **ASCII byte semantics**: classifiers test the first byte of the input string; case-conversion functions transform the first byte and pass remaining bytes through unchanged; structural splits work at the byte level. Unicode-aware variants are not provided.
 
-#### String splits — bridges to the array combinators
+#### String splits: bridges to the array combinators
 
 <!-- vera:skip-parse category="FRAGMENT" reason="string_chars/lines/words signatures (no bodies)" -->
 ```vera
@@ -2029,7 +2032,7 @@ public fn string_words(@String -> @Array<String>)
 
 `string_lines` follows Python's `str.splitlines()`: splits on `\n`, `\r\n`, and `\r` line terminators. A trailing line terminator does **not** produce an empty trailing segment.
 
-`string_words` follows Python's `str.split()` with no arguments: splits on runs of ASCII whitespace (the same set as `is_whitespace` — space, tab, `\n`, `\v`, `\f`, `\r`), and discards empty segments. `string_words("  ")` returns the empty array.
+`string_words` follows Python's `str.split()` with no arguments: splits on runs of ASCII whitespace (the same set as `is_whitespace`: space, tab, `\n`, `\v`, `\f`, `\r`), and discards empty segments. `string_words("  ")` returns the empty array.
 
 <!-- vera:skip-parse category="FRAGMENT" reason="bare string_chars, string_lines, string_words calls with their results in comments" -->
 ```vera
@@ -2040,7 +2043,7 @@ string_words("  foo  bar ")   -- ["foo", "bar"]
 string_words("   ")           -- []
 ```
 
-All three return a fresh `@Array<String>` whose elements are each independently allocated and copied. (The implementation does not share a backing buffer between elements: the GC mark phase rejects interior pointers — see `_emit_gc_collect` in `vera/codegen/assembly.py` — so a shared-buffer scheme cannot keep the elements rooted across a collection triggered after the function returns.)
+All three return a fresh `@Array<String>` whose elements are each independently allocated and copied. (The implementation does not share a backing buffer between elements: the GC mark phase rejects interior pointers (see `_emit_gc_collect` in `vera/codegen/assembly.py`), so a shared-buffer scheme cannot keep the elements rooted across a collection triggered after the function returns.)
 
 #### String transformations
 
@@ -2058,7 +2061,7 @@ public fn string_trim_end(@String -> @String)
 
 `string_reverse` reverses the byte order of the input. ASCII-safe; for multi-byte UTF-8 sequences the result is not a valid UTF-8 string. The empty string round-trips.
 
-`string_trim_start` strips leading ASCII whitespace (the same set as `is_whitespace` — space, tab, `\n`, `\v`, `\f`, `\r`); `string_trim_end` strips trailing whitespace. Each preserves the opposite end exactly. The all-whitespace input returns the empty string.
+`string_trim_start` strips leading ASCII whitespace (the same set as `is_whitespace`: space, tab, `\n`, `\v`, `\f`, `\r`); `string_trim_end` strips trailing whitespace. Each preserves the opposite end exactly. The all-whitespace input returns the empty string.
 
 <!-- vera:skip-parse category="FRAGMENT" reason="bare string_reverse, string_trim_start, string_trim_end calls with their results in comments" -->
 ```vera
@@ -2082,7 +2085,7 @@ public fn string_pad_end(@String, @Nat, @String -> @String)
 
 - If `string_length(s) >= n` the input is returned unchanged.
 - The fill cycles left-to-right and is truncated to exactly the padding length, not the next multiple of `string_length(fill)`.
-- An empty `fill` is a no-op (returns the input unchanged) — `pad_start` cannot infinitely loop.
+- An empty `fill` is a no-op (returns the input unchanged), so `pad_start` cannot infinitely loop.
 
 <!-- vera:skip-parse category="FRAGMENT" reason="bare string_pad_start, string_pad_end calls with their results in comments" -->
 ```vera
@@ -2103,7 +2106,7 @@ public fn char_to_lower(@String -> @String)
   requires(true) ensures(true) effects(pure)
 ```
 
-`char_to_upper` converts the first byte of the input to uppercase if it is an ASCII lowercase letter (`a..z`); other bytes pass through unchanged. `char_to_lower` is the dual. Only the first byte is transformed — these are deliberately first-character operations, useful for title-casing tokens.
+`char_to_upper` converts the first byte of the input to uppercase if it is an ASCII lowercase letter (`a..z`); other bytes pass through unchanged. `char_to_lower` is the dual. Only the first byte is transformed: these are first-character operations, useful for title-casing tokens.
 
 <!-- vera:skip-parse category="FRAGMENT" reason="bare char_to_upper, char_to_lower calls with their results in comments" -->
 ```vera
@@ -2134,11 +2137,11 @@ Each classifier inspects the **first byte** of the input string and returns a `@
 | `is_digit` | `0x30..0x39` (`'0'..'9'`) |
 | `is_alpha` | `0x41..0x5A` or `0x61..0x7A` (`'A'..'Z'`, `'a'..'z'`) |
 | `is_alphanumeric` | union of `is_digit` and `is_alpha` |
-| `is_whitespace` | `0x09` (tab), `0x0A` (`\n`), `0x0B` (`\v`), `0x0C` (`\f`), `0x0D` (`\r`), `0x20` (space) — Python `str.isspace()` ASCII set |
+| `is_whitespace` | `0x09` (tab), `0x0A` (`\n`), `0x0B` (`\v`), `0x0C` (`\f`), `0x0D` (`\r`), `0x20` (space); Python's `str.isspace()` ASCII set |
 | `is_upper` | `0x41..0x5A` (`'A'..'Z'`) |
 | `is_lower` | `0x61..0x7A` (`'a'..'z'`) |
 
-Every classifier returns `false` for the empty string — there is no first byte to inspect, so no predicate can hold.
+Every classifier returns `false` for the empty string. There is no first byte to inspect, so no predicate can hold.
 
 <!-- vera:skip-parse category="FRAGMENT" reason="bare is_digit, is_alpha, is_whitespace calls with their results in comments" -->
 ```vera
@@ -2150,15 +2153,15 @@ is_alpha("9")   -- false
 is_whitespace("\t")  -- true
 ```
 
-**Verification:** all sixteen functions have Tier-1-verifiable signatures; their bodies fall to Tier 3 (runtime) verification because the SMT encoding does not model byte-level string operations. Their `requires(true)` / `ensures(true)` contracts are total, so Tier 3 reduces to runtime trap-freedom — every input is accepted.
+**Verification:** all sixteen functions have Tier-1-verifiable signatures; their bodies fall to Tier 3 (runtime) verification because the SMT encoding does not model byte-level string operations. Their `requires(true)` / `ensures(true)` contracts are total, so Tier 3 reduces to runtime trap-freedom: every input is accepted.
 
 ### 9.6.23 JSON Typed Accessors
 
-Vera provides eleven additional JSON accessor functions that eliminate the two-level pattern-match boilerplate (`match option ... { Some(@Json) -> match @Json.0 { JNumber(@Float64) -> ... } }`) that every JSON API consumer would otherwise write. Tracked in [#366](https://github.com/aallan/vera/issues/366).
+Vera provides eleven additional JSON accessor functions that eliminate the two-level pattern-match boilerplate (`match option ... { Some(@Json) -> match @Json.0 { JNumber(@Float64) -> ... } }`) that every JSON API consumer would otherwise write.
 
-Unlike the rest of the chapter-9 built-ins, these are **pure-Vera prelude functions**, not WASM translators. The compiler injects them into every module that references `Json` values, alongside the existing `json_get` / `json_keys` / `json_type` combinators. No new host imports and no dedicated WASM translator paths — but the accessors are still compiled as ordinary WASM functions (via the standard AST-to-WAT pipeline) whenever a module actually references them. A module that never calls any of the eleven accessors pays zero compiled-WASM cost for them.
+Unlike the rest of the chapter-9 built-ins, these are **pure-Vera prelude functions**, not WASM translators. The compiler injects them into every module that references `Json` values, alongside the existing `json_get` / `json_keys` / `json_type` combinators. There are no new host imports and no dedicated WASM translator paths, but the accessors are still compiled as ordinary WASM functions (via the standard AST-to-WAT pipeline) whenever a module actually references them. A module that never calls any of the eleven accessors pays zero compiled-WASM cost for them.
 
-#### Layer 1 — type-coercion accessors
+#### Layer 1: type-coercion accessors
 
 <!-- vera:skip-parse category="FRAGMENT" reason="json_as_* Layer-1 signatures (no body, #366)" -->
 ```vera
@@ -2181,9 +2184,9 @@ public fn json_as_object(@Json -> @Option<Map<String, Json>>)
   requires(true) ensures(true) effects(pure)
 ```
 
-Each `json_as_*` returns `Some(value)` when the Json's constructor matches the requested type, `None` otherwise. The accessors are disjoint — at most one returns `Some` for any given Json value.
+Each `json_as_*` returns `Some(value)` when the Json's constructor matches the requested type, `None` otherwise. The accessors are disjoint. At most one returns `Some` for any given Json value.
 
-`json_as_int` is the one asymmetric case: it applies `float_to_int` to the underlying `Float64`, truncating toward zero. `float_to_int` (aka WASM's `i64.trunc_f64_s`) traps on NaN, ±infinity, and any finite float outside the closed-open i64 range `[-2^63, 2^63)` — that is, `f < -2^63` or `f >= 2^63`. The range is asymmetric because two's-complement i64 can represent `-2^63 = INT64_MIN` exactly but not `+2^63`. `json_as_int` guards all four trap paths (`float_is_nan`, `float_is_infinite`, plus explicit bounds `f >= 9223372036854775808.0` and `f < -9223372036854775808.0`) and returns `None` for every non-representable-as-Int input. At the inclusive lower bound, `json_as_int(JNumber(-9223372036854775808.0))` correctly returns `Some(INT64_MIN)`.
+`json_as_int` is the one asymmetric case: it applies `float_to_int` to the underlying `Float64`, truncating toward zero. `float_to_int` (aka WASM's `i64.trunc_f64_s`) traps on NaN, ±infinity, and any finite float outside the closed-open i64 range `[-2^63, 2^63)`, that is, `f < -2^63` or `f >= 2^63`. The range is asymmetric because two's-complement i64 can represent `-2^63 = INT64_MIN` exactly but not `+2^63`. `json_as_int` guards all four trap paths (`float_is_nan`, `float_is_infinite`, plus explicit bounds `f >= 9223372036854775808.0` and `f < -9223372036854775808.0`) and returns `None` for every non-representable-as-Int input. At the inclusive lower bound, `json_as_int(JNumber(-9223372036854775808.0))` returns `Some(INT64_MIN)`.
 
 <!-- vera:skip-parse category="FRAGMENT" reason="bare json_as_string, json_as_int calls with their results in comments" -->
 ```vera
@@ -2195,7 +2198,7 @@ json_as_int(JNumber(0.0 / 0.0))            -- None       -- NaN guard
 json_as_int(JNumber(infinity()))           -- None       -- infinity guard
 ```
 
-#### Layer 2 — compound field accessors
+#### Layer 2: compound field accessors
 
 <!-- vera:skip-parse category="FRAGMENT" reason="json_get_* Layer-2 signatures (no body, #366)" -->
 ```vera
@@ -2215,9 +2218,9 @@ public fn json_get_array(@Json, @String -> @Option<Array<Json>>)
   requires(true) ensures(true) effects(pure)
 ```
 
-Each `json_get_X(j, key)` is definitionally equivalent to chaining `json_get(j, key)` with the matching `json_as_X` coercion: it returns `None` both when the field is missing and when the field is present but of the wrong type. This is the accessor shape that 90% of real API-consuming code wants — field lookup and type coercion collapsed into one call.
+Each `json_get_X(j, key)` is definitionally equivalent to chaining `json_get(j, key)` with the matching `json_as_X` coercion: it returns `None` both when the field is missing and when the field is present but of the wrong type. This shape puts field lookup and type coercion in one call.
 
-There is no `json_get_object` — chained field access is handled by `json_get` returning `Option<Json>`, then letting the caller recurse.
+There is no `json_get_object`. Chained field access is handled by `json_get` returning `Option<Json>`, then letting the caller recurse.
 
 <!-- vera:skip-parse category="FRAGMENT" reason="bare json_get_string, json_get_int, json_get_bool calls with their results in comments" -->
 ```vera
@@ -2236,7 +2239,7 @@ json_get_int(obj, "name")                  -- None (wrong type)
 
 ### 9.7.1 Json
 
-`Json` is a standard library ADT for structured data interchange. Tracked in [#58](https://github.com/aallan/vera/issues/58).
+`Json` is a standard library ADT for structured data interchange.
 
 <!-- vera:skip-check category="ILLUSTRATIVE" code="E158" reason="the prelude's own declaration of a reserved name, shown as the compiler injects it (#1469)" -->
 ```vera
@@ -2250,7 +2253,7 @@ public data Json {
 }
 ```
 
-The `Json` type is provided by the standard prelude — no explicit `data` declaration is required. JSON values are constructed with the six variant constructors and destructured via `match`.
+The `Json` type is provided by the standard prelude, so no explicit `data` declaration is required. JSON values are constructed with the six variant constructors and destructured via `match`.
 
 **Parsing and serialization:**
 
@@ -2261,10 +2264,10 @@ The `Json` type is provided by the standard prelude — no explicit `data` decla
 | `json_stringify(j)` | `Json -> String` | Serialize a Json value to its canonical JSON string |
 <!-- render_lists:end signatures-json-parse -->
 
-**`json_parse`'s accepted domain.** Both runtimes accept exactly RFC 8259-valid text that decodes to finite numbers and to strings that are sequences of Unicode scalar values. Text outside that domain MUST produce `Err` at the parse rather than a value, and for the two exclusions below the message MUST be the same on every runtime. The domain is defined here rather than inherited from whatever the host parser happens to accept (DESIGN.md: explicit over implicit) — the two exclusions are precisely where the host parsers disagree:
+**`json_parse`'s accepted domain.** Both runtimes accept exactly RFC 8259-valid text that decodes to finite numbers and to strings that are sequences of Unicode scalar values. Text outside that domain MUST produce `Err` at the parse rather than a value, and for the two exclusions below the message MUST be the same on every runtime. The domain is defined here rather than inherited from whatever the host parser happens to accept (DESIGN.md: explicit over implicit). The two exclusions are where the host parsers disagree:
 
-- **A non-finite number, however it is written.** RFC 8259 has no literal for one, so the JavaScript constants `NaN`, `Infinity` and `-Infinity` are refused wherever a value may appear, nested or at the top level. A *syntactically valid* number whose magnitude overflows the `Float64` a `JNumber` holds is refused too, whether it is written with an exponent (`1e999`) or as plain digits (`1` followed by 309 zeros) — the distinction matters to a host whose parser decodes the two to different types, and not at all to the domain: RFC 8259 §6 sets no limit on a number's range but says an implementation may set one, and Vera's accepted range is the finite `Float64` values, which is exactly what `json_stringify` can write back. The bound is the point at which the nearest `Float64` becomes infinite, so a magnitude above the largest finite double that still *rounds* to it is accepted. Underflow is a different question and is *not* refused either: `1e-999` decodes to `0`, which is finite and in the domain. This is the input-side counterpart of the serialization rule below — a non-finite number has no JSON representation in either direction — and with both entry routes closed, the only way to reach the output-side refusal is to construct a `JNumber` from `nan()` or `infinity()`.
-- **A lone surrogate** — a `\uXXXX` escape in D800–DFFF with no matching partner. The text is grammatically legal, but its decoded value is not a sequence of scalar values, and a Vera `String` is. The alternatives are substituting U+FFFD, which silently yields a value the text did not encode, and admitting strings the rest of the language cannot represent (§0.2.6). A *matched* high-then-low pair is ordinary and is accepted: it denotes one astral scalar value.
+- **A non-finite number, however it is written.** RFC 8259 has no literal for one, so the JavaScript constants `NaN`, `Infinity` and `-Infinity` are refused wherever a value may appear, nested or at the top level. A *syntactically valid* number whose magnitude overflows the `Float64` a `JNumber` holds is refused too, whether it is written with an exponent (`1e999`) or as plain digits (`1` followed by 309 zeros). The distinction matters to a host whose parser decodes the two to different types, and not at all to the domain: RFC 8259 §6 sets no limit on a number's range but says an implementation may set one, and Vera's accepted range is the finite `Float64` values, which is exactly what `json_stringify` can write back. The bound is the point at which the nearest `Float64` becomes infinite, so a magnitude above the largest finite double that still *rounds* to it is accepted. Underflow is a different question and is *not* refused either: `1e-999` decodes to `0`, which is finite and in the domain. This is the input-side counterpart of the serialization rule below (a non-finite number has no JSON representation in either direction), and with both entry routes closed, the only way to reach the output-side refusal is to construct a `JNumber` from `nan()` or `infinity()`.
+- **A lone surrogate**: a `\uXXXX` escape in D800–DFFF with no matching partner. The text is grammatically legal, but its decoded value is not a sequence of scalar values, and a Vera `String` is. The alternatives are substituting U+FFFD, which silently yields a value the text did not encode, and admitting strings the rest of the language cannot represent (§0.2.6). A *matched* high-then-low pair is ordinary and is accepted: it denotes one astral scalar value.
 
 Text malformed for any other reason also produces `Err`, but that message is the host parser's own and is not pinned.
 
@@ -2277,7 +2280,7 @@ Text malformed for any other reason also produces `Err`, but that message is the
 
 The number rule is what makes serialization non-destructive: a document containing `1` re-serializes as `1`. A form that wrote `1.0` would silently alter integral values in transit, which §0.2.2 (explicitness, no implicit behaviour) rules out.
 
-`NaN` and infinities have no JSON representation. `json_stringify` on a `JNumber` holding one **fails** rather than substituting `null` — substituting would turn a value the format cannot carry into a different, valid one that no consumer could distinguish from a genuine `JNull`. Guard with `float_is_nan` / `float_is_infinite` (§9.6.12) before serializing.
+`NaN` and infinities have no JSON representation. `json_stringify` on a `JNumber` holding one **fails** rather than substituting `null`. Substituting would turn a value the format cannot carry into a different, valid one that no consumer could distinguish from a genuine `JNull`. Guard with `float_is_nan` / `float_is_infinite` (§9.6.12) before serializing.
 
 **Object access:**
 
@@ -2306,7 +2309,7 @@ The number rule is what makes serialization non-destructive: a document containi
 | `json_type(j)` | `Json -> String` | Returns `"null"`, `"bool"`, `"number"`, `"string"`, `"array"`, or `"object"` |
 <!-- render_lists:end signatures-json-type -->
 
-All JSON functions are pure. The `Json` type is a heap-allocated ADT — values are `i32` pointers into WASM linear memory with a tag + payload layout (like all Vera ADTs). Only `json_parse` and `json_stringify` are host imports (Python `json` / JavaScript `JSON`); the remaining utility functions (`json_get`, `json_has_field`, `json_type`, `json_keys`, `json_array_get`, `json_array_length`) are injected as Vera source from the standard prelude.
+All JSON functions are pure. The `Json` type is a heap-allocated ADT: values are `i32` pointers into WASM linear memory with a tag + payload layout (like all Vera ADTs). Only `json_parse` and `json_stringify` are host imports (Python `json` / JavaScript `JSON`); the remaining utility functions (`json_get`, `json_has_field`, `json_type`, `json_keys`, `json_array_get`, `json_array_length`) are injected as Vera source from the standard prelude.
 
 **Example:**
 
@@ -2337,7 +2340,7 @@ type ApiResponse = { @Json | json_has_field(@Json.0, "status") };
 
 ### 9.7.2 Decimal
 
-`Decimal` provides exact decimal arithmetic for financial and precision-sensitive applications. Tracked in [#333](https://github.com/aallan/vera/issues/333).
+`Decimal` provides exact decimal arithmetic for financial and precision-sensitive applications.
 
 Decimal is an opaque built-in type implemented via host imports, following the same pattern as `Map<K, V>` and `Set<T>`. The runtime maintains `decimal.Decimal` values (Python) or exact scaled-BigInt values (JavaScript); WASM code interacts with decimals through `i32` handles. All operations are pure.
 
@@ -2353,7 +2356,7 @@ Decimal is an opaque built-in type implemented via host imports, following the s
 | `decimal_to_float(d)` | `Decimal -> Float64` | Potentially lossy conversion to float |
 <!-- render_lists:end signatures-decimal-construct -->
 
-**`decimal_from_string` grammar:** both runtimes accept exactly the language `[+-]? ( digits ( "." digits? )? | "." digits ) ( ("e" | "E") [+-]? digits )?` where `digits` is one or more ASCII `0`–`9`, applied after ignoring surrounding whitespace — the six code points `is_whitespace` names (`0x09`, `0x0A`, `0x0B`, `0x0C`, `0x0D`, `0x20`) and no others, stated here because the two host libraries' own trim functions disagree about the rest in both directions, and the exponent token (when present) MUST satisfy `|exp| <= 999999` — the default context's exponent floor, cited by the `decimal_round` fallback below and chosen to keep operand magnitudes bounded and the exponent-token check exact. Only finite decimals are accepted: special values (`NaN`, `sNaN`, `Infinity`), digit-group underscores (`1_000`), non-ASCII digits, and out-of-range exponent tokens are all rejected with `None`, even where a host decimal library would accept them. The accepted domain is defined by this grammar rather than inherited from whatever the host library parses (DESIGN.md: explicit over implicit) — the Python host pre-validates with this grammar before constructing a `decimal.Decimal`, and the browser runtime's parser recognises the same language, checking the exponent token as a string before any numeric conversion (an unbounded token would otherwise round silently above 2^53). This `|exp| <= 999999` bound constrains **input literals** only; exact arithmetic on accepted operands can grow the exponent past it, as squaring the largest accepted literal shows, and such results are computed and rendered identically in both runtimes (the Python host runs the binary operations in a context whose exponent range is widened to the library maximum, `±10^18`, so a finite result never overflows and matches the browser's unbounded engine).
+**`decimal_from_string` grammar:** both runtimes accept exactly the language `[+-]? ( digits ( "." digits? )? | "." digits ) ( ("e" | "E") [+-]? digits )?` where `digits` is one or more ASCII `0`–`9`, applied after ignoring surrounding whitespace (the six code points `is_whitespace` names, `0x09`, `0x0A`, `0x0B`, `0x0C`, `0x0D` and `0x20`, and no others; they are stated here because the two host libraries' own trim functions disagree about the rest in both directions), and the exponent token (when present) MUST satisfy `|exp| <= 999999`, the default context's exponent floor, cited by the `decimal_round` fallback below and chosen to keep operand magnitudes bounded and the exponent-token check exact. Only finite decimals are accepted: special values (`NaN`, `sNaN`, `Infinity`), digit-group underscores (`1_000`), non-ASCII digits, and out-of-range exponent tokens are all rejected with `None`, even where a host decimal library would accept them. The accepted domain is defined by this grammar rather than inherited from whatever the host library parses (DESIGN.md: explicit over implicit). The Python host pre-validates with this grammar before constructing a `decimal.Decimal`, and the browser runtime's parser recognises the same language, checking the exponent token as a string before any numeric conversion (an unbounded token would otherwise round silently above 2^53). This `|exp| <= 999999` bound constrains **input literals** only; exact arithmetic on accepted operands can grow the exponent past it, as squaring the largest accepted literal shows, and such results are computed and rendered identically in both runtimes (the Python host runs the binary operations in a context whose exponent range is widened to the library maximum, `±10^18`, so a finite result never overflows and matches the browser's unbounded engine).
 
 <!-- vera:run fn="square_of_the_largest_literal" stdout="1E+1999998" -->
 ```
@@ -2411,13 +2414,13 @@ private fn decimal_demo(-> @Int)
 }
 ```
 
-**Runtime parity:** Both runtimes provide exact decimal arithmetic and comparison over finite decimal values. The Python runtime uses `decimal.Decimal`; the browser runtime uses a scaled-BigInt engine that mirrors `decimal.Decimal`'s default context (28 significant digits, `ROUND_HALF_EVEN`) operation-for-operation: construction (`decimal_from_int`; `decimal_from_float` including Python's float-repr formatting, so `decimal_from_float(100.0)` renders `"100.0"` in both runtimes and the implied exponent carries through arithmetic; `decimal_from_string` under the grammar above), addition, subtraction, multiplication, division (ideal-exponent trailing-zero trimming; the Python host runs these four binary operations in an exponent-widened context, `Emax`/`Emin` = `±10^18`, so a finite result whose exponent exceeds the default `±999999` returns the same exact value as the browser's unbounded engine rather than raising), rounding (quantize semantics, including negative `places`, whose quantum exponent is `max(0, -places - 27)` because the quantum itself is context-rounded; `places` below the context's exponent floor of `-999999` leave the value unchanged in both runtimes, extending the same unchanged-value fallback that covers unrepresentable quantize results), negation and absolute value (which apply the context, rounding to 28 significant digits like Python's unary operators), comparison, equality, and the canonical string form all agree byte-for-byte across the two runtimes — enforced by the compile-once, compare-stdout-byte-exact parity tests in `tests/test_browser.py` (`TestBrowserDecimalExact856`). `decimal_compare` and `decimal_eq` share one exact numeric comparison in each runtime, so `decimal_from_string("1.0")` and `decimal_from_string("1")` compare `Equal` **and** `eq` in both. The one exclusion is non-finite floats through `decimal_from_float` (NaN, ±infinity): `decimal_to_string` and `decimal_to_float` round-trip them identically in both runtimes (`NaN` / `Infinity` / `-Infinity`), but arithmetic and comparison on such values are defined only on the Python runtime — the browser runtime rejects them with a loud runtime error naming this section. This closed [#856](https://github.com/aallan/vera/issues/856) (was: the browser runtime routed the family through JavaScript `Number`, losing precision and contradicting itself); see the CHANGELOG.
+**Runtime parity:** Both runtimes provide exact decimal arithmetic and comparison over finite decimal values. The Python runtime uses `decimal.Decimal`; the browser runtime uses a scaled-BigInt engine that mirrors `decimal.Decimal`'s default context (28 significant digits, `ROUND_HALF_EVEN`) operation-for-operation: construction (`decimal_from_int`; `decimal_from_float` including Python's float-repr formatting, so `decimal_from_float(100.0)` renders `"100.0"` in both runtimes and the implied exponent carries through arithmetic; `decimal_from_string` under the grammar above), addition, subtraction, multiplication, division (ideal-exponent trailing-zero trimming; the Python host runs these four binary operations in an exponent-widened context, `Emax`/`Emin` = `±10^18`, so a finite result whose exponent exceeds the default `±999999` returns the same exact value as the browser's unbounded engine rather than raising), rounding (quantize semantics, including negative `places`, whose quantum exponent is `max(0, -places - 27)` because the quantum itself is context-rounded; `places` below the context's exponent floor of `-999999` leave the value unchanged in both runtimes, extending the same unchanged-value fallback that covers unrepresentable quantize results), negation and absolute value (which apply the context, rounding to 28 significant digits like Python's unary operators), comparison, equality, and the canonical string form all agree byte-for-byte across the two runtimes, which the compile-once, compare-stdout-byte-exact parity tests in `tests/test_browser.py` (`TestBrowserDecimalExact856`) enforce. `decimal_compare` and `decimal_eq` share one exact numeric comparison in each runtime, so `decimal_from_string("1.0")` and `decimal_from_string("1")` compare `Equal` **and** `eq` in both. The one exclusion is non-finite floats through `decimal_from_float` (NaN, ±infinity): `decimal_to_string` and `decimal_to_float` round-trip them identically in both runtimes (`NaN` / `Infinity` / `-Infinity`), but arithmetic and comparison on such values are defined only on the Python runtime; the browser runtime rejects them with a loud runtime error naming this section.
 
 ### 9.7.3 Markdown
 
-Markdown is the lingua franca of large language models — they understand it natively and generate it naturally. A typed Markdown ADT makes document structure visible to the type system, enabling contracts that verify the structural properties of agent output.
+Markdown is the lingua franca of large language models: they read it and write it. A typed Markdown ADT makes document structure visible to the type system, enabling contracts that verify the structural properties of agent output.
 
-Markdown is represented as two mutually defined ADTs: `MdBlock` for block-level elements (§9.3.6) and `MdInline` for inline-level content (§9.3.5). The two-level design makes illegal states unrepresentable — a heading cannot contain another heading at the type level.
+Markdown is represented as two mutually defined ADTs: `MdBlock` for block-level elements (§9.3.6) and `MdInline` for inline-level content (§9.3.5). The two-level design makes illegal states unrepresentable. A heading cannot contain another heading at the type level.
 
 <!-- vera:skip-check category="ILLUSTRATIVE" code="E158" reason="the prelude's own declaration of a reserved name, shown as the compiler injects it (#1469)" -->
 ```
@@ -2432,12 +2435,12 @@ public data MdInline {
 ```
 
 `MdInline` constructors:
-- `MdText(@String)` — plain text run. The leaf node of all inline content.
-- `MdCode(@String)` — inline code span. Essential for agent communication about code.
-- `MdEmph(@Array<MdInline>)` — emphasis (italic). Contains recursive inline content.
-- `MdStrong(@Array<MdInline>)` — strong emphasis (bold). Contains recursive inline content.
-- `MdLink(@Array<MdInline>, @String)` — hyperlink: display text (inline content) and target URL.
-- `MdImage(@String, @String)` — image: alt text and source URL.
+- `MdText(@String)`: plain text run. The leaf node of all inline content.
+- `MdCode(@String)`: inline code span. Essential for agent communication about code.
+- `MdEmph(@Array<MdInline>)`: emphasis (italic). Contains recursive inline content.
+- `MdStrong(@Array<MdInline>)`: strong emphasis (bold). Contains recursive inline content.
+- `MdLink(@Array<MdInline>, @String)`: hyperlink, with display text (inline content) and target URL.
+- `MdImage(@String, @String)`: image, with alt text and source URL.
 
 <!-- vera:skip-check category="ILLUSTRATIVE" code="E158" reason="the prelude's own declaration of a reserved name, shown as the compiler injects it (#1469)" -->
 ```
@@ -2454,22 +2457,22 @@ public data MdBlock {
 ```
 
 `MdBlock` constructors:
-- `MdParagraph(@Array<MdInline>)` — paragraph: a sequence of inline content.
-- `MdHeading(@Nat, @Array<MdInline>)` — heading: level (1--6) as `Nat`, plus inline content. The level is a number rather than six separate constructors, allowing contracts like `@Nat.0 >= 1 && @Nat.0 <= 6`.
-- `MdCodeBlock(@String, @String)` — fenced code block: language tag and code body. Critical for agents working with source code.
-- `MdBlockQuote(@Array<MdBlock>)` — block quote: contains recursive block content.
-- `MdList(@Bool, @Array<Array<MdBlock>>)` — list: ordered (`true`) or unordered (`false`), with each item containing block content.
-- `MdThematicBreak` — horizontal rule. Nullary constructor.
-- `MdTable(@Array<Array<Array<MdInline>>>)` — table: rows of cells, each cell containing inline content. Tables are a GitHub Flavored Markdown extension, not strict CommonMark, but they are ubiquitous in agent communication and document conversion output.
-- `MdDocument(@Array<MdBlock>)` — top-level document: a sequence of blocks.
+- `MdParagraph(@Array<MdInline>)`: paragraph, with a sequence of inline content.
+- `MdHeading(@Nat, @Array<MdInline>)`: heading, with level (1--6) as `Nat`, plus inline content. The level is a number rather than six separate constructors, allowing contracts like `@Nat.0 >= 1 && @Nat.0 <= 6`.
+- `MdCodeBlock(@String, @String)`: fenced code block, with language tag and code body. Critical for agents working with source code.
+- `MdBlockQuote(@Array<MdBlock>)`: block quote, containing recursive block content.
+- `MdList(@Bool, @Array<Array<MdBlock>>)`: list, ordered (`true`) or unordered (`false`), each item containing block content.
+- `MdThematicBreak`: horizontal rule, a nullary constructor.
+- `MdTable(@Array<Array<Array<MdInline>>>)`: table, with rows of cells, each cell containing inline content. Tables are a GitHub Flavored Markdown extension, not strict CommonMark, but they are ubiquitous in agent communication and document conversion output.
+- `MdDocument(@Array<MdBlock>)`: top-level document, with a sequence of blocks.
 
 **Design note.** The following Markdown constructs are intentionally excluded per the one-canonical-form principle (§0.2.3). Each has a canonical equivalent in the ADT:
 
-- **Raw HTML** (block and inline) — not safe for verification, not appropriate for agent-to-agent communication.
-- **Link reference definitions** — not recognised: `md_parse` keeps the reference link and the definition as paragraph text. The canonical form is an inline link (`MdLink`).
-- **Setext headings** — not recognised: the title and its underline parse as one paragraph. The canonical form is an ATX heading (`MdHeading`).
-- **Indented code blocks** — not recognised: the indented lines parse as paragraph text. The canonical form is a fenced code block (`MdCodeBlock`).
-- **Hard and soft line breaks** — collapsed into paragraph text. Not structurally significant for agent communication.
+- **Raw HTML** (block and inline) is not safe for verification and not appropriate for agent-to-agent communication.
+- **Link reference definitions** are not recognised: `md_parse` keeps the reference link and the definition as paragraph text. The canonical form is an inline link (`MdLink`).
+- **Setext headings** are not recognised: the title and its underline parse as one paragraph. The canonical form is an ATX heading (`MdHeading`).
+- **Indented code blocks** are not recognised: the indented lines parse as paragraph text. The canonical form is a fenced code block (`MdCodeBlock`).
+- **Hard and soft line breaks** are collapsed into paragraph text; they are not structurally significant for agent communication.
 
 **Parse and render operations:**
 
@@ -2481,35 +2484,35 @@ public fn md_parse(@String -> @Result<MdBlock, String>)
   effects(pure)
 ```
 
-Parses a Markdown string into an `MdDocument`. Returns `Err` if parsing fails. This is pure — it transforms one value to another with no side effects.
+Parses a Markdown string into an `MdDocument`. Returns `Err` if parsing fails. This is pure. It transforms one value to another with no side effects.
 
 Every runtime produces the same `MdBlock` (§12.9.3), and the rules below are what makes that a checkable claim rather than a coincidence of two hand-written parsers. They pin the *grammar*, where the constructors above pin only the result: a document that parses to different ADTs on two hosts is a §12.9.3 violation even when the two render to the same text, because a program can `match` on a paragraph's children and count them.
 
-**Character classes.** The grammar names its own, and MUST NOT be written in a host regex language's shorthands, which denote different sets in different hosts — `\s` matches Unicode whitespace in some and a different Unicode set in others, `\d` matches Unicode digits in some and `0`–`9` in others, and `.` excludes a carriage return in some and not others. A grammar written in shorthands is a different grammar on each host: the same pattern read a CRLF document's heading in one and refused it in the other.
+**Character classes.** The grammar names its own, and MUST NOT be written in a host regex language's shorthands, which denote different sets in different hosts: `\s` matches Unicode whitespace in some and a different Unicode set in others, `\d` matches Unicode digits in some and `0`–`9` in others, and `.` excludes a carriage return in some and not others. A grammar written in shorthands is a different grammar on each host: the same pattern can read a CRLF document's heading on one host and refuse it on another.
 
-- *whitespace* is one of space, tab, carriage return, line tabulation (U+000B), form feed (U+000C) — never a line feed, which the line split consumes;
+- *whitespace* is one of space, tab, carriage return, line tabulation (U+000B), form feed (U+000C), never a line feed, which the line split consumes;
 - *digit* is `0`–`9`;
 - *any* is any character but a line feed.
 
-Trimming, wherever these rules call for it, removes *whitespace* from both ends — not whatever a host's own string-trim function happens to remove.
+Trimming, wherever these rules call for it, removes *whitespace* from both ends, not whatever a host's own string-trim function happens to remove.
 
 **Block structure.** The parser walks lines in order, and each line is claimed by the FIRST construct below whose pattern matches it. The order is part of the grammar: a line two constructs could open belongs to the earlier one.
 
 | # | construct | pattern (`ws` = *whitespace*, `any` = *any*) |
 |---|---|---|
-| 1 | blank line — skipped | the whole line is *whitespace* |
-| 2 | `MdHeading` | `^(#{1,6})ws+(any*?)(?:ws+#+ws*)?$` — level is the run of `#`, content is group 2 trimmed |
-| 3 | `MdCodeBlock` | ``^(`{3,}\|~{3,})ws*(any*?)$`` — closes on `^<same char>{n,}ws*$` for the opener's length `n`, or at the end of input |
-| 4 | `MdThematicBreak` | `^(?:---+\|\*\*\*+\|___+)ws*$` — three or more of one character, with no interior *whitespace*, so `* * *` is a list, not a break |
-| 5 | `MdBlockQuote` | `^>ws?(any*)` — a following line with no marker continues the quote unless it opens a block (2, 3, 4, 5, 7 or 8) |
+| 1 | blank line, skipped | the whole line is *whitespace* |
+| 2 | `MdHeading` | `^(#{1,6})ws+(any*?)(?:ws+#+ws*)?$` ; level is the run of `#`, content is group 2 trimmed |
+| 3 | `MdCodeBlock` | ``^(`{3,}\|~{3,})ws*(any*?)$`` ; it closes on `^<same char>{n,}ws*$` for the opener's length `n`, or at the end of input |
+| 4 | `MdThematicBreak` | `^(?:---+\|\*\*\*+\|___+)ws*$` ; three or more of one character, with no interior *whitespace*, so `* * *` is a list, not a break |
+| 5 | `MdBlockQuote` | `^>ws?(any*)` ; a following line with no marker continues the quote unless it opens a block (2, 3, 4, 5, 7 or 8) |
 | 6 | `MdTable` | `^\|(any+)\|?ws*$` on the line AND `^\|[ws:]*-[-ws:\|]*\|?ws*$` on the next; body rows continue while the row pattern matches. A row without that separator line beneath it is not a table |
-| 7 | `MdList` (unordered) | `^[-*+]ws+(any*)` — `-`, `*` and `+` are the same marker |
-| 8 | `MdList` (ordered) | `^(digit+)[.)]ws+(any*)` — `.` and `)` are the same marker |
+| 7 | `MdList` (unordered) | `^[-*+]ws+(any*)` ; `-`, `*` and `+` are the same marker |
+| 8 | `MdList` (ordered) | `^(digit+)[.)]ws+(any*)` ; `.` and `)` are the same marker |
 | 9 | `MdParagraph` | anything else, taking lines until a blank one or one matching 2, 3, 4, 5, 7 or 8 |
 
 Rule 9's stopping set is exactly the patterns of the constructs that claim a line, which is what makes the walk terminate: a line no construct claims is a line the paragraph takes. (Rule 6 is absent from it because a table needs its second line, so its first line alone belongs to the paragraph.)
 
-**A list item's continuation loses a fixed width.** A line under an item, indented by at least the marker's width — two spaces unordered, three ordered — belongs to that item with exactly that many characters removed, not with all its leading whitespace removed. The excess is what distinguishes a third nesting level from a second: under `- a`, the line `  - b` is an item of a nested list and `    - c` is an item nested inside *that*.
+**A list item's continuation loses a fixed width.** A line under an item, indented by at least the marker's width (two spaces unordered, three ordered), belongs to that item with exactly that many characters removed, not with all its leading whitespace removed. The excess is what distinguishes a third nesting level from a second: under `- a`, the line `  - b` is an item of a nested list and `    - c` is an item nested inside *that*.
 
 **A blank line does not close a list** while the next non-blank line is another item of the same kind. `- a`, blank, `- b` is one list of two items.
 
@@ -2517,7 +2520,7 @@ Rule 9's stopping set is exactly the patterns of the constructs that claim a lin
 
 - **Text runs are maximal.** Adjacent characters that open no other node form ONE `MdText`, the characters of a delimiter that failed to open one included. Emitting one node per scan step produces a different ADT that renders to the same string, which is why this rule is stated rather than left to the implementation.
 - **A code span closes at the next occurrence of its own run length.** An opening run of *n* backticks closes at the next *n* consecutive backticks. Where that occurrence is the leading *n* of a longer run, the opener MUST still close there and the remainder of the run stays literal text, so `` `x`` `` is a span holding `x` followed by a literal backtick. That is what makes the renderer's fence rule sufficient: a fence one backtick longer than the longest run inside the content cannot be entered early. If no such occurrence follows, the opening run is literal text. One leading and one trailing space are removed together when the fenced text is at least two characters long and both of its ends are spaces, so `` ` ` `` keeps its single space and `` `  ` `` is an empty span.
-- **A delimiter run is measured before it is read.** A run of `*` or `_` two or more long opens `MdStrong` if a closing pair follows; the run's leftover delimiters are resolved after that span closes, a single leftover as an `MdEmph` reaching the next lone delimiter and a larger leftover as literal text. If no closing pair follows, the run is retried as an `MdEmph` opened by its FIRST character and closing on the next lone delimiter — which the run's own second character supplies. So a run of two or more with no partner yields an EMPTY emphasis and re-scans what is left, rather than falling back to literal text: `**unclosed` is `[MdEmph([]), MdText("unclosed")]` and `****unclosed` is two empty emphases followed by the text. Only a LONE unpaired delimiter is literal text.
+- **A delimiter run is measured before it is read.** A run of `*` or `_` two or more long opens `MdStrong` if a closing pair follows; the run's leftover delimiters are resolved after that span closes, a single leftover as an `MdEmph` reaching the next lone delimiter and a larger leftover as literal text. If no closing pair follows, the run is retried as an `MdEmph` opened by its FIRST character and closing on the next lone delimiter, which the run's own second character supplies. So a run of two or more with no partner yields an EMPTY emphasis and re-scans what is left, rather than falling back to literal text: `**unclosed` is `[MdEmph([]), MdText("unclosed")]` and `****unclosed` is two empty emphases followed by the text. Only a LONE unpaired delimiter is literal text.
 - **A link or image label ends at its MATCHING bracket**, so `[a[b]c](url)` is one link.
 
 
@@ -2529,18 +2532,18 @@ public fn md_render(@MdBlock -> @String)
   effects(pure)
 ```
 
-Renders an `MdBlock` to a canonical Markdown string. Always succeeds. For every block the subset can write back, the round-trip property `md_parse(md_render(b)) == Ok(b)` MUST hold: rendering then re-parsing preserves structure. Two families are outside it, both because the subset has no text for them: the two code-span shapes named below, and a container with nothing in it to write — an `MdList` with no items or an `MdTable` with no rows renders to no lines, so it re-parses to no block. (An empty `MdBlockQuote` and an empty list *item* are inside the property: each has a form, given below.) Every runtime produces the same string (§12.9.3).
+Renders an `MdBlock` to a canonical Markdown string. Always succeeds. For every block the subset can write back, the round-trip property `md_parse(md_render(b)) == Ok(b)` MUST hold: rendering then re-parsing preserves structure. Two families are outside it, both because the subset has no text for them: the two code-span shapes named below, and a container with nothing in it to write (an `MdList` with no items or an `MdTable` with no rows renders to no lines, so it re-parses to no block). (An empty `MdBlockQuote` and an empty list *item* are inside the property: each has a form, given below.) Every runtime produces the same string (§12.9.3).
 
 Four rules carry that property. The first two follow from the ADT having no line-break node (see the design note above); the last two from a container needing to be readable back as one block:
 
 - **A paragraph is one line.** Its inline content is rendered without internal newlines. A parser collapses a paragraph's soft line breaks to spaces on the way in, so nothing survives to be re-emitted.
-- **A container prefixes every line of every child.** A block quote writes `>` and a space before each rendered line, and a bare `>` for a blank one; a list item writes its marker before the first line and an equal-width indent before the rest. Prefixing only a child's first line would leave a fenced block's body — or a nested block's continuation — outside its container, and the next `md_parse` would read it as a sibling.
-- **A container separates its children.** A block quote writes a bare `>` between adjacent children, as a document writes a blank line between its own. Without it two quoted paragraphs render as two adjacent quoted lines, which re-parse as one paragraph. An empty child still occupies its line: a `MdBlockQuote` with no children renders `>`, and a list item with no blocks renders its marker followed by a space, which is what the item patterns read back — a bare `-` is a paragraph. Rendering either as nothing deletes it, and in an ordered list renumbers every item after it. A container with nothing to render at all — a list with no items, a table with no rows — contributes no lines **and** no separator, because a separator standing for an absent block is a blank line the next parse cannot attribute to anything.
-- **A code span is fenced longer than its content.** The fence is one backtick more than the longest backtick run inside the span, with a single padding space on each side when the content itself starts or ends with a backtick, or when it both starts and ends with a space — a parser strips one such pair, so the pad is what it removes instead of the content's own spaces. A fixed-width fence terminates on a run inside the content.
+- **A container prefixes every line of every child.** A block quote writes `>` and a space before each rendered line, and a bare `>` for a blank one; a list item writes its marker before the first line and an equal-width indent before the rest. Prefixing only a child's first line would leave a fenced block's body, or a nested block's continuation, outside its container, and the next `md_parse` would read it as a sibling.
+- **A container separates its children.** A block quote writes a bare `>` between adjacent children, as a document writes a blank line between its own. Without it two quoted paragraphs render as two adjacent quoted lines, which re-parse as one paragraph. An empty child still occupies its line: a `MdBlockQuote` with no children renders `>`, and a list item with no blocks renders its marker followed by a space, which is what the item patterns read back; a bare `-` is a paragraph. Rendering either as nothing deletes it, and in an ordered list renumbers every item after it. A container with nothing to render at all (a list with no items, a table with no rows) contributes no lines **and** no separator, because a separator standing for an absent block is a blank line the next parse cannot attribute to anything.
+- **A code span is fenced longer than its content.** The fence is one backtick more than the longest backtick run inside the span, with a single padding space on each side when the content itself starts or ends with a backtick, or when it both starts and ends with a space; a parser strips one such pair, so the pad is what it removes instead of the content's own spaces. A fixed-width fence terminates on a run inside the content.
 
-Together these MUST make `md_render` a fixed point: re-parsing and re-rendering its output returns the same bytes. Unlike the round-trip property this one has no exceptions — a block with no text renders to no lines, which re-renders to no lines.
+Together these MUST make `md_render` a fixed point: re-parsing and re-rendering its output returns the same bytes. Unlike the round-trip property this one has no exceptions. A block with no text renders to no lines, which re-renders to no lines.
 
-Two code-span shapes are outside the **round-trip** property — not the fixed point, which has no exceptions. They are the two that property defers to above, and they are lost identically on every runtime rather than differently, because the subset has no escape syntax to write them another way: a span needing three or more backticks, at the start of a line, where that run is a fenced-code-block opener; and an empty span, whose rendering reads back as literal text.
+Two code-span shapes are outside the **round-trip** property, though not the fixed point, which has no exceptions. They are the two that property defers to above, and they are lost identically on every runtime rather than differently, because the subset has no escape syntax to write them another way: a span needing three or more backticks, at the start of a line, where that run is a fenced-code-block opener; and an empty span, whose rendering reads back as literal text.
 
 The rules are visible from a value a program builds, which is where they
 bite: a parser cannot produce an empty list item or a space-bounded code
@@ -2560,7 +2563,7 @@ public fn quote_rules(@Unit -> @String)
 ```
 
 Renders `> one`, `>`, `> ```sh`, `> a`, `> b`, `> ``` `, a blank line, and
-`>` — the fenced block's body carries the prefix on every line, the bare
+`>`. The fenced block's body has the prefix on every line, the bare
 `>` separates the quote's two children, and the empty quote still occupies
 its own line.
 
@@ -2674,9 +2677,9 @@ public data HtmlNode {
 ```
 
 `HtmlNode` constructors:
-- `HtmlElement(@String, @Map<String, String>, @Array<HtmlNode>)` — an HTML element: tag name, attribute map, and child nodes.
-- `HtmlText(@String)` — text content within an element.
-- `HtmlComment(@String)` — an HTML comment.
+- `HtmlElement(@String, @Map<String, String>, @Array<HtmlNode>)`: an HTML element, with tag name, attribute map, and child nodes.
+- `HtmlText(@String)`: text content within an element.
+- `HtmlComment(@String)`: an HTML comment.
 
 **Parse and serialize operations:**
 
@@ -2688,7 +2691,7 @@ public fn html_parse(@String -> @Result<HtmlNode, String>)
   effects(pure)
 ```
 
-Parses an HTML string into an `HtmlNode` tree. The parser is lenient (like browsers) — malformed HTML produces a best-effort tree rather than an error. Returns `Err` only on catastrophic parse failures.
+Parses an HTML string into an `HtmlNode` tree. The parser is lenient (like browsers). Malformed HTML produces a best-effort tree rather than an error. Returns `Err` only on catastrophic parse failures.
 
 <!-- vera:skip-parse category="FRAGMENT" reason="html_to_string" -->
 ```
@@ -2732,13 +2735,13 @@ public fn html_attr(@HtmlNode, @String -> @Option<String>)
 
 Returns the value of the named attribute if the node is an `HtmlElement` with that attribute present. Returns `None` for `HtmlText`, `HtmlComment`, or missing attributes. This is a pure Vera function (prelude-injected), not a host import.
 
-**Design note.** The `HtmlNode` ADT is intentionally simple compared to a full DOM. It captures the structural essence of HTML documents without modeling CSS, JavaScript, or DOM events. This matches the agent use case: extract structured information from web pages.
+**Design note.** The `HtmlNode` ADT is intentionally simple compared to a full DOM. It captures the structural essence of HTML documents without modelling CSS, JavaScript, or DOM events. This matches the agent use case: extract structured information from web pages.
 
 ## 9.8 Abilities
 
-> **Status: Implemented.** Tracked in [#60](https://github.com/aallan/vera/issues/60). Four built-in abilities (`Eq`, `Ord`, `Hash`, `Show`) are fully compilable. Supported types: Int, Nat, Bool, Float64, String, Byte, Unit. `Eq` derivation is **structural** ([#773](https://github.com/aallan/vera/issues/773)): a simple enum, or an ADT every field of which is itself `Eq` — an `Eq` primitive (`String` included, compared by content) or a nested `Eq` ADT (compared recursively, including recursive types) — supports `Eq` automatically. Fields with no `Eq` semantics (`Array`, `Map`, host handles) make the ADT non-derivable. `Show` and `Hash` derive **structurally** for composite types too ([#911](https://github.com/aallan/vera/issues/911)) — ADT, `Tuple`, `Option`, `Result`, and `Array`, recursing into each field/element by its own `show`/`hash` (see §9.8.2) — including directly-recursive ADTs (`List<T>`, `Tree<T>`), which lower to a generated self-calling helper ([#924](https://github.com/aallan/vera/issues/924)). The built-in `Ordering` ADT (`Less`, `Equal`, `Greater`) is available for `Ord`'s `compare` operation.
+> **Status: Implemented.** Four built-in abilities (`Eq`, `Ord`, `Hash`, `Show`) are fully compilable. Supported types: Int, Nat, Bool, Float64, String, Byte, Unit. `Eq` derivation is **structural** ([#773](https://github.com/aallan/vera/issues/773)): a simple enum, or an ADT every field of which is itself `Eq` (an `Eq` primitive, `String` included and compared by content, or a nested `Eq` ADT, compared recursively, including recursive types), supports `Eq` automatically. Fields with no `Eq` semantics (`Array`, `Map`, host handles) make the ADT non-derivable. `Show` and `Hash` derive **structurally** for composite types too ([#911](https://github.com/aallan/vera/issues/911)): ADT, `Tuple`, `Option`, `Result`, and `Array`, recursing into each field/element by its own `show`/`hash` (see §9.8.2), including directly-recursive ADTs (`List<T>`, `Tree<T>`), which lower to a generated self-calling helper ([#924](https://github.com/aallan/vera/issues/924)). The built-in `Ordering` ADT (`Less`, `Equal`, `Greater`) is available for `Ord`'s `compare` operation.
 
-Vera supports restricted abilities for constraining type variables in generic functions. To support practical generic programming — sorting, hashing, serialisation — type variables need constraints. Vera adopts restricted abilities rather than full typeclasses:
+Vera supports restricted abilities for constraining type variables in generic functions. To support practical generic programming (sorting, hashing, serialisation), type variables need constraints. Vera adopts restricted abilities rather than full typeclasses:
 
 <!-- vera:skip-check category="ILLUSTRATIVE" code="E185 E185" reason="the built-in Eq and Ord abilities' interfaces, shown as declarations beside a use; a program declaring either is refused" -->
 ```
@@ -2773,17 +2776,17 @@ Key design points:
 
 5. **Constraint syntax** uses `forall<T where Ability<T>>`, consistent with the placeholder noted in Chapter 2, Section 2.7.1. A constraint holds for every type the generic is instantiated at: the checker holds it against the type arguments it infers at each call, and at each call those instances make in turn, and refuses a type that does not satisfy it at the call that chooses it (**E613**), naming the chain of instances from that call.
 
-This design draws on Roc's abilities (deliberately no HKTs, auto-derivable) and Gleam's validation that useful languages need not have typeclasses.
+This design draws on Roc's abilities (no HKTs by design, auto-derivable) and Gleam's validation that useful languages need not have typeclasses.
 
 Ability **operation** names form one namespace across every ability in scope, the built-in abilities included: a bare call `size(x)` names the operation and not its ability. A second declaration of an operation name, in the same ability or another, is refused (**E184**, §8.5.5). A user ability named after a built-in ability, or an operation named after a built-in ability's operation, is refused as well (**E185**): code generation compiles `eq`, `compare`, `hash` and `show` against the built-in whatever a declaration says.
 
-An ability's operation is called bare — at a type that satisfies the ability, or through a `where` constraint in a generic body, where code generation compiles it for each instantiation. A qualifier names an effect, so a qualified call such as `Eq.eq(1, 1)` is a checker error (**E340**), and its fix is the bare call, `eq(1, 1)`.
+An ability's operation is called bare: at a type that satisfies the ability, or through a `where` constraint in a generic body, where code generation compiles it for each instantiation. A qualifier names an effect, so a qualified call such as `Eq.eq(1, 1)` is a checker error (**E340**), and its fix is the bare call, `eq(1, 1)`.
 
 ### 9.8.1 Built-in Abilities
 
 Four abilities are built into the language. Each is auto-satisfied for primitive types and (where noted) for ADTs composed of satisfying types. The declarations below show their interfaces; the abilities are in scope in every program, and a program that declares one of them is refused (**E185**).
 
-**Eq\<T\>** — Equality comparison.
+**Eq\<T\>**: equality comparison.
 
 <!-- vera:skip-check category="ILLUSTRATIVE" code="E185" reason="the built-in Eq ability's interface; a program declaring it is refused" -->
 ```
@@ -2796,7 +2799,7 @@ Operation: `eq(@T, @T -> @Bool)`. Returns `true` if the two values are structura
 
 Satisfied by: Int, Nat, Bool, Float64, String, Byte, Unit, and ADTs whose constructors contain only Eq-satisfying field types (auto-derivation). Simple enums (all-nullary constructors) always satisfy Eq.
 
-**Ord\<T\>** — Ordering comparison.
+**Ord\<T\>**: ordering comparison.
 
 <!-- vera:skip-check category="ILLUSTRATIVE" code="E185" reason="the built-in Ord ability's interface; a program declaring it is refused" -->
 ```
@@ -2818,9 +2821,9 @@ public data Ordering {
 }
 ```
 
-Satisfied by: Int, Nat, Float64, Byte, String — exactly the orderable types on which the ordering operators `<` / `>` / `<=` / `>=` are defined (Chapter 4, Section 4.5). `compare` is the ability spelling of the three-way if-chain `a < b ? Less : (a == b ? Equal : Greater)` (Chapter 6, Section 6.4), so it shares that domain. A user-defined ADT is **not** Ord-derivable (unlike `Eq` / `Hash` / `Show`, which derive structurally for composite types) — it has no defined total order, and neither does `Bool`. `compare` on a non-orderable operand (any ADT, or `Bool`) is rejected at check time with E242, mirroring the E143 rejection of a direct `<` on the same operand ([#921](https://github.com/aallan/vera/issues/921)).
+Satisfied by: Int, Nat, Float64, Byte, String, the orderable types on which the ordering operators `<` / `>` / `<=` / `>=` are defined (Chapter 4, Section 4.5). `compare` is the ability spelling of the three-way if-chain `a < b ? Less : (a == b ? Equal : Greater)` (Chapter 6, Section 6.4), so it shares that domain. A user-defined ADT is **not** Ord-derivable (unlike `Eq` / `Hash` / `Show`, which derive structurally for composite types). It has no defined total order, and neither does `Bool`. `compare` on a non-orderable operand (any ADT, or `Bool`) is rejected at check time with E242, mirroring the E143 rejection of a direct `<` on the same operand ([#921](https://github.com/aallan/vera/issues/921)).
 
-**Hash\<T\>** — Hashing.
+**Hash\<T\>**: hashing.
 
 <!-- vera:skip-check category="ILLUSTRATIVE" code="E185" reason="the built-in Hash ability's interface; a program declaring it is refused" -->
 ```
@@ -2831,9 +2834,9 @@ ability Hash<T> {
 
 Operation: `hash(@T -> @Int)`. Returns a deterministic integer hash of the value, the same in every run: a `String`'s is FNV-1a over its UTF-8 bytes. The keyed hash a `Map` or `Set` gives a `String` key (Section 9.4.3) is the collection's own and does not change it.
 
-Satisfied by: Int, Nat, Bool, Float64, String, Byte, Unit, and composite types — ADTs, `Tuple`, `Option`, `Result`, and `Array` — whose fields/elements are themselves `Hash`-satisfying (structural auto-derivation, §9.8.2).
+Satisfied by: Int, Nat, Bool, Float64, String, Byte, Unit, and composite types (ADTs, `Tuple`, `Option`, `Result`, and `Array`) whose fields/elements are themselves `Hash`-satisfying (structural auto-derivation, §9.8.2).
 
-**Show\<T\>** — String representation.
+**Show\<T\>**: string representation.
 
 <!-- vera:skip-check category="ILLUSTRATIVE" code="E185" reason="the built-in Show ability's interface; a program declaring it is refused" -->
 ```
@@ -2844,7 +2847,7 @@ ability Show<T> {
 
 Operation: `show(@T -> @String)`. Returns a human-readable string representation.
 
-Satisfied by: Int, Nat, Bool, Float64, String, Byte, Unit, and composite types — ADTs, `Tuple`, `Option`, `Result`, and `Array` — whose fields/elements are themselves `Show`-satisfying (structural auto-derivation, §9.8.2).
+Satisfied by: Int, Nat, Bool, Float64, String, Byte, Unit, and composite types (ADTs, `Tuple`, `Option`, `Result`, and `Array`) whose fields/elements are themselves `Show`-satisfying (structural auto-derivation, §9.8.2).
 
 `show(@Float64)` is backed by `float_to_string` and shares its domain: the non-finite classes render as `"nan"`, `"inf"`, and `"-inf"` (§9.6.11, [#857](https://github.com/aallan/vera/issues/857)), with the same spellings in both the Python and browser runtimes, and a finite value of magnitude 2^63 or more traps.
 
@@ -2852,18 +2855,18 @@ Satisfied by: Int, Nat, Bool, Float64, String, Byte, Unit, and composite types �
 
 For `Eq`, ADTs are automatically derivable when all constructor fields are Eq-satisfying types. The compiler generates structural equality: compare tags first, then compare fields pairwise.
 
-Simple enums (ADTs with only nullary constructors) always satisfy `Eq` — equality reduces to tag comparison.
+Simple enums (ADTs with only nullary constructors) always satisfy `Eq`. Equality reduces to tag comparison.
 
-ADTs with `String` fields derive `Eq` by content, and nested-ADT fields recurse into the nested ADT's own equality — including recursive and mutually-recursive types ([#773](https://github.com/aallan/vera/issues/773)). `Array`, `Map`, `Set`, host-handle, function, and tuple fields are non-derivable. `==` / `!=` (and the `eq` ability operation) is the surface spelling of `Eq`, so a non-Eq-derivable operand — a function value, an `Array` / `Map` / `Set` / `Tuple`, or a composite carrying such a field — is rejected at check time with E243 ([#928](https://github.com/aallan/vera/issues/928)), mirroring the E242 rejection of `compare` / ordering on a non-orderable operand. An `Eq` constraint over a non-derivable type on the generic path is likewise rejected, with E613 at the call that instantiates it.
+ADTs with `String` fields derive `Eq` by content, and nested-ADT fields recurse into the nested ADT's own equality, including recursive and mutually-recursive types ([#773](https://github.com/aallan/vera/issues/773)). `Array`, `Map`, `Set`, host-handle, function, and tuple fields are non-derivable. `==` / `!=` (and the `eq` ability operation) is the surface spelling of `Eq`, so a non-Eq-derivable operand (a function value, an `Array` / `Map` / `Set` / `Tuple`, or a composite with such a field) is rejected at check time with E243 ([#928](https://github.com/aallan/vera/issues/928)), mirroring the E242 rejection of `compare` / ordering on a non-orderable operand. An `Eq` constraint over a non-derivable type on the generic path is likewise rejected, with E613 at the call that instantiates it.
 
-`Show` and `Hash` also derive **structurally** for composite types ([#911](https://github.com/aallan/vera/issues/911)) — user ADTs, `Tuple`, `Option`, `Result`, and `Array` — recursing into each field/element by its own `show`/`hash`.
+`Show` and `Hash` also derive **structurally** for composite types ([#911](https://github.com/aallan/vera/issues/911)): user ADTs, `Tuple`, `Option`, `Result`, and `Array`, recursing into each field/element by its own `show`/`hash`.
 
 `show` renders a composite value using its constructor syntax:
 
 | Type | Rendering |
 |------|-----------|
 | ADT nullary constructor | `Ctor` (bare name) |
-| ADT with fields | `Ctor(f0, f1, …)` — each field by its own `show` |
+| ADT with fields | `Ctor(f0, f1, …)`, each field by its own `show` |
 | `Tuple` | `(a, b, …)` |
 | `Option` | `Some(x)` / `None` |
 | `Result` | `Ok(x)` / `Err(e)` |
@@ -2873,7 +2876,7 @@ Fields are separated by `, ` (comma + space). A `String` field renders as its ra
 
 `hash` on a composite is deterministic: it seeds with the constructor tag (or, for an `Array`, its length) and folds each field/element hash in FNV-style, so distinct constructors and distinct field values hash differently.
 
-A directly self-referential recursive ADT (`List<T>`, `Tree<T>`) `show`/`hash`es via a **generated self-calling helper function** ([#924](https://github.com/aallan/vera/issues/924)) — one `$show_<type>` / `$hash_<type>` per recursive type, recursing over the finite value at run time (mirroring how structural `Eq` derives one `$eq_<type>` helper). A composite whose element/field types still cannot be resolved at the `show`/`hash` site — e.g. a *generic* mutually-recursive ADT whose type argument is buried in a nested generic field (`Grove(Rose<T>, Forest<T>)`), the same type-argument-recovery limitation `Eq` shares — is skipped rather than mis-rendered.
+A directly self-referential recursive ADT (`List<T>`, `Tree<T>`) `show`/`hash`es via a **generated self-calling helper function** ([#924](https://github.com/aallan/vera/issues/924)): one `$show_<type>` / `$hash_<type>` per recursive type, recursing over the finite value at run time (mirroring how structural `Eq` derives one `$eq_<type>` helper). A composite whose element/field types still cannot be resolved at the `show`/`hash` site (for example a *generic* mutually-recursive ADT whose type argument is buried in a nested generic field, `Grove(Rose<T>, Forest<T>)`, the same type-argument-recovery limitation `Eq` shares) is skipped rather than mis-rendered.
 
 ### 9.8.3 Compilation Strategy
 
@@ -2881,7 +2884,7 @@ Ability operations are compiled via two mechanisms:
 
 1. **AST-level rewriting** (Pass 1.6): `eq(a, b)` is rewritten to `a == b`, and `compare(a, b)` is rewritten to `if a < b then Less else if a == b then Equal else Greater`. This reuses existing comparison codegen.
 
-2. **WASM-level dispatch**: `show(x)` and `hash(x)` are dispatched at WASM generation time based on the inferred type of the argument, routing to type-specific implementations (e.g., `to_string` for Int, FNV-1a for String hashing). For a composite argument the dispatch recurses over the value's layout — tag at offset 0, then each field at its concrete offset — rendering / folding each field by its own `show`/`hash`, the same structural traversal `Eq` uses.
+2. **WASM-level dispatch**: `show(x)` and `hash(x)` are dispatched at WASM generation time based on the inferred type of the argument, routing to type-specific implementations (e.g., `to_string` for Int, FNV-1a for String hashing). For a composite argument the dispatch recurses over the value's layout (tag at offset 0, then each field at its concrete offset), rendering / folding each field by its own `show`/`hash`, the same structural traversal `Eq` uses.
 
 ## 9.9 Limitations
 
@@ -2890,9 +2893,9 @@ The standard library and built-in effects have the following limitations, each t
 <!-- render_lists:begin limitations -->
 | Limitation | Issue |
 |-----------|-------|
-| No date or time handling beyond `IO.time` — no ISO 8601 parsing, formatting, or arithmetic | [#233](https://github.com/aallan/vera/issues/233) |
+| No date or time handling beyond `IO.time` (no ISO 8601 parsing, formatting, or arithmetic) | [#233](https://github.com/aallan/vera/issues/233) |
 | No cryptographic primitives (hashing, HMAC) | [#235](https://github.com/aallan/vera/issues/235) |
 | No CSV parsing or generation | [#236](https://github.com/aallan/vera/issues/236) |
-| `Http`: fixed request headers — no custom header support; `Http`: response status codes are not accessible; `Http`: no per-request timeout control; `Http`: browser runtime uses deprecated synchronous XMLHttpRequest; `Http`: GET and POST only — no PUT, PATCH, or DELETE | [#351](https://github.com/aallan/vera/issues/351) |
-| `Inference.complete`: `max_tokens` and `temperature` are not configurable; `Inference`: no `embed` operation (vector embeddings); `Inference`: no user-defined handlers — `handle[Inference]` is rejected; Host imports cannot return `Array<Float64>` (`alloc_result_ok_float_array` infrastructure) | [#370](https://github.com/aallan/vera/issues/370) |
+| `Http`: fixed request headers, no custom header support; `Http`: response status codes are not accessible; `Http`: no per-request timeout control; `Http`: browser runtime uses deprecated synchronous XMLHttpRequest; `Http`: GET and POST only, no PUT, PATCH, or DELETE | [#351](https://github.com/aallan/vera/issues/351) |
+| `Inference.complete`: `max_tokens` and `temperature` are not configurable; `Inference`: no `embed` operation (vector embeddings); `Inference`: no user-defined handlers (`handle[Inference]` is rejected); Host imports cannot return `Array<Float64>` (`alloc_result_ok_float_array` infrastructure) | [#370](https://github.com/aallan/vera/issues/370) |
 <!-- render_lists:end limitations -->

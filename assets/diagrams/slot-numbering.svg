@@ -1,5 +1,5 @@
 <svg width="920" height="312" viewBox="0 0 920 312" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
-  <title id="title">Per-type right-to-left numbering: in fn(@A, @B, @A, @B) each type has its own counter — the rightmost B is @B.0 and the earlier one @B.1; independently, the rightmost A is @A.0 and the earlier one @A.1.</title>
+  <title id="title">Per-type right-to-left numbering: in fn(@A, @B, @A, @B) each type has its own counter: the rightmost B is @B.0 and the earlier one @B.1; independently, the rightmost A is @A.0 and the earlier one @A.1.</title>
   <!-- Design system: see architecture.svg. Grounded in DE_BRUIJN.md §mnemonic. -->
   <defs>
     <marker id="arrA" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
@@ -22,7 +22,7 @@
   <rect x="1.5" y="1.5" width="917" height="309" rx="14" fill="#faf9f7" stroke="#e8e6e1" stroke-width="1.5"/>
 
   <text class="f micro" x="36" y="42">SLOT REFERENCES · EACH TYPE COUNTS ITS OWN BINDINGS, RIGHT TO LEFT</text>
-  <text class="f sub" x="36" y="64">Interleaved types don't share a counter — the rightmost binding of each type is its .0</text>
+  <text class="f sub" x="36" y="64">Interleaved types do not share a counter; the rightmost binding of each type is its .0</text>
 
   <!-- the signature, params at known x positions -->
   <g class="m sig">
@@ -53,7 +53,7 @@
   <text class="m idx" x="330" y="264" text-anchor="middle" fill="#4a82a8">@A.1</text>
   <rect x="438" y="246" width="64" height="26" rx="13" fill="#e4ecf2" stroke="#e8e6e1"/>
   <text class="m idx" x="470" y="264" text-anchor="middle" fill="#4a82a8">@A.0</text>
-  <text class="f" x="600" y="264" font-size="11px" fill="#4a82a8">rightmost A = .0 — B's don't count</text>
+  <text class="f" x="600" y="264" font-size="11px" fill="#4a82a8">rightmost A = .0; the Bs do not count</text>
 
-  <text class="f footi" x="36" y="296">A String parameter between two Ints never shifts the Int indices — counters are per-type.</text>
+  <text class="f footi" x="36" y="296">A String parameter between two Ints never shifts the Int indices, because counters are per type.</text>
 </svg>

@@ -2,7 +2,7 @@
 
 ## 0.1 What Is Vera?
 
-Vera is a statically typed, purely functional programming language with algebraic effects, full contracts, and refinement types. It compiles to WebAssembly.
+Vera is a statically typed, purely functional programming language that compiles to WebAssembly. It has algebraic effects, full contracts, and refinement types.
 
 Vera is designed for large language models (LLMs) to write, not humans. Every design decision prioritises machine-verifiability over human ergonomics.
 
@@ -12,21 +12,21 @@ The name comes from the Latin *veritas* (truth). In Vera, verification is a firs
 
 1. **Checkability over correctness.** The model does not need to produce correct code on the first attempt. It needs to produce code that can be mechanically checked. When the code is wrong, the compiler provides a precise, actionable signal (a type error, a contract violation with counterexample, an undeclared effect).
 
-2. **Explicitness over convenience.** All state changes are declared. All effects are typed. All function contracts are mandatory. There is no implicit behaviour for the model to infer or hallucinate.
+2. **Explicitness over convenience.** All state changes are declared, all effects are typed, and all function contracts are mandatory. There is no implicit behaviour for the model to infer or hallucinate.
 
 3. **One canonical form.** Every construct has one preferred surface spelling: no style choices, no optional syntax, and no equivalent alternatives, unless an explicitly documented distinction changes typing or semantics. For a given parse, formatting is deterministic and idempotent; comments and blank-line placement influence the output.
 
-4. **Structural references over names.** Bindings are referenced by type and positional index (`@T.n`), not by arbitrary names. This eliminates naming consistency errors — one of the most common failure modes when models generate code across large contexts.
+4. **Structural references over names.** Bindings are referenced by type and positional index (`@T.n`), not by arbitrary names. This eliminates naming consistency errors, one of the most common failure modes when models generate code across large contexts.
 
 5. **Contracts as the source of truth.** Every function declares what it requires and what it guarantees. The compiler verifies these contracts statically (via SMT solver) where the solver can decide them, and compiles every non-trivial contract it can express into a runtime check, whatever the solver decided. The contract is the specification; the implementation must satisfy it.
 
-6. **Constrained expressiveness.** The space of valid programs is deliberately small. Refinement types, mandatory contracts, and the effect system combine to reject large classes of incorrect programs at compile time. Fewer valid programs means fewer opportunities for the model to be wrong.
+6. **Constrained expressiveness.** The space of valid programs is small by design. Refinement types, mandatory contracts, and the effect system combine to reject large classes of incorrect programs at compile time. Fewer valid programs means fewer opportunities for the model to be wrong.
 
 ## 0.3 Non-Goals
 
-1. **Human ergonomics.** Vera's syntax will look alien to human programmers. This is intentional. The language is optimised for unambiguous machine emission, not for human readability or writability.
+1. **Human ergonomics.** Vera's syntax will look alien to human programmers, and that is intended. The language is optimised for unambiguous machine emission, not for human readability or writability.
 
-2. **Syntactic sugar.** There is no shorthand syntax. No operator overloading. No implicit conversions. No default arguments. Every feature that introduces ambiguity or alternative representations is excluded.
+2. **Syntactic sugar.** There is no shorthand syntax, no operator overloading, no implicit conversions, and no default arguments. Every feature that introduces ambiguity or alternative representations is excluded.
 
 3. **Backward compatibility.** Vera is a new language with no existing ecosystem. The specification may change freely between versions.
 
@@ -54,22 +54,22 @@ Vera draws on ideas from several existing languages and systems:
 
 - **bruijn**: A pure lambda calculus language using De Bruijn indices as surface syntax. Vera extends this concept to a typed, effectful language with type-namespaced indices (`@T.n`). See [`DE_BRUIJN.md`](../DE_BRUIJN.md) for the academic background and Vera-specific worked examples.
 
-- **TLA+ / Alloy**: Formal specification languages. Vera's contracts serve a similar role — they are executable specifications that constrain what the implementation can do.
+- **TLA+ / Alloy**: Formal specification languages. Vera's contracts serve a similar role; they are executable specifications that constrain what the implementation can do.
 
 ## 0.5 Diagnostics as Instructions
 
 Vera's compiler does not produce diagnostics for humans. It produces **instructions for the model that wrote the code**.
 
-Every diagnostic — parse errors, type errors, contract violations, effect mismatches, verification failures — MUST be a natural language explanation that tells the model what went wrong, why, and how to fix it. The diagnostic is not a status report; it is a corrective action.
+Every diagnostic (parse errors, type errors, contract violations, effect mismatches, verification failures) MUST be a natural language explanation that tells the model what went wrong, why, and how to fix it. The diagnostic is a corrective action rather than a status report.
 
 ### 0.5.1 Diagnostic Structure
 
 Every diagnostic MUST include:
 
-1. **Diagnostic code and location.** A stable diagnostic code (an `E` code for an error, a `W` code for a warning; `vera errors` lists them), file path, line number, and column, with the offending source line quoted and the error position indicated. The error code provides a machine-readable identifier, but every code is always accompanied by a full natural language explanation — the code alone is never the message.
+1. **Diagnostic code and location.** A stable diagnostic code (an `E` code for an error, a `W` code for a warning; `vera errors` lists them), file path, line number, and column, with the offending source line quoted and the error position indicated. The error code provides a machine-readable identifier, but every code is always accompanied by a full natural language explanation; the code alone is never the message.
 2. **Description.** A plain English explanation of the problem, written to tell the model what went wrong and how to fix it.
-3. **Rationale.** Why this is an error — which language rule was violated.
-4. **Fix.** A concrete code example showing the corrected form. This is not a hint; it is a template the model can apply directly.
+3. **Rationale.** Why this is an error, naming the language rule that was violated.
+4. **Fix.** A concrete code example showing the corrected form, as a template the model can apply directly.
 5. **Spec reference.** The specification chapter and section that defines the violated rule.
 
 A code's range names the phase that reports it (Section 0.5.3), and two ranges name none. An `E8xx` code reports a program's own failure while it runs, such as a runtime trap. An `E9xx` code reports a refusal of the command line itself rather than of the program, such as a source file that does not exist.
@@ -122,15 +122,15 @@ Diagnostics occur at every phase of compilation:
 
 The LLM-compiler interaction is a feedback loop. The model writes code; the compiler checks it; the model reads the diagnostics and revises. The quality of the diagnostics determines the speed of convergence.
 
-Traditional compilers optimise diagnostics for human developers who understand the language and can infer fixes from terse messages. LLMs do not have this background knowledge reliably. They perform best when given explicit, complete instructions — the same principle that makes MCP tool descriptions effective is applied here to compiler output.
+Traditional compilers optimise diagnostics for human developers who understand the language and can infer fixes from terse messages. LLMs do not have this background knowledge reliably. They perform best when given explicit, complete instructions. The same principle that makes MCP tool descriptions effective applies here to compiler output.
 
-A diagnostic that says `expected token '{'` is a puzzle. A diagnostic that says "Function X is missing its contract block. Add requires(), ensures(), and effects() between the signature and the body, like this: [example]" is an instruction. Vera always produces instructions.
+A diagnostic that says `expected token '{'` is a puzzle. A diagnostic that says "Function X is missing its contract block. Add requires(), ensures(), and effects() between the signature and the body, like this: [example]" is an instruction, and Vera always produces instructions.
 
-All diagnostic commands support a `--json` flag that produces machine-readable structured output. Each JSON diagnostic includes: the error code, severity, source location (file, line, column), the source line, a rationale explaining the cause, a fix suggestion with example code, and a spec reference. This output serves automated feedback loops where an agent reads the diagnostics, corrects the code, and re-checks — without parsing human-oriented prose.
+All diagnostic commands support a `--json` flag that produces machine-readable structured output. Each JSON diagnostic includes: the error code, severity, source location (file, line, column), the source line, a rationale explaining the cause, a fix suggestion with example code, and a spec reference. This output serves automated feedback loops where an agent reads the diagnostics, corrects the code, and re-checks, without parsing human-oriented prose.
 
 ### 0.5.5 Canonical Formatting
 
-The `vera fmt` command enforces Design Goal 3 (one canonical form) by normalising source code to a single textual representation. Two programs with the same parse — comments and blank-line placement included, since both affect the formatted output — have identical `vera fmt` output, and formatting is idempotent: `fmt(fmt(p)) == fmt(p)`. This eliminates style variation as a source of ambiguity in LLM training and generation.
+The `vera fmt` command enforces Design Goal 3 (one canonical form) by normalising source code to a single textual representation. Two programs with the same parse (comments and blank-line placement included, since both affect the formatted output) have identical `vera fmt` output, and formatting is idempotent: `fmt(fmt(p)) == fmt(p)`. This eliminates style variation as a source of ambiguity in LLM training and generation.
 
 ### 0.5.6 Contract-Driven Testing
 
@@ -144,14 +144,14 @@ The grammar is defined in EBNF notation in Chapter 10 and implemented as a machi
 
 ### 0.5.8 Machine-Readable Output (`--json`)
 
-The compiler emits structured JSON diagnostics via the `--json` flag, supported on `vera check`, `vera verify`, and `vera test`. The JSON shape is a public API for downstream tooling — CI pipelines, IDE plugins, agent feedback loops — and the field set is governed by the following stability rules:
+The compiler emits structured JSON diagnostics via the `--json` flag, supported on `vera check`, `vera verify`, `vera test`, `vera compile` and `vera run`. The JSON shape is a public API for downstream tooling (CI pipelines, IDE plugins, agent feedback loops), and the field set is governed by the following stability rules:
 
 - **Fields MAY be added** in any release. Consumers MUST tolerate unknown fields.
 - **Fields MUST NOT be removed or renamed** without a major version bump.
 - **Field semantics MUST NOT change** without a major version bump. The numeric value of `summary.failed` means the same thing in every minor release.
 - **The `ok` field is the canonical exit signal.** `ok == true` corresponds to exit code 0; `ok == false` corresponds to a non-zero exit. Downstream CI MUST gate on `ok` rather than parsing field-by-field.
 
-The field sets are documented per-command in [`TESTING.md`](../TESTING.md#json-output-stability) and verified by the test suite — a regression that drops a documented field will fail at least one test. Reference implementations are responsible for keeping their JSON output aligned with the documented set; downstream tooling SHOULD read the documented fields and ignore unknown ones.
+The field sets are documented per-command in [`TESTING.md`](../TESTING.md#json-output-stability) and verified by the test suite; a regression that drops a documented field will fail at least one test. Reference implementations are responsible for keeping their JSON output aligned with the documented set; downstream tooling SHOULD read the documented fields and ignore unknown ones.
 
 This is the same machine-readable / human-readable duality as the diagnostic format itself: `--json` is for tools, the default text output is for humans, and both are first-class.
 
@@ -162,7 +162,7 @@ Throughout this specification:
 - **MUST**, **MUST NOT**, **SHALL**, **SHALL NOT**: absolute requirements per RFC 2119.
 - **SHOULD**, **SHOULD NOT**: recommended but not absolute.
 - **MAY**: truly optional.
-- Code examples are shown in `monospace`. All examples are normative — they represent the one canonical way to write the construct shown.
+- Code examples are shown in `monospace`. All examples are normative: they represent the one canonical way to write the construct shown.
 - Grammar rules use EBNF notation as defined in Chapter 10.
 - The term "the compiler" refers to any conforming implementation of the Vera specification.
 
@@ -187,7 +187,7 @@ Throughout this specification:
 
 ## 0.8 Design Notes (Future Features)
 
-The following features are planned for future versions. Each is specified in its target chapter with full design details; this section provides a brief index.
+The following features are planned for future versions. The table names the issue that tracks each one and the chapters its design will extend.
 
 For features that have already shipped, see [HISTORY.md](https://github.com/aallan/vera/blob/main/HISTORY.md). For the full forward-looking roadmap, see [ROADMAP.md](https://github.com/aallan/vera/blob/main/ROADMAP.md).
 

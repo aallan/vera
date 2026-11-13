@@ -1,5 +1,5 @@
 <svg width="920" height="452" viewBox="0 0 920 452" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
-  <title id="title">The async model: async(e) may evaluate concurrently when e's effect row is commutative — the reference implementation issues Http requests on a host worker thread at the async point and await blocks for the response — while every other shape evaluates eagerly with a W002 warning, and Future of T is WASM-transparent either way.</title>
+  <title id="title">The async model: an implementation may evaluate async(e) concurrently when e's effect row is commutative; the reference implementation does so for async(Http.get(…)) and async(Http.post(…)) with call-free arguments, issuing the request on a host worker thread at the async point while await blocks for the response. Every other shape evaluates eagerly, and the checker warns (W002) where the row leaves the commutative set {Http, Async}. Future of T is WASM-transparent either way.</title>
   <!-- Design system: see architecture.svg. Grounded in spec/09 §9.5.4 (#841). -->
   <defs>
     <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
@@ -22,7 +22,7 @@
   <rect x="1.5" y="1.5" width="917" height="449" rx="14" fill="#faf9f7" stroke="#e8e6e1" stroke-width="1.5"/>
 
   <text class="f micro" x="36" y="42">ASYNC · EAGER BY DEFAULT, CONCURRENT WHEN COMMUTATIVE</text>
-  <text class="f sub" x="36" y="64">Value semantics never change — only when the work happens. &lt;Async&gt; is a marker effect; async/await are built-ins it enables.</text>
+  <text class="f sub" x="36" y="64">Value semantics never change; only the time the work happens does. &lt;Async&gt; is a marker effect; async/await are built-ins it enables.</text>
 
   <!-- entry -->
   <g>
@@ -37,22 +37,22 @@
   <g>
     <rect class="card" x="300" y="160" width="320" height="42" rx="10"/>
     <rect x="300.5" y="160.5" width="4" height="41" rx="2" fill="#8b6cad"/>
-    <text class="f t" x="460" y="180" text-anchor="middle">is expr's effect row commutative?</text>
-    <text class="f d" x="460" y="194" text-anchor="middle">whitelist: {Http, Async} — e.g. async(Http.get(…))</text>
+    <text class="f t" x="460" y="180" text-anchor="middle">async(Http.get(…)) or async(Http.post(…))?</text>
+    <text class="f d" x="460" y="194" text-anchor="middle">call-free arguments; Http is in the commutative set</text>
   </g>
 
   <polyline class="edge" points="300,181 240,181 240,226" marker-end="url(#arr)"/>
   <text class="m lbl" x="252" y="214" fill="#3d7a4d">yes → concurrent</text>
   <polyline class="edge" points="620,181 680,181 680,226" marker-end="url(#arr)"/>
-  <text class="m lbl" x="590" y="214" fill="#b07820">no → eager (+ W002)</text>
+  <text class="m lbl" x="590" y="214" fill="#b07820">no → eager</text>
 
   <!-- concurrent lane -->
   <g>
     <rect class="card" x="60" y="228" width="380" height="104" rx="10"/>
     <rect x="60.5" y="228.5" width="4" height="103" rx="2" fill="#5a9e6f"/>
-    <text class="f t" x="78" y="250" fill="#3d7a4d">Concurrent — reference implementation</text>
+    <text class="f t" x="78" y="250" fill="#3d7a4d">Concurrent: the reference implementation</text>
     <text class="f d" x="78" y="270">· the request is <tspan font-weight="600">issued on a host worker thread</tspan> at the</text>
-    <text class="f d" x="90" y="284">async(…) point — issuance keeps program order</text>
+    <text class="f d" x="90" y="284">async(…) point, so issuance keeps program order</text>
     <text class="f d" x="78" y="302">· the future is an opaque pending handle (same WASM type)</text>
     <text class="f d" x="78" y="320">· <tspan class="m" font-size="10px">await</tspan> blocks for the response</text>
   </g>
@@ -61,11 +61,11 @@
   <g>
     <rect class="card" x="480" y="228" width="404" height="104" rx="10"/>
     <rect x="480.5" y="228.5" width="4" height="103" rx="2" fill="#d4952a"/>
-    <text class="f t" x="498" y="250" fill="#b07820">Eager — every other shape</text>
-    <text class="f d" x="498" y="270">· <tspan class="m" font-size="10px">expr</tspan> evaluates right now, sequentially — semantically</text>
-    <text class="f d" x="510" y="284">forced where effects must keep program order</text>
-    <text class="f d" x="498" y="302">· the checker warns (<tspan class="m" font-size="10px">W002</tspan>) so the eager site is visible</text>
-    <text class="f d" x="498" y="320">· an eager Future&lt;T&gt; <tspan font-weight="600">is</tspan> the T — zero overhead</text>
+    <text class="f t" x="498" y="250" fill="#b07820">Eager: every other shape</text>
+    <text class="f d" x="498" y="270">· <tspan class="m" font-size="10px">expr</tspan> evaluates right now, sequentially; where the</text>
+    <text class="f d" x="510" y="284">row leaves {Http, Async} this is forced</text>
+    <text class="f d" x="498" y="302">· there the checker warns (<tspan class="m" font-size="10px">W002</tspan>), so the site is visible</text>
+    <text class="f d" x="498" y="320">· an eager Future&lt;T&gt; <tspan font-weight="600">is</tspan> the T, with zero overhead</text>
   </g>
 
   <!-- await -->
@@ -78,6 +78,6 @@
   </g>
 
   <!-- footer -->
-  <text class="f footi" x="36" y="404">The browser runtime evaluates all futures eagerly — spec-conformant under the MAY, identical values, only request timing differs.</text>
+  <text class="f footi" x="36" y="404">The browser runtime evaluates every future eagerly, which the MAY permits: the values are the same, and only request timing differs.</text>
   <text class="f footi" x="36" y="422">No coloured functions: algebraic effects already separate describing an operation from executing it.</text>
 </svg>
