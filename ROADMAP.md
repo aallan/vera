@@ -14,7 +14,7 @@ Ordering derives from the design principles ([DESIGN.md](DESIGN.md)): verificati
 
 [TESTING.md](TESTING.md#overview) counts the tests, the conformance programs and the examples.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs, plus the *limitations* the stages below retire.
 
-v0.3.0 is the sound base (Stage 29), reached through v0.2.8 to v0.2.12 (Stage 28) after v0.2.7's obligation table (Stage 27, in [HISTORY.md](HISTORY.md)).  The feature release follows it in Stage 30: the `Decision` effect ([#1467](https://github.com/aallan/vera/issues/1467)) and its blockers, [#351](https://github.com/aallan/vera/issues/351) and [#370](https://github.com/aallan/vera/issues/370).
+v0.3.0 is the sound base (Stage 29), reached through v0.2.9 to v0.2.12, the rest of Stage 28, whose first release, v0.2.8, is in [HISTORY.md](HISTORY.md).  The feature release follows it in Stage 30: the `Decision` effect ([#1467](https://github.com/aallan/vera/issues/1467)) and its blockers, [#351](https://github.com/aallan/vera/issues/351) and [#370](https://github.com/aallan/vera/issues/370).
 
 ## The bug queue
 
@@ -55,20 +55,19 @@ Exit criterion: each listed drift class has a generator or a gate, and a release
 | [#1611](https://github.com/aallan/vera/issues/1611) | Five test cells that can pass without exercising what they assert — each shown by a mutation or a direct run. |
 | [#1612](https://github.com/aallan/vera/issues/1612) | Stale comments and docstrings in tests and two compiler helpers, a test cache that never hits, and a mis-positioned constructor call. |
 
-## Stage 28 — Decomposition and the spec (v0.2.8 to v0.2.12)
+## Stage 28 — Decomposition and the spec (v0.2.9 to v0.2.12)
 
 *Readable parts, and a spec that states the language.*
 
-The large classes split once Stages 25 to 27 have deleted what they duplicate, and the spec hands its implementation status to the documents that track it.  The stage closes what remains of the [debt track](https://github.com/aallan/vera/milestone/10).  Code generation's seventeen remaining readers of a written type, `_type_expr_to_wasm_type` among them, are lines of [#1525](https://github.com/aallan/vera/issues/1525) that close in v0.2.8.  Two pieces of Stage 27's table carry over: §6.4.2's taint rules go, and `test_nested_container_guards` moves wholly to the nightly lane.
+The large classes split once Stages 25 to 27 have deleted what they duplicate, and the spec hands its implementation status to the documents that track it.  The stage closes what remains of the [debt track](https://github.com/aallan/vera/milestone/10).  Code generation's seventeen remaining readers of a written type, `_type_expr_to_wasm_type` among them, are lines of [#1525](https://github.com/aallan/vera/issues/1525) that close in v0.2.9.  Two pieces of Stage 27's table carry over: §6.4.2's taint rules go, and `test_nested_container_guards` moves wholly to the nightly lane.
 
 Exit criterion: no function is over 500 lines, and the spec carries no implementation status.
 
-The stage ships in five releases:
+The stage's four remaining releases:
 
 | Release | What |
 |---|---|
-| v0.2.8 | The nightly mutation sweep's redesign ([#1838](https://github.com/aallan/vera/issues/1838)), the `if` join's nested refinement premises at their root ([#1716](https://github.com/aallan/vera/issues/1716)), the one-variable-two-positions call fit ([#1684](https://github.com/aallan/vera/issues/1684)) and a batch of loud bugs. |
-| v0.2.9 | The rest of the stage's bugs and the language-server batch, with [#1838](https://github.com/aallan/vera/issues/1838) closing once the sweep meets its targets. |
+| v0.2.9 | The rest of the stage's bugs, the language-server batch, and the rest of the nightly mutation sweep's redesign, its declared oracle first, with [#1838](https://github.com/aallan/vera/issues/1838) closing once the sweep meets its targets. |
 | v0.2.10 | The documentation sweep and housekeeping. |
 | v0.2.11 | The testing-hygiene batch. |
 | v0.2.12 | The host and runtime bugs; Stage 29 follows at v0.3.0. |

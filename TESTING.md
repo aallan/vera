@@ -7,7 +7,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 <!-- render_status:begin status -->
 | Metric | Value |
 |--------|-------|
-| **Tests** | 55,671 collected from 299 test files, which hold 304,868 lines |
+| **Tests** | 60,002 collected from 308 test files, which hold 317,728 lines |
 | **Conformance programs** | 273 in `tests/conformance/manifest.json`: 0 at `parse`, 76 at `check`, 20 at `verify`, 177 at `run`; 64 of them negative fixtures (`expected_error`) |
 | **Example programs** | 44 in `examples/` |
 | **Corpus programs** | 324 `.vera` files under `examples/` and `tests/conformance/`, recursively |
@@ -37,28 +37,28 @@ The measures [ROADMAP.md](ROADMAP.md)'s Stage 29 holds v0.3.0 to, each beside th
 <!-- render_status:begin scorecard -->
 | Measure | v0.2.0, the audit (2026-10-06) | Now | Measured over |
 |---------|---------------------------|-----|---------------|
-| Open `soundness` bugs | 14 (≥17 by definition) | 5 | the tracker, 2026-11-06 00:56 UTC |
-| Open bugs | 82 | 23 | the tracker, 2026-11-06 00:56 UTC |
+| Open `soundness` bugs | 14 (≥17 by definition) | 3 | the tracker, 2026-11-12 23:58 UTC |
+| Open bugs | 82 | 26 | the tracker, 2026-11-12 23:58 UTC |
 | Backend `_infer_*` functions | 29 | 0 | the tree |
 | Pipeline entry points with an optional semantic table | 3 | 0 | the tree |
 | Same-named `Nat`/`Int` helpers in `vera/verifier.py` and `vera/wasm/` | 12 | 1 | the tree |
 | Explicit `guarded=` claims by the verifier | 38 | 0 | the tree |
-| Hand-rolled `isinstance` dispatchers over `Expr` | 191 | 148 | the tree |
+| Hand-rolled `isinstance` dispatchers over `Expr` | 191 | 157 | the tree |
 | Functions over 500 lines | 17 | 10 | the tree |
 | Host built-ins hand-mirrored across hosts | 53 × 2, plus WASI | 39 × 2, plus none | the tree |
 | Gate scripts that exist only to sync copies | 8 of 23 | 4 of 24 | the tree |
-| CI wall time per pull-request push | 57 min | 34.1 min | 20 pull-request runs, 2026-11-05 to 2026-11-05 |
-| Runner-minutes per pull-request push | 375 | 130 | 20 pull-request runs, 2026-11-05 to 2026-11-05 |
-| Fix pull requests, median: CI runs | 6 | 4 | 15 pull requests merged since v0.2.6 (2026-10-29), to 2026-11-06 |
-| Fix pull requests, median: hours to merge | 11.0 | 2.9 | 15 pull requests merged since v0.2.6 (2026-10-29), to 2026-11-06 |
-| Suite in the pull-request gate: tests | 30,095 | 27,226 | the tree |
-| Suite in the pull-request gate: worker-seconds | 9,037 | 2,198 | a run of 27,226 tests, 2026-11-06 00:37 UTC |
-| Subprocess share of suite time | 52% | 24.2% | a run of 27,226 tests, 2026-11-06 00:37 UTC |
+| CI wall time per pull-request push | 57 min | 34.5 min | 20 pull-request runs, 2026-11-12 to 2026-11-12 |
+| Runner-minutes per pull-request push | 375 | 131 | 20 pull-request runs, 2026-11-12 to 2026-11-12 |
+| Fix pull requests, median: CI runs | 6 | 6 | 10 pull requests merged since v0.2.7 (2026-11-06), to 2026-11-12 |
+| Fix pull requests, median: hours to merge | 11.0 | 8.3 | 10 pull requests merged since v0.2.7 (2026-11-06), to 2026-11-12 |
+| Suite in the pull-request gate: tests | 30,095 | 28,935 | the tree |
+| Suite in the pull-request gate: worker-seconds | 9,037 | 2,376 | a run of 28,935 tests, 2026-11-12 23:16 UTC |
+| Subprocess share of suite time | 52% | 23.9% | a run of 28,935 tests, 2026-11-12 23:16 UTC |
 | Conformance entries with golden output | 0 of 256 | 176 of 273; every run-level entry, one of them by exit status only | the tree |
 | Program generator with differentials | none | every pull request, nightly | the tree |
 | `vera test` executes proved functions | no | yes, in CI | the tree |
-| Statement coverage | 96.2% | 96.60% | Codecov, the post-merge run of `6bc4779` (2026-11-05) |
-| Spec words | 86,558 | 90,230 | the tree |
+| Statement coverage | 96.2% | 96.63% | Codecov, the post-merge run of `27430d2` (2026-11-12) |
+| Spec words | 86,558 | 91,418 | the tree |
 | Issue links in the spec | 175 | 123 | the tree |
 
 What each row counts, as the v0.2.0 column counted it:
@@ -87,7 +87,7 @@ What each row counts, as the v0.2.0 column counted it:
 - **Spec words**: the whitespace-separated words of `spec/*.md`.
 - **Issue links in the spec**: the `https://github.com/aallan/vera/issues/N` links in `spec/*.md`.
 
-Measured for v0.2.7 by `scripts/render_status.py`.  The v0.2.0 column is the audit's measurement of 6508cc32, taken on 2026-10-06 and held in `scripts/scorecard.py`.  `scripts/check_doc_counts.py --release` measures the tree's rows again; the others change from one moment to the next, so it asks of each only that it states the window it was measured over.
+Measured for v0.2.8 by `scripts/render_status.py`.  The v0.2.0 column is the audit's measurement of 6508cc32, taken on 2026-10-06 and held in `scripts/scorecard.py`.  `scripts/check_doc_counts.py --release` measures the tree's rows again; the others change from one moment to the next, so it asks of each only that it states the window it was measured over.
 <!-- render_status:end scorecard -->
 
 ## Running Tests
@@ -139,19 +139,19 @@ One row per test file: its tests as a full collection counts them (the stress te
 | `test_adt_ord_reject_921.py` | 40 | 641 | Regression tests for #921 — ``compare`` / ordering on a user ADT is a *silent wrong result*, the severest failure class. |
 | `test_alias_application_refinement_base_1237.py` | 11 | 379 | A parameterised alias APPLICATION substitutes its arguments (#1237). |
 | `test_ambiguous_import_refusal_1304.py` | 39 | 1,210 | #1304: two imports supplying one bare name are refused, in every namespace. |
-| `test_array_literal_elements_1584.py` | 633 | 566 | Every element of an array literal has the literal's element type (#1584). |
-| `test_array_literal_open_position_1668.py` | 1,692 | 1,360 | The type an array literal, an `if` or a `match` is given takes every part of it into account, an open position included (#1668). |
+| `test_array_literal_elements_1584.py` | 633 | 569 | Every element of an array literal has the literal's element type (#1584). |
+| `test_array_literal_open_position_1668.py` | 1,692 | 1,378 | The type an array literal, an `if` or a `match` is given takes every part of it into account, an open position included (#1668). |
 | `test_array_map_slot_closure_1056.py` | 10 | 227 | Regression tests for #1056 — a fn-typed slot handed to ``array_map`` / ``array_mapi`` as the closure argument. |
 | `test_ast.py` | 139 | 1,148 | Tests for the Vera AST layer (vera.ast + vera.transform). |
 | `test_await_ci.py` | 210 | 664 | The release goes on only from CI's successful run on its commit. |
 | `test_binder_position_generator.py` | 223 | 895 | The class instrument: every binder position, every refinement kind. |
 | `test_binder_positions.py` | 56 | 433 | The binder-position registry is held to the AST, and to the guard table. |
-| `test_boundary_guard_correctness_1466.py` | 991 | 2,250 | The class instrument: every guarded position, every WASM representation. |
+| `test_boundary_guard_correctness_1466.py` | 992 | 2,273 | The class instrument: every guarded position, every WASM representation. |
 | `test_browser.py` | 437 | 5,300 | Parity tests: Python/wasmtime vs Node.js/JS-runtime. |
 | `test_budget_marker_1670.py` | 9 | 172 | A test runs under the budget its marker names (#1670). |
 | `test_build_site.py` | 62 | 926 | Tests for the site-asset tooling: scripts/build_site.py and scripts/check_site_assets.py. |
 | `test_builtin_registry.py` | 1,729 | 1,580 | The built-in registry, `vera/builtins.py`, held to every phase that reads it (#735). |
-| `test_builtin_typevar_collision_970.py` | 61 | 837 | Regression tests for #970 — a user ``forall<T>`` var colliding *by name* with a built-in generic's internal type-variable name. |
+| `test_builtin_typevar_collision_970.py` | 61 | 840 | Regression tests for #970 — a user ``forall<T>`` var colliding *by name* with a built-in generic's internal type-variable name. |
 | `test_byte_literal_joins_1212.py` | 25 | 715 | #1212: a `@Byte` literal inside a value-position join lowers at i32. |
 | `test_bytes_1711.py` | 34 | 909 | Bytes in, out and through: the six operations of issue #1711. |
 | `test_cache_dependency_closure_1441.py` | 37 | 1,312 | #1441 — the warm session's cache key must cover what a proof actually reads. |
@@ -193,7 +193,7 @@ One row per test file: its tests as a full collection counts them (the stress te
 | `test_codegen_alias_of_adt_eq_show_1085.py` | 49 | 1,102 | Tests for #1085 / #1086 / #1087 — the alias-of-ADT / forall-Eq / bare-Future dispatch cluster (siblings of the #1076/#1077 ground-spelling family). |
 | `test_codegen_alias_typeargs_eq_1076.py` | 34 | 501 | Tests for #1076 / #1077 / #1078 — the Eq-dispatch ground-spelling cluster. |
 | `test_codegen_arrays.py` | 242 | 4,431 | Tests for vera.codegen — arrays (Byte type, array literals/bounds/length/range/concat, compound arrays, array utilities). |
-| `test_codegen_calls.py` | 32 | 1,402 | Tests for vera.codegen — calls (statement-position unit calls, tail-call optimization, pair-typed closure params and captures). |
+| `test_codegen_calls.py` | 32 | 1,396 | Tests for vera.codegen — calls (statement-position unit calls, tail-call optimization, pair-typed closure params and captures). |
 | `test_codegen_closures.py` | 63 | 1,947 | Tests for vera.codegen — Closures. |
 | `test_codegen_collections.py` | 69 | 1,153 | Tests for vera.codegen — collections (Map and Set collections, wrapper-handle bit-31 tagging). |
 | `test_codegen_contracts.py` | 33 | 532 | Tests for vera.codegen — Runtime contract insertion. |
@@ -232,7 +232,7 @@ One row per test file: its tests as a full collection counts them (the stress te
 | `test_codegen_typeparam_unit_wildcard_1060.py` | 31 | 933 | Tests for #1060 — wildcard over a type-parameter field instantiated to Unit. |
 | `test_codegen_where_helper_mangling_991.py` | 13 | 551 | #991: duplicate ``where``-helper names crash WAT assembly on the non-generic path (``duplicate func identifier``) — and pre-#978 a colliding grandchild was silently dropped, binding its call to a same-named top-level function. |
 | `test_codegen_zero_size_fields_1043.py` | 22 | 472 | Tests for #1043 — registered constructor layouts erase zero-size fields. |
-| `test_composite_coercion_guards.py` | 2,775 | 1,243 | A composite value's `Int` component coerced to a `Nat` component traps. |
+| `test_composite_coercion_guards.py` | 2,775 | 1,252 | A composite value's `Int` component coerced to a `Nat` component traps. |
 | `test_composite_postcondition_eq_912.py` | 16 | 461 | Regression tests for #912 — a composite (ADT / Option / Tuple) equality in ``ensures`` position must lower its RUNTIME check to STRUCTURAL equality, so a postcondition ``vera verify`` proves at Tier 1 does not spuriously TRAP at run. |
 | `test_conformance.py` | 1,440 | 725 | Conformance test suite — spec-anchored feature validation. |
 | `test_conformance_run_reach.py` | 84 | 174 | A run-level conformance program's run reaches what its header names (#1645). |
@@ -251,7 +251,8 @@ One row per test file: its tests as a full collection counts them (the stress te
 | `test_destructure_checked_against_source_1545.py` | 963 | 1,193 | A destructuring `let` is checked as the constructor pattern it is (#1545). |
 | `test_diagnostic_codes_1490.py` | 129 | 1,374 | Every diagnostic carries a registered code, and none is built by hand (#1490, #1793). |
 | `test_diagnostic_fields.py` | 98 | 1,618 | Unit tests for `scripts/check_diagnostic_fields.py` (#682). |
-| `test_disclosure_taint_follows_value_1406.py` | 129 | 2,298 | #1406 / #1407 — a disclosed fact's taint follows the VALUE, not the syntax. |
+| `test_diagnostic_text_reads_back_1573.py` | 1,159 | 1,270 | What a diagnostic prints is the program's own text (#1573, #1853, #1851). |
+| `test_disclosure_taint_follows_value_1406.py` | 129 | 2,306 | #1406 / #1407 — a disclosed fact's taint follows the VALUE, not the syntax. |
 | `test_distrust_corpus.py` | 227 | 310 | `vera test --distrust` over the corpus: a Tier-1 proof must survive a run. |
 | `test_doc_annotations.py` | 97 | 1,101 | Tests for scripts/doc_annotations.py — inline fence markers (#538, #1481). |
 | `test_doc_builtin_shadowing.py` | 11 | 183 | Tests for scripts/check_doc_builtin_shadowing.py (#819). |
@@ -262,16 +263,20 @@ One row per test file: its tests as a full collection counts them (the stress te
 | `test_emitted_checks_1479.py` | 50 | 597 | The per-module record of emitted runtime checks (#1479). |
 | `test_engine_failure_matrix.py` | 226 | 332 | The class instrument for what stops a mutation run (scripts/mutate_diff.py). |
 | `test_eq_contract_874.py` | 13 | 398 | Regression tests for #874 — the ``eq`` / ``compare`` ability operations in contract position (``requires`` / ``ensures``) must lower to their canonical operator form, so a contract that ``vera check`` accepts also *compiles*, *runs*, and *verifies at Tier 1*. |
+| `test_error_body_cut_1526.py` | 52 | 241 | An HTTP error body cut at the read cap is cut at a character (#1526). |
 | `test_errors.py` | 66 | 705 | Error message tests — verify LLM-oriented diagnostic quality. |
 | `test_evaluated_position_obligations_1480.py` | 1,580 | 4,717 | Every runtime check the compiled program performs has an obligation (#1480). |
 | `test_examples_ephemeris.py` | 12 | 370 | Pins for `examples/ephemeris.vera` — the tree's only floating-point program. |
 | `test_execute_characterization.py` | 24 | 507 | Characterization harness for ``execute()`` — the #421 decomposition gate. |
+| `test_exn_boundary_cut_1526.py` | 75 | 184 | The quoted String of an uncaught exception is cut at a character (#1526). |
 | `test_exn_throw_payload_1268.py` | 42 | 1,025 | ``throw``'s payload is obligated AND guarded like every other narrowing site (#1268). |
-| `test_expected_type_premise_1716.py` | 563 | 841 | An established fact comes from a value's own leaves (#1716). |
+| `test_expected_type_fixes_open_1684.py` | 613 | 2,162 | An expected type fixes what a value's arguments or elements leave open, and a type variable two arguments give different types takes one type whichever comes first (#1684, lines 1 and 5, find (a)). |
+| `test_expected_type_premise_1716.py` | 563 | 843 | An established fact comes from a value's own leaves (#1716). |
 | `test_expr_fold.py` | 127 | 1,625 | The class instrument for `vera/fold.py`: one traversal, one scope walk. |
 | `test_family_naming.py` | 66 | 1,618 | The State/Exn cell FAMILY is the cell the checker typed (#1209). |
 | `test_field_layout_one_source_1466.py` | 7 | 245 | One layout table, proved behaviourally: widen it and every walk follows. |
-| `test_fits_one_variable_one_type_1684.py` | 103 | 1,497 | A call argument whose type leaves a type variable open takes one type for it, and a function compiled before its variable had a type fits no other (#1684). |
+| `test_fits_one_variable_one_type_1684.py` | 103 | 1,507 | A call argument whose type leaves a type variable open takes one type for it, and a function compiled before its variable had a type fits no other (#1684). |
+| `test_fix_texts_apply_and_clear.py` | 324 | 1,934 | A diagnostic's fix, applied as written, clears it (#1778, #1763). |
 | `test_float64_builtins_807.py` | 81 | 455 | #807 — Tier-1 Z3 modeling for the modelable Float64 builtins deferred from #797: `float_clamp`, `int_to_float`, `float_to_int`. |
 | `test_float64_fp.py` | 10 | 250 | Regression tests for #797 — @Float64 contracts via Z3's FloatingPoint sort. |
 | `test_formatter.py` | 574 | 3,639 | Tests for vera.formatter — canonical code formatter. |
@@ -300,25 +305,26 @@ One row per test file: its tests as a full collection counts them (the stress te
 | `test_int_overflow_differential.py` | 263 | 393 | Verifier<->codegen classification differential for #798 (Stage 3, RISK 6/7). |
 | `test_interpolation_resolved_type_1347.py` | 33 | 201 | #1347 — interpolation decides on the RESOLVED type, not the spelling. |
 | `test_introspect.py` | 39 | 221 | Tests for ``vera.introspect`` — the registry payloads behind ``vera builtins/effects/errors --json`` (#539). |
+| `test_join_recorded_type_1716.py` | 1,564 | 2,283 | A join is recorded at the facts its arms share (#1716). |
 | `test_json_accept_domain_1306_1308.py` | 97 | 720 | ``json_parse``'s accept domain (#1306, #1308). |
 | `test_keyed_string_hash_1736.py` | 39 | 892 | A `String` key's hash in the persistent `Map` and `Set` is keyed for each instantiation (#1736). |
 | `test_lexical_fn_scope_1299.py` | 53 | 1,430 | #1299: codegen's bare-call ownership table must be the CALL SITE's scope. |
 | `test_literal_branch_join_1756.py` | 1,286 | 348 | A join of an `@Int` branch with a `@Nat` branch is an `@Int`, so binding it into a `@Nat` position is obligated (#1756). |
 | `test_literal_typing_from_context_1541_1565.py` | 3,125 | 1,561 | Every integer literal is an `Int`, and a generic call's type argument is fixed by the call's other arguments, then by the type its result is expected at (#1541, #1565). |
 | `test_lowering_boundary.py` | 384 | 2,020 | What code generation can lower is decided once, and the checker refuses the rest. |
-| `test_lsp.py` | 329 | 5,460 | Tests for vera/lsp/ — transport skeleton + coordinate layer (#222 Phase C). |
+| `test_lsp.py` | 329 | 5,462 | Tests for vera/lsp/ — transport skeleton + coordinate layer (#222 Phase C). |
 | `test_markdown.py` | 94 | 610 | Unit tests for the Python Markdown parser and renderer (§9.7.3). |
-| `test_match_unknown_scrutinee_1671.py` | 617 | 560 | A `match` over a scrutinee already in error is not judged for coverage (#1671). |
+| `test_match_unknown_scrutinee_1671.py` | 617 | 561 | A `match` over a scrutinee already in error is not judged for coverage (#1671). |
 | `test_matrix_gate.py` | 351 | 813 | The matrix gate (scripts/matrix_gate.py): the required check that holds a pull request to the full test matrix exactly when it raises `[project].version`. |
 | `test_matrix_issue.py` | 86 | 383 | A failed cell of the full test matrix files an issue (ci.yml `matrix-issue`). |
-| `test_matrix_sample.py` | 71 | 723 | The `matrix` marker's sample (tests/matrix_sample.py). |
+| `test_matrix_sample.py` | 71 | 732 | The `matrix` marker's sample (tests/matrix_sample.py). |
 | `test_module_environment_1493.py` | 120 | 795 | A module is compiled in ITS OWN namespace, imports included (#1493, #1275). |
 | `test_module_generic_collision_1281.py` | 22 | 847 | #1281: two modules' PROVABLY DISTINCT generics are not refused. |
 | `test_module_generic_namespace_1274.py` | 21 | 833 | #1274: a module generic that does not own the importer's bare name must be reached under its module-qualified ``mod$<path>$name`` identity. |
 | `test_module_shadowed_generic_effect_op_1310.py` | 4 | 397 | #1310: a qualified-only (shadowed) module generic's instantiation discovery had no effect-operation registry at all, unlike the unshadowed discovery walk #1207 already fixed. |
 | `test_mono_effect_op_naming_1207.py` | 9 | 339 | #1207: mono discovery and the WASM call-rewrite name ONE clone. |
-| `test_mutate_diff.py` | 243 | 3,531 | Tests for scripts/mutate_diff.py, the mutation lane scoped to a diff. |
-| `test_mutate_sweep.py` | 175 | 1,863 | Tests for scripts/mutate_sweep.py, the nightly mutation sweep over all of vera/. |
+| `test_mutate_diff.py` | 248 | 3,625 | Tests for scripts/mutate_diff.py, the mutation lane scoped to a diff. |
+| `test_mutate_sweep.py` | 277 | 3,774 | Tests for scripts/mutate_sweep.py, the nightly mutation sweep over all of vera/. |
 | `test_mutual_recursive_sorts_881.py` | 15 | 310 | Regression tests for #881 — mutually-recursive ``data`` declarations must not crash ``vera verify`` with a raw ``RecursionError`` during Z3 sort construction. |
 | `test_name_resolution_spine_1316.py` | 161 | 2,150 | #1316 / #1321 / #1331 — ONE name-resolution spine, asked in the DECLARING namespace. |
 | `test_named_traps_1479.py` | 375 | 1,927 | Every runtime trap names its cause (#1479). |
@@ -334,10 +340,11 @@ One row per test file: its tests as a full collection counts them (the stress te
 | `test_nightly_matrix_workflow.py` | 17 | 304 | The nightly full matrix is a workflow of its own, and every gating job runs on a pinned image. |
 | `test_nightly_stress_workflow.py` | 11 | 413 | Contract test for #1328: the nightly stress workflow's marker selection must actually collect every ``@pytest.mark.stress`` test, not just whichever file the invocation happens to name. |
 | `test_nonregular_data_rejected_1429.py` | 44 | 799 | #1429 — a non-regularly recursive `data` declaration is refused at CHECK. |
-| `test_obligation_table_1695.py` | 3,661 | 2,838 | One obligation table (#1695, ROADMAP Stage 27): every obligation record and every emitted guard come from one table entry. |
-| `test_obligations.py` | 791 | 1,922 | Tests for vera/obligations/ — reified obligations + warm session (#222 Phase A). |
+| `test_obligation_table_1695.py` | 3,664 | 2,877 | One obligation table (#1695, ROADMAP Stage 27): every obligation record and every emitted guard come from one table entry. |
+| `test_obligations.py` | 791 | 1,924 | Tests for vera/obligations/ — reified obligations + warm session (#222 Phase A). |
 | `test_one_classifier_1503.py` | 351 | 856 | #1503 — every guard and every obligation reads a component where it is built. |
-| `test_one_error_per_refusal_1563.py` | 153 | 845 | A judgement made on a value an earlier diagnostic already refused reports nothing further (#1563, the checker's lines). |
+| `test_one_error_per_refusal_1563.py` | 153 | 847 | A judgement made on a value an earlier diagnostic already refused reports nothing further (#1563, the checker's lines). |
+| `test_one_fit_at_every_site_1684.py` | 115 | 1,116 | Every site that holds a value to a required type asks the one fit, once per value (#1684, the open lines of 2026-11-04). |
 | `test_operation_row_1702.py` | 660 | 1,258 | An effect operation is held to the row in force, wherever it is performed (#1702). |
 | `test_overflow_fails_closed_1417.py` | 4 | 164 | An operand with no type the table can read is guarded as an `Int` (#1417). |
 | `test_parse_error_instructions_1348_1349.py` | 15 | 177 | #1349 / #1348 — the parser's fallback, brought up to the project's bar. |
@@ -357,7 +364,7 @@ One row per test file: its tests as a full collection counts them (the stress te
 | `test_readme.py` | 2 | 79 | Tests for README.md code samples — the parse stage of every Vera block. |
 | `test_reconciliation.py` | 394 | 1,480 | The verifier's runtime-guard claims reconciled with the checks code generation emits (the audit's T2a): :mod:`vera.reconcile`, ``vera verify``, which runs the join unless ``--no-reconcile``, and the corpus gate ``scripts/check_reconciliation.py``. |
 | `test_refinement_binder_convergence_1208.py` | 16 | 444 | Codegen's refinement guard and :mod:`vera.naming` share ONE derivation. |
-| `test_refinement_chain_convergence.py` | 63 | 386 | The two refinement-chain oracles answer the same question. |
+| `test_refinement_chain_convergence.py` | 63 | 385 | The two refinement-chain oracles answer the same question. |
 | `test_release.py` | 86 | 1,230 | Release-policy tests for ``scripts/release.py`` (#481). |
 | `test_render_lists.py` | 69 | 888 | scripts/render_lists.py, which writes the lists that have one source. |
 | `test_render_status.py` | 50 | 824 | scripts/render_status.py, which writes TESTING.md's generated status. |
@@ -372,26 +379,28 @@ One row per test file: its tests as a full collection counts them (the stress te
 | `test_serve.py` | 8 | 189 | End-to-end tests for the #305 ``vera serve`` driver. |
 | `test_shard.py` | 35 | 312 | Sharding (tests/shard.py): `--shard=K/N` runs the K-th of N parts of the collection. |
 | `test_short_circuit_1501.py` | 132 | 835 | `&&`, `\|\|` and `==>` short-circuit, in compiled code and in the verifier (#1501). |
-| `test_single_source_type_names.py` | 51 | 1,125 | #1327 / #1357 / #1365 / #1366: one source for an expression's type. |
+| `test_single_source_type_names.py` | 51 | 1,128 | #1327 / #1357 / #1365 / #1366: one source for an expression's type. |
 | `test_slot_naming.py` | 56 | 812 | Rule table for :mod:`vera.naming` — the ONE slot/family naming renderer. |
 | `test_slot_naming_blast_radius.py` | 15 | 316 | The measured blast radius of the #1208 slot-naming core flip. |
 | `test_slot_naming_differential.py` | 6 | 979 | Differential gate: the CHECKER must render what :mod:`vera.naming` renders. |
 | `test_soundness_392.py` | 36 | 576 | Regression tests for the #392 smt.py / verifier soundness audit. |
+| `test_source_boundary_chars_1790.py` | 156 | 545 | A byte-order mark at the start of a source, and characters nobody can see in one (#1790). |
 | `test_source_encoding_1728_1666.py` | 178 | 881 | A source that is not UTF-8, and a string escape that names a surrogate (#1666, #1728). |
 | `test_sql_provenance_309.py` | 79 | 781 | Tests for the SQL literal-provenance checker (#309) — SQL injection as a compile-time error. |
 | `test_state_clause_semantics.py` | 27 | 693 | #976 option C: ``handle[State<T>]`` clause bodies EXECUTE with intrinsic-hybrid semantics. |
 | `test_state_exn_registration.py` | 30 | 1,331 | #1210: State/Exn host-import registration must cover the whole handler. |
 | `test_stress.py` | 16 | 538 | Scale-dependent regression tests (#596). |
 | `test_string_length_soundness.py` | 15 | 269 | Regression tests for #802 — string_length code-point vs UTF-8 byte mismatch. |
+| `test_tail_call_guards_1849.py` | 160 | 964 | A guard on a tail call's result runs (#1849). |
 | `test_termination_rule.py` | 788 | 1,866 | Every recursive function proves it terminates or says it may not (#1492). |
 | `test_tester.py` | 17 | 442 | Tests for vera.tester — contract-driven test engine. |
 | `test_tester_artifacts.py` | 1 | 93 | `vera test` must thread the #747/#820 checker artifacts into BOTH the verifier and codegen (FIX 2, PR #986 review). |
 | `test_tester_coverage.py` | 49 | 1,414 | Tests for vera.tester — Coverage gap tests. |
-| `test_tester_distrust.py` | 205 | 3,125 | `vera test --distrust`: execute the functions the verifier proved. |
+| `test_tester_distrust.py` | 205 | 3,126 | `vera test --distrust`: execute the functions the verifier proved. |
 | `test_trial_argument_labels_1757.py` | 24 | 269 | A trial's arguments are labelled as the source names them (#1757). |
-| `test_type_renderer_1505.py` | 461 | 624 | One type renderer: a type argument has no `@` (#1505; ROADMAP Stage 26). |
+| `test_type_renderer_1505.py` | 461 | 627 | One type renderer: a type argument has no `@` (#1505; ROADMAP Stage 26). |
 | `test_typed_program_1525.py` | 48 | 1,076 | One typed program: the type-level members of #1525 (ROADMAP Stage 26). |
-| `test_typed_program_1679.py` | 3,011 | 1,435 | One typed program: a judgment that depends on a generic's instantiation is made at check (#1679; ROADMAP Stage 26). |
+| `test_typed_program_1679.py` | 3,011 | 1,445 | One typed program: a judgment that depends on a generic's instantiation is made at check (#1679; ROADMAP Stage 26). |
 | `test_types.py` | 82 | 443 | Unit tests for vera.types — type operations. |
 | `test_unresolved_names_1489.py` | 57 | 605 | Every type and effect name resolves, or check refuses it (#1489, #1506). |
 | `test_untranslatable_rule_1696.py` | 187 | 1,481 | One rule for an expression the verifier cannot translate (#1696). |
@@ -407,14 +416,14 @@ One row per test file: its tests as a full collection counts them (the stress te
 | `test_verifier_fresh_scope.py` | 45 | 1,145 | Tests for vera.verifier — fresh-scope obligation walking (#779, #985). |
 | `test_verifier_mutation_gates_smt.py` | 52 | 1,320 | Tests for vera.verifier — mutation_gates_smt (#387 mutation-hardening: verifier gates and SMT translation). |
 | `test_verifier_mutation_obligations.py` | 38 | 894 | Tests for vera.verifier — mutation_obligations (#387 mutation-hardening: obligation-record completeness and projection helpers). |
-| `test_verifier_nat_obligations.py` | 82 | 1,757 | Tests for vera.verifier — nat_obligations (@Nat subtraction-underflow (#520) and binding-site narrowing (#552) obligations). |
+| `test_verifier_nat_obligations.py` | 84 | 1,775 | Tests for vera.verifier — nat_obligations (@Nat subtraction-underflow (#520) and binding-site narrowing (#552) obligations). |
 | `test_verifier_nested_ctor_sort_918.py` | 14 | 417 | Regression: same-ADT self-nested constructor sort selection (#918). |
 | `test_verifier_nullary_ctor_sort_994.py` | 11 | 228 | Regression: bare nullary-constructor sort selection in ``==``/``!=`` (#994 F1). |
 | `test_verifier_premise_consistency_1451.py` | 203 | 3,501 | A function's premise set is checked for satisfiability before it is trusted (#1451). |
-| `test_verifier_primitive_ops.py` | 39 | 660 | Tests for vera.verifier — primitive_ops (division/modulo-by-zero (E526) and array index-bounds (E527) obligations (#680)). |
+| `test_verifier_primitive_ops.py` | 39 | 661 | Tests for vera.verifier — primitive_ops (division/modulo-by-zero (E526) and array index-bounds (E527) obligations (#680)). |
 | `test_verifier_reads_the_typed_program_1525.py` | 103 | 698 | The verifier reads every type from the typed program (#1525). |
 | `test_verifier_refined_sort_derivation.py` | 9 | 491 | One sort for a refined payload, wherever a term is rebuilt (#1421). |
-| `test_verifier_refinement_chain_1434.py` | 15 | 663 | A refinement over a refinement means the conjunction of its predicates (#1434). |
+| `test_verifier_refinement_chain_1434.py` | 15 | 659 | A refinement over a refinement means the conjunction of its predicates (#1434). |
 | `test_verifier_refinements.py` | 92 | 2,504 | Tests for vera.verifier — refinements (refined param sorts, refinement-predicate translation and verification (#746)). |
 | `test_verifier_shadow_audits.py` | 72 | 1,402 | Tests for vera.verifier — shadow_audits (per-monomorphization verification (#732) and the #680 shadow/projection audit battery). |
 | `test_verifier_sort_name_collision_884.py` | 5 | 203 | Regression: injective Z3 datatype sort names (#884). |
