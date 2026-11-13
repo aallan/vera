@@ -64,7 +64,8 @@
   <line class="edge" x1="476" y1="270" x2="768" y2="270" marker-end="url(#arr)"/>
   <text class="f note" x="620" y="262" text-anchor="middle">re-prove only what the edit could break</text>
   <line class="ret" x1="464" y1="298" x2="162" y2="298"/>
-  <text class="m" x="300" y="290" text-anchor="middle" font-size="10.5px" fill="#b07820">proof delta: newly_discharged · newly_undischarged · …</text>
+  <text class="m" x="300" y="276" text-anchor="middle" font-size="10.5px" fill="#b07820">proof delta: newly_discharged ·</text>
+  <text class="m" x="300" y="290" text-anchor="middle" font-size="10.5px" fill="#b07820">newly_undischarged · …</text>
   <text class="f note" x="300" y="312" text-anchor="middle">the canonical document is untouched</text>
 
   <!-- 3 · proposeEdit -->
