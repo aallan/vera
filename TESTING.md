@@ -7,7 +7,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 <!-- render_status:begin status -->
 | Metric | Value |
 |--------|-------|
-| **Tests** | 60,002 collected from 308 test files, which hold 317,728 lines |
+| **Tests** | 60,005 collected from 308 test files, which hold 317,798 lines |
 | **Conformance programs** | 273 in `tests/conformance/manifest.json`: 0 at `parse`, 76 at `check`, 20 at `verify`, 177 at `run`; 64 of them negative fixtures (`expected_error`) |
 | **Example programs** | 44 in `examples/` |
 | **Corpus programs** | 324 `.vera` files under `examples/` and `tests/conformance/`, recursively |
@@ -37,8 +37,8 @@ The measures [ROADMAP.md](ROADMAP.md)'s Stage 29 holds v0.3.0 to, each beside th
 <!-- render_status:begin scorecard -->
 | Measure | v0.2.0, the audit (2026-10-06) | Now | Measured over |
 |---------|---------------------------|-----|---------------|
-| Open `soundness` bugs | 14 (≥17 by definition) | 3 | the tracker, 2026-11-12 23:58 UTC |
-| Open bugs | 82 | 26 | the tracker, 2026-11-12 23:58 UTC |
+| Open `soundness` bugs | 14 (≥17 by definition) | 3 | the tracker, 2026-11-13 01:02 UTC |
+| Open bugs | 82 | 26 | the tracker, 2026-11-13 01:02 UTC |
 | Backend `_infer_*` functions | 29 | 0 | the tree |
 | Pipeline entry points with an optional semantic table | 3 | 0 | the tree |
 | Same-named `Nat`/`Int` helpers in `vera/verifier.py` and `vera/wasm/` | 12 | 1 | the tree |
@@ -49,9 +49,9 @@ The measures [ROADMAP.md](ROADMAP.md)'s Stage 29 holds v0.3.0 to, each beside th
 | Gate scripts that exist only to sync copies | 8 of 23 | 4 of 24 | the tree |
 | CI wall time per pull-request push | 57 min | 34.5 min | 20 pull-request runs, 2026-11-12 to 2026-11-12 |
 | Runner-minutes per pull-request push | 375 | 131 | 20 pull-request runs, 2026-11-12 to 2026-11-12 |
-| Fix pull requests, median: CI runs | 6 | 6 | 10 pull requests merged since v0.2.7 (2026-11-06), to 2026-11-12 |
-| Fix pull requests, median: hours to merge | 11.0 | 8.3 | 10 pull requests merged since v0.2.7 (2026-11-06), to 2026-11-12 |
-| Suite in the pull-request gate: tests | 30,095 | 28,935 | the tree |
+| Fix pull requests, median: CI runs | 6 | 6 | 10 pull requests merged since v0.2.7 (2026-11-06), to 2026-11-13 |
+| Fix pull requests, median: hours to merge | 11.0 | 8.3 | 10 pull requests merged since v0.2.7 (2026-11-06), to 2026-11-13 |
+| Suite in the pull-request gate: tests | 30,095 | 28,938 | the tree |
 | Suite in the pull-request gate: worker-seconds | 9,037 | 2,376 | a run of 28,935 tests, 2026-11-12 23:16 UTC |
 | Subprocess share of suite time | 52% | 23.9% | a run of 28,935 tests, 2026-11-12 23:16 UTC |
 | Conformance entries with golden output | 0 of 256 | 176 of 273; every run-level entry, one of them by exit status only | the tree |
@@ -324,7 +324,7 @@ One row per test file: its tests as a full collection counts them (the stress te
 | `test_module_shadowed_generic_effect_op_1310.py` | 4 | 397 | #1310: a qualified-only (shadowed) module generic's instantiation discovery had no effect-operation registry at all, unlike the unshadowed discovery walk #1207 already fixed. |
 | `test_mono_effect_op_naming_1207.py` | 9 | 339 | #1207: mono discovery and the WASM call-rewrite name ONE clone. |
 | `test_mutate_diff.py` | 248 | 3,625 | Tests for scripts/mutate_diff.py, the mutation lane scoped to a diff. |
-| `test_mutate_sweep.py` | 277 | 3,774 | Tests for scripts/mutate_sweep.py, the nightly mutation sweep over all of vera/. |
+| `test_mutate_sweep.py` | 280 | 3,844 | Tests for scripts/mutate_sweep.py, the nightly mutation sweep over all of vera/. |
 | `test_mutual_recursive_sorts_881.py` | 15 | 310 | Regression tests for #881 — mutually-recursive ``data`` declarations must not crash ``vera verify`` with a raw ``RecursionError`` during Z3 sort construction. |
 | `test_name_resolution_spine_1316.py` | 161 | 2,150 | #1316 / #1321 / #1331 — ONE name-resolution spine, asked in the DECLARING namespace. |
 | `test_named_traps_1479.py` | 375 | 1,927 | Every runtime trap names its cause (#1479). |

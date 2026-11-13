@@ -1014,6 +1014,20 @@ class EngineRun:
     error: str | None = None
 
 
+def _signal_group(pid: int, sig: int) -> bool:
+    """Send ``sig`` to the process group ``pid`` leads; False where the
+    group has no member left to signal.  A group whose every member has
+    gone answers ESRCH.  One whose last member has exited and is not yet
+    reaped answers EPERM on macOS, where a zombie can be sent nothing (Linux
+    delivers to it and reports no error), so EPERM is the same answer: a
+    group this process started holds no member it may not signal."""
+    try:
+        os.killpg(pid, sig)
+    except (ProcessLookupError, PermissionError):
+        return False
+    return True
+
+
 def _end_group(proc: subprocess.Popen[Any], grace_s: float) -> None:
     """End ``proc``'s process group: a terminate, then after ``grace_s`` a
     kill to whatever of the group is left (a test's subprocess included)."""
@@ -1021,18 +1035,13 @@ def _end_group(proc: subprocess.Popen[Any], grace_s: float) -> None:
         proc.kill()
         return
     for sig, wait in ((signal.SIGTERM, grace_s), (signal.SIGKILL, None)):
-        try:
-            os.killpg(proc.pid, sig)
-        except ProcessLookupError:
+        if not _signal_group(proc.pid, sig):
             return
         try:
             proc.wait(timeout=wait)
         except subprocess.TimeoutExpired:
             continue
-    try:
-        os.killpg(proc.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
+    _signal_group(proc.pid, signal.SIGKILL)
 
 
 def run_engine(cmd: Sequence[str], *, cwd: Path, budget_s: float, log_path: Path,
@@ -1075,8 +1084,8 @@ def _stop_engine(proc: subprocess.Popen[Any], posix: bool, grace_s: tuple[float,
     steps: list[tuple[Any, float | None]] = []
     if posix:
         steps = [(lambda: proc.send_signal(signal.SIGINT), grace_s[0]),
-                 (lambda: os.killpg(proc.pid, signal.SIGTERM), grace_s[1]),
-                 (lambda: os.killpg(proc.pid, signal.SIGKILL), None)]
+                 (lambda: _signal_group(proc.pid, signal.SIGTERM), grace_s[1]),
+                 (lambda: _signal_group(proc.pid, signal.SIGKILL), None)]
     else:
         steps = [(proc.terminate, grace_s[1]), (proc.kill, None)]
     returncode = None
@@ -1093,10 +1102,7 @@ def _stop_engine(proc: subprocess.Popen[Any], posix: bool, grace_s: tuple[float,
     if posix:
         # What the engine started (a test's subprocess) is still in its
         # group once the engine itself has stopped.
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        _signal_group(proc.pid, signal.SIGKILL)
     return EngineRun(returncode, "budget", time.monotonic() - start)
 
 
