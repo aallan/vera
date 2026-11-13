@@ -1,5 +1,5 @@
 <svg width="920" height="560" viewBox="0 0 920 560" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
-  <title id="title">Three-tier contract verification: each obligation goes to Z3 with a ten-second default budget. Unsat is verified (Tier 1) and sat is a vera verify error with a counterexample; unknown or timeout becomes a Tier 3 runtime check, compiled into the module where the obligation arises, or, where no check can be emitted, a disclosed warning (or the E538 error). Tier 2, where hints from assert axioms and lemmas would extend the solver to quantifiers, calls and arrays, is specified but not implemented.</title>
+  <title id="title">Three-tier contract verification: each obligation goes to Z3 with a ten-second default budget. Unsat is verified (Tier 1) and sat is a vera verify error with a counterexample; unknown or timeout becomes a Tier 3 runtime check, compiled into the module where the obligation arises, or, where no check can be emitted, a disclosed warning (E504, E506, E539, E540, E542, E543) or the E538 error, counted in no tier. Tier 2, where hints from assert axioms and lemmas would extend the solver to quantifiers, calls and arrays, is specified but not implemented.</title>
   <!-- Design system: see architecture.svg. Truthfulness: Tier 3 contracts are compiled
        as runtime guards; this diagram makes no claim about Tier 1 guard omission (#958). -->
   <defs>
@@ -109,8 +109,8 @@
     <rect class="card" x="336" y="406" width="248" height="62" rx="10"/>
     <rect x="336.5" y="406.5" width="4" height="61" rx="2" fill="#a9a49b"/>
     <text class="f title" x="352" y="428">Disclosed, not checked</text>
-    <text class="f desc" x="352" y="446">a warning: E504 · E506 · E539 · E540</text>
-    <text class="f desc" x="352" y="460">or the E538 error; counted in no tier</text>
+    <text class="f desc" x="352" y="446">warning E504 · E506 · E539 · E540 · E542</text>
+    <text class="f desc" x="352" y="460">· E543, or the E538 error; in no tier</text>
   </g>
 
   <!-- footer -->
