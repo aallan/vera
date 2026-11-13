@@ -3120,6 +3120,76 @@ class TestRunEngine:
                 pass
         assert not alive
 
+    def test_repro_a_group_whose_last_member_is_an_unreaped_exit_ends_without_error(self) -> None:
+        """A group whose last member has exited and is not yet reaped can be
+        sent nothing.  Linux delivers to the zombie and says so; macOS
+        answers EPERM, which ended the stop with a `PermissionError` (the
+        full matrix's macOS cell on the 0.2.8 release, where the engine's
+        worker had exited between the terminate and the kill)."""
+        if os.name != "posix":
+            pytest.skip("process groups are POSIX's")
+        import time
+
+        proc = subprocess.Popen([sys.executable, "-c", "pass"], stdout=subprocess.PIPE,
+                                start_new_session=True)
+        assert proc.stdout is not None
+        proc.stdout.read()  # end of file: it has exited, and nothing has waited for it
+        proc.stdout.close()
+        time.sleep(0.5)
+        sw.md._end_group(proc, 1.0)
+        assert proc.wait(timeout=10) == 0
+
+    def test_a_group_that_can_be_sent_nothing_is_gone(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """EPERM from a group signal is the answer of a group with no member
+        left to signal, as ESRCH is: on any POSIX host it ends the stop with
+        no error, at the terminate or at the kill."""
+        if os.name != "posix":
+            pytest.skip("process groups are POSIX's")
+        real = os.killpg
+        for refused_from in (1, 2):
+            proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
+                                    start_new_session=True)
+            sent: list[int] = []
+
+            def killpg(pid: int, sig: int, sent: list[int] = sent, refused_from: int = refused_from) -> None:
+                sent.append(sig)
+                if len(sent) >= refused_from:
+                    raise PermissionError(1, "Operation not permitted")
+                real(pid, sig)
+
+            monkeypatch.setattr(os, "killpg", killpg)
+            try:
+                sw.md._end_group(proc, 5.0)
+            finally:
+                monkeypatch.setattr(os, "killpg", real)
+                proc.kill()
+                proc.wait(timeout=10)
+            assert len(sent) == refused_from, sent
+
+    def test_a_budget_stop_whose_group_can_be_sent_nothing_still_returns(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The budget's stop ends with a kill to whatever the engine left in
+        its group, and a group that answers EPERM there has nothing left: the
+        run is still a budget stop."""
+        if os.name != "posix":
+            pytest.skip("process groups are POSIX's")
+        import signal
+
+        script = tmp_path / "engine.py"
+        script.write_text("import time\ntime.sleep(60)\n", encoding="utf-8")
+        real = os.killpg
+
+        def killpg(pid: int, sig: int) -> None:
+            if sig == signal.SIGKILL:
+                raise PermissionError(1, "Operation not permitted")
+            real(pid, sig)
+
+        monkeypatch.setattr(os, "killpg", killpg)
+        run = sw.md.run_engine([sys.executable, str(script)], cwd=tmp_path, budget_s=1.0,
+                               log_path=tmp_path / "log", grace_s=(5.0, 5.0))
+        assert run.stopped == "budget"
+
     def test_the_budgets_stop_reads_the_run_before_any_signal(self, tmp_path: Path) -> None:
         seen: list[bool] = []
         log = tmp_path / "log"

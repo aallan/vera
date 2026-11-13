@@ -1,6 +1,6 @@
 # History
 
-How the Vera compiler was built, from initial commit through the one obligation table of Stage 27, across 173 active development days.
+How the Vera compiler was built, from initial commit through the first release of Stage 28, across 176 active development days.
 
 Vera was developed in an interleaved spiral — each phase added a complete compiler layer with tests, documentation, and working examples before moving to the next. The compiler was built by a single developer working with Claude Code, with CodeRabbit providing AI code review on pull requests from v0.0.80 onwards. The entire project — language design, specification, compiler, test suite, documentation, website — was built from scratch starting 22 February 2026.
 
@@ -35,6 +35,7 @@ Version rows follow one rule: one sentence, at most one issue link.  [CHANGELOG.
 | 25 | 21–22 Oct | One resolver | v0.2.5 |
 | 26 | 22–28 Oct | One typed program | v0.2.6 |
 | 27 | 29 Oct – 9 Nov | One obligation table | v0.2.7 |
+| 28 | 11 Nov – | Decomposition and the spec | v0.2.8– |
 
 ---
 
@@ -548,6 +549,16 @@ v0.2.7 gave obligations one owner.  One pass over the typed program, `vera/oblig
 |---------|------|-------------|
 | v0.2.7 | 9 Nov | **One obligation table** — the table complete, with code generation guarding and the verifier discharging its rows, a join's recorded refinement no longer a premise of the value, a generic at a function type compiled, the small verifier batch of counterexamples, refused binders and stand-ins, the nightly matrix on pinned images, and the mutation sweep sampled by line. |
 
+## Stage 28: Decomposition and the spec (from 11 November)
+
+*Readable parts, and a spec that states the language.*
+
+v0.2.8 opened the stage with the bugs the obligation table's reviews had left loud.  An `if`, a `match` or an `Exn` handler has the type its arms share, where the checker had recorded one arm's, so no arm lends its refinement or its effect row to a value that does not have it.  A type variable takes one type from a call's arguments whatever their order, the type they share, and the type a value is expected at fixes what its arguments or elements leave open.  A message quotes the program's own text as `vera fmt` writes it, and a fix that names a type or offers a precondition writes one the program can hold, computed from the site and offered only where it clears the diagnostic.  The nightly mutation sweep keeps each mutant as the engine decides it, uploads a slice's record in legs that outlive a lost runner, and runs its engine under a memory bound.
+
+| Version | Date | What shipped |
+|---------|------|-------------|
+| v0.2.8 | 13 Nov | **Joins and open variables** — a join typed at what its arms share, a type variable given one type whatever the argument order and fixed by the type its site expects, messages that quote the program's own text with fixes computed from the site, a check kept on a tail call's result, and the mutation sweep accounting per mutant under a memory bound. |
+
 ---
 
 ## By the numbers
@@ -567,4 +578,4 @@ Ten releases, chosen for the capability each one unlocked rather than even spaci
 | Spec chapters | 7 | 10 | 12 | 13 | 13 | 13 | 13 | 14 | 14 | 14 |
 | Python coverage | — | — | 90% | 96% | 95% | 95% | 95% | 95% | 95% | 95% |
 
-Total: **3,200+ commits, 219 tagged releases, 173 active development days.**
+Total: **3,300+ commits, 220 tagged releases, 176 active development days.**
