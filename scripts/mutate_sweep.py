@@ -912,24 +912,27 @@ MAX_PARTS = 10
 PART_MAX = 65_536
 
 
-def check_parts(parts: Any, cycle: Any) -> None:
+def check_parts(parts: Any, cycle: Any, started: Any) -> None:
     """A closed cycle's comment parts: one to ``MAX_PARTS`` texts, each at
     most ``PART_MAX`` characters, part ``k`` opening with its marker's line."""
     _check(isinstance(parts, list) and 1 <= len(parts) <= MAX_PARTS, "the close comment's parts")
     for k, part in enumerate(parts, 1):
         _check(isinstance(part, str) and len(part) <= PART_MAX
-               and part.startswith(cycle_mark(int(cycle), k) + "\n"), f"the close comment's part {k}")
+               and part.startswith(cycle_mark(int(cycle), str(started), k) + "\n"),
+               f"the close comment's part {k}")
 
 
 def check_comments(comments: Any) -> None:
     """The state's kept close comments: at most ``KEPT_CYCLES`` closed
-    cycles, newest first, each its number and its parts (:func:`check_parts`)."""
+    cycles, newest first, each its number, the date of its first night
+    (``from``) and its parts (:func:`check_parts`)."""
     _check(isinstance(comments, list) and len(comments) <= KEPT_CYCLES, "the kept close comments")
     cycles = []
     for entry in comments:
-        rec = _keys(entry, {"cycle", "parts"}, "a kept close comment")
+        rec = _keys(entry, {"cycle", "from", "parts"}, "a kept close comment")
         cycles.append(_int(rec["cycle"], 1, 10**6, "a kept close comment's cycle"))
-        check_parts(rec["parts"], rec["cycle"])
+        _text(rec["from"], _DATE, "a kept close comment's first night")
+        check_parts(rec["parts"], rec["cycle"], rec["from"])
     _check(cycles == sorted(cycles, reverse=True) and len(set(cycles)) == len(cycles),
            "the kept close comments are not newest first")
 
@@ -3167,9 +3170,17 @@ def night_mark(run_id: int) -> str:
     return f"<!-- mutation-sweep-night run={run_id} -->"
 
 
-def cycle_mark(cycle: int, part: int) -> str:
-    """The first line of each part of a cycle's close comment."""
-    return f"<!-- mutation-sweep-cycle cycle={cycle} part={part} -->"
+def cycle_mark(cycle: int, started: str, part: int) -> str:
+    """The first line of each part of a cycle's close comment: the cycle's
+    number and the date of its first night, so a state reset that counts
+    from 1 again cannot take an older cycle's comment for its own."""
+    return f"<!-- mutation-sweep-cycle cycle={cycle} from={started} part={part} -->"
+
+
+#: The branch whose runs post a cycle's close comment (MUTATION.md § The
+#: cycle's survivors); a dispatched run on another ref renders it and
+#: posts no part of it.
+POSTING_REF = "refs/heads/main"
 
 
 def _count(n: int, noun: str) -> str:
@@ -3201,16 +3212,18 @@ def _function(key: str) -> str:
 
 
 def render_night_comment(report: Mapping[str, Any], *, run_id: int, repo: str,
-                         dispatched: bool) -> str:
+                         dispatched: bool, ref: str = POSTING_REF) -> str:
     """A night's comment on the standing issue: the commit, the run, the
     mutants decided tonight by column, the cycle's progress, the slices, and
-    the new survivors counted by module, in at most ``NIGHT_LINES`` lines."""
+    the new survivors counted by module, in at most ``NIGHT_LINES`` lines.
+    A dispatched night's names the ref it ran on."""
     night = report["night"]
     decided = report.get("decided", {})
     run = f"https://github.com/{repo}/actions/runs/{run_id}"
     parts = [f"{decided[c]:,} {_label(c)}" for c in ORDER if decided.get(c)]
     out = [night_mark(run_id),
-           ("Dispatched night, posted on request: " if dispatched else "")
+           (f"Dispatched night on {_code(ref.removeprefix('refs/heads/'))}, posted on request: "
+            if dispatched else "")
            + f"**{night['date']}**{'' if dispatched else ', scheduled night'} at `{night['head'][:12]}` "
            f"([run]({run})): "
            + (f"**{night['moved']:,} mutants decided**" if night["moved"] else "no mutant decided")
@@ -3280,6 +3293,7 @@ def render_cycle_comment(last: Mapping[str, Any], *, run_id: int, repo: str,
     import (``at_import``, by ident) is no task: it is named apart, and a
     cycle closed before the rule still counts it in its score."""
     cycle = int(last["cycle"])
+    started = str(last["started"])
     rows = []
     for module, row in last["modules"].items():
         total = row["killed"] + row["survived"] + row["timeout"]
@@ -3311,7 +3325,7 @@ def render_cycle_comment(last: Mapping[str, Any], *, run_id: int, repo: str,
     else:
         change = "No earlier cycle has closed, so there is no change to compare."
     run = f"https://github.com/{repo}/actions/runs/{run_id}"
-    head = [cycle_mark(cycle, 1),
+    head = [cycle_mark(cycle, started, 1),
             f"## Cycle {cycle} closed: {_pct(caught, total)}% caught (95% interval {low} to {high})", "",
             f"{last['started']} to {last['finished']}, at `{str(last['head'])[:12]}`, mutmut {last['engine']}: "
             + (f"{last['sampled']:,} mutants sampled ({float(last['fraction']):.0%} by line of "
@@ -3358,7 +3372,7 @@ def render_cycle_comment(last: Mapping[str, Any], *, run_id: int, repo: str,
     size = len(parts[0][0])
 
     def opener(k: int) -> str:
-        return f"{cycle_mark(cycle, k)}\n## Cycle {cycle}'s survivors, continued (part {k})\n"
+        return f"{cycle_mark(cycle, started, k)}\n## Cycle {cycle}'s survivors, continued (part {k})\n"
 
     def add(piece: str) -> None:
         nonlocal size
@@ -3801,14 +3815,15 @@ def cmd_comment(args: argparse.Namespace) -> int:
     report_path = state_dir / REPORT_FILE
     report = json.loads(report_path.read_text(encoding="utf-8")) if report_path.exists() else None
     dispatched = args.event != "schedule"
+    ref = getattr(args, "ref", None) or POSTING_REF
     if report is not None:
         (out / "1-night.md").write_text(render_night_comment(report, run_id=args.run_id, repo=args.repo,
-                                                             dispatched=dispatched), encoding="utf-8")
+                                                             dispatched=dispatched, ref=ref), encoding="utf-8")
     (out / "issue-body.md").write_text(render_issue_body(), encoding="utf-8")
     last = state.get("last_complete")
     closed = bool(report and report.get("night", {}).get("closed"))
     kept = list(state.get("comments") or [])
-    if last and (closed or args.backfill) and not any(c["cycle"] == last["cycle"] for c in kept):
+    if last and (closed or args.backfill) and not any(_is_kept(c, last) for c in kept):
         try:
             sources = vera_sources(Path(args.repo_dir), str(last["head"]))
         except md.LaneError as exc:
@@ -3834,21 +3849,37 @@ def cmd_comment(args: argparse.Namespace) -> int:
         # every later night writes these parts, never a render of its own.
         # Parts that fail the check are neither kept nor written for posting.
         try:
-            check_parts(parts, last["cycle"])
+            check_parts(parts, last["cycle"], last["started"])
         except StateError as exc:
             print(f"warning: cycle {last['cycle']}'s close comment is not posted ({exc}); a later night "
                   "renders it again", file=sys.stderr)
         else:
-            kept = [{"cycle": int(last["cycle"]), "parts": parts}, *kept][:KEPT_CYCLES]
+            kept = [{"cycle": int(last["cycle"]), "from": str(last["started"]), "parts": parts},
+                    *kept][:KEPT_CYCLES]
             state["comments"] = kept
             write_atomically(state_dir / STATE_FILE, state)
     # Every kept cycle's parts on backfill, so a part one night missed is
     # posted on a later one, after a close or two; tonight's alone without.
-    for entry in kept if args.backfill else [c for c in kept if closed and last and c["cycle"] == last["cycle"]]:
+    written = kept if args.backfill else [c for c in kept if closed and last and _is_kept(c, last)]
+    for entry in written:
         for k, text in enumerate(entry["parts"], 1):
             (out / f"2-cycle-{int(entry['cycle']):05d}-{k:02d}.md").write_text(text, encoding="utf-8")
+    if written and ref != POSTING_REF:
+        # The results job posts no cycle part from another ref: say so.
+        note = (f"Not posted: the close comment of cycle{'s' if len(written) != 1 else ''} "
+                + ", ".join(str(c["cycle"]) for c in written)
+                + f" (in the `mutation-sweep-comment` artifact), because this run is on `{ref}`, not "
+                f"`{POSTING_REF}`; a run on `{POSTING_REF}` posts it.")
+        print(note)
+        _write(getattr(args, "summary", None), note)
     print("\n".join(sorted(p.name for p in out.glob("*.md"))))
     return 0
+
+
+def _is_kept(entry: Mapping[str, Any], last: Mapping[str, Any]) -> bool:
+    """Whether a kept close comment is the last closed cycle's: its number
+    and its first night both, since a reset state counts from 1 again."""
+    return bool(entry["cycle"] == last["cycle"] and entry["from"] == last["started"])
 
 
 def cmd_closed(args: argparse.Namespace) -> int:
@@ -3866,11 +3897,11 @@ def cmd_closed(args: argparse.Namespace) -> int:
     try:
         state = load_state(Path(args.state) / STATE_FILE, _today())
         last = state["last_complete"]
-        kept = {c["cycle"] for c in state.get("comments") or []}
+        kept = list(state.get("comments") or [])
     except (OSError, ValueError, KeyError, TypeError):  # StateError is a ValueError
-        last, kept = None, set()
+        last, kept = None, []
     print(f"closed={'true' if closed else 'false'}")
-    print(f"render={'true' if last and last['cycle'] not in kept else 'false'}")
+    print(f"render={'true' if last and not any(_is_kept(c, last) for c in kept) else 'false'}")
     return 0
 
 
@@ -3999,6 +4030,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     comment.add_argument("--mutations", action="store_true",
                          help="show each survivor's mutation through the engine (mutmut installed)")
     comment.add_argument("--repo-dir", default=str(ROOT), help="the repository (default: this one)")
+    comment.add_argument("--ref", default=POSTING_REF,
+                         help=f"the ref the run is on (default {POSTING_REF}); from another, no cycle part is posted")
+    comment.add_argument("--summary", help="append a note here when the run's cycle parts are not posted")
     comment.add_argument("--out", required=True, help="the directory for the comment files")
     closed_p = sub.add_parser("closed", help="print closed=true when the night closed a cycle")
     closed_p.add_argument("--state", required=True, help="the stitch's out directory")

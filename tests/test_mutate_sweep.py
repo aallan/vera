@@ -4067,6 +4067,8 @@ class TestAtImport:
 
 NIGHT_FIXTURE = ROOT / "tests" / "fixtures" / "mutation_sweep_night_44224887325.json"
 CYCLE_FIXTURE = ROOT / "tests" / "fixtures" / "mutation_sweep_cycle_2.json"
+#: The first night of cycle 2, the fixture's, which its close comment's markers carry.
+FROM = "2026-11-04"
 
 
 def _fixture(path: Path) -> dict[str, Any]:
@@ -4126,7 +4128,7 @@ class TestNightComment:
     def test_a_dispatched_night_says_so_in_its_first_line(self) -> None:
         report = _fixture(NIGHT_FIXTURE)["report"]
         text = sw.render_night_comment(report, run_id=7, repo="o/r", dispatched=True)
-        assert _body(text)[0].startswith("Dispatched night, posted on request: **2026-11-18** at ")
+        assert _body(text)[0].startswith("Dispatched night on `main`, posted on request: **2026-11-18** at ")
 
     def test_a_red_night_names_the_tracking_issue(self) -> None:
         report = _fixture(NIGHT_FIXTURE)["report"]
@@ -4167,7 +4169,7 @@ class TestNightComment:
         names = sorted(p.name for p in (tmp_path / "c").glob("*.md"))
         assert names == ["1-night.md", "2-cycle-00001-01.md", "issue-body.md"]
         cycle = (tmp_path / "c" / "2-cycle-00001-01.md").read_text(encoding="utf-8")
-        assert cycle.splitlines()[0] == sw.cycle_mark(1, 1)
+        assert cycle.splitlines()[0] == sw.cycle_mark(1, "2026-10-16", 1)
         assert "- [ ] `vera/a.py:21` `C.m` mutant 2: (the mutation is not at hand)" in cycle
 
     def test_a_cycle_closed_on_an_earlier_night_is_written_only_on_backfill(self, tmp_path: Path) -> None:
@@ -4205,7 +4207,7 @@ class TestNightComment:
         kept = sw.load_state(out / sw.STATE_FILE, "2026-11-18")["comments"]
         assert [c["cycle"] for c in kept] == [2]
         assert [first[name] for name in sorted(first)] == kept[0]["parts"]
-        monkeypatch.setattr(sw, "render_cycle_comment", lambda *a, **k: [sw.cycle_mark(2, 1) + "\nother\n"])
+        monkeypatch.setattr(sw, "render_cycle_comment", lambda *a, **k: [sw.cycle_mark(2, FROM, 1) + "\nother\n"])
         assert run("c2") == first
         assert sw.load_state(out / sw.STATE_FILE, "2026-11-18")["comments"] == kept
 
@@ -4237,26 +4239,69 @@ class TestNightComment:
         state["last_complete"] = _fixture(CYCLE_FIXTURE)["last_complete"]
         sw.save_state(state, out)
         monkeypatch.setattr(sw, "render_cycle_comment",
-                            lambda *a, **k: [sw.cycle_mark(2, 1) + "\n" + "x" * sw.PART_MAX])
+                            lambda *a, **k: [sw.cycle_mark(2, FROM, 1) + "\n" + "x" * sw.PART_MAX])
         args = sw.argparse.Namespace(state=str(out), run_id=1, repo="o/r", event="schedule", backfill=True,
                                      mutations=False, repo_dir=str(tmp_path / "no-repo"), out=str(tmp_path / "c"))
         assert sw.cmd_comment(args) == 0
         assert not list((tmp_path / "c").glob("2-*.md"))
         assert "comments" not in sw.load_state(out / sw.STATE_FILE, "2026-11-18")
 
+    def test_repro_a_cycles_marker_carries_its_first_night(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A state reset counts from cycle 1 again: the marker carries the
+        cycle's first night too, and a kept comment of the same number and
+        another first night is not the last closed cycle's."""
+        last = _fixture(CYCLE_FIXTURE)["last_complete"]
+        parts = sw.render_cycle_comment(last, run_id=1, repo="o/r")
+        assert parts[0].splitlines()[0] == "<!-- mutation-sweep-cycle cycle=2 from=2026-11-04 part=1 -->"
+        out = tmp_path / "state"
+        state = sw.empty_state("2026-11-16")
+        state["last_complete"] = last
+        state["comments"] = [{"cycle": 2, "from": "2026-01-05", "parts": [sw.cycle_mark(2, "2026-01-05", 1) + "\nx\n"]}]
+        sw.save_state(state, out)
+        assert sw.main(["closed", "--state", str(out)]) == 0
+        assert "render=true" in capsys.readouterr().out.split()
+        with pytest.raises(sw.StateError):
+            sw.check_state({**state, "comments": [{"cycle": 2, "from": "January",
+                                                   "parts": [sw.cycle_mark(2, "January", 1) + "\nx\n"]}]})
+
+    def test_repro_a_run_on_another_ref_renders_its_cycle_and_says_it_is_not_posted(self, tmp_path: Path) -> None:
+        """A dispatched run on a branch renders the cycle's parts into the
+        artifact and says in its stitch summary why none is posted; its
+        night's comment names the ref."""
+        out = tmp_path / "state"
+        state = sw.empty_state("2026-11-16")
+        state["last_complete"] = _fixture(CYCLE_FIXTURE)["last_complete"]
+        sw.save_state(state, out)
+        report = _fixture(NIGHT_FIXTURE)["report"]
+        (out / sw.REPORT_FILE).write_text(json.dumps(report), encoding="utf-8")
+        summary = tmp_path / "summary.md"
+        for ref, dest in (("refs/heads/ci/sweep-results-loop", "branch"), (sw.POSTING_REF, "main")):
+            args = sw.argparse.Namespace(state=str(out), run_id=9, repo="o/r", event="workflow_dispatch",
+                                         backfill=True, mutations=False, repo_dir=str(tmp_path / "no-repo"),
+                                         out=str(tmp_path / dest), ref=ref, summary=str(summary))
+            assert sw.cmd_comment(args) == 0
+            assert (tmp_path / dest / "2-cycle-00002-01.md").exists()
+            night = (tmp_path / dest / "1-night.md").read_text(encoding="utf-8")
+            assert night.splitlines()[1].startswith(
+                f"Dispatched night on `{ref.removeprefix('refs/heads/')}`, posted on request: ")
+        note = summary.read_text(encoding="utf-8")
+        assert note.count("Not posted") == 1 and "`refs/heads/ci/sweep-results-loop`, not `refs/heads/main`" in note
+
     def test_the_kept_parts_are_checked(self) -> None:
         state = sw.empty_state("2026-11-16")
-        good = [{"cycle": 3, "parts": [sw.cycle_mark(3, 1) + "\na\n", sw.cycle_mark(3, 2) + "\nb\n"]},
-                {"cycle": 2, "parts": [sw.cycle_mark(2, 1) + "\na\n"]}]
+        good = [{"cycle": 3, "from": FROM, "parts": [sw.cycle_mark(3, FROM, 1) + "\na\n", sw.cycle_mark(3, FROM, 2) + "\nb\n"]},
+                {"cycle": 2, "from": FROM, "parts": [sw.cycle_mark(2, FROM, 1) + "\na\n"]}]
         sw.check_state({**state, "comments": good})
         one = good[1]
-        for bad in ([{"cycle": 2, "parts": [sw.cycle_mark(2, 2) + "\na\n"]}],
-                    [{"cycle": 2, "parts": [sw.cycle_mark(3, 1) + "\na\n"]}],
-                    [{"cycle": 2, "parts": ["a"]}], [{"cycle": 2, "parts": [1]}], [{"cycle": 2, "parts": []}],
-                    [{"cycle": 2, "parts": [sw.cycle_mark(2, 1) + "\n" + "x" * sw.PART_MAX]}],
-                    [{"cycle": 2, "parts": [sw.cycle_mark(2, k) + "\n" for k in range(1, sw.MAX_PARTS + 2)]}],
-                    [one, good[0]], [one, one], [{"cycle": 2}], "a",
-                    [{"cycle": c, "parts": [sw.cycle_mark(c, 1) + "\n"]} for c in range(sw.KEPT_CYCLES + 1, 0, -1)]):
+        for bad in ([{"cycle": 2, "from": FROM, "parts": [sw.cycle_mark(2, FROM, 2) + "\na\n"]}],
+                    [{"cycle": 2, "from": FROM, "parts": [sw.cycle_mark(3, FROM, 1) + "\na\n"]}],
+                    [{"cycle": 2, "from": FROM, "parts": ["a"]}], [{"cycle": 2, "from": FROM, "parts": [1]}], [{"cycle": 2, "from": FROM, "parts": []}],
+                    [{"cycle": 2, "from": FROM, "parts": [sw.cycle_mark(2, FROM, 1) + "\n" + "x" * sw.PART_MAX]}],
+                    [{"cycle": 2, "from": FROM, "parts": [sw.cycle_mark(2, FROM, k) + "\n" for k in range(1, sw.MAX_PARTS + 2)]}],
+                    [one, good[0]], [one, one], [{"cycle": 2, "from": FROM}], "a",
+                    [{"cycle": c, "from": FROM, "parts": [sw.cycle_mark(c, FROM, 1) + "\n"]} for c in range(sw.KEPT_CYCLES + 1, 0, -1)]):
             with pytest.raises(sw.StateError):
                 sw.check_state({**state, "comments": bad})
 
@@ -4270,10 +4315,10 @@ class TestNightComment:
         state = sw.empty_state("2026-11-16")
         seen = []
         for last, comment in ((None, None), (_fixture(CYCLE_FIXTURE)["last_complete"], None),
-                              (_fixture(CYCLE_FIXTURE)["last_complete"], [sw.cycle_mark(2, 1) + "\na\n"])):
+                              (_fixture(CYCLE_FIXTURE)["last_complete"], [sw.cycle_mark(2, FROM, 1) + "\na\n"])):
             state["last_complete"] = last
             if comment is not None:
-                state["comments"] = [{"cycle": 2, "parts": comment}]
+                state["comments"] = [{"cycle": 2, "from": FROM, "parts": comment}]
             sw.save_state(state, out)
             assert sw.main(["closed", "--state", str(out)]) == 0
             seen.append(capsys.readouterr().out.split())
@@ -4338,7 +4383,7 @@ class TestCycleComment:
         assert text.count("<details><summary>") == 43
         assert "<details><summary><code>vera/verifier.py</code>: 75 survivors</summary>" in text
         assert all(len(p) <= sw.COMMENT_LIMIT for p in parts)
-        assert [p.splitlines()[0] for p in parts] == [sw.cycle_mark(2, k) for k in range(1, len(parts) + 1)]
+        assert [p.splitlines()[0] for p in parts] == [sw.cycle_mark(2, FROM, k) for k in range(1, len(parts) + 1)]
 
     def test_repro_a_module_block_past_the_limit_is_split_at_task_boundaries(self) -> None:
         """One module's tasks longer than a comment go on in the next part,
@@ -4348,7 +4393,7 @@ class TestCycleComment:
         lines = {("vera/a.py", n): f"value_{n} = " + "y" * 150 for n in range(1, 701)}
         parts = sw.render_cycle_comment(last, run_id=1, repo="o/r", lines=lines)
         assert len(parts) >= 2 and all(len(p) <= sw.COMMENT_LIMIT for p in parts)
-        assert [p.splitlines()[0] for p in parts] == [sw.cycle_mark(2, k) for k in range(1, len(parts) + 1)]
+        assert [p.splitlines()[0] for p in parts] == [sw.cycle_mark(2, FROM, k) for k in range(1, len(parts) + 1)]
         tasks = [line for p in parts for line in p.splitlines() if line.startswith("- [ ] ")]
         assert tasks == [f"- [ ] `vera/a.py:{n}` `f` mutant {n}: on {sw._code(lines[('vera/a.py', n)])}"
                          for n in range(1, 701)]
@@ -4368,7 +4413,7 @@ class TestCycleComment:
         last = {**self.LAST, "modules": modules, "survivors": slow + gone}
         parts = sw.render_cycle_comment(last, run_id=1, repo="o/r", at_import=frozenset({"vera/b.py::x_g"}))
         assert len(parts) >= 3 and all(len(p) <= sw.COMMENT_LIMIT for p in parts)
-        sw.check_parts(parts, 2)  # each part can be kept and posted
+        sw.check_parts(parts, 2, FROM)  # each part can be kept and posted
         text = "".join(parts)
         for n in (1, 1250, 2500):
             assert f"`vera/a.py:{n}` `f` mutant {n}" in text and f"`vera/b.py:{n}` `g` mutant {n}" in text
@@ -4456,11 +4501,16 @@ class TestResultsWorkflow:
         assert "if" not in post and post["env"]["COMMENTS"] == "${{ needs.stitch.outputs.comments }}"
 
     @pytest.mark.skipif(sys.platform == "win32" or shutil.which("bash") is None, reason="runs the step under bash")
-    @pytest.mark.parametrize("rendered", [False, True])
-    def test_repro_the_post_step_posts_the_comments_or_a_marked_fallback(self, tmp_path: Path, rendered: bool) -> None:
+    @pytest.mark.parametrize(("rendered", "ref"), [(False, "refs/heads/main"), (True, "refs/heads/main"),
+                                                   (True, "refs/heads/ci/sweep-results-loop"),
+                                                   (True, "refs/heads/mainline")])
+    def test_repro_the_post_step_posts_the_comments_or_a_marked_fallback(self, tmp_path: Path, rendered: bool,
+                                                                          ref: str) -> None:
         """The post step run under bash against a stand-in for gh: with
         comments it posts each, the night's first; with none it posts two
-        lines, marked apart from a night's comment, that link the run."""
+        lines, marked apart from a night's comment, that link the run.  Only
+        a run on main posts a cycle's part: one on another ref posts its
+        night's comment alone."""
         bin_dir, out = tmp_path / "bin", tmp_path / "comment"
         bin_dir.mkdir()
         out.mkdir()
@@ -4471,19 +4521,29 @@ class TestResultsWorkflow:
         fake.chmod(0o755)
         if rendered:
             (out / "1-night.md").write_text(sw.night_mark(5) + "\nnight\n", encoding="utf-8")
-            (out / "2-cycle-00002-01.md").write_text(sw.cycle_mark(2, 1) + "\ncycle\n", encoding="utf-8")
+            (out / "2-cycle-00002-01.md").write_text(sw.cycle_mark(2, FROM, 1) + "\ncycle\n", encoding="utf-8")
         script = tmp_path / "post.sh"
         script.write_text(self._wf()["jobs"]["results"]["steps"][-1]["run"], encoding="utf-8")
         env = {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}", "LOG": str(log), "DIR": str(out),
                "RUNNER_TEMP": str(tmp_path), "COMMENTS": "42" if rendered else "", "RUN_ID": "5",
-               "RUN_URL": "https://github.com/o/r/actions/runs/5", "GH_REPO": "o/r", "GH_TOKEN": "x"}
+               "RUN_URL": "https://github.com/o/r/actions/runs/5", "GH_REPO": "o/r", "GH_TOKEN": "x", "REF": ref}
         subprocess.run(["bash", str(script)], env=env, check=True, capture_output=True, text=True, encoding="utf-8")
         posted = log.read_text(encoding="utf-8").splitlines()
-        if rendered:
-            assert posted == [sw.night_mark(5), "night", sw.cycle_mark(2, 1), "cycle"]
+        if rendered and ref == sw.POSTING_REF:
+            assert posted == [sw.night_mark(5), "night", sw.cycle_mark(2, FROM, 1), "cycle"]
+        elif rendered:
+            assert posted == [sw.night_mark(5), "night"]
         else:
             assert posted[0] == "<!-- mutation-sweep-night run=5 stopped -->" and posted[0] != sw.night_mark(5)
             assert len(posted) == 2 and "([run](https://github.com/o/r/actions/runs/5))" in posted[1]
+
+    def test_the_ref_reaches_the_steps_through_env(self) -> None:
+        jobs = self._wf()["jobs"]
+        (render,) = [s for s in jobs["stitch"]["steps"] if s.get("name") == "Render the night's comments"]
+        post = jobs["results"]["steps"][-1]
+        for step in (render, post):
+            assert step["env"]["REF"] == "${{ github.ref }}" and "github.ref" not in step["run"]
+        assert '--ref "$REF"' in render["run"] and f'"$REF" != "{sw.POSTING_REF}"' in post["run"]
 
     def test_a_dispatch_posts_only_when_asked(self) -> None:
         post = self._wf()[True]["workflow_dispatch"]["inputs"]["post"]

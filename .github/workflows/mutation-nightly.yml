@@ -471,13 +471,14 @@ jobs:
           RUN_ID: ${{ github.run_id }}
           REPO: ${{ github.repository }}
           EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
           MUTATIONS: ${{ steps.closed.outputs.render == 'true' || inputs.post }}
         run: |
           mutations=()
           if [ "$MUTATIONS" = "true" ]; then mutations=(--mutations); fi
           python scripts/mutate_sweep.py comment --backfill "${mutations[@]}" \
             --state "$RUNNER_TEMP/state-out" --run-id "$RUN_ID" --repo "$REPO" \
-            --event "$EVENT" --out "$RUNNER_TEMP/comment"
+            --event "$EVENT" --ref "$REF" --summary "$GITHUB_STEP_SUMMARY" --out "$RUNNER_TEMP/comment"
 
       # After the render, which writes a cycle's close comment parts into
       # the state; the two steps before it are bounded, so the job is alive
@@ -509,6 +510,8 @@ jobs:
   # rendered, posted as they are.  A night whose stitch rendered none (it
   # failed, or never ran) posts a marked two-line comment linking the run;
   # comments that exist and fail to download fail the job, to be rerun.
+  # Only a run on main posts a cycle's close comment; a dispatched run on
+  # another ref posts its night's comment alone.
   results:
     needs: [setup, stitch]
     if: ${{ !cancelled() && (github.event_name == 'schedule' || inputs.post) }}
@@ -532,6 +535,7 @@ jobs:
           COMMENTS: ${{ needs.stitch.outputs.comments }}
           RUN_ID: ${{ github.run_id }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REF: ${{ github.ref }}
         run: |
           set -euo pipefail
           if [ -z "$COMMENTS" ]; then
@@ -559,6 +563,13 @@ jobs:
             > "$RUNNER_TEMP/posted.txt"
           for file in "$DIR"/[12]-*.md; do
             [ -e "$file" ] || continue
+            case "$file" in
+              "$DIR"/2-*)
+                if [ "$REF" != "refs/heads/main" ]; then
+                  echo "not posted from $REF: $(basename "$file")"
+                  continue
+                fi ;;
+            esac
             mark=$(head -n 1 "$file")
             if grep -qxF -- "$mark" "$RUNNER_TEMP/posted.txt"; then
               echo "already posted: $mark"
