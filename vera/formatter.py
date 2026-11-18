@@ -2090,8 +2090,10 @@ def format_effect_ref_canonical(ref: EffectRefNode) -> str:
     writes an effect out to be pasted (E189's ``old()`` / ``new()``), where
     a resolved effect's rendering expands an alias and elides a refinement's
     predicate."""
+    # The attachment is read only where a statement or a declaration is
+    # emitted; an effect reference has no comment to place.
     return Formatter(
-        _Attached(before={}, inline=[], header=[], footer=[]),
+        _Attached(before={}, inline=[], header=[], footer=[]),  # pragma: no mutate
     )._fmt_effect_ref(ref)
 
 
