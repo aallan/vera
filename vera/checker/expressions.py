@@ -14,7 +14,7 @@ from typing import Any, ClassVar
 from vera import ast, fold, naming
 from vera.formatter import format_expr_canonical
 from vera.checker.sql import resolve_array_len, resolve_literal_string
-from vera.checker.resolution import _span_text, same_type_and_facts
+from vera.checker.resolution import same_type_and_facts
 from vera.lowering import (
     PREDICATE_ARITY,
     PREDICATE_PARAMETER,
@@ -1088,9 +1088,11 @@ class ExpressionsMixin:
         or the array's type is written with no element type (*bare*,
         `@Array`).  Code generation cannot choose the element's
         representation, so the program is refused here, with the type to
-        write, and not dropped there."""
-        coll = _span_text(self.source, expr.collection.span) or "[]"
-        idx = _span_text(self.source, expr.index.span) or "0"
+        write, and not dropped there.  The collection and the index are
+        written in canonical form, which every node has, with or without
+        the source text."""
+        coll = format_expr_canonical(expr.collection)
+        idx = format_expr_canonical(expr.index)
         if bare:
             fix = ("Write the array's element type where its type is "
                    "written: `@Array<Int>` in place of `@Array`, with the "

@@ -319,7 +319,7 @@ All elements have one type, the element type, and the type of the literal is `Ar
 @Array<Int>.0[3]
 ```
 
-Indexing uses square brackets with an `Int` or `Nat` index. The index has the array's element type, so that type must be fixed: by the array's elements, by an argument, or by the type the array or the index is expected at (§4.12.1). An index into an array whose element type nothing fixes, such as `match [][0] { _ -> 1 }` or an `@Array` written with no type argument, has no type and is refused (**E164**).
+Indexing uses square brackets with an `Int` or `Nat` index. The index has the array's element type, so that type must be fixed: by the array's elements, by an argument, or by the type the array or the index is expected at (§4.12.1). An index into an array whose element type nothing fixes, such as `match [][0] { _ -> 1 }` or an `@Array` written with no type argument, has no type and is refused (**E164**). The result of a generic call whose type variable no argument fixes is not such an array: the variable is instantiated at the phantom type (§11.4.1), so `empty(())[0]`, with `empty` a `forall<T>` function from `Unit` to `Array<T>`, is an index into an array that holds nothing, and traps where it is evaluated.
 
 Array indexing is bounds-checked:
 - Statically: if the index is a literal or can be proven in-bounds by the contract system

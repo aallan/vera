@@ -151,8 +151,23 @@ def test_e164_reads_as_written() -> None:
         "place of `Int`.")
     assert error.spec_ref == 'Chapter 4, Section 4.12.2 "Array Indexing"'
     assert error.rationale.startswith("An array's element type is fixed by")
+    assert error.rationale == (
+        "An array's element type is fixed by its elements, by an argument, "
+        "or by the type the array or its index is expected at.  Here "
+        "nothing fixes it, so the indexed value has no type and no "
+        "representation to compile to.")
+    # The collection and the index are written as the program writes them,
+    # an index other than 0 included.
+    at_two, = _errors(_main("Int", "match [][2] {\n  _ -> 1\n}"))
+    assert at_two.description == (
+        "The element type of [] is not known, so the index [][2] has no "
+        "type.")
+    assert "`@Array<Int>.0[2]`" in at_two.fix
     bare, = _errors(_fn("f", "@Array", "Int", "@Array.0[0]",
                         visibility="private"))
+    assert bare.description == (
+        "The element type of @Array.0 is not known, so the index "
+        "@Array.0[0] has no type.")
     assert bare.fix == (
         "Write the array's element type where its type is written: "
         "`@Array<Int>` in place of `@Array`, with the element type the "
@@ -172,6 +187,68 @@ def test_repro_the_typed_neighbours_check_and_keep_their_function() -> None:
         source = _main("Int", body)
         assert _codes(source) == [], body
         assert _dropped(source) == [], body
+
+
+# ---------------------------------------------------------------------
+# A variable a generic call leaves open is not the unknown type
+# ---------------------------------------------------------------------
+
+#: A generic function whose variable no argument names: a call leaves it
+#: open in the call's type (spec §5.9), and code generation builds the call
+#: at the phantom type `Bool` (§11.4.1).
+_EMPTY = f"private forall<T> fn empty(@Unit -> @Array<T>)\n{_SIG}{{\n  []\n}}\n\n"
+
+
+@pytest.mark.parametrize("body", [
+    "match empty(())[0] {\n  _ -> 1\n}",
+    "empty(())[0];\n1",
+    "match [empty(())[0]][0] {\n  _ -> 1\n}",
+], ids=["match", "discard", "element_of_an_untyped_literal"])
+def test_repro_an_index_into_a_generic_call_s_open_array_is_specified(
+        body: str) -> None:
+    """`empty(())[0]` is an index into an array that holds nothing, its
+    element type the variable the call leaves open: it checks, draws no
+    E164, compiles at the phantom instance `empty$Bool`, and traps on the
+    bounds check where it is evaluated (spec §4.12.2, §11.4.1)."""
+    source = _EMPTY + _main("Int", body)
+    assert _all_codes(source) == []
+    compiled = pipeline.compile(source)
+    assert compiled.result is not None
+    assert "$:empty$Bool " in compiled.result.wat
+    assert _dropped(source) == []
+    ran = pipeline.run(compiled)
+    assert ran.trap is not None
+    assert "out of bounds" in str(ran.trap), str(ran.trap)
+
+
+def test_repro_an_operand_over_a_generic_call_s_open_index_is_e140() -> None:
+    """`empty(())[0] + 1`: `+` over the open variable is E140, not E164."""
+    assert _codes(_EMPTY + _main("Int", "empty(())[0] + 1")) == ["E140"]
+
+
+def test_repro_a_type_the_index_stands_at_fixes_the_call_s_variable() -> None:
+    """An element or a component of a typed binding, or a generic call's
+    argument at a typed binding, fixes the variable (#1684): the call is
+    built at that type, not at the phantom."""
+    for body in ("let @Array<Int> = [empty(())[0]];\n0",
+                 "let @Tuple<Int, Int> = Tuple(empty(())[0], 1);\n0",
+                 "let @Int = idg(empty(())[0]);\n@Int.0"):
+        source = _IDG + _EMPTY + _main("Int", body)
+        assert _codes(source) == [], body
+        compiled = pipeline.compile(source)
+        assert compiled.result is not None
+        assert "$:empty$Int " in compiled.result.wat, body
+        assert "$:empty$Bool" not in compiled.result.wat, body
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "#1812: an empty literal handed to a built-in is typed by synthesis "
+    "alone, so `array_reverse([])[0]`'s element is a hole variable code "
+    "generation cannot build, and it drops `main` (E602)"))
+def test_an_index_into_a_built_in_over_an_empty_literal_compiles() -> None:
+    source = _main("Int", "match array_reverse([])[0] {\n  _ -> 1\n}")
+    assert _all_codes(source) == []
+    assert _dropped(source) == []
 
 
 # ---------------------------------------------------------------------
@@ -277,6 +354,44 @@ def test_e189_reads_as_written_and_its_fix_clears_it() -> None:
     applied = without.replace("new(Exn<Int>)", "new(State<Int>)").replace(
         "effects(<Exn<Int>>)", "effects(<Exn<Int>, State<Int>>)")
     assert _codes(applied) == []
+
+
+def test_e189_writes_an_effect_s_type_arguments_as_the_row_does() -> None:
+    """An effect and a cell of two type arguments each, written in the
+    message and the fix as the row writes them."""
+    source = ("effect Pair<A, B> {\n  op both(A, B -> Unit);\n}\n\n"
+              + _ensures("old(Pair<Int, Bool>) == 0",
+                         "<Pair<Int, Bool>, State<Tuple<Int, Bool>>>"))
+    error, = [e for e in _errors(source) if e.error_code == "E189"]
+    assert error.description == (
+        "old(Pair<Int, Bool>) names an effect with no state: old() reads a "
+        "State cell.")
+    assert error.fix == (
+        "Name the State cell the postcondition means: "
+        "`old(State<Tuple<Int, Bool>>)` in place of `old(Pair<Int, Bool>)`.")
+
+
+def test_e189_names_the_first_state_cell_as_the_row_writes_it() -> None:
+    """With two `State` cells in the row the fix names the first by its
+    written form, `State<Bool>` before `State<Int>`, whatever order the
+    row's set holds them in."""
+    for row in ("<IO, State<Int>, State<Bool>>", "<IO, State<Bool>, State<Int>>"):
+        error, = _errors(_ensures("old(IO) == 0", row))
+        assert error.fix == (
+            "Name the State cell the postcondition means: `old(State<Bool>)` "
+            "in place of `old(IO)`."), row
+
+
+@pytest.mark.parametrize("form", ["old", "new"])
+def test_a_state_cell_the_row_does_not_declare_keeps_e177_as_written(
+        form: str) -> None:
+    """A `State` cell is not refused by E189: the row's E177 reads it,
+    naming the form it was written in."""
+    error, = _errors(_ensures(f"{form}(State<Int>) == 0", "pure"))
+    assert error.error_code == "E177"
+    assert error.description == (
+        f"{form}(State<Int>) names an effect this function does not "
+        f"declare. Declared: pure.")
 
 
 def test_a_name_no_effect_declares_keeps_the_row_s_e177() -> None:
