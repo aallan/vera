@@ -719,6 +719,33 @@ class TestTheCountInTheEngine:
         assert md.engine_main([md.SHOW_ARG]) == 0
         assert json.loads(capsys.readouterr().out)["m.py"]["x_long"] == shown
 
+    def test_repro_the_lanes_show_of_a_survivor_reaches_mutmut(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The diff lane's default engine is this script, and the lane asks it
+        for a survivor's diff with mutmut's own ``show <mutant>``: that call
+        reaches mutmut's command line unchanged, and the diff it prints is
+        what the lane keeps.  The sweep's JSON protocol has a name of its own."""
+        calls: list[list[str]] = []
+
+        def cli(args: list[str], prog_name: str) -> None:
+            calls.append(list(args))
+            print("--- a/vera/m.py\n+++ b/vera/m.py\n-    return x + 1\n+    return x - 1")
+
+        fake = types.ModuleType("mutmut.__main__")
+        fake.cli = cli  # type: ignore[attr-defined]
+        package = types.ModuleType("mutmut")
+        package.__path__ = []  # type: ignore[attr-defined]
+        package.__main__ = fake  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "mutmut", package)
+        monkeypatch.setitem(sys.modules, "mutmut.__main__", fake)
+        monkeypatch.setattr(sys, "stdin", io.StringIO(""))
+        name = "vera.m.x_f__mutmut_3"
+        assert md.engine_main(["show", name]) == 0
+        assert calls == [["show", name]]
+        assert "-    return x + 1" in capsys.readouterr().out
+        assert md.SHOW_ARG != "show"
+
     def test_the_command_reads_its_request_from_stdin_and_answers_on_stdout(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
     ) -> None:

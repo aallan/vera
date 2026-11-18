@@ -182,8 +182,10 @@ NO_WINDOW_EXIT = 3
 #: plans its sample from.
 COUNT_ARG = "count"
 
-#: The engine's command that shows named mutants' code (:func:`show_mutants`).
-SHOW_ARG = "show"
+#: The engine's command that shows named mutants' code (:func:`show_mutants`),
+#: a name of its own: mutmut's ``show <mutant>``, which the lane asks for a
+#: survivor's diff, reaches mutmut unchanged.
+SHOW_ARG = "show-mutations"
 
 #: The exit status of a ``count`` the engine could not make.
 NO_COUNT_EXIT = 4

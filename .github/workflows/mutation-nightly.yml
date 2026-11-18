@@ -395,7 +395,7 @@ jobs:
       contents: read
       actions: read
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 40
     steps:
       # The whole history: a cycle's close comment reads the tree at the
       # head the cycle closed at, which can be older than this run's.
@@ -443,25 +443,20 @@ jobs:
           --out "$RUNNER_TEMP/state-out"
           --summary "$GITHUB_STEP_SUMMARY"
 
-      - name: Keep the state
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: mutation-sweep-state
-          path: ${{ runner.temp }}/state-out/
-          retention-days: 90
-
       # The comments for the standing issue, rendered whatever the night's
-      # colour (a red night's says so in a line).  A night that closed a
-      # cycle, or a dispatch asked to post, installs uv.lock's engine, whose
-      # visitor shows each survivor's mutation; without it each task names
-      # its line's text.
+      # colour (a red night's says so in a line).  A cycle's close comment
+      # is rendered once, its parts kept in the state, and every later night
+      # writes those parts, so a part whose marker is posted never changes.
+      # The night that first renders them (`render`), or a dispatch asked to
+      # post, installs uv.lock's engine, whose visitor shows each survivor's
+      # mutation; without it each task names its line's text.
       - id: closed
         if: ${{ !cancelled() }}
         run: python scripts/mutate_sweep.py closed --state "$RUNNER_TEMP/state-out" >> "$GITHUB_OUTPUT"
 
       - name: Install the engine that shows the cycle's mutations
-        if: ${{ !cancelled() && (steps.closed.outputs.closed == 'true' || inputs.post) }}
+        if: ${{ !cancelled() && (steps.closed.outputs.render == 'true' || inputs.post) }}
+        timeout-minutes: 10
         run: |
           pip install "uv>=0.5,<2"
           uv sync --locked --extra mutation --python 3.12
@@ -469,17 +464,29 @@ jobs:
 
       - name: Render the night's comments
         if: ${{ !cancelled() }}
+        timeout-minutes: 10
         env:
           RUN_ID: ${{ github.run_id }}
           REPO: ${{ github.repository }}
           EVENT: ${{ github.event_name }}
-          MUTATIONS: ${{ steps.closed.outputs.closed == 'true' || inputs.post }}
+          MUTATIONS: ${{ steps.closed.outputs.render == 'true' || inputs.post }}
         run: |
           mutations=()
           if [ "$MUTATIONS" = "true" ]; then mutations=(--mutations); fi
           python scripts/mutate_sweep.py comment --backfill "${mutations[@]}" \
             --state "$RUNNER_TEMP/state-out" --run-id "$RUN_ID" --repo "$REPO" \
             --event "$EVENT" --out "$RUNNER_TEMP/comment"
+
+      # After the render, which writes a cycle's close comment parts into
+      # the state; the two steps before it are bounded, so the job is alive
+      # to keep the state whatever they did.
+      - name: Keep the state
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mutation-sweep-state
+          path: ${{ runner.temp }}/state-out/
+          retention-days: 90
 
       - name: Keep the comments
         if: ${{ !cancelled() }}

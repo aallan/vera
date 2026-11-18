@@ -3911,6 +3911,47 @@ class TestAtImport:
         assert _at_import("def f():\n    return 1\n") == set()
         assert _at_import("class C:\n    def m(self):\n        return 1\n\n\nX = C().m()\n") == set()
 
+    def test_repro_a_postponed_annotation_is_evaluated_later(self) -> None:
+        """Under ``from __future__ import annotations`` an annotation is kept
+        as text and evaluated only when something asks for it (``get_type_hints``,
+        from a test): a reference in one can run later.  Without it, a
+        definition's annotations are evaluated where the definition runs."""
+        future = "from __future__ import annotations\n\n\n"
+        f = "def f():\n    return 1\n\n\n"
+        for use in ("def g(x: f()):\n    return x\n", "def g(x) -> f():\n    return x\n",
+                    "X: f() = 1\n", "class C:\n    x: f()\n"):
+            assert _at_import(future + f + use) == set(), use
+            assert _at_import(f + use) == {"f"}, use
+        # The value an annotated name is given is evaluated all the same.
+        assert _at_import(future + f + "X: int = f()\n") == {"f"}
+
+    def test_repro_a_lambdas_body_runs_later_whatever_encloses_it(self) -> None:
+        """A lambda's body, like a nested function's, runs when it is called,
+        so a call in it is later even inside a function run at import; its
+        defaults and a nested function's decorators and defaults are
+        evaluated where the definition runs."""
+        f = "def f():\n    return 1\n\n\n"
+        assert _at_import(f + "def make():\n    return lambda: f()\n\n\nG = make()\n") == {"make"}
+        assert _at_import(f + "def make():\n    return lambda x=f(): x\n\n\nG = make()\n") == {"make", "f"}
+        assert _at_import(f + "def make():\n    def inner(x=f()):\n        return x\n    return inner\n\n\n"
+                          "G = make()\n") == {"make", "f"}
+        assert _at_import(f + "def make():\n    @f\n    def inner():\n        return 1\n    return inner\n\n\n"
+                          "G = make()\n") == {"make", "f"}  # a decorator is called with what it decorates
+        assert _at_import(f + "def make():\n    def inner():\n        return f()\n    return inner\n\n\n"
+                          "G = make()\n") == {"make"}
+
+    def test_repro_a_generator_expressions_body_runs_later(self) -> None:
+        """A generator expression evaluates its leftmost iterable at once and
+        the rest as it is advanced; a list, set or dict comprehension runs
+        whole where it sits."""
+        f = "def f():\n    return [1]\n\n\n"
+        assert _at_import(f + "G = (f() for _ in range(2))\n") == set()
+        assert _at_import(f + "G = (x for x in range(2) if f())\n") == set()
+        assert _at_import(f + "G = (y for x in range(2) for y in f())\n") == set()
+        assert _at_import(f + "G = (x for x in f())\n") == {"f"}
+        for eager in ("[f() for _ in range(2)]", "{f() for _ in range(2)}", "{1: f() for _ in range(2)}"):
+            assert _at_import(f + f"G = {eager}\n") == {"f"}, eager
+
     def test_the_tree_holds_the_seven_functions_the_sweep_met(self) -> None:
         """The three #1740 names, which no cycle's sample has drawn, and the
         four the nights of cycles 2 and 3 scored as survivors."""
@@ -3950,6 +3991,22 @@ class TestAtImport:
         assert sorted(taken) == [(A.ident, 2, sw.AT_IMPORT), (A.ident, 3, sw.AT_IMPORT)]
         picks = [p.unit for b in sw.plan(state, UNITS, jobs=1, budget_s=sw.DEFAULT_BUDGET_S) for p in b]
         assert A not in picks and B in picks and C in picks
+
+    def test_repro_a_window_the_rule_decided_is_planned_again_when_the_rule_lets_it_go(self) -> None:
+        """A later commit adds a test that calls the function: the rule no
+        longer names it, and its window, decided by the rule alone, is
+        cleared so the cycle plans its mutants.  A window the engine decided
+        stays, and so does a window the rule still names."""
+        state = _state(f=3, m=2, g=2)
+        sw.settle_at_import(state, UNITS, frozenset({A.ident, C.ident}))
+        _decide(state, B, killed=2)
+        sw.settle_at_import(state, UNITS, frozenset({C.ident}))
+        assert state["units"][A.ident]["window"] is None and state["units"][A.ident]["partial"] is None
+        assert state["units"][B.ident]["window"]["killed"] == 2
+        assert state["units"][C.ident]["window"][sw.AT_IMPORT] == 2
+        picks = [p.unit for b in sw.plan(state, UNITS, jobs=1, budget_s=sw.DEFAULT_BUDGET_S) for p in b]
+        assert picks == [A]
+        sw.check_state(state)
 
     def test_a_stitch_given_the_rule_settles_and_reports_the_column(self) -> None:
         report: dict[str, Any] = {}
@@ -4074,6 +4131,62 @@ class TestNightComment:
             assert sw.cmd_comment(args) == 0
             assert sorted(p.name for p in dest.glob("*.md")) == files
 
+    def test_repro_a_cycles_parts_are_rendered_once_and_replayed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Part 1 posted and part 2 failed: the next night must post part 2
+        as it was cut, not a render of its own, which can cut the survivors
+        another way under the same markers.  The first render's parts go
+        into the state, and every later night writes those."""
+        out = tmp_path / "state"
+        state = sw.empty_state("2026-11-16")
+        state["last_complete"] = _fixture(CYCLE_FIXTURE)["last_complete"]
+        sw.save_state(state, out)
+
+        def run(dest: str) -> dict[str, str]:
+            args = sw.argparse.Namespace(state=str(out), run_id=9, repo="o/r", event="schedule", backfill=True,
+                                         mutations=False, repo_dir=str(tmp_path / "no-repo"),
+                                         out=str(tmp_path / dest))
+            assert sw.cmd_comment(args) == 0
+            return {p.name: p.read_text(encoding="utf-8") for p in (tmp_path / dest).glob("2-*.md")}
+
+        first = run("c1")
+        kept = sw.load_state(out / sw.STATE_FILE, "2026-11-18")["last_complete"]["comment"]
+        assert [first[name] for name in sorted(first)] == kept
+        monkeypatch.setattr(sw, "render_cycle_comment", lambda *a, **k: [sw.cycle_mark(2, 1) + "\nother\n"])
+        assert run("c2") == first
+
+    def test_the_kept_parts_are_checked_and_a_close_starts_afresh(self) -> None:
+        state = _state(f=1, m=1, g=1)
+        _complete(state, {A: 1, B: 1, C: 1})
+        assert sw.close_cycle(state, UNITS, head=HEAD, today="2026-11-18")
+        state["last_complete"]["comment"] = [sw.cycle_mark(1, 1) + "\na\n", sw.cycle_mark(1, 2) + "\nb\n"]
+        sw.check_state(state)
+        for bad in ([sw.cycle_mark(1, 2) + "\na\n"], [sw.cycle_mark(2, 1) + "\na\n"], ["a"], [1], "a", []):
+            with pytest.raises(sw.StateError):
+                sw.check_state({**state, "last_complete": {**state["last_complete"], "comment": bad}})
+        _complete(state, {A: 1, B: 1, C: 1})
+        assert sw.close_cycle(state, UNITS, head=HEAD, today="2026-11-19")
+        assert "comment" not in state["last_complete"]
+
+    def test_the_engine_is_installed_when_a_cycles_parts_are_first_rendered(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The parts are kept as first rendered, so the night that renders
+        them (the close, or the first night after a cycle closed before the
+        parts were kept) shows the mutations; later nights replay them."""
+        out = tmp_path / "state"
+        state = sw.empty_state("2026-11-16")
+        seen = []
+        for last, comment in ((None, None), (_fixture(CYCLE_FIXTURE)["last_complete"], None),
+                              (_fixture(CYCLE_FIXTURE)["last_complete"], [sw.cycle_mark(2, 1) + "\na\n"])):
+            state["last_complete"] = last if comment is None else {**last, "comment": comment}
+            sw.save_state(state, out)
+            assert sw.main(["closed", "--state", str(out)]) == 0
+            seen.append(capsys.readouterr().out.split())
+        assert seen == [["closed=false", "render=false"], ["closed=false", "render=true"],
+                        ["closed=false", "render=false"]]
+
 
 class TestCycleComment:
     """The close comment of cycle 2, the first the sweep closed, rendered
@@ -4133,6 +4246,23 @@ class TestCycleComment:
         assert "<details><summary><code>vera/verifier.py</code>: 75 survivors</summary>" in text
         assert all(len(p) <= sw.COMMENT_LIMIT for p in parts)
         assert [p.splitlines()[0] for p in parts] == [sw.cycle_mark(2, k) for k in range(1, len(parts) + 1)]
+
+    def test_repro_a_module_block_past_the_limit_is_split_at_task_boundaries(self) -> None:
+        """One module's tasks longer than a comment go on in the next part,
+        cut between two tasks, the module's heading repeated."""
+        survivors = [f"vera.a.x_f__mutmut_{n}@{n}:survived" for n in range(1, 701)]
+        last = {**self.LAST, "survivors": survivors}
+        lines = {("vera/a.py", n): f"value_{n} = " + "y" * 150 for n in range(1, 701)}
+        parts = sw.render_cycle_comment(last, run_id=1, repo="o/r", lines=lines)
+        assert len(parts) >= 2 and all(len(p) <= sw.COMMENT_LIMIT for p in parts)
+        assert [p.splitlines()[0] for p in parts] == [sw.cycle_mark(2, k) for k in range(1, len(parts) + 1)]
+        tasks = [line for p in parts for line in p.splitlines() if line.startswith("- [ ] ")]
+        assert tasks == [f"- [ ] `vera/a.py:{n}` `f` mutant {n}: on {sw._code(lines[('vera/a.py', n)])}"
+                         for n in range(1, 701)]
+        for p in parts:
+            assert p.count("<details><summary><code>vera/a.py</code>") == 1
+            assert p.count("<details>") == p.count("</details>")
+        assert "700 survivors, continued</summary>" in parts[1]
 
     def test_a_task_names_the_mutation_or_else_its_lines_text(self) -> None:
         name = ("vera/verifier.py", "x\u01c1ContractVerifier\u01c1_aggregate_generic_instances", 4)
@@ -4201,5 +4331,13 @@ class TestResultsWorkflow:
         (render,) = [s for s in steps if s.get("name") == "Render the night's comments"]
         assert "scripts/mutate_sweep.py comment --backfill" in render["run"] and "${{" not in render["run"]
         (install,) = [s for s in steps if s.get("name") == "Install the engine that shows the cycle's mutations"]
-        assert "steps.closed.outputs.closed == 'true'" in install["if"]
+        # The engine is installed on the night that first renders a cycle's
+        # parts, which the state then keeps for every later night.
+        assert "steps.closed.outputs.render == 'true'" in install["if"]
+        assert "steps.closed.outputs.render == 'true'" in render["env"]["MUTATIONS"]
+        # The state is kept after the render, which writes the parts into it.
+        names = [s.get("name") for s in steps]
+        assert names.index("Keep the state") > names.index("Render the night's comments")
+        (keep,) = [s for s in steps if s.get("name") == "Keep the state"]
+        assert keep["if"] == "always()"
         assert self._wf()["jobs"]["stitch"]["permissions"] == {"contents": "read", "actions": "read"}
