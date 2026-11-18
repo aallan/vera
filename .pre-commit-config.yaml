@@ -197,6 +197,15 @@ repos:
         # broad (same reasoning as diagnostic-fields).
         files: '((vera|scripts|tests)/.*\.py$)'
 
+      - id: history-rows
+        name: history rows
+        entry: .venv/bin/python scripts/check_history_rows.py
+        language: system
+        pass_filenames: false
+        # HISTORY.md's version rows are one sentence within a word cap, and
+        # each stage's prose is within its own (#1880).
+        files: '^(HISTORY\.md|scripts/check_history_rows\.py)$'
+
       # Offline: limitations.json loads, and the two hand-kept Bugs
       # headings survive (the weekly limitations-sync.yml run adds
       # --check-states, which asks the tracker about every cited issue).
