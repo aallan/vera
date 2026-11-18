@@ -698,6 +698,54 @@ class TestTheCountInTheEngine:
         assert lines[0] == 2 and lines.count(2) >= 2  # the call's own mutants first, on its first line
         assert md._unit_line_counts("m.py", source)["x_f"] == {line: lines.count(line) for line in set(lines)}
 
+    def test_show_names_each_mutant_by_the_number_and_line_the_count_gives_it(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The engine's ``show`` command, which the nightly sweep's cycle
+        comment reads a survivor's mutation from: mutant ``n`` of a unit sits
+        on the line the count's order gives it, and its code changes."""
+        pytest.importorskip("mutmut")
+        counts = json.loads(md.count_units(json.dumps(
+            {"sources": {"m.py": WINDOWED}, "units": {"m.py": ["x_long"]}})))["m.py"]["x_long"]
+        expected = [int(line) for line, k in sorted(counts["lines"].items(), key=lambda kv: int(kv[0]))
+                    for _ in range(k)]
+        numbers = [*range(1, counts["mutants"] + 1), counts["mutants"] + 1]
+        request = json.dumps({"sources": {"m.py": WINDOWED}, "mutants": {"m.py": {"x_long": numbers}}})
+        shown = json.loads(md.show_mutants(request))["m.py"]["x_long"]
+        assert sorted(shown, key=int) == [str(n) for n in numbers[:-1]]  # one past the unit's is left out
+        assert [shown[str(n)]["line"] for n in numbers[:-1]] == expected
+        assert all(v["original"] != v["mutated"] for v in shown.values())
+        monkeypatch.setattr(sys, "stdin", io.StringIO(request))
+        assert md.engine_main([md.SHOW_ARG]) == 0
+        assert json.loads(capsys.readouterr().out)["m.py"]["x_long"] == shown
+
+    def test_repro_the_lanes_show_of_a_survivor_reaches_mutmut(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The diff lane's default engine is this script, and the lane asks it
+        for a survivor's diff with mutmut's own ``show <mutant>``: that call
+        reaches mutmut's command line unchanged, and the diff it prints is
+        what the lane keeps.  The sweep's JSON protocol has a name of its own."""
+        calls: list[list[str]] = []
+
+        def cli(args: list[str], prog_name: str) -> None:
+            calls.append(list(args))
+            print("--- a/vera/m.py\n+++ b/vera/m.py\n-    return x + 1\n+    return x - 1")
+
+        fake = types.ModuleType("mutmut.__main__")
+        fake.cli = cli  # type: ignore[attr-defined]
+        package = types.ModuleType("mutmut")
+        package.__path__ = []  # type: ignore[attr-defined]
+        package.__main__ = fake  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "mutmut", package)
+        monkeypatch.setitem(sys.modules, "mutmut.__main__", fake)
+        monkeypatch.setattr(sys, "stdin", io.StringIO(""))
+        name = "vera.m.x_f__mutmut_3"
+        assert md.engine_main(["show", name]) == 0
+        assert calls == [["show", name]]
+        assert "-    return x + 1" in capsys.readouterr().out
+        assert md.SHOW_ARG != "show"
+
     def test_the_command_reads_its_request_from_stdin_and_answers_on_stdout(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
     ) -> None:
