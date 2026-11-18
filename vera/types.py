@@ -917,17 +917,17 @@ def is_subtype(sub: Type, sup: Type) -> bool:
     # (#1885), and a function guarantees the result it declares, so a
     # `-> @Int` closure guarantees no `Pos` (#1819).  Ahead of reflexivity:
     # `types_equal` compares a refined type by its base, so it would take
-    # `fn(Big -> Int)` for `fn(Pos -> Int)`.
-    if isinstance(sub, FunctionType) and isinstance(sup, FunctionType):
+    # `fn(Big -> Int)` for `fn(Pos -> Int)`.  Any type at a function type
+    # is judged there: only `Never` and the unknown fit one that is not a
+    # function type, as everywhere.
+    if isinstance(sup, FunctionType):
         return is_formal_subtype(sub, sup)
 
     # Reflexivity (structural equality).  `types_equal` compares a refined
     # type by its base, so where a function type sits inside (an
-    # `Array<fn(Pos -> Int)>` beside an `Array<fn(Big -> Int)>`) the
-    # predicates must agree too, or the pair goes on to the rules below,
-    # which reach rule 9 (#1885).
-    if types_equal(sub, sup) and (_refined_predicates_agree(sub, sup)
-                                  or not _holds_function(sub)):
+    # `Array<fn(Pos -> Int)>` beside an `Array<fn(Big -> Int)>`) the pair
+    # goes on to the rules below, which reach rule 9 (#1885).
+    if types_equal(sub, sup) and not _holds_function(sub):
         return True
 
     # Never is bottom

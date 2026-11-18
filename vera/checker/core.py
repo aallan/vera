@@ -1030,7 +1030,8 @@ class TypeChecker(
         params = [self._writes_as(p) for p in fn.params]
         result = self._writes_as(fn.return_type)
         effect = written_effect(fn.effect, self.env.type_params)
-        if result is None or effect is None or None in params:
+        if (result is None or effect is None  # pragma: no mutate — defensive: a part no program writes (an open variable) leaves the fix with no wrapper
+                or None in params):
             return None
         slots = [self._shown(base_type(p)) if isinstance(p, RefinedType)
                  else self._shown(p) for p in fn.params]
@@ -1053,9 +1054,10 @@ class TypeChecker(
         whole = _span_bounds(self.source, node.span)
         body = _span_bounds(self.source, node.body.span)
         at = _span_bounds(self.source, written.span)
-        if whole is None or body is None or at is None:
+        if (whole is None or body is None  # pragma: no mutate — defensive: a closure the parser built has every span, and the source is the checker's own
+                or at is None):
             return None
-        if not whole[0] <= at[0] < at[1] <= body[0]:
+        if not whole[0] <= at[0] < at[1] <= body[0]:  # pragma: no mutate — defensive: a closure's own parameter or result lies inside its header
             return None
         header = (self.source[whole[0]:at[0]] + pp
                   + self.source[at[1]:body[0]]).rstrip()
@@ -1077,9 +1079,12 @@ class TypeChecker(
         other: str,
     ) -> tuple[str, str]:
         """E189's *gave* and *other* at a call's argument: where the
-        callee's declared parameter is a type variable, the instance and the
-        argument that fixed it, and that argument at the type that fixes the
-        variable at *cp*, for the closure's parameter *index_at*; otherwise *gave* and *other* unchanged."""
+        callee's declared parameter is a function type whose parameter
+        *index_at* is a type variable, the instance and the argument that
+        fixed it, and that argument at the type that fixes the variable at
+        *cp*; otherwise *gave* and *other* unchanged.  The variable stands
+        outside every function type only in another argument's parameter,
+        never in the closure's own."""
         info, index, arg_types = call
         declared = base_type(info.param_types[index])
         if not (info.forall_vars and isinstance(declared, FunctionType)
@@ -1090,8 +1095,7 @@ class TypeChecker(
             return gave, other
         shown = strip_builtin_typevar_marker(var.name)
         for j, (pt, at) in enumerate(zip(info.param_types, arg_types)):
-            if j == index or at is None or not _mentions_outside_functions(
-                    pt, var.name):
+            if at is None or not _mentions_outside_functions(pt, var.name):
                 continue
             fixed = pretty_type(substitute(pt, {var.name: TypeVar(cp)}))
             return (f"'{info.name}', instantiated at `{shown} = {pp}` by "

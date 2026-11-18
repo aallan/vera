@@ -530,3 +530,181 @@ def test_a_function_value_meets_a_function_type(
         # `array_map`'s result column counts the mapped array.
         _accepted(source, 1 if (flow, kind) == ("array-map", "result")
                   else _shape(kind, form, p, c).result)
+
+
+#: What each flow names as giving the position its type, and the
+#: declaration its fix's second rewrite changes (a `Pos` closure at an `Int`
+#: parameter, written in place).
+_NAMED = {
+    "let": ("the `let` binding", "declare the binding at"),
+    "argument": ("parameter 0 of 'run_f'",
+                 "declare parameter 0 of 'run_f' at"),
+    "field": ("field 0 of 'MkH'", "declare field 0 of 'MkH' at"),
+    "if-join": ("the `let` binding", "declare the binding at"),
+    "match-join": ("the `let` binding", "declare the binding at"),
+    "return": ("the return type of 'mk'", "declare the return type of 'mk' at"),
+    "array-element": ("the `let` binding", "declare the binding at"),
+    "tuple-element": ("the `let` binding", "declare the binding at"),
+    "option": ("the `let` binding", "declare the binding at"),
+    "closure-return": ("the closure's declared return type",
+                       "declare the closure's return type at"),
+    "apply-fn-argument": ("parameter 0 of the applied function type",
+                          "declare parameter 0 of the applied function type at"),
+    "handler-state": ("the handler's state type",
+                      "declare the handler's state at"),
+    "state-put": ("parameter 0 of 'put'", "declare parameter 0 of 'put' at"),
+    "state-update": ("the handler's state type",
+                     "declare the handler's state at"),
+}
+
+
+_BUILT_AROUND = ("if-join", "match-join", "array-element", "tuple-element",
+                 "option")
+
+
+def test_every_flow_names_what_gave_the_position_its_type() -> None:
+    """One message shape at every flow: the description names what gave the
+    position its type, and the fix's second rewrite the declaration to
+    change, here a `Pos` closure where an `Int` parameter is."""
+    for flow, (gave, declare) in _NAMED.items():
+        diagnostic = _only_diagnostic(
+            program(flow, "parameter", "in-place", "Int", "Pos"))
+        description, fix = str(diagnostic["description"]), str(diagnostic["fix"])
+        assert f"where {gave} gives it the type" in description, (flow, description)
+        # A closure written in place is named as written; a value built
+        # around it (a join, an element) by its type, the predicate spelt.
+        spelt = ("{ @Int | @Int.0 > 0 }" if flow in _BUILT_AROUND else "Pos")
+        assert (f"Or {declare} a function type whose parameter 0 is "
+                f"`{spelt}`." in fix), (flow, fix)
+        assert diagnostic["rationale"] == _RATIONALE, flow
+
+
+def test_a_join_no_type_accepts_names_the_join() -> None:
+    """Two refinements of one base at a parameter, joined with nothing
+    expected: the join keeps their base, which neither arm accepts."""
+    source = _ALIASES + _fn(
+        "main(@Int -> @Int)",
+        "apply_fn(if @Int.0 > 100 then { fn(@Pos -> @Int) effects(pure) "
+        "{ @Pos.0 } } else { fn(@Big -> @Int) effects(pure) { @Big.0 } }, "
+        "@Int.0)", visibility="public", requires="@Int.0 > 10")
+    diagnostic = _only_diagnostic(source)
+    assert "where the join with its sibling arms gives it the type" in str(
+        diagnostic["description"])
+    assert "Or declare every arm at a function type whose parameter 0 is" in str(
+        diagnostic["fix"])
+
+
+_RATIONALE = (
+    "A function type is contravariant in its parameters and covariant in its "
+    "result (spec §2.8 rule 5): a function value fits it only if it accepts "
+    "every value the type's parameter admits and guarantees the result the "
+    "type promises.  The narrowing the checker permits for a value (an `Int` "
+    "where a `Nat` or a refinement is expected) is obligated and checked "
+    "where the value is; inside a function type there is none: an argument "
+    "is the caller's to check, at the call, and a result the function's own, "
+    "on its return.")
+
+
+# =====================================================================
+# Outside the class: each flow keeps its own diagnostic
+# =====================================================================
+
+_FN = "type F = fn(Int -> Int) effects(pure);\n\n"
+
+#: A function value that fits its function type by no narrowing (a
+#: parameter of another base, another data type, another arity, a result of
+#: another base, a wider effect row, a narrowing beside one of these), each
+#: at a `let`: the `let`'s own mismatch, E170, never E189.
+_OUTSIDE = {
+    "another base": (_FN, "fn(@String -> @Int) effects(pure) { 0 }"),
+    "another data type": (
+        "type F = fn(Array<Int> -> Int) effects(pure);\n\n",
+        "fn(@Option<Int> -> @Int) effects(pure) { 0 }"),
+    "another data type around a narrowing": (
+        "type F = fn(Option<Int> -> Int) effects(pure);\n\n",
+        "fn(@Array<Pos> -> @Int) effects(pure) { 0 }"),
+    "another arity beside a narrowing": (
+        _FN, "fn(@Pos, @Int -> @Int) effects(pure) { 0 }"),
+    "a result of another base beside a narrowing": (
+        _FN, "fn(@Pos -> @String) effects(pure) { \"\" }"),
+    "a wider effect row beside a narrowing": (
+        _FN, "fn(@Pos -> @Int) effects(<IO>) { 0 }"),
+}
+
+
+def test_a_mismatch_outside_the_class_keeps_the_let_s_code() -> None:
+    for name, (alias, value) in _OUTSIDE.items():
+        source = _ALIASES + alias + _fn(
+            "main(@Int -> @Int)", f"let @F = {value};\n  0",
+            visibility="public")
+        assert _codes(source) == ["E170"], name
+
+
+def test_a_function_value_where_no_function_type_is_keeps_its_code() -> None:
+    """A closure where a data type or a scalar is expected: no function
+    type to compare, so the `let`'s own E170."""
+    for declared in ("Option<F>", "Int"):
+        source = _ALIASES + _FN + _fn(
+            "main(@Int -> @Int)",
+            f"let @{declared} = fn(@Pos -> @Int) effects(pure) {{ 0 }};\n  0",
+            visibility="public")
+        assert _codes(source) == ["E170"], declared
+
+
+#: A `String`-taking closure at each flow whose own mismatch E189 replaces
+#: for the class: the flow's code stands for a value outside it.
+_OWN_CODE = {
+    "let": "E170", "argument": "E202", "field": "E213", "return": "E121",
+    "closure-return": "E171", "apply-fn-argument": "E202",
+    "handler-state": "E331", "state-put": "E204", "state-update": "E335",
+}
+
+
+def test_every_flow_keeps_its_own_code_outside_the_class() -> None:
+    for flow, code in _OWN_CODE.items():
+        source = program(flow, "parameter", "in-place", "Int", "Pos").replace(
+            "fn(@Pos -> @Int) effects(pure) { @Pos.0 }",
+            "fn(@String -> @Int) effects(pure) { 0 }")
+        assert code in _codes(source), (flow, _codes(source))
+        assert "E189" not in _codes(source), flow
+
+
+def test_an_unresolved_parameter_type_draws_no_cascade() -> None:
+    """A closure whose parameter names a type nothing declares: its E136
+    alone, as everywhere (the unknown fits a function type's position)."""
+    source = _FN + _fn(
+        "main(@Int -> @Int)",
+        "let @F = fn(@Missing -> @Int) effects(pure) { 0 };\n  0",
+        visibility="public")
+    assert _codes(source) == ["E136"]
+
+
+def test_a_generic_s_concrete_function_parameter_is_named_as_a_parameter(
+        ) -> None:
+    """A generic whose function-typed parameter is concrete: the position
+    is that parameter, no instance to name."""
+    source = _ALIASES + "type F = fn(Int -> Int) effects(pure);\n\n" + _fn(
+        "run(@F, @T -> @T)", "@T.0").replace(
+            "private fn run", "private forall<T> fn run") + _fn(
+        "main(@Int -> @Int)",
+        "run(fn(@Pos -> @Int) effects(pure) { @Pos.0 }, @Int.0)",
+        visibility="public")
+    diagnostic = _only_diagnostic(source)
+    assert "where parameter 0 of 'run' gives it the type" in str(
+        diagnostic["description"])
+    assert "Or declare parameter 0 of 'run' at a function type" in str(
+        diagnostic["fix"])
+
+
+def test_a_variable_met_below_the_head_is_refused_at_each_argument() -> None:
+    """A generic's variable two closures give below the head of their
+    arguments (`Some(...)`): no arm of the variable's join is an expression,
+    so each argument is refused where it is passed, once."""
+    source = _ALIASES + _fn(
+        "second(@Option<T>, @Option<T> -> @Option<T>)", "@Option<T>.0"
+    ).replace("private fn second", "private forall<T> fn second") + _fn(
+        "main(@Int -> @Int)",
+        "second(Some(fn(@Pos -> @Int) "
+        "effects(pure) { @Pos.0 }), Some(fn(@Big -> @Int) effects(pure) "
+        "{ @Big.0 }));\n  0", visibility="public")
+    assert _codes(source) == ["E189", "E189"]
